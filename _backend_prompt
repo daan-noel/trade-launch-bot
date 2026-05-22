@@ -1,0 +1,267 @@
+========================================= Make a new backend structure =========================================
+
+I'm building a meme coin trading/intelligence backend system focused on newly created Pump.fun tokens on Solana.
+
+Tech stack:
+- Rust
+- Actix Web
+- Tokio async runtime
+- PostgreSQL
+- Helius WebSocket API
+
+IMPORTANT:
+Right now, I only want to focus on:
+1. Token analyzation
+2. Volume-making / wash-trading analyzation
+
+Do NOT overengineer the system yet.
+Do NOT introduce microservices, Kafka, distributed systems, or unnecessary complexity.
+
+I want:
+- clean modular architecture
+- scalability later
+- fast iteration now
+- good separation of concerns
+- event-driven internal processing
+- replayable transaction history
+- good realtime performance
+
+The system only cares about:
+- newly created Pump.fun tokens AFTER the server starts
+- transactions related to tracked tokens
+- creator wallet behavior
+- volume-making detection
+- realtime token activity analysis
+
+-----------------------------------
+CORE FUNCTIONALITIES
+-----------------------------------
+
+1. TOKEN ANALYZATION
+
+The backend should:
+
+- connect to Helius WebSocket using transactionSubscribe
+- receive realtime transaction events
+- decode/analyze Solana transaction data
+- identify:
+  - token creation
+  - buy/sell trades
+  - wallets
+  - liquidity events
+  - creator wallet
+
+The system should:
+- track ONLY newly detected tokens
+- ignore unrelated tokens
+- store:
+  - raw transaction data
+  - parsed transaction data
+  - trades
+  - wallets
+  - tokens
+  - creator information
+
+I want normalized internal models instead of tightly coupling the system to Helius response structures.
+
+-----------------------------------
+
+2. VOLUME-MAKING / WASH-TRADING ANALYZATION
+
+When a new token is created:
+
+- identify the creator wallet
+- start tracking creator-related activity
+- analyze suspicious trading patterns
+
+Examples:
+- repeated buy/sell loops
+- circular wallet activity
+- coordinated wallets
+- fake volume behavior
+- suspicious liquidity behavior
+
+The analyzer should generate:
+- suspiciousness score
+- volume-making indicators
+- creator reputation data
+
+Store all analysis results in PostgreSQL.
+
+-----------------------------------
+ARCHITECTURE REQUIREMENTS
+-----------------------------------
+
+I want:
+- modular architecture
+- analyzers separated from ingestion layer
+- services separated from database logic
+- realtime in-memory state/cache
+- reusable analyzer system
+- clean event flow
+
+Use:
+- async event-driven processing
+- tokio channels or internal event bus
+- trait-based analyzers if appropriate
+
+IMPORTANT:
+Do NOT put heavy logic directly inside WebSocket handlers.
+
+-----------------------------------
+PROJECT STRUCTURE
+-----------------------------------
+
+Use this structure as the base architecture, and if you think it is needed, update the structure:
+
+src/
+├── main.rs
+│
+├── config/
+│   ├── mod.rs
+│   └── settings.rs
+│
+├── ingest/
+│   ├── helius_ws.rs
+│   ├── subscription.rs
+│   ├── decoder.rs
+│   └── event_handler.rs
+│
+├── models/
+│   ├── token.rs
+│   ├── wallet.rs
+│   ├── trade.rs
+│   ├── transaction.rs
+│   └── events.rs
+│
+├── analyzers/
+│   ├── token_analyzer.rs
+│   ├── volume_analyzer.rs
+│   ├── creator_analyzer.rs
+│   └── sniper_signal.rs
+│
+├── services/
+│   ├── token_service.rs
+│   ├── wallet_service.rs
+│   ├── transaction_service.rs
+│   └── signal_service.rs
+│
+├── storage/
+│   ├── postgres.rs
+│   ├── repositories/
+│   │   ├── token_repo.rs
+│   │   ├── wallet_repo.rs
+│   │   ├── trade_repo.rs
+│   │   └── transaction_repo.rs
+│   └── migrations/
+│
+├── state/
+│   ├── token_state.rs
+│   ├── creator_state.rs
+│   └── cache.rs
+│
+├── strategies/
+│   ├── paper_trader.rs
+│   ├── sniper.rs
+│   └── strategy_trait.rs
+│
+├── api/
+│   ├── routes.rs
+│   └── handlers.rs
+│
+├── utils/
+│   ├── logger.rs
+│   ├── time.rs
+│   └── helpers.rs
+│
+└── tests/
+
+-----------------------------------
+IMPORTANT DESIGN NOTES
+-----------------------------------
+
+- Keep Actix Web thin
+- Business logic should live in services/analyzers
+- Database queries should stay inside repositories
+- Keep analyzers modular and independent
+- Maintain realtime in-memory token state
+- Save BOTH raw and parsed transaction data
+- Design for future replay/backtesting support
+- Prefer clean abstractions over premature optimization
+
+-----------------------------------
+WHAT I WANT FROM YOU
+-----------------------------------
+
+Please help me:
+1. improve the architecture
+2. improve module responsibilities
+3. improve event/data flow
+4. design clean Rust abstractions
+5. suggest database schema design
+6. suggest analyzer interfaces
+7. suggest state/cache architecture
+8. identify future scalability concerns
+9. suggest best async/event-processing patterns
+10. suggest best practices for Solana realtime analytics systems
+
+IMPORTANT:
+Do NOT generate massive boilerplate code immediately.
+
+I want:
+- architecture-level guidance first
+- clean module boundaries
+- proper data flow
+- good engineering decisions
+
+Then we can gradually implement modules step-by-step.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+============================================== Simulation logic ==============================================
+
+When I click a simulation button of a rule, run simulation for the matched tokens, and show total simulation result above the rules table, simulated tokens list table under the rules table, instead of "Matched tokens table".
+
+Simulation runs like this:
+
+1. my First Entry Price logic
+- Just after the token is created and creator buy, there are many other transactions trade this newly created token (like other bots).
+- They all have same block timestamp. 
+- Let's assume my bot is not so fast to inject in the first block. So let's see about second block. 
+- In this second block, maybe from first to fifth transaction can be my first entry transaction. I'll change the transaction compare lange later.
+- So check about these transaction histories of the token, and the highest buy price will be my first entry price.
+- The highest price is from first block and 1-5 transactions of second block.
+- The transaction signature of the highest price will be my first entry transaction.
+
+2. my Exit Entry Price logic
+- Similar with First Entry Price logic.
+- When a transaction meets the "take profit"/"stop loss", calculate the exit entry price
+- In that block, the lowest token price will be my Exit Entry Price.
+- The transaction signature of the lowest price will be my exit entry transactio.
+
+3. Show in simulated tokens result table under the rules table
+- For each tokens matched with the selected rule, find the entry, exit transactions according to above logics.
+- Calculate the PnL, holding time, etc.
+- Show token simulated result data like rule name, token symbol, entry price(SOL), entry time, exit price(SOL), exit time, PnL, holding time, exit reason, TP/SL, PnL SOL in a row.
+
+4. Display a total simulation result on top of rules table
+- Make a card styled component that shows each analysis field of rule simulation result
+- Show analysis fields like "total tokens", "win rate", "total PnL", "AVG PnL", "AVG holding time", "Best profit", "Worst loss", etc
+
+Do this step by step. Make steps clearly and show me.

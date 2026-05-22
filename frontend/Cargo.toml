@@ -1,0 +1,30 @@
+[package]
+name = "frontend"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+yew = { version = "0.21", features = ["csr"] }
+yew-router = "0.18"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Navigator",
+    "Clipboard",
+    "console",
+    "EventSource",
+    "MessageEvent",
+    "WebSocket",
+    "CloseEvent",
+    "EventTarget",
+    "HtmlInputElement",
+    "HtmlSelectElement",
+] }
+js-sys = "0.3"
+gloo = { version = "0.11", features = ["net", "timers"] }
+gloo-net = { version = "0.6", features = ["websocket"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+wasm-logger = "0.2"

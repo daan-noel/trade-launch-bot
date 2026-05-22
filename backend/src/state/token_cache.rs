@@ -1,0 +1,143 @@
+use std::collections::VecDeque;
+
+use chrono::{DateTime, Utc};
+use dashmap::DashMap;
+
+use crate::config::constants::INITIAL_VIRTUAL_TOKEN_RESERVES;
+use crate::models::{token::Token, trade::Trade};
+
+/// Maximum number of recent trades kept in memory per token.
+/// Older entries are evicted as new ones arrive (sliding window).
+pub const RECENT_TRADES_WINDOW: usize = 50;
+
+// ---------------------------------------------------------------------------
+// TokenState
+// ---------------------------------------------------------------------------
+
+/// In-memory state for a single tracked token.
+/// Lives inside `TokenCache` for the lifetime of the server process.
+pub struct TokenState {
+    pub token: Token,
+
+    /// Sliding window of the most recent trades — primary input for analyzers.
+    pub recent_trades: VecDeque<Trade>,
+
+    /// Cumulative SOL volume across all trades since tracking began.
+    pub volume_sol_total: f64,
+
+    /// Total number of trades seen since tracking began.
+    pub trade_count: u64,
+
+    pub last_trade_at: Option<DateTime<Utc>>,
+    /// Initial virtual token reserves for circulating supply computation.
+    pub initial_virtual_token_reserves: Option<f64>,
+    /// Latest virtual token reserves snapshot.
+    pub current_virtual_token_reserves: Option<f64>,
+    /// Latest computed market cap (SOL) if available.
+    pub market_cap: Option<f64>,
+    /// Current token price from the latest trade.
+    pub current_price: Option<f64>,
+    /// All-time high price observed in trade history.
+    pub ath_price: Option<f64>,
+    /// Timestamp when ath_price was observed.
+    pub ath_timestamp: Option<DateTime<Utc>>,
+    /// Whether token has migrated from bonding curve to AMM.
+    pub is_migrated: bool,
+}
+
+impl TokenState {
+    pub fn new(token: Token) -> Self {
+        let ath_timestamp = Some(token.created_at);
+        let initial_price = token
+            .initial_buy_sol
+            .zip(token.initial_supply_token)
+            .and_then(|(buy, supply)| {
+                if supply > 0 {
+                    Some(buy / supply as f64)
+                } else {
+                    None
+                }
+            });
+
+        Self {
+            token,
+            recent_trades: VecDeque::with_capacity(RECENT_TRADES_WINDOW),
+            volume_sol_total: 0.0,
+            trade_count: 0,
+            last_trade_at: None,
+            initial_virtual_token_reserves: None,
+            current_virtual_token_reserves: None,
+            market_cap: None,
+            current_price: initial_price,
+            ath_price: initial_price,
+            ath_timestamp,
+            is_migrated: false,
+        }
+    }
+
+    /// Add a trade to the sliding window and update aggregate metrics.
+    pub fn add_trade(&mut self, trade: Trade) {
+        self.volume_sol_total += trade.sol_amount;
+        self.trade_count += 1;
+        self.last_trade_at = Some(trade.block_time);
+
+        // Update current price from the latest trade
+        let price = trade.price_per_token;
+        self.current_price = Some(price);
+
+        // Update all-time high price
+        if self.ath_price.is_none() || price > self.ath_price.unwrap_or(0.0) {
+            self.ath_price = Some(price);
+            self.ath_timestamp = Some(trade.block_time);
+        }
+
+        self.update_reserves(&trade);
+        self.update_market_cap(price);
+
+        if self.recent_trades.len() >= RECENT_TRADES_WINDOW {
+            self.recent_trades.pop_front();
+        }
+        self.recent_trades.push_back(trade);
+    }
+
+    fn update_reserves(&mut self, trade: &Trade) {
+        if let Some(current) = trade.virtual_token_reserves {
+            // Use the configured static initial virtual token reserves as the
+            // baseline. Do not attempt to reconstruct initial reserves from
+            // the first trade — it's constant for Pump.fun tokens.
+            if self.initial_virtual_token_reserves.is_none() {
+                self.initial_virtual_token_reserves = Some(INITIAL_VIRTUAL_TOKEN_RESERVES);
+            }
+            self.current_virtual_token_reserves = Some(current);
+        }
+    }
+
+    fn update_market_cap(&mut self, price: f64) {
+        self.market_cap = if let (Some(initial), Some(current)) = (
+            self.initial_virtual_token_reserves,
+            self.current_virtual_token_reserves,
+        ) {
+            let circulating_supply = (initial - current).max(0.0);
+            Some(circulating_supply * price)
+        } else {
+            None
+        };
+    }
+
+    /// Count unique wallets in the current sliding window.
+    pub fn unique_wallets_in_window(&self) -> usize {
+        let mut seen = std::collections::HashSet::new();
+        for t in &self.recent_trades {
+            seen.insert(t.wallet_address.as_str());
+        }
+        seen.len()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TokenCache
+// ---------------------------------------------------------------------------
+
+/// Concurrent in-memory map: mint_address → TokenState.
+/// A token present here means it is actively tracked.
+pub type TokenCache = DashMap<String, TokenState>;

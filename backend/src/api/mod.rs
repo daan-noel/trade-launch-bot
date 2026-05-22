@@ -1,0 +1,92 @@
+pub mod handlers;
+
+use actix_web::web;
+
+/// Register all `/api` routes onto the Actix service config.
+pub fn configure(cfg: &mut web::ServiceConfig) {
+    cfg.service(
+        web::scope("/api")
+            // Token endpoints
+            .route("/tokens", web::get().to(handlers::tokens::list_tokens))
+            .route("/tokens/{mint}", web::get().to(handlers::tokens::get_token))
+            .route(
+                "/tokens/{mint}/trades",
+                web::get().to(handlers::tokens::get_trades),
+            )
+            .route(
+                "/tokens/{mint}/analysis",
+                web::get().to(handlers::analysis::get_token_analysis),
+            )
+            // Creator endpoints
+            .route(
+                "/creators",
+                web::get().to(handlers::analysis::list_creators),
+            )
+            .route(
+                "/creators/{wallet}",
+                web::get().to(handlers::analysis::get_creator),
+            )
+            // Analysis list
+            .route(
+                "/analysis",
+                web::get().to(handlers::analysis::list_analysis_results),
+            )
+            // Real-time SSE stream
+            .route("/stream", web::get().to(handlers::stream::stream_events))
+            // Wallet endpoints
+            .route(
+                "/wallets/{address}",
+                web::get().to(handlers::wallets::get_wallet),
+            )
+            .route(
+                "/wallets/{address}/flag",
+                web::post().to(handlers::wallets::flag_wallet),
+            )
+            .route(
+                "/wallets/{address}/flag",
+                web::delete().to(handlers::wallets::unflag_wallet),
+            )
+            // Strategy endpoints
+            .route(
+                "/strategies/tpsl/rules",
+                web::get().to(handlers::strategies::list_tpsl_rules),
+            )
+            .route(
+                "/strategies/tpsl/rules",
+                web::post().to(handlers::strategies::create_tpsl_rule),
+            )
+            .route(
+                "/strategies/tpsl/rules/{rule_id}",
+                web::get().to(handlers::strategies::get_tpsl_rule),
+            )
+            .route(
+                "/strategies/tpsl/rules/{rule_id}",
+                web::put().to(handlers::strategies::update_tpsl_rule),
+            )
+            .route(
+                "/strategies/tpsl/rules/{rule_id}",
+                web::delete().to(handlers::strategies::delete_tpsl_rule),
+            )
+            .route(
+                "/strategies/tpsl/rules/{rule_id}/simulate",
+                web::get().to(handlers::strategies::simulate_tpsl_rule),
+            )
+            // Position endpoints
+            .route(
+                "/positions",
+                web::get().to(handlers::strategies::list_positions),
+            )
+            .route(
+                "/positions/{position_id}",
+                web::get().to(handlers::strategies::get_position),
+            )
+            .route(
+                "/positions/mint/{mint}",
+                web::get().to(handlers::strategies::get_positions_by_mint),
+            )
+            .route(
+                "/positions/wallet/{wallet}",
+                web::get().to(handlers::strategies::get_positions_by_wallet),
+            ),
+    );
+}

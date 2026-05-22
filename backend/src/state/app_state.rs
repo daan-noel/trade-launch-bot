@@ -1,0 +1,34 @@
+use std::sync::Arc;
+
+use sqlx::PgPool;
+use tokio::sync::broadcast;
+
+use crate::models::events::InternalEvent;
+
+use super::{creator_cache::CreatorCache, token_cache::TokenCache};
+
+/// Shared application state — passed to Actix handlers via `web::Data<AppState>`
+/// and injected into services.
+pub struct AppState {
+    pub db: PgPool,
+    pub token_cache: Arc<TokenCache>,
+    pub creator_cache: Arc<CreatorCache>,
+    /// Clone the sender to subscribe services; broadcast internally.
+    pub event_tx: broadcast::Sender<InternalEvent>,
+}
+
+impl AppState {
+    pub fn new(
+        db: PgPool,
+        token_cache: Arc<TokenCache>,
+        creator_cache: Arc<CreatorCache>,
+        event_tx: broadcast::Sender<InternalEvent>,
+    ) -> Self {
+        Self {
+            db,
+            token_cache,
+            creator_cache,
+            event_tx,
+        }
+    }
+}

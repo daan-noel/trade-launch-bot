@@ -1,0 +1,56 @@
+# Rust build output
+/target/
+Cargo.lock
+
+# Frontend - React/Vite
+frontend/dist/
+frontend/build/
+frontend/node_modules/
+frontend/.vite/
+
+# Environment secrets
+.env
+.env.local
+.env.*.local
+
+# Editor
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+
+# IDE
+.DS_Store
+Thumbs.db
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Testing
+coverage/
+
+# Compressed files
+*.rar
+*.zip
+*.7z
+
+# Misc
+.cache/
+dist/
+build/
