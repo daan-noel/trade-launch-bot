@@ -27,31 +27,42 @@ pub const METEORA_DAMM_V2_PROGRAM_ID: &str = "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWA
 
 // ---------------------------------------------------------------------------
 // Instruction discriminators (first 8 bytes of Anchor-encoded instruction data)
+// Source: Official Pump.fun IDL (https://github.com/PumpFunOfficial)
 // ---------------------------------------------------------------------------
 
-/// Pump.fun bonding-curve `buy` instruction.
+// ── Core Trading Instructions ─────────────────────────────────────────────
+/// Pump.fun bonding-curve `buy` instruction — buy tokens from a bonding curve.
 pub const BUY_DISCRIMINATOR: [u8; 8] = [0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea];
-/// Pump.fun `buyExactSolIn` instruction variant.
-pub const BUY_EXACT_SOL_IN_DISCRIMINATOR: [u8; 8] =
-    [0x38, 0xfc, 0x74, 0x08, 0x9e, 0xdf, 0xcd, 0x5f];
-/// Pump.fun bonding-curve `sell` instruction.
+/// Pump.fun bonding-curve `sell` instruction — sell tokens into a bonding curve.
 pub const SELL_DISCRIMINATOR: [u8; 8] = [0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad];
-/// Pump.fun AMM V2 `buyExactQuoteIn` instruction.
-pub const BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR: [u8; 8] =
-    [0x83, 0x54, 0x8d, 0x53, 0x58, 0x35, 0xe5, 0x2d];
-/// Pump.fun Token-2022 `create_v2` instruction.
-pub const CREATE_V2_INSTRUCTION_DISCRIMINATOR: [u8; 8] =
-    [0xd6, 0x90, 0x4c, 0xec, 0x5f, 0x8b, 0x31, 0xb4];
-/// Classic SPL Token `create` instruction.
+
+// ── Token Creation & Lifecycle ───────────────────────────────────────────
+/// Pump.fun `create` instruction — creates a new coin and bonding curve.
 pub const CREATE_INSTRUCTION_DISCRIMINATOR: [u8; 8] =
     [0x18, 0x1e, 0xc8, 0x28, 0x05, 0x1c, 0x07, 0x77];
-/// `extendAccount` — storage growth instruction, not a trade.
-pub const EXTEND_ACCOUNT_DISCRIMINATOR: [u8; 8] = [0xea, 0x66, 0xc2, 0xcb, 0x96, 0x48, 0x3e, 0xe5];
-/// `migrate_bonding_curve_creator` instruction.
-pub const MIGRATE_BONDING_CURVE_CREATOR_INSTRUCTION_DISCRIMINATOR: [u8; 8] =
-    [4, 52, 191, 52, 38, 214, 232, 0];
-/// `admin_set_creator` instruction.
-pub const ADMIN_SET_CREATOR_INSTRUCTION_DISCRIMINATOR: [u8; 8] = [69, 25, 171, 142, 57, 239, 13, 4];
+/// Pump.fun `create_v2` instruction — creates a new coin and bonding curve (v2 variant).
+pub const CREATE_V2_INSTRUCTION_DISCRIMINATOR: [u8; 8] = [0xd6, 0x90, 0x4c, 0xec, 0x5f, 0x8b, 0x31, 0xb4];
+/// Pump.fun `migrate` instruction — migrates liquidity to pump_amm when bonding curve completes.
+pub const MIGRATE_INSTRUCTION_DISCRIMINATOR: [u8; 8] =
+    [0x9b, 0xea, 0xe7, 0x92, 0xec, 0x9e, 0xa2, 0x1e];
+
+// ── Buy Variants (all collapse to InstructionKind::Buy in the decoder) ───
+/// `buy_exact_sol_in` — specify exact SOL in, receive tokens out.
+/// sha256("global:buy_exact_sol_in")[..8]
+pub const BUY_EXACT_SOL_IN_DISCRIMINATOR: [u8; 8] =
+    [0x38, 0xfc, 0x74, 0x08, 0x9e, 0xdf, 0xcd, 0x5f];
+/// `buy_exact_quote_in` — original second variant, still active.
+/// sha256("global:buy_exact_quote_in")[..8]
+pub const BUY_EXACT_QUOTE_IN_DISCRIMINATOR: [u8; 8] =
+    [0xc6, 0x2e, 0x15, 0x52, 0xb4, 0xd9, 0xe8, 0x70];
+/// `buy_v2` — new unified buy interface.
+/// sha256("global:buy_v2")[..8]
+pub const BUY_V2_DISCRIMINATOR: [u8; 8] =
+    [0xb8, 0x17, 0xee, 0x61, 0x67, 0xc5, 0xd3, 0x3d];
+/// `buy_exact_quote_in_v2` — new unified buy interface, exact quote in.
+/// sha256("global:buy_exact_quote_in_v2")[..8]
+pub const BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR: [u8; 8] =
+    [0xc2, 0xab, 0x1c, 0x46, 0x68, 0x4d, 0x5b, 0x2f];
 
 // ---------------------------------------------------------------------------
 // On-chain event discriminators (emitted via `emit!` in "Program data:" logs)

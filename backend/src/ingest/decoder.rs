@@ -1,4 +1,4 @@
-use base64::{engine::general_purpose::STANDARD, Engine};
+﻿use base64::{engine::general_purpose::STANDARD, Engine};
 use borsh::BorshDeserialize;
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
@@ -6,11 +6,11 @@ use tracing::{debug, warn};
 
 use crate::config::constants::{
     program_friendly_name, ASSOCIATED_TOKEN_PROGRAM_ID, BUY_DISCRIMINATOR,
-    BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR, BUY_EXACT_SOL_IN_DISCRIMINATOR, COMPUTE_BUDGET_PROGRAM_ID,
+    BUY_EXACT_QUOTE_IN_DISCRIMINATOR, BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR,
+    BUY_EXACT_SOL_IN_DISCRIMINATOR, BUY_V2_DISCRIMINATOR, COMPUTE_BUDGET_PROGRAM_ID,
     CREATE_INSTRUCTION_DISCRIMINATOR, CREATE_V2_INSTRUCTION_DISCRIMINATOR,
-    EXTEND_ACCOUNT_DISCRIMINATOR, MIGRATE_BONDING_CURVE_CREATOR_INSTRUCTION_DISCRIMINATOR,
-    PUMP_FUN_PROGRAM_ID, SELL_DISCRIMINATOR, SYSTEM_PROGRAM_ID, TOKEN_2022_PROGRAM_ID,
-    TOKEN_PROGRAM_ID, TRADE_EVENT_DISCRIMINATOR,
+    MIGRATE_INSTRUCTION_DISCRIMINATOR, PUMP_FUN_PROGRAM_ID, SELL_DISCRIMINATOR, SYSTEM_PROGRAM_ID,
+    TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, TRADE_EVENT_DISCRIMINATOR,
 };
 use crate::models::{
     events::{
@@ -126,6 +126,8 @@ impl HeliusDecoder {
         // ── Step 1b: identify high-level instruction kinds from message.instructions
         // Resolve program IDs correctly from each instruction and classify by
         // known Pump.fun discriminators instead of relying on log text.
+        // Note: Both SPL Token and Token-2022 use identical discriminators; token standard
+        // is determined by examining instruction accounts, not the discriminator itself.
         let kinds = collect_instruction_kinds(message, meta, &account_keys);
 
         // Determine the primary instruction type for this transaction.
@@ -316,10 +318,8 @@ impl HeliusDecoder {
             name = %name,
             symbol = %symbol,
             instruction_type = %instruction_type,
-            // bonding_curve = bonding_curve,
             initial_supply = ?initial_supply,
             labels_json = ?labels_json,
-            // block_time = %block_time,
             "Token created"
         );
 
@@ -504,6 +504,9 @@ fn decode_trade_events_from_logs(logs: &[&str]) -> Vec<DecodedTradeEvent> {
 
 /// Simplified instruction classifier.
 /// Only the four high-level classes that matter for analytics.
+/// Note: Pump.fun uses identical discriminators for both SPL Token and Token-2022.
+/// There is no separate create_v2; both token standards use the same `create` instruction.
+/// Token standard is determined by examining instruction accounts, not the instruction discriminator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstructionKind {
     Create,
@@ -514,9 +517,9 @@ pub enum InstructionKind {
 }
 
 /// Scan "Program log: Instruction: <Name>" entries and map each to a big-class
-/// InstructionKind.  All buy/sell variants (BuyExactSolIn, BuyExactQuoteInV2,
-/// Sell_v2, …) are collapsed into Buy / Sell.
-/// Create_v2 is collapsed into Create.
+/// InstructionKind. All buy/sell variants (BuyExactSolIn, BuyExactQuoteInV2, etc.)
+/// are collapsed into Buy / Sell. The same instructions work for both SPL Token and
+/// Token-2022 (there is no separate create_v2; only `create` for both token standards).
 fn collect_instruction_kinds(
     message: &Value,
     meta: &Value,
@@ -535,6 +538,8 @@ fn collect_instruction_kinds(
         if let Some(bytes) = data_bytes.as_deref().filter(|b| b.len() >= 8) {
             let kind = if bytes.starts_with(&BUY_DISCRIMINATOR)
                 || bytes.starts_with(&BUY_EXACT_SOL_IN_DISCRIMINATOR)
+                || bytes.starts_with(&BUY_EXACT_QUOTE_IN_DISCRIMINATOR)
+                || bytes.starts_with(&BUY_V2_DISCRIMINATOR)
                 || bytes.starts_with(&BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR)
             {
                 InstructionKind::Buy
@@ -544,7 +549,7 @@ fn collect_instruction_kinds(
                 || bytes.starts_with(&CREATE_V2_INSTRUCTION_DISCRIMINATOR)
             {
                 InstructionKind::Create
-            } else if bytes.starts_with(&MIGRATE_BONDING_CURVE_CREATOR_INSTRUCTION_DISCRIMINATOR) {
+            } else if bytes.starts_with(&MIGRATE_INSTRUCTION_DISCRIMINATOR) {
                 InstructionKind::Migrate
             } else {
                 InstructionKind::Unknown
@@ -649,17 +654,17 @@ fn instruction_data_bytes(ix: &Value) -> Option<Vec<u8>> {
 #[derive(BorshDeserialize)]
 #[allow(dead_code)]
 enum ComputeBudgetIx {
-    Unused,                              // 0 – deprecated
+    Unused,                              // 0 - deprecated
     RequestHeapFrame(u32),               // 1
     SetComputeUnitLimit(u32),            // 2
-    SetComputeUnitPrice(u64),            // 3 – micro-lamports per CU
+    SetComputeUnitPrice(u64),            // 3 - micro-lamports per CU
     SetLoadedAccountsDataSizeLimit(u32), // 4
 }
 
 /// Iterate `message.instructions` (top-level only) and build a human-readable
 /// label for each entry.  Also extracts `cu_limit` and `cu_price` in the same
 /// pass.
-///
+
 /// Returns `(labels, cu_limit_opt, cu_price_opt)`.
 fn build_instruction_labels(
     message: &Value,
@@ -728,11 +733,22 @@ fn label_instruction(program_id: &str, ix: &Value, data_bytes: Option<&[u8]>) ->
     if program_id == PUMP_FUN_PROGRAM_ID {
         if let Some(b) = data_bytes.filter(|b| b.len() >= 8) {
             let d = &b[..8];
+
+            // Trading instructions
             if d == BUY_DISCRIMINATOR {
                 return "Pump.Fun: Buy".to_owned();
             }
             if d == BUY_EXACT_SOL_IN_DISCRIMINATOR {
                 return "Pump.Fun: BuyExactSolIn".to_owned();
+            }
+            if d == BUY_EXACT_QUOTE_IN_DISCRIMINATOR {
+                return "Pump.Fun: BuyExactQuoteIn".to_owned();
+            }
+            if d == BUY_V2_DISCRIMINATOR {
+                return "Pump.Fun: BuyV2".to_owned();
+            }
+            if d == BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR {
+                return "Pump.Fun: BuyExactQuoteInV2".to_owned();
             }
             if d == SELL_DISCRIMINATOR {
                 return "Pump.Fun: Sell".to_owned();
@@ -743,8 +759,8 @@ fn label_instruction(program_id: &str, ix: &Value, data_bytes: Option<&[u8]>) ->
             if d == CREATE_V2_INSTRUCTION_DISCRIMINATOR {
                 return "Pump.Fun: Create_v2".to_owned();
             }
-            if d == EXTEND_ACCOUNT_DISCRIMINATOR {
-                return "Pump.Fun: ExtendAccount".to_owned();
+            if d == MIGRATE_INSTRUCTION_DISCRIMINATOR {
+                return "Pump.Fun: Migrate".to_owned();
             }
         }
         return "Pump.Fun: Unknown".to_owned();
@@ -776,7 +792,7 @@ fn label_instruction(program_id: &str, ix: &Value, data_bytes: Option<&[u8]>) ->
     } else {
         program_id
     };
-    format!("Unknown (…{})", suffix)
+    format!("Unknown (...{})", suffix)
 }
 
 fn capitalize_first(s: &str) -> String {
@@ -820,7 +836,7 @@ fn extract_account_keys(message: &Value) -> Vec<String> {
 /// Find ALL instructions that belong to `program_id`, searching both the
 /// top-level `message.instructions` list and every entry in
 /// `meta.innerInstructions[*].instructions`.
-///
+
 /// This is needed because trading bots (Terminal, Axiom, …) wrap pump.fun
 /// calls as CPI — the pump.fun instruction appears only as an inner call.
 fn find_pump_ixs_anywhere<'a>(
@@ -871,7 +887,7 @@ fn is_pump_create_ix(ix: &Value) -> bool {
 }
 
 /// Resolve account pubkeys from a pump instruction.
-///
+
 /// Helius with `jsonParsed` encoding may return accounts as either:
 ///   - Resolved pubkey strings: `["pk1", "pk2", ...]`
 ///   - Integer indices into `message.accountKeys`: `[0, 1, 2, ...]`
@@ -951,7 +967,7 @@ fn compute_token_change(user_ata: &str, mint: &str, account_keys: &[String], met
 
 /// Attempt to decode `name` and `symbol` from a Pump.fun Create instruction's
 /// base58-encoded data.
-///
+
 /// Anchor / Borsh layout (after the 8-byte discriminator):
 ///   name:   u32 LE length + UTF-8 bytes
 ///   symbol: u32 LE length + UTF-8 bytes
@@ -985,3 +1001,5 @@ fn read_anchor_string(data: &[u8], offset: &mut usize) -> Option<String> {
 
     Some(s)
 }
+
+
