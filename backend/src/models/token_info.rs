@@ -17,6 +17,7 @@ pub struct TokenInfo {
     pub last_trade_at: Option<DateTime<Utc>>,
     pub current_price: Option<f64>,
     pub is_rugged: bool,
+    pub is_migrated: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -33,6 +34,7 @@ impl TokenInfo {
         last_trade_at: Option<DateTime<Utc>>,
         current_price: Option<f64>,
         is_rugged: bool,
+        is_migrated: bool,
         created_at: DateTime<Utc>,
         updated_at: DateTime<Utc>,
     ) -> Self {
@@ -48,6 +50,7 @@ impl TokenInfo {
             last_trade_at,
             current_price,
             is_rugged,
+            is_migrated,
             created_at,
             updated_at,
         }

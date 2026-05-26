@@ -15,7 +15,7 @@ use crate::config::constants::{
 use crate::models::{
     events::{
         CreatorActivityEvent, CreatorActivityKind, InternalEvent, TokenCreatedEvent,
-        TradeExecutedEvent,
+        TokenMigratedEvent, TradeExecutedEvent,
     },
     token::Token,
     trade::{Trade, TradeType},
@@ -241,7 +241,34 @@ impl HeliusDecoder {
                     cu_limit,
                     cu_price,
                     &raw_tx,
+                    message,
+                    meta,
                 ));
+            }
+        }
+
+        let has_migrate = kinds.iter().any(|k| matches!(k, InstructionKind::Migrate));
+        if has_migrate {
+            let pump_ixs =
+                find_pump_ixs_anywhere(message, meta, &account_keys, &self.pump_program_id);
+            if let Some(migrate_ix) = pump_ixs.iter().find(|ix| {
+                if let Some(bytes) = instruction_data_bytes(ix).as_deref() {
+                    bytes.len() >= 8 && bytes[..8] == MIGRATE_INSTRUCTION_DISCRIMINATOR
+                } else {
+                    false
+                }
+            }) {
+                let ix_accounts = resolve_pump_accounts(migrate_ix, &account_keys);
+                if let Some(ev) = self.decode_migrate(
+                    &signature,
+                    slot,
+                    block_time,
+                    migrate_ix,
+                    &ix_accounts,
+                    &raw_tx,
+                ) {
+                    events.push(ev);
+                }
             }
         }
 
@@ -277,6 +304,8 @@ impl HeliusDecoder {
         cu_limit: Option<u64>,
         cu_price: Option<u64>,
         raw_tx: &RawTransaction,
+        message: &Value,
+        meta: &Value,
     ) -> Vec<InternalEvent> {
         let mint = match pump_accounts.first().filter(|s| !s.is_empty()) {
             Some(m) => m.clone(),
@@ -318,6 +347,8 @@ impl HeliusDecoder {
                 )
             });
         let create_kind = if is_v2 { "Create_v2" } else { "Create" };
+        let initial_buy_instruction = extract_pump_buy_instruction_data(message, meta, account_keys)
+            .map(buy_instruction_data_to_json);
 
         debug!(
             sig = %signature,
@@ -341,6 +372,7 @@ impl HeliusDecoder {
             bonding_curve,
             initial_supply,
             initial_buy_sol,
+            initial_buy_instruction,
             cu_limit,
             cu_price,
             is_mayhem_mode,
@@ -369,6 +401,29 @@ impl HeliusDecoder {
             }),
             InternalEvent::CreatorActivityDetected(creator_event),
         ]
+    }
+
+    fn decode_migrate(
+        &self,
+        signature: &str,
+        slot: u64,
+        block_time: DateTime<Utc>,
+        _pump_ix: &Value,
+        pump_accounts: &[String],
+        raw_tx: &RawTransaction,
+    ) -> Option<InternalEvent> {
+        let mint = pump_accounts.get(2)?.to_string();
+        if mint.is_empty() {
+            return None;
+        }
+
+        Some(InternalEvent::TokenMigrated(TokenMigratedEvent {
+            mint_address: mint,
+            tx_signature: signature.to_string(),
+            slot,
+            timestamp: block_time,
+            raw_tx: raw_tx.clone(),
+        }))
     }
 
     /// Balance-delta fallback for Buy/Sell when no "Program data:" TradeEvent
@@ -814,6 +869,150 @@ fn capitalize_first(s: &str) -> String {
     }
 }
 
+#[derive(Debug)]
+enum PumpBuyInstructionData {
+    Buy {
+        token_amount: u64,
+        max_sol_cost: u64,
+    },
+    BuyExactSolIn {
+        spendable_sol_in: u64,
+        min_tokens_out: u64,
+    },
+    BuyExactQuoteIn {
+        spendable_sol_in: u64,
+        min_tokens_out: u64,
+    },
+    BuyV2 {
+        token_amount: u64,
+        max_sol_cost: u64,
+    },
+    BuyExactQuoteInV2 {
+        spendable_sol_in: u64,
+        min_tokens_out: u64,
+    },
+}
+
+#[derive(BorshDeserialize)]
+struct BuyArgs {
+    token_amount: u64,
+    max_sol_cost: u64,
+}
+
+#[derive(BorshDeserialize)]
+struct BuyExactArgs {
+    spendable_sol_in: u64,
+    min_tokens_out: u64,
+}
+
+fn parse_pump_buy_instruction_data(data: &[u8]) -> Option<PumpBuyInstructionData> {
+    if data.len() < 8 {
+        return None;
+    }
+
+    let (discriminator, rest) = data.split_at(8);
+    let mut buf = rest;
+
+    if discriminator == BUY_DISCRIMINATOR {
+        let args = BuyArgs::deserialize(&mut buf).ok()?;
+        return Some(PumpBuyInstructionData::Buy {
+            token_amount: args.token_amount,
+            max_sol_cost: args.max_sol_cost,
+        });
+    }
+    if discriminator == BUY_V2_DISCRIMINATOR {
+        let args = BuyArgs::deserialize(&mut buf).ok()?;
+        return Some(PumpBuyInstructionData::BuyV2 {
+            token_amount: args.token_amount,
+            max_sol_cost: args.max_sol_cost,
+        });
+    }
+    if discriminator == BUY_EXACT_SOL_IN_DISCRIMINATOR {
+        let args = BuyExactArgs::deserialize(&mut buf).ok()?;
+        return Some(PumpBuyInstructionData::BuyExactSolIn {
+            spendable_sol_in: args.spendable_sol_in,
+            min_tokens_out: args.min_tokens_out,
+        });
+    }
+    if discriminator == BUY_EXACT_QUOTE_IN_DISCRIMINATOR {
+        let args = BuyExactArgs::deserialize(&mut buf).ok()?;
+        return Some(PumpBuyInstructionData::BuyExactQuoteIn {
+            spendable_sol_in: args.spendable_sol_in,
+            min_tokens_out: args.min_tokens_out,
+        });
+    }
+    if discriminator == BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR {
+        let args = BuyExactArgs::deserialize(&mut buf).ok()?;
+        return Some(PumpBuyInstructionData::BuyExactQuoteInV2 {
+            spendable_sol_in: args.spendable_sol_in,
+            min_tokens_out: args.min_tokens_out,
+        });
+    }
+
+    None
+}
+
+fn buy_instruction_data_to_json(data: PumpBuyInstructionData) -> Value {
+    match data {
+        PumpBuyInstructionData::Buy {
+            token_amount,
+            max_sol_cost,
+        } => json!({
+            "kind": "buy",
+            "token_amount": token_amount,
+            "max_sol_cost": max_sol_cost,
+        }),
+        PumpBuyInstructionData::BuyV2 {
+            token_amount,
+            max_sol_cost,
+        } => json!({
+            "kind": "buy_v2",
+            "token_amount": token_amount,
+            "max_sol_cost": max_sol_cost,
+        }),
+        PumpBuyInstructionData::BuyExactSolIn {
+            spendable_sol_in,
+            min_tokens_out,
+        } => json!({
+            "kind": "buy_exact_sol_in",
+            "spendable_sol_in": spendable_sol_in,
+            "min_tokens_out": min_tokens_out,
+        }),
+        PumpBuyInstructionData::BuyExactQuoteIn {
+            spendable_sol_in,
+            min_tokens_out,
+        } => json!({
+            "kind": "buy_exact_quote_in",
+            "spendable_sol_in": spendable_sol_in,
+            "min_tokens_out": min_tokens_out,
+        }),
+        PumpBuyInstructionData::BuyExactQuoteInV2 {
+            spendable_sol_in,
+            min_tokens_out,
+        } => json!({
+            "kind": "buy_exact_quote_in_v2",
+            "spendable_sol_in": spendable_sol_in,
+            "min_tokens_out": min_tokens_out,
+        }),
+    }
+}
+
+fn extract_pump_buy_instruction_data(
+    message: &Value,
+    meta: &Value,
+    account_keys: &[String],
+) -> Option<PumpBuyInstructionData> {
+    let ixs = find_pump_ixs_anywhere(message, meta, account_keys, PUMP_FUN_PROGRAM_ID);
+    for ix in ixs {
+        if let Some(bytes) = instruction_data_bytes(ix).as_deref() {
+            if let Some(data) = parse_pump_buy_instruction_data(bytes) {
+                return Some(data);
+            }
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // JSON extraction helpers
 // ---------------------------------------------------------------------------
@@ -980,10 +1179,10 @@ fn compute_token_change(user_ata: &str, mint: &str, account_keys: &[String], met
 /// base58-encoded data.
 
 /// Anchor / Borsh layout (after the 8-byte discriminator):
-///   name:         u32 LE length + UTF-8 bytes
-///   symbol:       u32 LE length + UTF-8 bytes
-///   uri:          u32 LE length + UTF-8 bytes
-///   mayhem_mode:  bool (only present for create_v2)
+///   name:             u32 LE length + UTF-8 bytes
+///   symbol:           u32 LE length + UTF-8 bytes
+///   uri:              u32 LE length + UTF-8 bytes
+///   is_mayhem_mode:   bool (only present for create_v2)
 fn decode_create_info(pump_ix: &Value) -> Option<(String, String, bool, bool)> {
     let data_b58 = pump_ix["data"].as_str()?;
     let data = bs58::decode(data_b58).into_vec().ok()?;

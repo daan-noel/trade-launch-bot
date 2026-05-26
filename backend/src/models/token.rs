@@ -20,6 +20,8 @@ pub struct Token {
     pub initial_supply_token: Option<u64>,
     /// First creator buy amount in SOL.
     pub initial_buy_sol: Option<f64>,
+    /// Buy instruction arguments from the creation transaction, if present.
+    pub initial_buy_instruction: Option<Value>,
     /// Compute-unit limit requested in the creation transaction (if any).
     pub cu_limit: Option<u64>,
     /// Compute-unit price requested in the creation transaction (if any), in micro-lamports per CU.
@@ -42,6 +44,7 @@ impl Token {
         bonding_curve_address: Option<String>,
         initial_supply_token: Option<u64>,
         initial_buy_sol: Option<f64>,
+        initial_buy_instruction: Option<Value>,
         cu_limit: Option<u64>,
         cu_price: Option<u64>,
         is_mayhem_mode: bool,
@@ -58,6 +61,7 @@ impl Token {
             bonding_curve_address,
             initial_supply_token,
             initial_buy_sol,
+            initial_buy_instruction,
             cu_limit,
             cu_price,
             is_mayhem_mode,

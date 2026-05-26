@@ -53,11 +53,13 @@ async fn main() -> anyhow::Result<()> {
     let (event_tx, _) = tokio::sync::broadcast::channel::<models::events::InternalEvent>(2048);
 
     // AppState — shared with API handlers via web::Data
+    let (live_tx, live_rx) = tokio::sync::watch::channel(false);
     let app_state = Arc::new(state::AppState::new(
         db.clone(),
         token_cache.clone(),
         creator_cache.clone(),
         event_tx.clone(),
+        live_tx.clone(),
     ));
 
     // Raw WS message channel: helius_ws → event_handler
@@ -65,7 +67,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Ingest: Helius WebSocket feed
     let ws_settings = Arc::new(settings.clone());
-    let ws_task = tokio::spawn(ingest::helius_ws::run(ws_settings, raw_tx));
+    let ws_task = tokio::spawn(ingest::helius_ws::run(
+        ws_settings,
+        raw_tx,
+        live_rx,
+    ));
 
     // Ingest: decode + persist + broadcast
     let event_handler = ingest::EventHandler::new(

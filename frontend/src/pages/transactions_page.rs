@@ -2,7 +2,7 @@ use yew::prelude::*;
 
 use crate::components::{trade_row, AppTable, Header, RowCells};
 use crate::services::websocket::connect_sse;
-use crate::state::transactions::TransactionState;
+use crate::state::{PriceUnitContext, transactions::TransactionState};
 
 const HEADERS: &[&str] = &[
     "Mint",
@@ -29,15 +29,23 @@ pub fn transactions_page() -> Html {
         });
     }
 
+    let price_unit = use_context::<PriceUnitContext>().expect("PriceUnitProvider must be mounted above TransactionsPage");
     let event_count = tx_state.events.len();
     let rows = tx_state
         .events
         .iter()
-        .map(trade_row)
+        .map(|ev| trade_row(ev, &price_unit))
         .collect::<Vec<RowCells>>();
     let headers = HEADERS
         .iter()
-        .map(|&h| AttrValue::Static(h))
+        .map(|&h| {
+            let label = match h {
+                "SOL" => price_unit.unit_label().to_string(),
+                "Price (SOL)" => format!("Price ({})", price_unit.unit_label()),
+                other => other.to_string(),
+            };
+            AttrValue::from(label)
+        })
         .collect::<Vec<_>>();
 
     html! {

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use sqlx::PgPool;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 use crate::models::events::InternalEvent;
 
@@ -15,6 +15,7 @@ pub struct AppState {
     pub creator_cache: Arc<CreatorCache>,
     /// Clone the sender to subscribe services; broadcast internally.
     pub event_tx: broadcast::Sender<InternalEvent>,
+    pub live_mode: watch::Sender<bool>,
 }
 
 impl AppState {
@@ -23,12 +24,22 @@ impl AppState {
         token_cache: Arc<TokenCache>,
         creator_cache: Arc<CreatorCache>,
         event_tx: broadcast::Sender<InternalEvent>,
+        live_mode: watch::Sender<bool>,
     ) -> Self {
         Self {
             db,
             token_cache,
             creator_cache,
             event_tx,
+            live_mode,
         }
+    }
+
+    pub fn is_live(&self) -> bool {
+        *self.live_mode.borrow()
+    }
+
+    pub fn set_live(&self, live: bool) {
+        let _ = self.live_mode.send(live);
     }
 }

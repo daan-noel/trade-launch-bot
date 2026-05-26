@@ -1,7 +1,9 @@
-﻿use yew::prelude::*;
+﻿use wasm_bindgen_futures::spawn_local;
+use yew::prelude::*;
 
 use crate::components::stat_card::{AddrCard, StatCard, StatVariant};
 use crate::services::api::{TokenDetailRecord, TokenRecord};
+use crate::state::PriceUnitContext;
 use serde_json::Value;
 use crate::utils::date::format_iso;
 use crate::utils::format::{
@@ -63,34 +65,32 @@ pub struct Props {
     pub on_select: Callback<String>,
     #[prop_or_default]
     pub row_num: Option<usize>,
-    /// Visibility mask — one bool per COLUMNS entry (symbol=0 … created=12).
+    /// Visibility mask — one bool per `COLUMNS` entry, in the same order.
     /// Defaults to all-visible when not supplied.
     #[prop_or_default]
     pub visible_cols: Vec<bool>,
+    #[prop_or_default]
+    pub group_borders: Vec<bool>,
+    /// Which rendered column position (1-based) is currently hovered, if any.
+    #[prop_or_default]
+    pub hovered_column: Option<usize>,
+    /// Callback to notify the parent which column (rendered pos) the mouse entered.
+    #[prop_or_default]
+    pub on_hover_column: Callback<Option<usize>>,
 }
 
 // ── Update-flash tracking ─────────────────────────────────────────────────────
 
 #[derive(Clone, PartialEq, Default)]
 struct UpdateFlags {
-    symbol: bool,
     current_price: bool,
     ath_price: bool,
     ath_timestamp: bool,
     volume_sol_total: bool,
     market_cap: bool,
-    initial_buy_sol: bool,
-    initial_supply_token: bool,
-    cu_limit: bool,
-    cu_price: bool,
-    ix_labels_count: bool,
-    is_migrated: bool,
-    age: bool,
-    created_at: bool,
     ath_fep_ratio: bool,
     current_fep_ratio: bool,
     trade_count: bool,
-    mayhem_mode: bool,
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -106,9 +106,10 @@ pub fn token_row(props: &Props) -> Html {
         s.symbol.clone()
     };
 
+    let price_unit = use_context::<PriceUnitContext>().expect("PriceUnitProvider must be mounted above TokenRow");
     let current_price_value = s.current_price;
     let current_price = current_price_value
-        .map(format_price)
+        .map(|v| price_unit.display_price(v))
         .unwrap_or_else(|| "-".into());
 
     let first_entry_price_value = s
@@ -139,15 +140,10 @@ pub fn token_row(props: &Props) -> Html {
         .map(|v| format!("{}x", format_decimal_trim(v, 2)))
         .unwrap_or_else(|| "-".into());
 
-    let ath_price_str = s.ath_price.map(format_price).unwrap_or_else(|| "-".into());
-    let market_cap = s.market_cap.map(|v| format_compact(v, 3)).unwrap_or_else(|| "-".into());
-    let initial_buy = s.initial_buy_sol.map(|v| format_decimal(v, 4)).unwrap_or_else(|| "-".into());
+    let ath_price_str = s.ath_price.map(|v| price_unit.display_price(v)).unwrap_or_else(|| "-".into());
+    let market_cap = s.market_cap.map(|v| price_unit.display_compact(v, 3)).unwrap_or_else(|| "-".into());
+    let initial_buy = s.initial_buy_sol.map(|v| price_unit.display_amount(v)).unwrap_or_else(|| "-".into());
     let cu_price = s.cu_price.map(|v| format_with_commas(v)).unwrap_or_else(|| "-".to_string());
-    let mayhem_mode_str: String = if s.is_mayhem_mode {
-        "Yes".to_string()
-    } else {
-        "-".to_string()
-    };
 
     let age_text  = format_age(s.age);
     let age_cls   = age_class(s.age);
@@ -158,6 +154,8 @@ pub fn token_row(props: &Props) -> Html {
         let mint = s.mint_address.clone();
         Callback::from(move |_: MouseEvent| on_select.emit(mint.clone()))
     };
+
+    let detail_copy_copied = use_state(|| false);
 
     // ── Detail panel ──────────────────────────────────────────────────────────
     let detail_panel = if props.selected {
@@ -199,15 +197,15 @@ pub fn token_row(props: &Props) -> Html {
                 .map(|v| format!("{}x  ({}%)", format_decimal_trim(v, 2), format_decimal(d_cur_pct.unwrap_or(0.0), 1)))
                 .unwrap_or_else(|| "-".into());
 
-            let d_ath_str = detail.ath_price.map(format_price).unwrap_or_else(|| "-".into());
-            let d_cur_str = detail.current_price.map(format_price).unwrap_or_else(|| "-".into());
+            let d_ath_str = detail.ath_price.map(|v| price_unit.display_price(v)).unwrap_or_else(|| "-".into());
+            let d_cur_str = detail.current_price.map(|v| price_unit.display_price(v)).unwrap_or_else(|| "-".into());
             let d_ath_ts = detail.ath_timestamp.as_deref().map(format_iso).unwrap_or_else(|| "-".into());
             let d_last_trade = detail.last_trade_at.as_deref().map(format_iso).unwrap_or_else(|| "-".into());
-            let d_volume = detail.volume_sol_total.map(|v| format_compact(v, 4)).unwrap_or_else(|| "-".into());
-            let d_mcap = detail.market_cap.map(|v| format_compact(v, 4)).unwrap_or_else(|| "-".into());
+            let d_volume = detail.volume_sol_total.map(|v| price_unit.display_compact(v, 4)).unwrap_or_else(|| "-".into());
+            let d_mcap = detail.market_cap.map(|v| price_unit.display_compact(v, 4)).unwrap_or_else(|| "-".into());
             let d_trades = detail.trade_count.map_or_else(|| "-".into(), |v| v.to_string());
             let d_wallets = detail.unique_wallets_in_window.map_or_else(|| "-".into(), |v| v.to_string());
-            let d_init_buy = detail.initial_buy_sol.map(|v| format_decimal(v, 4)).unwrap_or_else(|| "-".into());
+            let d_init_buy = detail.initial_buy_sol.map(|v| price_unit.display_amount(v)).unwrap_or_else(|| "-".into());
             let d_init_supply = detail.initial_supply_token.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
             let d_cu_limit = detail.cu_limit.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
             let d_cu_price = detail.cu_price.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
@@ -245,6 +243,24 @@ pub fn token_row(props: &Props) -> Html {
                 html! { <StatCard label="Bonding Curve" value="-" variant={StatVariant::Muted} /> }
             };
 
+            let on_copy_labels = {
+                let instruction_labels = detail.instruction_labels.clone();
+                let copied = detail_copy_copied.clone();
+                Callback::from(move |_: MouseEvent| {
+                    let text = serde_json::to_string(&instruction_labels).unwrap_or_default();
+                    let copied = copied.clone();
+                    spawn_local(async move {
+                        if let Some(win) = web_sys::window() {
+                            let cb = win.navigator().clipboard();
+                            let _ = wasm_bindgen_futures::JsFuture::from(cb.write_text(&text)).await;
+                            copied.set(true);
+                            let copied_reset = copied.clone();
+                            gloo::timers::callback::Timeout::new(1500, move || copied_reset.set(false)).forget();
+                        }
+                    });
+                })
+            };
+
             let instruction_html = build_instruction_html(&detail.instruction_labels);
 
             html! {
@@ -279,8 +295,8 @@ pub fn token_row(props: &Props) -> Html {
                         <div class="detail-section">
                             <div class="detail-section-title">{ "Activity & Market" }</div>
                             <div class="stat-grid-3">
-                                <StatCard label="Volume (SOL)" value={d_volume} variant={StatVariant::Info} bold={true} />
-                                <StatCard label="Market Cap (SOL)" value={d_mcap} bold={true} />
+                                <StatCard label={format!("Volume ({})", price_unit.unit_label())} value={d_volume} variant={StatVariant::Info} bold={true} />
+                                <StatCard label={format!("Market Cap ({})", price_unit.unit_label())} value={d_mcap} bold={true} />
                                 <StatCard label="Trade Count" value={d_trades} bold={true} />
                                 <StatCard label="Unique Wallets" value={d_wallets} variant={StatVariant::Info} bold={true} />
                                 <StatCard label="Last Trade" value={d_last_trade} variant={StatVariant::Muted} />
@@ -291,7 +307,7 @@ pub fn token_row(props: &Props) -> Html {
                         <div class="detail-section">
                             <div class="detail-section-title">{ "Creation Parameters" }</div>
                             <div class="stat-grid-4">
-                                <StatCard label="Initial Buy (SOL)" value={d_init_buy} />
+                                <StatCard label={format!("Initial Buy ({})", price_unit.unit_label())} value={d_init_buy} />
                                 <StatCard label="Initial Supply" value={d_init_supply} />
                                 <StatCard label="CU Limit" value={d_cu_limit} variant={StatVariant::Muted} bold={true} />
                                 <StatCard label="CU Price" value={d_cu_price} variant={StatVariant::Muted} bold={true} />
@@ -330,7 +346,25 @@ pub fn token_row(props: &Props) -> Html {
                         <div class="detail-body-divider"></div>
                         <div class="detail-right">
                             <div class="detail-section-title">
-                                { format!("Instruction Labels  ({})", d_label_count) }
+                                <span>{ format!("Instruction Labels  ({})", d_label_count) }</span>
+                                <button class={classes!("detail-copy-btn", (*detail_copy_copied).then_some("detail-copy-ok"))}
+                                    onclick={on_copy_labels}
+                                    title={if *detail_copy_copied { "Copied!" } else { "Copy labels to clipboard" }}>
+                                    { if *detail_copy_copied {
+                                        html! {
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                                <path d="M5 13l4 4L19 7" />
+                                            </svg>
+                                        }
+                                    } else {
+                                        html! {
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                                <rect x="9" y="9" width="13" height="13" rx="2" />
+                                                <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+                                            </svg>
+                                        }
+                                    } }
+                                </button>
                             </div>
                             { instruction_html }
                         </div>
@@ -362,21 +396,11 @@ pub fn token_row(props: &Props) -> Html {
         use_effect_with(token, move |token| {
             let mut flags = UpdateFlags::default();
             if let Some(prev) = &*previous.borrow() {
-                flags.symbol               = prev.symbol != token.symbol;
                 flags.current_price        = prev.current_price != token.current_price;
                 flags.ath_price            = prev.ath_price != token.ath_price;
                 flags.ath_timestamp        = prev.ath_timestamp != token.ath_timestamp;
                 flags.volume_sol_total     = prev.volume_sol_total != token.volume_sol_total;
                 flags.market_cap           = prev.market_cap != token.market_cap;
-                flags.initial_buy_sol      = prev.initial_buy_sol != token.initial_buy_sol;
-                flags.initial_supply_token = prev.initial_supply_token != token.initial_supply_token;
-                flags.cu_limit             = prev.cu_limit != token.cu_limit;
-                flags.cu_price             = prev.cu_price != token.cu_price;
-                flags.ix_labels_count      = prev.ix_labels_count != token.ix_labels_count;
-                flags.is_migrated          = prev.is_migrated != token.is_migrated;
-                flags.mayhem_mode          = prev.is_mayhem_mode != token.is_mayhem_mode;
-                flags.age                  = prev.age != token.age;
-                flags.created_at           = prev.created_at != token.created_at;
                 flags.trade_count          = prev.trade_count != token.trade_count;
 
                 let prev_fep = prev.initial_buy_sol
@@ -405,9 +429,39 @@ pub fn token_row(props: &Props) -> Html {
     // Helper: returns true when column i should be rendered (default-show when vec not supplied)
     let show = |i: usize| props.visible_cols.get(i).copied().unwrap_or(true);
 
+    // ── Column hover helpers ──────────────────────────────────────────────────
+    // Rendered column positions: pos 0 = row-num, 1..N = visible data cols, N+1 = row-actions.
+    // col_positions[i] = rendered position when show(i) is true; 0 otherwise (unused).
+    let col_positions: Vec<usize> = {
+        let mut pos = 1usize;
+        props.visible_cols.iter().map(|&vis| {
+            if vis { let p = pos; pos += 1; p } else { 0 }
+        }).collect()
+    };
+    let action_col_pos = 1 + props.visible_cols.iter().filter(|&&b| b).count();
+    let hc = props.hovered_column;
+    let on_hover_cb = props.on_hover_column.clone();
+    // Returns a MouseEvent callback that emits the given rendered column position to the parent.
+    let make_hover_cb = move |pos: usize| -> Callback<MouseEvent> {
+        let cb = on_hover_cb.clone();
+        Callback::from(move |_: MouseEvent| cb.emit(Some(pos)))
+    };
+
+    let border_style = |i: usize| {
+        if props.group_borders.get(i).copied().unwrap_or(false) {
+            "border-left: 1px solid rgba(128, 128, 128, 0.25);"
+        } else {
+            ""
+        }
+    };
+
     // ── Extra column display values (indices 13–21) ───────────────────────────
     let cu_limit_str    = s.cu_limit.map(|v| format_with_commas(v)).unwrap_or_else(|| "-".into());
     let init_supply_str = s.initial_supply_token.map(|v| format_with_commas(v)).unwrap_or_else(|| "-".into());
+    let token_amount_str = s.token_amount.map(|v| format_with_commas(v)).unwrap_or_else(|| "-".into());
+    let max_sol_cost_str = s.max_sol_cost.map(|v| format_with_commas(v)).unwrap_or_else(|| "-".into());
+    let spendable_sol_in_str = s.spendable_sol_in.map(|v| format_with_commas(v)).unwrap_or_else(|| "-".into());
+    let min_tokens_out_str = s.min_tokens_out.map(|v| format_with_commas(v)).unwrap_or_else(|| "-".into());
     let ath_ts_str      = s.ath_timestamp.as_deref().map(format_iso).unwrap_or_else(|| "-".into());
     let last_trade_str  = s.last_trade_at.as_deref().map(format_iso).unwrap_or_else(|| "-".into());
     let ix_labels_str: String = s.instruction_labels.as_array()
@@ -421,9 +475,8 @@ pub fn token_row(props: &Props) -> Html {
 
                 <td class="row-num">{ row_num_str }</td>
 
-                // 0 — Symbol (Identity)
                 if show(0) {
-                    <td class={classes!(update_flags.symbol.then_some("updated-cell"))}>
+                    <td class={(hc == Some(col_positions[0])).then_some("col-hover")} style={border_style(0)} onmouseenter={make_hover_cb(col_positions[0])}>
                         <div class="symbol-cell">
                             <span class="symbol-text">{ &display_symbol }</span>
                             <a
@@ -447,61 +500,59 @@ pub fn token_row(props: &Props) -> Html {
                     </td>
                 }
 
-                // 1 — Name (Identity)
-                if show(1) { <td>{ s.name.clone() }</td> }
+                if show(1) { <td class={(hc == Some(col_positions[1])).then_some("col-hover")} style={border_style(1)} onmouseenter={make_hover_cb(col_positions[1])}>{ s.name.clone() }</td> }
 
-                // 2 — Mint (Identity)
                 if show(2) {
-                    <td class="addr" title={s.mint_address.clone()}>{ truncate(&s.mint_address, 12) }</td>
+                    <td class={classes!("addr", (hc == Some(col_positions[2])).then_some("col-hover"))} style={border_style(2)} onmouseenter={make_hover_cb(col_positions[2])} title={s.mint_address.clone()}>{ truncate(&s.mint_address, 12) }</td>
                 }
 
-                // 3 — Creator (Identity)
                 if show(3) {
-                    <td class="addr" title={s.creator_address.clone()}>{ truncate(&s.creator_address, 12) }</td>
+                    <td class={classes!("addr", (hc == Some(col_positions[3])).then_some("col-hover"))} style={border_style(3)} onmouseenter={make_hover_cb(col_positions[3])} title={s.creator_address.clone()}>{ truncate(&s.creator_address, 12) }</td>
                 }
 
-                // 4 — Age (Lifecycle)
                 if show(4) {
-                    <td class={classes!(age_cls, update_flags.age.then_some("updated-cell"))}>
+                    <td class={classes!("addr", (hc == Some(col_positions[4])).then_some("col-hover"))} style={border_style(4)} onmouseenter={make_hover_cb(col_positions[4])} title={s.create_tx_address.clone()}>{ truncate(&s.create_tx_address, 12) }</td>
+                }
+
+                if show(5) {
+                    <td class={classes!(age_cls, (hc == Some(col_positions[5])).then_some("col-hover"))} style={border_style(5)} onmouseenter={make_hover_cb(col_positions[5])}>
                         { age_text }
                     </td>
                 }
 
-                // 5 — Created (Lifecycle)
-                if show(5) {
-                    <td class={classes!(update_flags.created_at.then_some("updated-cell"))}>
+                if show(6) {
+                    <td class={(hc == Some(col_positions[6])).then_some("col-hover")} style={border_style(6)} onmouseenter={make_hover_cb(col_positions[6])}>
                         { format_iso(&s.created_at) }
                     </td>
                 }
 
-                // 6 — Last Trade (Lifecycle)
-                if show(6) { <td class="dim-col">{ last_trade_str.clone() }</td> }
+                if show(7) { <td class={classes!("dim-col", (hc == Some(col_positions[7])).then_some("col-hover"))} style={border_style(7)} onmouseenter={make_hover_cb(col_positions[7])}>{ last_trade_str.clone() }</td> }
 
-                // 7 — Migrated (Lifecycle)
-                if show(7) {
-                    <td class={classes!(update_flags.is_migrated.then_some("updated-cell"))}>
-                        { if s.is_migrated {
-                            html! { <span class="migrated-yes">{ "V" }</span> }
-                        } else {
-                            html! { <span class="migrated-no">{ "-" }</span> }
-                        } }
-                    </td>
-                }
-
-                // 8 — Mayhem Mode (Lifecycle)
                 if show(8) {
-                    <td class={classes!(update_flags.mayhem_mode.then_some("updated-cell"))}>
-                        { &mayhem_mode_str }
+                    <td class={classes!(update_flags.trade_count.then_some("updated-cell"), (hc == Some(col_positions[8])).then_some("col-hover"))} style={border_style(8)} onmouseenter={make_hover_cb(col_positions[8])}>
+                        { format_with_commas(s.trade_count) }
                     </td>
                 }
 
-                // 9 — ATH/FEP (Performance)
                 if show(9) {
+                    <td class={classes!(price_class(s.ath_price), update_flags.ath_price.then_some("updated-cell"), (hc == Some(col_positions[9])).then_some("col-hover"))} style={border_style(9)} onmouseenter={make_hover_cb(col_positions[9])}>
+                        { &ath_price_str }
+                    </td>
+                }
+
+                if show(10) {
+                    <td class={classes!(update_flags.ath_timestamp.then_some("updated-cell"), (hc == Some(col_positions[10])).then_some("col-hover"))} style={border_style(10)} onmouseenter={make_hover_cb(col_positions[10])}>
+                        { ath_ts_str.clone() }
+                    </td>
+                }
+
+                if show(11) {
                     <td class={classes!(
                         "ath-fep-col",
                         ratio_class(ath_fep_mult),
-                        update_flags.ath_fep_ratio.then_some("updated-cell")
-                    )}>
+                        update_flags.ath_fep_ratio.then_some("updated-cell"),
+                        (hc == Some(col_positions[11])).then_some("col-hover")
+                    )} style={border_style(11)} onmouseenter={make_hover_cb(col_positions[11])}>
                         <div class="ratio-cell">
                             <span class="ratio-main">{ &ath_fep_display }</span>
                             <span class="ratio-sub">{ &ath_fep_pct }</span>
@@ -509,91 +560,88 @@ pub fn token_row(props: &Props) -> Html {
                     </td>
                 }
 
-                // 9 — Cur/FEP (Performance)
-                if show(9) {
-                    <td class={classes!(
-                        "cur-fep-col",
-                        ratio_class(current_fep_ratio_value),
-                        update_flags.current_fep_ratio.then_some("updated-cell")
-                    )}>
-                        { &cur_fep_display }
-                    </td>
-                }
-
-                // 10 — ATH price (Performance)
-                if show(10) {
-                    <td class={classes!(price_class(s.ath_price), update_flags.ath_price.then_some("updated-cell"))}>
-                        { &ath_price_str }
-                    </td>
-                }
-
-                // 11 — ATH At (Performance)
-                if show(11) { <td class="dim-col">{ ath_ts_str.clone() }</td> }
-
-                // 12 — Current Price (Performance)
                 if show(12) {
-                    <td class={classes!(price_class(current_price_value), update_flags.current_price.then_some("updated-cell"))}>
+                    <td class={classes!(price_class(current_price_value), update_flags.current_price.then_some("updated-cell"), (hc == Some(col_positions[12])).then_some("col-hover"))} style={border_style(12)} onmouseenter={make_hover_cb(col_positions[12])}>
                         { &current_price }
                     </td>
                 }
 
-                // 13 — MCap (Market)
                 if show(13) {
-                    <td class={classes!(price_class(s.market_cap), update_flags.market_cap.then_some("updated-cell"))}>
+                    <td class={classes!(
+                        "cur-fep-col",
+                        ratio_class(current_fep_ratio_value),
+                        update_flags.current_fep_ratio.then_some("updated-cell"),
+                        (hc == Some(col_positions[13])).then_some("col-hover")
+                    )} style={border_style(13)} onmouseenter={make_hover_cb(col_positions[13])}>
+                        { &cur_fep_display }
+                    </td>
+                }
+
+                if show(14) {
+                    <td class={classes!(price_class(s.market_cap), update_flags.market_cap.then_some("updated-cell"), (hc == Some(col_positions[14])).then_some("col-hover"))} style={border_style(14)} onmouseenter={make_hover_cb(col_positions[14])}>
                         { &market_cap }
                     </td>
                 }
 
-                // 14 — Volume (Market)
-                if show(14) {
-                    <td class={classes!(update_flags.volume_sol_total.then_some("updated-cell"))}>
+                if show(15) {
+                    <td class={classes!(update_flags.volume_sol_total.then_some("updated-cell"), (hc == Some(col_positions[15])).then_some("col-hover"))} style={border_style(15)} onmouseenter={make_hover_cb(col_positions[15])}>
                         { format_compact(s.volume_sol_total, 2) }
                     </td>
                 }
 
-                // 15 — Init Buy (Market)
-                if show(15) {
-                    <td class={classes!(update_flags.initial_buy_sol.then_some("updated-cell"))}>
+                if show(16) {
+                    <td class={(hc == Some(col_positions[16])).then_some("col-hover")} style={border_style(16)} onmouseenter={make_hover_cb(col_positions[16])}>
                         { &initial_buy }
                     </td>
                 }
 
-                // 16 — Init Supply (Market)
-                if show(16) { <td class="dim-col">{ init_supply_str.clone() }</td> }
+                if show(17) { <td class={classes!("dim-col", (hc == Some(col_positions[17])).then_some("col-hover"))} style={border_style(17)} onmouseenter={make_hover_cb(col_positions[17])}>{ init_supply_str.clone() }</td> }
 
-                // 17 — Trades (Market)
-                if show(17) {
-                    <td class={classes!(update_flags.trade_count.then_some("updated-cell"))}>
-                        { format_with_commas(s.trade_count) }
-                    </td>
-                }
+                if show(18) { <td class={classes!("dim-col", (hc == Some(col_positions[18])).then_some("col-hover"))} style={border_style(18)} onmouseenter={make_hover_cb(col_positions[18])}>{ token_amount_str.clone() }</td> }
 
-                // 18 — CU Limit (Technical)
-                if show(18) { <td class="dim-col">{ cu_limit_str.clone() }</td> }
+                if show(19) { <td class={classes!("dim-col", "cost-col", (hc == Some(col_positions[19])).then_some("col-hover"))} style={border_style(19)} onmouseenter={make_hover_cb(col_positions[19])}>{ max_sol_cost_str.clone() }</td> }
 
-                // 19 — CU Price (Technical)
-                if show(19) {
-                    <td class={classes!(update_flags.cu_price.then_some("updated-cell"))}>
+                if show(20) { <td class={classes!("dim-col", "liquidity-col", (hc == Some(col_positions[20])).then_some("col-hover"))} style={border_style(20)} onmouseenter={make_hover_cb(col_positions[20])}>{ spendable_sol_in_str.clone() }</td> }
+
+                if show(21) { <td class={classes!("dim-col", (hc == Some(col_positions[21])).then_some("col-hover"))} style={border_style(21)} onmouseenter={make_hover_cb(col_positions[21])}>{ min_tokens_out_str.clone() }</td> }
+
+                if show(22) { <td class={classes!("dim-col", (hc == Some(col_positions[22])).then_some("col-hover"))} style={border_style(22)} onmouseenter={make_hover_cb(col_positions[22])}>{ cu_limit_str.clone() }</td> }
+
+                if show(23) {
+                    <td class={(hc == Some(col_positions[23])).then_some("col-hover")} style={border_style(23)} onmouseenter={make_hover_cb(col_positions[23])}>
                         { &cu_price }
                     </td>
                 }
 
-                // 20 — IX Count (Technical)
-                if show(20) {
-                    <td class="dim-col">{ s.ix_labels_count.to_string() }</td>
+                if show(24) {
+                    <td class={classes!("dim-col", (hc == Some(col_positions[24])).then_some("col-hover"))} style={border_style(24)} onmouseenter={make_hover_cb(col_positions[24])}>{ s.ix_labels_count.to_string() }</td>
                 }
 
-                // 21 — IX Labels (Technical)
-                if show(21) {
-                    <td class="labels-col" title={ix_labels_str.clone()}>{ ix_labels_str.clone() }</td>
+                if show(25) {
+                    <td class={classes!("labels-col", (hc == Some(col_positions[25])).then_some("col-hover"))} style={border_style(25)} onmouseenter={make_hover_cb(col_positions[25])} title={ix_labels_str.clone()}>{ ix_labels_str.clone() }</td>
                 }
 
-                // 22 — Create TX (Technical)
-                if show(22) {
-                    <td class="addr" title={s.create_tx_address.clone()}>{ truncate(&s.create_tx_address, 12) }</td>
+                if show(26) {
+                    <td class={(hc == Some(col_positions[26])).then_some("col-hover")} style={border_style(26)} onmouseenter={make_hover_cb(col_positions[26])}>
+                        { if s.is_migrated {
+                            html! { <span class="status-badge status-true">{ "True" }</span> }
+                        } else {
+                            html! {}
+                        } }
+                    </td>
                 }
 
-                <td class="row-actions">
+                if show(27) {
+                    <td class={(hc == Some(col_positions[27])).then_some("col-hover")} style={border_style(27)} onmouseenter={make_hover_cb(col_positions[27])}>
+                        { if s.is_mayhem_mode {
+                            html! { <span class="status-badge status-true">{ "True" }</span> }
+                        } else {
+                            html! {}
+                        } }
+                    </td>
+                }
+
+                <td class={classes!("row-actions", (hc == Some(action_col_pos)).then_some("col-hover"))} onmouseenter={make_hover_cb(action_col_pos)}>
                     <button class="row-select-btn" onclick={onclick} title="View details">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
                              xmlns="http://www.w3.org/2000/svg" aria-hidden="true">

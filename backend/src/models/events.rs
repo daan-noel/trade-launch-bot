@@ -16,6 +16,9 @@ pub enum InternalEvent {
     /// A buy or sell trade was executed on a tracked token.
     TradeExecuted(TradeExecutedEvent),
 
+    /// A token's bonding curve migrated to the PumpSwap AMM.
+    TokenMigrated(TokenMigratedEvent),
+
     /// Liquidity was added to a tracked token's bonding curve.
     LiquidityAdded(LiquidityEvent),
 
@@ -40,6 +43,16 @@ pub struct TokenCreatedEvent {
     pub slot: u64,
     pub timestamp: DateTime<Utc>,
     /// Full raw transaction preserved for replay / debugging.
+    pub raw_tx: RawTransaction,
+}
+
+/// Emitted when a tracked token migrates its bonding curve to PumpSwap.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenMigratedEvent {
+    pub mint_address: String,
+    pub tx_signature: String,
+    pub slot: u64,
+    pub timestamp: DateTime<Utc>,
     pub raw_tx: RawTransaction,
 }
 

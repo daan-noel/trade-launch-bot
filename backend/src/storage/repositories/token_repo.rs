@@ -23,6 +23,7 @@ struct TokenDbRow {
     bonding_curve_address: Option<String>,
     initial_supply_token: Option<i64>,
     initial_buy_sol: Option<f64>,
+    initial_buy_instruction: Option<Json<Value>>,
     cu_limit: Option<i64>,
     cu_price: Option<i64>,
     is_mayhem_mode: bool,
@@ -42,6 +43,7 @@ impl From<TokenDbRow> for Token {
             bonding_curve_address: r.bonding_curve_address,
             initial_supply_token: r.initial_supply_token.map(|v| v as u64),
             initial_buy_sol: r.initial_buy_sol,
+            initial_buy_instruction: r.initial_buy_instruction.map(|v| v.0),
             cu_limit: r.cu_limit.map(|v| v as u64),
             cu_price: r.cu_price.map(|v| v as u64),
             is_mayhem_mode: r.is_mayhem_mode,
@@ -67,9 +69,9 @@ impl TokenRepo {
             r#"
             INSERT INTO tokens
                 (id, mint_address, creator_wallet, name, symbol,
-                  bonding_curve_address, initial_supply_token, initial_buy_sol, cu_limit, cu_price, is_mayhem_mode, ix_labels,
+                  bonding_curve_address, initial_supply_token, initial_buy_sol, initial_buy_instruction, cu_limit, cu_price, is_mayhem_mode, ix_labels,
                   creation_tx_signature, created_at)
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             ON CONFLICT (mint_address) DO NOTHING
             "#,
         )
@@ -81,6 +83,7 @@ impl TokenRepo {
         .bind(&token.bonding_curve_address)
         .bind(token.initial_supply_token.map(|v| v as i64))
         .bind(token.initial_buy_sol)
+        .bind(token.initial_buy_instruction.as_ref().map(|v| Json(v)))
         .bind(token.cu_limit.map(|v| v as i64))
         .bind(token.cu_price.map(|v| v as i64))
         .bind(token.is_mayhem_mode)
@@ -126,7 +129,8 @@ impl TokenRepo {
     /// Each parameter is optional — `None` skips that filter entirely so partial rules
     /// still match. An empty-array `p_ix_labels` is also treated as skipped.
     ///
-    /// - `p_initial_buy_sol` — within ±1% tolerance; skipped if `None`
+    /// - `p_initial_buy_sol` — within ±`p_tolerance_pct` tolerance; skipped if `None`
+    /// - `p_tolerance_pct`   — percent tolerance of `p_initial_buy_sol`; defaults to 1 if `None`
     /// - `p_cu_limit`        — exact match; skipped if `None`
     /// - `p_cu_price`        — exact match; skipped if `None`
     /// - `p_ix_labels`       — jsonb containment (`@>`); skipped if `None` or empty array
@@ -134,13 +138,22 @@ impl TokenRepo {
     pub async fn find_by_rule_criteria(
         &self,
         p_initial_buy_sol: Option<f64>,
+        p_tolerance_pct: Option<f64>,
         p_cu_limit: Option<u64>,
         p_cu_price: Option<u64>,
+        p_max_sol_cost: Option<f64>,
+        p_spendable_sol_in: Option<f64>,
         p_ix_labels: Option<&serde_json::Value>,
         limit: Option<i64>,
     ) -> anyhow::Result<Vec<Token>> {
-        // Tolerance for initial_buy_sol comparison (1% + epsilon).
-        let tol = p_initial_buy_sol.map(|v| v.abs() * 0.01 + 1e-9);
+        let tolerance_pct = p_tolerance_pct.unwrap_or(0.0);
+        // Use a small epsilon matching SOL precision (~1e-15) to avoid float noise.
+        let eps = 1e-15_f64;
+        let tol_buy = p_initial_buy_sol.map(|v| v.abs() * (tolerance_pct * 0.01) + eps);
+        let tol_cu_limit = p_cu_limit.map(|v| (v as f64).abs() * (tolerance_pct * 0.01) + eps);
+        let tol_cu_price = p_cu_price.map(|v| (v as f64).abs() * (tolerance_pct * 0.01) + eps);
+        let tol_max_sol_cost = p_max_sol_cost.map(|v| v.abs() * (tolerance_pct * 0.01) + eps);
+        let tol_spendable_sol_in = p_spendable_sol_in.map(|v| v.abs() * (tolerance_pct * 0.01) + eps);
 
         // Build the label filter: only apply when Some and non-empty array.
         let labels_filter = match p_ix_labels.and_then(|v| v.as_array()) {
@@ -154,10 +167,13 @@ impl TokenRepo {
         let cu_limit_i64 = p_cu_limit.map(|v| v as i64);
         let cu_price_i64 = p_cu_price.map(|v| v as i64);
 
-        // $1 = p_initial_buy_sol (NULL → skip),  $2 = tolerance
-        // $3 = cu_limit,  $4 = cu_price
-        // $5 = apply_labels,  $6 = labels_filter
-        // $7 = limit (NULL → no limit)
+        // $1 = p_initial_buy_sol (NULL → skip),  $2 = tolerance for buy
+        // $3 = p_cu_limit, $4 = tolerance for cu_limit
+        // $5 = p_cu_price, $6 = tolerance for cu_price
+        // $7 = p_max_sol_cost, $8 = tolerance for max_sol_cost
+        // $9 = p_spendable_sol_in, $10 = tolerance for spendable_sol_in
+        // $11 = apply_labels,  $12 = labels_filter
+        // $13 = limit (NULL → no limit)
         let rows = sqlx::query_as::<_, TokenDbRow>(
             r#"
             SELECT *
@@ -166,17 +182,37 @@ impl TokenRepo {
                        initial_buy_sol IS NOT NULL
                    AND ABS(initial_buy_sol - $1) <= $2
                    ))
-              AND  ($3::bigint IS NULL OR cu_limit  = $3)
-              AND  ($4::bigint IS NULL OR cu_price  = $4)
-              AND  ($5 = false   OR ix_labels @> $6::jsonb)
+              AND  ($3::bigint IS NULL OR (
+                       cu_limit IS NOT NULL
+                   AND ABS(cu_limit::float8 - $3::float8) <= $4
+                   ))
+              AND  ($5::bigint IS NULL OR (
+                       cu_price IS NOT NULL
+                   AND ABS(cu_price::float8 - $5::float8) <= $6
+                   ))
+              AND  ($7::float8 IS NULL OR (
+                       initial_buy_instruction IS NOT NULL
+                   AND ABS((initial_buy_instruction->>'max_sol_cost')::float8 - $7) <= $8
+                   ))
+              AND  ($9::float8 IS NULL OR (
+                       initial_buy_instruction IS NOT NULL
+                   AND ABS((initial_buy_instruction->>'spendable_sol_in')::float8 - $9) <= $10
+                   ))
+              AND  ($11 = false   OR ix_labels @> $12::jsonb)
             ORDER BY created_at DESC
-            LIMIT $7
+            LIMIT $13
             "#,
         )
         .bind(p_initial_buy_sol)
-        .bind(tol.unwrap_or(0.0))
+        .bind(tol_buy.unwrap_or(0.0))
         .bind(cu_limit_i64)
+        .bind(tol_cu_limit.unwrap_or(0.0))
         .bind(cu_price_i64)
+        .bind(tol_cu_price.unwrap_or(0.0))
+        .bind(p_max_sol_cost)
+        .bind(tol_max_sol_cost.unwrap_or(0.0))
+        .bind(p_spendable_sol_in)
+        .bind(tol_spendable_sol_in.unwrap_or(0.0))
         .bind(apply_labels)
         .bind(sqlx::types::Json(&labels_json))
         .bind(limit)

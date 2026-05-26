@@ -7,7 +7,13 @@ use tracing::{debug, info, warn};
 
 use crate::{
     models::{
-        events::{CreatorActivityEvent, InternalEvent, TokenCreatedEvent, TradeExecutedEvent},
+        events::{
+            CreatorActivityEvent,
+            InternalEvent,
+            TokenCreatedEvent,
+            TokenMigratedEvent,
+            TradeExecutedEvent,
+        },
         wallet::Wallet,
     },
     state::{
@@ -67,6 +73,9 @@ impl TokenService {
                 }
                 Ok(InternalEvent::TradeExecuted(e)) => {
                     self.handle_trade_executed(e).await;
+                }
+                Ok(InternalEvent::TokenMigrated(e)) => {
+                    self.handle_token_migrated(e).await;
                 }
                 Ok(InternalEvent::CreatorActivityDetected(e)) => {
                     self.handle_creator_activity(e);
@@ -153,6 +162,7 @@ impl TokenService {
                 token_state.last_trade_at,
                 token_state.current_price,
                 is_rugged,
+                token_state.is_migrated,
             )
             .await
         {
@@ -209,6 +219,7 @@ impl TokenService {
             let last_trade_at = token_state.last_trade_at;
             let creator_wallet = token_state.token.creator_wallet.clone();
             let trade_count = token_state.trade_count as i64;
+            let is_migrated = token_state.is_migrated;
             drop(token_state);
             let is_rugged = self
                 .compute_is_rugged(&mint, last_trade_at, &creator_wallet)
@@ -228,6 +239,7 @@ impl TokenService {
                     last_trade_at,
                     Some(trade_price),
                     is_rugged,
+                    is_migrated,
                 )
                 .await
             {
@@ -238,6 +250,21 @@ impl TokenService {
         // If the trader is a known creator, record the trade in their profile too
         if let Some(mut creator_state) = self.creator_cache.get_mut(&wallet) {
             creator_state.add_trade(e.trade);
+        }
+    }
+
+    async fn handle_token_migrated(&self, e: TokenMigratedEvent) {
+        let mint = e.mint_address.clone();
+        if !self.token_cache.contains_key(&mint) {
+            return;
+        }
+
+        if let Some(mut token_state) = self.token_cache.get_mut(&mint) {
+            token_state.is_migrated = true;
+        }
+
+        if let Err(err) = self.token_info_repo.update_migration_status(&mint, true).await {
+            warn!("Failed to persist migration status for {mint}: {err}");
         }
     }
 

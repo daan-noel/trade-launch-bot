@@ -125,6 +125,8 @@ fn to_sse_frame(event: &InternalEvent, mint_filter: Option<&str>, state: &AppSta
             });
             (event_type, data)
         }
+        // Token migration events are not emitted over SSE yet.
+        InternalEvent::TokenMigrated(_) => return None,
         // CreatorActivity is internal-only — not exposed over SSE
         InternalEvent::CreatorActivityDetected(_) => return None,
     };

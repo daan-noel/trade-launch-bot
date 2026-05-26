@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{error, info, trace};
 
@@ -10,11 +10,22 @@ use crate::ingest::subscription;
 
 /// Spawn-ready entry point. Loops forever: connect → subscribe → read → reconnect.
 /// Raw JSON text frames are forwarded to `raw_tx` for decoding.
-pub async fn run(settings: Arc<Settings>, raw_tx: mpsc::Sender<String>) {
+pub async fn run(
+    settings: Arc<Settings>,
+    raw_tx: mpsc::Sender<String>,
+    mut live_rx: watch::Receiver<bool>,
+) {
     let subscribe_msg = subscription::build_subscribe_message(&settings);
 
     loop {
-        match run_once(&settings, &raw_tx, &subscribe_msg).await {
+        while !*live_rx.borrow() {
+            info!("Helius WS: live mode disabled, paused");
+            if live_rx.changed().await.is_err() {
+                return;
+            }
+        }
+
+        match run_once(&settings, &raw_tx, &subscribe_msg, &mut live_rx).await {
             Ok(()) => info!("Helius WS: connection closed gracefully"),
             Err(e) => error!("Helius WS: connection error — {e}"),
         }
@@ -32,6 +43,7 @@ async fn run_once(
     settings: &Settings,
     raw_tx: &mpsc::Sender<String>,
     subscribe_msg: &str,
+    live_rx: &mut watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     info!("Helius WS: connecting to {}", settings.helius_ws_url);
 
@@ -57,6 +69,13 @@ async fn run_once(
 
     loop {
         tokio::select! {
+            _ = live_rx.changed() => {
+                if !*live_rx.borrow() {
+                    info!("Helius WS: live mode disabled, closing websocket");
+                    return Ok(());
+                }
+            }
+
             msg = read.next() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {

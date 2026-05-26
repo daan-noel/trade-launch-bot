@@ -21,6 +21,10 @@ pub struct TokenRecord {
     pub market_cap: Option<f64>,
     pub initial_buy_sol: Option<f64>,
     pub initial_supply_token: Option<u64>,
+    pub token_amount: Option<u64>,
+    pub max_sol_cost: Option<u64>,
+    pub spendable_sol_in: Option<u64>,
+    pub min_tokens_out: Option<u64>,
     pub cu_limit: Option<u64>,
     pub cu_price: Option<u64>,
     pub ix_labels_count: usize,
@@ -73,6 +77,10 @@ pub struct TokenDetailRecord {
     pub bonding_curve_address: Option<String>,
     pub initial_supply_token: Option<u64>,
     pub initial_buy_sol: Option<f64>,
+    pub token_amount: Option<u64>,
+    pub max_sol_cost: Option<u64>,
+    pub spendable_sol_in: Option<u64>,
+    pub min_tokens_out: Option<u64>,
     pub cu_limit: Option<u64>,
     pub cu_price: Option<u64>,
     pub instruction_labels: Value,
@@ -108,13 +116,16 @@ pub async fn fetch_token_detail(mint: &str) -> Result<TokenDetailRecord, String>
 pub struct RuleRecord {
     pub id: String,
     pub rule_name: String,
-    pub p_initial_buy_sol: f64,
+    pub p_initial_buy_sol: Option<f64>,
     pub p_cu_limit: Option<u64>,
     pub p_cu_price: Option<u64>,
+    pub p_max_sol_cost: Option<f64>,
+    pub p_spendable_sol_in: Option<f64>,
     pub p_ix_labels: Value,
     pub buy_amount: f64,
     pub take_profit: f64,
     pub stop_loss: f64,
+    pub tolerance_pct: f64,
     pub is_active: bool,
     pub created_at: String,
     pub updated_at: String,
@@ -123,13 +134,16 @@ pub struct RuleRecord {
 #[derive(Serialize)]
 pub struct CreateRuleRequest {
     pub rule_name: String,
-    pub p_initial_buy_sol: f64,
+    pub p_initial_buy_sol: Option<f64>,
     pub p_cu_limit: Option<u64>,
     pub p_cu_price: Option<u64>,
+    pub p_max_sol_cost: Option<f64>,
+    pub p_spendable_sol_in: Option<f64>,
     pub p_ix_labels: Value,
     pub buy_amount: f64,
     pub take_profit: f64,
     pub stop_loss: f64,
+    pub tolerance_pct: Option<f64>,
 }
 
 #[derive(Clone, PartialEq, Deserialize)]
@@ -165,6 +179,51 @@ pub struct SimulationResultRecord {
     pub best_pnl_pct: Option<f64>,
     pub worst_pnl_pct: Option<f64>,
     pub tokens: Vec<SimulatedTokenResult>,
+}
+
+#[derive(Clone, PartialEq, Deserialize)]
+pub struct LiveModeResponse {
+    pub live: bool,
+}
+
+#[derive(Serialize)]
+pub struct UpdateLiveModeRequest {
+    pub live: bool,
+}
+
+pub async fn fetch_live_mode() -> Result<bool, String> {
+    let url = format!("{API_BASE}/api/system/live");
+    let resp = Request::get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Fetch error: {e}"))?;
+    if !resp.ok() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let result = resp
+        .json::<LiveModeResponse>()
+        .await
+        .map_err(|e| format!("Parse error: {e}"))?;
+    Ok(result.live)
+}
+
+pub async fn set_live_mode(live: bool) -> Result<bool, String> {
+    let url = format!("{API_BASE}/api/system/live");
+    let request = Request::put(&url)
+        .json(&UpdateLiveModeRequest { live })
+        .map_err(|e| format!("Request error: {e}"))?;
+    let resp = request
+        .send()
+        .await
+        .map_err(|e| format!("Request error: {e}"))?;
+    if !resp.ok() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let result = resp
+        .json::<LiveModeResponse>()
+        .await
+        .map_err(|e| format!("Parse error: {e}"))?;
+    Ok(result.live)
 }
 
 pub async fn fetch_tpsl_rules() -> Result<Vec<RuleRecord>, String> {
@@ -218,6 +277,9 @@ pub struct UpdateRuleRequest {
     pub buy_amount: Option<f64>,
     pub take_profit: Option<f64>,
     pub stop_loss: Option<f64>,
+    pub p_max_sol_cost: Option<f64>,
+    pub p_spendable_sol_in: Option<f64>,
+    pub tolerance_pct: Option<f64>,
     pub is_active: Option<bool>,
 }
 

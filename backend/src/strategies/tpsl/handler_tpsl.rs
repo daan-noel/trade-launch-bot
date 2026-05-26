@@ -23,19 +23,25 @@ impl TPSLStrategyHandler {
                 continue;
             }
 
-            // Check p_initial_buy_sol constraint
-            if let Some(initial_buy) = token.initial_buy_sol {
-                if (initial_buy - rule.p_initial_buy_sol).abs() > 0.01 {
+            // Check p_initial_buy_sol constraint (optional)
+            if let Some(rule_initial_buy) = rule.p_initial_buy_sol {
+                if let Some(initial_buy) = token.initial_buy_sol {
+                    let tol = rule_initial_buy.abs() * (rule.tolerance_pct * 0.01);
+                    if (initial_buy - rule_initial_buy).abs() > tol + 1e-15 {
+                        continue;
+                    }
+                } else {
                     continue;
                 }
-            } else {
-                continue;
             }
 
             // Check p_cu_limit constraint (optional)
             if let Some(cu_limit_constraint) = rule.p_cu_limit {
                 if let Some(token_cu_limit) = token.cu_limit {
-                    if token_cu_limit != cu_limit_constraint {
+                    let token_value = token_cu_limit as f64;
+                    let rule_value = cu_limit_constraint as f64;
+                    let tol = rule_value.abs() * (rule.tolerance_pct * 0.01);
+                    if (token_value - rule_value).abs() > tol + 1e-15 {
                         continue;
                     }
                 } else {
@@ -46,7 +52,48 @@ impl TPSLStrategyHandler {
             // Check p_cu_price constraint (optional)
             if let Some(cu_price_constraint) = rule.p_cu_price {
                 if let Some(token_cu_price) = token.cu_price {
-                    if token_cu_price != cu_price_constraint {
+                    let token_value = token_cu_price as f64;
+                    let rule_value = cu_price_constraint as f64;
+                    let tol = rule_value.abs() * (rule.tolerance_pct * 0.01);
+                    if (token_value - rule_value).abs() > tol + 1e-9 {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+            }
+
+            // Check p_max_sol_cost constraint (optional)
+            if let Some(max_sol_cost_constraint) = rule.p_max_sol_cost {
+                if let Some(ix) = &token.initial_buy_instruction {
+                    let token_max_cost = ix
+                        .get("max_sol_cost")
+                        .and_then(|v| v.as_f64().or_else(|| v.as_u64().map(|u| u as f64)));
+                    if let Some(token_max_cost) = token_max_cost {
+                        let tol = max_sol_cost_constraint.abs() * (rule.tolerance_pct * 0.01);
+                        if (token_max_cost - max_sol_cost_constraint).abs() > tol + 1e-15 {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+            }
+
+            // Check p_spendable_sol_in constraint (optional)
+            if let Some(spendable_sol_in_constraint) = rule.p_spendable_sol_in {
+                if let Some(ix) = &token.initial_buy_instruction {
+                    let token_spendable_sol_in = ix
+                        .get("spendable_sol_in")
+                        .and_then(|v| v.as_f64().or_else(|| v.as_u64().map(|u| u as f64)));
+                    if let Some(token_spendable_sol_in) = token_spendable_sol_in {
+                        let tol = spendable_sol_in_constraint.abs() * (rule.tolerance_pct * 0.01);
+                        if (token_spendable_sol_in - spendable_sol_in_constraint).abs() > tol + 1e-15 {
+                            continue;
+                        }
+                    } else {
                         continue;
                     }
                 } else {
@@ -120,13 +167,16 @@ mod tests {
     fn test_tpsl_buy_entry() {
         let rule = StrategyTPSLRule::new(
             "Test Rule".to_string(),
-            0.5,
+            Some(0.5),
             None,
             None,
             serde_json::json!([]),
             1.0,
             50.0,
             20.0,
+            None,
+            None,
+            None,
         );
 
         let handler = TPSLStrategyHandler::new(vec![rule]);
@@ -140,6 +190,7 @@ mod tests {
             None,
             Some(1_000_000),
             Some(0.5),
+            None,
             None,
             None,
             false,

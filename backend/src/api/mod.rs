@@ -33,6 +33,15 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             )
             // Real-time SSE stream
             .route("/stream", web::get().to(handlers::stream::stream_events))
+            // System endpoints
+            .route(
+                "/system/live",
+                web::get().to(handlers::system::get_live_mode),
+            )
+            .route(
+                "/system/live",
+                web::put().to(handlers::system::set_live_mode),
+            )
             // Wallet endpoints
             .route(
                 "/wallets/{address}",

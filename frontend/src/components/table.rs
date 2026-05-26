@@ -1,5 +1,6 @@
 use yew::prelude::*;
 
+use crate::state::PriceUnitState;
 use crate::state::transactions::LiveTrade;
 use crate::utils::date::format_iso;
 use crate::utils::format::{format_decimal, truncate};
@@ -41,11 +42,14 @@ impl PartialEq for RowCells {
 // ── Row builder: live trades ──────────────────────────────────────────────────
 
 /// Build a `RowCells` for one `LiveTrade`. Shared by Dashboard and Transactions.
-pub fn trade_row(ev: &LiveTrade) -> RowCells {
+pub fn trade_row(ev: &LiveTrade, price_unit: &PriceUnitState) -> RowCells {
     let is_buy = ev.trade_type == "buy";
     let side_class = if is_buy { "side-buy" } else { "side-sell" };
     let side_label = if is_buy { "BUY" } else { "SELL" };
     let num_class = if is_buy { "num-buy" } else { "num-sell" };
+
+    let sol_amount = price_unit.display_amount(ev.sol_amount);
+    let price_per_token = price_unit.display_price(ev.price_per_token);
 
     RowCells::new(vec![
         html! {
@@ -65,9 +69,9 @@ pub fn trade_row(ev: &LiveTrade) -> RowCells {
                 </a>
             </td>
         },
-        html! { <td class={num_class}>{ format_decimal(ev.sol_amount, 4) }</td> },
+        html! { <td class={num_class}>{ sol_amount }</td> },
         html! { <td class={num_class}>{ format_decimal(ev.token_amount, 0) }</td> },
-        html! { <td class={num_class}>{ format_decimal(ev.price_per_token, 9) }</td> },
+        html! { <td class={num_class}>{ price_per_token }</td> },
         html! {
             <td class="addr" title={ev.tx_signature.clone()}>
                 <a href={format!("https://solscan.io/tx/{}", ev.tx_signature)}

@@ -10,6 +10,10 @@ use crate::{
     storage::repositories::{token_repo::TokenRepo, trade_repo::TradeRepo},
 };
 
+fn extract_buy_arg_u64(value: &Option<Value>, field: &str) -> Option<u64> {
+    value.as_ref().and_then(|obj| obj.get(field)).and_then(|v| v.as_u64())
+}
+
 // ---------------------------------------------------------------------------
 // Response types
 // ---------------------------------------------------------------------------
@@ -26,6 +30,10 @@ pub struct TokenSummary {
     pub market_cap: Option<f64>,
     pub initial_buy_sol: Option<f64>,
     pub initial_supply_token: Option<u64>,
+    pub token_amount: Option<u64>,
+    pub max_sol_cost: Option<u64>,
+    pub spendable_sol_in: Option<u64>,
+    pub min_tokens_out: Option<u64>,
     pub cu_limit: Option<u64>,
     pub cu_price: Option<u64>,
     pub is_mayhem_mode: bool,
@@ -63,6 +71,10 @@ impl From<&TokenState> for TokenSummary {
             market_cap: s.market_cap,
             initial_buy_sol: s.token.initial_buy_sol,
             initial_supply_token: s.token.initial_supply_token,
+            token_amount: extract_buy_arg_u64(&s.token.initial_buy_instruction, "token_amount"),
+            max_sol_cost: extract_buy_arg_u64(&s.token.initial_buy_instruction, "max_sol_cost"),
+            spendable_sol_in: extract_buy_arg_u64(&s.token.initial_buy_instruction, "spendable_sol_in"),
+            min_tokens_out: extract_buy_arg_u64(&s.token.initial_buy_instruction, "min_tokens_out"),
             cu_limit: s.token.cu_limit,
             cu_price: s.token.cu_price,
             is_mayhem_mode: s.token.is_mayhem_mode,
@@ -90,6 +102,10 @@ pub struct TokenDetail {
     pub bonding_curve_address: Option<String>,
     pub initial_supply_token: Option<u64>,
     pub initial_buy_sol: Option<f64>,
+    pub token_amount: Option<u64>,
+    pub max_sol_cost: Option<u64>,
+    pub spendable_sol_in: Option<u64>,
+    pub min_tokens_out: Option<u64>,
     pub cu_limit: Option<u64>,
     pub cu_price: Option<u64>,
     pub is_mayhem_mode: bool,
@@ -117,6 +133,10 @@ impl From<&TokenState> for TokenDetail {
             bonding_curve_address: s.token.bonding_curve_address.clone(),
             initial_supply_token: s.token.initial_supply_token,
             initial_buy_sol: s.token.initial_buy_sol,
+            token_amount: extract_buy_arg_u64(&s.token.initial_buy_instruction, "token_amount"),
+            max_sol_cost: extract_buy_arg_u64(&s.token.initial_buy_instruction, "max_sol_cost"),
+            spendable_sol_in: extract_buy_arg_u64(&s.token.initial_buy_instruction, "spendable_sol_in"),
+            min_tokens_out: extract_buy_arg_u64(&s.token.initial_buy_instruction, "min_tokens_out"),
             cu_limit: s.token.cu_limit,
             cu_price: s.token.cu_price,
             is_mayhem_mode: s.token.is_mayhem_mode,
@@ -219,6 +239,10 @@ pub async fn get_token(state: web::Data<Arc<AppState>>, path: web::Path<String>)
                 "bonding_curve_address": token.bonding_curve_address,
                 "initial_supply_token": token.initial_supply_token,
                 "initial_buy_sol": token.initial_buy_sol,
+                "token_amount": token.initial_buy_instruction.as_ref().and_then(|ix| ix.get("token_amount")).and_then(|v| v.as_u64()),
+                "max_sol_cost": token.initial_buy_instruction.as_ref().and_then(|ix| ix.get("max_sol_cost")).and_then(|v| v.as_u64()),
+                "spendable_sol_in": token.initial_buy_instruction.as_ref().and_then(|ix| ix.get("spendable_sol_in")).and_then(|v| v.as_u64()),
+                "min_tokens_out": token.initial_buy_instruction.as_ref().and_then(|ix| ix.get("min_tokens_out")).and_then(|v| v.as_u64()),
                 "cu_limit": token.cu_limit,
                 "cu_price": token.cu_price,
                 "is_mayhem_mode": token.is_mayhem_mode,

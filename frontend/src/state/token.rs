@@ -177,6 +177,10 @@ pub fn sort_tokens(tokens: &mut Vec<TokenRecord>, sort: &SortState) {
                 .partial_cmp(&b.initial_buy_sol)
                 .unwrap_or(std::cmp::Ordering::Equal),
             "initial_supply" => a.initial_supply_token.cmp(&b.initial_supply_token),
+            "token_amount" => a.token_amount.cmp(&b.token_amount),
+            "max_sol_cost" => a.max_sol_cost.cmp(&b.max_sol_cost),
+            "spendable_sol_in" => a.spendable_sol_in.cmp(&b.spendable_sol_in),
+            "min_tokens_out" => a.min_tokens_out.cmp(&b.min_tokens_out),
             "cu_limit" => a.cu_limit.cmp(&b.cu_limit),
             "cu_price" => a.cu_price.cmp(&b.cu_price),
             "label_count" | "ix_count" => a.ix_labels_count.cmp(&b.ix_labels_count),

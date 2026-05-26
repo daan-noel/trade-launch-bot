@@ -11,11 +11,15 @@ pub struct StrategyTPSLRule {
     /// Human-readable name for this rule.
     pub rule_name: String,
     /// Initial buy amount in SOL for filtering token creation events.
-    pub p_initial_buy_sol: f64,
+    pub p_initial_buy_sol: Option<f64>,
     /// Compute-unit limit constraint (optional).
     pub p_cu_limit: Option<u64>,
     /// Compute-unit price constraint (optional), in micro-lamports per CU.
     pub p_cu_price: Option<u64>,
+    /// Maximum total SOL cost for a buy candidate (optional).
+    pub p_max_sol_cost: Option<f64>,
+    /// Spendable SOL available when evaluating this rule (optional).
+    pub p_spendable_sol_in: Option<f64>,
     /// Instruction labels filter (optional JSON array).
     pub p_ix_labels: Value,
     /// Amount of SOL to allocate per buy.
@@ -24,6 +28,8 @@ pub struct StrategyTPSLRule {
     pub take_profit: f64,
     /// Stop loss percentage (e.g., 20 for 20% loss).
     pub stop_loss: f64,
+    /// Price tolerance percent when matching p_initial_buy_sol.
+    pub tolerance_pct: f64,
     /// Whether this rule is currently active.
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
@@ -33,13 +39,16 @@ pub struct StrategyTPSLRule {
 impl StrategyTPSLRule {
     pub fn new(
         rule_name: String,
-        p_initial_buy_sol: f64,
+        p_initial_buy_sol: Option<f64>,
         p_cu_limit: Option<u64>,
         p_cu_price: Option<u64>,
         p_ix_labels: Value,
         buy_amount: f64,
         take_profit: f64,
         stop_loss: f64,
+        p_max_sol_cost: Option<f64>,
+        p_spendable_sol_in: Option<f64>,
+        tolerance_pct: Option<f64>,
     ) -> Self {
         let now = Utc::now();
         Self {
@@ -52,7 +61,10 @@ impl StrategyTPSLRule {
             buy_amount,
             take_profit,
             stop_loss,
-            is_active: true,
+            p_max_sol_cost,
+            p_spendable_sol_in,
+            tolerance_pct: tolerance_pct.unwrap_or(0.0),
+            is_active: false,
             created_at: now,
             updated_at: now,
         }

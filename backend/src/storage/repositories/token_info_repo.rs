@@ -27,14 +27,15 @@ impl TokenInfoRepo {
         last_trade_at: Option<DateTime<Utc>>,
         current_price: Option<f64>,
         is_rugged: bool,
+        is_migrated: bool,
     ) -> anyhow::Result<()> {
         let now = Utc::now();
 
         sqlx::query(
             r#"
             INSERT INTO tokens_info
-                (mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_rugged, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                (mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_rugged, is_migrated, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             ON CONFLICT (mint_address) DO UPDATE
                 SET ath_price = GREATEST(COALESCE(tokens_info.ath_price, 0.0), COALESCE(EXCLUDED.ath_price, 0.0)),
                     ath_timestamp = CASE WHEN COALESCE(EXCLUDED.ath_price, 0.0) > COALESCE(tokens_info.ath_price, 0.0)
@@ -51,6 +52,7 @@ impl TokenInfoRepo {
                     END,
                     current_price = EXCLUDED.current_price,
                     is_rugged = EXCLUDED.is_rugged,
+                    is_migrated = tokens_info.is_migrated OR EXCLUDED.is_migrated,
                     updated_at = EXCLUDED.updated_at
             "#,
         )
@@ -64,6 +66,28 @@ impl TokenInfoRepo {
         .bind(last_trade_at)
         .bind(current_price)
         .bind(is_rugged)
+        .bind(is_migrated)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn update_migration_status(&self, mint: &str, is_migrated: bool) -> anyhow::Result<()> {
+        let now = Utc::now();
+        sqlx::query(
+            r#"
+            INSERT INTO tokens_info (mint_address, is_migrated, created_at, updated_at)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (mint_address) DO UPDATE
+                SET is_migrated = tokens_info.is_migrated OR EXCLUDED.is_migrated,
+                    updated_at = EXCLUDED.updated_at
+            "#,
+        )
+        .bind(mint)
+        .bind(is_migrated)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -74,8 +98,8 @@ impl TokenInfoRepo {
 
     #[allow(dead_code)]
     pub async fn find_by_mint(&self, mint: &str) -> anyhow::Result<Option<TokenInfo>> {
-        let row = sqlx::query_as::<_, (Uuid, String, Option<f64>, Option<DateTime<Utc>>, Option<i64>, f64, Option<f64>, i64, Option<DateTime<Utc>>, Option<f64>, bool, DateTime<Utc>, DateTime<Utc>)>(
-            "SELECT id, mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_rugged, created_at, updated_at FROM tokens_info WHERE mint_address = $1",
+        let row = sqlx::query_as::<_, (Uuid, String, Option<f64>, Option<DateTime<Utc>>, Option<i64>, f64, Option<f64>, i64, Option<DateTime<Utc>>, Option<f64>, bool, bool, DateTime<Utc>, DateTime<Utc>)>(
+            "SELECT id, mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_rugged, is_migrated, created_at, updated_at FROM tokens_info WHERE mint_address = $1",
         )
         .bind(mint)
         .fetch_optional(&self.pool)
@@ -94,6 +118,7 @@ impl TokenInfoRepo {
                 last_trade_at,
                 current_price,
                 is_rugged,
+                is_migrated,
                 created_at,
                 updated_at,
             )| TokenInfo {
@@ -108,6 +133,7 @@ impl TokenInfoRepo {
                 last_trade_at,
                 current_price,
                 is_rugged,
+                is_migrated,
                 created_at,
                 updated_at,
             },
@@ -116,8 +142,8 @@ impl TokenInfoRepo {
 
     /// List all token metrics rows.
     pub async fn list_all(&self) -> anyhow::Result<Vec<TokenInfo>> {
-        let rows = sqlx::query_as::<_, (Uuid, String, Option<f64>, Option<DateTime<Utc>>, Option<i64>, f64, Option<f64>, i64, Option<DateTime<Utc>>, Option<f64>, bool, DateTime<Utc>, DateTime<Utc>)>(
-            "SELECT id, mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_rugged, created_at, updated_at FROM tokens_info",
+        let rows = sqlx::query_as::<_, (Uuid, String, Option<f64>, Option<DateTime<Utc>>, Option<i64>, f64, Option<f64>, i64, Option<DateTime<Utc>>, Option<f64>, bool, bool, DateTime<Utc>, DateTime<Utc>)>(
+            "SELECT id, mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_rugged, is_migrated, created_at, updated_at FROM tokens_info",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -137,6 +163,7 @@ impl TokenInfoRepo {
                     last_trade_at,
                     current_price,
                     is_rugged,
+                    is_migrated,
                     created_at,
                     updated_at,
                 )| TokenInfo {
@@ -151,6 +178,7 @@ impl TokenInfoRepo {
                     last_trade_at,
                     current_price,
                     is_rugged,
+                    is_migrated,
                     created_at,
                     updated_at,
                 },
