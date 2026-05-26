@@ -142,6 +142,7 @@ mod tests {
             Some(0.5),
             None,
             None,
+            false,
             serde_json::json!([]),
             "tx_sig".to_string(),
             chrono::Utc::now(),

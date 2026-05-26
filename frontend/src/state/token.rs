@@ -181,6 +181,7 @@ pub fn sort_tokens(tokens: &mut Vec<TokenRecord>, sort: &SortState) {
             "cu_price" => a.cu_price.cmp(&b.cu_price),
             "label_count" | "ix_count" => a.ix_labels_count.cmp(&b.ix_labels_count),
             "trade_count" => a.trade_count.cmp(&b.trade_count),
+            "mayhem_mode" => a.is_mayhem_mode.cmp(&b.is_mayhem_mode),
             "migrated" => a.is_migrated.cmp(&b.is_migrated),
             "age" => a.age.cmp(&b.age),
             "name" => a.name.cmp(&b.name),

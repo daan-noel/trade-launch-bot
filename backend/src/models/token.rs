@@ -24,6 +24,8 @@ pub struct Token {
     pub cu_limit: Option<u64>,
     /// Compute-unit price requested in the creation transaction (if any), in micro-lamports per CU.
     pub cu_price: Option<u64>,
+    /// Whether this token was created in Pump.mayhem mode.
+    pub is_mayhem_mode: bool,
     /// Instruction labels from the create transaction.
     pub instruction_labels: Value,
     /// Transaction signature of the creation instruction.
@@ -42,6 +44,7 @@ impl Token {
         initial_buy_sol: Option<f64>,
         cu_limit: Option<u64>,
         cu_price: Option<u64>,
+        is_mayhem_mode: bool,
         instruction_labels: Value,
         creation_tx_signature: String,
         created_at: DateTime<Utc>,
@@ -57,6 +60,7 @@ impl Token {
             initial_buy_sol,
             cu_limit,
             cu_price,
+            is_mayhem_mode,
             instruction_labels,
             creation_tx_signature,
             created_at,

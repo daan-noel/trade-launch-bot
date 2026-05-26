@@ -25,6 +25,7 @@ struct TokenDbRow {
     initial_buy_sol: Option<f64>,
     cu_limit: Option<i64>,
     cu_price: Option<i64>,
+    is_mayhem_mode: bool,
     ix_labels: Json<Value>,
     creation_tx_signature: String,
     created_at: DateTime<Utc>,
@@ -43,6 +44,7 @@ impl From<TokenDbRow> for Token {
             initial_buy_sol: r.initial_buy_sol,
             cu_limit: r.cu_limit.map(|v| v as u64),
             cu_price: r.cu_price.map(|v| v as u64),
+            is_mayhem_mode: r.is_mayhem_mode,
             instruction_labels: r.ix_labels.0,
             creation_tx_signature: r.creation_tx_signature,
             created_at: r.created_at,
@@ -65,9 +67,9 @@ impl TokenRepo {
             r#"
             INSERT INTO tokens
                 (id, mint_address, creator_wallet, name, symbol,
-                  bonding_curve_address, initial_supply_token, initial_buy_sol, cu_limit, cu_price, ix_labels,
+                  bonding_curve_address, initial_supply_token, initial_buy_sol, cu_limit, cu_price, is_mayhem_mode, ix_labels,
                   creation_tx_signature, created_at)
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             ON CONFLICT (mint_address) DO NOTHING
             "#,
         )
@@ -81,6 +83,7 @@ impl TokenRepo {
         .bind(token.initial_buy_sol)
         .bind(token.cu_limit.map(|v| v as i64))
         .bind(token.cu_price.map(|v| v as i64))
+        .bind(token.is_mayhem_mode)
         .bind(Json(&token.instruction_labels))
         .bind(&token.creation_tx_signature)
         .bind(token.created_at)

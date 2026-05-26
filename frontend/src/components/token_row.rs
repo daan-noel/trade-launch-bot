@@ -90,6 +90,7 @@ struct UpdateFlags {
     ath_fep_ratio: bool,
     current_fep_ratio: bool,
     trade_count: bool,
+    mayhem_mode: bool,
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -141,7 +142,12 @@ pub fn token_row(props: &Props) -> Html {
     let ath_price_str = s.ath_price.map(format_price).unwrap_or_else(|| "-".into());
     let market_cap = s.market_cap.map(|v| format_compact(v, 3)).unwrap_or_else(|| "-".into());
     let initial_buy = s.initial_buy_sol.map(|v| format_decimal(v, 4)).unwrap_or_else(|| "-".into());
-    let cu_price = s.cu_price.map(|v| format_with_commas(v)).unwrap_or_else(|| "-".into());
+    let cu_price = s.cu_price.map(|v| format_with_commas(v)).unwrap_or_else(|| "-".to_string());
+    let mayhem_mode_str: String = if s.is_mayhem_mode {
+        "Yes".to_string()
+    } else {
+        "-".to_string()
+    };
 
     let age_text  = format_age(s.age);
     let age_cls   = age_class(s.age);
@@ -368,6 +374,7 @@ pub fn token_row(props: &Props) -> Html {
                 flags.cu_price             = prev.cu_price != token.cu_price;
                 flags.ix_labels_count      = prev.ix_labels_count != token.ix_labels_count;
                 flags.is_migrated          = prev.is_migrated != token.is_migrated;
+                flags.mayhem_mode          = prev.is_mayhem_mode != token.is_mayhem_mode;
                 flags.age                  = prev.age != token.age;
                 flags.created_at           = prev.created_at != token.created_at;
                 flags.trade_count          = prev.trade_count != token.trade_count;
@@ -481,8 +488,15 @@ pub fn token_row(props: &Props) -> Html {
                     </td>
                 }
 
-                // 8 — ATH/FEP (Performance)
+                // 8 — Mayhem Mode (Lifecycle)
                 if show(8) {
+                    <td class={classes!(update_flags.mayhem_mode.then_some("updated-cell"))}>
+                        { &mayhem_mode_str }
+                    </td>
+                }
+
+                // 9 — ATH/FEP (Performance)
+                if show(9) {
                     <td class={classes!(
                         "ath-fep-col",
                         ratio_class(ath_fep_mult),

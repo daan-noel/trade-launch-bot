@@ -29,6 +29,7 @@ const COLUMNS: &[(&str, &str, u32, Option<&str>)] = &[
     ("created",           "Created",      110, None),
     ("last_trade",        "Last Trade",   110, None),
     ("migrated",          "Migrated",      66, None),
+    ("mayhem_mode",       "Mayhem",        66, None),
     // Performance
     ("ath_fep_ratio",     "ATH/FEP",       88, Some("th-ath-fep")),
     ("current_fep_ratio", "Cur/FEP",       76, Some("th-cur-fep")),

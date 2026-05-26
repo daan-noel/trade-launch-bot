@@ -308,8 +308,16 @@ impl HeliusDecoder {
         let initial_supply = initial_create_event.map(|ev| ev.token_amount as u64);
         let initial_buy_sol = initial_create_event.map(|ev| ev.sol_amount);
 
-        let (name, symbol) = decode_create_strings(pump_ix)
-            .unwrap_or_else(|| ("Unknown".to_string(), "UNKNOWN".to_string()));
+        let (name, symbol, is_v2, is_mayhem_mode) = decode_create_info(pump_ix)
+            .unwrap_or_else(|| {
+                (
+                    "Unknown".to_string(),
+                    "UNKNOWN".to_string(),
+                    false,
+                    false,
+                )
+            });
+        let create_kind = if is_v2 { "Create_v2" } else { "Create" };
 
         debug!(
             sig = %signature,
@@ -317,6 +325,8 @@ impl HeliusDecoder {
             creator = %creator,
             name = %name,
             symbol = %symbol,
+            create_kind = %create_kind,
+            is_mayhem_mode = %is_mayhem_mode,
             instruction_type = %instruction_type,
             initial_supply = ?initial_supply,
             labels_json = ?labels_json,
@@ -333,6 +343,7 @@ impl HeliusDecoder {
             initial_buy_sol,
             cu_limit,
             cu_price,
+            is_mayhem_mode,
             labels_json.clone(),
             signature.to_string(),
             block_time,
@@ -969,10 +980,11 @@ fn compute_token_change(user_ata: &str, mint: &str, account_keys: &[String], met
 /// base58-encoded data.
 
 /// Anchor / Borsh layout (after the 8-byte discriminator):
-///   name:   u32 LE length + UTF-8 bytes
-///   symbol: u32 LE length + UTF-8 bytes
-///   uri:    u32 LE length + UTF-8 bytes  (not needed here)
-fn decode_create_strings(pump_ix: &Value) -> Option<(String, String)> {
+///   name:         u32 LE length + UTF-8 bytes
+///   symbol:       u32 LE length + UTF-8 bytes
+///   uri:          u32 LE length + UTF-8 bytes
+///   mayhem_mode:  bool (only present for create_v2)
+fn decode_create_info(pump_ix: &Value) -> Option<(String, String, bool, bool)> {
     let data_b58 = pump_ix["data"].as_str()?;
     let data = bs58::decode(data_b58).into_vec().ok()?;
 
@@ -981,11 +993,26 @@ fn decode_create_strings(pump_ix: &Value) -> Option<(String, String)> {
         return None;
     }
 
+    let discriminator = &data[..8];
+    let is_create_v2 = discriminator == CREATE_V2_INSTRUCTION_DISCRIMINATOR;
+    if discriminator != CREATE_INSTRUCTION_DISCRIMINATOR && !is_create_v2 {
+        return None;
+    }
+
     let mut offset = 8; // skip discriminator
     let name = read_anchor_string(&data, &mut offset)?;
     let symbol = read_anchor_string(&data, &mut offset)?;
 
-    Some((name, symbol))
+    // Consume the URI field if present so we can reach mayhem_mode on create_v2.
+    let _ = read_anchor_string(&data, &mut offset);
+
+    let is_mayhem_mode = if is_create_v2 {
+        data.get(offset).copied().unwrap_or(0) == 1
+    } else {
+        false
+    };
+
+    Some((name, symbol, is_create_v2, is_mayhem_mode))
 }
 
 /// Read a Borsh-encoded `String` (u32 LE length prefix + UTF-8 bytes).

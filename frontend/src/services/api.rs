@@ -27,6 +27,7 @@ pub struct TokenRecord {
     #[serde(default)]
     pub instruction_labels: serde_json::Value,
     pub is_migrated: bool,
+    pub is_mayhem_mode: bool,
     pub age: i64,
     pub created_at: String,
     pub create_tx_address: String,
@@ -75,6 +76,7 @@ pub struct TokenDetailRecord {
     pub cu_limit: Option<u64>,
     pub cu_price: Option<u64>,
     pub instruction_labels: Value,
+    pub is_mayhem_mode: bool,
     pub create_tx_address: String,
     pub created_at: String,
     pub trade_count: Option<u64>,
