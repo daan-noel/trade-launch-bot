@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use web_sys;
 use yew::prelude::*;
 
-use crate::utils::format::{format_compact, format_decimal, format_price, format_with_commas};
+use crate::utils::format::{format_compact, format_decimal_trim, format_price, format_with_commas};
 
 const LS_PRICE_UNIT_KEY: &str = "price_unit";
 
@@ -82,31 +82,31 @@ pub fn price_unit_provider(props: &PriceUnitProviderProps) -> Html {
 impl PriceUnitState {
     pub fn display_price(&self, sol_value: f64) -> String {
         match self.unit {
-            PriceUnit::SOL => format_price(sol_value),
+            PriceUnit::SOL => format!("◎{}", format_price(sol_value)),
             PriceUnit::USD => self
                 .usd_rate
                 .map(|rate| format_usd(sol_value * rate))
-                .unwrap_or_else(|| format_price(sol_value)),
+                .unwrap_or_else(|| format!("◎{}", format_price(sol_value))),
         }
     }
 
     pub fn display_amount(&self, sol_value: f64) -> String {
         match self.unit {
-            PriceUnit::SOL => format_decimal(sol_value, 4),
+            PriceUnit::SOL => format!("◎{}", format_decimal_trim(sol_value, 4)),
             PriceUnit::USD => self
                 .usd_rate
-                .map(format_usd)
-                .unwrap_or_else(|| format_decimal(sol_value, 4)),
+                .map(|rate| format_usd(sol_value * rate))
+                .unwrap_or_else(|| format!("◎{}", format_decimal_trim(sol_value, 4))),
         }
     }
 
     pub fn display_compact(&self, sol_value: f64, digits: usize) -> String {
         match self.unit {
-            PriceUnit::SOL => format_compact(sol_value, digits),
+            PriceUnit::SOL => format!("◎{}", format_compact(sol_value, digits)),
             PriceUnit::USD => self
                 .usd_rate
-                .map(format_usd)
-                .unwrap_or_else(|| format_compact(sol_value, digits)),
+                .map(|rate| format!("${}", format_compact(sol_value * rate, digits)))
+                .unwrap_or_else(|| format!("◎{}", format_compact(sol_value, digits))),
         }
     }
 
@@ -146,8 +146,16 @@ fn save_price_unit(state: &PriceUnitState) {
 }
 
 fn format_usd(value: f64) -> String {
+    if value == 0.0 {
+        return "$0".into();
+    }
+    let abs = value.abs();
     let sign = if value < 0.0 { "-" } else { "" };
-    let rounded = (value.abs() * 100.0).round() / 100.0;
+    // For tiny values (e.g. meme token prices), use engineering notation like format_price
+    if abs < 0.01 {
+        return format!("{sign}${}", format_price(abs));
+    }
+    let rounded = (abs * 100.0).round() / 100.0;
     let whole = rounded.trunc() as u64;
     let frac = ((rounded - whole as f64) * 100.0).round() as u64;
     let whole_str = format_with_commas(whole);

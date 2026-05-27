@@ -121,6 +121,7 @@ pub struct RuleRecord {
     pub p_cu_price: Option<u64>,
     pub p_max_sol_cost: Option<f64>,
     pub p_spendable_sol_in: Option<f64>,
+    pub p_max_holding_tokens: Option<u64>,
     pub p_ix_labels: Value,
     pub buy_amount: f64,
     pub take_profit: f64,
@@ -139,6 +140,7 @@ pub struct CreateRuleRequest {
     pub p_cu_price: Option<u64>,
     pub p_max_sol_cost: Option<f64>,
     pub p_spendable_sol_in: Option<f64>,
+    pub p_max_holding_tokens: Option<u64>,
     pub p_ix_labels: Value,
     pub buy_amount: f64,
     pub take_profit: f64,
@@ -151,6 +153,7 @@ pub struct SimulatedTokenResult {
     pub mint: String,
     pub symbol: String,
     pub entry_price: f64,
+    pub entry_amount: f64,
     pub entry_tx: String,
     pub entry_time: String,
     pub exit_price: Option<f64>,
@@ -162,23 +165,6 @@ pub struct SimulatedTokenResult {
     /// "TakeProfit", "StopLoss", or "Open"
     pub exit_reason: String,
     pub total_trades: usize,
-}
-
-#[derive(Clone, PartialEq, Deserialize)]
-pub struct SimulationResultRecord {
-    pub rule_id: String,
-    pub rule_name: String,
-    pub tokens_matched: usize,
-    pub win_count: usize,
-    pub loss_count: usize,
-    pub open_count: usize,
-    pub win_rate_pct: f64,
-    pub total_pnl_sol: f64,
-    pub avg_pnl_pct: Option<f64>,
-    pub avg_holding_secs: Option<f64>,
-    pub best_pnl_pct: Option<f64>,
-    pub worst_pnl_pct: Option<f64>,
-    pub tokens: Vec<SimulatedTokenResult>,
 }
 
 #[derive(Clone, PartialEq, Deserialize)]
@@ -257,7 +243,7 @@ pub async fn create_tpsl_rule(req: &CreateRuleRequest) -> Result<RuleRecord, Str
         .map_err(|e| format!("Parse error: {e}"))
 }
 
-pub async fn simulate_tpsl_rule(rule_id: &str) -> Result<SimulationResultRecord, String> {
+pub async fn simulate_tpsl_rule(rule_id: &str) -> Result<Vec<SimulatedTokenResult>, String> {
     let url = format!("{API_BASE}/api/strategies/tpsl/rules/{rule_id}/simulate");
     let resp = Request::get(&url)
         .send()
@@ -266,7 +252,7 @@ pub async fn simulate_tpsl_rule(rule_id: &str) -> Result<SimulationResultRecord,
     if !resp.ok() {
         return Err(format!("HTTP {}", resp.status()));
     }
-    resp.json::<SimulationResultRecord>()
+    resp.json::<Vec<SimulatedTokenResult>>()
         .await
         .map_err(|e| format!("Parse error: {e}"))
 }
@@ -277,8 +263,14 @@ pub struct UpdateRuleRequest {
     pub buy_amount: Option<f64>,
     pub take_profit: Option<f64>,
     pub stop_loss: Option<f64>,
-    pub p_max_sol_cost: Option<f64>,
-    pub p_spendable_sol_in: Option<f64>,
+    pub p_initial_buy_sol: Option<Option<f64>>,
+    pub p_cu_limit: Option<Option<u64>>,
+    pub p_cu_price: Option<Option<u64>>,
+    pub p_ix_labels: Option<Option<Value>>,
+    pub p_max_sol_cost: Option<Option<f64>>,
+    pub p_spendable_sol_in: Option<Option<f64>>,
+    // Outer Option = field present; inner Option = value or explicit null
+    pub p_max_holding_tokens: Option<Option<u64>>,
     pub tolerance_pct: Option<f64>,
     pub is_active: Option<bool>,
 }

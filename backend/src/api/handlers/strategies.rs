@@ -26,6 +26,7 @@ pub struct RuleResponse {
     pub p_cu_price: Option<u64>,
     pub p_max_sol_cost: Option<f64>,
     pub p_spendable_sol_in: Option<f64>,
+    pub p_max_holding_tokens: Option<u64>,
     pub p_ix_labels: serde_json::Value,
     pub buy_amount: f64,
     pub take_profit: f64,
@@ -46,6 +47,7 @@ impl From<StrategyTPSLRule> for RuleResponse {
             p_cu_price: r.p_cu_price,
             p_max_sol_cost: r.p_max_sol_cost,
             p_spendable_sol_in: r.p_spendable_sol_in,
+            p_max_holding_tokens: r.p_max_holding_tokens,
             p_ix_labels: r.p_ix_labels,
             buy_amount: r.buy_amount,
             take_profit: r.take_profit,
@@ -108,6 +110,7 @@ pub struct CreateRuleRequest {
     pub p_cu_price: Option<u64>,
     pub p_max_sol_cost: Option<f64>,
     pub p_spendable_sol_in: Option<f64>,
+    pub p_max_holding_tokens: Option<u64>,
     pub p_ix_labels: serde_json::Value,
     pub buy_amount: f64,
     pub take_profit: f64,
@@ -115,14 +118,27 @@ pub struct CreateRuleRequest {
     pub tolerance_pct: Option<f64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct UpdateRuleRequest {
     pub rule_name: Option<String>,
     pub buy_amount: Option<f64>,
     pub take_profit: Option<f64>,
     pub stop_loss: Option<f64>,
-    pub p_max_sol_cost: Option<f64>,
-    pub p_spendable_sol_in: Option<f64>,
+    #[serde(default)]
+    pub p_initial_buy_sol: Option<Option<f64>>,
+    #[serde(default)]
+    pub p_cu_limit: Option<Option<u64>>,
+    #[serde(default)]
+    pub p_cu_price: Option<Option<u64>>,
+    #[serde(default)]
+    pub p_ix_labels: Option<Option<serde_json::Value>>,
+    #[serde(default)]
+    pub p_max_sol_cost: Option<Option<f64>>,
+    #[serde(default)]
+    pub p_spendable_sol_in: Option<Option<f64>>,
+    // Outer Option = field present; inner Option = value or explicit null
+    #[serde(default)]
+    pub p_max_holding_tokens: Option<Option<u64>>,
     pub tolerance_pct: Option<f64>,
     pub is_active: Option<bool>,
 }
@@ -185,6 +201,7 @@ pub async fn create_tpsl_rule(
         req.stop_loss,
         req.p_max_sol_cost,
         req.p_spendable_sol_in,
+        req.p_max_holding_tokens,
         req.tolerance_pct,
     );
 
@@ -211,6 +228,11 @@ pub async fn update_tpsl_rule(
 
     match repo.find_by_id(rule_id).await {
         Ok(Some(mut rule)) => {
+            // Log incoming update request for debugging
+            match serde_json::to_value(&req.0) {
+                Ok(v) => tracing::debug!("UpdateRuleRequest JSON: {}", v),
+                Err(e) => tracing::debug!("Failed to serialize UpdateRuleRequest: {e}"),
+            }
             // Update fields if provided
             if let Some(name) = &req.rule_name {
                 rule.rule_name = name.clone();
@@ -224,11 +246,26 @@ pub async fn update_tpsl_rule(
             if let Some(stop_loss) = req.stop_loss {
                 rule.stop_loss = stop_loss;
             }
-            if let Some(max_sol_cost) = req.p_max_sol_cost {
-                rule.p_max_sol_cost = Some(max_sol_cost);
+            if let Some(initial_buy_sol_opt) = &req.p_initial_buy_sol {
+                rule.p_initial_buy_sol = initial_buy_sol_opt.clone();
             }
-            if let Some(spendable_sol_in) = req.p_spendable_sol_in {
-                rule.p_spendable_sol_in = Some(spendable_sol_in);
+            if let Some(cu_limit_opt) = &req.p_cu_limit {
+                rule.p_cu_limit = cu_limit_opt.clone();
+            }
+            if let Some(cu_price_opt) = &req.p_cu_price {
+                rule.p_cu_price = cu_price_opt.clone();
+            }
+            if let Some(ix_labels_opt) = &req.p_ix_labels {
+                rule.p_ix_labels = ix_labels_opt.clone().unwrap_or_else(|| serde_json::Value::Array(vec![]));
+            }
+            if let Some(max_sol_cost_opt) = &req.p_max_sol_cost {
+                rule.p_max_sol_cost = max_sol_cost_opt.clone();
+            }
+            if let Some(spendable_sol_in_opt) = &req.p_spendable_sol_in {
+                rule.p_spendable_sol_in = spendable_sol_in_opt.clone();
+            }
+            if let Some(max_holding_tokens_opt) = &req.p_max_holding_tokens {
+                rule.p_max_holding_tokens = max_holding_tokens_opt.clone();
             }
             if let Some(tolerance_pct) = req.tolerance_pct {
                 rule.tolerance_pct = tolerance_pct;
