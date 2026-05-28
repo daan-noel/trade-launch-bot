@@ -14,6 +14,8 @@ pub struct Token {
     pub creator_wallet: String,
     pub name: String,
     pub symbol: String,
+    /// Program id used for this token (SPL legacy or Token-2022), as base58 string.
+    pub token_program_id: Option<String>,
     /// Bonding curve program address for this token.
     pub bonding_curve_address: Option<String>,
     /// First creator buy amount, expressed in raw token units.
@@ -41,6 +43,7 @@ impl Token {
         creator_wallet: String,
         name: String,
         symbol: String,
+        token_program_id: Option<String>,
         bonding_curve_address: Option<String>,
         initial_supply_token: Option<u64>,
         initial_buy_sol: Option<f64>,
@@ -58,6 +61,7 @@ impl Token {
             creator_wallet,
             name,
             symbol,
+            token_program_id,
             bonding_curve_address,
             initial_supply_token,
             initial_buy_sol,

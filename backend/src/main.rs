@@ -18,6 +18,7 @@ use tracing::{error, info, warn};
 use actix_cors::Cors;
 use actix_web::{web, App, HttpServer};
 use crate::trader::{PumpFunTrader, TraderConfig};
+use crate::services::TradingService;
 
 fn parse_wallet_keypair(base58_key: &str) -> anyhow::Result<Keypair> {
     let bytes = bs58::decode(base58_key)
@@ -60,11 +61,12 @@ async fn main() -> anyhow::Result<()> {
         buy_seed_pool_size: settings.buy_seed_pool_size,
     });
 
-    let trader = Arc::new(PumpFunTrader::new(trader_config));
+    let mut trader = PumpFunTrader::new(trader_config);
     trader
         .initialize()
         .await
         .context("Failed to initialize PumpFunTrader")?;
+    let trader = Arc::new(trader);
 
     // Database — connect and run migrations
     let db = storage::postgres::connect(&settings).await?;
@@ -115,8 +117,14 @@ async fn main() -> anyhow::Result<()> {
     let service_task = tokio::spawn(token_service.run(event_tx.subscribe()));
 
     // Service: strategy handler — subscribes to the event bus
-    let strategy_service = services::StrategyService::new(db.clone());
+    let trading_service = services::TradingService::new(trader.clone());
+    let strategy_service = services::StrategyService::new(db.clone(), trading_service.clone());
     let strategy_task = tokio::spawn(strategy_service.run(event_tx.subscribe()));
+    let _trading_service_task = tokio::spawn(async move {
+        // TradingService currently acts as a bridge only; keep it alive for
+        // potential future event-driven trading tasks.
+        tokio::task::yield_now().await;
+    });
 
     // Initialize SOL price cache immediately, then start the poller.
     match services::price_service::fetch_latest_sol_price().await {

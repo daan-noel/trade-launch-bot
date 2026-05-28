@@ -11,6 +11,8 @@ pub struct Position {
     pub mint: String,
     /// Wallet address that owns this position.
     pub wallet: String,
+    /// Token program id used for this position (SPL legacy or Token-2022).
+    pub token_program_id: Option<String>,
     /// Entry price (SOL per token) when the position was opened.
     pub entry_price: f64,
     /// Exit price (SOL per token) when the position was closed.
@@ -37,6 +39,7 @@ pub struct Position {
 #[serde(rename_all = "PascalCase")]
 pub enum PositionStatus {
     Holding,
+    ExitPending,
     End,
 }
 
@@ -44,6 +47,7 @@ impl std::fmt::Display for PositionStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Holding => write!(f, "Holding"),
+            Self::ExitPending => write!(f, "ExitPending"),
             Self::End => write!(f, "End"),
         }
     }
@@ -55,6 +59,7 @@ impl std::str::FromStr for PositionStatus {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "Holding" => Ok(Self::Holding),
+            "ExitPending" => Ok(Self::ExitPending),
             "End" => Ok(Self::End),
             _ => Err(format!("Unknown status: {}", s)),
         }
@@ -76,6 +81,7 @@ impl Position {
             id: Uuid::new_v4(),
             mint,
             wallet,
+            token_program_id: None,
             entry_price,
             exit_price: None,
             entry_tx,
@@ -88,6 +94,18 @@ impl Position {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    /// Mark the position as pending exit while the sell is executing.
+    pub fn mark_exit_pending(&mut self) {
+        self.status = PositionStatus::ExitPending;
+        self.updated_at = Utc::now();
+    }
+
+    /// Re-open a position if the exit attempt fails.
+    pub fn reopen(&mut self) {
+        self.status = PositionStatus::Holding;
+        self.updated_at = Utc::now();
     }
 
     /// Close the position with an exit trade.

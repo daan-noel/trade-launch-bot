@@ -9,6 +9,12 @@ pub struct TradeRepo {
     pool: PgPool,
 }
 
+impl Clone for TradeRepo {
+    fn clone(&self) -> Self {
+        Self { pool: self.pool.clone() }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // DB row
 // ---------------------------------------------------------------------------

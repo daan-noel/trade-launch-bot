@@ -21,6 +21,7 @@ struct TokenDbRow {
     creator_wallet: String,
     name: String,
     symbol: String,
+    token_program_id: Option<String>,
     bonding_curve_address: Option<String>,
     initial_supply_token: Option<i64>,
     initial_buy_sol: Option<f64>,
@@ -41,6 +42,7 @@ impl From<TokenDbRow> for Token {
             creator_wallet: r.creator_wallet,
             name: r.name,
             symbol: r.symbol,
+            token_program_id: r.token_program_id,
             bonding_curve_address: r.bonding_curve_address,
             initial_supply_token: r.initial_supply_token.map(|v| v as u64),
             initial_buy_sol: r.initial_buy_sol,
@@ -69,9 +71,9 @@ impl TokenRepo {
         sqlx::query(
             r#"
             INSERT INTO tokens
-                (id, mint_address, creator_wallet, name, symbol,
-                  bonding_curve_address, initial_supply_token, initial_buy_sol, initial_buy_instruction, cu_limit, cu_price, is_mayhem_mode, ix_labels,
-                  creation_tx_signature, created_at)
+                (id, mint_address, creator_wallet, name, symbol, token_program_id,
+                    bonding_curve_address, initial_supply_token, initial_buy_sol, initial_buy_instruction, cu_limit, cu_price, is_mayhem_mode, ix_labels,
+                    creation_tx_signature, created_at)
               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             ON CONFLICT (mint_address) DO NOTHING
             "#,
@@ -81,6 +83,7 @@ impl TokenRepo {
         .bind(&token.creator_wallet)
         .bind(&token.name)
         .bind(&token.symbol)
+        .bind(token.token_program_id.as_ref())
         .bind(&token.bonding_curve_address)
         .bind(token.initial_supply_token.map(|v| v as i64))
         .bind(token.initial_buy_sol)

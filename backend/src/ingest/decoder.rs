@@ -363,6 +363,7 @@ impl HeliusDecoder {
             creator.clone(),
             name,
             symbol,
+            None,
             bonding_curve,
             initial_supply,
             initial_buy_sol,

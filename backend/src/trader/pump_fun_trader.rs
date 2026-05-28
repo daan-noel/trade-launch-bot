@@ -149,6 +149,11 @@ impl PumpFunTrader {
             .expect("Invalid pump upgrade fee recipient")
     }
 
+    /// Return the configured wallet public key as base58 string.
+    pub fn wallet_pubkey(&self) -> String {
+        self.config.keypair.pubkey().to_string()
+    }
+
     fn parse_and_store_nonce(
         list: &mut Vec<Pubkey>,
         nonce: &str,

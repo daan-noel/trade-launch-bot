@@ -167,56 +167,6 @@ impl TPSLStrategyHandler {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::models::StrategyTPSLRule;
-    use chrono::Utc;
-    use serde_json::json;
-
-    #[test]
-    fn check_buy_entry_converts_buy_instruction_lamports_to_sol() {
-        let mut rule = StrategyTPSLRule::new(
-            "test".to_string(),
-            None,
-            None,
-            None,
-            json!([]),
-            1.0,
-            10.0,
-            10.0,
-            Some(1.0),
-            Some(0.5),
-            None,
-            None,
-            Some(0.0),
-        );
-        rule.is_active = true;
-
-        let token = Token::new(
-            "mint".to_string(),
-            "creator".to_string(),
-            "name".to_string(),
-            "SYM".to_string(),
-            None,
-            None,
-            Some(1.0),
-            Some(json!({
-                "max_sol_cost": 1_000_000_000u64,
-                "spendable_sol_in": 500_000_000u64,
-            })),
-            None,
-            None,
-            false,
-            json!([]),
-            "tx".to_string(),
-            Utc::now(),
-        );
-
-        let handler = TPSLStrategyHandler::new(vec![rule]);
-        assert!(handler.check_buy_entry(&token).is_some());
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitReason {

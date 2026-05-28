@@ -234,6 +234,11 @@ impl PumpFunTrader {
         }
     }
 
+    /// Wallet public key for trade correlation.
+    pub fn wallet_pubkey(&self) -> String {
+        self.config.keypair.pubkey().to_string()
+    }
+
     // -----------------------------------------------------------------------
     // Initialization  (call once before any buy/sell)
     // -----------------------------------------------------------------------

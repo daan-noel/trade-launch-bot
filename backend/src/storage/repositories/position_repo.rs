@@ -8,6 +8,12 @@ pub struct PositionRepo {
     pool: PgPool,
 }
 
+impl Clone for PositionRepo {
+    fn clone(&self) -> Self {
+        Self { pool: self.pool.clone() }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // DB row
 // ---------------------------------------------------------------------------
@@ -19,6 +25,7 @@ struct PositionDbRow {
     wallet: String,
     entry_price: f64,
     exit_price: Option<f64>,
+    token_program_id: Option<String>,
     entry_tx: String,
     exit_tx: Option<String>,
     status: String,
@@ -36,6 +43,7 @@ impl TryFrom<PositionDbRow> for Position {
     fn try_from(r: PositionDbRow) -> Result<Self, Self::Error> {
         let status = match r.status.as_str() {
             "Holding" => PositionStatus::Holding,
+            "ExitPending" => PositionStatus::ExitPending,
             "End" => PositionStatus::End,
             other => anyhow::bail!("Unknown position status in DB: {other}"),
         };
@@ -46,6 +54,7 @@ impl TryFrom<PositionDbRow> for Position {
             wallet: r.wallet,
             entry_price: r.entry_price,
             exit_price: r.exit_price,
+            token_program_id: r.token_program_id,
             entry_tx: r.entry_tx,
             exit_tx: r.exit_tx,
             status,
@@ -62,6 +71,7 @@ impl TryFrom<PositionDbRow> for Position {
 fn position_status_str(s: PositionStatus) -> &'static str {
     match s {
         PositionStatus::Holding => "Holding",
+        PositionStatus::ExitPending => "ExitPending",
         PositionStatus::End => "End",
     }
 }
@@ -75,19 +85,46 @@ impl PositionRepo {
         Self { pool }
     }
 
+    /// Update entry fields for an existing position (entry_tx, entry_amount, entry_price).
+    pub async fn update_entry(
+        &self,
+        position_id: Uuid,
+        entry_tx: &str,
+        entry_amount: f64,
+        entry_price: f64,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE positions
+            SET entry_tx = $2, entry_amount = $3, entry_price = $4, updated_at = $5
+            WHERE id = $1
+            "#,
+        )
+        .bind(position_id)
+        .bind(entry_tx)
+        .bind(entry_amount)
+        .bind(entry_price)
+        .bind(Utc::now())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
     /// Create a new position.
     pub async fn insert(&self, position: &Position) -> anyhow::Result<()> {
         sqlx::query(
             r#"
             INSERT INTO positions
-                (id, mint, wallet, entry_price, exit_price, entry_tx, exit_tx,
+                (id, mint, wallet, token_program_id, entry_price, exit_price, entry_tx, exit_tx,
                  status, strategy, rule_id, entry_amount, exit_amount, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             "#,
         )
         .bind(position.id)
         .bind(&position.mint)
         .bind(&position.wallet)
+        .bind(position.token_program_id.as_ref())
         .bind(position.entry_price)
         .bind(position.exit_price)
         .bind(&position.entry_tx)
@@ -130,7 +167,7 @@ impl PositionRepo {
     pub async fn find_holding_by_mint(&self, mint: &str) -> anyhow::Result<Vec<Position>> {
         let rows = sqlx::query_as::<_, PositionDbRow>(
             r#"
-            SELECT id, mint, wallet, entry_price, exit_price, entry_tx, exit_tx,
+                 SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
                    status, strategy, rule_id, entry_amount, exit_amount, created_at, updated_at
             FROM positions
             WHERE mint = $1 AND status = 'Holding'
@@ -148,7 +185,7 @@ impl PositionRepo {
     pub async fn find_holding_by_wallet(&self, wallet: &str) -> anyhow::Result<Vec<Position>> {
         let rows = sqlx::query_as::<_, PositionDbRow>(
             r#"
-            SELECT id, mint, wallet, entry_price, exit_price, entry_tx, exit_tx,
+                 SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
                    status, strategy, rule_id, entry_amount, exit_amount, created_at, updated_at
             FROM positions
             WHERE wallet = $1 AND status = 'Holding'
@@ -198,7 +235,7 @@ impl PositionRepo {
     pub async fn find_by_id(&self, position_id: Uuid) -> anyhow::Result<Option<Position>> {
         let row = sqlx::query_as::<_, PositionDbRow>(
             r#"
-            SELECT id, mint, wallet, entry_price, exit_price, entry_tx, exit_tx,
+            SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
                    status, strategy, rule_id, entry_amount, exit_amount, created_at, updated_at
             FROM positions
             WHERE id = $1
@@ -215,7 +252,7 @@ impl PositionRepo {
     pub async fn find_by_entry_tx(&self, tx_sig: &str) -> anyhow::Result<Option<Position>> {
         let row = sqlx::query_as::<_, PositionDbRow>(
             r#"
-            SELECT id, mint, wallet, entry_price, exit_price, entry_tx, exit_tx,
+            SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
                    status, strategy, rule_id, entry_amount, exit_amount, created_at, updated_at
             FROM positions
             WHERE entry_tx = $1
@@ -228,11 +265,32 @@ impl PositionRepo {
         Ok(row.map(Position::try_from).transpose()?)
     }
 
+    /// Reopen stale exit-pending positions after the timeout has elapsed.
+    pub async fn reopen_stale_exit_pending(
+        &self,
+        stale_after: std::time::Duration,
+    ) -> anyhow::Result<u64> {
+        let cutoff = chrono::Utc::now() - chrono::Duration::from_std(stale_after)?;
+        let result = sqlx::query(
+            r#"
+            UPDATE positions
+            SET status = 'Holding', updated_at = $1
+                WHERE status = 'ExitPending' AND updated_at < $2
+            "#,
+        )
+        .bind(chrono::Utc::now())
+        .bind(cutoff)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
     /// Get positions by strategy.
     pub async fn find_by_strategy(&self, strategy: &str) -> anyhow::Result<Vec<Position>> {
         let rows = sqlx::query_as::<_, PositionDbRow>(
             r#"
-            SELECT id, mint, wallet, entry_price, exit_price, entry_tx, exit_tx,
+            SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
                    status, strategy, rule_id, entry_amount, exit_amount, created_at, updated_at
             FROM positions
             WHERE strategy = $1
@@ -254,7 +312,7 @@ impl PositionRepo {
     ) -> anyhow::Result<Vec<Position>> {
         let rows = sqlx::query_as::<_, PositionDbRow>(
             r#"
-            SELECT id, mint, wallet, entry_price, exit_price, entry_tx, exit_tx,
+            SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
                    status, strategy, rule_id, entry_amount, exit_amount, created_at, updated_at
             FROM positions
             WHERE strategy = $1 AND status = $2

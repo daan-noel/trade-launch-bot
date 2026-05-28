@@ -119,3 +119,11 @@ pub const TOKEN_TOTAL_SUPPLY: f64 = 1000000000000000.0;
 
 /// How long a token can go without a price change before being considered rugged.
 pub const RUGGED_STALE_SECONDS: i64 = 3600; // 1 hour
+
+
+
+
+
+pub const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
+pub const EVENT_AUTHORITY: &str = "Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1";
+pub const FEE_PROGRAM_ID: &str = "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ";
