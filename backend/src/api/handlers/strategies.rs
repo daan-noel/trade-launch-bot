@@ -1,3 +1,24 @@
+/// Get all positions for a specific TPSL rule (by rule_id)
+/// GET /api/strategies/tpsl/rules/{rule_id}/positions
+pub async fn get_positions_by_rule(
+    app_state: web::Data<Arc<AppState>>,
+    rule_id: web::Path<Uuid>,
+) -> impl Responder {
+    let repo = PositionRepo::new(app_state.db.clone());
+    let rule_id = rule_id.into_inner();
+    match repo.find_by_rule(rule_id).await {
+        Ok(positions) => {
+            let responses: Vec<PositionResponse> =
+                positions.into_iter().map(PositionResponse::from).collect();
+            HttpResponse::Ok().json(responses)
+        }
+        Err(e) => {
+            tracing::error!("Failed to get positions for rule {rule_id}: {e}");
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "Failed to get positions"}))
+        }
+    }
+}
 use actix_web::{web, HttpResponse, Responder};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

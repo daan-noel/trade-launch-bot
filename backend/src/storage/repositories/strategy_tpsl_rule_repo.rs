@@ -73,7 +73,7 @@ impl StrategyTPSLRuleRepo {
             INSERT INTO strategy_TPSL_rules
                 (id, rule_name, p_initial_buy_sol, p_cu_limit, p_cu_price, p_max_sol_cost, p_spendable_sol_in, p_max_holding_tokens, p_total_max_trade_tokens, p_ix_labels,
                  buy_amount, take_profit, stop_loss, tolerance_pct, is_active, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             "#,
         )
         .bind(rule.id)

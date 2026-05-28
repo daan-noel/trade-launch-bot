@@ -1,8 +1,8 @@
 use yew::prelude::*;
 
+use crate::components::{col_options_panel::COLUMNS, TokenRow};
 use crate::services::api::{TokenDetailRecord, TokenRecord};
 use crate::state::{SortOrder, SortState, PriceUnitContext};
-use crate::components::TokenRow;
 
 #[derive(Properties, PartialEq)]
 pub struct TokensTableProps {
@@ -23,30 +23,6 @@ pub struct TokensTableProps {
     pub offset: usize,
 }
 
-// Column configuration: (field, label, width_px, th_class)
-pub const TOKENS_COLUMNS: &[(&str, &str, u32, &str)] = &[
-    ("age", "Age", 60, "th-center"),
-    ("last_trade", "Last Trade", 80, "th-center"),
-    ("current_price", "Price", 100, "th-right"),
-    ("market_cap", "MCap", 100, "th-right"),
-    ("ath_price", "ATH Price", 100, "th-right"),
-    ("ath_age", "ATH Age", 80, "th-center"),
-    ("ath_fep", "ATH FEP", 80, "th-right"),
-    ("current_fep", "Current FEP", 100, "th-right"),
-    ("volume", "Volume", 100, "th-right"),
-    ("init_supply", "Init Supply", 120, "th-right"),
-    ("token_amount", "Token Amount", 120, "th-right"),
-    ("max_sol_cost", "Max SOL Cost", 100, "th-right"),
-    ("spendable_sol_in", "Spendable SOL In", 120, "th-right"),
-    ("min_tokens_out", "Min Tokens Out", 120, "th-right"),
-    ("trades", "Trades", 60, "th-center"),
-    ("cu_limit", "CU Limit", 100, "th-right"),
-    ("cu_price", "CU Price", 100, "th-right"),
-    ("ix_count", "IX Count", 80, "th-center"),
-    ("init_buy", "Init Buy", 80, "th-right"),
-    ("migrated", "Migrated", 80, "th-center"),
-];
-
 #[function_component(TokensTable)]
 pub fn tokens_table(props: &TokensTableProps) -> Html {
     let price_unit = use_context::<PriceUnitContext>()
@@ -61,7 +37,7 @@ pub fn tokens_table(props: &TokensTableProps) -> Html {
     let mut headers_html = vec![html! { <th class="th-row-num">{ "#" }</th> }];
     let mut rendered_col_pos = 1usize;
 
-    for (i, &(field, label, _, th_cls)) in TOKENS_COLUMNS.iter().enumerate() {
+    for (i, &(field, label, _, th_cls)) in COLUMNS.iter().enumerate() {
         if !props.visible_cols[i] {
             continue;
         }
@@ -124,7 +100,7 @@ pub fn tokens_table(props: &TokensTableProps) -> Html {
             <table class="trade-table" onmouseleave={on_table_leave}>
                 <colgroup>
                     <col style="width: 40px;" />
-                    { for TOKENS_COLUMNS.iter().enumerate().filter_map(|(i, &(_, _, w, _))| {
+                    { for COLUMNS.iter().enumerate().filter_map(|(i, &(_, _, w, _))| {
                         if props.visible_cols[i] { Some(html! { <col style={format!("width: {}px;", w)} /> }) }
                         else { None }
                     }) }

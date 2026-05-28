@@ -175,17 +175,38 @@ pub async fn run_simulation(
 
     let token_repo = TokenRepo::new(app_state.db.clone());
 
-    let has_initial_buy = rule.p_initial_buy_sol.is_some();
-    let has_cu_limit = rule.p_cu_limit.is_some();
-    let has_cu_price = rule.p_cu_price.is_some();
-    let has_max_sol_cost = rule.p_max_sol_cost.is_some();
-    let has_spendable_sol_in = rule.p_spendable_sol_in.is_some();
+    // Helper: treat 0 or None as None (ignore field)
+    fn ignore_zero_f64(val: Option<f64>) -> Option<f64> {
+        match val {
+            Some(v) if v == 0.0 => None,
+            Some(v) => Some(v),
+            None => None,
+        }
+    }
+    fn ignore_zero_u64(val: Option<u64>) -> Option<u64> {
+        match val {
+            Some(0) => None,
+            Some(v) => Some(v),
+            None => None,
+        }
+    }
+
+    let p_initial_buy_sol = ignore_zero_f64(rule.p_initial_buy_sol);
+    let tolerance_pct = ignore_zero_f64(Some(rule.tolerance_pct));
+    let p_cu_limit = ignore_zero_u64(rule.p_cu_limit);
+    let p_cu_price = ignore_zero_u64(rule.p_cu_price);
+    let p_max_sol_cost = ignore_zero_f64(rule.p_max_sol_cost);
+    let p_spendable_sol_in = ignore_zero_f64(rule.p_spendable_sol_in);
     let has_ix_labels = rule.p_ix_labels.as_array().map_or(false, |a| !a.is_empty());
-    if !has_initial_buy
-        && !has_cu_limit
-        && !has_cu_price
-        && !has_max_sol_cost
-        && !has_spendable_sol_in
+    let max_holding = ignore_zero_u64(rule.p_max_holding_tokens).map(|v| v as usize);
+    let total_max_trade_tokens = ignore_zero_u64(rule.p_total_max_trade_tokens).map(|v| v as usize);
+
+    if p_initial_buy_sol.is_none()
+        && tolerance_pct.is_none()
+        && p_cu_limit.is_none()
+        && p_cu_price.is_none()
+        && p_max_sol_cost.is_none()
+        && p_spendable_sol_in.is_none()
         && !has_ix_labels
     {
         return Err(anyhow!(
@@ -195,12 +216,12 @@ pub async fn run_simulation(
 
     let tokens = token_repo
         .find_by_rule_criteria(
-            rule.p_initial_buy_sol,
-            Some(rule.tolerance_pct),
-            rule.p_cu_limit,
-            rule.p_cu_price,
-            rule.p_max_sol_cost,
-            rule.p_spendable_sol_in,
+            p_initial_buy_sol,
+            tolerance_pct,
+            p_cu_limit,
+            p_cu_price,
+            p_max_sol_cost,
+            p_spendable_sol_in,
             Some(&rule.p_ix_labels),
             None,
         )
@@ -272,12 +293,6 @@ pub async fn run_simulation(
     }
 
     candidates.sort_by_key(|(entry_time, _, _)| *entry_time);
-    let max_holding = rule.p_max_holding_tokens.map(|v| v as usize);
-    let total_max_trade_tokens = rule.p_total_max_trade_tokens.map(|v| v as usize);
-
-    if total_max_trade_tokens == Some(0) || max_holding == Some(0) {
-        return Ok(vec![]);
-    }
 
     let mut results = select_simulated_tokens(candidates, max_holding, total_max_trade_tokens);
 

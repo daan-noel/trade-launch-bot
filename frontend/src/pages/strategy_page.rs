@@ -1,3 +1,24 @@
+// Utility: display '-' for None or zero/empty values
+fn dash<T: PartialEq + Default + ToString>(val: Option<T>) -> String {
+    match val {
+        Some(v) if v != T::default() => v.to_string(),
+        _ => "-".to_string(),
+    }
+}
+fn dash_f(val: f64, precision: usize) -> String {
+    if val == 0.0 {
+        "-".to_string()
+    } else {
+        format_decimal_trim(val, precision)
+    }
+}
+fn dash_percent(val: f64) -> String {
+    if val == 0.0 {
+        "-".to_string()
+    } else {
+        format!("{}%", format_decimal_trim(val, 1))
+    }
+}
 use serde_json::Value;
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
@@ -9,7 +30,7 @@ use crate::services::api::{
     CreateRuleRequest, RuleRecord, SimulatedTokenResult, UpdateRuleRequest,
 };
 use crate::state::PriceUnitContext;
-use crate::utils::format::{format_age, format_compact};
+use crate::utils::format::{format_age, format_compact, format_decimal_trim};
 
 // ── Modal mode ────────────────────────────────────────────────────────────────
 
@@ -37,6 +58,57 @@ pub fn strategy_page() -> Html {
     let loading = use_state(|| false);
     let load_error = use_state(|| Option::<String>::None);
     let search = use_state(String::new);
+
+    // ── Selection state ───────────────────────────────────────────────────────
+    let selected_rule_id = use_state(|| Option::<String>::None);
+
+    // ── Rule positions state ──────────────────────────────────────────────────
+    use crate::services::api::fetch_rule_positions;
+    use crate::services::api::RulePositionRecord;
+    let rule_positions = use_state(Vec::<RulePositionRecord>::new);
+    let rule_positions_loading = use_state(|| false);
+    let rule_positions_error = use_state(|| Option::<String>::None);
+
+    // Fetch positions when selected rule changes and is active
+    {
+        let selected_rule_id = selected_rule_id.clone();
+        let rules = rules.clone();
+        let rule_positions = rule_positions.clone();
+        let rule_positions_loading = rule_positions_loading.clone();
+        let rule_positions_error = rule_positions_error.clone();
+        use_effect_with(selected_rule_id.clone(), move |selected| {
+            let selected = selected.clone();
+            let rules = rules.clone();
+            let rule_positions = rule_positions.clone();
+            let rule_positions_loading = rule_positions_loading.clone();
+            let rule_positions_error = rule_positions_error.clone();
+            if let Some(rule_id) = selected.as_ref() {
+                if let Some(rule) = (*rules).iter().find(|r| &r.id == rule_id) {
+                    if rule.is_active {
+                        rule_positions_loading.set(true);
+                        rule_positions_error.set(None);
+                        let rule_id = rule_id.clone();
+                        spawn_local(async move {
+                            match fetch_rule_positions(&rule_id).await {
+                                Ok(positions) => rule_positions.set(positions),
+                                Err(err) => rule_positions_error.set(Some(err)),
+                            }
+                            rule_positions_loading.set(false);
+                        });
+                    } else {
+                        rule_positions.set(vec![]);
+                        rule_positions_error.set(None);
+                        rule_positions_loading.set(false);
+                    }
+                }
+            } else {
+                rule_positions.set(vec![]);
+                rule_positions_error.set(None);
+                rule_positions_loading.set(false);
+            }
+            || ()
+        });
+    }
 
     // ── Modal / form ──────────────────────────────────────────────────────────
     let modal_mode = use_state(|| ModalMode::None);
@@ -208,16 +280,13 @@ pub fn strategy_page() -> Html {
                     .unwrap_or_default(),
             );
             f_tolerance.set(rule.tolerance_pct.to_string());
-            let labels = rule
-                .p_ix_labels
-                .as_array()
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                })
-                .unwrap_or_default();
+
+            let labels = if rule.p_ix_labels.is_array() {
+                serde_json::to_string(&rule.p_ix_labels).unwrap_or_default()
+            } else {
+                String::new()
+            };
+
             f_ix_labels.set(labels);
             f_buy_amount.set(rule.buy_amount.to_string());
             f_take_profit.set(rule.take_profit.to_string());
@@ -467,44 +536,11 @@ pub fn strategy_page() -> Html {
                         }
                     }
                     ModalMode::Edit(rule) => {
-                        let p_initial_buy_sol = if initial_buy_s.trim().is_empty() {
-                            Some(None)
-                        } else {
-                            match initial_buy_s.trim().parse::<f64>() {
-                                Ok(v) => Some(Some(v)),
-                                Err(_) => {
-                                    form_error.set(Some("Invalid initial buy SOL".into()));
-                                    form_loading.set(false);
-                                    return;
-                                }
-                            }
-                        };
-                        let p_cu_limit = if cu_limit_s.trim().is_empty() {
-                            Some(None)
-                        } else {
-                            match cu_limit_s.trim().parse::<u64>() {
-                                Ok(v) => Some(Some(v)),
-                                Err(_) => {
-                                    form_error.set(Some("Invalid CU Limit".into()));
-                                    form_loading.set(false);
-                                    return;
-                                }
-                            }
-                        };
-                        let p_cu_price = if cu_price_s.trim().is_empty() {
-                            Some(None)
-                        } else {
-                            match cu_price_s.trim().parse::<u64>() {
-                                Ok(v) => Some(Some(v)),
-                                Err(_) => {
-                                    form_error.set(Some("Invalid CU Price".into()));
-                                    form_loading.set(false);
-                                    return;
-                                }
-                            }
-                        };
+                        let p_initial_buy_sol = Some(Some(if initial_buy_s.trim().is_empty() { 0.0 } else { initial_buy_s.trim().parse::<f64>().unwrap_or(0.0) }));
+                        let p_cu_limit = Some(Some(if cu_limit_s.trim().is_empty() { 0 } else { cu_limit_s.trim().parse::<u64>().unwrap_or(0) }));
+                        let p_cu_price = Some(Some(if cu_price_s.trim().is_empty() { 0 } else { cu_price_s.trim().parse::<u64>().unwrap_or(0) }));
                         let p_ix_labels = if ix_labels_s.trim().is_empty() {
-                            Some(None)
+                            Some(Some(Value::Array(vec![])))
                         } else {
                             let labels_vec: Vec<Value> = if ix_labels_s.trim().starts_with('[') {
                                 match serde_json::from_str::<Value>(ix_labels_s.trim()) {
@@ -535,54 +571,10 @@ pub fn strategy_page() -> Html {
                             };
                             Some(Some(Value::Array(labels_vec)))
                         };
-                        let p_max_sol_cost = if max_sol_cost_s.trim().is_empty() {
-                            Some(None)
-                        } else {
-                            match max_sol_cost_s.trim().parse::<f64>() {
-                                Ok(v) => Some(Some(v)),
-                                Err(_) => {
-                                    form_error.set(Some("Invalid max SOL cost".into()));
-                                    form_loading.set(false);
-                                    return;
-                                }
-                            }
-                        };
-                        let p_spendable_sol_in = if spendable_sol_in_s.trim().is_empty() {
-                            Some(None)
-                        } else {
-                            match spendable_sol_in_s.trim().parse::<f64>() {
-                                Ok(v) => Some(Some(v)),
-                                Err(_) => {
-                                    form_error.set(Some("Invalid spendable SOL in".into()));
-                                    form_loading.set(false);
-                                    return;
-                                }
-                            }
-                        };
-                        let p_max_holding_tokens = if max_holding_tokens_s.trim().is_empty() {
-                            Some(None)
-                        } else {
-                            match max_holding_tokens_s.trim().parse::<u64>() {
-                                Ok(v) => Some(Some(v)),
-                                Err(_) => {
-                                    form_error.set(Some("Invalid max holding tokens".into()));
-                                    form_loading.set(false);
-                                    return;
-                                }
-                            }
-                        };
-                        let p_total_max_trade_tokens = if total_max_trade_tokens_s.trim().is_empty() {
-                            Some(None)
-                        } else {
-                            match total_max_trade_tokens_s.trim().parse::<u64>() {
-                                Ok(v) => Some(Some(v)),
-                                Err(_) => {
-                                    form_error.set(Some("Invalid total max trade tokens".into()));
-                                    form_loading.set(false);
-                                    return;
-                                }
-                            }
-                        };
+                        let p_max_sol_cost = Some(Some(if max_sol_cost_s.trim().is_empty() { 0.0 } else { max_sol_cost_s.trim().parse::<f64>().unwrap_or(0.0) }));
+                        let p_spendable_sol_in = Some(Some(if spendable_sol_in_s.trim().is_empty() { 0.0 } else { spendable_sol_in_s.trim().parse::<f64>().unwrap_or(0.0) }));
+                        let p_max_holding_tokens = Some(Some(if max_holding_tokens_s.trim().is_empty() { 0 } else { max_holding_tokens_s.trim().parse::<u64>().unwrap_or(0) }));
+                        let p_total_max_trade_tokens = Some(Some(if total_max_trade_tokens_s.trim().is_empty() { 0 } else { total_max_trade_tokens_s.trim().parse::<u64>().unwrap_or(0) }));
                         let p_tolerance = if tolerance_s.trim().is_empty() {
                             None
                         } else {
@@ -750,8 +742,14 @@ pub fn strategy_page() -> Html {
         .collect();
 
     // ── Build table rows ──────────────────────────────────────────────────────
+    let on_select_rule = {
+        let selected_rule_id = selected_rule_id.clone();
+        Callback::from(move |rule_id: String| selected_rule_id.set(Some(rule_id)))
+    };
+
     let rule_rows = filtered.iter().map(|rule| {
         let rule = (*rule).clone();
+        let is_selected = Some(rule.id.clone()) == *selected_rule_id;
 
         let on_edit_cb = {
             let open_edit = open_edit.clone();
@@ -779,27 +777,35 @@ pub fn strategy_page() -> Html {
         let labels_display = rule.p_ix_labels.as_array()
             .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "—".to_string());
+            .unwrap_or_else(|| "-".to_string());
         let ix_count = rule.p_ix_labels.as_array().map(|arr| arr.len()).unwrap_or(0);
 
         html! {
-            <tr key={rule.id.clone()}>
+            <tr key={rule.id.clone()}
+                class={if is_selected { "selected-row" } else { "" }}
+                onclick={
+                    let rule_id = rule.id.clone();
+                    let on_select_rule = on_select_rule.clone();
+                    Callback::from(move |_: MouseEvent| on_select_rule.emit(rule_id.clone()))
+                }
+                style="cursor:pointer;"
+            >
                 <td>
                     <span class="rule-name-cell">{ &rule.rule_name }</span>
                 </td>
-                <td class="num-col">{ rule.p_initial_buy_sol.map(|v| format!("{:.3}", v)).unwrap_or_else(|| "-".into()) }</td>
-                <td class="dim-col">{ rule.p_cu_limit.map(|v| format_compact(v as f64, 0)).unwrap_or_else(|| "—".into()) }</td>
-                <td class="dim-col">{ rule.p_cu_price.map(|v| format_compact(v as f64, 0)).unwrap_or_else(|| "—".into()) }</td>
-                <td class="num-col">{ rule.p_max_sol_cost.map(|v| format!("{:.3}", v)).unwrap_or_else(|| "—".into()) }</td>
-                <td class="num-col">{ rule.p_spendable_sol_in.map(|v| format!("{:.3}", v)).unwrap_or_else(|| "—".into()) }</td>
-                <td class="num-col">{ rule.p_max_holding_tokens.map(|v| v.to_string()).unwrap_or_else(|| "—".into()) }</td>
-                <td class="num-col">{ rule.p_total_max_trade_tokens.map(|v| v.to_string()).unwrap_or_else(|| "—".into()) }</td>
-                <td class="num-col">{ if ix_count > 0 { ix_count.to_string() } else { "—".into() } }</td>
+                <td class="num-col">{ dash_f(rule.p_initial_buy_sol.unwrap_or(0.0), 15) }</td>
+                <td class="dim-col">{ dash(rule.p_cu_limit) }</td>
+                <td class="dim-col">{ dash(rule.p_cu_price) }</td>
+                <td class="num-col">{ dash_f(rule.p_max_sol_cost.unwrap_or(0.0), 3) }</td>
+                <td class="num-col">{ dash_f(rule.p_spendable_sol_in.unwrap_or(0.0), 3) }</td>
+                <td class="num-col">{ dash(rule.p_max_holding_tokens) }</td>
+                <td class="num-col">{ dash(rule.p_total_max_trade_tokens) }</td>
+                <td class="num-col">{ if ix_count > 0 { ix_count.to_string() } else { "-".into() } }</td>
                 <td class="labels-col">{ labels_display }</td>
-                <td class="num-col">{ format!("{:.3}", rule.buy_amount) }</td>
-                <td class="tp-col">{ format!("{:.1}%", rule.take_profit) }</td>
-                <td class="sl-col">{ format!("{:.1}%", rule.stop_loss) }</td>
-                <td class="num-col">{ format!("{:.1}%", rule.tolerance_pct) }</td>
+                <td class="num-col">{ dash_f(rule.buy_amount, 15) }</td>
+                <td class="tp-col">{ dash_percent(rule.take_profit) }</td>
+                <td class="sl-col">{ dash_percent(rule.stop_loss) }</td>
+                <td class="num-col">{ dash_percent(rule.tolerance_pct) }</td>
                 <td class="status-col">
                     <button
                         class={if rule.is_active { "status-pill status-active" } else { "status-pill status-inactive" }}
@@ -815,8 +821,8 @@ pub fn strategy_page() -> Html {
                         <button class="act-btn act-danger" onclick={on_confirm_delete.clone()} disabled={*delete_loading}>{ "Yes" }</button>
                         <button class="act-btn" onclick={on_cancel_delete.clone()}>{ "No" }</button>
                     } else {
-                        <button class="act-btn act-edit" onclick={on_edit_cb} title="Edit rule">{ "Edit" }</button>
-                        <button class="act-btn act-danger" onclick={on_delete_cb} title="Delete rule">{ "Del" }</button>
+                        <button class="act-btn act-edit" onclick={on_edit_cb} disabled={rule.is_active} title={if rule.is_active { "Cannot edit active rules" } else { "Edit rule" }}>{ "Edit" }</button>
+                        <button class="act-btn act-danger" onclick={on_delete_cb} disabled={rule.is_active} title={if rule.is_active { "Cannot delete active rules" } else { "Delete rule" }}>{ "Del" }</button>
                         <button class="act-btn act-sim" onclick={on_sim_cb} disabled={*simulate_loading} title="Run simulation">{ "▶" }</button>
                     }
                 </td>
@@ -1175,6 +1181,7 @@ pub fn strategy_page() -> Html {
                     />
                 </div>
 
+
                 // ── Rules table ───────────────────────────────────────────────
                 if *loading {
                     <div class="strat-state-msg">{ "Loading rules…" }</div>
@@ -1215,6 +1222,87 @@ pub fn strategy_page() -> Html {
                         </div>
                     </div>
                 }
+
+                // ── Trading tokens table for selected active rule ─────────────
+                {{
+                    let selected_rule = selected_rule_id.as_ref().and_then(|id| rules.iter().find(|r| &r.id == id));
+                    if let Some(rule) = selected_rule {
+                        if rule.is_active {
+                            html! {
+                                <div class="table-wrapper" style="margin-top: 24px;">
+                                    <div class="table-scroll">
+                                        <table class="trade-table">
+                                            <thead>
+                                                <tr>
+                                                    <th class="th-row-num">{ "#" }</th>
+                                                    <th>{ "Symbol" }</th>
+                                                    <th>{ "Entry Price" }</th>
+                                                    <th>{ "Entry Time" }</th>
+                                                    <th>{ "Exit Price" }</th>
+                                                    <th>{ "Exit Time" }</th>
+                                                    <th>{ "Holding" }</th>
+                                                    <th>{ "PnL%" }</th>
+                                                    <th>{ format!("PnL ({})", price_unit.unit_label()) }</th>
+                                                    <th>{ "Reason" }</th>
+                                                    <th>{ "Trades" }</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                if *rule_positions_loading {
+                                                    <tr><td colspan="11" class="no-data">{ "Loading tokens…" }</td></tr>
+                                                } else if let Some(err) = &*rule_positions_error {
+                                                    <tr><td colspan="11" class="inline-error">{ err }</td></tr>
+                                                } else if rule_positions.is_empty() {
+                                                    <tr><td colspan="11" class="no-data">{ "No trading tokens for this rule." }</td></tr>
+                                                } else {
+                                                    { rule_positions.iter().enumerate().map(|(i, t)| {
+                                                        let entry_time_str = t.created_at.get(..16).unwrap_or(&t.created_at).replace('T', " ");
+                                                        let exit_time_str = t.updated_at.get(..16).unwrap_or(&t.updated_at).replace('T', " ");
+                                                        let pnl_pct_html = match t.pnl_percent {
+                                                            Some(v) if v >= 0.0 => html! { <span class="tp-col">{ format!("{:+.1}%", v) }</span> },
+                                                            Some(v)             => html! { <span class="sl-col">{ format!("{:.1}%", v)  }</span> },
+                                                            None                => html! { <span class="dim-col">{ "—" }</span> },
+                                                        };
+                                                        let pnl_val_html = match t.exit_price {
+                                                            Some(_) if t.pnl_percent.unwrap_or(0.0) >= 0.0 => html! { <span class="tp-col">{ price_unit.display_amount(t.exit_amount.unwrap_or(0.0)) }</span> },
+                                                            Some(_) => html! { <span class="sl-col">{ price_unit.display_amount(t.exit_amount.unwrap_or(0.0)) }</span> },
+                                                            None => html! { <span class="dim-col">{ "—" }</span> },
+                                                        };
+                                                        let reason_html = match t.status.as_str() {
+                                                            "TakeProfit" => html! { <span class="tp-col">{ "TP" }</span> },
+                                                            "StopLoss"   => html! { <span class="sl-col">{ "SL" }</span> },
+                                                            _            => html! { <span class="dim-col">{ &t.status }</span> },
+                                                        };
+                                                        html! {
+                                                            <tr key={t.mint.clone()}>
+                                                                <td class="row-num">{ i + 1 }</td>
+                                                                <td>
+                                                                    <a href={format!("https://gmgn.ai/sol/token/{}", t.mint)}
+                                                                        target="_blank" rel="noreferrer" class="symbol-link-inline">
+                                                                        { &t.mint[..6] }
+                                                                    </a>
+                                                                </td>
+                                                                <td class="num-col">{ price_unit.display_price(t.entry_price) }</td>
+                                                                <td class="dim-col">{ entry_time_str }</td>
+                                                                <td class="num-col">{ t.exit_price.map(|p| price_unit.display_price(p)).unwrap_or_else(|| "—".into()) }</td>
+                                                                <td class="dim-col">{ exit_time_str }</td>
+                                                                <td class="dim-col">{ t.exit_amount.map(|amt| format_decimal_trim(amt, 3)).unwrap_or_else(|| "—".into()) }</td>
+                                                                <td>{ pnl_pct_html }</td>
+                                                                <td>{ pnl_val_html }</td>
+                                                                <td>{ reason_html }</td>
+                                                                <td class="dim-col">{ t.exit_tx.as_ref().map(|_| 1).unwrap_or(0) }</td>
+                                                            </tr>
+                                                        }
+                                                    }).collect::<Html>() }
+                                                }
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            }
+                        } else { html! {} }
+                    } else { html! {} }
+                }}
 
                 // ── Simulation tokens panel ───────────────────────────────────
                 { sim_panel }
@@ -1361,9 +1449,9 @@ pub fn strategy_page() -> Html {
                                 <div class="form-input-row">
                                     <textarea rows="4"
                                         class={if is_edit && !*f_allow_edit_params { "form-input form-input-locked" } else { "form-input" }}
+                                        value={(*f_ix_labels).clone()}
                                         oninput={oninput!(f_ix_labels)}
                                         placeholder="[\"Compute Budget: SetComputeUnitLimit\", \"Pump.Fun: Buy\"]" readonly={is_edit && !*f_allow_edit_params}>
-                                        { (*f_ix_labels).clone() }
                                     </textarea>
                                 </div>
                                 <span class="form-hint">

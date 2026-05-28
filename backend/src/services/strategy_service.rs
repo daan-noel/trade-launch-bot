@@ -236,7 +236,7 @@ impl StrategyService {
         let mint = e.trade.mint_address.clone();
 
         // Find all holding positions for this token
-        let mut positions = match self.position_repo.find_holding_by_mint(&mint).await {
+        let positions = match self.position_repo.find_holding_by_mint(&mint).await {
             Ok(p) => p,
             Err(err) => {
                 warn!("Failed to load positions for token {mint}: {err}");

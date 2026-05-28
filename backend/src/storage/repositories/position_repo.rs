@@ -10,7 +10,9 @@ pub struct PositionRepo {
 
 impl Clone for PositionRepo {
     fn clone(&self) -> Self {
-        Self { pool: self.pool.clone() }
+        Self {
+            pool: self.pool.clone(),
+        }
     }
 }
 
@@ -246,6 +248,24 @@ impl PositionRepo {
         .await?;
 
         Ok(row.map(Position::try_from).transpose()?)
+    }
+
+    /// Get all positions for a specific rule.
+    pub async fn find_by_rule(&self, rule_id: Uuid) -> anyhow::Result<Vec<Position>> {
+        let rows = sqlx::query_as::<_, PositionDbRow>(
+                r#"
+                SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
+                        status, strategy, rule_id, entry_amount, exit_amount, created_at, updated_at
+                FROM positions
+                WHERE rule_id = $1
+                ORDER BY created_at DESC
+                "#,
+            )
+            .bind(rule_id)
+            .fetch_all(&self.pool)
+            .await?;
+
+        rows.into_iter().map(Position::try_from).collect()
     }
 
     /// Get a position by entry transaction signature.

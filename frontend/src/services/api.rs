@@ -1,3 +1,36 @@
+#[derive(Clone, PartialEq, Deserialize)]
+pub struct RulePositionRecord {
+    pub id: String,
+    pub mint: String,
+    pub wallet: String,
+    pub entry_price: f64,
+    pub exit_price: Option<f64>,
+    pub entry_tx: String,
+    pub exit_tx: Option<String>,
+    pub status: String,
+    pub strategy: String,
+    pub rule_id: String,
+    pub entry_amount: f64,
+    pub exit_amount: Option<f64>,
+    pub pnl_percent: Option<f64>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Fetch all positions for a TPSL rule (by rule_id)
+pub async fn fetch_rule_positions(rule_id: &str) -> Result<Vec<RulePositionRecord>, String> {
+    let url = format!("{API_BASE}/api/strategies/tpsl/rules/{rule_id}/positions");
+    let resp = Request::get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Fetch error: {e}"))?;
+    if !resp.ok() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    resp.json::<Vec<RulePositionRecord>>()
+        .await
+        .map_err(|e| format!("Parse error: {e}"))
+}
 use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

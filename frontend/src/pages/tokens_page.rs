@@ -7,7 +7,6 @@ use crate::components::{
     StatusButton, StatusState, TokensTable, COLUMNS,
 };
 use crate::services::api::{fetch_token_detail, fetch_tokens, TokenDetailRecord, POLL_INTERVAL_MS};
-use crate::services::websocket::connect_sse_tokens;
 use crate::state::{sort_tokens, TokenAction, TokenContext};
 use gloo::timers::callback::Timeout;
 use js_sys;
@@ -141,23 +140,7 @@ pub fn tokens_page() -> Html {
         });
     }
 
-    // ── Open SSE for token deltas ─────────────────────────────────────────────
-    {
-        let token_state = token_state.clone();
-        let live_val = *live;
-        use_effect_with(live_val, move |live_val: &bool| {
-            let es_opt = if *live_val {
-                Some(connect_sse_tokens(token_state))
-            } else {
-                None
-            };
-            move || {
-                if let Some(es) = es_opt {
-                    es.close();
-                }
-            }
-        });
-    }
+    // (SSE connection for token deltas removed; StatusButton now only controls polling)
 
     // ── Persist column visibility to localStorage ──────────────────────────────────
     {
