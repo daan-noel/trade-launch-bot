@@ -96,6 +96,45 @@ impl StrategyService {
 
             // Find the matched rule to get buy_amount
             if let Some(rule) = handler.get_rule(rule_id) {
+                // Enforce max total held tokens for this rule, if configured.
+                if let Some(max_holding_tokens) = rule.p_max_holding_tokens {
+                    match self.position_repo.count_holding_by_rule(rule_id).await {
+                        Ok(current_holding) => {
+                            if current_holding >= max_holding_tokens as i64 {
+                                debug!(
+                                    "Rule {rule_id} reached max holding tokens ({current_holding}/{max_holding_tokens}), skipping token {mint}"
+                                );
+                                return;
+                            }
+                        }
+                        Err(err) => {
+                            warn!(
+                                "Failed to count holding positions for rule {rule_id}: {err}"
+                            );
+                            return;
+                        }
+                    }
+                }
+
+                if let Some(total_max_trade_tokens) = rule.p_total_max_trade_tokens {
+                    match self.position_repo.count_by_rule(rule_id).await {
+                        Ok(total_traded) => {
+                            if total_traded >= total_max_trade_tokens as i64 {
+                                debug!(
+                                    "Rule {rule_id} reached total max trade tokens ({total_traded}/{total_max_trade_tokens}), skipping token {mint}"
+                                );
+                                return;
+                            }
+                        }
+                        Err(err) => {
+                            warn!(
+                                "Failed to count total positions for rule {rule_id}: {err}"
+                            );
+                            return;
+                        }
+                    }
+                }
+
                 // Create a new position
                 let position = Position::new(
                     mint.clone(),

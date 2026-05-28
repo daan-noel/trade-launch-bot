@@ -3,6 +3,9 @@ name = "backend"
 version = "0.1.0"
 edition = "2021"
 
+[profile.dev]
+debug = true
+
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -56,3 +59,6 @@ base64 = "0.22"
 
 # Borsh deserialisation (Pump.fun on-chain structs, Compute Budget instruction)
 borsh = { version = "1", features = ["derive"] }
+
+
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

@@ -122,6 +122,7 @@ pub struct RuleRecord {
     pub p_max_sol_cost: Option<f64>,
     pub p_spendable_sol_in: Option<f64>,
     pub p_max_holding_tokens: Option<u64>,
+    pub p_total_max_trade_tokens: Option<u64>,
     pub p_ix_labels: Value,
     pub buy_amount: f64,
     pub take_profit: f64,
@@ -141,6 +142,7 @@ pub struct CreateRuleRequest {
     pub p_max_sol_cost: Option<f64>,
     pub p_spendable_sol_in: Option<f64>,
     pub p_max_holding_tokens: Option<u64>,
+    pub p_total_max_trade_tokens: Option<u64>,
     pub p_ix_labels: Value,
     pub buy_amount: f64,
     pub take_profit: f64,
@@ -175,6 +177,27 @@ pub struct LiveModeResponse {
 #[derive(Serialize)]
 pub struct UpdateLiveModeRequest {
     pub live: bool,
+}
+
+#[derive(Clone, PartialEq, Deserialize)]
+pub struct SolPriceResponse {
+    pub usd_rate: Option<f64>,
+}
+
+pub async fn fetch_sol_price() -> Result<Option<f64>, String> {
+    let url = format!("{API_BASE}/api/system/price");
+    let resp = Request::get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Fetch error: {e}"))?;
+    if !resp.ok() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let result = resp
+        .json::<SolPriceResponse>()
+        .await
+        .map_err(|e| format!("Parse error: {e}"))?;
+    Ok(result.usd_rate)
 }
 
 pub async fn fetch_live_mode() -> Result<bool, String> {
@@ -271,11 +294,15 @@ pub struct UpdateRuleRequest {
     pub p_spendable_sol_in: Option<Option<f64>>,
     // Outer Option = field present; inner Option = value or explicit null
     pub p_max_holding_tokens: Option<Option<u64>>,
+    pub p_total_max_trade_tokens: Option<Option<u64>>,
     pub tolerance_pct: Option<f64>,
     pub is_active: Option<bool>,
 }
 
-pub async fn update_tpsl_rule(rule_id: &str, req: &UpdateRuleRequest) -> Result<RuleRecord, String> {
+pub async fn update_tpsl_rule(
+    rule_id: &str,
+    req: &UpdateRuleRequest,
+) -> Result<RuleRecord, String> {
     let url = format!("{API_BASE}/api/strategies/tpsl/rules/{rule_id}");
     let request = Request::put(&url)
         .json(req)

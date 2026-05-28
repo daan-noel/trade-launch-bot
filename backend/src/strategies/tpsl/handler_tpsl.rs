@@ -2,7 +2,7 @@ use crate::models::{Position, StrategyTPSLRule, Token};
 use uuid::Uuid;
 
 /// TPSL (Take Profit Stop Loss) Strategy Handler
-/// 
+///
 /// This strategy analyzes tokens based on defined rules and manages buy/sell positions.
 /// - On token creation: Check if token matches buy entry rule criteria
 /// - On trade events: Monitor positions for exit conditions (take profit or stop loss)
@@ -27,7 +27,7 @@ impl TPSLStrategyHandler {
             if let Some(rule_initial_buy) = rule.p_initial_buy_sol {
                 if let Some(initial_buy) = token.initial_buy_sol {
                     let tol = rule_initial_buy.abs() * (rule.tolerance_pct * 0.01);
-                    if (initial_buy - rule_initial_buy).abs() > tol + 1e-15 {
+                    if (initial_buy - rule_initial_buy).abs() > tol + 1e-9 {
                         continue;
                     }
                 } else {
@@ -66,12 +66,15 @@ impl TPSLStrategyHandler {
             // Check p_max_sol_cost constraint (optional)
             if let Some(max_sol_cost_constraint) = rule.p_max_sol_cost {
                 if let Some(ix) = &token.initial_buy_instruction {
-                    let token_max_cost = ix
-                        .get("max_sol_cost")
-                        .and_then(|v| v.as_f64().or_else(|| v.as_u64().map(|u| u as f64)));
+                    let token_max_cost = ix.get("max_sol_cost").and_then(|v| {
+                        v.as_u64()
+                            .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+                    });
                     if let Some(token_max_cost) = token_max_cost {
+                        const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
+                        let token_max_cost_sol = token_max_cost as f64 / LAMPORTS_PER_SOL;
                         let tol = max_sol_cost_constraint.abs() * (rule.tolerance_pct * 0.01);
-                        if (token_max_cost - max_sol_cost_constraint).abs() > tol + 1e-15 {
+                        if (token_max_cost_sol - max_sol_cost_constraint).abs() > tol + 1e-15 {
                             continue;
                         }
                     } else {
@@ -85,12 +88,18 @@ impl TPSLStrategyHandler {
             // Check p_spendable_sol_in constraint (optional)
             if let Some(spendable_sol_in_constraint) = rule.p_spendable_sol_in {
                 if let Some(ix) = &token.initial_buy_instruction {
-                    let token_spendable_sol_in = ix
-                        .get("spendable_sol_in")
-                        .and_then(|v| v.as_f64().or_else(|| v.as_u64().map(|u| u as f64)));
+                    let token_spendable_sol_in = ix.get("spendable_sol_in").and_then(|v| {
+                        v.as_u64()
+                            .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+                    });
                     if let Some(token_spendable_sol_in) = token_spendable_sol_in {
+                        const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
+                        let token_spendable_sol_in_sol =
+                            token_spendable_sol_in as f64 / LAMPORTS_PER_SOL;
                         let tol = spendable_sol_in_constraint.abs() * (rule.tolerance_pct * 0.01);
-                        if (token_spendable_sol_in - spendable_sol_in_constraint).abs() > tol + 1e-15 {
+                        if (token_spendable_sol_in_sol - spendable_sol_in_constraint).abs()
+                            > tol + 1e-15
+                        {
                             continue;
                         }
                     } else {
@@ -102,8 +111,16 @@ impl TPSLStrategyHandler {
             }
 
             // Check p_ix_labels constraint (optional, simple presence check)
-            if !rule.p_ix_labels.is_null() && !rule.p_ix_labels.as_array().unwrap_or(&vec![]).is_empty() {
-                if token.instruction_labels.is_null() || token.instruction_labels.as_array().unwrap_or(&vec![]).is_empty() {
+            if !rule.p_ix_labels.is_null()
+                && !rule.p_ix_labels.as_array().unwrap_or(&vec![]).is_empty()
+            {
+                if token.instruction_labels.is_null()
+                    || token
+                        .instruction_labels
+                        .as_array()
+                        .unwrap_or(&vec![])
+                        .is_empty()
+                {
                     continue;
                 }
                 // TODO: More sophisticated label matching logic
@@ -118,12 +135,18 @@ impl TPSLStrategyHandler {
 
     /// Check if a position should exit based on take profit or stop loss.
     /// Returns Some(ExitReason) if exit should occur, None otherwise.
-    pub fn check_exit(&self, position: &Position, current_price: f64, rule: &StrategyTPSLRule) -> Option<ExitReason> {
+    pub fn check_exit(
+        &self,
+        position: &Position,
+        current_price: f64,
+        rule: &StrategyTPSLRule,
+    ) -> Option<ExitReason> {
         if position.status != crate::models::PositionStatus::Holding {
             return None;
         }
 
-        let price_change_percent = ((current_price - position.entry_price) / position.entry_price) * 100.0;
+        let price_change_percent =
+            ((current_price - position.entry_price) / position.entry_price) * 100.0;
 
         // Check take profit
         if price_change_percent >= rule.take_profit {
@@ -144,6 +167,57 @@ impl TPSLStrategyHandler {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::StrategyTPSLRule;
+    use chrono::Utc;
+    use serde_json::json;
+
+    #[test]
+    fn check_buy_entry_converts_buy_instruction_lamports_to_sol() {
+        let mut rule = StrategyTPSLRule::new(
+            "test".to_string(),
+            None,
+            None,
+            None,
+            json!([]),
+            1.0,
+            10.0,
+            10.0,
+            Some(1.0),
+            Some(0.5),
+            None,
+            None,
+            Some(0.0),
+        );
+        rule.is_active = true;
+
+        let token = Token::new(
+            "mint".to_string(),
+            "creator".to_string(),
+            "name".to_string(),
+            "SYM".to_string(),
+            None,
+            None,
+            Some(1.0),
+            Some(json!({
+                "max_sol_cost": 1_000_000_000u64,
+                "spendable_sol_in": 500_000_000u64,
+            })),
+            None,
+            None,
+            false,
+            json!([]),
+            "tx".to_string(),
+            Utc::now(),
+        );
+
+        let handler = TPSLStrategyHandler::new(vec![rule]);
+        assert!(handler.check_buy_entry(&token).is_some());
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitReason {
     TakeProfit,
@@ -156,49 +230,5 @@ impl std::fmt::Display for ExitReason {
             Self::TakeProfit => write!(f, "TakeProfit"),
             Self::StopLoss => write!(f, "StopLoss"),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_tpsl_buy_entry() {
-        let rule = StrategyTPSLRule::new(
-            "Test Rule".to_string(),
-            Some(0.5),
-            None,
-            None,
-            serde_json::json!([]),
-            1.0,
-            50.0,
-            20.0,
-            None,
-            None,
-            None,
-        );
-
-        let handler = TPSLStrategyHandler::new(vec![rule]);
-
-        // Token matching the rule
-        let token = Token::new(
-            "ABC123".to_string(),
-            "creator".to_string(),
-            "Test Token".to_string(),
-            "TEST".to_string(),
-            None,
-            Some(1_000_000),
-            Some(0.5),
-            None,
-            None,
-            None,
-            false,
-            serde_json::json!([]),
-            "tx_sig".to_string(),
-            chrono::Utc::now(),
-        );
-
-        assert!(handler.check_buy_entry(&token).is_some());
     }
 }

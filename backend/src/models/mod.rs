@@ -12,4 +12,3 @@ pub mod wallet;
 pub use position::{Position, PositionStatus};
 pub use strategy_tpsl_rule::StrategyTPSLRule;
 pub use token::Token;
-

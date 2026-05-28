@@ -1,4 +1,4 @@
-﻿use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use borsh::BorshDeserialize;
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
@@ -338,17 +338,11 @@ impl HeliusDecoder {
         let initial_buy_sol = initial_create_event.map(|ev| ev.sol_amount);
 
         let (name, symbol, is_v2, is_mayhem_mode) = decode_create_info(pump_ix)
-            .unwrap_or_else(|| {
-                (
-                    "Unknown".to_string(),
-                    "UNKNOWN".to_string(),
-                    false,
-                    false,
-                )
-            });
+            .unwrap_or_else(|| ("Unknown".to_string(), "UNKNOWN".to_string(), false, false));
         let create_kind = if is_v2 { "Create_v2" } else { "Create" };
-        let initial_buy_instruction = extract_pump_buy_instruction_data(message, meta, account_keys)
-            .map(buy_instruction_data_to_json);
+        let initial_buy_instruction =
+            extract_pump_buy_instruction_data(message, meta, account_keys)
+                .map(buy_instruction_data_to_json);
 
         debug!(
             sig = %signature,
@@ -1227,5 +1221,3 @@ fn read_anchor_string(data: &[u8], offset: &mut usize) -> Option<String> {
 
     Some(s)
 }
-
-

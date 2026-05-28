@@ -22,6 +22,7 @@ struct StrategyTPSLRuleDbRow {
     p_max_sol_cost: Option<f64>,
     p_spendable_sol_in: Option<f64>,
     p_max_holding_tokens: Option<i64>,
+    p_total_max_trade_tokens: Option<i64>,
     p_ix_labels: Json<serde_json::Value>,
     buy_amount: f64,
     take_profit: f64,
@@ -43,6 +44,7 @@ impl From<StrategyTPSLRuleDbRow> for StrategyTPSLRule {
             p_max_sol_cost: r.p_max_sol_cost,
             p_spendable_sol_in: r.p_spendable_sol_in,
             p_max_holding_tokens: r.p_max_holding_tokens.map(|v| v as u64),
+            p_total_max_trade_tokens: r.p_total_max_trade_tokens.map(|v| v as u64),
             p_ix_labels: r.p_ix_labels.0,
             buy_amount: r.buy_amount,
             take_profit: r.take_profit,
@@ -69,7 +71,7 @@ impl StrategyTPSLRuleRepo {
         sqlx::query(
             r#"
             INSERT INTO strategy_TPSL_rules
-                (id, rule_name, p_initial_buy_sol, p_cu_limit, p_cu_price, p_max_sol_cost, p_spendable_sol_in, p_max_holding_tokens, p_ix_labels,
+                (id, rule_name, p_initial_buy_sol, p_cu_limit, p_cu_price, p_max_sol_cost, p_spendable_sol_in, p_max_holding_tokens, p_total_max_trade_tokens, p_ix_labels,
                  buy_amount, take_profit, stop_loss, tolerance_pct, is_active, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             "#,
@@ -82,6 +84,7 @@ impl StrategyTPSLRuleRepo {
         .bind(rule.p_max_sol_cost)
         .bind(rule.p_spendable_sol_in)
         .bind(rule.p_max_holding_tokens.map(|v| v as i64))
+        .bind(rule.p_total_max_trade_tokens.map(|v| v as i64))
         .bind(Json(&rule.p_ix_labels))
         .bind(rule.buy_amount)
         .bind(rule.take_profit)
@@ -100,7 +103,7 @@ impl StrategyTPSLRuleRepo {
     pub async fn find_active(&self) -> anyhow::Result<Vec<StrategyTPSLRule>> {
         let rows = sqlx::query_as::<_, StrategyTPSLRuleDbRow>(
             r#"
-            SELECT id, rule_name, p_initial_buy_sol, p_cu_limit, p_cu_price, p_max_sol_cost, p_spendable_sol_in, p_max_holding_tokens, p_ix_labels,
+            SELECT id, rule_name, p_initial_buy_sol, p_cu_limit, p_cu_price, p_max_sol_cost, p_spendable_sol_in, p_max_holding_tokens, p_total_max_trade_tokens, p_ix_labels,
                    buy_amount, take_profit, stop_loss, tolerance_pct, is_active, created_at, updated_at
             FROM strategy_TPSL_rules
             WHERE is_active = TRUE
@@ -117,7 +120,7 @@ impl StrategyTPSLRuleRepo {
     pub async fn find_all(&self) -> anyhow::Result<Vec<StrategyTPSLRule>> {
         let rows = sqlx::query_as::<_, StrategyTPSLRuleDbRow>(
             r#"
-            SELECT id, rule_name, p_initial_buy_sol, p_cu_limit, p_cu_price, p_max_sol_cost, p_spendable_sol_in, p_max_holding_tokens, p_ix_labels,
+            SELECT id, rule_name, p_initial_buy_sol, p_cu_limit, p_cu_price, p_max_sol_cost, p_spendable_sol_in, p_max_holding_tokens, p_total_max_trade_tokens, p_ix_labels,
                    buy_amount, take_profit, stop_loss, tolerance_pct, is_active, created_at, updated_at
             FROM strategy_TPSL_rules
             ORDER BY created_at DESC
@@ -133,7 +136,7 @@ impl StrategyTPSLRuleRepo {
     pub async fn find_by_id(&self, rule_id: Uuid) -> anyhow::Result<Option<StrategyTPSLRule>> {
         let row = sqlx::query_as::<_, StrategyTPSLRuleDbRow>(
             r#"
-            SELECT id, rule_name, p_initial_buy_sol, p_cu_limit, p_cu_price, p_max_sol_cost, p_spendable_sol_in, p_max_holding_tokens, p_ix_labels,
+            SELECT id, rule_name, p_initial_buy_sol, p_cu_limit, p_cu_price, p_max_sol_cost, p_spendable_sol_in, p_max_holding_tokens, p_total_max_trade_tokens, p_ix_labels,
                    buy_amount, take_profit, stop_loss, tolerance_pct, is_active, created_at, updated_at
             FROM strategy_TPSL_rules
             WHERE id = $1
@@ -153,8 +156,8 @@ impl StrategyTPSLRuleRepo {
             UPDATE strategy_TPSL_rules
             SET rule_name = $1, p_initial_buy_sol = $2, p_cu_limit = $3, p_cu_price = $4,
                 p_ix_labels = $5, buy_amount = $6, take_profit = $7, stop_loss = $8,
-                p_max_sol_cost = $9, p_spendable_sol_in = $10, p_max_holding_tokens = $11, tolerance_pct = $12, is_active = $13, updated_at = $14
-            WHERE id = $15
+                p_max_sol_cost = $9, p_spendable_sol_in = $10, p_max_holding_tokens = $11, p_total_max_trade_tokens = $12, tolerance_pct = $13, is_active = $14, updated_at = $15
+            WHERE id = $16
             "#,
         )
         .bind(&rule.rule_name)
@@ -168,6 +171,7 @@ impl StrategyTPSLRuleRepo {
         .bind(rule.p_max_sol_cost)
         .bind(rule.p_spendable_sol_in)
         .bind(rule.p_max_holding_tokens.map(|v| v as i64))
+        .bind(rule.p_total_max_trade_tokens.map(|v| v as i64))
         .bind(rule.tolerance_pct)
         .bind(rule.is_active)
         .bind(Utc::now())

@@ -40,10 +40,7 @@ pub fn status_button(props: &StatusButtonProps) -> Html {
         let cb = props.onclick.clone();
         Callback::from(move |_| cb.emit(()))
     };
-    let label = props
-        .label
-        .as_deref()
-        .unwrap_or(props.state.as_text());
+    let label = props.label.as_deref().unwrap_or(props.state.as_text());
 
     html! {
         <button

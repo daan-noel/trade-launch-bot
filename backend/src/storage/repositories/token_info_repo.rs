@@ -75,7 +75,11 @@ impl TokenInfoRepo {
         Ok(())
     }
 
-    pub async fn update_migration_status(&self, mint: &str, is_migrated: bool) -> anyhow::Result<()> {
+    pub async fn update_migration_status(
+        &self,
+        mint: &str,
+        is_migrated: bool,
+    ) -> anyhow::Result<()> {
         let now = Utc::now();
         sqlx::query(
             r#"

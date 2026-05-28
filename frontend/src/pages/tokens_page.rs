@@ -3,38 +3,48 @@ use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
 use crate::components::{
-    ColOptionsPanel, FilterPanel, Filters, Header, Pagination, StatusButton, StatusState, TokenRow,
-    COLUMNS, compute_group_boundaries,
+    compute_group_boundaries, ColOptionsPanel, FilterPanel, Filters, Header, Pagination,
+    StatusButton, StatusState, TokensTable, COLUMNS,
 };
-use crate::services::api::{
-    fetch_token_detail, fetch_tokens, TokenDetailRecord, POLL_INTERVAL_MS,
-};
-use web_sys;
+use crate::services::api::{fetch_token_detail, fetch_tokens, TokenDetailRecord, POLL_INTERVAL_MS};
+use crate::services::websocket::connect_sse_tokens;
+use crate::state::{sort_tokens, TokenAction, TokenContext};
+use gloo::timers::callback::Timeout;
 use js_sys;
+use std::collections::HashSet;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
-use gloo::timers::callback::Timeout;
-use crate::services::websocket::connect_sse_tokens;
-use crate::state::{PriceUnitContext, sort_tokens, SortOrder, TokenAction, TokenContext};
-use std::collections::HashSet;
+use web_sys;
 
 const PAGE_SIZE_OPTIONS: &[usize] = &[10, 25, 50, 100];
 
-const LS_COL_KEY: &str  = "tokens_visible_cols";
+const LS_COL_KEY: &str = "tokens_visible_cols";
 const LS_LIVE_KEY: &str = "tokens_live";
 
 fn load_live() -> bool {
-    let window = match web_sys::window() { Some(w) => w, None => return false };
-    let storage = match window.local_storage().ok().flatten() { Some(s) => s, None => return false };
+    let window = match web_sys::window() {
+        Some(w) => w,
+        None => return false,
+    };
+    let storage = match window.local_storage().ok().flatten() {
+        Some(s) => s,
+        None => return false,
+    };
     match storage.get_item(LS_LIVE_KEY).ok().flatten().as_deref() {
         Some("true") => true,
-        _            => false,
+        _ => false,
     }
 }
 
 fn save_live(live: bool) {
-    let window = match web_sys::window() { Some(w) => w, None => return };
-    let storage = match window.local_storage().ok().flatten() { Some(s) => s, None => return };
+    let window = match web_sys::window() {
+        Some(w) => w,
+        None => return,
+    };
+    let storage = match window.local_storage().ok().flatten() {
+        Some(s) => s,
+        None => return,
+    };
     let _ = storage.set_item(LS_LIVE_KEY, if live { "true" } else { "false" });
 }
 
@@ -44,25 +54,45 @@ fn default_visible_cols() -> HashSet<String> {
 
 fn load_visible_cols() -> HashSet<String> {
     let default = default_visible_cols();
-    let window = match web_sys::window() { Some(w) => w, None => return default };
-    let storage = match window.local_storage().ok().flatten() { Some(s) => s, None => return default };
-    let raw = match storage.get_item(LS_COL_KEY).ok().flatten() { Some(v) => v, None => return default };
+    let window = match web_sys::window() {
+        Some(w) => w,
+        None => return default,
+    };
+    let storage = match window.local_storage().ok().flatten() {
+        Some(s) => s,
+        None => return default,
+    };
+    let raw = match storage.get_item(LS_COL_KEY).ok().flatten() {
+        Some(v) => v,
+        None => return default,
+    };
     match js_sys::JSON::parse(&raw) {
         Ok(obj) => {
             let arr = js_sys::Array::from(&obj);
-            let parsed: HashSet<String> = arr.iter()
+            let parsed: HashSet<String> = arr
+                .iter()
                 .filter_map(|v| v.as_string())
                 .filter(|s| COLUMNS.iter().any(|(k, _, _, _)| *k == s.as_str()))
                 .collect();
-            if parsed.is_empty() { default } else { parsed }
+            if parsed.is_empty() {
+                default
+            } else {
+                parsed
+            }
         }
         Err(_) => default,
     }
 }
 
 fn save_visible_cols(cols: &HashSet<String>) {
-    let window = match web_sys::window() { Some(w) => w, None => return };
-    let storage = match window.local_storage().ok().flatten() { Some(s) => s, None => return };
+    let window = match web_sys::window() {
+        Some(w) => w,
+        None => return,
+    };
+    let storage = match window.local_storage().ok().flatten() {
+        Some(s) => s,
+        None => return,
+    };
     let arr = js_sys::Array::new();
     for key in cols.iter() {
         arr.push(&JsValue::from_str(key));
@@ -91,10 +121,10 @@ pub fn tokens_page() -> Html {
     let tick_ref = use_mut_ref(|| 0u32);
     let live = use_state(load_live);
     let show_col_opts = use_state(|| false);
-    let visible_cols   = use_state(load_visible_cols);
-    let show_filters   = use_state(|| false);
-    let filters        = use_state(Filters::default);
-    let hovered_col    = use_state(|| None::<usize>);
+    let visible_cols = use_state(load_visible_cols);
+    let show_filters = use_state(|| false);
+    let filters = use_state(Filters::default);
+    let hovered_col = use_state(|| None::<usize>);
     // Full token list is always in token_state.tokens (fetched all at once).
 
     // ── Polling interval ──────────────────────────────────────────────────────
@@ -154,7 +184,6 @@ pub fn tokens_page() -> Html {
         });
     }
 
-
     // ── Reset to page 1 when search changes ──────────────────────────────────
     {
         let page = page.clone();
@@ -169,13 +198,20 @@ pub fn tokens_page() -> Html {
         let page = page.clone();
         let page_size = *page_size;
         let total = token_state.total;
-        use_effect_with((total, page_size, *page), move |(total, page_size, current_page)| {
-            let total_pages = if *total == 0 { 1 } else { (*total + page_size - 1) / page_size };
-            if *current_page > total_pages {
-                page.set(total_pages);
-            }
-            || ()
-        });
+        use_effect_with(
+            (total, page_size, *page),
+            move |(total, page_size, current_page)| {
+                let total_pages = if *total == 0 {
+                    1
+                } else {
+                    (*total + page_size - 1) / page_size
+                };
+                if *current_page > total_pages {
+                    page.set(total_pages);
+                }
+                || ()
+            },
+        );
     }
 
     // ── Fetch ALL tokens on mount (client-side pagination/search/filters after) ──
@@ -186,7 +222,10 @@ pub fn tokens_page() -> Html {
             spawn_local(async move {
                 match fetch_tokens("", 5000, 0).await {
                     Ok(result) => {
-                        token_state.dispatch(TokenAction::SetTokens { tokens: result.items, total: result.total });
+                        token_state.dispatch(TokenAction::SetTokens {
+                            tokens: result.items,
+                            total: result.total,
+                        });
                     }
                     Err(e) => {
                         token_state.dispatch(TokenAction::SetError(e));
@@ -210,7 +249,10 @@ pub fn tokens_page() -> Html {
             spawn_local(async move {
                 match fetch_tokens("", 5000, 0).await {
                     Ok(result) => {
-                        token_state.dispatch(TokenAction::SetTokens { tokens: result.items, total: result.total });
+                        token_state.dispatch(TokenAction::SetTokens {
+                            tokens: result.items,
+                            total: result.total,
+                        });
                     }
                     Err(e) => {
                         token_state.dispatch(TokenAction::SetError(e));
@@ -262,10 +304,21 @@ pub fn tokens_page() -> Html {
                             let id = format!("detail-{}", mint);
                             if let Some(el) = doc.get_element_by_id(&id) {
                                 let opts = js_sys::Object::new();
-                                let _ = js_sys::Reflect::set(&opts, &JsValue::from_str("behavior"), &JsValue::from_str("smooth"));
-                                let _ = js_sys::Reflect::set(&opts, &JsValue::from_str("block"), &JsValue::from_str("nearest"));
+                                let _ = js_sys::Reflect::set(
+                                    &opts,
+                                    &JsValue::from_str("behavior"),
+                                    &JsValue::from_str("smooth"),
+                                );
+                                let _ = js_sys::Reflect::set(
+                                    &opts,
+                                    &JsValue::from_str("block"),
+                                    &JsValue::from_str("nearest"),
+                                );
                                 let el_val: JsValue = el.clone().into();
-                                if let Ok(f) = js_sys::Reflect::get(&el_val, &JsValue::from_str("scrollIntoView")) {
+                                if let Ok(f) = js_sys::Reflect::get(
+                                    &el_val,
+                                    &JsValue::from_str("scrollIntoView"),
+                                ) {
                                     if let Ok(func) = f.dyn_into::<js_sys::Function>() {
                                         let _ = func.call1(&el_val, &opts.into());
                                     }
@@ -332,7 +385,9 @@ pub fn tokens_page() -> Html {
         Callback::from(move |key: String| {
             let mut new_cols = (*visible_cols).clone();
             if new_cols.contains(&key) {
-                if new_cols.len() > 1 { new_cols.remove(&key); }
+                if new_cols.len() > 1 {
+                    new_cols.remove(&key);
+                }
             } else {
                 new_cols.insert(key);
             }
@@ -357,47 +412,47 @@ pub fn tokens_page() -> Html {
         Callback::from(move |(field, val): (String, String)| {
             let mut f = (*filters).clone();
             match field.as_str() {
-                "age_min"              => f.age_min              = val,
-                "age_max"              => f.age_max              = val,
-                "last_trade_min"       => f.last_trade_min       = val,
-                "last_trade_max"       => f.last_trade_max       = val,
-                "ath_age_min"          => f.ath_age_min          = val,
-                "ath_age_max"          => f.ath_age_max          = val,
-                "ath_fep_min"          => f.ath_fep_min          = val,
-                "ath_fep_max"          => f.ath_fep_max          = val,
-                "cur_fep_min"          => f.cur_fep_min          = val,
-                "cur_fep_max"          => f.cur_fep_max          = val,
-                "ath_price_min"        => f.ath_price_min        = val,
-                "ath_price_max"        => f.ath_price_max        = val,
-                "price_min"            => f.price_min            = val,
-                "price_max"            => f.price_max            = val,
-                "volume_min"           => f.volume_min           = val,
-                "volume_max"           => f.volume_max           = val,
-                "mcap_min"             => f.mcap_min             = val,
-                "mcap_max"             => f.mcap_max             = val,
-                "init_buy_min"         => f.init_buy_min         = val,
-                "init_buy_max"         => f.init_buy_max         = val,
-                "init_supply_min"      => f.init_supply_min      = val,
-                "init_supply_max"      => f.init_supply_max      = val,
-                "token_amount_min"     => f.token_amount_min     = val,
-                "token_amount_max"     => f.token_amount_max     = val,
-                "max_sol_cost_min"     => f.max_sol_cost_min     = val,
-                "max_sol_cost_max"     => f.max_sol_cost_max     = val,
+                "age_min" => f.age_min = val,
+                "age_max" => f.age_max = val,
+                "last_trade_min" => f.last_trade_min = val,
+                "last_trade_max" => f.last_trade_max = val,
+                "ath_age_min" => f.ath_age_min = val,
+                "ath_age_max" => f.ath_age_max = val,
+                "ath_fep_min" => f.ath_fep_min = val,
+                "ath_fep_max" => f.ath_fep_max = val,
+                "cur_fep_min" => f.cur_fep_min = val,
+                "cur_fep_max" => f.cur_fep_max = val,
+                "ath_price_min" => f.ath_price_min = val,
+                "ath_price_max" => f.ath_price_max = val,
+                "price_min" => f.price_min = val,
+                "price_max" => f.price_max = val,
+                "volume_min" => f.volume_min = val,
+                "volume_max" => f.volume_max = val,
+                "mcap_min" => f.mcap_min = val,
+                "mcap_max" => f.mcap_max = val,
+                "init_buy_min" => f.init_buy_min = val,
+                "init_buy_max" => f.init_buy_max = val,
+                "init_supply_min" => f.init_supply_min = val,
+                "init_supply_max" => f.init_supply_max = val,
+                "token_amount_min" => f.token_amount_min = val,
+                "token_amount_max" => f.token_amount_max = val,
+                "max_sol_cost_min" => f.max_sol_cost_min = val,
+                "max_sol_cost_max" => f.max_sol_cost_max = val,
                 "spendable_sol_in_min" => f.spendable_sol_in_min = val,
                 "spendable_sol_in_max" => f.spendable_sol_in_max = val,
-                "min_tokens_out_min"   => f.min_tokens_out_min   = val,
-                "min_tokens_out_max"   => f.min_tokens_out_max   = val,
-                "trades_min"           => f.trades_min           = val,
-                "trades_max"           => f.trades_max           = val,
-                "cu_limit_min"         => f.cu_limit_min         = val,
-                "cu_limit_max"         => f.cu_limit_max         = val,
-                "cu_price_min"         => f.cu_price_min         = val,
-                "cu_price_max"         => f.cu_price_max         = val,
-                "ix_count_min"         => f.ix_count_min         = val,
-                "ix_count_max"         => f.ix_count_max         = val,
-                "ix_label"             => f.ix_label             = val,
-                "creator"              => f.creator              = val,
-                _                      => {}
+                "min_tokens_out_min" => f.min_tokens_out_min = val,
+                "min_tokens_out_max" => f.min_tokens_out_max = val,
+                "trades_min" => f.trades_min = val,
+                "trades_max" => f.trades_max = val,
+                "cu_limit_min" => f.cu_limit_min = val,
+                "cu_limit_max" => f.cu_limit_max = val,
+                "cu_price_min" => f.cu_price_min = val,
+                "cu_price_max" => f.cu_price_max = val,
+                "ix_count_min" => f.ix_count_min = val,
+                "ix_count_max" => f.ix_count_max = val,
+                "ix_label" => f.ix_label = val,
+                "creator" => f.creator = val,
+                _ => {}
             }
             filters.set(f);
         })
@@ -409,7 +464,7 @@ pub fn tokens_page() -> Html {
             let mut f = (*filters).clone();
             match field.as_str() {
                 "migrated" => f.migrated = val,
-                _          => {}
+                _ => {}
             }
             filters.set(f);
         })
@@ -443,7 +498,11 @@ pub fn tokens_page() -> Html {
 
     // Effective total: always client-side after search+filter.
     let effective_total = displayed_tokens.len();
-    let total_pages = if effective_total == 0 { 1 } else { (effective_total + ps - 1) / ps };
+    let total_pages = if effective_total == 0 {
+        1
+    } else {
+        (effective_total + ps - 1) / ps
+    };
     let cur_page = (*page).clamp(1, total_pages);
     let offset = cur_page.saturating_sub(1) * ps;
 
@@ -451,65 +510,18 @@ pub fn tokens_page() -> Html {
     displayed_tokens = displayed_tokens.into_iter().skip(offset).take(ps).collect();
 
     // Build visibility mask (one bool per COLUMNS entry, in order)
-    let vis: Vec<bool> = COLUMNS.iter()
+    let vis: Vec<bool> = COLUMNS
+        .iter()
         .map(|(key, _, _, _)| (*visible_cols).contains(*key))
         .collect();
     let group_border_cols = compute_group_boundaries(&vis);
     // total rendered columns: # + visible cols + action
     let num_cols = 2 + vis.iter().filter(|&&b| b).count();
-    let price_unit = use_context::<PriceUnitContext>().expect("PriceUnitProvider must be mounted above TokensPage");
 
     let on_col_hover = {
         let hovered_col = hovered_col.clone();
         Callback::from(move |col: Option<usize>| hovered_col.set(col))
     };
-    let on_table_leave = {
-        let hovered_col = hovered_col.clone();
-        Callback::from(move |_: MouseEvent| hovered_col.set(None))
-    };
-
-    // Build headers — skip hidden columns
-    let mut headers_html = vec![html! { <th class="th-row-num">{ "#" }</th> }];
-    let mut rendered_col_pos = 1usize;
-    for (i, &(field, label, _, th_cls)) in COLUMNS.iter().enumerate() {
-        if !vis[i] { continue; }
-        let this_pos = rendered_col_pos;
-        rendered_col_pos += 1;
-        let is_col_hovered = *hovered_col == Some(this_pos);
-        let is_sorted = token_state.sort.field == field;
-        let sort_icon = if is_sorted {
-            match token_state.sort.order {
-                SortOrder::Asc  => "↑",
-                SortOrder::Desc => "↓",
-            }
-        } else { "" };
-        let on_click = {
-            let on_toggle_sort = on_toggle_sort.clone();
-            let field = field.to_string();
-            Callback::from(move |_: MouseEvent| on_toggle_sort.emit(field.clone()))
-        };
-        let display_label = match field {
-            "current_price" => format!("Price ({})", price_unit.unit_label()),
-            "max_sol_cost" => "Max SOL Cost".to_string(),
-            "spendable_sol_in" => "Spendable SOL In".to_string(),
-            "market_cap" => format!("MCap ({})", price_unit.unit_label()),
-            _ => label.to_string(),
-        };
-        let border_style = if group_border_cols[i] { "border-left: 1px solid rgba(128, 128, 128, 0.25);" } else { "" };
-        headers_html.push(html! {
-            <th class={classes!(th_cls, is_col_hovered.then_some("col-hover"))} style={border_style}>
-                <button
-                    class={classes!("sort-header-btn", is_sorted.then_some("sort-active"))}
-                    onclick={on_click}
-                    title={format!("Sort by {}", display_label)}
-                >
-                    { display_label }
-                    { if is_sorted { html! { <span class="sort-icon">{ sort_icon }</span> } } else { html! {} } }
-                </button>
-            </th>
-        });
-    }
-    headers_html.push(html! { <th class="th-action"></th> });
 
     let on_select_token = {
         let token_state = token_state.clone();
@@ -598,56 +610,22 @@ pub fn tokens_page() -> Html {
                 } else if let Some(err) = &token_state.error {
                     <p class="error">{ err }</p>
                 } else {
-                    <div class="table-wrapper">
-                        <table class="trade-table" onmouseleave={on_table_leave}>
-                            <colgroup>
-                                <col style="width: 40px;" />
-                                { for COLUMNS.iter().enumerate().filter_map(|(i, &(_, _, w, _))| {
-                                    if vis[i] { Some(html! { <col style={format!("width: {}px;", w)} /> }) }
-                                    else { None }
-                                }) }
-                                <col style="width: 48px;" />
-                            </colgroup>
-                            <thead>
-                                <tr>
-                                    { for headers_html }
-                                </tr>
-                            </thead>
-                            <tbody>
-                                { if displayed_tokens.is_empty() {
-                                        html! {
-                                        <tr>
-                                            <td class="no-data" colspan={num_cols.to_string()}>{ "No tokens found." }</td>
-                                        </tr>
-                                    }
-                                } else {
-                                    html! {
-                                        { for displayed_tokens.iter().enumerate().map(|(idx, token)| {
-                                            let row_num = offset + idx + 1;
-                                            let selected = token_state.selected_mint.as_deref() == Some(&token.mint_address);
-                                            let detail = if selected { (*selected_detail).clone() } else { None };
-                                            html! {
-                                                <TokenRow
-                                                    key={token.mint_address.clone()}
-                                                    token={token.clone()}
-                                                    selected={selected}
-                                                    detail={detail}
-                                                    detail_loading={*detail_loading && selected}
-                                                    detail_error={(*detail_error).clone()}
-                                                    on_select={on_select_token.clone()}
-                                                    row_num={Some(row_num)}
-                                                    visible_cols={vis.clone()}
-                                                    group_borders={group_border_cols.clone()}
-                                                    hovered_column={*hovered_col}
-                                                    on_hover_column={on_col_hover.clone()}
-                                                />
-                                            }
-                                        }) }
-                                    }
-                                } }
-                            </tbody>
-                        </table>
-                    </div>
+                    <TokensTable
+                        tokens={displayed_tokens.clone()}
+                        visible_cols={vis.clone()}
+                        group_borders={group_border_cols.clone()}
+                        num_cols={num_cols}
+                        sort={token_state.sort.clone()}
+                        on_toggle_sort={on_toggle_sort}
+                        on_select_token={on_select_token.clone()}
+                        hovered_column={*hovered_col}
+                        on_hover_column={on_col_hover.clone()}
+                        selected_mint={token_state.selected_mint.clone()}
+                        selected_detail={(*selected_detail).clone()}
+                        detail_loading={*detail_loading}
+                        detail_error={(*detail_error).clone()}
+                        offset={offset}
+                    />
                 }
             </main>
         </div>

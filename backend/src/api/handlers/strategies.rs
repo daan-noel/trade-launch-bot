@@ -8,8 +8,7 @@ use crate::{
     models::{Position, StrategyTPSLRule},
     state::app_state::AppState,
     storage::repositories::{
-        position_repo::PositionRepo,
-        strategy_tpsl_rule_repo::StrategyTPSLRuleRepo,
+        position_repo::PositionRepo, strategy_tpsl_rule_repo::StrategyTPSLRuleRepo,
     },
 };
 
@@ -27,6 +26,7 @@ pub struct RuleResponse {
     pub p_max_sol_cost: Option<f64>,
     pub p_spendable_sol_in: Option<f64>,
     pub p_max_holding_tokens: Option<u64>,
+    pub p_total_max_trade_tokens: Option<u64>,
     pub p_ix_labels: serde_json::Value,
     pub buy_amount: f64,
     pub take_profit: f64,
@@ -48,6 +48,7 @@ impl From<StrategyTPSLRule> for RuleResponse {
             p_max_sol_cost: r.p_max_sol_cost,
             p_spendable_sol_in: r.p_spendable_sol_in,
             p_max_holding_tokens: r.p_max_holding_tokens,
+            p_total_max_trade_tokens: r.p_total_max_trade_tokens,
             p_ix_labels: r.p_ix_labels,
             buy_amount: r.buy_amount,
             take_profit: r.take_profit,
@@ -111,6 +112,7 @@ pub struct CreateRuleRequest {
     pub p_max_sol_cost: Option<f64>,
     pub p_spendable_sol_in: Option<f64>,
     pub p_max_holding_tokens: Option<u64>,
+    pub p_total_max_trade_tokens: Option<u64>,
     pub p_ix_labels: serde_json::Value,
     pub buy_amount: f64,
     pub take_profit: f64,
@@ -139,6 +141,8 @@ pub struct UpdateRuleRequest {
     // Outer Option = field present; inner Option = value or explicit null
     #[serde(default)]
     pub p_max_holding_tokens: Option<Option<u64>>,
+    #[serde(default)]
+    pub p_total_max_trade_tokens: Option<Option<u64>>,
     pub tolerance_pct: Option<f64>,
     pub is_active: Option<bool>,
 }
@@ -153,8 +157,7 @@ pub async fn list_tpsl_rules(app_state: web::Data<Arc<AppState>>) -> impl Respon
 
     match repo.find_all().await {
         Ok(rules) => {
-            let responses: Vec<RuleResponse> =
-                rules.into_iter().map(RuleResponse::from).collect();
+            let responses: Vec<RuleResponse> = rules.into_iter().map(RuleResponse::from).collect();
             HttpResponse::Ok().json(responses)
         }
         Err(e) => {
@@ -175,8 +178,7 @@ pub async fn get_tpsl_rule(
 
     match repo.find_by_id(rule_id).await {
         Ok(Some(rule)) => HttpResponse::Ok().json(RuleResponse::from(rule)),
-        Ok(None) => HttpResponse::NotFound()
-            .json(serde_json::json!({"error": "Rule not found"})),
+        Ok(None) => HttpResponse::NotFound().json(serde_json::json!({"error": "Rule not found"})),
         Err(e) => {
             tracing::error!("Failed to get TPSL rule {rule_id}: {e}");
             HttpResponse::InternalServerError()
@@ -202,6 +204,7 @@ pub async fn create_tpsl_rule(
         req.p_max_sol_cost,
         req.p_spendable_sol_in,
         req.p_max_holding_tokens,
+        req.p_total_max_trade_tokens,
         req.tolerance_pct,
     );
 
@@ -256,7 +259,9 @@ pub async fn update_tpsl_rule(
                 rule.p_cu_price = cu_price_opt.clone();
             }
             if let Some(ix_labels_opt) = &req.p_ix_labels {
-                rule.p_ix_labels = ix_labels_opt.clone().unwrap_or_else(|| serde_json::Value::Array(vec![]));
+                rule.p_ix_labels = ix_labels_opt
+                    .clone()
+                    .unwrap_or_else(|| serde_json::Value::Array(vec![]));
             }
             if let Some(max_sol_cost_opt) = &req.p_max_sol_cost {
                 rule.p_max_sol_cost = max_sol_cost_opt.clone();
@@ -266,6 +271,9 @@ pub async fn update_tpsl_rule(
             }
             if let Some(max_holding_tokens_opt) = &req.p_max_holding_tokens {
                 rule.p_max_holding_tokens = max_holding_tokens_opt.clone();
+            }
+            if let Some(total_max_trade_tokens_opt) = &req.p_total_max_trade_tokens {
+                rule.p_total_max_trade_tokens = total_max_trade_tokens_opt.clone();
             }
             if let Some(tolerance_pct) = req.tolerance_pct {
                 rule.tolerance_pct = tolerance_pct;
@@ -283,8 +291,7 @@ pub async fn update_tpsl_rule(
                 }
             }
         }
-        Ok(None) => HttpResponse::NotFound()
-            .json(serde_json::json!({"error": "Rule not found"})),
+        Ok(None) => HttpResponse::NotFound().json(serde_json::json!({"error": "Rule not found"})),
         Err(e) => {
             tracing::error!("Failed to get TPSL rule {rule_id}: {e}");
             HttpResponse::InternalServerError()
@@ -387,8 +394,9 @@ pub async fn get_position(
 
     match repo.find_by_id(position_id).await {
         Ok(Some(position)) => HttpResponse::Ok().json(PositionResponse::from(position)),
-        Ok(None) => HttpResponse::NotFound()
-            .json(serde_json::json!({"error": "Position not found"})),
+        Ok(None) => {
+            HttpResponse::NotFound().json(serde_json::json!({"error": "Position not found"}))
+        }
         Err(e) => {
             tracing::error!("Failed to get position {position_id}: {e}");
             HttpResponse::InternalServerError()

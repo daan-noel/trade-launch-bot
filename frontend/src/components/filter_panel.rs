@@ -21,30 +21,30 @@ pub fn iso_hours_ago(s: &str) -> Option<f64> {
 #[derive(Clone, PartialEq, Default)]
 pub struct Filters {
     // ── Time ──────────────────────────────────────────────────────────────────
-    pub age_min:          String,
-    pub age_max:          String,
-    pub last_trade_min:   String,
-    pub last_trade_max:   String,
-    pub ath_age_min:      String,
-    pub ath_age_max:      String,
+    pub age_min: String,
+    pub age_max: String,
+    pub last_trade_min: String,
+    pub last_trade_max: String,
+    pub ath_age_min: String,
+    pub ath_age_max: String,
     // ── Performance ───────────────────────────────────────────────────────────
-    pub ath_fep_min:      String,
-    pub ath_fep_max:      String,
-    pub cur_fep_min:      String,
-    pub cur_fep_max:      String,
-    pub ath_price_min:    String,
-    pub ath_price_max:    String,
-    pub price_min:        String,
-    pub price_max:        String,
+    pub ath_fep_min: String,
+    pub ath_fep_max: String,
+    pub cur_fep_min: String,
+    pub cur_fep_max: String,
+    pub ath_price_min: String,
+    pub ath_price_max: String,
+    pub price_min: String,
+    pub price_max: String,
     // ── Market ────────────────────────────────────────────────────────────────
-    pub volume_min:       String,
-    pub volume_max:       String,
-    pub mcap_min:         String,
-    pub mcap_max:         String,
-    pub init_buy_min:     String,
-    pub init_buy_max:     String,
-    pub init_supply_min:  String,
-    pub init_supply_max:  String,
+    pub volume_min: String,
+    pub volume_max: String,
+    pub mcap_min: String,
+    pub mcap_max: String,
+    pub init_buy_min: String,
+    pub init_buy_max: String,
+    pub init_supply_min: String,
+    pub init_supply_max: String,
     pub token_amount_min: String,
     pub token_amount_max: String,
     pub max_sol_cost_min: String,
@@ -53,68 +53,87 @@ pub struct Filters {
     pub spendable_sol_in_max: String,
     pub min_tokens_out_min: String,
     pub min_tokens_out_max: String,
-    pub trades_min:       String,
-    pub trades_max:       String,
+    pub trades_min: String,
+    pub trades_max: String,
     // ── Technical ─────────────────────────────────────────────────────────────
-    pub cu_limit_min:     String,
-    pub cu_limit_max:     String,
-    pub cu_price_min:     String,
-    pub cu_price_max:     String,
-    pub ix_count_min:     String,
-    pub ix_count_max:     String,
-    pub ix_label:         String,
+    pub cu_limit_min: String,
+    pub cu_limit_max: String,
+    pub cu_price_min: String,
+    pub cu_price_max: String,
+    pub ix_count_min: String,
+    pub ix_count_max: String,
+    pub ix_label: String,
     // ── Other ─────────────────────────────────────────────────────────────────
-    pub migrated:         String,
-    pub creator:          String,
+    pub migrated: String,
+    pub creator: String,
 }
 
 impl Filters {
     pub fn is_empty(&self) -> bool {
-        self.age_min.is_empty()             && self.age_max.is_empty()
-        && self.last_trade_min.is_empty()   && self.last_trade_max.is_empty()
-        && self.ath_age_min.is_empty()      && self.ath_age_max.is_empty()
-        && self.ath_fep_min.is_empty()      && self.ath_fep_max.is_empty()
-        && self.cur_fep_min.is_empty()      && self.cur_fep_max.is_empty()
-        && self.ath_price_min.is_empty()    && self.ath_price_max.is_empty()
-        && self.price_min.is_empty()        && self.price_max.is_empty()
-        && self.volume_min.is_empty()       && self.volume_max.is_empty()
-        && self.mcap_min.is_empty()         && self.mcap_max.is_empty()
-        && self.init_buy_min.is_empty()     && self.init_buy_max.is_empty()
-        && self.init_supply_min.is_empty()  && self.init_supply_max.is_empty()
-        && self.token_amount_min.is_empty() && self.token_amount_max.is_empty()
-        && self.max_sol_cost_min.is_empty() && self.max_sol_cost_max.is_empty()
-        && self.spendable_sol_in_min.is_empty() && self.spendable_sol_in_max.is_empty()
-        && self.min_tokens_out_min.is_empty() && self.min_tokens_out_max.is_empty()
-        && self.trades_min.is_empty()       && self.trades_max.is_empty()
-        && self.cu_limit_min.is_empty()     && self.cu_limit_max.is_empty()
-        && self.cu_price_min.is_empty()     && self.cu_price_max.is_empty()
-        && self.ix_count_min.is_empty()     && self.ix_count_max.is_empty()
-        && self.migrated.is_empty()
-        && self.ix_label.is_empty()
-        && self.creator.is_empty()
+        self.age_min.is_empty()
+            && self.age_max.is_empty()
+            && self.last_trade_min.is_empty()
+            && self.last_trade_max.is_empty()
+            && self.ath_age_min.is_empty()
+            && self.ath_age_max.is_empty()
+            && self.ath_fep_min.is_empty()
+            && self.ath_fep_max.is_empty()
+            && self.cur_fep_min.is_empty()
+            && self.cur_fep_max.is_empty()
+            && self.ath_price_min.is_empty()
+            && self.ath_price_max.is_empty()
+            && self.price_min.is_empty()
+            && self.price_max.is_empty()
+            && self.volume_min.is_empty()
+            && self.volume_max.is_empty()
+            && self.mcap_min.is_empty()
+            && self.mcap_max.is_empty()
+            && self.init_buy_min.is_empty()
+            && self.init_buy_max.is_empty()
+            && self.init_supply_min.is_empty()
+            && self.init_supply_max.is_empty()
+            && self.token_amount_min.is_empty()
+            && self.token_amount_max.is_empty()
+            && self.max_sol_cost_min.is_empty()
+            && self.max_sol_cost_max.is_empty()
+            && self.spendable_sol_in_min.is_empty()
+            && self.spendable_sol_in_max.is_empty()
+            && self.min_tokens_out_min.is_empty()
+            && self.min_tokens_out_max.is_empty()
+            && self.trades_min.is_empty()
+            && self.trades_max.is_empty()
+            && self.cu_limit_min.is_empty()
+            && self.cu_limit_max.is_empty()
+            && self.cu_price_min.is_empty()
+            && self.cu_price_max.is_empty()
+            && self.ix_count_min.is_empty()
+            && self.ix_count_max.is_empty()
+            && self.migrated.is_empty()
+            && self.ix_label.is_empty()
+            && self.creator.is_empty()
     }
 
     pub fn active_count(&self) -> usize {
         [
-            !self.age_min.is_empty()              || !self.age_max.is_empty(),
-            !self.last_trade_min.is_empty()        || !self.last_trade_max.is_empty(),
-            !self.ath_age_min.is_empty()           || !self.ath_age_max.is_empty(),
-            !self.ath_fep_min.is_empty()           || !self.ath_fep_max.is_empty(),
-            !self.cur_fep_min.is_empty()           || !self.cur_fep_max.is_empty(),
-            !self.ath_price_min.is_empty()         || !self.ath_price_max.is_empty(),
-            !self.price_min.is_empty()             || !self.price_max.is_empty(),
-            !self.volume_min.is_empty()            || !self.volume_max.is_empty(),
-            !self.mcap_min.is_empty()              || !self.mcap_max.is_empty(),
-            !self.init_buy_min.is_empty()          || !self.init_buy_max.is_empty(),
-            !self.init_supply_min.is_empty()       || !self.init_supply_max.is_empty(),
-            !self.token_amount_min.is_empty()      || !self.token_amount_max.is_empty(),
-            !self.max_sol_cost_min.is_empty()      || !self.max_sol_cost_max.is_empty(),
-            !self.spendable_sol_in_min.is_empty()  || !self.spendable_sol_in_max.is_empty(),
-            !self.min_tokens_out_min.is_empty()    || !self.min_tokens_out_max.is_empty(),
-            !self.trades_min.is_empty()            || !self.trades_max.is_empty(),
-            !self.cu_limit_min.is_empty()          || !self.cu_limit_max.is_empty(),
-            !self.cu_price_min.is_empty()          || !self.cu_price_max.is_empty(),
-            !self.ix_count_min.is_empty()          || !self.ix_count_max.is_empty(),
+            !self.age_min.is_empty() || !self.age_max.is_empty(),
+            !self.last_trade_min.is_empty() || !self.last_trade_max.is_empty(),
+            !self.ath_age_min.is_empty() || !self.ath_age_max.is_empty(),
+            !self.ath_fep_min.is_empty() || !self.ath_fep_max.is_empty(),
+            !self.cur_fep_min.is_empty() || !self.cur_fep_max.is_empty(),
+            !self.ath_price_min.is_empty() || !self.ath_price_max.is_empty(),
+            !self.price_min.is_empty() || !self.price_max.is_empty(),
+            !self.volume_min.is_empty() || !self.volume_max.is_empty(),
+            !self.mcap_min.is_empty() || !self.mcap_max.is_empty(),
+            !self.init_buy_min.is_empty() || !self.init_buy_max.is_empty(),
+            !self.init_supply_min.is_empty() || !self.init_supply_max.is_empty(),
+            !self.token_amount_min.is_empty() || !self.token_amount_max.is_empty(),
+            !self.max_sol_cost_min.is_empty() || !self.max_sol_cost_max.is_empty(),
+            !self.spendable_sol_in_min.is_empty() || !self.spendable_sol_in_max.is_empty(),
+            !self.min_tokens_out_min.is_empty() || !self.min_tokens_out_max.is_empty(),
+            !self.trades_min.is_empty() || !self.trades_max.is_empty(),
+            !self.cu_limit_min.is_empty() || !self.cu_limit_max.is_empty(),
+            !self.cu_price_min.is_empty() || !self.cu_price_max.is_empty(),
+            !self.ix_count_min.is_empty() || !self.ix_count_max.is_empty(),
             !self.migrated.is_empty(),
             !self.ix_label.is_empty(),
             !self.creator.is_empty(),
@@ -128,17 +147,36 @@ impl Filters {
         macro_rules! range_f64 {
             ($val:expr, $min:expr, $max:expr) => {{
                 let val: f64 = $val;
-                if let Ok(v) = $min.parse::<f64>() { if val < v { return false; } }
-                if let Ok(v) = $max.parse::<f64>() { if val > v { return false; } }
+                if let Ok(v) = $min.parse::<f64>() {
+                    if val < v {
+                        return false;
+                    }
+                }
+                if let Ok(v) = $max.parse::<f64>() {
+                    if val > v {
+                        return false;
+                    }
+                }
             }};
         }
         macro_rules! opt_f64 {
             ($opt:expr, $min:expr, $max:expr) => {{
                 if !$min.is_empty() || !$max.is_empty() {
-                    match { let x: Option<f64> = $opt; x } {
+                    match {
+                        let x: Option<f64> = $opt;
+                        x
+                    } {
                         Some(val) => {
-                            if let Ok(v) = $min.parse::<f64>() { if val < v { return false; } }
-                            if let Ok(v) = $max.parse::<f64>() { if val > v { return false; } }
+                            if let Ok(v) = $min.parse::<f64>() {
+                                if val < v {
+                                    return false;
+                                }
+                            }
+                            if let Ok(v) = $max.parse::<f64>() {
+                                if val > v {
+                                    return false;
+                                }
+                            }
                         }
                         None => return false,
                     }
@@ -151,8 +189,16 @@ impl Filters {
         if !self.last_trade_min.is_empty() || !self.last_trade_max.is_empty() {
             match t.last_trade_at.as_deref().and_then(iso_hours_ago) {
                 Some(h) => {
-                    if let Ok(v) = self.last_trade_min.parse::<f64>() { if h < v { return false; } }
-                    if let Ok(v) = self.last_trade_max.parse::<f64>() { if h > v { return false; } }
+                    if let Ok(v) = self.last_trade_min.parse::<f64>() {
+                        if h < v {
+                            return false;
+                        }
+                    }
+                    if let Ok(v) = self.last_trade_max.parse::<f64>() {
+                        if h > v {
+                            return false;
+                        }
+                    }
                 }
                 None => return false,
             }
@@ -161,8 +207,16 @@ impl Filters {
         if !self.ath_age_min.is_empty() || !self.ath_age_max.is_empty() {
             match t.ath_timestamp.as_deref().and_then(iso_hours_ago) {
                 Some(h) => {
-                    if let Ok(v) = self.ath_age_min.parse::<f64>() { if h < v { return false; } }
-                    if let Ok(v) = self.ath_age_max.parse::<f64>() { if h > v { return false; } }
+                    if let Ok(v) = self.ath_age_min.parse::<f64>() {
+                        if h < v {
+                            return false;
+                        }
+                    }
+                    if let Ok(v) = self.ath_age_max.parse::<f64>() {
+                        if h > v {
+                            return false;
+                        }
+                    }
                 }
                 None => return false,
             }
@@ -170,49 +224,103 @@ impl Filters {
 
         let fep: Option<f64> = t.initial_buy_sol.and_then(|buy| {
             t.initial_supply_token.and_then(|sup| {
-                if sup > 0 { Some(buy / sup as f64) } else { None }
+                if sup > 0 {
+                    Some(buy / sup as f64)
+                } else {
+                    None
+                }
             })
         });
         let ath_fep: Option<f64> = fep.and_then(|p| {
-            t.ath_price.and_then(|a| if p > 0.0 { Some(a / p) } else { None })
+            t.ath_price
+                .and_then(|a| if p > 0.0 { Some(a / p) } else { None })
         });
         let cur_fep: Option<f64> = fep.and_then(|p| {
-            t.current_price.and_then(|c| if p > 0.0 { Some(c / p) } else { None })
+            t.current_price
+                .and_then(|c| if p > 0.0 { Some(c / p) } else { None })
         });
 
-        opt_f64!(ath_fep,         &self.ath_fep_min,   &self.ath_fep_max);
-        opt_f64!(cur_fep,         &self.cur_fep_min,   &self.cur_fep_max);
-        opt_f64!(t.ath_price,     &self.ath_price_min, &self.ath_price_max);
-        opt_f64!(t.current_price, &self.price_min,     &self.price_max);
+        opt_f64!(ath_fep, &self.ath_fep_min, &self.ath_fep_max);
+        opt_f64!(cur_fep, &self.cur_fep_min, &self.cur_fep_max);
+        opt_f64!(t.ath_price, &self.ath_price_min, &self.ath_price_max);
+        opt_f64!(t.current_price, &self.price_min, &self.price_max);
 
         range_f64!(t.volume_sol_total, &self.volume_min, &self.volume_max);
-        opt_f64!(t.market_cap,                          &self.mcap_min,           &self.mcap_max);
-        opt_f64!(t.initial_buy_sol,                     &self.init_buy_min,       &self.init_buy_max);
-        opt_f64!(t.initial_supply_token.map(|v| v as f64), &self.init_supply_min, &self.init_supply_max);
-        opt_f64!(t.token_amount.map(|v| v as f64),      &self.token_amount_min,   &self.token_amount_max);
-        opt_f64!(t.max_sol_cost.map(|v| v as f64),      &self.max_sol_cost_min,   &self.max_sol_cost_max);
-        opt_f64!(t.spendable_sol_in.map(|v| v as f64),  &self.spendable_sol_in_min, &self.spendable_sol_in_max);
-        opt_f64!(t.min_tokens_out.map(|v| v as f64),    &self.min_tokens_out_min, &self.min_tokens_out_max);
+        opt_f64!(t.market_cap, &self.mcap_min, &self.mcap_max);
+        opt_f64!(t.initial_buy_sol, &self.init_buy_min, &self.init_buy_max);
+        opt_f64!(
+            t.initial_supply_token.map(|v| v as f64),
+            &self.init_supply_min,
+            &self.init_supply_max
+        );
+        opt_f64!(
+            t.token_amount.map(|v| v as f64),
+            &self.token_amount_min,
+            &self.token_amount_max
+        );
+        opt_f64!(
+            t.max_sol_cost.map(|v| v as f64),
+            &self.max_sol_cost_min,
+            &self.max_sol_cost_max
+        );
+        opt_f64!(
+            t.spendable_sol_in.map(|v| v as f64),
+            &self.spendable_sol_in_min,
+            &self.spendable_sol_in_max
+        );
+        opt_f64!(
+            t.min_tokens_out.map(|v| v as f64),
+            &self.min_tokens_out_min,
+            &self.min_tokens_out_max
+        );
         range_f64!(t.trade_count as f64, &self.trades_min, &self.trades_max);
 
-        opt_f64!(t.cu_limit.map(|v| v as f64), &self.cu_limit_min, &self.cu_limit_max);
-        opt_f64!(t.cu_price.map(|v| v as f64), &self.cu_price_min, &self.cu_price_max);
-        range_f64!(t.ix_labels_count as f64, &self.ix_count_min, &self.ix_count_max);
+        opt_f64!(
+            t.cu_limit.map(|v| v as f64),
+            &self.cu_limit_min,
+            &self.cu_limit_max
+        );
+        opt_f64!(
+            t.cu_price.map(|v| v as f64),
+            &self.cu_price_min,
+            &self.cu_price_max
+        );
+        range_f64!(
+            t.ix_labels_count as f64,
+            &self.ix_count_min,
+            &self.ix_count_max
+        );
 
         if !self.ix_label.is_empty() {
             let needle = self.ix_label.to_lowercase();
-            let matched = t.instruction_labels.as_array()
-                .map(|arr| arr.iter().any(|v| {
-                    v.as_str().map(|s| s.to_lowercase().contains(&needle)).unwrap_or(false)
-                }))
+            let matched = t
+                .instruction_labels
+                .as_array()
+                .map(|arr| {
+                    arr.iter().any(|v| {
+                        v.as_str()
+                            .map(|s| s.to_lowercase().contains(&needle))
+                            .unwrap_or(false)
+                    })
+                })
                 .unwrap_or(false);
-            if !matched { return false; }
+            if !matched {
+                return false;
+            }
         }
 
         match self.migrated.as_str() {
-            "yes" => if !t.is_migrated { return false; },
-            "no"  => if  t.is_migrated { return false; },
-            _     => {}
+            "yes" => {
+                if !t.is_migrated {
+                    return false;
+                }
+            }
+            "no" => {
+                if t.is_migrated {
+                    return false;
+                }
+            }
+            _ => {}
         }
 
         if !self.creator.is_empty() {

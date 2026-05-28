@@ -109,11 +109,19 @@ pub fn format_age(seconds: i64) -> String {
     if seconds < 86_400 {
         let h = seconds / 3_600;
         let m = (seconds % 3_600) / 60;
-        if m == 0 { format!("{}h", h) } else { format!("{}h {}m", h, m) }
+        if m == 0 {
+            format!("{}h", h)
+        } else {
+            format!("{}h {}m", h, m)
+        }
     } else {
         let d = seconds / 86_400;
         let h = (seconds % 86_400) / 3_600;
-        if h == 0 { format!("{}d", d) } else { format!("{}d {}h", d, h) }
+        if h == 0 {
+            format!("{}d", d)
+        } else {
+            format!("{}d {}h", d, h)
+        }
     }
 }
 
@@ -133,12 +141,12 @@ pub fn format_with_commas(n: u64) -> String {
 /// CSS class for age-based colour coding.
 pub fn age_class(seconds: i64) -> &'static str {
     if seconds < 3_600 {
-        "age-fresh"         // < 1 h  — danger red
+        "age-fresh" // < 1 h  — danger red
     } else if seconds < 86_400 {
-        "age-recent"        // < 24 h — warning yellow
+        "age-recent" // < 24 h — warning yellow
     } else if seconds < 604_800 {
-        "age-normal"        // < 7 d  — primary green
+        "age-normal" // < 7 d  — primary green
     } else {
-        "age-old"           // > 7 d  — muted
+        "age-old" // > 7 d  — muted
     }
 }

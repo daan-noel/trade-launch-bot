@@ -45,7 +45,8 @@ pub const SELL_DISCRIMINATOR: [u8; 8] = [0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x8
 pub const CREATE_INSTRUCTION_DISCRIMINATOR: [u8; 8] =
     [0x18, 0x1e, 0xc8, 0x28, 0x05, 0x1c, 0x07, 0x77];
 /// Pump.fun `create_v2` instruction — creates a new coin and bonding curve (v2 variant).
-pub const CREATE_V2_INSTRUCTION_DISCRIMINATOR: [u8; 8] = [0xd6, 0x90, 0x4c, 0xec, 0x5f, 0x8b, 0x31, 0xb4];
+pub const CREATE_V2_INSTRUCTION_DISCRIMINATOR: [u8; 8] =
+    [0xd6, 0x90, 0x4c, 0xec, 0x5f, 0x8b, 0x31, 0xb4];
 /// Pump.fun `migrate` instruction — migrates liquidity to pump_amm when bonding curve completes.
 pub const MIGRATE_INSTRUCTION_DISCRIMINATOR: [u8; 8] =
     [0x9b, 0xea, 0xe7, 0x92, 0xec, 0x9e, 0xa2, 0x1e];
@@ -61,8 +62,7 @@ pub const BUY_EXACT_QUOTE_IN_DISCRIMINATOR: [u8; 8] =
     [0xc6, 0x2e, 0x15, 0x52, 0xb4, 0xd9, 0xe8, 0x70];
 /// `buy_v2` — new unified buy interface.
 /// sha256("global:buy_v2")[..8]
-pub const BUY_V2_DISCRIMINATOR: [u8; 8] =
-    [0xb8, 0x17, 0xee, 0x61, 0x67, 0xc5, 0xd3, 0x3d];
+pub const BUY_V2_DISCRIMINATOR: [u8; 8] = [0xb8, 0x17, 0xee, 0x61, 0x67, 0xc5, 0xd3, 0x3d];
 /// `buy_exact_quote_in_v2` — new unified buy interface, exact quote in.
 /// sha256("global:buy_exact_quote_in_v2")[..8]
 pub const BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR: [u8; 8] =

@@ -1,8 +1,7 @@
 use crate::components::{StatusButton, StatusState};
-use crate::services::api::{fetch_live_mode, set_live_mode};
-use crate::state::{PriceUnitAction, PriceUnitContext, PriceUnit};
+use crate::services::api::{fetch_live_mode, fetch_sol_price, set_live_mode};
+use crate::state::{PriceUnit, PriceUnitAction, PriceUnitContext};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::HtmlInputElement;
 use yew::prelude::*;
 use yew_router::prelude::*;
 
@@ -12,22 +11,31 @@ use crate::routes::Route;
 pub fn header() -> Html {
     let route = use_route::<Route>().unwrap_or(Route::NotFound);
     let live_mode = use_state(|| false);
-    let price_unit = use_context::<PriceUnitContext>().expect("PriceUnitProvider must be mounted above Header");
-    let price_input = use_state(|| price_unit.usd_rate.map(|v| v.to_string()).unwrap_or_default());
+    let price_unit =
+        use_context::<PriceUnitContext>().expect("PriceUnitProvider must be mounted above Header");
 
     {
         let live_mode = live_mode.clone();
-        use_effect_with(
-            (),
-            move |_| {
-                spawn_local(async move {
-                    if let Ok(live) = fetch_live_mode().await {
-                        live_mode.set(live);
-                    }
-                });
-                || ()
-            },
-        );
+        use_effect_with((), move |_| {
+            spawn_local(async move {
+                if let Ok(live) = fetch_live_mode().await {
+                    live_mode.set(live);
+                }
+            });
+            || ()
+        });
+    }
+
+    {
+        let price_unit = price_unit.clone();
+        use_effect_with((), move |_| {
+            spawn_local(async move {
+                if let Ok(Some(rate)) = fetch_sol_price().await {
+                    price_unit.dispatch(PriceUnitAction::SetUsdRate(Some(rate)));
+                }
+            });
+            || ()
+        });
     }
 
     let onclick_toggle = {
@@ -50,23 +58,14 @@ pub fn header() -> Html {
                 PriceUnit::USD => PriceUnit::SOL,
             };
             price_unit.dispatch(PriceUnitAction::SetUnit(next));
-        })
-    };
 
-    let oninput_price_rate = {
-        let price_input = price_input.clone();
-        Callback::from(move |event: InputEvent| {
-            let input: HtmlInputElement = event.target_unchecked_into();
-            price_input.set(input.value());
-        })
-    };
-
-    let onclick_apply_rate = {
-        let price_input = price_input.clone();
-        let price_unit = price_unit.clone();
-        Callback::from(move |_| {
-            if let Ok(rate) = (*price_input).trim().parse::<f64>() {
-                price_unit.dispatch(PriceUnitAction::SetUsdRate(Some(rate)));
+            if next == PriceUnit::USD {
+                let price_unit = price_unit.clone();
+                spawn_local(async move {
+                    if let Ok(Some(rate)) = fetch_sol_price().await {
+                        price_unit.dispatch(PriceUnitAction::SetUsdRate(Some(rate)));
+                    }
+                });
             }
         })
     };
@@ -107,19 +106,10 @@ pub fn header() -> Html {
                             { price_unit.unit.label() }
                         </button>
                         if price_unit.unit == PriceUnit::USD {
-                            <div class="unit-input-group">
-                                <input
-                                    class="unit-input"
-                                    type="number"
-                                    step="0.01"
-                                    min="0"
-                                    value={(*price_input).clone()}
-                                    oninput={oninput_price_rate}
-                                    placeholder={"SOL/USD"}
-                                />
-                                <button class="unit-apply" onclick={onclick_apply_rate}>
-                                    { "✓" }
-                                </button>
+                            <div class="unit-price-label">
+                                { price_unit.usd_rate
+                                    .map(|rate| format!("SOL/USD {:.2}", rate))
+                                    .unwrap_or_else(|| "SOL/USD —".to_string()) }
                             </div>
                         }
                     </div>

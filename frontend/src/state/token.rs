@@ -7,15 +7,30 @@ const LS_SORT_KEY: &str = "tokens_sort";
 
 fn load_sort() -> SortState {
     let default = SortState::default();
-    let window = match web_sys::window() { Some(w) => w, None => return default };
-    let storage = match window.local_storage().ok().flatten() { Some(s) => s, None => return default };
-    let raw = match storage.get_item(LS_SORT_KEY).ok().flatten() { Some(v) => v, None => return default };
+    let window = match web_sys::window() {
+        Some(w) => w,
+        None => return default,
+    };
+    let storage = match window.local_storage().ok().flatten() {
+        Some(s) => s,
+        None => return default,
+    };
+    let raw = match storage.get_item(LS_SORT_KEY).ok().flatten() {
+        Some(v) => v,
+        None => return default,
+    };
     serde_json::from_str(&raw).unwrap_or(default)
 }
 
 fn save_sort(sort: &SortState) {
-    let window = match web_sys::window() { Some(w) => w, None => return };
-    let storage = match window.local_storage().ok().flatten() { Some(s) => s, None => return };
+    let window = match web_sys::window() {
+        Some(w) => w,
+        None => return,
+    };
+    let storage = match window.local_storage().ok().flatten() {
+        Some(s) => s,
+        None => return,
+    };
     if let Ok(json) = serde_json::to_string(sort) {
         let _ = storage.set_item(LS_SORT_KEY, &json);
     }
@@ -82,7 +97,7 @@ pub enum TokenAction {
         tokens: Vec<TokenRecord>,
         total: usize,
     },
-        /// Merge/replace tokens by `mint_address` so we can apply incremental updates
+    /// Merge/replace tokens by `mint_address` so we can apply incremental updates
     /// UpdateTokens now accepts partial diffs so the client can apply SSE deltas
     UpdateTokens {
         diffs: Vec<TokenDiff>,
@@ -137,13 +152,31 @@ pub fn sort_tokens(tokens: &mut Vec<TokenRecord>, sort: &SortState) {
                 let fep_a = a
                     .initial_buy_sol
                     .and_then(|buy| a.initial_supply_token.map(|supply| (buy, supply)))
-                    .and_then(|(buy, supply)| if supply > 0 { Some(buy / supply as f64) } else { None });
+                    .and_then(|(buy, supply)| {
+                        if supply > 0 {
+                            Some(buy / supply as f64)
+                        } else {
+                            None
+                        }
+                    });
                 let fep_b = b
                     .initial_buy_sol
                     .and_then(|buy| b.initial_supply_token.map(|supply| (buy, supply)))
-                    .and_then(|(buy, supply)| if supply > 0 { Some(buy / supply as f64) } else { None });
-                let ratio_a = fep_a.and_then(|fep| a.ath_price.and_then(|ath| if fep != 0.0 { Some(ath / fep) } else { None }));
-                let ratio_b = fep_b.and_then(|fep| b.ath_price.and_then(|ath| if fep != 0.0 { Some(ath / fep) } else { None }));
+                    .and_then(|(buy, supply)| {
+                        if supply > 0 {
+                            Some(buy / supply as f64)
+                        } else {
+                            None
+                        }
+                    });
+                let ratio_a = fep_a.and_then(|fep| {
+                    a.ath_price
+                        .and_then(|ath| if fep != 0.0 { Some(ath / fep) } else { None })
+                });
+                let ratio_b = fep_b.and_then(|fep| {
+                    b.ath_price
+                        .and_then(|ath| if fep != 0.0 { Some(ath / fep) } else { None })
+                });
                 ratio_a
                     .partial_cmp(&ratio_b)
                     .unwrap_or(std::cmp::Ordering::Equal)
@@ -152,13 +185,31 @@ pub fn sort_tokens(tokens: &mut Vec<TokenRecord>, sort: &SortState) {
                 let fep_a = a
                     .initial_buy_sol
                     .and_then(|buy| a.initial_supply_token.map(|supply| (buy, supply)))
-                    .and_then(|(buy, supply)| if supply > 0 { Some(buy / supply as f64) } else { None });
+                    .and_then(|(buy, supply)| {
+                        if supply > 0 {
+                            Some(buy / supply as f64)
+                        } else {
+                            None
+                        }
+                    });
                 let fep_b = b
                     .initial_buy_sol
                     .and_then(|buy| b.initial_supply_token.map(|supply| (buy, supply)))
-                    .and_then(|(buy, supply)| if supply > 0 { Some(buy / supply as f64) } else { None });
-                let ratio_a = fep_a.and_then(|fep| a.current_price.and_then(|cur| if fep != 0.0 { Some(cur / fep) } else { None }));
-                let ratio_b = fep_b.and_then(|fep| b.current_price.and_then(|cur| if fep != 0.0 { Some(cur / fep) } else { None }));
+                    .and_then(|(buy, supply)| {
+                        if supply > 0 {
+                            Some(buy / supply as f64)
+                        } else {
+                            None
+                        }
+                    });
+                let ratio_a = fep_a.and_then(|fep| {
+                    a.current_price
+                        .and_then(|cur| if fep != 0.0 { Some(cur / fep) } else { None })
+                });
+                let ratio_b = fep_b.and_then(|fep| {
+                    b.current_price
+                        .and_then(|cur| if fep != 0.0 { Some(cur / fep) } else { None })
+                });
                 ratio_a
                     .partial_cmp(&ratio_b)
                     .unwrap_or(std::cmp::Ordering::Equal)
@@ -246,27 +297,57 @@ impl Reducible for TokenState {
                     let mint = diff.mint_address.clone();
                     if let Some(pos) = next.tokens.iter().position(|t| t.mint_address == mint) {
                         let t = &mut next.tokens[pos];
-                        if let Some(name) = diff.name { t.name = name }
-                        if let Some(sym) = diff.symbol { t.symbol = sym }
-                        if let Some(cp) = diff.current_price { t.current_price = Some(cp) }
-                        if let Some(ath) = diff.ath_price { t.ath_price = Some(ath) }
-                        if let Some(ath_ts) = diff.ath_timestamp { t.ath_timestamp = Some(ath_ts) }
-                        if let Some(mc) = diff.market_cap { t.market_cap = Some(mc) }
-                        if let Some(delta) = diff.volume_sol_delta { t.volume_sol_total = t.volume_sol_total + delta }
-                        if let Some(dn) = diff.trade_count_delta { t.trade_count = t.trade_count.saturating_add(dn) }
-                        if let Some(last) = diff.last_trade_at { t.last_trade_at = Some(last) }
-                        if diff.initial_buy_sol.is_some() { t.initial_buy_sol = diff.initial_buy_sol }
-                        if diff.initial_supply_token.is_some() { t.initial_supply_token = diff.initial_supply_token }
-                        if diff.cu_limit.is_some() { t.cu_limit = diff.cu_limit }
-                        if diff.cu_price.is_some() { t.cu_price = diff.cu_price }
-                        if let Some(mig) = diff.is_migrated { t.is_migrated = mig }
+                        if let Some(name) = diff.name {
+                            t.name = name
+                        }
+                        if let Some(sym) = diff.symbol {
+                            t.symbol = sym
+                        }
+                        if let Some(cp) = diff.current_price {
+                            t.current_price = Some(cp)
+                        }
+                        if let Some(ath) = diff.ath_price {
+                            t.ath_price = Some(ath)
+                        }
+                        if let Some(ath_ts) = diff.ath_timestamp {
+                            t.ath_timestamp = Some(ath_ts)
+                        }
+                        if let Some(mc) = diff.market_cap {
+                            t.market_cap = Some(mc)
+                        }
+                        if let Some(delta) = diff.volume_sol_delta {
+                            t.volume_sol_total = t.volume_sol_total + delta
+                        }
+                        if let Some(dn) = diff.trade_count_delta {
+                            t.trade_count = t.trade_count.saturating_add(dn)
+                        }
+                        if let Some(last) = diff.last_trade_at {
+                            t.last_trade_at = Some(last)
+                        }
+                        if diff.initial_buy_sol.is_some() {
+                            t.initial_buy_sol = diff.initial_buy_sol
+                        }
+                        if diff.initial_supply_token.is_some() {
+                            t.initial_supply_token = diff.initial_supply_token
+                        }
+                        if diff.cu_limit.is_some() {
+                            t.cu_limit = diff.cu_limit
+                        }
+                        if diff.cu_price.is_some() {
+                            t.cu_price = diff.cu_price
+                        }
+                        if let Some(mig) = diff.is_migrated {
+                            t.is_migrated = mig
+                        }
                     } else {
                         // Do not add new tokens to the current page state. The list
                         // is a paginated/search result and should only update rows
                         // that are already present.
                     }
                 }
-                if let Some(t) = total { next.total = t }
+                if let Some(t) = total {
+                    next.total = t
+                }
                 sort_tokens(&mut next.tokens, &next.sort);
                 next.loading = false;
                 next.error = None;

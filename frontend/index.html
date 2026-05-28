@@ -2171,17 +2171,24 @@
         .row-num { text-align: right; color: var(--text-dim); font-size: 11px; font-family: var(--mono); }
 
         /* ══ Modal ═════════════════════════════════════════════════════════ */
+        body.modal-open {
+            overflow: hidden;
+        }
         .modal-overlay {
             position: fixed;
+            height: calc(100vh - 46px);
             inset: 0;
             z-index: 200;
             background: rgba(0, 0, 0, 0.65);
             backdrop-filter: blur(4px);
             display: flex;
-            align-items: center;
+            /* align-items: center; */
             justify-content: center;
             padding: 20px;
             animation: fade-in-overlay .18s ease both;
+            overscroll-behavior: contain;
+            box-sizing: border-box;
+            overflow-y: auto;
         }
         @keyframes fade-in-overlay { from { opacity: 0; } to { opacity: 1; } }
 
@@ -2190,7 +2197,12 @@
             border: 1px solid rgba(255, 255, 255, 0.08);
             border-radius: 12px;
             width: 100%;
-            max-width: 540px;
+            max-width: 600px;
+            /* max-height: calc(100vh - 40px); */
+            height: fit-content;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
             box-shadow: 0 24px 80px rgba(0, 0, 0, 0.7);
             animation: modal-in .2s cubic-bezier(.2,.9,.2,1) both;
         }
@@ -2214,15 +2226,18 @@
             background: none;
             border: none;
             color: var(--text-dim);
-            font-size: 18px;
+            font-size: 24px;
             line-height: 1;
             cursor: pointer;
-            padding: 2px 6px;
+            padding: 4px 8px;
             border-radius: 4px;
             transition: background .12s, color .12s;
         }
         .modal-header button:hover { background: rgba(255, 255, 255, 0.06); color: var(--text); }
-        .modal-body { padding: 20px; }
+        .modal-body {
+            padding: 20px;
+            overflow: auto;
+        }
 
         /* ══ Rule form ══════════════════════════════════════════════════════ */
         .rule-form { display: flex; flex-direction: column; gap: 16px; }

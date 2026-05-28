@@ -4,58 +4,69 @@ use yew::prelude::*;
 /// (sort_key, display_label, col_width_px, optional_th_class)
 pub const COLUMNS: &[(&str, &str, u32, Option<&str>)] = &[
     // Identity
-    ("symbol",            "Symbol",       90,  None),
-    ("name",              "Name",         120, None),
-    ("mint",              "Mint",         130, None),
-    ("creator",           "Creator",      130, None),
-    ("create_tx",         "Create TX",    130, None),
+    ("symbol", "Symbol", 90, None),
+    ("name", "Name", 120, None),
+    ("mint", "Mint", 130, None),
+    ("creator", "Creator", 130, None),
+    ("create_tx", "Create TX", 130, None),
     // Lifecycle
-    ("age",               "Age",           72, None),
-    ("created",           "Created",      110, None),
+    ("age", "Age", 72, None),
+    ("created", "Created", 110, None),
     // Activity
-    ("last_trade",        "Last Trade",   110, None),
-    ("trade_count",       "Trades",        66, None),
+    ("last_trade", "Last Trade", 110, None),
+    ("trade_count", "Trades", 66, None),
     // ATH
-    ("ath_price",         "ATH",           88, None),
-    ("ath_timestamp",     "ATH At",       110, None),
-    ("ath_fep_ratio",     "ATH/FEP",       88, Some("th-ath-fep")),
+    ("ath_price", "ATH", 88, None),
+    ("ath_timestamp", "ATH At", 110, None),
+    ("ath_fep_ratio", "ATH/FEP", 88, Some("th-ath-fep")),
     // Price
-    ("current_price",     "Price",         88, None),
-    ("current_fep_ratio", "Cur/FEP",       76, Some("th-cur-fep")),
+    ("current_price", "Price", 88, None),
+    ("current_fep_ratio", "Cur/FEP", 76, Some("th-cur-fep")),
     // Market
-    ("market_cap",        "MCap",          84, None),
-    ("volume",            "Volume",        78, None),
+    ("market_cap", "MCap", 84, None),
+    ("volume", "Volume", 78, None),
     // Buy / Supply
-    ("initial_buy",       "Init Buy",      78, None),
-    ("init_supply",       "Init Supply",   90, None),
+    ("initial_buy", "Init Buy", 78, None),
+    ("init_supply", "Init Supply", 90, None),
     // Cost
-    ("token_amount",      "Token Amt",     90, None),
-    ("max_sol_cost",      "Max SOL Cost", 100, Some("th-cost")),
+    ("token_amount", "Token Amt", 90, None),
+    ("max_sol_cost", "Max SOL Cost", 100, Some("th-cost")),
     // Liquidity
-    ("spendable_sol_in",  "Spendable SOL In", 100, Some("th-liquidity")),
-    ("min_tokens_out",    "Min Tokens",    90, None),
+    (
+        "spendable_sol_in",
+        "Spendable SOL In",
+        100,
+        Some("th-liquidity"),
+    ),
+    ("min_tokens_out", "Min Tokens", 90, None),
     // Technical
-    ("cu_limit",          "CU Limit",      72, None),
-    ("cu_price",          "CU Price",      72, None),
-    ("ix_count",          "IX Count",      54, None),
-    ("ix_labels",         "IX Labels",    180, None),
+    ("cu_limit", "CU Limit", 72, None),
+    ("cu_price", "CU Price", 72, None),
+    ("ix_count", "IX Count", 54, None),
+    ("ix_labels", "IX Labels", 180, None),
     // Status
-    ("migrated",          "Migrated",      66, None),
-    ("mayhem_mode",       "Mayhem",        66, None),
+    ("migrated", "Migrated", 66, None),
+    ("mayhem_mode", "Mayhem", 66, None),
 ];
 
 pub const COLUMN_GROUPS: &[(&str, &[&str])] = &[
-    ("Identity",      &["symbol", "name", "mint", "creator", "create_tx"]),
-    ("Lifecycle",     &["age", "created"]),
-    ("Activity",      &["last_trade", "trade_count"]),
-    ("ATH",           &["ath_price", "ath_timestamp", "ath_fep_ratio"]),
-    ("Price",         &["current_price", "current_fep_ratio"]),
-    ("Market",        &["market_cap", "volume"]),
-    ("Buy / Supply",  &["initial_buy", "init_supply"]),
-    ("Cost",          &["token_amount", "max_sol_cost"]),
-    ("Liquidity",     &["spendable_sol_in", "min_tokens_out"]),
-    ("Technical",     &["cu_limit", "cu_price", "ix_count", "ix_labels"]),
-    ("Status",        &["migrated", "mayhem_mode"]),
+    (
+        "Identity",
+        &["symbol", "name", "mint", "creator", "create_tx"],
+    ),
+    ("Lifecycle", &["age", "created"]),
+    ("Activity", &["last_trade", "trade_count"]),
+    ("ATH", &["ath_price", "ath_timestamp", "ath_fep_ratio"]),
+    ("Price", &["current_price", "current_fep_ratio"]),
+    ("Market", &["market_cap", "volume"]),
+    ("Buy / Supply", &["initial_buy", "init_supply"]),
+    ("Cost", &["token_amount", "max_sol_cost"]),
+    ("Liquidity", &["spendable_sol_in", "min_tokens_out"]),
+    (
+        "Technical",
+        &["cu_limit", "cu_price", "ix_count", "ix_labels"],
+    ),
+    ("Status", &["migrated", "mayhem_mode"]),
 ];
 
 pub fn column_group(key: &str) -> Option<&'static str> {

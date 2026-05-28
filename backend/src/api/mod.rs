@@ -42,6 +42,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 "/system/live",
                 web::put().to(handlers::system::set_live_mode),
             )
+            .route(
+                "/system/price",
+                web::get().to(handlers::system::get_sol_price),
+            )
             // Wallet endpoints
             .route(
                 "/wallets/{address}",

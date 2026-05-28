@@ -16,6 +16,7 @@ pub struct AppState {
     /// Clone the sender to subscribe services; broadcast internally.
     pub event_tx: broadcast::Sender<InternalEvent>,
     pub live_mode: watch::Sender<bool>,
+    pub sol_price: Arc<watch::Sender<Option<f64>>>,
 }
 
 impl AppState {
@@ -25,6 +26,7 @@ impl AppState {
         creator_cache: Arc<CreatorCache>,
         event_tx: broadcast::Sender<InternalEvent>,
         live_mode: watch::Sender<bool>,
+        sol_price: Arc<watch::Sender<Option<f64>>>,
     ) -> Self {
         Self {
             db,
@@ -32,6 +34,7 @@ impl AppState {
             creator_cache,
             event_tx,
             live_mode,
+            sol_price,
         }
     }
 
@@ -41,5 +44,17 @@ impl AppState {
 
     pub fn set_live(&self, live: bool) {
         let _ = self.live_mode.send(live);
+    }
+
+    pub fn set_sol_price(&self, price: Option<f64>) {
+        let _ = self.sol_price.send(price);
+    }
+
+    pub fn latest_sol_price(&self) -> Option<f64> {
+        *self.sol_price.borrow()
+    }
+
+    pub fn subscribe_sol_price(&self) -> watch::Receiver<Option<f64>> {
+        self.sol_price.subscribe()
     }
 }

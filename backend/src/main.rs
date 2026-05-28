@@ -10,7 +10,7 @@ mod strategies;
 
 use anyhow::Context;
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use actix_cors::Cors;
 use actix_web::{web, App, HttpServer};
@@ -54,12 +54,15 @@ async fn main() -> anyhow::Result<()> {
 
     // AppState — shared with API handlers via web::Data
     let (live_tx, live_rx) = tokio::sync::watch::channel(false);
+    let (sol_price_tx, _sol_price_rx) = tokio::sync::watch::channel::<Option<f64>>(None);
+    let sol_price = Arc::new(sol_price_tx);
     let app_state = Arc::new(state::AppState::new(
         db.clone(),
         token_cache.clone(),
         creator_cache.clone(),
         event_tx.clone(),
         live_tx.clone(),
+        sol_price.clone(),
     ));
 
     // Raw WS message channel: helius_ws → event_handler
@@ -67,11 +70,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Ingest: Helius WebSocket feed
     let ws_settings = Arc::new(settings.clone());
-    let ws_task = tokio::spawn(ingest::helius_ws::run(
-        ws_settings,
-        raw_tx,
-        live_rx,
-    ));
+    let ws_task = tokio::spawn(ingest::helius_ws::run(ws_settings, raw_tx, live_rx));
 
     // Ingest: decode + persist + broadcast
     let event_handler = ingest::EventHandler::new(
@@ -89,6 +88,20 @@ async fn main() -> anyhow::Result<()> {
     // Service: strategy handler — subscribes to the event bus
     let strategy_service = services::StrategyService::new(db.clone());
     let strategy_task = tokio::spawn(strategy_service.run(event_tx.subscribe()));
+
+    // Initialize SOL price cache immediately, then start the poller.
+    match services::price_service::fetch_latest_sol_price().await {
+        Ok(price) => {
+            info!("Initial SOL/USD price: ${price:.2}");
+            let _ = sol_price.send(Some(price));
+        }
+        Err(err) => {
+            warn!("Initial SOL/USD price fetch failed: {err}");
+        }
+    }
+
+    // Service: SOL price polling — updates the in-memory SOL/USD cache
+    let price_task = tokio::spawn(services::price_service::run(sol_price.clone()));
 
     // // Service: analyzers — volume + creator scoring
     // let analyzer_service = analyzers::AnalyzerService::new(
@@ -111,10 +124,10 @@ async fn main() -> anyhow::Result<()> {
         let cors = if allowed_origin == "*" {
             Cors::default()
                 .allow_any_origin()
-            .allowed_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"])
-            .allowed_header(actix_web::http::header::CONTENT_TYPE)
-            .allowed_header(actix_web::http::header::ACCEPT)
-            .max_age(3600)
+                .allowed_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+                .allowed_header(actix_web::http::header::CONTENT_TYPE)
+                .allowed_header(actix_web::http::header::ACCEPT)
+                .max_age(3600)
         } else {
             Cors::default()
                 .allowed_origin(&allowed_origin)
@@ -141,6 +154,7 @@ async fn main() -> anyhow::Result<()> {
         _ = handler_task  => error!("Event handler task exited unexpectedly"),
         _ = service_task  => error!("Token service task exited unexpectedly"),
         _ = strategy_task => error!("Strategy service task exited unexpectedly"),
+        _ = price_task    => error!("Price service task exited unexpectedly"),
         // _ = analyzer_task => error!("Analyzer service task exited unexpectedly"),
         res = server_task => {
             match res {

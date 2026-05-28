@@ -101,6 +101,7 @@ impl Position {
 
     /// Calculate profit/loss percentage.
     pub fn pnl_percentage(&self) -> Option<f64> {
-        self.exit_price.map(|ep| ((ep - self.entry_price) / self.entry_price) * 100.0)
+        self.exit_price
+            .map(|ep| ((ep - self.entry_price) / self.entry_price) * 100.0)
     }
 }

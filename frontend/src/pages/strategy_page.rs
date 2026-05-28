@@ -1,13 +1,12 @@
+use serde_json::Value;
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
-use serde_json::Value;
 
-use crate::components::Header;
 use crate::components::modal::Modal;
+use crate::components::Header;
 use crate::services::api::{
-    create_tpsl_rule, delete_tpsl_rule, fetch_tpsl_rules, simulate_tpsl_rule,
-    update_tpsl_rule, CreateRuleRequest, RuleRecord, SimulatedTokenResult,
-    UpdateRuleRequest,
+    create_tpsl_rule, delete_tpsl_rule, fetch_tpsl_rules, simulate_tpsl_rule, update_tpsl_rule,
+    CreateRuleRequest, RuleRecord, SimulatedTokenResult, UpdateRuleRequest,
 };
 use crate::state::PriceUnitContext;
 use crate::utils::format::{format_age, format_compact};
@@ -52,6 +51,7 @@ pub fn strategy_page() -> Html {
     let f_max_sol_cost = use_state(String::new);
     let f_spendable_sol_in = use_state(String::new);
     let f_max_holding_tokens = use_state(String::new);
+    let f_total_max_trade_tokens = use_state(String::new);
     let f_tolerance = use_state(String::new);
     let f_allow_edit_params = use_state(|| false);
     let form_error = use_state(|| Option::<String>::None);
@@ -87,12 +87,36 @@ pub fn strategy_page() -> Html {
     // ── Helpers: open modals ──────────────────────────────────────────────────
     let open_add = {
         let (modal_mode, f_name, f_initial_buy, f_cu_limit, f_cu_price) = (
-            modal_mode.clone(), f_name.clone(), f_initial_buy.clone(),
-            f_cu_limit.clone(), f_cu_price.clone(),
+            modal_mode.clone(),
+            f_name.clone(),
+            f_initial_buy.clone(),
+            f_cu_limit.clone(),
+            f_cu_price.clone(),
         );
-        let (f_ix_labels, f_buy_amount, f_take_profit, f_stop_loss, f_max_sol_cost, f_spendable_sol_in, f_max_holding_tokens, f_tolerance, f_allow_edit_params, form_error) = (
-            f_ix_labels.clone(), f_buy_amount.clone(), f_take_profit.clone(),
-            f_stop_loss.clone(), f_max_sol_cost.clone(), f_spendable_sol_in.clone(), f_max_holding_tokens.clone(), f_tolerance.clone(), f_allow_edit_params.clone(), form_error.clone(),
+        let (
+            f_ix_labels,
+            f_buy_amount,
+            f_take_profit,
+            f_stop_loss,
+            f_max_sol_cost,
+            f_spendable_sol_in,
+            f_max_holding_tokens,
+            f_total_max_trade_tokens,
+            f_tolerance,
+            f_allow_edit_params,
+            form_error,
+        ) = (
+            f_ix_labels.clone(),
+            f_buy_amount.clone(),
+            f_take_profit.clone(),
+            f_stop_loss.clone(),
+            f_max_sol_cost.clone(),
+            f_spendable_sol_in.clone(),
+            f_max_holding_tokens.clone(),
+            f_total_max_trade_tokens.clone(),
+            f_tolerance.clone(),
+            f_allow_edit_params.clone(),
+            form_error.clone(),
         );
         Callback::from(move |_: MouseEvent| {
             f_name.set(String::new());
@@ -106,6 +130,7 @@ pub fn strategy_page() -> Html {
             f_max_sol_cost.set(String::new());
             f_spendable_sol_in.set(String::new());
             f_max_holding_tokens.set(String::new());
+            f_total_max_trade_tokens.set(String::new());
             f_tolerance.set("0".into());
             f_allow_edit_params.set(false);
             form_error.set(None);
@@ -122,25 +147,76 @@ pub fn strategy_page() -> Html {
 
     let open_edit = {
         let (modal_mode, f_name, f_initial_buy, f_cu_limit, f_cu_price) = (
-            modal_mode.clone(), f_name.clone(), f_initial_buy.clone(),
-            f_cu_limit.clone(), f_cu_price.clone(),
+            modal_mode.clone(),
+            f_name.clone(),
+            f_initial_buy.clone(),
+            f_cu_limit.clone(),
+            f_cu_price.clone(),
         );
-        let (f_ix_labels, f_buy_amount, f_take_profit, f_stop_loss, f_max_sol_cost, f_spendable_sol_in, f_max_holding_tokens, f_tolerance, f_allow_edit_params, form_error) = (
-            f_ix_labels.clone(), f_buy_amount.clone(), f_take_profit.clone(),
-            f_stop_loss.clone(), f_max_sol_cost.clone(), f_spendable_sol_in.clone(), f_max_holding_tokens.clone(), f_tolerance.clone(), f_allow_edit_params.clone(), form_error.clone(),
+        let (
+            f_ix_labels,
+            f_buy_amount,
+            f_take_profit,
+            f_stop_loss,
+            f_max_sol_cost,
+            f_spendable_sol_in,
+            f_max_holding_tokens,
+            f_total_max_trade_tokens,
+            f_tolerance,
+            f_allow_edit_params,
+            form_error,
+        ) = (
+            f_ix_labels.clone(),
+            f_buy_amount.clone(),
+            f_take_profit.clone(),
+            f_stop_loss.clone(),
+            f_max_sol_cost.clone(),
+            f_spendable_sol_in.clone(),
+            f_max_holding_tokens.clone(),
+            f_total_max_trade_tokens.clone(),
+            f_tolerance.clone(),
+            f_allow_edit_params.clone(),
+            form_error.clone(),
         );
         Callback::from(move |rule: RuleRecord| {
             f_name.set(rule.rule_name.clone());
-            f_initial_buy.set(rule.p_initial_buy_sol.map(|v| v.to_string()).unwrap_or_default());
+            f_initial_buy.set(
+                rule.p_initial_buy_sol
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+            );
             f_cu_limit.set(rule.p_cu_limit.map(|v| v.to_string()).unwrap_or_default());
             f_cu_price.set(rule.p_cu_price.map(|v| v.to_string()).unwrap_or_default());
-            f_max_sol_cost.set(rule.p_max_sol_cost.map(|v| v.to_string()).unwrap_or_default());
-            f_spendable_sol_in.set(rule.p_spendable_sol_in.map(|v| v.to_string()).unwrap_or_default());
-            f_max_holding_tokens.set(rule.p_max_holding_tokens.map(|v| v.to_string()).unwrap_or_default());
+            f_max_sol_cost.set(
+                rule.p_max_sol_cost
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+            );
+            f_spendable_sol_in.set(
+                rule.p_spendable_sol_in
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+            );
+            f_max_holding_tokens.set(
+                rule.p_max_holding_tokens
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+            );
+            f_total_max_trade_tokens.set(
+                rule.p_total_max_trade_tokens
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+            );
             f_tolerance.set(rule.tolerance_pct.to_string());
-            let labels = rule.p_ix_labels
+            let labels = rule
+                .p_ix_labels
                 .as_array()
-                .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
                 .unwrap_or_default();
             f_ix_labels.set(labels);
             f_buy_amount.set(rule.buy_amount.to_string());
@@ -169,26 +245,74 @@ pub fn strategy_page() -> Html {
     // ── Save (create or update) ───────────────────────────────────────────────
     let on_save = {
         let (modal_mode, rules, form_error, form_loading) = (
-            modal_mode.clone(), rules.clone(), form_error.clone(), form_loading.clone(),
+            modal_mode.clone(),
+            rules.clone(),
+            form_error.clone(),
+            form_loading.clone(),
         );
-        let (f_name, f_initial_buy, f_cu_limit, f_cu_price, f_ix_labels, f_max_sol_cost, f_spendable_sol_in, f_max_holding_tokens, f_tolerance) = (
-            f_name.clone(), f_initial_buy.clone(), f_cu_limit.clone(),
-            f_cu_price.clone(), f_ix_labels.clone(), f_max_sol_cost.clone(), f_spendable_sol_in.clone(), f_max_holding_tokens.clone(), f_tolerance.clone(),
+        let (
+            f_name,
+            f_initial_buy,
+            f_cu_limit,
+            f_cu_price,
+            f_ix_labels,
+            f_max_sol_cost,
+            f_spendable_sol_in,
+            f_max_holding_tokens,
+            f_total_max_trade_tokens,
+            f_tolerance,
+        ) = (
+            f_name.clone(),
+            f_initial_buy.clone(),
+            f_cu_limit.clone(),
+            f_cu_price.clone(),
+            f_ix_labels.clone(),
+            f_max_sol_cost.clone(),
+            f_spendable_sol_in.clone(),
+            f_max_holding_tokens.clone(),
+            f_total_max_trade_tokens.clone(),
+            f_tolerance.clone(),
         );
         let (f_buy_amount, f_take_profit, f_stop_loss) = (
-            f_buy_amount.clone(), f_take_profit.clone(), f_stop_loss.clone(),
+            f_buy_amount.clone(),
+            f_take_profit.clone(),
+            f_stop_loss.clone(),
         );
         Callback::from(move |_: MouseEvent| {
             let mode = (*modal_mode).clone();
             let (rules, form_error, form_loading, modal_mode) = (
-                rules.clone(), form_error.clone(), form_loading.clone(), modal_mode.clone(),
+                rules.clone(),
+                form_error.clone(),
+                form_loading.clone(),
+                modal_mode.clone(),
             );
-            let (name, initial_buy_s, cu_limit_s, cu_price_s, ix_labels_s, max_sol_cost_s, spendable_sol_in_s, max_holding_tokens_s, tolerance_s) = (
-                (*f_name).clone(), (*f_initial_buy).clone(), (*f_cu_limit).clone(),
-                (*f_cu_price).clone(), (*f_ix_labels).clone(), (*f_max_sol_cost).clone(), (*f_spendable_sol_in).clone(), (*f_max_holding_tokens).clone(), (*f_tolerance).clone(),
+            let (
+                name,
+                initial_buy_s,
+                cu_limit_s,
+                cu_price_s,
+                ix_labels_s,
+                max_sol_cost_s,
+                spendable_sol_in_s,
+                max_holding_tokens_s,
+                total_max_trade_tokens_s,
+                tolerance_s,
+            ) = (
+                (*f_name).clone(),
+                (*f_initial_buy).clone(),
+                (*f_cu_limit).clone(),
+                (*f_cu_price).clone(),
+                (*f_ix_labels).clone(),
+                (*f_max_sol_cost).clone(),
+                (*f_spendable_sol_in).clone(),
+                (*f_max_holding_tokens).clone(),
+                (*f_total_max_trade_tokens).clone(),
+                (*f_tolerance).clone(),
             );
             let (buy_amount_s, take_profit_s, stop_loss_s) = (
-                (*f_buy_amount).clone(), (*f_take_profit).clone(), (*f_stop_loss).clone(),
+                (*f_buy_amount).clone(),
+                (*f_take_profit).clone(),
+                (*f_stop_loss).clone(),
             );
             form_error.set(None);
             form_loading.set(true);
@@ -196,15 +320,27 @@ pub fn strategy_page() -> Html {
             spawn_local(async move {
                 let buy_amount = match buy_amount_s.trim().parse::<f64>() {
                     Ok(v) => v,
-                    Err(_) => { form_error.set(Some("Invalid buy amount".into())); form_loading.set(false); return; }
+                    Err(_) => {
+                        form_error.set(Some("Invalid buy amount".into()));
+                        form_loading.set(false);
+                        return;
+                    }
                 };
                 let take_profit = match take_profit_s.trim().parse::<f64>() {
                     Ok(v) => v,
-                    Err(_) => { form_error.set(Some("Invalid take profit %".into())); form_loading.set(false); return; }
+                    Err(_) => {
+                        form_error.set(Some("Invalid take profit %".into()));
+                        form_loading.set(false);
+                        return;
+                    }
                 };
                 let stop_loss = match stop_loss_s.trim().parse::<f64>() {
                     Ok(v) => v,
-                    Err(_) => { form_error.set(Some("Invalid stop loss %".into())); form_loading.set(false); return; }
+                    Err(_) => {
+                        form_error.set(Some("Invalid stop loss %".into()));
+                        form_loading.set(false);
+                        return;
+                    }
                 };
 
                 match mode {
@@ -214,37 +350,110 @@ pub fn strategy_page() -> Html {
                         } else {
                             match initial_buy_s.trim().parse::<f64>() {
                                 Ok(v) => Some(v),
-                                Err(_) => { form_error.set(Some("Invalid initial buy SOL".into())); form_loading.set(false); return; }
+                                Err(_) => {
+                                    form_error.set(Some("Invalid initial buy SOL".into()));
+                                    form_loading.set(false);
+                                    return;
+                                }
                             }
                         };
-                        let p_cu_limit = if cu_limit_s.trim().is_empty() { None } else { cu_limit_s.trim().parse::<u64>().ok() };
-                        let p_cu_price = if cu_price_s.trim().is_empty() { None } else { cu_price_s.trim().parse::<u64>().ok() };
+                        let p_cu_limit = if cu_limit_s.trim().is_empty() {
+                            None
+                        } else {
+                            cu_limit_s.trim().parse::<u64>().ok()
+                        };
+                        let p_cu_price = if cu_price_s.trim().is_empty() {
+                            None
+                        } else {
+                            cu_price_s.trim().parse::<u64>().ok()
+                        };
                         let ix_labels: Vec<Value> = if ix_labels_s.trim().starts_with('[') {
                             match serde_json::from_str::<Value>(ix_labels_s.trim()) {
-                                Ok(Value::Array(arr)) => arr.into_iter().map(|item| {
-                                    if item.is_string() {
-                                        item
-                                    } else {
-                                        Value::String(item.to_string())
-                                    }
-                                }).collect(),
+                                Ok(Value::Array(arr)) => arr
+                                    .into_iter()
+                                    .map(|item| {
+                                        if item.is_string() {
+                                            item
+                                        } else {
+                                            Value::String(item.to_string())
+                                        }
+                                    })
+                                    .collect(),
                                 _ => ix_labels_s
-                                    .split(',').map(|s| s.trim()).filter(|s| !s.is_empty())
-                                    .map(|s| Value::String(s.to_string())).collect(),
+                                    .split(',')
+                                    .map(|s| s.trim())
+                                    .filter(|s| !s.is_empty())
+                                    .map(|s| Value::String(s.to_string()))
+                                    .collect(),
                             }
                         } else {
                             ix_labels_s
-                                .split(',').map(|s| s.trim()).filter(|s| !s.is_empty())
-                                .map(|s| Value::String(s.to_string())).collect()
+                                .split(',')
+                                .map(|s| s.trim())
+                                .filter(|s| !s.is_empty())
+                                .map(|s| Value::String(s.to_string()))
+                                .collect()
                         };
 
-                        let p_max_sol_cost = if max_sol_cost_s.trim().is_empty() { None } else { max_sol_cost_s.trim().parse::<f64>().ok() };
-                        let p_spendable_sol_in = if spendable_sol_in_s.trim().is_empty() { None } else { spendable_sol_in_s.trim().parse::<f64>().ok() };
-                        let p_max_holding_tokens = if max_holding_tokens_s.trim().is_empty() { None } else { match max_holding_tokens_s.trim().parse::<u64>() { Ok(v) => Some(v), Err(_) => { form_error.set(Some("Invalid max holding tokens".into())); form_loading.set(false); return; } } };
-                        let p_tolerance = if tolerance_s.trim().is_empty() { None } else { match tolerance_s.trim().parse::<f64>() { Ok(v) => Some(v), Err(_) => { form_error.set(Some("Invalid tolerance %".into())); form_loading.set(false); return; } } };
+                        let p_max_sol_cost = if max_sol_cost_s.trim().is_empty() {
+                            None
+                        } else {
+                            max_sol_cost_s.trim().parse::<f64>().ok()
+                        };
+                        let p_spendable_sol_in = if spendable_sol_in_s.trim().is_empty() {
+                            None
+                        } else {
+                            spendable_sol_in_s.trim().parse::<f64>().ok()
+                        };
+                        let p_max_holding_tokens = if max_holding_tokens_s.trim().is_empty() {
+                            None
+                        } else {
+                            match max_holding_tokens_s.trim().parse::<u64>() {
+                                Ok(v) => Some(v),
+                                Err(_) => {
+                                    form_error.set(Some("Invalid max holding tokens".into()));
+                                    form_loading.set(false);
+                                    return;
+                                }
+                            }
+                        };
+                        let p_total_max_trade_tokens = if total_max_trade_tokens_s.trim().is_empty() {
+                            None
+                        } else {
+                            match total_max_trade_tokens_s.trim().parse::<u64>() {
+                                Ok(v) => Some(v),
+                                Err(_) => {
+                                    form_error.set(Some("Invalid total max trade tokens".into()));
+                                    form_loading.set(false);
+                                    return;
+                                }
+                            }
+                        };
+                        let p_tolerance = if tolerance_s.trim().is_empty() {
+                            None
+                        } else {
+                            match tolerance_s.trim().parse::<f64>() {
+                                Ok(v) => Some(v),
+                                Err(_) => {
+                                    form_error.set(Some("Invalid tolerance %".into()));
+                                    form_loading.set(false);
+                                    return;
+                                }
+                            }
+                        };
                         let req = CreateRuleRequest {
-                            rule_name: name, p_initial_buy_sol, p_cu_limit, p_cu_price,
-                            p_max_sol_cost, p_spendable_sol_in, p_max_holding_tokens, p_ix_labels: Value::Array(ix_labels), buy_amount, take_profit, stop_loss,
+                            rule_name: name,
+                            p_initial_buy_sol,
+                            p_cu_limit,
+                            p_cu_price,
+                            p_max_sol_cost,
+                            p_spendable_sol_in,
+                            p_max_holding_tokens,
+                            p_total_max_trade_tokens,
+                            p_ix_labels: Value::Array(ix_labels),
+                            buy_amount,
+                            take_profit,
+                            stop_loss,
                             tolerance_pct: p_tolerance,
                         };
                         match create_tpsl_rule(&req).await {
@@ -263,7 +472,11 @@ pub fn strategy_page() -> Html {
                         } else {
                             match initial_buy_s.trim().parse::<f64>() {
                                 Ok(v) => Some(Some(v)),
-                                Err(_) => { form_error.set(Some("Invalid initial buy SOL".into())); form_loading.set(false); return; }
+                                Err(_) => {
+                                    form_error.set(Some("Invalid initial buy SOL".into()));
+                                    form_loading.set(false);
+                                    return;
+                                }
                             }
                         };
                         let p_cu_limit = if cu_limit_s.trim().is_empty() {
@@ -271,7 +484,11 @@ pub fn strategy_page() -> Html {
                         } else {
                             match cu_limit_s.trim().parse::<u64>() {
                                 Ok(v) => Some(Some(v)),
-                                Err(_) => { form_error.set(Some("Invalid CU Limit".into())); form_loading.set(false); return; }
+                                Err(_) => {
+                                    form_error.set(Some("Invalid CU Limit".into()));
+                                    form_loading.set(false);
+                                    return;
+                                }
                             }
                         };
                         let p_cu_price = if cu_price_s.trim().is_empty() {
@@ -279,7 +496,11 @@ pub fn strategy_page() -> Html {
                         } else {
                             match cu_price_s.trim().parse::<u64>() {
                                 Ok(v) => Some(Some(v)),
-                                Err(_) => { form_error.set(Some("Invalid CU Price".into())); form_loading.set(false); return; }
+                                Err(_) => {
+                                    form_error.set(Some("Invalid CU Price".into()));
+                                    form_loading.set(false);
+                                    return;
+                                }
                             }
                         };
                         let p_ix_labels = if ix_labels_s.trim().is_empty() {
@@ -287,11 +508,30 @@ pub fn strategy_page() -> Html {
                         } else {
                             let labels_vec: Vec<Value> = if ix_labels_s.trim().starts_with('[') {
                                 match serde_json::from_str::<Value>(ix_labels_s.trim()) {
-                                    Ok(Value::Array(arr)) => arr.into_iter().map(|item| if item.is_string() { item } else { Value::String(item.to_string()) }).collect(),
-                                    _ => ix_labels_s.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| Value::String(s.to_string())).collect(),
+                                    Ok(Value::Array(arr)) => arr
+                                        .into_iter()
+                                        .map(|item| {
+                                            if item.is_string() {
+                                                item
+                                            } else {
+                                                Value::String(item.to_string())
+                                            }
+                                        })
+                                        .collect(),
+                                    _ => ix_labels_s
+                                        .split(',')
+                                        .map(|s| s.trim())
+                                        .filter(|s| !s.is_empty())
+                                        .map(|s| Value::String(s.to_string()))
+                                        .collect(),
                                 }
                             } else {
-                                ix_labels_s.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| Value::String(s.to_string())).collect()
+                                ix_labels_s
+                                    .split(',')
+                                    .map(|s| s.trim())
+                                    .filter(|s| !s.is_empty())
+                                    .map(|s| Value::String(s.to_string()))
+                                    .collect()
                             };
                             Some(Some(Value::Array(labels_vec)))
                         };
@@ -300,7 +540,11 @@ pub fn strategy_page() -> Html {
                         } else {
                             match max_sol_cost_s.trim().parse::<f64>() {
                                 Ok(v) => Some(Some(v)),
-                                Err(_) => { form_error.set(Some("Invalid max SOL cost".into())); form_loading.set(false); return; }
+                                Err(_) => {
+                                    form_error.set(Some("Invalid max SOL cost".into()));
+                                    form_loading.set(false);
+                                    return;
+                                }
                             }
                         };
                         let p_spendable_sol_in = if spendable_sol_in_s.trim().is_empty() {
@@ -308,7 +552,11 @@ pub fn strategy_page() -> Html {
                         } else {
                             match spendable_sol_in_s.trim().parse::<f64>() {
                                 Ok(v) => Some(Some(v)),
-                                Err(_) => { form_error.set(Some("Invalid spendable SOL in".into())); form_loading.set(false); return; }
+                                Err(_) => {
+                                    form_error.set(Some("Invalid spendable SOL in".into()));
+                                    form_loading.set(false);
+                                    return;
+                                }
                             }
                         };
                         let p_max_holding_tokens = if max_holding_tokens_s.trim().is_empty() {
@@ -316,22 +564,64 @@ pub fn strategy_page() -> Html {
                         } else {
                             match max_holding_tokens_s.trim().parse::<u64>() {
                                 Ok(v) => Some(Some(v)),
-                                Err(_) => { form_error.set(Some("Invalid max holding tokens".into())); form_loading.set(false); return; }
+                                Err(_) => {
+                                    form_error.set(Some("Invalid max holding tokens".into()));
+                                    form_loading.set(false);
+                                    return;
+                                }
                             }
                         };
-                        let p_tolerance = if tolerance_s.trim().is_empty() { None } else { match tolerance_s.trim().parse::<f64>() { Ok(v) => Some(v), Err(_) => { form_error.set(Some("Invalid tolerance %".into())); form_loading.set(false); return; } } };
+                        let p_total_max_trade_tokens = if total_max_trade_tokens_s.trim().is_empty() {
+                            Some(None)
+                        } else {
+                            match total_max_trade_tokens_s.trim().parse::<u64>() {
+                                Ok(v) => Some(Some(v)),
+                                Err(_) => {
+                                    form_error.set(Some("Invalid total max trade tokens".into()));
+                                    form_loading.set(false);
+                                    return;
+                                }
+                            }
+                        };
+                        let p_tolerance = if tolerance_s.trim().is_empty() {
+                            None
+                        } else {
+                            match tolerance_s.trim().parse::<f64>() {
+                                Ok(v) => Some(v),
+                                Err(_) => {
+                                    form_error.set(Some("Invalid tolerance %".into()));
+                                    form_loading.set(false);
+                                    return;
+                                }
+                            }
+                        };
                         let req = UpdateRuleRequest {
-                            rule_name: Some(name), buy_amount: Some(buy_amount),
-                            take_profit: Some(take_profit), stop_loss: Some(stop_loss),
-                            p_initial_buy_sol, p_cu_limit, p_cu_price, p_ix_labels,
-                            p_max_sol_cost, p_spendable_sol_in, p_max_holding_tokens,
+                            rule_name: Some(name),
+                            buy_amount: Some(buy_amount),
+                            take_profit: Some(take_profit),
+                            stop_loss: Some(stop_loss),
+                            p_initial_buy_sol,
+                            p_cu_limit,
+                            p_cu_price,
+                            p_ix_labels,
+                            p_max_sol_cost,
+                            p_spendable_sol_in,
+                            p_max_holding_tokens,
+                            p_total_max_trade_tokens,
                             tolerance_pct: p_tolerance,
                             is_active: None,
                         };
                         match update_tpsl_rule(&rule.id, &req).await {
                             Ok(updated) => {
-                                let items = (*rules).iter()
-                                    .map(|r| if r.id == updated.id { updated.clone() } else { r.clone() })
+                                let items = (*rules)
+                                    .iter()
+                                    .map(|r| {
+                                        if r.id == updated.id {
+                                            updated.clone()
+                                        } else {
+                                            r.clone()
+                                        }
+                                    })
                                     .collect();
                                 rules.set(items);
                                 modal_mode.set(ModalMode::None);
@@ -353,15 +643,31 @@ pub fn strategy_page() -> Html {
             let rules = rules.clone();
             spawn_local(async move {
                 let req = UpdateRuleRequest {
-                    rule_name: None, buy_amount: None, take_profit: None, stop_loss: None,
-                    p_initial_buy_sol: None, p_cu_limit: None, p_cu_price: None, p_ix_labels: None,
-                    p_max_sol_cost: None, p_spendable_sol_in: None, p_max_holding_tokens: None,
+                    rule_name: None,
+                    buy_amount: None,
+                    take_profit: None,
+                    stop_loss: None,
+                    p_initial_buy_sol: None,
+                    p_cu_limit: None,
+                    p_cu_price: None,
+                    p_ix_labels: None,
+                    p_max_sol_cost: None,
+                    p_spendable_sol_in: None,
+                    p_max_holding_tokens: None,
+                    p_total_max_trade_tokens: None,
                     tolerance_pct: None,
                     is_active: Some(!rule.is_active),
                 };
                 if let Ok(updated) = update_tpsl_rule(&rule.id, &req).await {
-                    let items = (*rules).iter()
-                        .map(|r| if r.id == updated.id { updated.clone() } else { r.clone() })
+                    let items = (*rules)
+                        .iter()
+                        .map(|r| {
+                            if r.id == updated.id {
+                                updated.clone()
+                            } else {
+                                r.clone()
+                            }
+                        })
                         .collect();
                     rules.set(items);
                 }
@@ -380,17 +686,28 @@ pub fn strategy_page() -> Html {
     };
     let on_confirm_delete = {
         let (confirm_delete_id, rules, delete_loading) = (
-            confirm_delete_id.clone(), rules.clone(), delete_loading.clone(),
+            confirm_delete_id.clone(),
+            rules.clone(),
+            delete_loading.clone(),
         );
         Callback::from(move |_: MouseEvent| {
-            let rule_id = match (*confirm_delete_id).clone() { Some(id) => id, None => return };
+            let rule_id = match (*confirm_delete_id).clone() {
+                Some(id) => id,
+                None => return,
+            };
             let (confirm_delete_id, rules, delete_loading) = (
-                confirm_delete_id.clone(), rules.clone(), delete_loading.clone(),
+                confirm_delete_id.clone(),
+                rules.clone(),
+                delete_loading.clone(),
             );
             delete_loading.set(true);
             spawn_local(async move {
                 if delete_tpsl_rule(&rule_id).await.is_ok() {
-                    let items = (*rules).iter().filter(|r| r.id != rule_id).cloned().collect();
+                    let items = (*rules)
+                        .iter()
+                        .filter(|r| r.id != rule_id)
+                        .cloned()
+                        .collect();
                     rules.set(items);
                 }
                 confirm_delete_id.set(None);
@@ -402,11 +719,15 @@ pub fn strategy_page() -> Html {
     // ── Simulate ──────────────────────────────────────────────────────────────
     let on_simulate = {
         let (simulate_result, simulate_error, simulate_loading) = (
-            simulate_result.clone(), simulate_error.clone(), simulate_loading.clone(),
+            simulate_result.clone(),
+            simulate_error.clone(),
+            simulate_loading.clone(),
         );
         Callback::from(move |rule: RuleRecord| {
             let (simulate_result, simulate_error, simulate_loading) = (
-                simulate_result.clone(), simulate_error.clone(), simulate_loading.clone(),
+                simulate_result.clone(),
+                simulate_error.clone(),
+                simulate_loading.clone(),
             );
             simulate_result.set(None);
             simulate_error.set(None);
@@ -423,7 +744,8 @@ pub fn strategy_page() -> Html {
     };
 
     let search_val = (*search).to_lowercase();
-    let filtered: Vec<&RuleRecord> = (*rules).iter()
+    let filtered: Vec<&RuleRecord> = (*rules)
+        .iter()
         .filter(|r| search_val.is_empty() || r.rule_name.to_lowercase().contains(&search_val))
         .collect();
 
@@ -458,6 +780,7 @@ pub fn strategy_page() -> Html {
             .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "—".to_string());
+        let ix_count = rule.p_ix_labels.as_array().map(|arr| arr.len()).unwrap_or(0);
 
         html! {
             <tr key={rule.id.clone()}>
@@ -470,10 +793,13 @@ pub fn strategy_page() -> Html {
                 <td class="num-col">{ rule.p_max_sol_cost.map(|v| format!("{:.3}", v)).unwrap_or_else(|| "—".into()) }</td>
                 <td class="num-col">{ rule.p_spendable_sol_in.map(|v| format!("{:.3}", v)).unwrap_or_else(|| "—".into()) }</td>
                 <td class="num-col">{ rule.p_max_holding_tokens.map(|v| v.to_string()).unwrap_or_else(|| "—".into()) }</td>
+                <td class="num-col">{ rule.p_total_max_trade_tokens.map(|v| v.to_string()).unwrap_or_else(|| "—".into()) }</td>
+                <td class="num-col">{ if ix_count > 0 { ix_count.to_string() } else { "—".into() } }</td>
                 <td class="labels-col">{ labels_display }</td>
                 <td class="num-col">{ format!("{:.3}", rule.buy_amount) }</td>
                 <td class="tp-col">{ format!("{:.1}%", rule.take_profit) }</td>
                 <td class="sl-col">{ format!("{:.1}%", rule.stop_loss) }</td>
+                <td class="num-col">{ format!("{:.1}%", rule.tolerance_pct) }</td>
                 <td class="status-col">
                     <button
                         class={if rule.is_active { "status-pill status-active" } else { "status-pill status-inactive" }}
@@ -498,7 +824,8 @@ pub fn strategy_page() -> Html {
         }
     }).collect::<Html>();
 
-    let price_unit = use_context::<PriceUnitContext>().expect("PriceUnitProvider must be mounted above StrategyPage");
+    let price_unit = use_context::<PriceUnitContext>()
+        .expect("PriceUnitProvider must be mounted above StrategyPage");
 
     // ── Simulation summary card (shown above rules table) ─────────────────────
     let sim_summary_card = if let Some(result) = &*simulate_result {
@@ -513,8 +840,14 @@ pub fn strategy_page() -> Html {
 
         let tokens = &result.tokens;
         let tokens_matched = tokens.len();
-        let win_count = tokens.iter().filter(|t| t.exit_reason == "TakeProfit").count();
-        let loss_count = tokens.iter().filter(|t| t.exit_reason == "StopLoss").count();
+        let win_count = tokens
+            .iter()
+            .filter(|t| t.exit_reason == "TakeProfit")
+            .count();
+        let loss_count = tokens
+            .iter()
+            .filter(|t| t.exit_reason == "StopLoss")
+            .count();
         let open_count = tokens.iter().filter(|t| t.exit_reason == "Open").count();
         let closed_count = tokens_matched - open_count;
         let win_rate_pct = if closed_count > 0 {
@@ -524,12 +857,25 @@ pub fn strategy_page() -> Html {
         };
 
         let total_entry_amount: f64 = tokens.iter().map(|t| t.entry_amount).sum();
-        let total_holding_amount: f64 = tokens.iter().filter(|t| t.exit_reason == "Open").map(|t| t.entry_amount).sum();
-        let total_tp_amount: f64 = tokens.iter().filter(|t| t.exit_reason == "TakeProfit").filter_map(|t| t.pnl_sol).sum();
-        let total_sl_amount: f64 = tokens.iter().filter(|t| t.exit_reason == "StopLoss").filter_map(|t| t.pnl_sol.map(|v| v.abs())).sum();
+        let total_holding_amount: f64 = tokens
+            .iter()
+            .filter(|t| t.exit_reason == "Open")
+            .map(|t| t.entry_amount)
+            .sum();
+        let total_tp_amount: f64 = tokens
+            .iter()
+            .filter(|t| t.exit_reason == "TakeProfit")
+            .filter_map(|t| t.pnl_sol)
+            .sum();
+        let total_sl_amount: f64 = tokens
+            .iter()
+            .filter(|t| t.exit_reason == "StopLoss")
+            .filter_map(|t| t.pnl_sol.map(|v| v.abs()))
+            .sum();
         let total_pnl_sol = total_tp_amount - total_sl_amount;
 
-        let closed: Vec<&SimulatedTokenResult> = tokens.iter().filter(|t| t.exit_reason != "Open").collect();
+        let closed: Vec<&SimulatedTokenResult> =
+            tokens.iter().filter(|t| t.exit_reason != "Open").collect();
         let avg_pnl_pct = if !closed.is_empty() {
             Some(closed.iter().filter_map(|t| t.pnl_percent).sum::<f64>() / closed.len() as f64)
         } else {
@@ -541,7 +887,14 @@ pub fn strategy_page() -> Html {
             None
         };
         let avg_holding_secs = if !closed.is_empty() {
-            Some(closed.iter().filter_map(|t| t.holding_secs).map(|s| s as f64).sum::<f64>() / closed.len() as f64)
+            Some(
+                closed
+                    .iter()
+                    .filter_map(|t| t.holding_secs)
+                    .map(|s| s as f64)
+                    .sum::<f64>()
+                    / closed.len() as f64,
+            )
         } else {
             None
         };
@@ -615,9 +968,9 @@ pub fn strategy_page() -> Html {
                             { avg_pnl_pct.map(|v| format!("{:+.1}%", v)).unwrap_or_else(|| "—".into()) }
                         </div>
                     </div>
-                    
 
-                    
+
+
                     <div class="sim-summary-stat">
                         <div class="sim-summary-label">{ format!("Total TP ({})", price_unit.unit_label()) }</div>
                         <div class="sim-summary-value tp-col">
@@ -630,7 +983,7 @@ pub fn strategy_page() -> Html {
                             { price_unit.display_amount(total_sl_amount) }
                         </div>
                     </div>
-                    
+
                     <div class="sim-summary-stat">
                         <div class="sim-summary-label">{ "Avg Hold" }</div>
                         <div class="sim-summary-value">
@@ -750,8 +1103,33 @@ pub fn strategy_page() -> Html {
         html! {}
     };
     let is_edit = matches!(&*modal_mode, ModalMode::Edit(_));
-    let modal_title = if is_edit { "Edit TPSL Rule" } else { "New TPSL Rule" };
+    let modal_title = if is_edit {
+        "Edit TPSL Rule"
+    } else {
+        "New TPSL Rule"
+    };
     let modal_visible = !matches!(&*modal_mode, ModalMode::None);
+
+    {
+        let modal_visible = modal_visible;
+        use_effect_with(modal_visible, move |visible| {
+            if let Some(window) = web_sys::window() {
+                if let Some(body) = window.document().and_then(|d| d.body()) {
+                    let class_name = body.class_name();
+                    let mut classes: Vec<&str> = class_name.split_whitespace().collect();
+                    if *visible {
+                        if !classes.iter().any(|&c| c == "modal-open") {
+                            classes.push("modal-open");
+                        }
+                    } else {
+                        classes.retain(|&c| c != "modal-open");
+                    }
+                    body.set_class_name(&classes.join(" "));
+                }
+            }
+            || ()
+        });
+    }
 
     macro_rules! oninput {
         ($field:expr) => {{
@@ -814,18 +1192,21 @@ pub fn strategy_page() -> Html {
                                         <th>{ "CU Price" }</th>
                                         <th>{ "Max SOL" }</th>
                                         <th>{ "Spendable" }</th>
-                                        <th>{ "Max Hold" }</th>
+                                        <th>{ "Max Holding" }</th>
+                                        <th>{ "Total Max" }</th>
+                                        <th>{ "IX" }</th>
                                         <th>{ "Labels" }</th>
                                         <th>{ "Buy Amt" }</th>
                                         <th>{ "TP" }</th>
                                         <th>{ "SL" }</th>
+                                        <th>{ "Tolerance" }</th>
                                         <th>{ "Status" }</th>
                                         <th>{ "Actions" }</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     if filtered.is_empty() {
-                                        <tr><td colspan="13" class="no-data">{ "No rules found" }</td></tr>
+                                        <tr><td colspan="16" class="no-data">{ "No rules found" }</td></tr>
                                     } else {
                                         { rule_rows }
                                     }
@@ -855,6 +1236,14 @@ pub fn strategy_page() -> Html {
                                     class={if is_edit && !*f_allow_edit_params { "form-input form-input-locked" } else { "form-input" }}
                                     value={(*f_initial_buy).clone()} oninput={oninput!(f_initial_buy)}
                                     placeholder="0.5" readonly={is_edit && !*f_allow_edit_params} />
+                            </label>
+
+                            <label class="form-field">
+                                <span class="form-label" style="color:var(--text-dim)">{ "Tolerance %" }</span>
+                                <input type="number" step="0.1"
+                                    class={if is_edit && !*f_allow_edit_params { "form-input form-input-locked" } else { "form-input" }}
+                                    value={(*f_tolerance).clone()} oninput={oninput!(f_tolerance)} placeholder="0" readonly={is_edit && !*f_allow_edit_params} />
+                                <div class="form-hint">{ "Tolerance % — 0 = exact match; e.g. 10 allows ±10% for numeric rule criteria (Init Buy, CU Limit, CU Price, Max SOL Cost, Spendable SOL In)." }</div>
                             </label>
 
                             <label class="form-field">
@@ -910,7 +1299,19 @@ pub fn strategy_page() -> Html {
                                     class={if is_edit && !*f_allow_edit_params { "form-input form-input-locked" } else { "form-input" }}
                                     value={(*f_max_holding_tokens).clone()} oninput={oninput!(f_max_holding_tokens)}
                                     placeholder="5" readonly={is_edit && !*f_allow_edit_params} />
-                                <div class="form-hint">{ "Optional limit on how many matched tokens can be held simultaneously during rule simulation." }</div>
+                                <div class="form-hint">{ "Optional limit on how many matched tokens may be held simultaneously by this rule. This limit applies to live strategy execution and rule simulation." }</div>
+                            </label>
+
+                            <label class="form-field">
+                                <span class="form-label" style="color:var(--text-dim)">
+                                    { "Total Max Trade Tokens" }
+                                    <span class="form-opt">{ " opt" }</span>
+                                </span>
+                                <input type="number" step="1"
+                                    class={if is_edit && !*f_allow_edit_params { "form-input form-input-locked" } else { "form-input" }}
+                                    value={(*f_total_max_trade_tokens).clone()} oninput={oninput!(f_total_max_trade_tokens)}
+                                    placeholder="10" readonly={is_edit && !*f_allow_edit_params} />
+                                <div class="form-hint">{ "Optional limit on the total number of tokens this rule may trade over time. Once reached, the rule will stop creating new positions." }</div>
                             </label>
 
                             <div class="form-field form-field-full">
@@ -921,8 +1322,27 @@ pub fn strategy_page() -> Html {
                                         </span>
                                     { if is_edit {
                                         html! {
-                                            <button type="button" class="form-action-btn" onclick={toggle_edit_params.clone()}>
-                                                { if *f_allow_edit_params { "Lock rule criteria" } else { "Unlock rule criteria" } }
+                                            <button type="button" class="form-action-btn" onclick={toggle_edit_params.clone()}
+                                                title={if *f_allow_edit_params { "Lock rule criteria" } else { "Unlock rule criteria" }}>
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                                    { if *f_allow_edit_params {
+                                                        html! {
+                                                            <>
+                                                                <rect x="3" y="11" width="18" height="11" rx="2" />
+                                                                <path d="M7 11V7a5 5 0 0110 0v4" />
+                                                            </>
+                                                        }
+                                                    } else {
+                                                        html! {
+                                                            <>
+                                                                <rect x="3" y="11" width="18" height="11" rx="2" />
+                                                                <path d="M7 11V7a5 5 0 0110 0v4" />
+                                                                <line x1="9" y1="15" x2="9" y2="18" />
+                                                                <line x1="15" y1="15" x2="15" y2="18" />
+                                                            </>
+                                                        }
+                                                    } }
+                                                </svg>
                                             </button>
                                         }
                                     } else { html! {} }}
@@ -969,13 +1389,6 @@ pub fn strategy_page() -> Html {
                                     value={(*f_stop_loss).clone()} oninput={oninput!(f_stop_loss)} placeholder="20" />
                             </label>
 
-                            <label class="form-field">
-                                <span class="form-label" style="color:var(--text-dim)">{ "Tolerance %" }</span>
-                                <input type="number" step="0.1" class="form-input"
-                                    value={(*f_tolerance).clone()} oninput={oninput!(f_tolerance)} placeholder="0" />
-                                <div class="form-hint">{ "Tolerance % — 0 = exact match; e.g. 10 allows ±10% for numeric rule criteria (Init Buy, CU Limit, CU Price, Max SOL Cost, Spendable SOL In)." }</div>
-                            </label>
-
                         </div>
 
                         if is_edit {
@@ -1014,5 +1427,3 @@ pub fn strategy_page() -> Html {
         </div>
     }
 }
-
-

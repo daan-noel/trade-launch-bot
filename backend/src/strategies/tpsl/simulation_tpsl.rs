@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
-use std::{collections::VecDeque, sync::Arc};
+use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::models::trade::TradeType;
@@ -10,7 +10,7 @@ use crate::storage::repositories::token_repo::TokenRepo;
 use crate::storage::repositories::trade_repo::TradeRepo;
 
 /// Per-token simulation result.
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 pub struct SimulatedTokenResult {
     pub mint: String,
     pub symbol: String,
@@ -41,7 +41,10 @@ fn find_entry(
     }
 
     let first_slot = trades[0].slot;
-    let second_slot = trades.iter().find(|t| t.slot > first_slot).map(|t| t.slot)?;
+    let second_slot = trades
+        .iter()
+        .find(|t| t.slot > first_slot)
+        .map(|t| t.slot)?;
 
     let mut candidates: Vec<&crate::models::trade::Trade> = Vec::new();
 
@@ -61,7 +64,11 @@ fn find_entry(
 
     candidates
         .into_iter()
-        .max_by(|a, b| a.price_per_token.partial_cmp(&b.price_per_token).unwrap_or(std::cmp::Ordering::Equal))
+        .max_by(|a, b| {
+            a.price_per_token
+                .partial_cmp(&b.price_per_token)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
         .map(|t| (t.price_per_token, t.tx_signature.clone(), t.block_time))
 }
 
@@ -87,21 +94,70 @@ fn find_exit(
             continue;
         }
 
-        let reason = if pct >= take_profit_pct { "TakeProfit" } else { "StopLoss" };
+        let reason = if pct >= take_profit_pct {
+            "TakeProfit"
+        } else {
+            "StopLoss"
+        };
         let exit_slot = t.slot;
 
-        let exit_candidates: Vec<&crate::models::trade::Trade> =
-            later.iter().copied().filter(|t| t.slot == exit_slot).collect();
+        let exit_candidates: Vec<&crate::models::trade::Trade> = later
+            .iter()
+            .copied()
+            .filter(|t| t.slot == exit_slot)
+            .collect();
 
-        let exit_trade = exit_candidates
-            .into_iter()
-            .min_by(|a, b| a.price_per_token.partial_cmp(&b.price_per_token).unwrap_or(std::cmp::Ordering::Equal));
+        let exit_trade = exit_candidates.into_iter().min_by(|a, b| {
+            a.price_per_token
+                .partial_cmp(&b.price_per_token)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         if let Some(et) = exit_trade {
-            return Some((et.price_per_token, et.tx_signature.clone(), et.block_time, reason.to_string()));
+            return Some((
+                et.price_per_token,
+                et.tx_signature.clone(),
+                et.block_time,
+                reason.to_string(),
+            ));
         }
     }
     None
+}
+
+fn select_simulated_tokens(
+    candidates: Vec<(DateTime<Utc>, Option<DateTime<Utc>>, SimulatedTokenResult)>,
+    max_holding_tokens: Option<usize>,
+    total_max_trade_tokens: Option<usize>,
+) -> Vec<SimulatedTokenResult> {
+    let mut active_exits: Vec<Option<DateTime<Utc>>> = Vec::new();
+    let mut results: Vec<SimulatedTokenResult> = Vec::new();
+    let mut selected_count: usize = 0;
+
+    for (entry_time, exit_time, result) in candidates {
+        if let Some(total_max) = total_max_trade_tokens {
+            if selected_count >= total_max {
+                break;
+            }
+        }
+
+        active_exits.retain(|active_exit| match active_exit {
+            Some(exit_time) => *exit_time > entry_time,
+            None => true,
+        });
+
+        if let Some(max_holding) = max_holding_tokens {
+            if active_exits.len() >= max_holding {
+                continue;
+            }
+        }
+
+        active_exits.push(exit_time);
+        results.push(result);
+        selected_count += 1;
+    }
+
+    results
 }
 
 /// Simulate a TPSL rule; returns token-level simulation results.
@@ -132,7 +188,9 @@ pub async fn run_simulation(
         && !has_spendable_sol_in
         && !has_ix_labels
     {
-        return Err(anyhow!("All rule criteria are empty — simulation would match every token"));
+        return Err(anyhow!(
+            "All rule criteria are empty — simulation would match every token"
+        ));
     }
 
     let tokens = token_repo
@@ -166,7 +224,13 @@ pub async fn run_simulation(
             continue;
         };
 
-        let exit = find_exit(&trades, entry_time, entry_price, rule.take_profit, rule.stop_loss);
+        let exit = find_exit(
+            &trades,
+            entry_time,
+            entry_price,
+            rule.take_profit,
+            rule.stop_loss,
+        );
 
         let (exit_price, exit_tx, exit_time, exit_reason, holding_secs, pnl_percent, pnl_sol) =
             match exit {
@@ -174,7 +238,15 @@ pub async fn run_simulation(
                     let secs = (etime - entry_time).num_seconds();
                     let pct = ((ep - entry_price) / entry_price) * 100.0;
                     let sol = rule.buy_amount * (pct / 100.0);
-                    (Some(ep), Some(et), Some(etime), reason, Some(secs), Some(pct), Some(sol))
+                    (
+                        Some(ep),
+                        Some(et),
+                        Some(etime),
+                        reason,
+                        Some(secs),
+                        Some(pct),
+                        Some(sol),
+                    )
                 }
                 None => (None, None, None, "Open".to_string(), None, None, None),
             };
@@ -200,39 +272,14 @@ pub async fn run_simulation(
     }
 
     candidates.sort_by_key(|(entry_time, _, _)| *entry_time);
-    let mut results: Vec<SimulatedTokenResult> = Vec::with_capacity(candidates.len());
+    let max_holding = rule.p_max_holding_tokens.map(|v| v as usize);
+    let total_max_trade_tokens = rule.p_total_max_trade_tokens.map(|v| v as usize);
 
-    if let Some(max_holding_tokens) = rule.p_max_holding_tokens {
-        let max_holding = max_holding_tokens as usize;
-        if max_holding == 0 {
-            return Ok(vec![]);
-        }
-
-        let mut waiting: VecDeque<(DateTime<Utc>, Option<DateTime<Utc>>, SimulatedTokenResult)> =
-            VecDeque::from(candidates);
-        let mut active_exits: Vec<Option<DateTime<Utc>>> = Vec::new();
-
-        while let Some((_, exit_time, result)) = waiting.pop_front() {
-            if active_exits.len() < max_holding {
-                active_exits.push(exit_time);
-                results.push(result);
-                continue;
-            }
-
-            if let Some(min_exit) = active_exits.iter().filter_map(|e| *e).min() {
-                active_exits.retain(|exit| match exit {
-                    Some(exit_time) => *exit_time > min_exit,
-                    None => true,
-                });
-                active_exits.push(exit_time);
-                results.push(result);
-            } else {
-                break;
-            }
-        }
-    } else {
-        results = candidates.into_iter().map(|(_, _, result)| result).collect();
+    if total_max_trade_tokens == Some(0) || max_holding == Some(0) {
+        return Ok(vec![]);
     }
+
+    let mut results = select_simulated_tokens(candidates, max_holding, total_max_trade_tokens);
 
     results.sort_by(|a, b| {
         let rank = |r: &str| match r {
@@ -242,8 +289,111 @@ pub async fn run_simulation(
         };
         rank(&a.exit_reason)
             .cmp(&rank(&b.exit_reason))
-            .then_with(|| b.pnl_percent.unwrap_or(0.0).partial_cmp(&a.pnl_percent.unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| {
+                b.pnl_percent
+                    .unwrap_or(0.0)
+                    .partial_cmp(&a.pnl_percent.unwrap_or(0.0))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
     });
 
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Duration, Utc};
+
+    fn make_candidate(
+        base: DateTime<Utc>,
+        entry_offset: i64,
+        exit_offset: Option<i64>,
+    ) -> (DateTime<Utc>, Option<DateTime<Utc>>, SimulatedTokenResult) {
+        let entry_time = base + Duration::seconds(entry_offset);
+        let exit_time = exit_offset.map(|offset| base + Duration::seconds(offset));
+        let exit_time_clone = exit_time.clone();
+
+        (
+            entry_time,
+            exit_time_clone,
+            SimulatedTokenResult {
+                mint: format!("mint-{}", entry_offset),
+                symbol: "SYM".to_string(),
+                entry_price: 1.0,
+                entry_amount: 1.0,
+                entry_tx: format!("tx-{}", entry_offset),
+                entry_time,
+                exit_price: None,
+                exit_tx: None,
+                exit_time,
+                holding_secs: None,
+                pnl_percent: None,
+                pnl_sol: None,
+                exit_reason: "Open".to_string(),
+                total_trades: 0,
+            },
+        )
+    }
+
+    #[test]
+    fn select_simulated_tokens_respects_total_holding_limit() {
+        let base = Utc::now();
+        let candidates = vec![
+            make_candidate(base, 0, Some(10)),
+            make_candidate(base, 1, Some(2)),
+            make_candidate(base, 2, None),
+            make_candidate(base, 3, Some(6)),
+            make_candidate(base, 7, Some(9)),
+            make_candidate(base, 11, Some(15)),
+        ];
+
+        let selected = select_simulated_tokens(candidates, Some(2), None);
+        let selected_entry_offsets: Vec<i64> = selected
+            .iter()
+            .map(|result| result.entry_time.timestamp() - base.timestamp())
+            .collect();
+
+        assert_eq!(selected_entry_offsets, vec![0, 1, 2, 11]);
+    }
+
+    #[test]
+    fn select_simulated_tokens_respects_total_max_trade_limit() {
+        let base = Utc::now();
+        let candidates = vec![
+            make_candidate(base, 0, Some(10)),
+            make_candidate(base, 1, Some(2)),
+            make_candidate(base, 2, None),
+            make_candidate(base, 3, Some(6)),
+        ];
+
+        let selected = select_simulated_tokens(candidates, None, Some(2));
+        let selected_entry_offsets: Vec<i64> = selected
+            .iter()
+            .map(|result| result.entry_time.timestamp() - base.timestamp())
+            .collect();
+
+        assert_eq!(selected_entry_offsets, vec![0, 1]);
+    }
+
+    #[test]
+    fn select_simulated_tokens_respects_both_limits() {
+        let base = Utc::now();
+        let candidates = vec![
+            make_candidate(base, 0, Some(10)),
+            make_candidate(base, 1, Some(2)),
+            make_candidate(base, 2, None),
+            make_candidate(base, 3, Some(6)),
+            make_candidate(base, 7, Some(9)),
+            make_candidate(base, 11, Some(15)),
+        ];
+
+        let selected = select_simulated_tokens(candidates, Some(2), Some(3));
+        let selected_entry_offsets: Vec<i64> = selected
+            .iter()
+            .map(|result| result.entry_time.timestamp() - base.timestamp())
+            .collect();
+
+        assert_eq!(selected_entry_offsets, vec![0, 1, 2]);
+    }
 }

@@ -162,6 +162,38 @@ impl PositionRepo {
         rows.into_iter().map(Position::try_from).collect()
     }
 
+    /// Count active holding positions for a specific rule.
+    pub async fn count_holding_by_rule(&self, rule_id: Uuid) -> anyhow::Result<i64> {
+        let row: (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(*)
+            FROM positions
+            WHERE rule_id = $1 AND status = 'Holding'
+            "#,
+        )
+        .bind(rule_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(row.0)
+    }
+
+    /// Count all positions created for a specific rule.
+    pub async fn count_by_rule(&self, rule_id: Uuid) -> anyhow::Result<i64> {
+        let row: (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(*)
+            FROM positions
+            WHERE rule_id = $1
+            "#,
+        )
+        .bind(rule_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(row.0)
+    }
+
     /// Get a specific position by ID.
     pub async fn find_by_id(&self, position_id: Uuid) -> anyhow::Result<Option<Position>> {
         let row = sqlx::query_as::<_, PositionDbRow>(

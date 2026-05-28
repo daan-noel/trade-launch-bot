@@ -1,7 +1,7 @@
 use yew::prelude::*;
 
-use crate::state::PriceUnitState;
 use crate::state::transactions::LiveTrade;
+use crate::state::PriceUnitState;
 use crate::utils::date::format_iso;
 use crate::utils::format::{format_decimal, truncate};
 

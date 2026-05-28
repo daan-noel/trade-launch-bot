@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sqlx::{types::Json, PgPool};
+use tracing::info;
 use uuid::Uuid;
 
 use crate::models::token::Token;
@@ -146,14 +147,22 @@ impl TokenRepo {
         p_ix_labels: Option<&serde_json::Value>,
         limit: Option<i64>,
     ) -> anyhow::Result<Vec<Token>> {
-        let tolerance_pct = p_tolerance_pct.unwrap_or(0.0);
-        // Use a small epsilon matching SOL precision (~1e-15) to avoid float noise.
-        let eps = 1e-15_f64;
+
+
+        // Reintroduce tolerance for `initial_buy_sol` only. Use provided
+        // `p_tolerance_pct` when set; otherwise use a dynamic default:
+        // - 1.0% for values >= 0.001
+        // - 5.0% for very small values (< 0.001) so tiny tokens still match
+        let tolerance_pct = match p_tolerance_pct {
+            Some(v) if v > 0.0 => v,
+            _ => match p_initial_buy_sol {
+                Some(v) if v.abs() < 0.001 => 5.0,
+                _ => 1.0,
+            },
+        };
+        // Small epsilon to avoid binary rounding misses
+        let eps = 1e-9_f64;
         let tol_buy = p_initial_buy_sol.map(|v| v.abs() * (tolerance_pct * 0.01) + eps);
-        let tol_cu_limit = p_cu_limit.map(|v| (v as f64).abs() * (tolerance_pct * 0.01) + eps);
-        let tol_cu_price = p_cu_price.map(|v| (v as f64).abs() * (tolerance_pct * 0.01) + eps);
-        let tol_max_sol_cost = p_max_sol_cost.map(|v| v.abs() * (tolerance_pct * 0.01) + eps);
-        let tol_spendable_sol_in = p_spendable_sol_in.map(|v| v.abs() * (tolerance_pct * 0.01) + eps);
 
         // Build the label filter: only apply when Some and non-empty array.
         let labels_filter = match p_ix_labels.and_then(|v| v.as_array()) {
@@ -167,58 +176,77 @@ impl TokenRepo {
         let cu_limit_i64 = p_cu_limit.map(|v| v as i64);
         let cu_price_i64 = p_cu_price.map(|v| v as i64);
 
-        // $1 = p_initial_buy_sol (NULL → skip),  $2 = tolerance for buy
-        // $3 = p_cu_limit, $4 = tolerance for cu_limit
-        // $5 = p_cu_price, $6 = tolerance for cu_price
-        // $7 = p_max_sol_cost, $8 = tolerance for max_sol_cost
-        // $9 = p_spendable_sol_in, $10 = tolerance for spendable_sol_in
-        // $11 = apply_labels,  $12 = labels_filter
-        // $13 = limit (NULL → no limit)
+        // The buy instruction fields are stored in lamports, while the rule
+        // criteria are expressed in SOL. Convert rule values to lamports for
+        // consistent database comparison.
+        const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
+        // Accept either SOL or lamports: auto-detect values that look like lamports
+        // (large integers, e.g. > 1e6) and treat them as lamports instead of SOL.
+        let p_max_sol_cost_lamports = p_max_sol_cost.map(|v| {
+            if v.abs() >= 1e6 {
+                // already lamports
+                v.round() as i64
+            } else {
+                (v * LAMPORTS_PER_SOL).round() as i64
+            }
+        });
+        let p_spendable_sol_in_lamports = p_spendable_sol_in.map(|v| {
+            if v.abs() >= 1e6 {
+                v.round() as i64
+            } else {
+                (v * LAMPORTS_PER_SOL).round() as i64
+            }
+        });
+
+        // $1 = p_initial_buy_sol (NULL → skip)
+        // $2 = tolerance for initial_buy_sol
+        // $3 = p_cu_limit
+        // $4 = p_cu_price
+        // $5 = p_max_sol_cost_lamports
+        // $6 = p_spendable_sol_in_lamports
+        // $7 = apply_labels,  $8 = labels_filter
+        // $9 = limit (NULL → no limit)
         let rows = sqlx::query_as::<_, TokenDbRow>(
             r#"
             SELECT *
             FROM   tokens
             WHERE  ($1::float8 IS NULL OR (
                        initial_buy_sol IS NOT NULL
-                   AND ABS(initial_buy_sol - $1) <= $2
-                   ))
+                  AND ABS(initial_buy_sol - $1::float8) <= $2::float8
+                  ))
               AND  ($3::bigint IS NULL OR (
                        cu_limit IS NOT NULL
-                   AND ABS(cu_limit::float8 - $3::float8) <= $4
+                   AND cu_limit = $3::bigint
+                   ))
+              AND  ($4::bigint IS NULL OR (
+                       cu_price IS NOT NULL
+                   AND cu_price = $4::bigint
                    ))
               AND  ($5::bigint IS NULL OR (
-                       cu_price IS NOT NULL
-                   AND ABS(cu_price::float8 - $5::float8) <= $6
-                   ))
-              AND  ($7::float8 IS NULL OR (
                        initial_buy_instruction IS NOT NULL
-                   AND ABS((initial_buy_instruction->>'max_sol_cost')::float8 - $7) <= $8
+                   AND (initial_buy_instruction->>'max_sol_cost')::bigint = $5::bigint
                    ))
-              AND  ($9::float8 IS NULL OR (
+              AND  ($6::bigint IS NULL OR (
                        initial_buy_instruction IS NOT NULL
-                   AND ABS((initial_buy_instruction->>'spendable_sol_in')::float8 - $9) <= $10
+                   AND (initial_buy_instruction->>'spendable_sol_in')::bigint = $6::bigint
                    ))
-              AND  ($11 = false   OR ix_labels @> $12::jsonb)
+              AND  ($7 = false   OR ix_labels @> $8::jsonb)
             ORDER BY created_at DESC
-            LIMIT $13
+            LIMIT $9
             "#,
         )
-        .bind(p_initial_buy_sol)
-        .bind(tol_buy.unwrap_or(0.0))
-        .bind(cu_limit_i64)
-        .bind(tol_cu_limit.unwrap_or(0.0))
-        .bind(cu_price_i64)
-        .bind(tol_cu_price.unwrap_or(0.0))
-        .bind(p_max_sol_cost)
-        .bind(tol_max_sol_cost.unwrap_or(0.0))
-        .bind(p_spendable_sol_in)
-        .bind(tol_spendable_sol_in.unwrap_or(0.0))
-        .bind(apply_labels)
-        .bind(sqlx::types::Json(&labels_json))
-        .bind(limit)
+                .bind(p_initial_buy_sol)
+                .bind(tol_buy.unwrap_or(0.0_f64))
+                .bind(cu_limit_i64)
+                .bind(cu_price_i64)
+                .bind(p_max_sol_cost_lamports)
+                .bind(p_spendable_sol_in_lamports)
+                .bind(apply_labels)
+                .bind(sqlx::types::Json(&labels_json))
+                .bind(limit)
         .fetch_all(&self.pool)
         .await?;
-
+    
         Ok(rows.into_iter().map(Token::from).collect())
     }
 }

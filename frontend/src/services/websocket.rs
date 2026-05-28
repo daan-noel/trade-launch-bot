@@ -3,8 +3,8 @@ use web_sys::{EventSource, MessageEvent};
 use yew::UseReducerHandle;
 
 use crate::services::api::API_BASE;
-use crate::state::transactions::{LiveTrade, TransactionAction, TransactionState};
 use crate::state::token::{TokenAction, TokenState};
+use crate::state::transactions::{LiveTrade, TransactionAction, TransactionState};
 
 fn sse_url() -> String {
     format!("{}/api/stream", API_BASE)
@@ -71,27 +71,45 @@ pub fn connect_sse_tokens(dispatch: UseReducerHandle<TokenState>) -> EventSource
                             diff.current_price = v.get("price_per_token").and_then(|p| p.as_f64());
                             diff.volume_sol_delta = v.get("sol_amount").and_then(|s| s.as_f64());
                             diff.trade_count_delta = Some(1);
-                            diff.last_trade_at = v.get("timestamp").and_then(|t| t.as_str().map(|s| s.to_string()));
+                            diff.last_trade_at = v
+                                .get("timestamp")
+                                .and_then(|t| t.as_str().map(|s| s.to_string()));
                         }
                         "token_created" => {
-                            diff.name = v.get("name").and_then(|n| n.as_str().map(|s| s.to_string()));
-                            diff.symbol = v.get("symbol").and_then(|s| s.as_str().map(|s| s.to_string()));
-                            diff.last_trade_at = v.get("timestamp").and_then(|t| t.as_str().map(|s| s.to_string()));
+                            diff.name = v
+                                .get("name")
+                                .and_then(|n| n.as_str().map(|s| s.to_string()));
+                            diff.symbol = v
+                                .get("symbol")
+                                .and_then(|s| s.as_str().map(|s| s.to_string()));
+                            diff.last_trade_at = v
+                                .get("timestamp")
+                                .and_then(|t| t.as_str().map(|s| s.to_string()));
                         }
                         "liquidity_added" | "liquidity_removed" => {
                             diff.volume_sol_delta = v.get("sol_amount").and_then(|s| s.as_f64());
-                            diff.last_trade_at = v.get("timestamp").and_then(|t| t.as_str().map(|s| s.to_string()));
+                            diff.last_trade_at = v
+                                .get("timestamp")
+                                .and_then(|t| t.as_str().map(|s| s.to_string()));
                         }
                         _ => {}
                     }
 
-                    d.dispatch(TokenAction::UpdateTokens { diffs: vec![diff], total: None });
+                    d.dispatch(TokenAction::UpdateTokens {
+                        diffs: vec![diff],
+                        total: None,
+                    });
                 }
             }
         }
     });
 
-    for evt in &["token_created", "trade_executed", "liquidity_added", "liquidity_removed"] {
+    for evt in &[
+        "token_created",
+        "trade_executed",
+        "liquidity_added",
+        "liquidity_removed",
+    ] {
         es.add_event_listener_with_callback(evt, on_token_event.as_ref().unchecked_ref())
             .unwrap_or_else(|_| panic!("addEventListener({}) failed", evt));
     }

@@ -1,15 +1,15 @@
-﻿use wasm_bindgen_futures::spawn_local;
+use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
 use crate::components::stat_card::{AddrCard, StatCard, StatVariant};
 use crate::services::api::{TokenDetailRecord, TokenRecord};
 use crate::state::PriceUnitContext;
-use serde_json::Value;
 use crate::utils::date::format_iso;
 use crate::utils::format::{
     age_class, format_age, format_compact, format_decimal, format_decimal_trim, format_price,
     format_with_commas, truncate,
 };
+use serde_json::Value;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -17,13 +17,21 @@ fn price_class(price: Option<f64>) -> &'static str {
     match price {
         Some(v) if v != 0.0 => {
             let abs = v.abs();
-            if abs >= 1.0        { "price-normal"   }
-            else if abs >= 1e-3  { "price-e-3"      }
-            else if abs >= 1e-6  { "price-e-6"      }
-            else if abs >= 1e-9  { "price-e-9"      }
-            else if abs >= 1e-12 { "price-e-12"     }
-            else if abs >= 1e-15 { "price-e-15"     }
-            else                 { "price-e-smaller"}
+            if abs >= 1.0 {
+                "price-normal"
+            } else if abs >= 1e-3 {
+                "price-e-3"
+            } else if abs >= 1e-6 {
+                "price-e-6"
+            } else if abs >= 1e-9 {
+                "price-e-9"
+            } else if abs >= 1e-12 {
+                "price-e-12"
+            } else if abs >= 1e-15 {
+                "price-e-15"
+            } else {
+                "price-e-smaller"
+            }
         }
         _ => "price-normal",
     }
@@ -33,11 +41,11 @@ fn price_class(price: Option<f64>) -> &'static str {
 fn ratio_class(mult: Option<f64>) -> &'static str {
     match mult {
         Some(v) if v >= 100.0 => "ratio-moon",
-        Some(v) if v >= 30.0  => "ratio-high",
-        Some(v) if v >= 10.0  => "ratio-good",
-        Some(v) if v >= 3.0   => "ratio-mid",
-        Some(v) if v >= 1.5   => "ratio-low",
-        _                     => "ratio-flat",
+        Some(v) if v >= 30.0 => "ratio-high",
+        Some(v) if v >= 10.0 => "ratio-good",
+        Some(v) if v >= 3.0 => "ratio-mid",
+        Some(v) if v >= 1.5 => "ratio-low",
+        _ => "ratio-flat",
     }
 }
 
@@ -45,11 +53,11 @@ fn ratio_class(mult: Option<f64>) -> &'static str {
 fn ratio_variant(mult: Option<f64>) -> StatVariant {
     match mult {
         Some(v) if v >= 100.0 => StatVariant::Danger,
-        Some(v) if v >= 30.0  => StatVariant::Accent,
-        Some(v) if v >= 10.0  => StatVariant::Warning,
-        Some(v) if v >= 3.0   => StatVariant::Primary,
-        Some(v) if v >= 1.5   => StatVariant::Info,
-        _                     => StatVariant::Muted,
+        Some(v) if v >= 30.0 => StatVariant::Accent,
+        Some(v) if v >= 10.0 => StatVariant::Warning,
+        Some(v) if v >= 3.0 => StatVariant::Primary,
+        Some(v) if v >= 1.5 => StatVariant::Info,
+        _ => StatVariant::Muted,
     }
 }
 
@@ -106,7 +114,8 @@ pub fn token_row(props: &Props) -> Html {
         s.symbol.clone()
     };
 
-    let price_unit = use_context::<PriceUnitContext>().expect("PriceUnitProvider must be mounted above TokenRow");
+    let price_unit = use_context::<PriceUnitContext>()
+        .expect("PriceUnitProvider must be mounted above TokenRow");
     let current_price_value = s.current_price;
     let current_price = current_price_value
         .map(|v| price_unit.display_price(v))
@@ -115,12 +124,22 @@ pub fn token_row(props: &Props) -> Html {
     let first_entry_price_value = s
         .initial_buy_sol
         .and_then(|buy| s.initial_supply_token.map(|supply| (buy, supply)))
-        .and_then(|(buy, supply)| if supply > 0 { Some(buy / supply as f64) } else { None });
+        .and_then(|(buy, supply)| {
+            if supply > 0 {
+                Some(buy / supply as f64)
+            } else {
+                None
+            }
+        });
 
     // ath_fep_ratio_value: (ath / fep) * 100  ->  price multiple x 100
     let ath_fep_ratio_value = first_entry_price_value.and_then(|fep| {
         s.ath_price.and_then(|ath| {
-            if fep != 0.0 { Some((ath / fep) * 100.0) } else { None }
+            if fep != 0.0 {
+                Some((ath / fep) * 100.0)
+            } else {
+                None
+            }
         })
     });
     let ath_fep_mult = ath_fep_ratio_value.map(|v| v / 100.0);
@@ -132,21 +151,31 @@ pub fn token_row(props: &Props) -> Html {
         .unwrap_or_else(|| "-".into());
 
     let current_fep_ratio_value = first_entry_price_value.and_then(|fep| {
-        current_price_value.and_then(|cur| {
-            if fep != 0.0 { Some(cur / fep) } else { None }
-        })
+        current_price_value.and_then(|cur| if fep != 0.0 { Some(cur / fep) } else { None })
     });
     let cur_fep_display = current_fep_ratio_value
         .map(|v| format!("{}x", format_decimal_trim(v, 2)))
         .unwrap_or_else(|| "-".into());
 
-    let ath_price_str = s.ath_price.map(|v| price_unit.display_price(v)).unwrap_or_else(|| "-".into());
-    let market_cap = s.market_cap.map(|v| price_unit.display_compact(v, 3)).unwrap_or_else(|| "-".into());
-    let initial_buy = s.initial_buy_sol.map(|v| price_unit.display_amount(v)).unwrap_or_else(|| "-".into());
-    let cu_price = s.cu_price.map(|v| format_with_commas(v)).unwrap_or_else(|| "-".to_string());
+    let ath_price_str = s
+        .ath_price
+        .map(|v| price_unit.display_price(v))
+        .unwrap_or_else(|| "-".into());
+    let market_cap = s
+        .market_cap
+        .map(|v| price_unit.display_compact(v, 3))
+        .unwrap_or_else(|| "-".into());
+    let initial_buy = s
+        .initial_buy_sol
+        .map(|v| price_unit.display_amount(v))
+        .unwrap_or_else(|| "-".into());
+    let cu_price = s
+        .cu_price
+        .map(|v| format_with_commas(v))
+        .unwrap_or_else(|| "-".to_string());
 
-    let age_text  = format_age(s.age);
-    let age_cls   = age_class(s.age);
+    let age_text = format_age(s.age);
+    let age_cls = age_class(s.age);
 
     // ── Click handler ─────────────────────────────────────────────────────────
     let onclick = {
@@ -174,45 +203,127 @@ pub fn token_row(props: &Props) -> Html {
             let d_fep = detail
                 .initial_buy_sol
                 .and_then(|buy| detail.initial_supply_token.map(|s| (buy, s)))
-                .and_then(|(buy, supply)| if supply > 0 { Some(buy / supply as f64) } else { None });
+                .and_then(|(buy, supply)| {
+                    if supply > 0 {
+                        Some(buy / supply as f64)
+                    } else {
+                        None
+                    }
+                });
             let d_fep_str = d_fep.map(format_price).unwrap_or_else(|| "-".into());
 
             let d_ath_mult = d_fep.and_then(|fep| {
-                detail.ath_price.and_then(|ath| if fep != 0.0 { Some(ath / fep) } else { None })
+                detail
+                    .ath_price
+                    .and_then(|ath| if fep != 0.0 { Some(ath / fep) } else { None })
             });
             let d_ath_pct = d_fep.and_then(|fep| {
-                detail.ath_price.and_then(|ath| if fep != 0.0 { Some((ath / fep) * 100.0) } else { None })
+                detail.ath_price.and_then(|ath| {
+                    if fep != 0.0 {
+                        Some((ath / fep) * 100.0)
+                    } else {
+                        None
+                    }
+                })
             });
             let d_ath_mult_str = d_ath_mult
-                .map(|v| format!("{}x  ({}%)", format_decimal_trim(v, 2), format_decimal(d_ath_pct.unwrap_or(0.0), 1)))
+                .map(|v| {
+                    format!(
+                        "{}x  ({}%)",
+                        format_decimal_trim(v, 2),
+                        format_decimal(d_ath_pct.unwrap_or(0.0), 1)
+                    )
+                })
                 .unwrap_or_else(|| "-".into());
 
             let d_cur_mult = d_fep.and_then(|fep| {
-                detail.current_price.and_then(|cur| if fep != 0.0 { Some(cur / fep) } else { None })
+                detail
+                    .current_price
+                    .and_then(|cur| if fep != 0.0 { Some(cur / fep) } else { None })
             });
             let d_cur_pct = d_fep.and_then(|fep| {
-                detail.current_price.and_then(|cur| if fep != 0.0 { Some((cur / fep) * 100.0) } else { None })
+                detail.current_price.and_then(|cur| {
+                    if fep != 0.0 {
+                        Some((cur / fep) * 100.0)
+                    } else {
+                        None
+                    }
+                })
             });
             let d_cur_mult_str = d_cur_mult
-                .map(|v| format!("{}x  ({}%)", format_decimal_trim(v, 2), format_decimal(d_cur_pct.unwrap_or(0.0), 1)))
+                .map(|v| {
+                    format!(
+                        "{}x  ({}%)",
+                        format_decimal_trim(v, 2),
+                        format_decimal(d_cur_pct.unwrap_or(0.0), 1)
+                    )
+                })
                 .unwrap_or_else(|| "-".into());
 
-            let d_ath_str = detail.ath_price.map(|v| price_unit.display_price(v)).unwrap_or_else(|| "-".into());
-            let d_cur_str = detail.current_price.map(|v| price_unit.display_price(v)).unwrap_or_else(|| "-".into());
-            let d_ath_ts = detail.ath_timestamp.as_deref().map(format_iso).unwrap_or_else(|| "-".into());
-            let d_last_trade = detail.last_trade_at.as_deref().map(format_iso).unwrap_or_else(|| "-".into());
-            let d_volume = detail.volume_sol_total.map(|v| price_unit.display_compact(v, 4)).unwrap_or_else(|| "-".into());
-            let d_mcap = detail.market_cap.map(|v| price_unit.display_compact(v, 4)).unwrap_or_else(|| "-".into());
-            let d_trades = detail.trade_count.map_or_else(|| "-".into(), |v| v.to_string());
-            let d_wallets = detail.unique_wallets_in_window.map_or_else(|| "-".into(), |v| v.to_string());
-            let d_init_buy = detail.initial_buy_sol.map(|v| price_unit.display_amount(v)).unwrap_or_else(|| "-".into());
-            let d_init_supply = detail.initial_supply_token.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
-            let d_cu_limit = detail.cu_limit.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
-            let d_cu_price = detail.cu_price.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
-            let d_label_count = detail.instruction_labels.as_array().map(|a| a.len()).unwrap_or(0);
+            let d_ath_str = detail
+                .ath_price
+                .map(|v| price_unit.display_price(v))
+                .unwrap_or_else(|| "-".into());
+            let d_cur_str = detail
+                .current_price
+                .map(|v| price_unit.display_price(v))
+                .unwrap_or_else(|| "-".into());
+            let d_ath_ts = detail
+                .ath_timestamp
+                .as_deref()
+                .map(format_iso)
+                .unwrap_or_else(|| "-".into());
+            let d_last_trade = detail
+                .last_trade_at
+                .as_deref()
+                .map(format_iso)
+                .unwrap_or_else(|| "-".into());
+            let d_volume = detail
+                .volume_sol_total
+                .map(|v| price_unit.display_compact(v, 4))
+                .unwrap_or_else(|| "-".into());
+            let d_mcap = detail
+                .market_cap
+                .map(|v| price_unit.display_compact(v, 4))
+                .unwrap_or_else(|| "-".into());
+            let d_trades = detail
+                .trade_count
+                .map_or_else(|| "-".into(), |v| v.to_string());
+            let d_wallets = detail
+                .unique_wallets_in_window
+                .map_or_else(|| "-".into(), |v| v.to_string());
+            let d_init_buy = detail
+                .initial_buy_sol
+                .map(|v| price_unit.display_amount(v))
+                .unwrap_or_else(|| "-".into());
+            let d_init_supply = detail
+                .initial_supply_token
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".into());
+            let d_cu_limit = detail
+                .cu_limit
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".into());
+            let d_cu_price = detail
+                .cu_price
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".into());
+            let d_label_count = detail
+                .instruction_labels
+                .as_array()
+                .map(|a| a.len())
+                .unwrap_or(0);
             let d_created = format_iso(&detail.created_at);
-            let d_status = if detail.is_migrated { "Migrated ✓" } else { "Bonding Curve" };
-            let d_status_cls = if detail.is_migrated { "detail-status-migrated" } else { "detail-status-bonding" };
+            let d_status = if detail.is_migrated {
+                "Migrated ✓"
+            } else {
+                "Bonding Curve"
+            };
+            let d_status_cls = if detail.is_migrated {
+                "detail-status-migrated"
+            } else {
+                "detail-status-bonding"
+            };
 
             let d_symbol = if detail.symbol.is_empty() {
                 truncate(&detail.mint_address, 8)
@@ -220,22 +331,28 @@ pub fn token_row(props: &Props) -> Html {
                 detail.symbol.clone()
             };
 
-            let creator_solscan   = format!("https://solscan.io/account/{}", detail.creator_address);
-            let creator_gmgn      = format!("https://gmgn.ai/sol/address/{}", detail.creator_address);
-            let mint_solscan      = format!("https://solscan.io/token/{}", detail.mint_address);
-            let mint_gmgn         = format!("https://gmgn.ai/sol/token/{}", detail.mint_address);
+            let creator_solscan = format!("https://solscan.io/account/{}", detail.creator_address);
+            let creator_gmgn = format!("https://gmgn.ai/sol/address/{}", detail.creator_address);
+            let mint_solscan = format!("https://solscan.io/token/{}", detail.mint_address);
+            let mint_gmgn = format!("https://gmgn.ai/sol/token/{}", detail.mint_address);
             let create_tx_solscan = format!("https://solscan.io/tx/{}", detail.create_tx_address);
 
-            let creator_short   = truncate(&detail.creator_address, 12);
-            let mint_short      = truncate(&detail.mint_address, 12);
+            let creator_short = truncate(&detail.creator_address, 12);
+            let mint_short = truncate(&detail.mint_address, 12);
             let create_tx_short = truncate(&detail.create_tx_address, 12);
-            let bonding_short   = detail.bonding_curve_address.as_deref()
+            let bonding_short = detail
+                .bonding_curve_address
+                .as_deref()
                 .map(|a| truncate(a, 12))
                 .unwrap_or_else(|| "-".into());
-            let bonding_full    = detail.bonding_curve_address.clone().unwrap_or_default();
-            let bonding_solscan = detail.bonding_curve_address.as_ref()
+            let bonding_full = detail.bonding_curve_address.clone().unwrap_or_default();
+            let bonding_solscan = detail
+                .bonding_curve_address
+                .as_ref()
                 .map(|a| format!("https://solscan.io/account/{}", a));
-            let bonding_gmgn    = detail.bonding_curve_address.as_ref()
+            let bonding_gmgn = detail
+                .bonding_curve_address
+                .as_ref()
                 .map(|a| format!("https://gmgn.ai/sol/address/{}", a));
             let bonding_html = if let Some(url) = bonding_solscan {
                 html! { <AddrCard label="Bonding Curve" short={bonding_short} full={bonding_full} solscan_url={url} gmgn_url={bonding_gmgn} /> }
@@ -252,10 +369,14 @@ pub fn token_row(props: &Props) -> Html {
                     spawn_local(async move {
                         if let Some(win) = web_sys::window() {
                             let cb = win.navigator().clipboard();
-                            let _ = wasm_bindgen_futures::JsFuture::from(cb.write_text(&text)).await;
+                            let _ =
+                                wasm_bindgen_futures::JsFuture::from(cb.write_text(&text)).await;
                             copied.set(true);
                             let copied_reset = copied.clone();
-                            gloo::timers::callback::Timeout::new(1500, move || copied_reset.set(false)).forget();
+                            gloo::timers::callback::Timeout::new(1500, move || {
+                                copied_reset.set(false)
+                            })
+                            .forget();
                         }
                     });
                 })
@@ -396,26 +517,51 @@ pub fn token_row(props: &Props) -> Html {
         use_effect_with(token, move |token| {
             let mut flags = UpdateFlags::default();
             if let Some(prev) = &*previous.borrow() {
-                flags.current_price        = prev.current_price != token.current_price;
-                flags.ath_price            = prev.ath_price != token.ath_price;
-                flags.ath_timestamp        = prev.ath_timestamp != token.ath_timestamp;
-                flags.volume_sol_total     = prev.volume_sol_total != token.volume_sol_total;
-                flags.market_cap           = prev.market_cap != token.market_cap;
-                flags.trade_count          = prev.trade_count != token.trade_count;
+                flags.current_price = prev.current_price != token.current_price;
+                flags.ath_price = prev.ath_price != token.ath_price;
+                flags.ath_timestamp = prev.ath_timestamp != token.ath_timestamp;
+                flags.volume_sol_total = prev.volume_sol_total != token.volume_sol_total;
+                flags.market_cap = prev.market_cap != token.market_cap;
+                flags.trade_count = prev.trade_count != token.trade_count;
 
-                let prev_fep = prev.initial_buy_sol
+                let prev_fep = prev
+                    .initial_buy_sol
                     .and_then(|buy| prev.initial_supply_token.map(|s| (buy, s)))
                     .and_then(|(buy, s)| if s > 0 { Some(buy / s as f64) } else { None });
-                let new_fep = token.initial_buy_sol
+                let new_fep = token
+                    .initial_buy_sol
                     .and_then(|buy| token.initial_supply_token.map(|s| (buy, s)))
                     .and_then(|(buy, s)| if s > 0 { Some(buy / s as f64) } else { None });
 
-                let prev_ath_fep = prev_fep.and_then(|fep| prev.ath_price.and_then(|ath| if fep != 0.0 { Some((ath / fep) * 100.0) } else { None }));
-                let new_ath_fep  = new_fep .and_then(|fep| token.ath_price.and_then(|ath| if fep != 0.0 { Some((ath / fep) * 100.0) } else { None }));
+                let prev_ath_fep = prev_fep.and_then(|fep| {
+                    prev.ath_price.and_then(|ath| {
+                        if fep != 0.0 {
+                            Some((ath / fep) * 100.0)
+                        } else {
+                            None
+                        }
+                    })
+                });
+                let new_ath_fep = new_fep.and_then(|fep| {
+                    token.ath_price.and_then(|ath| {
+                        if fep != 0.0 {
+                            Some((ath / fep) * 100.0)
+                        } else {
+                            None
+                        }
+                    })
+                });
                 flags.ath_fep_ratio = prev_ath_fep != new_ath_fep;
 
-                let prev_cur_fep = prev_fep.and_then(|fep| prev.current_price.and_then(|cur| if fep != 0.0 { Some(cur / fep) } else { None }));
-                let new_cur_fep  = new_fep .and_then(|fep| token.current_price.and_then(|cur| if fep != 0.0 { Some(cur / fep) } else { None }));
+                let prev_cur_fep = prev_fep.and_then(|fep| {
+                    prev.current_price
+                        .and_then(|cur| if fep != 0.0 { Some(cur / fep) } else { None })
+                });
+                let new_cur_fep = new_fep.and_then(|fep| {
+                    token
+                        .current_price
+                        .and_then(|cur| if fep != 0.0 { Some(cur / fep) } else { None })
+                });
                 flags.current_fep_ratio = prev_cur_fep != new_cur_fep;
             }
             *previous.borrow_mut() = Some(token.clone());
@@ -424,7 +570,11 @@ pub fn token_row(props: &Props) -> Html {
         });
     }
 
-    let row_class = if props.selected { classes!("selected-row") } else { classes!() };
+    let row_class = if props.selected {
+        classes!("selected-row")
+    } else {
+        classes!()
+    };
     let row_num_str = props.row_num.map(|n| n.to_string()).unwrap_or_default();
     // Helper: returns true when column i should be rendered (default-show when vec not supplied)
     let show = |i: usize| props.visible_cols.get(i).copied().unwrap_or(true);
@@ -434,9 +584,19 @@ pub fn token_row(props: &Props) -> Html {
     // col_positions[i] = rendered position when show(i) is true; 0 otherwise (unused).
     let col_positions: Vec<usize> = {
         let mut pos = 1usize;
-        props.visible_cols.iter().map(|&vis| {
-            if vis { let p = pos; pos += 1; p } else { 0 }
-        }).collect()
+        props
+            .visible_cols
+            .iter()
+            .map(|&vis| {
+                if vis {
+                    let p = pos;
+                    pos += 1;
+                    p
+                } else {
+                    0
+                }
+            })
+            .collect()
     };
     let action_col_pos = 1 + props.visible_cols.iter().filter(|&&b| b).count();
     let hc = props.hovered_column;
@@ -456,16 +616,49 @@ pub fn token_row(props: &Props) -> Html {
     };
 
     // ── Extra column display values (indices 13–21) ───────────────────────────
-    let cu_limit_str    = s.cu_limit.map(|v| format_with_commas(v)).unwrap_or_else(|| "-".into());
-    let init_supply_str = s.initial_supply_token.map(|v| format_with_commas(v)).unwrap_or_else(|| "-".into());
-    let token_amount_str = s.token_amount.map(|v| format_with_commas(v)).unwrap_or_else(|| "-".into());
-    let max_sol_cost_str = s.max_sol_cost.map(|v| format_with_commas(v)).unwrap_or_else(|| "-".into());
-    let spendable_sol_in_str = s.spendable_sol_in.map(|v| format_with_commas(v)).unwrap_or_else(|| "-".into());
-    let min_tokens_out_str = s.min_tokens_out.map(|v| format_with_commas(v)).unwrap_or_else(|| "-".into());
-    let ath_ts_str      = s.ath_timestamp.as_deref().map(format_iso).unwrap_or_else(|| "-".into());
-    let last_trade_str  = s.last_trade_at.as_deref().map(format_iso).unwrap_or_else(|| "-".into());
-    let ix_labels_str: String = s.instruction_labels.as_array()
-        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
+    let cu_limit_str = s
+        .cu_limit
+        .map(|v| format_with_commas(v))
+        .unwrap_or_else(|| "-".into());
+    let init_supply_str = s
+        .initial_supply_token
+        .map(|v| format_with_commas(v))
+        .unwrap_or_else(|| "-".into());
+    let token_amount_str = s
+        .token_amount
+        .map(|v| format_with_commas(v))
+        .unwrap_or_else(|| "-".into());
+    let max_sol_cost_str = s
+        .max_sol_cost
+        .map(|v| format_with_commas(v))
+        .unwrap_or_else(|| "-".into());
+    let spendable_sol_in_str = s
+        .spendable_sol_in
+        .map(|v| format_with_commas(v))
+        .unwrap_or_else(|| "-".into());
+    let min_tokens_out_str = s
+        .min_tokens_out
+        .map(|v| format_with_commas(v))
+        .unwrap_or_else(|| "-".into());
+    let ath_ts_str = s
+        .ath_timestamp
+        .as_deref()
+        .map(format_iso)
+        .unwrap_or_else(|| "-".into());
+    let last_trade_str = s
+        .last_trade_at
+        .as_deref()
+        .map(format_iso)
+        .unwrap_or_else(|| "-".into());
+    let ix_labels_str: String = s
+        .instruction_labels
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "-".into());
 
@@ -673,8 +866,11 @@ pub fn token_row(props: &Props) -> Html {
 
 fn build_instruction_html(instr: &Value) -> Html {
     let value_to_string = |v: &Value| -> String {
-        if let Some(s) = v.as_str() { s.to_string() }
-        else { v.to_string() }
+        if let Some(s) = v.as_str() {
+            s.to_string()
+        } else {
+            v.to_string()
+        }
     };
 
     let items: Vec<String> = if let Some(obj) = instr.as_object() {

@@ -2,7 +2,7 @@ use yew::prelude::*;
 
 use crate::components::{trade_row, AppTable, Header, RowCells};
 use crate::services::websocket::connect_sse;
-use crate::state::{PriceUnitContext, transactions::TransactionState};
+use crate::state::{transactions::TransactionState, PriceUnitContext};
 
 const HEADERS: &[&str] = &[
     "Mint",
@@ -31,7 +31,8 @@ pub fn dashboard_page() -> Html {
         });
     }
 
-    let price_unit = use_context::<PriceUnitContext>().expect("PriceUnitProvider must be mounted above DashboardPage");
+    let price_unit = use_context::<PriceUnitContext>()
+        .expect("PriceUnitProvider must be mounted above DashboardPage");
     let event_count = state.events.len();
     let rows = state
         .events

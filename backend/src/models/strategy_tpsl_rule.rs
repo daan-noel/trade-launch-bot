@@ -22,6 +22,8 @@ pub struct StrategyTPSLRule {
     pub p_spendable_sol_in: Option<f64>,
     /// Maximum number of tokens that can be held simultaneously during simulation.
     pub p_max_holding_tokens: Option<u64>,
+    /// Maximum total number of trades/tokens this rule may create over time.
+    pub p_total_max_trade_tokens: Option<u64>,
     /// Instruction labels filter (optional JSON array).
     pub p_ix_labels: Value,
     /// Amount of SOL to allocate per buy.
@@ -51,6 +53,7 @@ impl StrategyTPSLRule {
         p_max_sol_cost: Option<f64>,
         p_spendable_sol_in: Option<f64>,
         p_max_holding_tokens: Option<u64>,
+        p_total_max_trade_tokens: Option<u64>,
         tolerance_pct: Option<f64>,
     ) -> Self {
         let now = Utc::now();
@@ -67,6 +70,7 @@ impl StrategyTPSLRule {
             p_max_sol_cost,
             p_spendable_sol_in,
             p_max_holding_tokens: p_max_holding_tokens,
+            p_total_max_trade_tokens: p_total_max_trade_tokens,
             tolerance_pct: tolerance_pct.unwrap_or(0.0),
             is_active: false,
             created_at: now,

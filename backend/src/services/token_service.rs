@@ -8,10 +8,7 @@ use tracing::{debug, info, warn};
 use crate::{
     models::{
         events::{
-            CreatorActivityEvent,
-            InternalEvent,
-            TokenCreatedEvent,
-            TokenMigratedEvent,
+            CreatorActivityEvent, InternalEvent, TokenCreatedEvent, TokenMigratedEvent,
             TradeExecutedEvent,
         },
         wallet::Wallet,
@@ -263,7 +260,11 @@ impl TokenService {
             token_state.is_migrated = true;
         }
 
-        if let Err(err) = self.token_info_repo.update_migration_status(&mint, true).await {
+        if let Err(err) = self
+            .token_info_repo
+            .update_migration_status(&mint, true)
+            .await
+        {
             warn!("Failed to persist migration status for {mint}: {err}");
         }
     }

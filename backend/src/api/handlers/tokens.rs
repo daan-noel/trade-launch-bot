@@ -11,7 +11,10 @@ use crate::{
 };
 
 fn extract_buy_arg_u64(value: &Option<Value>, field: &str) -> Option<u64> {
-    value.as_ref().and_then(|obj| obj.get(field)).and_then(|v| v.as_u64())
+    value
+        .as_ref()
+        .and_then(|obj| obj.get(field))
+        .and_then(|v| v.as_u64())
 }
 
 // ---------------------------------------------------------------------------
@@ -73,7 +76,10 @@ impl From<&TokenState> for TokenSummary {
             initial_supply_token: s.token.initial_supply_token,
             token_amount: extract_buy_arg_u64(&s.token.initial_buy_instruction, "token_amount"),
             max_sol_cost: extract_buy_arg_u64(&s.token.initial_buy_instruction, "max_sol_cost"),
-            spendable_sol_in: extract_buy_arg_u64(&s.token.initial_buy_instruction, "spendable_sol_in"),
+            spendable_sol_in: extract_buy_arg_u64(
+                &s.token.initial_buy_instruction,
+                "spendable_sol_in",
+            ),
             min_tokens_out: extract_buy_arg_u64(&s.token.initial_buy_instruction, "min_tokens_out"),
             cu_limit: s.token.cu_limit,
             cu_price: s.token.cu_price,
@@ -135,7 +141,10 @@ impl From<&TokenState> for TokenDetail {
             initial_buy_sol: s.token.initial_buy_sol,
             token_amount: extract_buy_arg_u64(&s.token.initial_buy_instruction, "token_amount"),
             max_sol_cost: extract_buy_arg_u64(&s.token.initial_buy_instruction, "max_sol_cost"),
-            spendable_sol_in: extract_buy_arg_u64(&s.token.initial_buy_instruction, "spendable_sol_in"),
+            spendable_sol_in: extract_buy_arg_u64(
+                &s.token.initial_buy_instruction,
+                "spendable_sol_in",
+            ),
             min_tokens_out: extract_buy_arg_u64(&s.token.initial_buy_instruction, "min_tokens_out"),
             cu_limit: s.token.cu_limit,
             cu_price: s.token.cu_price,

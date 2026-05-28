@@ -19,10 +19,10 @@ impl StatVariant {
             Self::Default => "sv",
             Self::Primary => "sv sv-primary",
             Self::Warning => "sv sv-warning",
-            Self::Danger  => "sv sv-danger",
-            Self::Info    => "sv sv-info",
-            Self::Accent  => "sv sv-accent",
-            Self::Muted   => "sv sv-muted",
+            Self::Danger => "sv sv-danger",
+            Self::Info => "sv sv-info",
+            Self::Accent => "sv sv-accent",
+            Self::Muted => "sv sv-muted",
         }
     }
 }
@@ -97,11 +97,11 @@ pub fn addr_card(props: &AddrCardProps) -> Html {
     let copied = use_state(|| false);
 
     let on_copy = {
-        let full   = props.full.clone();
+        let full = props.full.clone();
         let copied = copied.clone();
         Callback::from(move |e: MouseEvent| {
             e.stop_propagation();
-            let full   = full.clone();
+            let full = full.clone();
             let copied = copied.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 if let Some(win) = web_sys::window() {

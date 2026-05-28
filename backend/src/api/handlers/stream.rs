@@ -30,7 +30,11 @@ pub struct StreamQuery {
 /// ```
 /// Returns `None` for event variants not exposed over SSE
 /// (e.g. liquidity events not yet fully utilized).
-fn to_sse_frame(event: &InternalEvent, mint_filter: Option<&str>, state: &AppState) -> Option<Vec<u8>> {
+fn to_sse_frame(
+    event: &InternalEvent,
+    mint_filter: Option<&str>,
+    state: &AppState,
+) -> Option<Vec<u8>> {
     let (event_type, data) = match event {
         InternalEvent::TokenCreated(e) => {
             if mint_filter.map_or(false, |m| m != e.token.mint_address) {
@@ -169,8 +173,11 @@ pub async fn stream_events(
             loop {
                 match rx.recv().await {
                     Ok(event) => {
-                        if let Some(bytes) = to_sse_frame(&event, mint_filter.as_deref(), state.as_ref()) {
-                            let chunk = Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(bytes));
+                        if let Some(bytes) =
+                            to_sse_frame(&event, mint_filter.as_deref(), state.as_ref())
+                        {
+                            let chunk =
+                                Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(bytes));
                             return Some((chunk, (rx, mint_filter, state)));
                         }
                         // Event filtered or unsupported — wait for the next one
