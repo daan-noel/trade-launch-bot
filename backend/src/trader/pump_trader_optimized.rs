@@ -37,8 +37,8 @@ use solana_sdk::{
     signature::{Keypair, Signature, Signer},
     transaction::Transaction,
 };
-use solana_system_interface::instruction as system_instruction;
-use solana_system_interface::program as system_program;
+use solana_sdk::system_instruction;
+use solana_sdk::system_program;
 use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash as StdHash, Hasher};

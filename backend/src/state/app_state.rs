@@ -4,6 +4,7 @@ use sqlx::PgPool;
 use tokio::sync::{broadcast, watch};
 
 use crate::models::events::InternalEvent;
+use crate::trader::PumpFunTrader;
 
 use super::{creator_cache::CreatorCache, token_cache::TokenCache};
 
@@ -17,6 +18,7 @@ pub struct AppState {
     pub event_tx: broadcast::Sender<InternalEvent>,
     pub live_mode: watch::Sender<bool>,
     pub sol_price: Arc<watch::Sender<Option<f64>>>,
+    pub trader: Arc<PumpFunTrader>,
 }
 
 impl AppState {
@@ -27,6 +29,7 @@ impl AppState {
         event_tx: broadcast::Sender<InternalEvent>,
         live_mode: watch::Sender<bool>,
         sol_price: Arc<watch::Sender<Option<f64>>>,
+        trader: Arc<PumpFunTrader>,
     ) -> Self {
         Self {
             db,
@@ -35,6 +38,7 @@ impl AppState {
             event_tx,
             live_mode,
             sol_price,
+            trader,
         }
     }
 

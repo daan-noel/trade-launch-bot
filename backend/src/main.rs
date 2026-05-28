@@ -1,19 +1,31 @@
 mod analyzers;
 mod api;
 mod config;
+pub use config::constants as constants;
 mod ingest;
 mod models;
 mod services;
 mod state;
 mod storage;
 mod strategies;
+mod trader;
 
 use anyhow::Context;
+use solana_sdk::signature::Keypair;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use actix_cors::Cors;
 use actix_web::{web, App, HttpServer};
+use crate::trader::{PumpFunTrader, TraderConfig};
+
+fn parse_wallet_keypair(base58_key: &str) -> anyhow::Result<Keypair> {
+    let bytes = bs58::decode(base58_key)
+        .into_vec()
+        .context("Failed to decode WALLET_PRIVATE_KEY as base58")?;
+    Keypair::from_bytes(&bytes)
+        .context("Failed to construct Keypair from WALLET_PRIVATE_KEY bytes")
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -37,6 +49,22 @@ async fn main() -> anyhow::Result<()> {
         pump_program = %settings.pump_program_id,
         "Configuration loaded"
     );
+
+    let trader_config = Arc::new(TraderConfig {
+        rpc_url: settings.helius_rpc_url.clone(),
+        helius_sender_url: settings.helius_sender_url.clone(),
+        keypair: parse_wallet_keypair(&settings.wallet_private_key)
+            .context("Failed to parse trader wallet private key")?,
+        nonce_accounts: settings.nonce_accounts.clone(),
+        priority_fee_lamports: settings.compute_unit_price,
+        buy_seed_pool_size: settings.buy_seed_pool_size,
+    });
+
+    let trader = Arc::new(PumpFunTrader::new(trader_config));
+    trader
+        .initialize()
+        .await
+        .context("Failed to initialize PumpFunTrader")?;
 
     // Database — connect and run migrations
     let db = storage::postgres::connect(&settings).await?;
@@ -63,6 +91,7 @@ async fn main() -> anyhow::Result<()> {
         event_tx.clone(),
         live_tx.clone(),
         sol_price.clone(),
+        trader.clone(),
     ));
 
     // Raw WS message channel: helius_ws → event_handler
