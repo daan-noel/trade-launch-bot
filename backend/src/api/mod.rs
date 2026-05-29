@@ -88,6 +88,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 "/strategies/tpsl/rules/{rule_id}/simulate",
                 web::get().to(handlers::strategies::simulate_tpsl_rule),
             )
+            .route(
+                "/strategies/tpsl/rules/{rule_id}/matched",
+                web::get().to(handlers::strategies::get_matched_tokens),
+            )
             // Position endpoints
             .route(
                 "/positions",

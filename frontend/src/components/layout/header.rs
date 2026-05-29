@@ -109,9 +109,6 @@ pub fn header() -> Html {
                     <Link<Route> to={Route::Settings}     classes={cls(Route::Settings)}>{ "Settings" }</Link<Route>>
                 </nav>
                 <div class="topnav-right">
-                    <span class="">
-                        {"SOL"}
-                    </span>
                     <div class="unit-widget">
                         <button class={classes!("chain-badge", price_unit.unit.label().to_lowercase())}
                             onclick={onclick_toggle_unit}>

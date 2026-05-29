@@ -1,21 +1,23 @@
 impl PositionRepo {
-    /// Update exit fields for an existing position (exit_tx, exit_price, exit_amount, status).
+    /// Update exit fields for an existing position (exit_tx, exit_price, exit_time, status).
     pub async fn update_exit(
         &self,
         position_id: Uuid,
         exit_tx: &str,
         exit_price: f64,
+        exit_time: DateTime<Utc>,
     ) -> anyhow::Result<()> {
         sqlx::query(
             r#"
             UPDATE positions
-            SET exit_tx = $2, exit_price = $3, status = 'End', updated_at = $4
+            SET exit_tx = $2, exit_price = $3, exit_time = $4, status = 'End', updated_at = $5
             WHERE id = $1
             "#,
         )
         .bind(position_id)
         .bind(exit_tx)
         .bind(exit_price)
+        .bind(exit_time)
         .bind(Utc::now())
         .execute(&self.pool)
         .await?;
@@ -83,6 +85,8 @@ struct PositionDbRow {
     rule_id: Uuid,
     entry_amount: f64,
     exit_amount: Option<f64>,
+    entry_time: Option<DateTime<Utc>>,
+    exit_time: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -112,6 +116,8 @@ impl TryFrom<PositionDbRow> for Position {
             rule_id: r.rule_id,
             entry_amount: r.entry_amount,
             exit_amount: r.exit_amount,
+            entry_time: r.entry_time,
+            exit_time: r.exit_time,
             created_at: r.created_at,
             updated_at: r.updated_at,
         })
@@ -135,18 +141,19 @@ impl PositionRepo {
         Self { pool }
     }
 
-    /// Update entry fields for an existing position (entry_tx, entry_amount, entry_price).
+    /// Update entry fields for an existing position (entry_tx, entry_amount, entry_price, entry_time).
     pub async fn update_entry(
         &self,
         position_id: Uuid,
         entry_tx: &str,
         entry_amount: f64,
         entry_price: f64,
+        entry_time: DateTime<Utc>,
     ) -> anyhow::Result<()> {
         sqlx::query(
             r#"
             UPDATE positions
-            SET entry_tx = $2, entry_amount = $3, entry_price = $4, updated_at = $5
+            SET entry_tx = $2, entry_amount = $3, entry_price = $4, entry_time = $5, updated_at = $6
             WHERE id = $1
             "#,
         )
@@ -154,6 +161,7 @@ impl PositionRepo {
         .bind(entry_tx)
         .bind(entry_amount)
         .bind(entry_price)
+        .bind(entry_time)
         .bind(Utc::now())
         .execute(&self.pool)
         .await?;
@@ -167,8 +175,9 @@ impl PositionRepo {
             r#"
             INSERT INTO positions
                 (id, mint, wallet, token_program_id, entry_price, exit_price, entry_tx, exit_tx,
-                 status, strategy, rule_id, entry_amount, exit_amount, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                 status, strategy, rule_id, entry_amount, exit_amount,
+                 entry_time, exit_time, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             "#,
         )
         .bind(position.id)
@@ -184,6 +193,8 @@ impl PositionRepo {
         .bind(position.rule_id)
         .bind(position.entry_amount)
         .bind(position.exit_amount)
+        .bind(position.entry_time)
+        .bind(position.exit_time)
         .bind(position.created_at)
         .bind(position.updated_at)
         .execute(&self.pool)
@@ -197,14 +208,16 @@ impl PositionRepo {
         sqlx::query(
             r#"
             UPDATE positions
-            SET exit_price = $1, exit_tx = $2, status = $3, exit_amount = $4, updated_at = $5
-            WHERE id = $6
+            SET exit_price = $1, exit_tx = $2, status = $3, exit_amount = $4,
+                exit_time = $5, updated_at = $6
+            WHERE id = $7
             "#,
         )
         .bind(position.exit_price)
         .bind(&position.exit_tx)
         .bind(position_status_str(position.status))
         .bind(position.exit_amount)
+        .bind(position.exit_time)
         .bind(Utc::now())
         .bind(position.id)
         .execute(&self.pool)
@@ -218,7 +231,8 @@ impl PositionRepo {
         let rows = sqlx::query_as::<_, PositionDbRow>(
             r#"
                  SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
-                   status, strategy, rule_id, entry_amount, exit_amount, created_at, updated_at
+                   status, strategy, rule_id, entry_amount, exit_amount,
+                   entry_time, exit_time, created_at, updated_at
             FROM positions
             WHERE mint = $1 AND status = 'Holding'
             ORDER BY created_at DESC
@@ -236,7 +250,8 @@ impl PositionRepo {
         let rows = sqlx::query_as::<_, PositionDbRow>(
             r#"
                  SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
-                   status, strategy, rule_id, entry_amount, exit_amount, created_at, updated_at
+                   status, strategy, rule_id, entry_amount, exit_amount,
+                   entry_time, exit_time, created_at, updated_at
             FROM positions
             WHERE wallet = $1 AND status = 'Holding'
             ORDER BY created_at DESC
@@ -286,7 +301,8 @@ impl PositionRepo {
         let row = sqlx::query_as::<_, PositionDbRow>(
             r#"
             SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
-                   status, strategy, rule_id, entry_amount, exit_amount, created_at, updated_at
+                   status, strategy, rule_id, entry_amount, exit_amount,
+                   entry_time, exit_time, created_at, updated_at
             FROM positions
             WHERE id = $1
             "#,
@@ -303,7 +319,8 @@ impl PositionRepo {
         let rows = sqlx::query_as::<_, PositionDbRow>(
                 r#"
                 SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
-                        status, strategy, rule_id, entry_amount, exit_amount, created_at, updated_at
+                        status, strategy, rule_id, entry_amount, exit_amount,
+                   entry_time, exit_time, created_at, updated_at
                 FROM positions
                 WHERE rule_id = $1
                 ORDER BY created_at DESC
@@ -321,7 +338,8 @@ impl PositionRepo {
         let row = sqlx::query_as::<_, PositionDbRow>(
             r#"
             SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
-                   status, strategy, rule_id, entry_amount, exit_amount, created_at, updated_at
+                   status, strategy, rule_id, entry_amount, exit_amount,
+                   entry_time, exit_time, created_at, updated_at
             FROM positions
             WHERE entry_tx = $1
             "#,
@@ -359,7 +377,8 @@ impl PositionRepo {
         let rows = sqlx::query_as::<_, PositionDbRow>(
             r#"
             SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
-                   status, strategy, rule_id, entry_amount, exit_amount, created_at, updated_at
+                   status, strategy, rule_id, entry_amount, exit_amount,
+                   entry_time, exit_time, created_at, updated_at
             FROM positions
             WHERE strategy = $1
             ORDER BY created_at DESC
@@ -381,7 +400,8 @@ impl PositionRepo {
         let rows = sqlx::query_as::<_, PositionDbRow>(
             r#"
             SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
-                   status, strategy, rule_id, entry_amount, exit_amount, created_at, updated_at
+                   status, strategy, rule_id, entry_amount, exit_amount,
+                   entry_time, exit_time, created_at, updated_at
             FROM positions
             WHERE strategy = $1 AND status = $2
             ORDER BY created_at DESC

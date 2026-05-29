@@ -30,7 +30,9 @@ use crate::{
     state::app_state::AppState,
     storage::repositories::{
         position_repo::PositionRepo, strategy_tpsl_rule_repo::StrategyTPSLRuleRepo,
+        token_repo::TokenRepo,
     },
+    strategies::tpsl::handler_tpsl::token_matches_rule,
 };
 
 // ---------------------------------------------------------------------------
@@ -99,6 +101,8 @@ pub struct PositionResponse {
     pub entry_amount: f64,
     pub exit_amount: Option<f64>,
     pub pnl_percent: Option<f64>,
+    pub entry_time: Option<DateTime<Utc>>,
+    pub exit_time: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -120,6 +124,8 @@ impl From<Position> for PositionResponse {
             entry_amount: p.entry_amount,
             exit_amount: p.exit_amount,
             pnl_percent,
+            entry_time: p.entry_time,
+            exit_time: p.exit_time,
             created_at: p.created_at,
             updated_at: p.updated_at,
         }
@@ -432,6 +438,71 @@ pub async fn get_position(
                 .json(serde_json::json!({"error": "Failed to get position"}))
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Matched tokens
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct MatchedTokenResult {
+    pub mint: String,
+    pub symbol: String,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    pub initial_buy_sol: Option<f64>,
+    pub cu_limit: Option<u64>,
+    pub cu_price: Option<u64>,
+}
+
+/// Return all tokens in the database that satisfy a rule's entry criteria.
+///
+/// GET /api/strategies/tpsl/rules/{rule_id}/matched
+pub async fn get_matched_tokens(
+    app_state: web::Data<Arc<AppState>>,
+    rule_id: web::Path<Uuid>,
+) -> impl Responder {
+    let rule_id = rule_id.into_inner();
+    let rule_repo = StrategyTPSLRuleRepo::new(app_state.db.clone());
+    let token_repo = TokenRepo::new(app_state.db.clone());
+
+    let rule = match rule_repo.find_by_id(rule_id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return HttpResponse::NotFound()
+                .json(serde_json::json!({"error": "Rule not found"}));
+        }
+        Err(e) => {
+            tracing::error!("Failed to get rule {rule_id}: {e}");
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "Failed to get rule"}));
+        }
+    };
+
+    let tokens = match token_repo.find_all().await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!("Failed to load tokens for matched check: {e}");
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "Failed to load tokens"}));
+        }
+    };
+
+    let matched: Vec<MatchedTokenResult> = tokens
+        .into_iter()
+        .filter(|t| token_matches_rule(t, &rule))
+        .map(|t| MatchedTokenResult {
+            mint: t.mint_address,
+            symbol: t.symbol,
+            name: t.name,
+            created_at: t.created_at,
+            initial_buy_sol: t.initial_buy_sol,
+            cu_limit: t.cu_limit,
+            cu_price: t.cu_price,
+        })
+        .collect();
+
+    HttpResponse::Ok().json(matched)
 }
 
 // ---------------------------------------------------------------------------

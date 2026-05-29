@@ -31,6 +31,10 @@ pub struct Position {
     pub entry_amount: f64,
     /// Amount of tokens sold at exit.
     pub exit_amount: Option<f64>,
+    /// On-chain block time of the confirmed buy trade.
+    pub entry_time: Option<DateTime<Utc>>,
+    /// On-chain block time of the confirmed sell trade.
+    pub exit_time: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -91,6 +95,8 @@ impl Position {
             rule_id,
             entry_amount,
             exit_amount: None,
+            entry_time: None,
+            exit_time: None,
             created_at: now,
             updated_at: now,
         }
@@ -109,10 +115,11 @@ impl Position {
     }
 
     /// Close the position with an exit trade.
-    pub fn close(&mut self, exit_price: f64, exit_tx: String, exit_amount: f64) {
+    pub fn close(&mut self, exit_price: f64, exit_tx: String, exit_amount: f64, exit_time: DateTime<Utc>) {
         self.exit_price = Some(exit_price);
         self.exit_tx = Some(exit_tx);
         self.exit_amount = Some(exit_amount);
+        self.exit_time = Some(exit_time);
         self.status = PositionStatus::End;
         self.updated_at = Utc::now();
     }

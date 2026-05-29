@@ -1,0 +1,20 @@
+By considering tokens table in tokes page, and 3 tables in TPSL strategy page,
+make a re-usable one table component.
+
+This table component is almost same based on tokens table in tokens page.
+
+- custom columns, this column can be a data or component like status button which has onclick event or something like that
+- custom action field for table row
+- sort fuctionality for each columns
+- selectable row, when one is selected, show custom detail panel under the row in table
+- row is cross-effected on hover
+- pagination with custom page size
+- show/hide column section
+- global search/filter for all columns
+- filters section for each column
+
+Make this extendable for other projects too.
+Then update the 4 tables.
+
+Tell me plan first
+

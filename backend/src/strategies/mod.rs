@@ -1,10 +1,15 @@
 pub mod tpsl;
 
-pub use tpsl::{ExitReason, TPSLStrategyHandler};
+#[allow(unused_imports)]
+pub use tpsl::{ExitReason, TPSLStrategyHandler, TpslStrategyService};
 
-/// Base trait for all strategy handlers.
-/// Future strategies (e.g., MACD, RSI, etc.) can implement this trait.
-pub trait StrategyHandler {
+use crate::models::events::{TokenCreatedEvent, TradeExecutedEvent};
+
+#[async_trait::async_trait]
+pub trait StrategyHandler: Send + Sync {
     fn name(&self) -> &str;
-    fn version(&self) -> &str;
+    async fn on_token_created(&self, event: &TokenCreatedEvent);
+    async fn on_trade_executed(&self, event: &TradeExecutedEvent);
+    /// Override to spawn background tasks (cleanup loops, etc.) when the service starts.
+    fn spawn_background_tasks(&self) {}
 }

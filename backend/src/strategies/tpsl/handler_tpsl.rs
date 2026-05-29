@@ -189,6 +189,109 @@ impl TPSLStrategyHandler {
     }
 }
 
+/// Check whether a token satisfies a single rule's entry criteria.
+/// Unlike `check_buy_entry`, this does not require the rule to be active.
+pub fn token_matches_rule(token: &Token, rule: &StrategyTPSLRule) -> bool {
+    let p_initial_buy_sol = ignore_zero_f64(rule.p_initial_buy_sol);
+    let p_cu_limit = ignore_zero_u64(rule.p_cu_limit);
+    let p_cu_price = ignore_zero_u64(rule.p_cu_price);
+    let p_max_sol_cost = ignore_zero_f64(rule.p_max_sol_cost);
+    let p_spendable_sol_in = ignore_zero_f64(rule.p_spendable_sol_in);
+    let has_ix_labels = rule.p_ix_labels.as_array().map_or(false, |a| !a.is_empty());
+
+    if p_initial_buy_sol.is_none()
+        && p_cu_limit.is_none()
+        && p_cu_price.is_none()
+        && p_max_sol_cost.is_none()
+        && p_spendable_sol_in.is_none()
+        && !has_ix_labels
+    {
+        return false;
+    }
+
+    if let Some(rule_val) = p_initial_buy_sol {
+        match token.initial_buy_sol {
+            Some(v) => {
+                let tol = rule_val.abs() * (rule.tolerance_pct * 0.01);
+                if (v - rule_val).abs() > tol + 1e-9 {
+                    return false;
+                }
+            }
+            None => return false,
+        }
+    }
+
+    if let Some(rule_val) = p_cu_limit {
+        match token.cu_limit {
+            Some(v) => {
+                let tol = rule_val as f64 * (rule.tolerance_pct * 0.01);
+                if (v as f64 - rule_val as f64).abs() > tol + 1e-15 {
+                    return false;
+                }
+            }
+            None => return false,
+        }
+    }
+
+    if let Some(rule_val) = p_cu_price {
+        match token.cu_price {
+            Some(v) => {
+                let tol = rule_val as f64 * (rule.tolerance_pct * 0.01);
+                if (v as f64 - rule_val as f64).abs() > tol + 1e-9 {
+                    return false;
+                }
+            }
+            None => return false,
+        }
+    }
+
+    if let Some(rule_val) = p_max_sol_cost {
+        const LAMPORTS: f64 = 1_000_000_000.0;
+        let raw = token.initial_buy_instruction.as_ref().and_then(|ix| {
+            ix.get("max_sol_cost")
+                .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+        });
+        match raw {
+            Some(v) => {
+                let sol = v as f64 / LAMPORTS;
+                let tol = rule_val.abs() * (rule.tolerance_pct * 0.01);
+                if (sol - rule_val).abs() > tol + 1e-15 {
+                    return false;
+                }
+            }
+            None => return false,
+        }
+    }
+
+    if let Some(rule_val) = p_spendable_sol_in {
+        const LAMPORTS: f64 = 1_000_000_000.0;
+        let raw = token.initial_buy_instruction.as_ref().and_then(|ix| {
+            ix.get("spendable_sol_in")
+                .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+        });
+        match raw {
+            Some(v) => {
+                let sol = v as f64 / LAMPORTS;
+                let tol = rule_val.abs() * (rule.tolerance_pct * 0.01);
+                if (sol - rule_val).abs() > tol + 1e-15 {
+                    return false;
+                }
+            }
+            None => return false,
+        }
+    }
+
+    if has_ix_labels {
+        if token.instruction_labels.is_null()
+            || token.instruction_labels.as_array().map_or(true, |a| a.is_empty())
+        {
+            return false;
+        }
+    }
+
+    true
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitReason {
     TakeProfit,

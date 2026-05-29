@@ -358,12 +358,18 @@ impl HeliusDecoder {
             "Token created"
         );
 
+        let token_program_id = if is_v2 {
+            TOKEN_2022_PROGRAM_ID
+        } else {
+            TOKEN_PROGRAM_ID
+        };
+
         let token = Token::new(
             mint,
             creator.clone(),
             name,
             symbol,
-            None,
+            Some(token_program_id.to_string()),
             bonding_curve,
             initial_supply,
             initial_buy_sol,

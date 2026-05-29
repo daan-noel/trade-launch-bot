@@ -51,12 +51,14 @@ impl EventHandler {
                     let sig = raw_tx.signature.clone();
                     let raw_tx_clone = raw_tx.clone();
 
-                    tokio::spawn(async move {
-                        let repo = TransactionRepo::new(pool);
-                        if let Err(e) = repo.insert(&raw_tx_clone).await {
-                            error!("Failed to persist raw tx {sig}: {e}");
-                        }
-                    });
+                    // ! Don't save raw transaction histories from Helius WS,
+                    // ! for now
+                    // tokio::spawn(async move {
+                    //     let repo = TransactionRepo::new(pool);
+                    //     if let Err(e) = repo.insert(&raw_tx_clone).await {
+                    //         error!("Failed to persist raw tx {sig}: {e}");
+                    //     }
+                    // });
 
                     // Broadcast all decoded events
                     let n = events.len();

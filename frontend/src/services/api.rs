@@ -13,6 +13,8 @@ pub struct RulePositionRecord {
     pub entry_amount: f64,
     pub exit_amount: Option<f64>,
     pub pnl_percent: Option<f64>,
+    pub entry_time: Option<String>,
+    pub exit_time: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -297,6 +299,31 @@ pub async fn create_tpsl_rule(req: &CreateRuleRequest) -> Result<RuleRecord, Str
         return Err(format!("HTTP {}", resp.status()));
     }
     resp.json::<RuleRecord>()
+        .await
+        .map_err(|e| format!("Parse error: {e}"))
+}
+
+#[derive(Clone, PartialEq, Deserialize)]
+pub struct MatchedTokenRecord {
+    pub mint: String,
+    pub symbol: String,
+    pub name: String,
+    pub created_at: String,
+    pub initial_buy_sol: Option<f64>,
+    pub cu_limit: Option<u64>,
+    pub cu_price: Option<u64>,
+}
+
+pub async fn fetch_matched_tokens(rule_id: &str) -> Result<Vec<MatchedTokenRecord>, String> {
+    let url = format!("{API_BASE}/api/strategies/tpsl/rules/{rule_id}/matched");
+    let resp = Request::get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Fetch error: {e}"))?;
+    if !resp.ok() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    resp.json::<Vec<MatchedTokenRecord>>()
         .await
         .map_err(|e| format!("Parse error: {e}"))
 }
