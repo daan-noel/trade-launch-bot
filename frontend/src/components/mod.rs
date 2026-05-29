@@ -1,5 +1,6 @@
 pub mod button;
 pub mod col_options_panel;
+pub mod data_table;
 pub mod filter_panel;
 pub mod graph;
 pub mod layout;
@@ -12,10 +13,11 @@ pub mod token_row;
 pub mod tokens_table;
 
 pub use col_options_panel::{compute_group_boundaries, ColOptionsPanel, COLUMNS};
+pub use data_table::{Column, DataTable, SortDir, SortKey};
 pub use filter_panel::{FilterPanel, Filters};
 pub use layout::Header;
 pub use pagination::Pagination;
 pub use status_button::{StatusButton, StatusState};
 pub use table::{trade_row, AppTable, RowCells};
-pub use token_row::TokenRow;
-pub use tokens_table::TokensTable;
+pub use token_row::{TokenDetailPanel, TokenRow};
+pub use tokens_table::token_columns;

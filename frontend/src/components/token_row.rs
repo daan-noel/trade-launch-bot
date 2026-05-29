@@ -900,3 +900,183 @@ fn build_instruction_html(instr: &Value) -> Html {
         </div>
     }
 }
+
+// ── TokenDetailPanel — standalone detail panel for use with DataTable ─────────
+
+#[derive(Properties, PartialEq)]
+pub struct TokenDetailPanelProps {
+    pub detail: Option<TokenDetailRecord>,
+    pub loading: bool,
+    #[prop_or_default]
+    pub error: Option<String>,
+}
+
+#[function_component(TokenDetailPanel)]
+pub fn token_detail_panel(props: &TokenDetailPanelProps) -> Html {
+    let copy_copied = use_state(|| false);
+    let price_unit = use_context::<PriceUnitContext>()
+        .expect("PriceUnitProvider must be mounted above TokenDetailPanel");
+
+    if props.loading {
+        return html! {
+            <div class="detail-loading">
+                <span style="color:var(--text-dim); font-size:12px;">{ "Loading details..." }</span>
+            </div>
+        };
+    }
+    if let Some(err) = &props.error {
+        return html! { <p class="error" style="padding:12px;">{ err }</p> };
+    }
+    let Some(detail) = &props.detail else {
+        return html! {
+            <div class="token-detail-panel-empty">
+                <span style="color:var(--text-dim); font-size:12px;">
+                    { "Select a row to load detailed info." }
+                </span>
+            </div>
+        };
+    };
+
+    let d_fep = detail
+        .initial_buy_sol
+        .and_then(|buy| detail.initial_supply_token.map(|s| (buy, s)))
+        .and_then(|(buy, supply)| if supply > 0 { Some(buy / supply as f64) } else { None });
+    let d_fep_str = d_fep.map(format_price).unwrap_or_else(|| "-".into());
+    let d_ath_mult = d_fep.and_then(|fep| detail.ath_price.and_then(|ath| if fep != 0.0 { Some(ath / fep) } else { None }));
+    let d_ath_pct = d_fep.and_then(|fep| detail.ath_price.and_then(|ath| if fep != 0.0 { Some((ath / fep) * 100.0) } else { None }));
+    let d_ath_mult_str = d_ath_mult.map(|v| format!("{}x  ({}%)", format_decimal_trim(v, 2), format_decimal(d_ath_pct.unwrap_or(0.0), 1))).unwrap_or_else(|| "-".into());
+    let d_cur_mult = d_fep.and_then(|fep| detail.current_price.and_then(|cur| if fep != 0.0 { Some(cur / fep) } else { None }));
+    let d_cur_pct = d_fep.and_then(|fep| detail.current_price.and_then(|cur| if fep != 0.0 { Some((cur / fep) * 100.0) } else { None }));
+    let d_cur_mult_str = d_cur_mult.map(|v| format!("{}x  ({}%)", format_decimal_trim(v, 2), format_decimal(d_cur_pct.unwrap_or(0.0), 1))).unwrap_or_else(|| "-".into());
+    let d_ath_str = detail.ath_price.map(|v| price_unit.display_price(v)).unwrap_or_else(|| "-".into());
+    let d_cur_str = detail.current_price.map(|v| price_unit.display_price(v)).unwrap_or_else(|| "-".into());
+    let d_ath_ts = detail.ath_timestamp.as_deref().map(format_iso).unwrap_or_else(|| "-".into());
+    let d_last_trade = detail.last_trade_at.as_deref().map(format_iso).unwrap_or_else(|| "-".into());
+    let d_volume = detail.volume_sol_total.map(|v| price_unit.display_compact(v, 4)).unwrap_or_else(|| "-".into());
+    let d_mcap = detail.market_cap.map(|v| price_unit.display_compact(v, 4)).unwrap_or_else(|| "-".into());
+    let d_trades = detail.trade_count.map_or_else(|| "-".into(), |v| v.to_string());
+    let d_wallets = detail.unique_wallets_in_window.map_or_else(|| "-".into(), |v| v.to_string());
+    let d_init_buy = detail.initial_buy_sol.map(|v| price_unit.display_amount(v)).unwrap_or_else(|| "-".into());
+    let d_init_supply = detail.initial_supply_token.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
+    let d_cu_limit = detail.cu_limit.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
+    let d_cu_price = detail.cu_price.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
+    let d_label_count = detail.instruction_labels.as_array().map(|a| a.len()).unwrap_or(0);
+    let d_created = format_iso(&detail.created_at);
+    let d_status = if detail.is_migrated { "Migrated ✓" } else { "Bonding Curve" };
+    let d_status_cls = if detail.is_migrated { "detail-status-migrated" } else { "detail-status-bonding" };
+    let d_symbol = if detail.symbol.is_empty() { truncate(&detail.mint_address, 8) } else { detail.symbol.clone() };
+
+    let creator_solscan = format!("https://solscan.io/account/{}", detail.creator_address);
+    let creator_gmgn = format!("https://gmgn.ai/sol/address/{}", detail.creator_address);
+    let mint_solscan = format!("https://solscan.io/token/{}", detail.mint_address);
+    let mint_gmgn = format!("https://gmgn.ai/sol/token/{}", detail.mint_address);
+    let create_tx_solscan = format!("https://solscan.io/tx/{}", detail.create_tx_address);
+    let creator_short = truncate(&detail.creator_address, 12);
+    let mint_short = truncate(&detail.mint_address, 12);
+    let create_tx_short = truncate(&detail.create_tx_address, 12);
+    let bonding_short = detail.bonding_curve_address.as_deref().map(|a| truncate(a, 12)).unwrap_or_else(|| "-".into());
+    let bonding_full = detail.bonding_curve_address.clone().unwrap_or_default();
+    let bonding_solscan = detail.bonding_curve_address.as_ref().map(|a| format!("https://solscan.io/account/{}", a));
+    let bonding_gmgn = detail.bonding_curve_address.as_ref().map(|a| format!("https://gmgn.ai/sol/address/{}", a));
+    let bonding_html = if let Some(url) = bonding_solscan {
+        html! { <AddrCard label="Bonding Curve" short={bonding_short} full={bonding_full} solscan_url={url} gmgn_url={bonding_gmgn} /> }
+    } else {
+        html! { <StatCard label="Bonding Curve" value="-" variant={StatVariant::Muted} /> }
+    };
+
+    let on_copy_labels = {
+        let instruction_labels = detail.instruction_labels.clone();
+        let copied = copy_copied.clone();
+        Callback::from(move |_: MouseEvent| {
+            let text = serde_json::to_string(&instruction_labels).unwrap_or_default();
+            let copied = copied.clone();
+            spawn_local(async move {
+                if let Some(win) = web_sys::window() {
+                    let cb = win.navigator().clipboard();
+                    let _ = wasm_bindgen_futures::JsFuture::from(cb.write_text(&text)).await;
+                    copied.set(true);
+                    let copied_reset = copied.clone();
+                    gloo::timers::callback::Timeout::new(1500, move || copied_reset.set(false)).forget();
+                }
+            });
+        })
+    };
+
+    let instruction_html = build_instruction_html(&detail.instruction_labels);
+
+    html! {
+        <section class="token-detail-panel">
+            <div class="detail-panel-inner">
+                <div class="detail-header">
+                    <div class="detail-title-group">
+                        <span class="detail-symbol">{ &d_symbol }</span>
+                        <span class="detail-token-name">{ &detail.name }</span>
+                    </div>
+                    <span class={classes!("detail-status-badge", d_status_cls)}>{ d_status }</span>
+                </div>
+                <div class="detail-body">
+                    <div class="detail-left">
+                        <div class="detail-section">
+                            <div class="detail-section-title">{ "Price Performance" }</div>
+                            <div class="stat-grid-3">
+                                <StatCard label="First Entry Price" value={d_fep_str} large=true />
+                                <StatCard label="ATH Price" value={d_ath_str} variant={StatVariant::Primary} large=true />
+                                <StatCard label="Current Price" value={d_cur_str} large=true />
+                                <StatCard label="ATH / FEP" value={d_ath_mult_str} variant={ratio_variant(d_ath_mult)} large=true />
+                                <StatCard label="Current / FEP" value={d_cur_mult_str} variant={ratio_variant(d_cur_mult)} large=true />
+                                <StatCard label="ATH Timestamp" value={d_ath_ts} variant={StatVariant::Muted} />
+                            </div>
+                        </div>
+                        <div class="detail-section">
+                            <div class="detail-section-title">{ "Activity & Market" }</div>
+                            <div class="stat-grid-3">
+                                <StatCard label={format!("Volume ({})", price_unit.unit_label())} value={d_volume} variant={StatVariant::Info} bold={true} />
+                                <StatCard label={format!("Market Cap ({})", price_unit.unit_label())} value={d_mcap} bold={true} />
+                                <StatCard label="Trade Count" value={d_trades} bold={true} />
+                                <StatCard label="Unique Wallets" value={d_wallets} variant={StatVariant::Info} bold={true} />
+                                <StatCard label="Last Trade" value={d_last_trade} variant={StatVariant::Muted} />
+                                <StatCard label="Created" value={d_created} variant={StatVariant::Muted} />
+                            </div>
+                        </div>
+                        <div class="detail-section">
+                            <div class="detail-section-title">{ "Creation Parameters" }</div>
+                            <div class="stat-grid-4">
+                                <StatCard label={format!("Initial Buy ({})", price_unit.unit_label())} value={d_init_buy} />
+                                <StatCard label="Initial Supply" value={d_init_supply} />
+                                <StatCard label="CU Limit" value={d_cu_limit} variant={StatVariant::Muted} bold={true} />
+                                <StatCard label="CU Price" value={d_cu_price} variant={StatVariant::Muted} bold={true} />
+                            </div>
+                        </div>
+                        <div class="detail-section">
+                            <div class="detail-section-title">{ "Addresses" }</div>
+                            <div class="stat-grid-4">
+                                <AddrCard label="Creator" short={creator_short} full={detail.creator_address.clone()} solscan_url={creator_solscan} gmgn_url={Some(creator_gmgn)} />
+                                <AddrCard label="Mint" short={mint_short} full={detail.mint_address.clone()} solscan_url={mint_solscan} gmgn_url={Some(mint_gmgn)} />
+                                <AddrCard label="Create TX" short={create_tx_short} full={detail.create_tx_address.clone()} solscan_url={create_tx_solscan} />
+                                { bonding_html }
+                            </div>
+                        </div>
+                    </div>
+                    <div class="detail-body-divider"></div>
+                    <div class="detail-right">
+                        <div class="detail-section-title">
+                            <span>{ format!("Instruction Labels  ({})", d_label_count) }</span>
+                            <button
+                                class={classes!("detail-copy-btn", (*copy_copied).then_some("detail-copy-ok"))}
+                                onclick={on_copy_labels}
+                                title={if *copy_copied { "Copied!" } else { "Copy labels to clipboard" }}
+                            >
+                                { if *copy_copied {
+                                    html! { <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7" /></svg> }
+                                } else {
+                                    html! { <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" /></svg> }
+                                } }
+                            </button>
+                        </div>
+                        { instruction_html }
+                    </div>
+                </div>
+            </div>
+        </section>
+    }
+}

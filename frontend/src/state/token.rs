@@ -106,6 +106,7 @@ pub enum TokenAction {
     SetError(String),
     ToggleSort(String), // field name - toggles order if same field, sets order to Desc if different
     SelectToken(String),
+    ClearSelection,
 }
 
 pub fn sort_tokens(tokens: &mut Vec<TokenRecord>, sort: &SortState) {
@@ -367,12 +368,14 @@ impl Reducible for TokenState {
                 sort_tokens(&mut next.tokens, &next.sort);
             }
             TokenAction::SelectToken(mint) => {
-                // Toggle selection: deselect if already selected, otherwise select.
                 if next.selected_mint.as_deref() == Some(&mint) {
                     next.selected_mint = None;
                 } else {
                     next.selected_mint = Some(mint);
                 }
+            }
+            TokenAction::ClearSelection => {
+                next.selected_mint = None;
             }
         }
         next.into()
