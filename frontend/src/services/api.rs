@@ -456,3 +456,35 @@ pub async fn fetch_creators(limit: i64, offset: i64) -> Result<CreatorListResult
         .await
         .map_err(|e| format!("Parse error: {e}"))
 }
+
+// ── Wallet holdings (on-chain, no DB) ────────────────────────────────────────
+
+#[derive(Clone, PartialEq, Deserialize)]
+pub struct WalletHolding {
+    pub mint: String,
+    pub amount: u64,
+    pub ui_amount: f64,
+    pub decimals: u8,
+    pub token_account: String,
+    pub token_program_id: String,
+    pub symbol: Option<String>,
+    pub price_usd: Option<f64>,
+    pub value_usd: Option<f64>,
+    pub liquidity: Option<f64>,
+    pub price_change_24h: Option<f64>,
+    pub token_created_at: Option<String>,
+}
+
+pub async fn fetch_wallet_holdings() -> Result<Vec<WalletHolding>, String> {
+    let url = format!("{API_BASE}/api/solana/wallet/tokens");
+    let resp = Request::get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Fetch error: {e}"))?;
+    if !resp.ok() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    resp.json::<Vec<WalletHolding>>()
+        .await
+        .map_err(|e| format!("Parse error: {e}"))
+}

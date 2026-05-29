@@ -239,6 +239,66 @@ impl PumpFunTrader {
         self.config.keypair.pubkey().to_string()
     }
 
+    /// Query the on-chain SPL token balance for a given wallet + mint.
+    /// Tries both classic Token and Token-2022 ATAs; returns 0 if none found.
+    pub fn get_token_balance_blocking(
+        &self,
+        wallet: &str,
+        mint: &str,
+    ) -> anyhow::Result<crate::services::trading_service::TokenBalance> {
+        use std::str::FromStr;
+        use solana_sdk::pubkey::Pubkey;
+        use spl_associated_token_account::get_associated_token_address_with_program_id;
+
+        let wallet_pk = Pubkey::from_str(wallet)
+            .map_err(|e| anyhow::anyhow!("Invalid wallet pubkey: {e}"))?;
+        let mint_pk = Pubkey::from_str(mint)
+            .map_err(|e| anyhow::anyhow!("Invalid mint pubkey: {e}"))?;
+
+        let programs = [
+            (Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap(), TOKEN_PROGRAM_ID),
+            (Pubkey::from_str(TOKEN_2022_PROGRAM_ID).unwrap(), TOKEN_2022_PROGRAM_ID),
+        ];
+
+        for (token_prog_pk, token_prog_str) in &programs {
+            let ata = get_associated_token_address_with_program_id(
+                &wallet_pk,
+                &mint_pk,
+                token_prog_pk,
+            );
+            match self.rpc.get_token_account_balance(&ata) {
+                Ok(ui_amount) => {
+                    let amount: u64 = ui_amount.amount.parse().unwrap_or(0);
+                    return Ok(crate::services::trading_service::TokenBalance {
+                        mint: mint.to_string(),
+                        wallet: wallet.to_string(),
+                        amount,
+                        ui_amount: ui_amount.ui_amount.unwrap_or(0.0),
+                        decimals: ui_amount.decimals,
+                        token_account: Some(ata.to_string()),
+                        token_program_id: token_prog_str.to_string(),
+                    });
+                }
+                Err(_) => continue,
+            }
+        }
+
+        Ok(crate::services::trading_service::TokenBalance {
+            mint: mint.to_string(),
+            wallet: wallet.to_string(),
+            amount: 0,
+            ui_amount: 0.0,
+            decimals: 0,
+            token_account: None,
+            token_program_id: String::new(),
+        })
+    }
+
+    /// Expose the RPC URL for callers that need to make their own RPC requests.
+    pub fn rpc_url(&self) -> &str {
+        &self.config.rpc_url
+    }
+
     // -----------------------------------------------------------------------
     // Initialization  (call once before any buy/sell)
     // -----------------------------------------------------------------------

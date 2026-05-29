@@ -94,6 +94,7 @@ pub fn header() -> Html {
                     <Link<Route> to={Route::Tokens}       classes={cls(Route::Tokens)}>{ "Tokens" }</Link<Route>>
                     <Link<Route> to={Route::Transactions} classes={cls(Route::Transactions)}>{ "Transactions" }</Link<Route>>
                     <Link<Route> to={Route::Analysis}     classes={cls(Route::Analysis)}>{ "Analysis" }</Link<Route>>
+                    <Link<Route> to={Route::Wallet}       classes={cls(Route::Wallet)}>{ "Wallet" }</Link<Route>>
                     <div class="nav-item">
                         <span class={classes!("nav-link", on_strategies.then_some("active"))}>
                             { "Strategies" }

@@ -108,6 +108,15 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route(
                 "/positions/wallet/{wallet}",
                 web::get().to(handlers::strategies::get_positions_by_wallet),
+            )
+            // On-chain Solana queries — bypass local DB entirely
+            .route(
+                "/solana/wallet/tokens",
+                web::get().to(handlers::trade::get_wallet_tokens),
+            )
+            .route(
+                "/solana/wallet/{wallet}/token/{mint}",
+                web::get().to(handlers::trade::get_wallet_token_balance),
             ),
     );
 }

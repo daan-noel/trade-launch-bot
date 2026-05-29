@@ -8,7 +8,7 @@ use yew::prelude::*;
 use yew_router::prelude::*;
 use yew_router::components::Redirect;
 
-use crate::pages::{AnalysisPage, DashboardPage, HomePage, TpslPage, TokensPage, TransactionsPage};
+use crate::pages::{AnalysisPage, DashboardPage, HomePage, TpslPage, TokensPage, TransactionsPage, WalletPage};
 
 #[derive(Clone, Routable, PartialEq)]
 pub enum Route {
@@ -28,6 +28,8 @@ pub enum Route {
     StrategiesTpsl,
     #[at("/strategies")]
     Strategies,
+    #[at("/wallet")]
+    Wallet,
     #[not_found]
     #[at("/404")]
     NotFound,
@@ -43,6 +45,7 @@ pub fn switch(route: Route) -> Html {
         Route::Settings => html! { <crate::routes::settings::SettingsRoute /> },
         Route::StrategiesTpsl => html! { <TpslPage /> },
         Route::Strategies => html! { <Redirect<Route> to={Route::StrategiesTpsl} /> },
+        Route::Wallet => html! { <WalletPage /> },
         Route::NotFound => html! { <h1>{ "404 - Not Found" }</h1> },
     }
 }
