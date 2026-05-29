@@ -96,13 +96,13 @@ pub fn header() -> Html {
                     <Link<Route> to={Route::Settings}     classes={cls(Route::Settings)}>{ "Settings" }</Link<Route>>
                 </nav>
                 <div class="topnav-right">
-                    <span class="chain-badge">
-                        <span class="chain-dot"></span>
+                    <span class="">
                         {"SOL"}
                     </span>
                     <div class="unit-widget">
-                        <button class={classes!("unit-button", price_unit.unit.label().to_lowercase())}
+                        <button class={classes!("chain-badge", price_unit.unit.label().to_lowercase())}
                             onclick={onclick_toggle_unit}>
+                            <span class="chain-dot"></span>
                             { price_unit.unit.label() }
                         </button>
                         if price_unit.unit == PriceUnit::USD {

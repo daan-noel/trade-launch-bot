@@ -30,7 +30,7 @@ use crate::services::api::{
     CreateRuleRequest, RuleRecord, SimulatedTokenResult, UpdateRuleRequest,
 };
 use crate::state::PriceUnitContext;
-use crate::utils::format::{format_age, format_compact, format_decimal_trim};
+use crate::utils::format::{format_age, format_decimal_trim};
 
 // ── Modal mode ────────────────────────────────────────────────────────────────
 
@@ -118,6 +118,7 @@ pub fn strategy_page() -> Html {
     let f_cu_price = use_state(String::new);
     let f_ix_labels = use_state(String::new);
     let f_buy_amount = use_state(String::new);
+    let f_trade_mode = use_state(|| "paper".to_string());
     let f_take_profit = use_state(String::new);
     let f_stop_loss = use_state(String::new);
     let f_max_sol_cost = use_state(String::new);
@@ -157,13 +158,15 @@ pub fn strategy_page() -> Html {
     }
 
     // ── Helpers: open modals ──────────────────────────────────────────────────
+    let f_trade_mode_for_add = f_trade_mode.clone();
     let open_add = {
-        let (modal_mode, f_name, f_initial_buy, f_cu_limit, f_cu_price) = (
+        let (modal_mode, f_name, f_initial_buy, f_cu_limit, f_cu_price, f_trade_mode) = (
             modal_mode.clone(),
             f_name.clone(),
             f_initial_buy.clone(),
             f_cu_limit.clone(),
             f_cu_price.clone(),
+            f_trade_mode_for_add,
         );
         let (
             f_ix_labels,
@@ -204,6 +207,7 @@ pub fn strategy_page() -> Html {
             f_max_holding_tokens.set(String::new());
             f_total_max_trade_tokens.set(String::new());
             f_tolerance.set("0".into());
+            f_trade_mode.set(String::from("paper"));
             f_allow_edit_params.set(false);
             form_error.set(None);
             modal_mode.set(ModalMode::Add);
@@ -235,6 +239,7 @@ pub fn strategy_page() -> Html {
             f_max_holding_tokens,
             f_total_max_trade_tokens,
             f_tolerance,
+            f_trade_mode,
             f_allow_edit_params,
             form_error,
         ) = (
@@ -247,6 +252,7 @@ pub fn strategy_page() -> Html {
             f_max_holding_tokens.clone(),
             f_total_max_trade_tokens.clone(),
             f_tolerance.clone(),
+            f_trade_mode.clone(),
             f_allow_edit_params.clone(),
             form_error.clone(),
         );
@@ -291,6 +297,7 @@ pub fn strategy_page() -> Html {
             f_buy_amount.set(rule.buy_amount.to_string());
             f_take_profit.set(rule.take_profit.to_string());
             f_stop_loss.set(rule.stop_loss.to_string());
+            f_trade_mode.set(rule.trade_mode.clone());
             f_allow_edit_params.set(false);
             form_error.set(None);
             modal_mode.set(ModalMode::Edit(rule));
@@ -313,76 +320,44 @@ pub fn strategy_page() -> Html {
 
     // ── Save (create or update) ───────────────────────────────────────────────
     let on_save = {
-        let (modal_mode, rules, form_error, form_loading) = (
-            modal_mode.clone(),
-            rules.clone(),
-            form_error.clone(),
-            form_loading.clone(),
-        );
-        let (
-            f_name,
-            f_initial_buy,
-            f_cu_limit,
-            f_cu_price,
-            f_ix_labels,
-            f_max_sol_cost,
-            f_spendable_sol_in,
-            f_max_holding_tokens,
-            f_total_max_trade_tokens,
-            f_tolerance,
-        ) = (
-            f_name.clone(),
-            f_initial_buy.clone(),
-            f_cu_limit.clone(),
-            f_cu_price.clone(),
-            f_ix_labels.clone(),
-            f_max_sol_cost.clone(),
-            f_spendable_sol_in.clone(),
-            f_max_holding_tokens.clone(),
-            f_total_max_trade_tokens.clone(),
-            f_tolerance.clone(),
-        );
-        let (f_buy_amount, f_take_profit, f_stop_loss) = (
-            f_buy_amount.clone(),
-            f_take_profit.clone(),
-            f_stop_loss.clone(),
-        );
+        let modal_mode = modal_mode.clone();
+        let rules = rules.clone();
+        let form_error = form_error.clone();
+        let form_loading = form_loading.clone();
+        let f_name = f_name.clone();
+        let f_initial_buy = f_initial_buy.clone();
+        let f_cu_limit = f_cu_limit.clone();
+        let f_cu_price = f_cu_price.clone();
+        let f_ix_labels = f_ix_labels.clone();
+        let f_max_sol_cost = f_max_sol_cost.clone();
+        let f_spendable_sol_in = f_spendable_sol_in.clone();
+        let f_max_holding_tokens = f_max_holding_tokens.clone();
+        let f_total_max_trade_tokens = f_total_max_trade_tokens.clone();
+        let f_tolerance = f_tolerance.clone();
+        let f_buy_amount = f_buy_amount.clone();
+        let f_take_profit = f_take_profit.clone();
+        let f_stop_loss = f_stop_loss.clone();
+        let f_trade_mode = f_trade_mode.clone();
         Callback::from(move |_: MouseEvent| {
-            let mode = (*modal_mode).clone();
-            let (rules, form_error, form_loading, modal_mode) = (
-                rules.clone(),
-                form_error.clone(),
-                form_loading.clone(),
-                modal_mode.clone(),
-            );
-            let (
-                name,
-                initial_buy_s,
-                cu_limit_s,
-                cu_price_s,
-                ix_labels_s,
-                max_sol_cost_s,
-                spendable_sol_in_s,
-                max_holding_tokens_s,
-                total_max_trade_tokens_s,
-                tolerance_s,
-            ) = (
-                (*f_name).clone(),
-                (*f_initial_buy).clone(),
-                (*f_cu_limit).clone(),
-                (*f_cu_price).clone(),
-                (*f_ix_labels).clone(),
-                (*f_max_sol_cost).clone(),
-                (*f_spendable_sol_in).clone(),
-                (*f_max_holding_tokens).clone(),
-                (*f_total_max_trade_tokens).clone(),
-                (*f_tolerance).clone(),
-            );
-            let (buy_amount_s, take_profit_s, stop_loss_s) = (
-                (*f_buy_amount).clone(),
-                (*f_take_profit).clone(),
-                (*f_stop_loss).clone(),
-            );
+            let modal_mode_val = (*modal_mode).clone();
+            let rules = rules.clone();
+            let form_error = form_error.clone();
+            let form_loading = form_loading.clone();
+            let modal_mode = modal_mode.clone();
+            let name = (*f_name).clone();
+            let initial_buy_s = (*f_initial_buy).clone();
+            let cu_limit_s = (*f_cu_limit).clone();
+            let cu_price_s = (*f_cu_price).clone();
+            let ix_labels_s = (*f_ix_labels).clone();
+            let max_sol_cost_s = (*f_max_sol_cost).clone();
+            let spendable_sol_in_s = (*f_spendable_sol_in).clone();
+            let max_holding_tokens_s = (*f_max_holding_tokens).clone();
+            let total_max_trade_tokens_s = (*f_total_max_trade_tokens).clone();
+            let tolerance_s = (*f_tolerance).clone();
+            let buy_amount_s = (*f_buy_amount).clone();
+            let take_profit_s = (*f_take_profit).clone();
+            let stop_loss_s = (*f_stop_loss).clone();
+            let f_trade_mode = (*f_trade_mode).clone();
             form_error.set(None);
             form_loading.set(true);
 
@@ -412,7 +387,7 @@ pub fn strategy_page() -> Html {
                     }
                 };
 
-                match mode {
+                match &modal_mode_val {
                     ModalMode::Add => {
                         let p_initial_buy_sol = if initial_buy_s.trim().is_empty() {
                             None
@@ -422,7 +397,7 @@ pub fn strategy_page() -> Html {
                                 Err(_) => {
                                     form_error.set(Some("Invalid initial buy SOL".into()));
                                     form_loading.set(false);
-                                    return;
+                                    return ();
                                 }
                             }
                         };
@@ -438,22 +413,8 @@ pub fn strategy_page() -> Html {
                         };
                         let ix_labels: Vec<Value> = if ix_labels_s.trim().starts_with('[') {
                             match serde_json::from_str::<Value>(ix_labels_s.trim()) {
-                                Ok(Value::Array(arr)) => arr
-                                    .into_iter()
-                                    .map(|item| {
-                                        if item.is_string() {
-                                            item
-                                        } else {
-                                            Value::String(item.to_string())
-                                        }
-                                    })
-                                    .collect(),
-                                _ => ix_labels_s
-                                    .split(',')
-                                    .map(|s| s.trim())
-                                    .filter(|s| !s.is_empty())
-                                    .map(|s| Value::String(s.to_string()))
-                                    .collect(),
+                                Ok(Value::Array(arr)) => arr,
+                                _ => vec![],
                             }
                         } else {
                             ix_labels_s
@@ -463,7 +424,6 @@ pub fn strategy_page() -> Html {
                                 .map(|s| Value::String(s.to_string()))
                                 .collect()
                         };
-
                         let p_max_sol_cost = if max_sol_cost_s.trim().is_empty() {
                             None
                         } else {
@@ -504,7 +464,7 @@ pub fn strategy_page() -> Html {
                             match tolerance_s.trim().parse::<f64>() {
                                 Ok(v) => Some(v),
                                 Err(_) => {
-                                    form_error.set(Some("Invalid tolerance %".into()));
+                                    form_error.set(Some("Invalid tolerance".into()));
                                     form_loading.set(false);
                                     return;
                                 }
@@ -520,6 +480,7 @@ pub fn strategy_page() -> Html {
                             p_max_holding_tokens,
                             p_total_max_trade_tokens,
                             p_ix_labels: Value::Array(ix_labels),
+                            trade_mode: (*f_trade_mode).to_string(),
                             buy_amount,
                             take_profit,
                             stop_loss,
@@ -536,6 +497,7 @@ pub fn strategy_page() -> Html {
                         }
                     }
                     ModalMode::Edit(rule) => {
+                        let rule = rule.clone();
                         let p_initial_buy_sol = Some(Some(if initial_buy_s.trim().is_empty() { 0.0 } else { initial_buy_s.trim().parse::<f64>().unwrap_or(0.0) }));
                         let p_cu_limit = Some(Some(if cu_limit_s.trim().is_empty() { 0 } else { cu_limit_s.trim().parse::<u64>().unwrap_or(0) }));
                         let p_cu_price = Some(Some(if cu_price_s.trim().is_empty() { 0 } else { cu_price_s.trim().parse::<u64>().unwrap_or(0) }));
@@ -544,22 +506,8 @@ pub fn strategy_page() -> Html {
                         } else {
                             let labels_vec: Vec<Value> = if ix_labels_s.trim().starts_with('[') {
                                 match serde_json::from_str::<Value>(ix_labels_s.trim()) {
-                                    Ok(Value::Array(arr)) => arr
-                                        .into_iter()
-                                        .map(|item| {
-                                            if item.is_string() {
-                                                item
-                                            } else {
-                                                Value::String(item.to_string())
-                                            }
-                                        })
-                                        .collect(),
-                                    _ => ix_labels_s
-                                        .split(',')
-                                        .map(|s| s.trim())
-                                        .filter(|s| !s.is_empty())
-                                        .map(|s| Value::String(s.to_string()))
-                                        .collect(),
+                                    Ok(Value::Array(arr)) => arr,
+                                    _ => vec![],
                                 }
                             } else {
                                 ix_labels_s
@@ -581,7 +529,7 @@ pub fn strategy_page() -> Html {
                             match tolerance_s.trim().parse::<f64>() {
                                 Ok(v) => Some(v),
                                 Err(_) => {
-                                    form_error.set(Some("Invalid tolerance %".into()));
+                                    form_error.set(Some("Invalid tolerance".into()));
                                     form_loading.set(false);
                                     return;
                                 }
@@ -602,18 +550,13 @@ pub fn strategy_page() -> Html {
                             p_total_max_trade_tokens,
                             tolerance_pct: p_tolerance,
                             is_active: None,
+                            trade_mode: Some(f_trade_mode.clone()),
                         };
                         match update_tpsl_rule(&rule.id, &req).await {
                             Ok(updated) => {
                                 let items = (*rules)
                                     .iter()
-                                    .map(|r| {
-                                        if r.id == updated.id {
-                                            updated.clone()
-                                        } else {
-                                            r.clone()
-                                        }
-                                    })
+                                    .map(|r| if r.id == updated.id { updated.clone() } else { r.clone() })
                                     .collect();
                                 rules.set(items);
                                 modal_mode.set(ModalMode::None);
@@ -649,6 +592,7 @@ pub fn strategy_page() -> Html {
                     p_total_max_trade_tokens: None,
                     tolerance_pct: None,
                     is_active: Some(!rule.is_active),
+                    trade_mode: None,
                 };
                 if let Ok(updated) = update_tpsl_rule(&rule.id, &req).await {
                     let items = (*rules)
@@ -806,6 +750,17 @@ pub fn strategy_page() -> Html {
                 <td class="tp-col">{ dash_percent(rule.take_profit) }</td>
                 <td class="sl-col">{ dash_percent(rule.stop_loss) }</td>
                 <td class="num-col">{ dash_percent(rule.tolerance_pct) }</td>
+                <td class="mode-col">
+                    <span class={
+                        if rule.trade_mode == "real" {
+                            "mode-pill mode-real"
+                        } else {
+                            "mode-pill mode-paper"
+                        }
+                    }>
+                        { if rule.trade_mode == "real" { "Real" } else { "Paper" } }
+                    </span>
+                </td>
                 <td class="status-col">
                     <button
                         class={if rule.is_active { "status-pill status-active" } else { "status-pill status-inactive" }}
@@ -1146,6 +1101,15 @@ pub fn strategy_page() -> Html {
             })
         }};
     }
+    macro_rules! onselect {
+        ($field:expr) => {{
+            let field = $field.clone();
+            Callback::from(move |e: Event| {
+                let el: web_sys::HtmlSelectElement = e.target_unchecked_into();
+                field.set(el.value());
+            })
+        }};
+    }
 
     html! {
         <div class="page-shell">
@@ -1207,6 +1171,7 @@ pub fn strategy_page() -> Html {
                                         <th>{ "TP" }</th>
                                         <th>{ "SL" }</th>
                                         <th>{ "Tolerance" }</th>
+                                        <th>{ "Mode" }</th>
                                         <th>{ "Status" }</th>
                                         <th>{ "Actions" }</th>
                                     </tr>
@@ -1308,9 +1273,27 @@ pub fn strategy_page() -> Html {
                 { sim_panel }
 
                 // ── Add / Edit modal ──────────────────────────────────────────
-                <Modal title={modal_title.to_string()} visible={modal_visible} on_close={close_modal}>
+                <Modal
+                    title={modal_title.to_string()}
+                    visible={modal_visible}
+                    on_close={close_modal}
+                    key={
+                        match &*modal_mode {
+                            ModalMode::Edit(rule) => rule.id.clone(),
+                            _ => "modal-add".to_string(),
+                        }
+                    }
+                >
                     <div class="rule-form">
                         <div class="rule-form-grid">
+                            <label class="form-field">
+                                <span class="form-label" style="color:var(--primary)">{ "Mode" }</span>
+                                <select class="form-input" value={(*f_trade_mode).clone()} onchange={onselect!(f_trade_mode)}>
+                                    <option value="paper" selected={*f_trade_mode == "paper"}>{ "Paper Test" }</option>
+                                    <option value="real" selected={*f_trade_mode == "real"}>{ "Real Trading" }</option>
+                                </select>
+                                <div class="form-hint">{ "Choose 'Paper Test' for simulation only, or 'Real Trading' to enable live trades." }</div>
+                            </label>
 
                             <label class="form-field form-field-full">
                                 <span class="form-label" style="color:var(--primary)">{ "Rule Name" }</span>

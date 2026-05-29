@@ -1,0 +1,2 @@
+ALTER TABLE strategy_TPSL_rules
+ADD COLUMN IF NOT EXISTS trade_mode TEXT NOT NULL DEFAULT 'paper';

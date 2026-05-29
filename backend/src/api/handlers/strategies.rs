@@ -49,6 +49,7 @@ pub struct RuleResponse {
     pub p_max_holding_tokens: Option<u64>,
     pub p_total_max_trade_tokens: Option<u64>,
     pub p_ix_labels: serde_json::Value,
+    pub trade_mode: String,
     pub buy_amount: f64,
     pub take_profit: f64,
     pub stop_loss: f64,
@@ -71,6 +72,7 @@ impl From<StrategyTPSLRule> for RuleResponse {
             p_max_holding_tokens: r.p_max_holding_tokens,
             p_total_max_trade_tokens: r.p_total_max_trade_tokens,
             p_ix_labels: r.p_ix_labels,
+            trade_mode: r.trade_mode,
             buy_amount: r.buy_amount,
             take_profit: r.take_profit,
             stop_loss: r.stop_loss,
@@ -135,6 +137,7 @@ pub struct CreateRuleRequest {
     pub p_max_holding_tokens: Option<u64>,
     pub p_total_max_trade_tokens: Option<u64>,
     pub p_ix_labels: serde_json::Value,
+    pub trade_mode: String,
     pub buy_amount: f64,
     pub take_profit: f64,
     pub stop_loss: f64,
@@ -166,6 +169,7 @@ pub struct UpdateRuleRequest {
     pub p_total_max_trade_tokens: Option<Option<u64>>,
     pub tolerance_pct: Option<f64>,
     pub is_active: Option<bool>,
+    pub trade_mode: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -219,6 +223,7 @@ pub async fn create_tpsl_rule(
         req.p_cu_limit,
         req.p_cu_price,
         req.p_ix_labels.clone(),
+        req.trade_mode.clone(),
         req.buy_amount,
         req.take_profit,
         req.stop_loss,
@@ -301,6 +306,9 @@ pub async fn update_tpsl_rule(
             }
             if let Some(is_active) = req.is_active {
                 rule.is_active = is_active;
+            }
+            if let Some(trade_mode) = &req.trade_mode {
+                rule.trade_mode = trade_mode.clone();
             }
 
             match repo.update(&rule).await {

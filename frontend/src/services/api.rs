@@ -157,6 +157,7 @@ pub struct RuleRecord {
     pub p_max_holding_tokens: Option<u64>,
     pub p_total_max_trade_tokens: Option<u64>,
     pub p_ix_labels: Value,
+    pub trade_mode: String,
     pub buy_amount: f64,
     pub take_profit: f64,
     pub stop_loss: f64,
@@ -177,6 +178,7 @@ pub struct CreateRuleRequest {
     pub p_max_holding_tokens: Option<u64>,
     pub p_total_max_trade_tokens: Option<u64>,
     pub p_ix_labels: Value,
+    pub trade_mode: String,
     pub buy_amount: f64,
     pub take_profit: f64,
     pub stop_loss: f64,
@@ -330,6 +332,7 @@ pub struct UpdateRuleRequest {
     pub p_total_max_trade_tokens: Option<Option<u64>>,
     pub tolerance_pct: Option<f64>,
     pub is_active: Option<bool>,
+    pub trade_mode: Option<String>,
 }
 
 pub async fn update_tpsl_rule(

@@ -26,6 +26,8 @@ pub struct StrategyTPSLRule {
     pub p_total_max_trade_tokens: Option<u64>,
     /// Instruction labels filter (optional JSON array).
     pub p_ix_labels: Value,
+    /// Trade mode: "paper" (paper test) or "real" (real trading)
+    pub trade_mode: String,
     /// Amount of SOL to allocate per buy.
     pub buy_amount: f64,
     /// Take profit percentage (e.g., 50 for 50% gain).
@@ -47,6 +49,7 @@ impl StrategyTPSLRule {
         p_cu_limit: Option<u64>,
         p_cu_price: Option<u64>,
         p_ix_labels: Value,
+        trade_mode: String,
         buy_amount: f64,
         take_profit: f64,
         stop_loss: f64,
@@ -64,6 +67,7 @@ impl StrategyTPSLRule {
             p_cu_limit,
             p_cu_price,
             p_ix_labels,
+            trade_mode,
             buy_amount,
             take_profit,
             stop_loss,
