@@ -2,17 +2,15 @@ use yew::prelude::*;
 use yew_router::prelude::*;
 
 use crate::routes::Route;
-use crate::state::{PriceUnitProvider, TokenProvider};
+use crate::state::AppStateProvider;
 
 #[function_component(App)]
 pub fn app() -> Html {
     html! {
         <BrowserRouter>
-            <PriceUnitProvider>
-                <TokenProvider>
-                    <Switch<Route> render={crate::routes::switch} />
-                </TokenProvider>
-            </PriceUnitProvider>
+            <AppStateProvider>
+                <Switch<Route> render={crate::routes::switch} />
+            </AppStateProvider>
         </BrowserRouter>
     }
 }

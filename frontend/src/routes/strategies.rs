@@ -1,8 +1,8 @@
 use yew::prelude::*;
 
-#[function_component(StrategiesRoute)]
-pub fn strategies_route() -> Html {
+#[function_component(TpslRoute)]
+pub fn tpsl_route() -> Html {
     html! {
-        <crate::pages::StrategyPage />
+        <crate::pages::TpslPage />
     }
 }

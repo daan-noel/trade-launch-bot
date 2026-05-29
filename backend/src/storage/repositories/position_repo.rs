@@ -1,3 +1,51 @@
+impl PositionRepo {
+    /// Update exit fields for an existing position (exit_tx, exit_price, exit_amount, status).
+    pub async fn update_exit(
+        &self,
+        position_id: Uuid,
+        exit_tx: &str,
+        exit_price: f64,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE positions
+            SET exit_tx = $2, exit_price = $3, status = 'End', updated_at = $4
+            WHERE id = $1
+            "#,
+        )
+        .bind(position_id)
+        .bind(exit_tx)
+        .bind(exit_price)
+        .bind(Utc::now())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Revert ExitPending to Holding for a position.
+    pub async fn revert_exit_pending(&self, position_id: Uuid) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE positions SET status = 'Holding', updated_at = $2 WHERE id = $1
+            "#,
+        )
+        .bind(position_id)
+        .bind(Utc::now())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Delete a position by ID.
+    pub async fn delete_position(&self, position_id: Uuid) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM positions WHERE id = $1")
+            .bind(position_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+}
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;

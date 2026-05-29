@@ -8,6 +8,7 @@ use crate::state::app_state::AppState;
 use crate::storage::repositories::strategy_tpsl_rule_repo::StrategyTPSLRuleRepo;
 use crate::storage::repositories::token_repo::TokenRepo;
 use crate::storage::repositories::trade_repo::TradeRepo;
+use crate::utils::{ignore_zero_f64, ignore_zero_u64};
 
 /// Per-token simulation result.
 #[derive(Clone, serde::Serialize)]
@@ -32,7 +33,7 @@ pub struct SimulatedTokenResult {
 }
 
 // Entry / exit helpers (copied from handlers)
-fn find_entry(
+pub fn find_entry(
     trades: &[crate::models::trade::Trade],
     second_block_cap: usize,
 ) -> Option<(f64, String, DateTime<Utc>)> {
@@ -44,7 +45,7 @@ fn find_entry(
     let second_slot = trades
         .iter()
         .find(|t| t.slot > first_slot)
-        .map(|t| t.slot)?;
+        .map(|t| t.slot);
 
     let mut candidates: Vec<&crate::models::trade::Trade> = Vec::new();
 
@@ -54,14 +55,17 @@ fn find_entry(
         }
         if t.slot == first_slot {
             candidates.push(t);
-        } else if t.slot == second_slot {
-            let already = candidates.iter().filter(|c| c.slot == second_slot).count();
-            if already < second_block_cap {
-                candidates.push(t);
+        } else if let Some(second_slot) = second_slot {
+            if t.slot == second_slot {
+                let already = candidates.iter().filter(|c| c.slot == second_slot).count();
+                if already < second_block_cap {
+                    candidates.push(t);
+                }
             }
         }
     }
 
+    // Entry price: highest price in first block and 1-5th txs of second block
     candidates
         .into_iter()
         .max_by(|a, b| {
@@ -72,7 +76,7 @@ fn find_entry(
         .map(|t| (t.price_per_token, t.tx_signature.clone(), t.block_time))
 }
 
-fn find_exit(
+pub fn find_exit(
     trades: &[crate::models::trade::Trade],
     entry_time: DateTime<Utc>,
     entry_price: f64,
@@ -101,6 +105,7 @@ fn find_exit(
         };
         let exit_slot = t.slot;
 
+        // Exit price: lowest price in the block where exit condition met
         let exit_candidates: Vec<&crate::models::trade::Trade> = later
             .iter()
             .copied()
@@ -175,21 +180,6 @@ pub async fn run_simulation(
 
     let token_repo = TokenRepo::new(app_state.db.clone());
 
-    // Helper: treat 0 or None as None (ignore field)
-    fn ignore_zero_f64(val: Option<f64>) -> Option<f64> {
-        match val {
-            Some(v) if v == 0.0 => None,
-            Some(v) => Some(v),
-            None => None,
-        }
-    }
-    fn ignore_zero_u64(val: Option<u64>) -> Option<u64> {
-        match val {
-            Some(0) => None,
-            Some(v) => Some(v),
-            None => None,
-        }
-    }
 
     let p_initial_buy_sol = ignore_zero_f64(rule.p_initial_buy_sol);
     let tolerance_pct = ignore_zero_f64(Some(rule.tolerance_pct));

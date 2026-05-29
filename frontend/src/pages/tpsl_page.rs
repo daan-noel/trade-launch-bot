@@ -19,6 +19,7 @@ fn dash_percent(val: f64) -> String {
         format!("{}%", format_decimal_trim(val, 1))
     }
 }
+use gloo::timers::callback::Interval;
 use serde_json::Value;
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
@@ -26,10 +27,11 @@ use yew::prelude::*;
 use crate::components::modal::Modal;
 use crate::components::Header;
 use crate::services::api::{
-    create_tpsl_rule, delete_tpsl_rule, fetch_tpsl_rules, simulate_tpsl_rule, update_tpsl_rule,
-    CreateRuleRequest, RuleRecord, SimulatedTokenResult, UpdateRuleRequest,
+    create_tpsl_rule, delete_tpsl_rule, fetch_rule_positions, fetch_tpsl_rules, simulate_tpsl_rule,
+    update_tpsl_rule, CreateRuleRequest, RuleRecord, SimulatedTokenResult, UpdateRuleRequest,
+    POLL_INTERVAL_MS,
 };
-use crate::state::PriceUnitContext;
+use crate::state::{PriceUnitContext, TpslAction, TpslContext};
 use crate::utils::format::{format_age, format_decimal_trim};
 
 // ── Modal mode ────────────────────────────────────────────────────────────────
@@ -51,64 +53,14 @@ struct SimulationResult {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-#[function_component(StrategyPage)]
-pub fn strategy_page() -> Html {
-    // ── Data ──────────────────────────────────────────────────────────────────
-    let rules = use_state(Vec::<RuleRecord>::new);
-    let loading = use_state(|| false);
-    let load_error = use_state(|| Option::<String>::None);
+#[function_component(TpslPage)]
+pub fn tpsl_page() -> Html {
+    let tpsl =
+        use_context::<TpslContext>().expect("TpslProvider must be mounted above TpslPage");
+
+    // ── UI-only state ─────────────────────────────────────────────────────────
     let search = use_state(String::new);
-
-    // ── Selection state ───────────────────────────────────────────────────────
     let selected_rule_id = use_state(|| Option::<String>::None);
-
-    // ── Rule positions state ──────────────────────────────────────────────────
-    use crate::services::api::fetch_rule_positions;
-    use crate::services::api::RulePositionRecord;
-    let rule_positions = use_state(Vec::<RulePositionRecord>::new);
-    let rule_positions_loading = use_state(|| false);
-    let rule_positions_error = use_state(|| Option::<String>::None);
-
-    // Fetch positions when selected rule changes and is active
-    {
-        let selected_rule_id = selected_rule_id.clone();
-        let rules = rules.clone();
-        let rule_positions = rule_positions.clone();
-        let rule_positions_loading = rule_positions_loading.clone();
-        let rule_positions_error = rule_positions_error.clone();
-        use_effect_with(selected_rule_id.clone(), move |selected| {
-            let selected = selected.clone();
-            let rules = rules.clone();
-            let rule_positions = rule_positions.clone();
-            let rule_positions_loading = rule_positions_loading.clone();
-            let rule_positions_error = rule_positions_error.clone();
-            if let Some(rule_id) = selected.as_ref() {
-                if let Some(rule) = (*rules).iter().find(|r| &r.id == rule_id) {
-                    if rule.is_active {
-                        rule_positions_loading.set(true);
-                        rule_positions_error.set(None);
-                        let rule_id = rule_id.clone();
-                        spawn_local(async move {
-                            match fetch_rule_positions(&rule_id).await {
-                                Ok(positions) => rule_positions.set(positions),
-                                Err(err) => rule_positions_error.set(Some(err)),
-                            }
-                            rule_positions_loading.set(false);
-                        });
-                    } else {
-                        rule_positions.set(vec![]);
-                        rule_positions_error.set(None);
-                        rule_positions_loading.set(false);
-                    }
-                }
-            } else {
-                rule_positions.set(vec![]);
-                rule_positions_error.set(None);
-                rule_positions_loading.set(false);
-            }
-            || ()
-        });
-    }
 
     // ── Modal / form ──────────────────────────────────────────────────────────
     let modal_mode = use_state(|| ModalMode::None);
@@ -139,22 +91,83 @@ pub fn strategy_page() -> Html {
     let simulate_error = use_state(|| Option::<String>::None);
     let simulate_loading = use_state(|| false);
 
-    // ── Load rules on mount ───────────────────────────────────────────────────
+    // ── Poll tick ─────────────────────────────────────────────────────────────
+    let tick = use_state(|| 0u32);
+    let tick_ref = use_mut_ref(|| 0u32);
     {
-        let rules = rules.clone();
-        let load_error = load_error.clone();
-        let loading = loading.clone();
+        let tick = tick.clone();
+        let tick_ref = tick_ref.clone();
         use_effect_with((), move |_| {
-            loading.set(true);
+            let interval = Interval::new(POLL_INTERVAL_MS, move || {
+                let mut v = tick_ref.borrow_mut();
+                *v = v.wrapping_add(1);
+                tick.set(*v);
+            });
+            move || drop(interval)
+        });
+    }
+
+    // ── Fetch rules on mount; silently refresh on every tick ──────────────────
+    // TpslProvider uses use_reducer_eq: dispatch is a no-op when data is unchanged.
+    {
+        let tpsl = tpsl.clone();
+        use_effect_with(*tick, move |tick_val| {
+            let is_initial = *tick_val == 0;
+            if is_initial {
+                tpsl.dispatch(TpslAction::SetLoading);
+            }
             spawn_local(async move {
                 match fetch_tpsl_rules().await {
-                    Ok(fetched) => rules.set(fetched),
-                    Err(err) => load_error.set(Some(err)),
+                    Ok(fetched) => tpsl.dispatch(TpslAction::SetRules(fetched)),
+                    Err(err) if is_initial => tpsl.dispatch(TpslAction::SetError(err)),
+                    Err(_) => {}
                 }
-                loading.set(false);
             });
             || ()
         });
+    }
+
+    // ── Fetch positions for selected active rule; silently refresh on tick ────
+    let prev_selected_for_pos = use_mut_ref(|| Option::<String>::None);
+    {
+        let tpsl = tpsl.clone();
+        let prev_selected_for_pos = prev_selected_for_pos.clone();
+        use_effect_with(
+            ((*selected_rule_id).clone(), *tick),
+            move |(selected, _tick)| {
+                let selection_changed = *prev_selected_for_pos.borrow() != *selected;
+                *prev_selected_for_pos.borrow_mut() = selected.clone();
+                if let Some(rule_id) = selected.as_ref() {
+                    let is_active = tpsl
+                        .rules
+                        .iter()
+                        .find(|r| &r.id == rule_id)
+                        .map(|r| r.is_active)
+                        .unwrap_or(false);
+                    if is_active {
+                        if selection_changed {
+                            tpsl.dispatch(TpslAction::SetPositionsLoading);
+                        }
+                        let rule_id = rule_id.clone();
+                        let tpsl = tpsl.clone();
+                        spawn_local(async move {
+                            match fetch_rule_positions(&rule_id).await {
+                                Ok(positions) => tpsl.dispatch(TpslAction::SetPositions(positions)),
+                                Err(err) if selection_changed => {
+                                    tpsl.dispatch(TpslAction::SetPositionsError(err))
+                                }
+                                Err(_) => {}
+                            }
+                        });
+                    } else {
+                        tpsl.dispatch(TpslAction::ClearPositions);
+                    }
+                } else {
+                    tpsl.dispatch(TpslAction::ClearPositions);
+                }
+                || ()
+            },
+        );
     }
 
     // ── Helpers: open modals ──────────────────────────────────────────────────
@@ -321,7 +334,7 @@ pub fn strategy_page() -> Html {
     // ── Save (create or update) ───────────────────────────────────────────────
     let on_save = {
         let modal_mode = modal_mode.clone();
-        let rules = rules.clone();
+        let tpsl = tpsl.clone();
         let form_error = form_error.clone();
         let form_loading = form_loading.clone();
         let f_name = f_name.clone();
@@ -340,7 +353,7 @@ pub fn strategy_page() -> Html {
         let f_trade_mode = f_trade_mode.clone();
         Callback::from(move |_: MouseEvent| {
             let modal_mode_val = (*modal_mode).clone();
-            let rules = rules.clone();
+            let tpsl = tpsl.clone();
             let form_error = form_error.clone();
             let form_loading = form_loading.clone();
             let modal_mode = modal_mode.clone();
@@ -446,7 +459,8 @@ pub fn strategy_page() -> Html {
                                 }
                             }
                         };
-                        let p_total_max_trade_tokens = if total_max_trade_tokens_s.trim().is_empty() {
+                        let p_total_max_trade_tokens = if total_max_trade_tokens_s.trim().is_empty()
+                        {
                             None
                         } else {
                             match total_max_trade_tokens_s.trim().parse::<u64>() {
@@ -480,7 +494,7 @@ pub fn strategy_page() -> Html {
                             p_max_holding_tokens,
                             p_total_max_trade_tokens,
                             p_ix_labels: Value::Array(ix_labels),
-                            trade_mode: (*f_trade_mode).to_string(),
+                            trade_mode: f_trade_mode.to_string(),
                             buy_amount,
                             take_profit,
                             stop_loss,
@@ -488,9 +502,7 @@ pub fn strategy_page() -> Html {
                         };
                         match create_tpsl_rule(&req).await {
                             Ok(new_rule) => {
-                                let mut items = (*rules).clone();
-                                items.insert(0, new_rule);
-                                rules.set(items);
+                                tpsl.dispatch(TpslAction::AddRule(new_rule));
                                 modal_mode.set(ModalMode::None);
                             }
                             Err(err) => form_error.set(Some(err)),
@@ -498,9 +510,21 @@ pub fn strategy_page() -> Html {
                     }
                     ModalMode::Edit(rule) => {
                         let rule = rule.clone();
-                        let p_initial_buy_sol = Some(Some(if initial_buy_s.trim().is_empty() { 0.0 } else { initial_buy_s.trim().parse::<f64>().unwrap_or(0.0) }));
-                        let p_cu_limit = Some(Some(if cu_limit_s.trim().is_empty() { 0 } else { cu_limit_s.trim().parse::<u64>().unwrap_or(0) }));
-                        let p_cu_price = Some(Some(if cu_price_s.trim().is_empty() { 0 } else { cu_price_s.trim().parse::<u64>().unwrap_or(0) }));
+                        let p_initial_buy_sol = Some(Some(if initial_buy_s.trim().is_empty() {
+                            0.0
+                        } else {
+                            initial_buy_s.trim().parse::<f64>().unwrap_or(0.0)
+                        }));
+                        let p_cu_limit = Some(Some(if cu_limit_s.trim().is_empty() {
+                            0
+                        } else {
+                            cu_limit_s.trim().parse::<u64>().unwrap_or(0)
+                        }));
+                        let p_cu_price = Some(Some(if cu_price_s.trim().is_empty() {
+                            0
+                        } else {
+                            cu_price_s.trim().parse::<u64>().unwrap_or(0)
+                        }));
                         let p_ix_labels = if ix_labels_s.trim().is_empty() {
                             Some(Some(Value::Array(vec![])))
                         } else {
@@ -519,10 +543,29 @@ pub fn strategy_page() -> Html {
                             };
                             Some(Some(Value::Array(labels_vec)))
                         };
-                        let p_max_sol_cost = Some(Some(if max_sol_cost_s.trim().is_empty() { 0.0 } else { max_sol_cost_s.trim().parse::<f64>().unwrap_or(0.0) }));
-                        let p_spendable_sol_in = Some(Some(if spendable_sol_in_s.trim().is_empty() { 0.0 } else { spendable_sol_in_s.trim().parse::<f64>().unwrap_or(0.0) }));
-                        let p_max_holding_tokens = Some(Some(if max_holding_tokens_s.trim().is_empty() { 0 } else { max_holding_tokens_s.trim().parse::<u64>().unwrap_or(0) }));
-                        let p_total_max_trade_tokens = Some(Some(if total_max_trade_tokens_s.trim().is_empty() { 0 } else { total_max_trade_tokens_s.trim().parse::<u64>().unwrap_or(0) }));
+                        let p_max_sol_cost = Some(Some(if max_sol_cost_s.trim().is_empty() {
+                            0.0
+                        } else {
+                            max_sol_cost_s.trim().parse::<f64>().unwrap_or(0.0)
+                        }));
+                        let p_spendable_sol_in =
+                            Some(Some(if spendable_sol_in_s.trim().is_empty() {
+                                0.0
+                            } else {
+                                spendable_sol_in_s.trim().parse::<f64>().unwrap_or(0.0)
+                            }));
+                        let p_max_holding_tokens =
+                            Some(Some(if max_holding_tokens_s.trim().is_empty() {
+                                0
+                            } else {
+                                max_holding_tokens_s.trim().parse::<u64>().unwrap_or(0)
+                            }));
+                        let p_total_max_trade_tokens =
+                            Some(Some(if total_max_trade_tokens_s.trim().is_empty() {
+                                0
+                            } else {
+                                total_max_trade_tokens_s.trim().parse::<u64>().unwrap_or(0)
+                            }));
                         let p_tolerance = if tolerance_s.trim().is_empty() {
                             None
                         } else {
@@ -554,11 +597,7 @@ pub fn strategy_page() -> Html {
                         };
                         match update_tpsl_rule(&rule.id, &req).await {
                             Ok(updated) => {
-                                let items = (*rules)
-                                    .iter()
-                                    .map(|r| if r.id == updated.id { updated.clone() } else { r.clone() })
-                                    .collect();
-                                rules.set(items);
+                                tpsl.dispatch(TpslAction::UpdateRule(updated));
                                 modal_mode.set(ModalMode::None);
                             }
                             Err(err) => form_error.set(Some(err)),
@@ -573,9 +612,9 @@ pub fn strategy_page() -> Html {
 
     // ── Toggle active ─────────────────────────────────────────────────────────
     let on_toggle_active = {
-        let rules = rules.clone();
+        let tpsl = tpsl.clone();
         Callback::from(move |rule: RuleRecord| {
-            let rules = rules.clone();
+            let tpsl = tpsl.clone();
             spawn_local(async move {
                 let req = UpdateRuleRequest {
                     rule_name: None,
@@ -595,17 +634,7 @@ pub fn strategy_page() -> Html {
                     trade_mode: None,
                 };
                 if let Ok(updated) = update_tpsl_rule(&rule.id, &req).await {
-                    let items = (*rules)
-                        .iter()
-                        .map(|r| {
-                            if r.id == updated.id {
-                                updated.clone()
-                            } else {
-                                r.clone()
-                            }
-                        })
-                        .collect();
-                    rules.set(items);
+                    tpsl.dispatch(TpslAction::UpdateRule(updated));
                 }
             });
         })
@@ -621,9 +650,9 @@ pub fn strategy_page() -> Html {
         Callback::from(move |_: MouseEvent| confirm_delete_id.set(None))
     };
     let on_confirm_delete = {
-        let (confirm_delete_id, rules, delete_loading) = (
+        let (confirm_delete_id, tpsl, delete_loading) = (
             confirm_delete_id.clone(),
-            rules.clone(),
+            tpsl.clone(),
             delete_loading.clone(),
         );
         Callback::from(move |_: MouseEvent| {
@@ -631,20 +660,15 @@ pub fn strategy_page() -> Html {
                 Some(id) => id,
                 None => return,
             };
-            let (confirm_delete_id, rules, delete_loading) = (
+            let (confirm_delete_id, tpsl, delete_loading) = (
                 confirm_delete_id.clone(),
-                rules.clone(),
+                tpsl.clone(),
                 delete_loading.clone(),
             );
             delete_loading.set(true);
             spawn_local(async move {
                 if delete_tpsl_rule(&rule_id).await.is_ok() {
-                    let items = (*rules)
-                        .iter()
-                        .filter(|r| r.id != rule_id)
-                        .cloned()
-                        .collect();
-                    rules.set(items);
+                    tpsl.dispatch(TpslAction::RemoveRule(rule_id));
                 }
                 confirm_delete_id.set(None);
                 delete_loading.set(false);
@@ -680,7 +704,8 @@ pub fn strategy_page() -> Html {
     };
 
     let search_val = (*search).to_lowercase();
-    let filtered: Vec<&RuleRecord> = (*rules)
+    let filtered: Vec<&RuleRecord> = tpsl
+        .rules
         .iter()
         .filter(|r| search_val.is_empty() || r.rule_name.to_lowercase().contains(&search_val))
         .collect();
@@ -865,103 +890,62 @@ pub fn strategy_page() -> Html {
         html! {
             <div class="sim-summary-card">
                 <div class="sim-summary-header">
-                    <span class="sim-summary-title">
-                        { "Simulation — " }{ &result.rule_name }
-                    </span>
+                    <span class="sim-summary-title">{ "Simulation — " }{ &result.rule_name }</span>
                     <button class="sim-close-btn" onclick={clear_sim_top} title="Close">{ "✕" }</button>
                 </div>
                 <div class="sim-summary-grid">
-                    <div class="sim-summary-stat">
-                        <div class="sim-summary-label">{ "Tokens" }</div>
-                        <div class="sim-summary-value">{ tokens_matched }</div>
-                    </div>
+                    <div class="sim-summary-stat"><div class="sim-summary-label">{ "Tokens" }</div><div class="sim-summary-value">{ tokens_matched }</div></div>
                     <div class="sim-summary-stat">
                         <div class="sim-summary-label">{ "Win Rate" }</div>
-                        <div class={if win_rate_pct >= 50.0 { "sim-summary-value sv-primary" } else { "sim-summary-value sv-danger" }}>
-                            { format!("{:.1}%", win_rate_pct) }
-                        </div>
+                        <div class={if win_rate_pct >= 50.0 { "sim-summary-value sv-primary" } else { "sim-summary-value sv-danger" }}>{ format!("{:.1}%", win_rate_pct) }</div>
                     </div>
                     <div class="sim-summary-stat">
                         <div class="sim-summary-label">{ "W / L / Open" }</div>
                         <div class="sim-summary-value">
-                            <span class="tp-col">{ win_count }</span>
-                            { " / " }
-                            <span class="sl-col">{ loss_count }</span>
-                            { " / " }
-                            <span class="dim-col">{ open_count }</span>
+                            <span class="tp-col">{ win_count }</span>{ " / " }<span class="sl-col">{ loss_count }</span>{ " / " }<span class="dim-col">{ open_count }</span>
                         </div>
                     </div>
-
                     <div class="sim-summary-stat">
                         <div class="sim-summary-label">{ format!("Total Entry ({})", price_unit.unit_label()) }</div>
-                        <div class="sim-summary-value">
-                            { price_unit.display_amount(total_entry_amount) }
-                        </div>
+                        <div class="sim-summary-value">{ price_unit.display_amount(total_entry_amount) }</div>
                     </div>
                     <div class="sim-summary-stat">
                         <div class="sim-summary-label">{ format!("Total Holding ({})", price_unit.unit_label()) }</div>
-                        <div class="sim-summary-value">
-                            { price_unit.display_amount(total_holding_amount) }
-                        </div>
+                        <div class="sim-summary-value">{ price_unit.display_amount(total_holding_amount) }</div>
                     </div>
-                                        <div class="sim-summary-stat">
+                    <div class="sim-summary-stat">
                         <div class="sim-summary-label">{ "Avg Entry" }</div>
-                        <div class="sim-summary-value">
-                            { avg_entry_amount.map(|v| price_unit.display_amount(v)).unwrap_or_else(|| "—".into()) }
-                        </div>
+                        <div class="sim-summary-value">{ avg_entry_amount.map(|v| price_unit.display_amount(v)).unwrap_or_else(|| "—".into()) }</div>
                     </div>
-
                     <div class="sim-summary-stat">
                         <div class="sim-summary-label">{ format!("Total PnL ({})", price_unit.unit_label()) }</div>
-                        <div class={if total_pnl_sol >= 0.0 { "sim-summary-value sv-primary" } else { "sim-summary-value sv-danger" }}>
-                            { price_unit.display_amount(total_pnl_sol) }
-                        </div>
+                        <div class={if total_pnl_sol >= 0.0 { "sim-summary-value sv-primary" } else { "sim-summary-value sv-danger" }}>{ price_unit.display_amount(total_pnl_sol) }</div>
                     </div>
                     <div class="sim-summary-stat">
                         <div class="sim-summary-label">{ "Avg PnL" }</div>
-                        <div class={
-                            match avg_pnl_pct {
-                                Some(v) if v >= 0.0 => "sim-summary-value sv-primary",
-                                Some(_) => "sim-summary-value sv-danger",
-                                None => "sim-summary-value",
-                            }
-                        }>
+                        <div class={match avg_pnl_pct { Some(v) if v >= 0.0 => "sim-summary-value sv-primary", Some(_) => "sim-summary-value sv-danger", None => "sim-summary-value" }}>
                             { avg_pnl_pct.map(|v| format!("{:+.1}%", v)).unwrap_or_else(|| "—".into()) }
                         </div>
                     </div>
-
-
-
                     <div class="sim-summary-stat">
                         <div class="sim-summary-label">{ format!("Total TP ({})", price_unit.unit_label()) }</div>
-                        <div class="sim-summary-value tp-col">
-                            { price_unit.display_amount(total_tp_amount) }
-                        </div>
+                        <div class="sim-summary-value tp-col">{ price_unit.display_amount(total_tp_amount) }</div>
                     </div>
                     <div class="sim-summary-stat">
                         <div class="sim-summary-label">{ format!("Total SL ({})", price_unit.unit_label()) }</div>
-                        <div class="sim-summary-value sl-col">
-                            { price_unit.display_amount(total_sl_amount) }
-                        </div>
+                        <div class="sim-summary-value sl-col">{ price_unit.display_amount(total_sl_amount) }</div>
                     </div>
-
                     <div class="sim-summary-stat">
                         <div class="sim-summary-label">{ "Avg Hold" }</div>
-                        <div class="sim-summary-value">
-                            { avg_holding_secs.map(|s| format_age(s as i64)).unwrap_or_else(|| "—".into()) }
-                        </div>
+                        <div class="sim-summary-value">{ avg_holding_secs.map(|s| format_age(s as i64)).unwrap_or_else(|| "—".into()) }</div>
                     </div>
                     <div class="sim-summary-stat">
                         <div class="sim-summary-label">{ "Best" }</div>
-                        <div class="sim-summary-value tp-col">
-                            { best_pnl_pct.map(|v| format!("{:+.1}%", v)).unwrap_or_else(|| "—".into()) }
-                        </div>
+                        <div class="sim-summary-value tp-col">{ best_pnl_pct.map(|v| format!("{:+.1}%", v)).unwrap_or_else(|| "—".into()) }</div>
                     </div>
                     <div class="sim-summary-stat">
                         <div class="sim-summary-label">{ "Worst" }</div>
-                        <div class="sim-summary-value sl-col">
-                            { worst_pnl_pct.map(|v| format!("{:+.1}%", v)).unwrap_or_else(|| "—".into()) }
-                        </div>
+                        <div class="sim-summary-value sl-col">{ worst_pnl_pct.map(|v| format!("{:+.1}%", v)).unwrap_or_else(|| "—".into()) }</div>
                     </div>
                 </div>
             </div>
@@ -1063,6 +1047,7 @@ pub fn strategy_page() -> Html {
     } else {
         html! {}
     };
+
     let is_edit = matches!(&*modal_mode, ModalMode::Edit(_));
     let modal_title = if is_edit {
         "Edit TPSL Rule"
@@ -1116,10 +1101,8 @@ pub fn strategy_page() -> Html {
             <Header />
             <main class="page-body">
 
-                // ── Simulation summary card (above rules table) ───────────────
                 { sim_summary_card }
 
-                // ── Header bar ────────────────────────────────────────────────
                 <div class="strat-header">
                     <div class="strat-title-row">
                         <h2 class="section-title">{ "TPSL Strategies" }</h2>
@@ -1128,7 +1111,6 @@ pub fn strategy_page() -> Html {
                     <button class="add-rule-btn" onclick={open_add}>{ "+ Add Rule" }</button>
                 </div>
 
-                // ── Search bar ────────────────────────────────────────────────
                 <div class="strat-toolbar">
                     <input
                         type="search"
@@ -1145,11 +1127,9 @@ pub fn strategy_page() -> Html {
                     />
                 </div>
 
-
-                // ── Rules table ───────────────────────────────────────────────
-                if *loading {
+                if tpsl.loading {
                     <div class="strat-state-msg">{ "Loading rules…" }</div>
-                } else if let Some(err) = &*load_error {
+                } else if let Some(err) = &tpsl.error {
                     <div class="inline-error">{ err }</div>
                 } else {
                     <div class="table-wrapper">
@@ -1188,91 +1168,86 @@ pub fn strategy_page() -> Html {
                     </div>
                 }
 
-                // ── Trading tokens table for selected active rule ─────────────
                 {{
-                    let selected_rule = selected_rule_id.as_ref().and_then(|id| rules.iter().find(|r| &r.id == id));
-                    if let Some(rule) = selected_rule {
-                        if rule.is_active {
-                            html! {
-                                <div class="table-wrapper" style="margin-top: 24px;">
-                                    <div class="table-scroll">
-                                        <table class="trade-table">
-                                            <thead>
-                                                <tr>
-                                                    <th class="th-row-num">{ "#" }</th>
-                                                    <th>{ "Symbol" }</th>
-                                                    <th>{ "Entry Price" }</th>
-                                                    <th>{ "Entry Time" }</th>
-                                                    <th>{ "Exit Price" }</th>
-                                                    <th>{ "Exit Time" }</th>
-                                                    <th>{ "Holding" }</th>
-                                                    <th>{ "PnL%" }</th>
-                                                    <th>{ format!("PnL ({})", price_unit.unit_label()) }</th>
-                                                    <th>{ "Reason" }</th>
-                                                    <th>{ "Trades" }</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                if *rule_positions_loading {
-                                                    <tr><td colspan="11" class="no-data">{ "Loading tokens…" }</td></tr>
-                                                } else if let Some(err) = &*rule_positions_error {
-                                                    <tr><td colspan="11" class="inline-error">{ err }</td></tr>
-                                                } else if rule_positions.is_empty() {
-                                                    <tr><td colspan="11" class="no-data">{ "No trading tokens for this rule." }</td></tr>
-                                                } else {
-                                                    { rule_positions.iter().enumerate().map(|(i, t)| {
-                                                        let entry_time_str = t.created_at.get(..16).unwrap_or(&t.created_at).replace('T', " ");
-                                                        let exit_time_str = t.updated_at.get(..16).unwrap_or(&t.updated_at).replace('T', " ");
-                                                        let pnl_pct_html = match t.pnl_percent {
-                                                            Some(v) if v >= 0.0 => html! { <span class="tp-col">{ format!("{:+.1}%", v) }</span> },
-                                                            Some(v)             => html! { <span class="sl-col">{ format!("{:.1}%", v)  }</span> },
-                                                            None                => html! { <span class="dim-col">{ "—" }</span> },
-                                                        };
-                                                        let pnl_val_html = match t.exit_price {
-                                                            Some(_) if t.pnl_percent.unwrap_or(0.0) >= 0.0 => html! { <span class="tp-col">{ price_unit.display_amount(t.exit_amount.unwrap_or(0.0)) }</span> },
-                                                            Some(_) => html! { <span class="sl-col">{ price_unit.display_amount(t.exit_amount.unwrap_or(0.0)) }</span> },
-                                                            None => html! { <span class="dim-col">{ "—" }</span> },
-                                                        };
-                                                        let reason_html = match t.status.as_str() {
-                                                            "TakeProfit" => html! { <span class="tp-col">{ "TP" }</span> },
-                                                            "StopLoss"   => html! { <span class="sl-col">{ "SL" }</span> },
-                                                            _            => html! { <span class="dim-col">{ &t.status }</span> },
-                                                        };
-                                                        html! {
-                                                            <tr key={t.mint.clone()}>
-                                                                <td class="row-num">{ i + 1 }</td>
-                                                                <td>
-                                                                    <a href={format!("https://gmgn.ai/sol/token/{}", t.mint)}
-                                                                        target="_blank" rel="noreferrer" class="symbol-link-inline">
-                                                                        { &t.mint[..6] }
-                                                                    </a>
-                                                                </td>
-                                                                <td class="num-col">{ price_unit.display_price(t.entry_price) }</td>
-                                                                <td class="dim-col">{ entry_time_str }</td>
-                                                                <td class="num-col">{ t.exit_price.map(|p| price_unit.display_price(p)).unwrap_or_else(|| "—".into()) }</td>
-                                                                <td class="dim-col">{ exit_time_str }</td>
-                                                                <td class="dim-col">{ t.exit_amount.map(|amt| format_decimal_trim(amt, 3)).unwrap_or_else(|| "—".into()) }</td>
-                                                                <td>{ pnl_pct_html }</td>
-                                                                <td>{ pnl_val_html }</td>
-                                                                <td>{ reason_html }</td>
-                                                                <td class="dim-col">{ t.exit_tx.as_ref().map(|_| 1).unwrap_or(0) }</td>
-                                                            </tr>
-                                                        }
-                                                    }).collect::<Html>() }
-                                                }
-                                            </tbody>
-                                        </table>
-                                    </div>
+                    let selected_rule = selected_rule_id.as_ref().and_then(|id| tpsl.rules.iter().find(|r| &r.id == id));
+                    if let Some(_) = selected_rule {
+                        html! {
+                            <div class="table-wrapper" style="margin-top: 24px;">
+                                <div class="table-scroll">
+                                    <table class="trade-table">
+                                        <thead>
+                                            <tr>
+                                                <th class="th-row-num">{ "#" }</th>
+                                                <th>{ "Symbol" }</th>
+                                                <th>{ "Entry Price" }</th>
+                                                <th>{ "Entry Time" }</th>
+                                                <th>{ "Exit Price" }</th>
+                                                <th>{ "Exit Time" }</th>
+                                                <th>{ "Holding" }</th>
+                                                <th>{ "PnL%" }</th>
+                                                <th>{ format!("PnL ({})", price_unit.unit_label()) }</th>
+                                                <th>{ "Reason" }</th>
+                                                <th>{ "Trades" }</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            if tpsl.positions_loading {
+                                                <tr><td colspan="11" class="no-data">{ "Loading tokens…" }</td></tr>
+                                            } else if let Some(err) = &tpsl.positions_error {
+                                                <tr><td colspan="11" class="inline-error">{ err }</td></tr>
+                                            } else if tpsl.positions.is_empty() {
+                                                <tr><td colspan="11" class="no-data">{ "No trading tokens for this rule." }</td></tr>
+                                            } else {
+                                                { tpsl.positions.iter().enumerate().map(|(i, t)| {
+                                                    let entry_time_str = t.created_at.get(..16).unwrap_or(&t.created_at).replace('T', " ");
+                                                    let exit_time_str = t.updated_at.get(..16).unwrap_or(&t.updated_at).replace('T', " ");
+                                                    let pnl_pct_html = match t.pnl_percent {
+                                                        Some(v) if v >= 0.0 => html! { <span class="tp-col">{ format!("{:+.1}%", v) }</span> },
+                                                        Some(v)             => html! { <span class="sl-col">{ format!("{:.1}%", v)  }</span> },
+                                                        None                => html! { <span class="dim-col">{ "—" }</span> },
+                                                    };
+                                                    let pnl_val_html = match t.exit_price {
+                                                        Some(_) if t.pnl_percent.unwrap_or(0.0) >= 0.0 => html! { <span class="tp-col">{ price_unit.display_amount(t.exit_amount.unwrap_or(0.0)) }</span> },
+                                                        Some(_) => html! { <span class="sl-col">{ price_unit.display_amount(t.exit_amount.unwrap_or(0.0)) }</span> },
+                                                        None => html! { <span class="dim-col">{ "—" }</span> },
+                                                    };
+                                                    let reason_html = match t.status.as_str() {
+                                                        "TakeProfit" => html! { <span class="tp-col">{ "TP" }</span> },
+                                                        "StopLoss"   => html! { <span class="sl-col">{ "SL" }</span> },
+                                                        _            => html! { <span class="dim-col">{ &t.status }</span> },
+                                                    };
+                                                    html! {
+                                                        <tr key={t.mint.clone()}>
+                                                            <td class="row-num">{ i + 1 }</td>
+                                                            <td>
+                                                                <a href={format!("https://gmgn.ai/sol/token/{}", t.mint)}
+                                                                    target="_blank" rel="noreferrer" class="symbol-link-inline">
+                                                                    { &t.mint[..6] }
+                                                                </a>
+                                                            </td>
+                                                            <td class="num-col">{ price_unit.display_price(t.entry_price) }</td>
+                                                            <td class="dim-col">{ entry_time_str }</td>
+                                                            <td class="num-col">{ t.exit_price.map(|p| price_unit.display_price(p)).unwrap_or_else(|| "—".into()) }</td>
+                                                            <td class="dim-col">{ exit_time_str }</td>
+                                                            <td class="dim-col">{ t.exit_amount.map(|amt| format_decimal_trim(amt, 3)).unwrap_or_else(|| "—".into()) }</td>
+                                                            <td>{ pnl_pct_html }</td>
+                                                            <td>{ pnl_val_html }</td>
+                                                            <td>{ reason_html }</td>
+                                                            <td class="dim-col">{ t.exit_tx.as_ref().map(|_| 1).unwrap_or(0) }</td>
+                                                        </tr>
+                                                    }
+                                                }).collect::<Html>() }
+                                            }
+                                        </tbody>
+                                    </table>
                                 </div>
-                            }
-                        } else { html! {} }
+                            </div>
+                        }
                     } else { html! {} }
                 }}
 
-                // ── Simulation tokens panel ───────────────────────────────────
                 { sim_panel }
 
-                // ── Add / Edit modal ──────────────────────────────────────────
                 <Modal
                     title={modal_title.to_string()}
                     visible={modal_visible}
@@ -1318,10 +1293,7 @@ pub fn strategy_page() -> Html {
                             </label>
 
                             <label class="form-field">
-                                <span class="form-label" style="color:var(--text-dim)">
-                                    { "CU Limit" }
-                                    <span class="form-opt">{ " opt" }</span>
-                                </span>
+                                <span class="form-label" style="color:var(--text-dim)">{ "CU Limit" }<span class="form-opt">{ " opt" }</span></span>
                                 <input type="number"
                                     class={if is_edit && !*f_allow_edit_params { "form-input form-input-locked" } else { "form-input" }}
                                     value={(*f_cu_limit).clone()} oninput={oninput!(f_cu_limit)}
@@ -1329,10 +1301,7 @@ pub fn strategy_page() -> Html {
                             </label>
 
                             <label class="form-field">
-                                <span class="form-label" style="color:var(--text-dim)">
-                                    { "CU Price" }
-                                    <span class="form-opt">{ " opt" }</span>
-                                </span>
+                                <span class="form-label" style="color:var(--text-dim)">{ "CU Price" }<span class="form-opt">{ " opt" }</span></span>
                                 <input type="number"
                                     class={if is_edit && !*f_allow_edit_params { "form-input form-input-locked" } else { "form-input" }}
                                     value={(*f_cu_price).clone()} oninput={oninput!(f_cu_price)}
@@ -1340,10 +1309,7 @@ pub fn strategy_page() -> Html {
                             </label>
 
                             <label class="form-field">
-                                <span class="form-label" style="color:var(--text-dim)">
-                                    { "Max SOL Cost" }
-                                    <span class="form-opt">{ " opt" }</span>
-                                </span>
+                                <span class="form-label" style="color:var(--text-dim)">{ "Max SOL Cost" }<span class="form-opt">{ " opt" }</span></span>
                                 <input type="number" step="0.001"
                                     class={if is_edit && !*f_allow_edit_params { "form-input form-input-locked" } else { "form-input" }}
                                     value={(*f_max_sol_cost).clone()} oninput={oninput!(f_max_sol_cost)}
@@ -1351,10 +1317,7 @@ pub fn strategy_page() -> Html {
                             </label>
 
                             <label class="form-field">
-                                <span class="form-label" style="color:var(--text-dim)">
-                                    { "Spendable SOL In" }
-                                    <span class="form-opt">{ " opt" }</span>
-                                </span>
+                                <span class="form-label" style="color:var(--text-dim)">{ "Spendable SOL In" }<span class="form-opt">{ " opt" }</span></span>
                                 <input type="number" step="0.001"
                                     class={if is_edit && !*f_allow_edit_params { "form-input form-input-locked" } else { "form-input" }}
                                     value={(*f_spendable_sol_in).clone()} oninput={oninput!(f_spendable_sol_in)}
@@ -1362,10 +1325,7 @@ pub fn strategy_page() -> Html {
                             </label>
 
                             <label class="form-field">
-                                <span class="form-label" style="color:var(--text-dim)">
-                                    { "Max Holding Tokens" }
-                                    <span class="form-opt">{ " opt" }</span>
-                                </span>
+                                <span class="form-label" style="color:var(--text-dim)">{ "Max Holding Tokens" }<span class="form-opt">{ " opt" }</span></span>
                                 <input type="number" step="1"
                                     class={if is_edit && !*f_allow_edit_params { "form-input form-input-locked" } else { "form-input" }}
                                     value={(*f_max_holding_tokens).clone()} oninput={oninput!(f_max_holding_tokens)}
@@ -1374,10 +1334,7 @@ pub fn strategy_page() -> Html {
                             </label>
 
                             <label class="form-field">
-                                <span class="form-label" style="color:var(--text-dim)">
-                                    { "Total Max Trade Tokens" }
-                                    <span class="form-opt">{ " opt" }</span>
-                                </span>
+                                <span class="form-label" style="color:var(--text-dim)">{ "Total Max Trade Tokens" }<span class="form-opt">{ " opt" }</span></span>
                                 <input type="number" step="1"
                                     class={if is_edit && !*f_allow_edit_params { "form-input form-input-locked" } else { "form-input" }}
                                     value={(*f_total_max_trade_tokens).clone()} oninput={oninput!(f_total_max_trade_tokens)}
@@ -1388,30 +1345,18 @@ pub fn strategy_page() -> Html {
                             <div class="form-field form-field-full">
                                 <div class="form-field-label-row">
                                     <span class="form-label" style="color:var(--text-dim)">
-                                            { "Instruction Labels" }
-                                            <span class="form-opt">{ " comma-separated or JSON array, opt" }</span>
-                                        </span>
+                                        { "Instruction Labels" }
+                                        <span class="form-opt">{ " comma-separated or JSON array, opt" }</span>
+                                    </span>
                                     { if is_edit {
                                         html! {
                                             <button type="button" class="form-action-btn" onclick={toggle_edit_params.clone()}
                                                 title={if *f_allow_edit_params { "Lock rule criteria" } else { "Unlock rule criteria" }}>
                                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                                                     { if *f_allow_edit_params {
-                                                        html! {
-                                                            <>
-                                                                <rect x="3" y="11" width="18" height="11" rx="2" />
-                                                                <path d="M7 11V7a5 5 0 0110 0v4" />
-                                                            </>
-                                                        }
+                                                        html! { <><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0110 0v4" /></> }
                                                     } else {
-                                                        html! {
-                                                            <>
-                                                                <rect x="3" y="11" width="18" height="11" rx="2" />
-                                                                <path d="M7 11V7a5 5 0 0110 0v4" />
-                                                                <line x1="9" y1="15" x2="9" y2="18" />
-                                                                <line x1="15" y1="15" x2="15" y2="18" />
-                                                            </>
-                                                        }
+                                                        html! { <><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0110 0v4" /><line x1="9" y1="15" x2="9" y2="18" /><line x1="15" y1="15" x2="15" y2="18" /></> }
                                                     } }
                                                 </svg>
                                             </button>
@@ -1437,9 +1382,7 @@ pub fn strategy_page() -> Html {
                                         placeholder="[\"Compute Budget: SetComputeUnitLimit\", \"Pump.Fun: Buy\"]" readonly={is_edit && !*f_allow_edit_params}>
                                     </textarea>
                                 </div>
-                                <span class="form-hint">
-                                    { "Paste comma-separated labels or a JSON-style array. Click the icon above to populate a sample list." }
-                                </span>
+                                <span class="form-hint">{ "Paste comma-separated labels or a JSON-style array. Click the icon above to populate a sample list." }</span>
                             </div>
 
                             <label class="form-field">
@@ -1459,13 +1402,10 @@ pub fn strategy_page() -> Html {
                                 <input type="number" step="1" class="form-input form-input-sl"
                                     value={(*f_stop_loss).clone()} oninput={oninput!(f_stop_loss)} placeholder="20" />
                             </label>
-
                         </div>
 
                         if is_edit {
-                            <p class="form-hint">
-                                { "Entry criteria (Init Buy, CU Limit, CU Price, Labels) are locked after creation." }
-                            </p>
+                            <p class="form-hint">{ "Entry criteria (Init Buy, CU Limit, CU Price, Labels) are locked after creation." }</p>
                         }
 
                         { if let Some(err) = &*form_error {
@@ -1482,9 +1422,8 @@ pub fn strategy_page() -> Html {
                                     } }
                                 </div>
                             }
-                        } else {
-                            html! {}
-                        }}
+                        } else { html! {} }}
+
                         <div class="form-actions">
                             <button class="btn-ghost" onclick={cancel_modal}>{ "Cancel" }</button>
                             <button class="btn-primary-sm" onclick={on_save} disabled={*form_loading}>

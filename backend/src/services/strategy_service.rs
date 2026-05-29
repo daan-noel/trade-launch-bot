@@ -1,21 +1,22 @@
 use sqlx::PgPool;
 use tokio::sync::broadcast;
-use tracing::{debug, info, warn};
 use tokio::time::sleep;
+use tracing::{debug, info, warn};
 
 use std::time::Duration;
 
+use crate::utils::{ignore_zero_f64, ignore_zero_u64};
 use crate::{
     models::{
         events::{InternalEvent, TokenCreatedEvent, TradeExecutedEvent},
         Position,
     },
+    services::TradingService,
     storage::repositories::{
         position_repo::PositionRepo, strategy_tpsl_rule_repo::StrategyTPSLRuleRepo,
         token_repo::TokenRepo, trade_repo::TradeRepo,
     },
     strategies::TPSLStrategyHandler,
-    services::TradingService,
 };
 
 /// Strategy Service — subscribes to the internal event bus and manages strategy-based trading:
@@ -136,12 +137,16 @@ impl StrategyService {
         // Check if this token matches any rule
         let handler = TPSLStrategyHandler::new(rules);
         if let Some(rule_id) = handler.check_buy_entry(&e.token) {
-            debug!("Token {mint} matches TPSL buy entry rule {rule_id}");
+            info!("Token {mint} matches TPSL buy entry rule {rule_id}");
 
             // Find the matched rule to get buy_amount
             if let Some(rule) = handler.get_rule(rule_id) {
+                let max_holding = ignore_zero_u64(rule.p_max_holding_tokens).map(|v| v as usize);
+                let total_max_trade_tokens =
+                    ignore_zero_u64(rule.p_total_max_trade_tokens).map(|v| v as usize);
+
                 // Enforce max total held tokens for this rule, if configured.
-                if let Some(max_holding_tokens) = rule.p_max_holding_tokens {
+                if let Some(max_holding_tokens) = max_holding {
                     match self.position_repo.count_holding_by_rule(rule_id).await {
                         Ok(current_holding) => {
                             if current_holding >= max_holding_tokens as i64 {
@@ -152,15 +157,13 @@ impl StrategyService {
                             }
                         }
                         Err(err) => {
-                            warn!(
-                                "Failed to count holding positions for rule {rule_id}: {err}"
-                            );
+                            warn!("Failed to count holding positions for rule {rule_id}: {err}");
                             return;
                         }
                     }
                 }
 
-                if let Some(total_max_trade_tokens) = rule.p_total_max_trade_tokens {
+                if let Some(total_max_trade_tokens) = total_max_trade_tokens {
                     match self.position_repo.count_by_rule(rule_id).await {
                         Ok(total_traded) => {
                             if total_traded >= total_max_trade_tokens as i64 {
@@ -171,35 +174,65 @@ impl StrategyService {
                             }
                         }
                         Err(err) => {
-                            warn!(
-                                "Failed to count total positions for rule {rule_id}: {err}"
-                            );
+                            warn!("Failed to count total positions for rule {rule_id}: {err}");
                             return;
                         }
                     }
                 }
 
-                // Create a new position
+                // Insert empty position
                 let mut position = Position::new(
                     mint.clone(),
-                    e.token.creator_wallet.clone(),
-                    0.0, // entry_price will be 0 initially; can be updated from first trade
+                    self.trading.wallet_pubkey(),
+                    0.0,
                     e.tx_signature.clone(),
                     "TPSL".to_string(),
                     rule_id,
                     rule.buy_amount,
                 );
-                // Propagate token program id when available so buys use correct program.
                 position.token_program_id = e.token.token_program_id.clone();
 
                 if let Err(err) = self.position_repo.insert(&position).await {
                     warn!("Failed to create position for token {mint}: {err}");
-                } else {
-                    info!(
-                        "Created position {} for token {mint} under rule {rule_id}",
-                        position.id
-                    );
-                    // Execute the buy via TradingService asynchronously with retries and confirmation polling
+                    return;
+                }
+
+                info!(
+                    "Created position {} for token {mint} under rule {rule_id}",
+                    position.id
+                );
+
+                if rule.trade_mode == "paper" {
+                    // Wait for block complete event (simulate with async block for now)
+                    let trade_repo = self.trade_repo.clone();
+                    let mint_for_trades = mint.clone();
+                    let position_repo = self.position_repo.clone();
+                    let position_id = position.id;
+                    let buy_amount = rule.buy_amount;
+                    tokio::spawn(async move {
+                        // TODO: Replace with actual block-complete event
+                        sleep(Duration::from_secs(1)).await;
+                        if let Ok(trades) = trade_repo.find_by_mint_all(&mint_for_trades).await {
+                            if let Some((entry_price, entry_tx, _entry_time)) =
+                                crate::strategies::tpsl::simulation_tpsl::find_entry(&trades, 5)
+                            {
+                                let _ = position_repo
+                                    .update_entry(position_id, &entry_tx, buy_amount, entry_price)
+                                    .await;
+                                info!(
+                                    "[PAPER TEST] Set entry price for position {}: {} (tx: {})",
+                                    position_id, entry_price, entry_tx
+                                );
+                            } else {
+                                info!(
+                                    "[PAPER TEST] No entry price found for position {} (mint {})",
+                                    position_id, mint_for_trades
+                                );
+                            }
+                        }
+                    });
+                } else if rule.trade_mode == "real" {
+                    // Real mode: wait for trade event, then send buy, then confirm in history
                     let trading = self.trading.clone();
                     let mint_clone = mint.clone();
                     let creator = e.token.creator_wallet.clone();
@@ -211,8 +244,8 @@ impl StrategyService {
                         .token_program_id
                         .clone()
                         .unwrap_or_else(|| crate::config::constants::TOKEN_PROGRAM_ID.to_string());
-
                     tokio::spawn(async move {
+                        let mint_for_log = mint_clone.clone();
                         buy_with_retries(
                             trading,
                             mint_clone,
@@ -220,10 +253,22 @@ impl StrategyService {
                             token_program_id,
                             buy_amount,
                             position_id,
-                            position_repo,
-                            trade_repo,
+                            position_repo.clone(),
+                            trade_repo.clone(),
                         )
                         .await;
+                        // If not found, remove position
+                        if let Ok(pos) = position_repo.find_by_id(position_id).await {
+                            if let Some(pos) = pos {
+                                if pos.entry_price == 0.0 {
+                                    let _ = position_repo.delete_position(position_id).await;
+                                    info!(
+                                        "[REAL] Removed position {} for mint {}: buy not found",
+                                        position_id, mint_for_log
+                                    );
+                                }
+                            }
+                        }
                     });
                 }
             }
@@ -269,33 +314,109 @@ impl StrategyService {
                         position.id, exit_reason
                     );
 
-                    position.mark_exit_pending();
-                    if let Err(err) = self.position_repo.update(&position).await {
-                        warn!(
-                            "Failed to mark position {} as ExitPending: {err}",
-                            position.id
-                        );
-                    } else {
-                        info!(
-                            position_id = %position.id,
-                            mint = %mint,
-                            "Position marked ExitPending"
-                        );
+                    if rule.trade_mode == "paper" {
+                        // Mark ExitPending, start 10s timer for exit price
+                        position.mark_exit_pending();
+                        if let Err(err) = self.position_repo.update(&position).await {
+                            warn!(
+                                "Failed to mark position {} as ExitPending: {err}",
+                                position.id
+                            );
+                        } else {
+                            info!(position_id = %position.id, mint = %mint, "[PAPER TEST] Position marked ExitPending");
+                        }
+                        let trade_repo = self.trade_repo.clone();
+                        let mint_for_trades = mint.clone();
+                        let position_repo = self.position_repo.clone();
+                        let position_id = position.id;
+                        let entry_tx = position.entry_tx.clone();
+                        let entry_price = position.entry_price;
+                        let take_profit = rule.take_profit;
+                        let stop_loss = rule.stop_loss;
+                        tokio::spawn(async move {
+                            let mut found = false;
+                            let start = std::time::Instant::now();
+                            let entry_time = chrono::Utc::now(); // fallback if not available
+                            while start.elapsed() < Duration::from_secs(10) {
+                                if let Ok(trades) =
+                                    trade_repo.find_by_mint_all(&mint_for_trades).await
+                                {
+                                    // Try to find the entry trade's block_time
+                                    let entry_block_time = trades
+                                        .iter()
+                                        .find(|t| t.tx_signature == entry_tx)
+                                        .map(|t| t.block_time)
+                                        .unwrap_or(entry_time);
+                                    if let Some((exit_price, exit_tx, _exit_time, reason)) =
+                                        crate::strategies::tpsl::simulation_tpsl::find_exit(
+                                            &trades,
+                                            entry_block_time,
+                                            entry_price,
+                                            take_profit,
+                                            stop_loss,
+                                        )
+                                    {
+                                        let _ = position_repo
+                                            .update_exit(position_id, &exit_tx, exit_price)
+                                            .await;
+                                        info!("[PAPER TEST] Set exit price for position {}: {} (tx: {}, reason: {})", position_id, exit_price, exit_tx, reason);
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                                sleep(Duration::from_millis(500)).await;
+                            }
+                            if !found {
+                                // Timeout: revert ExitPending to Holding
+                                let _ = position_repo.revert_exit_pending(position_id).await;
+                                info!("[PAPER TEST] ExitPending timed out, reverted to Holding for position {}", position_id);
+                            }
+                        });
+                    } else if rule.trade_mode == "real" {
+                        // Real mode: send sell, retry up to 10 times if not found
+                        position.mark_exit_pending();
+                        if let Err(err) = self.position_repo.update(&position).await {
+                            warn!(
+                                "Failed to mark position {} as ExitPending: {err}",
+                                position.id
+                            );
+                        } else {
+                            info!(position_id = %position.id, mint = %mint, "[REAL] Position marked ExitPending");
+                        }
+                        let trading = self.trading.clone();
+                        let position_repo = self.position_repo.clone();
+                        let trade_repo = self.trade_repo.clone();
+                        let mut retries = 0;
+                        let max_retries = 10;
+                        let mut found = false;
+                        while retries < max_retries {
+                            execute_sell_for_position(
+                                trading.clone(),
+                                position.clone(),
+                                current_price,
+                                position_repo.clone(),
+                                trade_repo.clone(),
+                            )
+                            .await;
+                            // Check if sell succeeded
+                            if let Ok(pos) = position_repo.find_by_id(position.id).await {
+                                if let Some(pos) = pos {
+                                    if pos.exit_price.is_some() {
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            retries += 1;
+                            sleep(Duration::from_secs(1)).await;
+                        }
+                        if !found {
+                            info!(
+                                "[REAL] Sell not confirmed after {} retries for position {}",
+                                max_retries, position.id
+                            );
+                        }
                     }
-
-                    let trading = self.trading.clone();
-                    let position_repo = self.position_repo.clone();
-                    let trade_repo = self.trade_repo.clone();
-                    tokio::spawn(async move {
-                        execute_sell_for_position(
-                            trading,
-                            position,
-                            current_price,
-                            position_repo,
-                            trade_repo,
-                        )
-                        .await;
-                    });
                 }
             }
         }
@@ -334,10 +455,16 @@ async fn buy_with_retries(
                     match trade_repo.find_by_mint(&mint, 20).await {
                         Ok(trades) => {
                             if let Some(t) = trades.into_iter().find(|t| {
-                                t.wallet_address == wallet && t.trade_type == crate::models::trade::TradeType::Buy
+                                t.wallet_address == wallet
+                                    && t.trade_type == crate::models::trade::TradeType::Buy
                             }) {
                                 if let Err(err) = position_repo
-                                    .update_entry(position_id, &t.tx_signature, t.token_amount, t.price_per_token)
+                                    .update_entry(
+                                        position_id,
+                                        &t.tx_signature,
+                                        t.token_amount,
+                                        t.price_per_token,
+                                    )
                                     .await
                                 {
                                     warn!("Failed to update position entry after buy confirmation: {err}");
@@ -393,7 +520,8 @@ async fn execute_sell_for_position(
         "Executing sell for exited position"
     );
 
-    let completed = sell_with_retries(trading.clone(), mint.clone(), amount, trade_repo.clone()).await;
+    let completed =
+        sell_with_retries(trading.clone(), mint.clone(), amount, trade_repo.clone()).await;
     if !completed {
         warn!(
             position_id = %position.id,
@@ -423,8 +551,12 @@ async fn execute_sell_for_position(
                 .unwrap_or(0.0)
                 .max(0.0);
             if remaining <= StrategyService::PARTIAL_FILL_THRESHOLD {
-                    let exit_amount = last_sell.token_amount;
-                    position.close(last_sell.price_per_token, last_sell.tx_signature.clone(), exit_amount);
+                let exit_amount = last_sell.token_amount;
+                position.close(
+                    last_sell.price_per_token,
+                    last_sell.tx_signature.clone(),
+                    exit_amount,
+                );
                 if let Err(err) = position_repo.update(&position).await {
                     warn!(
                         position_id = %position.id,
@@ -455,7 +587,12 @@ async fn execute_sell_for_position(
 
 /// Attempt a sell with retries. If the sell may partially fill, this will retry
 /// a few times to attempt selling the remaining quantity.
-async fn sell_with_retries(trading: TradingService, mint: String, mut amount: u64, trade_repo: TradeRepo) -> bool {
+async fn sell_with_retries(
+    trading: TradingService,
+    mint: String,
+    mut amount: u64,
+    trade_repo: TradeRepo,
+) -> bool {
     let mut attempt = 0usize;
     let max_attempts = StrategyService::SELL_MAX_ATTEMPTS;
     let mut backoff_ms = 300u64;
@@ -477,7 +614,10 @@ async fn sell_with_retries(trading: TradingService, mint: String, mut amount: u6
                 let mut poll_attempts = 0usize;
                 while poll_attempts < StrategyService::SELL_POLL_MAX_ATTEMPTS {
                     poll_attempts += 1;
-                    match trade_repo.net_token_amount_by_wallet_and_mint(&wallet, &mint).await {
+                    match trade_repo
+                        .net_token_amount_by_wallet_and_mint(&wallet, &mint)
+                        .await
+                    {
                         Ok(balance) => {
                             let remaining = balance.max(0.0);
                             if remaining <= StrategyService::PARTIAL_FILL_THRESHOLD {
@@ -493,7 +633,10 @@ async fn sell_with_retries(trading: TradingService, mint: String, mut amount: u6
                         }
                     }
 
-                    sleep(Duration::from_millis(StrategyService::SELL_POLL_INTERVAL_MS)).await;
+                    sleep(Duration::from_millis(
+                        StrategyService::SELL_POLL_INTERVAL_MS,
+                    ))
+                    .await;
                 }
 
                 if poll_attempts >= StrategyService::SELL_POLL_MAX_ATTEMPTS {

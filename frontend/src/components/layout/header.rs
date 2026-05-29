@@ -78,6 +78,8 @@ pub fn header() -> Html {
         }
     };
 
+    let on_strategies = matches!(route, Route::Strategies | Route::StrategiesTpsl);
+
     html! {
         <header class="topnav">
             <div class="topnav-inner">
@@ -92,7 +94,18 @@ pub fn header() -> Html {
                     <Link<Route> to={Route::Tokens}       classes={cls(Route::Tokens)}>{ "Tokens" }</Link<Route>>
                     <Link<Route> to={Route::Transactions} classes={cls(Route::Transactions)}>{ "Transactions" }</Link<Route>>
                     <Link<Route> to={Route::Analysis}     classes={cls(Route::Analysis)}>{ "Analysis" }</Link<Route>>
-                    <Link<Route> to={Route::Strategies}   classes={cls(Route::Strategies)}>{ "Strategies" }</Link<Route>>
+                    <div class="nav-item">
+                        <span class={classes!("nav-link", on_strategies.then_some("active"))}>
+                            { "Strategies" }
+                            <span class="subnav-arrow">{ "▾" }</span>
+                        </span>
+                        <div class="subnav">
+                            <Link<Route> to={Route::StrategiesTpsl}
+                                classes={if route == Route::StrategiesTpsl { classes!("subnav-link", "active") } else { classes!("subnav-link") }}>
+                                { "TPSL" }
+                            </Link<Route>>
+                        </div>
+                    </div>
                     <Link<Route> to={Route::Settings}     classes={cls(Route::Settings)}>{ "Settings" }</Link<Route>>
                 </nav>
                 <div class="topnav-right">

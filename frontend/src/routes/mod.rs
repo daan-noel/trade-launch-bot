@@ -6,8 +6,9 @@ pub mod transactions;
 
 use yew::prelude::*;
 use yew_router::prelude::*;
+use yew_router::components::Redirect;
 
-use crate::pages::{AnalysisPage, DashboardPage, HomePage, TokensPage, TransactionsPage};
+use crate::pages::{AnalysisPage, DashboardPage, HomePage, TpslPage, TokensPage, TransactionsPage};
 
 #[derive(Clone, Routable, PartialEq)]
 pub enum Route {
@@ -23,6 +24,8 @@ pub enum Route {
     Analysis,
     #[at("/settings")]
     Settings,
+    #[at("/strategies/tpsl")]
+    StrategiesTpsl,
     #[at("/strategies")]
     Strategies,
     #[not_found]
@@ -38,7 +41,8 @@ pub fn switch(route: Route) -> Html {
         Route::Transactions => html! { <TransactionsPage /> },
         Route::Analysis => html! { <AnalysisPage /> },
         Route::Settings => html! { <crate::routes::settings::SettingsRoute /> },
-        Route::Strategies => html! { <crate::routes::strategies::StrategiesRoute /> },
+        Route::StrategiesTpsl => html! { <TpslPage /> },
+        Route::Strategies => html! { <Redirect<Route> to={Route::StrategiesTpsl} /> },
         Route::NotFound => html! { <h1>{ "404 - Not Found" }</h1> },
     }
 }

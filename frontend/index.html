@@ -166,6 +166,60 @@
             box-shadow: 0 0 8px rgba(8, 153, 129, 0.6);
         }
 
+        /* ── Sub-nav dropdown (Strategies) ───────────────────────────── */
+        .nav-item {
+            position: relative;
+        }
+
+        .nav-item .subnav {
+            display: none;
+            position: absolute;
+            top: calc(100% + 6px);
+            left: 0;
+            min-width: 120px;
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 4px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+            z-index: 200;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .nav-item:hover .subnav,
+        .nav-item:focus-within .subnav {
+            display: flex;
+        }
+
+        .subnav-link {
+            display: block;
+            padding: 6px 12px;
+            border-radius: 5px;
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-mid);
+            white-space: nowrap;
+            transition: background .12s, color .12s;
+        }
+
+        .subnav-link:hover {
+            background: rgba(8, 153, 129, 0.08);
+            color: var(--text);
+        }
+
+        .subnav-link.active {
+            color: var(--primary);
+            background: rgba(8, 153, 129, 0.1);
+            font-weight: 700;
+        }
+
+        .subnav-arrow {
+            font-size: 9px;
+            opacity: 0.55;
+            margin-left: 2px;
+        }
+
         /* right slot */
         .topnav-right {
             margin-left: auto;

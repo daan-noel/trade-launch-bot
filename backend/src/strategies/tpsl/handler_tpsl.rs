@@ -1,4 +1,6 @@
+use crate::utils::{ignore_zero_f64, ignore_zero_u64};
 use crate::models::{Position, StrategyTPSLRule, Token};
+use tracing::{debug, info, warn, error};
 use uuid::Uuid;
 
 /// TPSL (Take Profit Stop Loss) Strategy Handler
@@ -23,8 +25,28 @@ impl TPSLStrategyHandler {
                 continue;
             }
 
+            let p_initial_buy_sol = ignore_zero_f64(rule.p_initial_buy_sol);
+            let tolerance_pct = ignore_zero_f64(Some(rule.tolerance_pct));
+            let p_cu_limit = ignore_zero_u64(rule.p_cu_limit);
+            let p_cu_price = ignore_zero_u64(rule.p_cu_price);
+            let p_max_sol_cost = ignore_zero_f64(rule.p_max_sol_cost);
+            let p_spendable_sol_in = ignore_zero_f64(rule.p_spendable_sol_in);
+            let has_ix_labels = rule.p_ix_labels.as_array().map_or(false, |a| !a.is_empty());
+
+            if p_initial_buy_sol.is_none()
+                && tolerance_pct.is_none()
+                && p_cu_limit.is_none()
+                && p_cu_price.is_none()
+                && p_max_sol_cost.is_none()
+                && p_spendable_sol_in.is_none()
+                && !has_ix_labels
+            {
+                warn!("All rule criteria are empty — simulation would match every token");
+                continue;
+            }
+
             // Check p_initial_buy_sol constraint (optional)
-            if let Some(rule_initial_buy) = rule.p_initial_buy_sol {
+            if let Some(rule_initial_buy) = p_initial_buy_sol {
                 if let Some(initial_buy) = token.initial_buy_sol {
                     let tol = rule_initial_buy.abs() * (rule.tolerance_pct * 0.01);
                     if (initial_buy - rule_initial_buy).abs() > tol + 1e-9 {
@@ -36,7 +58,7 @@ impl TPSLStrategyHandler {
             }
 
             // Check p_cu_limit constraint (optional)
-            if let Some(cu_limit_constraint) = rule.p_cu_limit {
+            if let Some(cu_limit_constraint) = p_cu_limit {
                 if let Some(token_cu_limit) = token.cu_limit {
                     let token_value = token_cu_limit as f64;
                     let rule_value = cu_limit_constraint as f64;
@@ -50,7 +72,7 @@ impl TPSLStrategyHandler {
             }
 
             // Check p_cu_price constraint (optional)
-            if let Some(cu_price_constraint) = rule.p_cu_price {
+            if let Some(cu_price_constraint) = p_cu_price {
                 if let Some(token_cu_price) = token.cu_price {
                     let token_value = token_cu_price as f64;
                     let rule_value = cu_price_constraint as f64;
@@ -64,7 +86,7 @@ impl TPSLStrategyHandler {
             }
 
             // Check p_max_sol_cost constraint (optional)
-            if let Some(max_sol_cost_constraint) = rule.p_max_sol_cost {
+            if let Some(max_sol_cost_constraint) = p_max_sol_cost {
                 if let Some(ix) = &token.initial_buy_instruction {
                     let token_max_cost = ix.get("max_sol_cost").and_then(|v| {
                         v.as_u64()
@@ -86,7 +108,7 @@ impl TPSLStrategyHandler {
             }
 
             // Check p_spendable_sol_in constraint (optional)
-            if let Some(spendable_sol_in_constraint) = rule.p_spendable_sol_in {
+            if let Some(spendable_sol_in_constraint) = p_spendable_sol_in {
                 if let Some(ix) = &token.initial_buy_instruction {
                     let token_spendable_sol_in = ix.get("spendable_sol_in").and_then(|v| {
                         v.as_u64()
@@ -166,7 +188,6 @@ impl TPSLStrategyHandler {
         self.rules.iter().find(|r| r.id == rule_id)
     }
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitReason {
