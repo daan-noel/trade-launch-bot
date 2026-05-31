@@ -3,15 +3,28 @@ use std::rc::Rc;
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
-use crate::components::{Column, DataTable, Header, SortKey};
-use crate::services::api::{fetch_wallet_holdings, WalletHolding};
+use crate::components::{Column, DataTable, Header, Modal, SortKey};
+use crate::services::api::{
+    fetch_wallet_holdings, trade_buy, trade_sell, BuyTokenRequest, SellTokenRequest, WalletHolding,
+};
 use crate::utils::format::truncate;
+
+// Minimal state for the buy dialog: which mint is open + the SOL input value.
+#[derive(Clone, PartialEq)]
+struct BuyDialog {
+    mint: String,
+    token_program_id: String,
+    sol_input: String,
+}
 
 #[function_component(WalletPage)]
 pub fn wallet_page() -> Html {
     let holdings = use_state(Vec::<WalletHolding>::new);
     let loading = use_state(|| false);
     let error = use_state(|| Option::<String>::None);
+    let action_error = use_state(|| Option::<String>::None);
+    let selling_mint = use_state(|| Option::<String>::None);
+    let buy_dialog = use_state(|| Option::<BuyDialog>::None);
 
     let fetch = {
         let holdings = holdings.clone();
@@ -42,6 +55,143 @@ pub fn wallet_page() -> Html {
     let on_refresh = {
         let fetch = fetch.clone();
         Callback::from(move |_: MouseEvent| fetch.emit(()))
+    };
+
+    // ── Sell all ─────────────────────────────────────────────────────────────
+    let on_sell = {
+        let selling_mint = selling_mint.clone();
+        let action_error = action_error.clone();
+        let fetch = fetch.clone();
+        Callback::from(move |(mint, token_amount): (String, u64)| {
+            let selling_mint = selling_mint.clone();
+            let action_error = action_error.clone();
+            let fetch = fetch.clone();
+            selling_mint.set(Some(mint.clone()));
+            action_error.set(None);
+            spawn_local(async move {
+                match trade_sell(&SellTokenRequest { mint, token_amount }).await {
+                    Ok(_) => { fetch.emit(()); }
+                    Err(e) => { action_error.set(Some(format!("Sell failed: {e}"))); }
+                }
+                selling_mint.set(None);
+            });
+        })
+    };
+
+    // ── Buy dialog open ───────────────────────────────────────────────────────
+    let on_buy_open = {
+        let buy_dialog = buy_dialog.clone();
+        Callback::from(move |(mint, token_program_id): (String, String)| {
+            buy_dialog.set(Some(BuyDialog {
+                mint,
+                token_program_id,
+                sol_input: "0.1".to_string(),
+            }));
+        })
+    };
+
+    let on_buy_cancel = {
+        let buy_dialog = buy_dialog.clone();
+        Callback::from(move |_: MouseEvent| buy_dialog.set(None))
+    };
+
+    let on_modal_close = {
+        let buy_dialog = buy_dialog.clone();
+        Callback::from(move |_: ()| buy_dialog.set(None))
+    };
+
+    // SOL input change inside dialog
+    let on_sol_input = {
+        let buy_dialog = buy_dialog.clone();
+        Callback::from(move |e: InputEvent| {
+            let input = e.target_unchecked_into::<web_sys::HtmlInputElement>().value();
+            buy_dialog.set(buy_dialog.as_ref().map(|d| BuyDialog {
+                sol_input: input,
+                ..d.clone()
+            }));
+        })
+    };
+
+    // Buy submit
+    let on_buy_submit = {
+        let buy_dialog = buy_dialog.clone();
+        let action_error = action_error.clone();
+        let fetch = fetch.clone();
+        Callback::from(move |_: MouseEvent| {
+            let Some(dialog) = (*buy_dialog).clone() else { return };
+            let sol_amount: f64 = match dialog.sol_input.trim().parse() {
+                Ok(v) if v > 0.0 => v,
+                _ => {
+                    action_error.set(Some("Enter a valid SOL amount > 0".to_string()));
+                    return;
+                }
+            };
+            let buy_dialog = buy_dialog.clone();
+            let action_error = action_error.clone();
+            let fetch = fetch.clone();
+            action_error.set(None);
+            buy_dialog.set(None);
+            spawn_local(async move {
+                let req = BuyTokenRequest {
+                    mint: dialog.mint,
+                    sol_amount,
+                    token_program_id: dialog.token_program_id,
+                };
+                match trade_buy(&req).await {
+                    Ok(_) => { fetch.emit(()); }
+                    Err(e) => { action_error.set(Some(format!("Buy failed: {e}"))); }
+                }
+            });
+        })
+    };
+
+    // ── Action column (needs cloned callbacks captured into Rc closure) ───────
+    let action_col = {
+        let on_sell = on_sell.clone();
+        let on_buy_open = on_buy_open.clone();
+        let selling_mint = selling_mint.clone();
+        Column {
+            key: "actions",
+            label: "Actions",
+            render: Rc::new(move |r: &WalletHolding| {
+                let mint = r.mint.clone();
+                let token_amount = r.amount;
+                let token_program_id = r.token_program_id.clone();
+                let is_selling = selling_mint.as_ref().map(|m| m == &mint).unwrap_or(false);
+
+                let sell_cb = {
+                    let on_sell = on_sell.clone();
+                    let mint = mint.clone();
+                    Callback::from(move |_: MouseEvent| on_sell.emit((mint.clone(), token_amount)))
+                };
+                let buy_cb = {
+                    let on_buy_open = on_buy_open.clone();
+                    let mint = mint.clone();
+                    Callback::from(move |_: MouseEvent| {
+                        on_buy_open.emit((mint.clone(), token_program_id.clone()))
+                    })
+                };
+
+                html! {
+                    <div class="action-btns">
+                        <button class="btn-action btn-buy" onclick={buy_cb}>{ "Buy" }</button>
+                        <button
+                            class="btn-action btn-sell"
+                            onclick={sell_cb}
+                            disabled={is_selling}
+                        >
+                            { if is_selling { "Selling…" } else { "Sell All" } }
+                        </button>
+                    </div>
+                }
+            }),
+            sort_value: None,
+            search_value: Rc::new(|_: &WalletHolding| String::new()),
+            cell_class: None,
+            sortable: false,
+            default_visible: true,
+            width: Some("160px"),
+        }
     };
 
     let wallet_row_key: Rc<dyn Fn(&WalletHolding) -> String> =
@@ -255,7 +405,26 @@ pub fn wallet_page() -> Html {
             default_visible: true,
             width: Some("160px"),
         },
+        action_col
     ];
+
+    // ── Buy modal values ──────────────────────────────────────────────────────
+    let (modal_title, modal_desc, sol_input_val) = if let Some(dialog) = &*buy_dialog {
+        let symbol = holdings
+            .iter()
+            .find(|h| h.mint == dialog.mint)
+            .and_then(|h| h.symbol.as_deref())
+            .unwrap_or(&dialog.mint);
+            // .unwrap_or(&dialog.mint[..8.min(dialog.mint.len())]);
+        (
+            format!("Buy {}", symbol),
+            format!("Mint: {}", dialog.mint),
+            // format!("Mint: {}", truncate(&dialog.mint, 16)),
+            dialog.sol_input.clone(),
+        )
+    } else {
+        (String::new(), String::new(), String::new())
+    };
 
     html! {
         <div class="page-shell">
@@ -280,6 +449,9 @@ pub fn wallet_page() -> Html {
                 if let Some(err) = &*error {
                     <div class="inline-error">{ err }</div>
                 }
+                if let Some(err) = &*action_error {
+                    <div class="inline-error">{ err }</div>
+                }
 
                 if *loading && holdings.is_empty() {
                     <div class="strat-state-msg">{ "Loading wallet holdings from Solana…" }</div>
@@ -298,6 +470,28 @@ pub fn wallet_page() -> Html {
                     />
                 }
             </main>
+            <Modal
+                title={modal_title}
+                visible={(*buy_dialog).is_some()}
+                on_close={on_modal_close}
+            >
+                <p class="modal-desc">{ modal_desc }</p>
+                <label class="modal-label">
+                    { "SOL Amount" }
+                    <input
+                        type="number"
+                        class="form-input"
+                        min="0.001"
+                        step="0.01"
+                        value={sol_input_val}
+                        oninput={on_sol_input}
+                    />
+                </label>
+                <div class="form-actions">
+                    <button class="btn-ghost" onclick={on_buy_cancel}>{ "Cancel" }</button>
+                    <button class="btn-primary-sm" onclick={on_buy_submit}>{ "Confirm Buy" }</button>
+                </div>
+            </Modal>
         </div>
     }
 }

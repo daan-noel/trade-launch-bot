@@ -488,3 +488,52 @@ pub async fn fetch_wallet_holdings() -> Result<Vec<WalletHolding>, String> {
         .await
         .map_err(|e| format!("Parse error: {e}"))
 }
+
+#[derive(Serialize)]
+pub struct BuyTokenRequest {
+    pub mint: String,
+    pub sol_amount: f64,
+    pub token_program_id: String,
+}
+
+#[derive(Serialize)]
+pub struct SellTokenRequest {
+    pub mint: String,
+    pub token_amount: u64,
+}
+
+pub async fn trade_buy(req: &BuyTokenRequest) -> Result<bool, String> {
+    let url = format!("{API_BASE}/api/solana/wallet/buy");
+    let resp = Request::post(&url)
+        .json(req)
+        .map_err(|e| format!("Request error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Fetch error: {e}"))?;
+    if !resp.ok() {
+        let msg = resp.json::<serde_json::Value>().await
+            .ok()
+            .and_then(|v| v["error"].as_str().map(str::to_owned))
+            .unwrap_or_else(|| format!("HTTP {}", resp.status()));
+        return Err(msg);
+    }
+    Ok(true)
+}
+
+pub async fn trade_sell(req: &SellTokenRequest) -> Result<bool, String> {
+    let url = format!("{API_BASE}/api/solana/wallet/sell");
+    let resp = Request::post(&url)
+        .json(req)
+        .map_err(|e| format!("Request error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Fetch error: {e}"))?;
+    if !resp.ok() {
+        let msg = resp.json::<serde_json::Value>().await
+            .ok()
+            .and_then(|v| v["error"].as_str().map(str::to_owned))
+            .unwrap_or_else(|| format!("HTTP {}", resp.status()));
+        return Err(msg);
+    }
+    Ok(true)
+}
