@@ -1,5 +1,6 @@
 use std::rc::Rc;
 
+use gloo_timers::future::TimeoutFuture;
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
@@ -23,6 +24,7 @@ pub fn wallet_page() -> Html {
     let loading = use_state(|| false);
     let error = use_state(|| Option::<String>::None);
     let action_error = use_state(|| Option::<String>::None);
+    let action_success = use_state(|| Option::<String>::None);
     let selling_mint = use_state(|| Option::<String>::None);
     let buy_dialog = use_state(|| Option::<BuyDialog>::None);
 
@@ -61,17 +63,31 @@ pub fn wallet_page() -> Html {
     let on_sell = {
         let selling_mint = selling_mint.clone();
         let action_error = action_error.clone();
+        let action_success = action_success.clone();
         let fetch = fetch.clone();
+        let holdings = holdings.clone();
         Callback::from(move |(mint, token_amount): (String, u64)| {
             let selling_mint = selling_mint.clone();
             let action_error = action_error.clone();
+            let action_success = action_success.clone();
             let fetch = fetch.clone();
+            let holdings = holdings.clone();
             selling_mint.set(Some(mint.clone()));
             action_error.set(None);
+            action_success.set(None);
             spawn_local(async move {
-                match trade_sell(&SellTokenRequest { mint, token_amount }).await {
-                    Ok(_) => { fetch.emit(()); }
-                    Err(e) => { action_error.set(Some(format!("Sell failed: {e}"))); }
+                let token_account = holdings.iter().find(|h| h.mint == mint).map(|h| h.token_account.clone());
+                if let Some(token_account) = token_account {
+                    match trade_sell(&SellTokenRequest { mint, token_amount, token_account }).await {
+                        Ok(_) => {
+                            action_success.set(Some("Sell successful! Refreshing…".into()));
+                            TimeoutFuture::new(1_500).await;
+                            fetch.emit(());
+                        }
+                        Err(e) => { action_error.set(Some(format!("Sell failed: {e}"))); }
+                    }
+                } else {
+                    action_error.set(Some("Token account not found for mint".to_string()));
                 }
                 selling_mint.set(None);
             });
@@ -116,6 +132,7 @@ pub fn wallet_page() -> Html {
     let on_buy_submit = {
         let buy_dialog = buy_dialog.clone();
         let action_error = action_error.clone();
+        let action_success = action_success.clone();
         let fetch = fetch.clone();
         Callback::from(move |_: MouseEvent| {
             let Some(dialog) = (*buy_dialog).clone() else { return };
@@ -128,8 +145,10 @@ pub fn wallet_page() -> Html {
             };
             let buy_dialog = buy_dialog.clone();
             let action_error = action_error.clone();
+            let action_success = action_success.clone();
             let fetch = fetch.clone();
             action_error.set(None);
+            action_success.set(None);
             buy_dialog.set(None);
             spawn_local(async move {
                 let req = BuyTokenRequest {
@@ -138,7 +157,11 @@ pub fn wallet_page() -> Html {
                     token_program_id: dialog.token_program_id,
                 };
                 match trade_buy(&req).await {
-                    Ok(_) => { fetch.emit(()); }
+                    Ok(_) => {
+                        action_success.set(Some("Buy successful! Refreshing…".into()));
+                        TimeoutFuture::new(1_500).await;
+                        fetch.emit(());
+                    }
                     Err(e) => { action_error.set(Some(format!("Buy failed: {e}"))); }
                 }
             });
@@ -451,6 +474,9 @@ pub fn wallet_page() -> Html {
                 }
                 if let Some(err) = &*action_error {
                     <div class="inline-error">{ err }</div>
+                }
+                if let Some(msg) = &*action_success {
+                    <div class="inline-success">{ msg }</div>
                 }
 
                 if *loading && holdings.is_empty() {

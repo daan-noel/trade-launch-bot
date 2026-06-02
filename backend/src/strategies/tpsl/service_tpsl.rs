@@ -543,7 +543,12 @@ async fn sell_with_retries(
 
     while attempt < max_attempts && amount > 0 {
         attempt += 1;
-        match trading.sell_token(&mint, amount, None, false).await {
+        // Look up token_account for this mint
+        let token_account_override = match trading.get_all_token_accounts().await {
+            Ok(accounts) => accounts.iter().find(|a| a.mint == mint).map(|a| a.token_account.clone()),
+            Err(_) => None,
+        };
+        match trading.sell_token(&mint, amount, None, false, token_account_override.as_deref()).await {
             Ok(true) => {
                 info!(mint = %mint, attempt, amount, "sell submitted");
                 let mut poll_attempts = 0usize;

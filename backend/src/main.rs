@@ -29,7 +29,7 @@ fn parse_wallet_keypair(base58_key: &str) -> anyhow::Result<Keypair> {
         .context("Failed to construct Keypair from WALLET_PRIVATE_KEY bytes")
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
     // Load .env before anything else
     dotenvy::dotenv().ok();
@@ -180,6 +180,7 @@ async fn main() -> anyhow::Result<()> {
             .app_data(web::Data::new(http_state.clone()))
             .configure(api::configure)
     })
+    .workers(4)
     .bind(&bind_addr)
     .context("Failed to bind HTTP server")?;
     let server_task = tokio::spawn(http_server.run());

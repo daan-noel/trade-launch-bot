@@ -25,7 +25,9 @@ use anyhow::{Context, Result};
 use base64::{engine::general_purpose, Engine as _};
 use rand::seq::SliceRandom;
 use serde_json::json;
-use solana_client::{nonce_utils, rpc_client::RpcClient};
+use solana_client::{nonblocking::rpc_client::RpcClient, nonce_utils};
+use solana_sdk::system_instruction;
+use solana_sdk::system_program;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
     compute_budget::ComputeBudgetInstruction,
@@ -37,10 +39,9 @@ use solana_sdk::{
     signature::{Keypair, Signature, Signer},
     transaction::Transaction,
 };
-use solana_sdk::system_instruction;
-use solana_sdk::system_program;
-use std::collections::{HashMap, HashSet};
+use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash as StdHash, Hasher};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -85,8 +86,7 @@ const NONCE_MAX_WAIT_ITERS: usize = 200;
 /// Sleep between nonce spin-wait iterations.
 const NONCE_WAIT_SLEEP_MS: u64 = 20;
 
-const PUMP_PROGRAM_UPGRADE_FEE_RECIPIENT: &str =
-    "5YxQFdt3Tr9zJLvkFccqXVUwhdTWJQc1fFg2YPbxvxeD";
+const PUMP_PROGRAM_UPGRADE_FEE_RECIPIENT: &str = "5YxQFdt3Tr9zJLvkFccqXVUwhdTWJQc1fFg2YPbxvxeD";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -115,6 +115,7 @@ pub struct TokenPDAs {
     pub bonding_curve_v2: Pubkey,
     pub associated_bonding_curve: Pubkey,
     pub creator_vault: Pubkey,
+    pub cashback_enabled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -192,6 +193,132 @@ pub struct PumpFunTrader {
 }
 
 impl PumpFunTrader {
+    /// Return all non-zero token accounts held by the trader's wallet.
+    /// Uses raw JSON-RPC via reqwest to avoid extra Solana SDK dependencies.
+    pub async fn get_all_token_accounts(
+        &self,
+    ) -> anyhow::Result<Vec<crate::services::trading_service::WalletHolding>> {
+        use crate::config::constants::{TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
+
+        let wallet = self.wallet_pubkey();
+        let rpc_url = self.rpc_url().to_string();
+        let client = reqwest::Client::new();
+        let mut holdings: Vec<crate::services::trading_service::WalletHolding> = Vec::new();
+
+        for prog in [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID] {
+            let body = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getTokenAccountsByOwner",
+                "params": [
+                    wallet,
+                    { "programId": prog },
+                    { "encoding": "jsonParsed" }
+                ]
+            });
+
+            let resp: serde_json::Value = client
+                .post(&rpc_url)
+                .json(&body)
+                .send()
+                .await?
+                .json()
+                .await?;
+
+            let Some(accounts) = resp["result"]["value"].as_array() else {
+                continue;
+            };
+
+            for account in accounts {
+                let info = &account["account"]["data"]["parsed"]["info"];
+                let mint = match info["mint"].as_str() {
+                    Some(m) if !m.is_empty() => m.to_string(),
+                    _ => continue,
+                };
+                let ta = &info["tokenAmount"];
+                let amount: u64 = ta["amount"].as_str().unwrap_or("0").parse().unwrap_or(0);
+                if amount == 0 {
+                    continue;
+                }
+                let ui_amount = ta["uiAmount"].as_f64().unwrap_or(0.0);
+                let decimals = ta["decimals"].as_u64().unwrap_or(0) as u8;
+                let token_account = account["pubkey"].as_str().unwrap_or("").to_string();
+
+                holdings.push(crate::services::trading_service::WalletHolding {
+                    mint,
+                    amount,
+                    ui_amount,
+                    decimals,
+                    token_account,
+                    token_program_id: prog.to_string(),
+                });
+            }
+        }
+
+        holdings.sort_by(|a, b| {
+            b.ui_amount
+                .partial_cmp(&a.ui_amount)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        Ok(holdings)
+    }
+    /// Utility to fetch the creator pubkey for a given mint by reading the bonding curve PDA account.
+    /// Returns the creator as a String.
+    pub async fn get_creator_from_mint_pda(&self, mint_address: &str) -> anyhow::Result<String> {
+        use solana_sdk::pubkey::Pubkey;
+        use std::str::FromStr;
+        let rpc = &self.rpc;
+
+        // Get bonding curve PDA
+        let program_id = Pubkey::from_str(PUMP_FUN_PROGRAM_ID)?;
+        let mint = Pubkey::from_str(mint_address)?;
+        let (bonding_curve, _) =
+            Pubkey::find_program_address(&[b"bonding-curve", mint.as_ref()], &program_id);
+
+        // Fetch account data
+        let account = rpc.get_account(&bonding_curve).await?;
+
+        // Parse creator from account data
+        const CREATOR_OFFSET: usize = 49;
+        if account.data.len() < CREATOR_OFFSET + 32 {
+            anyhow::bail!("Account data too short");
+        }
+        let creator_bytes: [u8; 32] =
+            account.data[CREATOR_OFFSET..CREATOR_OFFSET + 32].try_into()?;
+        let creator = Pubkey::from(creator_bytes);
+
+        // Derive all PDAs needed for sell
+        let (bonding_curve_v2, _) =
+            Pubkey::find_program_address(&[b"bonding-curve-v2", mint.as_ref()], &program_id);
+        let mint_account = rpc.get_account(&mint).await?;
+        let token_program = mint_account.owner;
+
+        let assoc_bonding_curve = get_associated_token_address_with_program_id(
+            &bonding_curve, // owner = bonding curve PDA
+            &mint,
+            &token_program,
+        );
+
+        let (creator_vault, _) =
+            Pubkey::find_program_address(&[b"creator-vault", creator.as_ref()], &program_id);
+
+        let cashback_enabled = account.data.len() > 82 && account.data[82] != 0;
+
+        // Cache PDAs for this mint
+        self.token_pdas.lock().await.insert(
+            mint_address.to_string(),
+            TokenPDAs {
+                token_program,
+                bonding_curve,
+                bonding_curve_v2,
+                associated_bonding_curve: assoc_bonding_curve,
+                creator_vault,
+                cashback_enabled,
+            },
+        );
+
+        Ok(creator.to_string())
+    }
     // -----------------------------------------------------------------------
     // Construction
     // -----------------------------------------------------------------------
@@ -241,59 +368,58 @@ impl PumpFunTrader {
 
     /// Query the on-chain SPL token balance for a given wallet + mint.
     /// Tries both classic Token and Token-2022 ATAs; returns 0 if none found.
-    pub fn get_token_balance_blocking(
+    pub async fn get_token_balance(
         &self,
         wallet: &str,
         mint: &str,
     ) -> anyhow::Result<crate::services::trading_service::TokenBalance> {
-        use std::str::FromStr;
-        use solana_sdk::pubkey::Pubkey;
-        use spl_associated_token_account::get_associated_token_address_with_program_id;
+        // FIX: don't derive ATA — look up actual on-chain account
+        // Check cache first
+        let cached = self.user_token_accounts.lock().await.get(mint).copied();
 
-        let wallet_pk = Pubkey::from_str(wallet)
-            .map_err(|e| anyhow::anyhow!("Invalid wallet pubkey: {e}"))?;
-        let mint_pk = Pubkey::from_str(mint)
-            .map_err(|e| anyhow::anyhow!("Invalid mint pubkey: {e}"))?;
-
-        let programs = [
-            (Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap(), TOKEN_PROGRAM_ID),
-            (Pubkey::from_str(TOKEN_2022_PROGRAM_ID).unwrap(), TOKEN_2022_PROGRAM_ID),
-        ];
-
-        for (token_prog_pk, token_prog_str) in &programs {
-            let ata = get_associated_token_address_with_program_id(
-                &wallet_pk,
-                &mint_pk,
-                token_prog_pk,
-            );
-            match self.rpc.get_token_account_balance(&ata) {
-                Ok(ui_amount) => {
-                    let amount: u64 = ui_amount.amount.parse().unwrap_or(0);
-                    return Ok(crate::services::trading_service::TokenBalance {
-                        mint: mint.to_string(),
-                        wallet: wallet.to_string(),
-                        amount,
-                        ui_amount: ui_amount.ui_amount.unwrap_or(0.0),
-                        decimals: ui_amount.decimals,
-                        token_account: Some(ata.to_string()),
-                        token_program_id: token_prog_str.to_string(),
-                    });
+        let token_account_pk = match cached {
+            Some(pk) => pk,
+            None => {
+                let holdings = self.get_all_token_accounts().await?;
+                match holdings.iter().find(|h| h.mint == mint) {
+                    Some(h) => Pubkey::from_str(&h.token_account)?,
+                    None => {
+                        // Truly not found
+                        return Ok(crate::services::trading_service::TokenBalance {
+                            mint: mint.to_string(),
+                            wallet: wallet.to_string(),
+                            amount: 0,
+                            ui_amount: 0.0,
+                            decimals: 0,
+                            token_account: None,
+                            token_program_id: String::new(),
+                        });
+                    }
                 }
-                Err(_) => continue,
             }
+        };
+
+        match self.rpc.get_token_account_balance(&token_account_pk).await {
+            Ok(ui_amount) => {
+                let amount: u64 = ui_amount.amount.parse().unwrap_or(0);
+                // Also cache it for future use
+                self.user_token_accounts
+                    .lock()
+                    .await
+                    .insert(mint.to_string(), token_account_pk);
+                Ok(crate::services::trading_service::TokenBalance {
+                    mint: mint.to_string(),
+                    wallet: wallet.to_string(),
+                    amount,
+                    ui_amount: ui_amount.ui_amount.unwrap_or(0.0),
+                    decimals: ui_amount.decimals,
+                    token_account: Some(token_account_pk.to_string()),
+                    token_program_id: String::new(),
+                })
+            }
+            Err(e) => anyhow::bail!("Failed to get token balance: {e}"),
         }
-
-        Ok(crate::services::trading_service::TokenBalance {
-            mint: mint.to_string(),
-            wallet: wallet.to_string(),
-            amount: 0,
-            ui_amount: 0.0,
-            decimals: 0,
-            token_account: None,
-            token_program_id: String::new(),
-        })
     }
-
     /// Expose the RPC URL for callers that need to make their own RPC requests.
     pub fn rpc_url(&self) -> &str {
         &self.config.rpc_url
@@ -314,10 +440,12 @@ impl PumpFunTrader {
         self.token_account_rent = self
             .rpc
             .get_minimum_balance_for_rent_exemption(self.token_account_space as usize)
+            .await
             .context("Failed to get rent for token account")?;
         self.token_2022_account_rent = self
             .rpc
             .get_minimum_balance_for_rent_exemption(self.token_2022_account_space as usize)
+            .await
             .context("Failed to get rent for token-2022 account")?;
 
         // 3. Compute budget instructions — built once, cloned per tx
@@ -350,8 +478,14 @@ impl PumpFunTrader {
         {
             let mut slots = self.nonce_slots.lock().await;
             for &pubkey in &self.nonce_pubkeys {
-                let hash = self.fetch_nonce_hash_sync(&pubkey)?;
-                slots.insert(pubkey, NonceSlot { cached_hash: Some(hash), in_use: false });
+                let hash = self.fetch_nonce_hash_async(&pubkey).await?;
+                slots.insert(
+                    pubkey,
+                    NonceSlot {
+                        cached_hash: Some(hash),
+                        in_use: false,
+                    },
+                );
             }
         }
         info!(
@@ -360,7 +494,10 @@ impl PumpFunTrader {
         );
 
         // 7. Pre-build buy seed pools for both token programs
-        info!("🌱 Pre-building buy seed pools (target={})", self.config.buy_seed_pool_size);
+        info!(
+            "🌱 Pre-building buy seed pools (target={})",
+            self.config.buy_seed_pool_size
+        );
         self.fill_buy_pool(TOKEN_PROGRAM_ID).await?;
         self.fill_buy_pool(TOKEN_2022_PROGRAM_ID).await?;
         info!("✅ Buy seed pools ready");
@@ -387,18 +524,15 @@ impl PumpFunTrader {
         let buy_lamports = (sol_amount * LAMPORTS_PER_SOL as f64) as u64;
         let keypair = &self.config.keypair;
 
-        // ── Acquire nonce (non-blocking hot path) ──────────────────────────
         let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
 
         let result: Result<bool> = async {
             let global = self.global_account.as_ref().context("Not initialized")?;
 
-            // Parse addresses
             let mint = Pubkey::from_str(token_mint)?;
             let creator_pubkey = Pubkey::from_str(creator)?;
             let token_program = Pubkey::from_str(token_program_id)?;
 
-            // Derive PDAs
             let (bonding_curve, _) = Pubkey::find_program_address(
                 &[b"bonding-curve", mint.as_ref()],
                 &self.pump_program,
@@ -407,16 +541,13 @@ impl PumpFunTrader {
                 &[b"bonding-curve-v2", mint.as_ref()],
                 &self.pump_program,
             );
-            let (assoc_bonding_curve, _) = Pubkey::find_program_address(
-                &[bonding_curve.as_ref(), token_program.as_ref(), mint.as_ref()],
-                &self.assoc_token_program,
-            );
+            let assoc_bonding_curve =
+                get_associated_token_address_with_program_id(&bonding_curve, &mint, &token_program);
             let (creator_vault, _) = Pubkey::find_program_address(
                 &[b"creator-vault", creator_pubkey.as_ref()],
                 &self.pump_program,
             );
 
-            // Cache PDAs immediately — sell needs them
             self.token_pdas.lock().await.insert(
                 token_mint.to_string(),
                 TokenPDAs {
@@ -425,40 +556,61 @@ impl PumpFunTrader {
                     bonding_curve_v2,
                     associated_bonding_curve: assoc_bonding_curve,
                     creator_vault,
+                    cashback_enabled: false,
                 },
             );
 
-            // ── Buy template from pool (zero alloc on hot path) ────────────
-            let template = self.acquire_buy_template(token_program_id).await?;
-            let user_token_account = template.user_token_account;
+            // Check if ATA exists
+            let ata = get_associated_token_address_with_program_id(
+                &keypair.pubkey(),
+                &mint,
+                &token_program,
+            );
+            let ata_exists = self.rpc.get_account(&ata).await.is_ok();
 
-            // Cache user token account for sell
+            // FIX: acquire template ONCE, use same address for both create ix and buy ix
+            let (user_token_account, template_opt) = if ata_exists {
+                (ata, None)
+            } else {
+                let template = self.acquire_buy_template(token_program_id).await?;
+                let account = template.user_token_account;
+                (account, Some(template))
+            };
+
+            // Cache for sell
             self.user_token_accounts
                 .lock()
                 .await
                 .insert(token_mint.to_string(), user_token_account);
 
-            // ── Assemble instructions ───────────────────────────────────────
             let mut ixs = Vec::with_capacity(6);
             ixs.extend_from_slice(&self.compute_budget_ixs);
-            ixs.push(template.create_with_seed_ix);
 
-            // InitializeAccount3
-            let init_ix = if token_program_id == TOKEN_PROGRAM_ID {
-                spl_token::instruction::initialize_account3(
-                    &token_program, &user_token_account, &mint, &keypair.pubkey(),
-                )?
-            } else {
-                spl_token_2022::instruction::initialize_account3(
-                    &token_program, &user_token_account, &mint, &keypair.pubkey(),
-                )?
-            };
-            ixs.push(init_ix);
+            if let Some(template) = template_opt {
+                // FIX: use the same template we already acquired above
+                ixs.push(template.create_with_seed_ix);
 
-            // Buy_exact_sol_in
+                let init_ix = if token_program_id == TOKEN_PROGRAM_ID {
+                    spl_token::instruction::initialize_account3(
+                        &token_program,
+                        &user_token_account,
+                        &mint,
+                        &keypair.pubkey(),
+                    )?
+                } else {
+                    spl_token_2022::instruction::initialize_account3(
+                        &token_program,
+                        &user_token_account,
+                        &mint,
+                        &keypair.pubkey(),
+                    )?
+                };
+                ixs.push(init_ix);
+            }
+
             let mut buy_data = vec![0x38, 0xfc, 0x74, 0x08, 0x9e, 0xdf, 0xcd, 0x5f];
             buy_data.extend_from_slice(&buy_lamports.to_le_bytes());
-            buy_data.extend_from_slice(&1u64.to_le_bytes()); // min_token_amount = 1
+            buy_data.extend_from_slice(&1u64.to_le_bytes());
             ixs.push(Instruction {
                 program_id: self.pump_program,
                 accounts: vec![
@@ -479,42 +631,40 @@ impl PumpFunTrader {
                     AccountMeta::new_readonly(global.fee_config, false),
                     AccountMeta::new_readonly(self.fee_program, false),
                     AccountMeta::new_readonly(bonding_curve_v2, false),
-                    AccountMeta::new(self.upgrade_fee_recipient, false), // April 28 upgrade
+                    AccountMeta::new(self.upgrade_fee_recipient, false),
                 ],
                 data: buy_data,
             });
 
-            // Jito tip (pre-built, just clone the ix)
             if let Some(tip) = self.jito_tip_ix.lock().await.clone() {
                 ixs.push(tip);
             }
 
-            // ── Sign & send ─────────────────────────────────────────────────
             let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, keypair)?;
             let sig = self.send_transaction(&tx).await?;
-
             info!(
                 "📤 Buy sent — sig: {} | SOL: {} | {}ms",
-                sig, sol_amount, t0.elapsed().as_millis()
+                sig,
+                sol_amount,
+                t0.elapsed().as_millis()
             );
 
-            // ── Confirm ─────────────────────────────────────────────────────
             self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES).await?;
-
-            info!("✅ Buy confirmed — sig: {} | {}ms", sig, t0.elapsed().as_millis());
+            info!(
+                "✅ Buy confirmed — sig: {} | {}ms",
+                sig,
+                t0.elapsed().as_millis()
+            );
             Ok(true)
         }
         .await;
 
-        // ── Always: release nonce, refill pool, prebuild next template ──────
         self.schedule_nonce_refresh(nonce_pubkey);
         self.replenish_pool_async(token_program_id);
-        // Eagerly prebuild ONE more template in background (like file 2)
         self.prebuild_one_template_async(token_program_id);
 
         result
     }
-
     // -----------------------------------------------------------------------
     // Sell  (with retry loop)
     // -----------------------------------------------------------------------
@@ -525,10 +675,74 @@ impl PumpFunTrader {
         token_amount: u64,
         creator_override: Option<&str>,
         is_cashback: bool,
+        token_account_override: Option<&str>,
     ) -> Result<bool> {
         let mut last_err: Option<anyhow::Error> = None;
 
         for attempt in 0..MAX_SELL_ATTEMPTS {
+            // Ensure PDAs are cached
+            if !self.token_pdas.lock().await.contains_key(token_mint) {
+                if let Err(e) = self.get_creator_from_mint_pda(token_mint).await {
+                    last_err = Some(e);
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
+            }
+
+            // Ensure user token account is cached
+            // FIX: fallback chain — override → cache → on-chain lookup
+            {
+                let cache = self.user_token_accounts.lock().await;
+                if !cache.contains_key(token_mint) {
+                    let pk = if let Some(token_account) = token_account_override {
+                        // Use provided override
+                        let pk = match Pubkey::from_str(token_account) {
+                            Ok(pk) => pk,
+                            Err(e) => {
+                                last_err =
+                                    Some(anyhow::anyhow!("Invalid token_account_override: {e}"));
+                                continue;
+                            }
+                        };
+                        drop(cache); // release lock before re-acquiring for insert
+                        pk
+                    } else {
+                        // FIX: look up actual on-chain account, don't derive ATA
+                        drop(cache); // release lock before async call
+                        let holdings = match self.get_all_token_accounts().await {
+                            Ok(h) => h,
+                            Err(e) => {
+                                last_err = Some(e);
+                                tokio::time::sleep(Duration::from_millis(50)).await;
+                                continue;
+                            }
+                        };
+                        match holdings.iter().find(|h| h.mint == token_mint) {
+                            Some(h) => match Pubkey::from_str(&h.token_account) {
+                                Ok(pk) => pk,
+                                Err(e) => {
+                                    last_err =
+                                        Some(anyhow::anyhow!("Invalid token account pubkey: {e}"));
+                                    continue;
+                                }
+                            },
+                            None => {
+                                last_err = Some(anyhow::anyhow!(
+                                    "No token account found for mint {}",
+                                    token_mint
+                                ));
+                                tokio::time::sleep(Duration::from_millis(50)).await;
+                                continue;
+                            }
+                        }
+                    };
+                    self.user_token_accounts
+                        .lock()
+                        .await
+                        .insert(token_mint.to_string(), pk);
+                }
+            }
+
             let (nonce_pubkey, nonce_hash) = match self.acquire_nonce().await {
                 Ok(v) => v,
                 Err(e) => {
@@ -540,12 +754,21 @@ impl PumpFunTrader {
 
             info!(
                 "🔁 Sell attempt {}/{} — token: {} nonce: {}",
-                attempt + 1, MAX_SELL_ATTEMPTS, token_mint, nonce_pubkey
+                attempt + 1,
+                MAX_SELL_ATTEMPTS,
+                token_mint,
+                nonce_pubkey
             );
 
             let res = self
-                .execute_sell(token_mint, token_amount, creator_override,
-                              is_cashback, &nonce_pubkey, nonce_hash)
+                .execute_sell(
+                    token_mint,
+                    token_amount,
+                    creator_override,
+                    is_cashback,
+                    &nonce_pubkey,
+                    nonce_hash,
+                )
                 .await;
 
             self.schedule_nonce_refresh(nonce_pubkey);
@@ -568,11 +791,9 @@ impl PumpFunTrader {
             }
         }
 
-        Err(last_err.unwrap_or_else(|| {
-            anyhow::anyhow!("Sell failed after {} attempts", MAX_SELL_ATTEMPTS)
-        }))
+        Err(last_err
+            .unwrap_or_else(|| anyhow::anyhow!("Sell failed after {} attempts", MAX_SELL_ATTEMPTS)))
     }
-
     // -----------------------------------------------------------------------
     // Sell inner
     // -----------------------------------------------------------------------
@@ -609,7 +830,10 @@ impl PumpFunTrader {
                 &self.pump_program,
             );
             if pdas.creator_vault != vault {
-                info!("🔄 Creator vault updated: {} → {}", pdas.creator_vault, vault);
+                info!(
+                    "🔄 Creator vault updated: {} → {}",
+                    pdas.creator_vault, vault
+                );
                 pdas.creator_vault = vault;
             }
         }
@@ -622,7 +846,10 @@ impl PumpFunTrader {
             .get(token_mint)
             .copied()
             .context("User token account not cached — buy must precede sell")?;
-
+        warn!(
+            user_token_account = user_token_account.to_string(),
+            "=== Using cached user token account for sell"
+        );
         // ── Assemble instructions ───────────────────────────────────────────
         let mut ixs = Vec::with_capacity(5);
         ixs.extend_from_slice(&self.compute_budget_ixs);
@@ -635,7 +862,7 @@ impl PumpFunTrader {
         let mut accounts = vec![
             AccountMeta::new_readonly(global.global_pda, false),
             AccountMeta::new(global.fee_recipient, false),
-            AccountMeta::new(mint, false),
+            AccountMeta::new_readonly(mint, false),
             AccountMeta::new(pdas.bonding_curve, false),
             AccountMeta::new(pdas.associated_bonding_curve, false),
             AccountMeta::new(user_token_account, false),
@@ -649,12 +876,11 @@ impl PumpFunTrader {
             AccountMeta::new_readonly(self.fee_program, false),
         ];
 
-        // Cashback requires the user_volume_accumulator account
-        if is_cashback {
+        if pdas.cashback_enabled {
             accounts.push(AccountMeta::new(global.user_volume_accumulator, false));
         }
 
-        accounts.push(AccountMeta::new(pdas.bonding_curve_v2, false));
+        accounts.push(AccountMeta::new_readonly(pdas.bonding_curve_v2, false));
         accounts.push(AccountMeta::new(self.upgrade_fee_recipient, false));
 
         ixs.push(Instruction {
@@ -674,12 +900,18 @@ impl PumpFunTrader {
 
         info!(
             "📤 Sell sent — sig: {} | amount: {} | {}ms",
-            sig, token_amount, t0.elapsed().as_millis()
+            sig,
+            token_amount,
+            t0.elapsed().as_millis()
         );
 
         self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES).await?;
 
-        info!("✅ Sell confirmed — sig: {} | {}ms", sig, t0.elapsed().as_millis());
+        info!(
+            "✅ Sell confirmed — sig: {} | {}ms",
+            sig,
+            t0.elapsed().as_millis()
+        );
         Ok(true)
     }
 
@@ -749,7 +981,7 @@ impl PumpFunTrader {
         for i in 0..max_retries {
             tokio::time::sleep(Duration::from_millis(CONFIRM_POLL_MS)).await;
 
-            match self.rpc.get_signature_status(&sig)? {
+            match self.rpc.get_signature_status(&sig).await? {
                 Some(Ok(())) => return Ok(()),
                 Some(Err(e)) => anyhow::bail!("Transaction failed on-chain: {:?}", e),
                 None => {
@@ -782,14 +1014,17 @@ impl PumpFunTrader {
             if raw.is_empty() {
                 anyhow::bail!("Nonce account string must not be empty");
             }
-            let pk = Pubkey::from_str(raw)
-                .with_context(|| format!("Invalid nonce pubkey: {}", raw))?;
+            let pk =
+                Pubkey::from_str(raw).with_context(|| format!("Invalid nonce pubkey: {}", raw))?;
             if seen.insert(pk) {
                 self.nonce_pubkeys.push(pk);
             }
         }
 
-        info!("✅ {} unique nonce account(s) configured", self.nonce_pubkeys.len());
+        info!(
+            "✅ {} unique nonce account(s) configured",
+            self.nonce_pubkeys.len()
+        );
         Ok(())
     }
 
@@ -803,7 +1038,8 @@ impl PumpFunTrader {
 
         for _ in 0..NONCE_MAX_WAIT_ITERS {
             let mut slots = self.nonce_slots.lock().await;
-            let start = self.nonce_cursor.fetch_add(1, Ordering::Relaxed) % self.nonce_pubkeys.len();
+            let start =
+                self.nonce_cursor.fetch_add(1, Ordering::Relaxed) % self.nonce_pubkeys.len();
 
             for offset in 0..self.nonce_pubkeys.len() {
                 let pk = self.nonce_pubkeys[(start + offset) % self.nonce_pubkeys.len()];
@@ -843,27 +1079,24 @@ impl PumpFunTrader {
         let slots = Arc::clone(&self.nonce_slots);
 
         tokio::spawn(async move {
-            let result = tokio::task::spawn_blocking(move || -> Result<Hash> {
+            let result: anyhow::Result<Hash> = async {
                 let account = rpc
                     .get_account(&nonce_pubkey)
+                    .await
                     .with_context(|| format!("get_account failed for {}", nonce_pubkey))?;
                 match nonce_utils::state_from_account(&account)? {
                     State::Initialized(data) => Ok(data.blockhash()),
                     _ => anyhow::bail!("Nonce account {} not initialized", nonce_pubkey),
                 }
-            })
+            }
             .await;
 
             let mut guard = slots.lock().await;
             if let Some(slot) = guard.get_mut(&nonce_pubkey) {
                 match result {
-                    Ok(Ok(hash)) => slot.cached_hash = Some(hash),
-                    Ok(Err(e)) => {
-                        warn!("⚠️  Failed to refresh nonce {}: {}", nonce_pubkey, e);
-                        slot.cached_hash = None;
-                    }
+                    Ok(hash) => slot.cached_hash = Some(hash),
                     Err(e) => {
-                        warn!("⚠️  Nonce refresh task panicked for {}: {}", nonce_pubkey, e);
+                        warn!("⚠️  Failed to refresh nonce {}: {}", nonce_pubkey, e);
                         slot.cached_hash = None;
                     }
                 }
@@ -872,10 +1105,11 @@ impl PumpFunTrader {
         });
     }
 
-    fn fetch_nonce_hash_sync(&self, pubkey: &Pubkey) -> Result<Hash> {
+    pub async fn fetch_nonce_hash_async(&self, pubkey: &Pubkey) -> Result<Hash> {
         let account = self
             .rpc
             .get_account(pubkey)
+            .await
             .with_context(|| format!("Failed to fetch nonce account {}", pubkey))?;
         match nonce_utils::state_from_account(&account)? {
             State::Initialized(data) => Ok(data.blockhash()),
@@ -929,7 +1163,10 @@ impl PumpFunTrader {
             &program_id,
         );
 
-        Ok(BuyTemplate { create_with_seed_ix: ix, user_token_account })
+        Ok(BuyTemplate {
+            create_with_seed_ix: ix,
+            user_token_account,
+        })
     }
 
     async fn fill_buy_pool(&self, token_program_id: &str) -> Result<()> {
@@ -1012,7 +1249,10 @@ impl PumpFunTrader {
                 space,
                 &program_id,
             );
-            pool.lock().await.push(BuyTemplate { create_with_seed_ix: ix, user_token_account });
+            pool.lock().await.push(BuyTemplate {
+                create_with_seed_ix: ix,
+                user_token_account,
+            });
         });
     }
 
@@ -1076,22 +1316,20 @@ impl PumpFunTrader {
             let account = self
                 .rpc
                 .get_account(&global_pda)
+                .await
                 .context("Failed to fetch pump global account")?;
             if account.data.len() < 73 {
                 anyhow::bail!("Global account data too short");
             }
-            Pubkey::try_from(&account.data[41..73])
-                .context("Failed to parse fee_recipient")?
+            Pubkey::try_from(&account.data[41..73]).context("Failed to parse fee_recipient")?
         };
 
         let (global_volume_accumulator, _) =
             Pubkey::find_program_address(&[b"global_volume_accumulator"], &pump);
 
         let wallet = self.config.keypair.pubkey();
-        let (user_volume_accumulator, _) = Pubkey::find_program_address(
-            &[b"user_volume_accumulator", wallet.as_ref()],
-            &pump,
-        );
+        let (user_volume_accumulator, _) =
+            Pubkey::find_program_address(&[b"user_volume_accumulator", wallet.as_ref()], &pump);
 
         let fee_prog = self.fee_program;
         let (fee_config, _) =

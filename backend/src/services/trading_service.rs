@@ -65,83 +65,21 @@ impl TradingService {
         token_amount: u64,
         creator_override: Option<&str>,
         is_cashback: bool,
+        token_account_override: Option<&str>,
     ) -> Result<bool> {
         self.trader
-            .sell_token(token_mint, token_amount, creator_override, is_cashback)
+            .sell_token(token_mint, token_amount, creator_override, is_cashback, token_account_override)
             .await
     }
 
     /// Return all non-zero token accounts held by the trader's wallet.
-    /// Uses raw JSON-RPC via reqwest to avoid extra Solana SDK dependencies.
     pub async fn get_all_token_accounts(&self) -> Result<Vec<WalletHolding>> {
-        use crate::config::constants::{TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID};
-
-        let wallet = self.wallet_pubkey();
-        let rpc_url = self.trader.rpc_url().to_string();
-        let client = reqwest::Client::new();
-        let mut holdings: Vec<WalletHolding> = Vec::new();
-
-        for prog in [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID] {
-            let body = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "getTokenAccountsByOwner",
-                "params": [
-                    wallet,
-                    { "programId": prog },
-                    { "encoding": "jsonParsed" }
-                ]
-            });
-
-            let resp: serde_json::Value = client
-                .post(&rpc_url)
-                .json(&body)
-                .send()
-                .await?
-                .json()
-                .await?;
-
-            let Some(accounts) = resp["result"]["value"].as_array() else { continue };
-
-            for account in accounts {
-                let info = &account["account"]["data"]["parsed"]["info"];
-                let mint = match info["mint"].as_str() {
-                    Some(m) if !m.is_empty() => m.to_string(),
-                    _ => continue,
-                };
-                let ta = &info["tokenAmount"];
-                let amount: u64 = ta["amount"].as_str().unwrap_or("0").parse().unwrap_or(0);
-                if amount == 0 { continue; }
-                let ui_amount = ta["uiAmount"].as_f64().unwrap_or(0.0);
-                let decimals = ta["decimals"].as_u64().unwrap_or(0) as u8;
-                let token_account = account["pubkey"].as_str().unwrap_or("").to_string();
-
-                holdings.push(WalletHolding {
-                    mint,
-                    amount,
-                    ui_amount,
-                    decimals,
-                    token_account,
-                    token_program_id: prog.to_string(),
-                });
-            }
-        }
-
-        holdings.sort_by(|a, b| {
-            b.ui_amount.partial_cmp(&a.ui_amount).unwrap_or(std::cmp::Ordering::Equal)
-        });
-        Ok(holdings)
+        self.trader.get_all_token_accounts().await
     }
 
     /// Query the on-chain SPL token balance for a wallet + mint pair.
     /// Runs the blocking RPC call on a thread-pool thread.
     pub async fn get_token_balance(&self, wallet: &str, mint: &str) -> Result<TokenBalance> {
-        let trader = self.trader.clone();
-        let wallet = wallet.to_string();
-        let mint = mint.to_string();
-        tokio::task::spawn_blocking(move || {
-            trader.get_token_balance_blocking(&wallet, &mint)
-        })
-        .await?
+        self.trader.get_token_balance(wallet, mint).await
     }
 }

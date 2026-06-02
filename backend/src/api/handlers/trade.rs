@@ -3,9 +3,11 @@ use std::sync::Arc;
 
 use actix_web::{web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::services::TradingService;
 use crate::state::app_state::AppState;
+
 
 #[derive(Deserialize)]
 pub struct BuyRequest {
@@ -18,6 +20,7 @@ pub struct BuyRequest {
 pub struct SellRequest {
     pub mint: String,
     pub token_amount: u64,
+    pub token_account: Option<String>,
 }
 
 /// POST /api/solana/wallet/buy
@@ -25,18 +28,24 @@ pub async fn manual_buy(
     app_state: web::Data<Arc<AppState>>,
     body: web::Json<BuyRequest>,
 ) -> impl Responder {
-    let rpc_url = app_state.trader.rpc_url().to_string();
-    let creator = match fetch_creator_from_helius(&rpc_url, &body.mint).await {
+    let creator = match app_state.trader.get_creator_from_mint_pda(&body.mint).await {
         Ok(c) => c,
         Err(e) => {
-            tracing::warn!("manual_buy: getAsset failed for {}: {e}", body.mint);
+            tracing::warn!("manual_buy: get_creator_from_mint_pda failed for {}: {e}", body.mint);
             return HttpResponse::BadRequest()
                 .json(serde_json::json!({ "error": format!("Could not resolve creator: {e}") }));
         }
     };
 
     let trading = TradingService::new(app_state.trader.clone());
-    match trading.buy_token(&body.mint, &creator, &body.token_program_id, body.sol_amount).await {
+    let mint = body.mint.clone();
+    let creator = creator.clone();
+    let token_program_id = body.token_program_id.clone();
+    let sol_amount = body.sol_amount;
+    let buy_result = trading
+        .buy_token(&mint, &creator, &token_program_id, sol_amount)
+        .await;
+    match buy_result {
         Ok(success) => HttpResponse::Ok().json(serde_json::json!({ "success": success })),
         Err(e) => {
             tracing::warn!("manual_buy failed mint={}: {e}", body.mint);
@@ -45,58 +54,18 @@ pub async fn manual_buy(
     }
 }
 
-/// Calls Helius DAS `getAsset` and returns the first authority address as the creator.
-/// Falls back to the first verified creator if no authority is found.
-async fn fetch_creator_from_helius(rpc_url: &str, mint: &str) -> anyhow::Result<String> {
-    let body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": "1",
-        "method": "getAsset",
-        "params": { "id": mint }
-    });
-
-    let resp: serde_json::Value = reqwest::Client::new()
-        .post(rpc_url)
-        .json(&body)
-        .send()
-        .await?
-        .json()
-        .await?;
-
-    let result = &resp["result"];
-
-    // Prefer authorities — most reliable for pump.fun tokens
-    if let Some(auth) = result["authorities"].as_array().and_then(|a| a.first()) {
-        if let Some(addr) = auth["address"].as_str() {
-            return Ok(addr.to_owned());
-        }
-    }
-
-    // Fall back to first verified creator
-    if let Some(creators) = result["creators"].as_array() {
-        for creator in creators {
-            if creator["verified"].as_bool().unwrap_or(false) {
-                if let Some(addr) = creator["address"].as_str() {
-                    return Ok(addr.to_owned());
-                }
-            }
-        }
-        // Last resort: any creator
-        if let Some(addr) = creators.first().and_then(|c| c["address"].as_str()) {
-            return Ok(addr.to_owned());
-        }
-    }
-
-    anyhow::bail!("no authority or creator found in getAsset response")
-}
-
 /// POST /api/solana/wallet/sell
 pub async fn manual_sell(
     app_state: web::Data<Arc<AppState>>,
     body: web::Json<SellRequest>,
 ) -> impl Responder {
     let trading = TradingService::new(app_state.trader.clone());
-    match trading.sell_token(&body.mint, body.token_amount, None, false).await {
+    let token_account_override = body.token_account.as_deref();
+    let sell_amount = (body.token_amount * 90 / 100) as u64; // Sell 99% to avoid dust issues
+    match trading
+        .sell_token(&body.mint, sell_amount, None, false, token_account_override)
+        .await
+    {
         Ok(success) => HttpResponse::Ok().json(serde_json::json!({ "success": success })),
         Err(e) => {
             tracing::warn!("manual_sell failed mint={}: {e}", body.mint);
@@ -133,9 +102,7 @@ struct EnrichedWalletHolding {
 ///
 /// Returns all non-zero token accounts held by the trader's wallet,
 /// enriched with symbol (from token cache) and current USD price (Jupiter).
-pub async fn get_wallet_tokens(
-    app_state: web::Data<Arc<AppState>>,
-) -> impl Responder {
+pub async fn get_wallet_tokens(app_state: web::Data<Arc<AppState>>) -> impl Responder {
     let trading = TradingService::new(app_state.trader.clone());
     let holdings = match trading.get_all_token_accounts().await {
         Ok(h) => h,
@@ -202,12 +169,15 @@ async fn fetch_jupiter_data(mints: &[String]) -> anyhow::Result<HashMap<String, 
     let mut result = HashMap::new();
     if let Some(data) = resp.as_object() {
         for (mint, entry) in data {
-            result.insert(mint.clone(), JupiterEntry {
-                price_usd: entry["usdPrice"].as_f64(),
-                liquidity: entry["liquidity"].as_f64(),
-                price_change_24h: entry["priceChange24h"].as_f64(),
-                token_created_at: entry["createdAt"].as_str().map(str::to_owned),
-            });
+            result.insert(
+                mint.clone(),
+                JupiterEntry {
+                    price_usd: entry["usdPrice"].as_f64(),
+                    liquidity: entry["liquidity"].as_f64(),
+                    price_change_24h: entry["priceChange24h"].as_f64(),
+                    token_created_at: entry["createdAt"].as_str().map(str::to_owned),
+                },
+            );
         }
     }
     Ok(result)

@@ -500,6 +500,7 @@ pub struct BuyTokenRequest {
 pub struct SellTokenRequest {
     pub mint: String,
     pub token_amount: u64,
+    pub token_account: String,
 }
 
 pub async fn trade_buy(req: &BuyTokenRequest) -> Result<bool, String> {
