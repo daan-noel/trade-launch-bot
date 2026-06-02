@@ -30,6 +30,8 @@ pub struct Token {
     pub cu_price: Option<u64>,
     /// Whether this token was created in Pump.mayhem mode.
     pub is_mayhem_mode: bool,
+    /// Whether cashback was enabled at token creation (create_v2 only).
+    pub is_cashback_enabled: bool,
     /// Instruction labels from the create transaction.
     pub instruction_labels: Value,
     /// Transaction signature of the creation instruction.
@@ -51,6 +53,7 @@ impl Token {
         cu_limit: Option<u64>,
         cu_price: Option<u64>,
         is_mayhem_mode: bool,
+        is_cashback_enabled: bool,
         instruction_labels: Value,
         creation_tx_signature: String,
         created_at: DateTime<Utc>,
@@ -69,6 +72,7 @@ impl Token {
             cu_limit,
             cu_price,
             is_mayhem_mode,
+            is_cashback_enabled,
             instruction_labels,
             creation_tx_signature,
             created_at,

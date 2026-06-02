@@ -357,5 +357,14 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       sortValue: (r) => (r.is_mayhem_mode ? 1 : 0),
       searchValue: (r) => String(r.is_mayhem_mode),
     },
+    {
+      key: 'cashback',
+      label: 'Cashback',
+      width: '72px',
+      sortable: true,
+      render: (r) => (r.is_cashback_enabled ? '✓' : ''),
+      sortValue: (r) => (r.is_cashback_enabled ? 1 : 0),
+      searchValue: (r) => String(r.is_cashback_enabled),
+    },
   ];
 }

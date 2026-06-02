@@ -28,6 +28,7 @@ export interface TokenRecord {
   instruction_labels: unknown;
   is_migrated: boolean;
   is_mayhem_mode: boolean;
+  is_cashback_enabled: boolean;
   age: number;
   created_at: string;
   create_tx_address: string;
@@ -138,6 +139,7 @@ export interface TokenDetailRecord {
   cu_price: number | null;
   instruction_labels: unknown;
   is_mayhem_mode: boolean;
+  is_cashback_enabled: boolean;
   create_tx_address: string;
   created_at: string;
   trade_count: number | null;

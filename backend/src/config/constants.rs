@@ -76,6 +76,9 @@ pub const BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR: [u8; 8] =
 /// "Program data:" log entries that start with these 8 bytes carry a full
 /// RawTradeEvent (Borsh-encoded), including virtual/real reserves.
 pub const TRADE_EVENT_DISCRIMINATOR: [u8; 8] = [0xbd, 0xdb, 0x7f, 0xd3, 0x4e, 0xe6, 0x61, 0xee];
+/// CreateEvent discriminator — emitted on every token creation via `emit!`.
+pub const CREATE_EVENT_DISCRIMINATOR: [u8; 8] =
+    [0x1b, 0x72, 0xa9, 0x4d, 0xde, 0xeb, 0x63, 0x76];
 
 // ---------------------------------------------------------------------------
 // Human-readable program name lookup
