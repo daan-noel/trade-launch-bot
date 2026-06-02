@@ -1,0 +1,35 @@
+---
+description: Frontend React/Vite conventions — paths, stack, and tool discipline
+globs: frontend-react/**
+alwaysApply: false
+---
+
+# frontend-react — token-efficient
+
+Stay in `frontend-react/**`. Smallest correct diff. Monorepo + API map: `.cursor/rules/project.mdc`.
+
+## Skip
+`node_modules/`, `dist/`, `.vite/`, `.env*`, `dist/assets/*`, lock/media unless versions matter
+
+## Stack
+React 19 · Vite 8 · TS 6 · Tailwind 4 · react-router 7. Hooks/context only (no Redux).
+
+## Task → path
+- Routes/nav → `src/App.tsx`, `components/layout/Header.tsx`
+- Page → `src/pages/` (thin: fetch/stream + compose)
+- Columns → `*Columns.tsx` + `components/table/DataTable`
+- REST → `services/api.ts` only; types → `types/index.ts` (snake_case)
+- SSE → `services/sse.ts`, `hooks/useTradeStream.ts` (`trade_executed`)
+- SOL/USD → `usePriceDisplay`, `PriceUnitContext`, `utils/format.ts`
+- Feature UI → `components/{layout,table,ui,tokens,tpsl,transactions,wallet,analysis}/`
+
+Routes: `/` `/dashboard` `/tokens` `/transactions` `/analysis` `/wallet` `/strategies/tpsl` `/settings`
+Dev: `npm run dev` (:5173, proxies `/api` → :8080). `VITE_API_BASE` in `.env` only.
+
+## Rules
+`cn()` + `@theme` tokens; memo columns when price unit changes; localStorage try/catch.
+New backend endpoint: note route + JSON — don't edit `backend/` unless asked.
+
+## Tools
+Grep first; read >150 lines with limit/offset; no Task/subagent for single lookups.
+Done: `npm run build` here (not `cargo check` unless cross-stack). No commit/docs unless asked.

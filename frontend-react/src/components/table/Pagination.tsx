@@ -19,6 +19,32 @@ function buildPageButtons(current: number, total: number): number[] {
   return [1, 0, current - 1, current, current + 1, 0, total];
 }
 
+function ChevronIcon({ direction }: { direction: 'left' | 'right' }) {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 14 14"
+      fill="none"
+      aria-hidden
+      className={direction === 'right' ? 'rotate-180' : undefined}
+    >
+      <path
+        d="M8.5 10.5L5 7l3.5-3.5"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+const navBtn =
+  'inline-flex h-8 w-8 shrink-0 items-center justify-center text-text-dim transition-colors hover:bg-bg-hover hover:text-text disabled:pointer-events-none disabled:opacity-35';
+const pageBtn =
+  'inline-flex h-8 min-w-8 shrink-0 items-center justify-center px-1.5 text-[13px] font-medium tabular-nums transition-colors';
+
 export function Pagination({
   currentPage,
   totalPages,
@@ -29,67 +55,121 @@ export function Pagination({
   onPageSizeChange,
 }: PaginationProps) {
   const buttons = buildPageButtons(currentPage, totalPages);
+  const rangeStart = totalItems === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const rangeEnd = totalItems === 0 ? 0 : Math.min(currentPage * pageSize, totalItems);
 
   return (
-    <div className="my-3 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-primary/18 bg-[rgba(15,23,42,0.9)] px-4 py-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.03)]">
-      <span className="min-w-[120px] flex-1 font-mono text-xs text-text-mid">
-        Page {currentPage} of {totalPages} • {totalItems} total
-      </span>
-
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          disabled={currentPage <= 1}
-          onClick={() => onPageChange(currentPage - 1)}
-          className="h-[34px] min-w-[34px] rounded-full bg-[rgba(15,23,42,0.8)] font-bold text-text transition hover:-translate-y-px hover:bg-primary/20 hover:text-primary disabled:cursor-default disabled:opacity-45"
-        >
-          ‹
-        </button>
-        {buttons.map((page, i) =>
-          page === 0 ? (
-            <span key={`e-${i}`} className="px-1.5 text-sm text-text-mid">
-              ...
-            </span>
-          ) : (
-            <button
-              key={page}
-              type="button"
-              disabled={page === currentPage}
-              onClick={() => onPageChange(page)}
-              className={cn(
-                'h-[34px] min-w-[34px] rounded-full font-bold transition hover:-translate-y-px hover:bg-primary/20 hover:text-primary disabled:cursor-default',
-                page === currentPage
-                  ? 'bg-[linear-gradient(135deg,rgba(56,189,248,0.22),rgba(56,189,248,0.1))] text-primary shadow-[0_0_0_1px_rgba(56,189,248,0.18)]'
-                  : 'bg-[rgba(15,23,42,0.8)] text-text',
-              )}
-            >
-              {page}
-            </button>
-          ),
+    <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-bg-panel px-3 py-2.5">
+      <p className="min-w-0 flex-1 text-xs text-text-dim">
+        {totalItems === 0 ? (
+          'No results'
+        ) : (
+          <>
+            Showing{' '}
+            <span className="font-medium tabular-nums text-text">
+              {rangeStart}–{rangeEnd}
+            </span>{' '}
+            of{' '}
+            <span className="font-medium tabular-nums text-text">{totalItems}</span>
+            {totalPages > 1 && (
+              <span className="text-text-mid">
+                {' '}
+                · page {currentPage} of {totalPages}
+              </span>
+            )}
+          </>
         )}
-        <button
-          type="button"
-          disabled={currentPage >= totalPages}
-          onClick={() => onPageChange(currentPage + 1)}
-          className="h-[34px] min-w-[34px] rounded-full bg-[rgba(15,23,42,0.8)] font-bold text-text transition hover:-translate-y-px hover:bg-primary/20 hover:text-primary disabled:cursor-default disabled:opacity-45"
-        >
-          ›
-        </button>
-      </div>
+      </p>
 
-      <label className="flex items-center gap-2 rounded-full bg-white/4 px-3 py-2 text-xs text-text">
-        Show
-        <select
-          value={pageSize}
-          onChange={(e) => onPageSizeChange(Number(e.target.value))}
-          className="cursor-pointer rounded border border-primary bg-bg-panel px-2 py-1 text-xs font-medium text-text outline-none"
+      {totalPages > 1 && (
+        <nav
+          className="inline-flex items-center overflow-hidden rounded-md border border-border bg-bg-card"
+          aria-label="Pagination"
         >
-          {pageSizeOptions.map((size) => (
-            <option key={size} value={size}>
-              {size}
-            </option>
-          ))}
-        </select>
+          <button
+            type="button"
+            disabled={currentPage <= 1}
+            onClick={() => onPageChange(currentPage - 1)}
+            className={cn(navBtn, 'border-r border-border')}
+            aria-label="Previous page"
+          >
+            <ChevronIcon direction="left" />
+          </button>
+
+          {buttons.map((page, i) =>
+            page === 0 ? (
+              <span
+                key={`e-${i}`}
+                className="inline-flex h-8 w-7 items-center justify-center border-r border-border text-xs tracking-widest text-text-dim select-none"
+                aria-hidden
+              >
+                ···
+              </span>
+            ) : (
+              <button
+                key={page}
+                type="button"
+                onClick={() => onPageChange(page)}
+                aria-label={`Page ${page}`}
+                aria-current={page === currentPage ? 'page' : undefined}
+                className={cn(
+                  pageBtn,
+                  'border-r border-border last:border-r-0',
+                  page === currentPage
+                    ? 'bg-primary/15 text-primary'
+                    : 'text-text-dim hover:bg-bg-hover hover:text-text',
+                )}
+              >
+                {page}
+              </button>
+            ),
+          )}
+
+          <button
+            type="button"
+            disabled={currentPage >= totalPages}
+            onClick={() => onPageChange(currentPage + 1)}
+            className={navBtn}
+            aria-label="Next page"
+          >
+            <ChevronIcon direction="right" />
+          </button>
+        </nav>
+      )}
+
+      <label className="flex shrink-0 items-center gap-2 text-xs text-text-dim">
+        <span className="hidden sm:inline">Rows per page</span>
+        <span className="sm:hidden">Rows</span>
+        <span className="relative inline-flex">
+          <select
+            value={pageSize}
+            onChange={(e) => onPageSizeChange(Number(e.target.value))}
+            aria-label="Rows per page"
+            className="h-8 cursor-pointer appearance-none rounded-md border border-border bg-bg-card py-0 pr-7 pl-2.5 text-xs font-medium text-text transition-colors hover:border-white/20 focus:border-primary/40 focus:outline-none focus:ring-1 focus:ring-primary/25"
+          >
+            {pageSizeOptions.map((size) => (
+              <option key={size} value={size}>
+                {size}
+              </option>
+            ))}
+          </select>
+          <svg
+            className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 text-text-dim"
+            width="10"
+            height="10"
+            viewBox="0 0 10 10"
+            fill="none"
+            aria-hidden
+          >
+            <path
+              d="M2.5 4L5 6.5 7.5 4"
+              stroke="currentColor"
+              strokeWidth="1.25"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </span>
       </label>
     </div>
   );
