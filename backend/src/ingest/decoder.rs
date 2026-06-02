@@ -157,7 +157,7 @@ impl HeliusDecoder {
 
         // 3a. For each decoded TradeEvent: emit TradeExecuted.
         //     Covers Buy/Sell even when pump.fun is a nested CPI call.
-        for ev in &decoded_events {
+        for (leg_index, ev) in decoded_events.iter().enumerate() {
             let trade_type = if ev.is_buy {
                 TradeType::Buy
             } else {
@@ -183,6 +183,7 @@ impl HeliusDecoder {
                 TradeType::Sell => "Sell".to_string(),
             };
             trade.instruction_labels = labels_json.clone();
+            trade.leg_index = leg_index as u32;
 
             events.push(InternalEvent::TradeExecuted(TradeExecutedEvent {
                 trade,

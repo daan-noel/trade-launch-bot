@@ -4,13 +4,9 @@ use sqlx::PgPool;
 use tracing::info;
 
 use crate::{
-    state::{
-        creator_cache::{CreatorCache, CreatorState},
-        token_cache::{TokenCache, TokenState, RECENT_TRADES_WINDOW},
-    },
+    state::token_cache::{TokenCache, TokenState},
     storage::repositories::{
-        analysis_repo::AnalysisRepo, token_info_repo::TokenInfoRepo, token_repo::TokenRepo,
-        trade_repo::TradeRepo,
+        token_info_repo::TokenInfoRepo, token_repo::TokenRepo, trade_repo::TradeRepo,
     },
 };
 
@@ -20,8 +16,7 @@ use crate::{
 /// Strategy (3 queries total — no N+1):
 ///   1. Load all tokens.
 ///   2. Load per-token aggregates (count, volume, last_trade_at) in one GROUP BY.
-///   3. Load the most recent `RECENT_TRADES_WINDOW` trades per token using a
-///      window function, ordered oldest-first for correct VecDeque ordering.
+///   3. Load full trade history per token (oldest-first) in one query.
 pub async fn seed_token_cache(pool: &PgPool, token_cache: Arc<TokenCache>) -> anyhow::Result<()> {
     let token_repo = TokenRepo::new(pool.clone());
     let trade_repo = TradeRepo::new(pool.clone());
@@ -91,61 +86,15 @@ pub async fn seed_token_cache(pool: &PgPool, token_cache: Arc<TokenCache>) -> an
         }
     }
 
-    // 3. Recent trades per token — fill the sliding window
-    let recent_trades = trade_repo
-        .load_recent_per_token(RECENT_TRADES_WINDOW)
-        .await?;
-    for trade in recent_trades {
+    // 3. Full trade history per token
+    let all_trades = trade_repo.load_all_chronological().await?;
+    for trade in all_trades {
         if let Some(mut state) = token_cache.get_mut(&trade.mint_address) {
-            state.recent_trades.push_back(trade);
+            state.trades.push(trade);
         }
     }
 
     info!("Cache seed complete: {} tokens loaded from DB", total);
 
-    Ok(())
-}
-
-/// Populate `creator_cache` from the `creator_profiles` table so that
-/// historical creators are recognised immediately after a server restart.
-///
-/// Strategy (2 queries):
-///   1. Load all creator profiles → seed `CreatorState` with saved scores.
-///   2. Load all tokens → populate each creator's `created_tokens` list.
-///      (trade_history is not restored — it rebuilds from live events)
-pub async fn seed_creator_cache(
-    pool: &PgPool,
-    creator_cache: Arc<CreatorCache>,
-) -> anyhow::Result<()> {
-    let analysis_repo = AnalysisRepo::new(pool.clone());
-    let token_repo = TokenRepo::new(pool.clone());
-
-    // 1. Load all stored creator profiles
-    let (total, profiles) = analysis_repo.list_creator_profiles(i64::MAX, 0).await?;
-
-    if total == 0 {
-        info!("Creator cache seed: no profiles in DB — nothing to load");
-        return Ok(());
-    }
-
-    for profile in &profiles {
-        let mut cs = creator_cache
-            .entry(profile.wallet_address.clone())
-            .or_insert_with(|| CreatorState::new(profile.wallet_address.clone()));
-        cs.suspiciousness_score = profile.suspiciousness_score;
-    }
-
-    // 2. Populate created_tokens for each cached creator
-    let tokens = token_repo.find_all().await?;
-    for token in tokens {
-        if let Some(mut cs) = creator_cache.get_mut(&token.creator_wallet) {
-            cs.add_token(token.mint_address);
-        }
-    }
-
-    info!(
-        "Creator cache seed complete: {} creator profiles loaded from DB",
-        total
-    );
     Ok(())
 }

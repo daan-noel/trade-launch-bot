@@ -37,6 +37,8 @@ pub struct Settings {
     // --- Server ---
     pub host: String,
     pub port: u16,
+    pub http_enabled: bool,
+    pub http_workers: usize,
 }
 
 impl Settings {
@@ -62,6 +64,8 @@ impl Settings {
             database_url: required("DATABASE_URL")?,
             host: env_or("HOST", "127.0.0.1"),
             port: env_parse("PORT", 8081)?,
+            http_enabled: env_or("HTTP_ENABLED", "true").parse().unwrap_or(true),
+            http_workers: env_parse("HTTP_WORKERS", 2)?,
         })
     }
 }

@@ -1,5 +1,6 @@
 pub mod analysis;
 pub mod events;
+pub mod ingest;
 pub mod position;
 pub mod strategy_tpsl_rule;
 pub mod token;

@@ -102,23 +102,6 @@ impl StrategyTPSLRuleRepo {
         Ok(())
     }
 
-    /// Get all active TPSL rules.
-    pub async fn find_active(&self) -> anyhow::Result<Vec<StrategyTPSLRule>> {
-        let rows = sqlx::query_as::<_, StrategyTPSLRuleDbRow>(
-            r#"
-                 SELECT id, rule_name, p_initial_buy_sol, p_cu_limit, p_cu_price, p_max_sol_cost, p_spendable_sol_in, p_max_holding_tokens, p_total_max_trade_tokens, p_ix_labels,
-                     trade_mode, buy_amount, take_profit, stop_loss, tolerance_pct, is_active, created_at, updated_at
-            FROM strategy_TPSL_rules
-            WHERE is_active = TRUE
-            ORDER BY created_at DESC
-            "#,
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(rows.into_iter().map(StrategyTPSLRule::from).collect())
-    }
-
     /// Get all TPSL rules (active and inactive).
     pub async fn find_all(&self) -> anyhow::Result<Vec<StrategyTPSLRule>> {
         let rows = sqlx::query_as::<_, StrategyTPSLRuleDbRow>(

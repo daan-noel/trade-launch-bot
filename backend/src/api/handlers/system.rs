@@ -4,8 +4,7 @@ use actix_web::{web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use crate::services::price_service;
-use crate::state::app_state::AppState;
+use crate::state::{app_state::AppState, sol_price};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LiveModeResponse {
@@ -23,7 +22,7 @@ pub struct UpdateLiveModeRequest {
 }
 
 pub async fn get_sol_price(state: web::Data<Arc<AppState>>) -> impl Responder {
-    let latest = match price_service::fetch_latest_sol_price().await {
+    let latest = match sol_price::fetch_latest_sol_price().await {
         Ok(price) => {
             state.set_sol_price(Some(price));
             Some(price)

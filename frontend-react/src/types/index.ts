@@ -149,7 +149,7 @@ export interface TokenDetailRecord {
   ath_price: number | null;
   ath_timestamp: string | null;
   is_migrated: boolean;
-  unique_wallets_in_window: number | null;
+  unique_wallets: number | null;
   last_trade_at: string | null;
 }
 

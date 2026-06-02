@@ -243,7 +243,12 @@ pub async fn create_tpsl_rule(
     let repo = StrategyTPSLRuleRepo::new(app_state.db.clone());
 
     match repo.insert(&rule).await {
-        Ok(_) => HttpResponse::Created().json(RuleResponse::from(rule)),
+        Ok(_) => {
+            if let Err(e) = app_state.tpsl_cache.reload_rules(&app_state.db).await {
+                tracing::warn!("TPSL rule cache reload after create failed: {e}");
+            }
+            HttpResponse::Created().json(RuleResponse::from(rule))
+        }
         Err(e) => {
             tracing::error!("Failed to create TPSL rule: {e}");
             HttpResponse::InternalServerError()
@@ -318,7 +323,12 @@ pub async fn update_tpsl_rule(
             }
 
             match repo.update(&rule).await {
-                Ok(_) => HttpResponse::Ok().json(RuleResponse::from(rule)),
+                Ok(_) => {
+                    if let Err(e) = app_state.tpsl_cache.reload_rules(&app_state.db).await {
+                        tracing::warn!("TPSL rule cache reload after update failed: {e}");
+                    }
+                    HttpResponse::Ok().json(RuleResponse::from(rule))
+                }
                 Err(e) => {
                     tracing::error!("Failed to update TPSL rule {rule_id}: {e}");
                     HttpResponse::InternalServerError()
@@ -344,7 +354,12 @@ pub async fn delete_tpsl_rule(
     let repo = StrategyTPSLRuleRepo::new(app_state.db.clone());
 
     match repo.delete(rule_id).await {
-        Ok(_) => HttpResponse::NoContent().finish(),
+        Ok(_) => {
+            if let Err(e) = app_state.tpsl_cache.reload_rules(&app_state.db).await {
+                tracing::warn!("TPSL rule cache reload after delete failed: {e}");
+            }
+            HttpResponse::NoContent().finish()
+        }
         Err(e) => {
             tracing::error!("Failed to delete TPSL rule {rule_id}: {e}");
             HttpResponse::InternalServerError()

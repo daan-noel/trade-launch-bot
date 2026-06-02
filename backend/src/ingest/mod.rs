@@ -1,6 +1,8 @@
+pub mod db_writer;
 pub mod decoder;
-pub mod event_handler;
 pub mod helius_ws;
+pub mod pipeline;
 pub mod subscription;
 
-pub use event_handler::EventHandler;
+pub use db_writer::DbWriter;
+pub use pipeline::IngestPipeline;

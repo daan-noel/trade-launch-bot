@@ -197,13 +197,13 @@ impl PumpFunTrader {
     /// Uses raw JSON-RPC via reqwest to avoid extra Solana SDK dependencies.
     pub async fn get_all_token_accounts(
         &self,
-    ) -> anyhow::Result<Vec<crate::services::trading_service::WalletHolding>> {
+    ) -> anyhow::Result<Vec<crate::trader::WalletHolding>> {
         use crate::config::constants::{TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
 
         let wallet = self.wallet_pubkey();
         let rpc_url = self.rpc_url().to_string();
         let client = reqwest::Client::new();
-        let mut holdings: Vec<crate::services::trading_service::WalletHolding> = Vec::new();
+        let mut holdings: Vec<crate::trader::WalletHolding> = Vec::new();
 
         for prog in [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID] {
             let body = serde_json::json!({
@@ -244,7 +244,7 @@ impl PumpFunTrader {
                 let decimals = ta["decimals"].as_u64().unwrap_or(0) as u8;
                 let token_account = account["pubkey"].as_str().unwrap_or("").to_string();
 
-                holdings.push(crate::services::trading_service::WalletHolding {
+                holdings.push(crate::trader::WalletHolding {
                     mint,
                     amount,
                     ui_amount,
@@ -372,7 +372,7 @@ impl PumpFunTrader {
         &self,
         wallet: &str,
         mint: &str,
-    ) -> anyhow::Result<crate::services::trading_service::TokenBalance> {
+    ) -> anyhow::Result<crate::trader::TokenBalance> {
         // FIX: don't derive ATA — look up actual on-chain account
         // Check cache first
         let cached = self.user_token_accounts.lock().await.get(mint).copied();
@@ -385,7 +385,7 @@ impl PumpFunTrader {
                     Some(h) => Pubkey::from_str(&h.token_account)?,
                     None => {
                         // Truly not found
-                        return Ok(crate::services::trading_service::TokenBalance {
+                        return Ok(crate::trader::TokenBalance {
                             mint: mint.to_string(),
                             wallet: wallet.to_string(),
                             amount: 0,
@@ -407,7 +407,7 @@ impl PumpFunTrader {
                     .lock()
                     .await
                     .insert(mint.to_string(), token_account_pk);
-                Ok(crate::services::trading_service::TokenBalance {
+                Ok(crate::trader::TokenBalance {
                     mint: mint.to_string(),
                     wallet: wallet.to_string(),
                     amount,

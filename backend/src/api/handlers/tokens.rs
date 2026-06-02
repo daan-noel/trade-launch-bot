@@ -128,7 +128,7 @@ pub struct TokenDetail {
     pub ath_price: Option<f64>,
     pub ath_timestamp: Option<DateTime<Utc>>,
     pub is_migrated: bool,
-    pub unique_wallets_in_window: Option<usize>,
+    pub unique_wallets: Option<usize>,
     pub last_trade_at: Option<DateTime<Utc>>,
 }
 
@@ -163,7 +163,7 @@ impl From<&TokenState> for TokenDetail {
             ath_price: s.ath_price,
             ath_timestamp: s.ath_timestamp,
             is_migrated: s.is_migrated,
-            unique_wallets_in_window: Some(s.unique_wallets_in_window()),
+            unique_wallets: Some(s.unique_wallets()),
             last_trade_at: s.last_trade_at,
         }
     }
@@ -270,7 +270,7 @@ pub async fn get_token(state: web::Data<Arc<AppState>>, path: web::Path<String>)
                 "ath_price": null,
                 "ath_timestamp": null,
                 "is_migrated": false,
-                "unique_wallets_in_window": null,
+                "unique_wallets": null,
                 "last_trade_at": null,
                 "note": "token exists in DB but is not actively tracked this session"
             }))
@@ -290,8 +290,7 @@ pub async fn get_token(state: web::Data<Arc<AppState>>, path: web::Path<String>)
 
 /// `GET /api/tokens/:mint/trades?limit=50&offset=0`
 ///
-/// Returns the recent-trade window from cache (fast) when the token is tracked,
-/// otherwise queries the DB directly.
+/// Returns trades from cache (fast) when the token is tracked, otherwise queries the DB.
 pub async fn get_trades(
     state: web::Data<Arc<AppState>>,
     path: web::Path<String>,
@@ -299,13 +298,15 @@ pub async fn get_trades(
 ) -> impl Responder {
     let mint = path.into_inner();
     let limit = query.limit.max(1).min(200);
+    let offset = query.offset.max(0) as usize;
 
     // Try cache first
     if let Some(entry) = state.token_cache.get(&mint) {
         let trades: Vec<&Trade> = entry
-            .recent_trades
+            .trades
             .iter()
             .rev() // most recent first
+            .skip(offset)
             .take(limit as usize)
             .collect();
         return HttpResponse::Ok().json(trades);

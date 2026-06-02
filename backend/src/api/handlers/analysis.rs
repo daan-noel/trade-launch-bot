@@ -3,10 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::sync::Arc;
 
-use crate::{
-    models::trade::Trade, state::app_state::AppState,
-    storage::repositories::analysis_repo::AnalysisRepo,
-};
+use crate::{state::app_state::AppState, storage::repositories::analysis_repo::AnalysisRepo};
 
 // ---------------------------------------------------------------------------
 // Response types
@@ -23,15 +20,6 @@ pub struct AnalysisResultResponse {
 #[derive(Serialize)]
 pub struct CreatorResponse {
     pub wallet_address: String,
-    /// Tokens created this session (from in-memory cache)
-    pub live_created_tokens: Vec<String>,
-    /// Number of trades in the in-memory sliding window
-    pub live_trade_window_size: usize,
-    /// Current suspiciousness score from cache
-    pub live_suspiciousness_score: f64,
-    /// Trades in the creator's current sliding window (most recent N)
-    pub recent_trades: Vec<Trade>,
-    /// Persisted creator profile, if available
     pub persisted_profile: Option<PersistedCreatorProfile>,
 }
 
@@ -78,67 +66,36 @@ pub async fn get_token_analysis(
     }
 }
 
-/// `GET /api/creators/:wallet` — live creator state from cache + persisted profile.
+/// `GET /api/creators/:wallet` — persisted creator profile from DB.
 pub async fn get_creator(
     state: web::Data<Arc<AppState>>,
     path: web::Path<String>,
 ) -> impl Responder {
     let wallet = path.into_inner();
-
-    // Always check DB for a persisted profile
     let repo = AnalysisRepo::new(state.db.clone());
-    let persisted_profile = match repo.find_creator_profile(&wallet).await {
-        Ok(p) => p.map(|cp| PersistedCreatorProfile {
-            tokens_created: cp.tokens_created,
-            total_volume_sol: cp.total_volume_sol,
-            suspiciousness_score: cp.suspiciousness_score,
-            wash_trade_score: cp.wash_trade_score,
-            last_analyzed_at: cp.last_analyzed_at,
+
+    match repo.find_creator_profile(&wallet).await {
+        Ok(Some(cp)) => HttpResponse::Ok().json(CreatorResponse {
+            wallet_address: wallet,
+            persisted_profile: Some(PersistedCreatorProfile {
+                tokens_created: cp.tokens_created,
+                total_volume_sol: cp.total_volume_sol,
+                suspiciousness_score: cp.suspiciousness_score,
+                wash_trade_score: cp.wash_trade_score,
+                last_analyzed_at: cp.last_analyzed_at,
+            }),
         }),
+        Ok(None) => HttpResponse::NotFound().json(serde_json::json!({
+            "error": "creator not found",
+            "wallet": wallet
+        })),
         Err(e) => {
             tracing::error!("DB error fetching creator profile for {wallet}: {e}");
-            return HttpResponse::InternalServerError().json(serde_json::json!({
+            HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "database error"
-            }));
+            }))
         }
-    };
-
-    // Enrich with live data from cache if the creator is tracked this session
-    if let Some(creator_state) = state.creator_cache.get(&wallet) {
-        let recent_trades: Vec<Trade> = creator_state
-            .trade_history
-            .iter()
-            .rev()
-            .take(20)
-            .cloned()
-            .collect();
-
-        return HttpResponse::Ok().json(CreatorResponse {
-            wallet_address: wallet.clone(),
-            live_created_tokens: creator_state.created_tokens.clone(),
-            live_trade_window_size: creator_state.trade_history.len(),
-            live_suspiciousness_score: creator_state.suspiciousness_score,
-            recent_trades,
-            persisted_profile,
-        });
     }
-
-    // Creator not in cache — return whatever the DB has
-    if persisted_profile.is_some() {
-        return HttpResponse::Ok().json(CreatorResponse {
-            wallet_address: wallet,
-            live_created_tokens: vec![],
-            live_trade_window_size: 0,
-            live_suspiciousness_score: 0.0,
-            recent_trades: vec![],
-            persisted_profile,
-        });
-    }
-
-    HttpResponse::NotFound().json(serde_json::json!({
-        "error": "creator not found",
-        "wallet": wallet
-    }))
 }
 
 // ---------------------------------------------------------------------------

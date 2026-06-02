@@ -1,15 +1,12 @@
-mod analyzers;
 mod api;
 mod config;
 pub use config::constants as constants;
 mod ingest;
 mod models;
-mod services;
 mod state;
 mod storage;
 mod strategies;
 mod trader;
-mod utils;
 
 use anyhow::Context;
 use solana_sdk::signature::Keypair;
@@ -73,61 +70,59 @@ async fn main() -> anyhow::Result<()> {
 
     // In-memory caches (shared between services and future API handlers)
     let token_cache = Arc::new(state::token_cache::TokenCache::new());
-    let creator_cache = Arc::new(state::creator_cache::CreatorCache::new());
 
-    // Seed caches from DB so historical data is visible immediately
     storage::seed::seed_token_cache(&db, token_cache.clone()).await?;
-    storage::seed::seed_creator_cache(&db, creator_cache.clone()).await?;
 
-    // Internal event bus: one sender, many receivers (services, analyzers, API)
-    let (event_tx, _) = tokio::sync::broadcast::channel::<models::events::InternalEvent>(2048);
+    let (sse_tx, _) = tokio::sync::broadcast::channel::<models::ingest::SseEvent>(512);
 
-    // AppState — shared with API handlers via web::Data
     let (live_tx, live_rx) = tokio::sync::watch::channel(false);
     let (sol_price_tx, _sol_price_rx) = tokio::sync::watch::channel::<Option<f64>>(None);
     let sol_price = Arc::new(sol_price_tx);
+    let tpsl_cache = Arc::new(strategies::tpsl::TpslRuntimeCache::new());
+    tpsl_cache
+        .load_from_db(&db)
+        .await
+        .context("Failed to load TPSL runtime cache")?;
+
     let app_state = Arc::new(state::AppState::new(
         db.clone(),
         token_cache.clone(),
-        creator_cache.clone(),
-        event_tx.clone(),
+        sse_tx.clone(),
         live_tx.clone(),
         sol_price.clone(),
         trader.clone(),
+        tpsl_cache.clone(),
     ));
 
-    // Raw WS message channel: helius_ws → event_handler
+    let (db_tx, db_rx, strategy_tx, strategy_rx) = ingest::IngestPipeline::channel_pair();
+
     let (raw_tx, raw_rx) = tokio::sync::mpsc::channel::<String>(1024);
 
-    // Ingest: Helius WebSocket feed
     let ws_settings = Arc::new(settings.clone());
     let ws_task = tokio::spawn(ingest::helius_ws::run(ws_settings, raw_tx, live_rx));
 
-    // Ingest: decode + persist + broadcast
-    let event_handler = ingest::EventHandler::new(
+    let pipeline = ingest::IngestPipeline::new(
         settings.pump_program_id.clone(),
-        event_tx.clone(),
-        db.clone(),
+        token_cache.clone(),
+        db_tx,
+        strategy_tx,
+        sse_tx,
     );
-    let handler_task = tokio::spawn(event_handler.run(raw_rx));
+    let pipeline_task = tokio::spawn(pipeline.run(raw_rx));
 
-    // Service: token lifecycle — subscribes to the event bus
-    let token_service =
-        services::TokenService::new(db.clone(), token_cache.clone(), creator_cache.clone());
-    let service_task = tokio::spawn(token_service.run(event_tx.subscribe()));
+    let db_writer = ingest::DbWriter::new(db.clone());
+    let db_writer_task = tokio::spawn(db_writer.run(db_rx));
 
-    // Service: strategy handler — subscribes to the event bus
-    let trading_service = services::TradingService::new(trader.clone());
-    let strategy_service = services::StrategyService::new(db.clone(), trading_service.clone());
-    let strategy_task = tokio::spawn(strategy_service.run(event_tx.subscribe()));
-    let _trading_service_task = tokio::spawn(async move {
-        // TradingService currently acts as a bridge only; keep it alive for
-        // potential future event-driven trading tasks.
-        tokio::task::yield_now().await;
-    });
+    let strategy_runner = strategies::StrategyRunner::new(
+        db.clone(),
+        trader.clone(),
+        token_cache.clone(),
+        tpsl_cache,
+    );
+    let strategy_task = tokio::spawn(strategy_runner.run(strategy_rx));
 
     // Initialize SOL price cache immediately, then start the poller.
-    match services::price_service::fetch_latest_sol_price().await {
+    match state::sol_price::fetch_latest_sol_price().await {
         Ok(price) => {
             info!("Initial SOL/USD price: ${price:.2}");
             let _ = sol_price.send(Some(price));
@@ -138,63 +133,61 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Service: SOL price polling — updates the in-memory SOL/USD cache
-    let price_task = tokio::spawn(services::price_service::run(sol_price.clone()));
+    let price_task = tokio::spawn(state::sol_price::run_poller(sol_price.clone()));
 
-    // // Service: analyzers — volume + creator scoring
-    // let analyzer_service = analyzers::AnalyzerService::new(
-    //     db,
-    //     token_cache,
-    //     creator_cache,
-    // );
-    // let analyzer_task = tokio::spawn(analyzer_service.run(event_tx.subscribe()));
+    let server_task = if settings.http_enabled {
+        let bind_addr = format!("{}:{}", settings.host, settings.port);
+        info!(addr = %bind_addr, workers = settings.http_workers, "Starting HTTP server");
+        let http_state = app_state.clone();
+        let http_workers = settings.http_workers;
+        let http_server = HttpServer::new(move || {
+            let allowed_origin =
+                std::env::var("CORS_ALLOWED_ORIGIN").unwrap_or_else(|_| "*".to_string());
 
-    // HTTP server
-    let bind_addr = format!("{}:{}", settings.host, settings.port);
-    info!(addr = %bind_addr, "Starting HTTP server");
-    let http_state = app_state.clone();
-    let http_server = HttpServer::new(move || {
-        // Read allowed origin from env at worker-spawn time so it can be set
-        // per-environment without recompilation.  Defaults to "*" (dev).
-        let allowed_origin =
-            std::env::var("CORS_ALLOWED_ORIGIN").unwrap_or_else(|_| "*".to_string());
+            let cors = if allowed_origin == "*" {
+                Cors::default()
+                    .allow_any_origin()
+                    .allowed_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+                    .allowed_header(actix_web::http::header::CONTENT_TYPE)
+                    .allowed_header(actix_web::http::header::ACCEPT)
+                    .max_age(3600)
+            } else {
+                Cors::default()
+                    .allowed_origin(&allowed_origin)
+                    .allowed_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+                    .allowed_header(actix_web::http::header::CONTENT_TYPE)
+                    .allowed_header(actix_web::http::header::ACCEPT)
+                    .max_age(3600)
+            };
 
-        let cors = if allowed_origin == "*" {
-            Cors::default()
-                .allow_any_origin()
-                .allowed_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"])
-                .allowed_header(actix_web::http::header::CONTENT_TYPE)
-                .allowed_header(actix_web::http::header::ACCEPT)
-                .max_age(3600)
-        } else {
-            Cors::default()
-                .allowed_origin(&allowed_origin)
-                .allowed_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"])
-                .allowed_header(actix_web::http::header::CONTENT_TYPE)
-                .allowed_header(actix_web::http::header::ACCEPT)
-                .max_age(3600)
-        };
-
-        App::new()
-            .wrap(cors)
-            .app_data(web::Data::new(http_state.clone()))
-            .configure(api::configure)
-    })
-    .workers(4)
-    .bind(&bind_addr)
-    .context("Failed to bind HTTP server")?;
-    let server_task = tokio::spawn(http_server.run());
+            App::new()
+                .wrap(cors)
+                .app_data(web::Data::new(http_state.clone()))
+                .configure(api::configure)
+        })
+        .workers(http_workers)
+        .bind(&bind_addr)
+        .context("Failed to bind HTTP server")?;
+        Some(tokio::spawn(http_server.run()))
+    } else {
+        info!("HTTP disabled (HTTP_ENABLED=false) — bot-only mode");
+        None
+    };
 
     info!("System running — waiting for events");
 
-    // Run until a critical task exits
     tokio::select! {
         _ = ws_task       => error!("WS task exited unexpectedly"),
-        _ = handler_task  => error!("Event handler task exited unexpectedly"),
-        _ = service_task  => error!("Token service task exited unexpectedly"),
-        _ = strategy_task => error!("Strategy service task exited unexpectedly"),
-        _ = price_task    => error!("Price service task exited unexpectedly"),
-        // _ = analyzer_task => error!("Analyzer service task exited unexpectedly"),
-        res = server_task => {
+        _ = pipeline_task  => error!("Ingest pipeline exited unexpectedly"),
+        _ = db_writer_task  => error!("DbWriter task exited unexpectedly"),
+        _ = strategy_task => error!("Strategy runner exited unexpectedly"),
+        _ = price_task    => error!("SOL price poller exited unexpectedly"),
+        res = async {
+            match server_task {
+                Some(task) => task.await,
+                None => std::future::pending().await,
+            }
+        } => {
             match res {
                 Ok(Ok(())) => info!("HTTP server stopped"),
                 Ok(Err(e)) => error!("HTTP server error: {e}"),

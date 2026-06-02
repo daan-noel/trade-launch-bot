@@ -29,6 +29,7 @@ struct TradeDbRow {
     token_amount: f64,
     price_per_token: f64,
     tx_signature: String,
+    leg_index: i32,
     slot: i64,
     block_time: DateTime<Utc>,
     virtual_sol_reserves: Option<f64>,
@@ -58,6 +59,7 @@ impl TryFrom<TradeDbRow> for Trade {
             token_amount: r.token_amount,
             price_per_token: r.price_per_token,
             tx_signature: r.tx_signature,
+            leg_index: r.leg_index as u32,
             slot: r.slot as u64,
             block_time: r.block_time,
             virtual_sol_reserves: r.virtual_sol_reserves,
@@ -93,12 +95,12 @@ impl TradeRepo {
             INSERT INTO trades
                 (id, mint_address, wallet_address, trade_type,
                  sol_amount, token_amount, price_per_token,
-                 tx_signature, slot, block_time,
+                 tx_signature, leg_index, slot, block_time,
                  virtual_sol_reserves, virtual_token_reserves,
                  real_sol_reserves, real_token_reserves,
                  ix_type, ix_labels)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-            ON CONFLICT (tx_signature) DO NOTHING
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+            ON CONFLICT (tx_signature, leg_index) DO NOTHING
             "#,
         )
         .bind(trade.id)
@@ -109,6 +111,7 @@ impl TradeRepo {
         .bind(trade.token_amount)
         .bind(trade.price_per_token)
         .bind(&trade.tx_signature)
+        .bind(trade.leg_index as i32)
         .bind(trade.slot as i64)
         .bind(trade.block_time)
         .bind(trade.virtual_sol_reserves)
@@ -129,7 +132,7 @@ impl TradeRepo {
             r#"
             SELECT id, mint_address, wallet_address, trade_type,
                    sol_amount, token_amount, price_per_token,
-                   tx_signature, slot, block_time,
+                   tx_signature, leg_index, slot, block_time,
                    virtual_sol_reserves, virtual_token_reserves,
                    real_sol_reserves, real_token_reserves,
                    ix_type, ix_labels
@@ -153,7 +156,7 @@ impl TradeRepo {
             r#"
             SELECT id, mint_address, wallet_address, trade_type,
                    sol_amount, token_amount, price_per_token,
-                   tx_signature, slot, block_time,
+                   tx_signature, leg_index, slot, block_time,
                    virtual_sol_reserves, virtual_token_reserves,
                    real_sol_reserves, real_token_reserves,
                    ix_type, ix_labels
@@ -281,30 +284,20 @@ impl TradeRepo {
             .collect())
     }
 
-    /// Load the most recent `window` trades for every token in one query,
-    /// ordered oldest-first so callers can push them into a VecDeque.
-    pub async fn load_recent_per_token(&self, window: usize) -> anyhow::Result<Vec<Trade>> {
+    /// Load all trades for every token in one query, oldest-first per mint.
+    pub async fn load_all_chronological(&self) -> anyhow::Result<Vec<Trade>> {
         let rows = sqlx::query_as::<_, TradeDbRow>(
             r#"
             SELECT id, mint_address, wallet_address, trade_type,
                    sol_amount, token_amount, price_per_token,
-                   tx_signature, slot, block_time,
+                   tx_signature, leg_index, slot, block_time,
                    virtual_sol_reserves, virtual_token_reserves,
                    real_sol_reserves, real_token_reserves,
                    ix_type, ix_labels
-            FROM (
-                SELECT *,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY mint_address
-                           ORDER BY block_time DESC
-                       ) AS rn
-                FROM trades
-            ) ranked
-            WHERE rn <= $1
+            FROM trades
             ORDER BY mint_address, block_time ASC
             "#,
         )
-        .bind(window as i64)
         .fetch_all(&self.pool)
         .await?;
 

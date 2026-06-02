@@ -1,14 +1,8 @@
-use std::collections::VecDeque;
-
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 
 use crate::config::constants::INITIAL_VIRTUAL_TOKEN_RESERVES;
 use crate::models::{token::Token, trade::Trade};
-
-/// Maximum number of recent trades kept in memory per token.
-/// Older entries are evicted as new ones arrive (sliding window).
-pub const RECENT_TRADES_WINDOW: usize = 50;
 
 // ---------------------------------------------------------------------------
 // TokenState
@@ -19,8 +13,8 @@ pub const RECENT_TRADES_WINDOW: usize = 50;
 pub struct TokenState {
     pub token: Token,
 
-    /// Sliding window of the most recent trades — primary input for analyzers.
-    pub recent_trades: VecDeque<Trade>,
+    /// Full trade history in chronological order (oldest first).
+    pub trades: Vec<Trade>,
 
     /// Cumulative SOL volume across all trades since tracking began.
     pub volume_sol_total: f64,
@@ -61,7 +55,7 @@ impl TokenState {
 
         Self {
             token,
-            recent_trades: VecDeque::with_capacity(RECENT_TRADES_WINDOW),
+            trades: Vec::new(),
             volume_sol_total: 0.0,
             trade_count: 0,
             last_trade_at: None,
@@ -75,7 +69,7 @@ impl TokenState {
         }
     }
 
-    /// Add a trade to the sliding window and update aggregate metrics.
+    /// Append a trade and update aggregate metrics.
     pub fn add_trade(&mut self, trade: Trade) {
         self.volume_sol_total += trade.sol_amount;
         self.trade_count += 1;
@@ -94,10 +88,7 @@ impl TokenState {
         self.update_reserves(&trade);
         self.update_market_cap(price);
 
-        if self.recent_trades.len() >= RECENT_TRADES_WINDOW {
-            self.recent_trades.pop_front();
-        }
-        self.recent_trades.push_back(trade);
+        self.trades.push(trade);
     }
 
     fn update_reserves(&mut self, trade: &Trade) {
@@ -124,10 +115,10 @@ impl TokenState {
         };
     }
 
-    /// Count unique wallets in the current sliding window.
-    pub fn unique_wallets_in_window(&self) -> usize {
+    /// Count unique wallets across the full trade history.
+    pub fn unique_wallets(&self) -> usize {
         let mut seen = std::collections::HashSet::new();
-        for t in &self.recent_trades {
+        for t in &self.trades {
             seen.insert(t.wallet_address.as_str());
         }
         seen.len()

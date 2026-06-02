@@ -15,6 +15,8 @@ pub struct Trade {
     /// SOL per token at execution time.
     pub price_per_token: f64,
     pub tx_signature: String,
+    /// Index of this trade within the transaction (0 = first pump leg).
+    pub leg_index: u32,
     pub slot: u64,
     pub block_time: DateTime<Utc>,
 
@@ -68,6 +70,7 @@ impl Trade {
             token_amount,
             price_per_token,
             tx_signature,
+            leg_index: 0,
             slot,
             block_time,
             virtual_sol_reserves: None,

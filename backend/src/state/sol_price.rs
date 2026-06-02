@@ -10,8 +10,8 @@ const USER_AGENT_STR: &str =
     "Mozilla/5.0 (compatible; MemeTrading/1.0; +https://github.com/your-org/meme-trading)";
 
 /// Background task that polls CoinGecko every 60 s and updates the SOL/USD watch channel.
-pub async fn run(sol_price_tx: Arc<watch::Sender<Option<f64>>>) {
-    info!("PriceService: starting (polls SOL/USD every {POLL_INTERVAL_SECS}s)");
+pub async fn run_poller(sol_price_tx: Arc<watch::Sender<Option<f64>>>) {
+    info!("SOL price poller: starting (every {POLL_INTERVAL_SECS}s)");
 
     loop {
         match fetch_latest_sol_price().await {
@@ -20,7 +20,7 @@ pub async fn run(sol_price_tx: Arc<watch::Sender<Option<f64>>>) {
                 let _ = sol_price_tx.send(Some(price));
             }
             Err(e) => {
-                warn!("PriceService: failed to fetch SOL price: {e}");
+                warn!("SOL price poller: fetch failed: {e}");
             }
         }
 

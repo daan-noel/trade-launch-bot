@@ -1,4 +1,3 @@
-/// Utility functions for TPSL strategies
 pub fn ignore_zero_f64(val: Option<f64>) -> Option<f64> {
     match val {
         Some(v) if v == 0.0 => None,

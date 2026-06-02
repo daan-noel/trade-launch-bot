@@ -157,7 +157,7 @@ export function TokenDetailPanel({ detail, loading, error }: TokenDetailPanelPro
               <StatCard label={`Volume (${price.unitLabel})`} value={detail.volume_sol_total != null ? price.displayCompact(detail.volume_sol_total, 4) : '-'} variant="info" bold />
               <StatCard label={`Market Cap (${price.unitLabel})`} value={detail.market_cap != null ? price.displayCompact(detail.market_cap, 4) : '-'} bold />
               <StatCard label="Trade Count" value={detail.trade_count != null ? String(detail.trade_count) : '-'} bold />
-              <StatCard label="Unique Wallets" value={detail.unique_wallets_in_window != null ? String(detail.unique_wallets_in_window) : '-'} variant="info" bold />
+              <StatCard label="Unique Wallets" value={detail.unique_wallets != null ? String(detail.unique_wallets) : '-'} variant="info" bold />
               <StatCard label="Last Trade" value={detail.last_trade_at ? formatIso(detail.last_trade_at) : '-'} variant="muted" />
               <StatCard label="Created" value={formatIso(detail.created_at)} variant="muted" />
             </div>

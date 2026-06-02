@@ -5,7 +5,6 @@ use actix_web::{web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use crate::services::TradingService;
 use crate::state::app_state::AppState;
 
 
@@ -37,12 +36,12 @@ pub async fn manual_buy(
         }
     };
 
-    let trading = TradingService::new(app_state.trader.clone());
     let mint = body.mint.clone();
     let creator = creator.clone();
     let token_program_id = body.token_program_id.clone();
     let sol_amount = body.sol_amount;
-    let buy_result = trading
+    let buy_result = app_state
+        .trader
         .buy_token(&mint, &creator, &token_program_id, sol_amount)
         .await;
     match buy_result {
@@ -59,10 +58,10 @@ pub async fn manual_sell(
     app_state: web::Data<Arc<AppState>>,
     body: web::Json<SellRequest>,
 ) -> impl Responder {
-    let trading = TradingService::new(app_state.trader.clone());
     let token_account_override = body.token_account.as_deref();
     let sell_amount = (body.token_amount * 90 / 100) as u64; // Sell 99% to avoid dust issues
-    match trading
+    match app_state
+        .trader
         .sell_token(&body.mint, sell_amount, None, false, token_account_override)
         .await
     {
@@ -103,8 +102,7 @@ struct EnrichedWalletHolding {
 /// Returns all non-zero token accounts held by the trader's wallet,
 /// enriched with symbol (from token cache) and current USD price (Jupiter).
 pub async fn get_wallet_tokens(app_state: web::Data<Arc<AppState>>) -> impl Responder {
-    let trading = TradingService::new(app_state.trader.clone());
-    let holdings = match trading.get_all_token_accounts().await {
+    let holdings = match app_state.trader.get_all_token_accounts().await {
         Ok(h) => h,
         Err(e) => {
             tracing::warn!("get_wallet_tokens failed: {e}");
@@ -192,9 +190,7 @@ pub async fn get_wallet_token_balance(
     path: web::Path<(String, String)>,
 ) -> impl Responder {
     let (wallet, mint) = path.into_inner();
-    let trading = TradingService::new(app_state.trader.clone());
-
-    match trading.get_token_balance(&wallet, &mint).await {
+    match app_state.trader.get_token_balance(&wallet, &mint).await {
         Ok(balance) => HttpResponse::Ok().json(balance),
         Err(e) => {
             tracing::warn!("get_wallet_token_balance failed wallet={wallet} mint={mint}: {e}");

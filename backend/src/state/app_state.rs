@@ -3,42 +3,43 @@ use std::sync::Arc;
 use sqlx::PgPool;
 use tokio::sync::{broadcast, watch};
 
-use crate::models::events::InternalEvent;
+use crate::models::ingest::SseEvent;
+use crate::strategies::tpsl::TpslRuntimeCache;
 use crate::trader::PumpFunTrader;
 
-use super::{creator_cache::CreatorCache, token_cache::TokenCache};
+use super::token_cache::TokenCache;
 
 /// Shared application state — passed to Actix handlers via `web::Data<AppState>`
 /// and injected into services.
 pub struct AppState {
     pub db: PgPool,
     pub token_cache: Arc<TokenCache>,
-    pub creator_cache: Arc<CreatorCache>,
-    /// Clone the sender to subscribe services; broadcast internally.
-    pub event_tx: broadcast::Sender<InternalEvent>,
+    /// Cold lane: SSE subscribers only (fed after cache update in ingest pipeline).
+    pub sse_tx: broadcast::Sender<SseEvent>,
     pub live_mode: watch::Sender<bool>,
     pub sol_price: Arc<watch::Sender<Option<f64>>>,
     pub trader: Arc<PumpFunTrader>,
+    pub tpsl_cache: Arc<TpslRuntimeCache>,
 }
 
 impl AppState {
     pub fn new(
         db: PgPool,
         token_cache: Arc<TokenCache>,
-        creator_cache: Arc<CreatorCache>,
-        event_tx: broadcast::Sender<InternalEvent>,
+        sse_tx: broadcast::Sender<SseEvent>,
         live_mode: watch::Sender<bool>,
         sol_price: Arc<watch::Sender<Option<f64>>>,
         trader: Arc<PumpFunTrader>,
+        tpsl_cache: Arc<TpslRuntimeCache>,
     ) -> Self {
         Self {
             db,
             token_cache,
-            creator_cache,
-            event_tx,
+            sse_tx,
             live_mode,
             sol_price,
             trader,
+            tpsl_cache,
         }
     }
 

@@ -9,7 +9,7 @@ use crate::storage::repositories::strategy_tpsl_rule_repo::StrategyTPSLRuleRepo;
 use crate::storage::repositories::token_repo::TokenRepo;
 use crate::storage::repositories::trade_repo::TradeRepo;
 use crate::strategies::tpsl::handler_tpsl::token_matches_rule;
-use crate::utils::{ignore_zero_f64, ignore_zero_u64};
+use super::util::{ignore_zero_f64, ignore_zero_u64};
 
 /// Per-token simulation result.
 #[derive(Clone, serde::Serialize)]

@@ -414,4 +414,37 @@ impl PositionRepo {
 
         rows.into_iter().map(Position::try_from).collect()
     }
+
+    /// All positions with status Holding (for TPSL runtime cache warm-up).
+    pub async fn find_all_holding(&self) -> anyhow::Result<Vec<Position>> {
+        let rows = sqlx::query_as::<_, PositionDbRow>(
+            r#"
+            SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
+                   status, strategy, rule_id, entry_amount, exit_amount,
+                   entry_time, exit_time, created_at, updated_at
+            FROM positions
+            WHERE status = 'Holding'
+            ORDER BY created_at DESC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(Position::try_from).collect()
+    }
+
+    /// Total position count per rule (all statuses).
+    pub async fn count_all_by_rule(&self) -> anyhow::Result<Vec<(Uuid, i64)>> {
+        let rows: Vec<(Uuid, i64)> = sqlx::query_as(
+            r#"
+            SELECT rule_id, COUNT(*)::bigint
+            FROM positions
+            GROUP BY rule_id
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
+    }
 }

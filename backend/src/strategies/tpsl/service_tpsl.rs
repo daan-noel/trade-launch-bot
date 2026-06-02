@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::PgPool;
@@ -5,32 +6,29 @@ use tokio::time::sleep;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::models::{
-    events::{TokenCreatedEvent, TradeExecutedEvent},
-    Position,
-};
-use crate::services::TradingService;
-use crate::storage::repositories::{
-    position_repo::PositionRepo, strategy_tpsl_rule_repo::StrategyTPSLRuleRepo,
-    trade_repo::TradeRepo,
-};
-use crate::strategies::{tpsl::TPSLStrategyHandler, StrategyHandler};
-use crate::utils::ignore_zero_u64;
+use crate::models::Position;
+use crate::state::token_cache::TokenCache;
+use crate::storage::repositories::{position_repo::PositionRepo, trade_repo::TradeRepo};
+use crate::strategies::tpsl::{TPSLStrategyHandler, TpslRuntimeCache};
+use crate::trader::PumpFunTrader;
+use super::util::ignore_zero_u64;
 
 pub struct TpslStrategyService {
-    rule_repo: StrategyTPSLRuleRepo,
+    pool: PgPool,
     position_repo: PositionRepo,
     trade_repo: TradeRepo,
-    trading: TradingService,
+    trader: Arc<PumpFunTrader>,
+    runtime: Arc<TpslRuntimeCache>,
 }
 
 impl TpslStrategyService {
-    pub fn new(pool: PgPool, trading: TradingService) -> Self {
+    pub fn new(pool: PgPool, trader: Arc<PumpFunTrader>, runtime: Arc<TpslRuntimeCache>) -> Self {
         Self {
-            rule_repo: StrategyTPSLRuleRepo::new(pool.clone()),
             position_repo: PositionRepo::new(pool.clone()),
-            trade_repo: TradeRepo::new(pool),
-            trading,
+            trade_repo: TradeRepo::new(pool.clone()),
+            pool,
+            trader,
+            runtime,
         }
     }
 
@@ -45,14 +43,11 @@ impl TpslStrategyService {
     const EXIT_PENDING_STALE_MS: u64 = 300_000;
 }
 
-#[async_trait::async_trait]
-impl StrategyHandler for TpslStrategyService {
-    fn name(&self) -> &str {
-        "TPSL"
-    }
-
-    fn spawn_background_tasks(&self) {
+impl TpslStrategyService {
+    pub fn spawn_background_tasks(&self) {
         let cleanup_repo = self.position_repo.clone();
+        let runtime = self.runtime.clone();
+        let pool = self.pool.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(
                 TpslStrategyService::EXIT_PENDING_CLEANUP_INTERVAL_MS,
@@ -68,6 +63,9 @@ impl StrategyHandler for TpslStrategyService {
                     Ok(reopened) => {
                         if reopened > 0 {
                             info!("Reopened {reopened} stale ExitPending positions");
+                            if let Err(err) = runtime.reload_holding(&pool).await {
+                                warn!("Failed to refresh TPSL holding cache after cleanup: {err}");
+                            }
                         }
                     }
                     Err(err) => {
@@ -78,16 +76,17 @@ impl StrategyHandler for TpslStrategyService {
         });
     }
 
-    async fn on_token_created(&self, e: &TokenCreatedEvent) {
-        let mint = e.token.mint_address.clone();
-
-        let rules = match self.rule_repo.find_active().await {
-            Ok(r) => r,
-            Err(err) => {
-                warn!("Failed to load active TPSL rules: {err}");
+    pub async fn on_token_created(&self, mint: &str, cache: &TokenCache) {
+        let mint = mint.to_string();
+        let token = match cache.get(&mint) {
+            Some(entry) => entry.value().token.clone(),
+            None => {
+                debug!("Token {mint} not in cache — skipping TPSL create");
                 return;
             }
         };
+
+        let rules = self.runtime.active_rules();
 
         if rules.is_empty() {
             debug!("No active TPSL rules — skipping token {mint}");
@@ -95,7 +94,7 @@ impl StrategyHandler for TpslStrategyService {
         }
 
         let handler = TPSLStrategyHandler::new(rules);
-        if let Some(rule_id) = handler.check_buy_entry(&e.token) {
+        if let Some(rule_id) = handler.check_buy_entry(&token) {
             info!("Token {mint} matches TPSL buy entry rule {rule_id}");
 
             if let Some(rule) = handler.get_rule(rule_id) {
@@ -104,56 +103,43 @@ impl StrategyHandler for TpslStrategyService {
                     ignore_zero_u64(rule.p_total_max_trade_tokens).map(|v| v as usize);
 
                 if let Some(max_holding_tokens) = max_holding {
-                    match self.position_repo.count_holding_by_rule(rule_id).await {
-                        Ok(current_holding) => {
-                            if current_holding >= max_holding_tokens as i64 {
-                                debug!(
-                                    "Rule {rule_id} reached max holding tokens \
-                                     ({current_holding}/{max_holding_tokens}), skipping {mint}"
-                                );
-                                return;
-                            }
-                        }
-                        Err(err) => {
-                            warn!("Failed to count holding positions for rule {rule_id}: {err}");
-                            return;
-                        }
+                    let current_holding = self.runtime.holding_count_by_rule(rule_id);
+                    if current_holding >= max_holding_tokens as i64 {
+                        debug!(
+                            "Rule {rule_id} reached max holding tokens \
+                             ({current_holding}/{max_holding_tokens}), skipping {mint}"
+                        );
+                        return;
                     }
                 }
 
                 if let Some(total_max) = total_max_trade_tokens {
-                    match self.position_repo.count_by_rule(rule_id).await {
-                        Ok(total_traded) => {
-                            if total_traded >= total_max as i64 {
-                                debug!(
-                                    "Rule {rule_id} reached total max trade tokens \
-                                     ({total_traded}/{total_max}), skipping {mint}"
-                                );
-                                return;
-                            }
-                        }
-                        Err(err) => {
-                            warn!("Failed to count total positions for rule {rule_id}: {err}");
-                            return;
-                        }
+                    let total_traded = self.runtime.total_count_by_rule(rule_id);
+                    if total_traded >= total_max as i64 {
+                        debug!(
+                            "Rule {rule_id} reached total max trade tokens \
+                             ({total_traded}/{total_max}), skipping {mint}"
+                        );
+                        return;
                     }
                 }
 
                 let mut position = Position::new(
                     mint.clone(),
-                    self.trading.wallet_pubkey(),
+                    self.trader.wallet_pubkey(),
                     0.0,
-                    e.tx_signature.clone(),
+                    token.creation_tx_signature.clone(),
                     "TPSL".to_string(),
                     rule_id,
                     rule.buy_amount,
                 );
-                position.token_program_id = e.token.token_program_id.clone();
+                position.token_program_id = token.token_program_id.clone();
 
                 if let Err(err) = self.position_repo.insert(&position).await {
                     warn!("Failed to create position for token {mint}: {err}");
                     return;
                 }
+                self.runtime.sync_position(None, &position);
 
                 info!(
                     "Created position {} for token {mint} under rule {rule_id}",
@@ -164,6 +150,7 @@ impl StrategyHandler for TpslStrategyService {
                     let trade_repo = self.trade_repo.clone();
                     let mint_for_trades = mint.clone();
                     let position_repo = self.position_repo.clone();
+                    let runtime = self.runtime.clone();
                     let position_id = position.id;
                     let buy_amount = rule.buy_amount;
                     tokio::spawn(async move {
@@ -172,9 +159,14 @@ impl StrategyHandler for TpslStrategyService {
                             if let Some((entry_price, entry_tx, entry_time)) =
                                 crate::strategies::tpsl::simulation_tpsl::find_entry(&trades, 5)
                             {
-                                let _ = position_repo
-                                    .update_entry(position_id, &entry_tx, buy_amount, entry_price, entry_time)
-                                    .await;
+                                if let Ok(Some(prev)) = position_repo.find_by_id(position_id).await {
+                                    let _ = position_repo
+                                        .update_entry(position_id, &entry_tx, buy_amount, entry_price, entry_time)
+                                        .await;
+                                    if let Ok(Some(current)) = position_repo.find_by_id(position_id).await {
+                                        runtime.sync_position(Some(&prev), &current);
+                                    }
+                                }
                                 info!(
                                     "[PAPER] Set entry for position {}: {} (tx: {})",
                                     position_id, entry_price, entry_tx
@@ -188,13 +180,14 @@ impl StrategyHandler for TpslStrategyService {
                         }
                     });
                 } else if rule.trade_mode == "real" {
-                    let trading = self.trading.clone();
+                    let trader = self.trader.clone();
                     let mint_clone = mint.clone();
-                    let creator = e.token.creator_wallet.clone();
+                    let creator = token.creator_wallet.clone();
                     let buy_amount = rule.buy_amount;
                     let position_id = position.id;
                     let position_repo = self.position_repo.clone();
                     let trade_repo = self.trade_repo.clone();
+                    let runtime = self.runtime.clone();
                     let token_program_id = position
                         .token_program_id
                         .clone()
@@ -202,7 +195,7 @@ impl StrategyHandler for TpslStrategyService {
                     tokio::spawn(async move {
                         let mint_for_log = mint_clone.clone();
                         buy_with_retries(
-                            trading,
+                            trader,
                             mint_clone,
                             creator,
                             token_program_id,
@@ -210,17 +203,17 @@ impl StrategyHandler for TpslStrategyService {
                             position_id,
                             position_repo.clone(),
                             trade_repo.clone(),
+                            runtime.clone(),
                         )
                         .await;
-                        if let Ok(pos) = position_repo.find_by_id(position_id).await {
-                            if let Some(pos) = pos {
-                                if pos.entry_price == 0.0 {
-                                    let _ = position_repo.delete_position(position_id).await;
-                                    info!(
-                                        "[REAL] Removed position {} for mint {}: buy not found",
-                                        position_id, mint_for_log
-                                    );
-                                }
+                        if let Ok(Some(pos)) = position_repo.find_by_id(position_id).await {
+                            if pos.entry_price == 0.0 {
+                                let _ = position_repo.delete_position(position_id).await;
+                                runtime.remove_position(&pos);
+                                info!(
+                                    "[REAL] Removed position {} for mint {}: buy not found",
+                                    position_id, mint_for_log
+                                );
                             }
                         }
                     });
@@ -231,31 +224,19 @@ impl StrategyHandler for TpslStrategyService {
         }
     }
 
-    async fn on_trade_executed(&self, e: &TradeExecutedEvent) {
-        let mint = e.trade.mint_address.clone();
-
-        let positions = match self.position_repo.find_holding_by_mint(&mint).await {
-            Ok(p) => p,
-            Err(err) => {
-                warn!("Failed to load positions for token {mint}: {err}");
-                return;
-            }
+    pub async fn on_trade_executed(&self, mint: &str, cache: &TokenCache) {
+        let mint = mint.to_string();
+        let current_price = match cache.get(&mint) {
+            Some(entry) => entry.value().current_price.unwrap_or(0.0),
+            None => return,
         };
 
+        let positions = self.runtime.holding_by_mint(&mint);
         if positions.is_empty() {
             return;
         }
 
-        let rules = match self.rule_repo.find_all().await {
-            Ok(r) => r,
-            Err(err) => {
-                warn!("Failed to load TPSL rules: {err}");
-                return;
-            }
-        };
-
-        let handler = TPSLStrategyHandler::new(rules);
-        let current_price = e.trade.price_per_token;
+        let handler = TPSLStrategyHandler::new(self.runtime.all_rules_vec());
 
         for mut position in positions {
             if let Some(rule) = handler.get_rule(position.rule_id) {
@@ -266,6 +247,7 @@ impl StrategyHandler for TpslStrategyService {
                     );
 
                     if rule.trade_mode == "paper" {
+                        let prev = position.clone();
                         position.mark_exit_pending();
                         if let Err(err) = self.position_repo.update(&position).await {
                             warn!(
@@ -273,12 +255,14 @@ impl StrategyHandler for TpslStrategyService {
                                 position.id
                             );
                         } else {
+                            self.runtime.sync_position(Some(&prev), &position);
                             info!(position_id = %position.id, mint = %mint,
                                 "[PAPER] Position marked ExitPending");
                         }
                         let trade_repo = self.trade_repo.clone();
                         let mint_for_trades = mint.clone();
                         let position_repo = self.position_repo.clone();
+                        let runtime = self.runtime.clone();
                         let position_id = position.id;
                         let entry_tx = position.entry_tx.clone();
                         let entry_price = position.entry_price;
@@ -306,9 +290,16 @@ impl StrategyHandler for TpslStrategyService {
                                             stop_loss,
                                         )
                                     {
-                                        let _ = position_repo
-                                            .update_exit(position_id, &exit_tx, exit_price, exit_time)
-                                            .await;
+                                        if let Ok(Some(prev)) = position_repo.find_by_id(position_id).await {
+                                            let _ = position_repo
+                                                .update_exit(position_id, &exit_tx, exit_price, exit_time)
+                                                .await;
+                                            if let Ok(Some(current)) =
+                                                position_repo.find_by_id(position_id).await
+                                            {
+                                                runtime.sync_position(Some(&prev), &current);
+                                            }
+                                        }
                                         info!(
                                             "[PAPER] Set exit for position {}: {} (tx: {}, reason: {})",
                                             position_id, exit_price, exit_tx, reason
@@ -320,7 +311,12 @@ impl StrategyHandler for TpslStrategyService {
                                 sleep(Duration::from_millis(500)).await;
                             }
                             if !found {
-                                let _ = position_repo.revert_exit_pending(position_id).await;
+                                if let Ok(Some(prev)) = position_repo.find_by_id(position_id).await {
+                                    let _ = position_repo.revert_exit_pending(position_id).await;
+                                    if let Ok(Some(current)) = position_repo.find_by_id(position_id).await {
+                                        runtime.sync_position(Some(&prev), &current);
+                                    }
+                                }
                                 info!(
                                     "[PAPER] ExitPending timed out, reverted to Holding for position {}",
                                     position_id
@@ -328,6 +324,7 @@ impl StrategyHandler for TpslStrategyService {
                             }
                         });
                     } else if rule.trade_mode == "real" {
+                        let prev = position.clone();
                         position.mark_exit_pending();
                         if let Err(err) = self.position_repo.update(&position).await {
                             warn!(
@@ -335,21 +332,24 @@ impl StrategyHandler for TpslStrategyService {
                                 position.id
                             );
                         } else {
+                            self.runtime.sync_position(Some(&prev), &position);
                             info!(position_id = %position.id, mint = %mint,
                                 "[REAL] Position marked ExitPending");
                         }
-                        let trading = self.trading.clone();
+                        let trader = self.trader.clone();
                         let position_repo = self.position_repo.clone();
                         let trade_repo = self.trade_repo.clone();
+                        let runtime = self.runtime.clone();
                         let mut retries = 0;
                         let max_retries = 10;
                         let mut found = false;
                         while retries < max_retries {
                             execute_sell_for_position(
-                                trading.clone(),
+                                trader.clone(),
                                 position.clone(),
                                 position_repo.clone(),
                                 trade_repo.clone(),
+                                runtime.clone(),
                             )
                             .await;
                             if let Ok(pos) = position_repo.find_by_id(position.id).await {
@@ -381,7 +381,7 @@ impl StrategyHandler for TpslStrategyService {
 // ---------------------------------------------------------------------------
 
 async fn buy_with_retries(
-    trading: TradingService,
+    trader: Arc<PumpFunTrader>,
     mint: String,
     creator: String,
     token_program_id: String,
@@ -389,6 +389,7 @@ async fn buy_with_retries(
     position_id: Uuid,
     position_repo: PositionRepo,
     trade_repo: TradeRepo,
+    runtime: Arc<TpslRuntimeCache>,
 ) {
     let mut attempt = 0usize;
     let max_attempts = TpslStrategyService::BUY_MAX_ATTEMPTS;
@@ -396,13 +397,13 @@ async fn buy_with_retries(
 
     while attempt < max_attempts {
         attempt += 1;
-        match trading
+        match trader
             .buy_token(&mint, &creator, &token_program_id, buy_amount)
             .await
         {
             Ok(true) => {
                 info!(mint = %mint, attempt, "buy succeeded");
-                let wallet = trading.wallet_pubkey();
+                let wallet = trader.wallet_pubkey();
                 let mut poll_attempts = 0usize;
                 while poll_attempts < TpslStrategyService::BUY_POLL_MAX_ATTEMPTS {
                     poll_attempts += 1;
@@ -412,20 +413,25 @@ async fn buy_with_retries(
                                 t.wallet_address == wallet
                                     && t.trade_type == crate::models::trade::TradeType::Buy
                             }) {
-                                if let Err(err) = position_repo
-                                    .update_entry(
-                                        position_id,
-                                        &t.tx_signature,
-                                        t.token_amount,
-                                        t.price_per_token,
-                                        t.block_time,
-                                    )
-                                    .await
-                                {
-                                    warn!("Failed to update position entry after buy confirmation: {err}");
-                                } else {
-                                    info!(mint = %mint, tx = %t.tx_signature,
-                                        "Position updated with buy confirmation");
+                                if let Ok(Some(prev)) = position_repo.find_by_id(position_id).await {
+                                    if let Err(err) = position_repo
+                                        .update_entry(
+                                            position_id,
+                                            &t.tx_signature,
+                                            t.token_amount,
+                                            t.price_per_token,
+                                            t.block_time,
+                                        )
+                                        .await
+                                    {
+                                        warn!("Failed to update position entry after buy confirmation: {err}");
+                                    } else if let Ok(Some(current)) =
+                                        position_repo.find_by_id(position_id).await
+                                    {
+                                        runtime.sync_position(Some(&prev), &current);
+                                        info!(mint = %mint, tx = %t.tx_signature,
+                                            "Position updated with buy confirmation");
+                                    }
                                 }
                                 return;
                             }
@@ -453,13 +459,14 @@ async fn buy_with_retries(
 }
 
 async fn execute_sell_for_position(
-    trading: TradingService,
+    trader: Arc<PumpFunTrader>,
     mut position: Position,
     position_repo: PositionRepo,
     trade_repo: TradeRepo,
+    runtime: Arc<TpslRuntimeCache>,
 ) {
     let mint = position.mint.clone();
-    let wallet = trading.wallet_pubkey();
+    let wallet = trader.wallet_pubkey();
     let amount = position.entry_amount as u64;
 
     info!(
@@ -468,18 +475,21 @@ async fn execute_sell_for_position(
     );
 
     let completed =
-        sell_with_retries(trading.clone(), mint.clone(), amount, trade_repo.clone()).await;
+        sell_with_retries(trader.clone(), mint.clone(), amount, trade_repo.clone()).await;
     if !completed {
         warn!(
             position_id = %position.id, mint = %mint,
             "Sell execution finished without clearing token balance; reverting position to Holding"
         );
+        let prev = position.clone();
         position.reopen();
         if let Err(err) = position_repo.update(&position).await {
             warn!(
                 position_id = %position.id, mint = %mint,
                 "Failed to revert position {} to Holding: {err}", position.id
             );
+        } else {
+            runtime.sync_position(Some(&prev), &position);
         }
         return;
     }
@@ -501,12 +511,14 @@ async fn execute_sell_for_position(
                     exit_amount,
                     last_sell.block_time,
                 );
+                let prev = position.clone();
                 if let Err(err) = position_repo.update(&position).await {
                     warn!(
                         position_id = %position.id, mint = %mint,
                         "Failed to close position after confirmed sell: {err}"
                     );
                 } else {
+                    runtime.sync_position(Some(&prev), &position);
                     let pnl_percent = position.pnl_percentage().unwrap_or(0.0);
                     info!(
                         position_id = %position.id, mint = %mint,
@@ -526,7 +538,7 @@ async fn execute_sell_for_position(
 }
 
 async fn sell_with_retries(
-    trading: TradingService,
+    trader: Arc<PumpFunTrader>,
     mint: String,
     mut amount: u64,
     trade_repo: TradeRepo,
@@ -534,7 +546,7 @@ async fn sell_with_retries(
     let mut attempt = 0usize;
     let max_attempts = TpslStrategyService::SELL_MAX_ATTEMPTS;
     let mut backoff_ms = 300u64;
-    let wallet = trading.wallet_pubkey();
+    let wallet = trader.wallet_pubkey();
 
     if amount == 0 {
         info!(mint = %mint, "sell skipped because amount is zero");
@@ -544,11 +556,11 @@ async fn sell_with_retries(
     while attempt < max_attempts && amount > 0 {
         attempt += 1;
         // Look up token_account for this mint
-        let token_account_override = match trading.get_all_token_accounts().await {
+        let token_account_override = match trader.get_all_token_accounts().await {
             Ok(accounts) => accounts.iter().find(|a| a.mint == mint).map(|a| a.token_account.clone()),
             Err(_) => None,
         };
-        match trading.sell_token(&mint, amount, None, false, token_account_override.as_deref()).await {
+        match trader.sell_token(&mint, amount, None, false, token_account_override.as_deref()).await {
             Ok(true) => {
                 info!(mint = %mint, attempt, amount, "sell submitted");
                 let mut poll_attempts = 0usize;
