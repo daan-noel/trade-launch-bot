@@ -19,7 +19,6 @@ use tracing::{error, info, warn};
 use actix_cors::Cors;
 use actix_web::{web, App, HttpServer};
 use crate::trader::{PumpFunTrader, TraderConfig};
-use crate::services::TradingService;
 
 fn parse_wallet_keypair(base58_key: &str) -> anyhow::Result<Keypair> {
     let bytes = bs58::decode(base58_key)

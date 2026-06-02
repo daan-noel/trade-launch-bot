@@ -1,6 +1,6 @@
 [workspace]
-members = ["backend", "frontend"]
-resolver = "2"
+members = ["backend"]
+resolver = "1"
 
 [workspace.package]
 edition = "2021"

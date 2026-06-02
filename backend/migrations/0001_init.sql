@@ -18,13 +18,17 @@ CREATE TABLE IF NOT EXISTS tokens (
     ix_labels               JSONB       NOT NULL DEFAULT '[]',
     creation_tx_signature   TEXT        NOT NULL,
     is_mayhem_mode          BOOLEAN     NOT NULL DEFAULT FALSE,
+    is_cashback_enabled     BOOLEAN     NOT NULL DEFAULT FALSE,
+    token_program_id        TEXT,
     initial_buy_instruction JSONB,
     created_at              TIMESTAMPTZ NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_tokens_creator_wallet ON tokens(creator_wallet);
-CREATE INDEX IF NOT EXISTS idx_tokens_created_at     ON tokens(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_tokens_is_mayhem_mode ON tokens(is_mayhem_mode);
+CREATE INDEX IF NOT EXISTS idx_tokens_creator_wallet     ON tokens(creator_wallet);
+CREATE INDEX IF NOT EXISTS idx_tokens_created_at         ON tokens(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tokens_is_mayhem_mode     ON tokens(is_mayhem_mode);
+CREATE INDEX IF NOT EXISTS idx_tokens_token_program_id   ON tokens(token_program_id);
+CREATE INDEX IF NOT EXISTS idx_tokens_is_cashback_enabled ON tokens(is_cashback_enabled);
 
 -- -------------------------------------------------------------------------
 -- wallets
@@ -139,21 +143,24 @@ CREATE INDEX IF NOT EXISTS idx_creator_profiles_wallet ON creator_profiles(walle
 -- strategy_TPSL_rules
 -- -------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS strategy_TPSL_rules (
-    id                  UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
-    rule_name           TEXT        NOT NULL,
-    p_initial_buy_sol   DOUBLE PRECISION,
-    p_cu_limit          BIGINT,
-    p_cu_price          BIGINT,
-    p_max_sol_cost      DOUBLE PRECISION,
-    p_spendable_sol_in  DOUBLE PRECISION,
-    p_ix_labels         JSONB       NOT NULL DEFAULT '[]',
-    buy_amount          DOUBLE PRECISION NOT NULL,
-    take_profit         DOUBLE PRECISION NOT NULL,
-    stop_loss           DOUBLE PRECISION NOT NULL,
-    tolerance_pct       DOUBLE PRECISION NOT NULL DEFAULT 1.0,
-    is_active           BOOLEAN     NOT NULL DEFAULT TRUE,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+    id                      UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    rule_name               TEXT        NOT NULL,
+    p_initial_buy_sol       DOUBLE PRECISION,
+    p_cu_limit              BIGINT,
+    p_cu_price              BIGINT,
+    p_max_sol_cost          DOUBLE PRECISION,
+    p_spendable_sol_in      DOUBLE PRECISION,
+    p_max_holding_tokens    BIGINT,
+    p_total_max_trade_tokens BIGINT,
+    p_ix_labels             JSONB       NOT NULL DEFAULT '[]',
+    buy_amount              DOUBLE PRECISION NOT NULL,
+    take_profit             DOUBLE PRECISION NOT NULL,
+    stop_loss               DOUBLE PRECISION NOT NULL,
+    tolerance_pct           DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+    trade_mode              TEXT        NOT NULL DEFAULT 'paper',
+    is_active               BOOLEAN     NOT NULL DEFAULT TRUE,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_strategy_TPSL_rules_active ON strategy_TPSL_rules(is_active);
@@ -167,23 +174,26 @@ CREATE TABLE IF NOT EXISTS positions (
     wallet              TEXT        NOT NULL,
     token_program_id    TEXT,
     entry_price         DOUBLE PRECISION NOT NULL,
-    exit_price          DOUBLE PRECISION,
+    entry_amount        DOUBLE PRECISION NOT NULL,
+    entry_time          TIMESTAMPTZ,
     entry_tx            TEXT        NOT NULL UNIQUE,
+    exit_price          DOUBLE PRECISION,
+    exit_amount         DOUBLE PRECISION,
+    exit_time           TIMESTAMPTZ,
     exit_tx             TEXT        UNIQUE,
     status              TEXT        NOT NULL CHECK (status IN ('Holding', 'ExitPending', 'End')),
     strategy            TEXT        NOT NULL,
     rule_id             UUID        NOT NULL,
-    entry_amount        DOUBLE PRECISION NOT NULL,
-    exit_amount         DOUBLE PRECISION,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    
+
     FOREIGN KEY (rule_id) REFERENCES strategy_TPSL_rules(id) ON DELETE SET NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_positions_mint ON positions(mint);
-CREATE INDEX IF NOT EXISTS idx_positions_wallet ON positions(wallet);
-CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
-CREATE INDEX IF NOT EXISTS idx_positions_strategy ON positions(strategy);
-CREATE INDEX IF NOT EXISTS idx_positions_rule_id ON positions(rule_id);
-CREATE INDEX IF NOT EXISTS idx_positions_mint_status ON positions(mint, status);
+CREATE INDEX IF NOT EXISTS idx_positions_mint              ON positions(mint);
+CREATE INDEX IF NOT EXISTS idx_positions_wallet            ON positions(wallet);
+CREATE INDEX IF NOT EXISTS idx_positions_status            ON positions(status);
+CREATE INDEX IF NOT EXISTS idx_positions_strategy          ON positions(strategy);
+CREATE INDEX IF NOT EXISTS idx_positions_rule_id           ON positions(rule_id);
+CREATE INDEX IF NOT EXISTS idx_positions_mint_status       ON positions(mint, status);
+CREATE INDEX IF NOT EXISTS idx_positions_token_program_id  ON positions(token_program_id);
