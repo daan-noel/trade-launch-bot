@@ -1,0 +1,391 @@
+//! Token Swing Analyzer.
+//!
+//! Detects alternating buy-dominant (swing high) and sell-dominant (swing low)
+//! legs in a token's trade history. See
+//! `@project_plans/token_swing_analyzer_spec_using_TA_terms.md` for the full
+//! specification this implementation follows.
+
+use serde::{Deserialize, Serialize};
+
+use crate::models::trade::{Trade, TradeType};
+
+// ---------------------------------------------------------------------------
+// Parameters
+// ---------------------------------------------------------------------------
+
+/// Tunable parameters for swing detection. All fields are optional in the JSON
+/// body and fall back to the defaults below.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SwingParams {
+    // Reversal thresholds: Swing High -> Swing Low
+    #[serde(default = "default_high_to_low_sol")]
+    pub high_to_low_threshold_sol: f64,
+    #[serde(default = "default_pct")]
+    pub high_to_low_threshold_pct: f64, // 0-100 (real percent)
+
+    // Reversal thresholds: Swing Low -> Swing High
+    #[serde(default = "default_low_to_high_sol")]
+    pub low_to_high_threshold_sol: f64,
+    #[serde(default = "default_pct")]
+    pub low_to_high_threshold_pct: f64, // 0-100 (real percent)
+
+    // Minimum leg quality filters
+    #[serde(default = "default_min_leg_trades")]
+    pub min_leg_trades: u32,
+    #[serde(default)]
+    pub min_leg_duration_ms: i64,
+    #[serde(default)]
+    pub min_leg_volume: f64,
+    #[serde(default)]
+    pub min_leg_net_flow: f64,
+}
+
+fn default_high_to_low_sol() -> f64 {
+    5.0
+}
+fn default_low_to_high_sol() -> f64 {
+    5.0
+}
+fn default_pct() -> f64 {
+    50.0
+}
+fn default_min_leg_trades() -> u32 {
+    2
+}
+
+impl Default for SwingParams {
+    fn default() -> Self {
+        Self {
+            high_to_low_threshold_sol: default_high_to_low_sol(),
+            high_to_low_threshold_pct: default_pct(),
+            low_to_high_threshold_sol: default_low_to_high_sol(),
+            low_to_high_threshold_pct: default_pct(),
+            min_leg_trades: default_min_leg_trades(),
+            min_leg_duration_ms: 0,
+            min_leg_volume: 0.0,
+            min_leg_net_flow: 0.0,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SwingType {
+    SwingHigh,
+    SwingLow,
+}
+
+/// A finalized swing leg, ready for serialization.
+#[derive(Debug, Clone, Serialize)]
+pub struct SwingLeg {
+    #[serde(rename = "type")]
+    pub leg_type: SwingType,
+    pub start_at: i64,
+    pub end_at: i64,
+    pub duration_ms: i64,
+    pub start_price: f64,
+    pub end_price: f64,
+    pub inflow: f64,
+    pub outflow: f64,
+    pub net_flow: f64,
+    pub trade_count: u32,
+}
+
+// ---------------------------------------------------------------------------
+// Internal representation
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Buy,
+    Sell,
+}
+
+struct Tx {
+    timestamp_ms: i64,
+    slot: u64,
+    position: u32,
+    side: Side,
+    sol_amount: f64,
+    price: f64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    SwingHigh,
+    TempSwingLow,
+    SwingLow,
+    TempSwingHigh,
+}
+
+/// Mutable leg accumulator used during the scan.
+#[derive(Clone)]
+struct LegAcc {
+    leg_type: SwingType,
+    start_at: i64,
+    end_at: i64,
+    start_price: f64,
+    end_price: f64,
+    inflow: f64,
+    outflow: f64,
+    trade_count: u32,
+}
+
+impl LegAcc {
+    /// Create a swing-high leg seeded from a BUY (fully consumes the tx).
+    fn seed_high(tx: &Tx) -> Self {
+        Self {
+            leg_type: SwingType::SwingHigh,
+            start_at: tx.timestamp_ms,
+            end_at: tx.timestamp_ms,
+            start_price: tx.price,
+            end_price: tx.price,
+            inflow: tx.sol_amount,
+            outflow: 0.0,
+            trade_count: 1,
+        }
+    }
+
+    /// Create a swing-low leg seeded from a SELL (fully consumes the tx).
+    fn seed_low(tx: &Tx) -> Self {
+        Self {
+            leg_type: SwingType::SwingLow,
+            start_at: tx.timestamp_ms,
+            end_at: tx.timestamp_ms,
+            start_price: tx.price,
+            end_price: tx.price,
+            inflow: 0.0,
+            outflow: tx.sol_amount,
+            trade_count: 1,
+        }
+    }
+
+    fn net_flow(&self) -> f64 {
+        self.inflow - self.outflow
+    }
+
+    /// Apply a same-side BUY to a swing-high leg.
+    fn apply_buy(&mut self, tx: &Tx) {
+        self.inflow += tx.sol_amount;
+        self.end_at = tx.timestamp_ms;
+        self.end_price = tx.price;
+        self.trade_count += 1;
+    }
+
+    /// Apply a same-side SELL to a swing-low leg.
+    fn apply_sell(&mut self, tx: &Tx) {
+        self.outflow += tx.sol_amount;
+        self.end_at = tx.timestamp_ms;
+        self.end_price = tx.price;
+        self.trade_count += 1;
+    }
+
+    fn finalize(self) -> SwingLeg {
+        SwingLeg {
+            leg_type: self.leg_type,
+            start_at: self.start_at,
+            end_at: self.end_at,
+            duration_ms: self.end_at - self.start_at,
+            start_price: self.start_price,
+            end_price: self.end_price,
+            inflow: self.inflow,
+            outflow: self.outflow,
+            net_flow: self.net_flow(),
+            trade_count: self.trade_count,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+/// Run swing detection over a token's trades, returning the filtered ledger.
+pub fn detect_swings(trades: &[Trade], params: &SwingParams) -> Vec<SwingLeg> {
+    let txs = sanitize_and_order(trades);
+    let ledger = scan(&txs, params);
+    apply_quality_filter(ledger, params)
+}
+
+/// Map trades to internal transactions, skip invalid ones, and apply the
+/// canonical ordering: `timestamp_ms ASC, slot ASC, position ASC`.
+fn sanitize_and_order(trades: &[Trade]) -> Vec<Tx> {
+    let mut txs: Vec<Tx> = trades
+        .iter()
+        .filter(|t| t.sol_amount > 0.0)
+        .map(|t| Tx {
+            timestamp_ms: t.block_time.timestamp_millis(),
+            slot: t.slot,
+            position: t.leg_index,
+            side: match t.trade_type {
+                TradeType::Buy => Side::Buy,
+                TradeType::Sell => Side::Sell,
+            },
+            sol_amount: t.sol_amount,
+            price: t.price_per_token,
+        })
+        .collect();
+
+    txs.sort_by(|a, b| {
+        a.timestamp_ms
+            .cmp(&b.timestamp_ms)
+            .then(a.slot.cmp(&b.slot))
+            .then(a.position.cmp(&b.position))
+    });
+
+    txs
+}
+
+/// Core phase machine. Produces the pre-filter, strictly-alternating ledger of
+/// finalized legs. The active leg and any temp leg at end-of-history are
+/// discarded.
+fn scan(txs: &[Tx], params: &SwingParams) -> Vec<LegAcc> {
+    let mut ledger: Vec<LegAcc> = Vec::new();
+
+    if txs.is_empty() {
+        return ledger;
+    }
+
+    let mut current_high: Option<LegAcc> = None;
+    let mut current_low: Option<LegAcc> = None;
+    let mut temp: Option<LegAcc> = None;
+    let mut frozen_threshold: f64 = 0.0;
+
+    // Initialization from the first transaction.
+    let first = &txs[0];
+    let mut phase = match first.side {
+        Side::Buy => {
+            current_high = Some(LegAcc::seed_high(first));
+            Phase::SwingHigh
+        }
+        Side::Sell => {
+            current_low = Some(LegAcc::seed_low(first));
+            Phase::SwingLow
+        }
+    };
+
+    for tx in &txs[1..] {
+        match phase {
+            Phase::SwingHigh => match tx.side {
+                Side::Buy => current_high.as_mut().unwrap().apply_buy(tx),
+                Side::Sell => {
+                    let snapshot = current_high.as_ref().unwrap().net_flow();
+                    frozen_threshold = params
+                        .high_to_low_threshold_sol
+                        .min(params.high_to_low_threshold_pct / 100.0 * snapshot.abs());
+                    temp = Some(LegAcc::seed_low(tx));
+                    phase = Phase::TempSwingLow;
+
+                    if temp.as_ref().unwrap().outflow >= frozen_threshold {
+                        ledger.push(current_high.take().unwrap());
+                        current_low = temp.take();
+                        phase = Phase::SwingLow;
+                    }
+                }
+            },
+
+            Phase::TempSwingLow => match tx.side {
+                Side::Sell => {
+                    let t = temp.as_mut().unwrap();
+                    t.apply_sell(tx);
+                    if t.outflow >= frozen_threshold {
+                        ledger.push(current_high.take().unwrap());
+                        current_low = temp.take();
+                        phase = Phase::SwingLow;
+                    }
+                }
+                Side::Buy => {
+                    // Sub-threshold: merge temp SELLs back into the swing high.
+                    let t = temp.take().unwrap();
+                    let h = current_high.as_mut().unwrap();
+                    h.outflow += t.outflow;
+                    h.trade_count += t.trade_count;
+                    phase = Phase::SwingHigh;
+                    // The triggering BUY is then counted exactly once here.
+                    h.apply_buy(tx);
+                }
+            },
+
+            Phase::SwingLow => match tx.side {
+                Side::Sell => current_low.as_mut().unwrap().apply_sell(tx),
+                Side::Buy => {
+                    let snapshot = current_low.as_ref().unwrap().net_flow(); // negative
+                    frozen_threshold = params
+                        .low_to_high_threshold_sol
+                        .max(params.low_to_high_threshold_pct / 100.0 * snapshot.abs());
+                    temp = Some(LegAcc::seed_high(tx));
+                    phase = Phase::TempSwingHigh;
+
+                    if temp.as_ref().unwrap().inflow >= frozen_threshold {
+                        ledger.push(current_low.take().unwrap());
+                        current_high = temp.take();
+                        phase = Phase::SwingHigh;
+                    }
+                }
+            },
+
+            Phase::TempSwingHigh => match tx.side {
+                Side::Buy => {
+                    let t = temp.as_mut().unwrap();
+                    t.apply_buy(tx);
+                    if t.inflow >= frozen_threshold {
+                        ledger.push(current_low.take().unwrap());
+                        current_high = temp.take();
+                        phase = Phase::SwingHigh;
+                    }
+                }
+                Side::Sell => {
+                    // Sub-threshold: merge temp BUYs back into the swing low.
+                    let t = temp.take().unwrap();
+                    let l = current_low.as_mut().unwrap();
+                    l.inflow += t.inflow;
+                    l.trade_count += t.trade_count;
+                    phase = Phase::SwingLow;
+                    // The triggering SELL is then counted exactly once here.
+                    l.apply_sell(tx);
+                }
+            },
+        }
+    }
+
+    ledger
+}
+
+/// Post-processing pair-based quality filter. Forms fixed, non-overlapping
+/// `(swing_high, swing_low)` pairs and discards a pair only when BOTH legs
+/// fail. Unpaired legs (leading low / trailing high) are kept as-is.
+fn apply_quality_filter(ledger: Vec<LegAcc>, params: &SwingParams) -> Vec<SwingLeg> {
+    let fails = |leg: &LegAcc| -> bool {
+        let duration_ms = leg.end_at - leg.start_at;
+        leg.trade_count < params.min_leg_trades
+            || duration_ms < params.min_leg_duration_ms
+            || leg.net_flow().abs() < params.min_leg_net_flow
+            || (leg.inflow + leg.outflow) < params.min_leg_volume
+    };
+
+    let mut out: Vec<SwingLeg> = Vec::with_capacity(ledger.len());
+    let mut i = 0;
+    while i < ledger.len() {
+        let is_pair = i + 1 < ledger.len()
+            && ledger[i].leg_type == SwingType::SwingHigh
+            && ledger[i + 1].leg_type == SwingType::SwingLow;
+
+        if is_pair {
+            if !(fails(&ledger[i]) && fails(&ledger[i + 1])) {
+                out.push(ledger[i].clone().finalize());
+                out.push(ledger[i + 1].clone().finalize());
+            }
+            i += 2;
+        } else {
+            // Unpaired leg: ignored by the filter, kept as-is.
+            out.push(ledger[i].clone().finalize());
+            i += 1;
+        }
+    }
+
+    out
+}

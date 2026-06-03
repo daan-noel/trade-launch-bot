@@ -3,6 +3,7 @@ mod config;
 pub use config::constants as constants;
 mod ingest;
 mod models;
+mod analyzers;
 mod state;
 mod storage;
 mod strategies;

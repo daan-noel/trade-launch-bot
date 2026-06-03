@@ -78,7 +78,7 @@ export function Pagination({
   }
 
   return (
-    <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-bg-panel px-3 py-2.5">
+    <div className="mt-1 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-bg-panel px-3 py-1.5">
       <p className="min-w-0 flex-1 text-xs text-text-dim">
         {totalItems === 0 ? (
           'No results'

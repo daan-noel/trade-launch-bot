@@ -15,24 +15,28 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             )
             .route(
                 "/tokens/{mint}/analysis",
-                web::get().to(handlers::analysis::get_token_analysis),
+                web::get().to(handlers::tokens::get_token_analysis),
+            )
+            .route(
+                "/tokens/{mint}/swings",
+                web::post().to(handlers::tokens::detect_token_swings),
             )
             // Creator endpoints
             .route(
                 "/creators",
-                web::get().to(handlers::analysis::list_creators),
+                web::get().to(handlers::tokens::list_creators),
             )
             .route(
                 "/creators/{wallet}",
-                web::get().to(handlers::analysis::get_creator),
+                web::get().to(handlers::tokens::get_creator),
             )
             // Analysis list
             .route(
                 "/analysis",
-                web::get().to(handlers::analysis::list_analysis_results),
+                web::get().to(handlers::tokens::list_analysis_results),
             )
             // Real-time SSE stream
-            .route("/stream", web::get().to(handlers::stream::stream_events))
+            .route("/stream", web::get().to(handlers::system::stream_events))
             // System endpoints
             .route(
                 "/system/live",
@@ -49,15 +53,15 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             // Wallet endpoints
             .route(
                 "/wallets/{address}",
-                web::get().to(handlers::wallets::get_wallet),
+                web::get().to(handlers::system::get_wallet),
             )
             .route(
                 "/wallets/{address}/flag",
-                web::post().to(handlers::wallets::flag_wallet),
+                web::post().to(handlers::system::flag_wallet),
             )
             .route(
                 "/wallets/{address}/flag",
-                web::delete().to(handlers::wallets::unflag_wallet),
+                web::delete().to(handlers::system::unflag_wallet),
             )
             // Strategy endpoints
             .route(
@@ -112,19 +116,19 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             // On-chain Solana queries — bypass local DB entirely
             .route(
                 "/solana/wallet/tokens",
-                web::get().to(handlers::trade::get_wallet_tokens),
+                web::get().to(handlers::trading::get_wallet_tokens),
             )
             .route(
                 "/solana/wallet/buy",
-                web::post().to(handlers::trade::manual_buy),
+                web::post().to(handlers::trading::manual_buy),
             )
             .route(
                 "/solana/wallet/sell",
-                web::post().to(handlers::trade::manual_sell),
+                web::post().to(handlers::trading::manual_sell),
             )
             .route(
                 "/solana/wallet/{wallet}/token/{mint}",
-                web::get().to(handlers::trade::get_wallet_token_balance),
+                web::get().to(handlers::trading::get_wallet_token_balance),
             ),
     );
 }

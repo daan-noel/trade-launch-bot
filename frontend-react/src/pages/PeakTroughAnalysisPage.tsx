@@ -36,6 +36,10 @@ function filterByCreatedRange(
   });
 }
 
+function SectionDivider() {
+  return <div role="separator" className="my-6 border-t border-white/6" />;
+}
+
 export function PeakTroughAnalysisPage() {
   const price = usePriceDisplay();
   const { unit, usdRate } = usePriceUnit();
@@ -172,6 +176,8 @@ export function PeakTroughAnalysisPage() {
         )}
       </div>
 
+      <SectionDivider />
+
       <div className="mb-3 flex flex-wrap items-end gap-3">
         <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
           Created from
@@ -219,6 +225,8 @@ export function PeakTroughAnalysisPage() {
         <p className="mb-3 text-sm text-text-dim">Click Refresh to load tokens.</p>
       )}
 
+      <SectionDivider />
+
       {loaded && (
         <DataTable
           columns={columns}
@@ -236,7 +244,9 @@ export function PeakTroughAnalysisPage() {
         />
       )}
 
-      <div className="mt-4">
+      <SectionDivider />
+
+      <div>
         <TokenPriceChart
           symbol={chartSymbol}
           id={selectedMint ?? ''}
@@ -257,7 +267,9 @@ export function PeakTroughAnalysisPage() {
       </div>
 
       {selectedBar && selectedMint && (
-        <div className="mt-4">
+        <>
+          <SectionDivider />
+          <div>
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <h3 className="text-sm font-bold text-text">Bar trades</h3>
             <span className="font-mono text-[11px] text-text-dim">{barTimeLabel}</span>
@@ -282,7 +294,8 @@ export function PeakTroughAnalysisPage() {
             hoverable
             emptyMessage="No trades in this bar."
           />
-        </div>
+          </div>
+        </>
       )}
     </div>
   );
