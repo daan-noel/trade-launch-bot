@@ -26,7 +26,6 @@ export function DashboardPage() {
           columns={columns}
           rows={events}
           rowKey={(ev) => `${ev.tx_signature}-${ev.slot}`}
-          defaultPageSize={25}
           searchable={false}
           colFilters={false}
           selectable={false}

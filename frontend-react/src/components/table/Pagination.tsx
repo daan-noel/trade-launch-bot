@@ -1,10 +1,13 @@
+import { useEffect, useState } from 'react';
 import { cn } from '../../lib/cn';
+
+export const DEFAULT_PAGE_SIZE = 10;
 
 interface PaginationProps {
   currentPage: number;
   totalPages: number;
   totalItems: number;
-  pageSize: number;
+  pageSize?: number;
   pageSizeOptions: number[];
   onPageChange: (page: number) => void;
   onPageSizeChange: (size: number) => void;
@@ -49,14 +52,30 @@ export function Pagination({
   currentPage,
   totalPages,
   totalItems,
-  pageSize,
+  pageSize = DEFAULT_PAGE_SIZE,
   pageSizeOptions,
   onPageChange,
   onPageSizeChange,
 }: PaginationProps) {
+  const [pageInput, setPageInput] = useState(String(currentPage));
   const buttons = buildPageButtons(currentPage, totalPages);
   const rangeStart = totalItems === 0 ? 0 : (currentPage - 1) * pageSize + 1;
   const rangeEnd = totalItems === 0 ? 0 : Math.min(currentPage * pageSize, totalItems);
+
+  useEffect(() => {
+    setPageInput(String(currentPage));
+  }, [currentPage]);
+
+  function commitPageInput() {
+    const parsed = parseInt(pageInput, 10);
+    if (!Number.isFinite(parsed)) {
+      setPageInput(String(currentPage));
+      return;
+    }
+    const page = Math.min(totalPages, Math.max(1, parsed));
+    setPageInput(String(page));
+    if (page !== currentPage) onPageChange(page);
+  }
 
   return (
     <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-bg-panel px-3 py-2.5">
@@ -124,6 +143,24 @@ export function Pagination({
               </button>
             ),
           )}
+
+          <label className="inline-flex h-8 shrink-0 items-center gap-1 border-r border-border px-2 text-xs text-text-dim">
+            <span className="sr-only">Go to page</span>
+            <input
+              type="number"
+              min={1}
+              max={totalPages}
+              value={pageInput}
+              onChange={(e) => setPageInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.currentTarget.blur();
+              }}
+              onBlur={commitPageInput}
+              aria-label={`Page number, 1 to ${totalPages}`}
+              className="h-6 w-11 rounded border border-border bg-bg-card px-1 text-center text-[13px] font-medium tabular-nums text-text transition-colors [appearance:textfield] hover:border-white/20 focus:border-primary/40 focus:outline-none focus:ring-1 focus:ring-primary/25 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+            />
+            <span className="tabular-nums">/ {totalPages}</span>
+          </label>
 
           <button
             type="button"

@@ -5,7 +5,6 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use crate::{
-    models::trade::Trade,
     state::{app_state::AppState, token_cache::TokenState},
     storage::repositories::{token_repo::TokenRepo, trade_repo::TradeRepo},
 };
@@ -288,33 +287,21 @@ pub async fn get_token(state: web::Data<Arc<AppState>>, path: web::Path<String>)
     }
 }
 
-/// `GET /api/tokens/:mint/trades?limit=50&offset=0`
+/// `GET /api/tokens/:mint/trades`
 ///
-/// Returns trades from cache (fast) when the token is tracked, otherwise queries the DB.
+/// Returns all trades for a token in chronological order (cache first, else DB).
 pub async fn get_trades(
     state: web::Data<Arc<AppState>>,
     path: web::Path<String>,
-    query: web::Query<PaginationParams>,
 ) -> impl Responder {
     let mint = path.into_inner();
-    let limit = query.limit.max(1).min(200);
-    let offset = query.offset.max(0) as usize;
 
-    // Try cache first
     if let Some(entry) = state.token_cache.get(&mint) {
-        let trades: Vec<&Trade> = entry
-            .trades
-            .iter()
-            .rev() // most recent first
-            .skip(offset)
-            .take(limit as usize)
-            .collect();
-        return HttpResponse::Ok().json(trades);
+        return HttpResponse::Ok().json(entry.trades.clone());
     }
 
-    // Fallback to DB
     let repo = TradeRepo::new(state.db.clone());
-    match repo.find_by_mint(&mint, limit).await {
+    match repo.find_by_mint_all(&mint).await {
         Ok(trades) => HttpResponse::Ok().json(trades),
         Err(e) => {
             tracing::error!("DB error fetching trades for {mint}: {e}");

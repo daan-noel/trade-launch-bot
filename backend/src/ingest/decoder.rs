@@ -178,6 +178,7 @@ impl HeliusDecoder {
             trade.virtual_token_reserves = Some(ev.virtual_token_reserves);
             trade.real_sol_reserves = Some(ev.real_sol_reserves);
             trade.real_token_reserves = Some(ev.real_token_reserves);
+            trade.apply_curve_price();
             trade.instruction_type = match trade.trade_type {
                 TradeType::Buy => "Buy".to_string(),
                 TradeType::Sell => "Sell".to_string(),

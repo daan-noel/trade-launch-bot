@@ -25,7 +25,6 @@ export function TransactionsPage() {
           columns={columns}
           rows={events}
           rowKey={(ev) => `${ev.tx_signature}-${ev.slot}`}
-          defaultPageSize={25}
           pageSizeOptions={[10, 25, 50, 100]}
           searchable
           colFilters

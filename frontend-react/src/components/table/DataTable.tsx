@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { cn } from '../../lib/cn';
-import { Pagination } from './Pagination';
+import { Pagination, DEFAULT_PAGE_SIZE } from './Pagination';
 import type { ColumnDef, SortDir, SortValue } from './types';
 
 function loadVisibleCols(storageKey: string, columns: ColumnDef<unknown>[]): Set<string> {
@@ -62,7 +62,7 @@ export function DataTable<R>({
   rowActions,
   selectedKey: externalSelected,
   onSelect,
-  defaultPageSize = 25,
+  defaultPageSize = DEFAULT_PAGE_SIZE,
   pageSizeOptions = [10, 25, 50, 100],
   searchable = true,
   colFilters = false,

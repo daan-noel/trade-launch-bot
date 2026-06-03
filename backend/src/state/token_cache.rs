@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 
-use crate::config::constants::INITIAL_VIRTUAL_TOKEN_RESERVES;
+use crate::config::constants::{INITIAL_VIRTUAL_TOKEN_RESERVES, TOKEN_TOTAL_SUPPLY};
 use crate::models::{token::Token, trade::Trade};
 
 // ---------------------------------------------------------------------------
@@ -104,15 +104,8 @@ impl TokenState {
     }
 
     fn update_market_cap(&mut self, price: f64) {
-        self.market_cap = if let (Some(initial), Some(current)) = (
-            self.initial_virtual_token_reserves,
-            self.current_virtual_token_reserves,
-        ) {
-            let circulating_supply = (initial - current).max(0.0);
-            Some(circulating_supply * price)
-        } else {
-            None
-        };
+        // FDV in SOL: total supply × curve spot price (GMGN-style).
+        self.market_cap = Some(TOKEN_TOTAL_SUPPLY * price);
     }
 
     /// Count unique wallets across the full trade history.

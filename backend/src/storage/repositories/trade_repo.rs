@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use sqlx::{types::Json, PgPool};
 use uuid::Uuid;
 
-use crate::config::constants::INITIAL_VIRTUAL_TOKEN_RESERVES;
+use crate::config::constants::TOKEN_TOTAL_SUPPLY;
 use crate::models::trade::{Trade, TradeType};
 
 pub struct TradeRepo {
@@ -261,16 +261,9 @@ impl TradeRepo {
         Ok(rows
             .into_iter()
             .map(|r| {
-                // Use the static initial virtual token reserves as baseline.
-                let initial_reserves = INITIAL_VIRTUAL_TOKEN_RESERVES;
-
-                let market_cap = match (r.current_virtual_token_reserves, r.last_price) {
-                    (Some(current), Some(price)) => {
-                        let circulating_supply = (initial_reserves - current).max(0.0);
-                        Some(circulating_supply * price)
-                    }
-                    _ => None,
-                };
+                let market_cap = r
+                    .last_price
+                    .map(|price| TOKEN_TOTAL_SUPPLY * price);
 
                 (
                     r.mint_address,

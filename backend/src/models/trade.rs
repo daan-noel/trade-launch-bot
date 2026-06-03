@@ -45,6 +45,21 @@ pub enum TradeType {
 }
 
 impl Trade {
+    /// Spot price from bonding-curve reserves (`virtual_sol / virtual_token`).
+    pub fn curve_spot_price(&self) -> Option<f64> {
+        match (self.virtual_sol_reserves, self.virtual_token_reserves) {
+            (Some(vsol), Some(vtok)) if vtok > 0.0 => Some(vsol / vtok),
+            _ => None,
+        }
+    }
+
+    /// Overwrite `price_per_token` with curve spot price when reserves are present.
+    pub fn apply_curve_price(&mut self) {
+        if let Some(spot) = self.curve_spot_price() {
+            self.price_per_token = spot;
+        }
+    }
+
     pub fn new(
         mint_address: String,
         wallet_address: String,

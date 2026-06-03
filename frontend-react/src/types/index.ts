@@ -165,6 +165,22 @@ export interface LiveTrade {
   timestamp: string;
 }
 
+export interface TradeRecord {
+  id: string;
+  mint_address: string;
+  wallet_address: string;
+  trade_type: 'buy' | 'sell';
+  sol_amount: number;
+  token_amount: number;
+  price_per_token: number;
+  tx_signature: string;
+  leg_index: number;
+  slot: number;
+  block_time: string;
+  virtual_sol_reserves?: number | null;
+  virtual_token_reserves?: number | null;
+}
+
 export interface AnalysisRecord {
   analyzer_name: string;
   score: number;

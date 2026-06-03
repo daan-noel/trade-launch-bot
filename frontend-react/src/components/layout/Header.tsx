@@ -1,6 +1,7 @@
-import { NavLink, Link } from 'react-router-dom';
+import { Link, NavLink, useLocation } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { StatusButton } from '../ui/StatusButton';
+import { NavDropdown } from '../ui/NavDropdown';
 import { fetchLiveMode, fetchSolPrice, setLiveMode } from '../../services/api';
 import { usePriceUnit } from '../../context/PriceUnitContext';
 import { cn } from '../../lib/cn';
@@ -24,26 +25,10 @@ function NavItem({ to, children }: { to: string; children: React.ReactNode }) {
   );
 }
 
-function ChevronDown({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 12 12"
-      fill="none"
-      aria-hidden
-      className={cn('size-3 opacity-50', className)}
-    >
-      <path
-        d="M3 4.5 6 7.5 9 4.5"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
 export function Header() {
+  const location = useLocation();
+  const analysisActive = location.pathname.startsWith('/analysis');
+  const strategiesActive = location.pathname.startsWith('/strategies');
   const [liveMode, setLiveModeState] = useState(false);
   const { unit, usdRate, setUnit, setUsdRate } = usePriceUnit();
 
@@ -94,44 +79,25 @@ export function Header() {
 
         <div className="hidden h-5 w-px shrink-0 bg-white/8 md:block" aria-hidden />
 
-        <nav className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto rounded-lg border border-white/6 bg-white/3 p-1 scrollbar-none [&::-webkit-scrollbar]:hidden">
+        <nav className="flex min-w-0 flex-1 items-center gap-0.5 overflow-visible rounded-lg border border-white/6 bg-white/3 p-1">
           <NavItem to="/">Home</NavItem>
           <NavItem to="/dashboard">Dashboard</NavItem>
           <NavItem to="/tokens">Tokens</NavItem>
           <NavItem to="/transactions">Transactions</NavItem>
-          <NavItem to="/analysis">Analysis</NavItem>
+          <NavDropdown
+            label="Analysis"
+            isActive={analysisActive}
+            items={[
+              { to: '/analysis/general', label: 'General' },
+              { to: '/analysis/peak-trough', label: 'Peak / Trough' },
+            ]}
+          />
           <NavItem to="/wallet">Wallet</NavItem>
-
-          <div className="group relative shrink-0">
-            <NavLink
-              to="/strategies/tpsl"
-              className={({ isActive }) =>
-                cn(
-                  'flex items-center gap-1 rounded-md px-3 py-1.5 text-[13px] font-medium transition-all duration-150',
-                  isActive
-                    ? 'bg-primary/12 text-primary shadow-[inset_0_1px_0_rgba(19,206,175,0.15)]'
-                    : 'text-text-mid hover:bg-white/4 hover:text-text',
-                )
-              }
-            >
-              Strategies
-              <ChevronDown className="transition-transform group-hover:translate-y-px" />
-            </NavLink>
-            <div className="invisible absolute left-0 top-[calc(100%+8px)] z-10 flex min-w-[132px] translate-y-1 flex-col gap-0.5 rounded-lg border border-white/8 bg-bg-panel/95 p-1 opacity-0 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-xl transition-all duration-150 group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100">
-              <NavLink
-                to="/strategies/tpsl"
-                className={({ isActive }) =>
-                  cn(
-                    'rounded-md px-3 py-2 text-xs font-medium text-text-mid whitespace-nowrap transition-colors hover:bg-white/6 hover:text-text',
-                    isActive && 'bg-primary/10 text-primary',
-                  )
-                }
-              >
-                TP / SL Rules
-              </NavLink>
-            </div>
-          </div>
-
+          <NavDropdown
+            label="Strategies"
+            isActive={strategiesActive}
+            items={[{ to: '/strategies/tpsl', label: 'TP / SL Rules' }]}
+          />
           <NavItem to="/settings">Settings</NavItem>
         </nav>
 
