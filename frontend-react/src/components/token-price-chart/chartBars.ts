@@ -102,6 +102,96 @@ export function tradesForChartMetric(
   });
 }
 
+type TradeBucket = {
+  prices: number[];
+  volume: number;
+  liquiditySol: number | null;
+};
+
+/** GMGN-style: fill every interval, open[i] = close[i-1], flat bars when no trades. */
+function buildContinuousBars(
+  buckets: Map<number, TradeBucket>,
+  startKey: number,
+  endKey: number,
+  step: number,
+): OhlcBar[] {
+  const bars: OhlcBar[] = [];
+  let prevClose: number | null = null;
+  let lastLiquidity: number | null = null;
+
+  for (let key = startKey; key <= endKey; key += step) {
+    const bucket = buckets.get(key);
+    const prices = bucket?.prices ?? [];
+
+    if (prices.length > 0) {
+      const open = prevClose ?? prices[0];
+      const close = prices[prices.length - 1];
+      const high = Math.max(open, ...prices);
+      const low = Math.min(open, ...prices);
+      if (bucket!.liquiditySol != null) lastLiquidity = bucket!.liquiditySol;
+
+      bars.push({
+        time: key as UTCTimestamp,
+        open,
+        high,
+        low,
+        close,
+        volume: bucket!.volume,
+        liquiditySol: lastLiquidity,
+      });
+      prevClose = close;
+    } else if (prevClose != null) {
+      bars.push({
+        time: key as UTCTimestamp,
+        open: prevClose,
+        high: prevClose,
+        low: prevClose,
+        close: prevClose,
+        volume: 0,
+        liquiditySol: lastLiquidity,
+      });
+    }
+  }
+
+  return bars;
+}
+
+function collectTradeBuckets(
+  trades: ChartTrade[],
+  bucketKey: (trade: ChartTrade) => number | null,
+  toValue: (priceInSol: number) => number,
+  metric: ChartMetric,
+): Map<number, TradeBucket> {
+  const buckets = new Map<number, TradeBucket>();
+
+  for (const trade of trades) {
+    const key = bucketKey(trade);
+    if (key == null) continue;
+
+    const value = chartValueForTrade(trade, metric);
+    if (value == null) continue;
+
+    const price = toValue(value);
+    const vol = trade.sol_amount ?? 1;
+    const liquiditySol = curveLiquiditySol(trade);
+    const existing = buckets.get(key);
+
+    if (existing) {
+      existing.prices.push(price);
+      existing.volume += vol;
+      if (liquiditySol != null) existing.liquiditySol = liquiditySol;
+    } else {
+      buckets.set(key, {
+        prices: [price],
+        volume: vol,
+        liquiditySol,
+      });
+    }
+  }
+
+  return buckets;
+}
+
 export function aggregateTradesToBars(
   trades: ChartTrade[],
   intervalSec: number,
@@ -110,58 +200,24 @@ export function aggregateTradesToBars(
 ): OhlcBar[] {
   if (trades.length === 0) return [];
 
-  const buckets = new Map<
-    number,
-    {
-      open: number;
-      high: number;
-      low: number;
-      close: number;
-      volume: number;
-      liquiditySol: number | null;
-    }
-  >();
-
   const sorted = [...trades].sort(
     (a, b) => Date.parse(a.block_time) - Date.parse(b.block_time),
   );
 
-  for (const trade of sorted) {
-    const sec = tradeTimestampSec(trade.block_time);
-    if (sec == null) continue;
+  const buckets = collectTradeBuckets(
+    sorted,
+    (trade) => {
+      const sec = tradeTimestampSec(trade.block_time);
+      return sec == null ? null : bucketStart(sec, intervalSec);
+    },
+    toValue,
+    metric,
+  );
 
-    const time = bucketStart(sec, intervalSec);
-    const value = chartValueForTrade(trade, metric);
-    if (value == null) continue;
-    const price = toValue(value);
-    const vol = trade.sol_amount ?? 1;
-    const liquiditySol = curveLiquiditySol(trade);
+  if (buckets.size === 0) return [];
 
-    const existing = buckets.get(time);
-    if (existing) {
-      existing.high = Math.max(existing.high, price);
-      existing.low = Math.min(existing.low, price);
-      existing.close = price;
-      existing.volume += vol;
-      if (liquiditySol != null) existing.liquiditySol = liquiditySol;
-    } else {
-      buckets.set(time, {
-        open: price,
-        high: price,
-        low: price,
-        close: price,
-        volume: vol,
-        liquiditySol,
-      });
-    }
-  }
-
-  return Array.from(buckets.entries())
-    .sort(([a], [b]) => a - b)
-    .map(([time, bar]) => ({
-      time: time as UTCTimestamp,
-      ...bar,
-    }));
+  const keys = [...buckets.keys()].sort((a, b) => a - b);
+  return buildContinuousBars(buckets, keys[0], keys[keys.length - 1], intervalSec);
 }
 
 export function aggregateTradesToBarsBySlot(
@@ -171,59 +227,23 @@ export function aggregateTradesToBarsBySlot(
 ): OhlcBar[] {
   if (trades.length === 0) return [];
 
-  const buckets = new Map<
-    number,
-    {
-      open: number;
-      high: number;
-      low: number;
-      close: number;
-      volume: number;
-      liquiditySol: number | null;
-    }
-  >();
-
   const sorted = [...trades].sort((a, b) => {
     const slotDiff = (a.slot ?? 0) - (b.slot ?? 0);
     if (slotDiff !== 0) return slotDiff;
     return Date.parse(a.block_time) - Date.parse(b.block_time);
   });
 
-  for (const trade of sorted) {
-    const slot = trade.slot;
-    if (slot == null) continue;
+  const buckets = collectTradeBuckets(
+    sorted,
+    (trade) => trade.slot ?? null,
+    toValue,
+    metric,
+  );
 
-    const value = chartValueForTrade(trade, metric);
-    if (value == null) continue;
-    const price = toValue(value);
-    const vol = trade.sol_amount ?? 1;
-    const liquiditySol = curveLiquiditySol(trade);
+  if (buckets.size === 0) return [];
 
-    const existing = buckets.get(slot);
-    if (existing) {
-      existing.high = Math.max(existing.high, price);
-      existing.low = Math.min(existing.low, price);
-      existing.close = price;
-      existing.volume += vol;
-      if (liquiditySol != null) existing.liquiditySol = liquiditySol;
-    } else {
-      buckets.set(slot, {
-        open: price,
-        high: price,
-        low: price,
-        close: price,
-        volume: vol,
-        liquiditySol,
-      });
-    }
-  }
-
-  return Array.from(buckets.entries())
-    .sort(([a], [b]) => a - b)
-    .map(([slot, bar]) => ({
-      time: slot as UTCTimestamp,
-      ...bar,
-    }));
+  const keys = [...buckets.keys()].sort((a, b) => a - b);
+  return buildContinuousBars(buckets, keys[0], keys[keys.length - 1], 1);
 }
 
 export function barsToLineData(bars: OhlcBar[]) {

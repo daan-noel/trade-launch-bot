@@ -108,10 +108,12 @@ export interface ChartToolbarProps {
   swingOverlayAvailable: boolean;
   showSwingOverlay: boolean;
   crosshair: ChartCrosshairInfo | null;
+  chartTimezone: string;
   isMigrated?: boolean;
   isMayhemMode?: boolean;
   isCashbackEnabled?: boolean;
   onGroupModeChange: (mode: ChartGroupMode) => void;
+  onChartTimezoneChange: (timezone: string) => void;
   onIntervalChange: (interval: ChartInterval) => void;
   onStyleChange: (style: ChartStyle) => void;
   onMetricChange?: (metric: ChartMetric) => void;

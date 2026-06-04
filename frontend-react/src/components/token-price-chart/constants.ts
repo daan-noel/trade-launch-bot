@@ -9,6 +9,7 @@ import {
 } from 'lightweight-charts';
 import { formatPrice } from '../../utils/format';
 import type { PriceUnit } from '../../types';
+import { createChartTimeFormatters } from './chartTimezone';
 import type { ChartGroupMode, ChartInterval, ChartStyle } from './types';
 
 /** Pump.fun total supply in raw token units (FDV market cap). */
@@ -132,8 +133,11 @@ export function createChartOptions(
   height: number,
   groupMode: ChartGroupMode = 'time',
   priceUnit: PriceUnit = 'SOL',
+  timezone?: string,
 ): DeepPartial<ChartOptions> {
   const slotTimeFormatter = (time: number) => String(time);
+  const timeFormatters =
+    groupMode === 'time' && timezone ? createChartTimeFormatters(timezone) : null;
 
   return {
     width,
@@ -152,10 +156,10 @@ export function createChartOptions(
       timeVisible: groupMode === 'time',
       secondsVisible: groupMode === 'time',
       ...(groupMode === 'slot'
-        ? {
-            tickMarkFormatter: slotTimeFormatter,
-          }
-        : {}),
+        ? { tickMarkFormatter: slotTimeFormatter }
+        : timeFormatters
+          ? { tickMarkFormatter: timeFormatters.tickMarkFormatter }
+          : {}),
     },
     crosshair: {
       vertLine: { color: CHART_COLORS.crosshair },
@@ -164,10 +168,10 @@ export function createChartOptions(
     localization: {
       priceFormatter: createChartPriceFormatter(priceUnit),
       ...(groupMode === 'slot'
-        ? {
-            timeFormatter: slotTimeFormatter,
-          }
-        : {}),
+        ? { timeFormatter: slotTimeFormatter }
+        : timeFormatters
+          ? { timeFormatter: timeFormatters.timeFormatter }
+          : {}),
     },
   };
 }
