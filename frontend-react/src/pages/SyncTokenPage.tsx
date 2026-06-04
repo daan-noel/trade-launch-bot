@@ -1,8 +1,10 @@
 import { useCallback, useMemo, useState } from 'react';
 import { DataTable } from '../components/table/DataTable';
 import { tokenTradeColumns } from '../components/transactions/tokenTradeColumns';
+import { TokenPriceChart, type ChartMetric } from '../components/token-price-chart';
 import { TokenDetailPanel } from '../components/tokens/TokenDetailPanel';
 import { Button } from '../components/ui/Button';
+import { usePriceUnit } from '../context/PriceUnitContext';
 import { usePriceDisplay } from '../hooks/usePriceDisplay';
 import { syncToken } from '../services/api';
 import type { SyncProgressEvent, TokenDetailRecord, TradeRecord } from '../types';
@@ -45,7 +47,14 @@ function stageLabel(stage: string): string {
 
 export function SyncTokenPage() {
   const price = usePriceDisplay();
+  const { unit, usdRate } = usePriceUnit();
   const tradeColumns = useMemo(() => tokenTradeColumns(price), [price]);
+
+  const [chartMetric, setChartMetric] = useState<ChartMetric>('price');
+  const toChartValue = useCallback(
+    (sol: number) => (unit === 'USD' && usdRate != null ? sol * usdRate : sol),
+    [unit, usdRate],
+  );
 
   const [mint, setMint] = useState('');
   const [includePostMigrate, setIncludePostMigrate] = useState(false);
@@ -165,6 +174,23 @@ export function SyncTokenPage() {
           <h3 className="mb-2 text-sm font-bold text-text">Token</h3>
           <div className="mb-6 rounded-lg border border-white/6 bg-white/2 p-3">
             <TokenDetailPanel detail={detail} loading={false} error={null} />
+          </div>
+
+          <div className="mb-6">
+            <TokenPriceChart
+              symbol={detail.symbol || detail.name || detail.mint_address}
+              id={detail.mint_address}
+              trades={trades}
+              toValue={toChartValue}
+              priceLabel={chartMetric === 'mc' ? `MC (${unit})` : unit}
+              priceUnit={unit}
+              metric={chartMetric}
+              onMetricChange={setChartMetric}
+              athPriceInSol={detail.ath_price}
+              isMigrated={detail.is_migrated}
+              isMayhemMode={detail.is_mayhem_mode}
+              isCashbackEnabled={detail.is_cashback_enabled}
+            />
           </div>
 
           <div className="mb-2 flex items-center gap-2">
