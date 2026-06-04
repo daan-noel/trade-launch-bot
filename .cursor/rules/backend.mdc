@@ -13,11 +13,11 @@ Stay in `backend/**`. Smallest correct diff. Monorepo map: `.cursor/rules/projec
 
 ## Task → path
 - Routes/handlers → `src/api/mod.rs`, `src/api/handlers/`
-- Logic → `src/services/`, TP/SL → `src/strategies/tpsl/`
+- Logic → `src/services/` (e.g. `sol_price`, `wallet_tokens`), outbound REST → `src/services/clients/`, TP/SL → `src/strategies/tpsl/`
 - SQL → `src/storage/repositories/`, schema → `migrations/`
 - On-chain → `src/trader/`, Helius feed → `src/ingest/`
 - Types/events → `src/models/` (JSON **snake_case**)
-- Startup/state → `src/main.rs`, `src/state/app_state.rs`, `src/config/settings.rs`
+- Startup/state → `src/main.rs`, `src/state/app_state.rs`, `src/config/settings.rs` (`state/` has no HTTP)
 
 ## Rules
 Handlers thin (`web::Data<Arc<AppState>>`); logic in services; SQL in repos only.

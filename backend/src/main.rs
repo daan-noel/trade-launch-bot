@@ -6,6 +6,7 @@ mod models;
 mod analyzers;
 mod state;
 mod storage;
+mod services;
 mod strategies;
 mod trader;
 
@@ -123,7 +124,7 @@ async fn main() -> anyhow::Result<()> {
     let strategy_task = tokio::spawn(strategy_runner.run(strategy_rx));
 
     // Initialize SOL price cache immediately, then start the poller.
-    match state::sol_price::fetch_latest_sol_price().await {
+    match services::sol_price::fetch_latest_sol_price().await {
         Ok(price) => {
             info!("Initial SOL/USD price: ${price:.2}");
             let _ = sol_price.send(Some(price));
@@ -134,7 +135,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Service: SOL price polling — updates the in-memory SOL/USD cache
-    let price_task = tokio::spawn(state::sol_price::run_poller(sol_price.clone()));
+    let price_task = tokio::spawn(services::sol_price::run_poller(sol_price.clone()));
 
     let server_task = if settings.http_enabled {
         let bind_addr = format!("{}:{}", settings.host, settings.port);

@@ -2,9 +2,8 @@ use std::sync::Arc;
 
 use actix_web::{web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
-use tracing::warn;
-
-use crate::state::{app_state::AppState, sol_price};
+use crate::services::sol_price;
+use crate::state::app_state::AppState;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LiveModeResponse {
@@ -22,18 +21,8 @@ pub struct UpdateLiveModeRequest {
 }
 
 pub async fn get_sol_price(state: web::Data<Arc<AppState>>) -> impl Responder {
-    let latest = match sol_price::fetch_latest_sol_price().await {
-        Ok(price) => {
-            state.set_sol_price(Some(price));
-            Some(price)
-        }
-        Err(err) => {
-            warn!("Failed to refresh SOL price on request: {err}");
-            state.latest_sol_price()
-        }
-    };
-
-    HttpResponse::Ok().json(SolPriceResponse { usd_rate: latest })
+    let usd_rate = sol_price::refresh(state.get_ref()).await;
+    HttpResponse::Ok().json(SolPriceResponse { usd_rate })
 }
 
 pub async fn get_live_mode(state: web::Data<Arc<AppState>>) -> impl Responder {
