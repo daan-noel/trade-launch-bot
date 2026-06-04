@@ -2,6 +2,16 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { DataTable } from '../../components/table/DataTable';
 import { tokenTradeColumns } from '../../components/transactions/tokenTradeColumns';
 import { TokenPriceChart, tradeBarTime, type ChartBarSelection, type ChartMetric } from '../../components/token-price-chart';
+import { FilterPanel } from '../../components/tokens/FilterPanel';
+import {
+  activeFilterCount,
+  defaultFilters,
+  filtersEmpty,
+  loadStoredTokenFilters,
+  saveStoredTokenFilters,
+  tokenPassesFilters,
+  type TokenFilters,
+} from '../../components/tokens/filters';
 import { tokenColumns } from '../../components/tokens/tokenColumns';
 import { usePriceUnit } from '../../context/PriceUnitContext';
 import { usePriceDisplay } from '../../hooks/usePriceDisplay';
@@ -52,6 +62,19 @@ function filterByCreatedRange(
     if (!Number.isNaN(toMs) && created > toMs) return false;
     return true;
   });
+}
+
+function filterDisplayedTokens(
+  tokens: TokenRecord[],
+  createdFrom: string,
+  createdTo: string,
+  filters: TokenFilters,
+): TokenRecord[] {
+  let rows = filterByCreatedRange(tokens, createdFrom, createdTo);
+  if (!filtersEmpty(filters)) {
+    rows = rows.filter((t) => tokenPassesFilters(filters, t));
+  }
+  return rows;
 }
 
 function SectionDivider() {
@@ -197,6 +220,9 @@ export function SwingDetectionPage() {
     toDatetimeLocalValue(new Date()),
   );
 
+  const [showFilters, setShowFilters] = useState(false);
+  const [filters, setFilters] = useState<TokenFilters>(loadStoredTokenFilters);
+
   const [selectedMint, setSelectedMint] = useState<string | null>(null);
   const [trades, setTrades] = useState<TradeRecord[]>([]);
   const [tradesLoading, setTradesLoading] = useState(false);
@@ -259,9 +285,11 @@ export function SwingDetectionPage() {
   }, [selectedMint, swingParams]);
 
   const displayed = useMemo(
-    () => filterByCreatedRange(tokens, createdFrom, createdTo),
-    [tokens, createdFrom, createdTo],
+    () => filterDisplayedTokens(tokens, createdFrom, createdTo, filters),
+    [tokens, createdFrom, createdTo, filters],
   );
+
+  const filterCount = activeFilterCount(filters);
 
   const selectedToken = useMemo(
     () => displayed.find((t) => t.mint_address === selectedMint) ?? null,
@@ -291,10 +319,11 @@ export function SwingDetectionPage() {
       setTotal(result.total);
       setLoaded(true);
       if (selectedMint) {
-        const stillVisible = filterByCreatedRange(
+        const stillVisible = filterDisplayedTokens(
           result.items,
           createdFrom,
           createdTo,
+          filters,
         ).some((t) => t.mint_address === selectedMint);
         if (stillVisible) {
           await loadTrades(selectedMint);
@@ -308,7 +337,7 @@ export function SwingDetectionPage() {
     } finally {
       setLoading(false);
     }
-  }, [selectedMint, createdFrom, createdTo, loadTrades]);
+  }, [selectedMint, createdFrom, createdTo, filters, loadTrades]);
 
   useEffect(() => {
     saveStoredSwingCriteria(swingParams, swingFilter, appliedSwingFilter);
@@ -385,6 +414,32 @@ export function SwingDetectionPage() {
           </Badge>
         )}
       </div>
+
+      <div className="mb-1.5 flex gap-1.5">
+        <Button
+          variant="subtle"
+          size="sm"
+          active={showFilters || filterCount > 0}
+          onClick={() => setShowFilters((v) => !v)}
+        >
+          {filterCount > 0 ? `Global Filters (${filterCount})` : 'Global Filters'}
+        </Button>
+      </div>
+
+      {showFilters && (
+        <FilterPanel
+          filters={filters}
+          onApply={(next) => {
+            setFilters(next);
+            saveStoredTokenFilters(next);
+          }}
+          onClear={() => {
+            const empty = defaultFilters();
+            setFilters(empty);
+            saveStoredTokenFilters(empty);
+          }}
+        />
+      )}
 
       <SectionDivider />
 
