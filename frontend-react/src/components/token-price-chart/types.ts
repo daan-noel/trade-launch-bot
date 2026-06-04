@@ -23,6 +23,8 @@ export interface OhlcBar {
   low: number;
   close: number;
   volume: number;
+  /** Bonding-curve liquidity (SOL) after the last trade in this bar. */
+  liquiditySol: number | null;
 }
 
 export type ChartInterval = '1s' | '30s' | '1m' | '5m';
@@ -35,6 +37,7 @@ export interface ChartCrosshairInfo {
   low: number;
   close: number;
   volume: number;
+  liquiditySol: number | null;
 }
 
 export interface ChartBarSelection {
@@ -44,6 +47,19 @@ export interface ChartBarSelection {
   intervalSec?: number;
   /** Set when groupMode is `slot`. */
   slot?: number;
+}
+
+/** Swing leg overlay — matches backend `SwingLegRecord` shape. */
+export interface ChartSwingLeg {
+  type: 'swing_high' | 'swing_low';
+  start_at: number;
+  end_at: number;
+  start_price: number;
+  end_price: number;
+}
+
+export interface ChartSwingOverlay {
+  legs: ChartSwingLeg[];
 }
 
 export interface TokenPriceChartProps {
@@ -65,6 +81,8 @@ export interface TokenPriceChartProps {
   height?: number;
   /** Fired when a chart bar/candle is clicked; null clears selection. */
   onBarClick?: (selection: ChartBarSelection | null) => void;
+  /** Swing detection legs to draw as an overlay line. */
+  swingOverlay?: ChartSwingOverlay | null;
   /** Token ATH spot price in SOL (from tokens_info). */
   athPriceInSol?: number | null;
   isMigrated?: boolean;
@@ -85,6 +103,8 @@ export interface ChartToolbarProps {
   showAthLine: boolean;
   athLineAvailable: boolean;
   showMigrationLine: boolean;
+  swingOverlayAvailable: boolean;
+  showSwingOverlay: boolean;
   crosshair: ChartCrosshairInfo | null;
   isMigrated?: boolean;
   isMayhemMode?: boolean;
@@ -96,4 +116,5 @@ export interface ChartToolbarProps {
   onShowTradeMarkersChange: (show: boolean) => void;
   onShowAthLineChange: (show: boolean) => void;
   onShowMigrationLineChange: (show: boolean) => void;
+  onShowSwingOverlayChange: (show: boolean) => void;
 }

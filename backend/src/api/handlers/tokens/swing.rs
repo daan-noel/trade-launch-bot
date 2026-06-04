@@ -17,8 +17,8 @@ pub struct SwingResponse {
 }
 
 /// `POST /api/tokens/:mint/swings` — run swing detection over a token's trade
-/// history. The (optional) JSON body carries tunable `SwingParams`; send `{}`
-/// to use defaults.
+/// history (cache first, else DB). The (optional) JSON body carries tunable
+/// `SwingParams`; send `{}` to use defaults.
 pub async fn detect_token_swings(
     state: web::Data<Arc<AppState>>,
     path: web::Path<String>,
@@ -26,23 +26,27 @@ pub async fn detect_token_swings(
 ) -> impl Responder {
     let mint = path.into_inner();
     let params = body.into_inner();
-    let repo = TradeRepo::new(state.db.clone());
 
-    match repo.find_by_mint_all(&mint).await {
-        Ok(trades) => {
-            let swings = detect_swings(&trades, &params);
-            HttpResponse::Ok().json(SwingResponse {
-                mint,
-                params,
-                count: swings.len(),
-                swings,
-            })
+    let trades = if let Some(entry) = state.token_cache.get(&mint) {
+        entry.trades.clone()
+    } else {
+        let repo = TradeRepo::new(state.db.clone());
+        match repo.find_by_mint_all(&mint).await {
+            Ok(trades) => trades,
+            Err(e) => {
+                tracing::error!("DB error fetching trades for swing analysis {mint}: {e}");
+                return HttpResponse::InternalServerError().json(serde_json::json!({
+                    "error": "database error"
+                }));
+            }
         }
-        Err(e) => {
-            tracing::error!("DB error fetching trades for swing analysis {mint}: {e}");
-            HttpResponse::InternalServerError().json(serde_json::json!({
-                "error": "database error"
-            }))
-        }
-    }
+    };
+
+    let swings = detect_swings(&trades, &params);
+    HttpResponse::Ok().json(SwingResponse {
+        mint,
+        params,
+        count: swings.len(),
+        swings,
+    })
 }

@@ -89,7 +89,7 @@ export function Header() {
             isActive={analysisActive}
             items={[
               { to: '/analysis/general', label: 'General' },
-              { to: '/analysis/peak-trough', label: 'Peak / Trough' },
+              { to: '/analysis/swing-detection', label: 'Swing detection' },
             ]}
           />
           <NavItem to="/wallet">Wallet</NavItem>

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   createChart,
   createSeriesMarkers,
+  LineSeries,
   LineStyle,
   type IChartApi,
   type IPriceLine,
@@ -32,7 +33,9 @@ import {
   LINE_SERIES_OPTIONS,
   LS_CHART_PREFS_KEY,
   SERIES_BY_STYLE,
+  SWING_HIGH_OVERLAY_SERIES_OPTIONS,
 } from './constants';
+import { swingsToColoredLineData } from './swingOverlay';
 import type {
   ChartBarSelection,
   ChartCrosshairInfo,
@@ -191,6 +194,7 @@ export function TokenPriceChart({
   className,
   height = 320,
   onBarClick,
+  swingOverlay = null,
   athPriceInSol = null,
   isMigrated,
   isMayhemMode,
@@ -201,6 +205,7 @@ export function TokenPriceChart({
   const onBarClickRef = useRef(onBarClick);
   onBarClickRef.current = onBarClick;
   const seriesRef = useRef<ISeriesApi<'Line' | 'Candlestick'> | null>(null);
+  const swingSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const markersPluginRef = useRef<MarkersPlugin | null>(null);
   const barsRef = useRef<OhlcBar[]>([]);
 
@@ -211,6 +216,8 @@ export function TokenPriceChart({
   const [showTradeMarkers, setShowTradeMarkers] = useState(initialPrefs.showTradeMarkers);
   const [showAthLine, setShowAthLine] = useState(initialPrefs.showAthLine);
   const [showMigrationLine, setShowMigrationLine] = useState(initialPrefs.showMigrationLine);
+  const swingOverlayAvailable = (swingOverlay?.legs.length ?? 0) > 0;
+  const [showSwingOverlay, setShowSwingOverlay] = useState(true);
   const [crosshair, setCrosshair] = useState<ChartCrosshairInfo | null>(null);
   const athLineRef = useRef<IPriceLine | null>(null);
   const migrationLineRef = useRef<IPriceLine | null>(null);
@@ -242,6 +249,10 @@ export function TokenPriceChart({
   barsRef.current = bars;
 
   const athLineAvailable = athChartValue(athPriceInSol, metric, toValue) != null;
+
+  useEffect(() => {
+    if (swingOverlayAvailable) setShowSwingOverlay(true);
+  }, [swingOverlayAvailable, swingOverlay?.legs]);
 
   const handleGroupModeChange = useCallback(
     (next: ChartGroupMode) => {
@@ -338,6 +349,7 @@ export function TokenPriceChart({
         low: bar.low,
         close: bar.close,
         volume: bar.volume,
+        liquiditySol: bar.liquiditySol,
       });
     });
 
@@ -368,6 +380,7 @@ export function TokenPriceChart({
       markersPluginRef.current?.detach();
       markersPluginRef.current = null;
       seriesRef.current = null;
+      swingSeriesRef.current = null;
       chart.remove();
       chartRef.current = null;
       setCrosshair(null);
@@ -503,6 +516,56 @@ export function TokenPriceChart({
     });
   }, [showMigrationLine, metric, toValue, showChart, bars, style]);
 
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !showChart) return;
+
+    if (swingSeriesRef.current) {
+      chart.removeSeries(swingSeriesRef.current);
+      swingSeriesRef.current = null;
+    }
+
+    if (!showSwingOverlay || !swingOverlay?.legs.length) return;
+
+    const data = swingsToColoredLineData(
+      swingOverlay.legs,
+      metric,
+      toValue,
+      groupMode,
+      chartTrades,
+    );
+    if (data.length < 2) return;
+
+    const series = chart.addSeries(LineSeries, {
+      ...SWING_HIGH_OVERLAY_SERIES_OPTIONS,
+      priceFormat: createChartPriceFormat(priceUnit),
+    });
+    series.setData(data);
+    swingSeriesRef.current = series;
+
+    return () => {
+      if (swingSeriesRef.current && chartRef.current) {
+        try {
+          chartRef.current.removeSeries(swingSeriesRef.current);
+        } catch {
+          /* chart may already be removed */
+        }
+        swingSeriesRef.current = null;
+      }
+    };
+  }, [
+    showSwingOverlay,
+    swingOverlay,
+    metric,
+    toValue,
+    groupMode,
+    chartTrades,
+    showChart,
+    bars,
+    style,
+    priceUnit,
+  ]);
+
   if (!id) {
     return (
       <Placeholder
@@ -569,6 +632,8 @@ export function TokenPriceChart({
         showAthLine={showAthLine}
         athLineAvailable={athLineAvailable}
         showMigrationLine={showMigrationLine}
+        swingOverlayAvailable={swingOverlayAvailable}
+        showSwingOverlay={showSwingOverlay}
         crosshair={crosshair}
         isMigrated={isMigrated}
         isMayhemMode={isMayhemMode}
@@ -580,6 +645,7 @@ export function TokenPriceChart({
         onShowTradeMarkersChange={handleShowTradeMarkersChange}
         onShowAthLineChange={handleShowAthLineChange}
         onShowMigrationLineChange={handleShowMigrationLineChange}
+        onShowSwingOverlayChange={setShowSwingOverlay}
       />
       <div ref={containerRef} style={{ height, width: '100%' }} />
     </div>

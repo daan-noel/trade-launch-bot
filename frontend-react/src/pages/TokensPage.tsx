@@ -163,7 +163,6 @@ export function TokensPage() {
           rowDetail={() => (
             <TokenDetailPanel detail={detail} loading={detailLoading} error={detailError} />
           )}
-          pageSizeOptions={[10, 25, 50, 100]}
           searchable
           colFilters
           colToggle

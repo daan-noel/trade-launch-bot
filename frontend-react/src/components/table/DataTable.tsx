@@ -63,7 +63,7 @@ export function DataTable<R>({
   selectedKey: externalSelected,
   onSelect,
   defaultPageSize = DEFAULT_PAGE_SIZE,
-  pageSizeOptions = [10, 25, 50, 100],
+  pageSizeOptions,
   searchable = true,
   colFilters = false,
   colToggle = false,

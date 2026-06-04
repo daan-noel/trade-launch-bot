@@ -55,6 +55,17 @@ export async function fetchTokenTrades(
   return request(`${API_BASE}/api/tokens/${encodeURIComponent(mint)}/trades`);
 }
 
+export async function fetchTokenSwings(
+  mint: string,
+  params: import('../types').SwingParams,
+): Promise<import('../types').SwingDetectionResult> {
+  return request(`${API_BASE}/api/tokens/${encodeURIComponent(mint)}/swings`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+}
+
 export async function fetchTpslRules(): Promise<import('../types').RuleRecord[]> {
   return request(`${API_BASE}/api/strategies/tpsl/rules`);
 }

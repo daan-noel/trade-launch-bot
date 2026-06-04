@@ -29,7 +29,7 @@ pub struct SwingParams {
     #[serde(default = "default_pct")]
     pub low_to_high_threshold_pct: f64, // 0-100 (real percent)
 
-    // Minimum leg quality filters
+    // Leg quality filters (min: 0 disables volume/duration/net_flow; max: 0 = no cap)
     #[serde(default = "default_min_leg_trades")]
     pub min_leg_trades: u32,
     #[serde(default)]
@@ -38,6 +38,14 @@ pub struct SwingParams {
     pub min_leg_volume: f64,
     #[serde(default)]
     pub min_leg_net_flow: f64,
+    #[serde(default)]
+    pub max_leg_trades: u32,
+    #[serde(default)]
+    pub max_leg_duration_ms: i64,
+    #[serde(default)]
+    pub max_leg_volume: f64,
+    #[serde(default)]
+    pub max_leg_net_flow: f64,
 }
 
 fn default_high_to_low_sol() -> f64 {
@@ -64,6 +72,10 @@ impl Default for SwingParams {
             min_leg_duration_ms: 0,
             min_leg_volume: 0.0,
             min_leg_net_flow: 0.0,
+            max_leg_trades: 0,
+            max_leg_duration_ms: 0,
+            max_leg_volume: 0.0,
+            max_leg_net_flow: 0.0,
         }
     }
 }
@@ -240,9 +252,9 @@ fn sanitize_and_order(trades: &[Trade]) -> Vec<Tx> {
     txs
 }
 
-/// Core phase machine. Produces the pre-filter, strictly-alternating ledger of
-/// finalized legs. The active leg and any temp leg at end-of-history are
-/// discarded.
+/// Core phase machine. Produces the pre-filter, strictly-alternating ledger.
+/// Finalized reversals are pushed during the scan; the active leg and any temp
+/// leg still open at end-of-history are appended as well.
 fn scan(txs: &[Tx], params: &SwingParams) -> Vec<LegAcc> {
     let mut ledger: Vec<LegAcc> = Vec::new();
 
@@ -316,7 +328,8 @@ fn scan(txs: &[Tx], params: &SwingParams) -> Vec<LegAcc> {
                     let snapshot = current_low.as_ref().unwrap().net_flow(); // negative
                     frozen_threshold = params
                         .low_to_high_threshold_sol
-                        .max(params.low_to_high_threshold_pct / 100.0 * snapshot.abs());
+                        // .max(params.low_to_high_threshold_pct / 100.0 * snapshot.abs());
+                        .min(params.low_to_high_threshold_sol);
                     temp = Some(LegAcc::seed_high(tx));
                     phase = Phase::TempSwingHigh;
 
@@ -352,6 +365,35 @@ fn scan(txs: &[Tx], params: &SwingParams) -> Vec<LegAcc> {
         }
     }
 
+    match phase {
+        Phase::SwingHigh => {
+            if let Some(h) = current_high {
+                ledger.push(h);
+            }
+        }
+        Phase::TempSwingLow => {
+            if let Some(h) = current_high {
+                ledger.push(h);
+            }
+            if let Some(t) = temp {
+                ledger.push(t);
+            }
+        }
+        Phase::SwingLow => {
+            if let Some(l) = current_low {
+                ledger.push(l);
+            }
+        }
+        Phase::TempSwingHigh => {
+            if let Some(l) = current_low {
+                ledger.push(l);
+            }
+            if let Some(t) = temp {
+                ledger.push(t);
+            }
+        }
+    }
+
     ledger
 }
 
@@ -365,6 +407,10 @@ fn apply_quality_filter(ledger: Vec<LegAcc>, params: &SwingParams) -> Vec<SwingL
             || duration_ms < params.min_leg_duration_ms
             || leg.net_flow().abs() < params.min_leg_net_flow
             || (leg.inflow + leg.outflow) < params.min_leg_volume
+            || (params.max_leg_trades > 0 && leg.trade_count > params.max_leg_trades)
+            || (params.max_leg_duration_ms > 0 && duration_ms > params.max_leg_duration_ms)
+            || (params.max_leg_net_flow > 0.0 && leg.net_flow().abs() > params.max_leg_net_flow)
+            || (params.max_leg_volume > 0.0 && (leg.inflow + leg.outflow) > params.max_leg_volume)
     };
 
     let mut out: Vec<SwingLeg> = Vec::with_capacity(ledger.len());

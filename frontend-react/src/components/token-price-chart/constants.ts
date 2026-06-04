@@ -67,7 +67,34 @@ export const CHART_COLORS = {
   activePill: '#13ceaf',
   athLine: '#f0b429',
   migrationLine: '#5dade2',
+  swingOverlay: '#e879f9',
+  /** Swing path segments — distinct from candle up/down greens and reds */
+  swingHigh: '#38bdf8',
+  swingLow: '#e879f9',
 } as const;
+
+const SWING_OVERLAY_SERIES_BASE: DeepPartial<LineSeriesOptions> = {
+  lineWidth: 2,
+  crosshairMarkerVisible: true,
+  priceLineVisible: false,
+  lastValueVisible: false,
+};
+
+export const SWING_HIGH_OVERLAY_SERIES_OPTIONS: DeepPartial<LineSeriesOptions> = {
+  ...SWING_OVERLAY_SERIES_BASE,
+  color: CHART_COLORS.swingHigh,
+};
+
+export const SWING_LOW_OVERLAY_SERIES_OPTIONS: DeepPartial<LineSeriesOptions> = {
+  ...SWING_OVERLAY_SERIES_BASE,
+  color: CHART_COLORS.swingLow,
+};
+
+/** @deprecated Use SWING_HIGH/LOW_OVERLAY_SERIES_OPTIONS — single magenta path */
+export const SWING_OVERLAY_SERIES_OPTIONS: DeepPartial<LineSeriesOptions> = {
+  ...SWING_OVERLAY_SERIES_BASE,
+  color: CHART_COLORS.swingOverlay,
+};
 
 /** Pump.fun bonding-curve initial reserves (SOL and raw token units). */
 const PUMP_INITIAL_VIRTUAL_SOL = 30;

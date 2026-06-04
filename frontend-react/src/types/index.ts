@@ -188,6 +188,43 @@ export interface AnalysisRecord {
   computed_at: string;
 }
 
+export interface SwingParams {
+  high_to_low_threshold_sol: number;
+  high_to_low_threshold_pct: number;
+  low_to_high_threshold_sol: number;
+  low_to_high_threshold_pct: number;
+  min_leg_trades: number;
+  min_leg_duration_ms: number;
+  min_leg_volume: number;
+  min_leg_net_flow: number;
+  max_leg_trades: number;
+  max_leg_duration_ms: number;
+  max_leg_volume: number;
+  max_leg_net_flow: number;
+}
+
+export type SwingLegType = 'swing_high' | 'swing_low';
+
+export interface SwingLegRecord {
+  type: SwingLegType;
+  start_at: number;
+  end_at: number;
+  duration_ms: number;
+  start_price: number;
+  end_price: number;
+  inflow: number;
+  outflow: number;
+  net_flow: number;
+  trade_count: number;
+}
+
+export interface SwingDetectionResult {
+  mint: string;
+  params: SwingParams;
+  count: number;
+  swings: SwingLegRecord[];
+}
+
 export interface CreatorRecord {
   wallet_address: string;
   tokens_created: number;

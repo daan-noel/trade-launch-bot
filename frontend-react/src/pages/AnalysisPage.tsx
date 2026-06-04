@@ -10,7 +10,6 @@ import { cn } from '../lib/cn';
 
 type Tab = 'creators' | 'results';
 
-const PAGE_OPTS = [10, 25, 50, 100];
 
 export function AnalysisPage() {
   const [tab, setTab] = useState<Tab>('creators');
@@ -120,7 +119,6 @@ export function AnalysisPage() {
                 totalPages={creatorTotalPages}
                 totalItems={creatorTotal}
                 pageSize={creatorPs}
-                pageSizeOptions={PAGE_OPTS}
                 onPageChange={setCreatorPage}
                 onPageSizeChange={(s) => {
                   setCreatorPs(s);
@@ -153,7 +151,6 @@ export function AnalysisPage() {
                 totalPages={resultTotalPages}
                 totalItems={resultTotal}
                 pageSize={resultPs}
-                pageSizeOptions={PAGE_OPTS}
                 onPageChange={setResultPage}
                 onPageSizeChange={(s) => {
                   setResultPs(s);

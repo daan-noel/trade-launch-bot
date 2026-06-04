@@ -14,6 +14,7 @@ export {
   migrationChartValue,
   tradesForChartMetric,
 } from './chartBars';
+export { swingsToLineData, swingsToColoredLineData } from './swingOverlay';
 export { TOKEN_TOTAL_SUPPLY, PUMP_MIGRATION_SPOT_PRICE_SOL } from './constants';
 export {
   CHART_COLORS,
@@ -35,6 +36,8 @@ export type {
   ChartStyle,
   ChartCrosshairInfo,
   ChartBarSelection,
+  ChartSwingLeg,
+  ChartSwingOverlay,
   TokenPriceChartProps,
   ChartToolbarProps,
 } from './types';

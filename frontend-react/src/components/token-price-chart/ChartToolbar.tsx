@@ -57,6 +57,8 @@ export function ChartToolbar({
   showAthLine,
   athLineAvailable,
   showMigrationLine,
+  swingOverlayAvailable,
+  showSwingOverlay,
   crosshair,
   isMigrated,
   isMayhemMode,
@@ -68,21 +70,26 @@ export function ChartToolbar({
   onShowTradeMarkersChange,
   onShowAthLineChange,
   onShowMigrationLineChange,
+  onShowSwingOverlayChange,
 }: ChartToolbarProps) {
   const intervalsDisabled = groupMode === 'slot';
   const formatChartPrice = createChartPriceFormatter(priceUnit);
   const formatVol = createChartPriceFormatter('SOL');
+
+  const liqLabel =
+    crosshair?.liquiditySol != null ? formatVol(crosshair.liquiditySol) : '—';
 
   const crosshairLine =
     crosshair && style === 'candles' ? (
       <>
         O {formatChartPrice(crosshair.open)} H {formatChartPrice(crosshair.high)} L{' '}
         {formatChartPrice(crosshair.low)} C {formatChartPrice(crosshair.close)} Vol{' '}
-        {formatVol(crosshair.volume)}
+        {formatVol(crosshair.volume)} Liq {liqLabel}
       </>
     ) : crosshair && style === 'line' ? (
       <>
-        Price {formatChartPrice(crosshair.close)} Vol {formatVol(crosshair.volume)}
+        Price {formatChartPrice(crosshair.close)} Vol {formatVol(crosshair.volume)} Liq{' '}
+        {liqLabel}
       </>
     ) : null;
 
@@ -285,6 +292,36 @@ export function ChartToolbar({
           />
           <span style={showMigrationLine ? { color: CHART_COLORS.migrationLine } : undefined}>
             Migration line
+          </span>
+        </label>
+
+        <label
+          className={cn(
+            'flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-semibold',
+            !swingOverlayAvailable && 'cursor-not-allowed opacity-40',
+          )}
+          style={{ backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }}
+          title={
+            swingOverlayAvailable
+              ? 'Show swing detection path on chart'
+              : 'Run swing detection to overlay results'
+          }
+        >
+          <input
+            type="checkbox"
+            checked={showSwingOverlay}
+            disabled={!swingOverlayAvailable}
+            onChange={(e) => onShowSwingOverlayChange(e.target.checked)}
+            className="size-3 accent-[#e879f9]"
+          />
+          <span
+            style={
+              showSwingOverlay && swingOverlayAvailable
+                ? { color: CHART_COLORS.swingOverlay }
+                : undefined
+            }
+          >
+            Swings
           </span>
         </label>
       </div>

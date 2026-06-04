@@ -6,7 +6,7 @@ import { DashboardPage } from './pages/DashboardPage';
 import { TokensPage } from './pages/TokensPage';
 import { TransactionsPage } from './pages/TransactionsPage';
 import { AnalysisPage } from './pages/AnalysisPage';
-import { PeakTroughAnalysisPage } from './pages/PeakTroughAnalysisPage';
+import { SwingDetectionPage } from './pages/SwingDetectionPage';
 import { WalletPage } from './pages/WalletPage';
 import { TpslPage } from './pages/TpslPage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -24,7 +24,7 @@ export default function App() {
             <Route path="transactions" element={<TransactionsPage />} />
             <Route path="analysis" element={<Navigate to="/analysis/general" replace />} />
             <Route path="analysis/general" element={<AnalysisPage />} />
-            <Route path="analysis/peak-trough" element={<PeakTroughAnalysisPage />} />
+            <Route path="analysis/swing-detection" element={<SwingDetectionPage />} />
             <Route path="wallet" element={<WalletPage />} />
             <Route path="strategies/tpsl" element={<TpslPage />} />
             <Route path="strategies" element={<Navigate to="/strategies/tpsl" replace />} />

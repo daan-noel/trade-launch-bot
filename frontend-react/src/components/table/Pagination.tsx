@@ -8,7 +8,7 @@ interface PaginationProps {
   totalPages: number;
   totalItems: number;
   pageSize?: number;
-  pageSizeOptions: number[];
+  pageSizeOptions?: number[];
   onPageChange: (page: number) => void;
   onPageSizeChange: (size: number) => void;
 }
@@ -53,7 +53,7 @@ export function Pagination({
   totalPages,
   totalItems,
   pageSize = DEFAULT_PAGE_SIZE,
-  pageSizeOptions,
+  pageSizeOptions = [5, 10, 25, 50, 100],
   onPageChange,
   onPageSizeChange,
 }: PaginationProps) {

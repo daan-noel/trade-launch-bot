@@ -37,6 +37,15 @@ export function curveSpotPriceSol(
   return vsol / vtoken;
 }
 
+/** Bonding-curve liquidity in SOL (GMGN-style: 2× virtual SOL reserves). */
+export function curveLiquiditySol(
+  trade: Pick<ChartTrade, 'virtual_sol_reserves'>,
+): number | null {
+  const vsol = trade.virtual_sol_reserves;
+  if (vsol == null || vsol <= 0) return null;
+  return vsol * 2;
+}
+
 /** FDV in SOL: total supply × spot price (GMGN-style MC). */
 export function curveMarketCapSol(
   trade: Pick<ChartTrade, 'virtual_sol_reserves' | 'virtual_token_reserves'>,
@@ -95,7 +104,14 @@ export function aggregateTradesToBars(
 
   const buckets = new Map<
     number,
-    { open: number; high: number; low: number; close: number; volume: number }
+    {
+      open: number;
+      high: number;
+      low: number;
+      close: number;
+      volume: number;
+      liquiditySol: number | null;
+    }
   >();
 
   const sorted = [...trades].sort(
@@ -109,6 +125,7 @@ export function aggregateTradesToBars(
     const time = bucketStart(sec, intervalSec);
     const price = toValue(trade.price_per_token);
     const vol = trade.sol_amount ?? 1;
+    const liquiditySol = curveLiquiditySol(trade);
 
     const existing = buckets.get(time);
     if (existing) {
@@ -116,6 +133,7 @@ export function aggregateTradesToBars(
       existing.low = Math.min(existing.low, price);
       existing.close = price;
       existing.volume += vol;
+      if (liquiditySol != null) existing.liquiditySol = liquiditySol;
     } else {
       buckets.set(time, {
         open: price,
@@ -123,6 +141,7 @@ export function aggregateTradesToBars(
         low: price,
         close: price,
         volume: vol,
+        liquiditySol,
       });
     }
   }
@@ -143,7 +162,14 @@ export function aggregateTradesToBarsBySlot(
 
   const buckets = new Map<
     number,
-    { open: number; high: number; low: number; close: number; volume: number }
+    {
+      open: number;
+      high: number;
+      low: number;
+      close: number;
+      volume: number;
+      liquiditySol: number | null;
+    }
   >();
 
   const sorted = [...trades].sort((a, b) => {
@@ -158,6 +184,7 @@ export function aggregateTradesToBarsBySlot(
 
     const price = toValue(trade.price_per_token);
     const vol = trade.sol_amount ?? 1;
+    const liquiditySol = curveLiquiditySol(trade);
 
     const existing = buckets.get(slot);
     if (existing) {
@@ -165,6 +192,7 @@ export function aggregateTradesToBarsBySlot(
       existing.low = Math.min(existing.low, price);
       existing.close = price;
       existing.volume += vol;
+      if (liquiditySol != null) existing.liquiditySol = liquiditySol;
     } else {
       buckets.set(slot, {
         open: price,
@@ -172,6 +200,7 @@ export function aggregateTradesToBarsBySlot(
         low: price,
         close: price,
         volume: vol,
+        liquiditySol,
       });
     }
   }
