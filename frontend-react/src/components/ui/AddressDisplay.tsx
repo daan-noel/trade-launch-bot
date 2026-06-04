@@ -12,12 +12,15 @@ interface AddressDisplayProps {
   className?: string;
   /** Prevent table row selection when interacting with controls */
   stopPropagation?: boolean;
+  /** default: truncated + hover actions; full: full address + always-visible larger actions */
+  mode?: 'default' | 'full';
 }
 
-function CopyIcon({ copied }: { copied: boolean }) {
+function CopyIcon({ copied, size = 'sm' }: { copied: boolean; size?: 'sm' | 'lg' }) {
+  const iconCls = size === 'lg' ? 'size-4' : 'size-3';
   if (copied) {
     return (
-      <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3">
+      <svg viewBox="0 0 20 20" fill="none" aria-hidden className={iconCls}>
         <path
           d="m5 10.5 3.5 3.5L15 7"
           stroke="currentColor"
@@ -29,7 +32,7 @@ function CopyIcon({ copied }: { copied: boolean }) {
     );
   }
   return (
-    <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3">
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden className={iconCls}>
       <rect
         x="6.5"
         y="6.5"
@@ -55,12 +58,14 @@ function ExplorerIconButton({
   label,
   className,
   onClick,
+  size = 'sm',
 }: {
   href: string;
   title: string;
   label: string;
   className: string;
   onClick?: (e: MouseEvent<HTMLAnchorElement>) => void;
+  size?: 'sm' | 'lg';
 }) {
   return (
     <a
@@ -71,7 +76,8 @@ function ExplorerIconButton({
       aria-label={title}
       onClick={onClick}
       className={cn(
-        'inline-flex size-[18px] shrink-0 items-center justify-center rounded bg-white/5 text-[9px] font-bold hover:bg-white/10',
+        'inline-flex shrink-0 items-center justify-center rounded bg-white/5 font-bold hover:bg-white/10',
+        size === 'lg' ? 'size-[24px] text-[11px]' : 'size-[18px] text-[9px]',
         className,
       )}
     >
@@ -80,8 +86,10 @@ function ExplorerIconButton({
   );
 }
 
-const iconBtn =
+const iconBtnSm =
   'inline-flex size-[18px] shrink-0 items-center justify-center rounded bg-white/5 text-text-dim transition hover:bg-white/10 hover:text-text';
+const iconBtnLg =
+  'inline-flex size-[24px] shrink-0 items-center justify-center rounded bg-white/5 text-text-dim transition hover:bg-white/10 hover:text-text';
 
 const HOVER_DELAY_MS = 500;
 
@@ -92,12 +100,16 @@ export function AddressDisplay({
   truncateLen = 10,
   className,
   stopPropagation = false,
+  mode = 'default',
 }: AddressDisplayProps) {
+  const isFull = mode === 'full';
   const [copied, setCopied] = useState(false);
-  const [showActions, setShowActions] = useState(false);
+  const [showActions, setShowActions] = useState(isFull);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const links = getAddressExplorerLinks(kind, address);
-  const label = display ?? truncate(address, truncateLen);
+  const label = isFull ? address : (display ?? truncate(address, truncateLen));
+  const iconSize = isFull ? 'lg' : 'sm';
+  const iconBtn = isFull ? iconBtnLg : iconBtnSm;
 
   const clearHoverTimer = () => {
     if (hoverTimerRef.current) {
@@ -107,11 +119,13 @@ export function AddressDisplay({
   };
 
   const onMouseEnter = () => {
+    if (isFull) return;
     clearHoverTimer();
     hoverTimerRef.current = setTimeout(() => setShowActions(true), HOVER_DELAY_MS);
   };
 
   const onMouseLeave = () => {
+    if (isFull) return;
     clearHoverTimer();
     setShowActions(false);
   };
@@ -135,21 +149,30 @@ export function AddressDisplay({
 
   return (
     <div
-      className={cn('inline-flex min-w-0 flex-col items-center gap-0.5', className)}
+      className={cn(
+        'inline-flex min-w-0 flex-col gap-0.5',
+        isFull ? 'items-start' : 'items-center',
+        className,
+      )}
       onClick={stopPropagation ? stop : undefined}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
     >
       <span
-        className="max-w-full truncate font-mono text-[11px] text-text-mid"
-        title={address}
+        className={cn(
+          'max-w-full font-mono text-text-mid',
+          isFull ? 'text-[10px] leading-snug break-all' : 'truncate text-[11px]',
+        )}
+        title={isFull ? undefined : address}
       >
         {label}
       </span>
       <div
         className={cn(
-          'flex items-center justify-center gap-0.5 overflow-hidden transition-[max-height,opacity] duration-150',
-          showActions ? 'max-h-6 opacity-100' : 'max-h-0 opacity-0 pointer-events-none',
+          'flex items-center gap-0.5',
+          !isFull && 'justify-center overflow-hidden transition-[max-height,opacity] duration-150',
+          isFull || showActions ? 'opacity-100' : 'max-h-0 opacity-0 pointer-events-none',
+          !isFull && (showActions ? 'max-h-6' : 'max-h-0'),
         )}
       >
         <button
@@ -158,15 +181,16 @@ export function AddressDisplay({
           title={copied ? 'Copied!' : 'Copy address'}
           aria-label={copied ? 'Copied' : 'Copy address'}
           className={cn(iconBtn, copied && 'text-primary')}
-          tabIndex={showActions ? 0 : -1}
+          tabIndex={isFull || showActions ? 0 : -1}
         >
-          <CopyIcon copied={copied} />
+          <CopyIcon copied={copied} size={iconSize} />
         </button>
         {links.gmgn && (
           <ExplorerIconButton
             href={links.gmgn}
             title="Open on GMGN"
             label="G"
+            size={iconSize}
             className="text-[#00c97a] hover:bg-[rgba(0,201,122,0.15)]"
             onClick={stop}
           />
@@ -175,6 +199,7 @@ export function AddressDisplay({
           href={links.solscan}
           title="Open on Solscan"
           label="S"
+          size={iconSize}
           className="text-[#9945ff] hover:bg-[rgba(153,69,255,0.15)]"
           onClick={stop}
         />

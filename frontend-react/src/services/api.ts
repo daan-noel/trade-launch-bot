@@ -165,6 +165,7 @@ export async function syncToken(
   mintAddress: string,
   includePostMigrate: boolean,
   onProgress: (event: import('../types').SyncProgressEvent) => void,
+  signal?: AbortSignal,
 ): Promise<import('../types').SyncCompleteEvent> {
   const resp = await fetch(`${API_BASE}/api/token/sync`, {
     method: 'POST',
@@ -176,6 +177,7 @@ export async function syncToken(
       mint_address: mintAddress.trim(),
       include_post_migrate: includePostMigrate,
     }),
+    signal,
   });
 
   if (!resp.ok) {

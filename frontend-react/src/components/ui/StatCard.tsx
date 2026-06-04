@@ -51,12 +51,11 @@ export function StatCard({
 
 interface AddrCardProps {
   label: string;
-  short: string;
   full: string;
   kind: AddressKind;
 }
 
-export function AddrCard({ label, short, full, kind }: AddrCardProps) {
+export function AddrCard({ label, full, kind }: AddrCardProps) {
   return (
     <div className="grid min-h-10 content-center gap-0.5 rounded-md border border-white/5 bg-white/2 px-2 py-1">
       <span className="truncate text-[9px] font-semibold uppercase tracking-wider text-text-dim">
@@ -65,8 +64,7 @@ export function AddrCard({ label, short, full, kind }: AddrCardProps) {
       <AddressDisplay
         address={full}
         kind={kind}
-        display={short}
-        className="text-[10px]"
+        mode="full"
       />
     </div>
   );

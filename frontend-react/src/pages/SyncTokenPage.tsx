@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { DataTable } from '../components/table/DataTable';
 import { tokenTradeColumns } from '../components/transactions/tokenTradeColumns';
 import { TokenPriceChart, type ChartMetric } from '../components/token-price-chart';
@@ -63,8 +63,13 @@ export function SyncTokenPage() {
   const [error, setError] = useState<string | null>(null);
   const [detail, setDetail] = useState<TokenDetailRecord | null>(null);
   const [trades, setTrades] = useState<TradeRecord[]>([]);
+  const syncAbortRef = useRef<AbortController | null>(null);
 
   const percent = progress ? stagePercent(progress.stage, progress.current, progress.total) : 0;
+
+  const handleCancelSync = useCallback(() => {
+    syncAbortRef.current?.abort();
+  }, []);
 
   const handleSync = useCallback(async () => {
     const trimmed = mint.trim();
@@ -73,6 +78,10 @@ export function SyncTokenPage() {
       return;
     }
 
+    syncAbortRef.current?.abort();
+    const controller = new AbortController();
+    syncAbortRef.current = controller;
+
     setSyncing(true);
     setError(null);
     setProgress(null);
@@ -80,20 +89,26 @@ export function SyncTokenPage() {
     setTrades([]);
 
     try {
-      const result = await syncToken(trimmed, includePostMigrate, (ev) => setProgress(ev));
+      const result = await syncToken(
+        trimmed,
+        includePostMigrate,
+        (ev) => setProgress(ev),
+        controller.signal,
+      );
       setDetail(result.token);
       setTrades(result.trades);
-      setProgress({
-        type: 'progress',
-        stage: 'recomputing',
-        current: 1,
-        total: 1,
-        message: 'Complete',
-      });
+      setProgress(null);
     } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') {
+        setProgress(null);
+        return;
+      }
       setError(e instanceof Error ? e.message : 'Sync failed');
     } finally {
       setSyncing(false);
+      if (syncAbortRef.current === controller) {
+        syncAbortRef.current = null;
+      }
     }
   }, [mint, includePostMigrate]);
 
@@ -133,28 +148,34 @@ export function SyncTokenPage() {
           Include post-migrate trades
         </label>
 
-        <Button variant="primary" onClick={handleSync} disabled={syncing || !mint.trim()}>
-          {syncing ? 'Syncing…' : 'Fetch'}
-        </Button>
+        {syncing ? (
+          <Button variant="ghost" onClick={handleCancelSync}>
+            Cancel
+          </Button>
+        ) : (
+          <Button variant="primary" onClick={handleSync} disabled={!mint.trim()}>
+            Fetch
+          </Button>
+        )}
       </div>
 
-      {(syncing || progress) && (
+      {syncing && (
         <div className="mb-4 rounded-lg border border-white/6 bg-white/2 p-4">
           <div className="mb-2 flex items-center justify-between gap-2">
             <span className="text-[11px] font-bold uppercase tracking-widest text-primary">
               {progress ? stageLabel(progress.stage) : 'Starting…'}
             </span>
             <span className="font-mono text-[11px] text-text-dim">
-              {syncing ? `${Math.round(percent)}%` : '100%'}
+              {Math.round(percent)}%
             </span>
           </div>
           <div className="h-2 overflow-hidden rounded-full bg-white/6">
             <div
               className={cn(
                 'h-full rounded-full bg-primary transition-[width] duration-300',
-                syncing && 'animate-pulse',
+                'animate-pulse',
               )}
-              style={{ width: `${syncing ? percent : 100}%` }}
+              style={{ width: `${percent}%` }}
             />
           </div>
           {progress?.message && (
