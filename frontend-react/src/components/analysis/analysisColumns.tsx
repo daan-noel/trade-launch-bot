@@ -1,8 +1,9 @@
 import type { ColumnDef } from '../table/types';
 import type { AnalysisRecord, CreatorRecord } from '../../types';
 import { formatIso } from '../../utils/date';
-import { formatDecimal, truncate } from '../../utils/format';
+import { formatDecimal } from '../../utils/format';
 import { cn } from '../../lib/cn';
+import { AddressDisplay } from '../ui/AddressDisplay';
 
 function scoreBadge(score: number) {
   const pct = `${(score * 100).toFixed(0)}%`;
@@ -16,15 +17,7 @@ export const creatorColumns: ColumnDef<CreatorRecord>[] = [
     key: 'wallet',
     label: 'Wallet',
     render: (c) => (
-      <a
-        href={`https://solscan.io/account/${c.wallet_address}`}
-        target="_blank"
-        rel="noopener noreferrer"
-        title={c.wallet_address}
-        className="text-accent hover:text-primary"
-      >
-        {truncate(c.wallet_address, 12)}
-      </a>
+      <AddressDisplay address={c.wallet_address} kind="account" truncateLen={12} />
     ),
     sortValue: (c) => c.wallet_address,
     searchValue: (c) => c.wallet_address,

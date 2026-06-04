@@ -1,9 +1,10 @@
 import type { ColumnDef } from '../table/types';
 import type { TradeRecord } from '../../types';
 import { formatIso } from '../../utils/date';
-import { formatDecimal, truncate } from '../../utils/format';
+import { formatDecimal } from '../../utils/format';
 import type { usePriceDisplay } from '../../hooks/usePriceDisplay';
 import { cn } from '../../lib/cn';
+import { AddressDisplay } from '../ui/AddressDisplay';
 
 export function tokenTradeColumns(
   price: ReturnType<typeof usePriceDisplay>,
@@ -36,15 +37,7 @@ export function tokenTradeColumns(
       key: 'wallet',
       label: 'Wallet',
       render: (t) => (
-        <a
-          href={`https://solscan.io/account/${t.wallet_address}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          title={t.wallet_address}
-          className="text-accent hover:text-primary"
-        >
-          {truncate(t.wallet_address, 10)}
-        </a>
+        <AddressDisplay address={t.wallet_address} kind="account" />
       ),
       sortValue: (t) => t.wallet_address,
       searchValue: (t) => t.wallet_address,
@@ -95,15 +88,7 @@ export function tokenTradeColumns(
       key: 'signature',
       label: 'Signature',
       render: (t) => (
-        <a
-          href={`https://solscan.io/tx/${t.tx_signature}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          title={t.tx_signature}
-          className="text-accent hover:text-primary"
-        >
-          {truncate(t.tx_signature, 10)}
-        </a>
+        <AddressDisplay address={t.tx_signature} kind="transaction" />
       ),
       sortValue: (t) => t.tx_signature,
       searchValue: (t) => t.tx_signature,

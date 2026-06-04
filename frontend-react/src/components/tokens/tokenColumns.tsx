@@ -12,6 +12,7 @@ import {
   truncate,
 } from '../../utils/format';
 import type { usePriceDisplay } from '../../hooks/usePriceDisplay';
+import { AddressDisplay } from '../ui/AddressDisplay';
 
 function fep(r: TokenRecord): number | null {
   if (r.initial_buy_sol == null || r.initial_supply_token == null || r.initial_supply_token <= 0) {
@@ -36,15 +37,13 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       width: '90px',
       sortable: true,
       render: (r) => (
-        <a
-          href={`https://gmgn.ai/sol/token/${r.mint_address}`}
-          target="_blank"
-          rel="noreferrer"
-          className="text-accent hover:text-primary"
-          onClick={(e) => e.stopPropagation()}
-        >
-          {r.symbol || truncate(r.mint_address, 8)}
-        </a>
+        <AddressDisplay
+          address={r.mint_address}
+          kind="token"
+          display={r.symbol || truncate(r.mint_address, 8)}
+          truncateLen={8}
+          stopPropagation
+        />
       ),
       sortValue: (r) => r.symbol,
       searchValue: (r) => `${r.symbol} ${r.name} ${r.mint_address}`,
@@ -61,18 +60,10 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'mint',
       label: 'Mint',
-      width: '130px',
+      width: '165px',
       sortable: true,
       render: (r) => (
-        <a
-          href={`https://solscan.io/token/${r.mint_address}`}
-          target="_blank"
-          rel="noreferrer"
-          className="text-accent hover:text-primary"
-          onClick={(e) => e.stopPropagation()}
-        >
-          {truncate(r.mint_address, 10)}
-        </a>
+        <AddressDisplay address={r.mint_address} kind="token" stopPropagation />
       ),
       sortValue: (r) => r.mint_address,
       searchValue: (r) => r.mint_address,
@@ -80,18 +71,10 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'creator',
       label: 'Creator',
-      width: '130px',
+      width: '165px',
       sortable: true,
       render: (r) => (
-        <a
-          href={`https://solscan.io/account/${r.creator_address}`}
-          target="_blank"
-          rel="noreferrer"
-          className="text-accent hover:text-primary"
-          onClick={(e) => e.stopPropagation()}
-        >
-          {truncate(r.creator_address, 10)}
-        </a>
+        <AddressDisplay address={r.creator_address} kind="account" stopPropagation />
       ),
       sortValue: (r) => r.creator_address,
       searchValue: (r) => r.creator_address,
@@ -99,17 +82,9 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'create_tx',
       label: 'Create TX',
-      width: '130px',
+      width: '165px',
       render: (r) => (
-        <a
-          href={`https://solscan.io/tx/${r.create_tx_address}`}
-          target="_blank"
-          rel="noreferrer"
-          className="text-accent hover:text-primary"
-          onClick={(e) => e.stopPropagation()}
-        >
-          {truncate(r.create_tx_address, 10)}
-        </a>
+        <AddressDisplay address={r.create_tx_address} kind="transaction" stopPropagation />
       ),
       searchValue: (r) => r.create_tx_address,
     },

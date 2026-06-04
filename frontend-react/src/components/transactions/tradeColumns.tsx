@@ -1,9 +1,10 @@
 import type { ColumnDef } from '../table/types';
 import type { LiveTrade } from '../../types';
 import { formatIso } from '../../utils/date';
-import { formatDecimal, truncate } from '../../utils/format';
+import { formatDecimal } from '../../utils/format';
 import type { usePriceDisplay } from '../../hooks/usePriceDisplay';
 import { cn } from '../../lib/cn';
+import { AddressDisplay } from '../ui/AddressDisplay';
 
 export function tradeColumns(price: ReturnType<typeof usePriceDisplay>): ColumnDef<LiveTrade>[] {
   const unit = price.unitLabel;
@@ -12,17 +13,7 @@ export function tradeColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'mint',
       label: 'Mint',
-      render: (ev) => (
-        <a
-          href={`https://solscan.io/token/${ev.mint}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          title={ev.mint}
-          className="text-accent hover:text-primary"
-        >
-          {truncate(ev.mint, 10)}
-        </a>
-      ),
+      render: (ev) => <AddressDisplay address={ev.mint} kind="token" />,
       sortValue: (ev) => ev.mint,
       searchValue: (ev) => ev.mint,
     },
@@ -50,17 +41,7 @@ export function tradeColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'wallet',
       label: 'Wallet',
-      render: (ev) => (
-        <a
-          href={`https://solscan.io/account/${ev.wallet}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          title={ev.wallet}
-          className="text-accent hover:text-primary"
-        >
-          {truncate(ev.wallet, 10)}
-        </a>
-      ),
+      render: (ev) => <AddressDisplay address={ev.wallet} kind="account" />,
       sortValue: (ev) => ev.wallet,
       searchValue: (ev) => ev.wallet,
     },
@@ -110,15 +91,7 @@ export function tradeColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       key: 'signature',
       label: 'Signature',
       render: (ev) => (
-        <a
-          href={`https://solscan.io/tx/${ev.tx_signature}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          title={ev.tx_signature}
-          className="text-accent hover:text-primary"
-        >
-          {truncate(ev.tx_signature, 10)}
-        </a>
+        <AddressDisplay address={ev.tx_signature} kind="transaction" />
       ),
       sortValue: (ev) => ev.tx_signature,
       searchValue: (ev) => ev.tx_signature,

@@ -7,9 +7,16 @@ import {
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
+  type LogicalRangeChangeEventHandler,
   type SeriesMarker,
   type UTCTimestamp,
 } from 'lightweight-charts';
+import {
+  barsSignature,
+  captureChartViewport,
+  reapplyChartViewport,
+  type ChartViewport,
+} from './chartViewport';
 import {
   aggregateTradesToBars,
   aggregateTradesToBarsBySlot,
@@ -19,7 +26,6 @@ import {
   barsToLineData,
   tradeBarSlot,
   tradeBarTime,
-  tradesForChartMetric,
 } from './chartBars';
 import { ChartToolbar } from './ChartToolbar';
 import { cn } from './cn';
@@ -35,7 +41,7 @@ import {
   SERIES_BY_STYLE,
   SWING_HIGH_OVERLAY_SERIES_OPTIONS,
 } from './constants';
-import { swingsToColoredLineData } from './swingOverlay';
+import { swingsToColoredLineData, swingsToLegSegments } from './swingOverlay';
 import type {
   ChartBarSelection,
   ChartCrosshairInfo,
@@ -205,7 +211,7 @@ export function TokenPriceChart({
   const onBarClickRef = useRef(onBarClick);
   onBarClickRef.current = onBarClick;
   const seriesRef = useRef<ISeriesApi<'Line' | 'Candlestick'> | null>(null);
-  const swingSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const swingSeriesRefs = useRef<ISeriesApi<'Line'>[]>([]);
   const markersPluginRef = useRef<MarkersPlugin | null>(null);
   const barsRef = useRef<OhlcBar[]>([]);
 
@@ -233,18 +239,37 @@ export function TokenPriceChart({
   const shouldFitContentRef = useRef(true);
   const prevIdRef = useRef(id);
   const prevGroupingKeyRef = useRef(groupingKey);
+  const visibleViewportRef = useRef<ChartViewport | null>(null);
+  const isRestoringViewportRef = useRef(false);
+  const mountedSeriesStyleRef = useRef<ChartStyle | null>(null);
+  const prevBarsSignatureRef = useRef<string | null>(null);
+  const horzStepRef = useRef(intervalSec);
+  horzStepRef.current = groupMode === 'slot' ? 1 : intervalSec;
 
-  const chartTrades = useMemo(
-    () => tradesForChartMetric(trades, metric),
-    [trades, metric],
+  const snapshotVisibleViewport = useCallback(
+    (chart: IChartApi, series: ISeriesApi<'Line' | 'Candlestick'>): ChartViewport | null => {
+      if (shouldFitContentRef.current) return null;
+      const logical = chart.timeScale().getVisibleLogicalRange();
+      if (!logical) return null;
+      return captureChartViewport(series, logical, horzStepRef.current);
+    },
+    [],
+  );
+
+  const sortedTrades = useMemo(
+    () =>
+      [...trades].sort(
+        (a, b) => Date.parse(a.block_time) - Date.parse(b.block_time),
+      ),
+    [trades],
   );
 
   const bars = useMemo(
     () =>
       groupMode === 'slot'
-        ? aggregateTradesToBarsBySlot(chartTrades, toValue)
-        : aggregateTradesToBars(chartTrades, intervalSec, toValue),
-    [chartTrades, groupMode, intervalSec, toValue],
+        ? aggregateTradesToBarsBySlot(sortedTrades, toValue, metric)
+        : aggregateTradesToBars(sortedTrades, intervalSec, toValue, metric),
+    [sortedTrades, groupMode, intervalSec, toValue, metric],
   );
   barsRef.current = bars;
 
@@ -309,6 +334,9 @@ export function TokenPriceChart({
   useEffect(() => {
     if (prevIdRef.current !== id || prevGroupingKeyRef.current !== groupingKey) {
       shouldFitContentRef.current = true;
+      visibleViewportRef.current = null;
+      prevBarsSignatureRef.current = null;
+      mountedSeriesStyleRef.current = null;
       prevIdRef.current = id;
       prevGroupingKeyRef.current = groupingKey;
     }
@@ -375,12 +403,27 @@ export function TokenPriceChart({
       onBarClickRef.current?.(selection);
     });
 
+    const onVisibleLogicalRangeChange: LogicalRangeChangeEventHandler = (logical) => {
+      if (shouldFitContentRef.current || isRestoringViewportRef.current || logical == null) {
+        return;
+      }
+      const series = seriesRef.current;
+      if (!series) return;
+      visibleViewportRef.current = captureChartViewport(
+        series,
+        logical,
+        horzStepRef.current,
+      );
+    };
+    chart.timeScale().subscribeVisibleLogicalRangeChange(onVisibleLogicalRangeChange);
+
     return () => {
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(onVisibleLogicalRangeChange);
       ro.disconnect();
       markersPluginRef.current?.detach();
       markersPluginRef.current = null;
       seriesRef.current = null;
-      swingSeriesRef.current = null;
+      swingSeriesRefs.current = [];
       chart.remove();
       chartRef.current = null;
       setCrosshair(null);
@@ -404,20 +447,54 @@ export function TokenPriceChart({
     if (!chart || !showChart || bars.length === 0) return;
 
     const ts = chart.timeScale();
-    const savedRange = shouldFitContentRef.current ? null : ts.getVisibleLogicalRange();
+    const sig = barsSignature(bars);
+    const barsShapeChanged =
+      prevBarsSignatureRef.current != null && prevBarsSignatureRef.current !== sig;
+    prevBarsSignatureRef.current = sig;
 
-    if (seriesRef.current) {
+    const existing = seriesRef.current;
+    const styleChanged = mountedSeriesStyleRef.current !== style;
+
+    if (existing && !styleChanged) {
+      const savedViewport = snapshotVisibleViewport(chart, existing);
+      if (savedViewport) visibleViewportRef.current = savedViewport;
+
+      if (style === 'line') {
+        existing.setData(barsToLineData(bars));
+      } else {
+        existing.setData(barsToCandleData(bars));
+      }
+
+      if (savedViewport) {
+        isRestoringViewportRef.current = true;
+        reapplyChartViewport(ts, savedViewport, barsShapeChanged ? 'time' : 'logical');
+        requestAnimationFrame(() => {
+          isRestoringViewportRef.current = false;
+        });
+      }
+      return;
+    }
+
+    const savedViewport =
+      existing != null
+        ? snapshotVisibleViewport(chart, existing)
+        : shouldFitContentRef.current
+          ? null
+          : visibleViewportRef.current;
+    if (savedViewport) visibleViewportRef.current = savedViewport;
+
+    if (existing) {
       if (athLineRef.current) {
-        seriesRef.current.removePriceLine(athLineRef.current);
+        existing.removePriceLine(athLineRef.current);
         athLineRef.current = null;
       }
       if (migrationLineRef.current) {
-        seriesRef.current.removePriceLine(migrationLineRef.current);
+        existing.removePriceLine(migrationLineRef.current);
         migrationLineRef.current = null;
       }
       markersPluginRef.current?.detach();
       markersPluginRef.current = null;
-      chart.removeSeries(seriesRef.current);
+      chart.removeSeries(existing);
       seriesRef.current = null;
     }
 
@@ -428,6 +505,7 @@ export function TokenPriceChart({
       priceFormat: createChartPriceFormat(priceUnit),
     });
     seriesRef.current = series as ISeriesApi<'Line' | 'Candlestick'>;
+    mountedSeriesStyleRef.current = style;
 
     if (style === 'line') {
       series.setData(barsToLineData(bars));
@@ -438,10 +516,15 @@ export function TokenPriceChart({
     if (shouldFitContentRef.current) {
       ts.fitContent();
       shouldFitContentRef.current = false;
-    } else if (savedRange) {
-      ts.setVisibleLogicalRange(savedRange);
+      visibleViewportRef.current = null;
+    } else if (savedViewport) {
+      isRestoringViewportRef.current = true;
+      reapplyChartViewport(ts, savedViewport, barsShapeChanged ? 'time' : 'logical');
+      requestAnimationFrame(() => {
+        isRestoringViewportRef.current = false;
+      });
     }
-  }, [bars, style, showChart, groupingKey, priceUnit]);
+  }, [bars, style, showChart, groupingKey, priceUnit, snapshotVisibleViewport]);
 
   useEffect(() => {
     const series = seriesRef.current;
@@ -458,7 +541,7 @@ export function TokenPriceChart({
     } else {
       markersPluginRef.current = createSeriesMarkers(series, markers) as MarkersPlugin;
     }
-  }, [showTradeMarkers, trades, groupMode, intervalSec, showChart, bars]);
+  }, [showTradeMarkers, trades, groupMode, intervalSec, showChart]);
 
   useEffect(() => {
     const series = seriesRef.current;
@@ -482,16 +565,7 @@ export function TokenPriceChart({
       axisLabelVisible: true,
       title: 'ATH',
     });
-  }, [
-    showAthLine,
-    athLineAvailable,
-    athPriceInSol,
-    metric,
-    toValue,
-    showChart,
-    bars,
-    style,
-  ]);
+  }, [showAthLine, athLineAvailable, athPriceInSol, metric, toValue, showChart, style]);
 
   useEffect(() => {
     const series = seriesRef.current;
@@ -514,44 +588,89 @@ export function TokenPriceChart({
       axisLabelVisible: true,
       title: 'Migration',
     });
-  }, [showMigrationLine, metric, toValue, showChart, bars, style]);
+  }, [showMigrationLine, metric, toValue, showChart, style]);
 
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || !showChart) return;
 
-    if (swingSeriesRef.current) {
-      chart.removeSeries(swingSeriesRef.current);
-      swingSeriesRef.current = null;
+    const mainSeries = seriesRef.current;
+    const savedViewport =
+      mainSeries != null ? snapshotVisibleViewport(chart, mainSeries) : null;
+    if (savedViewport) visibleViewportRef.current = savedViewport;
+
+    for (const series of swingSeriesRefs.current) {
+      chart.removeSeries(series);
+    }
+    swingSeriesRefs.current = [];
+
+    if (!showSwingOverlay || !swingOverlay?.legs.length) {
+      if (savedViewport) {
+        isRestoringViewportRef.current = true;
+        reapplyChartViewport(chart.timeScale(), savedViewport, 'logical');
+        requestAnimationFrame(() => {
+          isRestoringViewportRef.current = false;
+        });
+      }
+      return;
     }
 
-    if (!showSwingOverlay || !swingOverlay?.legs.length) return;
+    const segmentMode = swingOverlay.segmentMode ?? 'connected';
 
-    const data = swingsToColoredLineData(
-      swingOverlay.legs,
-      metric,
-      toValue,
-      groupMode,
-      chartTrades,
-    );
-    if (data.length < 2) return;
+    if (segmentMode === 'perLeg') {
+      const segments = swingsToLegSegments(
+        swingOverlay.legs,
+        metric,
+        toValue,
+        groupMode,
+        sortedTrades,
+      );
+      for (const segment of segments) {
+        const series = chart.addSeries(LineSeries, {
+          ...SWING_HIGH_OVERLAY_SERIES_OPTIONS,
+          color: segment.color,
+          priceFormat: createChartPriceFormat(priceUnit),
+        });
+        series.setData(segment.data);
+        swingSeriesRefs.current.push(series);
+      }
+    } else {
+      const data = swingsToColoredLineData(
+        swingOverlay.legs,
+        metric,
+        toValue,
+        groupMode,
+        sortedTrades,
+      );
+      const pointCount = data.filter((p) => 'value' in p).length;
+      if (pointCount < 2) return;
 
-    const series = chart.addSeries(LineSeries, {
-      ...SWING_HIGH_OVERLAY_SERIES_OPTIONS,
-      priceFormat: createChartPriceFormat(priceUnit),
-    });
-    series.setData(data);
-    swingSeriesRef.current = series;
+      const series = chart.addSeries(LineSeries, {
+        ...SWING_HIGH_OVERLAY_SERIES_OPTIONS,
+        priceFormat: createChartPriceFormat(priceUnit),
+      });
+      series.setData(data);
+      swingSeriesRefs.current.push(series);
+    }
+
+    if (savedViewport) {
+      isRestoringViewportRef.current = true;
+      reapplyChartViewport(chart.timeScale(), savedViewport, 'logical');
+      requestAnimationFrame(() => {
+        isRestoringViewportRef.current = false;
+      });
+    }
 
     return () => {
-      if (swingSeriesRef.current && chartRef.current) {
+      if (!chartRef.current) return;
+      for (const series of swingSeriesRefs.current) {
         try {
-          chartRef.current.removeSeries(swingSeriesRef.current);
+          chartRef.current.removeSeries(series);
         } catch {
           /* chart may already be removed */
         }
-        swingSeriesRef.current = null;
       }
+      swingSeriesRefs.current = [];
     };
   }, [
     showSwingOverlay,
@@ -559,11 +678,11 @@ export function TokenPriceChart({
     metric,
     toValue,
     groupMode,
-    chartTrades,
+    sortedTrades,
     showChart,
-    bars,
     style,
     priceUnit,
+    snapshotVisibleViewport,
   ]);
 
   if (!id) {

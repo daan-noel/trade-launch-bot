@@ -2,12 +2,16 @@ import type { UTCTimestamp } from 'lightweight-charts';
 import { CHART_COLORS, TOKEN_TOTAL_SUPPLY } from './constants';
 import type { ChartGroupMode, ChartMetric, ChartSwingLeg, ChartTrade } from './types';
 
-export interface SwingColoredLinePoint {
-  time: UTCTimestamp;
-  value: number;
-  /** Styles the segment from this point to the next (lightweight-charts forward color). */
-  color?: string;
-}
+export type SwingOverlaySegmentMode = 'connected' | 'perLeg';
+
+export type SwingColoredLinePoint =
+  | {
+      time: UTCTimestamp;
+      value: number;
+      /** Styles the segment from this point to the next (lightweight-charts forward color). */
+      color?: string;
+    }
+  | { time: UTCTimestamp };
 
 type SwingVertex = { time: UTCTimestamp; value: number };
 
@@ -65,7 +69,7 @@ function pushVertex(
   return t;
 }
 
-/** Shared reversal vertices — one monotonic time axis for the full swing path. */
+/** Connected reversal path — first leg start + each leg end. */
 function buildSwingPathVertices(
   swings: ChartSwingLeg[],
   metric: ChartMetric,
@@ -97,7 +101,74 @@ function buildSwingPathVertices(
   return vertices;
 }
 
-/** One connected line; per-point color alternates sky (swing_high) / magenta (swing_low). */
+function pushColoredVertex(
+  out: SwingColoredLinePoint[],
+  time: UTCTimestamp | null,
+  value: number,
+  prevTime: number,
+  color?: string,
+): number {
+  if (time == null) return prevTime;
+  let t = time as number;
+  if (t <= prevTime) t = prevTime + 1;
+  const point: SwingColoredLinePoint = {
+    time: t as UTCTimestamp,
+    value,
+    ...(color ? { color } : {}),
+  };
+  out.push(point);
+  return t;
+}
+
+export type SwingLegLineSegment = {
+  color: string;
+  data: SwingColoredLinePoint[];
+};
+
+function buildLegSegment(
+  leg: ChartSwingLeg,
+  metric: ChartMetric,
+  toValue: (sol: number) => number,
+  groupMode: ChartGroupMode,
+  trades: ChartTrade[],
+): SwingLegLineSegment | null {
+  const color = swingLegColor(leg.type);
+  const data: SwingColoredLinePoint[] = [];
+  let prevTime = -1;
+  prevTime = pushColoredVertex(
+    data,
+    resolveChartTime(leg.start_at, groupMode, trades),
+    swingPriceToChartY(leg.start_price, metric, toValue),
+    prevTime,
+    color,
+  );
+  prevTime = pushColoredVertex(
+    data,
+    resolveChartTime(leg.end_at, groupMode, trades),
+    swingPriceToChartY(leg.end_price, metric, toValue),
+    prevTime,
+  );
+  if (data.filter((p) => 'value' in p).length < 2) return null;
+  return { color, data };
+}
+
+/** One isolated line segment per leg (start → end), for filtered swing results. */
+export function swingsToLegSegments(
+  swings: ChartSwingLeg[],
+  metric: ChartMetric,
+  toValue: (sol: number) => number,
+  groupMode: ChartGroupMode,
+  trades: ChartTrade[],
+): SwingLegLineSegment[] {
+  const segments: SwingLegLineSegment[] = [];
+  for (const leg of swings) {
+    const segment = buildLegSegment(leg, metric, toValue, groupMode, trades);
+    if (segment) segments.push(segment);
+  }
+  return segments;
+}
+
+/** Connected swing path with per-segment colors (full detection result). */
 export function swingsToColoredLineData(
   swings: ChartSwingLeg[],
   metric: ChartMetric,

@@ -184,29 +184,26 @@ export function TokenDetailPanel({ detail, loading, error }: TokenDetailPanelPro
                 label="Creator"
                 short={truncate(detail.creator_address, 12)}
                 full={detail.creator_address}
-                solscanUrl={`https://solscan.io/account/${detail.creator_address}`}
-                gmgnUrl={`https://gmgn.ai/sol/address/${detail.creator_address}`}
+                kind="account"
               />
               <AddrCard
                 label="Mint"
                 short={truncate(detail.mint_address, 12)}
                 full={detail.mint_address}
-                solscanUrl={`https://solscan.io/token/${detail.mint_address}`}
-                gmgnUrl={`https://gmgn.ai/sol/token/${detail.mint_address}`}
+                kind="token"
               />
               <AddrCard
                 label="Create TX"
                 short={truncate(detail.create_tx_address, 12)}
                 full={detail.create_tx_address}
-                solscanUrl={`https://solscan.io/tx/${detail.create_tx_address}`}
+                kind="transaction"
               />
               {detail.bonding_curve_address ? (
                 <AddrCard
                   label="Bonding Curve"
                   short={truncate(detail.bonding_curve_address, 12)}
                   full={detail.bonding_curve_address}
-                  solscanUrl={`https://solscan.io/account/${detail.bonding_curve_address}`}
-                  gmgnUrl={`https://gmgn.ai/sol/address/${detail.bonding_curve_address}`}
+                  kind="account"
                 />
               ) : (
                 <StatCard label="Bonding Curve" value="-" variant="muted" />

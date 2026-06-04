@@ -79,6 +79,14 @@ export function migrationChartValue(
   return toValue(solValue);
 }
 
+export function chartValueForTrade(
+  trade: ChartTrade,
+  metric: ChartMetric,
+): number | null {
+  return metric === 'price' ? curveSpotPriceSol(trade) : curveMarketCapSol(trade);
+}
+
+/** Trades with `price_per_token` set to the chart metric (overlay / markers). */
 export function tradesForChartMetric(
   trades: ChartTrade[],
   metric: ChartMetric,
@@ -88,8 +96,7 @@ export function tradesForChartMetric(
   );
 
   return sorted.flatMap((trade) => {
-    const value =
-      metric === 'price' ? curveSpotPriceSol(trade) : curveMarketCapSol(trade);
+    const value = chartValueForTrade(trade, metric);
     if (value == null) return [];
     return [{ ...trade, price_per_token: value }];
   });
@@ -99,6 +106,7 @@ export function aggregateTradesToBars(
   trades: ChartTrade[],
   intervalSec: number,
   toValue: (priceInSol: number) => number,
+  metric: ChartMetric,
 ): OhlcBar[] {
   if (trades.length === 0) return [];
 
@@ -123,7 +131,9 @@ export function aggregateTradesToBars(
     if (sec == null) continue;
 
     const time = bucketStart(sec, intervalSec);
-    const price = toValue(trade.price_per_token);
+    const value = chartValueForTrade(trade, metric);
+    if (value == null) continue;
+    const price = toValue(value);
     const vol = trade.sol_amount ?? 1;
     const liquiditySol = curveLiquiditySol(trade);
 
@@ -157,6 +167,7 @@ export function aggregateTradesToBars(
 export function aggregateTradesToBarsBySlot(
   trades: ChartTrade[],
   toValue: (priceInSol: number) => number,
+  metric: ChartMetric,
 ): OhlcBar[] {
   if (trades.length === 0) return [];
 
@@ -182,7 +193,9 @@ export function aggregateTradesToBarsBySlot(
     const slot = trade.slot;
     if (slot == null) continue;
 
-    const price = toValue(trade.price_per_token);
+    const value = chartValueForTrade(trade, metric);
+    if (value == null) continue;
+    const price = toValue(value);
     const vol = trade.sol_amount ?? 1;
     const liquiditySol = curveLiquiditySol(trade);
 

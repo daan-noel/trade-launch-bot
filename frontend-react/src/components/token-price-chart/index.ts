@@ -13,8 +13,16 @@ export {
   athChartValue,
   migrationChartValue,
   tradesForChartMetric,
+  chartValueForTrade,
 } from './chartBars';
-export { swingsToLineData, swingsToColoredLineData } from './swingOverlay';
+export {
+  swingsToLineData,
+  swingsToColoredLineData,
+  swingsToLegSegments,
+  type SwingColoredLinePoint,
+  type SwingLegLineSegment,
+  type SwingOverlaySegmentMode,
+} from './swingOverlay';
 export { TOKEN_TOTAL_SUPPLY, PUMP_MIGRATION_SPOT_PRICE_SOL } from './constants';
 export {
   CHART_COLORS,

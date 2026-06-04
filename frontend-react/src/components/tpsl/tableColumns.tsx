@@ -4,6 +4,7 @@ import { formatAge, formatDecimalTrim } from '../../utils/format';
 import type { usePriceDisplay } from '../../hooks/usePriceDisplay';
 import { fmtTime } from './utils';
 import { cn } from '../../lib/cn';
+import { AddressDisplay } from '../ui/AddressDisplay';
 
 export function positionColumns(
   price: ReturnType<typeof usePriceDisplay>,
@@ -13,14 +14,11 @@ export function positionColumns(
       key: 'mint',
       label: 'Mint',
       render: (r) => (
-        <a
-          href={`https://gmgn.ai/sol/token/${r.mint}`}
-          target="_blank"
-          rel="noreferrer"
-          className="text-accent hover:text-primary"
-        >
-          {r.mint.slice(0, 6)}
-        </a>
+        <AddressDisplay
+          address={r.mint}
+          kind="token"
+          display={r.mint.slice(0, 6)}
+        />
       ),
       searchValue: (r) => r.mint,
     },
@@ -115,14 +113,7 @@ export const matchedColumns: ColumnDef<MatchedTokenRecord>[] = [
     label: 'Symbol',
     sortable: true,
     render: (r) => (
-      <a
-        href={`https://gmgn.ai/sol/token/${r.mint}`}
-        target="_blank"
-        rel="noreferrer"
-        className="text-accent hover:text-primary"
-      >
-        {r.symbol}
-      </a>
+      <AddressDisplay address={r.mint} kind="token" display={r.symbol} />
     ),
     sortValue: (r) => r.symbol,
     searchValue: (r) => `${r.symbol} ${r.name}`,
@@ -178,14 +169,7 @@ export function simColumns(
       label: 'Symbol',
       sortable: true,
       render: (r) => (
-        <a
-          href={`https://gmgn.ai/sol/token/${r.mint}`}
-          target="_blank"
-          rel="noreferrer"
-          className="text-accent hover:text-primary"
-        >
-          {r.symbol}
-        </a>
+        <AddressDisplay address={r.mint} kind="token" display={r.symbol} />
       ),
       sortValue: (r) => r.symbol,
       searchValue: (r) => r.symbol,

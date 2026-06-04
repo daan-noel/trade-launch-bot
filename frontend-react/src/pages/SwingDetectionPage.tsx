@@ -15,6 +15,7 @@ import {
 } from '../components/analysis/swingFilter';
 import { Button } from '../components/ui/Button';
 import { Tabs, TabsList, TabsPanel, TabsTrigger } from '../components/ui/Tabs';
+import { VisibilityToggleButton } from '../components/ui/VisibilityToggleButton';
 import { fetchTokenSwings, fetchTokenTrades, fetchTokens } from '../services/api';
 import type {
   SwingDetectionResult,
@@ -124,6 +125,9 @@ export function SwingDetectionPage() {
   const [swingError, setSwingError] = useState<string | null>(null);
   const [swingPanelTab, setSwingPanelTab] = useState<SwingPanelTab>('analysis');
   const [swingFilter, setSwingFilter] = useState<SwingFilterCriteria>(DEFAULT_SWING_FILTER);
+  const [appliedSwingFilter, setAppliedSwingFilter] =
+    useState<SwingFilterCriteria>(DEFAULT_SWING_FILTER);
+  const [showSwingResultsTable, setShowSwingResultsTable] = useState(false);
 
   const toggleAnalysis = useCallback((kind: AnalysisKind) => {
     setActiveAnalysis((prev) => (prev === kind ? null : kind));
@@ -228,12 +232,14 @@ export function SwingDetectionPage() {
       setSwingResult(null);
       setSwingError(null);
       setSwingFilter(DEFAULT_SWING_FILTER);
+      setAppliedSwingFilter(DEFAULT_SWING_FILTER);
       return;
     }
     setSelectedBar(null);
     setSwingResult(null);
     setSwingError(null);
     setSwingFilter(DEFAULT_SWING_FILTER);
+    setAppliedSwingFilter(DEFAULT_SWING_FILTER);
     loadTrades(selectedMint);
   }, [selectedMint, loadTrades]);
 
@@ -268,16 +274,18 @@ export function SwingDetectionPage() {
 
   const filteredSwings = useMemo(() => {
     if (!swingResult) return [];
-    return filterSwings(swingResult.swings, swingFilter);
-  }, [swingResult, swingFilter]);
+    return filterSwings(swingResult.swings, appliedSwingFilter);
+  }, [swingResult, appliedSwingFilter]);
 
-  const swingOverlayLegs = useMemo(() => {
+  const swingOverlay = useMemo(() => {
     if (!swingResult || swingResult.mint !== selectedMint) return null;
-    if (swingPanelTab === 'filter' && hasActiveSwingFilter(swingFilter)) {
-      return filteredSwings;
-    }
-    return swingResult.swings;
-  }, [swingResult, selectedMint, swingPanelTab, swingFilter, filteredSwings]);
+    const filterActive =
+      swingPanelTab === 'filter' && hasActiveSwingFilter(appliedSwingFilter);
+    return {
+      legs: filterActive ? filteredSwings : swingResult.swings,
+      segmentMode: filterActive ? ('perLeg' as const) : ('connected' as const),
+    };
+  }, [swingResult, selectedMint, swingPanelTab, appliedSwingFilter, filteredSwings]);
 
   return (
     <div>
@@ -578,17 +586,25 @@ export function SwingDetectionPage() {
                     <span className="rounded-md border border-primary/35 bg-primary/12 px-2 py-0.5 font-mono text-[11px] text-primary">
                       {swingResult.count} swing{swingResult.count === 1 ? '' : 's'}
                     </span>
+                    <span className="flex-1" />
+                    <VisibilityToggleButton
+                      visible={showSwingResultsTable}
+                      onToggle={() => setShowSwingResultsTable((v) => !v)}
+                      label="swing results table"
+                    />
                   </div>
-                  <DataTable
-                    columns={swingTableColumns}
-                    rows={swingResult.swings}
-                    rowKey={(leg) => `${leg.type}-${leg.start_at}-${leg.end_at}`}
-                    defaultPageSize={5}
-                    searchable
-                    colFilters
-                    hoverable
-                    emptyMessage="No swings detected with these parameters."
-                  />
+                  {showSwingResultsTable && (
+                    <DataTable
+                      columns={swingTableColumns}
+                      rows={swingResult.swings}
+                      rowKey={(leg) => `${leg.type}-${leg.start_at}-${leg.end_at}`}
+                      defaultPageSize={5}
+                      searchable
+                      colFilters
+                      hoverable
+                      emptyMessage="No swings detected with these parameters."
+                    />
+                  )}
                 </>
               )}
             </div>
@@ -602,12 +618,16 @@ export function SwingDetectionPage() {
                 )}
                 {swingResult && (
                   <>
+                    <p className="mb-3 text-[11px] text-text-dim">
+                      Narrow detected legs for display only — does not re-run detection. 0 =
+                      ignore that bound.
+                    </p>
                     <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                       <label className={labelClassName}>
-                        Type
+                        Filter leg type
                         <select
-                          value={swingFilter.type}
-                          onChange={(e) => updateSwingFilter('type', e.target.value)}
+                          value={swingFilter.leg_type}
+                          onChange={(e) => updateSwingFilter('leg_type', e.target.value)}
                           className={inputClassName}
                         >
                           <option value="all">All</option>
@@ -616,111 +636,127 @@ export function SwingDetectionPage() {
                         </select>
                       </label>
                       <label className={labelClassName}>
-                        Min duration (ms)
+                        Filter min duration (ms)
                         <input
                           type="number"
                           min={0}
                           step={1}
-                          value={swingFilter.min_duration_ms}
-                          onChange={(e) => updateSwingFilter('min_duration_ms', e.target.value)}
-                          className={inputClassName}
-                        />
-                      </label>
-                      <label className={labelClassName}>
-                        Max duration (ms)
-                        <input
-                          type="number"
-                          min={0}
-                          step={1}
-                          value={swingFilter.max_duration_ms}
-                          onChange={(e) => updateSwingFilter('max_duration_ms', e.target.value)}
-                          className={inputClassName}
-                        />
-                      </label>
-                      <label className={labelClassName}>
-                        Min trades
-                        <input
-                          type="number"
-                          min={0}
-                          step={1}
-                          value={swingFilter.min_trade_count}
-                          onChange={(e) => updateSwingFilter('min_trade_count', e.target.value)}
-                          className={inputClassName}
-                        />
-                      </label>
-                      <label className={labelClassName}>
-                        Max trades
-                        <input
-                          type="number"
-                          min={0}
-                          step={1}
-                          value={swingFilter.max_trade_count}
-                          onChange={(e) => updateSwingFilter('max_trade_count', e.target.value)}
-                          className={inputClassName}
-                        />
-                      </label>
-                      <label className={labelClassName}>
-                        Min volume (SOL)
-                        <input
-                          type="number"
-                          min={0}
-                          step="any"
-                          value={swingFilter.min_volume}
-                          onChange={(e) => updateSwingFilter('min_volume', e.target.value)}
-                          className={inputClassName}
-                        />
-                      </label>
-                      <label className={labelClassName}>
-                        Max volume (SOL)
-                        <input
-                          type="number"
-                          min={0}
-                          step="any"
-                          value={swingFilter.max_volume}
-                          onChange={(e) => updateSwingFilter('max_volume', e.target.value)}
-                          className={inputClassName}
-                        />
-                      </label>
-                      <label className={labelClassName}>
-                        Min net flow (SOL)
-                        <input
-                          type="number"
-                          step="any"
-                          value={swingFilter.min_net_flow}
-                          onChange={(e) => updateSwingFilter('min_net_flow', e.target.value)}
-                          className={inputClassName}
-                        />
-                      </label>
-                      <label className={labelClassName}>
-                        Max net flow (SOL)
-                        <input
-                          type="number"
-                          step="any"
-                          value={swingFilter.max_net_flow}
-                          onChange={(e) => updateSwingFilter('max_net_flow', e.target.value)}
-                          className={inputClassName}
-                        />
-                      </label>
-                      <label className={labelClassName}>
-                        Min price change (%)
-                        <input
-                          type="number"
-                          step="any"
-                          value={swingFilter.min_price_change_pct}
+                          value={swingFilter.filter_min_duration_ms}
                           onChange={(e) =>
-                            updateSwingFilter('min_price_change_pct', e.target.value)
+                            updateSwingFilter('filter_min_duration_ms', e.target.value)
                           }
                           className={inputClassName}
                         />
                       </label>
                       <label className={labelClassName}>
-                        Max price change (%)
+                        Filter max duration (ms)
+                        <input
+                          type="number"
+                          min={0}
+                          step={1}
+                          value={swingFilter.filter_max_duration_ms}
+                          onChange={(e) =>
+                            updateSwingFilter('filter_max_duration_ms', e.target.value)
+                          }
+                          className={inputClassName}
+                        />
+                      </label>
+                      <label className={labelClassName}>
+                        Filter min trades
+                        <input
+                          type="number"
+                          min={0}
+                          step={1}
+                          value={swingFilter.filter_min_trades}
+                          onChange={(e) =>
+                            updateSwingFilter('filter_min_trades', e.target.value)
+                          }
+                          className={inputClassName}
+                        />
+                      </label>
+                      <label className={labelClassName}>
+                        Filter max trades
+                        <input
+                          type="number"
+                          min={0}
+                          step={1}
+                          value={swingFilter.filter_max_trades}
+                          onChange={(e) =>
+                            updateSwingFilter('filter_max_trades', e.target.value)
+                          }
+                          className={inputClassName}
+                        />
+                      </label>
+                      <label className={labelClassName}>
+                        Filter min volume (SOL)
+                        <input
+                          type="number"
+                          min={0}
+                          step="any"
+                          value={swingFilter.filter_min_volume_sol}
+                          onChange={(e) =>
+                            updateSwingFilter('filter_min_volume_sol', e.target.value)
+                          }
+                          className={inputClassName}
+                        />
+                      </label>
+                      <label className={labelClassName}>
+                        Filter max volume (SOL)
+                        <input
+                          type="number"
+                          min={0}
+                          step="any"
+                          value={swingFilter.filter_max_volume_sol}
+                          onChange={(e) =>
+                            updateSwingFilter('filter_max_volume_sol', e.target.value)
+                          }
+                          className={inputClassName}
+                        />
+                      </label>
+                      <label className={labelClassName}>
+                        Filter min net flow (SOL)
                         <input
                           type="number"
                           step="any"
-                          value={swingFilter.max_price_change_pct}
+                          value={swingFilter.filter_min_net_flow_sol}
                           onChange={(e) =>
-                            updateSwingFilter('max_price_change_pct', e.target.value)
+                            updateSwingFilter('filter_min_net_flow_sol', e.target.value)
+                          }
+                          className={inputClassName}
+                        />
+                      </label>
+                      <label className={labelClassName}>
+                        Filter max net flow (SOL)
+                        <input
+                          type="number"
+                          step="any"
+                          value={swingFilter.filter_max_net_flow_sol}
+                          onChange={(e) =>
+                            updateSwingFilter('filter_max_net_flow_sol', e.target.value)
+                          }
+                          className={inputClassName}
+                        />
+                      </label>
+                      <label className={labelClassName}>
+                        Filter min change (%)
+                        <input
+                          type="number"
+                          step="any"
+                          value={swingFilter.filter_min_change_pct}
+                          onChange={(e) =>
+                            updateSwingFilter('filter_min_change_pct', e.target.value)
+                          }
+                          className={inputClassName}
+                        />
+                      </label>
+                      <label className={labelClassName}>
+                        Filter max change (%)
+                        <input
+                          type="number"
+                          step="any"
+                          value={swingFilter.filter_max_change_pct}
+                          onChange={(e) =>
+                            updateSwingFilter('filter_max_change_pct', e.target.value)
                           }
                           className={inputClassName}
                         />
@@ -729,15 +765,24 @@ export function SwingDetectionPage() {
 
                     <div className="mb-4 flex flex-wrap items-center gap-3">
                       <Button
+                        variant="primary"
+                        onClick={() => setAppliedSwingFilter(swingFilter)}
+                      >
+                        Apply
+                      </Button>
+                      <Button
                         variant="ghost"
                         className="text-[11px] text-text-dim"
-                        onClick={() => setSwingFilter(DEFAULT_SWING_FILTER)}
+                        onClick={() => {
+                          setSwingFilter(DEFAULT_SWING_FILTER);
+                          setAppliedSwingFilter(DEFAULT_SWING_FILTER);
+                        }}
                       >
                         Clear filters
                       </Button>
                       {!hasActiveSwingFilter(swingFilter) && (
                         <span className="text-[11px] text-text-dim">
-                          Set criteria to narrow swings (0 = no bound).
+                          Set filter criteria and click Apply (0 = ignore that field).
                         </span>
                       )}
                     </div>
@@ -748,21 +793,29 @@ export function SwingDetectionPage() {
                         {filteredSwings.length} / {swingResult.count} swing
                         {swingResult.count === 1 ? '' : 's'}
                       </span>
+                      <span className="flex-1" />
+                      <VisibilityToggleButton
+                        visible={showSwingResultsTable}
+                        onToggle={() => setShowSwingResultsTable((v) => !v)}
+                        label="filtered swing results table"
+                      />
                     </div>
-                    <DataTable
-                      columns={swingTableColumns}
-                      rows={filteredSwings}
-                      rowKey={(leg) => `${leg.type}-${leg.start_at}-${leg.end_at}`}
-                      defaultPageSize={5}
-                      searchable
-                      colFilters
-                      hoverable
-                      emptyMessage={
-                        hasActiveSwingFilter(swingFilter)
-                          ? 'No swings match these filter criteria.'
-                          : 'Set filter criteria to narrow results.'
-                      }
-                    />
+                    {showSwingResultsTable && (
+                      <DataTable
+                        columns={swingTableColumns}
+                        rows={filteredSwings}
+                        rowKey={(leg) => `${leg.type}-${leg.start_at}-${leg.end_at}`}
+                        defaultPageSize={5}
+                        searchable
+                        colFilters
+                        hoverable
+                        emptyMessage={
+                          hasActiveSwingFilter(appliedSwingFilter)
+                            ? 'No swings match these filter criteria.'
+                            : 'Set filter criteria and click Apply.'
+                        }
+                      />
+                    )}
                   </>
                 )}
               </TabsPanel>
@@ -786,9 +839,7 @@ export function SwingDetectionPage() {
           metric={chartMetric}
           onMetricChange={setChartMetric}
           onBarClick={setSelectedBar}
-          swingOverlay={
-            swingOverlayLegs ? { legs: swingOverlayLegs } : null
-          }
+          swingOverlay={swingOverlay}
           athPriceInSol={selectedToken?.ath_price ?? null}
           isMigrated={selectedToken?.is_migrated}
           isMayhemMode={selectedToken?.is_mayhem_mode}

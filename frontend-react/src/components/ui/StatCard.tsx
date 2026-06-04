@@ -1,6 +1,8 @@
 import { cn } from '../../lib/cn';
 import type { StatVariant } from '../../utils/format';
 import { statVariantClass } from '../../utils/format';
+import type { AddressKind } from '../../utils/addressLinks';
+import { AddressDisplay } from './AddressDisplay';
 
 interface StatCardProps {
   label: string;
@@ -51,56 +53,21 @@ interface AddrCardProps {
   label: string;
   short: string;
   full: string;
-  solscanUrl: string;
-  gmgnUrl?: string;
+  kind: AddressKind;
 }
 
-export function AddrCard({ label, short, full, solscanUrl, gmgnUrl }: AddrCardProps) {
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(full);
-    } catch {
-      /* ignore */
-    }
-  };
-
+export function AddrCard({ label, short, full, kind }: AddrCardProps) {
   return (
     <div className="grid min-h-10 content-center gap-0.5 rounded-md border border-white/5 bg-white/2 px-2 py-1">
       <span className="truncate text-[9px] font-semibold uppercase tracking-wider text-text-dim">
         {label}
       </span>
-      <div className="flex items-center justify-between gap-1">
-        <button
-          type="button"
-          onClick={copy}
-          title="Click to copy"
-          className="min-w-0 flex-1 truncate text-left font-mono text-[10px] text-text-mid hover:text-text"
-        >
-          {short}
-        </button>
-        <div className="flex shrink-0 items-center gap-0.5">
-          {gmgnUrl && (
-            <a
-              href={gmgnUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex size-[18px] items-center justify-center rounded bg-white/5 text-[9px] font-bold text-[#00c97a] hover:bg-[rgba(0,201,122,0.15)]"
-              title="Open on GMGN"
-            >
-              G
-            </a>
-          )}
-          <a
-            href={solscanUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex size-[18px] items-center justify-center rounded bg-white/5 text-[9px] font-bold text-[#9945ff] hover:bg-[rgba(153,69,255,0.15)]"
-            title="Open on Solscan"
-          >
-            S
-          </a>
-        </div>
-      </div>
+      <AddressDisplay
+        address={full}
+        kind={kind}
+        display={short}
+        className="text-[10px]"
+      />
     </div>
   );
 }

@@ -69,7 +69,7 @@ export const CHART_COLORS = {
   migrationLine: '#5dade2',
   swingOverlay: '#e879f9',
   /** Swing path segments — distinct from candle up/down greens and reds */
-  swingHigh: '#38bdf8',
+  swingHigh: '#0eb5ff',
   swingLow: '#e879f9',
 } as const;
 

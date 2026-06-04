@@ -60,6 +60,8 @@ export interface ChartSwingLeg {
 
 export interface ChartSwingOverlay {
   legs: ChartSwingLeg[];
+  /** `perLeg` — one segment per leg with gaps (result filter). Default: connected path. */
+  segmentMode?: 'connected' | 'perLeg';
 }
 
 export interface TokenPriceChartProps {

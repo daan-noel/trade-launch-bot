@@ -1,7 +1,7 @@
 import type { ColumnDef } from '../table/types';
 import type { WalletHolding } from '../../types';
-import { truncate } from '../../utils/format';
 import { cn } from '../../lib/cn';
+import { AddressDisplay } from '../ui/AddressDisplay';
 
 function formatPriceUsd(p: number): string {
   if (p < 0.0001) return `$${p.toFixed(8)}`;
@@ -35,18 +35,15 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
     {
       key: 'mint',
       label: 'Mint',
-      width: '160px',
+      width: '195px',
       sortable: true,
       render: (r) => (
-        <a
-          href={`https://gmgn.ai/sol/token/${r.mint}`}
-          target="_blank"
-          rel="noreferrer"
-          className="text-accent hover:text-primary"
-          onClick={(e) => e.stopPropagation()}
-        >
-          {truncate(r.mint, 12)}
-        </a>
+        <AddressDisplay
+          address={r.mint}
+          kind="token"
+          truncateLen={12}
+          stopPropagation
+        />
       ),
       sortValue: (r) => r.mint,
       searchValue: (r) => r.mint,
@@ -155,18 +152,15 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
     {
       key: 'token_account',
       label: 'Token Account',
-      width: '160px',
+      width: '195px',
       sortable: false,
       render: (r) => (
-        <a
-          href={`https://solscan.io/account/${r.token_account}`}
-          target="_blank"
-          rel="noreferrer"
-          className="text-accent hover:text-primary"
-          onClick={(e) => e.stopPropagation()}
-        >
-          {truncate(r.token_account, 12)}
-        </a>
+        <AddressDisplay
+          address={r.token_account}
+          kind="account"
+          truncateLen={12}
+          stopPropagation
+        />
       ),
       searchValue: (r) => r.token_account,
     },
