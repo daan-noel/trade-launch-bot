@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { DataTable } from '../components/table/DataTable';
-import { InlineAlert, Modal } from '../components/ui/Modal';
-import { walletColumns } from '../components/wallet/walletColumns';
-import { fetchWalletHoldings, tradeBuy, tradeSell } from '../services/api';
-import type { WalletHolding } from '../types';
-import { cn } from '../lib/cn';
+import { DataTable } from '../../components/table/DataTable';
+import { InlineAlert, Modal } from '../../components/ui/Modal';
+import { walletColumns } from '../../components/wallet/walletColumns';
+import { fetchWalletHoldings, tradeBuy, tradeSell } from '../../services/api';
+import type { WalletHolding } from '../../types';
+import { cn } from '../../lib/cn';
 
 interface BuyDialog {
   mint: string;

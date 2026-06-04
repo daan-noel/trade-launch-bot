@@ -16,7 +16,7 @@ React 19 · Vite 8 · TS 6 · Tailwind 4 · react-router 7. Hooks/context only (
 
 ## Task → path
 - Routes/nav → `src/App.tsx`, `components/layout/Header.tsx`
-- Page → `src/pages/` (thin: fetch/stream + compose)
+- Page → `src/pages/{home,dashboard,tokens,transactions,analysis,wallet,strategies,settings,not-found}/` (thin: fetch/stream + compose)
 - Columns → `*Columns.tsx` + `components/table/DataTable`
 - REST → `services/api.ts` only; types → `types/index.ts` (snake_case)
 - SSE → `services/sse.ts`, `hooks/useTradeStream.ts` (`trade_executed`)

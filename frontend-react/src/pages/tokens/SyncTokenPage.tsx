@@ -1,14 +1,14 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { DataTable } from '../components/table/DataTable';
-import { tokenTradeColumns } from '../components/transactions/tokenTradeColumns';
-import { TokenPriceChart, type ChartMetric } from '../components/token-price-chart';
-import { TokenDetailPanel } from '../components/tokens/TokenDetailPanel';
-import { Button } from '../components/ui/Button';
-import { usePriceUnit } from '../context/PriceUnitContext';
-import { usePriceDisplay } from '../hooks/usePriceDisplay';
-import { syncToken } from '../services/api';
-import type { SyncProgressEvent, TokenDetailRecord, TradeRecord } from '../types';
-import { cn } from '../lib/cn';
+import { DataTable } from '../../components/table/DataTable';
+import { tokenTradeColumns } from '../../components/transactions/tokenTradeColumns';
+import { TokenPriceChart, type ChartMetric } from '../../components/token-price-chart';
+import { TokenDetailPanel } from '../../components/tokens/TokenDetailPanel';
+import { Button } from '../../components/ui/Button';
+import { usePriceUnit } from '../../context/PriceUnitContext';
+import { usePriceDisplay } from '../../hooks/usePriceDisplay';
+import { syncToken } from '../../services/api';
+import type { SyncProgressEvent, TokenDetailRecord, TradeRecord } from '../../types';
+import { cn } from '../../lib/cn';
 
 const STAGE_ORDER = [
   'validating',

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { DataTable } from '../components/table/DataTable';
-import { InlineAlert } from '../components/ui/Modal';
+import { DataTable } from '../../components/table/DataTable';
+import { InlineAlert } from '../../components/ui/Modal';
 import {
   buildCreatePayload,
   buildUpdatePayload,
@@ -8,15 +8,15 @@ import {
   formFromRule,
   RuleFormModal,
   type RuleFormData,
-} from '../components/tpsl/RuleFormModal';
-import { ruleColumns } from '../components/tpsl/ruleColumns';
-import { SimSummaryCard } from '../components/tpsl/SimSummaryCard';
+} from '../../components/tpsl/RuleFormModal';
+import { ruleColumns } from '../../components/tpsl/ruleColumns';
+import { SimSummaryCard } from '../../components/tpsl/SimSummaryCard';
 import {
   matchedColumns,
   positionColumns,
   simColumns,
-} from '../components/tpsl/tableColumns';
-import { usePriceDisplay } from '../hooks/usePriceDisplay';
+} from '../../components/tpsl/tableColumns';
+import { usePriceDisplay } from '../../hooks/usePriceDisplay';
 import {
   createTpslRule,
   deleteTpslRule,
@@ -25,10 +25,10 @@ import {
   fetchTpslRules,
   simulateTpslRule,
   updateTpslRule,
-} from '../services/api';
-import { POLL_INTERVAL_MS } from '../services/config';
-import type { RulePositionRecord, RuleRecord, SimulatedTokenResult } from '../types';
-import { cn } from '../lib/cn';
+} from '../../services/api';
+import { POLL_INTERVAL_MS } from '../../services/config';
+import type { RulePositionRecord, RuleRecord, SimulatedTokenResult } from '../../types';
+import { cn } from '../../lib/cn';
 
 export function TpslPage() {
   const price = usePriceDisplay();
@@ -60,7 +60,7 @@ export function TpslPage() {
 
   const [matchedResult, setMatchedResult] = useState<{
     ruleId: string;
-    tokens: import('../types').MatchedTokenRecord[];
+    tokens: import('../../types').MatchedTokenRecord[];
   } | null>(null);
   const [matchedError, setMatchedError] = useState<string | null>(null);
   const [matchedLoading, setMatchedLoading] = useState(false);

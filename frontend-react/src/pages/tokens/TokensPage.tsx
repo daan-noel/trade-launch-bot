@@ -1,20 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { DataTable } from '../components/table/DataTable';
-import { FilterPanel, defaultFilters } from '../components/tokens/FilterPanel';
-import { TokenDetailPanel } from '../components/tokens/TokenDetailPanel';
-import { tokenColumns } from '../components/tokens/tokenColumns';
+import { DataTable } from '../../components/table/DataTable';
+import { FilterPanel, defaultFilters } from '../../components/tokens/FilterPanel';
+import { TokenDetailPanel } from '../../components/tokens/TokenDetailPanel';
+import { tokenColumns } from '../../components/tokens/tokenColumns';
 import {
   activeFilterCount,
   filtersEmpty,
   tokenPassesFilters,
   type TokenFilters,
-} from '../components/tokens/filters';
-import { StatusButton } from '../components/ui/StatusButton';
-import { fetchTokenDetail, fetchTokens } from '../services/api';
-import { POLL_INTERVAL_MS } from '../services/config';
-import type { TokenDetailRecord, TokenRecord } from '../types';
-import { usePriceDisplay } from '../hooks/usePriceDisplay';
-import { cn } from '../lib/cn';
+} from '../../components/tokens/filters';
+import { StatusButton } from '../../components/ui/StatusButton';
+import { fetchTokenDetail, fetchTokens } from '../../services/api';
+import { POLL_INTERVAL_MS } from '../../services/config';
+import type { TokenDetailRecord, TokenRecord } from '../../types';
+import { usePriceDisplay } from '../../hooks/usePriceDisplay';
+import { cn } from '../../lib/cn';
 
 const LS_LIVE_KEY = 'tokens_live';
 
@@ -139,7 +139,7 @@ export function TokensPage() {
             (showFilters || filterCount > 0) && 'border-primary/35 bg-primary/12 text-primary',
           )}
         >
-          {filterCount > 0 ? `Filters (${filterCount})` : 'Filters'}
+          {filterCount > 0 ? `Global Filters (${filterCount})` : 'Global Filters'}
         </button>
       </div>
 
