@@ -11,6 +11,7 @@ import {
   truncate,
 } from '../../utils/format';
 import { AddrCard, StatCard } from '../ui/StatCard';
+import { Badge } from '../ui/Badge';
 
 function CopyIcon({ copied }: { copied: boolean }) {
   if (copied) {
@@ -168,16 +169,9 @@ export function TokenDetailPanel({ detail, loading, error }: TokenDetailPanelPro
           <span className="text-[15px] font-extrabold tracking-wide">{symbol}</span>
           <span className="text-xs text-text-mid">{detail.name}</span>
         </div>
-        <span
-          className={cn(
-            'rounded-md px-2.5 py-0.5 text-[11px] font-bold tracking-wide',
-            detail.is_migrated
-              ? 'border border-primary/30 bg-primary/12 text-primary'
-              : 'border border-info/25 bg-info/10 text-info',
-          )}
-        >
+        <Badge variant={detail.is_migrated ? 'primary' : 'info'}>
           {detail.is_migrated ? 'Migrated ✓' : 'Bonding Curve'}
-        </span>
+        </Badge>
       </div>
 
       <div className="flex items-start gap-0">

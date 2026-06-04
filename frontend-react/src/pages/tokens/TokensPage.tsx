@@ -12,6 +12,7 @@ import {
   tokenPassesFilters,
   type TokenFilters,
 } from '../../components/tokens/filters';
+import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { StatusButton } from '../../components/ui/StatusButton';
 import { fetchTokenDetail, fetchTokens } from '../../services/api';
@@ -116,15 +117,15 @@ export function TokensPage() {
     <div>
       <div className="mb-3.5 flex flex-wrap items-center gap-3">
         <h2 className="text-lg font-extrabold text-text">Tokens</h2>
-        <span className="rounded-md border border-primary bg-primary/15 px-2.5 py-0.5 font-mono text-[11px] font-bold tracking-wide text-primary">
+        <Badge variant="primary" className="font-mono">
           {total} tracked
-        </span>
+        </Badge>
         <StatusButton
           state={live ? 'live' : 'dead'}
           label={live ? 'ACTIVE' : 'PAUSED'}
           onClick={() => setLive((v) => !v)}
           className={cn(
-            'rounded px-2 py-0.5 text-[10px]',
+            'px-4 py-0.5 text-[10px]',
             live && 'animate-pulse',
           )}
         />

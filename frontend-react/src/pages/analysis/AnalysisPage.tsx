@@ -3,6 +3,7 @@ import { DataTable } from '../../components/table/DataTable';
 import { Pagination } from '../../components/table/Pagination';
 import { InlineAlert } from '../../components/ui/Modal';
 import { analysisColumns, creatorColumns } from '../../components/analysis/analysisColumns';
+import { Badge } from '../../components/ui/Badge';
 import { fetchAnalysis, fetchCreators } from '../../services/api';
 import { POLL_INTERVAL_MS } from '../../services/config';
 import type { AnalysisRecord, CreatorRecord } from '../../types';
@@ -75,9 +76,9 @@ export function AnalysisPage() {
     <div>
       <div className="mb-3.5 flex items-center gap-2.5">
         <h2 className="text-base font-bold text-primary">Analysis</h2>
-        <span className="rounded-md border border-primary bg-primary/15 px-2.5 py-0.5 font-mono text-[11px] font-bold tracking-wide text-primary">
+        <Badge variant="primary" className="font-mono">
           {creatorTotal} creators · {resultTotal} results
-        </span>
+        </Badge>
       </div>
 
       <div className="mb-4 flex gap-2">

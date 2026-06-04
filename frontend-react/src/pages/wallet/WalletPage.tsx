@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { DataTable } from '../../components/table/DataTable';
+import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
 import { InlineAlert, Modal } from '../../components/ui/Modal';
@@ -115,9 +116,9 @@ export function WalletPage() {
     <div>
       <div className="mb-3.5 flex flex-wrap items-center gap-3">
         <h2 className="text-lg font-extrabold text-text">Wallet Holdings</h2>
-        <span className="rounded-md border border-primary bg-primary/15 px-2.5 py-0.5 font-mono text-[11px] font-bold tracking-wide text-primary">
+        <Badge variant="primary" className="font-mono">
           {holdings.length} tokens
-        </span>
+        </Badge>
         <Button variant="subtle" size="sm" onClick={loadHoldings} disabled={loading}>
           {loading ? 'Loading…' : '↻ Refresh'}
         </Button>

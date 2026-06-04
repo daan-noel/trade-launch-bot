@@ -3,6 +3,7 @@ import { DataTable } from '../../components/table/DataTable';
 import { tokenTradeColumns } from '../../components/transactions/tokenTradeColumns';
 import { TokenPriceChart, type ChartMetric } from '../../components/token-price-chart';
 import { TokenDetailPanel } from '../../components/tokens/TokenDetailPanel';
+import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Checkbox } from '../../components/ui/Checkbox';
 import { Input } from '../../components/ui/Input';
@@ -218,9 +219,9 @@ export function SyncTokenPage() {
 
           <div className="mb-2 flex items-center gap-2">
             <h3 className="text-sm font-bold text-text">Trades</h3>
-            <span className="rounded-md border border-primary bg-primary/15 px-2 py-0.5 font-mono text-[11px] font-bold text-primary">
+            <Badge variant="primary" className="font-mono">
               {trades.length}
-            </span>
+            </Badge>
           </div>
           <DataTable
             columns={tradeColumns}

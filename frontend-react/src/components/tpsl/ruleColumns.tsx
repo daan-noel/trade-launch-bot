@@ -2,6 +2,7 @@ import type { ColumnDef } from '../table/types';
 import type { RuleRecord } from '../../types';
 import { dashF, dashNum, dashPercent } from './utils';
 import { cn } from '../../lib/cn';
+import { Badge } from '../ui/Badge';
 
 export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnDef<RuleRecord>[] {
   return [
@@ -123,16 +124,14 @@ export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnD
       label: 'Mode',
       sortable: true,
       render: (r) => (
-        <span
-          className={cn(
-            'inline-block rounded-full px-2 py-0.5 text-[10px] font-bold uppercase',
-            r.trade_mode === 'real'
-              ? 'border border-red/40 bg-red/12 text-red'
-              : 'border border-info/40 bg-info/12 text-info',
-          )}
+        <Badge
+          variant={r.trade_mode === 'real' ? 'danger' : 'info'}
+          size="sm"
+          pill
+          className="uppercase"
         >
           {r.trade_mode === 'real' ? 'Real' : 'Paper'}
-        </span>
+        </Badge>
       ),
       sortValue: (r) => r.trade_mode,
       searchValue: (r) => r.trade_mode,

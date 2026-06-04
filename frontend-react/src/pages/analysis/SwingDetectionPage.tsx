@@ -13,6 +13,7 @@ import {
   parseSwingFilterField,
   type SwingFilterCriteria,
 } from '../../components/analysis/swingFilter';
+import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
 import { Select } from '../../components/ui/Select';
@@ -378,10 +379,10 @@ export function SwingDetectionPage() {
       <div className="mb-3.5 flex flex-wrap items-center gap-3">
         <h2 className="text-lg font-extrabold text-text">Swing detection</h2>
         {loaded && (
-          <span className="rounded-md border border-primary bg-primary/15 px-2.5 py-0.5 font-mono text-[11px] font-bold tracking-wide text-primary">
+          <Badge variant="primary" className="font-mono">
             {displayed.length}
             {displayed.length !== total ? ` / ${total}` : ''} tokens
-          </span>
+          </Badge>
         )}
       </div>
 
@@ -474,7 +475,7 @@ export function SwingDetectionPage() {
               <span className="font-mono text-text">
                 {selectedMint
                   ? chartSymbol
-                    ? `${chartSymbol} (${selectedMint.slice(0, 8)}…)`
+                    ? `${chartSymbol} - ${selectedMint}`
                     : selectedMint
                   : 'Select a token from the table above'}
               </span>
@@ -695,9 +696,9 @@ export function SwingDetectionPage() {
                     <>
                       <div className="mb-2 flex flex-wrap items-center gap-2">
                         <span className="text-[12px] font-bold text-text">Results</span>
-                        <span className="rounded-md border border-primary/35 bg-primary/12 px-2 py-0.5 font-mono text-[11px] text-primary">
+                        <Badge variant="primary" className="font-mono font-normal">
                           {swingResult.count} swing{swingResult.count === 1 ? '' : 's'}
-                        </span>
+                        </Badge>
                         <span className="flex-1" />
                         <VisibilityToggleButton
                           visible={showSwingResultsTable}
@@ -923,10 +924,10 @@ export function SwingDetectionPage() {
 
                     <div className="mb-2 flex flex-wrap items-center gap-2">
                       <span className="text-[12px] font-bold text-text">Filtered</span>
-                      <span className="rounded-md border border-primary/35 bg-primary/12 px-2 py-0.5 font-mono text-[11px] text-primary">
+                      <Badge variant="primary" className="font-mono font-normal">
                         {filteredSwings.length} / {swingResult.count} swing
                         {swingResult.count === 1 ? '' : 's'}
-                      </span>
+                      </Badge>
                       <span className="flex-1" />
                       <VisibilityToggleButton
                         visible={showSwingResultsTable}
@@ -988,9 +989,9 @@ export function SwingDetectionPage() {
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <h3 className="text-sm font-bold text-text">Bar trades</h3>
               <span className="font-mono text-[11px] text-text-dim">{barTimeLabel}</span>
-              <span className="rounded-md border border-primary/35 bg-primary/12 px-2 py-0.5 font-mono text-[11px] text-primary">
+              <Badge variant="primary" className="font-mono font-normal">
                 {barTrades.length} trade{barTrades.length === 1 ? '' : 's'}
-              </span>
+              </Badge>
               <button
                 type="button"
                 onClick={() => setSelectedBar(null)}

@@ -246,10 +246,10 @@ export function FilterPanel({ filters, onApply, onClear }: FilterPanelProps) {
           </Button>
           <Button
             variant="primary"
-            size="sm"
+            size="md"
             type="submit"
             disabled={!dirty}
-            className="font-bold uppercase tracking-wider"
+            className="min-h-9 px-6 font-bold uppercase tracking-wider"
           >
             {dirty ? 'Apply' : 'Applied'}
           </Button>
