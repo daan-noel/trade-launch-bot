@@ -111,6 +111,8 @@ export interface TokenPriceChartProps {
   height?: number;
   /** Fired when a chart bar/candle is clicked; null clears selection. */
   onBarClick?: (selection: ChartBarSelection | null) => void;
+  /** Highlights the clicked bar/candle on the main series. */
+  selectedBar?: ChartBarSelection | null;
   /** Swing detection legs to draw as an overlay line. */
   swingOverlay?: ChartSwingOverlay | null;
   /** `${type}-${start_at}-${end_at}` — highlights that leg on the overlay. */

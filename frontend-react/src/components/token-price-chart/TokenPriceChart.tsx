@@ -24,6 +24,7 @@ import {
   migrationChartValue,
   barsToCandleData,
   barsToLineData,
+  barSelectionMarker,
   tradeBarSlot,
   tradeBarTime,
 } from './chartBars';
@@ -43,7 +44,6 @@ import {
   LS_CHART_PREFS_KEY,
   SERIES_BY_STYLE,
   SWING_HIGH_OVERLAY_SERIES_OPTIONS,
-  SWING_SELECTED_OVERLAY_SERIES_OPTIONS,
   TOKEN_TOTAL_SUPPLY,
 } from './constants';
 import { BarCrosshairTooltip } from './BarCrosshairTooltip';
@@ -53,6 +53,7 @@ import {
   groupSequentialLegChains,
   resolveSwingLegAtChartInteraction,
   swingLegKey,
+  swingLegBarTimes,
   swingLegSelectionMarkers,
   swingsToColoredLineData,
 } from './swingOverlay';
@@ -175,6 +176,18 @@ type MarkersPlugin = {
   detach: () => void;
 };
 
+function sortSeriesMarkers(
+  markers: SeriesMarker<UTCTimestamp>[],
+): SeriesMarker<UTCTimestamp>[] {
+  const byTime = new Map<number, SeriesMarker<UTCTimestamp>>();
+  for (const marker of markers) {
+    byTime.set(marker.time as number, marker);
+  }
+  return [...byTime.values()].sort(
+    (a, b) => (a.time as number) - (b.time as number),
+  );
+}
+
 function panelClass(className?: string) {
   return cn('rounded-lg border', className);
 }
@@ -217,6 +230,7 @@ export function TokenPriceChart({
   className,
   height = 320,
   onBarClick,
+  selectedBar = null,
   swingOverlay = null,
   selectedSwingLegKey = null,
   onSwingLegClick,
@@ -237,7 +251,6 @@ export function TokenPriceChart({
   selectedSwingLegKeyRef.current = selectedSwingLegKey;
   const seriesRef = useRef<ISeriesApi<'Line' | 'Candlestick'> | null>(null);
   const swingSeriesRefs = useRef<ISeriesApi<'Line'>[]>([]);
-  const swingHighlightSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const swingSeriesLegRef = useRef(new Map<ISeriesApi<'Line'>, ChartSwingLeg>());
   const swingOverlayMetaRef = useRef<{
     segmentMode: 'connected' | 'perLeg' | 'connectedSequential';
@@ -278,6 +291,7 @@ export function TokenPriceChart({
 
   const intervalSec = CHART_INTERVALS[interval];
   const groupingKey = groupMode === 'slot' ? 'slot' : intervalSec;
+  const selectedBarTime = selectedBar?.barTime ?? null;
 
   const shouldFitContentRef = useRef(true);
   const prevIdRef = useRef(id);
@@ -317,6 +331,41 @@ export function TokenPriceChart({
   barsRef.current = bars;
   sortedTradesRef.current = sortedTrades;
   showSwingOverlayRef.current = showSwingOverlay;
+
+  const highlightBarTimes = useMemo(() => {
+    const times = new Set<number>();
+    if (selectedBarTime != null) times.add(selectedBarTime as number);
+    if (selectedSwingLegKey && swingOverlay?.legs.length) {
+      const leg = swingOverlay.legs.find(
+        (l) => swingLegKey(l) === selectedSwingLegKey,
+      );
+      if (leg) {
+        for (const t of swingLegBarTimes(
+          leg,
+          bars,
+          groupMode,
+          sortedTrades,
+          intervalSec,
+        )) {
+          times.add(t as number);
+        }
+      }
+    }
+    return times;
+  }, [
+    selectedBarTime,
+    selectedSwingLegKey,
+    swingOverlay,
+    bars,
+    groupMode,
+    sortedTrades,
+    intervalSec,
+  ]);
+
+  const highlightBarKey = useMemo(
+    () => [...highlightBarTimes].sort((a, b) => a - b).join(','),
+    [highlightBarTimes],
+  );
 
   const formatChartPrice = useMemo(
     () => createChartPriceFormatter(priceUnit),
@@ -643,7 +692,7 @@ export function TokenPriceChart({
       if (style === 'line') {
         existing.setData(barsToLineData(bars));
       } else {
-        existing.setData(barsToCandleData(bars));
+        existing.setData(barsToCandleData(bars, highlightBarTimes));
       }
 
       if (savedViewport) {
@@ -691,7 +740,7 @@ export function TokenPriceChart({
     if (style === 'line') {
       series.setData(barsToLineData(bars));
     } else {
-      series.setData(barsToCandleData(bars));
+      series.setData(barsToCandleData(bars, highlightBarTimes));
     }
 
     if (shouldFitContentRef.current) {
@@ -705,7 +754,7 @@ export function TokenPriceChart({
         isRestoringViewportRef.current = false;
       });
     }
-  }, [bars, style, showChart, groupingKey, priceUnit, snapshotVisibleViewport]);
+  }, [bars, style, showChart, groupingKey, priceUnit, highlightBarKey, snapshotVisibleViewport]);
 
   useEffect(() => {
     const series = seriesRef.current;
@@ -722,25 +771,32 @@ export function TokenPriceChart({
         (l) => swingLegKey(l) === selectedSwingLegKey,
       );
       if (leg) {
-        const segment = buildLegSegment(
-          leg,
-          metric,
-          toValue,
-          groupMode,
-          sortedTrades,
+        markers.push(
+          ...swingLegSelectionMarkers(
+            leg,
+            bars,
+            groupMode,
+            sortedTrades,
+            intervalSec,
+          ),
         );
-        if (segment) {
-          markers.push(
-            ...swingLegSelectionMarkers(segment, CHART_COLORS.swingSelected),
-          );
-        }
       }
     }
 
-    if (markersPluginRef.current) {
-      markersPluginRef.current.setMarkers(markers);
-    } else if (markers.length > 0) {
-      markersPluginRef.current = createSeriesMarkers(series, markers) as MarkersPlugin;
+    if (selectedBarTime != null) {
+      const bar = barsRef.current.find((b) => b.time === selectedBarTime);
+      if (bar) {
+        markers.push(barSelectionMarker(bar));
+      }
+    }
+
+    const sorted = sortSeriesMarkers(markers);
+
+    markersPluginRef.current?.detach();
+    markersPluginRef.current = null;
+
+    if (sorted.length > 0) {
+      markersPluginRef.current = createSeriesMarkers(series, sorted) as MarkersPlugin;
     }
   }, [
     showTradeMarkers,
@@ -749,10 +805,10 @@ export function TokenPriceChart({
     intervalSec,
     showChart,
     selectedSwingLegKey,
+    selectedBarTime,
     swingOverlay,
-    metric,
-    toValue,
     sortedTrades,
+    bars,
   ]);
 
   useEffect(() => {
@@ -816,10 +872,6 @@ export function TokenPriceChart({
     }
     swingSeriesRefs.current = [];
     swingSeriesLegRef.current.clear();
-    if (swingHighlightSeriesRef.current) {
-      chart.removeSeries(swingHighlightSeriesRef.current);
-      swingHighlightSeriesRef.current = null;
-    }
     swingOverlayMetaRef.current = null;
     setSwingTooltip(null);
 
@@ -915,69 +967,6 @@ export function TokenPriceChart({
     style,
     priceUnit,
     snapshotVisibleViewport,
-  ]);
-
-  useEffect(() => {
-    const chart = chartRef.current;
-    if (!chart || !showChart) return;
-
-    if (swingHighlightSeriesRef.current) {
-      try {
-        chart.removeSeries(swingHighlightSeriesRef.current);
-      } catch {
-        /* chart may already be removed */
-      }
-      swingHighlightSeriesRef.current = null;
-    }
-
-    if (
-      !showSwingOverlay ||
-      !selectedSwingLegKey ||
-      !swingOverlay?.legs.length
-    ) {
-      return;
-    }
-
-    const leg = swingOverlay.legs.find(
-      (l) => swingLegKey(l) === selectedSwingLegKey,
-    );
-    if (!leg) return;
-
-    const segment = buildLegSegment(
-      leg,
-      metric,
-      toValue,
-      groupMode,
-      sortedTrades,
-    );
-    if (!segment) return;
-
-    const series = chart.addSeries(LineSeries, {
-      ...SWING_SELECTED_OVERLAY_SERIES_OPTIONS,
-      priceFormat: createChartPriceFormat(priceUnit),
-    });
-    series.setData(segment.data);
-    swingHighlightSeriesRef.current = series;
-
-    return () => {
-      if (!chartRef.current || !swingHighlightSeriesRef.current) return;
-      try {
-        chartRef.current.removeSeries(swingHighlightSeriesRef.current);
-      } catch {
-        /* ignore */
-      }
-      swingHighlightSeriesRef.current = null;
-    };
-  }, [
-    selectedSwingLegKey,
-    showSwingOverlay,
-    swingOverlay,
-    metric,
-    toValue,
-    groupMode,
-    sortedTrades,
-    showChart,
-    priceUnit,
   ]);
 
   if (!id) {

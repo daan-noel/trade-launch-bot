@@ -383,10 +383,17 @@ export function SwingDetectionPage() {
     setSelectedSwingKey(null);
   }, [swingResult]);
 
-  const handleSwingLegClick = useCallback((leg: ChartSwingLeg | null) => {
-    setSelectedSwingKey(leg ? swingLegKey(leg) : null);
-    if (leg) setSelectedBar(null);
+  const handleSwingSelect = useCallback((key: string | null) => {
+    setSelectedSwingKey(key);
+    if (key) setSelectedBar(null);
   }, []);
+
+  const handleSwingLegClick = useCallback(
+    (leg: ChartSwingLeg | null) => {
+      handleSwingSelect(leg ? swingLegKey(leg) : null);
+    },
+    [handleSwingSelect],
+  );
 
   const handleBarClick = useCallback((selection: ChartBarSelection | null) => {
     setSelectedBar(selection);
@@ -420,6 +427,25 @@ export function SwingDetectionPage() {
     ? selectedBar.groupMode === 'slot'
       ? `Slot ${selectedBar.slot}`
       : formatTimestampMs(Number(selectedBar.barTime) * 1000, timezone)
+    : '';
+
+  const selectedSwingLeg = useMemo(() => {
+    if (!selectedSwingKey || !swingResult) return null;
+    return swingResult.swings.find((leg) => swingLegKey(leg) === selectedSwingKey) ?? null;
+  }, [selectedSwingKey, swingResult]);
+
+  const swingTrades = useMemo(() => {
+    if (!selectedSwingLeg) return [];
+    const lo = Math.min(selectedSwingLeg.start_at, selectedSwingLeg.end_at);
+    const hi = Math.max(selectedSwingLeg.start_at, selectedSwingLeg.end_at);
+    return trades.filter((t) => {
+      const tms = Date.parse(t.block_time);
+      return tms >= lo && tms <= hi;
+    });
+  }, [trades, selectedSwingLeg]);
+
+  const swingTimeLabel = selectedSwingLeg
+    ? `${formatTimestampMs(selectedSwingLeg.start_at, timezone)} → ${formatTimestampMs(selectedSwingLeg.end_at, timezone)}`
     : '';
 
   const filteredSwings = useMemo(() => {
@@ -816,7 +842,7 @@ export function SwingDetectionPage() {
                           rows={swingResult.swings}
                           rowKey={swingLegKey}
                           selectedKey={selectedSwingKey}
-                          onSelect={setSelectedSwingKey}
+                          onSelect={handleSwingSelect}
                           defaultPageSize={5}
                           searchable
                           colFilters
@@ -1047,7 +1073,7 @@ export function SwingDetectionPage() {
                         rows={filteredSwings}
                         rowKey={swingLegKey}
                         selectedKey={selectedSwingKey}
-                        onSelect={setSelectedSwingKey}
+                        onSelect={handleSwingSelect}
                         defaultPageSize={5}
                         searchable
                         colFilters
@@ -1082,6 +1108,7 @@ export function SwingDetectionPage() {
           metric={chartMetric}
           onMetricChange={setChartMetric}
           onBarClick={handleBarClick}
+          selectedBar={selectedBar}
           swingOverlay={swingOverlay}
           selectedSwingLegKey={selectedSwingKey}
           onSwingLegClick={handleSwingLegClick}
@@ -1094,19 +1121,27 @@ export function SwingDetectionPage() {
         />
       </div>
 
-      {selectedBar && selectedMint && (
+      {(selectedBar || selectedSwingKey) && selectedMint && (
         <>
           <SectionDivider />
           <div>
             <div className="mb-2 flex flex-wrap items-center gap-2">
-              <h3 className="text-sm font-bold text-text">Bar trades</h3>
-              <span className="font-mono text-[11px] text-text-dim">{barTimeLabel}</span>
+              <h3 className="text-sm font-bold text-text">
+                {selectedSwingKey ? 'Swing trades' : 'Bar trades'}
+              </h3>
+              <span className="font-mono text-[11px] text-text-dim">
+                {selectedSwingKey ? swingTimeLabel : barTimeLabel}
+              </span>
               <Badge variant="primary" className="font-mono font-normal">
-                {barTrades.length} trade{barTrades.length === 1 ? '' : 's'}
+                {(selectedSwingKey ? swingTrades : barTrades).length} trade
+                {(selectedSwingKey ? swingTrades : barTrades).length === 1 ? '' : 's'}
               </Badge>
               <button
                 type="button"
-                onClick={() => setSelectedBar(null)}
+                onClick={() => {
+                  setSelectedBar(null);
+                  setSelectedSwingKey(null);
+                }}
                 className="text-[11px] text-text-dim hover:text-text"
               >
                 Clear
@@ -1114,13 +1149,15 @@ export function SwingDetectionPage() {
             </div>
             <DataTable
               columns={tradeTableColumns}
-              rows={barTrades}
+              rows={selectedSwingKey ? swingTrades : barTrades}
               rowKey={(t) => t.id}
               defaultPageSize={25}
               searchable
               colFilters
               hoverable
-              emptyMessage="No trades in this bar."
+              emptyMessage={
+                selectedSwingKey ? 'No trades in this swing.' : 'No trades in this bar.'
+              }
             />
           </div>
         </>

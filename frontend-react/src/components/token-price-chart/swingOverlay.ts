@@ -1,4 +1,5 @@
 import type { SeriesMarker, UTCTimestamp } from 'lightweight-charts';
+import { bucketStart } from './chartBars';
 import { CHART_COLORS, TOKEN_TOTAL_SUPPLY } from './constants';
 import type { ChartGroupMode, ChartMetric, ChartSwingLeg, ChartTrade } from './types';
 
@@ -159,37 +160,75 @@ export type SwingLegLineSegment = {
   data: SwingColoredLinePoint[];
 };
 
-/** Start/end markers for a selected swing leg (price-anchored for line + candle charts). */
-export function swingLegSelectionMarkers(
-  segment: SwingLegLineSegment,
-  markerColor: string,
-): SeriesMarker<UTCTimestamp>[] {
-  const vertices = segment.data.filter(
-    (p): p is Extract<SwingColoredLinePoint, { value: number }> => 'value' in p,
-  );
-  if (!vertices.length) return [];
-
-  const endpoint = (
-    vtx: (typeof vertices)[number],
-    label: 'S' | 'E',
-  ): SeriesMarker<UTCTimestamp> => ({
-    time: vtx.time,
-    position: 'atPriceMiddle',
-    price: vtx.value,
-    color: markerColor,
-    shape: 'square',
-    size: 2,
-    text: label,
-  });
-
-  if (vertices.length === 1 || vertices[0].time === vertices[vertices.length - 1].time) {
-    return [endpoint(vertices[0], 'S')];
+function swingLegChartTimeRange(
+  leg: ChartSwingLeg,
+  groupMode: ChartGroupMode,
+  trades: ChartTrade[],
+  intervalSec: number,
+): { lo: number; hi: number } | null {
+  if (groupMode === 'slot') {
+    const start = resolveChartTime(leg.start_at, groupMode, trades);
+    const end = resolveChartTime(leg.end_at, groupMode, trades);
+    if (start == null || end == null) return null;
+    return {
+      lo: Math.min(start as number, end as number),
+      hi: Math.max(start as number, end as number),
+    };
   }
+  const startSec = Math.floor(leg.start_at / 1000);
+  const endSec = Math.floor(leg.end_at / 1000);
+  return {
+    lo: bucketStart(Math.min(startSec, endSec), intervalSec),
+    hi: bucketStart(Math.max(startSec, endSec), intervalSec),
+  };
+}
 
-  return [
-    endpoint(vertices[0], 'S'),
-    endpoint(vertices[vertices.length - 1], 'E'),
-  ];
+/** Start/end arrow markers for a selected swing leg (same style as bar selection). */
+export function swingLegSelectionMarkers(
+  leg: ChartSwingLeg,
+  bars: { time: UTCTimestamp }[],
+  groupMode: ChartGroupMode,
+  trades: ChartTrade[],
+  intervalSec: number,
+  markerColor: string = CHART_COLORS.barSelected,
+): SeriesMarker<UTCTimestamp>[] {
+  const legBarTimes = swingLegBarTimes(leg, bars, groupMode, trades, intervalSec);
+  if (!legBarTimes.length) return [];
+
+  const barTimeSet = new Set(legBarTimes.map((t) => t as number));
+  const rising = leg.end_price >= leg.start_price;
+  const shape = rising ? 'arrowUp' : 'arrowDown';
+  const position = rising ? 'belowBar' : 'aboveBar';
+
+  const markerTimes =
+    legBarTimes.length === 1
+      ? legBarTimes
+      : [legBarTimes[0], legBarTimes[legBarTimes.length - 1]];
+
+  return markerTimes
+    .filter((time) => barTimeSet.has(time as number))
+    .map((time) => ({
+      time,
+      position,
+      color: markerColor,
+      shape,
+      size: 2,
+    }));
+}
+
+/** OHLC bar times covered by a swing leg (for candle border highlight). */
+export function swingLegBarTimes(
+  leg: ChartSwingLeg,
+  bars: { time: UTCTimestamp }[],
+  groupMode: ChartGroupMode,
+  trades: ChartTrade[],
+  intervalSec: number,
+): UTCTimestamp[] {
+  const range = swingLegChartTimeRange(leg, groupMode, trades, intervalSec);
+  if (!range) return [];
+  return bars
+    .filter((b) => (b.time as number) >= range.lo && (b.time as number) <= range.hi)
+    .map((b) => b.time);
 }
 
 export function buildLegSegment(

@@ -1,5 +1,5 @@
-import type { UTCTimestamp } from 'lightweight-charts';
-import { PUMP_MIGRATION_SPOT_PRICE_SOL, TOKEN_TOTAL_SUPPLY } from './constants';
+import type { SeriesMarker, UTCTimestamp } from 'lightweight-charts';
+import { CHART_COLORS, PUMP_MIGRATION_SPOT_PRICE_SOL, TOKEN_TOTAL_SUPPLY } from './constants';
 import type { ChartMetric, ChartTrade, OhlcBar } from './types';
 
 function tradeTimestampSec(blockTime: string): number | null {
@@ -252,12 +252,37 @@ export function barsToLineData(bars: OhlcBar[]) {
   return bars.map((b) => ({ time: b.time, value: b.close }));
 }
 
-export function barsToCandleData(bars: OhlcBar[]) {
-  return bars.map((b) => ({
-    time: b.time,
-    open: b.open,
-    high: b.high,
-    low: b.low,
-    close: b.close,
-  }));
+export function barsToCandleData(
+  bars: OhlcBar[],
+  highlightBarTimes?: ReadonlySet<number>,
+) {
+  const border = CHART_COLORS.barSelected;
+  return bars.map((b) => {
+    const candle = {
+      time: b.time,
+      open: b.open,
+      high: b.high,
+      low: b.low,
+      close: b.close,
+    };
+    if (highlightBarTimes?.has(b.time as number)) {
+      return { ...candle, borderColor: border };
+    }
+    return candle;
+  });
+}
+
+/** Arrow marker for a selected bar (line + candle charts). */
+export function barSelectionMarker(
+  bar: OhlcBar,
+  color: string = CHART_COLORS.barSelected,
+): SeriesMarker<UTCTimestamp> {
+  const bullish = bar.close >= bar.open;
+  return {
+    time: bar.time,
+    position: bullish ? 'belowBar' : 'aboveBar',
+    color,
+    shape: bullish ? 'arrowUp' : 'arrowDown',
+    size: 2,
+  };
 }
