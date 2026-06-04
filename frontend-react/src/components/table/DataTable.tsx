@@ -95,8 +95,6 @@ export function DataTable<R>({
     if (storageKey) saveVisibleCols(storageKey, visibleCols);
   }, [visibleCols, storageKey]);
 
-  useEffect(() => setPage(1), [search, colFiltersMap, sortCol, sortDir]);
-
   const visCols = useMemo(
     () => columns.filter((c) => visibleCols.has(c.key)),
     [columns, visibleCols],
@@ -130,6 +128,18 @@ export function DataTable<R>({
     }
     return list;
   }, [rows, columns, search, colFiltersMap, sortCol, sortDir]);
+
+  useEffect(() => {
+    if (!paginate) return;
+    if (selectedKey) {
+      const index = processed.findIndex((row) => rowKey(row) === selectedKey);
+      if (index >= 0) {
+        setPage(Math.floor(index / pageSize) + 1);
+        return;
+      }
+    }
+    setPage(1);
+  }, [search, colFiltersMap, sortCol, sortDir]);
 
   const totalFiltered = processed.length;
   const totalPages = paginate
