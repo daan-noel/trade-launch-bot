@@ -56,6 +56,28 @@ export interface ChartSwingLeg {
   end_at: number;
   start_price: number;
   end_price: number;
+  duration_ms?: number;
+  inflow?: number;
+  outflow?: number;
+  net_flow?: number;
+  trade_count?: number;
+}
+
+export interface ChartSwingTooltipState {
+  leg: ChartSwingLeg;
+  point: { x: number; y: number };
+}
+
+export interface ChartBarTooltipState {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  liquiditySol: number | null;
+  barTime: UTCTimestamp;
+  style: ChartStyle;
+  point: { x: number; y: number };
 }
 
 export interface ChartSwingOverlay {

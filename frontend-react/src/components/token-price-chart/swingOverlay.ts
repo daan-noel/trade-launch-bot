@@ -125,7 +125,7 @@ export type SwingLegLineSegment = {
   data: SwingColoredLinePoint[];
 };
 
-function buildLegSegment(
+export function buildLegSegment(
   leg: ChartSwingLeg,
   metric: ChartMetric,
   toValue: (sol: number) => number,
@@ -185,6 +185,40 @@ export function swingsToColoredLineData(
     }
     return point;
   });
+}
+
+/** Which swing leg contains this chart time (for crosshair tooltips). */
+export function findSwingLegIndexAtChartTime(
+  swings: ChartSwingLeg[],
+  chartTime: number,
+  groupMode: ChartGroupMode,
+  trades: ChartTrade[],
+  segmentMode: SwingOverlaySegmentMode = 'connected',
+): number | null {
+  if (!swings.length) return null;
+
+  if (segmentMode === 'perLeg') {
+    for (let i = 0; i < swings.length; i++) {
+      const start = resolveChartTime(swings[i].start_at, groupMode, trades);
+      const end = resolveChartTime(swings[i].end_at, groupMode, trades);
+      if (start == null || end == null) continue;
+      const lo = Math.min(start as number, end as number);
+      const hi = Math.max(start as number, end as number);
+      if (chartTime >= lo && chartTime <= hi) return i;
+    }
+    return null;
+  }
+
+  const vertices = buildSwingPathVertices(swings, 'price', (v) => v, groupMode, trades);
+  for (let i = 0; i < swings.length; i++) {
+    const start = vertices[i]?.time;
+    const end = vertices[i + 1]?.time;
+    if (start == null || end == null) continue;
+    const lo = Math.min(start as number, end as number);
+    const hi = Math.max(start as number, end as number);
+    if (chartTime >= lo && chartTime <= hi) return i;
+  }
+  return null;
 }
 
 /** Piecewise swing path — one vertex per reversal (first leg start + each leg end). */

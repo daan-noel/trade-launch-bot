@@ -80,6 +80,90 @@ const SWING_PARAM_INT_KEYS = new Set<keyof SwingParams>([
   'max_leg_duration_ms',
 ]);
 
+const LS_SWING_DETECTION_KEY = 'swing_detection_criteria';
+
+const SWING_PARAM_KEYS = Object.keys(DEFAULT_SWING_PARAMS) as (keyof SwingParams)[];
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function mergeSwingParams(partial: Partial<SwingParams> | undefined): SwingParams {
+  if (!partial) return DEFAULT_SWING_PARAMS;
+  const merged = { ...DEFAULT_SWING_PARAMS };
+  for (const key of SWING_PARAM_KEYS) {
+    const value = partial[key];
+    if (isFiniteNumber(value)) merged[key] = value;
+  }
+  return merged;
+}
+
+function mergeSwingFilter(partial: Partial<SwingFilterCriteria> | undefined): SwingFilterCriteria {
+  if (!partial) return DEFAULT_SWING_FILTER;
+  const legType = partial.leg_type;
+  const merged: SwingFilterCriteria = {
+    ...DEFAULT_SWING_FILTER,
+    leg_type:
+      legType === 'all' || legType === 'swing_high' || legType === 'swing_low'
+        ? legType
+        : DEFAULT_SWING_FILTER.leg_type,
+  };
+  for (const key of Object.keys(DEFAULT_SWING_FILTER) as (keyof SwingFilterCriteria)[]) {
+    if (key === 'leg_type') continue;
+    const value = partial[key];
+    if (isFiniteNumber(value)) merged[key] = value;
+  }
+  return merged;
+}
+
+function loadStoredSwingCriteria(): {
+  params: SwingParams;
+  filter: SwingFilterCriteria;
+  appliedFilter: SwingFilterCriteria;
+} {
+  try {
+    const raw = localStorage.getItem(LS_SWING_DETECTION_KEY);
+    if (!raw) {
+      return {
+        params: DEFAULT_SWING_PARAMS,
+        filter: DEFAULT_SWING_FILTER,
+        appliedFilter: DEFAULT_SWING_FILTER,
+      };
+    }
+    const parsed = JSON.parse(raw) as {
+      params?: Partial<SwingParams>;
+      filter?: Partial<SwingFilterCriteria>;
+      appliedFilter?: Partial<SwingFilterCriteria>;
+    };
+    return {
+      params: mergeSwingParams(parsed.params),
+      filter: mergeSwingFilter(parsed.filter),
+      appliedFilter: mergeSwingFilter(parsed.appliedFilter ?? parsed.filter),
+    };
+  } catch {
+    return {
+      params: DEFAULT_SWING_PARAMS,
+      filter: DEFAULT_SWING_FILTER,
+      appliedFilter: DEFAULT_SWING_FILTER,
+    };
+  }
+}
+
+function saveStoredSwingCriteria(
+  params: SwingParams,
+  filter: SwingFilterCriteria,
+  appliedFilter: SwingFilterCriteria,
+): void {
+  try {
+    localStorage.setItem(
+      LS_SWING_DETECTION_KEY,
+      JSON.stringify({ params, filter, appliedFilter }),
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
 const inputClassName =
   'rounded-md border border-white/10 bg-bg-card px-2 py-1.5 text-[13px] font-normal normal-case tracking-normal text-text w-full min-w-0';
 
@@ -87,6 +171,8 @@ const labelClassName =
   'flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim';
 
 export function SwingDetectionPage() {
+  const [storedSwingCriteria] = useState(loadStoredSwingCriteria);
+
   const price = usePriceDisplay();
   const { unit, usdRate } = usePriceUnit();
   const columns = useMemo(() => tokenColumns(price), [price]);
@@ -119,14 +205,15 @@ export function SwingDetectionPage() {
   const [chartMetric, setChartMetric] = useState<ChartMetric>('price');
 
   const [activeAnalysis, setActiveAnalysis] = useState<AnalysisKind | null>(null);
-  const [swingParams, setSwingParams] = useState<SwingParams>(DEFAULT_SWING_PARAMS);
+  const [swingParams, setSwingParams] = useState<SwingParams>(storedSwingCriteria.params);
   const [swingResult, setSwingResult] = useState<SwingDetectionResult | null>(null);
   const [swingLoading, setSwingLoading] = useState(false);
   const [swingError, setSwingError] = useState<string | null>(null);
   const [swingPanelTab, setSwingPanelTab] = useState<SwingPanelTab>('analysis');
-  const [swingFilter, setSwingFilter] = useState<SwingFilterCriteria>(DEFAULT_SWING_FILTER);
-  const [appliedSwingFilter, setAppliedSwingFilter] =
-    useState<SwingFilterCriteria>(DEFAULT_SWING_FILTER);
+  const [swingFilter, setSwingFilter] = useState<SwingFilterCriteria>(storedSwingCriteria.filter);
+  const [appliedSwingFilter, setAppliedSwingFilter] = useState<SwingFilterCriteria>(
+    storedSwingCriteria.appliedFilter,
+  );
   const [showSwingResultsTable, setShowSwingResultsTable] = useState(false);
 
   const toggleAnalysis = useCallback((kind: AnalysisKind) => {
@@ -224,6 +311,10 @@ export function SwingDetectionPage() {
   }, [selectedMint, createdFrom, createdTo, loadTrades]);
 
   useEffect(() => {
+    saveStoredSwingCriteria(swingParams, swingFilter, appliedSwingFilter);
+  }, [swingParams, swingFilter, appliedSwingFilter]);
+
+  useEffect(() => {
     if (!selectedMint) {
       setTrades([]);
       setTradesError(null);
@@ -231,15 +322,11 @@ export function SwingDetectionPage() {
       setSelectedBar(null);
       setSwingResult(null);
       setSwingError(null);
-      setSwingFilter(DEFAULT_SWING_FILTER);
-      setAppliedSwingFilter(DEFAULT_SWING_FILTER);
       return;
     }
     setSelectedBar(null);
     setSwingResult(null);
     setSwingError(null);
-    setSwingFilter(DEFAULT_SWING_FILTER);
-    setAppliedSwingFilter(DEFAULT_SWING_FILTER);
     loadTrades(selectedMint);
   }, [selectedMint, loadTrades]);
 

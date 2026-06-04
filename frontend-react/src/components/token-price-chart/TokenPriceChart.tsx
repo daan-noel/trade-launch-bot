@@ -40,19 +40,30 @@ import {
   CHART_INTERVALS,
   createChartOptions,
   createChartPriceFormat,
+  createChartPriceFormatter,
   DEFAULT_CHART_PREFS,
   LINE_SERIES_OPTIONS,
   LS_CHART_PREFS_KEY,
   SERIES_BY_STYLE,
   SWING_HIGH_OVERLAY_SERIES_OPTIONS,
+  TOKEN_TOTAL_SUPPLY,
 } from './constants';
-import { swingsToColoredLineData, swingsToLegSegments } from './swingOverlay';
+import { BarCrosshairTooltip } from './BarCrosshairTooltip';
+import { SwingCrosshairTooltip } from './SwingCrosshairTooltip';
+import {
+  buildLegSegment,
+  findSwingLegIndexAtChartTime,
+  swingsToColoredLineData,
+} from './swingOverlay';
 import type {
   ChartBarSelection,
   ChartCrosshairInfo,
   ChartGroupMode,
   ChartInterval,
   ChartStyle,
+  ChartSwingLeg,
+  ChartBarTooltipState,
+  ChartSwingTooltipState,
   ChartTrade,
   OhlcBar,
   TokenPriceChartProps,
@@ -225,6 +236,14 @@ export function TokenPriceChart({
   onBarClickRef.current = onBarClick;
   const seriesRef = useRef<ISeriesApi<'Line' | 'Candlestick'> | null>(null);
   const swingSeriesRefs = useRef<ISeriesApi<'Line'>[]>([]);
+  const swingSeriesLegRef = useRef(new Map<ISeriesApi<'Line'>, ChartSwingLeg>());
+  const swingOverlayMetaRef = useRef<{
+    segmentMode: 'connected' | 'perLeg';
+    groupMode: ChartGroupMode;
+    legs: ChartSwingLeg[];
+  } | null>(null);
+  const showSwingOverlayRef = useRef(true);
+  const sortedTradesRef = useRef<ChartTrade[]>([]);
   const markersPluginRef = useRef<MarkersPlugin | null>(null);
   const barsRef = useRef<OhlcBar[]>([]);
 
@@ -239,6 +258,10 @@ export function TokenPriceChart({
   const swingOverlayAvailable = (swingOverlay?.legs.length ?? 0) > 0;
   const [showSwingOverlay, setShowSwingOverlay] = useState(true);
   const [crosshair, setCrosshair] = useState<ChartCrosshairInfo | null>(null);
+  const [barTooltip, setBarTooltip] = useState<ChartBarTooltipState | null>(null);
+  const [swingTooltip, setSwingTooltip] = useState<ChartSwingTooltipState | null>(null);
+  const styleRef = useRef(style);
+  styleRef.current = style;
   const athLineRef = useRef<IPriceLine | null>(null);
   const migrationLineRef = useRef<IPriceLine | null>(null);
 
@@ -286,6 +309,32 @@ export function TokenPriceChart({
     [sortedTrades, groupMode, intervalSec, toValue, metric],
   );
   barsRef.current = bars;
+  sortedTradesRef.current = sortedTrades;
+  showSwingOverlayRef.current = showSwingOverlay;
+
+  const formatChartPrice = useMemo(
+    () => createChartPriceFormatter(priceUnit),
+    [priceUnit],
+  );
+  const formatSwingPrice = useCallback(
+    (priceInSol: number) => {
+      const chartY = metric === 'price' ? priceInSol : TOKEN_TOTAL_SUPPLY * priceInSol;
+      return formatChartPrice(toValue(chartY));
+    },
+    [metric, toValue, formatChartPrice],
+  );
+  const formatSwingAmount = useCallback(
+    (sol: number) => formatChartPrice(toValue(sol)),
+    [toValue, formatChartPrice],
+  );
+  const formatBarTime = useCallback(
+    (barTime: UTCTimestamp) => {
+      if (groupMode === 'slot') return `Slot ${barTime}`;
+      return createChartTimeFormatters(chartTimezone).timeFormatter(barTime);
+    },
+    [groupMode, chartTimezone],
+  );
+  const formatVol = useMemo(() => createChartPriceFormatter('SOL'), []);
 
   const athLineAvailable = athChartValue(athPriceInSol, metric, toValue) != null;
 
@@ -447,23 +496,75 @@ export function TokenPriceChart({
     ro.observe(el);
 
     chart.subscribeCrosshairMove((param) => {
+      const hovered =
+        param.hoveredSeries ?? param.hoveredInfo?.series;
+      const onSwingSeries =
+        hovered != null &&
+        swingSeriesRefs.current.includes(hovered as ISeriesApi<'Line'>);
+
+      let activeSwingLeg: ChartSwingLeg | undefined;
+      if (!onSwingSeries || !param.point || !showSwingOverlayRef.current) {
+        setSwingTooltip(null);
+      } else {
+        let leg = swingSeriesLegRef.current.get(hovered as ISeriesApi<'Line'>);
+        const meta = swingOverlayMetaRef.current;
+        if (!leg && meta?.legs.length) {
+          const seriesData = param.seriesData.get(hovered);
+          const chartTime =
+            seriesData && 'time' in seriesData
+              ? (seriesData.time as number)
+              : typeof param.time === 'number'
+                ? param.time
+                : undefined;
+          if (chartTime != null) {
+            const idx = findSwingLegIndexAtChartTime(
+              meta.legs,
+              chartTime,
+              meta.groupMode,
+              sortedTradesRef.current,
+              meta.segmentMode,
+            );
+            if (idx != null) leg = meta.legs[idx];
+          }
+        }
+        if (leg) {
+          activeSwingLeg = leg;
+          setSwingTooltip({ leg, point: param.point });
+        } else {
+          setSwingTooltip(null);
+        }
+      }
+
       if (!param.time) {
         setCrosshair(null);
+        setBarTooltip(null);
         return;
       }
       const bar = barsRef.current.find((b) => b.time === param.time);
       if (!bar) {
         setCrosshair(null);
+        setBarTooltip(null);
         return;
       }
-      setCrosshair({
+      const info: ChartCrosshairInfo = {
         open: bar.open,
         high: bar.high,
         low: bar.low,
         close: bar.close,
         volume: bar.volume,
         liquiditySol: bar.liquiditySol,
-      });
+      };
+      setCrosshair(info);
+      if (param.point && !activeSwingLeg) {
+        setBarTooltip({
+          ...info,
+          barTime: bar.time,
+          style: styleRef.current,
+          point: param.point,
+        });
+      } else {
+        setBarTooltip(null);
+      }
     });
 
     const groupModeAtMount = groupMode;
@@ -512,6 +613,8 @@ export function TokenPriceChart({
       chart.remove();
       chartRef.current = null;
       setCrosshair(null);
+      setBarTooltip(null);
+      setSwingTooltip(null);
     };
   }, [showChart, height, groupingKey, groupMode, priceUnit, chartTimezone]);
 
@@ -698,6 +801,9 @@ export function TokenPriceChart({
       chart.removeSeries(series);
     }
     swingSeriesRefs.current = [];
+    swingSeriesLegRef.current.clear();
+    swingOverlayMetaRef.current = null;
+    setSwingTooltip(null);
 
     if (!showSwingOverlay || !swingOverlay?.legs.length) {
       if (savedViewport) {
@@ -711,16 +817,16 @@ export function TokenPriceChart({
     }
 
     const segmentMode = swingOverlay.segmentMode ?? 'connected';
+    swingOverlayMetaRef.current = {
+      segmentMode,
+      groupMode,
+      legs: swingOverlay.legs,
+    };
 
     if (segmentMode === 'perLeg') {
-      const segments = swingsToLegSegments(
-        swingOverlay.legs,
-        metric,
-        toValue,
-        groupMode,
-        sortedTrades,
-      );
-      for (const segment of segments) {
+      for (const leg of swingOverlay.legs) {
+        const segment = buildLegSegment(leg, metric, toValue, groupMode, sortedTrades);
+        if (!segment) continue;
         const series = chart.addSeries(LineSeries, {
           ...SWING_HIGH_OVERLAY_SERIES_OPTIONS,
           color: segment.color,
@@ -728,6 +834,7 @@ export function TokenPriceChart({
         });
         series.setData(segment.data);
         swingSeriesRefs.current.push(series);
+        swingSeriesLegRef.current.set(series, leg);
       }
     } else {
       const data = swingsToColoredLineData(
@@ -863,7 +970,24 @@ export function TokenPriceChart({
         chartTimezone={chartTimezone}
         onChartTimezoneChange={handleChartTimezoneChange}
       />
-      <div ref={containerRef} style={{ height, width: '100%' }} />
+      <div className="relative" style={{ height, width: '100%' }}>
+        <div ref={containerRef} style={{ height: '100%', width: '100%' }} />
+        {barTooltip && !swingTooltip && (
+          <BarCrosshairTooltip
+            tooltip={barTooltip}
+            formatPrice={formatChartPrice}
+            formatVol={formatVol}
+            formatTime={formatBarTime}
+          />
+        )}
+        {swingTooltip && showSwingOverlay && (
+          <SwingCrosshairTooltip
+            tooltip={swingTooltip}
+            formatPrice={formatSwingPrice}
+            formatAmount={formatSwingAmount}
+          />
+        )}
+      </div>
     </div>
   );
 }
