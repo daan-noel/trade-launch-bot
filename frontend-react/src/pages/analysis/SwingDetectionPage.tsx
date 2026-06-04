@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { DataTable } from '../../components/table/DataTable';
 import { tokenTradeColumns } from '../../components/transactions/tokenTradeColumns';
-import { TokenPriceChart, tradeBarTime, type ChartBarSelection, type ChartMetric } from '../../components/token-price-chart';
+import {
+  TokenPriceChart,
+  tradeBarTime,
+  type ChartBarSelection,
+  type ChartMetric,
+  type ChartSwingLeg,
+} from '../../components/token-price-chart';
+import { swingLegKey } from '../../components/token-price-chart/swingOverlay';
 import { FilterPanel } from '../../components/tokens/FilterPanel';
 import {
   activeFilterCount,
@@ -251,6 +258,7 @@ export function SwingDetectionPage() {
   );
   const [showSwingResultsTable, setShowSwingResultsTable] = useState(false);
   const [connectSwings, setConnectSwings] = useState(storedSwingCriteria.connectSwings);
+  const [selectedSwingKey, setSelectedSwingKey] = useState<string | null>(null);
 
   const toggleAnalysis = useCallback((kind: AnalysisKind) => {
     setActiveAnalysis((prev) => (prev === kind ? null : kind));
@@ -361,13 +369,29 @@ export function SwingDetectionPage() {
       setSelectedBar(null);
       setSwingResult(null);
       setSwingError(null);
+      setSelectedSwingKey(null);
       return;
     }
     setSelectedBar(null);
     setSwingResult(null);
     setSwingError(null);
+    setSelectedSwingKey(null);
     loadTrades(selectedMint);
   }, [selectedMint, loadTrades]);
+
+  useEffect(() => {
+    setSelectedSwingKey(null);
+  }, [swingResult]);
+
+  const handleSwingLegClick = useCallback((leg: ChartSwingLeg | null) => {
+    setSelectedSwingKey(leg ? swingLegKey(leg) : null);
+    if (leg) setSelectedBar(null);
+  }, []);
+
+  const handleBarClick = useCallback((selection: ChartBarSelection | null) => {
+    setSelectedBar(selection);
+    if (selection) setSelectedSwingKey(null);
+  }, []);
 
   useEffect(() => {
     if (!selectedMint) return;
@@ -790,7 +814,9 @@ export function SwingDetectionPage() {
                         <DataTable
                           columns={swingTableColumns}
                           rows={swingResult.swings}
-                          rowKey={(leg) => `${leg.type}-${leg.start_at}-${leg.end_at}`}
+                          rowKey={swingLegKey}
+                          selectedKey={selectedSwingKey}
+                          onSelect={setSelectedSwingKey}
                           defaultPageSize={5}
                           searchable
                           colFilters
@@ -1019,7 +1045,9 @@ export function SwingDetectionPage() {
                       <DataTable
                         columns={swingTableColumns}
                         rows={filteredSwings}
-                        rowKey={(leg) => `${leg.type}-${leg.start_at}-${leg.end_at}`}
+                        rowKey={swingLegKey}
+                        selectedKey={selectedSwingKey}
+                        onSelect={setSelectedSwingKey}
                         defaultPageSize={5}
                         searchable
                         colFilters
@@ -1053,8 +1081,10 @@ export function SwingDetectionPage() {
           priceUnit={unit}
           metric={chartMetric}
           onMetricChange={setChartMetric}
-          onBarClick={setSelectedBar}
+          onBarClick={handleBarClick}
           swingOverlay={swingOverlay}
+          selectedSwingLegKey={selectedSwingKey}
+          onSwingLegClick={handleSwingLegClick}
           connectSwings={connectSwings}
           onConnectSwingsChange={setConnectSwings}
           athPriceInSol={selectedToken?.ath_price ?? null}

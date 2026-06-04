@@ -139,7 +139,7 @@ export function DataTable<R>({
       }
     }
     setPage(1);
-  }, [search, colFiltersMap, sortCol, sortDir]);
+  }, [search, colFiltersMap, sortCol, sortDir, selectedKey, processed, pageSize, paginate, rowKey]);
 
   const totalFiltered = processed.length;
   const totalPages = paginate

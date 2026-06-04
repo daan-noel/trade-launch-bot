@@ -43,14 +43,17 @@ import {
   LS_CHART_PREFS_KEY,
   SERIES_BY_STYLE,
   SWING_HIGH_OVERLAY_SERIES_OPTIONS,
+  SWING_SELECTED_OVERLAY_SERIES_OPTIONS,
   TOKEN_TOTAL_SUPPLY,
 } from './constants';
 import { BarCrosshairTooltip } from './BarCrosshairTooltip';
 import { SwingCrosshairTooltip } from './SwingCrosshairTooltip';
 import {
   buildLegSegment,
-  findSwingLegIndexAtChartTime,
   groupSequentialLegChains,
+  resolveSwingLegAtChartInteraction,
+  swingLegKey,
+  swingLegSelectionMarkers,
   swingsToColoredLineData,
 } from './swingOverlay';
 import type {
@@ -215,6 +218,8 @@ export function TokenPriceChart({
   height = 320,
   onBarClick,
   swingOverlay = null,
+  selectedSwingLegKey = null,
+  onSwingLegClick,
   connectSwings: connectSwingsProp,
   onConnectSwingsChange,
   athPriceInSol = null,
@@ -226,8 +231,13 @@ export function TokenPriceChart({
   const chartRef = useRef<IChartApi | null>(null);
   const onBarClickRef = useRef(onBarClick);
   onBarClickRef.current = onBarClick;
+  const onSwingLegClickRef = useRef(onSwingLegClick);
+  onSwingLegClickRef.current = onSwingLegClick;
+  const selectedSwingLegKeyRef = useRef(selectedSwingLegKey);
+  selectedSwingLegKeyRef.current = selectedSwingLegKey;
   const seriesRef = useRef<ISeriesApi<'Line' | 'Candlestick'> | null>(null);
   const swingSeriesRefs = useRef<ISeriesApi<'Line'>[]>([]);
+  const swingHighlightSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const swingSeriesLegRef = useRef(new Map<ISeriesApi<'Line'>, ChartSwingLeg>());
   const swingOverlayMetaRef = useRef<{
     segmentMode: 'connected' | 'perLeg' | 'connectedSequential';
@@ -432,33 +442,32 @@ export function TokenPriceChart({
       const onSwingSeries =
         hovered != null &&
         swingSeriesRefs.current.includes(hovered as ISeriesApi<'Line'>);
+      const chartTime = onSwingSeries
+        ? typeof param.time === 'number'
+          ? param.time
+          : hovered != null
+            ? (() => {
+                const seriesData = param.seriesData.get(hovered);
+                return seriesData && 'time' in seriesData
+                  ? (seriesData.time as number)
+                  : undefined;
+              })()
+            : undefined
+        : undefined;
 
       let activeSwingLeg: ChartSwingLeg | undefined;
-      if (!onSwingSeries || !param.point || !showSwingOverlayRef.current) {
+      if (!param.point || !showSwingOverlayRef.current || !onSwingSeries) {
         setSwingTooltip(null);
       } else {
-        let leg = swingSeriesLegRef.current.get(hovered as ISeriesApi<'Line'>);
-        const meta = swingOverlayMetaRef.current;
-        if (!leg && meta?.legs.length) {
-          const seriesData = param.seriesData.get(hovered);
-          const chartTime =
-            seriesData && 'time' in seriesData
-              ? (seriesData.time as number)
-              : typeof param.time === 'number'
-                ? param.time
-                : undefined;
-          if (chartTime != null) {
-            const idx = findSwingLegIndexAtChartTime(
-              meta.legs,
-              chartTime,
-              meta.groupMode,
-              sortedTradesRef.current,
-              meta.segmentMode,
-              meta.allLegs,
-            );
-            if (idx != null) leg = meta.legs[idx];
-          }
-        }
+        const leg = resolveSwingLegAtChartInteraction(
+          hovered as ISeriesApi<'Line'> | undefined,
+          param.seriesData,
+          chartTime,
+          swingSeriesRefs.current,
+          swingSeriesLegRef.current,
+          swingOverlayMetaRef.current,
+          sortedTradesRef.current,
+        );
         if (leg) {
           activeSwingLeg = leg;
           setSwingTooltip({ leg, point: param.point });
@@ -487,7 +496,11 @@ export function TokenPriceChart({
         liquiditySol: bar.liquiditySol,
       };
       setCrosshair(info);
-      if (param.point && !activeSwingLeg) {
+      const onMainSeries =
+        hovered != null &&
+        seriesRef.current != null &&
+        hovered === seriesRef.current;
+      if (param.point && (!activeSwingLeg || onMainSeries)) {
         setBarTooltip({
           ...info,
           barTime: bar.time,
@@ -502,6 +515,44 @@ export function TokenPriceChart({
     const groupModeAtMount = groupMode;
     const intervalAtMount = intervalSec;
     chart.subscribeClick((param) => {
+      const hovered =
+        param.hoveredSeries ?? param.hoveredInfo?.series;
+      const onSwingSeries =
+        hovered != null &&
+        swingSeriesRefs.current.includes(hovered as ISeriesApi<'Line'>);
+      const chartTime = onSwingSeries
+        ? typeof param.time === 'number'
+          ? param.time
+          : hovered != null
+            ? (() => {
+                const seriesData = param.seriesData.get(hovered);
+                return seriesData && 'time' in seriesData
+                  ? (seriesData.time as number)
+                  : undefined;
+              })()
+            : undefined
+        : undefined;
+      const swingLeg =
+        showSwingOverlayRef.current && onSwingSeries
+          ? resolveSwingLegAtChartInteraction(
+              hovered as ISeriesApi<'Line'> | undefined,
+              param.seriesData,
+              chartTime,
+              swingSeriesRefs.current,
+              swingSeriesLegRef.current,
+              swingOverlayMetaRef.current,
+              sortedTradesRef.current,
+              { requireSwingSeries: true },
+            )
+          : undefined;
+      if (swingLeg && onSwingLegClickRef.current) {
+        const key = swingLegKey(swingLeg);
+        const next =
+          selectedSwingLegKeyRef.current === key ? null : swingLeg;
+        onSwingLegClickRef.current(next);
+        return;
+      }
+
       if (!param.time) {
         onBarClickRef.current?.(null);
         return;
@@ -660,18 +711,49 @@ export function TokenPriceChart({
     const series = seriesRef.current;
     if (!series || !showChart) return;
 
-    if (!showTradeMarkers) {
-      markersPluginRef.current?.setMarkers([]);
-      return;
+    const markers: SeriesMarker<UTCTimestamp>[] = [];
+
+    if (showTradeMarkers) {
+      markers.push(...buildTradeMarkers(trades, groupMode, intervalSec));
     }
 
-    const markers = buildTradeMarkers(trades, groupMode, intervalSec);
+    if (selectedSwingLegKey && swingOverlay?.legs.length) {
+      const leg = swingOverlay.legs.find(
+        (l) => swingLegKey(l) === selectedSwingLegKey,
+      );
+      if (leg) {
+        const segment = buildLegSegment(
+          leg,
+          metric,
+          toValue,
+          groupMode,
+          sortedTrades,
+        );
+        if (segment) {
+          markers.push(
+            ...swingLegSelectionMarkers(segment, CHART_COLORS.swingSelected),
+          );
+        }
+      }
+    }
+
     if (markersPluginRef.current) {
       markersPluginRef.current.setMarkers(markers);
-    } else {
+    } else if (markers.length > 0) {
       markersPluginRef.current = createSeriesMarkers(series, markers) as MarkersPlugin;
     }
-  }, [showTradeMarkers, trades, groupMode, intervalSec, showChart]);
+  }, [
+    showTradeMarkers,
+    trades,
+    groupMode,
+    intervalSec,
+    showChart,
+    selectedSwingLegKey,
+    swingOverlay,
+    metric,
+    toValue,
+    sortedTrades,
+  ]);
 
   useEffect(() => {
     const series = seriesRef.current;
@@ -734,6 +816,10 @@ export function TokenPriceChart({
     }
     swingSeriesRefs.current = [];
     swingSeriesLegRef.current.clear();
+    if (swingHighlightSeriesRef.current) {
+      chart.removeSeries(swingHighlightSeriesRef.current);
+      swingHighlightSeriesRef.current = null;
+    }
     swingOverlayMetaRef.current = null;
     setSwingTooltip(null);
 
@@ -829,6 +915,69 @@ export function TokenPriceChart({
     style,
     priceUnit,
     snapshotVisibleViewport,
+  ]);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !showChart) return;
+
+    if (swingHighlightSeriesRef.current) {
+      try {
+        chart.removeSeries(swingHighlightSeriesRef.current);
+      } catch {
+        /* chart may already be removed */
+      }
+      swingHighlightSeriesRef.current = null;
+    }
+
+    if (
+      !showSwingOverlay ||
+      !selectedSwingLegKey ||
+      !swingOverlay?.legs.length
+    ) {
+      return;
+    }
+
+    const leg = swingOverlay.legs.find(
+      (l) => swingLegKey(l) === selectedSwingLegKey,
+    );
+    if (!leg) return;
+
+    const segment = buildLegSegment(
+      leg,
+      metric,
+      toValue,
+      groupMode,
+      sortedTrades,
+    );
+    if (!segment) return;
+
+    const series = chart.addSeries(LineSeries, {
+      ...SWING_SELECTED_OVERLAY_SERIES_OPTIONS,
+      priceFormat: createChartPriceFormat(priceUnit),
+    });
+    series.setData(segment.data);
+    swingHighlightSeriesRef.current = series;
+
+    return () => {
+      if (!chartRef.current || !swingHighlightSeriesRef.current) return;
+      try {
+        chartRef.current.removeSeries(swingHighlightSeriesRef.current);
+      } catch {
+        /* ignore */
+      }
+      swingHighlightSeriesRef.current = null;
+    };
+  }, [
+    selectedSwingLegKey,
+    showSwingOverlay,
+    swingOverlay,
+    metric,
+    toValue,
+    groupMode,
+    sortedTrades,
+    showChart,
+    priceUnit,
   ]);
 
   if (!id) {

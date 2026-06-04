@@ -20,6 +20,7 @@ export {
   swingsToColoredLineData,
   swingsToLegSegments,
   groupSequentialLegChains,
+  swingLegKey,
   type SwingColoredLinePoint,
   type SwingLegLineSegment,
   type SwingOverlaySegmentMode,

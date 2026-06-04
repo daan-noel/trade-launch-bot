@@ -108,7 +108,15 @@ type TradeBucket = {
   liquiditySol: number | null;
 };
 
-/** GMGN-style: fill every interval, open[i] = close[i-1], flat bars when no trades. */
+function sortTradesChronologically(trades: ChartTrade[]): ChartTrade[] {
+  return [...trades].sort((a, b) => {
+    const slotDiff = (a.slot ?? 0) - (b.slot ?? 0);
+    if (slotDiff !== 0) return slotDiff;
+    return Date.parse(a.block_time) - Date.parse(b.block_time);
+  });
+}
+
+/** GMGN-style: open = prev bar close (continuous spot); empty intervals flat at prev close. */
 function buildContinuousBars(
   buckets: Map<number, TradeBucket>,
   startKey: number,
@@ -200,9 +208,7 @@ export function aggregateTradesToBars(
 ): OhlcBar[] {
   if (trades.length === 0) return [];
 
-  const sorted = [...trades].sort(
-    (a, b) => Date.parse(a.block_time) - Date.parse(b.block_time),
-  );
+  const sorted = sortTradesChronologically(trades);
 
   const buckets = collectTradeBuckets(
     sorted,
@@ -227,11 +233,7 @@ export function aggregateTradesToBarsBySlot(
 ): OhlcBar[] {
   if (trades.length === 0) return [];
 
-  const sorted = [...trades].sort((a, b) => {
-    const slotDiff = (a.slot ?? 0) - (b.slot ?? 0);
-    if (slotDiff !== 0) return slotDiff;
-    return Date.parse(a.block_time) - Date.parse(b.block_time);
-  });
+  const sorted = sortTradesChronologically(trades);
 
   const buckets = collectTradeBuckets(
     sorted,

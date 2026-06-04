@@ -1,10 +1,10 @@
-import type { UTCTimestamp } from 'lightweight-charts';
+import type { SeriesMarker, UTCTimestamp } from 'lightweight-charts';
 import { CHART_COLORS, TOKEN_TOTAL_SUPPLY } from './constants';
 import type { ChartGroupMode, ChartMetric, ChartSwingLeg, ChartTrade } from './types';
 
 export type SwingOverlaySegmentMode = 'connected' | 'perLeg' | 'connectedSequential';
 
-function swingLegKey(leg: ChartSwingLeg): string {
+export function swingLegKey(leg: ChartSwingLeg): string {
   return `${leg.type}-${leg.start_at}-${leg.end_at}`;
 }
 
@@ -159,6 +159,39 @@ export type SwingLegLineSegment = {
   data: SwingColoredLinePoint[];
 };
 
+/** Start/end markers for a selected swing leg (price-anchored for line + candle charts). */
+export function swingLegSelectionMarkers(
+  segment: SwingLegLineSegment,
+  markerColor: string,
+): SeriesMarker<UTCTimestamp>[] {
+  const vertices = segment.data.filter(
+    (p): p is Extract<SwingColoredLinePoint, { value: number }> => 'value' in p,
+  );
+  if (!vertices.length) return [];
+
+  const endpoint = (
+    vtx: (typeof vertices)[number],
+    label: 'S' | 'E',
+  ): SeriesMarker<UTCTimestamp> => ({
+    time: vtx.time,
+    position: 'atPriceMiddle',
+    price: vtx.value,
+    color: markerColor,
+    shape: 'square',
+    size: 2,
+    text: label,
+  });
+
+  if (vertices.length === 1 || vertices[0].time === vertices[vertices.length - 1].time) {
+    return [endpoint(vertices[0], 'S')];
+  }
+
+  return [
+    endpoint(vertices[0], 'S'),
+    endpoint(vertices[vertices.length - 1], 'E'),
+  ];
+}
+
 export function buildLegSegment(
   leg: ChartSwingLeg,
   metric: ChartMetric,
@@ -219,6 +252,68 @@ export function swingsToColoredLineData(
     }
     return point;
   });
+}
+
+export type SwingOverlayInteractionMeta = {
+  segmentMode: SwingOverlaySegmentMode;
+  groupMode: ChartGroupMode;
+  legs: ChartSwingLeg[];
+  allLegs?: ChartSwingLeg[];
+};
+
+export type ResolveSwingLegOptions = {
+  /** When true, only match while the pointer is on a swing overlay series (not by time alone). */
+  requireSwingSeries?: boolean;
+};
+
+/** Resolve swing leg under crosshair or click (per-leg series or connected path + time). */
+export function resolveSwingLegAtChartInteraction(
+  hoveredSeries: unknown,
+  seriesData: ReadonlyMap<unknown, unknown> | undefined,
+  chartTime: number | undefined,
+  swingSeriesRefs: readonly unknown[],
+  swingSeriesLegRef: ReadonlyMap<unknown, ChartSwingLeg>,
+  meta: SwingOverlayInteractionMeta | null,
+  trades: ChartTrade[],
+  options?: ResolveSwingLegOptions,
+): ChartSwingLeg | undefined {
+  if (!meta?.legs.length || !swingSeriesRefs.length) return undefined;
+
+  const onSwingSeries =
+    hoveredSeries != null && swingSeriesRefs.includes(hoveredSeries);
+  if (options?.requireSwingSeries) {
+    if (!onSwingSeries) return undefined;
+  } else if (!onSwingSeries && chartTime == null) {
+    return undefined;
+  }
+
+  let leg =
+    hoveredSeries != null
+      ? swingSeriesLegRef.get(hoveredSeries)
+      : undefined;
+
+  if (!leg && meta.legs.length) {
+    let resolvedTime = chartTime;
+    if (resolvedTime == null && hoveredSeries != null && seriesData) {
+      const point = seriesData.get(hoveredSeries);
+      if (point && typeof point === 'object' && 'time' in point) {
+        resolvedTime = point.time as number;
+      }
+    }
+    if (resolvedTime != null) {
+      const idx = findSwingLegIndexAtChartTime(
+        meta.legs,
+        resolvedTime,
+        meta.groupMode,
+        trades,
+        meta.segmentMode,
+        meta.allLegs,
+      );
+      if (idx != null) leg = meta.legs[idx];
+    }
+  }
+
+  return leg;
 }
 
 /** Which swing leg contains this chart time (for crosshair tooltips). */

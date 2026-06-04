@@ -1,6 +1,7 @@
 import {
   CandlestickSeries,
   ColorType,
+  CrosshairMode,
   LineSeries,
   type CandlestickSeriesOptions,
   type ChartOptions,
@@ -72,6 +73,8 @@ export const CHART_COLORS = {
   /** Swing path segments — distinct from candle up/down greens and reds */
   swingHigh: '#0eb5ff',
   swingLow: '#e879f9',
+  /** Selected swing leg — high contrast on dark chart */
+  swingSelected: '#13ceaf',
 } as const;
 
 /** Crosshair tooltip / toolbar — distinct hue per field on dark panels. */
@@ -87,7 +90,7 @@ export const CHART_OHLC_COLORS = {
 
 const SWING_OVERLAY_SERIES_BASE: DeepPartial<LineSeriesOptions> = {
   lineWidth: 3,
-  crosshairMarkerVisible: true,
+  crosshairMarkerVisible: false,
   priceLineVisible: false,
   lastValueVisible: false,
 };
@@ -100,6 +103,12 @@ export const SWING_HIGH_OVERLAY_SERIES_OPTIONS: DeepPartial<LineSeriesOptions> =
 export const SWING_LOW_OVERLAY_SERIES_OPTIONS: DeepPartial<LineSeriesOptions> = {
   ...SWING_OVERLAY_SERIES_BASE,
   color: CHART_COLORS.swingLow,
+};
+
+export const SWING_SELECTED_OVERLAY_SERIES_OPTIONS: DeepPartial<LineSeriesOptions> = {
+  ...SWING_OVERLAY_SERIES_BASE,
+  color: CHART_COLORS.swingSelected,
+  lineWidth: 4,
 };
 
 /** @deprecated Use SWING_HIGH/LOW_OVERLAY_SERIES_OPTIONS — single magenta path */
@@ -173,6 +182,7 @@ export function createChartOptions(
           : {}),
     },
     crosshair: {
+      mode: CrosshairMode.Normal,
       vertLine: { color: CHART_COLORS.crosshair },
       horzLine: { color: CHART_COLORS.crosshair },
     },

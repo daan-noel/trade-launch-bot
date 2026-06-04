@@ -113,6 +113,10 @@ export interface TokenPriceChartProps {
   onBarClick?: (selection: ChartBarSelection | null) => void;
   /** Swing detection legs to draw as an overlay line. */
   swingOverlay?: ChartSwingOverlay | null;
+  /** `${type}-${start_at}-${end_at}` — highlights that leg on the overlay. */
+  selectedSwingLegKey?: string | null;
+  /** Fired when a swing path segment is clicked; null clears selection. */
+  onSwingLegClick?: (leg: ChartSwingLeg | null) => void;
   /** Token ATH spot price in SOL (from tokens_info). */
   athPriceInSol?: number | null;
   isMigrated?: boolean;
