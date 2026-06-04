@@ -149,8 +149,8 @@ SwingLeg {
     duration_ms: number     // end_at - start_at
 
     // Price
-    start_price: number     // price of first transaction of the leg
-    end_price: number       // price of the last same-side transaction (see below)
+    start_price: number     // spot before the first transaction of the leg (pre-trade)
+    end_price: number       // post-trade spot of the last same-side transaction (see below)
 
     // Flow (SOL)
     inflow: number          // total buy-side SOL

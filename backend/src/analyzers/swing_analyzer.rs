@@ -123,7 +123,10 @@ struct Tx {
     position: u32,
     side: Side,
     sol_amount: f64,
+    /// Post-trade spot (`price_per_token`).
     price: f64,
+    /// Pre-trade spot (for leg `start_price`).
+    price_before: f64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -154,7 +157,7 @@ impl LegAcc {
             leg_type: SwingType::SwingHigh,
             start_at: tx.timestamp_ms,
             end_at: tx.timestamp_ms,
-            start_price: tx.price,
+            start_price: tx.price_before,
             end_price: tx.price,
             inflow: tx.sol_amount,
             outflow: 0.0,
@@ -168,7 +171,7 @@ impl LegAcc {
             leg_type: SwingType::SwingLow,
             start_at: tx.timestamp_ms,
             end_at: tx.timestamp_ms,
-            start_price: tx.price,
+            start_price: tx.price_before,
             end_price: tx.price,
             inflow: 0.0,
             outflow: tx.sol_amount,
@@ -226,10 +229,20 @@ pub fn detect_swings(trades: &[Trade], params: &SwingParams) -> Vec<SwingLeg> {
 /// Map trades to internal transactions, skip invalid ones, and apply the
 /// canonical ordering: `timestamp_ms ASC, slot ASC, position ASC`.
 fn sanitize_and_order(trades: &[Trade]) -> Vec<Tx> {
-    let mut txs: Vec<Tx> = trades
-        .iter()
-        .filter(|t| t.sol_amount > 0.0)
-        .map(|t| Tx {
+    let mut ordered: Vec<&Trade> = trades.iter().filter(|t| t.sol_amount > 0.0).collect();
+
+    ordered.sort_by(|a, b| {
+        a.block_time
+            .timestamp_millis()
+            .cmp(&b.block_time.timestamp_millis())
+            .then(a.slot.cmp(&b.slot))
+            .then(a.leg_index.cmp(&b.leg_index))
+    });
+
+    let mut txs: Vec<Tx> = Vec::with_capacity(ordered.len());
+    for (i, t) in ordered.iter().enumerate() {
+        let prev_post = i.checked_sub(1).map(|j| txs[j].price);
+        txs.push(Tx {
             timestamp_ms: t.block_time.timestamp_millis(),
             slot: t.slot,
             position: t.leg_index,
@@ -239,15 +252,9 @@ fn sanitize_and_order(trades: &[Trade]) -> Vec<Tx> {
             },
             sol_amount: t.sol_amount,
             price: t.price_per_token,
-        })
-        .collect();
-
-    txs.sort_by(|a, b| {
-        a.timestamp_ms
-            .cmp(&b.timestamp_ms)
-            .then(a.slot.cmp(&b.slot))
-            .then(a.position.cmp(&b.position))
-    });
+            price_before: t.price_before_execution(prev_post),
+        });
+    }
 
     txs
 }
@@ -434,4 +441,91 @@ fn apply_quality_filter(ledger: Vec<LegAcc>, params: &SwingParams) -> Vec<SwingL
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn buy(
+        ms: i64,
+        sol: f64,
+        tokens: f64,
+        vsol_post: f64,
+        vtok_post: f64,
+        leg: u32,
+    ) -> Trade {
+        let mut t = Trade::new(
+            "mint".into(),
+            "user".into(),
+            TradeType::Buy,
+            sol,
+            tokens,
+            "sig".into(),
+            1,
+            Utc::now(),
+        );
+        t.block_time = chrono::DateTime::from_timestamp_millis(ms).unwrap();
+        t.leg_index = leg;
+        t.virtual_sol_reserves = Some(vsol_post);
+        t.virtual_token_reserves = Some(vtok_post);
+        t.apply_curve_price();
+        t
+    }
+
+    fn sell(ms: i64, sol: f64, tokens: f64, vsol_post: f64, vtok_post: f64) -> Trade {
+        let mut t = Trade::new(
+            "mint".into(),
+            "user".into(),
+            TradeType::Sell,
+            sol,
+            tokens,
+            "sig".into(),
+            1,
+            Utc::now(),
+        );
+        t.block_time = chrono::DateTime::from_timestamp_millis(ms).unwrap();
+        t.virtual_sol_reserves = Some(vsol_post);
+        t.virtual_token_reserves = Some(vtok_post);
+        t.apply_curve_price();
+        t
+    }
+
+    #[test]
+    fn swing_high_start_uses_pre_trade_price() {
+        let trades = vec![buy(1_000, 10.0, 1_000_000.0, 110.0, 900_000.0, 0)];
+        let legs = detect_swings(&trades, &SwingParams::default());
+        assert_eq!(legs.len(), 1);
+        let pre = trades[0].price_before_from_reserves().unwrap();
+        assert!((legs[0].start_price - pre).abs() < 1e-15);
+        assert!(legs[0].start_price < legs[0].end_price);
+    }
+
+    #[test]
+    fn confirmed_swing_high_after_reversal_uses_pre_first_buy() {
+        let params = SwingParams {
+            high_to_low_threshold_sol: 1.0,
+            high_to_low_threshold_pct: 100.0,
+            low_to_high_threshold_sol: 1.0,
+            low_to_high_threshold_pct: 100.0,
+            min_leg_trades: 1,
+            ..Default::default()
+        };
+        let trades = vec![
+            buy(1_000, 5.0, 500_000.0, 105.0, 950_000.0, 0),
+            sell(2_000, 2.0, 200_000.0, 103.0, 1_150_000.0),
+            buy(3_000, 3.0, 300_000.0, 106.0, 850_000.0, 0),
+        ];
+        let legs = detect_swings(&trades, &params);
+        let high = legs
+            .iter()
+            .filter(|l| l.leg_type == SwingType::SwingHigh)
+            .find(|l| l.start_at == 3_000)
+            .unwrap();
+        let opener = &trades[2];
+        let pre = opener.price_before_from_reserves().unwrap();
+        assert!((high.start_price - pre).abs() < 1e-15);
+        assert!((high.end_price - opener.price_per_token).abs() < 1e-15);
+    }
 }
