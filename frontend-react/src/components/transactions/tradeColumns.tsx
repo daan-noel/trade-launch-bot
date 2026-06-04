@@ -1,6 +1,6 @@
 import type { ColumnDef } from '../table/types';
 import type { LiveTrade } from '../../types';
-import { formatIso } from '../../utils/date';
+import { DateCell } from '../table/DateCell';
 import { formatDecimal } from '../../utils/format';
 import type { usePriceDisplay } from '../../hooks/usePriceDisplay';
 import { cn } from '../../lib/cn';
@@ -106,7 +106,8 @@ export function tradeColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'time',
       label: 'Time (UTC)',
-      render: (ev) => formatIso(ev.timestamp),
+      width: '96px',
+      render: (ev) => <DateCell iso={ev.timestamp} />,
       sortValue: (ev) => ev.timestamp,
       searchValue: (ev) => ev.timestamp,
     },

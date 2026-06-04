@@ -61,6 +61,11 @@ export function formatWithCommas(n: number): string {
   return n.toLocaleString('en-US', { maximumFractionDigits: 0 });
 }
 
+/** True when a numeric cell should show "-" (null, undefined, zero, NaN). */
+export function isEmptyNum(n: number | null | undefined): boolean {
+  return n == null || n === 0 || Number.isNaN(n);
+}
+
 export function ageClass(seconds: number): string {
   if (seconds < 3600) return 'text-red font-semibold';
   if (seconds < 86400) return 'text-warning font-semibold';

@@ -1,6 +1,6 @@
 import type { ColumnDef } from '../table/types';
 import type { AnalysisRecord, CreatorRecord } from '../../types';
-import { formatIso } from '../../utils/date';
+import { DateCell } from '../table/DateCell';
 import { formatDecimal } from '../../utils/format';
 import { cn } from '../../lib/cn';
 import { AddressDisplay } from '../ui/AddressDisplay';
@@ -58,7 +58,8 @@ export const creatorColumns: ColumnDef<CreatorRecord>[] = [
     key: 'last_analyzed',
     label: 'Last Analyzed',
     sortable: true,
-    render: (c) => (c.last_analyzed_at ? formatIso(c.last_analyzed_at) : '-'),
+    width: '96px',
+    render: (c) => <DateCell iso={c.last_analyzed_at} />,
     sortValue: (c) => c.last_analyzed_at ?? '',
     searchValue: (c) => c.last_analyzed_at ?? '',
   },
@@ -98,7 +99,8 @@ export const analysisColumns: ColumnDef<AnalysisRecord>[] = [
     key: 'computed_at',
     label: 'Computed At',
     sortable: true,
-    render: (r) => formatIso(r.computed_at),
+    width: '96px',
+    render: (r) => <DateCell iso={r.computed_at} />,
     sortValue: (r) => r.computed_at,
     searchValue: (r) => r.computed_at,
   },

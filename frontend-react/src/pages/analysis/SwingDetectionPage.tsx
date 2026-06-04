@@ -426,7 +426,7 @@ export function SwingDetectionPage() {
               setCreatedTo('');
             }}
           >
-            Clear Datetime Range
+            Clear
           </Button>
         )}
       </div>

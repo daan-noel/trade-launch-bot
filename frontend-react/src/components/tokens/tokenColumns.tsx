@@ -1,6 +1,6 @@
 import type { ColumnDef } from '../table/types';
 import type { TokenRecord } from '../../types';
-import { formatIso } from '../../utils/date';
+import { DateCell } from '../table/DateCell';
 import {
   ageClass,
   formatAge,
@@ -93,7 +93,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       label: 'Created',
       width: '110px',
       sortable: true,
-      render: (r) => formatIso(r.created_at),
+      render: (r) => <DateCell iso={r.created_at} />,
       sortValue: (r) => r.created_at,
       searchValue: (r) => r.created_at,
     },
@@ -102,7 +102,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       label: 'Last Trade',
       width: '110px',
       sortable: true,
-      render: (r) => (r.last_trade_at ? formatIso(r.last_trade_at) : '-'),
+      render: (r) => <DateCell iso={r.last_trade_at} />,
       sortValue: (r) => r.last_trade_at,
       searchValue: (r) => r.last_trade_at ?? '',
     },
@@ -129,7 +129,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       label: 'ATH At',
       width: '110px',
       sortable: true,
-      render: (r) => (r.ath_timestamp ? formatIso(r.ath_timestamp) : '-'),
+      render: (r) => <DateCell iso={r.ath_timestamp} />,
       sortValue: (r) => r.ath_timestamp,
       searchValue: (r) => r.ath_timestamp ?? '',
     },

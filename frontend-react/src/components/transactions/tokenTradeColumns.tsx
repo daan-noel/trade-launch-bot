@@ -1,6 +1,6 @@
 import type { ColumnDef } from '../table/types';
 import type { TradeRecord } from '../../types';
-import { formatIso } from '../../utils/date';
+import { DateCell } from '../table/DateCell';
 import { formatDecimal } from '../../utils/format';
 import type { usePriceDisplay } from '../../hooks/usePriceDisplay';
 import { cn } from '../../lib/cn';
@@ -103,7 +103,8 @@ export function tokenTradeColumns(
     {
       key: 'time',
       label: 'Time (UTC)',
-      render: (t) => formatIso(t.block_time),
+      width: '96px',
+      render: (t) => <DateCell iso={t.block_time} />,
       sortValue: (t) => t.block_time,
       searchValue: (t) => t.block_time,
     },
