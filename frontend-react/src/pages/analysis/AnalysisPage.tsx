@@ -6,7 +6,7 @@ import { analysisColumns, creatorColumns } from '../../components/analysis/analy
 import { fetchAnalysis, fetchCreators } from '../../services/api';
 import { POLL_INTERVAL_MS } from '../../services/config';
 import type { AnalysisRecord, CreatorRecord } from '../../types';
-import { cn } from '../../lib/cn';
+import { Button } from '../../components/ui/Button';
 
 type Tab = 'creators' | 'results';
 
@@ -82,19 +82,9 @@ export function AnalysisPage() {
 
       <div className="mb-4 flex gap-2">
         {(['creators', 'results'] as const).map((t) => (
-          <button
-            key={t}
-            type="button"
-            onClick={() => setTab(t)}
-            className={cn(
-              'rounded-md border px-4 py-1.5 text-[13px] font-medium transition',
-              tab === t
-                ? 'border-primary bg-primary/10 font-bold text-primary'
-                : 'border-border bg-bg-card text-text-mid hover:border-primary hover:text-text',
-            )}
-          >
+          <Button key={t} variant="ghost" active={tab === t} onClick={() => setTab(t)}>
             {t === 'creators' ? 'Creator Profiles' : 'Analysis Results'}
-          </button>
+          </Button>
         ))}
       </div>
 

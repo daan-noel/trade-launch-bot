@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { DataTable } from '../../components/table/DataTable';
+import { Button } from '../../components/ui/Button';
 import { InlineAlert } from '../../components/ui/Modal';
 import {
   buildCreatePayload,
@@ -221,68 +222,59 @@ export function TpslPage() {
       return (
         <div className="flex items-center justify-center gap-1">
           <span className="text-[11px] font-semibold text-red">Delete?</span>
-          <button
-            type="button"
-            disabled={deleteLoading}
-            onClick={() => handleDelete(rule.id)}
-            className="rounded border border-red/50 px-2 py-0.5 text-[11px] text-red"
-          >
+          <Button variant="danger" size="xs" disabled={deleteLoading} onClick={() => handleDelete(rule.id)}>
             Yes
-          </button>
-          <button
-            type="button"
-            onClick={() => setConfirmDeleteId(null)}
-            className="rounded border border-white/10 px-2 py-0.5 text-[11px]"
-          >
+          </Button>
+          <Button variant="ghost" size="xs" onClick={() => setConfirmDeleteId(null)}>
             No
-          </button>
+          </Button>
         </div>
       );
     }
     const matchedActive = matchedResult?.ruleId === rule.id;
     return (
       <div className="flex items-center justify-center gap-1">
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="xs"
           disabled={rule.is_active}
           onClick={() => openEdit(rule)}
           title={rule.is_active ? 'Cannot edit active rules' : 'Edit'}
-          className="rounded border border-white/10 px-2 py-0.5 text-[11px] disabled:opacity-35"
         >
           Edit
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="ghost"
+          size="xs"
           disabled={rule.is_active}
           onClick={() => setConfirmDeleteId(rule.id)}
           title={rule.is_active ? 'Cannot delete active rules' : 'Delete'}
-          className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-red disabled:opacity-35"
+          className="text-red"
         >
           Del
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="ghost"
+          size="xs"
           disabled={simLoading}
           onClick={() => handleSimulate(rule)}
-          className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-primary"
+          className="text-primary"
           title="Simulate"
         >
           ▶
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="ghost"
+          size="xs"
           disabled={matchedLoading}
           onClick={() => handleMatched(rule)}
           className={cn(
-            'rounded border px-2 py-0.5 text-[11px]',
-            matchedActive
-              ? 'border-[#9370db]/45 bg-[#9370db]/8 text-[#9370db]'
-              : 'border-white/10',
+            matchedActive && 'border-[#9370db]/45 bg-[#9370db]/8 text-[#9370db]',
           )}
           title="Matched tokens"
         >
           ⊞
-        </button>
+        </Button>
       </div>
     );
   };
@@ -307,13 +299,9 @@ export function TpslPage() {
 
       <div className="mb-3.5 flex items-center justify-between">
         <h2 className="text-base font-bold text-primary">TPSL Strategies</h2>
-        <button
-          type="button"
-          onClick={openAdd}
-          className="inline-flex items-center gap-1 rounded-md border border-primary bg-primary/12 px-4 py-1.5 text-xs font-bold text-primary hover:bg-primary/22"
-        >
+        <Button variant="primary" onClick={openAdd}>
           + Add Rule
-        </button>
+        </Button>
       </div>
 
       {loading && <p className="text-text-dim">Loading rules…</p>}

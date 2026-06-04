@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { DataTable } from '../../components/table/DataTable';
+import { Button } from '../../components/ui/Button';
+import { Input } from '../../components/ui/Input';
 import { InlineAlert, Modal } from '../../components/ui/Modal';
 import { walletColumns } from '../../components/wallet/walletColumns';
 import { fetchWalletHoldings, tradeBuy, tradeSell } from '../../services/api';
 import type { WalletHolding } from '../../types';
-import { cn } from '../../lib/cn';
 
 interface BuyDialog {
   mint: string;
@@ -117,16 +118,9 @@ export function WalletPage() {
         <span className="rounded-md border border-primary bg-primary/15 px-2.5 py-0.5 font-mono text-[11px] font-bold tracking-wide text-primary">
           {holdings.length} tokens
         </span>
-        <button
-          type="button"
-          onClick={loadHoldings}
-          disabled={loading}
-          className={cn(
-            'rounded-md border border-white/8 bg-white/4 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider text-text-dim transition hover:text-text disabled:opacity-45',
-          )}
-        >
+        <Button variant="subtle" size="sm" onClick={loadHoldings} disabled={loading}>
           {loading ? 'Loading…' : '↻ Refresh'}
-        </button>
+        </Button>
       </div>
 
       {error && <InlineAlert variant="error">{error}</InlineAlert>}
@@ -163,32 +157,25 @@ export function WalletPage() {
               <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
                 SOL Amount
               </span>
-              <input
+              <Input
                 type="number"
+                fieldSize="md"
                 min={0.001}
                 step={0.01}
                 value={buyDialog.solInput}
                 onChange={(e) =>
                   setBuyDialog((d) => (d ? { ...d, solInput: e.target.value } : d))
                 }
-                className="w-full rounded-md border border-white/10 bg-white/4 px-2.5 py-2 font-mono text-[13px] text-text outline-none focus:border-primary focus:shadow-[0_0_0_2px_rgba(19,206,175,0.15)]"
+                className="focus:shadow-[0_0_0_2px_rgba(19,206,175,0.15)]"
               />
             </label>
             <div className="flex items-center justify-end gap-2.5">
-              <button
-                type="button"
-                onClick={() => setBuyDialog(null)}
-                className="rounded-md border border-white/10 px-4 py-1.5 text-[13px] text-text-dim hover:bg-white/5 hover:text-text"
-              >
+              <Button variant="ghost" onClick={() => setBuyDialog(null)}>
                 Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleBuySubmit}
-                className="rounded-md border border-primary bg-primary/15 px-4 py-1.5 text-[13px] font-bold text-primary hover:bg-primary/25"
-              >
+              </Button>
+              <Button variant="primary" onClick={handleBuySubmit}>
                 Confirm Buy
-              </button>
+              </Button>
             </div>
           </>
         )}

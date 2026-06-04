@@ -1,5 +1,7 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { cn } from '../../lib/cn';
+import { Checkbox } from '../ui/Checkbox';
+import { Input } from '../ui/Input';
 import { Pagination, DEFAULT_PAGE_SIZE } from './Pagination';
 import type { ColumnDef, SortDir, SortValue } from './types';
 
@@ -158,12 +160,14 @@ export function DataTable<R>({
     <div className="flex flex-col gap-0">
       <div className="mb-2 flex flex-wrap items-center gap-2">
         {searchable && (
-          <input
+          <Input
             type="search"
+            fieldSize="lg"
+            variant="card"
             placeholder="Search…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="min-w-[200px] max-w-[340px] flex-1 rounded-lg border border-white/8 bg-bg-card px-3 py-1.5 text-[13px] text-text outline-none transition focus:border-primary"
+            className="min-w-[200px] max-w-[340px] flex-1 border-white/8 focus:border-primary"
           />
         )}
         <span className="flex-1" />
@@ -197,8 +201,7 @@ export function DataTable<R>({
         <div className="mb-2 flex flex-wrap gap-3 rounded-lg border border-white/7 bg-white/2 p-3">
           {columns.map((col) => (
             <label key={col.key} className="flex cursor-pointer items-center gap-2 text-xs text-text">
-              <input
-                type="checkbox"
+              <Checkbox
                 checked={visibleCols.has(col.key)}
                 onChange={(e) => {
                   setVisibleCols((prev) => {
@@ -208,7 +211,6 @@ export function DataTable<R>({
                     return next;
                   });
                 }}
-                className="accent-primary"
               />
               {col.label}
             </label>
@@ -254,14 +256,15 @@ export function DataTable<R>({
                   <th className="bg-bg-panel px-1 py-1" />
                   {visCols.map((col) => (
                     <th key={`f-${col.key}`} className="bg-bg-panel px-1 py-1">
-                      <input
+                      <Input
                         type="text"
+                        fieldSize="table"
                         placeholder="filter…"
                         value={colFiltersMap[col.key] ?? ''}
                         onChange={(e) =>
                           setColFiltersMap((m) => ({ ...m, [col.key]: e.target.value }))
                         }
-                        className="w-full rounded border border-white/8 bg-white/4 px-1.5 py-0.5 text-[11px] text-text outline-none focus:border-primary/40"
+                        className="border-white/8 focus:border-primary/40"
                       />
                     </th>
                   ))}

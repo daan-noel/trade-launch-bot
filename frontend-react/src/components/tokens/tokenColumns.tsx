@@ -9,7 +9,6 @@ import {
   formatWithCommas,
   priceClass,
   ratioClass,
-  truncate,
 } from '../../utils/format';
 import type { usePriceDisplay } from '../../hooks/usePriceDisplay';
 import { AddressDisplay } from '../ui/AddressDisplay';
@@ -36,15 +35,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       label: 'Symbol',
       width: '90px',
       sortable: true,
-      render: (r) => (
-        <AddressDisplay
-          address={r.mint_address}
-          kind="token"
-          display={r.symbol || truncate(r.mint_address, 8)}
-          truncateLen={8}
-          stopPropagation
-        />
-      ),
+      render: (r) => r.symbol,
       sortValue: (r) => r.symbol,
       searchValue: (r) => `${r.symbol} ${r.name} ${r.mint_address}`,
     },

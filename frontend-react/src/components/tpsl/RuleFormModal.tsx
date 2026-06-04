@@ -1,6 +1,9 @@
 import { useState } from 'react';
 import type { RuleRecord } from '../../types';
+import { Button } from '../ui/Button';
+import { Input, Textarea } from '../ui/Input';
 import { Modal, InlineAlert } from '../ui/Modal';
+import { Select } from '../ui/Select';
 import { cn } from '../../lib/cn';
 import { EXAMPLE_IX_LABELS, parseIxLabels } from './utils';
 
@@ -89,79 +92,77 @@ export function RuleFormModal({
 
   const set = (patch: Partial<RuleFormData>) => onChange({ ...form, ...patch });
 
-  const inputCls = (extra?: string) =>
-    cn(
-      'w-full rounded-md border border-white/10 bg-white/4 px-2.5 py-2 font-mono text-[13px] text-text outline-none focus:border-primary',
-      locked && 'cursor-not-allowed opacity-50',
-      extra,
-    );
+  const fieldCls = (extra?: string) =>
+    cn('font-mono', locked && 'cursor-not-allowed opacity-50', extra);
 
   return (
     <Modal title={isEdit ? 'Edit TPSL Rule' : 'New TPSL Rule'} open={open} onClose={onClose}>
       <div className="flex flex-col gap-4">
         <label className="flex flex-col gap-1.5">
           <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Mode</span>
-          <select
+          <Select
+            fieldSize="md"
             value={form.tradeMode}
             onChange={(e) => set({ tradeMode: e.target.value })}
-            className={inputCls()}
+            className={fieldCls()}
           >
             <option value="paper">Paper Test</option>
             <option value="real">Real Trading</option>
-          </select>
+          </Select>
         </label>
 
         <label className="flex flex-col gap-1.5">
           <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Rule Name</span>
-          <input
+          <Input
             type="text"
+            fieldSize="md"
             value={form.ruleName}
             onChange={(e) => set({ ruleName: e.target.value })}
             placeholder="e.g. Sniper 0.5 SOL"
-            className={inputCls()}
+            className={fieldCls()}
           />
         </label>
 
         <div className="grid grid-cols-2 gap-3">
           <label className="flex flex-col gap-1.5">
             <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Initial Buy SOL</span>
-            <input type="number" step="0.001" value={form.initialBuy} readOnly={locked}
-              onChange={(e) => set({ initialBuy: e.target.value })} className={inputCls()} />
+            <Input type="number" fieldSize="md" step="0.001" value={form.initialBuy} readOnly={locked}
+              onChange={(e) => set({ initialBuy: e.target.value })} className={fieldCls()} />
           </label>
           <label className="flex flex-col gap-1.5">
             <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Tolerance %</span>
-            <input type="number" step="0.1" value={form.tolerance} readOnly={locked}
-              onChange={(e) => set({ tolerance: e.target.value })} className={inputCls()} />
+            <Input type="number" fieldSize="md" step="0.1" value={form.tolerance} readOnly={locked}
+              onChange={(e) => set({ tolerance: e.target.value })} className={fieldCls()} />
           </label>
           <label className="flex flex-col gap-1.5">
             <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">CU Limit</span>
-            <input type="number" value={form.cuLimit} readOnly={locked}
-              onChange={(e) => set({ cuLimit: e.target.value })} className={inputCls()} />
+            <Input type="number" fieldSize="md" value={form.cuLimit} readOnly={locked}
+              onChange={(e) => set({ cuLimit: e.target.value })} className={fieldCls()} />
           </label>
           <label className="flex flex-col gap-1.5">
             <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">CU Price</span>
-            <input type="number" value={form.cuPrice} readOnly={locked}
-              onChange={(e) => set({ cuPrice: e.target.value })} className={inputCls()} />
+            <Input type="number" fieldSize="md" value={form.cuPrice} readOnly={locked}
+              onChange={(e) => set({ cuPrice: e.target.value })} className={fieldCls()} />
           </label>
           <label className="flex flex-col gap-1.5">
             <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Max SOL Cost</span>
-            <input type="number" step="0.001" value={form.maxSolCost} readOnly={locked}
-              onChange={(e) => set({ maxSolCost: e.target.value })} className={inputCls()} />
+            <Input type="number" fieldSize="md" step="0.001" value={form.maxSolCost} readOnly={locked}
+              onChange={(e) => set({ maxSolCost: e.target.value })} className={fieldCls()} />
           </label>
           <label className="flex flex-col gap-1.5">
             <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Spendable SOL In</span>
-            <input type="number" step="0.001" value={form.spendableSolIn} readOnly={locked}
-              onChange={(e) => set({ spendableSolIn: e.target.value })} className={inputCls()} />
+            <Input type="number" fieldSize="md" step="0.001" value={form.spendableSolIn} readOnly={locked}
+              onChange={(e) => set({ spendableSolIn: e.target.value })} className={fieldCls()} />
           </label>
           <label className="flex flex-col gap-1.5">
             <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Max Holding Tokens</span>
-            <input type="number" value={form.maxHoldingTokens} readOnly={locked}
-              onChange={(e) => set({ maxHoldingTokens: e.target.value })} className={inputCls()} />
+            <Input type="number" fieldSize="md" value={form.maxHoldingTokens} readOnly={locked}
+              onChange={(e) => set({ maxHoldingTokens: e.target.value })} className={fieldCls()} />
           </label>
           <label className="flex flex-col gap-1.5">
             <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Total Max Trade Tokens</span>
-            <input type="number" value={form.totalMaxTradeTokens} readOnly={locked}
-              onChange={(e) => set({ totalMaxTradeTokens: e.target.value })} className={inputCls()} />
+            <Input type="number" fieldSize="md" value={form.totalMaxTradeTokens} readOnly={locked}
+              onChange={(e) => set({ totalMaxTradeTokens: e.target.value })} className={fieldCls()} />
           </label>
         </div>
 
@@ -193,12 +194,13 @@ export function RuleFormModal({
               )}
             </div>
           </div>
-          <textarea
+          <Textarea
+            fieldSize="md"
             rows={4}
             value={form.ixLabels}
             readOnly={locked}
             onChange={(e) => set({ ixLabels: e.target.value })}
-            className={inputCls()}
+            className={fieldCls()}
             placeholder='["Pump.Fun: Buy"]'
           />
         </div>
@@ -206,32 +208,30 @@ export function RuleFormModal({
         <div className="grid grid-cols-3 gap-3">
           <label className="flex flex-col gap-1.5">
             <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Buy Amount (SOL)</span>
-            <input type="number" step="0.001" value={form.buyAmount}
-              onChange={(e) => set({ buyAmount: e.target.value })} className={inputCls()} />
+            <Input type="number" fieldSize="md" step="0.001" value={form.buyAmount}
+              onChange={(e) => set({ buyAmount: e.target.value })} className={fieldCls()} />
           </label>
           <label className="flex flex-col gap-1.5">
             <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Take Profit %</span>
-            <input type="number" step="1" value={form.takeProfit}
-              onChange={(e) => set({ takeProfit: e.target.value })} className={inputCls('focus:border-green')} />
+            <Input type="number" fieldSize="md" step="1" value={form.takeProfit}
+              onChange={(e) => set({ takeProfit: e.target.value })} className={fieldCls('focus:border-green')} />
           </label>
           <label className="flex flex-col gap-1.5">
             <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Stop Loss %</span>
-            <input type="number" step="1" value={form.stopLoss}
-              onChange={(e) => set({ stopLoss: e.target.value })} className={inputCls('focus:border-red')} />
+            <Input type="number" fieldSize="md" step="1" value={form.stopLoss}
+              onChange={(e) => set({ stopLoss: e.target.value })} className={fieldCls('focus:border-red')} />
           </label>
         </div>
 
         {error && <InlineAlert variant="error">{error}</InlineAlert>}
 
         <div className="flex justify-end gap-2.5">
-          <button type="button" onClick={onClose}
-            className="rounded-md border border-white/10 px-4 py-1.5 text-[13px] text-text-dim hover:bg-white/5">
+          <Button variant="ghost" onClick={onClose}>
             Cancel
-          </button>
-          <button type="button" onClick={() => onSave(allowEditParams)} disabled={loading}
-            className="rounded-md border border-primary bg-primary/15 px-4 py-1.5 text-[13px] font-bold text-primary hover:bg-primary/25 disabled:opacity-45">
+          </Button>
+          <Button variant="primary" onClick={() => onSave(allowEditParams)} disabled={loading}>
             {loading ? 'Saving…' : 'Save Rule'}
-          </button>
+          </Button>
         </div>
       </div>
     </Modal>

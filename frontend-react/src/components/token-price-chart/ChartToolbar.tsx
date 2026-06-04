@@ -10,6 +10,7 @@ import {
 } from './constants';
 import { getTimezoneSelectOptions } from './chartTimezone';
 import { BarCrosshairFields } from './BarCrosshairFields';
+import { Checkbox } from '../ui/Checkbox';
 import { cn } from './cn';
 import type { ChartMetric, ChartToolbarProps } from './types';
 
@@ -290,12 +291,12 @@ export function ChartToolbar({
               : 'No ATH price recorded for this token'
           }
         >
-          <input
-            type="checkbox"
+          <Checkbox
+            boxSize="sm"
             checked={showAthLine}
             disabled={!athLineAvailable}
             onChange={(e) => onShowAthLineChange(e.target.checked)}
-            className="size-3 accent-[#f0b429]"
+            className="accent-[#f0b429]"
           />
           <span style={showAthLine && athLineAvailable ? { color: CHART_COLORS.athLine } : undefined}>
             ATH line
@@ -307,11 +308,11 @@ export function ChartToolbar({
           style={{ backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }}
           title="Show pump.fun bonding-curve graduation price"
         >
-          <input
-            type="checkbox"
+          <Checkbox
+            boxSize="sm"
             checked={showMigrationLine}
             onChange={(e) => onShowMigrationLineChange(e.target.checked)}
-            className="size-3 accent-[#5dade2]"
+            className="accent-[#5dade2]"
           />
           <span style={showMigrationLine ? { color: CHART_COLORS.migrationLine } : undefined}>
             Migration line
@@ -330,12 +331,12 @@ export function ChartToolbar({
               : 'Run swing detection to overlay results'
           }
         >
-          <input
-            type="checkbox"
+          <Checkbox
+            boxSize="sm"
             checked={showSwingOverlay}
             disabled={!swingOverlayAvailable}
             onChange={(e) => onShowSwingOverlayChange(e.target.checked)}
-            className="size-3 accent-[#e879f9]"
+            className="accent-[#e879f9]"
           />
           <span
             style={

@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { DataTable } from '../../components/table/DataTable';
-import { FilterPanel, defaultFilters } from '../../components/tokens/FilterPanel';
+import { FilterPanel } from '../../components/tokens/FilterPanel';
 import { TokenDetailPanel } from '../../components/tokens/TokenDetailPanel';
 import { tokenColumns } from '../../components/tokens/tokenColumns';
 import {
   activeFilterCount,
+  defaultFilters,
   filtersEmpty,
+  loadStoredTokenFilters,
+  saveStoredTokenFilters,
   tokenPassesFilters,
   type TokenFilters,
 } from '../../components/tokens/filters';
+import { Button } from '../../components/ui/Button';
 import { StatusButton } from '../../components/ui/StatusButton';
 import { fetchTokenDetail, fetchTokens } from '../../services/api';
 import { POLL_INTERVAL_MS } from '../../services/config';
@@ -36,7 +40,7 @@ export function TokensPage() {
   const [error, setError] = useState<string | null>(null);
   const [live, setLive] = useState(loadLive);
   const [showFilters, setShowFilters] = useState(false);
-  const [filters, setFilters] = useState<TokenFilters>(defaultFilters);
+  const [filters, setFilters] = useState<TokenFilters>(loadStoredTokenFilters);
   const [selectedMint, setSelectedMint] = useState<string | null>(null);
   const [detail, setDetail] = useState<TokenDetailRecord | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -108,10 +112,6 @@ export function TokensPage() {
 
   const filterCount = activeFilterCount(filters);
 
-  const updateFilter = (field: keyof TokenFilters, value: string) => {
-    setFilters((f) => ({ ...f, [field]: value }));
-  };
-
   return (
     <div>
       <div className="mb-3.5 flex flex-wrap items-center gap-3">
@@ -131,23 +131,28 @@ export function TokensPage() {
       </div>
 
       <div className="mb-1.5 flex gap-1.5">
-        <button
-          type="button"
+        <Button
+          variant="subtle"
+          size="sm"
+          active={showFilters || filterCount > 0}
           onClick={() => setShowFilters((v) => !v)}
-          className={cn(
-            'rounded-[5px] border border-white/8 bg-white/4 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider text-text-dim transition hover:text-text',
-            (showFilters || filterCount > 0) && 'border-primary/35 bg-primary/12 text-primary',
-          )}
         >
           {filterCount > 0 ? `Global Filters (${filterCount})` : 'Global Filters'}
-        </button>
+        </Button>
       </div>
 
       {showFilters && (
         <FilterPanel
           filters={filters}
-          onChange={updateFilter}
-          onClear={() => setFilters(defaultFilters())}
+          onApply={(next) => {
+            setFilters(next);
+            saveStoredTokenFilters(next);
+          }}
+          onClear={() => {
+            const empty = defaultFilters();
+            setFilters(empty);
+            saveStoredTokenFilters(empty);
+          }}
         />
       )}
 

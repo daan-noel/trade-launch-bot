@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { cn } from '../../lib/cn';
+import { Input } from '../ui/Input';
 
 export const DEFAULT_PAGE_SIZE = 10;
 
@@ -146,8 +147,9 @@ export function Pagination({
 
           <label className="inline-flex h-8 shrink-0 items-center gap-1 border-r border-border px-2 text-xs text-text-dim">
             <span className="sr-only">Go to page</span>
-            <input
+            <Input
               type="number"
+              fieldSize="page"
               min={1}
               max={totalPages}
               value={pageInput}
@@ -157,7 +159,6 @@ export function Pagination({
               }}
               onBlur={commitPageInput}
               aria-label={`Page number, 1 to ${totalPages}`}
-              className="h-6 w-11 rounded border border-border bg-bg-card px-1 text-center text-[13px] font-medium tabular-nums text-text transition-colors [appearance:textfield] hover:border-white/20 focus:border-primary/40 focus:outline-none focus:ring-1 focus:ring-primary/25 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
             />
             <span className="tabular-nums">/ {totalPages}</span>
           </label>

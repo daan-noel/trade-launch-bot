@@ -14,6 +14,8 @@ import {
   type SwingFilterCriteria,
 } from '../../components/analysis/swingFilter';
 import { Button } from '../../components/ui/Button';
+import { Input } from '../../components/ui/Input';
+import { Select } from '../../components/ui/Select';
 import { Tabs, TabsList, TabsPanel, TabsTrigger } from '../../components/ui/Tabs';
 import { VisibilityToggleButton } from '../../components/ui/VisibilityToggleButton';
 import { fetchTokenSwings, fetchTokenTrades, fetchTokens } from '../../services/api';
@@ -163,9 +165,6 @@ function saveStoredSwingCriteria(
     /* ignore */
   }
 }
-
-const inputClassName =
-  'rounded-md border border-white/10 bg-bg-card px-2 py-1.5 text-[13px] font-normal normal-case tracking-normal text-text w-full min-w-0';
 
 const labelClassName =
   'flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim';
@@ -391,27 +390,30 @@ export function SwingDetectionPage() {
       <div className="mb-3 flex flex-wrap items-end gap-3">
         <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
           Created from
-          <input
+          <Input
             type="datetime-local"
+            fieldSize="md"
+            variant="card"
             value={createdFrom}
             onChange={(e) => setCreatedFrom(e.target.value)}
-            className="rounded-md border border-white/10 bg-bg-card px-2 py-1.5 text-[13px] font-normal normal-case tracking-normal text-text"
+            className="min-w-0 font-normal normal-case tracking-normal"
           />
         </label>
         <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
           Created to
-          <input
+          <Input
             type="datetime-local"
+            fieldSize="md"
+            variant="card"
             value={createdTo}
             onChange={(e) => setCreatedTo(e.target.value)}
-            className="rounded-md border border-white/10 bg-bg-card px-2 py-1.5 text-[13px] font-normal normal-case tracking-normal text-text"
+            className="min-w-0 font-normal normal-case tracking-normal"
           />
         </label>
         <Button
           variant="primary"
           onClick={handleRefresh}
           disabled={loading}
-          className="mb-0.5"
         >
           {loading ? 'Refreshing…' : 'Fetch'}
         </Button>
@@ -422,9 +424,8 @@ export function SwingDetectionPage() {
               setCreatedFrom('');
               setCreatedTo('');
             }}
-            className="mb-1 text-[11px] text-text-dim hover:text-text"
           >
-            Clear dates
+            Clear Datetime Range
           </Button>
         )}
       </div>
@@ -491,210 +492,234 @@ export function SwingDetectionPage() {
               </TabsList>
 
               <TabsPanel value="analysis" className="px-4">
-            <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <label className={labelClassName}>
-                High → low (SOL)
-                <input
-                  type="number"
-                  min={0}
-                  step="any"
-                  value={swingParams.high_to_low_threshold_sol}
-                  onChange={(e) =>
-                    updateSwingParam('high_to_low_threshold_sol', e.target.value)
-                  }
-                  className={inputClassName}
-                />
-              </label>
-              <label className={labelClassName}>
-                High → low (%)
-                <input
-                  type="number"
-                  min={0}
-                  max={100}
-                  step="any"
-                  value={swingParams.high_to_low_threshold_pct}
-                  onChange={(e) =>
-                    updateSwingParam('high_to_low_threshold_pct', e.target.value)
-                  }
-                  className={inputClassName}
-                />
-              </label>
-              <label className={labelClassName}>
-                Low → high (SOL)
-                <input
-                  type="number"
-                  min={0}
-                  step="any"
-                  value={swingParams.low_to_high_threshold_sol}
-                  onChange={(e) =>
-                    updateSwingParam('low_to_high_threshold_sol', e.target.value)
-                  }
-                  className={inputClassName}
-                />
-              </label>
-              <label className={labelClassName}>
-                Low → high (%)
-                <input
-                  type="number"
-                  min={0}
-                  max={100}
-                  step="any"
-                  value={swingParams.low_to_high_threshold_pct}
-                  onChange={(e) =>
-                    updateSwingParam('low_to_high_threshold_pct', e.target.value)
-                  }
-                  className={inputClassName}
-                />
-              </label>
-              <label className={labelClassName}>
-                Min leg trades
-                <input
-                  type="number"
-                  min={0}
-                  step={1}
-                  value={swingParams.min_leg_trades}
-                  onChange={(e) => updateSwingParam('min_leg_trades', e.target.value)}
-                  className={inputClassName}
-                />
-              </label>
-              <label className={labelClassName}>
-                Min leg duration (ms)
-                <input
-                  type="number"
-                  min={0}
-                  step={1}
-                  value={swingParams.min_leg_duration_ms}
-                  onChange={(e) => updateSwingParam('min_leg_duration_ms', e.target.value)}
-                  className={inputClassName}
-                />
-              </label>
-              <label className={labelClassName}>
-                Min leg volume (SOL)
-                <input
-                  type="number"
-                  min={0}
-                  step="any"
-                  value={swingParams.min_leg_volume}
-                  onChange={(e) => updateSwingParam('min_leg_volume', e.target.value)}
-                  className={inputClassName}
-                />
-              </label>
-              <label className={labelClassName}>
-                Min leg net flow (SOL)
-                <input
-                  type="number"
-                  min={0}
-                  step="any"
-                  value={swingParams.min_leg_net_flow}
-                  onChange={(e) => updateSwingParam('min_leg_net_flow', e.target.value)}
-                  className={inputClassName}
-                />
-              </label>
-              <label className={labelClassName}>
-                Max leg trades
-                <input
-                  type="number"
-                  min={0}
-                  step={1}
-                  value={swingParams.max_leg_trades}
-                  onChange={(e) => updateSwingParam('max_leg_trades', e.target.value)}
-                  className={inputClassName}
-                />
-              </label>
-              <label className={labelClassName}>
-                Max leg duration (ms)
-                <input
-                  type="number"
-                  min={0}
-                  step={1}
-                  value={swingParams.max_leg_duration_ms}
-                  onChange={(e) => updateSwingParam('max_leg_duration_ms', e.target.value)}
-                  className={inputClassName}
-                />
-              </label>
-              <label className={labelClassName}>
-                Max leg volume (SOL)
-                <input
-                  type="number"
-                  min={0}
-                  step="any"
-                  value={swingParams.max_leg_volume}
-                  onChange={(e) => updateSwingParam('max_leg_volume', e.target.value)}
-                  className={inputClassName}
-                />
-              </label>
-              <label className={labelClassName}>
-                Max leg net flow (SOL)
-                <input
-                  type="number"
-                  min={0}
-                  step="any"
-                  value={swingParams.max_leg_net_flow}
-                  onChange={(e) => updateSwingParam('max_leg_net_flow', e.target.value)}
-                  className={inputClassName}
-                />
-              </label>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-3">
-              <Button
-                variant="primary"
-                disabled={!selectedMint || swingLoading}
-                onClick={handleRunSwing}
-              >
-                {swingLoading ? 'Running…' : 'Run'}
-              </Button>
-              <Button
-                variant="ghost"
-                className="text-[11px] text-text-dim"
-                onClick={() => setSwingParams(DEFAULT_SWING_PARAMS)}
-              >
-                Reset defaults
-              </Button>
-            </div>
-
-            {swingError && (
-              <p className="mt-4 text-sm text-red">{swingError}</p>
-            )}
-
-            <div className="mt-4">
-              {swingLoading && (
-                <p className="text-[12px] text-text-dim">Running swing detection…</p>
-              )}
-              {!swingLoading && !swingError && !swingResult && (
-                <p className="rounded-md border border-dashed border-white/10 px-3 py-6 text-center text-[12px] text-text-dim">
-                  Click Run to detect swings for the selected token.
-                </p>
-              )}
-              {swingResult && !swingLoading && (
-                <>
-                  <div className="mb-2 flex flex-wrap items-center gap-2">
-                    <span className="text-[12px] font-bold text-text">Results</span>
-                    <span className="rounded-md border border-primary/35 bg-primary/12 px-2 py-0.5 font-mono text-[11px] text-primary">
-                      {swingResult.count} swing{swingResult.count === 1 ? '' : 's'}
-                    </span>
-                    <span className="flex-1" />
-                    <VisibilityToggleButton
-                      visible={showSwingResultsTable}
-                      onToggle={() => setShowSwingResultsTable((v) => !v)}
-                      label="swing results table"
+                <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <label className={labelClassName}>
+                    High → low (SOL)
+                    <Input
+                      fieldSize="md"
+                      variant="card"
+                      className="min-w-0 font-normal normal-case tracking-normal"
+                      type="number"
+                      min={0}
+                      step="any"
+                      value={swingParams.high_to_low_threshold_sol}
+                      onChange={(e) =>
+                        updateSwingParam('high_to_low_threshold_sol', e.target.value)
+                      }
                     />
-                  </div>
-                  {showSwingResultsTable && (
-                    <DataTable
-                      columns={swingTableColumns}
-                      rows={swingResult.swings}
-                      rowKey={(leg) => `${leg.type}-${leg.start_at}-${leg.end_at}`}
-                      defaultPageSize={5}
-                      searchable
-                      colFilters
-                      hoverable
-                      emptyMessage="No swings detected with these parameters."
+                  </label>
+                  <label className={labelClassName}>
+                    High → low (%)
+                    <Input
+                      fieldSize="md"
+                      variant="card"
+                      className="min-w-0 font-normal normal-case tracking-normal"
+                      type="number"
+                      min={0}
+                      max={100}
+                      step="any"
+                      value={swingParams.high_to_low_threshold_pct}
+                      onChange={(e) =>
+                        updateSwingParam('high_to_low_threshold_pct', e.target.value)
+                      }
                     />
+                  </label>
+                  <label className={labelClassName}>
+                    Low → high (SOL)
+                    <Input
+                      fieldSize="md"
+                      variant="card"
+                      className="min-w-0 font-normal normal-case tracking-normal"
+                      type="number"
+                      min={0}
+                      step="any"
+                      value={swingParams.low_to_high_threshold_sol}
+                      onChange={(e) =>
+                        updateSwingParam('low_to_high_threshold_sol', e.target.value)
+                      }
+                    />
+                  </label>
+                  <label className={labelClassName}>
+                    Low → high (%)
+                    <Input
+                      fieldSize="md"
+                      variant="card"
+                      className="min-w-0 font-normal normal-case tracking-normal"
+                      type="number"
+                      min={0}
+                      max={100}
+                      step="any"
+                      value={swingParams.low_to_high_threshold_pct}
+                      onChange={(e) =>
+                        updateSwingParam('low_to_high_threshold_pct', e.target.value)
+                      }
+                    />
+                  </label>
+                  <label className={labelClassName}>
+                    Min leg trades
+                    <Input
+                      fieldSize="md"
+                      variant="card"
+                      className="min-w-0 font-normal normal-case tracking-normal"
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={swingParams.min_leg_trades}
+                      onChange={(e) => updateSwingParam('min_leg_trades', e.target.value)}
+                    />
+                  </label>
+                  <label className={labelClassName}>
+                    Min leg duration (ms)
+                    <Input
+                      fieldSize="md"
+                      variant="card"
+                      className="min-w-0 font-normal normal-case tracking-normal"
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={swingParams.min_leg_duration_ms}
+                      onChange={(e) => updateSwingParam('min_leg_duration_ms', e.target.value)}
+                    />
+                  </label>
+                  <label className={labelClassName}>
+                    Min leg volume (SOL)
+                    <Input
+                      fieldSize="md"
+                      variant="card"
+                      className="min-w-0 font-normal normal-case tracking-normal"
+                      type="number"
+                      min={0}
+                      step="any"
+                      value={swingParams.min_leg_volume}
+                      onChange={(e) => updateSwingParam('min_leg_volume', e.target.value)}
+                    />
+                  </label>
+                  <label className={labelClassName}>
+                    Min leg net flow (SOL)
+                    <Input
+                      fieldSize="md"
+                      variant="card"
+                      className="min-w-0 font-normal normal-case tracking-normal"
+                      type="number"
+                      min={0}
+                      step="any"
+                      value={swingParams.min_leg_net_flow}
+                      onChange={(e) => updateSwingParam('min_leg_net_flow', e.target.value)}
+                    />
+                  </label>
+                  <label className={labelClassName}>
+                    Max leg trades
+                    <Input
+                      fieldSize="md"
+                      variant="card"
+                      className="min-w-0 font-normal normal-case tracking-normal"
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={swingParams.max_leg_trades}
+                      onChange={(e) => updateSwingParam('max_leg_trades', e.target.value)}
+                    />
+                  </label>
+                  <label className={labelClassName}>
+                    Max leg duration (ms)
+                    <Input
+                      fieldSize="md"
+                      variant="card"
+                      className="min-w-0 font-normal normal-case tracking-normal"
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={swingParams.max_leg_duration_ms}
+                      onChange={(e) => updateSwingParam('max_leg_duration_ms', e.target.value)}
+                    />
+                  </label>
+                  <label className={labelClassName}>
+                    Max leg volume (SOL)
+                    <Input
+                      fieldSize="md"
+                      variant="card"
+                      className="min-w-0 font-normal normal-case tracking-normal"
+                      type="number"
+                      min={0}
+                      step="any"
+                      value={swingParams.max_leg_volume}
+                      onChange={(e) => updateSwingParam('max_leg_volume', e.target.value)}
+                    />
+                  </label>
+                  <label className={labelClassName}>
+                    Max leg net flow (SOL)
+                    <Input
+                      fieldSize="md"
+                      variant="card"
+                      className="min-w-0 font-normal normal-case tracking-normal"
+                      type="number"
+                      min={0}
+                      step="any"
+                      value={swingParams.max_leg_net_flow}
+                      onChange={(e) => updateSwingParam('max_leg_net_flow', e.target.value)}
+                    />
+                  </label>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <Button
+                    variant="primary"
+                    disabled={!selectedMint || swingLoading}
+                    onClick={handleRunSwing}
+                  >
+                    {swingLoading ? 'Running…' : 'Run'}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    className="text-[11px] text-text-dim"
+                    onClick={() => setSwingParams(DEFAULT_SWING_PARAMS)}
+                  >
+                    Reset defaults
+                  </Button>
+                </div>
+
+                {swingError && (
+                  <p className="mt-4 text-sm text-red">{swingError}</p>
+                )}
+
+                <div className="mt-4">
+                  {swingLoading && (
+                    <p className="text-[12px] text-text-dim">Running swing detection…</p>
                   )}
-                </>
-              )}
-            </div>
+                  {!swingLoading && !swingError && !swingResult && (
+                    <p className="rounded-md border border-dashed border-white/10 px-3 py-6 text-center text-[12px] text-text-dim">
+                      Click Run to detect swings for the selected token.
+                    </p>
+                  )}
+                  {swingResult && !swingLoading && (
+                    <>
+                      <div className="mb-2 flex flex-wrap items-center gap-2">
+                        <span className="text-[12px] font-bold text-text">Results</span>
+                        <span className="rounded-md border border-primary/35 bg-primary/12 px-2 py-0.5 font-mono text-[11px] text-primary">
+                          {swingResult.count} swing{swingResult.count === 1 ? '' : 's'}
+                        </span>
+                        <span className="flex-1" />
+                        <VisibilityToggleButton
+                          visible={showSwingResultsTable}
+                          onToggle={() => setShowSwingResultsTable((v) => !v)}
+                          label="swing results table"
+                        />
+                      </div>
+                      {showSwingResultsTable && (
+                        <DataTable
+                          columns={swingTableColumns}
+                          rows={swingResult.swings}
+                          rowKey={(leg) => `${leg.type}-${leg.start_at}-${leg.end_at}`}
+                          defaultPageSize={5}
+                          searchable
+                          colFilters
+                          hoverable
+                          emptyMessage="No swings detected with these parameters."
+                        />
+                      )}
+                    </>
+                  )}
+                </div>
               </TabsPanel>
 
               <TabsPanel value="filter" className="px-4">
@@ -712,19 +737,24 @@ export function SwingDetectionPage() {
                     <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                       <label className={labelClassName}>
                         Filter leg type
-                        <select
+                        <Select
+                          fieldSize="md"
+                          variant="card"
+                          className="min-w-0 font-normal normal-case tracking-normal"
                           value={swingFilter.leg_type}
                           onChange={(e) => updateSwingFilter('leg_type', e.target.value)}
-                          className={inputClassName}
                         >
                           <option value="all">All</option>
                           <option value="swing_high">Swing high</option>
                           <option value="swing_low">Swing low</option>
-                        </select>
+                        </Select>
                       </label>
                       <label className={labelClassName}>
                         Filter min duration (ms)
-                        <input
+                        <Input
+                          fieldSize="md"
+                          variant="card"
+                          className="min-w-0 font-normal normal-case tracking-normal"
                           type="number"
                           min={0}
                           step={1}
@@ -732,12 +762,14 @@ export function SwingDetectionPage() {
                           onChange={(e) =>
                             updateSwingFilter('filter_min_duration_ms', e.target.value)
                           }
-                          className={inputClassName}
                         />
                       </label>
                       <label className={labelClassName}>
                         Filter max duration (ms)
-                        <input
+                        <Input
+                          fieldSize="md"
+                          variant="card"
+                          className="min-w-0 font-normal normal-case tracking-normal"
                           type="number"
                           min={0}
                           step={1}
@@ -745,12 +777,14 @@ export function SwingDetectionPage() {
                           onChange={(e) =>
                             updateSwingFilter('filter_max_duration_ms', e.target.value)
                           }
-                          className={inputClassName}
                         />
                       </label>
                       <label className={labelClassName}>
                         Filter min trades
-                        <input
+                        <Input
+                          fieldSize="md"
+                          variant="card"
+                          className="min-w-0 font-normal normal-case tracking-normal"
                           type="number"
                           min={0}
                           step={1}
@@ -758,12 +792,14 @@ export function SwingDetectionPage() {
                           onChange={(e) =>
                             updateSwingFilter('filter_min_trades', e.target.value)
                           }
-                          className={inputClassName}
                         />
                       </label>
                       <label className={labelClassName}>
                         Filter max trades
-                        <input
+                        <Input
+                          fieldSize="md"
+                          variant="card"
+                          className="min-w-0 font-normal normal-case tracking-normal"
                           type="number"
                           min={0}
                           step={1}
@@ -771,12 +807,14 @@ export function SwingDetectionPage() {
                           onChange={(e) =>
                             updateSwingFilter('filter_max_trades', e.target.value)
                           }
-                          className={inputClassName}
                         />
                       </label>
                       <label className={labelClassName}>
                         Filter min volume (SOL)
-                        <input
+                        <Input
+                          fieldSize="md"
+                          variant="card"
+                          className="min-w-0 font-normal normal-case tracking-normal"
                           type="number"
                           min={0}
                           step="any"
@@ -784,12 +822,14 @@ export function SwingDetectionPage() {
                           onChange={(e) =>
                             updateSwingFilter('filter_min_volume_sol', e.target.value)
                           }
-                          className={inputClassName}
                         />
                       </label>
                       <label className={labelClassName}>
                         Filter max volume (SOL)
-                        <input
+                        <Input
+                          fieldSize="md"
+                          variant="card"
+                          className="min-w-0 font-normal normal-case tracking-normal"
                           type="number"
                           min={0}
                           step="any"
@@ -797,55 +837,62 @@ export function SwingDetectionPage() {
                           onChange={(e) =>
                             updateSwingFilter('filter_max_volume_sol', e.target.value)
                           }
-                          className={inputClassName}
                         />
                       </label>
                       <label className={labelClassName}>
                         Filter min net flow (SOL)
-                        <input
+                        <Input
+                          fieldSize="md"
+                          variant="card"
+                          className="min-w-0 font-normal normal-case tracking-normal"
                           type="number"
                           step="any"
                           value={swingFilter.filter_min_net_flow_sol}
                           onChange={(e) =>
                             updateSwingFilter('filter_min_net_flow_sol', e.target.value)
                           }
-                          className={inputClassName}
                         />
                       </label>
                       <label className={labelClassName}>
                         Filter max net flow (SOL)
-                        <input
+                        <Input
+                          fieldSize="md"
+                          variant="card"
+                          className="min-w-0 font-normal normal-case tracking-normal"
                           type="number"
                           step="any"
                           value={swingFilter.filter_max_net_flow_sol}
                           onChange={(e) =>
                             updateSwingFilter('filter_max_net_flow_sol', e.target.value)
                           }
-                          className={inputClassName}
                         />
                       </label>
                       <label className={labelClassName}>
                         Filter min change (%)
-                        <input
+                        <Input
+                          fieldSize="md"
+                          variant="card"
+                          className="min-w-0 font-normal normal-case tracking-normal"
                           type="number"
                           step="any"
                           value={swingFilter.filter_min_change_pct}
                           onChange={(e) =>
                             updateSwingFilter('filter_min_change_pct', e.target.value)
                           }
-                          className={inputClassName}
                         />
                       </label>
                       <label className={labelClassName}>
                         Filter max change (%)
-                        <input
+                        <Input
+                          fieldSize="md"
+                          variant="card"
+                          className="min-w-0 font-normal normal-case tracking-normal"
                           type="number"
                           step="any"
                           value={swingFilter.filter_max_change_pct}
                           onChange={(e) =>
                             updateSwingFilter('filter_max_change_pct', e.target.value)
                           }
-                          className={inputClassName}
                         />
                       </label>
                     </div>
@@ -938,30 +985,30 @@ export function SwingDetectionPage() {
         <>
           <SectionDivider />
           <div>
-          <div className="mb-2 flex flex-wrap items-center gap-2">
-            <h3 className="text-sm font-bold text-text">Bar trades</h3>
-            <span className="font-mono text-[11px] text-text-dim">{barTimeLabel}</span>
-            <span className="rounded-md border border-primary/35 bg-primary/12 px-2 py-0.5 font-mono text-[11px] text-primary">
-              {barTrades.length} trade{barTrades.length === 1 ? '' : 's'}
-            </span>
-            <button
-              type="button"
-              onClick={() => setSelectedBar(null)}
-              className="text-[11px] text-text-dim hover:text-text"
-            >
-              Clear
-            </button>
-          </div>
-          <DataTable
-            columns={tradeTableColumns}
-            rows={barTrades}
-            rowKey={(t) => t.id}
-            defaultPageSize={25}
-            searchable
-            colFilters
-            hoverable
-            emptyMessage="No trades in this bar."
-          />
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <h3 className="text-sm font-bold text-text">Bar trades</h3>
+              <span className="font-mono text-[11px] text-text-dim">{barTimeLabel}</span>
+              <span className="rounded-md border border-primary/35 bg-primary/12 px-2 py-0.5 font-mono text-[11px] text-primary">
+                {barTrades.length} trade{barTrades.length === 1 ? '' : 's'}
+              </span>
+              <button
+                type="button"
+                onClick={() => setSelectedBar(null)}
+                className="text-[11px] text-text-dim hover:text-text"
+              >
+                Clear
+              </button>
+            </div>
+            <DataTable
+              columns={tradeTableColumns}
+              rows={barTrades}
+              rowKey={(t) => t.id}
+              defaultPageSize={25}
+              searchable
+              colFilters
+              hoverable
+              emptyMessage="No trades in this bar."
+            />
           </div>
         </>
       )}

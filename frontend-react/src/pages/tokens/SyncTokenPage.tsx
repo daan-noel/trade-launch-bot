@@ -4,6 +4,8 @@ import { tokenTradeColumns } from '../../components/transactions/tokenTradeColum
 import { TokenPriceChart, type ChartMetric } from '../../components/token-price-chart';
 import { TokenDetailPanel } from '../../components/tokens/TokenDetailPanel';
 import { Button } from '../../components/ui/Button';
+import { Checkbox } from '../../components/ui/Checkbox';
+import { Input } from '../../components/ui/Input';
 import { usePriceUnit } from '../../context/PriceUnitContext';
 import { usePriceDisplay } from '../../hooks/usePriceDisplay';
 import { syncToken } from '../../services/api';
@@ -127,23 +129,23 @@ export function SyncTokenPage() {
           <span className="text-[10px] font-bold uppercase tracking-widest text-text-dim">
             Mint address
           </span>
-          <input
+          <Input
             type="text"
+            fieldSize="md"
+            variant="card"
             value={mint}
             onChange={(e) => setMint(e.target.value)}
             placeholder="Token mint (base58)"
             disabled={syncing}
-            className="rounded-md border border-white/10 bg-bg-card px-3 py-2 font-mono text-[13px] text-text placeholder:text-text-dim/60 disabled:opacity-60"
+            className="font-mono placeholder:text-text-dim/60"
           />
         </label>
 
         <label className="flex cursor-pointer items-center gap-2 pb-2 text-[13px] text-text-mid">
-          <input
-            type="checkbox"
+          <Checkbox
             checked={includePostMigrate}
             onChange={(e) => setIncludePostMigrate(e.target.checked)}
             disabled={syncing}
-            className="size-4 rounded border-white/20 accent-primary"
           />
           Include post-migrate trades
         </label>
