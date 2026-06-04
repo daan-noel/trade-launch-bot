@@ -1,6 +1,6 @@
 import { formatIsoLines } from '../../utils/date';
 
-/** Renders an ISO timestamp as date + time (with seconds) on two lines. */
+/** Renders an ISO timestamp as date + time (with seconds and ms) on two lines. */
 export function DateCell({ iso }: { iso: string | null | undefined }) {
   if (!iso) return <span className="text-[10px]">-</span>;
   const { date, time } = formatIsoLines(iso);

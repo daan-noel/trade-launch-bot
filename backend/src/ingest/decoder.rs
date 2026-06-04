@@ -171,19 +171,19 @@ impl HeliusDecoder {
             trade.virtual_token_reserves = Some(ev.virtual_token_reserves);
             trade.real_sol_reserves = Some(ev.real_sol_reserves);
             trade.real_token_reserves = Some(ev.real_token_reserves);
-            trade.apply_curve_price();
             trade.instruction_type = match trade.trade_type {
                 TradeType::Buy => "Buy".to_string(),
                 TradeType::Sell => "Sell".to_string(),
             };
             trade.instruction_labels = labels_json.clone();
             trade.leg_index = leg_index as u32;
+            trade.received_at = raw_tx.received_at;
 
             events.push(InternalEvent::TradeExecuted(TradeExecutedEvent {
                 trade,
                 tx_signature: signature.clone(),
                 slot,
-                timestamp: block_time,
+                timestamp: raw_tx.received_at,
                 raw_tx: raw_tx.clone(),
             }));
         }
@@ -511,12 +511,13 @@ impl HeliusDecoder {
             TradeType::Sell => "Sell".to_string(),
         };
         trade.instruction_labels = labels_json.clone();
+        trade.received_at = raw_tx.received_at;
 
         Some(vec![InternalEvent::TradeExecuted(TradeExecutedEvent {
             trade,
             tx_signature: signature.to_string(),
             slot,
-            timestamp: block_time,
+            timestamp: raw_tx.received_at,
             raw_tx: raw_tx.clone(),
         })])
     }

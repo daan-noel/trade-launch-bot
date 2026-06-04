@@ -103,10 +103,10 @@ export function tokenTradeColumns(
     {
       key: 'time',
       label: 'Time (UTC)',
-      width: '96px',
-      render: (t) => <DateCell iso={t.block_time} />,
-      sortValue: (t) => t.block_time,
-      searchValue: (t) => t.block_time,
+      width: '108px',
+      render: (t) => <DateCell iso={t.received_at ?? t.block_time} />,
+      sortValue: (t) => t.received_at ?? t.block_time,
+      searchValue: (t) => t.received_at ?? t.block_time,
     },
   ];
 }

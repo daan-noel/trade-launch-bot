@@ -198,6 +198,7 @@ export interface TradeRecord {
   leg_index: number;
   slot: number;
   block_time: string;
+  received_at?: string;
   virtual_sol_reserves?: number | null;
   virtual_token_reserves?: number | null;
 }

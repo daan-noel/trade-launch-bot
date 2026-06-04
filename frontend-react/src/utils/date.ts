@@ -3,15 +3,17 @@ export function formatIso(iso: string): string {
   return time ? `${date} ${time}` : date;
 }
 
-/** UTC date + time (with seconds) for stacked table cells. */
+/** UTC date + time (with seconds and milliseconds) for stacked table cells. */
 export function formatIsoLines(iso: string): { date: string; time: string } {
+  console.log(iso)
   const ms = Date.parse(iso);
   if (Number.isNaN(ms)) return { date: iso, time: '' };
   const d = new Date(ms);
   const pad = (n: number) => String(n).padStart(2, '0');
+  const padMs = (n: number) => String(n).padStart(3, '0');
   return {
     date: `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`,
-    time: `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`,
+    time: `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}.${padMs(d.getUTCMilliseconds())}`,
   };
 }
 

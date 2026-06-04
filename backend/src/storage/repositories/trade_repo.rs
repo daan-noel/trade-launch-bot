@@ -32,6 +32,7 @@ struct TradeDbRow {
     leg_index: i32,
     slot: i64,
     block_time: DateTime<Utc>,
+    received_at: DateTime<Utc>,
     virtual_sol_reserves: Option<f64>,
     virtual_token_reserves: Option<f64>,
     real_sol_reserves: Option<f64>,
@@ -62,6 +63,7 @@ impl TryFrom<TradeDbRow> for Trade {
             leg_index: r.leg_index as u32,
             slot: r.slot as u64,
             block_time: r.block_time,
+            received_at: r.received_at,
             virtual_sol_reserves: r.virtual_sol_reserves,
             virtual_token_reserves: r.virtual_token_reserves,
             real_sol_reserves: r.real_sol_reserves,
@@ -95,11 +97,11 @@ impl TradeRepo {
             INSERT INTO trades
                 (id, mint_address, wallet_address, trade_type,
                  sol_amount, token_amount, price_per_token,
-                 tx_signature, leg_index, slot, block_time,
+                 tx_signature, leg_index, slot, block_time, received_at,
                  virtual_sol_reserves, virtual_token_reserves,
                  real_sol_reserves, real_token_reserves,
                  ix_type, ix_labels)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
             ON CONFLICT (tx_signature, leg_index) DO NOTHING
             "#,
         )
@@ -114,6 +116,7 @@ impl TradeRepo {
         .bind(trade.leg_index as i32)
         .bind(trade.slot as i64)
         .bind(trade.block_time)
+        .bind(trade.received_at)
         .bind(trade.virtual_sol_reserves)
         .bind(trade.virtual_token_reserves)
         .bind(trade.real_sol_reserves)
@@ -132,7 +135,7 @@ impl TradeRepo {
             r#"
             SELECT id, mint_address, wallet_address, trade_type,
                    sol_amount, token_amount, price_per_token,
-                   tx_signature, leg_index, slot, block_time,
+                   tx_signature, leg_index, slot, block_time, received_at,
                    virtual_sol_reserves, virtual_token_reserves,
                    real_sol_reserves, real_token_reserves,
                    ix_type, ix_labels
@@ -156,7 +159,7 @@ impl TradeRepo {
             r#"
             SELECT id, mint_address, wallet_address, trade_type,
                    sol_amount, token_amount, price_per_token,
-                   tx_signature, leg_index, slot, block_time,
+                   tx_signature, leg_index, slot, block_time, received_at,
                    virtual_sol_reserves, virtual_token_reserves,
                    real_sol_reserves, real_token_reserves,
                    ix_type, ix_labels
@@ -283,7 +286,7 @@ impl TradeRepo {
             r#"
             SELECT id, mint_address, wallet_address, trade_type,
                    sol_amount, token_amount, price_per_token,
-                   tx_signature, leg_index, slot, block_time,
+                   tx_signature, leg_index, slot, block_time, received_at,
                    virtual_sol_reserves, virtual_token_reserves,
                    real_sol_reserves, real_token_reserves,
                    ix_type, ix_labels

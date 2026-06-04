@@ -123,10 +123,13 @@ struct Tx {
     position: u32,
     side: Side,
     sol_amount: f64,
-    /// Post-trade spot (`price_per_token`).
+    /// Post-trade curve spot (`virtual_sol / virtual_token`), used for `end_price`.
     price: f64,
-    /// Pre-trade spot (for leg `start_price`).
-    price_before: f64,
+    /// Execution price `sol_amount / token_amount`.
+    execution_price: f64,
+    /// Curve spot immediately BEFORE this trade (the previous trade's post-trade
+    /// spot, since the curve is unchanged between trades). Used for `start_price`.
+    pre_spot: f64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -157,7 +160,7 @@ impl LegAcc {
             leg_type: SwingType::SwingHigh,
             start_at: tx.timestamp_ms,
             end_at: tx.timestamp_ms,
-            start_price: tx.price_before,
+            start_price: tx.pre_spot,
             end_price: tx.price,
             inflow: tx.sol_amount,
             outflow: 0.0,
@@ -171,7 +174,7 @@ impl LegAcc {
             leg_type: SwingType::SwingLow,
             start_at: tx.timestamp_ms,
             end_at: tx.timestamp_ms,
-            start_price: tx.price_before,
+            start_price: tx.pre_spot,
             end_price: tx.price,
             inflow: 0.0,
             outflow: tx.sol_amount,
@@ -239,24 +242,34 @@ fn sanitize_and_order(trades: &[Trade]) -> Vec<Tx> {
             .then(a.leg_index.cmp(&b.leg_index))
     });
 
-    let mut txs: Vec<Tx> = Vec::with_capacity(ordered.len());
-    for (i, t) in ordered.iter().enumerate() {
-        let prev_post = i.checked_sub(1).map(|j| txs[j].price);
-        txs.push(Tx {
-            timestamp_ms: t.block_time.timestamp_millis(),
-            slot: t.slot,
-            position: t.leg_index,
-            side: match t.trade_type {
-                TradeType::Buy => Side::Buy,
-                TradeType::Sell => Side::Sell,
-            },
-            sol_amount: t.sol_amount,
-            price: t.price_per_token,
-            price_before: t.price_before_execution(prev_post),
-        });
-    }
-
-    txs
+    let mut prev_post_spot: Option<f64> = None;
+    ordered
+        .into_iter()
+        .map(|t| {
+            let execution_price = t.execution_price();
+            // Post-trade curve spot (virtual_sol / virtual_token); falls back to
+            // the execution price when reserves are absent.
+            let post_spot = t.curve_spot_price().unwrap_or(execution_price);
+            // Spot just before this trade = the previous trade's post-trade spot.
+            // The very first trade has no prior state, so fall back to its own
+            // post-trade spot.
+            let pre_spot = prev_post_spot.unwrap_or(post_spot);
+            prev_post_spot = Some(post_spot);
+            Tx {
+                timestamp_ms: t.block_time.timestamp_millis(),
+                slot: t.slot,
+                position: t.leg_index,
+                side: match t.trade_type {
+                    TradeType::Buy => Side::Buy,
+                    TradeType::Sell => Side::Sell,
+                },
+                sol_amount: t.sol_amount,
+                price: post_spot,
+                execution_price,
+                pre_spot,
+            }
+        })
+        .collect()
 }
 
 /// Core phase machine. Produces the pre-filter, strictly-alternating ledger.
@@ -452,8 +465,8 @@ mod tests {
         ms: i64,
         sol: f64,
         tokens: f64,
-        vsol_post: f64,
-        vtok_post: f64,
+        _vsol_post: f64,
+        _vtok_post: f64,
         leg: u32,
     ) -> Trade {
         let mut t = Trade::new(
@@ -468,13 +481,10 @@ mod tests {
         );
         t.block_time = chrono::DateTime::from_timestamp_millis(ms).unwrap();
         t.leg_index = leg;
-        t.virtual_sol_reserves = Some(vsol_post);
-        t.virtual_token_reserves = Some(vtok_post);
-        t.apply_curve_price();
         t
     }
 
-    fn sell(ms: i64, sol: f64, tokens: f64, vsol_post: f64, vtok_post: f64) -> Trade {
+    fn sell(ms: i64, sol: f64, tokens: f64, _vsol_post: f64, _vtok_post: f64) -> Trade {
         let mut t = Trade::new(
             "mint".into(),
             "user".into(),
@@ -486,24 +496,22 @@ mod tests {
             Utc::now(),
         );
         t.block_time = chrono::DateTime::from_timestamp_millis(ms).unwrap();
-        t.virtual_sol_reserves = Some(vsol_post);
-        t.virtual_token_reserves = Some(vtok_post);
-        t.apply_curve_price();
         t
     }
 
     #[test]
-    fn swing_high_start_uses_pre_trade_price() {
+    fn swing_high_first_trade_start_falls_back_to_execution_price() {
+        // The very first trade has no prior curve state, so `start_price` falls
+        // back to its own execution price.
         let trades = vec![buy(1_000, 10.0, 1_000_000.0, 110.0, 900_000.0, 0)];
         let legs = detect_swings(&trades, &SwingParams::default());
         assert_eq!(legs.len(), 1);
-        let pre = trades[0].price_before_from_reserves().unwrap();
-        assert!((legs[0].start_price - pre).abs() < 1e-15);
-        assert!(legs[0].start_price < legs[0].end_price);
+        assert!((legs[0].start_price - trades[0].execution_price()).abs() < 1e-15);
+        assert!((legs[0].end_price - trades[0].price_per_token).abs() < 1e-15);
     }
 
     #[test]
-    fn confirmed_swing_high_after_reversal_uses_pre_first_buy() {
+    fn confirmed_swing_high_start_uses_pre_trade_spot() {
         let params = SwingParams {
             high_to_low_threshold_sol: 1.0,
             high_to_low_threshold_pct: 100.0,
@@ -512,9 +520,11 @@ mod tests {
             min_leg_trades: 1,
             ..Default::default()
         };
+        // Distinct execution prices so pre-trade spot (= prior trade's post spot)
+        // differs from the opening buy's own execution price.
         let trades = vec![
             buy(1_000, 5.0, 500_000.0, 105.0, 950_000.0, 0),
-            sell(2_000, 2.0, 200_000.0, 103.0, 1_150_000.0),
+            sell(2_000, 2.0, 100_000.0, 103.0, 1_150_000.0),
             buy(3_000, 3.0, 300_000.0, 106.0, 850_000.0, 0),
         ];
         let legs = detect_swings(&trades, &params);
@@ -524,8 +534,11 @@ mod tests {
             .find(|l| l.start_at == 3_000)
             .unwrap();
         let opener = &trades[2];
-        let pre = opener.price_before_from_reserves().unwrap();
-        assert!((high.start_price - pre).abs() < 1e-15);
+        let prev = &trades[1];
+        // start_at is the opening buy's timestamp; start_price is the spot just
+        // before it (the previous trade's post-trade spot), not its execution.
+        assert!((high.start_price - prev.price_per_token).abs() < 1e-15);
+        assert!((high.start_price - opener.execution_price()).abs() > 1e-15);
         assert!((high.end_price - opener.price_per_token).abs() < 1e-15);
     }
 }

@@ -106,7 +106,7 @@ export function tradeColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'time',
       label: 'Time (UTC)',
-      width: '96px',
+      width: '108px',
       render: (ev) => <DateCell iso={ev.timestamp} />,
       sortValue: (ev) => ev.timestamp,
       searchValue: (ev) => ev.timestamp,

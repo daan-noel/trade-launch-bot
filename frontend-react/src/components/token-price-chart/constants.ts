@@ -86,7 +86,7 @@ export const CHART_OHLC_COLORS = {
 } as const;
 
 const SWING_OVERLAY_SERIES_BASE: DeepPartial<LineSeriesOptions> = {
-  lineWidth: 2,
+  lineWidth: 3,
   crosshairMarkerVisible: true,
   priceLineVisible: false,
   lastValueVisible: false,
