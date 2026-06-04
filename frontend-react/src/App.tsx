@@ -10,6 +10,7 @@ import { SwingDetectionPage } from './pages/SwingDetectionPage';
 import { WalletPage } from './pages/WalletPage';
 import { TpslPage } from './pages/TpslPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { SyncTokenPage } from './pages/SyncTokenPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 
 export default function App() {
@@ -21,6 +22,7 @@ export default function App() {
             <Route index element={<HomePage />} />
             <Route path="dashboard" element={<DashboardPage />} />
             <Route path="tokens" element={<TokensPage />} />
+            <Route path="token/sync" element={<SyncTokenPage />} />
             <Route path="transactions" element={<TransactionsPage />} />
             <Route path="analysis" element={<Navigate to="/analysis/general" replace />} />
             <Route path="analysis/general" element={<AnalysisPage />} />

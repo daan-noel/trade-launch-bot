@@ -13,6 +13,8 @@ use super::token_cache::TokenCache;
 /// and injected into services.
 pub struct AppState {
     pub db: PgPool,
+    pub helius_rpc_url: String,
+    pub pump_program_id: String,
     pub token_cache: Arc<TokenCache>,
     /// Cold lane: SSE subscribers only (fed after cache update in ingest pipeline).
     pub sse_tx: broadcast::Sender<SseEvent>,
@@ -25,6 +27,8 @@ pub struct AppState {
 impl AppState {
     pub fn new(
         db: PgPool,
+        helius_rpc_url: String,
+        pump_program_id: String,
         token_cache: Arc<TokenCache>,
         sse_tx: broadcast::Sender<SseEvent>,
         live_mode: watch::Sender<bool>,
@@ -34,6 +38,8 @@ impl AppState {
     ) -> Self {
         Self {
             db,
+            helius_rpc_url,
+            pump_program_id,
             token_cache,
             sse_tx,
             live_mode,

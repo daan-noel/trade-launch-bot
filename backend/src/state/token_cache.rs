@@ -10,6 +10,7 @@ use crate::models::{token::Token, trade::Trade};
 
 /// In-memory state for a single tracked token.
 /// Lives inside `TokenCache` for the lifetime of the server process.
+#[derive(Clone)]
 pub struct TokenState {
     pub token: Token,
 

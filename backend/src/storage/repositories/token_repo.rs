@@ -1,7 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sqlx::{types::Json, PgPool};
-use tracing::info;
 use uuid::Uuid;
 
 use crate::models::token::Token;
@@ -78,6 +77,56 @@ impl TokenRepo {
                     creation_tx_signature, created_at)
               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             ON CONFLICT (mint_address) DO NOTHING
+            "#,
+        )
+        .bind(token.id)
+        .bind(&token.mint_address)
+        .bind(&token.creator_wallet)
+        .bind(&token.name)
+        .bind(&token.symbol)
+        .bind(token.token_program_id.as_ref())
+        .bind(&token.bonding_curve_address)
+        .bind(token.initial_supply_token.map(|v| v as i64))
+        .bind(token.initial_buy_sol)
+        .bind(token.initial_buy_instruction.as_ref().map(|v| Json(v)))
+        .bind(token.cu_limit.map(|v| v as i64))
+        .bind(token.cu_price.map(|v| v as i64))
+        .bind(token.is_mayhem_mode)
+        .bind(token.is_cashback_enabled)
+        .bind(Json(&token.instruction_labels))
+        .bind(&token.creation_tx_signature)
+        .bind(token.created_at)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Insert or refresh token metadata from a parsed create transaction.
+    pub async fn upsert(&self, token: &Token) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO tokens
+                (id, mint_address, creator_wallet, name, symbol, token_program_id,
+                    bonding_curve_address, initial_supply_token, initial_buy_sol, initial_buy_instruction, cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels,
+                    creation_tx_signature, created_at)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+            ON CONFLICT (mint_address) DO UPDATE SET
+                creator_wallet = EXCLUDED.creator_wallet,
+                name = EXCLUDED.name,
+                symbol = EXCLUDED.symbol,
+                token_program_id = EXCLUDED.token_program_id,
+                bonding_curve_address = EXCLUDED.bonding_curve_address,
+                initial_supply_token = EXCLUDED.initial_supply_token,
+                initial_buy_sol = EXCLUDED.initial_buy_sol,
+                initial_buy_instruction = EXCLUDED.initial_buy_instruction,
+                cu_limit = EXCLUDED.cu_limit,
+                cu_price = EXCLUDED.cu_price,
+                is_mayhem_mode = EXCLUDED.is_mayhem_mode,
+                is_cashback_enabled = EXCLUDED.is_cashback_enabled,
+                ix_labels = EXCLUDED.ix_labels,
+                creation_tx_signature = EXCLUDED.creation_tx_signature,
+                created_at = LEAST(tokens.created_at, EXCLUDED.created_at)
             "#,
         )
         .bind(token.id)

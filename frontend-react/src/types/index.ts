@@ -165,6 +165,27 @@ export interface LiveTrade {
   timestamp: string;
 }
 
+export interface SyncProgressEvent {
+  type: 'progress';
+  stage: string;
+  current: number;
+  total: number;
+  message: string;
+}
+
+export interface SyncCompleteEvent {
+  type: 'complete';
+  token: TokenDetailRecord;
+  trades: TradeRecord[];
+}
+
+export interface SyncErrorEvent {
+  type: 'error';
+  message: string;
+}
+
+export type SyncStreamEvent = SyncProgressEvent | SyncCompleteEvent | SyncErrorEvent;
+
 export interface TradeRecord {
   id: string;
   mint_address: string;

@@ -160,3 +160,68 @@ export async function tradeSell(req: {
 export function sseUrl(): string {
   return `${API_BASE}/api/stream`;
 }
+
+export async function syncToken(
+  mintAddress: string,
+  includePostMigrate: boolean,
+  onProgress: (event: import('../types').SyncProgressEvent) => void,
+): Promise<import('../types').SyncCompleteEvent> {
+  const resp = await fetch(`${API_BASE}/api/token/sync`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/x-ndjson',
+    },
+    body: JSON.stringify({
+      mint_address: mintAddress.trim(),
+      include_post_migrate: includePostMigrate,
+    }),
+  });
+
+  if (!resp.ok) {
+    const body = (await resp.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(
+      body?.message ?? `Sync failed (HTTP ${resp.status})`,
+    );
+  }
+
+  const reader = resp.body?.getReader();
+  if (!reader) {
+    throw new Error('Sync response has no body');
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let newline: number;
+    while ((newline = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      if (!line) continue;
+
+      const event = JSON.parse(line) as import('../types').SyncStreamEvent;
+      if (event.type === 'progress') {
+        onProgress(event);
+      } else if (event.type === 'error') {
+        throw new Error(event.message);
+      } else if (event.type === 'complete') {
+        return event;
+      }
+    }
+  }
+
+  const tail = buffer.trim();
+  if (tail) {
+    const event = JSON.parse(tail) as import('../types').SyncStreamEvent;
+    if (event.type === 'complete') return event;
+    if (event.type === 'error') throw new Error(event.message);
+    if (event.type === 'progress') onProgress(event);
+  }
+
+  throw new Error('Sync ended without a complete response');
+}

@@ -71,18 +71,11 @@ impl HeliusDecoder {
             return DecodeOutput::Ignored;
         }
 
-        self.decode_notification(&value)
+        self.decode_result(&value["params"]["result"])
     }
-}
 
-// ---------------------------------------------------------------------------
-// Core decode path
-// ---------------------------------------------------------------------------
-
-impl HeliusDecoder {
-    fn decode_notification(&self, value: &Value) -> DecodeOutput {
-        let result = &value["params"]["result"];
-
+    /// Decode a Helius `params.result` object (WebSocket notification or wrapped RPC `getTransaction`).
+    pub fn decode_result(&self, result: &Value) -> DecodeOutput {
         let signature = match result["signature"].as_str() {
             Some(s) => s.to_string(),
             None => {

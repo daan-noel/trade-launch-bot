@@ -27,6 +27,8 @@ function NavItem({ to, children }: { to: string; children: React.ReactNode }) {
 
 export function Header() {
   const location = useLocation();
+  const tokensActive =
+    location.pathname.startsWith('/tokens') || location.pathname.startsWith('/token');
   const analysisActive = location.pathname.startsWith('/analysis');
   const strategiesActive = location.pathname.startsWith('/strategies');
   const [liveMode, setLiveModeState] = useState(false);
@@ -82,7 +84,14 @@ export function Header() {
         <nav className="flex min-w-0 flex-1 items-center gap-0.5 overflow-visible rounded-lg border border-white/6 bg-white/3 p-1">
           <NavItem to="/">Home</NavItem>
           <NavItem to="/dashboard">Dashboard</NavItem>
-          <NavItem to="/tokens">Tokens</NavItem>
+          <NavDropdown
+            label="Tokens"
+            isActive={tokensActive}
+            items={[
+              { to: '/tokens', label: 'All tokens' },
+              { to: '/token/sync', label: 'Sync token' },
+            ]}
+          />
           <NavItem to="/transactions">Transactions</NavItem>
           <NavDropdown
             label="Analysis"
