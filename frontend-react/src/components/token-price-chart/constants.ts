@@ -74,6 +74,17 @@ export const CHART_COLORS = {
   swingLow: '#e879f9',
 } as const;
 
+/** Crosshair tooltip / toolbar — distinct hue per field on dark panels. */
+export const CHART_OHLC_COLORS = {
+  open: '#f0b429',
+  high: '#34d399',
+  low: '#f23645',
+  close: '#c084fc',
+  price: '#13ceaf',
+  volume: '#fb923c',
+  liquidity: '#5dade2',
+} as const;
+
 const SWING_OVERLAY_SERIES_BASE: DeepPartial<LineSeriesOptions> = {
   lineWidth: 2,
   crosshairMarkerVisible: true,

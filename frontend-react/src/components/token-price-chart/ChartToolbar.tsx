@@ -9,6 +9,7 @@ import {
   createChartPriceFormatter,
 } from './constants';
 import { getTimezoneSelectOptions } from './chartTimezone';
+import { BarCrosshairFields } from './BarCrosshairFields';
 import { cn } from './cn';
 import type { ChartMetric, ChartToolbarProps } from './types';
 
@@ -84,22 +85,15 @@ export function ChartToolbar({
   const formatChartPrice = createChartPriceFormatter(priceUnit);
   const formatVol = createChartPriceFormatter('SOL');
 
-  const liqLabel =
-    crosshair?.liquiditySol != null ? formatVol(crosshair.liquiditySol) : '—';
-
-  const crosshairLine =
-    crosshair && style === 'candles' ? (
-      <>
-        O {formatChartPrice(crosshair.open)} H {formatChartPrice(crosshair.high)} L{' '}
-        {formatChartPrice(crosshair.low)} C {formatChartPrice(crosshair.close)} Vol{' '}
-        {formatVol(crosshair.volume)} Liq {liqLabel}
-      </>
-    ) : crosshair && style === 'line' ? (
-      <>
-        Price {formatChartPrice(crosshair.close)} Vol {formatVol(crosshair.volume)} Liq{' '}
-        {liqLabel}
-      </>
-    ) : null;
+  const crosshairLine = crosshair ? (
+    <BarCrosshairFields
+      style={style}
+      crosshair={crosshair}
+      formatPrice={formatChartPrice}
+      formatVol={formatVol}
+      layout="inline"
+    />
+  ) : null;
 
   const showStatusBadges = isMigrated != null;
 
@@ -135,7 +129,6 @@ export function ChartToolbar({
         </div>
         <div
           className="mt-0.5 h-[14px] overflow-hidden font-mono text-[11px] leading-[14px]"
-          style={{ color: CHART_COLORS.panelTextDim }}
           aria-live="polite"
         >
           {crosshairLine ?? <span className="invisible select-none" aria-hidden="true">—</span>}

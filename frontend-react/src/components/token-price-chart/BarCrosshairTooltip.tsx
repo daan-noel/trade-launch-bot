@@ -1,4 +1,5 @@
 import { CHART_COLORS } from './constants';
+import { BarCrosshairFields } from './BarCrosshairFields';
 import type { ChartBarTooltipState } from './types';
 
 export function BarCrosshairTooltip({
@@ -13,7 +14,6 @@ export function BarCrosshairTooltip({
   formatTime: (barTime: ChartBarTooltipState['barTime']) => string;
 }) {
   const { point, style, barTime, open, high, low, close, volume, liquiditySol } = tooltip;
-  const liqLabel = liquiditySol != null ? formatVol(liquiditySol) : '—';
 
   return (
     <div
@@ -32,29 +32,13 @@ export function BarCrosshairTooltip({
       >
         {formatTime(barTime)}
       </div>
-      <div className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
-        {style === 'candles' ? (
-          <>
-            <span style={{ color: CHART_COLORS.panelTextDim }}>O</span>
-            <span>{formatPrice(open)}</span>
-            <span style={{ color: CHART_COLORS.panelTextDim }}>H</span>
-            <span>{formatPrice(high)}</span>
-            <span style={{ color: CHART_COLORS.panelTextDim }}>L</span>
-            <span>{formatPrice(low)}</span>
-            <span style={{ color: CHART_COLORS.panelTextDim }}>C</span>
-            <span>{formatPrice(close)}</span>
-          </>
-        ) : (
-          <>
-            <span style={{ color: CHART_COLORS.panelTextDim }}>Price</span>
-            <span>{formatPrice(close)}</span>
-          </>
-        )}
-        <span style={{ color: CHART_COLORS.panelTextDim }}>Vol</span>
-        <span>{formatVol(volume)}</span>
-        <span style={{ color: CHART_COLORS.panelTextDim }}>Liq</span>
-        <span>{liqLabel}</span>
-      </div>
+      <BarCrosshairFields
+        style={style}
+        crosshair={{ open, high, low, close, volume, liquiditySol }}
+        formatPrice={formatPrice}
+        formatVol={formatVol}
+        layout="grid"
+      />
     </div>
   );
 }
