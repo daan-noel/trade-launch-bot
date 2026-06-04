@@ -2,7 +2,41 @@ import type { UTCTimestamp } from 'lightweight-charts';
 import { CHART_COLORS, TOKEN_TOTAL_SUPPLY } from './constants';
 import type { ChartGroupMode, ChartMetric, ChartSwingLeg, ChartTrade } from './types';
 
-export type SwingOverlaySegmentMode = 'connected' | 'perLeg';
+export type SwingOverlaySegmentMode = 'connected' | 'perLeg' | 'connectedSequential';
+
+function swingLegKey(leg: ChartSwingLeg): string {
+  return `${leg.type}-${leg.start_at}-${leg.end_at}`;
+}
+
+/** Split a filtered leg list into chains that are consecutive in `allLegs`. */
+export function groupSequentialLegChains(
+  legs: ChartSwingLeg[],
+  allLegs: ChartSwingLeg[],
+): ChartSwingLeg[][] {
+  if (!legs.length) return [];
+  const indexOf = new Map<string, number>();
+  for (let i = 0; i < allLegs.length; i++) {
+    indexOf.set(swingLegKey(allLegs[i]), i);
+  }
+
+  const chains: ChartSwingLeg[][] = [];
+  let current: ChartSwingLeg[] = [];
+  let prevIdx: number | null = null;
+
+  for (const leg of legs) {
+    const idx = indexOf.get(swingLegKey(leg));
+    if (idx == null) continue;
+    if (current.length === 0 || (prevIdx != null && idx === prevIdx + 1)) {
+      current.push(leg);
+    } else {
+      chains.push(current);
+      current = [leg];
+    }
+    prevIdx = idx;
+  }
+  if (current.length) chains.push(current);
+  return chains;
+}
 
 export type SwingColoredLinePoint =
   | {
@@ -194,8 +228,29 @@ export function findSwingLegIndexAtChartTime(
   groupMode: ChartGroupMode,
   trades: ChartTrade[],
   segmentMode: SwingOverlaySegmentMode = 'connected',
+  allLegs?: ChartSwingLeg[],
 ): number | null {
   if (!swings.length) return null;
+
+  if (segmentMode === 'connectedSequential') {
+    const chains = groupSequentialLegChains(swings, allLegs ?? swings);
+    for (const chain of chains) {
+      const idx = findSwingLegIndexAtChartTime(
+        chain,
+        chartTime,
+        groupMode,
+        trades,
+        'connected',
+      );
+      if (idx != null) {
+        const leg = chain[idx];
+        const key = swingLegKey(leg);
+        const globalIdx = swings.findIndex((s) => swingLegKey(s) === key);
+        if (globalIdx >= 0) return globalIdx;
+      }
+    }
+    return null;
+  }
 
   if (segmentMode === 'perLeg') {
     for (let i = 0; i < swings.length; i++) {

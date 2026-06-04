@@ -82,8 +82,14 @@ export interface ChartBarTooltipState {
 
 export interface ChartSwingOverlay {
   legs: ChartSwingLeg[];
-  /** `perLeg` — one segment per leg with gaps (result filter). Default: connected path. */
-  segmentMode?: 'connected' | 'perLeg';
+  /**
+   * `connected` — full path through legs.
+   * `perLeg` — isolated start→end per leg.
+   * `connectedSequential` — connected within consecutive legs in `allLegs` (filtered subset).
+   */
+  segmentMode?: 'connected' | 'perLeg' | 'connectedSequential';
+  /** Full detection order; required for `connectedSequential`. */
+  allLegs?: ChartSwingLeg[];
 }
 
 export interface TokenPriceChartProps {
@@ -112,6 +118,9 @@ export interface TokenPriceChartProps {
   isMigrated?: boolean;
   isMayhemMode?: boolean;
   isCashbackEnabled?: boolean;
+  /** Chain swing reversal points (default true). */
+  connectSwings?: boolean;
+  onConnectSwingsChange?: (connected: boolean) => void;
 }
 
 export interface ChartToolbarProps {
@@ -129,6 +138,7 @@ export interface ChartToolbarProps {
   showMigrationLine: boolean;
   swingOverlayAvailable: boolean;
   showSwingOverlay: boolean;
+  connectSwings: boolean;
   crosshair: ChartCrosshairInfo | null;
   chartTimezone: string;
   isMigrated?: boolean;
@@ -143,4 +153,5 @@ export interface ChartToolbarProps {
   onShowAthLineChange: (show: boolean) => void;
   onShowMigrationLineChange: (show: boolean) => void;
   onShowSwingOverlayChange: (show: boolean) => void;
+  onConnectSwingsChange: (connected: boolean) => void;
 }

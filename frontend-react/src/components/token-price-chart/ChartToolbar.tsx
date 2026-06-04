@@ -10,6 +10,7 @@ import {
 } from './constants';
 import { getTimezoneSelectOptions } from './chartTimezone';
 import { BarCrosshairFields } from './BarCrosshairFields';
+import { Button } from '../ui/Button';
 import { Checkbox } from '../ui/Checkbox';
 import { cn } from './cn';
 import type { ChartMetric, ChartToolbarProps } from './types';
@@ -48,6 +49,31 @@ function StatusBadge({ label, color }: { label: string; color: string }) {
   );
 }
 
+/** Zigzag path through swing pivots; line omitted when legs are not connected. */
+function ConnectSwingsIcon({ connected }: { connected: boolean }) {
+  const nodes = [
+    { cx: 4, cy: 14 },
+    { cx: 10, cy: 5 },
+    { cx: 16, cy: 11 },
+  ];
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3.5">
+      {connected ? (
+        <path
+          d="M4 14 10 5 16 11"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      ) : null}
+      {nodes.map(({ cx, cy }) => (
+        <circle key={`${cx}-${cy}`} cx={cx} cy={cy} r="2" fill="currentColor" />
+      ))}
+    </svg>
+  );
+}
+
 export function ChartToolbar({
   symbol,
   groupMode,
@@ -63,6 +89,7 @@ export function ChartToolbar({
   showMigrationLine,
   swingOverlayAvailable,
   showSwingOverlay,
+  connectSwings,
   crosshair,
   isMigrated,
   isMayhemMode,
@@ -75,6 +102,7 @@ export function ChartToolbar({
   onShowAthLineChange,
   onShowMigrationLineChange,
   onShowSwingOverlayChange,
+  onConnectSwingsChange,
   chartTimezone,
   onChartTimezoneChange,
 }: ChartToolbarProps) {
@@ -299,7 +327,7 @@ export function ChartToolbar({
             className="accent-[#f0b429]"
           />
           <span style={showAthLine && athLineAvailable ? { color: CHART_COLORS.athLine } : undefined}>
-            ATH line
+            ATH
           </span>
         </label>
 
@@ -315,39 +343,70 @@ export function ChartToolbar({
             className="accent-[#5dade2]"
           />
           <span style={showMigrationLine ? { color: CHART_COLORS.migrationLine } : undefined}>
-            Migration line
+            Migration
           </span>
         </label>
 
-        <label
+        <div
           className={cn(
-            'flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-semibold',
+            'flex items-center gap-0.5 rounded-md py-1 pl-2 pr-1 text-[11px] font-semibold',
             !swingOverlayAvailable && 'cursor-not-allowed opacity-40',
           )}
           style={{ backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }}
-          title={
-            swingOverlayAvailable
-              ? 'Show swing detection path on chart'
-              : 'Run swing detection to overlay results'
-          }
         >
-          <Checkbox
-            boxSize="sm"
-            checked={showSwingOverlay}
-            disabled={!swingOverlayAvailable}
-            onChange={(e) => onShowSwingOverlayChange(e.target.checked)}
-            className="accent-[#e879f9]"
-          />
-          <span
-            style={
-              showSwingOverlay && swingOverlayAvailable
-                ? { color: CHART_COLORS.swingOverlay }
-                : undefined
+          <label
+            className={cn(
+              'flex cursor-pointer items-center gap-1.5',
+              !swingOverlayAvailable && 'cursor-not-allowed',
+            )}
+            title={
+              swingOverlayAvailable
+                ? 'Show swing detection path on chart'
+                : 'Run swing detection to overlay results'
             }
           >
-            Swings
-          </span>
-        </label>
+            <Checkbox
+              boxSize="sm"
+              checked={showSwingOverlay}
+              disabled={!swingOverlayAvailable}
+              onChange={(e) => onShowSwingOverlayChange(e.target.checked)}
+              className="accent-[#e879f9]"
+            />
+            <span
+              style={
+                showSwingOverlay && swingOverlayAvailable
+                  ? { color: CHART_COLORS.swingOverlay }
+                  : undefined
+              }
+            >
+              Swings
+            </span>
+          </label>
+          <Button
+            variant="subtle"
+            size="xs"
+            active={connectSwings}
+            disabled={!swingOverlayAvailable || !showSwingOverlay}
+            className="!min-h-0 shrink-0 border-0 bg-transparent px-1.5 py-0.5 normal-case tracking-normal hover:bg-white/6"
+            title={
+              swingOverlayAvailable
+                ? connectSwings
+                  ? 'Disconnect swing legs on chart'
+                  : 'Connect sequential swing legs on chart'
+                : 'Run swing detection to connect swings'
+            }
+            aria-label={
+              swingOverlayAvailable
+                ? connectSwings
+                  ? 'Disconnect swing legs on chart'
+                  : 'Connect sequential swing legs on chart'
+                : 'Run swing detection to connect swings'
+            }
+            onClick={() => onConnectSwingsChange(!connectSwings)}
+          >
+            <ConnectSwingsIcon connected={connectSwings} />
+          </Button>
+        </div>
       </div>
     </div>
   );

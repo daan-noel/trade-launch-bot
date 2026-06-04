@@ -146,6 +146,7 @@ function loadStoredSwingCriteria(): {
   params: SwingParams;
   filter: SwingFilterCriteria;
   appliedFilter: SwingFilterCriteria;
+  connectSwings: boolean;
 } {
   try {
     const raw = localStorage.getItem(LS_SWING_DETECTION_KEY);
@@ -154,23 +155,27 @@ function loadStoredSwingCriteria(): {
         params: DEFAULT_SWING_PARAMS,
         filter: DEFAULT_SWING_FILTER,
         appliedFilter: DEFAULT_SWING_FILTER,
+        connectSwings: true,
       };
     }
     const parsed = JSON.parse(raw) as {
       params?: Partial<SwingParams>;
       filter?: Partial<SwingFilterCriteria>;
       appliedFilter?: Partial<SwingFilterCriteria>;
+      connectSwings?: boolean;
     };
     return {
       params: mergeSwingParams(parsed.params),
       filter: mergeSwingFilter(parsed.filter),
       appliedFilter: mergeSwingFilter(parsed.appliedFilter ?? parsed.filter),
+      connectSwings: parsed.connectSwings !== false,
     };
   } catch {
     return {
       params: DEFAULT_SWING_PARAMS,
       filter: DEFAULT_SWING_FILTER,
       appliedFilter: DEFAULT_SWING_FILTER,
+      connectSwings: true,
     };
   }
 }
@@ -179,11 +184,12 @@ function saveStoredSwingCriteria(
   params: SwingParams,
   filter: SwingFilterCriteria,
   appliedFilter: SwingFilterCriteria,
+  connectSwings: boolean,
 ): void {
   try {
     localStorage.setItem(
       LS_SWING_DETECTION_KEY,
-      JSON.stringify({ params, filter, appliedFilter }),
+      JSON.stringify({ params, filter, appliedFilter, connectSwings }),
     );
   } catch {
     /* ignore */
@@ -241,6 +247,7 @@ export function SwingDetectionPage() {
     storedSwingCriteria.appliedFilter,
   );
   const [showSwingResultsTable, setShowSwingResultsTable] = useState(false);
+  const [connectSwings, setConnectSwings] = useState(storedSwingCriteria.connectSwings);
 
   const toggleAnalysis = useCallback((kind: AnalysisKind) => {
     setActiveAnalysis((prev) => (prev === kind ? null : kind));
@@ -340,8 +347,8 @@ export function SwingDetectionPage() {
   }, [selectedMint, createdFrom, createdTo, filters, loadTrades]);
 
   useEffect(() => {
-    saveStoredSwingCriteria(swingParams, swingFilter, appliedSwingFilter);
-  }, [swingParams, swingFilter, appliedSwingFilter]);
+    saveStoredSwingCriteria(swingParams, swingFilter, appliedSwingFilter, connectSwings);
+  }, [swingParams, swingFilter, appliedSwingFilter, connectSwings]);
 
   useEffect(() => {
     if (!selectedMint) {
@@ -397,11 +404,26 @@ export function SwingDetectionPage() {
     if (!swingResult || swingResult.mint !== selectedMint) return null;
     const filterActive =
       swingPanelTab === 'filter' && hasActiveSwingFilter(appliedSwingFilter);
-    return {
-      legs: filterActive ? filteredSwings : swingResult.swings,
-      segmentMode: filterActive ? ('perLeg' as const) : ('connected' as const),
-    };
-  }, [swingResult, selectedMint, swingPanelTab, appliedSwingFilter, filteredSwings]);
+    const legs = filterActive ? filteredSwings : swingResult.swings;
+    if (!connectSwings) {
+      return { legs, segmentMode: 'perLeg' as const };
+    }
+    if (filterActive) {
+      return {
+        legs,
+        allLegs: swingResult.swings,
+        segmentMode: 'connectedSequential' as const,
+      };
+    }
+    return { legs, segmentMode: 'connected' as const };
+  }, [
+    swingResult,
+    selectedMint,
+    swingPanelTab,
+    appliedSwingFilter,
+    filteredSwings,
+    connectSwings,
+  ]);
 
   return (
     <div>
@@ -1030,6 +1052,8 @@ export function SwingDetectionPage() {
           onMetricChange={setChartMetric}
           onBarClick={setSelectedBar}
           swingOverlay={swingOverlay}
+          connectSwings={connectSwings}
+          onConnectSwingsChange={setConnectSwings}
           athPriceInSol={selectedToken?.ath_price ?? null}
           isMigrated={selectedToken?.is_migrated}
           isMayhemMode={selectedToken?.is_mayhem_mode}

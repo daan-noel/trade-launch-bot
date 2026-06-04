@@ -53,6 +53,7 @@ import { SwingCrosshairTooltip } from './SwingCrosshairTooltip';
 import {
   buildLegSegment,
   findSwingLegIndexAtChartTime,
+  groupSequentialLegChains,
   swingsToColoredLineData,
 } from './swingOverlay';
 import type {
@@ -225,6 +226,8 @@ export function TokenPriceChart({
   height = 320,
   onBarClick,
   swingOverlay = null,
+  connectSwings: connectSwingsProp,
+  onConnectSwingsChange,
   athPriceInSol = null,
   isMigrated,
   isMayhemMode,
@@ -238,9 +241,10 @@ export function TokenPriceChart({
   const swingSeriesRefs = useRef<ISeriesApi<'Line'>[]>([]);
   const swingSeriesLegRef = useRef(new Map<ISeriesApi<'Line'>, ChartSwingLeg>());
   const swingOverlayMetaRef = useRef<{
-    segmentMode: 'connected' | 'perLeg';
+    segmentMode: 'connected' | 'perLeg' | 'connectedSequential';
     groupMode: ChartGroupMode;
     legs: ChartSwingLeg[];
+    allLegs?: ChartSwingLeg[];
   } | null>(null);
   const showSwingOverlayRef = useRef(true);
   const sortedTradesRef = useRef<ChartTrade[]>([]);
@@ -257,6 +261,9 @@ export function TokenPriceChart({
   const [chartTimezone, setChartTimezone] = useState(initialPrefs.chartTimezone);
   const swingOverlayAvailable = (swingOverlay?.legs.length ?? 0) > 0;
   const [showSwingOverlay, setShowSwingOverlay] = useState(true);
+  const [connectSwingsInternal, setConnectSwingsInternal] = useState(true);
+  const connectSwings = connectSwingsProp ?? connectSwingsInternal;
+  const setConnectSwings = onConnectSwingsChange ?? setConnectSwingsInternal;
   const [crosshair, setCrosshair] = useState<ChartCrosshairInfo | null>(null);
   const [barTooltip, setBarTooltip] = useState<ChartBarTooltipState | null>(null);
   const [swingTooltip, setSwingTooltip] = useState<ChartSwingTooltipState | null>(null);
@@ -523,6 +530,7 @@ export function TokenPriceChart({
               meta.groupMode,
               sortedTradesRef.current,
               meta.segmentMode,
+              meta.allLegs,
             );
             if (idx != null) leg = meta.legs[idx];
           }
@@ -821,6 +829,25 @@ export function TokenPriceChart({
       segmentMode,
       groupMode,
       legs: swingOverlay.legs,
+      allLegs: swingOverlay.allLegs,
+    };
+
+    const addConnectedPath = (legs: ChartSwingLeg[]) => {
+      const data = swingsToColoredLineData(
+        legs,
+        metric,
+        toValue,
+        groupMode,
+        sortedTrades,
+      );
+      const pointCount = data.filter((p) => 'value' in p).length;
+      if (pointCount < 2) return;
+      const series = chart.addSeries(LineSeries, {
+        ...SWING_HIGH_OVERLAY_SERIES_OPTIONS,
+        priceFormat: createChartPriceFormat(priceUnit),
+      });
+      series.setData(data);
+      swingSeriesRefs.current.push(series);
     };
 
     if (segmentMode === 'perLeg') {
@@ -836,23 +863,16 @@ export function TokenPriceChart({
         swingSeriesRefs.current.push(series);
         swingSeriesLegRef.current.set(series, leg);
       }
-    } else {
-      const data = swingsToColoredLineData(
+    } else if (segmentMode === 'connectedSequential') {
+      const chains = groupSequentialLegChains(
         swingOverlay.legs,
-        metric,
-        toValue,
-        groupMode,
-        sortedTrades,
+        swingOverlay.allLegs ?? swingOverlay.legs,
       );
-      const pointCount = data.filter((p) => 'value' in p).length;
-      if (pointCount < 2) return;
-
-      const series = chart.addSeries(LineSeries, {
-        ...SWING_HIGH_OVERLAY_SERIES_OPTIONS,
-        priceFormat: createChartPriceFormat(priceUnit),
-      });
-      series.setData(data);
-      swingSeriesRefs.current.push(series);
+      for (const chain of chains) {
+        addConnectedPath(chain);
+      }
+    } else {
+      addConnectedPath(swingOverlay.legs);
     }
 
     if (savedViewport) {
@@ -955,6 +975,7 @@ export function TokenPriceChart({
         showMigrationLine={showMigrationLine}
         swingOverlayAvailable={swingOverlayAvailable}
         showSwingOverlay={showSwingOverlay}
+        connectSwings={connectSwings}
         crosshair={crosshair}
         isMigrated={isMigrated}
         isMayhemMode={isMayhemMode}
@@ -967,6 +988,7 @@ export function TokenPriceChart({
         onShowAthLineChange={handleShowAthLineChange}
         onShowMigrationLineChange={handleShowMigrationLineChange}
         onShowSwingOverlayChange={setShowSwingOverlay}
+        onConnectSwingsChange={setConnectSwings}
         chartTimezone={chartTimezone}
         onChartTimezoneChange={handleChartTimezoneChange}
       />
