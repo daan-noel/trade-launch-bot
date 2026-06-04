@@ -1,6 +1,11 @@
 import type { ReactNode } from 'react';
 import { PriceUnitProvider } from './PriceUnitContext';
+import { TimezoneProvider } from './TimezoneContext';
 
 export function AppProviders({ children }: { children: ReactNode }) {
-  return <PriceUnitProvider>{children}</PriceUnitProvider>;
+  return (
+    <TimezoneProvider>
+      <PriceUnitProvider>{children}</PriceUnitProvider>
+    </TimezoneProvider>
+  );
 }

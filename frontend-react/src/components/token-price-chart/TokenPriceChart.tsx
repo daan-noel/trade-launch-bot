@@ -28,11 +28,8 @@ import {
   tradeBarTime,
 } from './chartBars';
 import { ChartToolbar } from './ChartToolbar';
-import {
-  createChartTimeFormatters,
-  getDefaultChartTimezone,
-  isValidTimezone,
-} from './chartTimezone';
+import { createChartTimeFormatters } from './chartTimezone';
+import { useTimezone } from '../../context/TimezoneContext';
 import { cn } from './cn';
 import {
   CANDLE_SERIES_OPTIONS,
@@ -77,9 +74,7 @@ function loadPrefs(): {
   showTradeMarkers: boolean;
   showAthLine: boolean;
   showMigrationLine: boolean;
-  chartTimezone: string;
 } {
-  const defaultTimezone = getDefaultChartTimezone();
   try {
     const raw = localStorage.getItem(LS_CHART_PREFS_KEY);
     if (raw) {
@@ -90,9 +85,7 @@ function loadPrefs(): {
         showTradeMarkers?: boolean;
         showAthLine?: boolean;
         showMigrationLine?: boolean;
-        chartTimezone?: string;
       };
-      const tz = parsed.chartTimezone;
       return {
         groupMode: parsed.groupMode ?? DEFAULT_CHART_PREFS.groupMode,
         interval: parsed.interval ?? DEFAULT_CHART_PREFS.interval,
@@ -101,14 +94,12 @@ function loadPrefs(): {
         showAthLine: parsed.showAthLine ?? DEFAULT_CHART_PREFS.showAthLine,
         showMigrationLine:
           parsed.showMigrationLine ?? DEFAULT_CHART_PREFS.showMigrationLine,
-        chartTimezone:
-          typeof tz === 'string' && isValidTimezone(tz) ? tz : defaultTimezone,
       };
     }
   } catch {
     /* ignore */
   }
-  return { ...DEFAULT_CHART_PREFS, chartTimezone: defaultTimezone };
+  return DEFAULT_CHART_PREFS;
 }
 
 function savePrefs(
@@ -118,7 +109,6 @@ function savePrefs(
   showTradeMarkers: boolean,
   showAthLine: boolean,
   showMigrationLine: boolean,
-  chartTimezone: string,
 ) {
   try {
     localStorage.setItem(
@@ -130,7 +120,6 @@ function savePrefs(
         showTradeMarkers,
         showAthLine,
         showMigrationLine,
-        chartTimezone,
       }),
     );
   } catch {
@@ -258,7 +247,7 @@ export function TokenPriceChart({
   const [showTradeMarkers, setShowTradeMarkers] = useState(initialPrefs.showTradeMarkers);
   const [showAthLine, setShowAthLine] = useState(initialPrefs.showAthLine);
   const [showMigrationLine, setShowMigrationLine] = useState(initialPrefs.showMigrationLine);
-  const [chartTimezone, setChartTimezone] = useState(initialPrefs.chartTimezone);
+  const { timezone: chartTimezone } = useTimezone();
   const swingOverlayAvailable = (swingOverlay?.legs.length ?? 0) > 0;
   const [showSwingOverlay, setShowSwingOverlay] = useState(true);
   const [connectSwingsInternal, setConnectSwingsInternal] = useState(true);
@@ -352,116 +341,51 @@ export function TokenPriceChart({
   const handleGroupModeChange = useCallback(
     (next: ChartGroupMode) => {
       setGroupMode(next);
-      savePrefs(
-        next,
-        interval,
-        style,
-        showTradeMarkers,
-        showAthLine,
-        showMigrationLine,
-        chartTimezone,
-      );
+      savePrefs(next, interval, style, showTradeMarkers, showAthLine, showMigrationLine);
       onBarClickRef.current?.(null);
     },
-    [interval, style, showTradeMarkers, showAthLine, showMigrationLine, chartTimezone],
+    [interval, style, showTradeMarkers, showAthLine, showMigrationLine],
   );
 
   const handleIntervalChange = useCallback(
     (next: ChartInterval) => {
       setInterval(next);
-      savePrefs(
-        groupMode,
-        next,
-        style,
-        showTradeMarkers,
-        showAthLine,
-        showMigrationLine,
-        chartTimezone,
-      );
+      savePrefs(groupMode, next, style, showTradeMarkers, showAthLine, showMigrationLine);
       onBarClickRef.current?.(null);
     },
-    [groupMode, style, showTradeMarkers, showAthLine, showMigrationLine, chartTimezone],
+    [groupMode, style, showTradeMarkers, showAthLine, showMigrationLine],
   );
 
   const handleStyleChange = useCallback(
     (next: ChartStyle) => {
       setStyle(next);
-      savePrefs(
-        groupMode,
-        interval,
-        next,
-        showTradeMarkers,
-        showAthLine,
-        showMigrationLine,
-        chartTimezone,
-      );
+      savePrefs(groupMode, interval, next, showTradeMarkers, showAthLine, showMigrationLine);
     },
-    [groupMode, interval, showTradeMarkers, showAthLine, showMigrationLine, chartTimezone],
+    [groupMode, interval, showTradeMarkers, showAthLine, showMigrationLine],
   );
 
   const handleShowTradeMarkersChange = useCallback(
     (next: boolean) => {
       setShowTradeMarkers(next);
-      savePrefs(
-        groupMode,
-        interval,
-        style,
-        next,
-        showAthLine,
-        showMigrationLine,
-        chartTimezone,
-      );
+      savePrefs(groupMode, interval, style, next, showAthLine, showMigrationLine);
     },
-    [groupMode, interval, style, showAthLine, showMigrationLine, chartTimezone],
+    [groupMode, interval, style, showAthLine, showMigrationLine],
   );
 
   const handleShowAthLineChange = useCallback(
     (next: boolean) => {
       setShowAthLine(next);
-      savePrefs(
-        groupMode,
-        interval,
-        style,
-        showTradeMarkers,
-        next,
-        showMigrationLine,
-        chartTimezone,
-      );
+      savePrefs(groupMode, interval, style, showTradeMarkers, next, showMigrationLine);
     },
-    [groupMode, interval, style, showTradeMarkers, showMigrationLine, chartTimezone],
+    [groupMode, interval, style, showTradeMarkers, showMigrationLine],
   );
 
   const handleShowMigrationLineChange = useCallback(
     (next: boolean) => {
       setShowMigrationLine(next);
-      savePrefs(
-        groupMode,
-        interval,
-        style,
-        showTradeMarkers,
-        showAthLine,
-        next,
-        chartTimezone,
-      );
+      savePrefs(groupMode, interval, style, showTradeMarkers, showAthLine, next);
     },
-    [groupMode, interval, style, showTradeMarkers, showAthLine, chartTimezone],
-  );
-
-  const handleChartTimezoneChange = useCallback(
-    (next: string) => {
-      if (!isValidTimezone(next)) return;
-      setChartTimezone(next);
-      savePrefs(
-        groupMode,
-        interval,
-        style,
-        showTradeMarkers,
-        showAthLine,
-        showMigrationLine,
-        next,
-      );
-    },
-    [groupMode, interval, style, showTradeMarkers, showAthLine, showMigrationLine],
+    [groupMode, interval, style, showTradeMarkers, showAthLine],
   );
 
   const showChart = Boolean(id) && !loading && !error && trades.length > 0 && bars.length > 0;
@@ -989,8 +913,6 @@ export function TokenPriceChart({
         onShowMigrationLineChange={handleShowMigrationLineChange}
         onShowSwingOverlayChange={setShowSwingOverlay}
         onConnectSwingsChange={setConnectSwings}
-        chartTimezone={chartTimezone}
-        onChartTimezoneChange={handleChartTimezoneChange}
       />
       <div className="relative" style={{ height, width: '100%' }}>
         <div ref={containerRef} style={{ height: '100%', width: '100%' }} />

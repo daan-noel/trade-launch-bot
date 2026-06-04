@@ -14,6 +14,8 @@ import {
 } from '../../components/tokens/filters';
 import { tokenColumns } from '../../components/tokens/tokenColumns';
 import { usePriceUnit } from '../../context/PriceUnitContext';
+import { useTimezone } from '../../context/TimezoneContext';
+import { formatTimestampMs } from '../../utils/date';
 import { usePriceDisplay } from '../../hooks/usePriceDisplay';
 import { swingColumns } from '../../components/analysis/swingColumns';
 import {
@@ -204,9 +206,10 @@ export function SwingDetectionPage() {
 
   const price = usePriceDisplay();
   const { unit, usdRate } = usePriceUnit();
+  const { timezone } = useTimezone();
   const columns = useMemo(() => tokenColumns(price), [price]);
   const tradeTableColumns = useMemo(() => tokenTradeColumns(price), [price]);
-  const swingTableColumns = useMemo(() => swingColumns(price), [price]);
+  const swingTableColumns = useMemo(() => swingColumns(price, timezone), [price, timezone]);
 
   const toChartValue = useCallback(
     (sol: number) => (unit === 'USD' && usdRate != null ? sol * usdRate : sol),
@@ -392,7 +395,7 @@ export function SwingDetectionPage() {
   const barTimeLabel = selectedBar
     ? selectedBar.groupMode === 'slot'
       ? `Slot ${selectedBar.slot}`
-      : new Date(Number(selectedBar.barTime) * 1000).toISOString().replace('T', ' ').slice(0, 19) + ' UTC'
+      : formatTimestampMs(Number(selectedBar.barTime) * 1000, timezone)
     : '';
 
   const filteredSwings = useMemo(() => {

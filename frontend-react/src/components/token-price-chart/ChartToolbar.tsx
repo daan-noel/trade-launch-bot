@@ -1,4 +1,3 @@
-import { useMemo } from 'react';
 import {
   CHART_COLORS,
   CHART_GROUP_MODES,
@@ -8,7 +7,6 @@ import {
   CHART_STYLE_LABELS,
   createChartPriceFormatter,
 } from './constants';
-import { getTimezoneSelectOptions } from './chartTimezone';
 import { BarCrosshairFields } from './BarCrosshairFields';
 import { Button } from '../ui/Button';
 import { Checkbox } from '../ui/Checkbox';
@@ -103,14 +101,8 @@ export function ChartToolbar({
   onShowMigrationLineChange,
   onShowSwingOverlayChange,
   onConnectSwingsChange,
-  chartTimezone,
-  onChartTimezoneChange,
 }: ChartToolbarProps) {
   const intervalsDisabled = groupMode === 'slot';
-  const timezoneOptions = useMemo(
-    () => getTimezoneSelectOptions(chartTimezone),
-    [chartTimezone],
-  );
   const formatChartPrice = createChartPriceFormatter(priceUnit);
   const formatVol = createChartPriceFormatter('SOL');
 
@@ -267,28 +259,6 @@ export function ChartToolbar({
             ))}
           </div>
         )}
-
-        <select
-          value={chartTimezone}
-          disabled={intervalsDisabled}
-          onChange={(e) => onChartTimezoneChange(e.target.value)}
-          title="Chart time axis timezone"
-          className={cn(
-            'max-w-[14rem] truncate rounded-md px-2 py-1 text-[11px] font-semibold',
-            intervalsDisabled && 'cursor-not-allowed opacity-40',
-          )}
-          style={{
-            backgroundColor: CHART_COLORS.grid,
-            color: CHART_COLORS.panelTextDim,
-            border: 'none',
-          }}
-        >
-          {timezoneOptions.map((opt) => (
-            <option key={opt.id} value={opt.id}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
 
         <button
           type="button"

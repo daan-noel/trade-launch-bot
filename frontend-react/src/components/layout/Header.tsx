@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { StatusButton } from '../ui/StatusButton';
 import { NavDropdown } from '../ui/NavDropdown';
 import { PriceUnitToggle } from '../ui/PriceUnitToggle';
+import { TimezoneSelect } from '../ui/TimezoneSelect';
 import { fetchLiveMode, fetchSolPrice, setLiveMode } from '../../services/api';
 import { usePriceUnit } from '../../context/PriceUnitContext';
 import { cn } from '../../lib/cn';
@@ -99,6 +100,7 @@ export function Header() {
         </nav>
 
         <div className="ml-auto flex shrink-0 items-center gap-2.5">
+          <TimezoneSelect />
           <PriceUnitToggle />
 
           <div className="hidden h-5 w-px bg-white/8 sm:block" aria-hidden />

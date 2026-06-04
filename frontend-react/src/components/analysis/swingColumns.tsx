@@ -1,17 +1,13 @@
 import type { ColumnDef } from '../table/types';
 import type { SwingLegRecord } from '../../types';
 import { formatDecimalTrim } from '../../utils/format';
+import { formatTimestampMs } from '../../utils/date';
 import type { usePriceDisplay } from '../../hooks/usePriceDisplay';
 import { cn } from '../../lib/cn';
 
-function formatMs(ms: number): string {
-  const d = new Date(ms);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
-}
-
 export function swingColumns(
   price: ReturnType<typeof usePriceDisplay>,
+  timeZone: string,
 ): ColumnDef<SwingLegRecord>[] {
   const unit = price.unitLabel;
 
@@ -39,17 +35,21 @@ export function swingColumns(
     },
     {
       key: 'start_at',
-      label: 'Start (UTC)',
-      render: (leg) => <span className="font-mono text-[11px]">{formatMs(leg.start_at)}</span>,
+      label: 'Start',
+      render: (leg) => (
+        <span className="font-mono text-[11px]">{formatTimestampMs(leg.start_at, timeZone)}</span>
+      ),
       sortValue: (leg) => leg.start_at,
-      searchValue: (leg) => formatMs(leg.start_at),
+      searchValue: (leg) => formatTimestampMs(leg.start_at, timeZone),
     },
     {
       key: 'end_at',
-      label: 'End (UTC)',
-      render: (leg) => <span className="font-mono text-[11px]">{formatMs(leg.end_at)}</span>,
+      label: 'End',
+      render: (leg) => (
+        <span className="font-mono text-[11px]">{formatTimestampMs(leg.end_at, timeZone)}</span>
+      ),
       sortValue: (leg) => leg.end_at,
-      searchValue: (leg) => formatMs(leg.end_at),
+      searchValue: (leg) => formatTimestampMs(leg.end_at, timeZone),
     },
     {
       key: 'duration_ms',

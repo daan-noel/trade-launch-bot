@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { cn } from '../../lib/cn';
 import { usePriceDisplay } from '../../hooks/usePriceDisplay';
 import type { TokenDetailRecord } from '../../types';
+import { useTimezone } from '../../context/TimezoneContext';
 import { formatIso } from '../../utils/date';
 import {
   formatDecimal,
@@ -106,6 +107,7 @@ interface TokenDetailPanelProps {
 
 export function TokenDetailPanel({ detail, loading, error }: TokenDetailPanelProps) {
   const price = usePriceDisplay();
+  const { timezone } = useTimezone();
   const [copiedAll, setCopiedAll] = useState(false);
   const [copiedItemIndex, setCopiedItemIndex] = useState<number | null>(null);
 
@@ -204,7 +206,7 @@ export function TokenDetailPanel({ detail, loading, error }: TokenDetailPanelPro
                 variant={ratioVariant(curMult)}
                 large
               />
-              <StatCard label="ATH Timestamp" value={detail.ath_timestamp ? formatIso(detail.ath_timestamp) : '-'} variant="muted" />
+              <StatCard label="ATH Timestamp" value={detail.ath_timestamp ? formatIso(detail.ath_timestamp, timezone) : '-'} variant="muted" />
             </div>
           </div>
 
@@ -217,8 +219,8 @@ export function TokenDetailPanel({ detail, loading, error }: TokenDetailPanelPro
               <StatCard label={`Market Cap (${price.unitLabel})`} value={detail.market_cap != null ? price.displayCompact(detail.market_cap, 4) : '-'} large />
               <StatCard label="Trade Count" value={detail.trade_count != null ? String(detail.trade_count) : '-'} large />
               <StatCard label="Unique Wallets" value={detail.unique_wallets != null ? String(detail.unique_wallets) : '-'} variant="info" large />
-              <StatCard label="Last Trade" value={detail.last_trade_at ? formatIso(detail.last_trade_at) : '-'} variant="muted" />
-              <StatCard label="Created" value={formatIso(detail.created_at)} variant="muted" />
+              <StatCard label="Last Trade" value={detail.last_trade_at ? formatIso(detail.last_trade_at, timezone) : '-'} variant="muted" />
+              <StatCard label="Created" value={formatIso(detail.created_at, timezone)} variant="muted" />
             </div>
           </div>
 

@@ -2,12 +2,8 @@ import { CHART_COLORS } from './constants';
 import { cn } from './cn';
 import type { ChartSwingTooltipState } from './types';
 import { formatDecimalTrim } from '../../utils/format';
-
-function formatMs(ms: number): string {
-  const d = new Date(ms);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${pad(d.getUTCMonth() + 1)}/${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
-}
+import { useTimezone } from '../../context/TimezoneContext';
+import { formatTimestampMsCompact } from '../../utils/date';
 
 function formatDuration(ms: number | undefined): string {
   if (ms == null) return '—';
@@ -26,6 +22,7 @@ export function SwingCrosshairTooltip({
   formatPrice: (priceInSol: number) => string;
   formatAmount: (sol: number) => string;
 }) {
+  const { timezone } = useTimezone();
   const { leg, point } = tooltip;
   const isHigh = leg.type === 'swing_high';
   const accent = isHigh ? CHART_COLORS.swingHigh : CHART_COLORS.swingLow;
@@ -66,11 +63,11 @@ export function SwingCrosshairTooltip({
       <div className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
         <span style={{ color: CHART_COLORS.panelTextDim }}>Start</span>
         <span>
-          {formatPrice(leg.start_price)} · {formatMs(leg.start_at)}
+          {formatPrice(leg.start_price)} · {formatTimestampMsCompact(leg.start_at, timezone)}
         </span>
         <span style={{ color: CHART_COLORS.panelTextDim }}>End</span>
         <span>
-          {formatPrice(leg.end_price)} · {formatMs(leg.end_at)}
+          {formatPrice(leg.end_price)} · {formatTimestampMsCompact(leg.end_at, timezone)}
         </span>
         {changePct != null && (
           <>
