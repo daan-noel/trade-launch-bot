@@ -104,6 +104,7 @@ impl HeliusRpc {
     pub async fn get_all_signatures(
         &self,
         address: &str,
+        until: Option<&str>,
         on_page: impl Fn(usize, usize),
     ) -> anyhow::Result<Vec<SignatureEntry>> {
         let mut all = Vec::new();
@@ -115,6 +116,9 @@ impl HeliusRpc {
             let mut cfg = json!({ "limit": SIG_PAGE_LIMIT, "commitment": "confirmed" });
             if let Some(ref sig) = before {
                 cfg["before"] = json!(sig);
+            }
+            if let Some(sig) = until {
+                cfg["until"] = json!(sig);
             }
 
             let batch = self

@@ -129,6 +129,25 @@ impl TradeRepo {
         Ok(())
     }
 
+    /// Signature of the most recently saved trade for a token, if any.
+    /// Used as the `until` boundary for incremental syncs.
+    pub async fn latest_signature(&self, mint: &str) -> anyhow::Result<Option<String>> {
+        let sig: Option<String> = sqlx::query_scalar(
+            r#"
+            SELECT tx_signature
+            FROM trades
+            WHERE mint_address = $1
+            ORDER BY slot DESC, block_time DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(mint)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(sig)
+    }
+
     /// Most recent trades for a token, newest first.
     pub async fn find_by_mint(&self, mint: &str, limit: i64) -> anyhow::Result<Vec<Trade>> {
         let rows = sqlx::query_as::<_, TradeDbRow>(

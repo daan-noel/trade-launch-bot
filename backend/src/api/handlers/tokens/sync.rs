@@ -20,6 +20,8 @@ pub struct SyncTokenBody {
     pub mint_address: String,
     #[serde(default)]
     pub include_post_migrate: bool,
+    #[serde(default)]
+    pub incremental: bool,
 }
 
 #[derive(Serialize)]
@@ -66,6 +68,7 @@ pub async fn sync_token(
     let req = TokenSyncRequest {
         mint_address: mint,
         include_post_migrate: body.include_post_migrate,
+        incremental: body.incremental,
     };
 
     tokio::spawn(async move {

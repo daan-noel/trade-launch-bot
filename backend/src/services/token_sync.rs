@@ -82,6 +82,8 @@ impl SyncError {
 pub struct TokenSyncRequest {
     pub mint_address: String,
     pub include_post_migrate: bool,
+    /// When true, only fetch transactions newer than the last saved trade.
+    pub incremental: bool,
 }
 
 pub struct TokenSyncContext {
@@ -172,8 +174,18 @@ pub async fn run_token_sync(
 
     let decoder = HeliusDecoder::new(ctx.pump_program_id.clone());
 
+    // For incremental syncs, stop paging once we reach the last saved trade.
+    let until_signature: Option<String> = if req.incremental {
+        TradeRepo::new(ctx.db.clone())
+            .latest_signature(&mint)
+            .await
+            .map_err(|e| SyncError::Internal(e.to_string()))?
+    } else {
+        None
+    };
+
     let signatures = rpc
-        .get_all_signatures(&bonding_curve, |page, total| {
+        .get_all_signatures(&bonding_curve, until_signature.as_deref(), |page, total| {
             let line = serde_json::to_string(&SyncProgressEvent {
                 event_type: "progress",
                 stage: "fetching_signatures".into(),

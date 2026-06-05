@@ -102,7 +102,7 @@ export function SyncTokenPage() {
     syncAbortRef.current?.abort();
   }, []);
 
-  const handleSync = useCallback(async () => {
+  const handleSync = useCallback(async (incremental = false) => {
     const trimmed = mint.trim();
     if (!trimmed) {
       setError('Enter a token mint address.');
@@ -125,6 +125,7 @@ export function SyncTokenPage() {
         includePostMigrate,
         (ev) => setProgress(ev),
         controller.signal,
+        incremental,
       );
       setDetail(result.token);
       setTrades(result.trades);
@@ -184,9 +185,14 @@ export function SyncTokenPage() {
             Cancel
           </Button>
         ) : (
-          <Button variant="primary" onClick={handleSync} disabled={!mint.trim()}>
-            Fetch
-          </Button>
+          <>
+            <Button variant="primary" onClick={() => handleSync(false)} disabled={!mint.trim()}>
+              Fetch All
+            </Button>
+            <Button variant="ghost" onClick={() => handleSync(true)} disabled={!mint.trim()}>
+              Fetch New
+            </Button>
+          </>
         )}
       </div>
 

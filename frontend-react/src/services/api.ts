@@ -269,6 +269,7 @@ export async function syncToken(
   includePostMigrate: boolean,
   onProgress: (event: import('../types').SyncProgressEvent) => void,
   signal?: AbortSignal,
+  incremental = false,
 ): Promise<import('../types').SyncCompleteEvent> {
   const resp = await fetch(`${API_BASE}/api/token/sync`, {
     method: 'POST',
@@ -279,6 +280,7 @@ export async function syncToken(
     body: JSON.stringify({
       mint_address: mintAddress.trim(),
       include_post_migrate: includePostMigrate,
+      incremental,
     }),
     signal,
   });
