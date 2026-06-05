@@ -42,7 +42,12 @@ import { Input } from '../../components/ui/Input';
 import { Select } from '../../components/ui/Select';
 import { Tabs, TabsList, TabsPanel, TabsTrigger } from '../../components/ui/Tabs';
 import { VisibilityToggleButton } from '../../components/ui/VisibilityToggleButton';
-import { fetchProfiles, fetchTokenSwings, fetchTokenTrades, fetchTokens } from '../../services/api';
+import { fetchProfiles, fetchTokenSwings } from '../../services/api';
+import {
+  apiErrorMessage,
+  useGetTokenTradesQuery,
+  useGetTokensQuery,
+} from '../../store/apiSlice';
 import type {
   SwingDetectionResult,
   SwingParams,
@@ -50,6 +55,10 @@ import type {
   TradeRecord,
   WalletProfile,
 } from '../../types';
+
+/** Stable empty references so derived memos don't recompute every render. */
+const EMPTY_TOKENS: TokenRecord[] = [];
+const EMPTY_TRADES: TradeRecord[] = [];
 
 function toDatetimeLocalValue(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -241,11 +250,22 @@ export function SwingDetectionPage() {
     [unit, usdRate],
   );
 
-  const [tokens, setTokens] = useState<TokenRecord[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loaded, setLoaded] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Lazily loaded on the "Fetch" button, but shares TokensPage's cache key —
+  // if that page already loaded the list, flipping `skip` off is instant.
+  const [shouldLoadTokens, setShouldLoadTokens] = useState(false);
+  const {
+    data: tokensData,
+    isFetching: loading,
+    error: tokensError,
+    refetch: refetchTokens,
+  } = useGetTokensQuery(
+    { search: '', limit: 5000, offset: 0 },
+    { skip: !shouldLoadTokens },
+  );
+  const tokens = tokensData?.items ?? EMPTY_TOKENS;
+  const total = tokensData?.total ?? 0;
+  const loaded = tokensData !== undefined;
+  const error = apiErrorMessage(tokensError, 'Failed to load tokens');
   const [profiles, setProfiles] = useState<WalletProfile[]>([]);
 
   useEffect(() => {
@@ -284,9 +304,16 @@ export function SwingDetectionPage() {
   const [filters, setFilters] = useState<TokenFilters>(loadStoredTokenFilters);
 
   const [selectedMint, setSelectedMint] = useState<string | null>(null);
-  const [trades, setTrades] = useState<TradeRecord[]>([]);
-  const [tradesLoading, setTradesLoading] = useState(false);
-  const [tradesError, setTradesError] = useState<string | null>(null);
+  // Per-mint trades cached by mint, so re-selecting a token doesn't re-pull.
+  const {
+    data: tradesData,
+    isFetching: tradesLoading,
+    error: tradesErrorRaw,
+  } = useGetTokenTradesQuery(selectedMint ?? '', { skip: !selectedMint });
+  const trades = tradesData ?? EMPTY_TRADES;
+  const tradesError = selectedMint
+    ? apiErrorMessage(tradesErrorRaw, 'Failed to load trades')
+    : null;
   const [selectedBar, setSelectedBar] = useState<ChartBarSelection | null>(null);
   const [chartMetric, setChartMetric] = useState<ChartMetric>('price');
 
@@ -358,48 +385,16 @@ export function SwingDetectionPage() {
     [displayed, selectedMint],
   );
 
-  const loadTrades = useCallback(async (mint: string) => {
-    setTradesLoading(true);
-    setTradesError(null);
-    try {
-      const data = await fetchTokenTrades(mint);
-      setTrades(data);
-    } catch (e) {
-      setTrades([]);
-      setTradesError(e instanceof Error ? e.message : 'Failed to load trades');
-    } finally {
-      setTradesLoading(false);
+  // First click loads the shared token cache; later clicks force a refetch.
+  // A selection that scrolls out of the date range is cleared by the effect
+  // below that watches `displayed`.
+  const handleRefresh = useCallback(() => {
+    if (!shouldLoadTokens) {
+      setShouldLoadTokens(true);
+    } else {
+      refetchTokens();
     }
-  }, []);
-
-  const handleRefresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await fetchTokens('', 5000, 0);
-      setTokens(result.items);
-      setTotal(result.total);
-      setLoaded(true);
-      if (selectedMint) {
-        const stillVisible = filterDisplayedTokens(
-          result.items,
-          createdFrom,
-          createdTo,
-          filters,
-        ).some((t) => t.mint_address === selectedMint);
-        if (stillVisible) {
-          await loadTrades(selectedMint);
-        } else {
-          setSelectedMint(null);
-          setTrades([]);
-        }
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load tokens');
-    } finally {
-      setLoading(false);
-    }
-  }, [selectedMint, createdFrom, createdTo, filters, loadTrades]);
+  }, [shouldLoadTokens, refetchTokens]);
 
   useEffect(() => {
     saveStoredSwingCriteria(
@@ -410,23 +405,14 @@ export function SwingDetectionPage() {
     );
   }, [swingParams, swingFilter, appliedSwingFilter, connectSwings]);
 
+  // Reset selection-derived UI when the chosen token changes. Trades themselves
+  // are fetched/cached by the useGetTokenTradesQuery hook above.
   useEffect(() => {
-    if (!selectedMint) {
-      setTrades([]);
-      setTradesError(null);
-      setTradesLoading(false);
-      setSelectedBar(null);
-      setSwingResult(null);
-      setSwingError(null);
-      setSelectedSwingKey(null);
-      return;
-    }
     setSelectedBar(null);
     setSwingResult(null);
     setSwingError(null);
     setSelectedSwingKey(null);
-    loadTrades(selectedMint);
-  }, [selectedMint, loadTrades]);
+  }, [selectedMint]);
 
   useEffect(() => {
     setSelectedSwingKey(null);

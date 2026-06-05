@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { DataTable } from '../../components/table/DataTable';
 import { FilterPanel } from '../../components/tokens/FilterPanel';
 import { TokenDetailPanel } from '../../components/tokens/TokenDetailPanel';
@@ -15,13 +15,20 @@ import {
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { StatusButton } from '../../components/ui/StatusButton';
-import { fetchTokenDetail, fetchTokens } from '../../services/api';
 import { POLL_INTERVAL_MS } from '../../services/config';
-import type { TokenDetailRecord, TokenRecord } from '../../types';
+import type { TokenRecord } from '../../types';
 import { usePriceDisplay } from '../../hooks/usePriceDisplay';
+import {
+  apiErrorMessage,
+  useGetTokenDetailQuery,
+  useGetTokensQuery,
+} from '../../store/apiSlice';
 import { cn } from '../../lib/cn';
 
 const LS_LIVE_KEY = 'tokens_live';
+
+/** Stable empty reference so derived memos don't recompute every render. */
+const EMPTY_TOKENS: TokenRecord[] = [];
 
 function loadLive(): boolean {
   try {
@@ -35,41 +42,34 @@ export function TokensPage() {
   const price = usePriceDisplay();
   const columns = useMemo(() => tokenColumns(price), [price]);
 
-  const [tokens, setTokens] = useState<TokenRecord[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [live, setLive] = useState(loadLive);
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState<TokenFilters>(loadStoredTokenFilters);
   const [selectedMint, setSelectedMint] = useState<string | null>(null);
-  const [detail, setDetail] = useState<TokenDetailRecord | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [detailError, setDetailError] = useState<string | null>(null);
 
-  const loadTokens = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
-    try {
-      const result = await fetchTokens('', 5000, 0);
-      setTokens(result.items);
-      setTotal(result.total);
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load tokens');
-    } finally {
-      if (!silent) setLoading(false);
-    }
-  }, []);
+  // Shared cache: identical args to SwingDetectionPage, so the 5000-row list is
+  // fetched once and reused across navigation. Live mode polls into the cache.
+  const {
+    data: tokensData,
+    isLoading: loading,
+    error: tokensError,
+  } = useGetTokensQuery(
+    { search: '', limit: 5000, offset: 0 },
+    { pollingInterval: live ? POLL_INTERVAL_MS : 0 },
+  );
+  const tokens = tokensData?.items ?? EMPTY_TOKENS;
+  const total = tokensData?.total ?? 0;
+  const error = apiErrorMessage(tokensError, 'Failed to load tokens');
 
-  useEffect(() => {
-    loadTokens();
-  }, [loadTokens]);
-
-  useEffect(() => {
-    if (!live) return;
-    const id = setInterval(() => loadTokens(true), POLL_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [live, loadTokens]);
+  // Per-mint detail cached by mint, so re-selecting a token is instant.
+  const {
+    data: detail,
+    isFetching: detailLoading,
+    error: detailErrorRaw,
+  } = useGetTokenDetailQuery(selectedMint ?? '', { skip: !selectedMint });
+  const detailError = selectedMint
+    ? apiErrorMessage(detailErrorRaw, 'Failed to load detail')
+    : null;
 
   useEffect(() => {
     try {
@@ -78,22 +78,6 @@ export function TokensPage() {
       /* ignore */
     }
   }, [live]);
-
-  useEffect(() => {
-    if (!selectedMint) {
-      setDetail(null);
-      setDetailError(null);
-      setDetailLoading(false);
-      return;
-    }
-    setDetailLoading(true);
-    setDetailError(null);
-    setDetail(null);
-    fetchTokenDetail(selectedMint)
-      .then(setDetail)
-      .catch((e) => setDetailError(e instanceof Error ? e.message : 'Failed to load detail'))
-      .finally(() => setDetailLoading(false));
-  }, [selectedMint]);
 
   useEffect(() => {
     if (!selectedMint) return;
@@ -167,7 +151,7 @@ export function TokensPage() {
           selectedKey={selectedMint}
           onSelect={setSelectedMint}
           rowDetail={() => (
-            <TokenDetailPanel detail={detail} loading={detailLoading} error={detailError} />
+            <TokenDetailPanel detail={detail ?? null} loading={detailLoading} error={detailError} />
           )}
           searchable
           colFilters
