@@ -145,5 +145,9 @@ pub const RUGGED_STALE_SECONDS: i64 = 3600; // 1 hour
 
 
 pub const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
+
+/// Trades below this size are dust (bot noise / probe txs) and are not ingested.
+pub const MIN_TRADE_LAMPORTS: u64 = 10_000;
+pub const MIN_TRADE_SOL: f64 = MIN_TRADE_LAMPORTS as f64 / LAMPORTS_PER_SOL as f64;
 pub const EVENT_AUTHORITY: &str = "Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1";
 pub const FEE_PROGRAM_ID: &str = "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ";

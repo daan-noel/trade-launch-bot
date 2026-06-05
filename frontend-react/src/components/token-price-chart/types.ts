@@ -10,6 +10,9 @@ export interface ChartTrade {
   slot?: number;
   virtual_sol_reserves?: number | null;
   virtual_token_reserves?: number | null;
+  real_sol_reserves?: number | null;
+  real_token_reserves?: number | null;
+  venue?: 'curve' | 'amm';
   wallet_address?: string;
 }
 

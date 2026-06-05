@@ -153,6 +153,10 @@ impl HeliusDecoder {
         // 3a. For each decoded TradeEvent: emit TradeExecuted.
         //     Covers Buy/Sell even when pump.fun is a nested CPI call.
         for (leg_index, ev) in decoded_events.iter().enumerate() {
+            if Trade::is_dust(ev.sol_amount) {
+                continue;
+            }
+
             let trade_type = if ev.is_buy {
                 TradeType::Buy
             } else {
@@ -325,6 +329,9 @@ impl HeliusDecoder {
             if ev.pool != pool {
                 continue;
             }
+            if Trade::is_dust(ev.quote_amount) {
+                continue;
+            }
             let trade_type = if ev.is_buy {
                 TradeType::Buy
             } else {
@@ -341,7 +348,10 @@ impl HeliusDecoder {
                 slot,
                 block_time,
             );
-            // PumpSwap has no virtual reserves; record the post-swap pool reserves.
+            // PumpSwap has no virtual reserves; mirror post-swap pool reserves so
+            // chart spot (virtual_sol / virtual_token) works for AMM trades too.
+            trade.virtual_sol_reserves = Some(ev.pool_quote_reserves);
+            trade.virtual_token_reserves = Some(ev.pool_base_reserves);
             trade.real_sol_reserves = Some(ev.pool_quote_reserves);
             trade.real_token_reserves = Some(ev.pool_base_reserves);
             trade.instruction_type = match trade.trade_type {
@@ -581,6 +591,10 @@ impl HeliusDecoder {
 
         let sol_amount = compute_sol_change(&user, account_keys, pre_balances, post_balances);
         let token_amount = compute_token_change(&user_ata, &mint, account_keys, meta);
+
+        if Trade::is_dust(sol_amount) {
+            return None;
+        }
 
         let mut trade = Trade::new(
             mint,

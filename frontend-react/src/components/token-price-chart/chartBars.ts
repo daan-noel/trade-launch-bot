@@ -27,6 +27,9 @@ export function tradeBarSlot(trade: Pick<ChartTrade, 'slot'>): UTCTimestamp | nu
   return slot as UTCTimestamp;
 }
 
+/** Matches backend `MIN_TRADE_SOL` (10k lamports); safety net for pre-filter data. */
+const MIN_CHART_SOL = 1e-5;
+
 /** Bonding-curve spot price: virtual SOL / virtual tokens (GMGN-style). */
 export function curveSpotPriceSol(
   trade: Pick<ChartTrade, 'virtual_sol_reserves' | 'virtual_token_reserves'>,
@@ -35,6 +38,29 @@ export function curveSpotPriceSol(
   const vtoken = trade.virtual_token_reserves;
   if (vsol == null || vtoken == null || vtoken <= 0) return null;
   return vsol / vtoken;
+}
+
+/** PumpSwap pool spot: quote SOL / base tokens (post-migration). */
+export function poolSpotPriceSol(
+  trade: Pick<ChartTrade, 'real_sol_reserves' | 'real_token_reserves'>,
+): number | null {
+  const sol = trade.real_sol_reserves;
+  const token = trade.real_token_reserves;
+  if (sol == null || token == null || token <= 0) return null;
+  return sol / token;
+}
+
+/**
+ * GMGN-style spot for charting: curve virtual reserves, then pool reserves
+ * (AMM), then execution price as last resort.
+ */
+export function tradeSpotPriceSol(trade: ChartTrade): number | null {
+  const spot = curveSpotPriceSol(trade) ?? poolSpotPriceSol(trade);
+  if (spot != null && spot > 0 && Number.isFinite(spot)) return spot;
+  if (trade.price_per_token > 0 && Number.isFinite(trade.price_per_token)) {
+    return trade.price_per_token;
+  }
+  return null;
 }
 
 /** Bonding-curve liquidity in SOL (GMGN-style: 2× virtual SOL reserves). */
@@ -46,11 +72,25 @@ export function curveLiquiditySol(
   return vsol * 2;
 }
 
+/** Pool or curve liquidity in SOL (2× quote/virtual SOL reserves). */
+export function tradeLiquiditySol(trade: ChartTrade): number | null {
+  const sol = trade.virtual_sol_reserves ?? trade.real_sol_reserves;
+  if (sol == null || sol <= 0) return null;
+  return sol * 2;
+}
+
 /** FDV in SOL: total supply × spot price (GMGN-style MC). */
 export function curveMarketCapSol(
   trade: Pick<ChartTrade, 'virtual_sol_reserves' | 'virtual_token_reserves'>,
 ): number | null {
   const spot = curveSpotPriceSol(trade);
+  if (spot == null) return null;
+  return TOKEN_TOTAL_SUPPLY * spot;
+}
+
+/** FDV in SOL from chart spot (curve, pool, or execution fallback). */
+export function tradeMarketCapSol(trade: ChartTrade): number | null {
+  const spot = tradeSpotPriceSol(trade);
   if (spot == null) return null;
   return TOKEN_TOTAL_SUPPLY * spot;
 }
@@ -83,7 +123,7 @@ export function chartValueForTrade(
   trade: ChartTrade,
   metric: ChartMetric,
 ): number | null {
-  return metric === 'price' ? curveSpotPriceSol(trade) : curveMarketCapSol(trade);
+  return metric === 'price' ? tradeSpotPriceSol(trade) : tradeMarketCapSol(trade);
 }
 
 /** Trades with `price_per_token` set to the chart metric (overlay / markers). */
@@ -173,6 +213,8 @@ function collectTradeBuckets(
   const buckets = new Map<number, TradeBucket>();
 
   for (const trade of trades) {
+    if (trade.sol_amount != null && trade.sol_amount < MIN_CHART_SOL) continue;
+
     const key = bucketKey(trade);
     if (key == null) continue;
 
@@ -181,7 +223,7 @@ function collectTradeBuckets(
 
     const price = toValue(value);
     const vol = trade.sol_amount ?? 1;
-    const liquiditySol = curveLiquiditySol(trade);
+    const liquiditySol = tradeLiquiditySol(trade);
     const existing = buckets.get(key);
 
     if (existing) {
