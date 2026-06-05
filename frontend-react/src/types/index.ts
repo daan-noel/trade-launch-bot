@@ -251,6 +251,18 @@ export interface SwingDetectionResult {
   swings: SwingLegRecord[];
 }
 
+/** One token's swing ledger inside a batch (multi-token) detection response. */
+export interface SwingBatchEntry {
+  mint: string;
+  count: number;
+  swings: SwingLegRecord[];
+}
+
+export interface SwingBatchResponse {
+  params: SwingParams;
+  results: SwingBatchEntry[];
+}
+
 export interface CreatorRecord {
   wallet_address: string;
   tokens_created: number;

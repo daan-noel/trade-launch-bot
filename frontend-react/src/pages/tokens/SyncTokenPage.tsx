@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useDispatch, useSelector } from 'react-redux';
 import { DataTable } from '../../components/table/DataTable';
 import type { ColumnDef } from '../../components/table/types';
 import { tokenTradeColumns } from '../../components/transactions/tokenTradeColumns';
@@ -12,7 +13,14 @@ import { Textarea } from '../../components/ui/Input';
 import { usePriceUnit } from '../../context/PriceUnitContext';
 import { usePriceDisplay } from '../../hooks/usePriceDisplay';
 import { fetchProfiles, syncToken } from '../../services/api';
-import type { SyncProgressEvent, TokenDetailRecord, TradeRecord, WalletProfile } from '../../types';
+import type { SyncProgressEvent, TokenDetailRecord, WalletProfile } from '../../types';
+import type { AppDispatch, RootState } from '../../store';
+import {
+  clearSyncOutput,
+  setSelectedMint,
+  setSyncOutput,
+} from '../../store/syncTokenSlice';
+import type { SyncedToken, SyncResultItem } from '../../store/syncTokenSlice';
 import { cn } from '../../lib/cn';
 
 const STAGE_ORDER = [
@@ -82,11 +90,6 @@ function parseMints(raw: string): string[] {
     ),
   );
 }
-
-type SyncResultItem = { mint: string; ok: boolean; error?: string };
-
-/** A token that synced successfully, paired with its trades. */
-type SyncedToken = { token: TokenDetailRecord; trades: TradeRecord[] };
 
 /** A synced-tokens table row: a sync result, with its token record (null on failure). */
 type SyncedRow = SyncResultItem & { token: TokenDetailRecord | null };
@@ -199,6 +202,14 @@ export function SyncTokenPage() {
   const { unit, usdRate } = usePriceUnit();
   const tradeColumns = useMemo(() => tokenTradeColumns(price), [price]);
 
+  // Synced output lives in Redux so it survives navigation (the route unmounts
+  // on leave). The in-flight sync state below stays local — it's tied to a
+  // specific request and isn't meaningful to persist.
+  const dispatch = useDispatch<AppDispatch>();
+  const results = useSelector((s: RootState) => s.syncToken.results);
+  const syncedTokens = useSelector((s: RootState) => s.syncToken.syncedTokens);
+  const selectedMint = useSelector((s: RootState) => s.syncToken.selectedMint);
+
   const [chartMetric, setChartMetric] = useState<ChartMetric>('price');
   const toChartValue = useCallback(
     (sol: number) => (unit === 'USD' && usdRate != null ? sol * usdRate : sol),
@@ -210,10 +221,7 @@ export function SyncTokenPage() {
   const [syncing, setSyncing] = useState(false);
   const [progress, setProgress] = useState<SyncProgressEvent | null>(null);
   const [batch, setBatch] = useState<{ index: number; total: number } | null>(null);
-  const [results, setResults] = useState<SyncResultItem[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [syncedTokens, setSyncedTokens] = useState<SyncedToken[]>([]);
-  const [selectedMint, setSelectedMint] = useState<string | null>(null);
   const syncAbortRef = useRef<AbortController | null>(null);
   const [profiles, setProfiles] = useState<WalletProfile[]>([]);
 
@@ -259,9 +267,7 @@ export function SyncTokenPage() {
     setSyncing(true);
     setError(null);
     setProgress(null);
-    setSyncedTokens([]);
-    setSelectedMint(null);
-    setResults([]);
+    dispatch(clearSyncOutput());
     setBatch(null);
 
     const collected: SyncResultItem[] = [];
@@ -293,16 +299,24 @@ export function SyncTokenPage() {
           });
         }
       }
-      setResults(collected);
-      setSyncedTokens(oks);
-      setSelectedMint(oks[0]?.token.mint_address ?? null);
+      dispatch(
+        setSyncOutput({
+          results: collected,
+          syncedTokens: oks,
+          selectedMint: oks[0]?.token.mint_address ?? null,
+        }),
+      );
       setProgress(null);
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') {
         setProgress(null);
-        setResults(collected);
-        setSyncedTokens(oks);
-        setSelectedMint(oks[0]?.token.mint_address ?? null);
+        dispatch(
+          setSyncOutput({
+            results: collected,
+            syncedTokens: oks,
+            selectedMint: oks[0]?.token.mint_address ?? null,
+          }),
+        );
         return;
       }
       setError(e instanceof Error ? e.message : 'Sync failed');
@@ -313,7 +327,7 @@ export function SyncTokenPage() {
         syncAbortRef.current = null;
       }
     }
-  }, [mint, includePostMigrate]);
+  }, [mint, includePostMigrate, dispatch]);
 
   return (
     <div>
@@ -420,7 +434,7 @@ export function SyncTokenPage() {
             selectedKey={selectedMint}
             onSelect={(key) => {
               if (key && syncedTokens.some((t) => t.token.mint_address === key)) {
-                setSelectedMint(key);
+                dispatch(setSelectedMint(key));
               }
             }}
             defaultPageSize={25}

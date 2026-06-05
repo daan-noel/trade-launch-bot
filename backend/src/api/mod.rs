@@ -19,6 +19,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 web::get().to(handlers::tokens::get_token_analysis),
             )
             .route(
+                "/tokens/swings/batch",
+                web::post().to(handlers::tokens::detect_tokens_swings_batch),
+            )
+            .route(
                 "/tokens/{mint}/swings",
                 web::post().to(handlers::tokens::detect_token_swings),
             )

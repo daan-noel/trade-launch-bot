@@ -218,7 +218,7 @@ export function FilterPanel({ filters, onApply, onClear }: FilterPanelProps) {
         e.preventDefault();
         onApply(draft);
       }}
-      className="mb-2 rounded-lg border border-white/8 bg-white/2 px-4 py-3"
+      className="w-full mb-2 rounded-lg border border-white/8 bg-white/2 px-4 py-3"
     >
       <div className="mb-3 flex items-center justify-between gap-3 border-b border-white/6 pb-2.5">
         <div className="flex items-center gap-2">

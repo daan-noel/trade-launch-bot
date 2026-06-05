@@ -30,19 +30,7 @@ CREATE INDEX IF NOT EXISTS idx_tokens_is_mayhem_mode     ON tokens(is_mayhem_mod
 CREATE INDEX IF NOT EXISTS idx_tokens_token_program_id   ON tokens(token_program_id);
 CREATE INDEX IF NOT EXISTS idx_tokens_is_cashback_enabled ON tokens(is_cashback_enabled);
 
--- -------------------------------------------------------------------------
--- wallets
--- -------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS wallets (
-    id              UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
-    address         TEXT        UNIQUE NOT NULL,
-    first_seen_at   TIMESTAMPTZ NOT NULL,
-    last_seen_at    TIMESTAMPTZ NOT NULL,
-    is_flagged      BOOLEAN     NOT NULL DEFAULT FALSE,
-    flag_reason     TEXT
-);
 
-CREATE INDEX IF NOT EXISTS idx_wallets_flagged ON wallets(is_flagged) WHERE is_flagged = TRUE;
 
 -- -------------------------------------------------------------------------
 -- trades

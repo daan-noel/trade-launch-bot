@@ -66,6 +66,18 @@ export async function fetchTokenSwings(
   });
 }
 
+/** Run swing detection over many mints in one request (shared params). */
+export async function fetchTokenSwingsBatch(
+  mints: string[],
+  params: import('../types').SwingParams,
+): Promise<import('../types').SwingBatchResponse> {
+  return request(`${API_BASE}/api/tokens/swings/batch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mints, params }),
+  });
+}
+
 export async function fetchTpslRules(): Promise<import('../types').RuleRecord[]> {
   return request(`${API_BASE}/api/strategies/tpsl/rules`);
 }

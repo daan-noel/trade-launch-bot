@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useDispatch, useSelector } from 'react-redux';
 import { DataTable } from '../../components/table/DataTable';
 import { tokenTradeColumns } from '../../components/transactions/tokenTradeColumns';
 import {
@@ -28,6 +29,18 @@ import { formatTimestampMs } from '../../utils/date';
 import { usePriceDisplay } from '../../hooks/usePriceDisplay';
 import { swingColumns } from '../../components/analysis/swingColumns';
 import {
+  DEFAULT_SWING_PARAMS,
+  SWING_PARAM_INT_KEYS,
+  SwingParamsGrid,
+  isFiniteNumber,
+  mergeSwingParams,
+  swingParamsFromForm,
+  swingParamLabelClassName as labelClassName,
+  type SwingParamsForm,
+} from '../../components/analysis/swingParams';
+import { computeChainStats, type SwingChainStats } from '../../components/analysis/swingChains';
+import { swingChainColumns } from '../../components/analysis/swingChainColumns';
+import {
   DEFAULT_SWING_FILTER,
   filterSwings,
   hasActiveSwingFilter,
@@ -42,14 +55,25 @@ import { Input } from '../../components/ui/Input';
 import { Select } from '../../components/ui/Select';
 import { Tabs, TabsList, TabsPanel, TabsTrigger } from '../../components/ui/Tabs';
 import { VisibilityToggleButton } from '../../components/ui/VisibilityToggleButton';
-import { fetchProfiles, fetchTokenSwings } from '../../services/api';
+import { fetchProfiles, fetchTokenSwings, fetchTokenSwingsBatch } from '../../services/api';
 import {
   apiErrorMessage,
   useGetTokenTradesQuery,
   useGetTokensQuery,
 } from '../../store/apiSlice';
+import type { AppDispatch, RootState } from '../../store';
+import {
+  clearCreatedRange,
+  setCreatedFrom,
+  setCreatedTo,
+  setSelectedMint,
+  setSelectedSwingKey,
+  setSwingAllResults,
+  setSwingResult,
+  setTokensFetched,
+} from '../../store/swingDetectionSlice';
 import type {
-  SwingDetectionResult,
+  SwingLegRecord,
   SwingParams,
   TokenRecord,
   TradeRecord,
@@ -59,17 +83,6 @@ import type {
 /** Stable empty references so derived memos don't recompute every render. */
 const EMPTY_TOKENS: TokenRecord[] = [];
 const EMPTY_TRADES: TradeRecord[] = [];
-
-function toDatetimeLocalValue(date: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function startOfToday(): Date {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
 
 function filterByCreatedRange(
   tokens: TokenRecord[],
@@ -106,59 +119,12 @@ function SectionDivider() {
 
 type AnalysisKind = 'swing';
 type SwingPanelTab = 'analysis' | 'filter';
-
-const DEFAULT_SWING_PARAMS: SwingParams = {
-  high_to_low_threshold_sol: 5,
-  high_to_low_threshold_pct: 50,
-  low_to_high_threshold_sol: 5,
-  low_to_high_threshold_pct: 50,
-  min_leg_trades: 2,
-  min_leg_duration_ms: 0,
-  min_leg_volume: 0,
-  min_leg_net_flow: 0,
-  max_leg_trades: 0,
-  max_leg_duration_ms: 0,
-  max_leg_volume: 0,
-  max_leg_net_flow: 0,
-};
-
-const SWING_PARAM_INT_KEYS = new Set<keyof SwingParams>([
-  'min_leg_trades',
-  'min_leg_duration_ms',
-  'max_leg_trades',
-  'max_leg_duration_ms',
-]);
+type SwingAllTab = 'analysis' | 'chain';
 
 const LS_SWING_DETECTION_KEY = 'swing_detection_criteria';
 
-const SWING_PARAM_KEYS = Object.keys(DEFAULT_SWING_PARAMS) as (keyof SwingParams)[];
-
-/** Editable form shape: fields may be empty while the user is typing. */
-type SwingParamsForm = { [K in keyof SwingParams]: number | '' };
-
-/** Coerce an in-progress form into params, treating empty fields as 0. */
-function swingParamsFromForm(form: SwingParamsForm): SwingParams {
-  const out = {} as SwingParams;
-  for (const key of SWING_PARAM_KEYS) {
-    const value = form[key];
-    out[key] = typeof value === 'number' ? value : 0;
-  }
-  return out;
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
-function mergeSwingParams(partial: Partial<SwingParams> | undefined): SwingParams {
-  if (!partial) return DEFAULT_SWING_PARAMS;
-  const merged = { ...DEFAULT_SWING_PARAMS };
-  for (const key of SWING_PARAM_KEYS) {
-    const value = partial[key];
-    if (isFiniteNumber(value)) merged[key] = value;
-  }
-  return merged;
-}
+/** Default max idle gap (ms) for two swings to count as the same chain. */
+const DEFAULT_CHAIN_LATENCY_MS = 60_000;
 
 function mergeSwingFilter(partial: Partial<SwingFilterCriteria> | undefined): SwingFilterCriteria {
   if (!partial) return DEFAULT_SWING_FILTER;
@@ -183,6 +149,7 @@ function loadStoredSwingCriteria(): {
   filter: SwingFilterCriteria;
   appliedFilter: SwingFilterCriteria;
   connectSwings: boolean;
+  chainLatencyMs: number;
 } {
   try {
     const raw = localStorage.getItem(LS_SWING_DETECTION_KEY);
@@ -192,6 +159,7 @@ function loadStoredSwingCriteria(): {
         filter: DEFAULT_SWING_FILTER,
         appliedFilter: DEFAULT_SWING_FILTER,
         connectSwings: true,
+        chainLatencyMs: DEFAULT_CHAIN_LATENCY_MS,
       };
     }
     const parsed = JSON.parse(raw) as {
@@ -199,12 +167,16 @@ function loadStoredSwingCriteria(): {
       filter?: Partial<SwingFilterCriteria>;
       appliedFilter?: Partial<SwingFilterCriteria>;
       connectSwings?: boolean;
+      chainLatencyMs?: number;
     };
     return {
       params: mergeSwingParams(parsed.params),
       filter: mergeSwingFilter(parsed.filter),
       appliedFilter: mergeSwingFilter(parsed.appliedFilter ?? parsed.filter),
       connectSwings: parsed.connectSwings !== false,
+      chainLatencyMs: isFiniteNumber(parsed.chainLatencyMs)
+        ? parsed.chainLatencyMs
+        : DEFAULT_CHAIN_LATENCY_MS,
     };
   } catch {
     return {
@@ -212,6 +184,7 @@ function loadStoredSwingCriteria(): {
       filter: DEFAULT_SWING_FILTER,
       appliedFilter: DEFAULT_SWING_FILTER,
       connectSwings: true,
+      chainLatencyMs: DEFAULT_CHAIN_LATENCY_MS,
     };
   }
 }
@@ -221,27 +194,36 @@ function saveStoredSwingCriteria(
   filter: SwingFilterCriteria,
   appliedFilter: SwingFilterCriteria,
   connectSwings: boolean,
+  chainLatencyMs: number,
 ): void {
   try {
     localStorage.setItem(
       LS_SWING_DETECTION_KEY,
-      JSON.stringify({ params, filter, appliedFilter, connectSwings }),
+      JSON.stringify({ params, filter, appliedFilter, connectSwings, chainLatencyMs }),
     );
   } catch {
     /* ignore */
   }
 }
 
-const labelClassName =
-  'flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim';
-
 export function SwingDetectionPage() {
   const [storedSwingCriteria] = useState(loadStoredSwingCriteria);
+
+  // Persisted in Redux so the page restores its state across navigation
+  // (routes unmount on leave): fetched token results, time range, selected
+  // token, swing result, and selected swing leg.
+  const dispatch = useDispatch<AppDispatch>();
+  const tokensFetched = useSelector((s: RootState) => s.swingDetection.tokensFetched);
+  const createdFrom = useSelector((s: RootState) => s.swingDetection.createdFrom);
+  const createdTo = useSelector((s: RootState) => s.swingDetection.createdTo);
+  const selectedMint = useSelector((s: RootState) => s.swingDetection.selectedMint);
+  const swingResult = useSelector((s: RootState) => s.swingDetection.swingResult);
+  const selectedSwingKey = useSelector((s: RootState) => s.swingDetection.selectedSwingKey);
+  const swingAllResults = useSelector((s: RootState) => s.swingDetection.swingAllResults);
 
   const price = usePriceDisplay();
   const { unit, usdRate } = usePriceUnit();
   const { timezone } = useTimezone();
-  const columns = useMemo(() => tokenColumns(price), [price]);
   const tradeTableColumns = useMemo(() => tokenTradeColumns(price), [price]);
   const swingTableColumns = useMemo(() => swingColumns(price, timezone), [price, timezone]);
 
@@ -251,8 +233,8 @@ export function SwingDetectionPage() {
   );
 
   // Lazily loaded on the "Fetch" button, but shares TokensPage's cache key —
-  // if that page already loaded the list, flipping `skip` off is instant.
-  const [shouldLoadTokens, setShouldLoadTokens] = useState(false);
+  // if that page already loaded the list, flipping `skip` off is instant. The
+  // `tokensFetched` flag lives in Redux so the table re-appears on return.
   const {
     data: tokensData,
     isFetching: loading,
@@ -260,7 +242,7 @@ export function SwingDetectionPage() {
     refetch: refetchTokens,
   } = useGetTokensQuery(
     { search: '', limit: 5000, offset: 0 },
-    { skip: !shouldLoadTokens },
+    { skip: !tokensFetched },
   );
   const tokens = tokensData?.items ?? EMPTY_TOKENS;
   const total = tokensData?.total ?? 0;
@@ -269,7 +251,7 @@ export function SwingDetectionPage() {
   const [profiles, setProfiles] = useState<WalletProfile[]>([]);
 
   useEffect(() => {
-    fetchProfiles().then(setProfiles).catch(() => {});
+    fetchProfiles().then(setProfiles).catch(() => { });
   }, []);
 
   const profileWallets = useMemo<ProfileWalletInfo[]>(() => {
@@ -293,17 +275,9 @@ export function SwingDetectionPage() {
     return result;
   }, [profiles]);
 
-  const [createdFrom, setCreatedFrom] = useState(() =>
-    toDatetimeLocalValue(startOfToday()),
-  );
-  const [createdTo, setCreatedTo] = useState(() =>
-    toDatetimeLocalValue(new Date()),
-  );
-
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState<TokenFilters>(loadStoredTokenFilters);
 
-  const [selectedMint, setSelectedMint] = useState<string | null>(null);
   // Per-mint trades cached by mint, so re-selecting a token doesn't re-pull.
   const {
     data: tradesData,
@@ -319,7 +293,6 @@ export function SwingDetectionPage() {
 
   const [activeAnalysis, setActiveAnalysis] = useState<AnalysisKind | null>(null);
   const [swingParams, setSwingParams] = useState<SwingParamsForm>(storedSwingCriteria.params);
-  const [swingResult, setSwingResult] = useState<SwingDetectionResult | null>(null);
   const [swingLoading, setSwingLoading] = useState(false);
   const [swingError, setSwingError] = useState<string | null>(null);
   const [swingPanelTab, setSwingPanelTab] = useState<SwingPanelTab>('analysis');
@@ -329,7 +302,43 @@ export function SwingDetectionPage() {
   );
   const [showSwingResultsTable, setShowSwingResultsTable] = useState(false);
   const [connectSwings, setConnectSwings] = useState(storedSwingCriteria.connectSwings);
-  const [selectedSwingKey, setSelectedSwingKey] = useState<string | null>(null);
+
+  // "Swing Detection All" — global detection across every filtered token. Raw
+  // swings per mint are kept so tuning the chain latency re-groups instantly
+  // without re-fetching.
+  const [showSwingAll, setShowSwingAll] = useState(false);
+  const [swingAllTab, setSwingAllTab] = useState<SwingAllTab>('analysis');
+  const [chainLatencyMs, setChainLatencyMs] = useState<number | ''>(
+    storedSwingCriteria.chainLatencyMs,
+  );
+  const [swingAllLoading, setSwingAllLoading] = useState(false);
+  const [swingAllError, setSwingAllError] = useState<string | null>(null);
+
+  // Batch result lives in Redux (as the serializable array the API returns);
+  // index it by mint here for lookups and chain-stat grouping.
+  const swingsByMint = useMemo(() => {
+    const map = new Map<string, SwingLegRecord[]>();
+    if (swingAllResults) {
+      for (const entry of swingAllResults) map.set(entry.mint, entry.swings);
+    }
+    return map;
+  }, [swingAllResults]);
+  const swingAllRanCount = swingAllResults ? swingAllResults.length : null;
+
+  const chainLatencyValue = typeof chainLatencyMs === 'number' ? chainLatencyMs : 0;
+
+  const chainStatsByMint = useMemo(() => {
+    const map = new Map<string, SwingChainStats>();
+    for (const [mint, swings] of swingsByMint) {
+      map.set(mint, computeChainStats(swings, chainLatencyValue));
+    }
+    return map;
+  }, [swingsByMint, chainLatencyValue]);
+
+  const columns = useMemo(
+    () => [...tokenColumns(price), ...swingChainColumns(chainStatsByMint)],
+    [price, chainStatsByMint],
+  );
 
   const toggleAnalysis = useCallback((kind: AnalysisKind) => {
     setActiveAnalysis((prev) => (prev === kind ? null : kind));
@@ -364,19 +373,36 @@ export function SwingDetectionPage() {
     setSwingError(null);
     try {
       const result = await fetchTokenSwings(selectedMint, swingParamsFromForm(swingParams));
-      setSwingResult(result);
+      dispatch(setSwingResult(result));
     } catch (e) {
-      setSwingResult(null);
+      dispatch(setSwingResult(null));
       setSwingError(e instanceof Error ? e.message : 'Swing detection failed');
     } finally {
       setSwingLoading(false);
     }
-  }, [selectedMint, swingParams]);
+  }, [selectedMint, swingParams, dispatch]);
 
   const displayed = useMemo(
     () => filterDisplayedTokens(tokens, createdFrom, createdTo, filters),
     [tokens, createdFrom, createdTo, filters],
   );
+
+  // Run detection across all currently-filtered tokens in one batch request,
+  // then keep the raw swings per mint for client-side chain grouping.
+  const handleRunAllSwings = useCallback(async () => {
+    const mints = displayed.map((t) => t.mint_address);
+    if (mints.length === 0) return;
+    setSwingAllLoading(true);
+    setSwingAllError(null);
+    try {
+      const resp = await fetchTokenSwingsBatch(mints, swingParamsFromForm(swingParams));
+      dispatch(setSwingAllResults(resp.results));
+    } catch (e) {
+      setSwingAllError(e instanceof Error ? e.message : 'Swing detection failed');
+    } finally {
+      setSwingAllLoading(false);
+    }
+  }, [displayed, swingParams, dispatch]);
 
   const filterCount = activeFilterCount(filters);
 
@@ -389,12 +415,19 @@ export function SwingDetectionPage() {
   // A selection that scrolls out of the date range is cleared by the effect
   // below that watches `displayed`.
   const handleRefresh = useCallback(() => {
-    if (!shouldLoadTokens) {
-      setShouldLoadTokens(true);
+    if (!tokensFetched) {
+      dispatch(setTokensFetched(true));
     } else {
       refetchTokens();
     }
-  }, [shouldLoadTokens, refetchTokens]);
+  }, [tokensFetched, refetchTokens, dispatch]);
+
+  const handleSelectMint = useCallback(
+    (mint: string | null) => {
+      dispatch(setSelectedMint(mint));
+    },
+    [dispatch],
+  );
 
   useEffect(() => {
     saveStoredSwingCriteria(
@@ -402,26 +435,25 @@ export function SwingDetectionPage() {
       swingFilterFromForm(swingFilter),
       appliedSwingFilter,
       connectSwings,
+      chainLatencyValue,
     );
-  }, [swingParams, swingFilter, appliedSwingFilter, connectSwings]);
+  }, [swingParams, swingFilter, appliedSwingFilter, connectSwings, chainLatencyValue]);
 
-  // Reset selection-derived UI when the chosen token changes. Trades themselves
-  // are fetched/cached by the useGetTokenTradesQuery hook above.
+  // Reset local selection-derived UI when the chosen token changes. The Redux
+  // swing result and leg selection are cleared by the setSelectedMint reducer;
+  // trades themselves are fetched/cached by the useGetTokenTradesQuery hook.
   useEffect(() => {
     setSelectedBar(null);
-    setSwingResult(null);
     setSwingError(null);
-    setSelectedSwingKey(null);
   }, [selectedMint]);
 
-  useEffect(() => {
-    setSelectedSwingKey(null);
-  }, [swingResult]);
-
-  const handleSwingSelect = useCallback((key: string | null) => {
-    setSelectedSwingKey(key);
-    if (key) setSelectedBar(null);
-  }, []);
+  const handleSwingSelect = useCallback(
+    (key: string | null) => {
+      dispatch(setSelectedSwingKey(key));
+      if (key) setSelectedBar(null);
+    },
+    [dispatch],
+  );
 
   const handleSwingLegClick = useCallback(
     (leg: ChartSwingLeg | null) => {
@@ -430,17 +462,23 @@ export function SwingDetectionPage() {
     [handleSwingSelect],
   );
 
-  const handleBarClick = useCallback((selection: ChartBarSelection | null) => {
-    setSelectedBar(selection);
-    if (selection) setSelectedSwingKey(null);
-  }, []);
+  const handleBarClick = useCallback(
+    (selection: ChartBarSelection | null) => {
+      setSelectedBar(selection);
+      if (selection) dispatch(setSelectedSwingKey(null));
+    },
+    [dispatch],
+  );
 
+  // A selection that scrolls out of the date range is cleared — but only once
+  // the list has loaded, so the persisted selection survives the initial fetch
+  // after navigating back (when `displayed` is briefly empty).
   useEffect(() => {
-    if (!selectedMint) return;
+    if (!selectedMint || !loaded) return;
     if (!displayed.some((t) => t.mint_address === selectedMint)) {
-      setSelectedMint(null);
+      dispatch(setSelectedMint(null));
     }
-  }, [displayed, selectedMint]);
+  }, [displayed, selectedMint, loaded, dispatch]);
 
   const chartSymbol =
     selectedToken?.symbol || selectedToken?.name || selectedMint || '';
@@ -464,10 +502,20 @@ export function SwingDetectionPage() {
       : formatTimestampMs(Number(selectedBar.barTime) * 1000, timezone)
     : '';
 
+  // Swings to draw on the chart for the selected token. The per-token "Run"
+  // result takes precedence (it honors the Analysis/Filter panel); otherwise
+  // fall back to the "Swing Detection All" batch result so selecting a token
+  // after a batch run still shows its swings on the chart.
+  const selectedMintSwings = useMemo<SwingLegRecord[] | null>(() => {
+    if (!selectedMint) return null;
+    if (swingResult && swingResult.mint === selectedMint) return swingResult.swings;
+    return swingsByMint.get(selectedMint) ?? null;
+  }, [selectedMint, swingResult, swingsByMint]);
+
   const selectedSwingLeg = useMemo(() => {
-    if (!selectedSwingKey || !swingResult) return null;
-    return swingResult.swings.find((leg) => swingLegKey(leg) === selectedSwingKey) ?? null;
-  }, [selectedSwingKey, swingResult]);
+    if (!selectedSwingKey || !selectedMintSwings) return null;
+    return selectedMintSwings.find((leg) => swingLegKey(leg) === selectedSwingKey) ?? null;
+  }, [selectedSwingKey, selectedMintSwings]);
 
   const swingTrades = useMemo(() => {
     if (!selectedSwingLeg) return [];
@@ -489,22 +537,26 @@ export function SwingDetectionPage() {
   }, [swingResult, appliedSwingFilter]);
 
   const swingOverlay = useMemo(() => {
-    if (!swingResult || swingResult.mint !== selectedMint) return null;
+    if (!selectedMintSwings || !selectedMintSwings.length) return null;
+    // The Analysis/Filter panel only applies to the per-token "Run" result; the
+    // batch ("Swing Detection All") fallback is shown as a plain connected path.
+    const isRunResult = swingResult != null && swingResult.mint === selectedMint;
     const filterActive =
-      swingPanelTab === 'filter' && hasActiveSwingFilter(appliedSwingFilter);
-    const legs = filterActive ? filteredSwings : swingResult.swings;
+      isRunResult && swingPanelTab === 'filter' && hasActiveSwingFilter(appliedSwingFilter);
+    const legs = filterActive ? filteredSwings : selectedMintSwings;
     if (!connectSwings) {
       return { legs, segmentMode: 'perLeg' as const };
     }
     if (filterActive) {
       return {
         legs,
-        allLegs: swingResult.swings,
+        allLegs: selectedMintSwings,
         segmentMode: 'connectedSequential' as const,
       };
     }
     return { legs, segmentMode: 'connected' as const };
   }, [
+    selectedMintSwings,
     swingResult,
     selectedMint,
     swingPanelTab,
@@ -512,6 +564,199 @@ export function SwingDetectionPage() {
     filteredSwings,
     connectSwings,
   ]);
+
+  // Inline element generators — plain functions that read this component's
+  // scope directly, so there are no props to thread through.
+  function renderControlsBar() {
+    return (
+      <div className="mb-3 flex flex-wrap items-end gap-3">
+        <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
+          Created from
+          <Input
+            type="datetime-local"
+            fieldSize="md"
+            variant="card"
+            value={createdFrom}
+            onChange={(e) => dispatch(setCreatedFrom(e.target.value))}
+            className="min-w-0 font-normal normal-case tracking-normal"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
+          Created to
+          <Input
+            type="datetime-local"
+            fieldSize="md"
+            variant="card"
+            value={createdTo}
+            onChange={(e) => dispatch(setCreatedTo(e.target.value))}
+            className="min-w-0 font-normal normal-case tracking-normal"
+          />
+        </label>
+        <Button variant="primary" onClick={handleRefresh} disabled={loading}>
+          {loading ? 'Refreshing…' : 'Fetch'}
+        </Button>
+        {(createdFrom || createdTo) && (
+          <Button variant="ghost" onClick={() => dispatch(clearCreatedRange())}>
+            Clear
+          </Button>
+        )}
+        <span className="flex-1" />
+        {renderSwingDetectionAllButton()}
+        {renderGobalTokenFiltersButton()}
+        {renderSwingDetectionAllPanel()}
+        {renderGlobalTokenFiltersPanel()}
+      </div>
+    );
+  }
+
+  function renderGobalTokenFiltersButton() {
+    return (
+      <Button
+        variant="subtle"
+        size="sm"
+        active={showFilters || filterCount > 0}
+        onClick={() => setShowFilters((v) => !v)}
+      >
+        {filterCount > 0 ? `Global Filters (${filterCount})` : 'Global Filters'}
+      </Button>
+    );
+  }
+  function renderGlobalTokenFiltersPanel() {
+    return (
+      showFilters && (
+        <FilterPanel
+          filters={filters}
+          onApply={(next) => {
+            setFilters(next);
+            saveStoredTokenFilters(next);
+          }}
+          onClear={() => {
+            const empty = defaultFilters();
+            setFilters(empty);
+            saveStoredTokenFilters(empty);
+          }}
+        />
+      )
+    );
+  }
+
+  function renderSwingDetectionAllButton() {
+    return (
+      loaded && (
+        <>
+          <Button
+            variant={showSwingAll ? 'primary' : 'subtle'}
+            size="sm"
+            active={showSwingAll}
+            onClick={() => setShowSwingAll((v) => !v)}
+          >
+            {swingAllRanCount != null ? `Swing Detection All (${swingAllRanCount})` : "Swing Detection All"}
+          </Button>
+        </>
+      )
+    )
+  };
+  function renderSwingDetectionAllPanel() {
+    const tokenCount = displayed.length;
+    const runLabel = swingAllLoading
+      ? 'Running…'
+      : `Run on ${tokenCount} token${tokenCount === 1 ? '' : 's'}`;
+
+    return (
+      loaded && showSwingAll &&
+      <div className="w-full mb-3 rounded-lg border border-white/8 bg-bg-card/40 p-4">
+        <p className="mb-3 text-[12px] text-text-dim">
+          Runs swing detection on all{' '}
+          <span className="font-mono text-text">{tokenCount}</span> filtered token
+          {tokenCount === 1 ? '' : 's'}, groups each token's swings into chains, and
+          fills the Swing Pairs / Max Seq Pairs / Chains columns below.
+        </p>
+
+        <Tabs
+          value={swingAllTab}
+          onValueChange={(v) => setSwingAllTab(v as SwingAllTab)}
+          variant="contained"
+          className="-mx-4"
+        >
+          <TabsList className="px-4">
+            <TabsTrigger value="analysis">Analysis</TabsTrigger>
+            <TabsTrigger value="chain">Chain of Swings</TabsTrigger>
+          </TabsList>
+
+          <TabsPanel value="analysis" className="px-4">
+            <SwingParamsGrid params={swingParams} onChange={updateSwingParam} />
+
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                variant="primary"
+                disabled={tokenCount === 0 || swingAllLoading}
+                onClick={handleRunAllSwings}
+              >
+                {runLabel}
+              </Button>
+              <Button
+                variant="ghost"
+                className="text-[11px] text-text-dim"
+                onClick={() => setSwingParams(DEFAULT_SWING_PARAMS)}
+              >
+                Reset defaults
+              </Button>
+            </div>
+          </TabsPanel>
+
+          <TabsPanel value="chain" className="px-4">
+            <p className="mb-3 text-[11px] text-text-dim">
+              Two consecutive high→low pairs stay in the same chain when the idle gap
+              between them (one pair's low ending to the next pair's high starting) is
+              within this latency. A chain needs at least 2 linked pairs. Changing it
+              re-groups instantly — no need to re-run detection.
+            </p>
+            <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <label className={labelClassName}>
+                Chain latency (ms)
+                <Input
+                  fieldSize="md"
+                  variant="card"
+                  className="min-w-0 font-normal normal-case tracking-normal"
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={chainLatencyMs}
+                  onChange={(e) => {
+                    const parsed = parseInt(e.target.value, 10);
+                    setChainLatencyMs(Number.isFinite(parsed) ? parsed : '');
+                  }}
+                />
+              </label>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                variant="primary"
+                disabled={tokenCount === 0 || swingAllLoading}
+                onClick={handleRunAllSwings}
+              >
+                {runLabel}
+              </Button>
+              {swingAllRanCount == null && (
+                <span className="text-[11px] text-text-dim">
+                  Run detection to populate the chain columns.
+                </span>
+              )}
+            </div>
+          </TabsPanel>
+        </Tabs>
+
+        {swingAllError && <p className="mt-4 text-sm text-red">{swingAllError}</p>}
+        {swingAllLoading && (
+          <p className="mt-4 text-[12px] text-text-dim">
+            Running swing detection on {tokenCount} tokens…
+          </p>
+        )}
+      </div>
+
+    );
+  }
 
   return (
     <div>
@@ -525,76 +770,9 @@ export function SwingDetectionPage() {
         )}
       </div>
 
-      <div className="mb-1.5 flex gap-1.5">
-        <Button
-          variant="subtle"
-          size="sm"
-          active={showFilters || filterCount > 0}
-          onClick={() => setShowFilters((v) => !v)}
-        >
-          {filterCount > 0 ? `Global Filters (${filterCount})` : 'Global Filters'}
-        </Button>
-      </div>
-
-      {showFilters && (
-        <FilterPanel
-          filters={filters}
-          onApply={(next) => {
-            setFilters(next);
-            saveStoredTokenFilters(next);
-          }}
-          onClear={() => {
-            const empty = defaultFilters();
-            setFilters(empty);
-            saveStoredTokenFilters(empty);
-          }}
-        />
-      )}
-
       <SectionDivider />
 
-      <div className="mb-3 flex flex-wrap items-end gap-3">
-        <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
-          Created from
-          <Input
-            type="datetime-local"
-            fieldSize="md"
-            variant="card"
-            value={createdFrom}
-            onChange={(e) => setCreatedFrom(e.target.value)}
-            className="min-w-0 font-normal normal-case tracking-normal"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
-          Created to
-          <Input
-            type="datetime-local"
-            fieldSize="md"
-            variant="card"
-            value={createdTo}
-            onChange={(e) => setCreatedTo(e.target.value)}
-            className="min-w-0 font-normal normal-case tracking-normal"
-          />
-        </label>
-        <Button
-          variant="primary"
-          onClick={handleRefresh}
-          disabled={loading}
-        >
-          {loading ? 'Refreshing…' : 'Fetch'}
-        </Button>
-        {(createdFrom || createdTo) && (
-          <Button
-            variant="ghost"
-            onClick={() => {
-              setCreatedFrom('');
-              setCreatedTo('');
-            }}
-          >
-            Clear
-          </Button>
-        )}
-      </div>
+      {renderControlsBar()}
 
       {error && <p className="mb-2 text-sm text-red">{error}</p>}
 
@@ -604,18 +782,19 @@ export function SwingDetectionPage() {
 
       <SectionDivider />
 
+
       {loaded && (
         <DataTable
           columns={columns}
           rows={displayed}
           rowKey={(r) => r.mint_address}
           selectedKey={selectedMint}
-          onSelect={setSelectedMint}
+          onSelect={handleSelectMint}
           searchable
           colFilters
           colToggle
           hoverable
-          storageKey="swing_detection_visible_cols"
+          storageKey="swing_detection_visible_cols_v2"
           emptyMessage="No tokens in this date range."
         />
       )}
@@ -658,174 +837,7 @@ export function SwingDetectionPage() {
               </TabsList>
 
               <TabsPanel value="analysis" className="px-4">
-                <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                  <label className={labelClassName}>
-                    High → low (SOL)
-                    <Input
-                      fieldSize="md"
-                      variant="card"
-                      className="min-w-0 font-normal normal-case tracking-normal"
-                      type="number"
-                      min={0}
-                      step="any"
-                      value={swingParams.high_to_low_threshold_sol}
-                      onChange={(e) =>
-                        updateSwingParam('high_to_low_threshold_sol', e.target.value)
-                      }
-                    />
-                  </label>
-                  <label className={labelClassName}>
-                    High → low (%)
-                    <Input
-                      fieldSize="md"
-                      variant="card"
-                      className="min-w-0 font-normal normal-case tracking-normal"
-                      type="number"
-                      min={0}
-                      max={100}
-                      step="any"
-                      value={swingParams.high_to_low_threshold_pct}
-                      onChange={(e) =>
-                        updateSwingParam('high_to_low_threshold_pct', e.target.value)
-                      }
-                    />
-                  </label>
-                  <label className={labelClassName}>
-                    Low → high (SOL)
-                    <Input
-                      fieldSize="md"
-                      variant="card"
-                      className="min-w-0 font-normal normal-case tracking-normal"
-                      type="number"
-                      min={0}
-                      step="any"
-                      value={swingParams.low_to_high_threshold_sol}
-                      onChange={(e) =>
-                        updateSwingParam('low_to_high_threshold_sol', e.target.value)
-                      }
-                    />
-                  </label>
-                  <label className={labelClassName}>
-                    Low → high (%)
-                    <Input
-                      fieldSize="md"
-                      variant="card"
-                      className="min-w-0 font-normal normal-case tracking-normal"
-                      type="number"
-                      min={0}
-                      max={100}
-                      step="any"
-                      value={swingParams.low_to_high_threshold_pct}
-                      onChange={(e) =>
-                        updateSwingParam('low_to_high_threshold_pct', e.target.value)
-                      }
-                    />
-                  </label>
-                  <label className={labelClassName}>
-                    Min leg trades
-                    <Input
-                      fieldSize="md"
-                      variant="card"
-                      className="min-w-0 font-normal normal-case tracking-normal"
-                      type="number"
-                      min={0}
-                      step={1}
-                      value={swingParams.min_leg_trades}
-                      onChange={(e) => updateSwingParam('min_leg_trades', e.target.value)}
-                    />
-                  </label>
-                  <label className={labelClassName}>
-                    Min leg duration (ms)
-                    <Input
-                      fieldSize="md"
-                      variant="card"
-                      className="min-w-0 font-normal normal-case tracking-normal"
-                      type="number"
-                      min={0}
-                      step={1}
-                      value={swingParams.min_leg_duration_ms}
-                      onChange={(e) => updateSwingParam('min_leg_duration_ms', e.target.value)}
-                    />
-                  </label>
-                  <label className={labelClassName}>
-                    Min leg volume (SOL)
-                    <Input
-                      fieldSize="md"
-                      variant="card"
-                      className="min-w-0 font-normal normal-case tracking-normal"
-                      type="number"
-                      min={0}
-                      step="any"
-                      value={swingParams.min_leg_volume}
-                      onChange={(e) => updateSwingParam('min_leg_volume', e.target.value)}
-                    />
-                  </label>
-                  <label className={labelClassName}>
-                    Min leg net flow (SOL)
-                    <Input
-                      fieldSize="md"
-                      variant="card"
-                      className="min-w-0 font-normal normal-case tracking-normal"
-                      type="number"
-                      min={0}
-                      step="any"
-                      value={swingParams.min_leg_net_flow}
-                      onChange={(e) => updateSwingParam('min_leg_net_flow', e.target.value)}
-                    />
-                  </label>
-                  <label className={labelClassName}>
-                    Max leg trades
-                    <Input
-                      fieldSize="md"
-                      variant="card"
-                      className="min-w-0 font-normal normal-case tracking-normal"
-                      type="number"
-                      min={0}
-                      step={1}
-                      value={swingParams.max_leg_trades}
-                      onChange={(e) => updateSwingParam('max_leg_trades', e.target.value)}
-                    />
-                  </label>
-                  <label className={labelClassName}>
-                    Max leg duration (ms)
-                    <Input
-                      fieldSize="md"
-                      variant="card"
-                      className="min-w-0 font-normal normal-case tracking-normal"
-                      type="number"
-                      min={0}
-                      step={1}
-                      value={swingParams.max_leg_duration_ms}
-                      onChange={(e) => updateSwingParam('max_leg_duration_ms', e.target.value)}
-                    />
-                  </label>
-                  <label className={labelClassName}>
-                    Max leg volume (SOL)
-                    <Input
-                      fieldSize="md"
-                      variant="card"
-                      className="min-w-0 font-normal normal-case tracking-normal"
-                      type="number"
-                      min={0}
-                      step="any"
-                      value={swingParams.max_leg_volume}
-                      onChange={(e) => updateSwingParam('max_leg_volume', e.target.value)}
-                    />
-                  </label>
-                  <label className={labelClassName}>
-                    Max leg net flow (SOL)
-                    <Input
-                      fieldSize="md"
-                      variant="card"
-                      className="min-w-0 font-normal normal-case tracking-normal"
-                      type="number"
-                      min={0}
-                      step="any"
-                      value={swingParams.max_leg_net_flow}
-                      onChange={(e) => updateSwingParam('max_leg_net_flow', e.target.value)}
-                    />
-                  </label>
-                </div>
+                <SwingParamsGrid params={swingParams} onChange={updateSwingParam} />
 
                 <div className="flex flex-wrap items-center gap-3">
                   <Button
@@ -1176,7 +1188,7 @@ export function SwingDetectionPage() {
                 type="button"
                 onClick={() => {
                   setSelectedBar(null);
-                  setSelectedSwingKey(null);
+                  dispatch(setSelectedSwingKey(null));
                 }}
                 className="text-[11px] text-text-dim hover:text-text"
               >
