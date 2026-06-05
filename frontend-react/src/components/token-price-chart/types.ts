@@ -10,6 +10,22 @@ export interface ChartTrade {
   slot?: number;
   virtual_sol_reserves?: number | null;
   virtual_token_reserves?: number | null;
+  wallet_address?: string;
+}
+
+/** A tag attached to a wallet's owning profile. */
+export interface ProfileTagInfo {
+  name: string;
+  color: string;
+}
+
+/** A tracked profile wallet to render as chart markers. */
+export interface ProfileWalletInfo {
+  address: string;
+  label?: string;
+  color: string;
+  profileName?: string;
+  tags?: ProfileTagInfo[];
 }
 
 export type ChartGroupMode = 'time' | 'slot';
@@ -66,6 +82,19 @@ export interface ChartSwingLeg {
 export interface ChartSwingTooltipState {
   leg: ChartSwingLeg;
   point: { x: number; y: number };
+}
+
+export interface WalletBarActivity {
+  wallet: ProfileWalletInfo;
+  buyCount: number;
+  sellCount: number;
+  buySol: number;
+  sellSol: number;
+}
+
+export interface ChartWalletMarkersTooltipState {
+  point: { x: number; y: number };
+  wallets: WalletBarActivity[];
 }
 
 export interface ChartBarTooltipState {
@@ -127,6 +156,8 @@ export interface TokenPriceChartProps {
   /** Chain swing reversal points (default true). */
   connectSwings?: boolean;
   onConnectSwingsChange?: (connected: boolean) => void;
+  /** Tracked profile wallets to render as colored buy/sell markers. */
+  profileWallets?: ProfileWalletInfo[];
 }
 
 export interface ChartToolbarProps {

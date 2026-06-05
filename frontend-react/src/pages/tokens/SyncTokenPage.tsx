@@ -1,7 +1,7 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DataTable } from '../../components/table/DataTable';
 import { tokenTradeColumns } from '../../components/transactions/tokenTradeColumns';
-import { TokenPriceChart, type ChartMetric } from '../../components/token-price-chart';
+import { TokenPriceChart, WALLET_MARKER_COLORS, type ChartMetric, type ProfileWalletInfo } from '../../components/token-price-chart';
 import { TokenDetailPanel } from '../../components/tokens/TokenDetailPanel';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
@@ -9,8 +9,8 @@ import { Checkbox } from '../../components/ui/Checkbox';
 import { Input } from '../../components/ui/Input';
 import { usePriceUnit } from '../../context/PriceUnitContext';
 import { usePriceDisplay } from '../../hooks/usePriceDisplay';
-import { syncToken } from '../../services/api';
-import type { SyncProgressEvent, TokenDetailRecord, TradeRecord } from '../../types';
+import { fetchProfiles, syncToken } from '../../services/api';
+import type { SyncProgressEvent, TokenDetailRecord, TradeRecord, WalletProfile } from '../../types';
 import { cn } from '../../lib/cn';
 
 const STAGE_ORDER = [
@@ -48,6 +48,27 @@ function stageLabel(stage: string): string {
   }
 }
 
+function buildProfileWallets(profiles: WalletProfile[]): ProfileWalletInfo[] {
+  const result: ProfileWalletInfo[] = [];
+  let colorIdx = 0;
+  for (const profile of profiles) {
+    for (const wallet of profile.wallets) {
+      if (!wallet.is_tracked) continue;
+      result.push({
+        address: wallet.address,
+        label: wallet.comment
+          ? wallet.comment.slice(0, 12)
+          : `${wallet.address.slice(0, 4)}…${wallet.address.slice(-4)}`,
+        color: WALLET_MARKER_COLORS[colorIdx % WALLET_MARKER_COLORS.length],
+        profileName: profile.name,
+        tags: profile.tags.map((t) => ({ name: t.name, color: t.color })),
+      });
+      colorIdx++;
+    }
+  }
+  return result;
+}
+
 export function SyncTokenPage() {
   const price = usePriceDisplay();
   const { unit, usdRate } = usePriceUnit();
@@ -67,6 +88,13 @@ export function SyncTokenPage() {
   const [detail, setDetail] = useState<TokenDetailRecord | null>(null);
   const [trades, setTrades] = useState<TradeRecord[]>([]);
   const syncAbortRef = useRef<AbortController | null>(null);
+  const [profiles, setProfiles] = useState<WalletProfile[]>([]);
+
+  useEffect(() => {
+    fetchProfiles().then(setProfiles).catch(() => {});
+  }, []);
+
+  const profileWallets = useMemo(() => buildProfileWallets(profiles), [profiles]);
 
   const percent = progress ? stagePercent(progress.stage, progress.current, progress.total) : 0;
 
@@ -214,6 +242,7 @@ export function SyncTokenPage() {
               isMigrated={detail.is_migrated}
               isMayhemMode={detail.is_mayhem_mode}
               isCashbackEnabled={detail.is_cashback_enabled}
+              profileWallets={profileWallets}
             />
           </div>
 

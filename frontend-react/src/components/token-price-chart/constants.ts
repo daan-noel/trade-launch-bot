@@ -126,6 +126,20 @@ export const PUMP_MIGRATION_SPOT_PRICE_SOL = (() => {
 
 export const LS_CHART_PREFS_KEY = 'token_price_chart_prefs';
 
+/** Distinct colors cycled across tracked profile wallets. */
+export const WALLET_MARKER_COLORS = [
+  '#f59e0b', // amber
+  '#06b6d4', // cyan
+  '#8b5cf6', // violet
+  '#ec4899', // pink
+  '#10b981', // emerald
+  '#f97316', // orange
+  '#6366f1', // indigo
+  '#a855f7', // purple
+  '#14b8a6', // teal
+  '#ef4444', // red
+] as const;
+
 export const CHART_GROUP_MODES: ChartGroupMode[] = ['time', 'slot'];
 
 export const CHART_GROUP_MODE_LABELS: Record<ChartGroupMode, string> = {

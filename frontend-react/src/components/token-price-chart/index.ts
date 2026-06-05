@@ -48,6 +48,9 @@ export type {
   ChartBarSelection,
   ChartSwingLeg,
   ChartSwingOverlay,
+  ProfileWalletInfo,
+  ProfileTagInfo,
   TokenPriceChartProps,
   ChartToolbarProps,
 } from './types';
+export { WALLET_MARKER_COLORS } from './constants';

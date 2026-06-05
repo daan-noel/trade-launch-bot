@@ -48,6 +48,8 @@ import {
 } from './constants';
 import { BarCrosshairTooltip } from './BarCrosshairTooltip';
 import { SwingCrosshairTooltip } from './SwingCrosshairTooltip';
+import { WalletMarkersTooltip } from './WalletMarkersTooltip';
+import { WalletMarkersPlugin, asSeriesPrimitive, type WalletMarkerDef } from './walletMarkersPlugin';
 import {
   buildLegSegment,
   groupSequentialLegChains,
@@ -66,9 +68,12 @@ import type {
   ChartSwingLeg,
   ChartBarTooltipState,
   ChartSwingTooltipState,
+  ChartWalletMarkersTooltipState,
   ChartTrade,
   OhlcBar,
+  ProfileWalletInfo,
   TokenPriceChartProps,
+  WalletBarActivity,
 } from './types';
 
 function loadPrefs(): {
@@ -179,13 +184,119 @@ type MarkersPlugin = {
 function sortSeriesMarkers(
   markers: SeriesMarker<UTCTimestamp>[],
 ): SeriesMarker<UTCTimestamp>[] {
-  const byTime = new Map<number, SeriesMarker<UTCTimestamp>>();
-  for (const marker of markers) {
-    byTime.set(marker.time as number, marker);
+  return [...markers].sort((a, b) => (a.time as number) - (b.time as number));
+}
+
+function buildWalletMarkerDefs(
+  trades: ChartTrade[],
+  profileWallets: ProfileWalletInfo[],
+  bars: OhlcBar[],
+  groupMode: ChartGroupMode,
+  intervalSec: number,
+): WalletMarkerDef[] {
+  const walletMap = new Map(profileWallets.map((w) => [w.address, w]));
+  const barMap = new Map(bars.map((b) => [b.time as number, b]));
+
+  // barTime -> { buy: wallets[], sell: wallets[] } — one entry per wallet per type per bar
+  const groups = new Map<number, { buy: ProfileWalletInfo[]; sell: ProfileWalletInfo[] }>();
+  const seen = new Set<string>(); // `${address}:${barTime}:${type}`
+
+  for (const trade of trades) {
+    if (!trade.wallet_address) continue;
+    const wallet = walletMap.get(trade.wallet_address);
+    if (!wallet) continue;
+    const time =
+      groupMode === 'slot'
+        ? tradeBarSlot(trade)
+        : tradeBarTime(trade.block_time, intervalSec);
+    if (time == null) continue;
+    const t = time as number;
+    const type = trade.trade_type === 'buy' ? 'buy' : 'sell';
+    const key = `${trade.wallet_address}:${t}:${type}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    let group = groups.get(t);
+    if (!group) { group = { buy: [], sell: [] }; groups.set(t, group); }
+    group[type].push(wallet);
   }
-  return [...byTime.values()].sort(
-    (a, b) => (a.time as number) - (b.time as number),
-  );
+
+  const defs: WalletMarkerDef[] = [];
+  for (const [t, { buy, sell }] of groups) {
+    const bar = barMap.get(t);
+    if (!bar) continue;
+    const barTime = t as UTCTimestamp;
+
+    // Always render tracked markers above the candle/line, stacking buys then
+    // sells with a continuous index so they never overlap or fall below the bar.
+    let stackIndex = 0;
+    for (const w of buy) {
+      defs.push({
+        barTime,
+        barEdgePrice: bar.high,
+        letter: (w.profileName ?? w.label ?? w.address).charAt(0).toUpperCase(),
+        color: w.color,
+        borderColor: CHART_COLORS.up,
+        type: 'sell',
+        stackIndex: stackIndex++,
+      });
+    }
+    for (const w of sell) {
+      defs.push({
+        barTime,
+        barEdgePrice: bar.high,
+        letter: (w.profileName ?? w.label ?? w.address).charAt(0).toUpperCase(),
+        color: w.color,
+        borderColor: CHART_COLORS.down,
+        type: 'sell',
+        stackIndex: stackIndex++,
+      });
+    }
+  }
+  return defs;
+}
+
+function buildWalletBarActivityMap(
+  trades: ChartTrade[],
+  profileWallets: ProfileWalletInfo[],
+  groupMode: ChartGroupMode,
+  intervalSec: number,
+): Map<number, WalletBarActivity[]> {
+  const walletMap = new Map(profileWallets.map((w) => [w.address, w]));
+  // barTime -> walletAddress -> activity
+  const byBar = new Map<number, Map<string, WalletBarActivity>>();
+
+  for (const trade of trades) {
+    if (!trade.wallet_address) continue;
+    const wallet = walletMap.get(trade.wallet_address);
+    if (!wallet) continue;
+    const time =
+      groupMode === 'slot'
+        ? tradeBarSlot(trade)
+        : tradeBarTime(trade.block_time, intervalSec);
+    if (time == null) continue;
+    const t = time as number;
+    let barMap = byBar.get(t);
+    if (!barMap) { barMap = new Map(); byBar.set(t, barMap); }
+    let activity = barMap.get(trade.wallet_address);
+    if (!activity) {
+      activity = { wallet, buyCount: 0, sellCount: 0, buySol: 0, sellSol: 0 };
+      barMap.set(trade.wallet_address, activity);
+    }
+    if (trade.trade_type === 'buy') {
+      activity.buyCount += 1;
+      activity.buySol += trade.sol_amount ?? 0;
+    } else {
+      activity.sellCount += 1;
+      activity.sellSol += trade.sol_amount ?? 0;
+    }
+  }
+
+  const result = new Map<number, WalletBarActivity[]>();
+  for (const [barTime, walletActivities] of byBar) {
+    result.set(barTime, [...walletActivities.values()]);
+  }
+  return result;
 }
 
 function panelClass(className?: string) {
@@ -240,6 +351,7 @@ export function TokenPriceChart({
   isMigrated,
   isMayhemMode,
   isCashbackEnabled,
+  profileWallets,
 }: TokenPriceChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -261,6 +373,7 @@ export function TokenPriceChart({
   const showSwingOverlayRef = useRef(true);
   const sortedTradesRef = useRef<ChartTrade[]>([]);
   const markersPluginRef = useRef<MarkersPlugin | null>(null);
+  const walletMarkersPrimRef = useRef<WalletMarkersPlugin | null>(null);
   const barsRef = useRef<OhlcBar[]>([]);
 
   const initialPrefs = loadPrefs();
@@ -279,6 +392,8 @@ export function TokenPriceChart({
   const [crosshair, setCrosshair] = useState<ChartCrosshairInfo | null>(null);
   const [barTooltip, setBarTooltip] = useState<ChartBarTooltipState | null>(null);
   const [swingTooltip, setSwingTooltip] = useState<ChartSwingTooltipState | null>(null);
+  const [walletMarkersTooltip, setWalletMarkersTooltip] = useState<ChartWalletMarkersTooltipState | null>(null);
+  const walletActivityMapRef = useRef<Map<number, WalletBarActivity[]>>(new Map());
   const styleRef = useRef(style);
   styleRef.current = style;
   const athLineRef = useRef<IPriceLine | null>(null);
@@ -528,12 +643,14 @@ export function TokenPriceChart({
       if (!param.time) {
         setCrosshair(null);
         setBarTooltip(null);
+        setWalletMarkersTooltip(null);
         return;
       }
       const bar = barsRef.current.find((b) => b.time === param.time);
       if (!bar) {
         setCrosshair(null);
         setBarTooltip(null);
+        setWalletMarkersTooltip(null);
         return;
       }
       const info: ChartCrosshairInfo = {
@@ -545,19 +662,34 @@ export function TokenPriceChart({
         liquiditySol: bar.liquiditySol,
       };
       setCrosshair(info);
-      const onMainSeries =
-        hovered != null &&
-        seriesRef.current != null &&
-        hovered === seriesRef.current;
-      if (param.point && (!activeSwingLeg || onMainSeries)) {
-        setBarTooltip({
-          ...info,
-          barTime: bar.time,
-          style: styleRef.current,
-          point: param.point,
-        });
-      } else {
+      const onWalletMarker =
+        param.point != null &&
+        (walletMarkersPrimRef.current?.containsPoint(param.point.x, param.point.y) ?? false);
+
+      if (onWalletMarker) {
+        const walletActivity = walletActivityMapRef.current.get(bar.time as number);
+        setWalletMarkersTooltip(
+          walletActivity && walletActivity.length > 0
+            ? { point: param.point!, wallets: walletActivity }
+            : null,
+        );
         setBarTooltip(null);
+      } else {
+        setWalletMarkersTooltip(null);
+        const onMainSeries =
+          hovered != null &&
+          seriesRef.current != null &&
+          hovered === seriesRef.current;
+        if (param.point && (!activeSwingLeg || onMainSeries)) {
+          setBarTooltip({
+            ...info,
+            barTime: bar.time,
+            style: styleRef.current,
+            point: param.point,
+          });
+        } else {
+          setBarTooltip(null);
+        }
       }
     });
 
@@ -647,6 +779,7 @@ export function TokenPriceChart({
       setCrosshair(null);
       setBarTooltip(null);
       setSwingTooltip(null);
+      setWalletMarkersTooltip(null);
     };
   }, [showChart, height, groupingKey, groupMode, priceUnit, chartTimezone]);
 
@@ -724,6 +857,10 @@ export function TokenPriceChart({
       }
       markersPluginRef.current?.detach();
       markersPluginRef.current = null;
+      if (walletMarkersPrimRef.current) {
+        existing.detachPrimitive(asSeriesPrimitive(walletMarkersPrimRef.current));
+        walletMarkersPrimRef.current = null;
+      }
       chart.removeSeries(existing);
       seriesRef.current = null;
     }
@@ -736,6 +873,10 @@ export function TokenPriceChart({
     });
     seriesRef.current = series as ISeriesApi<'Line' | 'Candlestick'>;
     mountedSeriesStyleRef.current = style;
+
+    const walletPrim = new WalletMarkersPlugin();
+    series.attachPrimitive(asSeriesPrimitive(walletPrim));
+    walletMarkersPrimRef.current = walletPrim;
 
     if (style === 'line') {
       series.setData(barsToLineData(bars));
@@ -764,6 +905,15 @@ export function TokenPriceChart({
 
     if (showTradeMarkers) {
       markers.push(...buildTradeMarkers(trades, groupMode, intervalSec));
+    }
+
+    if (profileWallets && profileWallets.length > 0) {
+      const walletDefs = buildWalletMarkerDefs(trades, profileWallets, bars, groupMode, intervalSec);
+      walletMarkersPrimRef.current?.setMarkers(walletDefs);
+      walletActivityMapRef.current = buildWalletBarActivityMap(trades, profileWallets, groupMode, intervalSec);
+    } else {
+      walletMarkersPrimRef.current?.setMarkers([]);
+      walletActivityMapRef.current = new Map();
     }
 
     if (selectedSwingLegKey && swingOverlay?.legs.length) {
@@ -804,11 +954,13 @@ export function TokenPriceChart({
     groupMode,
     intervalSec,
     showChart,
+    style,
     selectedSwingLegKey,
     selectedBarTime,
     swingOverlay,
     sortedTrades,
     bars,
+    profileWallets,
   ]);
 
   useEffect(() => {
@@ -1068,6 +1220,9 @@ export function TokenPriceChart({
             formatPrice={formatSwingPrice}
             formatAmount={formatSwingAmount}
           />
+        )}
+        {walletMarkersTooltip && (
+          <WalletMarkersTooltip tooltip={walletMarkersTooltip} />
         )}
       </div>
     </div>

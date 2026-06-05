@@ -3,10 +3,12 @@ import { DataTable } from '../../components/table/DataTable';
 import { tokenTradeColumns } from '../../components/transactions/tokenTradeColumns';
 import {
   TokenPriceChart,
+  WALLET_MARKER_COLORS,
   tradeBarTime,
   type ChartBarSelection,
   type ChartMetric,
   type ChartSwingLeg,
+  type ProfileWalletInfo,
 } from '../../components/token-price-chart';
 import { swingLegKey } from '../../components/token-price-chart/swingOverlay';
 import { FilterPanel } from '../../components/tokens/FilterPanel';
@@ -38,12 +40,13 @@ import { Input } from '../../components/ui/Input';
 import { Select } from '../../components/ui/Select';
 import { Tabs, TabsList, TabsPanel, TabsTrigger } from '../../components/ui/Tabs';
 import { VisibilityToggleButton } from '../../components/ui/VisibilityToggleButton';
-import { fetchTokenSwings, fetchTokenTrades, fetchTokens } from '../../services/api';
+import { fetchProfiles, fetchTokenSwings, fetchTokenTrades, fetchTokens } from '../../services/api';
 import type {
   SwingDetectionResult,
   SwingParams,
   TokenRecord,
   TradeRecord,
+  WalletProfile,
 } from '../../types';
 
 function toDatetimeLocalValue(date: Date): string {
@@ -228,6 +231,32 @@ export function SwingDetectionPage() {
   const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [profiles, setProfiles] = useState<WalletProfile[]>([]);
+
+  useEffect(() => {
+    fetchProfiles().then(setProfiles).catch(() => {});
+  }, []);
+
+  const profileWallets = useMemo<ProfileWalletInfo[]>(() => {
+    const result: ProfileWalletInfo[] = [];
+    let colorIdx = 0;
+    for (const profile of profiles) {
+      for (const wallet of profile.wallets) {
+        if (!wallet.is_tracked) continue;
+        result.push({
+          address: wallet.address,
+          label: wallet.comment
+            ? wallet.comment.slice(0, 12)
+            : `${wallet.address.slice(0, 4)}…${wallet.address.slice(-4)}`,
+          color: WALLET_MARKER_COLORS[colorIdx % WALLET_MARKER_COLORS.length],
+          profileName: profile.name,
+          tags: profile.tags.map((t) => ({ name: t.name, color: t.color })),
+        });
+        colorIdx++;
+      }
+    }
+    return result;
+  }, [profiles]);
 
   const [createdFrom, setCreatedFrom] = useState(() =>
     toDatetimeLocalValue(startOfToday()),
@@ -1118,6 +1147,7 @@ export function SwingDetectionPage() {
           isMigrated={selectedToken?.is_migrated}
           isMayhemMode={selectedToken?.is_mayhem_mode}
           isCashbackEnabled={selectedToken?.is_cashback_enabled}
+          profileWallets={profileWallets}
         />
       </div>
 
