@@ -32,7 +32,9 @@ import {
   filterSwings,
   hasActiveSwingFilter,
   parseSwingFilterField,
+  swingFilterFromForm,
   type SwingFilterCriteria,
+  type SwingFilterForm,
 } from '../../components/analysis/swingFilter';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
@@ -121,6 +123,19 @@ const SWING_PARAM_INT_KEYS = new Set<keyof SwingParams>([
 const LS_SWING_DETECTION_KEY = 'swing_detection_criteria';
 
 const SWING_PARAM_KEYS = Object.keys(DEFAULT_SWING_PARAMS) as (keyof SwingParams)[];
+
+/** Editable form shape: fields may be empty while the user is typing. */
+type SwingParamsForm = { [K in keyof SwingParams]: number | '' };
+
+/** Coerce an in-progress form into params, treating empty fields as 0. */
+function swingParamsFromForm(form: SwingParamsForm): SwingParams {
+  const out = {} as SwingParams;
+  for (const key of SWING_PARAM_KEYS) {
+    const value = form[key];
+    out[key] = typeof value === 'number' ? value : 0;
+  }
+  return out;
+}
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
@@ -276,12 +291,12 @@ export function SwingDetectionPage() {
   const [chartMetric, setChartMetric] = useState<ChartMetric>('price');
 
   const [activeAnalysis, setActiveAnalysis] = useState<AnalysisKind | null>(null);
-  const [swingParams, setSwingParams] = useState<SwingParams>(storedSwingCriteria.params);
+  const [swingParams, setSwingParams] = useState<SwingParamsForm>(storedSwingCriteria.params);
   const [swingResult, setSwingResult] = useState<SwingDetectionResult | null>(null);
   const [swingLoading, setSwingLoading] = useState(false);
   const [swingError, setSwingError] = useState<string | null>(null);
   const [swingPanelTab, setSwingPanelTab] = useState<SwingPanelTab>('analysis');
-  const [swingFilter, setSwingFilter] = useState<SwingFilterCriteria>(storedSwingCriteria.filter);
+  const [swingFilter, setSwingFilter] = useState<SwingFilterForm>(storedSwingCriteria.filter);
   const [appliedSwingFilter, setAppliedSwingFilter] = useState<SwingFilterCriteria>(
     storedSwingCriteria.appliedFilter,
   );
@@ -300,7 +315,7 @@ export function SwingDetectionPage() {
         : parseFloat(raw);
       setSwingParams((prev) => ({
         ...prev,
-        [key]: Number.isFinite(parsed) ? parsed : prev[key],
+        [key]: Number.isFinite(parsed) ? parsed : '',
       }));
     },
     [],
@@ -321,7 +336,7 @@ export function SwingDetectionPage() {
     setSwingLoading(true);
     setSwingError(null);
     try {
-      const result = await fetchTokenSwings(selectedMint, swingParams);
+      const result = await fetchTokenSwings(selectedMint, swingParamsFromForm(swingParams));
       setSwingResult(result);
     } catch (e) {
       setSwingResult(null);
@@ -387,7 +402,12 @@ export function SwingDetectionPage() {
   }, [selectedMint, createdFrom, createdTo, filters, loadTrades]);
 
   useEffect(() => {
-    saveStoredSwingCriteria(swingParams, swingFilter, appliedSwingFilter, connectSwings);
+    saveStoredSwingCriteria(
+      swingParamsFromForm(swingParams),
+      swingFilterFromForm(swingFilter),
+      appliedSwingFilter,
+      connectSwings,
+    );
   }, [swingParams, swingFilter, appliedSwingFilter, connectSwings]);
 
   useEffect(() => {
@@ -1062,7 +1082,7 @@ export function SwingDetectionPage() {
                     <div className="mb-4 flex flex-wrap items-center gap-3">
                       <Button
                         variant="primary"
-                        onClick={() => setAppliedSwingFilter(swingFilter)}
+                        onClick={() => setAppliedSwingFilter(swingFilterFromForm(swingFilter))}
                       >
                         Apply
                       </Button>
@@ -1076,7 +1096,7 @@ export function SwingDetectionPage() {
                       >
                         Clear filters
                       </Button>
-                      {!hasActiveSwingFilter(swingFilter) && (
+                      {!hasActiveSwingFilter(swingFilterFromForm(swingFilter)) && (
                         <span className="text-[11px] text-text-dim">
                           Set filter criteria and click Apply (0 = ignore that field).
                         </span>

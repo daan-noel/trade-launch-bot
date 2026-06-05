@@ -17,17 +17,17 @@ use crate::models::trade::{Trade, TradeType};
 /// body and fall back to the defaults below.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SwingParams {
-    // Reversal thresholds: Swing High -> Swing Low
+    // Reversal thresholds: Swing High -> Swing Low (0 = no bound)
     #[serde(default = "default_high_to_low_sol")]
     pub high_to_low_threshold_sol: f64,
     #[serde(default = "default_pct")]
-    pub high_to_low_threshold_pct: f64, // 0-100 (real percent)
+    pub high_to_low_threshold_pct: f64, // 0-100 (real percent), 0 = no bound
 
-    // Reversal thresholds: Swing Low -> Swing High
+    // Reversal thresholds: Swing Low -> Swing High (0 = no bound)
     #[serde(default = "default_low_to_high_sol")]
     pub low_to_high_threshold_sol: f64,
     #[serde(default = "default_pct")]
-    pub low_to_high_threshold_pct: f64, // 0-100 (real percent)
+    pub low_to_high_threshold_pct: f64, // 0-100 (real percent), 0 = no bound
 
     // Leg quality filters (min: 0 disables volume/duration/net_flow; max: 0 = no cap)
     #[serde(default = "default_min_leg_trades")]
@@ -222,6 +222,21 @@ impl LegAcc {
 // Entry point
 // ---------------------------------------------------------------------------
 
+/// Combine the absolute (SOL) and relative (percent of the previous leg's net
+/// flow) reversal bounds into a single trigger threshold. A value of `0` means
+/// "no bound" for that term: it becomes `+inf` so it drops out of the `min` and
+/// lets the other term govern. If both terms are `0`, the threshold is `+inf`
+/// and no threshold-driven reversal can fire.
+fn reversal_threshold(sol: f64, pct: f64, prev_leg_net_flow_abs: f64) -> f64 {
+    let sol_bound = if sol > 0.0 { sol } else { f64::INFINITY };
+    let pct_bound = if pct > 0.0 {
+        pct / 100.0 * prev_leg_net_flow_abs
+    } else {
+        f64::INFINITY
+    };
+    sol_bound.min(pct_bound)
+}
+
 /// Run swing detection over a token's trades, returning the filtered ledger.
 pub fn detect_swings(trades: &[Trade], params: &SwingParams) -> Vec<SwingLeg> {
     let txs = sanitize_and_order(trades);
@@ -306,9 +321,11 @@ fn scan(txs: &[Tx], params: &SwingParams) -> Vec<LegAcc> {
                 Side::Buy => current_high.as_mut().unwrap().apply_buy(tx),
                 Side::Sell => {
                     let snapshot = current_high.as_ref().unwrap().net_flow();
-                    frozen_threshold = params
-                        .high_to_low_threshold_sol
-                        .min(params.high_to_low_threshold_pct / 100.0 * snapshot.abs());
+                    frozen_threshold = reversal_threshold(
+                        params.high_to_low_threshold_sol,
+                        params.high_to_low_threshold_pct,
+                        snapshot.abs(),
+                    );
                     temp = Some(LegAcc::seed_low(tx));
                     phase = Phase::TempSwingLow;
 
@@ -346,10 +363,11 @@ fn scan(txs: &[Tx], params: &SwingParams) -> Vec<LegAcc> {
                 Side::Sell => current_low.as_mut().unwrap().apply_sell(tx),
                 Side::Buy => {
                     let snapshot = current_low.as_ref().unwrap().net_flow(); // negative
-                    frozen_threshold = params
-                        .low_to_high_threshold_sol
-                        // .max(params.low_to_high_threshold_pct / 100.0 * snapshot.abs());
-                        .min(params.low_to_high_threshold_sol);
+                    frozen_threshold = reversal_threshold(
+                        params.low_to_high_threshold_sol,
+                        params.low_to_high_threshold_pct,
+                        snapshot.abs(),
+                    );
                     temp = Some(LegAcc::seed_high(tx));
                     phase = Phase::TempSwingHigh;
 
@@ -418,8 +436,8 @@ fn scan(txs: &[Tx], params: &SwingParams) -> Vec<LegAcc> {
 }
 
 /// Post-processing pair-based quality filter. Forms fixed, non-overlapping
-/// `(swing_high, swing_low)` pairs and discards a pair only when BOTH legs
-/// fail. Unpaired legs (leading low / trailing high) are kept as-is.
+/// `(swing_high, swing_low)` pairs and discards a pair if one of the legs fail
+/// Unpaired legs (leading low / trailing high) are kept as-is.
 fn apply_quality_filter(ledger: Vec<LegAcc>, params: &SwingParams) -> Vec<SwingLeg> {
     let fails = |leg: &LegAcc| -> bool {
         let duration_ms = leg.end_at - leg.start_at;
@@ -441,7 +459,7 @@ fn apply_quality_filter(ledger: Vec<LegAcc>, params: &SwingParams) -> Vec<SwingL
             && ledger[i + 1].leg_type == SwingType::SwingLow;
 
         if is_pair {
-            if !(fails(&ledger[i]) && fails(&ledger[i + 1])) {
+            if !(fails(&ledger[i]) || fails(&ledger[i + 1])) {
                 out.push(ledger[i].clone().finalize());
                 out.push(ledger[i + 1].clone().finalize());
             }

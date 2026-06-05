@@ -38,6 +38,24 @@ const SWING_FILTER_INT_KEYS = new Set<keyof SwingFilterCriteria>([
   'filter_max_trades',
 ]);
 
+/** Editable form shape: numeric bounds may be empty while the user is typing. */
+export type SwingFilterForm = {
+  [K in keyof SwingFilterCriteria]: SwingFilterCriteria[K] extends number
+    ? number | ''
+    : SwingFilterCriteria[K];
+};
+
+/** Coerce an in-progress form into criteria, treating empty bounds as 0 (ignored). */
+export function swingFilterFromForm(form: SwingFilterForm): SwingFilterCriteria {
+  const out: SwingFilterCriteria = { ...DEFAULT_SWING_FILTER, leg_type: form.leg_type };
+  for (const key of Object.keys(DEFAULT_SWING_FILTER) as (keyof SwingFilterCriteria)[]) {
+    if (key === 'leg_type') continue;
+    const value = form[key];
+    out[key] = typeof value === 'number' ? value : 0;
+  }
+  return out;
+}
+
 function legVolume(leg: SwingLegRecord): number {
   return leg.inflow + leg.outflow;
 }
@@ -135,15 +153,18 @@ export function filterSwings(
   });
 }
 
-export function parseSwingFilterField<K extends keyof SwingFilterCriteria>(
+export function parseSwingFilterField<K extends keyof SwingFilterForm>(
   key: K,
   raw: string,
-  prev: SwingFilterCriteria,
-): SwingFilterCriteria[K] {
+  prev: SwingFilterForm,
+): SwingFilterForm[K] {
   if (key === 'leg_type') {
     const v = raw as SwingLegTypeFilter;
-    return (v === 'swing_high' || v === 'swing_low' || v === 'all' ? v : 'all') as SwingFilterCriteria[K];
+    return (v === 'swing_high' || v === 'swing_low' || v === 'all' ? v : 'all') as SwingFilterForm[K];
   }
-  const parsed = SWING_FILTER_INT_KEYS.has(key) ? parseInt(raw, 10) : parseFloat(raw);
-  return (Number.isFinite(parsed) ? parsed : prev[key]) as SwingFilterCriteria[K];
+  if (raw === '') return '' as SwingFilterForm[K];
+  const parsed = SWING_FILTER_INT_KEYS.has(key as keyof SwingFilterCriteria)
+    ? parseInt(raw, 10)
+    : parseFloat(raw);
+  return (Number.isFinite(parsed) ? parsed : prev[key]) as SwingFilterForm[K];
 }
