@@ -113,11 +113,13 @@ export function formatTimestampMsCompact(ms: number, timeZone: string): string {
     const h = dtfPart(parts, 'hour');
     const mi = dtfPart(parts, 'minute');
     const s = dtfPart(parts, 'second');
-    return `${mo}/${da} ${h}:${mi}:${s}`;
+    // return `${mo}/${da} ${h}:${mi}:${s}`;
+    return `${h}:${mi}:${s}`;
   } catch {
     const d = new Date(ms);
     const pad = (n: number) => String(n).padStart(2, '0');
-    return `${pad(d.getUTCMonth() + 1)}/${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+    // return `${pad(d.getUTCMonth() + 1)}/${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+    return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
   }
 }
 

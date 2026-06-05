@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DataTable } from '../../components/table/DataTable';
+import type { ColumnDef } from '../../components/table/types';
 import { tokenTradeColumns } from '../../components/transactions/tokenTradeColumns';
 import { TokenPriceChart, WALLET_MARKER_COLORS, type ChartMetric, type ProfileWalletInfo } from '../../components/token-price-chart';
 import { TokenDetailPanel } from '../../components/tokens/TokenDetailPanel';
+import { AddressDisplay } from '../../components/ui/AddressDisplay';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Checkbox } from '../../components/ui/Checkbox';
@@ -83,6 +85,115 @@ function parseMints(raw: string): string[] {
 
 type SyncResultItem = { mint: string; ok: boolean; error?: string };
 
+/** A token that synced successfully, paired with its trades. */
+type SyncedToken = { token: TokenDetailRecord; trades: TradeRecord[] };
+
+/** A synced-tokens table row: a sync result, with its token record (null on failure). */
+type SyncedRow = SyncResultItem & { token: TokenDetailRecord | null };
+
+/** Compact column set for the synced-tokens picker table. */
+function syncedTokenColumns(
+  price: ReturnType<typeof usePriceDisplay>,
+): ColumnDef<SyncedRow>[] {
+  return [
+    {
+      key: 'result',
+      label: 'Result',
+      width: '120px',
+      sortable: true,
+      render: (r) =>
+        r.ok ? (
+          <Badge variant="success" size="sm">OK</Badge>
+        ) : (
+          <span className="inline-flex max-w-full items-center gap-1.5">
+            <Badge variant="danger" size="sm">FAIL</Badge>
+            {r.error && (
+              <span className="truncate text-[11px] text-red" title={r.error}>
+                {r.error}
+              </span>
+            )}
+          </span>
+        ),
+      sortValue: (r) => (r.ok ? 1 : 0),
+      searchValue: (r) => (r.ok ? 'ok' : `fail ${r.error ?? ''}`),
+    },
+    {
+      key: 'symbol',
+      label: 'Symbol',
+      width: '90px',
+      sortable: true,
+      render: (r) => r.token?.symbol || '-',
+      sortValue: (r) => r.token?.symbol ?? null,
+      searchValue: (r) => `${r.token?.symbol ?? ''} ${r.token?.name ?? ''} ${r.mint}`,
+    },
+    {
+      key: 'name',
+      label: 'Name',
+      width: '130px',
+      sortable: true,
+      render: (r) => r.token?.name || '-',
+      sortValue: (r) => r.token?.name ?? null,
+      searchValue: (r) => r.token?.name ?? '',
+    },
+    {
+      key: 'mint',
+      label: 'Mint',
+      width: '165px',
+      render: (r) => <AddressDisplay address={r.mint} kind="token" stopPropagation />,
+      sortValue: (r) => r.mint,
+      searchValue: (r) => r.mint,
+    },
+    {
+      key: 'trade_count',
+      label: 'Trades',
+      width: '70px',
+      sortable: true,
+      render: (r) => r.token?.trade_count ?? '-',
+      sortValue: (r) => r.token?.trade_count ?? null,
+      searchValue: (r) => String(r.token?.trade_count ?? ''),
+    },
+    {
+      key: 'volume',
+      label: 'Volume',
+      width: '84px',
+      sortable: true,
+      render: (r) =>
+        r.token?.volume_sol_total != null ? price.displayCompact(r.token.volume_sol_total, 4) : '-',
+      sortValue: (r) => r.token?.volume_sol_total ?? null,
+      searchValue: (r) => String(r.token?.volume_sol_total ?? ''),
+    },
+    {
+      key: 'market_cap',
+      label: 'MCap',
+      width: '84px',
+      sortable: true,
+      render: (r) =>
+        r.token?.market_cap != null ? price.displayCompact(r.token.market_cap, 3) : '-',
+      sortValue: (r) => r.token?.market_cap ?? null,
+      searchValue: (r) => String(r.token?.market_cap ?? ''),
+    },
+    {
+      key: 'current_price',
+      label: 'Price',
+      width: '88px',
+      sortable: true,
+      render: (r) =>
+        r.token?.current_price != null ? price.displayPrice(r.token.current_price) : '-',
+      sortValue: (r) => r.token?.current_price ?? null,
+      searchValue: (r) => String(r.token?.current_price ?? ''),
+    },
+    {
+      key: 'migrated',
+      label: 'Migrated',
+      width: '70px',
+      sortable: true,
+      render: (r) => (r.token?.is_migrated ? '✓' : ''),
+      sortValue: (r) => (r.token?.is_migrated ? 1 : 0),
+      searchValue: (r) => String(r.token?.is_migrated ?? ''),
+    },
+  ];
+}
+
 export function SyncTokenPage() {
   const price = usePriceDisplay();
   const { unit, usdRate } = usePriceUnit();
@@ -101,8 +212,8 @@ export function SyncTokenPage() {
   const [batch, setBatch] = useState<{ index: number; total: number } | null>(null);
   const [results, setResults] = useState<SyncResultItem[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [detail, setDetail] = useState<TokenDetailRecord | null>(null);
-  const [trades, setTrades] = useState<TradeRecord[]>([]);
+  const [syncedTokens, setSyncedTokens] = useState<SyncedToken[]>([]);
+  const [selectedMint, setSelectedMint] = useState<string | null>(null);
   const syncAbortRef = useRef<AbortController | null>(null);
   const [profiles, setProfiles] = useState<WalletProfile[]>([]);
 
@@ -112,6 +223,21 @@ export function SyncTokenPage() {
 
   const profileWallets = useMemo(() => buildProfileWallets(profiles), [profiles]);
   const mints = useMemo(() => parseMints(mint), [mint]);
+
+  const syncedColumns = useMemo(() => syncedTokenColumns(price), [price]);
+  const syncedRows = useMemo<SyncedRow[]>(
+    () =>
+      results.map((r) => ({
+        ...r,
+        token: syncedTokens.find((t) => t.token.mint_address === r.mint)?.token ?? null,
+      })),
+    [results, syncedTokens],
+  );
+  const failedCount = useMemo(() => results.filter((r) => !r.ok).length, [results]);
+  const selected = useMemo(
+    () => syncedTokens.find((t) => t.token.mint_address === selectedMint) ?? null,
+    [syncedTokens, selectedMint],
+  );
 
   const percent = progress ? stagePercent(progress.stage, progress.current, progress.total) : 0;
 
@@ -133,13 +259,13 @@ export function SyncTokenPage() {
     setSyncing(true);
     setError(null);
     setProgress(null);
-    setDetail(null);
-    setTrades([]);
+    setSyncedTokens([]);
+    setSelectedMint(null);
     setResults([]);
     setBatch(null);
 
     const collected: SyncResultItem[] = [];
-    let lastOk: { token: TokenDetailRecord; trades: TradeRecord[] } | null = null;
+    const oks: SyncedToken[] = [];
 
     try {
       for (let i = 0; i < targets.length; i++) {
@@ -155,7 +281,7 @@ export function SyncTokenPage() {
             incremental,
           );
           collected.push({ mint: target, ok: true });
-          lastOk = { token: result.token, trades: result.trades };
+          oks.push({ token: result.token, trades: result.trades });
         } catch (e) {
           if (e instanceof DOMException && e.name === 'AbortError') {
             throw e;
@@ -168,15 +294,15 @@ export function SyncTokenPage() {
         }
       }
       setResults(collected);
-      if (lastOk) {
-        setDetail(lastOk.token);
-        setTrades(lastOk.trades);
-      }
+      setSyncedTokens(oks);
+      setSelectedMint(oks[0]?.token.mint_address ?? null);
       setProgress(null);
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') {
         setProgress(null);
         setResults(collected);
+        setSyncedTokens(oks);
+        setSelectedMint(oks[0]?.token.mint_address ?? null);
         return;
       }
       setError(e instanceof Error ? e.message : 'Sync failed');
@@ -278,50 +404,55 @@ export function SyncTokenPage() {
         </p>
       )}
 
-      {results.length > 1 && (
-        <div className="mb-4 rounded-lg border border-white/6 bg-white/2 p-3">
+      {syncedRows.length > 0 && (
+        <div className="mb-6">
           <div className="mb-2 flex items-center gap-2">
-            <h3 className="text-sm font-bold text-text">Sync results</h3>
-            <Badge variant="success">{results.filter((r) => r.ok).length} ok</Badge>
-            {results.some((r) => !r.ok) && (
-              <Badge variant="danger">{results.filter((r) => !r.ok).length} failed</Badge>
-            )}
+            <h3 className="text-sm font-bold text-text">Synced tokens</h3>
+            <Badge variant="primary" className="font-mono">
+              {syncedRows.length}
+            </Badge>
+            {failedCount > 0 && <Badge variant="danger">{failedCount} failed</Badge>}
           </div>
-          <ul className="space-y-1">
-            {results.map((r) => (
-              <li key={r.mint} className="flex items-center gap-2 text-xs">
-                <Badge variant={r.ok ? 'success' : 'danger'} size="sm">
-                  {r.ok ? 'OK' : 'FAIL'}
-                </Badge>
-                <span className="font-mono text-text-dim">{r.mint}</span>
-                {r.error && <span className="text-red">{r.error}</span>}
-              </li>
-            ))}
-          </ul>
+          <DataTable
+            columns={syncedColumns}
+            rows={syncedRows}
+            rowKey={(r) => r.mint}
+            selectedKey={selectedMint}
+            onSelect={(key) => {
+              if (key && syncedTokens.some((t) => t.token.mint_address === key)) {
+                setSelectedMint(key);
+              }
+            }}
+            defaultPageSize={25}
+            searchable
+            hoverable
+            emptyMessage="No tokens"
+          />
         </div>
       )}
 
-      {detail && (
+      {selected && (
         <>
           <h3 className="mb-2 text-sm font-bold text-text">Token</h3>
           <div className="mb-6 rounded-lg border border-white/6 bg-white/2 p-3">
-            <TokenDetailPanel detail={detail} loading={false} error={null} />
+            <TokenDetailPanel detail={selected.token} loading={false} error={null} />
           </div>
 
           <div className="mb-6">
             <TokenPriceChart
-              symbol={detail.symbol || detail.name || detail.mint_address}
-              id={detail.mint_address}
-              trades={trades}
+              key={selected.token.mint_address}
+              symbol={selected.token.symbol || selected.token.name || selected.token.mint_address}
+              id={selected.token.mint_address}
+              trades={selected.trades}
               toValue={toChartValue}
               priceLabel={chartMetric === 'mc' ? `MC (${unit})` : unit}
               priceUnit={unit}
               metric={chartMetric}
               onMetricChange={setChartMetric}
-              athPriceInSol={detail.ath_price}
-              isMigrated={detail.is_migrated}
-              isMayhemMode={detail.is_mayhem_mode}
-              isCashbackEnabled={detail.is_cashback_enabled}
+              athPriceInSol={selected.token.ath_price}
+              isMigrated={selected.token.is_migrated}
+              isMayhemMode={selected.token.is_mayhem_mode}
+              isCashbackEnabled={selected.token.is_cashback_enabled}
               profileWallets={profileWallets}
             />
           </div>
@@ -329,12 +460,13 @@ export function SyncTokenPage() {
           <div className="mb-2 flex items-center gap-2">
             <h3 className="text-sm font-bold text-text">Trades</h3>
             <Badge variant="primary" className="font-mono">
-              {trades.length}
+              {selected.trades.length}
             </Badge>
           </div>
           <DataTable
+            key={selected.token.mint_address}
             columns={tradeColumns}
-            rows={trades}
+            rows={selected.trades}
             rowKey={(t) => `${t.tx_signature}-${t.leg_index}`}
             defaultPageSize={25}
             searchable
