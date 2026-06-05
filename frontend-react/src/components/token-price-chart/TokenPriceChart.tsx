@@ -52,8 +52,10 @@ import { BarCrosshairTooltip } from './BarCrosshairTooltip';
 import { SwingCrosshairTooltip } from './SwingCrosshairTooltip';
 import { WalletMarkersTooltip } from './WalletMarkersTooltip';
 import { WalletMarkersPlugin, asSeriesPrimitive, type WalletMarkerDef } from './walletMarkersPlugin';
+import { ChainHighlightPlugin, asChainPrimitive } from './chainHighlightPlugin';
 import {
   buildLegSegment,
+  chartTimeRangeForSpan,
   groupSequentialLegChains,
   resolveSwingLegAtChartInteraction,
   swingLegKey,
@@ -350,6 +352,7 @@ export function TokenPriceChart({
   onBarClick,
   selectedBar = null,
   swingOverlay = null,
+  highlightChain = null,
   selectedSwingLegKey = null,
   onSwingLegClick,
   connectSwings: connectSwingsProp,
@@ -381,6 +384,7 @@ export function TokenPriceChart({
   const sortedTradesRef = useRef<ChartTrade[]>([]);
   const markersPluginRef = useRef<MarkersPlugin | null>(null);
   const walletMarkersPrimRef = useRef<WalletMarkersPlugin | null>(null);
+  const chainHighlightPrimRef = useRef<ChainHighlightPlugin | null>(null);
   const barsRef = useRef<OhlcBar[]>([]);
 
   const initialPrefs = loadPrefs();
@@ -787,6 +791,8 @@ export function TokenPriceChart({
       ro.disconnect();
       markersPluginRef.current?.detach();
       markersPluginRef.current = null;
+      walletMarkersPrimRef.current = null;
+      chainHighlightPrimRef.current = null;
       seriesRef.current = null;
       swingSeriesRefs.current = [];
       chart.remove();
@@ -876,6 +882,10 @@ export function TokenPriceChart({
         existing.detachPrimitive(asSeriesPrimitive(walletMarkersPrimRef.current));
         walletMarkersPrimRef.current = null;
       }
+      if (chainHighlightPrimRef.current) {
+        existing.detachPrimitive(asChainPrimitive(chainHighlightPrimRef.current));
+        chainHighlightPrimRef.current = null;
+      }
       chart.removeSeries(existing);
       seriesRef.current = null;
     }
@@ -892,6 +902,10 @@ export function TokenPriceChart({
     const walletPrim = new WalletMarkersPlugin();
     series.attachPrimitive(asSeriesPrimitive(walletPrim));
     walletMarkersPrimRef.current = walletPrim;
+
+    const chainPrim = new ChainHighlightPlugin();
+    series.attachPrimitive(asChainPrimitive(chainPrim));
+    chainHighlightPrimRef.current = chainPrim;
 
     if (style === 'line') {
       series.setData(barsToLineData(bars));
@@ -977,6 +991,37 @@ export function TokenPriceChart({
     bars,
     profileWallets,
   ]);
+
+  // Highlight the longest swing chain as a full-height band. Resolving the
+  // span to bar-aligned chart times here keeps the plugin in sync with the
+  // current grouping/interval; the plugin recomputes pixel positions per frame.
+  useEffect(() => {
+    const prim = chainHighlightPrimRef.current;
+    if (!prim || !showChart) return;
+
+    if (!highlightChain) {
+      prim.setHighlight(null);
+      return;
+    }
+
+    const range = chartTimeRangeForSpan(
+      highlightChain.startAt,
+      highlightChain.endAt,
+      groupMode,
+      sortedTrades,
+      intervalSec,
+    );
+    if (!range) {
+      prim.setHighlight(null);
+      return;
+    }
+
+    prim.setHighlight({
+      loTime: range.lo as UTCTimestamp,
+      hiTime: range.hi as UTCTimestamp,
+      pairCount: highlightChain.pairCount,
+    });
+  }, [highlightChain, groupMode, intervalSec, sortedTrades, showChart, style, bars]);
 
   useEffect(() => {
     const series = seriesRef.current;

@@ -51,6 +51,7 @@ export type {
   ChartBarSelection,
   ChartSwingLeg,
   ChartSwingOverlay,
+  ChartChainHighlight,
   ProfileWalletInfo,
   ProfileTagInfo,
   TokenPriceChartProps,

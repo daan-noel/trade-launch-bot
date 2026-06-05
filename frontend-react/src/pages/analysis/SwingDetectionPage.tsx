@@ -517,6 +517,14 @@ export function SwingDetectionPage() {
     return selectedMintSwings.find((leg) => swingLegKey(leg) === selectedSwingKey) ?? null;
   }, [selectedSwingKey, selectedMintSwings]);
 
+  // Longest swing chain for the selected token (from the batch "All" run),
+  // highlighted on the chart as a band. Re-derives when the chain latency is
+  // tuned, since `chainStatsByMint` recomputes with it.
+  const longestChainHighlight = useMemo(
+    () => (selectedMint ? chainStatsByMint.get(selectedMint)?.longestChain ?? null : null),
+    [selectedMint, chainStatsByMint],
+  );
+
   const swingTrades = useMemo(() => {
     if (!selectedSwingLeg) return [];
     const lo = Math.min(selectedSwingLeg.start_at, selectedSwingLeg.end_at);
@@ -777,7 +785,7 @@ export function SwingDetectionPage() {
       {error && <p className="mb-2 text-sm text-red">{error}</p>}
 
       {!loaded && !loading && !error && (
-        <p className="mb-3 text-sm text-text-dim">Click Refresh to load tokens.</p>
+        <p className="mb-3 text-sm text-text-dim">Click Fetch to load tokens.</p>
       )}
 
       <SectionDivider />
@@ -1157,6 +1165,7 @@ export function SwingDetectionPage() {
           onBarClick={handleBarClick}
           selectedBar={selectedBar}
           swingOverlay={swingOverlay}
+          highlightChain={longestChainHighlight}
           selectedSwingLegKey={selectedSwingKey}
           onSwingLegClick={handleSwingLegClick}
           connectSwings={connectSwings}

@@ -23,6 +23,18 @@ export interface SwingChainStats {
   maxSequentialPairCount: number;
   /** Number of chains (runs of ≥ 2 pairs linked within the latency budget). */
   chainCount: number;
+  /** Time span of the largest chain (for chart highlighting); null if none link. */
+  longestChain: SwingChainSpan | null;
+}
+
+/** Time span (ms) covered by a chain, plus its pair count. */
+export interface SwingChainSpan {
+  /** First pair's high start (ms epoch). */
+  startAt: number;
+  /** Last pair's low end (ms epoch). */
+  endAt: number;
+  /** Pairs linked in the chain. */
+  pairCount: number;
 }
 
 /** One high→low swing pair, spanning the up-leg start through the down-leg end. */
@@ -67,6 +79,9 @@ export function computeChainStats(
   let maxRun = 0; // pairs in the largest chain (≥ 2 linked pairs)
   let curRun = 0; // pairs in the currently-open chain (0 = none open)
   let chainCount = 0;
+  let curStart = 0; // first pair index of the currently-open chain
+  let maxStart = -1; // first pair index of the largest chain (-1 = none)
+  let maxEnd = -1; // last pair index of the largest chain
 
   for (let k = 0; k + 1 < m; k++) {
     const gap = pairs[k + 1].startAt - pairs[k].endAt;
@@ -74,10 +89,15 @@ export function computeChainStats(
       if (curRun === 0) {
         curRun = 2; // this link joins pairs k and k+1 — a new chain opens
         chainCount += 1;
+        curStart = k;
       } else {
         curRun += 1; // extend the chain by one more pair
       }
-      if (curRun > maxRun) maxRun = curRun;
+      if (curRun > maxRun) {
+        maxRun = curRun;
+        maxStart = curStart;
+        maxEnd = k + 1;
+      }
     } else {
       curRun = 0; // gap too large — chain breaks here
     }
@@ -88,5 +108,9 @@ export function computeChainStats(
     totalPairCount: m,
     maxSequentialPairCount: maxRun,
     chainCount,
+    longestChain:
+      maxStart >= 0
+        ? { startAt: pairs[maxStart].startAt, endAt: pairs[maxEnd].endAt, pairCount: maxRun }
+        : null,
   };
 }

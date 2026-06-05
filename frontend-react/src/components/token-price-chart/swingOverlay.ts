@@ -160,27 +160,41 @@ export type SwingLegLineSegment = {
   data: SwingColoredLinePoint[];
 };
 
-function swingLegChartTimeRange(
-  leg: ChartSwingLeg,
+/**
+ * Resolve a [startAtMs, endAtMs] span to the chart-time range of the bars it
+ * covers — bucketed bar starts in time mode, nearest-trade slots in slot mode.
+ */
+export function chartTimeRangeForSpan(
+  startAtMs: number,
+  endAtMs: number,
   groupMode: ChartGroupMode,
   trades: ChartTrade[],
   intervalSec: number,
 ): { lo: number; hi: number } | null {
   if (groupMode === 'slot') {
-    const start = resolveChartTime(leg.start_at, groupMode, trades);
-    const end = resolveChartTime(leg.end_at, groupMode, trades);
+    const start = resolveChartTime(startAtMs, groupMode, trades);
+    const end = resolveChartTime(endAtMs, groupMode, trades);
     if (start == null || end == null) return null;
     return {
       lo: Math.min(start as number, end as number),
       hi: Math.max(start as number, end as number),
     };
   }
-  const startSec = Math.floor(leg.start_at / 1000);
-  const endSec = Math.floor(leg.end_at / 1000);
+  const startSec = Math.floor(startAtMs / 1000);
+  const endSec = Math.floor(endAtMs / 1000);
   return {
     lo: bucketStart(Math.min(startSec, endSec), intervalSec),
     hi: bucketStart(Math.max(startSec, endSec), intervalSec),
   };
+}
+
+function swingLegChartTimeRange(
+  leg: ChartSwingLeg,
+  groupMode: ChartGroupMode,
+  trades: ChartTrade[],
+  intervalSec: number,
+): { lo: number; hi: number } | null {
+  return chartTimeRangeForSpan(leg.start_at, leg.end_at, groupMode, trades, intervalSec);
 }
 
 /** Start/end arrow markers for a selected swing leg (same style as bar selection). */

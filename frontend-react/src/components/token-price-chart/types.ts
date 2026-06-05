@@ -101,6 +101,16 @@ export interface ChartSwingTooltipState {
   point: { x: number; y: number };
 }
 
+/** Longest swing chain to highlight as a translucent full-height band. */
+export interface ChartChainHighlight {
+  /** Chain start (ms epoch) — first pair's high start. */
+  startAt: number;
+  /** Chain end (ms epoch) — last pair's low end. */
+  endAt: number;
+  /** Pairs linked in the chain (for the label). */
+  pairCount: number;
+}
+
 export interface WalletBarActivity {
   wallet: ProfileWalletInfo;
   buyCount: number;
@@ -163,6 +173,8 @@ export interface TokenPriceChartProps {
   selectedBar?: ChartBarSelection | null;
   /** Swing detection legs to draw as an overlay line. */
   swingOverlay?: ChartSwingOverlay | null;
+  /** Longest swing chain to highlight as a translucent band (after batch detection). */
+  highlightChain?: ChartChainHighlight | null;
   /** `${type}-${start_at}-${end_at}` — highlights that leg on the overlay. */
   selectedSwingLegKey?: string | null;
   /** Fired when a swing path segment is clicked; null clears selection. */

@@ -75,6 +75,11 @@ export const CHART_COLORS = {
   swingLow: '#e879f9',
   /** Selected OHLC bar / line point */
   barSelected: '#fddc3b',
+  /** Longest swing-chain highlight band (amber wash + solid label chip) */
+  chainBandFill: 'rgba(250, 204, 21, 0.12)',
+  chainBandBorder: 'rgba(250, 204, 21, 0.6)',
+  chainBandLabelBg: 'rgba(250, 204, 21, 0.92)',
+  chainBandLabelText: '#1a1a1a',
 } as const;
 
 /** Crosshair tooltip / toolbar — distinct hue per field on dark panels. */
