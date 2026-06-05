@@ -48,6 +48,10 @@ export interface OhlcBar {
   low: number;
   close: number;
   volume: number;
+  /** Buy-side SOL volume in this bar (SOL into the curve/pool). */
+  inflow: number;
+  /** Sell-side SOL volume in this bar (SOL out of the curve/pool). */
+  outflow: number;
   /** Bonding-curve liquidity (SOL) after the last trade in this bar. */
   liquiditySol: number | null;
 }
@@ -62,6 +66,10 @@ export interface ChartCrosshairInfo {
   low: number;
   close: number;
   volume: number;
+  /** Buy-side SOL volume in the hovered bar. */
+  inflow: number;
+  /** Sell-side SOL volume in the hovered bar. */
+  outflow: number;
   liquiditySol: number | null;
 }
 
@@ -112,6 +120,8 @@ export interface ChartBarTooltipState {
   low: number;
   close: number;
   volume: number;
+  inflow: number;
+  outflow: number;
   liquiditySol: number | null;
   barTime: UTCTimestamp;
   style: ChartStyle;
@@ -182,6 +192,7 @@ export interface ChartToolbarProps {
   showAthLine: boolean;
   athLineAvailable: boolean;
   showMigrationLine: boolean;
+  trimEmptyBars: boolean;
   swingOverlayAvailable: boolean;
   showSwingOverlay: boolean;
   connectSwings: boolean;
@@ -196,6 +207,7 @@ export interface ChartToolbarProps {
   onShowTradeMarkersChange: (show: boolean) => void;
   onShowAthLineChange: (show: boolean) => void;
   onShowMigrationLineChange: (show: boolean) => void;
+  onTrimEmptyBarsChange: (trim: boolean) => void;
   onShowSwingOverlayChange: (show: boolean) => void;
   onConnectSwingsChange: (connected: boolean) => void;
 }

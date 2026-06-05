@@ -207,6 +207,8 @@ export function tradesForChartMetric(
 type TradeBucket = {
   prices: number[];
   volume: number;
+  inflow: number;
+  outflow: number;
   liquiditySol: number | null;
 };
 
@@ -268,6 +270,8 @@ function buildContinuousBars(
         low,
         close,
         volume: bucket!.volume,
+        inflow: bucket!.inflow,
+        outflow: bucket!.outflow,
         liquiditySol: lastLiquidity,
       });
       prevClose = close;
@@ -279,6 +283,8 @@ function buildContinuousBars(
         low: prevClose,
         close: prevClose,
         volume: 0,
+        inflow: 0,
+        outflow: 0,
         liquiditySol: lastLiquidity,
       });
     }
@@ -306,17 +312,23 @@ function collectTradeBuckets(
 
     const price = toValue(value);
     const vol = trade.sol_amount ?? 1;
+    const inflow = trade.trade_type === 'buy' ? vol : 0;
+    const outflow = trade.trade_type === 'buy' ? 0 : vol;
     const liquiditySol = tradeLiquiditySol(trade);
     const existing = buckets.get(key);
 
     if (existing) {
       existing.prices.push(price);
       existing.volume += vol;
+      existing.inflow += inflow;
+      existing.outflow += outflow;
       if (liquiditySol != null) existing.liquiditySol = liquiditySol;
     } else {
       buckets.set(key, {
         prices: [price],
         volume: vol,
+        inflow,
+        outflow,
         liquiditySol,
       });
     }
@@ -379,6 +391,16 @@ export function aggregateTradesToBarsBySlot(
   const keys = [...buckets.keys()].sort((a, b) => a - b);
   const seedOpen = seedOpenValue(sorted, metric, toValue);
   return buildContinuousBars(buckets, keys[0], keys[keys.length - 1], 1, seedOpen);
+}
+
+/**
+ * Drop flat placeholder bars that {@link buildContinuousBars} synthesizes for
+ * intervals with no trades. Real bars always carry `volume > 0`; empty ones are
+ * flat at the previous close with `volume === 0`. Trimming them collapses the
+ * gaps so only intervals that actually traded remain.
+ */
+export function dropEmptyBars(bars: OhlcBar[]): OhlcBar[] {
+  return bars.filter((b) => b.volume > 0);
 }
 
 export function barsToLineData(bars: OhlcBar[]) {

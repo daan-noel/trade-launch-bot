@@ -154,6 +154,7 @@ export const DEFAULT_CHART_PREFS = {
   showTradeMarkers: true,
   showAthLine: true,
   showMigrationLine: true,
+  trimEmptyBars: false,
 };
 
 export function createChartOptions(

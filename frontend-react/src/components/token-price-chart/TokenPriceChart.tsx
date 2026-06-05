@@ -26,6 +26,7 @@ import {
   barsToLineData,
   barSelectionMarker,
   compareTradesChronologically,
+  dropEmptyBars,
   tradeBarSlot,
   tradeBarTime,
 } from './chartBars';
@@ -84,6 +85,7 @@ function loadPrefs(): {
   showTradeMarkers: boolean;
   showAthLine: boolean;
   showMigrationLine: boolean;
+  trimEmptyBars: boolean;
 } {
   try {
     const raw = localStorage.getItem(LS_CHART_PREFS_KEY);
@@ -95,6 +97,7 @@ function loadPrefs(): {
         showTradeMarkers?: boolean;
         showAthLine?: boolean;
         showMigrationLine?: boolean;
+        trimEmptyBars?: boolean;
       };
       return {
         groupMode: parsed.groupMode ?? DEFAULT_CHART_PREFS.groupMode,
@@ -104,6 +107,7 @@ function loadPrefs(): {
         showAthLine: parsed.showAthLine ?? DEFAULT_CHART_PREFS.showAthLine,
         showMigrationLine:
           parsed.showMigrationLine ?? DEFAULT_CHART_PREFS.showMigrationLine,
+        trimEmptyBars: parsed.trimEmptyBars ?? DEFAULT_CHART_PREFS.trimEmptyBars,
       };
     }
   } catch {
@@ -119,6 +123,7 @@ function savePrefs(
   showTradeMarkers: boolean,
   showAthLine: boolean,
   showMigrationLine: boolean,
+  trimEmptyBars: boolean,
 ) {
   try {
     localStorage.setItem(
@@ -130,6 +135,7 @@ function savePrefs(
         showTradeMarkers,
         showAthLine,
         showMigrationLine,
+        trimEmptyBars,
       }),
     );
   } catch {
@@ -384,6 +390,7 @@ export function TokenPriceChart({
   const [showTradeMarkers, setShowTradeMarkers] = useState(initialPrefs.showTradeMarkers);
   const [showAthLine, setShowAthLine] = useState(initialPrefs.showAthLine);
   const [showMigrationLine, setShowMigrationLine] = useState(initialPrefs.showMigrationLine);
+  const [trimEmptyBars, setTrimEmptyBars] = useState(initialPrefs.trimEmptyBars);
   const { timezone: chartTimezone } = useTimezone();
   const swingOverlayAvailable = (swingOverlay?.legs.length ?? 0) > 0;
   const [showSwingOverlay, setShowSwingOverlay] = useState(true);
@@ -434,13 +441,13 @@ export function TokenPriceChart({
     [trades],
   );
 
-  const bars = useMemo(
-    () =>
+  const bars = useMemo(() => {
+    const built =
       groupMode === 'slot'
         ? aggregateTradesToBarsBySlot(sortedTrades, toValue, metric)
-        : aggregateTradesToBars(sortedTrades, intervalSec, toValue, metric),
-    [sortedTrades, groupMode, intervalSec, toValue, metric],
-  );
+        : aggregateTradesToBars(sortedTrades, intervalSec, toValue, metric);
+    return trimEmptyBars ? dropEmptyBars(built) : built;
+  }, [sortedTrades, groupMode, intervalSec, toValue, metric, trimEmptyBars]);
   barsRef.current = bars;
   sortedTradesRef.current = sortedTrades;
   showSwingOverlayRef.current = showSwingOverlay;
@@ -513,51 +520,59 @@ export function TokenPriceChart({
   const handleGroupModeChange = useCallback(
     (next: ChartGroupMode) => {
       setGroupMode(next);
-      savePrefs(next, interval, style, showTradeMarkers, showAthLine, showMigrationLine);
+      savePrefs(next, interval, style, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars);
       onBarClickRef.current?.(null);
     },
-    [interval, style, showTradeMarkers, showAthLine, showMigrationLine],
+    [interval, style, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars],
   );
 
   const handleIntervalChange = useCallback(
     (next: ChartInterval) => {
       setInterval(next);
-      savePrefs(groupMode, next, style, showTradeMarkers, showAthLine, showMigrationLine);
+      savePrefs(groupMode, next, style, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars);
       onBarClickRef.current?.(null);
     },
-    [groupMode, style, showTradeMarkers, showAthLine, showMigrationLine],
+    [groupMode, style, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars],
   );
 
   const handleStyleChange = useCallback(
     (next: ChartStyle) => {
       setStyle(next);
-      savePrefs(groupMode, interval, next, showTradeMarkers, showAthLine, showMigrationLine);
+      savePrefs(groupMode, interval, next, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars);
     },
-    [groupMode, interval, showTradeMarkers, showAthLine, showMigrationLine],
+    [groupMode, interval, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars],
   );
 
   const handleShowTradeMarkersChange = useCallback(
     (next: boolean) => {
       setShowTradeMarkers(next);
-      savePrefs(groupMode, interval, style, next, showAthLine, showMigrationLine);
+      savePrefs(groupMode, interval, style, next, showAthLine, showMigrationLine, trimEmptyBars);
     },
-    [groupMode, interval, style, showAthLine, showMigrationLine],
+    [groupMode, interval, style, showAthLine, showMigrationLine, trimEmptyBars],
   );
 
   const handleShowAthLineChange = useCallback(
     (next: boolean) => {
       setShowAthLine(next);
-      savePrefs(groupMode, interval, style, showTradeMarkers, next, showMigrationLine);
+      savePrefs(groupMode, interval, style, showTradeMarkers, next, showMigrationLine, trimEmptyBars);
     },
-    [groupMode, interval, style, showTradeMarkers, showMigrationLine],
+    [groupMode, interval, style, showTradeMarkers, showMigrationLine, trimEmptyBars],
   );
 
   const handleShowMigrationLineChange = useCallback(
     (next: boolean) => {
       setShowMigrationLine(next);
-      savePrefs(groupMode, interval, style, showTradeMarkers, showAthLine, next);
+      savePrefs(groupMode, interval, style, showTradeMarkers, showAthLine, next, trimEmptyBars);
     },
-    [groupMode, interval, style, showTradeMarkers, showAthLine],
+    [groupMode, interval, style, showTradeMarkers, showAthLine, trimEmptyBars],
+  );
+
+  const handleTrimEmptyBarsChange = useCallback(
+    (next: boolean) => {
+      setTrimEmptyBars(next);
+      savePrefs(groupMode, interval, style, showTradeMarkers, showAthLine, showMigrationLine, next);
+    },
+    [groupMode, interval, style, showTradeMarkers, showAthLine, showMigrationLine],
   );
 
   const showChart = Boolean(id) && !loading && !error && trades.length > 0 && bars.length > 0;
@@ -657,6 +672,8 @@ export function TokenPriceChart({
         low: bar.low,
         close: bar.close,
         volume: bar.volume,
+        inflow: bar.inflow,
+        outflow: bar.outflow,
         liquiditySol: bar.liquiditySol,
       };
       setCrosshair(info);
@@ -1185,6 +1202,7 @@ export function TokenPriceChart({
         showAthLine={showAthLine}
         athLineAvailable={athLineAvailable}
         showMigrationLine={showMigrationLine}
+        trimEmptyBars={trimEmptyBars}
         swingOverlayAvailable={swingOverlayAvailable}
         showSwingOverlay={showSwingOverlay}
         connectSwings={connectSwings}
@@ -1199,6 +1217,7 @@ export function TokenPriceChart({
         onShowTradeMarkersChange={handleShowTradeMarkersChange}
         onShowAthLineChange={handleShowAthLineChange}
         onShowMigrationLineChange={handleShowMigrationLineChange}
+        onTrimEmptyBarsChange={handleTrimEmptyBarsChange}
         onShowSwingOverlayChange={setShowSwingOverlay}
         onConnectSwingsChange={setConnectSwings}
       />
@@ -1207,7 +1226,6 @@ export function TokenPriceChart({
         {barTooltip && !swingTooltip && (
           <BarCrosshairTooltip
             tooltip={barTooltip}
-            formatPrice={formatChartPrice}
             formatVol={formatVol}
             formatTime={formatBarTime}
           />

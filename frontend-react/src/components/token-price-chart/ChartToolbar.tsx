@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import {
   CHART_COLORS,
   CHART_GROUP_MODES,
@@ -11,7 +12,7 @@ import { BarCrosshairFields } from './BarCrosshairFields';
 import { Button } from '../ui/Button';
 import { Checkbox } from '../ui/Checkbox';
 import { cn } from './cn';
-import type { ChartMetric, ChartToolbarProps } from './types';
+import type { ChartMetric, ChartStyle, ChartToolbarProps } from './types';
 
 const CHART_METRICS: ChartMetric[] = ['price', 'mc'];
 
@@ -72,6 +73,142 @@ function ConnectSwingsIcon({ connected }: { connected: boolean }) {
   );
 }
 
+/** Up (buy) + down (sell) arrows — per-bar buy/sell count markers. */
+function BuySellCountsIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3.5">
+      <path
+        d="M6 14V5m0 0L3.5 7.5M6 5l2.5 2.5"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M14 6v9m0 0 2.5-2.5M14 15l-2.5-2.5"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+/** Two edges with inward arrows — collapse the empty gaps between candles. */
+function TrimGapsIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3.5">
+      <path d="M3 4.5v11M17 4.5v11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <path
+        d="M6 10h3.5M9.5 10 7.8 8.3M9.5 10 7.8 11.7"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M14 10h-3.5M10.5 10l1.7-1.7M10.5 10l1.7 1.7"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+/** Two filled candlesticks with wicks — candlestick chart style. */
+function CandlesIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3.5">
+      <path d="M7 2.5v3.5M7 13.5V17" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <rect x="4.75" y="6" width="4.5" height="7.5" rx="1" fill="currentColor" />
+      <path d="M14 5v2M14 13v2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <rect x="11.75" y="7" width="4.5" height="6" rx="1" fill="currentColor" />
+    </svg>
+  );
+}
+
+/** Rising zigzag — line chart style. */
+function LineIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3.5">
+      <path
+        d="M3 13l4-4 3 3 7-7"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+const CHART_STYLE_ICONS: Record<ChartStyle, ReactNode> = {
+  candles: <CandlesIcon />,
+  line: <LineIcon />,
+};
+
+/** Instant dark tooltip shown below its `group` parent on hover (icon-only controls). */
+function HoverTooltip({ children }: { children: ReactNode }) {
+  return (
+    <span
+      role="tooltip"
+      className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded px-2 py-1 text-[10px] font-medium opacity-0 shadow-lg transition-opacity duration-100 group-hover:opacity-100"
+      style={{
+        backgroundColor: '#0a0a0a',
+        color: CHART_COLORS.panelText,
+        border: `1px solid ${CHART_COLORS.border}`,
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+/**
+ * Square icon toggle for the toolbar with an instant hover tooltip — the label
+ * lives in the tooltip since the button is icon-only. Mirrors the active-pill
+ * styling of the other toolbar toggles.
+ */
+function IconToggleButton({
+  active,
+  onClick,
+  label,
+  tooltip,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  tooltip: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="group relative inline-flex">
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label={label}
+        aria-pressed={active}
+        className={cn(
+          'flex size-7 items-center justify-center rounded-md transition-colors',
+          active ? 'text-[#0a0a0a]' : 'hover:text-white',
+        )}
+        style={
+          active
+            ? { backgroundColor: CHART_COLORS.activePill }
+            : { backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }
+        }
+      >
+        {children}
+      </button>
+      <HoverTooltip>{tooltip}</HoverTooltip>
+    </div>
+  );
+}
+
 export function ChartToolbar({
   symbol,
   groupMode,
@@ -85,6 +222,7 @@ export function ChartToolbar({
   showAthLine,
   athLineAvailable,
   showMigrationLine,
+  trimEmptyBars,
   swingOverlayAvailable,
   showSwingOverlay,
   connectSwings,
@@ -99,6 +237,7 @@ export function ChartToolbar({
   onShowTradeMarkersChange,
   onShowAthLineChange,
   onShowMigrationLineChange,
+  onTrimEmptyBarsChange,
   onShowSwingOverlayChange,
   onConnectSwingsChange,
 }: ChartToolbarProps) {
@@ -215,22 +354,26 @@ export function ChartToolbar({
           style={{ backgroundColor: CHART_COLORS.grid }}
         >
           {CHART_STYLES.map((key) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => onStyleChange(key)}
-              className={cn(
-                'rounded px-2 py-0.5 text-[11px] font-semibold transition-colors',
-                style === key ? 'text-[#0a0a0a]' : 'hover:text-white',
-              )}
-              style={
-                style === key
-                  ? { backgroundColor: CHART_COLORS.activePill }
-                  : { color: CHART_COLORS.panelTextDim }
-              }
-            >
-              {CHART_STYLE_LABELS[key]}
-            </button>
+            <div key={key} className="group relative inline-flex">
+              <button
+                type="button"
+                onClick={() => onStyleChange(key)}
+                aria-label={`${CHART_STYLE_LABELS[key]} chart`}
+                aria-pressed={style === key}
+                className={cn(
+                  'flex items-center justify-center rounded px-2.5 py-0.5 transition-colors',
+                  style === key ? 'text-[#0a0a0a]' : 'hover:text-white',
+                )}
+                style={
+                  style === key
+                    ? { backgroundColor: CHART_COLORS.activePill }
+                    : { color: CHART_COLORS.panelTextDim }
+                }
+              >
+                {CHART_STYLE_ICONS[key]}
+              </button>
+              <HoverTooltip>{CHART_STYLE_LABELS[key]}</HoverTooltip>
+            </div>
           ))}
         </div>
 
@@ -260,22 +403,23 @@ export function ChartToolbar({
           </div>
         )}
 
-        <button
-          type="button"
+        <IconToggleButton
+          active={showTradeMarkers}
           onClick={() => onShowTradeMarkersChange(!showTradeMarkers)}
-          title="Show buy/sell counts per bar"
-          className={cn(
-            'rounded-md px-2 py-1 text-[11px] font-semibold transition-colors',
-            showTradeMarkers ? 'text-[#0a0a0a]' : 'hover:text-white',
-          )}
-          style={
-            showTradeMarkers
-              ? { backgroundColor: CHART_COLORS.activePill }
-              : { backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }
-          }
+          label="Toggle buy/sell counts per bar"
+          tooltip="Buy/sell counts per bar"
         >
-          B/S counts
-        </button>
+          <BuySellCountsIcon />
+        </IconToggleButton>
+
+        <IconToggleButton
+          active={trimEmptyBars}
+          onClick={() => onTrimEmptyBarsChange(!trimEmptyBars)}
+          label="Toggle trimming of empty candles"
+          tooltip="Hide flat candles for intervals with no trades"
+        >
+          <TrimGapsIcon />
+        </IconToggleButton>
 
         <label
           className={cn(

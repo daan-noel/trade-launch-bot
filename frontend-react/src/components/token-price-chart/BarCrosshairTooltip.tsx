@@ -1,19 +1,17 @@
 import { CHART_COLORS } from './constants';
-import { BarCrosshairFields } from './BarCrosshairFields';
+import { BarFlowFields } from './BarFlowFields';
 import type { ChartBarTooltipState } from './types';
 
 export function BarCrosshairTooltip({
   tooltip,
-  formatPrice,
   formatVol,
   formatTime,
 }: {
   tooltip: ChartBarTooltipState;
-  formatPrice: (value: number) => string;
   formatVol: (value: number) => string;
   formatTime: (barTime: ChartBarTooltipState['barTime']) => string;
 }) {
-  const { point, style, barTime, open, high, low, close, volume, liquiditySol } = tooltip;
+  const { point, barTime } = tooltip;
 
   return (
     <div
@@ -32,13 +30,7 @@ export function BarCrosshairTooltip({
       >
         {formatTime(barTime)}
       </div>
-      <BarCrosshairFields
-        style={style}
-        crosshair={{ open, high, low, close, volume, liquiditySol }}
-        formatPrice={formatPrice}
-        formatVol={formatVol}
-        layout="grid"
-      />
+      <BarFlowFields crosshair={tooltip} formatVol={formatVol} layout="grid" />
     </div>
   );
 }
