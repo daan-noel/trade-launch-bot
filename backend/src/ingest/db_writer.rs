@@ -7,7 +7,7 @@ use tracing::{error, warn};
 
 use crate::{
     config::constants::RUGGED_STALE_SECONDS,
-    models::{token::Token, trade::Trade, transaction::RawTransaction, wallet::Wallet},
+    models::{token::Token, trade::Trade, transaction::RawTransaction},
     storage::repositories::{
         token_info_repo::TokenInfoRepo, token_repo::TokenRepo, trade_repo::TradeRepo,
         transaction_repo::TransactionRepo, wallet_repo::WalletRepo,
@@ -106,8 +106,8 @@ impl DbWriter {
                 }
                 DbWriteOp::Wallet(addr) => {
                     let now = Utc::now();
-                    if let Err(e) = wallet_repo.upsert(&Wallet::new(addr, now)).await {
-                        warn!("DbWriter: wallet upsert: {e}");
+                    if let Err(e) = wallet_repo.touch_last_seen(&addr, now).await {
+                        warn!("DbWriter: wallet touch {addr}: {e}");
                     }
                 }
                 DbWriteOp::Trade(trade) => {

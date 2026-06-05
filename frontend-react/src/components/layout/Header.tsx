@@ -33,6 +33,7 @@ export function Header() {
     location.pathname.startsWith('/tokens') || location.pathname.startsWith('/token');
   const analysisActive = location.pathname.startsWith('/analysis');
   const strategiesActive = location.pathname.startsWith('/strategies');
+  const profilesActive = location.pathname.startsWith('/profiles');
   const [liveMode, setLiveModeState] = useState(false);
   const { setUsdRate } = usePriceUnit();
 
@@ -90,7 +91,14 @@ export function Header() {
               { to: '/analysis/swing-detection', label: 'Swing detection' },
             ]}
           />
-          <NavItem to="/wallet">Wallet</NavItem>
+          <NavDropdown
+            label="Profiles"
+            isActive={profilesActive}
+            items={[
+              { to: '/profiles/mine', label: 'My wallets' },
+              { to: '/profiles/other', label: 'Other profiles' },
+            ]}
+          />
           <NavDropdown
             label="Strategies"
             isActive={strategiesActive}

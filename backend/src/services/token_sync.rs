@@ -18,7 +18,6 @@ use crate::{
         events::InternalEvent,
         token::Token,
         trade::Trade,
-        wallet::Wallet,
     },
     state::{
         token_cache::{TokenCache, TokenState},
@@ -254,7 +253,7 @@ pub async fn run_token_sync(
                             token_record = Some(e.token.clone());
                             let now = Utc::now();
                             let _ = wallet_repo
-                                .upsert(&Wallet::new(e.token.creator_wallet.clone(), now))
+                                .touch_last_seen(&e.token.creator_wallet, now)
                                 .await;
                         }
                         InternalEvent::TradeExecuted(e) if e.trade.mint_address == mint => {
@@ -264,7 +263,7 @@ pub async fn run_token_sync(
                             let _ = trade_repo.insert(&e.trade).await;
                             let now = Utc::now();
                             let _ = wallet_repo
-                                .upsert(&Wallet::new(e.trade.wallet_address.clone(), now))
+                                .touch_last_seen(&e.trade.wallet_address, now)
                                 .await;
                         }
                         InternalEvent::TokenMigrated(e) if e.mint_address == mint => {

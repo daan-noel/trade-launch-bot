@@ -8,6 +8,8 @@ pub mod token_info;
 pub mod trade;
 pub mod transaction;
 pub mod wallet;
+pub mod wallet_profile;
+pub mod wallet_profile_tag;
 
 // Re-export types for convenience
 pub use position::{Position, PositionStatus};

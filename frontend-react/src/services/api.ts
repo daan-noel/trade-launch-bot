@@ -157,6 +157,109 @@ export async function tradeSell(req: {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Profiles & Wallets
+// ---------------------------------------------------------------------------
+
+export async function fetchProfiles(): Promise<import('../types').WalletProfile[]> {
+  return request(`${API_BASE}/api/profiles`);
+}
+
+export async function createProfile(req: {
+  name: string;
+  profile_type: import('../types').ProfileType;
+}): Promise<import('../types').WalletProfile> {
+  return request(`${API_BASE}/api/profiles`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+}
+
+export async function updateProfile(
+  id: string,
+  req: { name: string; profile_type: import('../types').ProfileType },
+): Promise<void> {
+  await request(`${API_BASE}/api/profiles/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+}
+
+export async function deleteProfile(id: string): Promise<void> {
+  await request(`${API_BASE}/api/profiles/${id}`, { method: 'DELETE' });
+}
+
+export async function createWalletEntry(
+  profileId: string,
+  req: { address: string; is_tracked?: boolean; comment?: string },
+): Promise<import('../types').WalletEntry> {
+  return request(`${API_BASE}/api/profiles/${profileId}/wallets`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+}
+
+export async function updateWalletEntry(
+  id: string,
+  req: { is_tracked: boolean; comment: string | null },
+): Promise<void> {
+  await request(`${API_BASE}/api/wallets/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+}
+
+export async function deleteWalletEntry(id: string): Promise<void> {
+  await request(`${API_BASE}/api/wallets/${id}`, { method: 'DELETE' });
+}
+
+// ---------------------------------------------------------------------------
+// Tags
+// ---------------------------------------------------------------------------
+
+export async function fetchTags(): Promise<import('../types').WalletProfileTag[]> {
+  return request(`${API_BASE}/api/tags`);
+}
+
+export async function createTag(req: {
+  name: string;
+  color: string;
+  comment?: string;
+}): Promise<import('../types').WalletProfileTag> {
+  return request(`${API_BASE}/api/tags`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+}
+
+export async function updateTag(
+  id: string,
+  req: { name: string; color: string; comment?: string },
+): Promise<void> {
+  await request(`${API_BASE}/api/tags/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+}
+
+export async function deleteTag(id: string): Promise<void> {
+  await request(`${API_BASE}/api/tags/${id}`, { method: 'DELETE' });
+}
+
+export async function updateProfileTags(profileId: string, tagIds: string[]): Promise<void> {
+  await request(`${API_BASE}/api/profiles/${profileId}/tags`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tag_ids: tagIds }),
+  });
+}
+
 export function sseUrl(): string {
   return `${API_BASE}/api/stream`;
 }

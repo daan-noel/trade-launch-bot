@@ -5,4 +5,6 @@ pub mod token_info_repo;
 pub mod token_repo;
 pub mod trade_repo;
 pub mod transaction_repo;
+pub mod wallet_profile_repo;
+pub mod wallet_profile_tag_repo;
 pub mod wallet_repo;

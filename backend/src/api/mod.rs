@@ -51,19 +51,54 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 "/system/price",
                 web::get().to(handlers::system::get_sol_price),
             )
-            // Wallet endpoints
+            // Profile endpoints
             .route(
-                "/wallets/{address}",
+                "/profiles",
+                web::get().to(handlers::system::list_profiles),
+            )
+            .route(
+                "/profiles",
+                web::post().to(handlers::system::create_profile),
+            )
+            .route(
+                "/profiles/{id}",
+                web::get().to(handlers::system::get_profile),
+            )
+            .route(
+                "/profiles/{id}",
+                web::put().to(handlers::system::update_profile),
+            )
+            .route(
+                "/profiles/{id}",
+                web::delete().to(handlers::system::delete_profile),
+            )
+            // Profile tag assignment
+            .route(
+                "/profiles/{id}/tags",
+                web::put().to(handlers::system::update_profile_tags),
+            )
+            // Wallet endpoints (under profiles for create, standalone for edit/delete)
+            .route(
+                "/profiles/{id}/wallets",
+                web::post().to(handlers::system::create_wallet),
+            )
+            .route(
+                "/wallets/{id}",
                 web::get().to(handlers::system::get_wallet),
             )
             .route(
-                "/wallets/{address}/flag",
-                web::post().to(handlers::system::flag_wallet),
+                "/wallets/{id}",
+                web::put().to(handlers::system::update_wallet),
             )
             .route(
-                "/wallets/{address}/flag",
-                web::delete().to(handlers::system::unflag_wallet),
+                "/wallets/{id}",
+                web::delete().to(handlers::system::delete_wallet),
             )
+            // Tag endpoints
+            .route("/tags", web::get().to(handlers::system::list_tags))
+            .route("/tags", web::post().to(handlers::system::create_tag))
+            .route("/tags/{id}", web::put().to(handlers::system::update_tag))
+            .route("/tags/{id}", web::delete().to(handlers::system::delete_tag))
             // Strategy endpoints
             .route(
                 "/strategies/tpsl/rules",

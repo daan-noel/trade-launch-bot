@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useDispatch, useSelector } from 'react-redux';
 import { DataTable } from '../../components/table/DataTable';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
 import { InlineAlert, Modal } from '../../components/ui/Modal';
 import { walletColumns } from '../../components/wallet/walletColumns';
-import { fetchWalletHoldings, tradeBuy, tradeSell } from '../../services/api';
-import type { WalletHolding } from '../../types';
+import { tradeBuy, tradeSell } from '../../services/api';
+import type { AppDispatch, RootState } from '../../store';
+import { loadWalletHoldings } from '../../store/walletSlice';
 
 interface BuyDialog {
   mint: string;
@@ -14,27 +16,20 @@ interface BuyDialog {
   solInput: string;
 }
 
-export function WalletPage() {
-  const [holdings, setHoldings] = useState<WalletHolding[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+export function MyWalletPage() {
+  const dispatch = useDispatch<AppDispatch>();
+  const holdings = useSelector((s: RootState) => s.wallet.holdings);
+  const loading = useSelector((s: RootState) => s.wallet.loading);
+  const error = useSelector((s: RootState) => s.wallet.error);
+
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
   const [sellingMint, setSellingMint] = useState<string | null>(null);
   const [buyDialog, setBuyDialog] = useState<BuyDialog | null>(null);
 
-  const loadHoldings = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await fetchWalletHoldings();
-      setHoldings(data);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load holdings');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const loadHoldings = useCallback(() => {
+    dispatch(loadWalletHoldings());
+  }, [dispatch]);
 
   useEffect(() => {
     loadHoldings();

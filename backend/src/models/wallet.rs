@@ -2,37 +2,36 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// A Solana wallet observed interacting with tracked tokens.
+/// A manually managed Solana wallet belonging to a WalletProfile.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Wallet {
     pub id: Uuid,
-    /// Base58 public key.
+    pub profile_id: Uuid,
+    /// Base58 public key — validated on creation (32–44 chars, base58 alphabet).
     pub address: String,
-    pub first_seen_at: DateTime<Utc>,
-    pub last_seen_at: DateTime<Utc>,
-    pub is_flagged: bool,
-    pub flag_reason: Option<String>,
+    pub is_tracked: bool,
+    pub comment: Option<String>,
+    pub created_at: DateTime<Utc>,
+    /// Set by ingest when a trade from this address is observed; null until first seen.
+    pub last_seen_at: Option<DateTime<Utc>>,
 }
 
-impl Wallet {
-    pub fn new(address: String, now: DateTime<Utc>) -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            address,
-            first_seen_at: now,
-            last_seen_at: now,
-            is_flagged: false,
-            flag_reason: None,
+/// Validate a Solana wallet address: base58 alphabet, 32–44 chars.
+pub fn validate_solana_address(address: &str) -> Result<(), String> {
+    const BASE58_ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    let len = address.len();
+    if !(32..=44).contains(&len) {
+        return Err(format!(
+            "invalid address length {len}: expected 32–44 characters"
+        ));
+    }
+    for ch in address.bytes() {
+        if !BASE58_ALPHABET.contains(&ch) {
+            return Err(format!(
+                "invalid character '{}' in address",
+                ch as char
+            ));
         }
     }
-
-    #[allow(dead_code)]
-    pub fn touch(&mut self, now: DateTime<Utc>) {
-        self.last_seen_at = now;
-    }
-
-    pub fn flag(&mut self, reason: String) {
-        self.is_flagged = true;
-        self.flag_reason = Some(reason);
-    }
+    Ok(())
 }

@@ -8,7 +8,8 @@ import { SyncTokenPage } from './pages/tokens/SyncTokenPage';
 import { TransactionsPage } from './pages/transactions/TransactionsPage';
 import { AnalysisPage } from './pages/analysis/AnalysisPage';
 import { SwingDetectionPage } from './pages/analysis/SwingDetectionPage';
-import { WalletPage } from './pages/wallet/WalletPage';
+import { MyWalletPage } from './pages/profiles/MyWalletPage';
+import { OtherProfilesPage } from './pages/profiles/OtherProfilesPage';
 import { TpslPage } from './pages/strategies/TpslPage';
 import { SettingsPage } from './pages/settings/SettingsPage';
 import { NotFoundPage } from './pages/not-found/NotFoundPage';
@@ -27,7 +28,9 @@ export default function App() {
             <Route path="analysis" element={<Navigate to="/analysis/general" replace />} />
             <Route path="analysis/general" element={<AnalysisPage />} />
             <Route path="analysis/swing-detection" element={<SwingDetectionPage />} />
-            <Route path="wallet" element={<WalletPage />} />
+            <Route path="wallet" element={<Navigate to="/profiles/mine" replace />} />
+            <Route path="profiles/mine" element={<MyWalletPage />} />
+            <Route path="profiles/other" element={<OtherProfilesPage />} />
             <Route path="strategies/tpsl" element={<TpslPage />} />
             <Route path="strategies" element={<Navigate to="/strategies/tpsl" replace />} />
             <Route path="settings" element={<SettingsPage />} />

@@ -255,3 +255,32 @@ export interface CreatorRecord {
   wash_trade_score: number;
   last_analyzed_at: string | null;
 }
+
+export type ProfileType = 'mine' | 'trader' | 'whale' | 'dev';
+
+export interface WalletProfileTag {
+  id: string;
+  name: string;
+  color: string;
+  comment: string | null;
+  created_at: string;
+}
+
+export interface WalletEntry {
+  id: string;
+  profile_id: string;
+  address: string;
+  is_tracked: boolean;
+  comment: string | null;
+  created_at: string;
+  last_seen_at: string | null;
+}
+
+export interface WalletProfile {
+  id: string;
+  name: string;
+  profile_type: ProfileType;
+  created_at: string;
+  wallets: WalletEntry[];
+  tags: WalletProfileTag[];
+}

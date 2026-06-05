@@ -8,72 +8,107 @@ pub struct WalletRepo {
     pool: PgPool,
 }
 
-// ---------------------------------------------------------------------------
-// DB row
-// ---------------------------------------------------------------------------
-
 #[derive(sqlx::FromRow)]
-struct WalletDbRow {
+struct WalletRow {
     id: Uuid,
+    profile_id: Uuid,
     address: String,
-    first_seen_at: DateTime<Utc>,
-    last_seen_at: DateTime<Utc>,
-    is_flagged: bool,
-    flag_reason: Option<String>,
+    is_tracked: bool,
+    comment: Option<String>,
+    created_at: DateTime<Utc>,
+    last_seen_at: Option<DateTime<Utc>>,
 }
 
-impl From<WalletDbRow> for Wallet {
-    fn from(r: WalletDbRow) -> Self {
+impl From<WalletRow> for Wallet {
+    fn from(r: WalletRow) -> Self {
         Self {
             id: r.id,
+            profile_id: r.profile_id,
             address: r.address,
-            first_seen_at: r.first_seen_at,
+            is_tracked: r.is_tracked,
+            comment: r.comment,
+            created_at: r.created_at,
             last_seen_at: r.last_seen_at,
-            is_flagged: r.is_flagged,
-            flag_reason: r.flag_reason,
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Repo
-// ---------------------------------------------------------------------------
 
 impl WalletRepo {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
 
-    /// Insert or update a wallet. Updates `last_seen_at` on conflict.
-    pub async fn upsert(&self, wallet: &Wallet) -> anyhow::Result<()> {
+    pub async fn insert(&self, wallet: &Wallet) -> anyhow::Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO wallets (id, address, first_seen_at, last_seen_at, is_flagged, flag_reason)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (address) DO UPDATE
-                SET last_seen_at = EXCLUDED.last_seen_at,
-                    is_flagged   = EXCLUDED.is_flagged,
-                    flag_reason  = EXCLUDED.flag_reason
+            INSERT INTO wallets (id, profile_id, address, is_tracked, comment, created_at, last_seen_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             "#,
         )
         .bind(wallet.id)
+        .bind(wallet.profile_id)
         .bind(&wallet.address)
-        .bind(wallet.first_seen_at)
+        .bind(wallet.is_tracked)
+        .bind(&wallet.comment)
+        .bind(wallet.created_at)
         .bind(wallet.last_seen_at)
-        .bind(wallet.is_flagged)
-        .bind(&wallet.flag_reason)
         .execute(&self.pool)
         .await?;
-
         Ok(())
     }
 
+    /// Update mutable fields (is_tracked, comment) for an existing wallet.
+    pub async fn update(&self, id: Uuid, is_tracked: bool, comment: Option<&str>) -> anyhow::Result<()> {
+        sqlx::query("UPDATE wallets SET is_tracked=$1, comment=$2 WHERE id=$3")
+            .bind(is_tracked)
+            .bind(comment)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete(&self, id: Uuid) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM wallets WHERE id=$1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<Wallet>> {
+        let row = sqlx::query_as::<_, WalletRow>("SELECT * FROM wallets WHERE id=$1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(Wallet::from))
+    }
+
     pub async fn find_by_address(&self, address: &str) -> anyhow::Result<Option<Wallet>> {
-        let row = sqlx::query_as::<_, WalletDbRow>("SELECT * FROM wallets WHERE address = $1")
+        let row = sqlx::query_as::<_, WalletRow>("SELECT * FROM wallets WHERE address=$1")
             .bind(address)
             .fetch_optional(&self.pool)
             .await?;
-
         Ok(row.map(Wallet::from))
+    }
+
+    pub async fn list_by_profile(&self, profile_id: Uuid) -> anyhow::Result<Vec<Wallet>> {
+        let rows = sqlx::query_as::<_, WalletRow>(
+            "SELECT * FROM wallets WHERE profile_id=$1 ORDER BY created_at ASC",
+        )
+        .bind(profile_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Wallet::from).collect())
+    }
+
+    /// Touch last_seen_at for a known address. Silently no-ops if address is not in the table.
+    pub async fn touch_last_seen(&self, address: &str, now: DateTime<Utc>) -> anyhow::Result<()> {
+        sqlx::query("UPDATE wallets SET last_seen_at=$1 WHERE address=$2")
+            .bind(now)
+            .bind(address)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }
