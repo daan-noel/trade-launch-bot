@@ -201,6 +201,8 @@ export interface TradeRecord {
   received_at?: string;
   virtual_sol_reserves?: number | null;
   virtual_token_reserves?: number | null;
+  /** Trading venue: 'curve' (bonding curve) or 'amm' (post-migration PumpSwap). */
+  venue?: 'curve' | 'amm';
 }
 
 export interface AnalysisRecord {

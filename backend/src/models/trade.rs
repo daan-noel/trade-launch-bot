@@ -38,6 +38,10 @@ pub struct Trade {
     /// the transaction, e.g. `["Compute Budget: SetComputeUnitLimit", "Pump.Fun: Buy"]`.
     /// Stored as a JSON array.
     pub instruction_labels: serde_json::Value,
+
+    /// Trading venue: `"curve"` (pump.fun bonding curve) or `"amm"` (post-migration
+    /// PumpSwap pool). Drives the per-venue incremental fetch boundary.
+    pub venue: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,6 +104,7 @@ impl Trade {
             real_token_reserves: None,
             instruction_type: "Unknown".to_string(),
             instruction_labels: serde_json::Value::Array(vec![]),
+            venue: "curve".to_string(),
         }
     }
 }

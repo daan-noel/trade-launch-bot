@@ -17,6 +17,8 @@ pub const ADDRESS_LOOKUP_TABLE_PROGRAM_ID: &str = "AddressLookupTab1e11111111111
 
 /// Pump.fun graduation AMM (PumpSwap).
 pub const PUMP_SWAP_PROGRAM_ID: &str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
+/// Wrapped SOL — the quote mint for every canonical (migrated) PumpSwap pool.
+pub const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
 pub const ARBITRAGE_BOT_FADO9_ID: &str = "FAdo9NCw1ssek6Z6yeWzWjhLVsr8uiCwcWNUnKgzTnHe";
 pub const ARBITRAGE_BOT_9ZZF9_ID: &str = "9Zzf9QqTy3TkyXysvJBsXyuRjda5aXCEJ9vXfL2HKSYv";
 pub const AXIOM_TRADE_PROGRAM_ID: &str = "FLASHX8DrLbgeR8FcfNV1F5krxYcYMUdBkrP1EPBtxB9";
@@ -50,6 +52,10 @@ pub const CREATE_V2_INSTRUCTION_DISCRIMINATOR: [u8; 8] =
 /// Pump.fun `migrate` instruction — migrates liquidity to pump_amm when bonding curve completes.
 pub const MIGRATE_INSTRUCTION_DISCRIMINATOR: [u8; 8] =
     [0x9b, 0xea, 0xe7, 0x92, 0xec, 0x9e, 0xa2, 0x1e];
+/// Pump.fun `migrate_v2` instruction — current migration path (replaced `migrate`).
+/// sha256("global:migrate_v2")[..8]
+pub const MIGRATE_V2_INSTRUCTION_DISCRIMINATOR: [u8; 8] =
+    [0xbb, 0xcb, 0x12, 0x1f, 0xce, 0xed, 0xfe, 0x29];
 
 // ── Buy Variants (all collapse to InstructionKind::Buy in the decoder) ───
 /// `buy_exact_sol_in` — specify exact SOL in, receive tokens out.
@@ -79,6 +85,17 @@ pub const TRADE_EVENT_DISCRIMINATOR: [u8; 8] = [0xbd, 0xdb, 0x7f, 0xd3, 0x4e, 0x
 /// CreateEvent discriminator — emitted on every token creation via `emit!`.
 pub const CREATE_EVENT_DISCRIMINATOR: [u8; 8] =
     [0x1b, 0x72, 0xa9, 0x4d, 0xde, 0xeb, 0x63, 0x76];
+
+// ── PumpSwap (pump_amm) post-migration swap events ───────────────────────────
+// Emitted via `emit!` in "Program data:" logs for every AMM buy/sell. Only the
+// leading fields (amounts, pool, user) are read; trailing fields added in later
+// program versions (e.g. coin_creator) are tolerated by Borsh deserialization.
+/// PumpSwap `BuyEvent` discriminator.
+pub const PUMP_SWAP_BUY_EVENT_DISCRIMINATOR: [u8; 8] =
+    [103, 244, 82, 31, 44, 245, 119, 119];
+/// PumpSwap `SellEvent` discriminator.
+pub const PUMP_SWAP_SELL_EVENT_DISCRIMINATOR: [u8; 8] =
+    [62, 47, 55, 10, 165, 3, 220, 42];
 
 // ---------------------------------------------------------------------------
 // Human-readable program name lookup

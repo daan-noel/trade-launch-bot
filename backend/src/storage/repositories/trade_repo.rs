@@ -39,6 +39,7 @@ struct TradeDbRow {
     real_token_reserves: Option<f64>,
     ix_type: String,
     ix_labels: Json<serde_json::Value>,
+    venue: String,
 }
 
 impl TryFrom<TradeDbRow> for Trade {
@@ -70,6 +71,7 @@ impl TryFrom<TradeDbRow> for Trade {
             real_token_reserves: r.real_token_reserves,
             instruction_type: r.ix_type,
             instruction_labels: r.ix_labels.0,
+            venue: r.venue,
         })
     }
 }
@@ -100,8 +102,8 @@ impl TradeRepo {
                  tx_signature, leg_index, slot, block_time, received_at,
                  virtual_sol_reserves, virtual_token_reserves,
                  real_sol_reserves, real_token_reserves,
-                 ix_type, ix_labels)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                 ix_type, ix_labels, venue)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
             ON CONFLICT (tx_signature, leg_index) DO NOTHING
             "#,
         )
@@ -123,25 +125,32 @@ impl TradeRepo {
         .bind(trade.real_token_reserves)
         .bind(&trade.instruction_type)
         .bind(sqlx::types::Json(&trade.instruction_labels))
+        .bind(&trade.venue)
         .execute(&self.pool)
         .await?;
 
         Ok(())
     }
 
-    /// Signature of the most recently saved trade for a token, if any.
-    /// Used as the `until` boundary for incremental syncs.
-    pub async fn latest_signature(&self, mint: &str) -> anyhow::Result<Option<String>> {
+    /// Signature of the most recently saved trade for a token on a specific
+    /// venue (`"curve"` or `"amm"`), if any. Used as the `until` boundary for
+    /// incremental syncs so each venue resumes from its own last saved trade.
+    pub async fn latest_signature(
+        &self,
+        mint: &str,
+        venue: &str,
+    ) -> anyhow::Result<Option<String>> {
         let sig: Option<String> = sqlx::query_scalar(
             r#"
             SELECT tx_signature
             FROM trades
-            WHERE mint_address = $1
+            WHERE mint_address = $1 AND venue = $2
             ORDER BY slot DESC, block_time DESC
             LIMIT 1
             "#,
         )
         .bind(mint)
+        .bind(venue)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -157,7 +166,7 @@ impl TradeRepo {
                    tx_signature, leg_index, slot, block_time, received_at,
                    virtual_sol_reserves, virtual_token_reserves,
                    real_sol_reserves, real_token_reserves,
-                   ix_type, ix_labels
+                   ix_type, ix_labels, venue
             FROM trades
             WHERE mint_address = $1
             ORDER BY block_time DESC
@@ -181,7 +190,7 @@ impl TradeRepo {
                    tx_signature, leg_index, slot, block_time, received_at,
                    virtual_sol_reserves, virtual_token_reserves,
                    real_sol_reserves, real_token_reserves,
-                   ix_type, ix_labels
+                   ix_type, ix_labels, venue
             FROM trades
             WHERE mint_address = $1
             ORDER BY slot ASC, block_time ASC
@@ -308,7 +317,7 @@ impl TradeRepo {
                    tx_signature, leg_index, slot, block_time, received_at,
                    virtual_sol_reserves, virtual_token_reserves,
                    real_sol_reserves, real_token_reserves,
-                   ix_type, ix_labels
+                   ix_type, ix_labels, venue
             FROM trades
             ORDER BY mint_address, block_time ASC
             "#,

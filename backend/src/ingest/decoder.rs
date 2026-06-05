@@ -9,9 +9,11 @@ use crate::config::constants::{
     BUY_EXACT_QUOTE_IN_DISCRIMINATOR, BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR,
     BUY_EXACT_SOL_IN_DISCRIMINATOR, BUY_V2_DISCRIMINATOR, COMPUTE_BUDGET_PROGRAM_ID,
     CREATE_EVENT_DISCRIMINATOR, CREATE_INSTRUCTION_DISCRIMINATOR,
-    CREATE_V2_INSTRUCTION_DISCRIMINATOR, MIGRATE_INSTRUCTION_DISCRIMINATOR, PUMP_FUN_PROGRAM_ID,
-    SELL_DISCRIMINATOR, SYSTEM_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID,
-    TRADE_EVENT_DISCRIMINATOR,
+    CREATE_V2_INSTRUCTION_DISCRIMINATOR, LAMPORTS_PER_SOL, MIGRATE_INSTRUCTION_DISCRIMINATOR,
+    MIGRATE_V2_INSTRUCTION_DISCRIMINATOR,
+    PUMP_FUN_PROGRAM_ID, PUMP_SWAP_BUY_EVENT_DISCRIMINATOR, PUMP_SWAP_PROGRAM_ID,
+    PUMP_SWAP_SELL_EVENT_DISCRIMINATOR, SELL_DISCRIMINATOR, SYSTEM_PROGRAM_ID,
+    TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, TRADE_EVENT_DISCRIMINATOR,
 };
 use crate::models::{
     events::{
@@ -251,7 +253,9 @@ impl HeliusDecoder {
                 find_pump_ixs_anywhere(message, meta, &account_keys, &self.pump_program_id);
             if let Some(migrate_ix) = pump_ixs.iter().find(|ix| {
                 if let Some(bytes) = instruction_data_bytes(ix).as_deref() {
-                    bytes.len() >= 8 && bytes[..8] == MIGRATE_INSTRUCTION_DISCRIMINATOR
+                    bytes.len() >= 8
+                        && (bytes[..8] == MIGRATE_INSTRUCTION_DISCRIMINATOR
+                            || bytes[..8] == MIGRATE_V2_INSTRUCTION_DISCRIMINATOR)
                 } else {
                     false
                 }
@@ -275,6 +279,88 @@ impl HeliusDecoder {
         }
 
         DecodeOutput::Transaction { raw_tx, events }
+    }
+
+    /// Decode a wrapped `getTransaction` result as a post-migration PumpSwap
+    /// (pump_amm) swap. Unlike [`decode_result`], this path keys off the
+    /// PumpSwap program and its `BuyEvent`/`SellEvent` "Program data:" logs
+    /// rather than the bonding-curve program.
+    ///
+    /// `mint` is the token being synced (PumpSwap events don't carry the base
+    /// mint), and `pool` is its derived PumpSwap pool — events for any other
+    /// pool in the same transaction are ignored. Returns the raw transaction
+    /// and one [`Trade`] per matching swap leg, or `None` if the transaction
+    /// has no PumpSwap swap for this pool.
+    pub fn decode_pump_swap_result(
+        &self,
+        result: &Value,
+        mint: &str,
+        pool: &str,
+    ) -> Option<(RawTransaction, Vec<Trade>)> {
+        let signature = result["signature"].as_str()?.to_string();
+        let slot = result["slot"].as_u64().unwrap_or(0);
+        let block_time = result["blockTime"]
+            .as_i64()
+            .or_else(|| result["transaction"]["blockTime"].as_i64())
+            .or_else(|| result["transaction"]["meta"]["blockTime"].as_i64())
+            .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
+            .unwrap_or_else(Utc::now);
+
+        let meta = &result["transaction"]["meta"];
+        let message = &result["transaction"]["transaction"]["message"];
+
+        let logs = extract_logs(meta);
+        if !logs.iter().any(|l| l.contains(PUMP_SWAP_PROGRAM_ID)) {
+            return None;
+        }
+
+        let raw_tx = RawTransaction::new(signature.clone(), slot, block_time, result.clone());
+        let account_keys = extract_account_keys(message);
+        let (labels, _, _) = build_instruction_labels(message, &account_keys);
+        let labels_json = json!(labels);
+
+        let mut trades = Vec::new();
+        for ev in decode_pump_swap_trades_from_logs(&logs) {
+            // Multi-hop routes can touch several pools in one tx; keep only ours.
+            if ev.pool != pool {
+                continue;
+            }
+            let trade_type = if ev.is_buy {
+                TradeType::Buy
+            } else {
+                TradeType::Sell
+            };
+
+            let mut trade = Trade::new(
+                mint.to_string(),
+                ev.user,
+                trade_type,
+                ev.quote_amount,
+                ev.base_amount,
+                signature.clone(),
+                slot,
+                block_time,
+            );
+            // PumpSwap has no virtual reserves; record the post-swap pool reserves.
+            trade.real_sol_reserves = Some(ev.pool_quote_reserves);
+            trade.real_token_reserves = Some(ev.pool_base_reserves);
+            trade.instruction_type = match trade.trade_type {
+                TradeType::Buy => "Buy".to_string(),
+                TradeType::Sell => "Sell".to_string(),
+            };
+            trade.instruction_labels = labels_json.clone();
+            trade.leg_index = trades.len() as u32;
+            trade.received_at = raw_tx.received_at;
+            trade.venue = "amm".to_string();
+
+            trades.push(trade);
+        }
+
+        if trades.is_empty() {
+            None
+        } else {
+            Some((raw_tx, trades))
+        }
     }
 }
 
@@ -601,6 +687,140 @@ fn decode_trade_events_from_logs(logs: &[&str]) -> Vec<DecodedTradeEvent> {
 }
 
 // ---------------------------------------------------------------------------
+// Step 1a (cont.) — decode PumpSwap BuyEvent / SellEvent from "Program data:"
+// ---------------------------------------------------------------------------
+
+/// Leading fields of the PumpSwap `BuyEvent` (Borsh). Trailing fields added in
+/// later program versions (e.g. `coin_creator`) are left unread by `deserialize`.
+#[derive(BorshDeserialize)]
+struct RawPumpSwapBuyEvent {
+    #[allow(dead_code)]
+    timestamp: i64,
+    base_amount_out: u64,
+    #[allow(dead_code)]
+    max_quote_amount_in: u64,
+    #[allow(dead_code)]
+    user_base_token_reserves: u64,
+    #[allow(dead_code)]
+    user_quote_token_reserves: u64,
+    pool_base_token_reserves: u64,
+    pool_quote_token_reserves: u64,
+    #[allow(dead_code)]
+    quote_amount_in: u64,
+    #[allow(dead_code)]
+    lp_fee_basis_points: u64,
+    #[allow(dead_code)]
+    lp_fee: u64,
+    #[allow(dead_code)]
+    protocol_fee_basis_points: u64,
+    #[allow(dead_code)]
+    protocol_fee: u64,
+    #[allow(dead_code)]
+    quote_amount_in_with_lp_fee: u64,
+    /// Total SOL the user spent, including LP + protocol fees.
+    user_quote_amount_in: u64,
+    pool: [u8; 32],
+    user: [u8; 32],
+}
+
+/// Leading fields of the PumpSwap `SellEvent` (Borsh). See `RawPumpSwapBuyEvent`.
+#[derive(BorshDeserialize)]
+struct RawPumpSwapSellEvent {
+    #[allow(dead_code)]
+    timestamp: i64,
+    base_amount_in: u64,
+    #[allow(dead_code)]
+    min_quote_amount_out: u64,
+    #[allow(dead_code)]
+    user_base_token_reserves: u64,
+    #[allow(dead_code)]
+    user_quote_token_reserves: u64,
+    pool_base_token_reserves: u64,
+    pool_quote_token_reserves: u64,
+    #[allow(dead_code)]
+    quote_amount_out: u64,
+    #[allow(dead_code)]
+    lp_fee_basis_points: u64,
+    #[allow(dead_code)]
+    lp_fee: u64,
+    #[allow(dead_code)]
+    protocol_fee_basis_points: u64,
+    #[allow(dead_code)]
+    protocol_fee: u64,
+    #[allow(dead_code)]
+    quote_amount_out_without_lp_fee: u64,
+    /// Total SOL the user received, net of LP + protocol fees.
+    user_quote_amount_out: u64,
+    pool: [u8; 32],
+    user: [u8; 32],
+}
+
+/// A decoded PumpSwap swap. `base_amount` is raw token units (matching the
+/// bonding-curve `token_amount` convention); `quote_amount` and reserve fields
+/// are in SOL (lamports / 1e9).
+struct DecodedAmmTrade {
+    is_buy: bool,
+    base_amount: f64,
+    quote_amount: f64,
+    pool: String,
+    user: String,
+    pool_base_reserves: f64,
+    pool_quote_reserves: f64,
+}
+
+/// Scan "Program data:" log lines for PumpSwap Buy/Sell events, in log order.
+fn decode_pump_swap_trades_from_logs(logs: &[&str]) -> Vec<DecodedAmmTrade> {
+    let mut out = Vec::new();
+    let lamports = LAMPORTS_PER_SOL as f64;
+
+    for log in logs {
+        let Some(encoded) = log.strip_prefix("Program data: ") else {
+            continue;
+        };
+        let bytes = match STANDARD.decode(encoded) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        if bytes.len() < 8 {
+            continue;
+        }
+
+        let disc = &bytes[..8];
+        let mut buf: &[u8] = &bytes[8..];
+
+        if disc == PUMP_SWAP_BUY_EVENT_DISCRIMINATOR {
+            match RawPumpSwapBuyEvent::deserialize(&mut buf) {
+                Ok(e) => out.push(DecodedAmmTrade {
+                    is_buy: true,
+                    base_amount: e.base_amount_out as f64,
+                    quote_amount: e.user_quote_amount_in as f64 / lamports,
+                    pool: bs58::encode(e.pool).into_string(),
+                    user: bs58::encode(e.user).into_string(),
+                    pool_base_reserves: e.pool_base_token_reserves as f64,
+                    pool_quote_reserves: e.pool_quote_token_reserves as f64 / lamports,
+                }),
+                Err(e) => warn!("Failed to Borsh-decode PumpSwap BuyEvent: {e}"),
+            }
+        } else if disc == PUMP_SWAP_SELL_EVENT_DISCRIMINATOR {
+            match RawPumpSwapSellEvent::deserialize(&mut buf) {
+                Ok(e) => out.push(DecodedAmmTrade {
+                    is_buy: false,
+                    base_amount: e.base_amount_in as f64,
+                    quote_amount: e.user_quote_amount_out as f64 / lamports,
+                    pool: bs58::encode(e.pool).into_string(),
+                    user: bs58::encode(e.user).into_string(),
+                    pool_base_reserves: e.pool_base_token_reserves as f64,
+                    pool_quote_reserves: e.pool_quote_token_reserves as f64 / lamports,
+                }),
+                Err(e) => warn!("Failed to Borsh-decode PumpSwap SellEvent: {e}"),
+            }
+        }
+    }
+
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Step 1a (cont.) — decode CreateEvent from "Program data:" log lines
 // ---------------------------------------------------------------------------
 
@@ -736,7 +956,9 @@ fn collect_instruction_kinds(
                 || bytes.starts_with(&CREATE_V2_INSTRUCTION_DISCRIMINATOR)
             {
                 InstructionKind::Create
-            } else if bytes.starts_with(&MIGRATE_INSTRUCTION_DISCRIMINATOR) {
+            } else if bytes.starts_with(&MIGRATE_INSTRUCTION_DISCRIMINATOR)
+                || bytes.starts_with(&MIGRATE_V2_INSTRUCTION_DISCRIMINATOR)
+            {
                 InstructionKind::Migrate
             } else {
                 InstructionKind::Unknown
