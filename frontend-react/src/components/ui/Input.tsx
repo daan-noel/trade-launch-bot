@@ -1,4 +1,12 @@
-import { forwardRef, type InputHTMLAttributes, type TextareaHTMLAttributes } from 'react';
+import {
+  forwardRef,
+  useCallback,
+  useImperativeHandle,
+  useLayoutEffect,
+  useRef,
+  type InputHTMLAttributes,
+  type TextareaHTMLAttributes,
+} from 'react';
 import { cn } from '../../lib/cn';
 
 export type FieldSize = 'sm' | 'md' | 'lg' | 'table' | 'page';
@@ -59,13 +67,35 @@ export const Input = forwardRef<
 
 export const Textarea = forwardRef<
   HTMLTextAreaElement,
-  TextareaHTMLAttributes<HTMLTextAreaElement> & FieldProps
->(function Textarea({ className, rows = 2, fieldSize = 'sm', variant = 'default', ...props }, ref) {
+  TextareaHTMLAttributes<HTMLTextAreaElement> & FieldProps & { autoResize?: boolean }
+>(function Textarea(
+  { className, rows = 2, fieldSize = 'sm', variant = 'default', autoResize = false, value, ...props },
+  ref,
+) {
+  const innerRef = useRef<HTMLTextAreaElement | null>(null);
+  useImperativeHandle(ref, () => innerRef.current as HTMLTextAreaElement, []);
+
+  const resize = useCallback(() => {
+    const el = innerRef.current;
+    if (!el || !autoResize) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [autoResize]);
+
+  useLayoutEffect(() => {
+    resize();
+  }, [resize, value]);
+
   return (
     <textarea
-      ref={ref}
+      ref={innerRef}
       rows={rows}
-      className={cn(fieldClassName({ size: fieldSize, variant, className }), 'resize-y leading-snug')}
+      value={value}
+      className={cn(
+        fieldClassName({ size: fieldSize, variant, className }),
+        'leading-snug',
+        autoResize ? 'resize-none overflow-hidden' : 'resize-y',
+      )}
       {...props}
     />
   );

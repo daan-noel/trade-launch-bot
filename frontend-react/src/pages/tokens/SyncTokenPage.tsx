@@ -6,7 +6,7 @@ import { TokenDetailPanel } from '../../components/tokens/TokenDetailPanel';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Checkbox } from '../../components/ui/Checkbox';
-import { Input } from '../../components/ui/Input';
+import { Textarea } from '../../components/ui/Input';
 import { usePriceUnit } from '../../context/PriceUnitContext';
 import { usePriceDisplay } from '../../hooks/usePriceDisplay';
 import { fetchProfiles, syncToken } from '../../services/api';
@@ -69,6 +69,20 @@ function buildProfileWallets(profiles: WalletProfile[]): ProfileWalletInfo[] {
   return result;
 }
 
+/** Split a comma/newline/whitespace separated blob into unique, trimmed mint addresses. */
+function parseMints(raw: string): string[] {
+  return Array.from(
+    new Set(
+      raw
+        .split(/[\s,]+/)
+        .map((m) => m.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+type SyncResultItem = { mint: string; ok: boolean; error?: string };
+
 export function SyncTokenPage() {
   const price = usePriceDisplay();
   const { unit, usdRate } = usePriceUnit();
@@ -84,6 +98,8 @@ export function SyncTokenPage() {
   const [includePostMigrate, setIncludePostMigrate] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [progress, setProgress] = useState<SyncProgressEvent | null>(null);
+  const [batch, setBatch] = useState<{ index: number; total: number } | null>(null);
+  const [results, setResults] = useState<SyncResultItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [detail, setDetail] = useState<TokenDetailRecord | null>(null);
   const [trades, setTrades] = useState<TradeRecord[]>([]);
@@ -95,6 +111,7 @@ export function SyncTokenPage() {
   }, []);
 
   const profileWallets = useMemo(() => buildProfileWallets(profiles), [profiles]);
+  const mints = useMemo(() => parseMints(mint), [mint]);
 
   const percent = progress ? stagePercent(progress.stage, progress.current, progress.total) : 0;
 
@@ -103,9 +120,9 @@ export function SyncTokenPage() {
   }, []);
 
   const handleSync = useCallback(async (incremental = false) => {
-    const trimmed = mint.trim();
-    if (!trimmed) {
-      setError('Enter a token mint address.');
+    const targets = parseMints(mint);
+    if (targets.length === 0) {
+      setError('Enter at least one token mint address.');
       return;
     }
 
@@ -118,26 +135,54 @@ export function SyncTokenPage() {
     setProgress(null);
     setDetail(null);
     setTrades([]);
+    setResults([]);
+    setBatch(null);
+
+    const collected: SyncResultItem[] = [];
+    let lastOk: { token: TokenDetailRecord; trades: TradeRecord[] } | null = null;
 
     try {
-      const result = await syncToken(
-        trimmed,
-        includePostMigrate,
-        (ev) => setProgress(ev),
-        controller.signal,
-        incremental,
-      );
-      setDetail(result.token);
-      setTrades(result.trades);
+      for (let i = 0; i < targets.length; i++) {
+        const target = targets[i];
+        setBatch({ index: i, total: targets.length });
+        setProgress(null);
+        try {
+          const result = await syncToken(
+            target,
+            includePostMigrate,
+            (ev) => setProgress(ev),
+            controller.signal,
+            incremental,
+          );
+          collected.push({ mint: target, ok: true });
+          lastOk = { token: result.token, trades: result.trades };
+        } catch (e) {
+          if (e instanceof DOMException && e.name === 'AbortError') {
+            throw e;
+          }
+          collected.push({
+            mint: target,
+            ok: false,
+            error: e instanceof Error ? e.message : 'Sync failed',
+          });
+        }
+      }
+      setResults(collected);
+      if (lastOk) {
+        setDetail(lastOk.token);
+        setTrades(lastOk.trades);
+      }
       setProgress(null);
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') {
         setProgress(null);
+        setResults(collected);
         return;
       }
       setError(e instanceof Error ? e.message : 'Sync failed');
     } finally {
       setSyncing(false);
+      setBatch(null);
       if (syncAbortRef.current === controller) {
         syncAbortRef.current = null;
       }
@@ -157,15 +202,16 @@ export function SyncTokenPage() {
       <div className="mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-white/6 bg-white/2 p-4">
         <label className="flex min-w-[280px] flex-1 flex-col gap-1">
           <span className="text-[10px] font-bold uppercase tracking-widest text-text-dim">
-            Mint address
+            Mint address{mints.length > 1 ? ` (${mints.length})` : ''}
           </span>
-          <Input
-            type="text"
+          <Textarea
             fieldSize="md"
             variant="card"
+            rows={1}
+            autoResize
             value={mint}
             onChange={(e) => setMint(e.target.value)}
-            placeholder="Token mint (base58)"
+            placeholder="One or more token mints (base58), separated by comma or newline"
             disabled={syncing}
             className="font-mono placeholder:text-text-dim/60"
           />
@@ -186,10 +232,10 @@ export function SyncTokenPage() {
           </Button>
         ) : (
           <>
-            <Button variant="primary" onClick={() => handleSync(false)} disabled={!mint.trim()}>
+            <Button variant="primary" onClick={() => handleSync(false)} disabled={mints.length === 0}>
               Fetch All
             </Button>
-            <Button variant="ghost" onClick={() => handleSync(true)} disabled={!mint.trim()}>
+            <Button variant="ghost" onClick={() => handleSync(true)} disabled={mints.length === 0}>
               Fetch New
             </Button>
           </>
@@ -200,6 +246,11 @@ export function SyncTokenPage() {
         <div className="mb-4 rounded-lg border border-white/6 bg-white/2 p-4">
           <div className="mb-2 flex items-center justify-between gap-2">
             <span className="text-[11px] font-bold uppercase tracking-widest text-primary">
+              {batch && batch.total > 1 && (
+                <span className="mr-2 text-text-dim">
+                  Token {batch.index + 1}/{batch.total}
+                </span>
+              )}
               {progress ? stageLabel(progress.stage) : 'Starting…'}
             </span>
             <span className="font-mono text-[11px] text-text-dim">
@@ -225,6 +276,29 @@ export function SyncTokenPage() {
         <p className="mb-4 rounded-md border border-red/30 bg-red/10 px-3 py-2 text-sm text-red">
           {error}
         </p>
+      )}
+
+      {results.length > 1 && (
+        <div className="mb-4 rounded-lg border border-white/6 bg-white/2 p-3">
+          <div className="mb-2 flex items-center gap-2">
+            <h3 className="text-sm font-bold text-text">Sync results</h3>
+            <Badge variant="success">{results.filter((r) => r.ok).length} ok</Badge>
+            {results.some((r) => !r.ok) && (
+              <Badge variant="danger">{results.filter((r) => !r.ok).length} failed</Badge>
+            )}
+          </div>
+          <ul className="space-y-1">
+            {results.map((r) => (
+              <li key={r.mint} className="flex items-center gap-2 text-xs">
+                <Badge variant={r.ok ? 'success' : 'danger'} size="sm">
+                  {r.ok ? 'OK' : 'FAIL'}
+                </Badge>
+                <span className="font-mono text-text-dim">{r.mint}</span>
+                {r.error && <span className="text-red">{r.error}</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
       {detail && (
