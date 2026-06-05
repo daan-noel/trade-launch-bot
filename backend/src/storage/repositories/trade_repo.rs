@@ -193,7 +193,7 @@ impl TradeRepo {
                    ix_type, ix_labels, venue
             FROM trades
             WHERE mint_address = $1
-            ORDER BY slot ASC, block_time ASC
+            ORDER BY slot ASC, block_time ASC, tx_signature ASC, leg_index ASC
             "#,
         )
         .bind(mint)
@@ -319,7 +319,7 @@ impl TradeRepo {
                    real_sol_reserves, real_token_reserves,
                    ix_type, ix_labels, venue
             FROM trades
-            ORDER BY mint_address, block_time ASC
+            ORDER BY mint_address, slot ASC, block_time ASC, tx_signature ASC, leg_index ASC
             "#,
         )
         .fetch_all(&self.pool)

@@ -7,7 +7,13 @@ export interface ChartTrade {
   price_per_token: number;
   trade_type: 'buy' | 'sell';
   sol_amount?: number;
+  /** Raw token units swapped — used to reconstruct the pre-trade (genesis) open. */
+  token_amount?: number;
   slot?: number;
+  /** Transaction signature — chronological tiebreaker (keeps a tx's legs contiguous). */
+  tx_signature?: string;
+  /** Leg index within the transaction (0 = first) — chronological tiebreaker. */
+  leg_index?: number;
   virtual_sol_reserves?: number | null;
   virtual_token_reserves?: number | null;
   real_sol_reserves?: number | null;

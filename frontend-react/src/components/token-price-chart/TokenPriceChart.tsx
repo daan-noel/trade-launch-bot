@@ -25,6 +25,7 @@ import {
   barsToCandleData,
   barsToLineData,
   barSelectionMarker,
+  compareTradesChronologically,
   tradeBarSlot,
   tradeBarTime,
 } from './chartBars';
@@ -429,10 +430,7 @@ export function TokenPriceChart({
   );
 
   const sortedTrades = useMemo(
-    () =>
-      [...trades].sort(
-        (a, b) => Date.parse(a.block_time) - Date.parse(b.block_time),
-      ),
+    () => [...trades].sort(compareTradesChronologically),
     [trades],
   );
 

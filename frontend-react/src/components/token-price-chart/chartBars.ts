@@ -63,6 +63,42 @@ export function tradeSpotPriceSol(trade: ChartTrade): number | null {
   return null;
 }
 
+/**
+ * Curve/pool spot price (SOL per raw token) *before* this trade executed.
+ *
+ * The on-chain pump.fun `TradeEvent` only snapshots reserves *after* the swap,
+ * so without this the very first bar would have to open at the post-first-trade
+ * price — collapsing (and often inverting) the genesis candle. We recover the
+ * pre-trade price from the post-trade reserves and the token delta via the
+ * constant-product invariant `k = vsol·vtoken` (fee-independent, since pump.fun
+ * fees never enter the virtual reserves). Returns null when the inputs are
+ * missing or non-finite, so callers fall back to the post-trade price.
+ */
+export function preTradeSpotPriceSol(trade: ChartTrade): number | null {
+  const postVsol = trade.virtual_sol_reserves ?? trade.real_sol_reserves;
+  const postVtoken = trade.virtual_token_reserves ?? trade.real_token_reserves;
+  const tokenAmount = trade.token_amount;
+  if (
+    postVsol == null ||
+    postVtoken == null ||
+    tokenAmount == null ||
+    postVsol <= 0 ||
+    postVtoken <= 0 ||
+    tokenAmount <= 0
+  ) {
+    return null;
+  }
+  // Buys remove tokens from the curve; sells add them back.
+  const preVtoken =
+    trade.trade_type === 'buy'
+      ? postVtoken + tokenAmount
+      : postVtoken - tokenAmount;
+  if (preVtoken <= 0) return null;
+  const k = postVsol * postVtoken;
+  const preSpot = k / (preVtoken * preVtoken);
+  return preSpot > 0 && Number.isFinite(preSpot) ? preSpot : null;
+}
+
 /** Bonding-curve liquidity in SOL (GMGN-style: 2× virtual SOL reserves). */
 export function curveLiquiditySol(
   trade: Pick<ChartTrade, 'virtual_sol_reserves'>,
@@ -126,14 +162,40 @@ export function chartValueForTrade(
   return metric === 'price' ? tradeSpotPriceSol(trade) : tradeMarketCapSol(trade);
 }
 
+/** Pre-trade chart value (price or FDV MC) — mirrors {@link chartValueForTrade}. */
+function preTradeChartValue(trade: ChartTrade, metric: ChartMetric): number | null {
+  const spot = preTradeSpotPriceSol(trade);
+  if (spot == null) return null;
+  return metric === 'price' ? spot : TOKEN_TOTAL_SUPPLY * spot;
+}
+
+/**
+ * Display-space `open` to seed the very first bar: the pre-trade value of the
+ * first trade that actually contributes to a bucket (same dust/validity filter
+ * as {@link collectTradeBuckets}). Null when it can't be reconstructed, in which
+ * case the genesis bar falls back to opening at the first trade's post-trade
+ * price (the previous behaviour).
+ */
+function seedOpenValue(
+  sortedTrades: ChartTrade[],
+  metric: ChartMetric,
+  toValue: (priceInSol: number) => number,
+): number | null {
+  for (const trade of sortedTrades) {
+    if (trade.sol_amount != null && trade.sol_amount < MIN_CHART_SOL) continue;
+    if (chartValueForTrade(trade, metric) == null) continue;
+    const pre = preTradeChartValue(trade, metric);
+    return pre == null ? null : toValue(pre);
+  }
+  return null;
+}
+
 /** Trades with `price_per_token` set to the chart metric (overlay / markers). */
 export function tradesForChartMetric(
   trades: ChartTrade[],
   metric: ChartMetric,
 ): ChartTrade[] {
-  const sorted = [...trades].sort(
-    (a, b) => Date.parse(a.block_time) - Date.parse(b.block_time),
-  );
+  const sorted = [...trades].sort(compareTradesChronologically);
 
   return sorted.flatMap((trade) => {
     const value = chartValueForTrade(trade, metric);
@@ -148,12 +210,30 @@ type TradeBucket = {
   liquiditySol: number | null;
 };
 
+/**
+ * Deterministic chronological order for trades: on-chain `slot`, then block
+ * time, then transaction signature (keeps a transaction's legs contiguous),
+ * then `leg_index` (leg order within the transaction).
+ *
+ * Same-slot trades from *different* transactions share an identical
+ * second-precision block time and carry no recoverable intra-block index, so
+ * they fall back to signature order — deterministic, though not guaranteed to
+ * match true block order. This still fixes the common case (multi-leg/bundled
+ * transactions) where open/close were previously order-dependent.
+ */
+export function compareTradesChronologically(a: ChartTrade, b: ChartTrade): number {
+  const slotDiff = (a.slot ?? 0) - (b.slot ?? 0);
+  if (slotDiff !== 0) return slotDiff;
+  const timeDiff = Date.parse(a.block_time) - Date.parse(b.block_time);
+  if (timeDiff !== 0) return timeDiff;
+  const sigA = a.tx_signature ?? '';
+  const sigB = b.tx_signature ?? '';
+  if (sigA !== sigB) return sigA < sigB ? -1 : 1;
+  return (a.leg_index ?? 0) - (b.leg_index ?? 0);
+}
+
 function sortTradesChronologically(trades: ChartTrade[]): ChartTrade[] {
-  return [...trades].sort((a, b) => {
-    const slotDiff = (a.slot ?? 0) - (b.slot ?? 0);
-    if (slotDiff !== 0) return slotDiff;
-    return Date.parse(a.block_time) - Date.parse(b.block_time);
-  });
+  return [...trades].sort(compareTradesChronologically);
 }
 
 /** GMGN-style: open = prev bar close (continuous spot); empty intervals flat at prev close. */
@@ -162,9 +242,12 @@ function buildContinuousBars(
   startKey: number,
   endKey: number,
   step: number,
+  seedOpen: number | null = null,
 ): OhlcBar[] {
   const bars: OhlcBar[] = [];
-  let prevClose: number | null = null;
+  // Seed the first bar's open with the pre-trade price (GMGN-style); every later
+  // bar opens at the previous bar's close.
+  let prevClose: number | null = seedOpen;
   let lastLiquidity: number | null = null;
 
   for (let key = startKey; key <= endKey; key += step) {
@@ -265,7 +348,14 @@ export function aggregateTradesToBars(
   if (buckets.size === 0) return [];
 
   const keys = [...buckets.keys()].sort((a, b) => a - b);
-  return buildContinuousBars(buckets, keys[0], keys[keys.length - 1], intervalSec);
+  const seedOpen = seedOpenValue(sorted, metric, toValue);
+  return buildContinuousBars(
+    buckets,
+    keys[0],
+    keys[keys.length - 1],
+    intervalSec,
+    seedOpen,
+  );
 }
 
 export function aggregateTradesToBarsBySlot(
@@ -287,7 +377,8 @@ export function aggregateTradesToBarsBySlot(
   if (buckets.size === 0) return [];
 
   const keys = [...buckets.keys()].sort((a, b) => a - b);
-  return buildContinuousBars(buckets, keys[0], keys[keys.length - 1], 1);
+  const seedOpen = seedOpenValue(sorted, metric, toValue);
+  return buildContinuousBars(buckets, keys[0], keys[keys.length - 1], 1, seedOpen);
 }
 
 export function barsToLineData(bars: OhlcBar[]) {
