@@ -87,6 +87,24 @@ pub struct TokenSyncRequest {
     pub incremental: bool,
 }
 
+/// Page cap for the sync preview. Bounds RPC cost when enumerating full history
+/// for the "total" count — beyond this the preview reports `*_capped = true` and
+/// the UI shows e.g. "10000+". 10 pages × 1000 sigs = 10k transactions.
+const PREVIEW_MAX_PAGES: usize = 10;
+
+/// Lightweight estimate of how many transactions a sync would download for a
+/// mint, computed from signatures only (no `getTransaction`). `new_*` counts
+/// what "Fetch New" would pull (newer than the watermark); `total_*` counts the
+/// full history "Fetch All" would pull, capped at [`PREVIEW_MAX_PAGES`].
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncPreview {
+    pub new_count: u64,
+    pub new_capped: bool,
+    pub total_count: u64,
+    pub total_capped: bool,
+    pub is_migrated: bool,
+}
+
 pub struct TokenSyncContext {
     pub db: sqlx::PgPool,
     pub token_cache: Arc<TokenCache>,
@@ -428,6 +446,111 @@ pub async fn run_token_sync(
     ctx.token_cache.insert(mint.clone(), state.clone());
 
     Ok(SyncOutput { state, trades })
+}
+
+/// Estimate, without downloading transactions, how many txs a sync would fetch.
+///
+/// Counts signatures only (the cheap `fetching_signatures` half of a sync):
+/// `new_*` resolves the same incremental `until` boundary `run_token_sync` uses
+/// (watermark, then latest saved trade) and counts what's newer; `total_*`
+/// enumerates full history up to [`PREVIEW_MAX_PAGES`]. AMM pool signatures are
+/// included only when the caller asks for post-migrate trades and the token has
+/// migrated, mirroring the real sync.
+pub async fn preview_sync(
+    ctx: TokenSyncContext,
+    req: TokenSyncRequest,
+) -> Result<SyncPreview, SyncError> {
+    let mint = req.mint_address.trim().to_string();
+    validate_mint_address(&mint)?;
+
+    let rpc = HeliusRpc::new(ctx.helius_rpc_url.clone());
+    let bonding_curve = derive_bonding_curve(&mint, &ctx.pump_program_id)
+        .map_err(|e| SyncError::InvalidMint(format!("Not a valid mint address: {e}")))?;
+
+    // No bonding curve on-chain → not a pump token; nothing to estimate.
+    let exists = rpc
+        .account_exists(&bonding_curve)
+        .await
+        .map_err(|e| SyncError::Internal(e.to_string()))?;
+    if !exists {
+        return Err(SyncError::NotPumpToken(
+            "No bonding curve account found on-chain.".into(),
+        ));
+    }
+
+    let info_repo = TokenInfoRepo::new(ctx.db.clone());
+    let trade_repo = TradeRepo::new(ctx.db.clone());
+
+    let (_, prev_curve_sig, prev_amm_sig) = info_repo
+        .get_sync_watermark(&mint)
+        .await
+        .map_err(|e| SyncError::Internal(e.to_string()))?;
+
+    // Curve: count what "Fetch New" would pull (newer than the watermark) and
+    // what "Fetch All" would pull (full history, capped).
+    let curve_until: Option<String> = match prev_curve_sig {
+        Some(sig) => Some(sig),
+        None => trade_repo
+            .latest_signature(&mint, "curve")
+            .await
+            .map_err(|e| SyncError::Internal(e.to_string()))?,
+    };
+    let (mut new_count, mut new_capped) = rpc
+        .count_signatures(&bonding_curve, curve_until.as_deref(), PREVIEW_MAX_PAGES)
+        .await
+        .map_err(|e| SyncError::Internal(e.to_string()))?;
+    let (mut total_count, mut total_capped) = rpc
+        .count_signatures(&bonding_curve, None, PREVIEW_MAX_PAGES)
+        .await
+        .map_err(|e| SyncError::Internal(e.to_string()))?;
+
+    let is_migrated = info_repo
+        .find_by_mint(&mint)
+        .await
+        .ok()
+        .flatten()
+        .map(|i| i.is_migrated)
+        .unwrap_or(false)
+        || ctx.token_cache.get(&mint).map(|e| e.is_migrated).unwrap_or(false);
+
+    // Post-migration AMM pool — only counted when the sync would include it.
+    if req.include_post_migrate && is_migrated {
+        let pool = derive_pump_swap_pool(&mint, &ctx.pump_program_id)
+            .map_err(|e| SyncError::Internal(e.to_string()))?;
+        let pool_exists = rpc
+            .account_exists(&pool)
+            .await
+            .map_err(|e| SyncError::Internal(e.to_string()))?;
+        if pool_exists {
+            let amm_until: Option<String> = match prev_amm_sig {
+                Some(sig) => Some(sig),
+                None => trade_repo
+                    .latest_signature(&mint, "amm")
+                    .await
+                    .map_err(|e| SyncError::Internal(e.to_string()))?,
+            };
+            let (amm_new, amm_new_capped) = rpc
+                .count_signatures(&pool, amm_until.as_deref(), PREVIEW_MAX_PAGES)
+                .await
+                .map_err(|e| SyncError::Internal(e.to_string()))?;
+            let (amm_total, amm_total_capped) = rpc
+                .count_signatures(&pool, None, PREVIEW_MAX_PAGES)
+                .await
+                .map_err(|e| SyncError::Internal(e.to_string()))?;
+            new_count += amm_new;
+            new_capped = new_capped || amm_new_capped;
+            total_count += amm_total;
+            total_capped = total_capped || amm_total_capped;
+        }
+    }
+
+    Ok(SyncPreview {
+        new_count: new_count as u64,
+        new_capped,
+        total_count: total_count as u64,
+        total_capped,
+        is_migrated,
+    })
 }
 
 /// Fetch and persist post-migration PumpSwap swaps for `mint`.

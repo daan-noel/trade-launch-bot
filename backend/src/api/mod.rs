@@ -7,6 +7,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/api")
             .route("/token/sync", web::post().to(handlers::tokens::sync_token))
+            .route(
+                "/token/sync/preview",
+                web::post().to(handlers::tokens::preview_sync),
+            )
             // Token endpoints
             .route("/tokens", web::get().to(handlers::tokens::list_tokens))
             .route("/tokens/{mint}", web::get().to(handlers::tokens::get_token))

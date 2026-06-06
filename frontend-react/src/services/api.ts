@@ -276,6 +276,35 @@ export function sseUrl(): string {
   return `${API_BASE}/api/stream`;
 }
 
+/** Estimate (signatures only) how many transactions a sync would download. */
+export interface SyncPreview {
+  /** Transactions "Fetch New" would download (newer than the watermark). */
+  new_count: number;
+  /** True if the new-count hit the page cap (display as "N+"). */
+  new_capped: boolean;
+  /** Transactions "Fetch All" would download (full history, capped). */
+  total_count: number;
+  /** True if the total hit the page cap (display as "N+"). */
+  total_capped: boolean;
+  is_migrated: boolean;
+}
+
+export async function fetchSyncPreview(
+  mintAddress: string,
+  includePostMigrate: boolean,
+  signal?: AbortSignal,
+): Promise<SyncPreview> {
+  return request(`${API_BASE}/api/token/sync/preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      mint_address: mintAddress.trim(),
+      include_post_migrate: includePostMigrate,
+    }),
+    signal,
+  });
+}
+
 export async function syncToken(
   mintAddress: string,
   includePostMigrate: boolean,

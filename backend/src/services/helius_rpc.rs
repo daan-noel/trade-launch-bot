@@ -153,6 +153,59 @@ impl HeliusRpc {
         Ok(all)
     }
 
+    /// Count successful signatures for an address, optionally only those newer
+    /// than `until`, stopping after `max_pages` pages.
+    ///
+    /// Returns `(count, capped)` where `capped` is true if the page cap was hit
+    /// before history was exhausted. This is the cheap half of a sync — it pages
+    /// `getSignaturesForAddress` (signatures only, no `getTransaction`), so it
+    /// estimates how many transactions a sync would download without downloading
+    /// them. With `until` set the RPC stops at that signature, so the "new since
+    /// last sync" count is usually a single page.
+    pub async fn count_signatures(
+        &self,
+        address: &str,
+        until: Option<&str>,
+        max_pages: usize,
+    ) -> anyhow::Result<(usize, bool)> {
+        let mut count = 0usize;
+        let mut before: Option<String> = None;
+        let mut page = 0usize;
+
+        loop {
+            if page >= max_pages {
+                return Ok((count, true));
+            }
+            page += 1;
+
+            let mut cfg = json!({ "limit": SIG_PAGE_LIMIT, "commitment": "confirmed" });
+            if let Some(ref sig) = before {
+                cfg["before"] = json!(sig);
+            }
+            if let Some(sig) = until {
+                cfg["until"] = json!(sig);
+            }
+
+            let batch = self
+                .call("getSignaturesForAddress", json!([address, cfg]))
+                .await?;
+            let entries = parse_signature_entries(&batch)?;
+            let page_len = entries.len();
+            if page_len == 0 {
+                break;
+            }
+
+            count += entries.iter().filter(|e| e.err.is_none()).count();
+
+            if page_len < SIG_PAGE_LIMIT {
+                break;
+            }
+            before = entries.last().map(|e| e.signature.clone());
+        }
+
+        Ok((count, false))
+    }
+
     /// Fetch a confirmed parsed transaction; returns `None` if missing or failed on-chain.
     pub async fn get_transaction(&self, signature: &str) -> anyhow::Result<Option<Value>> {
         let result = self

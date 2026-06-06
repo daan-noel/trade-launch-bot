@@ -108,3 +108,39 @@ pub async fn sync_token(
         .content_type("application/x-ndjson")
         .streaming(body_stream)
 }
+
+/// `POST /api/token/sync/preview` — estimate how many transactions a sync would
+/// download for a mint (signatures only, no tx downloads). Returns `SyncPreview`
+/// with new (Fetch New) and total (Fetch All) counts.
+pub async fn preview_sync(
+    state: web::Data<Arc<AppState>>,
+    body: web::Json<SyncTokenBody>,
+) -> impl Responder {
+    let mint = body.mint_address.trim().to_string();
+
+    if let Err(e) = token_sync::validate_mint_address(&mint) {
+        return HttpResponse::BadRequest().json(ErrorBody {
+            message: e.message().to_string(),
+        });
+    }
+
+    let ctx = TokenSyncContext {
+        db: state.db.clone(),
+        token_cache: state.token_cache.clone(),
+        helius_rpc_url: state.helius_rpc_url.clone(),
+        pump_program_id: state.pump_program_id.clone(),
+    };
+
+    let req = TokenSyncRequest {
+        mint_address: mint,
+        include_post_migrate: body.include_post_migrate,
+        incremental: body.incremental,
+    };
+
+    match token_sync::preview_sync(ctx, req).await {
+        Ok(preview) => HttpResponse::Ok().json(preview),
+        Err(e) => HttpResponse::BadRequest().json(ErrorBody {
+            message: e.message().to_string(),
+        }),
+    }
+}

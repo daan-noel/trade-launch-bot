@@ -509,6 +509,7 @@ export function SyncTokenPage() {
       <InputSyncStatus
         mints={mints}
         refreshSignal={syncNonce}
+        includePostMigrate={includePostMigrate}
         onRemove={handleRemoveMint}
         onRemoveMany={handleRemoveMints}
       />
