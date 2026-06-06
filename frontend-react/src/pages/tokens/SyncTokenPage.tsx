@@ -5,6 +5,7 @@ import { RelativeTimeCell } from '../../components/table/RelativeTimeCell';
 import type { ColumnDef } from '../../components/table/types';
 import { tokenTradeColumns } from '../../components/transactions/tokenTradeColumns';
 import { TokenPriceChart, WALLET_MARKER_COLORS, type ChartMetric, type ProfileWalletInfo } from '../../components/token-price-chart';
+import { InputSyncStatus } from '../../components/tokens/InputSyncStatus';
 import { TokenDetailPanel } from '../../components/tokens/TokenDetailPanel';
 import { AddressDisplay } from '../../components/ui/AddressDisplay';
 import { Badge } from '../../components/ui/Badge';
@@ -267,11 +268,13 @@ export function SyncTokenPage() {
   const [progress, setProgress] = useState<SyncProgressEvent | null>(null);
   const [batch, setBatch] = useState<{ index: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Bumped after every sync run so the input status panel re-reads freshness.
+  const [syncNonce, setSyncNonce] = useState(0);
   const syncAbortRef = useRef<AbortController | null>(null);
   const [profiles, setProfiles] = useState<WalletProfile[]>([]);
 
   useEffect(() => {
-    fetchProfiles().then(setProfiles).catch(() => {});
+    fetchProfiles().then(setProfiles).catch(() => { });
   }, []);
 
   const profileWallets = useMemo(() => buildProfileWallets(profiles), [profiles]);
@@ -324,6 +327,18 @@ export function SyncTokenPage() {
   const handleClearSynced = useCallback(() => {
     dispatch(clearSyncOutput());
   }, [dispatch]);
+
+  // Drop a single mint from the textarea (used by the input status table). Rebuilds
+  // from the parsed, deduped list so the remaining mints stay one-per-line.
+  const handleRemoveMint = useCallback((target: string) => {
+    setMint((prev) => parseMints(prev).filter((m) => m !== target).join('\n'));
+  }, []);
+
+  // Bulk-remove (e.g. "Remove synced") — drop every listed mint from the textarea.
+  const handleRemoveMints = useCallback((targets: string[]) => {
+    const drop = new Set(targets);
+    setMint((prev) => parseMints(prev).filter((m) => !drop.has(m)).join('\n'));
+  }, []);
 
   const handleSync = useCallback(async (incremental = false) => {
     const targets = parseMints(mint);
@@ -382,11 +397,24 @@ export function SyncTokenPage() {
     } finally {
       setSyncing(false);
       setBatch(null);
+      setSyncNonce((n) => n + 1);
       if (syncAbortRef.current === controller) {
         syncAbortRef.current = null;
       }
     }
   }, [mint, includePostMigrate, dispatch]);
+
+  // "Fetch All" re-downloads every transaction from Helius even for data already
+  // in the DB, so guard it behind a confirm to avoid accidental slow/costly runs.
+  const handleFetchAll = useCallback(() => {
+    const ok = window.confirm(
+      `Fetch ALL transactions for ${mints.length} token${mints.length === 1 ? '' : 's'}?\n\n` +
+      'This re-downloads the full history from Helius even for transactions already ' +
+      'saved in the database, which can be slow and use significant RPC credits.\n\n' +
+      'Use "Fetch New" for routine updates.',
+    );
+    if (ok) handleSync(false);
+  }, [mints.length, handleSync]);
 
   return (
     <div>
@@ -436,11 +464,21 @@ export function SyncTokenPage() {
           </Button>
         ) : (
           <>
-            <Button variant="primary" onClick={() => handleSync(false)} disabled={mints.length === 0}>
-              Fetch All
-            </Button>
-            <Button variant="ghost" onClick={() => handleSync(true)} disabled={mints.length === 0}>
+            <Button
+              variant="primary"
+              onClick={() => handleSync(true)}
+              disabled={mints.length === 0}
+              title="Quick update: downloads only transactions newer than the last sync. Fast and cheap — use this for routine refreshes."
+            >
               Fetch New
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={handleFetchAll}
+              disabled={mints.length === 0}
+              title="Full re-sync: re-downloads the entire transaction history from Helius, even data already in the database. Slow and uses more RPC credits — only needed to rebuild from scratch."
+            >
+              Fetch All
             </Button>
           </>
         )}
@@ -467,6 +505,13 @@ export function SyncTokenPage() {
           />
         </div>
       )}
+
+      <InputSyncStatus
+        mints={mints}
+        refreshSignal={syncNonce}
+        onRemove={handleRemoveMint}
+        onRemoveMany={handleRemoveMints}
+      />
 
       {error && (
         <p className="mb-4 rounded-md border border-red/30 bg-red/10 px-3 py-2 text-sm text-red">
