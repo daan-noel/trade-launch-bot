@@ -17,8 +17,8 @@ import type { SyncProgressEvent, TokenDetailRecord, WalletProfile } from '../../
 import type { AppDispatch, RootState } from '../../store';
 import {
   clearSyncOutput,
+  mergeSyncOutput,
   setSelectedMint,
-  setSyncOutput,
 } from '../../store/syncTokenSlice';
 import type { SyncedToken, SyncResultItem } from '../../store/syncTokenSlice';
 import { cn } from '../../lib/cn';
@@ -197,6 +197,40 @@ function syncedTokenColumns(
   ];
 }
 
+/** A labeled sync progress bar: title on the left, detail (percent/count) on the right. */
+function ProgressBar({
+  label,
+  detail,
+  percent,
+  message,
+}: {
+  label: string;
+  detail: string;
+  percent: number;
+  message?: string;
+}) {
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-[11px] font-bold uppercase tracking-widest text-primary">
+          {label}
+        </span>
+        <span className="font-mono text-[11px] text-text-dim">{detail}</span>
+      </div>
+      <div className="h-2 overflow-hidden rounded-full bg-white/6">
+        <div
+          className={cn(
+            'h-full rounded-full bg-primary transition-[width] duration-300',
+            'animate-pulse',
+          )}
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+      {message && <p className="mt-2 text-xs text-text-dim">{message}</p>}
+    </div>
+  );
+}
+
 export function SyncTokenPage() {
   const price = usePriceDisplay();
   const { unit, usdRate } = usePriceUnit();
@@ -209,6 +243,7 @@ export function SyncTokenPage() {
   const results = useSelector((s: RootState) => s.syncToken.results);
   const syncedTokens = useSelector((s: RootState) => s.syncToken.syncedTokens);
   const selectedMint = useSelector((s: RootState) => s.syncToken.selectedMint);
+  const syncedMints = useSelector((s: RootState) => s.syncToken.syncedMints);
 
   const [chartMetric, setChartMetric] = useState<ChartMetric>('price');
   const toChartValue = useCallback(
@@ -231,6 +266,12 @@ export function SyncTokenPage() {
 
   const profileWallets = useMemo(() => buildProfileWallets(profiles), [profiles]);
   const mints = useMemo(() => parseMints(mint), [mint]);
+  // How many entries the user typed were duplicates of an earlier one. parseMints
+  // already drops them, so this is purely to let the user know they were ignored.
+  const duplicateCount = useMemo(() => {
+    const all = mint.split(/[\s,]+/).map((m) => m.trim()).filter(Boolean);
+    return all.length - mints.length;
+  }, [mint, mints]);
 
   const syncedColumns = useMemo(() => syncedTokenColumns(price), [price]);
   const syncedRows = useMemo<SyncedRow[]>(
@@ -247,11 +288,32 @@ export function SyncTokenPage() {
     [syncedTokens, selectedMint],
   );
 
+  // Per-token (inner) progress: how far the current token is through its stages.
   const percent = progress ? stagePercent(progress.stage, progress.current, progress.total) : 0;
+  // Overall (outer) batch progress: how many tokens are done. `batch` is set at
+  // the start of each token; fall back to the parsed mint count before it lands.
+  const tokensTotal = batch?.total ?? mints.length;
+  const tokensIndex = batch?.index ?? 0;
+  // Fold the in-flight token's own fraction in so the bar advances smoothly
+  // between tokens instead of stepping a whole notch at a time.
+  const tokensPercent =
+    tokensTotal > 0
+      ? Math.min(100, ((tokensIndex + percent / 100) / tokensTotal) * 100)
+      : 0;
 
   const handleCancelSync = useCallback(() => {
     syncAbortRef.current?.abort();
   }, []);
+
+  // Refill the input with every mint synced this session so they can be
+  // reviewed or re-synced (e.g. "Fetch New" to pull only fresh trades).
+  const handleLoadSyncedMints = useCallback(() => {
+    setMint(syncedMints.join('\n'));
+  }, [syncedMints]);
+
+  const handleClearSynced = useCallback(() => {
+    dispatch(clearSyncOutput());
+  }, [dispatch]);
 
   const handleSync = useCallback(async (incremental = false) => {
     const targets = parseMints(mint);
@@ -267,7 +329,6 @@ export function SyncTokenPage() {
     setSyncing(true);
     setError(null);
     setProgress(null);
-    dispatch(clearSyncOutput());
     setBatch(null);
 
     const collected: SyncResultItem[] = [];
@@ -299,24 +360,12 @@ export function SyncTokenPage() {
           });
         }
       }
-      dispatch(
-        setSyncOutput({
-          results: collected,
-          syncedTokens: oks,
-          selectedMint: oks[0]?.token.mint_address ?? null,
-        }),
-      );
+      dispatch(mergeSyncOutput({ results: collected, syncedTokens: oks }));
       setProgress(null);
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') {
         setProgress(null);
-        dispatch(
-          setSyncOutput({
-            results: collected,
-            syncedTokens: oks,
-            selectedMint: oks[0]?.token.mint_address ?? null,
-          }),
-        );
+        dispatch(mergeSyncOutput({ results: collected, syncedTokens: oks }));
         return;
       }
       setError(e instanceof Error ? e.message : 'Sync failed');
@@ -341,8 +390,13 @@ export function SyncTokenPage() {
 
       <div className="mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-white/6 bg-white/2 p-4">
         <label className="flex min-w-[280px] flex-1 flex-col gap-1">
-          <span className="text-[10px] font-bold uppercase tracking-widest text-text-dim">
+          <span className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-text-dim">
             Mint address{mints.length > 1 ? ` (${mints.length})` : ''}
+            {duplicateCount > 0 && (
+              <span className="font-bold normal-case tracking-normal text-warning">
+                {duplicateCount} duplicate{duplicateCount > 1 ? 's' : ''} ignored
+              </span>
+            )}
           </span>
           <Textarea
             fieldSize="md"
@@ -383,32 +437,24 @@ export function SyncTokenPage() {
       </div>
 
       {syncing && (
-        <div className="mb-4 rounded-lg border border-white/6 bg-white/2 p-4">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <span className="text-[11px] font-bold uppercase tracking-widest text-primary">
-              {batch && batch.total > 1 && (
-                <span className="mr-2 text-text-dim">
-                  Token {batch.index + 1}/{batch.total}
-                </span>
-              )}
-              {progress ? stageLabel(progress.stage) : 'Starting…'}
-            </span>
-            <span className="font-mono text-[11px] text-text-dim">
-              {Math.round(percent)}%
-            </span>
-          </div>
-          <div className="h-2 overflow-hidden rounded-full bg-white/6">
-            <div
-              className={cn(
-                'h-full rounded-full bg-primary transition-[width] duration-300',
-                'animate-pulse',
-              )}
-              style={{ width: `${percent}%` }}
-            />
-          </div>
-          {progress?.message && (
-            <p className="mt-2 text-xs text-text-dim">{progress.message}</p>
-          )}
+        <div className="mb-4 space-y-4 rounded-lg border border-white/6 bg-white/2 p-4">
+          {/* Outer bar: progress across the whole batch of tokens. */}
+          <ProgressBar
+            label={`Tokens ${tokensIndex + 1} / ${tokensTotal}`}
+            detail={`${Math.round(tokensPercent)}%`}
+            percent={tokensPercent}
+          />
+          {/* Inner bar: the current token's tx-fetch / stage status. */}
+          <ProgressBar
+            label={progress ? stageLabel(progress.stage) : 'Starting…'}
+            detail={
+              progress && progress.stage === 'fetching_transactions' && progress.total > 0
+                ? `${progress.current} / ${progress.total} tx`
+                : `${Math.round(percent)}%`
+            }
+            percent={percent}
+            message={progress?.message}
+          />
         </div>
       )}
 
@@ -426,6 +472,20 @@ export function SyncTokenPage() {
               {syncedRows.length}
             </Badge>
             {failedCount > 0 && <Badge variant="danger">{failedCount} failed</Badge>}
+            <div className="ml-auto flex items-center gap-1">
+              <Button
+                variant="link"
+                size="xs"
+                onClick={handleLoadSyncedMints}
+                disabled={syncing || syncedMints.length === 0}
+                title="Put every mint synced this session back into the input"
+              >
+                Load {syncedMints.length} mint{syncedMints.length === 1 ? '' : 's'}
+              </Button>
+              <Button variant="link" size="xs" onClick={handleClearSynced} disabled={syncing}>
+                Clear
+              </Button>
+            </div>
           </div>
           <DataTable
             columns={syncedColumns}

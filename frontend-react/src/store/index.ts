@@ -17,7 +17,7 @@ export const store = configureStore({
         // Synced token payloads carry potentially large trade arrays. They are
         // plain JSON (serializable), but deep-scanning them on every dispatch is
         // wasteful in dev, so skip the check for this slice's data.
-        ignoredActions: ['syncToken/setSyncOutput'],
+        ignoredActions: ['syncToken/mergeSyncOutput'],
         ignoredPaths: ['syncToken.syncedTokens'],
       },
     }).concat(apiSlice.middleware),
