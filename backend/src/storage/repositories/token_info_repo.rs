@@ -102,8 +102,8 @@ impl TokenInfoRepo {
 
     #[allow(dead_code)]
     pub async fn find_by_mint(&self, mint: &str) -> anyhow::Result<Option<TokenInfo>> {
-        let row = sqlx::query_as::<_, (Uuid, String, Option<f64>, Option<DateTime<Utc>>, Option<i64>, f64, Option<f64>, i64, Option<DateTime<Utc>>, Option<f64>, bool, bool, DateTime<Utc>, DateTime<Utc>)>(
-            "SELECT id, mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_rugged, is_migrated, created_at, updated_at FROM tokens_info WHERE mint_address = $1",
+        let row = sqlx::query_as::<_, (Uuid, String, Option<f64>, Option<DateTime<Utc>>, Option<i64>, f64, Option<f64>, i64, Option<DateTime<Utc>>, Option<f64>, bool, bool, DateTime<Utc>, DateTime<Utc>, Option<DateTime<Utc>>)>(
+            "SELECT id, mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_rugged, is_migrated, created_at, updated_at, last_synced_at FROM tokens_info WHERE mint_address = $1",
         )
         .bind(mint)
         .fetch_optional(&self.pool)
@@ -125,6 +125,7 @@ impl TokenInfoRepo {
                 is_migrated,
                 created_at,
                 updated_at,
+                last_synced_at,
             )| TokenInfo {
                 id,
                 mint_address,
@@ -140,14 +141,15 @@ impl TokenInfoRepo {
                 is_migrated,
                 created_at,
                 updated_at,
+                last_synced_at,
             },
         ))
     }
 
     /// List all token metrics rows.
     pub async fn list_all(&self) -> anyhow::Result<Vec<TokenInfo>> {
-        let rows = sqlx::query_as::<_, (Uuid, String, Option<f64>, Option<DateTime<Utc>>, Option<i64>, f64, Option<f64>, i64, Option<DateTime<Utc>>, Option<f64>, bool, bool, DateTime<Utc>, DateTime<Utc>)>(
-            "SELECT id, mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_rugged, is_migrated, created_at, updated_at FROM tokens_info",
+        let rows = sqlx::query_as::<_, (Uuid, String, Option<f64>, Option<DateTime<Utc>>, Option<i64>, f64, Option<f64>, i64, Option<DateTime<Utc>>, Option<f64>, bool, bool, DateTime<Utc>, DateTime<Utc>, Option<DateTime<Utc>>)>(
+            "SELECT id, mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_rugged, is_migrated, created_at, updated_at, last_synced_at FROM tokens_info",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -170,6 +172,7 @@ impl TokenInfoRepo {
                     is_migrated,
                     created_at,
                     updated_at,
+                    last_synced_at,
                 )| TokenInfo {
                     id,
                     mint_address,
@@ -185,8 +188,58 @@ impl TokenInfoRepo {
                     is_migrated,
                     created_at,
                     updated_at,
+                    last_synced_at,
                 },
             )
             .collect())
+    }
+
+    /// Read the per-token sync watermark: `(last_synced_at, curve_sig, amm_sig)`.
+    /// Any field is `None` if the token has never been synced (or predates the
+    /// watermark feature). Returns all-`None` when the row doesn't exist yet.
+    pub async fn get_sync_watermark(
+        &self,
+        mint: &str,
+    ) -> anyhow::Result<(Option<DateTime<Utc>>, Option<String>, Option<String>)> {
+        let row = sqlx::query_as::<_, (Option<DateTime<Utc>>, Option<String>, Option<String>)>(
+            "SELECT last_synced_at, last_synced_curve_sig, last_synced_amm_sig FROM tokens_info WHERE mint_address = $1",
+        )
+        .bind(mint)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.unwrap_or((None, None, None)))
+    }
+
+    /// Record a successful sync: stamp `last_synced_at = at` and store the newest
+    /// per-venue signatures seen. A `None` signature preserves the prior value
+    /// (e.g. an AMM-less sync leaves any existing AMM watermark intact).
+    pub async fn update_sync_watermark(
+        &self,
+        mint: &str,
+        at: DateTime<Utc>,
+        curve_sig: Option<&str>,
+        amm_sig: Option<&str>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO tokens_info
+                (mint_address, last_synced_at, last_synced_curve_sig, last_synced_amm_sig, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $2, $2)
+            ON CONFLICT (mint_address) DO UPDATE
+                SET last_synced_at = EXCLUDED.last_synced_at,
+                    last_synced_curve_sig = COALESCE(EXCLUDED.last_synced_curve_sig, tokens_info.last_synced_curve_sig),
+                    last_synced_amm_sig = COALESCE(EXCLUDED.last_synced_amm_sig, tokens_info.last_synced_amm_sig),
+                    updated_at = EXCLUDED.updated_at
+            "#,
+        )
+        .bind(mint)
+        .bind(at)
+        .bind(curve_sig)
+        .bind(amm_sig)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
     }
 }

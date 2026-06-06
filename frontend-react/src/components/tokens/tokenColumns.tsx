@@ -1,6 +1,7 @@
 import type { ColumnDef } from '../table/types';
 import type { TokenRecord } from '../../types';
 import { DateCell } from '../table/DateCell';
+import { RelativeTimeCell } from '../table/RelativeTimeCell';
 import {
   ageClass,
   formatAge,
@@ -105,6 +106,15 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       render: (r) => <DateCell iso={r.last_trade_at} />,
       sortValue: (r) => r.last_trade_at,
       searchValue: (r) => r.last_trade_at ?? '',
+    },
+    {
+      key: 'last_synced',
+      label: 'Last Synced',
+      width: '96px',
+      sortable: true,
+      render: (r) => <RelativeTimeCell iso={r.last_synced_at} />,
+      sortValue: (r) => r.last_synced_at,
+      searchValue: (r) => r.last_synced_at ?? '',
     },
     {
       key: 'trade_count',

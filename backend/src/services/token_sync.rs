@@ -203,13 +203,26 @@ pub async fn run_token_sync(
 
     let decoder = HeliusDecoder::new(ctx.pump_program_id.clone());
 
-    // For incremental syncs, stop paging once we reach the last saved
-    // bonding-curve trade (AMM trades are tracked separately, below).
+    let info_repo = TokenInfoRepo::new(ctx.db.clone());
+
+    // Per-venue signature watermarks from the last successful sync. Preferred
+    // over the latest saved trade as the incremental `until` boundary so a token
+    // that synced with zero trades still resumes instead of re-fetching all txs.
+    let (_, prev_curve_sig, prev_amm_sig) = info_repo
+        .get_sync_watermark(&mint)
+        .await
+        .map_err(|e| SyncError::Internal(e.to_string()))?;
+
+    // For incremental syncs, stop paging once we reach the last bonding-curve
+    // signature we already have (AMM trades are tracked separately, below).
     let until_signature: Option<String> = if req.incremental {
-        TradeRepo::new(ctx.db.clone())
-            .latest_signature(&mint, "curve")
-            .await
-            .map_err(|e| SyncError::Internal(e.to_string()))?
+        match prev_curve_sig.clone() {
+            Some(sig) => Some(sig),
+            None => TradeRepo::new(ctx.db.clone())
+                .latest_signature(&mint, "curve")
+                .await
+                .map_err(|e| SyncError::Internal(e.to_string()))?,
+        }
     } else {
         None
     };
@@ -229,6 +242,14 @@ pub async fn run_token_sync(
         })
         .await
         .map_err(|e| SyncError::Internal(e.to_string()))?;
+
+    // Newest curve signature seen this run (signatures are slot-ascending, so
+    // the last entry is newest). Falls back to the prior watermark when nothing
+    // new was fetched, so a no-op incremental sync keeps the boundary intact.
+    let newest_curve_sig = signatures
+        .last()
+        .map(|e| e.signature.clone())
+        .or_else(|| prev_curve_sig.clone());
 
     let sig_total = signatures.len() as u64;
     send_progress(
@@ -255,7 +276,6 @@ pub async fn run_token_sync(
     let trade_repo = TradeRepo::new(ctx.db.clone());
     let tx_repo = TransactionRepo::new(ctx.db.clone());
     let wallet_repo = WalletRepo::new(ctx.db.clone());
-    let info_repo = TokenInfoRepo::new(ctx.db.clone());
 
     let mut migrate_slot: Option<u64> = None;
     let mut token_record: Option<Token> = token_repo
@@ -339,20 +359,25 @@ pub async fn run_token_sync(
     // ── Post-migration AMM (PumpSwap) trades ─────────────────────────────────
     // Bonding-curve signatures never include PumpSwap swaps (the curve account
     // isn't touched once trading moves to the pool), so fetch them separately.
-    if req.include_post_migrate && is_migrated {
+    let new_amm_sig = if req.include_post_migrate && is_migrated {
         sync_amm_trades(
             &rpc,
             &decoder,
             &ctx.pump_program_id,
             &mint,
             req.incremental,
+            prev_amm_sig.as_deref(),
             &trade_repo,
             &tx_repo,
             &wallet_repo,
             &progress_tx,
         )
-        .await?;
-    }
+        .await?
+        .or_else(|| prev_amm_sig.clone())
+    } else {
+        // AMM not synced this run — keep any existing AMM watermark.
+        prev_amm_sig.clone()
+    };
 
     send_progress(&progress_tx, "recomputing", 1, 1, "Rebuilding metrics").await?;
 
@@ -386,6 +411,20 @@ pub async fn run_token_sync(
     let rugged = token_metrics::compute_is_rugged(&trade_repo, &metrics).await;
     write_metrics(&info_repo, &metrics, rugged).await?;
 
+    // Stamp the sync watermark so the next "Fetch new" resumes from here, and
+    // mirror it onto the cached state for immediate display.
+    let synced_at = Utc::now();
+    info_repo
+        .update_sync_watermark(
+            &mint,
+            synced_at,
+            newest_curve_sig.as_deref(),
+            new_amm_sig.as_deref(),
+        )
+        .await
+        .map_err(|e| SyncError::Internal(e.to_string()))?;
+    state.last_synced_at = Some(synced_at);
+
     ctx.token_cache.insert(mint.clone(), state.clone());
 
     Ok(SyncOutput { state, trades })
@@ -394,9 +433,13 @@ pub async fn run_token_sync(
 /// Fetch and persist post-migration PumpSwap swaps for `mint`.
 ///
 /// Derives the canonical pool, pages its signatures (resuming from the last
-/// saved AMM trade when `incremental`), decodes Buy/Sell events, and inserts
-/// them as `venue = "amm"` trades. A missing pool (not yet created on-chain)
-/// is treated as "nothing to do", not an error.
+/// known AMM signature when `incremental`), decodes Buy/Sell events, and inserts
+/// them as `venue = "amm"` trades. A missing pool (not yet created on-chain) is
+/// treated as "nothing to do", not an error.
+///
+/// Returns the newest AMM signature seen this run (slot-ascending order, so the
+/// last entry), or `None` when nothing new was fetched — the caller uses it to
+/// advance the stored AMM watermark.
 #[allow(clippy::too_many_arguments)]
 async fn sync_amm_trades(
     rpc: &HeliusRpc,
@@ -404,11 +447,12 @@ async fn sync_amm_trades(
     pump_program_id: &str,
     mint: &str,
     incremental: bool,
+    prev_amm_sig: Option<&str>,
     trade_repo: &TradeRepo,
     tx_repo: &TransactionRepo,
     wallet_repo: &WalletRepo,
     progress_tx: &mpsc::Sender<String>,
-) -> Result<(), SyncError> {
+) -> Result<Option<String>, SyncError> {
     let pool = derive_pump_swap_pool(mint, pump_program_id)
         .map_err(|e| SyncError::Internal(e.to_string()))?;
 
@@ -417,14 +461,19 @@ async fn sync_amm_trades(
         .await
         .map_err(|e| SyncError::Internal(e.to_string()))?;
     if !exists {
-        return Ok(());
+        return Ok(None);
     }
 
+    // Prefer the stored AMM watermark over the latest saved AMM trade, so a
+    // migrated token with no decoded AMM trades yet still resumes correctly.
     let until: Option<String> = if incremental {
-        trade_repo
-            .latest_signature(mint, "amm")
-            .await
-            .map_err(|e| SyncError::Internal(e.to_string()))?
+        match prev_amm_sig {
+            Some(sig) => Some(sig.to_string()),
+            None => trade_repo
+                .latest_signature(mint, "amm")
+                .await
+                .map_err(|e| SyncError::Internal(e.to_string()))?,
+        }
     } else {
         None
     };
@@ -446,6 +495,8 @@ async fn sync_amm_trades(
         })
         .await
         .map_err(|e| SyncError::Internal(e.to_string()))?;
+
+    let newest_amm_sig = signatures.last().map(|e| e.signature.clone());
 
     let fetched = fetch_transactions(rpc, &signatures, progress_tx).await?;
 
@@ -469,7 +520,7 @@ async fn sync_amm_trades(
         }
     }
 
-    Ok(())
+    Ok(newest_amm_sig)
 }
 
 struct FetchedTx {

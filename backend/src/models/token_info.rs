@@ -20,6 +20,8 @@ pub struct TokenInfo {
     pub is_migrated: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Wall-clock time of the last successful manual sync, if any.
+    pub last_synced_at: Option<DateTime<Utc>>,
 }
 
 impl TokenInfo {
@@ -37,6 +39,7 @@ impl TokenInfo {
         is_migrated: bool,
         created_at: DateTime<Utc>,
         updated_at: DateTime<Utc>,
+        last_synced_at: Option<DateTime<Utc>>,
     ) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -53,6 +56,7 @@ impl TokenInfo {
             is_migrated,
             created_at,
             updated_at,
+            last_synced_at,
         }
     }
 }

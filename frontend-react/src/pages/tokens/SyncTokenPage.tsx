@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { DataTable } from '../../components/table/DataTable';
+import { RelativeTimeCell } from '../../components/table/RelativeTimeCell';
 import type { ColumnDef } from '../../components/table/types';
 import { tokenTradeColumns } from '../../components/transactions/tokenTradeColumns';
 import { TokenPriceChart, WALLET_MARKER_COLORS, type ChartMetric, type ProfileWalletInfo } from '../../components/token-price-chart';
@@ -193,6 +194,15 @@ function syncedTokenColumns(
       render: (r) => (r.token?.is_migrated ? '✓' : ''),
       sortValue: (r) => (r.token?.is_migrated ? 1 : 0),
       searchValue: (r) => String(r.token?.is_migrated ?? ''),
+    },
+    {
+      key: 'last_synced',
+      label: 'Last synced',
+      width: '96px',
+      sortable: true,
+      render: (r) => <RelativeTimeCell iso={r.token?.last_synced_at} />,
+      sortValue: (r) => r.token?.last_synced_at ?? null,
+      searchValue: (r) => r.token?.last_synced_at ?? '',
     },
   ];
 }

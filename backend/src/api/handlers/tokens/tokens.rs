@@ -51,6 +51,7 @@ pub struct TokenSummary {
     pub name: String,
     pub trade_count: u64,
     pub last_trade_at: Option<DateTime<Utc>>,
+    pub last_synced_at: Option<DateTime<Utc>>,
 }
 
 impl From<&TokenState> for TokenSummary {
@@ -95,6 +96,7 @@ impl From<&TokenState> for TokenSummary {
             name: s.token.name.clone(),
             trade_count: s.trade_count,
             last_trade_at: s.last_trade_at,
+            last_synced_at: s.last_synced_at,
         }
     }
 }
@@ -129,6 +131,7 @@ pub struct TokenDetail {
     pub is_migrated: bool,
     pub unique_wallets: Option<usize>,
     pub last_trade_at: Option<DateTime<Utc>>,
+    pub last_synced_at: Option<DateTime<Utc>>,
 }
 
 impl From<&TokenState> for TokenDetail {
@@ -164,6 +167,7 @@ impl From<&TokenState> for TokenDetail {
             is_migrated: s.is_migrated,
             unique_wallets: Some(s.unique_wallets()),
             last_trade_at: s.last_trade_at,
+            last_synced_at: s.last_synced_at,
         }
     }
 }
@@ -271,6 +275,7 @@ pub async fn get_token(state: web::Data<Arc<AppState>>, path: web::Path<String>)
                 "is_migrated": false,
                 "unique_wallets": null,
                 "last_trade_at": null,
+                "last_synced_at": null,
                 "note": "token exists in DB but is not actively tracked this session"
             }))
         }

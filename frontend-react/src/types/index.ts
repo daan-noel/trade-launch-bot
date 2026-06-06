@@ -33,6 +33,7 @@ export interface TokenRecord {
   created_at: string;
   create_tx_address: string;
   last_trade_at: string | null;
+  last_synced_at: string | null;
 }
 
 export interface FetchTokensResult {
@@ -151,6 +152,7 @@ export interface TokenDetailRecord {
   is_migrated: boolean;
   unique_wallets: number | null;
   last_trade_at: string | null;
+  last_synced_at: string | null;
 }
 
 export interface LiveTrade {

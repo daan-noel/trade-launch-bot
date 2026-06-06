@@ -52,6 +52,7 @@ pub async fn seed_token_cache(pool: &PgPool, token_cache: Arc<TokenCache>) -> an
             state.market_cap = info.market_cap;
             state.current_price = info.current_price;
             state.is_migrated = info.is_migrated;
+            state.last_synced_at = info.last_synced_at;
         }
     }
 
