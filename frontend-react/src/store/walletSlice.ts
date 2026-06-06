@@ -1,6 +1,6 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
-import { fetchWalletHoldings } from '../services/api';
-import type { WalletHolding } from '../types';
+import { fetchWalletHoldings } from 'services/api';
+import type { WalletHolding } from 'types';
 
 interface WalletState {
   holdings: WalletHolding[];

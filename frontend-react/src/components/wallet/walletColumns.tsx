@@ -1,7 +1,7 @@
-import type { ColumnDef } from '../table/types';
-import type { WalletHolding } from '../../types';
-import { cn } from '../../lib/cn';
-import { AddressDisplay } from '../ui/AddressDisplay';
+import type { ColumnDef } from 'components/table/types';
+import type { WalletHolding } from 'types';
+import { cn } from 'lib/cn';
+import { AddressDisplay } from 'components/ui/AddressDisplay';
 
 function formatPriceUsd(p: number): string {
   if (p < 0.0001) return `$${p.toFixed(8)}`;

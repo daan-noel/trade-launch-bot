@@ -7,7 +7,7 @@ import {
   type InputHTMLAttributes,
   type TextareaHTMLAttributes,
 } from 'react';
-import { cn } from '../../lib/cn';
+import { cn } from 'lib/cn';
 
 export type FieldSize = 'sm' | 'md' | 'lg' | 'table' | 'page';
 export type FieldVariant = 'default' | 'card';

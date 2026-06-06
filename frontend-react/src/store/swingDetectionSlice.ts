@@ -1,5 +1,5 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
-import type { SwingBatchEntry, SwingDetectionResult } from '../types';
+import type { SwingBatchEntry, SwingDetectionResult } from 'types';
 
 function toDatetimeLocalValue(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');

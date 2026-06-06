@@ -1,29 +1,29 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { DataTable } from '../../components/table/DataTable';
-import { RelativeTimeCell } from '../../components/table/RelativeTimeCell';
-import type { ColumnDef } from '../../components/table/types';
-import { tokenTradeColumns } from '../../components/transactions/tokenTradeColumns';
-import { TokenPriceChart, WALLET_MARKER_COLORS, type ChartMetric, type ProfileWalletInfo } from '../../components/token-price-chart';
-import { InputSyncStatus } from '../../components/tokens/InputSyncStatus';
-import { TokenDetailPanel } from '../../components/tokens/TokenDetailPanel';
-import { AddressDisplay } from '../../components/ui/AddressDisplay';
-import { Badge } from '../../components/ui/Badge';
-import { Button } from '../../components/ui/Button';
-import { Checkbox } from '../../components/ui/Checkbox';
-import { Textarea } from '../../components/ui/Input';
-import { usePriceUnit } from '../../context/PriceUnitContext';
-import { usePriceDisplay } from '../../hooks/usePriceDisplay';
-import { fetchProfiles, syncToken } from '../../services/api';
-import type { SyncProgressEvent, TokenDetailRecord, WalletProfile } from '../../types';
+import { DataTable } from 'components/table/DataTable';
+import { RelativeTimeCell } from 'components/table/RelativeTimeCell';
+import type { ColumnDef } from 'components/table/types';
+import { tokenTradeColumns } from 'components/transactions/tokenTradeColumns';
+import { TokenPriceChart, WALLET_MARKER_COLORS, type ChartMetric, type ProfileWalletInfo } from 'components/token-price-chart';
+import { InputSyncStatus } from 'components/tokens/InputSyncStatus';
+import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
+import { AddressDisplay } from 'components/ui/AddressDisplay';
+import { Badge } from 'components/ui/Badge';
+import { Button } from 'components/ui/Button';
+import { Checkbox } from 'components/ui/Checkbox';
+import { Textarea } from 'components/ui/Input';
+import { usePriceUnit } from 'context/PriceUnitContext';
+import { usePriceDisplay } from 'hooks/usePriceDisplay';
+import { fetchProfiles, syncToken } from 'services/api';
+import type { SyncProgressEvent, TokenDetailRecord, WalletProfile } from 'types';
 import type { AppDispatch, RootState } from '../../store';
 import {
   clearSyncOutput,
   mergeSyncOutput,
   setSelectedMint,
-} from '../../store/syncTokenSlice';
-import type { SyncedToken, SyncResultItem } from '../../store/syncTokenSlice';
-import { cn } from '../../lib/cn';
+} from 'store/syncTokenSlice';
+import type { SyncedToken, SyncResultItem } from 'store/syncTokenSlice';
+import { cn } from 'lib/cn';
 
 const STAGE_ORDER = [
   'validating',

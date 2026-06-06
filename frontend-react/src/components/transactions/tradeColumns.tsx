@@ -1,10 +1,10 @@
-import type { ColumnDef } from '../table/types';
-import type { LiveTrade } from '../../types';
-import { DateCell } from '../table/DateCell';
-import { formatDecimal } from '../../utils/format';
-import type { usePriceDisplay } from '../../hooks/usePriceDisplay';
-import { cn } from '../../lib/cn';
-import { AddressDisplay } from '../ui/AddressDisplay';
+import type { ColumnDef } from 'components/table/types';
+import type { LiveTrade } from 'types';
+import { DateCell } from 'components/table/DateCell';
+import { formatDecimal } from 'utils/format';
+import type { usePriceDisplay } from 'hooks/usePriceDisplay';
+import { cn } from 'lib/cn';
+import { AddressDisplay } from 'components/ui/AddressDisplay';
 
 export function tradeColumns(price: ReturnType<typeof usePriceDisplay>): ColumnDef<LiveTrade>[] {
   const unit = price.unitLabel;

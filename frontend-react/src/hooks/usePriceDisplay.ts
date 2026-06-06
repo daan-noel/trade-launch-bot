@@ -1,11 +1,11 @@
 import { useMemo } from 'react';
-import { usePriceUnit } from '../context/PriceUnitContext';
+import { usePriceUnit } from 'context/PriceUnitContext';
 import {
   formatCompact,
   formatDecimalTrim,
   formatPrice,
   formatWithCommas,
-} from '../utils/format';
+} from 'utils/format';
 
 function formatUsd(value: number): string {
   if (value === 0) return '$0';

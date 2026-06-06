@@ -1,18 +1,18 @@
 import { useState, type ReactNode } from 'react';
-import { cn } from '../../lib/cn';
-import { usePriceDisplay } from '../../hooks/usePriceDisplay';
-import type { TokenDetailRecord } from '../../types';
-import { useTimezone } from '../../context/TimezoneContext';
-import { formatIso } from '../../utils/date';
+import { cn } from 'lib/cn';
+import { usePriceDisplay } from 'hooks/usePriceDisplay';
+import type { TokenDetailRecord } from 'types';
+import { useTimezone } from 'context/TimezoneContext';
+import { formatIso } from 'utils/date';
 import {
   formatDecimal,
   formatDecimalTrim,
   formatPrice,
   ratioVariant,
   truncate,
-} from '../../utils/format';
-import { AddrCard, StatCard } from '../ui/StatCard';
-import { Badge } from '../ui/Badge';
+} from 'utils/format';
+import { AddrCard, StatCard } from 'components/ui/StatCard';
+import { Badge } from 'components/ui/Badge';
 
 function CopyIcon({ copied }: { copied: boolean }) {
   if (copied) {

@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { DataTable } from '../../components/table/DataTable';
-import { FilterPanel } from '../../components/tokens/FilterPanel';
-import { TokenDetailPanel } from '../../components/tokens/TokenDetailPanel';
-import { tokenColumns } from '../../components/tokens/tokenColumns';
+import { DataTable } from 'components/table/DataTable';
+import { FilterPanel } from 'components/tokens/FilterPanel';
+import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
+import { tokenColumns } from 'components/tokens/tokenColumns';
 import {
   activeFilterCount,
   defaultFilters,
@@ -11,19 +11,19 @@ import {
   saveStoredTokenFilters,
   tokenPassesFilters,
   type TokenFilters,
-} from '../../components/tokens/filters';
-import { Badge } from '../../components/ui/Badge';
-import { Button } from '../../components/ui/Button';
-import { StatusButton } from '../../components/ui/StatusButton';
-import { POLL_INTERVAL_MS } from '../../services/config';
-import type { TokenRecord } from '../../types';
-import { usePriceDisplay } from '../../hooks/usePriceDisplay';
+} from 'components/tokens/filters';
+import { Badge } from 'components/ui/Badge';
+import { Button } from 'components/ui/Button';
+import { StatusButton } from 'components/ui/StatusButton';
+import { POLL_INTERVAL_MS } from 'services/config';
+import type { TokenRecord } from 'types';
+import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import {
   apiErrorMessage,
   useGetTokenDetailQuery,
   useGetTokensQuery,
-} from '../../store/apiSlice';
-import { cn } from '../../lib/cn';
+} from 'store/apiSlice';
+import { cn } from 'lib/cn';
 
 const LS_LIVE_KEY = 'tokens_live';
 

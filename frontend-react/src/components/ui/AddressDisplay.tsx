@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type MouseEvent } from 'react';
-import { cn } from '../../lib/cn';
-import { truncate } from '../../utils/format';
-import { getAddressExplorerLinks, type AddressKind } from '../../utils/addressLinks';
+import { cn } from 'lib/cn';
+import { truncate } from 'utils/format';
+import { getAddressExplorerLinks, type AddressKind } from 'utils/addressLinks';
 
 interface AddressDisplayProps {
   address: string;

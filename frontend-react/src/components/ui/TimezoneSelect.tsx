@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
-import { getTimezoneSelectOptions } from '../token-price-chart/chartTimezone';
-import { useTimezone } from '../../context/TimezoneContext';
-import { cn } from '../../lib/cn';
+import { getTimezoneSelectOptions } from 'components/token-price-chart/chartTimezone';
+import { useTimezone } from 'context/TimezoneContext';
+import { cn } from 'lib/cn';
 
 type TimezoneSelectProps = {
   className?: string;

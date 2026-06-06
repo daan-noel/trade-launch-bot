@@ -32,7 +32,7 @@ import {
 } from './chartBars';
 import { ChartToolbar } from './ChartToolbar';
 import { createChartTimeFormatters } from './chartTimezone';
-import { useTimezone } from '../../context/TimezoneContext';
+import { useTimezone } from 'context/TimezoneContext';
 import { cn } from './cn';
 import {
   CANDLE_SERIES_OPTIONS,

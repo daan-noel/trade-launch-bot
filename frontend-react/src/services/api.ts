@@ -37,7 +37,7 @@ export async function fetchTokens(
   search: string,
   limit: number,
   offset: number,
-): Promise<{ total: number; items: import('../types').TokenRecord[] }> {
+): Promise<{ total: number; items: import('types').TokenRecord[] }> {
   let url = `${API_BASE}/api/tokens?limit=${limit}&offset=${offset}`;
   if (search) url += `&search=${encodeURIComponent(search)}`;
   return request(url);
@@ -45,20 +45,20 @@ export async function fetchTokens(
 
 export async function fetchTokenDetail(
   mint: string,
-): Promise<import('../types').TokenDetailRecord> {
+): Promise<import('types').TokenDetailRecord> {
   return request(`${API_BASE}/api/tokens/${mint}`);
 }
 
 export async function fetchTokenTrades(
   mint: string,
-): Promise<import('../types').TradeRecord[]> {
+): Promise<import('types').TradeRecord[]> {
   return request(`${API_BASE}/api/tokens/${encodeURIComponent(mint)}/trades`);
 }
 
 export async function fetchTokenSwings(
   mint: string,
-  params: import('../types').SwingParams,
-): Promise<import('../types').SwingDetectionResult> {
+  params: import('types').SwingParams,
+): Promise<import('types').SwingDetectionResult> {
   return request(`${API_BASE}/api/tokens/${encodeURIComponent(mint)}/swings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -69,8 +69,8 @@ export async function fetchTokenSwings(
 /** Run swing detection over many mints in one request (shared params). */
 export async function fetchTokenSwingsBatch(
   mints: string[],
-  params: import('../types').SwingParams,
-): Promise<import('../types').SwingBatchResponse> {
+  params: import('types').SwingParams,
+): Promise<import('types').SwingBatchResponse> {
   return request(`${API_BASE}/api/tokens/swings/batch`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -78,13 +78,13 @@ export async function fetchTokenSwingsBatch(
   });
 }
 
-export async function fetchTpslRules(): Promise<import('../types').RuleRecord[]> {
+export async function fetchTpslRules(): Promise<import('types').RuleRecord[]> {
   return request(`${API_BASE}/api/strategies/tpsl/rules`);
 }
 
 export async function createTpslRule(
   req: Record<string, unknown>,
-): Promise<import('../types').RuleRecord> {
+): Promise<import('types').RuleRecord> {
   return request(`${API_BASE}/api/strategies/tpsl/rules`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -95,7 +95,7 @@ export async function createTpslRule(
 export async function updateTpslRule(
   ruleId: string,
   req: Record<string, unknown>,
-): Promise<import('../types').RuleRecord> {
+): Promise<import('types').RuleRecord> {
   return request(`${API_BASE}/api/strategies/tpsl/rules/${ruleId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -109,37 +109,37 @@ export async function deleteTpslRule(ruleId: string): Promise<void> {
 
 export async function simulateTpslRule(
   ruleId: string,
-): Promise<import('../types').SimulatedTokenResult[]> {
+): Promise<import('types').SimulatedTokenResult[]> {
   return request(`${API_BASE}/api/strategies/tpsl/rules/${ruleId}/simulate`);
 }
 
 export async function fetchMatchedTokens(
   ruleId: string,
-): Promise<import('../types').MatchedTokenRecord[]> {
+): Promise<import('types').MatchedTokenRecord[]> {
   return request(`${API_BASE}/api/strategies/tpsl/rules/${ruleId}/matched`);
 }
 
 export async function fetchRulePositions(
   ruleId: string,
-): Promise<import('../types').RulePositionRecord[]> {
+): Promise<import('types').RulePositionRecord[]> {
   return request(`${API_BASE}/api/strategies/tpsl/rules/${ruleId}/positions`);
 }
 
-export async function fetchWalletHoldings(): Promise<import('../types').WalletHolding[]> {
+export async function fetchWalletHoldings(): Promise<import('types').WalletHolding[]> {
   return request(`${API_BASE}/api/solana/wallet/tokens`);
 }
 
 export async function fetchAnalysis(
   limit: number,
   offset: number,
-): Promise<{ total: number; items: import('../types').AnalysisRecord[] }> {
+): Promise<{ total: number; items: import('types').AnalysisRecord[] }> {
   return request(`${API_BASE}/api/analysis?limit=${limit}&offset=${offset}`);
 }
 
 export async function fetchCreators(
   limit: number,
   offset: number,
-): Promise<{ total: number; items: import('../types').CreatorRecord[] }> {
+): Promise<{ total: number; items: import('types').CreatorRecord[] }> {
   return request(`${API_BASE}/api/creators?limit=${limit}&offset=${offset}`);
 }
 
@@ -173,14 +173,14 @@ export async function tradeSell(req: {
 // Profiles & Wallets
 // ---------------------------------------------------------------------------
 
-export async function fetchProfiles(): Promise<import('../types').WalletProfile[]> {
+export async function fetchProfiles(): Promise<import('types').WalletProfile[]> {
   return request(`${API_BASE}/api/profiles`);
 }
 
 export async function createProfile(req: {
   name: string;
-  profile_type: import('../types').ProfileType;
-}): Promise<import('../types').WalletProfile> {
+  profile_type: import('types').ProfileType;
+}): Promise<import('types').WalletProfile> {
   return request(`${API_BASE}/api/profiles`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -190,7 +190,7 @@ export async function createProfile(req: {
 
 export async function updateProfile(
   id: string,
-  req: { name: string; profile_type: import('../types').ProfileType },
+  req: { name: string; profile_type: import('types').ProfileType },
 ): Promise<void> {
   await request(`${API_BASE}/api/profiles/${id}`, {
     method: 'PUT',
@@ -206,7 +206,7 @@ export async function deleteProfile(id: string): Promise<void> {
 export async function createWalletEntry(
   profileId: string,
   req: { address: string; is_tracked?: boolean; comment?: string },
-): Promise<import('../types').WalletEntry> {
+): Promise<import('types').WalletEntry> {
   return request(`${API_BASE}/api/profiles/${profileId}/wallets`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -233,7 +233,7 @@ export async function deleteWalletEntry(id: string): Promise<void> {
 // Tags
 // ---------------------------------------------------------------------------
 
-export async function fetchTags(): Promise<import('../types').WalletProfileTag[]> {
+export async function fetchTags(): Promise<import('types').WalletProfileTag[]> {
   return request(`${API_BASE}/api/tags`);
 }
 
@@ -241,7 +241,7 @@ export async function createTag(req: {
   name: string;
   color: string;
   comment?: string;
-}): Promise<import('../types').WalletProfileTag> {
+}): Promise<import('types').WalletProfileTag> {
   return request(`${API_BASE}/api/tags`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -308,10 +308,10 @@ export async function fetchSyncPreview(
 export async function syncToken(
   mintAddress: string,
   includePostMigrate: boolean,
-  onProgress: (event: import('../types').SyncProgressEvent) => void,
+  onProgress: (event: import('types').SyncProgressEvent) => void,
   signal?: AbortSignal,
   incremental = false,
-): Promise<import('../types').SyncCompleteEvent> {
+): Promise<import('types').SyncCompleteEvent> {
   const resp = await fetch(`${API_BASE}/api/token/sync`, {
     method: 'POST',
     headers: {
@@ -352,7 +352,7 @@ export async function syncToken(
       buffer = buffer.slice(newline + 1);
       if (!line) continue;
 
-      const event = JSON.parse(line) as import('../types').SyncStreamEvent;
+      const event = JSON.parse(line) as import('types').SyncStreamEvent;
       if (event.type === 'progress') {
         onProgress(event);
       } else if (event.type === 'error') {
@@ -365,7 +365,7 @@ export async function syncToken(
 
   const tail = buffer.trim();
   if (tail) {
-    const event = JSON.parse(tail) as import('../types').SyncStreamEvent;
+    const event = JSON.parse(tail) as import('types').SyncStreamEvent;
     if (event.type === 'complete') return event;
     if (event.type === 'error') throw new Error(event.message);
     if (event.type === 'progress') onProgress(event);

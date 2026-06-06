@@ -1,12 +1,12 @@
 import { Link, NavLink, useLocation } from 'react-router-dom';
 import { useEffect, useState } from 'react';
-import { StatusButton } from '../ui/StatusButton';
-import { NavDropdown } from '../ui/NavDropdown';
-import { PriceUnitToggle } from '../ui/PriceUnitToggle';
-import { TimezoneSelect } from '../ui/TimezoneSelect';
-import { fetchLiveMode, fetchSolPrice, setLiveMode } from '../../services/api';
-import { usePriceUnit } from '../../context/PriceUnitContext';
-import { cn } from '../../lib/cn';
+import { StatusButton } from 'components/ui/StatusButton';
+import { NavDropdown } from 'components/ui/NavDropdown';
+import { PriceUnitToggle } from 'components/ui/PriceUnitToggle';
+import { TimezoneSelect } from 'components/ui/TimezoneSelect';
+import { fetchLiveMode, fetchSolPrice, setLiveMode } from 'services/api';
+import { usePriceUnit } from 'context/PriceUnitContext';
+import { cn } from 'lib/cn';
 
 function NavItem({ to, children }: { to: string; children: React.ReactNode }) {
   return (

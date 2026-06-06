@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { DataTable } from '../../components/table/DataTable';
-import { tokenTradeColumns } from '../../components/transactions/tokenTradeColumns';
+import { DataTable } from 'components/table/DataTable';
+import { tokenTradeColumns } from 'components/transactions/tokenTradeColumns';
 import {
   TokenPriceChart,
   WALLET_MARKER_COLORS,
@@ -10,9 +10,9 @@ import {
   type ChartMetric,
   type ChartSwingLeg,
   type ProfileWalletInfo,
-} from '../../components/token-price-chart';
-import { swingLegKey } from '../../components/token-price-chart/swingOverlay';
-import { FilterPanel } from '../../components/tokens/FilterPanel';
+} from 'components/token-price-chart';
+import { swingLegKey } from 'components/token-price-chart/swingOverlay';
+import { FilterPanel } from 'components/tokens/FilterPanel';
 import {
   activeFilterCount,
   defaultFilters,
@@ -21,13 +21,13 @@ import {
   saveStoredTokenFilters,
   tokenPassesFilters,
   type TokenFilters,
-} from '../../components/tokens/filters';
-import { tokenColumns } from '../../components/tokens/tokenColumns';
-import { usePriceUnit } from '../../context/PriceUnitContext';
-import { useTimezone } from '../../context/TimezoneContext';
-import { formatTimestampMs } from '../../utils/date';
-import { usePriceDisplay } from '../../hooks/usePriceDisplay';
-import { swingColumns } from '../../components/analysis/swingColumns';
+} from 'components/tokens/filters';
+import { tokenColumns } from 'components/tokens/tokenColumns';
+import { usePriceUnit } from 'context/PriceUnitContext';
+import { useTimezone } from 'context/TimezoneContext';
+import { formatTimestampMs } from 'utils/date';
+import { usePriceDisplay } from 'hooks/usePriceDisplay';
+import { swingColumns } from 'components/analysis/swingColumns';
 import {
   DEFAULT_SWING_PARAMS,
   SWING_PARAM_INT_KEYS,
@@ -37,9 +37,9 @@ import {
   swingParamsFromForm,
   swingParamLabelClassName as labelClassName,
   type SwingParamsForm,
-} from '../../components/analysis/swingParams';
-import { computeChainStats, type SwingChainStats } from '../../components/analysis/swingChains';
-import { swingChainColumns } from '../../components/analysis/swingChainColumns';
+} from 'components/analysis/swingParams';
+import { computeChainStats, type SwingChainStats } from 'components/analysis/swingChains';
+import { swingChainColumns } from 'components/analysis/swingChainColumns';
 import {
   DEFAULT_SWING_FILTER,
   filterSwings,
@@ -48,19 +48,19 @@ import {
   swingFilterFromForm,
   type SwingFilterCriteria,
   type SwingFilterForm,
-} from '../../components/analysis/swingFilter';
-import { Badge } from '../../components/ui/Badge';
-import { Button } from '../../components/ui/Button';
-import { Input } from '../../components/ui/Input';
-import { Select } from '../../components/ui/Select';
-import { Tabs, TabsList, TabsPanel, TabsTrigger } from '../../components/ui/Tabs';
-import { VisibilityToggleButton } from '../../components/ui/VisibilityToggleButton';
-import { fetchProfiles, fetchTokenSwings, fetchTokenSwingsBatch } from '../../services/api';
+} from 'components/analysis/swingFilter';
+import { Badge } from 'components/ui/Badge';
+import { Button } from 'components/ui/Button';
+import { Input } from 'components/ui/Input';
+import { Select } from 'components/ui/Select';
+import { Tabs, TabsList, TabsPanel, TabsTrigger } from 'components/ui/Tabs';
+import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
+import { fetchProfiles, fetchTokenSwings, fetchTokenSwingsBatch } from 'services/api';
 import {
   apiErrorMessage,
   useGetTokenTradesQuery,
   useGetTokensQuery,
-} from '../../store/apiSlice';
+} from 'store/apiSlice';
 import type { AppDispatch, RootState } from '../../store';
 import {
   clearCreatedRange,
@@ -71,14 +71,14 @@ import {
   setSwingAllResults,
   setSwingResult,
   setTokensFetched,
-} from '../../store/swingDetectionSlice';
+} from 'store/swingDetectionSlice';
 import type {
   SwingLegRecord,
   SwingParams,
   TokenRecord,
   TradeRecord,
   WalletProfile,
-} from '../../types';
+} from 'types';
 
 /** Stable empty references so derived memos don't recompute every render. */
 const EMPTY_TOKENS: TokenRecord[] = [];

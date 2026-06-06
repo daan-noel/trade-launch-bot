@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { NavLink } from 'react-router-dom';
-import { cn } from '../../lib/cn';
+import { cn } from 'lib/cn';
 
 export type NavDropdownItem = {
   to: string;

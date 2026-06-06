@@ -1,4 +1,4 @@
-import { formatDecimalTrim } from '../../utils/format';
+import { formatDecimalTrim } from 'utils/format';
 
 export function dashNum(val: number | null | undefined, zero = 0): string {
   if (val == null || val === zero) return '-';

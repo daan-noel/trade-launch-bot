@@ -1,10 +1,10 @@
 import { useState } from 'react';
-import type { RuleRecord } from '../../types';
-import { Button } from '../ui/Button';
-import { Input, Textarea } from '../ui/Input';
-import { Modal, InlineAlert } from '../ui/Modal';
-import { Select } from '../ui/Select';
-import { cn } from '../../lib/cn';
+import type { RuleRecord } from 'types';
+import { Button } from 'components/ui/Button';
+import { Input, Textarea } from 'components/ui/Input';
+import { Modal, InlineAlert } from 'components/ui/Modal';
+import { Select } from 'components/ui/Select';
+import { cn } from 'lib/cn';
 import { EXAMPLE_IX_LABELS, parseIxLabels } from './utils';
 
 export interface RuleFormData {

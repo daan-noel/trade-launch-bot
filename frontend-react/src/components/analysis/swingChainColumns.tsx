@@ -1,5 +1,5 @@
-import type { ColumnDef } from '../table/types';
-import type { TokenRecord } from '../../types';
+import type { ColumnDef } from 'components/table/types';
+import type { TokenRecord } from 'types';
 import type { SwingChainStats } from './swingChains';
 
 /**

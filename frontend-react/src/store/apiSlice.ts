@@ -1,8 +1,8 @@
 import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
 import type { FetchBaseQueryError } from '@reduxjs/toolkit/query';
 import type { SerializedError } from '@reduxjs/toolkit';
-import { API_BASE } from '../services/config';
-import type { TokenDetailRecord, TokenRecord, TradeRecord } from '../types';
+import { API_BASE } from 'services/config';
+import type { TokenDetailRecord, TokenRecord, TradeRecord } from 'types';
 
 export interface TokensArgs {
   search: string;

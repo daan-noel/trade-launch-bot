@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { cn } from '../../lib/cn';
-import { Checkbox } from '../ui/Checkbox';
-import { Input } from '../ui/Input';
+import { cn } from 'lib/cn';
+import { Checkbox } from 'components/ui/Checkbox';
+import { Input } from 'components/ui/Input';
 import { Pagination, DEFAULT_PAGE_SIZE } from './Pagination';
 import type { ColumnDef, SortDir, SortValue } from './types';
 

@@ -1,4 +1,4 @@
-import type { SwingLegRecord, SwingLegType } from '../../types';
+import type { SwingLegRecord, SwingLegType } from 'types';
 
 export type SwingLegTypeFilter = 'all' | SwingLegType;
 

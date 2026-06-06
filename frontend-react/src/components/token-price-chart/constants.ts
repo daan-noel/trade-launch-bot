@@ -8,8 +8,8 @@ import {
   type DeepPartial,
   type LineSeriesOptions,
 } from 'lightweight-charts';
-import { formatPrice } from '../../utils/format';
-import type { PriceUnit } from '../../types';
+import { formatPrice } from 'utils/format';
+import type { PriceUnit } from 'types';
 import { createChartTimeFormatters } from './chartTimezone';
 import type { ChartGroupMode, ChartInterval, ChartStyle } from './types';
 

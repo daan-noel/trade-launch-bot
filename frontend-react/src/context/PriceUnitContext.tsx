@@ -6,7 +6,7 @@ import {
   useReducer,
   type ReactNode,
 } from 'react';
-import type { PriceUnit, PriceUnitState } from '../types';
+import type { PriceUnit, PriceUnitState } from 'types';
 
 const LS_PRICE_UNIT_KEY = 'price_unit';
 

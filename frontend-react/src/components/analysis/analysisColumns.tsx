@@ -1,9 +1,9 @@
-import type { ColumnDef } from '../table/types';
-import type { AnalysisRecord, CreatorRecord } from '../../types';
-import { DateCell } from '../table/DateCell';
-import { formatDecimal } from '../../utils/format';
-import { cn } from '../../lib/cn';
-import { AddressDisplay } from '../ui/AddressDisplay';
+import type { ColumnDef } from 'components/table/types';
+import type { AnalysisRecord, CreatorRecord } from 'types';
+import { DateCell } from 'components/table/DateCell';
+import { formatDecimal } from 'utils/format';
+import { cn } from 'lib/cn';
+import { AddressDisplay } from 'components/ui/AddressDisplay';
 
 function scoreBadge(score: number) {
   const pct = `${(score * 100).toFixed(0)}%`;

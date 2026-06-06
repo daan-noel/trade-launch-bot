@@ -1,5 +1,5 @@
 import type { UTCTimestamp } from 'lightweight-charts';
-import type { PriceUnit } from '../../types';
+import type { PriceUnit } from 'types';
 
 /** Minimal trade shape required by the chart — copy this folder as-is into other projects. */
 export interface ChartTrade {

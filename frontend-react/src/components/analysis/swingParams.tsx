@@ -1,5 +1,5 @@
-import { Input } from '../ui/Input';
-import type { SwingParams } from '../../types';
+import { Input } from 'components/ui/Input';
+import type { SwingParams } from 'types';
 
 export const DEFAULT_SWING_PARAMS: SwingParams = {
   high_to_low_threshold_sol: 5,

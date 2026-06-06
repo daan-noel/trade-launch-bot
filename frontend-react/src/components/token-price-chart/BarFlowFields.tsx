@@ -1,5 +1,5 @@
 import { CHART_COLORS } from './constants';
-import { formatDecimalTrim } from '../../utils/format';
+import { formatDecimalTrim } from 'utils/format';
 import type { ChartCrosshairInfo } from './types';
 
 type BarFlowFieldsProps = {

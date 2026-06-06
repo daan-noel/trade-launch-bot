@@ -1,9 +1,9 @@
-import type { ColumnDef } from '../table/types';
-import type { SwingLegRecord } from '../../types';
-import { formatDecimalTrim } from '../../utils/format';
-import { formatTimestampMs } from '../../utils/date';
-import type { usePriceDisplay } from '../../hooks/usePriceDisplay';
-import { cn } from '../../lib/cn';
+import type { ColumnDef } from 'components/table/types';
+import type { SwingLegRecord } from 'types';
+import { formatDecimalTrim } from 'utils/format';
+import { formatTimestampMs } from 'utils/date';
+import type { usePriceDisplay } from 'hooks/usePriceDisplay';
+import { cn } from 'lib/cn';
 
 export function swingColumns(
   price: ReturnType<typeof usePriceDisplay>,

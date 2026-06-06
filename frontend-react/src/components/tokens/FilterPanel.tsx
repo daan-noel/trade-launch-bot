@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { cn } from '../../lib/cn';
-import { Button } from '../ui/Button';
-import { Input, Textarea } from '../ui/Input';
+import { cn } from 'lib/cn';
+import { Button } from 'components/ui/Button';
+import { Input, Textarea } from 'components/ui/Input';
 import {
   activeFilterCount,
   defaultFilters,

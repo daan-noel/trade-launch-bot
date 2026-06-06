@@ -1,5 +1,5 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
-import type { TokenDetailRecord, TradeRecord } from '../types';
+import type { TokenDetailRecord, TradeRecord } from 'types';
 
 /** A single token's sync outcome. */
 export type SyncResultItem = { mint: string; ok: boolean; error?: string };

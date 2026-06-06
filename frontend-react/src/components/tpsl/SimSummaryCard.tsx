@@ -1,7 +1,7 @@
-import type { SimulatedTokenResult } from '../../types';
-import { formatAge } from '../../utils/format';
-import type { usePriceDisplay } from '../../hooks/usePriceDisplay';
-import { cn } from '../../lib/cn';
+import type { SimulatedTokenResult } from 'types';
+import { formatAge } from 'utils/format';
+import type { usePriceDisplay } from 'hooks/usePriceDisplay';
+import { cn } from 'lib/cn';
 
 interface SimSummaryCardProps {
   ruleName: string;

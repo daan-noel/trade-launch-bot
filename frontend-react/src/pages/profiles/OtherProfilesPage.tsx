@@ -12,13 +12,13 @@ import {
   updateProfileTags,
   updateTag,
   updateWalletEntry,
-} from '../../services/api';
-import type { ProfileType, WalletEntry, WalletProfile, WalletProfileTag } from '../../types';
-import { Badge, type BadgeVariant } from '../../components/ui/Badge';
-import { Button } from '../../components/ui/Button';
-import { Input, Textarea } from '../../components/ui/Input';
-import { Select } from '../../components/ui/Select';
-import { InlineAlert, Modal } from '../../components/ui/Modal';
+} from 'services/api';
+import type { ProfileType, WalletEntry, WalletProfile, WalletProfileTag } from 'types';
+import { Badge, type BadgeVariant } from 'components/ui/Badge';
+import { Button } from 'components/ui/Button';
+import { Input, Textarea } from 'components/ui/Input';
+import { Select } from 'components/ui/Select';
+import { InlineAlert, Modal } from 'components/ui/Modal';
 
 // ---------------------------------------------------------------------------
 // Constants

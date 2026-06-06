@@ -1,6 +1,6 @@
-import { usePriceUnit } from '../../context/PriceUnitContext';
-import { fetchSolPrice } from '../../services/api';
-import { cn } from '../../lib/cn';
+import { usePriceUnit } from 'context/PriceUnitContext';
+import { fetchSolPrice } from 'services/api';
+import { cn } from 'lib/cn';
 
 export function PriceUnitToggle() {
   const { unit, usdRate, setUnit, setUsdRate } = usePriceUnit();

@@ -1,5 +1,5 @@
-import { useTimezone } from '../../context/TimezoneContext';
-import { formatIsoLines } from '../../utils/date';
+import { useTimezone } from 'context/TimezoneContext';
+import { formatIsoLines } from 'utils/date';
 
 /** Renders an ISO timestamp as date + time (with seconds and ms) on two lines. */
 export function DateCell({ iso }: { iso: string | null | undefined }) {

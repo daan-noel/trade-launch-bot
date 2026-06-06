@@ -1,9 +1,9 @@
 import { useMemo } from 'react';
-import { DataTable } from '../../components/table/DataTable';
-import { Badge } from '../../components/ui/Badge';
-import { tradeColumns } from '../../components/transactions/tradeColumns';
-import { usePriceDisplay } from '../../hooks/usePriceDisplay';
-import { useTradeStream } from '../../hooks/useTradeStream';
+import { DataTable } from 'components/table/DataTable';
+import { Badge } from 'components/ui/Badge';
+import { tradeColumns } from 'components/transactions/tradeColumns';
+import { usePriceDisplay } from 'hooks/usePriceDisplay';
+import { useTradeStream } from 'hooks/useTradeStream';
 
 export function TransactionsPage() {
   const price = usePriceDisplay();

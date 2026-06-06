@@ -1,7 +1,7 @@
-import type { ColumnDef } from '../table/types';
-import type { TokenRecord } from '../../types';
-import { DateCell } from '../table/DateCell';
-import { RelativeTimeCell } from '../table/RelativeTimeCell';
+import type { ColumnDef } from 'components/table/types';
+import type { TokenRecord } from 'types';
+import { DateCell } from 'components/table/DateCell';
+import { RelativeTimeCell } from 'components/table/RelativeTimeCell';
 import {
   ageClass,
   formatAge,
@@ -10,9 +10,9 @@ import {
   formatWithCommas,
   priceClass,
   ratioClass,
-} from '../../utils/format';
-import type { usePriceDisplay } from '../../hooks/usePriceDisplay';
-import { AddressDisplay } from '../ui/AddressDisplay';
+} from 'utils/format';
+import type { usePriceDisplay } from 'hooks/usePriceDisplay';
+import { AddressDisplay } from 'components/ui/AddressDisplay';
 
 function fep(r: TokenRecord): number | null {
   if (r.initial_buy_sol == null || r.initial_supply_token == null || r.initial_supply_token <= 0) {

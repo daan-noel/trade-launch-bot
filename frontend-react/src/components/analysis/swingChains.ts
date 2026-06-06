@@ -1,4 +1,4 @@
-import type { SwingLegRecord } from '../../types';
+import type { SwingLegRecord } from 'types';
 
 /**
  * "Chain of Swings" stats for a single token.

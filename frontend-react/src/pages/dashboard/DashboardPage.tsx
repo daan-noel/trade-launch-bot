@@ -1,8 +1,8 @@
 import { useMemo } from 'react';
-import { DataTable } from '../../components/table/DataTable';
-import { tradeColumns } from '../../components/transactions/tradeColumns';
-import { usePriceDisplay } from '../../hooks/usePriceDisplay';
-import { useTradeStream } from '../../hooks/useTradeStream';
+import { DataTable } from 'components/table/DataTable';
+import { tradeColumns } from 'components/transactions/tradeColumns';
+import { usePriceDisplay } from 'hooks/usePriceDisplay';
+import { useTradeStream } from 'hooks/useTradeStream';
 
 export function DashboardPage() {
   const price = usePriceDisplay();

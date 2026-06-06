@@ -1,10 +1,10 @@
-import type { ColumnDef } from '../table/types';
-import type { RulePositionRecord, MatchedTokenRecord, SimulatedTokenResult } from '../../types';
-import { formatAge, formatDecimalTrim } from '../../utils/format';
-import type { usePriceDisplay } from '../../hooks/usePriceDisplay';
+import type { ColumnDef } from 'components/table/types';
+import type { RulePositionRecord, MatchedTokenRecord, SimulatedTokenResult } from 'types';
+import { formatAge, formatDecimalTrim } from 'utils/format';
+import type { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { fmtTime } from './utils';
-import { cn } from '../../lib/cn';
-import { AddressDisplay } from '../ui/AddressDisplay';
+import { cn } from 'lib/cn';
+import { AddressDisplay } from 'components/ui/AddressDisplay';
 
 export function positionColumns(
   price: ReturnType<typeof usePriceDisplay>,

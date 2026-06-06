@@ -1,7 +1,7 @@
-import { cn } from '../../lib/cn';
-import type { StatVariant } from '../../utils/format';
-import { statVariantClass } from '../../utils/format';
-import type { AddressKind } from '../../utils/addressLinks';
+import { cn } from 'lib/cn';
+import type { StatVariant } from 'utils/format';
+import { statVariantClass } from 'utils/format';
+import type { AddressKind } from 'utils/addressLinks';
 import { AddressDisplay } from './AddressDisplay';
 
 interface StatCardProps {

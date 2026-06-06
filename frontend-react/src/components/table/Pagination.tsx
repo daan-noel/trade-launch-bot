@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { cn } from '../../lib/cn';
-import { Input } from '../ui/Input';
+import { cn } from 'lib/cn';
+import { Input } from 'components/ui/Input';
 
 export const DEFAULT_PAGE_SIZE = 10;
 

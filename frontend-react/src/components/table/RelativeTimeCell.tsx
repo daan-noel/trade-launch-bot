@@ -1,6 +1,6 @@
-import { useTimezone } from '../../context/TimezoneContext';
-import { formatIso } from '../../utils/date';
-import { formatAge } from '../../utils/format';
+import { useTimezone } from 'context/TimezoneContext';
+import { formatIso } from 'utils/date';
+import { formatAge } from 'utils/format';
 
 /**
  * Renders an ISO timestamp as compact relative time ("2h ago"), with the full

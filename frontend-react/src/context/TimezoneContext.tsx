@@ -10,8 +10,8 @@ import {
 import {
   getDefaultChartTimezone,
   isValidTimezone,
-} from '../components/token-price-chart/chartTimezone';
-import { LS_CHART_PREFS_KEY } from '../components/token-price-chart/constants';
+} from 'components/token-price-chart/chartTimezone';
+import { LS_CHART_PREFS_KEY } from 'components/token-price-chart/constants';
 
 export const LS_TIMEZONE_KEY = 'app_timezone';
 

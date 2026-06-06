@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { DataTable } from '../../components/table/DataTable';
-import { Badge } from '../../components/ui/Badge';
-import { Button } from '../../components/ui/Button';
-import { Input } from '../../components/ui/Input';
-import { InlineAlert, Modal } from '../../components/ui/Modal';
-import { walletColumns } from '../../components/wallet/walletColumns';
-import { tradeBuy, tradeSell } from '../../services/api';
+import { DataTable } from 'components/table/DataTable';
+import { Badge } from 'components/ui/Badge';
+import { Button } from 'components/ui/Button';
+import { Input } from 'components/ui/Input';
+import { InlineAlert, Modal } from 'components/ui/Modal';
+import { walletColumns } from 'components/wallet/walletColumns';
+import { tradeBuy, tradeSell } from 'services/api';
 import type { AppDispatch, RootState } from '../../store';
-import { loadWalletHoldings } from '../../store/walletSlice';
+import { loadWalletHoldings } from 'store/walletSlice';
 
 interface BuyDialog {
   mint: string;

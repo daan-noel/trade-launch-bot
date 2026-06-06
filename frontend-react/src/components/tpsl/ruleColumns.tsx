@@ -1,8 +1,8 @@
-import type { ColumnDef } from '../table/types';
-import type { RuleRecord } from '../../types';
+import type { ColumnDef } from 'components/table/types';
+import type { RuleRecord } from 'types';
 import { dashF, dashNum, dashPercent } from './utils';
-import { cn } from '../../lib/cn';
-import { Badge } from '../ui/Badge';
+import { cn } from 'lib/cn';
+import { Badge } from 'components/ui/Badge';
 
 export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnDef<RuleRecord>[] {
   return [

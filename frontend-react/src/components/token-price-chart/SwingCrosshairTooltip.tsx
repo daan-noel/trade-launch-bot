@@ -1,9 +1,9 @@
 import { CHART_COLORS } from './constants';
 import { cn } from './cn';
 import type { ChartSwingTooltipState } from './types';
-import { formatDecimalTrim } from '../../utils/format';
-import { useTimezone } from '../../context/TimezoneContext';
-import { formatTimestampMsCompact } from '../../utils/date';
+import { formatDecimalTrim } from 'utils/format';
+import { useTimezone } from 'context/TimezoneContext';
+import { formatTimestampMsCompact } from 'utils/date';
 
 function formatDuration(ms: number | undefined): string {
   if (ms == null) return '—';

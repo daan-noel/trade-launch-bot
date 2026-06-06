@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { connectTradeStream } from '../services/sse';
-import type { LiveTrade } from '../types';
+import { connectTradeStream } from 'services/sse';
+import type { LiveTrade } from 'types';
 
 const MAX_EVENTS = 500;
 

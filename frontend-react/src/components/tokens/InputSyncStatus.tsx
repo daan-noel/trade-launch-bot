@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import { fetchSyncPreview, fetchTokenDetail } from '../../services/api';
-import { RelativeTimeCell } from '../table/RelativeTimeCell';
-import { AddressDisplay } from '../ui/AddressDisplay';
-import { Badge } from '../ui/Badge';
-import { Button } from '../ui/Button';
+import { fetchSyncPreview, fetchTokenDetail } from 'services/api';
+import { RelativeTimeCell } from 'components/table/RelativeTimeCell';
+import { AddressDisplay } from 'components/ui/AddressDisplay';
+import { Badge } from 'components/ui/Badge';
+import { Button } from 'components/ui/Button';
 
 type MintStatus =
   | { state: 'loading' }

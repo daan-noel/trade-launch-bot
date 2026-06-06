@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
-import { DataTable } from '../../components/table/DataTable';
-import { Pagination } from '../../components/table/Pagination';
-import { InlineAlert } from '../../components/ui/Modal';
-import { analysisColumns, creatorColumns } from '../../components/analysis/analysisColumns';
-import { Badge } from '../../components/ui/Badge';
-import { fetchAnalysis, fetchCreators } from '../../services/api';
-import { POLL_INTERVAL_MS } from '../../services/config';
-import type { AnalysisRecord, CreatorRecord } from '../../types';
-import { Button } from '../../components/ui/Button';
+import { DataTable } from 'components/table/DataTable';
+import { Pagination } from 'components/table/Pagination';
+import { InlineAlert } from 'components/ui/Modal';
+import { analysisColumns, creatorColumns } from 'components/analysis/analysisColumns';
+import { Badge } from 'components/ui/Badge';
+import { fetchAnalysis, fetchCreators } from 'services/api';
+import { POLL_INTERVAL_MS } from 'services/config';
+import type { AnalysisRecord, CreatorRecord } from 'types';
+import { Button } from 'components/ui/Button';
 
 type Tab = 'creators' | 'results';
 
