@@ -19,6 +19,7 @@ import type { SyncProgressEvent, TokenDetailRecord, WalletProfile } from 'types'
 import type { AppDispatch, RootState } from '../../store';
 import {
   clearSyncOutput,
+  invalidateSyncPreviews,
   mergeSyncOutput,
   setSelectedMint,
 } from 'store/syncTokenSlice';
@@ -397,6 +398,9 @@ export function SyncTokenPage() {
     } finally {
       setSyncing(false);
       setBatch(null);
+      // The synced mints' cached previews are now stale (their pending/total tx
+      // counts changed), so drop them; bumping the nonce re-counts them.
+      dispatch(invalidateSyncPreviews(targets));
       setSyncNonce((n) => n + 1);
       if (syncAbortRef.current === controller) {
         syncAbortRef.current = null;

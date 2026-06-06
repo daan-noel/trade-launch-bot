@@ -1,9 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useDispatch, useSelector } from 'react-redux';
 import { fetchSyncPreview, fetchTokenDetail } from 'services/api';
 import { RelativeTimeCell } from 'components/table/RelativeTimeCell';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
+import type { AppDispatch, RootState } from '../../store';
+import { cacheSyncPreview } from 'store/syncTokenSlice';
 
 type MintStatus =
   | { state: 'loading' }
@@ -55,8 +58,24 @@ export function InputSyncStatus({
   /** Remove several mints from the textarea at once (bulk actions). */
   onRemoveMany: (mints: string[]) => void;
 }) {
+  const dispatch = useDispatch<AppDispatch>();
   const [statuses, setStatuses] = useState<Record<string, MintStatus>>({});
-  const [previews, setPreviews] = useState<Record<string, PreviewState>>({});
+
+  // Cached "to fetch" estimates live in Redux (keyed by `${mint}|${flag}`) so
+  // they survive navigation away from the page and aren't re-counted on every
+  // re-render. `pending` holds only the transient loading/error states for
+  // previews not yet in the cache.
+  const previewCache = useSelector((s: RootState) => s.syncToken.syncPreviews);
+  const [pending, setPending] = useState<
+    Record<string, { state: 'loading' } | { state: 'error' }>
+  >({});
+  // Latest cache, read inside the (debounced) fetch effect without making the
+  // effect re-run on every cache write.
+  const cacheRef = useRef(previewCache);
+  cacheRef.current = previewCache;
+  // Cache keys currently being fetched, so a re-render mid-flight doesn't fire a
+  // duplicate request for the same mint.
+  const inFlight = useRef<Set<string>>(new Set());
 
   // Database freshness (cheap, no RPC) — populates the Symbol/Status/Last synced
   // columns. Kept independent of the preview so the panel renders instantly even
@@ -94,47 +113,77 @@ export function InputSyncStatus({
     };
   }, [mints, refreshSignal]);
 
-  // "To fetch" estimate (hits Helius to count signatures). Re-runs when the
-  // post-migrate toggle changes, since that decides whether AMM txs are counted.
+  // "To fetch" estimate (hits Helius to count signatures). Only fetches mints
+  // whose count isn't already cached for the current post-migrate setting, so
+  // adding a mint, toggling the setting back, or revisiting the page reuses
+  // prior results instead of re-counting. `refreshSignal` triggers a re-fetch
+  // after a sync — the parent invalidates the synced mints' cache entries first,
+  // so they read as missing here and get re-counted.
   useEffect(() => {
-    if (mints.length === 0) {
-      setPreviews({});
-      return;
-    }
-    let cancelled = false;
+    if (mints.length === 0) return;
     const handle = setTimeout(() => {
-      // Seed loading state, keeping any already-loaded row so it doesn't flicker
-      // back to "…" while re-counting.
-      setPreviews((prev) => {
-        const next: Record<string, PreviewState> = {};
-        for (const mint of mints) next[mint] = prev[mint] ?? { state: 'loading' };
+      const missing = mints.filter((m) => {
+        const key = `${m}|${includePostMigrate}`;
+        return !cacheRef.current[key] && !inFlight.current.has(key);
+      });
+      if (missing.length === 0) return;
+      // Seed loading state for the mints we're about to fetch.
+      setPending((prev) => {
+        const next = { ...prev };
+        for (const m of missing) next[`${m}|${includePostMigrate}`] = { state: 'loading' };
         return next;
       });
       // Fire each request independently and commit its result the moment it
       // resolves, so a row's count shows as soon as it's fetched instead of
       // waiting for the whole batch to finish.
-      for (const mint of mints) {
-        void fetchSyncPreview(mint, includePostMigrate)
-          .then(
-            (p): PreviewState => ({
-              state: 'loaded',
-              newCount: p.new_count,
-              newCapped: p.new_capped,
-              totalCount: p.total_count,
-              totalCapped: p.total_capped,
-            }),
-          )
-          .catch((): PreviewState => ({ state: 'error' }))
-          .then((result) => {
-            if (!cancelled) setPreviews((prev) => ({ ...prev, [mint]: result }));
+      for (const m of missing) {
+        const key = `${m}|${includePostMigrate}`;
+        inFlight.current.add(key);
+        void fetchSyncPreview(m, includePostMigrate)
+          .then((p) => {
+            dispatch(
+              cacheSyncPreview({
+                key,
+                data: {
+                  newCount: p.new_count,
+                  newCapped: p.new_capped,
+                  totalCount: p.total_count,
+                  totalCapped: p.total_capped,
+                },
+              }),
+            );
+            // Drop the loading marker — the cached value now drives the row.
+            setPending((prev) => {
+              const next = { ...prev };
+              delete next[key];
+              return next;
+            });
+          })
+          .catch(() => {
+            setPending((prev) => ({ ...prev, [key]: { state: 'error' } }));
+          })
+          .finally(() => {
+            inFlight.current.delete(key);
           });
       }
     }, 500);
-    return () => {
-      cancelled = true;
-      clearTimeout(handle);
-    };
-  }, [mints, refreshSignal, includePostMigrate]);
+    return () => clearTimeout(handle);
+  }, [mints, refreshSignal, includePostMigrate, dispatch]);
+
+  // Per-mint view the table and bulk-action filters read from: the cached count
+  // (keyed by the current post-migrate setting) when present, else the transient
+  // loading/error state for an in-flight fetch.
+  const previews = useMemo<Record<string, PreviewState>>(() => {
+    const out: Record<string, PreviewState> = {};
+    for (const mint of mints) {
+      const key = `${mint}|${includePostMigrate}`;
+      const cached = previewCache[key];
+      out[mint] = cached
+        ? { state: 'loaded', ...cached }
+        : pending[key] ?? { state: 'loading' };
+    }
+    return out;
+  }, [mints, includePostMigrate, previewCache, pending]);
 
   if (mints.length === 0) return null;
 
@@ -144,6 +193,20 @@ export function InputSyncStatus({
     const s = statuses[m];
     return s?.state === 'found' && s.lastSyncedAt != null;
   });
+
+  // Mints whose preview reports nothing new to fetch ("up to date"). The
+  // "Remove up to date" action strips these so only tokens with pending trades
+  // remain — a tighter filter than "synced" (which keeps stale-but-synced ones).
+  const upToDateMints = mints.filter((m) => {
+    const p = previews[m];
+    return p?.state === 'loaded' && p.newCount === 0;
+  });
+
+  // Preview fetch progress: how many input mints have a resolved "to fetch"
+  // count (loaded from cache or errored) vs. still being counted on Helius.
+  const previewDone = mints.filter((m) => previews[m]?.state !== 'loading').length;
+  const previewing = previewDone < mints.length;
+  const previewPercent = mints.length > 0 ? (previewDone / mints.length) * 100 : 0;
 
   return (
     <div className="mb-4 rounded-lg border border-white/6 bg-white/2 p-4">
@@ -159,6 +222,16 @@ export function InputSyncStatus({
           variant="link"
           size="xs"
           className="shrink-0"
+          onClick={() => onRemoveMany(upToDateMints)}
+          disabled={upToDateMints.length === 0}
+          title="Remove every up-to-date token (nothing new to fetch) from the input, leaving only ones with pending trades"
+        >
+          Remove {upToDateMints.length} up to date
+        </Button>
+        <Button
+          variant="link"
+          size="xs"
+          className="shrink-0"
           onClick={() => onRemoveMany(syncedMints)}
           disabled={syncedMints.length === 0}
           title="Remove every already-synced token from the input, leaving only ones still needing a sync"
@@ -166,6 +239,24 @@ export function InputSyncStatus({
           Remove {syncedMints.length} synced
         </Button>
       </div>
+      {previewing && (
+        <div className="mb-2">
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-primary">
+              Estimating to-fetch counts
+            </span>
+            <span className="font-mono text-[11px] text-text-dim">
+              {previewDone} / {mints.length}
+            </span>
+          </div>
+          <div className="h-1.5 overflow-hidden rounded-full bg-white/6">
+            <div
+              className="h-full animate-pulse rounded-full bg-primary transition-[width] duration-300"
+              style={{ width: `${previewPercent}%` }}
+            />
+          </div>
+        </div>
+      )}
       <div className="overflow-hidden rounded-md border border-white/6">
         <table className="w-full text-[12px]">
           <thead>
@@ -226,17 +317,27 @@ export function InputSyncStatus({
                       >
                         —
                       </span>
+                    ) : p.newCount === 0 ? (
+                      <Badge variant="neutral" size="sm">
+                        up to date
+                      </Badge>
+                    ) : p.newCount >= p.totalCount ? (
+                      // Nothing synced yet — the whole history is "new", so a Fetch
+                      // would download everything. Flagged distinctly (no "/ total",
+                      // since it's redundant) as a full first-time pull.
+                      <Badge
+                        variant="accent"
+                        size="sm"
+                        title="Never synced — Fetch All would download the entire history"
+                      >
+                        ↓ {fmtCount(p.newCount, p.newCapped)} all new
+                      </Badge>
                     ) : (
+                      // Partial top-up — only the trades since the last sync.
                       <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
-                        {p.newCount > 0 ? (
-                          <Badge variant="primary" size="sm" title="Transactions Fetch New would download">
-                            +{fmtCount(p.newCount, p.newCapped)} new
-                          </Badge>
-                        ) : (
-                          <Badge variant="neutral" size="sm">
-                            up to date
-                          </Badge>
-                        )}
+                        <Badge variant="primary" size="sm" title="Transactions Fetch New would download">
+                          +{fmtCount(p.newCount, p.newCapped)} new
+                        </Badge>
                         <span
                           className="text-[11px] text-text-dim"
                           title="Total transactions in history (Fetch All)"

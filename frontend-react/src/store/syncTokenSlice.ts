@@ -7,6 +7,18 @@ export type SyncResultItem = { mint: string; ok: boolean; error?: string };
 /** A token that synced successfully, paired with its trades. */
 export type SyncedToken = { token: TokenDetailRecord; trades: TradeRecord[] };
 
+/**
+ * The numeric result of a sync preview, cached for reuse. Counting signatures
+ * hits Helius (slow/costly), so results are kept keyed by `${mint}|${flag}` and
+ * reused until a sync of that mint invalidates them.
+ */
+export type SyncPreviewData = {
+  newCount: number;
+  newCapped: boolean;
+  totalCount: number;
+  totalCapped: boolean;
+};
+
 interface SyncTokenState {
   /** Per-mint ok/fail results, accumulated across sync runs. */
   results: SyncResultItem[];
@@ -20,6 +32,12 @@ interface SyncTokenState {
    * they've synced even after the heavier results/syncedTokens are gone.
    */
   syncedMints: string[];
+  /**
+   * Cached "to fetch" estimates from {@link SyncPreviewData}, keyed by
+   * `${mint}|${includePostMigrate}`. Persisted here so the input status panel
+   * survives navigation and skips re-counting mints it has already priced.
+   */
+  syncPreviews: Record<string, SyncPreviewData>;
 }
 
 const initialState: SyncTokenState = {
@@ -27,6 +45,7 @@ const initialState: SyncTokenState = {
   syncedTokens: [],
   selectedMint: null,
   syncedMints: [],
+  syncPreviews: {},
 };
 
 const syncTokenSlice = createSlice({
@@ -39,6 +58,24 @@ const syncTokenSlice = createSlice({
       state.syncedTokens = [];
       state.selectedMint = null;
       state.syncedMints = [];
+    },
+    /** Store a freshly fetched sync preview under its `${mint}|${flag}` key. */
+    cacheSyncPreview(
+      state,
+      action: PayloadAction<{ key: string; data: SyncPreviewData }>,
+    ) {
+      state.syncPreviews[action.payload.key] = action.payload.data;
+    },
+    /**
+     * Drop cached previews for the given mints (both post-migrate variants) so
+     * they're re-counted — used after a sync changes a mint's pending/total tx
+     * counts.
+     */
+    invalidateSyncPreviews(state, action: PayloadAction<string[]>) {
+      for (const mint of action.payload) {
+        delete state.syncPreviews[`${mint}|true`];
+        delete state.syncPreviews[`${mint}|false`];
+      }
     },
     /**
      * Merge a completed (or partially aborted) sync run into the existing
@@ -88,6 +125,12 @@ const syncTokenSlice = createSlice({
   },
 });
 
-export const { clearSyncOutput, mergeSyncOutput, setSelectedMint } = syncTokenSlice.actions;
+export const {
+  clearSyncOutput,
+  mergeSyncOutput,
+  setSelectedMint,
+  cacheSyncPreview,
+  invalidateSyncPreviews,
+} = syncTokenSlice.actions;
 
 export default syncTokenSlice.reducer;

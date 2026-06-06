@@ -97,7 +97,10 @@ impl HeliusRpc {
                 json!([address, { "encoding": "base64" }]),
             )
             .await?;
-        Ok(!result.is_null())
+        // getAccountInfo wraps the account in `{ context, value }`, with `value`
+        // null when the account doesn't exist. Check `value`, not the wrapper
+        // (which is never null) — otherwise this returns true for every address.
+        Ok(result.get("value").is_some_and(|v| !v.is_null()))
     }
 
     /// Paginate successful (non-failed) signatures for an address, oldest slot first.
