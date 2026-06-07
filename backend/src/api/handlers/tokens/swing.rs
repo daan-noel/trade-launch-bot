@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::{
     analyzers::swing_analyzer::{detect_swings, SwingLeg, SwingParams},
+    models::trade::Trade,
     state::app_state::AppState,
     storage::repositories::trade_repo::TradeRepo,
 };
@@ -24,6 +25,48 @@ pub struct SwingBatchRequest {
     /// Shared tunable parameters; omit to use defaults.
     #[serde(default)]
     pub params: SwingParams,
+    /// Optional detection window, in milliseconds relative to each token's first
+    /// trade. A `null`/omitted bound leaves that side open. Trades outside the
+    /// window are dropped before detection runs.
+    #[serde(default)]
+    pub window_start_ms: Option<i64>,
+    #[serde(default)]
+    pub window_end_ms: Option<i64>,
+    /// When true, restrict detection to bonding-curve trades (`venue == "curve"`),
+    /// i.e. the token-creation → migration phase. Applied before the window.
+    #[serde(default)]
+    pub curve_only: bool,
+}
+
+/// Restrict a token's trades to a window measured relative to its first trade.
+/// The anchor is the earliest `block_time` among trades that carry SOL — i.e.
+/// what detection treats as the opening trade. With both bounds unset (or no
+/// usable anchor) the trades are returned untouched.
+fn filter_trades_to_window(
+    trades: Vec<Trade>,
+    window_start_ms: Option<i64>,
+    window_end_ms: Option<i64>,
+) -> Vec<Trade> {
+    if window_start_ms.is_none() && window_end_ms.is_none() {
+        return trades;
+    }
+    let anchor = trades
+        .iter()
+        .filter(|t| t.sol_amount > 0.0)
+        .map(|t| t.block_time.timestamp_millis())
+        .min();
+    let Some(anchor) = anchor else {
+        return trades;
+    };
+    let lo = window_start_ms.map(|s| anchor + s);
+    let hi = window_end_ms.map(|e| anchor + e);
+    trades
+        .into_iter()
+        .filter(|t| {
+            let ts = t.block_time.timestamp_millis();
+            lo.map_or(true, |lo| ts >= lo) && hi.map_or(true, |hi| ts <= hi)
+        })
+        .collect()
 }
 
 /// One token's swing ledger inside a batch response.
@@ -84,7 +127,13 @@ pub async fn detect_tokens_swings_batch(
     state: web::Data<Arc<AppState>>,
     body: web::Json<SwingBatchRequest>,
 ) -> impl Responder {
-    let SwingBatchRequest { mints, params } = body.into_inner();
+    let SwingBatchRequest {
+        mints,
+        params,
+        window_start_ms,
+        window_end_ms,
+        curve_only,
+    } = body.into_inner();
     let repo = TradeRepo::new(state.db.clone());
 
     let mut results = Vec::with_capacity(mints.len());
@@ -101,6 +150,12 @@ pub async fn detect_tokens_swings_batch(
             }
         };
 
+        let trades = if curve_only {
+            trades.into_iter().filter(|t| t.venue == "curve").collect()
+        } else {
+            trades
+        };
+        let trades = filter_trades_to_window(trades, window_start_ms, window_end_ms);
         let swings = detect_swings(&trades, &params);
         results.push(SwingBatchEntry {
             mint,

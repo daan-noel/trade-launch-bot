@@ -51,6 +51,7 @@ import {
 } from 'components/analysis/swingFilter';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
+import { Checkbox } from 'components/ui/Checkbox';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { Tabs, TabsList, TabsPanel, TabsTrigger } from 'components/ui/Tabs';
@@ -119,7 +120,7 @@ function SectionDivider() {
 
 type AnalysisKind = 'swing';
 type SwingPanelTab = 'analysis' | 'filter';
-type SwingAllTab = 'analysis' | 'chain';
+type SwingAllTab = 'analysis' | 'chain' | 'timerange';
 
 const LS_SWING_DETECTION_KEY = 'swing_detection_criteria';
 
@@ -150,6 +151,9 @@ function loadStoredSwingCriteria(): {
   appliedFilter: SwingFilterCriteria;
   connectSwings: boolean;
   chainLatencyMs: number;
+  windowStartSec: number | null;
+  windowEndSec: number | null;
+  curveOnly: boolean;
 } {
   try {
     const raw = localStorage.getItem(LS_SWING_DETECTION_KEY);
@@ -160,6 +164,9 @@ function loadStoredSwingCriteria(): {
         appliedFilter: DEFAULT_SWING_FILTER,
         connectSwings: true,
         chainLatencyMs: DEFAULT_CHAIN_LATENCY_MS,
+        windowStartSec: null,
+        windowEndSec: null,
+        curveOnly: false,
       };
     }
     const parsed = JSON.parse(raw) as {
@@ -168,6 +175,9 @@ function loadStoredSwingCriteria(): {
       appliedFilter?: Partial<SwingFilterCriteria>;
       connectSwings?: boolean;
       chainLatencyMs?: number;
+      windowStartSec?: number | null;
+      windowEndSec?: number | null;
+      curveOnly?: boolean;
     };
     return {
       params: mergeSwingParams(parsed.params),
@@ -177,6 +187,9 @@ function loadStoredSwingCriteria(): {
       chainLatencyMs: isFiniteNumber(parsed.chainLatencyMs)
         ? parsed.chainLatencyMs
         : DEFAULT_CHAIN_LATENCY_MS,
+      windowStartSec: isFiniteNumber(parsed.windowStartSec) ? parsed.windowStartSec : null,
+      windowEndSec: isFiniteNumber(parsed.windowEndSec) ? parsed.windowEndSec : null,
+      curveOnly: parsed.curveOnly === true,
     };
   } catch {
     return {
@@ -185,6 +198,9 @@ function loadStoredSwingCriteria(): {
       appliedFilter: DEFAULT_SWING_FILTER,
       connectSwings: true,
       chainLatencyMs: DEFAULT_CHAIN_LATENCY_MS,
+      windowStartSec: null,
+      windowEndSec: null,
+      curveOnly: false,
     };
   }
 }
@@ -195,11 +211,23 @@ function saveStoredSwingCriteria(
   appliedFilter: SwingFilterCriteria,
   connectSwings: boolean,
   chainLatencyMs: number,
+  windowStartSec: number | null,
+  windowEndSec: number | null,
+  curveOnly: boolean,
 ): void {
   try {
     localStorage.setItem(
       LS_SWING_DETECTION_KEY,
-      JSON.stringify({ params, filter, appliedFilter, connectSwings, chainLatencyMs }),
+      JSON.stringify({
+        params,
+        filter,
+        appliedFilter,
+        connectSwings,
+        chainLatencyMs,
+        windowStartSec,
+        windowEndSec,
+        curveOnly,
+      }),
     );
   } catch {
     /* ignore */
@@ -311,6 +339,17 @@ export function SwingDetectionPage() {
   const [chainLatencyMs, setChainLatencyMs] = useState<number | ''>(
     storedSwingCriteria.chainLatencyMs,
   );
+  // Launch-relative detection window (seconds from each token's first trade);
+  // '' = open on that side. Applied to every "Swing Detection All" run.
+  const [windowStartSec, setWindowStartSec] = useState<number | ''>(
+    storedSwingCriteria.windowStartSec ?? '',
+  );
+  const [windowEndSec, setWindowEndSec] = useState<number | ''>(
+    storedSwingCriteria.windowEndSec ?? '',
+  );
+  // When set, the window is fixed to each token's bonding-curve phase
+  // (creation → migration), overriding the manual start/end seconds.
+  const [curveOnly, setCurveOnly] = useState(storedSwingCriteria.curveOnly);
   const [swingAllLoading, setSwingAllLoading] = useState(false);
   const [swingAllError, setSwingAllError] = useState<string | null>(null);
 
@@ -395,14 +434,18 @@ export function SwingDetectionPage() {
     setSwingAllLoading(true);
     setSwingAllError(null);
     try {
-      const resp = await fetchTokenSwingsBatch(mints, swingParamsFromForm(swingParams));
+      const resp = await fetchTokenSwingsBatch(mints, swingParamsFromForm(swingParams), {
+        startMs: curveOnly || windowStartSec === '' ? null : Math.round(windowStartSec * 1000),
+        endMs: curveOnly || windowEndSec === '' ? null : Math.round(windowEndSec * 1000),
+        curveOnly,
+      });
       dispatch(setSwingAllResults(resp.results));
     } catch (e) {
       setSwingAllError(e instanceof Error ? e.message : 'Swing detection failed');
     } finally {
       setSwingAllLoading(false);
     }
-  }, [displayed, swingParams, dispatch]);
+  }, [displayed, swingParams, windowStartSec, windowEndSec, curveOnly, dispatch]);
 
   const filterCount = activeFilterCount(filters);
 
@@ -436,8 +479,20 @@ export function SwingDetectionPage() {
       appliedSwingFilter,
       connectSwings,
       chainLatencyValue,
+      windowStartSec === '' ? null : windowStartSec,
+      windowEndSec === '' ? null : windowEndSec,
+      curveOnly,
     );
-  }, [swingParams, swingFilter, appliedSwingFilter, connectSwings, chainLatencyValue]);
+  }, [
+    swingParams,
+    swingFilter,
+    appliedSwingFilter,
+    connectSwings,
+    chainLatencyValue,
+    windowStartSec,
+    windowEndSec,
+    curveOnly,
+  ]);
 
   // Reset local selection-derived UI when the chosen token changes. The Redux
   // swing result and leg selection are cleared by the setSelectedMint reducer;
@@ -689,6 +744,7 @@ export function SwingDetectionPage() {
           <TabsList className="px-4">
             <TabsTrigger value="analysis">Analysis</TabsTrigger>
             <TabsTrigger value="chain">Chain of Swings</TabsTrigger>
+            <TabsTrigger value="timerange">Time Range</TabsTrigger>
           </TabsList>
 
           <TabsPanel value="analysis" className="px-4">
@@ -751,6 +807,81 @@ export function SwingDetectionPage() {
                   Run detection to populate the chain columns.
                 </span>
               )}
+            </div>
+          </TabsPanel>
+
+          <TabsPanel value="timerange" className="px-4">
+            <p className="mb-3 text-[11px] text-text-dim">
+              Restrict detection to a window measured in seconds from each token's
+              first trade (its launch). Leave a field blank to leave that side
+              open. This window applies to every Run on this panel — re-run
+              detection after changing it.
+            </p>
+            <label className="mb-4 flex items-center gap-2 text-[12px] text-text">
+              <Checkbox
+                checked={curveOnly}
+                onChange={(e) => setCurveOnly(e.target.checked)}
+              />
+              Token create → migration (bonding-curve trades only)
+              <span className="text-[11px] text-text-dim">
+                — ignores the seconds window below
+              </span>
+            </label>
+            <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <label className={labelClassName}>
+                Start (s after launch)
+                <Input
+                  fieldSize="md"
+                  variant="card"
+                  className="min-w-0 font-normal normal-case tracking-normal"
+                  type="number"
+                  min={0}
+                  step="any"
+                  disabled={curveOnly}
+                  value={windowStartSec}
+                  onChange={(e) => {
+                    const parsed = parseFloat(e.target.value);
+                    setWindowStartSec(Number.isFinite(parsed) ? parsed : '');
+                  }}
+                />
+              </label>
+              <label className={labelClassName}>
+                End (s after launch)
+                <Input
+                  fieldSize="md"
+                  variant="card"
+                  className="min-w-0 font-normal normal-case tracking-normal"
+                  type="number"
+                  min={0}
+                  step="any"
+                  disabled={curveOnly}
+                  value={windowEndSec}
+                  onChange={(e) => {
+                    const parsed = parseFloat(e.target.value);
+                    setWindowEndSec(Number.isFinite(parsed) ? parsed : '');
+                  }}
+                />
+              </label>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                variant="primary"
+                disabled={tokenCount === 0 || swingAllLoading}
+                onClick={handleRunAllSwings}
+              >
+                {runLabel}
+              </Button>
+              <Button
+                variant="ghost"
+                className="text-[11px] text-text-dim"
+                onClick={() => {
+                  setWindowStartSec('');
+                  setWindowEndSec('');
+                }}
+              >
+                Clear range
+              </Button>
             </div>
           </TabsPanel>
         </Tabs>
