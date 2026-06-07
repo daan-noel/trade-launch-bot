@@ -1,3 +1,4 @@
+import { useState, type MouseEvent } from 'react';
 import type { ColumnDef } from 'components/table/types';
 import type { TokenRecord } from 'types';
 import { DateCell } from 'components/table/DateCell';
@@ -13,6 +14,7 @@ import {
 } from 'utils/format';
 import type { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
+import { cn } from 'lib/cn';
 
 function fep(r: TokenRecord): number | null {
   if (r.initial_buy_sol == null || r.initial_supply_token == null || r.initial_supply_token <= 0) {
@@ -21,12 +23,47 @@ function fep(r: TokenRecord): number | null {
   return r.initial_buy_sol / r.initial_supply_token;
 }
 
-function ixLabels(r: TokenRecord): string {
+function ixLabelsArray(r: TokenRecord): string[] {
   const raw = r.instruction_labels;
-  if (Array.isArray(raw)) return raw.map(String).join(', ');
+  if (Array.isArray(raw)) return raw.map(String);
   const obj = raw as { instructions?: unknown[] } | null;
-  if (obj?.instructions) return obj.instructions.map(String).join(', ');
-  return '-';
+  if (obj?.instructions) return obj.instructions.map(String);
+  return [];
+}
+
+function ixLabels(r: TokenRecord): string {
+  const arr = ixLabelsArray(r);
+  return arr.length ? arr.join(', ') : '-';
+}
+
+function ixLabelsJson(r: TokenRecord): string {
+  return JSON.stringify(ixLabelsArray(r), null, 2);
+}
+
+function IxCountCell({ row }: { row: TokenRecord }) {
+  const [copied, setCopied] = useState(false);
+  const json = ixLabelsJson(row);
+
+  const copy = async (e: MouseEvent<HTMLSpanElement>) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(json);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  return (
+    <span
+      onClick={copy}
+      title={copied ? 'Copied!' : json}
+      className={cn('cursor-pointer', copied && 'text-primary')}
+    >
+      {row.ix_labels_count}
+    </span>
+  );
 }
 
 export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnDef<TokenRecord>[] {
@@ -296,7 +333,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       label: 'IX Count',
       width: '54px',
       sortable: true,
-      render: (r) => r.ix_labels_count,
+      render: (r) => <IxCountCell row={r} />,
       sortValue: (r) => r.ix_labels_count,
       searchValue: (r) => String(r.ix_labels_count),
     },

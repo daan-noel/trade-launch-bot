@@ -120,7 +120,7 @@ function SectionDivider() {
 
 type AnalysisKind = 'swing';
 type SwingPanelTab = 'analysis' | 'filter';
-type SwingAllTab = 'analysis' | 'chain' | 'timerange';
+type SwingAllTab = 'analysis' | 'chain' | 'timerange' | 'thresholds';
 
 const LS_SWING_DETECTION_KEY = 'swing_detection_criteria';
 
@@ -745,6 +745,22 @@ export function SwingDetectionPage() {
       ? 'Running…'
       : `Run on ${tokenCount} token${tokenCount === 1 ? '' : 's'}`;
 
+    const renderThresholdField = (label: string, key: keyof SwingParams) => (
+      <label className={labelClassName} key={key}>
+        {label}
+        <Input
+          fieldSize="md"
+          variant="card"
+          className="min-w-0 font-normal normal-case tracking-normal"
+          type="number"
+          min={0}
+          step="any"
+          value={swingParams[key]}
+          onChange={(e) => updateSwingParam(key, e.target.value)}
+        />
+      </label>
+    );
+
     return (
       loaded && showSwingAll &&
       <div className="w-full mb-3 rounded-lg border border-white/8 bg-bg-card/40 p-4">
@@ -765,6 +781,7 @@ export function SwingDetectionPage() {
             <TabsTrigger value="analysis">Analysis</TabsTrigger>
             <TabsTrigger value="chain">Chain of Swings</TabsTrigger>
             <TabsTrigger value="timerange">Time Range</TabsTrigger>
+            <TabsTrigger value="thresholds">Leg Thresholds</TabsTrigger>
           </TabsList>
 
           <TabsPanel value="analysis" className="px-4">
@@ -878,6 +895,57 @@ export function SwingDetectionPage() {
                 }}
               >
                 Clear range
+              </Button>
+            </div>
+          </TabsPanel>
+
+          <TabsPanel value="thresholds" className="px-4">
+            <p className="mb-3 text-[11px] text-text-dim">
+              Bound each detected leg by its price change (delta %) and net flow
+              rate (SOL per second), compared by magnitude — enter positive
+              values (e.g. 30 keeps swing lows that drop ≥ 30%). 0 = ignore that
+              bound. Applies during detection — re-run after changing.
+            </p>
+            <div className="mb-4 grid gap-6 sm:grid-cols-2">
+              <div>
+                <h4 className="mb-3 text-[12px] font-bold text-text">Swing High</h4>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {renderThresholdField('Min delta (%)', 'swing_high_min_delta_pct')}
+                  {renderThresholdField('Max delta (%)', 'swing_high_max_delta_pct')}
+                  {renderThresholdField('Min net flow / s (SOL)', 'swing_high_min_net_flow_per_sec')}
+                  {renderThresholdField('Max net flow / s (SOL)', 'swing_high_max_net_flow_per_sec')}
+                </div>
+              </div>
+              <div>
+                <h4 className="mb-3 text-[12px] font-bold text-text">Swing Low</h4>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {renderThresholdField('Min delta (%)', 'swing_low_min_delta_pct')}
+                  {renderThresholdField('Max delta (%)', 'swing_low_max_delta_pct')}
+                  {renderThresholdField('Min net flow / s (SOL)', 'swing_low_min_net_flow_per_sec')}
+                  {renderThresholdField('Max net flow / s (SOL)', 'swing_low_max_net_flow_per_sec')}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                variant="ghost"
+                className="text-[11px] text-text-dim"
+                onClick={() =>
+                  setSwingParams((prev) => ({
+                    ...prev,
+                    swing_high_min_delta_pct: 0,
+                    swing_high_max_delta_pct: 0,
+                    swing_high_min_net_flow_per_sec: 0,
+                    swing_high_max_net_flow_per_sec: 0,
+                    swing_low_min_delta_pct: 0,
+                    swing_low_max_delta_pct: 0,
+                    swing_low_min_net_flow_per_sec: 0,
+                    swing_low_max_net_flow_per_sec: 0,
+                  }))
+                }
+              >
+                Clear thresholds
               </Button>
             </div>
           </TabsPanel>

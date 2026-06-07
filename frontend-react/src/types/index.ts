@@ -229,6 +229,15 @@ export interface SwingParams {
   max_leg_duration_ms: number;
   max_leg_volume: number;
   max_leg_net_flow: number;
+  // Per-leg-type delta % and net-flow-per-second bounds (0 = no bound).
+  swing_high_min_delta_pct: number;
+  swing_high_max_delta_pct: number;
+  swing_high_min_net_flow_per_sec: number;
+  swing_high_max_net_flow_per_sec: number;
+  swing_low_min_delta_pct: number;
+  swing_low_max_delta_pct: number;
+  swing_low_min_net_flow_per_sec: number;
+  swing_low_max_net_flow_per_sec: number;
 }
 
 export type SwingLegType = 'swing_high' | 'swing_low';

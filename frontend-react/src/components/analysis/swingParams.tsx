@@ -14,6 +14,14 @@ export const DEFAULT_SWING_PARAMS: SwingParams = {
   max_leg_duration_ms: 0,
   max_leg_volume: 0,
   max_leg_net_flow: 0,
+  swing_high_min_delta_pct: 0,
+  swing_high_max_delta_pct: 0,
+  swing_high_min_net_flow_per_sec: 0,
+  swing_high_max_net_flow_per_sec: 0,
+  swing_low_min_delta_pct: 0,
+  swing_low_max_delta_pct: 0,
+  swing_low_min_net_flow_per_sec: 0,
+  swing_low_max_net_flow_per_sec: 0,
 };
 
 /** Params parsed as integers (the rest are parsed as floats). */

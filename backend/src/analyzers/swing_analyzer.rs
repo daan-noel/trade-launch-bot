@@ -46,6 +46,28 @@ pub struct SwingParams {
     pub max_leg_volume: f64,
     #[serde(default)]
     pub max_leg_net_flow: f64,
+
+    // Per-leg-type delta % and net-flow-per-second bounds, compared by MAGNITUDE
+    // (absolute value) so swing lows — whose delta % and net flow are negative —
+    // use the same positive thresholds as swing highs. 0 = no bound.
+    // Delta % magnitude: |(end_price - start_price)/start_price*100|.
+    // Net flow per second: |net_flow / (duration_ms/1000)|; skipped for 0-duration legs.
+    #[serde(default)]
+    pub swing_high_min_delta_pct: f64,
+    #[serde(default)]
+    pub swing_high_max_delta_pct: f64,
+    #[serde(default)]
+    pub swing_high_min_net_flow_per_sec: f64,
+    #[serde(default)]
+    pub swing_high_max_net_flow_per_sec: f64,
+    #[serde(default)]
+    pub swing_low_min_delta_pct: f64,
+    #[serde(default)]
+    pub swing_low_max_delta_pct: f64,
+    #[serde(default)]
+    pub swing_low_min_net_flow_per_sec: f64,
+    #[serde(default)]
+    pub swing_low_max_net_flow_per_sec: f64,
 }
 
 fn default_high_to_low_sol() -> f64 {
@@ -76,6 +98,14 @@ impl Default for SwingParams {
             max_leg_duration_ms: 0,
             max_leg_volume: 0.0,
             max_leg_net_flow: 0.0,
+            swing_high_min_delta_pct: 0.0,
+            swing_high_max_delta_pct: 0.0,
+            swing_high_min_net_flow_per_sec: 0.0,
+            swing_high_max_net_flow_per_sec: 0.0,
+            swing_low_min_delta_pct: 0.0,
+            swing_low_max_delta_pct: 0.0,
+            swing_low_min_net_flow_per_sec: 0.0,
+            swing_low_max_net_flow_per_sec: 0.0,
         }
     }
 }
@@ -441,6 +471,37 @@ fn scan(txs: &[Tx], params: &SwingParams) -> Vec<LegAcc> {
 fn apply_quality_filter(ledger: Vec<LegAcc>, params: &SwingParams) -> Vec<SwingLeg> {
     let fails = |leg: &LegAcc| -> bool {
         let duration_ms = leg.end_at - leg.start_at;
+
+        // Per-leg-type delta % and net-flow-per-second bounds (0 = no bound).
+        let (min_delta_pct, max_delta_pct, min_nf_per_sec, max_nf_per_sec) = match leg.leg_type {
+            SwingType::SwingHigh => (
+                params.swing_high_min_delta_pct,
+                params.swing_high_max_delta_pct,
+                params.swing_high_min_net_flow_per_sec,
+                params.swing_high_max_net_flow_per_sec,
+            ),
+            SwingType::SwingLow => (
+                params.swing_low_min_delta_pct,
+                params.swing_low_max_delta_pct,
+                params.swing_low_min_net_flow_per_sec,
+                params.swing_low_max_net_flow_per_sec,
+            ),
+        };
+        // Compared by magnitude so swing-low legs (negative delta/net flow) use
+        // the same positive thresholds as swing highs.
+        let delta_pct_abs = if leg.start_price != 0.0 {
+            ((leg.end_price - leg.start_price) / leg.start_price * 100.0).abs()
+        } else {
+            0.0
+        };
+        // Rate is undefined for instantaneous (0-duration) legs, so the ratio
+        // bounds are simply skipped for them rather than dividing by zero.
+        let net_flow_per_sec_abs = if duration_ms > 0 {
+            Some((leg.net_flow() / (duration_ms as f64 / 1000.0)).abs())
+        } else {
+            None
+        };
+
         leg.trade_count < params.min_leg_trades
             || duration_ms < params.min_leg_duration_ms
             || leg.net_flow().abs() < params.min_leg_net_flow
@@ -449,6 +510,10 @@ fn apply_quality_filter(ledger: Vec<LegAcc>, params: &SwingParams) -> Vec<SwingL
             || (params.max_leg_duration_ms > 0 && duration_ms > params.max_leg_duration_ms)
             || (params.max_leg_net_flow > 0.0 && leg.net_flow().abs() > params.max_leg_net_flow)
             || (params.max_leg_volume > 0.0 && (leg.inflow + leg.outflow) > params.max_leg_volume)
+            || (min_delta_pct > 0.0 && delta_pct_abs < min_delta_pct)
+            || (max_delta_pct > 0.0 && delta_pct_abs > max_delta_pct)
+            || (min_nf_per_sec > 0.0 && net_flow_per_sec_abs.is_some_and(|r| r < min_nf_per_sec))
+            || (max_nf_per_sec > 0.0 && net_flow_per_sec_abs.is_some_and(|r| r > max_nf_per_sec))
     };
 
     let mut out: Vec<SwingLeg> = Vec::with_capacity(ledger.len());
