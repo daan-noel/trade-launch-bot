@@ -9,6 +9,7 @@ import {
   type ISeriesApi,
   type LogicalRangeChangeEventHandler,
   type SeriesMarker,
+  type Time,
   type UTCTimestamp,
 } from 'lightweight-charts';
 import {
@@ -30,6 +31,7 @@ import {
   tradeBarSlot,
   tradeBarTime,
 } from './chartBars';
+import { ChartRangeSlider } from './ChartRangeSlider';
 import { ChartToolbar } from './ChartToolbar';
 import { createChartTimeFormatters } from './chartTimezone';
 import { useTimezone } from 'context/TimezoneContext';
@@ -405,6 +407,8 @@ export function TokenPriceChart({
   const [barTooltip, setBarTooltip] = useState<ChartBarTooltipState | null>(null);
   const [swingTooltip, setSwingTooltip] = useState<ChartSwingTooltipState | null>(null);
   const [walletMarkersTooltip, setWalletMarkersTooltip] = useState<ChartWalletMarkersTooltipState | null>(null);
+  /** Visible window mirrored from the chart's time scale, drives the range slider. */
+  const [sliderWindow, setSliderWindow] = useState<{ from: number; to: number } | null>(null);
   const walletActivityMapRef = useRef<Map<number, WalletBarActivity[]>>(new Map());
   const styleRef = useRef(style);
   styleRef.current = style;
@@ -579,6 +583,15 @@ export function TokenPriceChart({
     [groupMode, interval, style, showTradeMarkers, showAthLine, showMigrationLine],
   );
 
+  const handleSliderChange = useCallback((from: number, to: number) => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    chart.timeScale().setVisibleRange({
+      from: from as UTCTimestamp,
+      to: to as UTCTimestamp,
+    });
+  }, []);
+
   const showChart = Boolean(id) && !loading && !error && trades.length > 0 && bars.length > 0;
 
   useEffect(() => {
@@ -589,6 +602,7 @@ export function TokenPriceChart({
       mountedSeriesStyleRef.current = null;
       prevIdRef.current = id;
       prevGroupingKeyRef.current = groupingKey;
+      setSliderWindow(null);
     }
   }, [id, groupingKey]);
 
@@ -786,8 +800,19 @@ export function TokenPriceChart({
     };
     chart.timeScale().subscribeVisibleLogicalRangeChange(onVisibleLogicalRangeChange);
 
+    const onVisibleTimeRangeChange = (range: { from: Time; to: Time } | null) => {
+      if (!range) return;
+      const from = Number(range.from);
+      const to = Number(range.to);
+      setSliderWindow((prev) =>
+        prev && prev.from === from && prev.to === to ? prev : { from, to },
+      );
+    };
+    chart.timeScale().subscribeVisibleTimeRangeChange(onVisibleTimeRangeChange);
+
     return () => {
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(onVisibleLogicalRangeChange);
+      chart.timeScale().unsubscribeVisibleTimeRangeChange(onVisibleTimeRangeChange);
       ro.disconnect();
       markersPluginRef.current?.detach();
       markersPluginRef.current = null;
@@ -1286,6 +1311,15 @@ export function TokenPriceChart({
           <WalletMarkersTooltip tooltip={walletMarkersTooltip} />
         )}
       </div>
+      {bars.length > 1 && (
+        <ChartRangeSlider
+          min={bars[0].time as number}
+          max={bars[bars.length - 1].time as number}
+          from={sliderWindow?.from ?? (bars[0].time as number)}
+          to={sliderWindow?.to ?? (bars[bars.length - 1].time as number)}
+          onChange={handleSliderChange}
+        />
+      )}
     </div>
   );
 }
