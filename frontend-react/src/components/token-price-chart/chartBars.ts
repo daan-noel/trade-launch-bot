@@ -219,9 +219,9 @@ type TradeBucket = {
  *
  * Same-slot trades from *different* transactions share an identical
  * second-precision block time and carry no recoverable intra-block index, so
- * they fall back to signature order — deterministic, though not guaranteed to
- * match true block order. This still fixes the common case (multi-leg/bundled
- * transactions) where open/close were previously order-dependent.
+ * this comparator can only fall back to signature order — arbitrary, and NOT
+ * the true block order. `orderSlotGroupByReserveChain` (applied afterwards by
+ * `sortTradesChronologically`) recovers the real order for those groups.
  */
 export function compareTradesChronologically(a: ChartTrade, b: ChartTrade): number {
   const slotDiff = (a.slot ?? 0) - (b.slot ?? 0);
@@ -234,8 +234,84 @@ export function compareTradesChronologically(a: ChartTrade, b: ChartTrade): numb
   return (a.leg_index ?? 0) - (b.leg_index ?? 0);
 }
 
+/** Token reserves after a trade (curve virtual, else AMM pool real). */
+function tradeTokenReserve(trade: ChartTrade): number | null {
+  const reserve = trade.virtual_token_reserves ?? trade.real_token_reserves;
+  return reserve != null && Number.isFinite(reserve) ? reserve : null;
+}
+
+/**
+ * Recover the true on-chain execution order for trades that share a `slot`.
+ *
+ * Separate transactions in one slot carry no usable intra-block index
+ * (block_time is second-precision; `leg_index` only orders legs within a single
+ * tx), so the base comparator leaves them in arbitrary signature order — which
+ * can land a candle's open/close on the wrong trade. But every trade snapshots
+ * the curve's token reserves *after* it executed, and consecutive trades on the
+ * same curve chain exactly: `postTokens(prev) === preTokens(next)`, where the
+ * pre-trade reserve is `postTokens + tokenAmount` for a buy (tokens leave the
+ * curve) and `postTokens - tokenAmount` for a sell. Walking that chain from its
+ * unique head yields the real order.
+ *
+ * Bails out (returns the input unchanged) if reserves/amounts are missing or
+ * the trades don't form one clean line — so it never makes ordering worse.
+ */
+function orderSlotGroupByReserveChain(group: ChartTrade[]): ChartTrade[] {
+  if (group.length < 2) return group;
+
+  type ChainNode = { trade: ChartTrade; post: number; pre: number };
+  const nodes: ChainNode[] = [];
+  for (const trade of group) {
+    const post = tradeTokenReserve(trade);
+    const amount = trade.token_amount;
+    if (post == null || amount == null || !Number.isFinite(amount)) return group;
+    const pre = trade.trade_type === 'sell' ? post - amount : post + amount;
+    nodes.push({ trade, post, pre });
+  }
+
+  // Raw token units are exact in f64 below 2^53; ±1 guards any stray rounding.
+  const EPS = 1;
+  const isPostOfOther = (value: number, self: ChainNode): boolean =>
+    nodes.some((n) => n !== self && Math.abs(n.post - value) <= EPS);
+
+  // The head is the only trade whose pre-state isn't another trade's post-state.
+  const heads = nodes.filter((n) => !isPostOfOther(n.pre, n));
+  if (heads.length !== 1) return group;
+
+  const ordered: ChartTrade[] = [];
+  const used = new Set<ChainNode>();
+  let current: ChainNode | undefined = heads[0];
+  while (current && !used.has(current)) {
+    ordered.push(current.trade);
+    used.add(current);
+    const currentPost: number = current.post;
+    current = nodes.find((n) => !used.has(n) && Math.abs(n.pre - currentPost) <= EPS);
+  }
+
+  return ordered.length === group.length ? ordered : group;
+}
+
 function sortTradesChronologically(trades: ChartTrade[]): ChartTrade[] {
-  return [...trades].sort(compareTradesChronologically);
+  const sorted = [...trades].sort(compareTradesChronologically);
+
+  // The comparator groups same-slot trades together but can't order them; walk
+  // each run of one slot and reorder it into true execution order.
+  for (let i = 0; i < sorted.length; ) {
+    const slot = sorted[i].slot;
+    if (slot == null) {
+      i += 1;
+      continue;
+    }
+    let j = i + 1;
+    while (j < sorted.length && sorted[j].slot === slot) j += 1;
+    if (j - i > 1) {
+      const reordered = orderSlotGroupByReserveChain(sorted.slice(i, j));
+      for (let k = 0; k < reordered.length; k += 1) sorted[i + k] = reordered[k];
+    }
+    i = j;
+  }
+
+  return sorted;
 }
 
 /** GMGN-style: open = prev bar close (continuous spot); empty intervals flat at prev close. */
