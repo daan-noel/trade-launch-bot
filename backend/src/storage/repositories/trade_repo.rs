@@ -92,7 +92,9 @@ impl TradeRepo {
         Self { pool }
     }
 
-    /// Insert a trade. Ignores duplicates (idempotent on replay).
+    /// Insert a trade. On replay, refresh the decoded price/reserve columns so
+    /// decoder fixes (e.g. AMM pre- vs post-swap reserves) propagate on re-sync,
+    /// while preserving identity/time columns (`id`, `received_at`).
     pub async fn insert(&self, trade: &Trade) -> anyhow::Result<()> {
         sqlx::query(
             r#"
@@ -104,7 +106,12 @@ impl TradeRepo {
                  real_sol_reserves, real_token_reserves,
                  ix_type, ix_labels, venue)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
-            ON CONFLICT (tx_signature, leg_index) DO NOTHING
+            ON CONFLICT (tx_signature, leg_index) DO UPDATE SET
+                price_per_token        = EXCLUDED.price_per_token,
+                virtual_sol_reserves   = EXCLUDED.virtual_sol_reserves,
+                virtual_token_reserves = EXCLUDED.virtual_token_reserves,
+                real_sol_reserves      = EXCLUDED.real_sol_reserves,
+                real_token_reserves    = EXCLUDED.real_token_reserves
             "#,
         )
         .bind(trade.id)

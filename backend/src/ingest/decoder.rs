@@ -367,8 +367,9 @@ impl HeliusDecoder {
                 slot,
                 block_time,
             );
-            // PumpSwap has no virtual reserves; mirror post-swap pool reserves so
-            // chart spot (virtual_sol / virtual_token) works for AMM trades too.
+            // PumpSwap has no virtual reserves; `decode_pump_swap_trades_from_logs`
+            // already converted the event's PRE-swap snapshot to POST-swap pool
+            // reserves, so chart spot (sol / token) reflects each trade's price.
             trade.virtual_sol_reserves = Some(ev.pool_quote_reserves);
             trade.virtual_token_reserves = Some(ev.pool_base_reserves);
             trade.real_sol_reserves = Some(ev.pool_quote_reserves);
@@ -803,7 +804,6 @@ struct RawPumpSwapBuyEvent {
     protocol_fee_basis_points: u64,
     #[allow(dead_code)]
     protocol_fee: u64,
-    #[allow(dead_code)]
     quote_amount_in_with_lp_fee: u64,
     /// Total SOL the user spent, including LP + protocol fees.
     user_quote_amount_in: u64,
@@ -835,7 +835,6 @@ struct RawPumpSwapSellEvent {
     protocol_fee_basis_points: u64,
     #[allow(dead_code)]
     protocol_fee: u64,
-    #[allow(dead_code)]
     quote_amount_out_without_lp_fee: u64,
     /// Total SOL the user received, net of LP + protocol fees.
     user_quote_amount_out: u64,
@@ -878,28 +877,44 @@ fn decode_pump_swap_trades_from_logs(logs: &[&str]) -> Vec<DecodedAmmTrade> {
 
         if disc == PUMP_SWAP_BUY_EVENT_DISCRIMINATOR {
             match RawPumpSwapBuyEvent::deserialize(&mut buf) {
-                Ok(e) => out.push(DecodedAmmTrade {
-                    is_buy: true,
-                    base_amount: e.base_amount_out as f64,
-                    quote_amount: e.user_quote_amount_in as f64 / lamports,
-                    pool: bs58::encode(e.pool).into_string(),
-                    user: bs58::encode(e.user).into_string(),
-                    pool_base_reserves: e.pool_base_token_reserves as f64,
-                    pool_quote_reserves: e.pool_quote_token_reserves as f64 / lamports,
-                }),
+                Ok(e) => {
+                    // PumpSwap events snapshot PRE-swap pool reserves. Roll them
+                    // forward to the POST-swap state so chart spot reflects this
+                    // trade's own price: base tokens leave the pool, quote (incl.
+                    // the LP fee retained in the pool) enters it.
+                    let post_base = e.pool_base_token_reserves.saturating_sub(e.base_amount_out);
+                    let post_quote = e.pool_quote_token_reserves + e.quote_amount_in_with_lp_fee;
+                    out.push(DecodedAmmTrade {
+                        is_buy: true,
+                        base_amount: e.base_amount_out as f64,
+                        quote_amount: e.user_quote_amount_in as f64 / lamports,
+                        pool: bs58::encode(e.pool).into_string(),
+                        user: bs58::encode(e.user).into_string(),
+                        pool_base_reserves: post_base as f64,
+                        pool_quote_reserves: post_quote as f64 / lamports,
+                    });
+                }
                 Err(e) => warn!("Failed to Borsh-decode PumpSwap BuyEvent: {e}"),
             }
         } else if disc == PUMP_SWAP_SELL_EVENT_DISCRIMINATOR {
             match RawPumpSwapSellEvent::deserialize(&mut buf) {
-                Ok(e) => out.push(DecodedAmmTrade {
-                    is_buy: false,
-                    base_amount: e.base_amount_in as f64,
-                    quote_amount: e.user_quote_amount_out as f64 / lamports,
-                    pool: bs58::encode(e.pool).into_string(),
-                    user: bs58::encode(e.user).into_string(),
-                    pool_base_reserves: e.pool_base_token_reserves as f64,
-                    pool_quote_reserves: e.pool_quote_token_reserves as f64 / lamports,
-                }),
+                Ok(e) => {
+                    // PRE-swap -> POST-swap: base tokens enter the pool, quote
+                    // (excl. the LP fee retained in the pool) leaves it.
+                    let post_base = e.pool_base_token_reserves + e.base_amount_in;
+                    let post_quote = e
+                        .pool_quote_token_reserves
+                        .saturating_sub(e.quote_amount_out_without_lp_fee);
+                    out.push(DecodedAmmTrade {
+                        is_buy: false,
+                        base_amount: e.base_amount_in as f64,
+                        quote_amount: e.user_quote_amount_out as f64 / lamports,
+                        pool: bs58::encode(e.pool).into_string(),
+                        user: bs58::encode(e.user).into_string(),
+                        pool_base_reserves: post_base as f64,
+                        pool_quote_reserves: post_quote as f64 / lamports,
+                    });
+                }
                 Err(e) => warn!("Failed to Borsh-decode PumpSwap SellEvent: {e}"),
             }
         }
