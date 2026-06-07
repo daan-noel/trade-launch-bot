@@ -502,6 +502,26 @@ export function SwingDetectionPage() {
     setSwingError(null);
   }, [selectedMint]);
 
+  // Selecting a token after a global ("Swing Detection All") run promotes that
+  // token's batch swings into `swingResult`, so the per-token Analysis/Filter
+  // panel and chart treat them exactly like a single-token "Run" — which is what
+  // lets the user filter them. A genuine per-token Run for this mint already sets
+  // `swingResult` (mint matches), so it's left untouched here.
+  useEffect(() => {
+    if (!selectedMint) return;
+    if (swingResult && swingResult.mint === selectedMint) return;
+    const batch = swingsByMint.get(selectedMint);
+    if (!batch) return;
+    dispatch(
+      setSwingResult({
+        mint: selectedMint,
+        params: swingParamsFromForm(swingParams),
+        count: batch.length,
+        swings: batch,
+      }),
+    );
+  }, [selectedMint, swingResult, swingsByMint, swingParams, dispatch]);
+
   const handleSwingSelect = useCallback(
     (key: string | null) => {
       dispatch(setSelectedSwingKey(key));
@@ -752,13 +772,6 @@ export function SwingDetectionPage() {
 
             <div className="flex flex-wrap items-center gap-3">
               <Button
-                variant="primary"
-                disabled={tokenCount === 0 || swingAllLoading}
-                onClick={handleRunAllSwings}
-              >
-                {runLabel}
-              </Button>
-              <Button
                 variant="ghost"
                 className="text-[11px] text-text-dim"
                 onClick={() => setSwingParams(DEFAULT_SWING_PARAMS)}
@@ -794,20 +807,11 @@ export function SwingDetectionPage() {
               </label>
             </div>
 
-            <div className="flex flex-wrap items-center gap-3">
-              <Button
-                variant="primary"
-                disabled={tokenCount === 0 || swingAllLoading}
-                onClick={handleRunAllSwings}
-              >
-                {runLabel}
-              </Button>
-              {swingAllRanCount == null && (
-                <span className="text-[11px] text-text-dim">
-                  Run detection to populate the chain columns.
-                </span>
-              )}
-            </div>
+            {swingAllRanCount == null && (
+              <p className="text-[11px] text-text-dim">
+                Run detection to populate the chain columns.
+              </p>
+            )}
           </TabsPanel>
 
           <TabsPanel value="timerange" className="px-4">
@@ -866,13 +870,6 @@ export function SwingDetectionPage() {
 
             <div className="flex flex-wrap items-center gap-3">
               <Button
-                variant="primary"
-                disabled={tokenCount === 0 || swingAllLoading}
-                onClick={handleRunAllSwings}
-              >
-                {runLabel}
-              </Button>
-              <Button
                 variant="ghost"
                 className="text-[11px] text-text-dim"
                 onClick={() => {
@@ -885,6 +882,16 @@ export function SwingDetectionPage() {
             </div>
           </TabsPanel>
         </Tabs>
+
+        <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-white/8 pt-4">
+          <Button
+            variant="primary"
+            disabled={tokenCount === 0 || swingAllLoading}
+            onClick={handleRunAllSwings}
+          >
+            {runLabel}
+          </Button>
+        </div>
 
         {swingAllError && <p className="mt-4 text-sm text-red">{swingAllError}</p>}
         {swingAllLoading && (
