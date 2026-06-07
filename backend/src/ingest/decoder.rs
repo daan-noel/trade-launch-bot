@@ -1504,6 +1504,12 @@ fn compute_sol_change(wallet: &str, account_keys: &[String], pre: &[u64], post: 
 /// Compute the absolute token amount change for `user_ata` (the trader's
 /// Associated Token Account) using pre/post token balance entries.
 /// Token balance entries carry an `accountIndex` that maps into `account_keys`.
+///
+/// Returns RAW base units (no decimal scaling) to stay consistent with the
+/// authoritative log-event path (`decode_trade_events_from_logs`), which stores
+/// `token_amount` as raw units. Reading `uiTokenAmount.uiAmount` here instead
+/// would yield a decimal-adjusted amount (raw / 10^decimals), making this
+/// fallback path's `price_per_token` inflated by 10^decimals and poisoning ATH.
 fn compute_token_change(user_ata: &str, mint: &str, account_keys: &[String], meta: &Value) -> f64 {
     let ata_idx = match account_keys.iter().position(|k| k == user_ata) {
         Some(i) => i as u64,
@@ -1519,7 +1525,10 @@ fn compute_token_change(user_ata: &str, mint: &str, account_keys: &[String], met
                         && entry["mint"].as_str() == Some(mint)
                 })
             })
-            .and_then(|entry| entry["uiTokenAmount"]["uiAmount"].as_f64())
+            // `amount` is the raw base-unit integer as a string; parse it so the
+            // units match the log-event path. (`uiAmount` is decimal-adjusted.)
+            .and_then(|entry| entry["uiTokenAmount"]["amount"].as_str())
+            .and_then(|s| s.parse::<f64>().ok())
             .unwrap_or(0.0)
     };
 

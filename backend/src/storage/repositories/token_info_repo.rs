@@ -14,7 +14,13 @@ impl TokenInfoRepo {
     }
 
     /// Upsert token metrics.
-    /// Keeps `ath_price` as the highest trade price ever seen for this token.
+    ///
+    /// `ath_price` is written authoritatively from the caller's freshly
+    /// recomputed value: the sync path rebuilds state from the full trade
+    /// history, so a re-sync must be able to *lower* a previously over-stated
+    /// ATH (e.g. one poisoned by a bad trade). A NULL incoming value preserves
+    /// the existing stored value. The live ingest path always supplies a
+    /// running max seeded from this column on startup, so it never lowers it.
     pub async fn upsert_metrics(
         &self,
         mint: &str,
@@ -37,8 +43,8 @@ impl TokenInfoRepo {
                 (mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_rugged, is_migrated, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             ON CONFLICT (mint_address) DO UPDATE
-                SET ath_price = GREATEST(COALESCE(tokens_info.ath_price, 0.0), COALESCE(EXCLUDED.ath_price, 0.0)),
-                    ath_timestamp = CASE WHEN COALESCE(EXCLUDED.ath_price, 0.0) > COALESCE(tokens_info.ath_price, 0.0)
+                SET ath_price = COALESCE(EXCLUDED.ath_price, tokens_info.ath_price),
+                    ath_timestamp = CASE WHEN EXCLUDED.ath_price IS NOT NULL
                                     THEN EXCLUDED.ath_timestamp ELSE tokens_info.ath_timestamp END,
                     age = EXCLUDED.age,
                     volume = EXCLUDED.volume,
