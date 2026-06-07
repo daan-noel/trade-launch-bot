@@ -61,6 +61,24 @@ export function InputSyncStatus({
   const dispatch = useDispatch<AppDispatch>();
   const [statuses, setStatuses] = useState<Record<string, MintStatus>>({});
 
+  // Tokens synced this session carry their just-updated record, so a mint that
+  // finishes in a running batch shows its fresh symbol/last-synced time here
+  // immediately — ahead of (and overriding) the slower DB freshness fetch below.
+  const syncedTokens = useSelector((s: RootState) => s.syncToken.syncedTokens);
+  const syncedByMint = useMemo(() => {
+    const out: Record<string, MintStatus> = {};
+    for (const t of syncedTokens) {
+      out[t.token.mint_address] = {
+        state: 'found',
+        symbol: t.token.symbol,
+        lastSyncedAt: t.token.last_synced_at,
+      };
+    }
+    return out;
+  }, [syncedTokens]);
+  const statusOf = (mint: string): MintStatus | undefined =>
+    syncedByMint[mint] ?? statuses[mint];
+
   // Cached "to fetch" estimates live in Redux (keyed by `${mint}|${flag}`) so
   // they survive navigation away from the page and aren't re-counted on every
   // re-render. `pending` holds only the transient loading/error states for
@@ -190,7 +208,7 @@ export function InputSyncStatus({
   // Mints that already have a recorded sync — the "Remove synced" bulk action
   // strips these so only tokens still needing a sync are left in the input.
   const syncedMints = mints.filter((m) => {
-    const s = statuses[m];
+    const s = statusOf(m);
     return s?.state === 'found' && s.lastSyncedAt != null;
   });
 
@@ -273,7 +291,7 @@ export function InputSyncStatus({
           </thead>
           <tbody>
             {mints.map((mint) => {
-              const s = statuses[mint];
+              const s = statusOf(mint);
               const p = previews[mint];
               return (
                 <tr key={mint} className="border-t border-white/6">

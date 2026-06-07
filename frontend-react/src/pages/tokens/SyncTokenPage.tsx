@@ -18,12 +18,12 @@ import { fetchProfiles, syncToken } from 'services/api';
 import type { SyncProgressEvent, TokenDetailRecord, WalletProfile } from 'types';
 import type { AppDispatch, RootState } from '../../store';
 import {
+  cacheSyncPreview,
   clearSyncOutput,
-  invalidateSyncPreviews,
   mergeSyncOutput,
   setSelectedMint,
 } from 'store/syncTokenSlice';
-import type { SyncedToken, SyncResultItem } from 'store/syncTokenSlice';
+import type { SyncResultItem } from 'store/syncTokenSlice';
 import { cn } from 'lib/cn';
 
 const STAGE_ORDER = [
@@ -357,9 +357,6 @@ export function SyncTokenPage() {
     setProgress(null);
     setBatch(null);
 
-    const collected: SyncResultItem[] = [];
-    const oks: SyncedToken[] = [];
-
     try {
       for (let i = 0; i < targets.length; i++) {
         const target = targets[i];
@@ -373,34 +370,49 @@ export function SyncTokenPage() {
             controller.signal,
             incremental,
           );
-          collected.push({ mint: target, ok: true });
-          oks.push({ token: result.token, trades: result.trades });
+          // Commit this token the moment it finishes (don't wait for the rest of
+          // the batch) so its rows update live: the output table + chart pick it
+          // up, the input status row shows the fresh last-synced time, and its
+          // "To fetch" estimate drops to up-to-date (we just pulled everything).
+          dispatch(
+            mergeSyncOutput({
+              results: [{ mint: target, ok: true }],
+              syncedTokens: [{ token: result.token, trades: result.trades }],
+            }),
+          );
+          dispatch(
+            cacheSyncPreview({
+              key: `${target}|${includePostMigrate}`,
+              data: { newCount: 0, newCapped: false, totalCount: 0, totalCapped: false },
+            }),
+          );
         } catch (e) {
           if (e instanceof DOMException && e.name === 'AbortError') {
             throw e;
           }
-          collected.push({
-            mint: target,
-            ok: false,
-            error: e instanceof Error ? e.message : 'Sync failed',
-          });
+          // Record the failure right away too, so its row flips to FAIL live.
+          dispatch(
+            mergeSyncOutput({
+              results: [
+                { mint: target, ok: false, error: e instanceof Error ? e.message : 'Sync failed' },
+              ],
+              syncedTokens: [],
+            }),
+          );
         }
       }
-      dispatch(mergeSyncOutput({ results: collected, syncedTokens: oks }));
       setProgress(null);
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') {
+        // Tokens finished before the abort are already committed above.
         setProgress(null);
-        dispatch(mergeSyncOutput({ results: collected, syncedTokens: oks }));
         return;
       }
       setError(e instanceof Error ? e.message : 'Sync failed');
     } finally {
       setSyncing(false);
       setBatch(null);
-      // The synced mints' cached previews are now stale (their pending/total tx
-      // counts changed), so drop them; bumping the nonce re-counts them.
-      dispatch(invalidateSyncPreviews(targets));
+      // Refresh the input status table's DB-backed columns one last time.
       setSyncNonce((n) => n + 1);
       if (syncAbortRef.current === controller) {
         syncAbortRef.current = null;
