@@ -5,7 +5,8 @@ use serde_json::{json, Value};
 use tracing::{debug, warn};
 
 use crate::config::constants::{
-    program_friendly_name, ASSOCIATED_TOKEN_PROGRAM_ID, BUY_DISCRIMINATOR,
+    program_friendly_name, ANCHOR_EVENT_CPI_DISCRIMINATOR, ASSOCIATED_TOKEN_PROGRAM_ID,
+    BUY_DISCRIMINATOR,
     BUY_EXACT_QUOTE_IN_DISCRIMINATOR, BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR,
     BUY_EXACT_SOL_IN_DISCRIMINATOR, BUY_V2_DISCRIMINATOR, COMPUTE_BUDGET_PROGRAM_ID,
     CREATE_EVENT_DISCRIMINATOR, CREATE_INSTRUCTION_DISCRIMINATOR,
@@ -117,7 +118,25 @@ impl HeliusDecoder {
         // Emitted by pump.fun via `emit!` for EVERY buy/sell, regardless of
         // whether the pump.fun instruction is outer or an inner CPI call.
         // They carry authoritative on-chain amounts + virtual reserve snapshot.
-        let decoded_events = decode_trade_events_from_logs(&logs);
+        let mut decoded_events = decode_trade_events_from_logs(&logs);
+
+        // Solana truncates a transaction's logs once they exceed its size limit
+        // (common on large/bundled txs), which can drop the "Program data:"
+        // TradeEvent line entirely. Pump.fun also emits the SAME event via
+        // `emit_cpi!` as an inner instruction to the event authority, and inner
+        // instructions are never truncated — so recover the events there before
+        // resorting to the lossy balance-delta fallback (step 3b). Balance
+        // deltas conflate the swap with other SOL/token movement in the tx and
+        // carry no reserve snapshot, producing mispriced trades.
+        if decoded_events.is_empty() {
+            decoded_events = decode_trade_events_from_inner_ixs(
+                message,
+                meta,
+                &account_keys,
+                &self.pump_program_id,
+            );
+        }
+
         let decoded_create_events = decode_create_events_from_logs(&logs);
 
         // ── Step 1b: identify high-level instruction kinds from message.instructions
@@ -656,6 +675,25 @@ struct DecodedTradeEvent {
     real_token_reserves: f64,
 }
 
+impl DecodedTradeEvent {
+    /// Convert a Borsh-decoded `RawTradeEvent` into the decoder's normalized
+    /// form: lamport amounts are scaled to SOL; token amounts stay in raw base
+    /// units. Shared by the log-line and inner-instruction decode paths.
+    fn from_raw(raw: RawTradeEvent) -> Self {
+        Self {
+            mint: bs58::encode(raw.mint).into_string(),
+            sol_amount: raw.sol_amount as f64 / 1_000_000_000.0,
+            token_amount: raw.token_amount as f64,
+            is_buy: raw.is_buy,
+            user: bs58::encode(raw.user).into_string(),
+            virtual_sol_reserves: raw.virtual_sol_reserves as f64 / 1_000_000_000.0,
+            virtual_token_reserves: raw.virtual_token_reserves as f64,
+            real_sol_reserves: raw.real_sol_reserves as f64 / 1_000_000_000.0,
+            real_token_reserves: raw.real_token_reserves as f64,
+        }
+    }
+}
+
 /// Scan every "Program data: <base64>" log line, try to decode each as a
 /// TradeEvent, and return all successfully decoded events in log order.
 fn decode_trade_events_from_logs(logs: &[&str]) -> Vec<DecodedTradeEvent> {
@@ -684,17 +722,53 @@ fn decode_trade_events_from_logs(logs: &[&str]) -> Vec<DecodedTradeEvent> {
             }
         };
 
-        events.push(DecodedTradeEvent {
-            mint: bs58::encode(raw.mint).into_string(),
-            sol_amount: raw.sol_amount as f64 / 1_000_000_000.0,
-            token_amount: raw.token_amount as f64,
-            is_buy: raw.is_buy,
-            user: bs58::encode(raw.user).into_string(),
-            virtual_sol_reserves: raw.virtual_sol_reserves as f64 / 1_000_000_000.0,
-            virtual_token_reserves: raw.virtual_token_reserves as f64,
-            real_sol_reserves: raw.real_sol_reserves as f64 / 1_000_000_000.0,
-            real_token_reserves: raw.real_token_reserves as f64,
-        });
+        events.push(DecodedTradeEvent::from_raw(raw));
+    }
+
+    events
+}
+
+/// Scan inner instructions for pump.fun's `emit_cpi!` TradeEvent self-CPI and
+/// decode each one. The instruction data is the 8-byte Anchor event-CPI tag,
+/// followed by the 8-byte TradeEvent discriminator, followed by the same
+/// Borsh-encoded `RawTradeEvent` carried in the "Program data:" log. This is the
+/// truncation-proof source used when [`decode_trade_events_from_logs`] finds
+/// nothing because Solana truncated the transaction's logs.
+fn decode_trade_events_from_inner_ixs(
+    message: &Value,
+    meta: &Value,
+    account_keys: &[String],
+    pump_program_id: &str,
+) -> Vec<DecodedTradeEvent> {
+    let mut events = Vec::new();
+
+    for ix in find_pump_ixs_anywhere(message, meta, account_keys, pump_program_id) {
+        let Some(data_b58) = ix["data"].as_str() else {
+            continue;
+        };
+        let bytes = match bs58::decode(data_b58).into_vec() {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+
+        // [8: Anchor event-CPI tag][8: TradeEvent discriminator][Borsh payload]
+        if bytes.len() < 16
+            || bytes[..8] != ANCHOR_EVENT_CPI_DISCRIMINATOR
+            || bytes[8..16] != TRADE_EVENT_DISCRIMINATOR
+        {
+            continue;
+        }
+
+        let mut buf: &[u8] = &bytes[16..];
+        let raw = match RawTradeEvent::deserialize(&mut buf) {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Failed to Borsh-decode TradeEvent from inner ix: {e}");
+                continue;
+            }
+        };
+
+        events.push(DecodedTradeEvent::from_raw(raw));
     }
 
     events

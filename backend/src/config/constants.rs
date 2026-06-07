@@ -82,6 +82,14 @@ pub const BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR: [u8; 8] =
 /// "Program data:" log entries that start with these 8 bytes carry a full
 /// RawTradeEvent (Borsh-encoded), including virtual/real reserves.
 pub const TRADE_EVENT_DISCRIMINATOR: [u8; 8] = [0xbd, 0xdb, 0x7f, 0xd3, 0x4e, 0xe6, 0x61, 0xee];
+/// Anchor `emit_cpi!` self-CPI tag. Pump.fun emits each event BOTH as an
+/// `emit!` "Program data:" log AND as an `emit_cpi!` inner instruction to the
+/// event authority. The inner-instruction data is this 8-byte tag followed by
+/// the event's own discriminator + Borsh payload. Unlike logs, inner
+/// instructions are never truncated by Solana, so they are the reliable source
+/// when a transaction's logs are truncated.
+pub const ANCHOR_EVENT_CPI_DISCRIMINATOR: [u8; 8] =
+    [0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d];
 /// CreateEvent discriminator — emitted on every token creation via `emit!`.
 pub const CREATE_EVENT_DISCRIMINATOR: [u8; 8] =
     [0x1b, 0x72, 0xa9, 0x4d, 0xde, 0xeb, 0x63, 0x76];
