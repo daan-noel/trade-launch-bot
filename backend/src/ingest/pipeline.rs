@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use chrono::Utc;
+use dashmap::DashMap;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info, warn};
 
@@ -17,6 +18,7 @@ use crate::{
         ingest::{IngestKind, SseEvent, StrategyPing},
         transaction::RawTransaction,
     },
+    services::token_sync::derive_pump_swap_pool,
     state::token_cache::{TokenCache, TokenState},
 };
 
@@ -30,6 +32,12 @@ pub struct IngestPipeline {
     db_tx: mpsc::Sender<DbWriteOp>,
     strategy_tx: mpsc::Sender<StrategyPing>,
     sse_tx: broadcast::Sender<SseEvent>,
+    pump_program_id: String,
+    /// pool → mint index shared with the decoder so live PumpSwap (AMM) swaps,
+    /// which carry the pool but not the base mint, can be attributed back to the
+    /// tracked token. Populated for migrated tokens at startup and on
+    /// create/migrate.
+    pool_index: Arc<DashMap<String, String>>,
 }
 
 impl IngestPipeline {
@@ -40,12 +48,30 @@ impl IngestPipeline {
         strategy_tx: mpsc::Sender<StrategyPing>,
         sse_tx: broadcast::Sender<SseEvent>,
     ) -> Self {
+        // Seed the pool→mint index for tokens already migrated before this
+        // process started, so live AMM swaps for them are captured immediately.
+        // Tokens created/migrating during this session register their pool
+        // lazily (see `register_pool`).
+        let pool_index: Arc<DashMap<String, String>> = Arc::new(DashMap::new());
+        for entry in token_cache.iter() {
+            if entry.is_migrated {
+                if let Ok(pool) = derive_pump_swap_pool(entry.key(), &pump_program_id) {
+                    pool_index.insert(pool, entry.key().clone());
+                }
+            }
+        }
+
+        let decoder =
+            HeliusDecoder::new(pump_program_id.clone()).with_pool_index(pool_index.clone());
+
         Self {
-            decoder: HeliusDecoder::new(pump_program_id),
+            decoder,
             token_cache,
             db_tx,
             strategy_tx,
             sse_tx,
+            pump_program_id,
+            pool_index,
         }
     }
 
@@ -117,6 +143,18 @@ impl IngestPipeline {
         let _ = self.sse_tx.send(event);
     }
 
+    /// Register a token's canonical PumpSwap pool in the pool→mint index so the
+    /// decoder can attribute live AMM swaps (which carry the pool, not the base
+    /// mint) back to this token. Idempotent; safe to call repeatedly.
+    fn register_pool(&self, mint: &str) {
+        match derive_pump_swap_pool(mint, &self.pump_program_id) {
+            Ok(pool) => {
+                self.pool_index.insert(pool, mint.to_string());
+            }
+            Err(e) => warn!("Pool derivation failed for {mint}: {e}"),
+        }
+    }
+
     async fn on_token_created(&self, e: TokenCreatedEvent) {
         let mint = e.token.mint_address.clone();
         if self.token_cache.contains_key(&mint) {
@@ -139,6 +177,10 @@ impl IngestPipeline {
         let metrics = metrics_from_state(&mint, &token_state, false);
         self.token_cache.insert(mint.clone(), token_state);
         self.enqueue_db(DbWriteOp::Metrics(metrics));
+
+        // Register the pool now so post-migration AMM swaps are captured even if
+        // the live `Migrate` event is later missed (e.g. across a WS reconnect).
+        self.register_pool(&mint);
 
         self.ping_strategy(mint.clone(), IngestKind::TokenCreated);
         self.emit_sse(SseEvent::TokenCreated {
@@ -193,6 +235,11 @@ impl IngestPipeline {
         if !self.token_cache.contains_key(&mint) {
             return;
         }
+
+        // Ensure the pool is registered before AMM swaps start arriving. Covers
+        // tokens created in a prior session (no create event this run) that
+        // migrate now.
+        self.register_pool(&mint);
 
         if let Some(mut token_state) = self.token_cache.get_mut(&mint) {
             token_state.is_migrated = true;

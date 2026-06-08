@@ -1,6 +1,9 @@
+use std::sync::Arc;
+
 use base64::{engine::general_purpose::STANDARD, Engine};
 use borsh::BorshDeserialize;
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
 use serde_json::{json, Value};
 use tracing::{debug, warn};
 
@@ -32,6 +35,10 @@ use crate::models::{
 
 pub struct HeliusDecoder {
     pump_program_id: String,
+    /// Shared pool→mint index for resolving live PumpSwap (AMM) swaps, whose
+    /// events carry the pool but not the base mint. `None` in contexts that
+    /// decode AMM trades with an explicit pool already in hand (token sync).
+    pool_index: Option<Arc<DashMap<String, String>>>,
 }
 
 /// Outcome of decoding one raw Helius WebSocket message.
@@ -49,7 +56,18 @@ pub enum DecodeOutput {
 
 impl HeliusDecoder {
     pub fn new(pump_program_id: String) -> Self {
-        Self { pump_program_id }
+        Self {
+            pump_program_id,
+            pool_index: None,
+        }
+    }
+
+    /// Attach a shared pool→mint index, enabling the live decode path to
+    /// recognise post-migration PumpSwap (AMM) swaps and attribute them back to
+    /// the tracked mint that owns the pool.
+    pub fn with_pool_index(mut self, index: Arc<DashMap<String, String>>) -> Self {
+        self.pool_index = Some(index);
+        self
     }
 
     /// Entry point: decode one raw WS text frame.
@@ -103,8 +121,16 @@ impl HeliusDecoder {
 
         let logs = extract_logs(meta);
 
-        // Fast-path: skip if this transaction doesn't involve Pump.fun
+        // Fast-path: a bonding-curve transaction mentions the pump.fun program.
+        // If it doesn't, it may still be a post-migration PumpSwap (AMM) swap for
+        // a token we track — those touch the AMM program instead and carry the
+        // pool rather than the base mint, so they're resolved via `pool_index`.
         if !logs.iter().any(|l| l.contains(&self.pump_program_id)) {
+            if self.pool_index.is_some()
+                && logs.iter().any(|l| l.contains(PUMP_SWAP_PROGRAM_ID))
+            {
+                return self.decode_amm_live(result, &logs);
+            }
             return DecodeOutput::Ignored;
         }
 
@@ -351,38 +377,16 @@ impl HeliusDecoder {
             if Trade::is_dust(ev.quote_amount) {
                 continue;
             }
-            let trade_type = if ev.is_buy {
-                TradeType::Buy
-            } else {
-                TradeType::Sell
-            };
-
-            let mut trade = Trade::new(
-                mint.to_string(),
-                ev.user,
-                trade_type,
-                ev.quote_amount,
-                ev.base_amount,
-                signature.clone(),
+            let trade = build_amm_trade(
+                &ev,
+                mint,
+                &signature,
                 slot,
                 block_time,
+                &labels_json,
+                trades.len() as u32,
+                raw_tx.received_at,
             );
-            // PumpSwap has no virtual reserves; `decode_pump_swap_trades_from_logs`
-            // already converted the event's PRE-swap snapshot to POST-swap pool
-            // reserves, so chart spot (sol / token) reflects each trade's price.
-            trade.virtual_sol_reserves = Some(ev.pool_quote_reserves);
-            trade.virtual_token_reserves = Some(ev.pool_base_reserves);
-            trade.real_sol_reserves = Some(ev.pool_quote_reserves);
-            trade.real_token_reserves = Some(ev.pool_base_reserves);
-            trade.instruction_type = match trade.trade_type {
-                TradeType::Buy => "Buy".to_string(),
-                TradeType::Sell => "Sell".to_string(),
-            };
-            trade.instruction_labels = labels_json.clone();
-            trade.leg_index = trades.len() as u32;
-            trade.received_at = raw_tx.received_at;
-            trade.venue = "amm".to_string();
-
             trades.push(trade);
         }
 
@@ -392,6 +396,118 @@ impl HeliusDecoder {
             Some((raw_tx, trades))
         }
     }
+
+    /// Live-ingest decode of a PumpSwap (AMM) transaction delivered by the WS
+    /// subscription. Mirrors [`decode_pump_swap_result`] but, since the WS stream
+    /// gives us no mint up front, resolves each swap's `pool` to a tracked mint
+    /// via the shared pool→mint index. Swaps for pools we don't track are
+    /// dropped. `logs` is reused from the caller to avoid re-extracting it for
+    /// the many AMM transactions that don't concern us.
+    fn decode_amm_live(&self, result: &Value, logs: &[&str]) -> DecodeOutput {
+        let Some(index) = self.pool_index.as_ref() else {
+            return DecodeOutput::Ignored;
+        };
+
+        // Decode swaps and resolve pool→mint first; bail without cloning the
+        // (large) result JSON when none of the pools are ones we track.
+        let resolved: Vec<(DecodedAmmTrade, String)> = decode_pump_swap_trades_from_logs(logs)
+            .into_iter()
+            .filter(|ev| !Trade::is_dust(ev.quote_amount))
+            .filter_map(|ev| index.get(&ev.pool).map(|m| (ev, m.value().clone())))
+            .collect();
+        if resolved.is_empty() {
+            return DecodeOutput::Ignored;
+        }
+
+        let signature = match result["signature"].as_str() {
+            Some(s) => s.to_string(),
+            None => return DecodeOutput::Ignored,
+        };
+        let slot = result["slot"].as_u64().unwrap_or(0);
+        let block_time = result["blockTime"]
+            .as_i64()
+            .or_else(|| result["transaction"]["blockTime"].as_i64())
+            .or_else(|| result["transaction"]["meta"]["blockTime"].as_i64())
+            .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
+            .unwrap_or_else(Utc::now);
+
+        let message = &result["transaction"]["transaction"]["message"];
+        let raw_tx = RawTransaction::new(signature.clone(), slot, block_time, result.clone());
+        let account_keys = extract_account_keys(message);
+        let (labels, _, _) = build_instruction_labels(message, &account_keys);
+        let labels_json = json!(labels);
+
+        let mut events = Vec::with_capacity(resolved.len());
+        for (ev, mint) in &resolved {
+            let trade = build_amm_trade(
+                ev,
+                mint,
+                &signature,
+                slot,
+                block_time,
+                &labels_json,
+                events.len() as u32,
+                raw_tx.received_at,
+            );
+            events.push(InternalEvent::TradeExecuted(TradeExecutedEvent {
+                trade,
+                tx_signature: signature.clone(),
+                slot,
+                timestamp: raw_tx.received_at,
+                raw_tx: raw_tx.clone(),
+            }));
+        }
+
+        DecodeOutput::Transaction { raw_tx, events }
+    }
+}
+
+/// Build a `Trade` from a decoded PumpSwap (AMM) swap for `mint`. Shared by the
+/// sync path ([`HeliusDecoder::decode_pump_swap_result`], explicit pool) and the
+/// live path ([`HeliusDecoder::decode_amm_live`], pool resolved via the index).
+#[allow(clippy::too_many_arguments)]
+fn build_amm_trade(
+    ev: &DecodedAmmTrade,
+    mint: &str,
+    signature: &str,
+    slot: u64,
+    block_time: DateTime<Utc>,
+    labels_json: &Value,
+    leg_index: u32,
+    received_at: DateTime<Utc>,
+) -> Trade {
+    let trade_type = if ev.is_buy {
+        TradeType::Buy
+    } else {
+        TradeType::Sell
+    };
+
+    let mut trade = Trade::new(
+        mint.to_string(),
+        ev.user.clone(),
+        trade_type,
+        ev.quote_amount,
+        ev.base_amount,
+        signature.to_string(),
+        slot,
+        block_time,
+    );
+    // PumpSwap has no virtual reserves; `decode_pump_swap_trades_from_logs`
+    // already converted the event's PRE-swap snapshot to POST-swap pool
+    // reserves, so chart spot (sol / token) reflects each trade's price.
+    trade.virtual_sol_reserves = Some(ev.pool_quote_reserves);
+    trade.virtual_token_reserves = Some(ev.pool_base_reserves);
+    trade.real_sol_reserves = Some(ev.pool_quote_reserves);
+    trade.real_token_reserves = Some(ev.pool_base_reserves);
+    trade.instruction_type = match trade.trade_type {
+        TradeType::Buy => "Buy".to_string(),
+        TradeType::Sell => "Sell".to_string(),
+    };
+    trade.instruction_labels = labels_json.clone();
+    trade.leg_index = leg_index;
+    trade.received_at = received_at;
+    trade.venue = "amm".to_string();
+    trade
 }
 
 // ---------------------------------------------------------------------------
