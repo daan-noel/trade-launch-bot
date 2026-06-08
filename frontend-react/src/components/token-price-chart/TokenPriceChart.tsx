@@ -52,6 +52,7 @@ import {
 } from './constants';
 import { BarCrosshairTooltip } from './BarCrosshairTooltip';
 import { SwingCrosshairTooltip } from './SwingCrosshairTooltip';
+import { ChainHighlightTooltip, type ChainTradeCounts } from './ChainHighlightTooltip';
 import { WalletMarkersTooltip } from './WalletMarkersTooltip';
 import { WalletMarkersPlugin, asSeriesPrimitive, type WalletMarkerDef } from './walletMarkersPlugin';
 import { ChainHighlightPlugin, asChainPrimitive } from './chainHighlightPlugin';
@@ -74,6 +75,8 @@ import type {
   ChartSwingLeg,
   ChartBarTooltipState,
   ChartSwingTooltipState,
+  ChartChainTooltipState,
+  ChartChainHighlight,
   ChartWalletMarkersTooltipState,
   ChartTrade,
   OhlcBar,
@@ -310,6 +313,23 @@ function buildWalletBarActivityMap(
   return result;
 }
 
+/** Total/buy/sell trade counts inside the chain window [startAt, endAt] (ms epoch). */
+function computeChainTradeCounts(
+  trades: ChartTrade[],
+  highlight: ChartChainHighlight | null,
+): ChainTradeCounts {
+  if (!highlight) return { total: 0, buy: 0, sell: 0 };
+  let buy = 0;
+  let sell = 0;
+  for (const t of trades) {
+    const ms = new Date(t.block_time).getTime();
+    if (Number.isNaN(ms) || ms < highlight.startAt || ms > highlight.endAt) continue;
+    if (t.trade_type === 'buy') buy += 1;
+    else sell += 1;
+  }
+  return { total: buy + sell, buy, sell };
+}
+
 function panelClass(className?: string) {
   return cn('rounded-lg border', className);
 }
@@ -387,6 +407,8 @@ export function TokenPriceChart({
   const markersPluginRef = useRef<MarkersPlugin | null>(null);
   const walletMarkersPrimRef = useRef<WalletMarkersPlugin | null>(null);
   const chainHighlightPrimRef = useRef<ChainHighlightPlugin | null>(null);
+  const highlightChainRef = useRef(highlightChain);
+  highlightChainRef.current = highlightChain;
   const barsRef = useRef<OhlcBar[]>([]);
 
   const initialPrefs = loadPrefs();
@@ -406,6 +428,7 @@ export function TokenPriceChart({
   const [crosshair, setCrosshair] = useState<ChartCrosshairInfo | null>(null);
   const [barTooltip, setBarTooltip] = useState<ChartBarTooltipState | null>(null);
   const [swingTooltip, setSwingTooltip] = useState<ChartSwingTooltipState | null>(null);
+  const [chainTooltip, setChainTooltip] = useState<ChartChainTooltipState | null>(null);
   const [walletMarkersTooltip, setWalletMarkersTooltip] = useState<ChartWalletMarkersTooltipState | null>(null);
   /** Visible window mirrored from the chart's time scale, drives the range slider. */
   const [sliderWindow, setSliderWindow] = useState<{ from: number; to: number } | null>(null);
@@ -518,6 +541,11 @@ export function TokenPriceChart({
     [groupMode, chartTimezone],
   );
   const formatVol = useMemo(() => createChartPriceFormatter('SOL'), []);
+
+  const chainTradeCounts = useMemo(
+    () => computeChainTradeCounts(sortedTrades, highlightChain),
+    [sortedTrades, highlightChain],
+  );
 
   const athLineAvailable = athChartValue(athPriceInSol, metric, toValue) != null;
 
@@ -632,6 +660,21 @@ export function TokenPriceChart({
     ro.observe(el);
 
     chart.subscribeCrosshairMove((param) => {
+      // Hovering the chain label chip (not the band body) shows the chain totals
+      // tooltip and suppresses every other tooltip.
+      const onChainLabel =
+        param.point != null &&
+        (chainHighlightPrimRef.current?.containsLabelPoint(param.point.x, param.point.y) ??
+          false);
+      if (onChainLabel && highlightChainRef.current && param.point) {
+        setChainTooltip({ highlight: highlightChainRef.current, point: param.point });
+        setSwingTooltip(null);
+        setBarTooltip(null);
+        setWalletMarkersTooltip(null);
+        return;
+      }
+      setChainTooltip(null);
+
       const hovered =
         param.hoveredSeries ?? param.hoveredInfo?.series;
       const onSwingSeries =
@@ -825,6 +868,7 @@ export function TokenPriceChart({
       setCrosshair(null);
       setBarTooltip(null);
       setSwingTooltip(null);
+      setChainTooltip(null);
       setWalletMarkersTooltip(null);
     };
   }, [showChart, height, groupingKey, groupMode, priceUnit, chartTimezone]);
@@ -1305,6 +1349,14 @@ export function TokenPriceChart({
             tooltip={swingTooltip}
             formatPrice={formatSwingPrice}
             formatAmount={formatSwingAmount}
+          />
+        )}
+        {chainTooltip && (
+          <ChainHighlightTooltip
+            tooltip={chainTooltip}
+            tradeCounts={chainTradeCounts}
+            formatAmount={formatSwingAmount}
+            formatPrice={formatSwingPrice}
           />
         )}
         {walletMarkersTooltip && (

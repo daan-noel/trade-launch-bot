@@ -23,17 +23,39 @@ export interface ChainHighlightDef {
   pairCount: number;
 }
 
+/** Label chip rectangle in media (CSS) pixels — used for both drawing and hit-testing. */
+interface LabelRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
 /** Band geometry in media (CSS) pixels, recomputed each frame from the time scale. */
 interface RenderedBand {
   left: number;
   right: number;
   label: string;
+  /** Chip rect (CSS px) so the host can hit-test the label independently of the band. */
+  labelRect: LabelRect;
 }
 
 const LABEL_PAD_X = 6; // CSS px horizontal padding inside the label chip
 const LABEL_TOP = 6; // CSS px from the top of the pane to the chip
 const LABEL_HEIGHT = 16; // CSS px chip height
+const LABEL_FONT = 'bold 10px sans-serif'; // chip text font (CSS px)
 const MIN_HALF = 3; // CSS px minimum half-bar so narrow bands stay visible
+
+/** Cached offscreen 2D context for measuring chip text width in CSS px. */
+let measureCtx: CanvasRenderingContext2D | null | undefined;
+function measureLabelWidth(text: string): number {
+  if (measureCtx === undefined) {
+    measureCtx = document.createElement('canvas').getContext('2d');
+  }
+  if (!measureCtx) return text.length * 6; // rough fallback if no 2D context
+  measureCtx.font = LABEL_FONT;
+  return measureCtx.measureText(text).width;
+}
 
 function roundRectPath(
   ctx: CanvasRenderingContext2D,
@@ -92,25 +114,24 @@ class ChainLabelRenderer implements IPrimitivePaneRenderer {
     if (!band) return;
     target.useBitmapCoordinateSpace(({ context: ctx, horizontalPixelRatio: hr, verticalPixelRatio: vr }) => {
       const s = Math.min(hr, vr);
-      const cx = ((band.left + band.right) / 2) * hr;
-      const top = LABEL_TOP * vr;
+      const { left, top, width, height } = band.labelRect;
+      const chipLeft = left * hr;
+      const chipTop = top * vr;
+      const chipWidth = width * hr;
+      const chipHeight = height * vr;
+      const cx = chipLeft + chipWidth / 2;
 
       ctx.save();
       ctx.font = `bold ${Math.round(10 * s)}px sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
 
-      const textWidth = ctx.measureText(band.label).width;
-      const chipWidth = textWidth + LABEL_PAD_X * 2 * s;
-      const chipHeight = LABEL_HEIGHT * s;
-      const chipLeft = cx - chipWidth / 2;
-
       ctx.fillStyle = CHART_COLORS.chainBandLabelBg;
-      roundRectPath(ctx, chipLeft, top, chipWidth, chipHeight, 3 * s);
+      roundRectPath(ctx, chipLeft, chipTop, chipWidth, chipHeight, 3 * s);
       ctx.fill();
 
       ctx.fillStyle = CHART_COLORS.chainBandLabelText;
-      ctx.fillText(band.label, cx, top + chipHeight / 2);
+      ctx.fillText(band.label, cx, chipTop + chipHeight / 2);
       ctx.restore();
     });
   }
@@ -181,11 +202,34 @@ export class ChainHighlightPlugin
     const half =
       c0 != null && c1 != null ? Math.max(MIN_HALF, Math.abs(c1 - c0) / 2) : MIN_HALF;
 
+    const left = Math.min(xLo, xHi) - half;
+    const right = Math.max(xLo, xHi) + half;
+    const label = `Longest chain · ${def.pairCount} pairs`;
+    const chipWidth = measureLabelWidth(label) + LABEL_PAD_X * 2;
+
     this._band = {
-      left: Math.min(xLo, xHi) - half,
-      right: Math.max(xLo, xHi) + half,
-      label: `Longest chain · ${def.pairCount} pairs`,
+      left,
+      right,
+      label,
+      labelRect: {
+        left: (left + right) / 2 - chipWidth / 2,
+        top: LABEL_TOP,
+        width: chipWidth,
+        height: LABEL_HEIGHT,
+      },
     };
+  }
+
+  /** True when (x, y) in CSS px lands on the label chip — not the band body. */
+  containsLabelPoint(x: number, y: number): boolean {
+    const rect = this._band?.labelRect;
+    if (!rect) return false;
+    return (
+      x >= rect.left &&
+      x <= rect.left + rect.width &&
+      y >= rect.top &&
+      y <= rect.top + rect.height
+    );
   }
 
   paneViews(): readonly IPrimitivePaneView[] {

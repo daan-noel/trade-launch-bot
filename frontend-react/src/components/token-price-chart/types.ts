@@ -109,6 +109,26 @@ export interface ChartChainHighlight {
   endAt: number;
   /** Pairs linked in the chain (for the label). */
   pairCount: number;
+  /** Total SOL inflow across every leg in the chain. */
+  inflow: number;
+  /** Total SOL outflow across every leg in the chain. */
+  outflow: number;
+  /** Net SOL flow (inflow − outflow) across the chain. */
+  netFlow: number;
+  /** Chain wall-clock span (ms). */
+  durationMs: number;
+  /** Price change across the chain (last end price − first start price). */
+  priceDelta: number;
+  /** `priceDelta` as a percentage of the first start price; null if unknown. */
+  priceDeltaPct: number | null;
+  /** Total trades across every leg in the chain. */
+  tradeCount: number;
+}
+
+/** Tooltip shown when the crosshair hovers the chain label chip. */
+export interface ChartChainTooltipState {
+  highlight: ChartChainHighlight;
+  point: { x: number; y: number };
 }
 
 export interface WalletBarActivity {

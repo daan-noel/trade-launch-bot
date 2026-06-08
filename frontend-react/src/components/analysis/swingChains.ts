@@ -27,7 +27,7 @@ export interface SwingChainStats {
   longestChain: SwingChainSpan | null;
 }
 
-/** Time span (ms) covered by a chain, plus its pair count. */
+/** Time span (ms) covered by a chain, plus its pair count and flow totals. */
 export interface SwingChainSpan {
   /** First pair's high start (ms epoch). */
   startAt: number;
@@ -35,12 +35,30 @@ export interface SwingChainSpan {
   endAt: number;
   /** Pairs linked in the chain. */
   pairCount: number;
+  /** Total SOL inflow across every leg in the chain. */
+  inflow: number;
+  /** Total SOL outflow across every leg in the chain. */
+  outflow: number;
+  /** Net SOL flow (inflow − outflow) across the chain. */
+  netFlow: number;
+  /** Chain wall-clock span (ms) — `endAt − startAt`. */
+  durationMs: number;
+  /** Price change across the chain: last pair's end price − first pair's start price. */
+  priceDelta: number;
+  /** `priceDelta` as a percentage of the first start price; null if that price is 0. */
+  priceDeltaPct: number | null;
+  /** Total trades across every leg in the chain. */
+  tradeCount: number;
 }
 
 /** One high→low swing pair, spanning the up-leg start through the down-leg end. */
 interface SwingPair {
   startAt: number;
   endAt: number;
+  /** The swing_high leg that opens the pair. */
+  high: SwingLegRecord;
+  /** The swing_low leg that closes the pair. */
+  low: SwingLegRecord;
 }
 
 /**
@@ -55,13 +73,45 @@ function toSwingPairs(swings: SwingLegRecord[]): SwingPair[] {
     const high = sorted[i];
     const low = sorted[i + 1];
     if (high.type === 'swing_high' && low?.type === 'swing_low') {
-      pairs.push({ startAt: high.start_at, endAt: low.end_at });
+      pairs.push({ startAt: high.start_at, endAt: low.end_at, high, low });
       i += 2; // consume the pair
     } else {
       i += 1; // unpaired leg — skip
     }
   }
   return pairs;
+}
+
+/** Sum flow totals + price delta over the inclusive pair range `[lo, hi]`. */
+function summariseChain(pairs: SwingPair[], lo: number, hi: number): SwingChainSpan {
+  let inflow = 0;
+  let outflow = 0;
+  let netFlow = 0;
+  let tradeCount = 0;
+  for (let k = lo; k <= hi; k++) {
+    const { high, low } = pairs[k];
+    inflow += high.inflow + low.inflow;
+    outflow += high.outflow + low.outflow;
+    netFlow += high.net_flow + low.net_flow;
+    tradeCount += high.trade_count + low.trade_count;
+  }
+  const startAt = pairs[lo].startAt;
+  const endAt = pairs[hi].endAt;
+  const startPrice = pairs[lo].high.start_price;
+  const endPrice = pairs[hi].low.end_price;
+  const priceDelta = endPrice - startPrice;
+  return {
+    startAt,
+    endAt,
+    pairCount: hi - lo + 1,
+    inflow,
+    outflow,
+    netFlow,
+    durationMs: endAt - startAt,
+    priceDelta,
+    priceDeltaPct: startPrice > 0 ? (priceDelta / startPrice) * 100 : null,
+    tradeCount,
+  };
 }
 
 /**
@@ -108,9 +158,6 @@ export function computeChainStats(
     totalPairCount: m,
     maxSequentialPairCount: maxRun,
     chainCount,
-    longestChain:
-      maxStart >= 0
-        ? { startAt: pairs[maxStart].startAt, endAt: pairs[maxEnd].endAt, pairCount: maxRun }
-        : null,
+    longestChain: maxStart >= 0 ? summariseChain(pairs, maxStart, maxEnd) : null,
   };
 }
