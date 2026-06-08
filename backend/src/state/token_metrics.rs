@@ -1,4 +1,5 @@
 use chrono::Utc;
+use tracing::warn;
 
 use crate::{
     config::constants::RUGGED_STALE_SECONDS,
@@ -64,6 +65,9 @@ pub async fn compute_is_rugged(trade_repo: &TradeRepo, m: &TokenMetricsWrite) ->
         .await
     {
         Ok(balance) => balance <= 0.0,
-        Err(_) => false,
+        Err(err) => {
+            warn!("rugged check {}: {err}", m.mint);
+            false
+        }
     }
 }

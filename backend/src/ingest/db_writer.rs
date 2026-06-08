@@ -6,8 +6,8 @@ use tokio::sync::mpsc;
 use tracing::{error, warn};
 
 use crate::{
-    config::constants::RUGGED_STALE_SECONDS,
     models::{token::Token, trade::Trade, transaction::RawTransaction},
+    state::token_metrics::compute_is_rugged,
     storage::repositories::{
         token_info_repo::TokenInfoRepo, token_repo::TokenRepo, trade_repo::TradeRepo,
         transaction_repo::TransactionRepo, wallet_repo::WalletRepo,
@@ -149,36 +149,6 @@ impl DbWriter {
                     }
                 }
             }
-        }
-    }
-}
-
-async fn compute_is_rugged(trade_repo: &TradeRepo, m: &TokenMetricsWrite) -> bool {
-    let last_trade_at = match m.last_trade_at {
-        Some(ts) => ts,
-        None => return false,
-    };
-
-    if Utc::now()
-        .signed_duration_since(last_trade_at)
-        .num_seconds()
-        < RUGGED_STALE_SECONDS
-    {
-        return false;
-    }
-
-    if m.creator_wallet.is_empty() {
-        return false;
-    }
-
-    match trade_repo
-        .net_token_amount_by_wallet_and_mint(&m.creator_wallet, &m.mint)
-        .await
-    {
-        Ok(balance) => balance <= 0.0,
-        Err(err) => {
-            warn!("DbWriter: rugged check {}: {err}", m.mint);
-            false
         }
     }
 }
