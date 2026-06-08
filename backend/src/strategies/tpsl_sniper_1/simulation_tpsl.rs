@@ -323,9 +323,12 @@ pub async fn run_simulation(
         .await
         .map_err(|e| anyhow!("DB error fetching tokens: {e}"))?;
 
+    // Never trade Mayhem-Mode tokens: they carry an AI random-walk agent (2B supply,
+    // net-sell drift, ±300% noise) for their first 24h — manufactured chaos, not a
+    // snipeable edge. Exclude them outright (legacy-only policy, 2026-06 regime).
     let tokens: Vec<_> = all_tokens
         .into_iter()
-        .filter(|t| token_matches_rule(t, &rule))
+        .filter(|t| !t.is_mayhem_mode && token_matches_rule(t, &rule))
         .collect();
 
     let trade_repo = TradeRepo::new(app_state.db.clone());
