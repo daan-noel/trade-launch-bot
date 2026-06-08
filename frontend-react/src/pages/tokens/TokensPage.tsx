@@ -151,12 +151,6 @@ export function TokensPage() {
           rowKey={(r) => r.mint_address}
           selectedKey={selectedMint}
           onSelect={setSelectedMint}
-          rowDetail={() => (
-            <div className="flex flex-col gap-2.5">
-              <TokenDetailPanel detail={detail ?? null} loading={detailLoading} error={detailError} />
-              <TokenTradeChart detail={detail ?? null} />
-            </div>
-          )}
           searchable
           colFilters
           colToggle
@@ -164,6 +158,19 @@ export function TokensPage() {
           storageKey="tokens_visible_cols"
           emptyMessage="No tokens found"
         />
+      )}
+
+      {/* Detail section lives BELOW the table, outside its horizontal scroll box,
+          so the chart sizes to the page width and never inherits the table's
+          x-scroll. Selecting a row highlights it and fills this panel. */}
+      {selectedMint && (
+        <div
+          id={`detail-${selectedMint}`}
+          className="mt-3.5 flex flex-col gap-2.5 rounded-lg border border-white/6 bg-bg-panel p-3"
+        >
+          <TokenDetailPanel detail={detail ?? null} loading={detailLoading} error={detailError} />
+          <TokenTradeChart detail={detail ?? null} />
+        </div>
       )}
     </div>
   );
