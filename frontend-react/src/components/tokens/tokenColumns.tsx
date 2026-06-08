@@ -71,6 +71,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'symbol',
       label: 'Symbol',
+      group: 'identity',
       width: '90px',
       sortable: true,
       render: (r) => r.symbol,
@@ -80,6 +81,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'name',
       label: 'Name',
+      group: 'identity',
       width: '120px',
       sortable: true,
       render: (r) => r.name,
@@ -89,6 +91,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'mint',
       label: 'Mint',
+      group: 'identity',
       width: '165px',
       sortable: true,
       render: (r) => (
@@ -100,6 +103,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'creator',
       label: 'Creator',
+      group: 'identity',
       width: '165px',
       sortable: true,
       render: (r) => (
@@ -111,6 +115,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'create_tx',
       label: 'Create TX',
+      group: 'identity',
       width: '165px',
       render: (r) => (
         <AddressDisplay address={r.create_tx_address} kind="transaction" stopPropagation />
@@ -120,6 +125,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'token_age',
       label: 'Token Age',
+      group: 'activity',
       width: '72px',
       sortable: true,
       render: (r) => <span className={ageClass(r.age)}>{formatAge(r.age)}</span>,
@@ -129,6 +135,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'created',
       label: 'Created',
+      group: 'activity',
       width: '110px',
       sortable: true,
       render: (r) => <DateCell iso={r.created_at} />,
@@ -138,6 +145,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'last_trade',
       label: 'Last Trade',
+      group: 'activity',
       width: '110px',
       sortable: true,
       render: (r) => <DateCell iso={r.last_trade_at} />,
@@ -147,6 +155,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'lifetime',
       label: 'Lifetime',
+      group: 'activity',
       width: '72px',
       sortable: true,
       render: (r) =>
@@ -164,6 +173,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'last_synced',
       label: 'Last Synced',
+      group: 'activity',
       width: '96px',
       sortable: true,
       render: (r) => <RelativeTimeCell iso={r.last_synced_at} />,
@@ -173,6 +183,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'trade_count',
       label: 'Trades',
+      group: 'activity',
       width: '66px',
       sortable: true,
       render: (r) => r.trade_count,
@@ -182,6 +193,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'ath_price',
       label: 'ATH',
+      group: 'price',
       width: '88px',
       sortable: true,
       render: (r) => (r.ath_price != null ? price.displayPrice(r.ath_price) : '-'),
@@ -191,6 +203,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'ath_timestamp',
       label: 'ATH At',
+      group: 'price',
       width: '110px',
       sortable: true,
       render: (r) => <DateCell iso={r.ath_timestamp} />,
@@ -200,6 +213,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'ath_fep_ratio',
       label: 'ATH/FEP',
+      group: 'price',
       width: '88px',
       sortable: true,
       render: (r) => {
@@ -221,6 +235,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'current_price',
       label: 'Price',
+      group: 'price',
       width: '88px',
       sortable: true,
       render: (r) => (
@@ -234,6 +249,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'current_fep_ratio',
       label: 'Cur/FEP',
+      group: 'price',
       width: '76px',
       sortable: true,
       render: (r) => {
@@ -255,6 +271,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'market_cap',
       label: 'MCap',
+      group: 'market',
       width: '84px',
       sortable: true,
       render: (r) => (r.market_cap != null ? price.displayCompact(r.market_cap, 3) : '-'),
@@ -264,6 +281,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'volume',
       label: 'Volume',
+      group: 'market',
       width: '78px',
       sortable: true,
       render: (r) => price.displayCompact(r.volume_sol_total, 4),
@@ -273,6 +291,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'initial_buy',
       label: 'Init Buy',
+      group: 'initial',
       width: '78px',
       sortable: true,
       render: (r) => (r.initial_buy_sol != null ? price.displayAmount(r.initial_buy_sol) : '-'),
@@ -282,6 +301,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'init_supply',
       label: 'Init Supply',
+      group: 'initial',
       width: '90px',
       sortable: true,
       render: (r) =>
@@ -292,6 +312,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'token_amount',
       label: 'Token Amt',
+      group: 'max_or_spendable',
       width: '90px',
       sortable: true,
       render: (r) => (r.token_amount != null ? formatCompact(r.token_amount, 2) : '-'),
@@ -301,6 +322,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'max_sol_cost',
       label: 'Max SOL Cost',
+      group: 'max_or_spendable',
       width: '100px',
       sortable: true,
       render: (r) =>
@@ -311,6 +333,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'spendable_sol_in',
       label: 'Spendable SOL In',
+      group: 'max_or_spendable',
       width: '100px',
       sortable: true,
       render: (r) =>
@@ -321,6 +344,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'min_tokens_out',
       label: 'Min Tokens',
+      group: 'max_or_spendable',
       width: '90px',
       sortable: true,
       render: (r) => (r.min_tokens_out != null ? formatCompact(r.min_tokens_out, 2) : '-'),
@@ -330,6 +354,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'cu_limit',
       label: 'CU Limit',
+      group: 'compute',
       width: '72px',
       sortable: true,
       render: (r) => (r.cu_limit != null ? r.cu_limit : '-'),
@@ -339,6 +364,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'cu_price',
       label: 'CU Price',
+      group: 'compute',
       width: '72px',
       sortable: true,
       render: (r) => (r.cu_price != null ? formatWithCommas(r.cu_price) : '-'),
@@ -348,6 +374,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'ix_count',
       label: 'IX Count',
+      group: 'ix',
       width: '54px',
       sortable: true,
       render: (r) => <IxCountCell row={r} />,
@@ -357,6 +384,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'ix_labels',
       label: 'IX Labels',
+      group: 'ix',
       width: '180px',
       sortable: false,
       render: (r) => {
@@ -372,6 +400,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'migrated',
       label: 'Migrated',
+      group: 'flags',
       width: '66px',
       sortable: true,
       render: (r) => (r.is_migrated ? '✓' : ''),
@@ -381,6 +410,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'mayhem_mode',
       label: 'Mayhem',
+      group: 'flags',
       width: '66px',
       sortable: true,
       render: (r) => (r.is_mayhem_mode ? '✓' : ''),
@@ -390,6 +420,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
     {
       key: 'cashback',
       label: 'Cashback',
+      group: 'flags',
       width: '72px',
       sortable: true,
       render: (r) => (r.is_cashback_enabled ? '✓' : ''),

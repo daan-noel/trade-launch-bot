@@ -13,4 +13,5 @@ export interface ColumnDef<R> {
   sortable?: boolean;
   defaultVisible?: boolean;
   width?: string;
+  group?: string;
 }

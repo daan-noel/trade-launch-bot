@@ -100,6 +100,37 @@ export function DataTable<R>({
     [columns, visibleCols],
   );
 
+  // Assign each visible column a group index (consecutive same-group cols share
+  // it; the next group flips). Drives the even/odd tint + boundary divider.
+  // The Actions column is treated as its own trailing group, so its tint
+  // continues the alternation from the last data column.
+  const { colGroups, actionsTinted } = useMemo(() => {
+    let groupIdx = -1;
+    let prevGroup: string | undefined;
+    let started = false;
+    const groups = visCols.map((col) => {
+      const isStart = !started || col.group !== prevGroup;
+      if (isStart) groupIdx += 1;
+      started = true;
+      prevGroup = col.group;
+      return { isStart, tinted: groupIdx % 2 === 1 };
+    });
+    return { colGroups: groups, actionsTinted: (groupIdx + 1) % 2 === 1 };
+  }, [visCols]);
+
+  // Boundary divider on a group's first column + faint tint on odd groups.
+  const groupCellCls = (ci: number) =>
+    cn(
+      colGroups[ci]?.isStart && ci > 0 && 'border-l border-white/10',
+      colGroups[ci]?.tinted && 'shadow-[inset_0_0_0_1000px_rgba(255,255,255,0.02)]',
+    );
+
+  // Actions is always a new trailing group → always gets the boundary divider.
+  const actionsCellCls = cn(
+    'border-l border-white/10',
+    actionsTinted && 'shadow-[inset_0_0_0_1000px_rgba(255,255,255,0.02)]',
+  );
+
   const processed = useMemo(() => {
     const searchLower = search.toLowerCase();
     let list = rows.filter((row) => {
@@ -243,6 +274,7 @@ export function DataTable<R>({
                     className={cn(
                       'sticky top-0 bg-bg-panel px-2 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-primary',
                       col.sortable !== false && 'cursor-pointer hover:text-accent',
+                      groupCellCls(ci),
                       hoverable && hoveredCol === ci + 1 && 'bg-primary/12',
                     )}
                     onClick={col.sortable !== false ? () => toggleSort(col.key) : undefined}
@@ -256,7 +288,7 @@ export function DataTable<R>({
                   </th>
                 ))}
                 {rowActions && (
-                  <th className="sticky top-0 bg-bg-panel px-2 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-primary">
+                  <th className={cn('sticky top-0 bg-bg-panel px-2 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-primary', actionsCellCls)}>
                     Actions
                   </th>
                 )}
@@ -264,8 +296,8 @@ export function DataTable<R>({
               {colFilters && showFilterRow && (
                 <tr>
                   <th className="bg-bg-panel px-1 py-1" />
-                  {visCols.map((col) => (
-                    <th key={`f-${col.key}`} className="bg-bg-panel px-1 py-1">
+                  {visCols.map((col, ci) => (
+                    <th key={`f-${col.key}`} className={cn('bg-bg-panel px-1 py-1', groupCellCls(ci))}>
                       <Input
                         type="text"
                         fieldSize="table"
@@ -278,7 +310,7 @@ export function DataTable<R>({
                       />
                     </th>
                   ))}
-                  {rowActions && <th className="bg-bg-panel px-1 py-1" />}
+                  {rowActions && <th className={cn('bg-bg-panel px-1 py-1', actionsCellCls)} />}
                 </tr>
               )}
             </thead>
@@ -312,6 +344,7 @@ export function DataTable<R>({
                             key={col.key}
                             className={cn(
                               'border-b border-border px-2 py-1.5 text-center text-text',
+                              groupCellCls(ci),
                               hoverable && hoveredCol === ci + 1 && 'bg-primary/12',
                             )}
                             onMouseEnter={hoverable ? () => setHoveredCol(ci + 1) : undefined}
@@ -322,7 +355,7 @@ export function DataTable<R>({
                         ))}
                         {rowActions && (
                           <td
-                            className="border-b border-border px-2 py-1.5 text-center"
+                            className={cn('border-b border-border px-2 py-1.5 text-center', actionsCellCls)}
                             onClick={(e) => e.stopPropagation()}
                           >
                             {rowActions(row)}
