@@ -98,26 +98,26 @@ impl TpslStrategyService {
             info!("Token {mint} matches TPSL buy entry rule {rule_id}");
 
             if let Some(rule) = handler.get_rule(rule_id) {
-                let max_holding = ignore_zero_u64(rule.p_max_holding_tokens).map(|v| v as usize);
-                let total_max_trade_tokens =
-                    ignore_zero_u64(rule.p_total_max_trade_tokens).map(|v| v as usize);
+                let max_concurrent_tokens = ignore_zero_u64(rule.p_max_concurrent_tokens).map(|v| v as usize);
+                let max_total_tokens =
+                    ignore_zero_u64(rule.p_max_total_tokens).map(|v| v as usize);
 
-                if let Some(max_holding_tokens) = max_holding {
+                if let Some(cap) = max_concurrent_tokens {
                     let current_holding = self.runtime.holding_count_by_rule(rule_id);
-                    if current_holding >= max_holding_tokens as i64 {
+                    if current_holding >= cap as i64 {
                         debug!(
-                            "Rule {rule_id} reached max holding tokens \
-                             ({current_holding}/{max_holding_tokens}), skipping {mint}"
+                            "Rule {rule_id} reached max concurrent tokens \
+                             ({current_holding}/{cap}), skipping {mint}"
                         );
                         return;
                     }
                 }
 
-                if let Some(total_max) = total_max_trade_tokens {
+                if let Some(total_max) = max_total_tokens {
                     let total_traded = self.runtime.total_count_by_rule(rule_id);
                     if total_traded >= total_max as i64 {
                         debug!(
-                            "Rule {rule_id} reached total max trade tokens \
+                            "Rule {rule_id} reached max total tokens \
                              ({total_traded}/{total_max}), skipping {mint}"
                         );
                         return;

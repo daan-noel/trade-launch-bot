@@ -16,8 +16,8 @@ export interface RuleFormData {
   cuPrice: string;
   maxSolCost: string;
   spendableSolIn: string;
-  maxHoldingTokens: string;
-  totalMaxTradeTokens: string;
+  maxConcurrentTokens: string;
+  maxTotalTokens: string;
   ixLabels: string;
   buyAmount: string;
   takeProfit: string;
@@ -34,8 +34,8 @@ export function emptyForm(): RuleFormData {
     cuPrice: '',
     maxSolCost: '',
     spendableSolIn: '',
-    maxHoldingTokens: '',
-    totalMaxTradeTokens: '',
+    maxConcurrentTokens: '',
+    maxTotalTokens: '',
     ixLabels: '',
     buyAmount: '',
     takeProfit: '',
@@ -56,8 +56,8 @@ export function formFromRule(rule: RuleRecord): RuleFormData {
     cuPrice: rule.p_cu_price?.toString() ?? '',
     maxSolCost: rule.p_max_sol_cost?.toString() ?? '',
     spendableSolIn: rule.p_spendable_sol_in?.toString() ?? '',
-    maxHoldingTokens: rule.p_max_holding_tokens?.toString() ?? '',
-    totalMaxTradeTokens: rule.p_total_max_trade_tokens?.toString() ?? '',
+    maxConcurrentTokens: rule.p_max_concurrent_tokens?.toString() ?? '',
+    maxTotalTokens: rule.p_max_total_tokens?.toString() ?? '',
     ixLabels: labels,
     buyAmount: rule.buy_amount.toString(),
     takeProfit: rule.take_profit.toString(),
@@ -155,14 +155,14 @@ export function RuleFormModal({
               onChange={(e) => set({ spendableSolIn: e.target.value })} className={fieldCls()} />
           </label>
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Max Holding Tokens</span>
-            <Input type="number" fieldSize="md" value={form.maxHoldingTokens} readOnly={locked}
-              onChange={(e) => set({ maxHoldingTokens: e.target.value })} className={fieldCls()} />
+            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Max Concurrent Tokens</span>
+            <Input type="number" fieldSize="md" value={form.maxConcurrentTokens} readOnly={locked}
+              onChange={(e) => set({ maxConcurrentTokens: e.target.value })} className={fieldCls()} />
           </label>
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Total Max Trade Tokens</span>
-            <Input type="number" fieldSize="md" value={form.totalMaxTradeTokens} readOnly={locked}
-              onChange={(e) => set({ totalMaxTradeTokens: e.target.value })} className={fieldCls()} />
+            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Max Total Tokens</span>
+            <Input type="number" fieldSize="md" value={form.maxTotalTokens} readOnly={locked}
+              onChange={(e) => set({ maxTotalTokens: e.target.value })} className={fieldCls()} />
           </label>
         </div>
 
@@ -248,8 +248,8 @@ export function buildCreatePayload(form: RuleFormData) {
     p_cu_price: parseOptU(form.cuPrice) ?? null,
     p_max_sol_cost: parseOptF(form.maxSolCost) ?? null,
     p_spendable_sol_in: parseOptF(form.spendableSolIn) ?? null,
-    p_max_holding_tokens: parseOptU(form.maxHoldingTokens) ?? null,
-    p_total_max_trade_tokens: parseOptU(form.totalMaxTradeTokens) ?? null,
+    p_max_concurrent_tokens: parseOptU(form.maxConcurrentTokens) ?? null,
+    p_max_total_tokens: parseOptU(form.maxTotalTokens) ?? null,
     p_ix_labels: parseIxLabels(form.ixLabels),
     trade_mode: form.tradeMode,
     buy_amount: parseFloat(form.buyAmount),
@@ -276,11 +276,11 @@ export function buildUpdatePayload(form: RuleFormData, allowParams: boolean) {
     p_cu_price: form.cuPrice.trim() ? parseInt(form.cuPrice, 10) : 0,
     p_max_sol_cost: form.maxSolCost.trim() ? parseFloat(form.maxSolCost) : 0,
     p_spendable_sol_in: form.spendableSolIn.trim() ? parseFloat(form.spendableSolIn) : 0,
-    p_max_holding_tokens: form.maxHoldingTokens.trim()
-      ? parseInt(form.maxHoldingTokens, 10)
+    p_max_concurrent_tokens: form.maxConcurrentTokens.trim()
+      ? parseInt(form.maxConcurrentTokens, 10)
       : 0,
-    p_total_max_trade_tokens: form.totalMaxTradeTokens.trim()
-      ? parseInt(form.totalMaxTradeTokens, 10)
+    p_max_total_tokens: form.maxTotalTokens.trim()
+      ? parseInt(form.maxTotalTokens, 10)
       : 0,
     p_ix_labels: parseIxLabels(form.ixLabels),
   };

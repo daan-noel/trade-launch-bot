@@ -16,14 +16,14 @@ pub struct StrategyTPSLRule {
     pub p_cu_limit: Option<u64>,
     /// Compute-unit price constraint (optional), in micro-lamports per CU.
     pub p_cu_price: Option<u64>,
-    /// Maximum total SOL cost for a buy candidate (optional).
+    /// Filter: match the token's creation-instruction max_sol_cost (optional).
     pub p_max_sol_cost: Option<f64>,
-    /// Spendable SOL available when evaluating this rule (optional).
+    /// Filter: match the token's creation-instruction spendable_sol_in (optional).
     pub p_spendable_sol_in: Option<f64>,
-    /// Maximum number of tokens that can be held simultaneously during simulation.
-    pub p_max_holding_tokens: Option<u64>,
-    /// Maximum total number of trades/tokens this rule may create over time.
-    pub p_total_max_trade_tokens: Option<u64>,
+    /// Concurrency cap: max tokens held open at the same time.
+    pub p_max_concurrent_tokens: Option<u64>,
+    /// Total cap: max tokens this rule may trade over the whole run.
+    pub p_max_total_tokens: Option<u64>,
     /// Instruction labels filter (optional JSON array).
     pub p_ix_labels: Value,
     /// Trade mode: "paper" (paper test) or "real" (real trading)
@@ -55,8 +55,8 @@ impl StrategyTPSLRule {
         stop_loss: f64,
         p_max_sol_cost: Option<f64>,
         p_spendable_sol_in: Option<f64>,
-        p_max_holding_tokens: Option<u64>,
-        p_total_max_trade_tokens: Option<u64>,
+        p_max_concurrent_tokens: Option<u64>,
+        p_max_total_tokens: Option<u64>,
         tolerance_pct: Option<f64>,
     ) -> Self {
         let now = Utc::now();
@@ -73,8 +73,8 @@ impl StrategyTPSLRule {
             stop_loss,
             p_max_sol_cost,
             p_spendable_sol_in,
-            p_max_holding_tokens: p_max_holding_tokens,
-            p_total_max_trade_tokens: p_total_max_trade_tokens,
+            p_max_concurrent_tokens: p_max_concurrent_tokens,
+            p_max_total_tokens: p_max_total_tokens,
             tolerance_pct: tolerance_pct.unwrap_or(0.0),
             is_active: false,
             created_at: now,

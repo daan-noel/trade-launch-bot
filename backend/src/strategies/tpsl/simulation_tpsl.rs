@@ -133,15 +133,15 @@ pub fn find_exit(
 
 fn select_simulated_tokens(
     candidates: Vec<(DateTime<Utc>, Option<DateTime<Utc>>, SimulatedTokenResult)>,
-    max_holding_tokens: Option<usize>,
-    total_max_trade_tokens: Option<usize>,
+    max_concurrent_tokens: Option<usize>,
+    max_total_tokens: Option<usize>,
 ) -> Vec<SimulatedTokenResult> {
     let mut active_exits: Vec<Option<DateTime<Utc>>> = Vec::new();
     let mut results: Vec<SimulatedTokenResult> = Vec::new();
     let mut selected_count: usize = 0;
 
     for (entry_time, exit_time, result) in candidates {
-        if let Some(total_max) = total_max_trade_tokens {
+        if let Some(total_max) = max_total_tokens {
             if selected_count >= total_max {
                 break;
             }
@@ -152,8 +152,8 @@ fn select_simulated_tokens(
             None => true,
         });
 
-        if let Some(max_holding) = max_holding_tokens {
-            if active_exits.len() >= max_holding {
+        if let Some(max_open) = max_concurrent_tokens {
+            if active_exits.len() >= max_open {
                 continue;
             }
         }
@@ -181,8 +181,8 @@ pub async fn run_simulation(
 
     let token_repo = TokenRepo::new(app_state.db.clone());
 
-    let max_holding = ignore_zero_u64(rule.p_max_holding_tokens).map(|v| v as usize);
-    let total_max_trade_tokens = ignore_zero_u64(rule.p_total_max_trade_tokens).map(|v| v as usize);
+    let max_concurrent_tokens = ignore_zero_u64(rule.p_max_concurrent_tokens).map(|v| v as usize);
+    let max_total_tokens = ignore_zero_u64(rule.p_max_total_tokens).map(|v| v as usize);
 
     let all_tokens = token_repo
         .find_all()
@@ -260,7 +260,7 @@ pub async fn run_simulation(
 
     candidates.sort_by_key(|(entry_time, _, _)| *entry_time);
 
-    let mut results = select_simulated_tokens(candidates, max_holding, total_max_trade_tokens);
+    let mut results = select_simulated_tokens(candidates, max_concurrent_tokens, max_total_tokens);
 
     results.sort_by(|a, b| {
         let rank = |r: &str| match r {

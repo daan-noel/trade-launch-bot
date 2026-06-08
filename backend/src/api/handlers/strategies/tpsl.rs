@@ -26,8 +26,8 @@ pub struct RuleResponse {
     pub p_cu_price: Option<u64>,
     pub p_max_sol_cost: Option<f64>,
     pub p_spendable_sol_in: Option<f64>,
-    pub p_max_holding_tokens: Option<u64>,
-    pub p_total_max_trade_tokens: Option<u64>,
+    pub p_max_concurrent_tokens: Option<u64>,
+    pub p_max_total_tokens: Option<u64>,
     pub p_ix_labels: serde_json::Value,
     pub trade_mode: String,
     pub buy_amount: f64,
@@ -49,8 +49,8 @@ impl From<StrategyTPSLRule> for RuleResponse {
             p_cu_price: r.p_cu_price,
             p_max_sol_cost: r.p_max_sol_cost,
             p_spendable_sol_in: r.p_spendable_sol_in,
-            p_max_holding_tokens: r.p_max_holding_tokens,
-            p_total_max_trade_tokens: r.p_total_max_trade_tokens,
+            p_max_concurrent_tokens: r.p_max_concurrent_tokens,
+            p_max_total_tokens: r.p_max_total_tokens,
             p_ix_labels: r.p_ix_labels,
             trade_mode: r.trade_mode,
             buy_amount: r.buy_amount,
@@ -72,8 +72,8 @@ pub struct CreateRuleRequest {
     pub p_cu_price: Option<u64>,
     pub p_max_sol_cost: Option<f64>,
     pub p_spendable_sol_in: Option<f64>,
-    pub p_max_holding_tokens: Option<u64>,
-    pub p_total_max_trade_tokens: Option<u64>,
+    pub p_max_concurrent_tokens: Option<u64>,
+    pub p_max_total_tokens: Option<u64>,
     pub p_ix_labels: serde_json::Value,
     pub trade_mode: String,
     pub buy_amount: f64,
@@ -102,9 +102,9 @@ pub struct UpdateRuleRequest {
     pub p_spendable_sol_in: Option<Option<f64>>,
     // Outer Option = field present; inner Option = value or explicit null
     #[serde(default)]
-    pub p_max_holding_tokens: Option<Option<u64>>,
+    pub p_max_concurrent_tokens: Option<Option<u64>>,
     #[serde(default)]
-    pub p_total_max_trade_tokens: Option<Option<u64>>,
+    pub p_max_total_tokens: Option<Option<u64>>,
     pub tolerance_pct: Option<f64>,
     pub is_active: Option<bool>,
     pub trade_mode: Option<String>,
@@ -167,8 +167,8 @@ pub async fn create_tpsl_rule(
         req.stop_loss,
         req.p_max_sol_cost,
         req.p_spendable_sol_in,
-        req.p_max_holding_tokens,
-        req.p_total_max_trade_tokens,
+        req.p_max_concurrent_tokens,
+        req.p_max_total_tokens,
         req.tolerance_pct,
     );
 
@@ -238,11 +238,11 @@ pub async fn update_tpsl_rule(
             if let Some(spendable_sol_in_opt) = &req.p_spendable_sol_in {
                 rule.p_spendable_sol_in = spendable_sol_in_opt.clone();
             }
-            if let Some(max_holding_tokens_opt) = &req.p_max_holding_tokens {
-                rule.p_max_holding_tokens = max_holding_tokens_opt.clone();
+            if let Some(max_concurrent_tokens_opt) = &req.p_max_concurrent_tokens {
+                rule.p_max_concurrent_tokens = max_concurrent_tokens_opt.clone();
             }
-            if let Some(total_max_trade_tokens_opt) = &req.p_total_max_trade_tokens {
-                rule.p_total_max_trade_tokens = total_max_trade_tokens_opt.clone();
+            if let Some(max_total_tokens_opt) = &req.p_max_total_tokens {
+                rule.p_max_total_tokens = max_total_tokens_opt.clone();
             }
             if let Some(tolerance_pct) = req.tolerance_pct {
                 rule.tolerance_pct = tolerance_pct;

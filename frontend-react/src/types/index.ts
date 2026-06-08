@@ -51,8 +51,8 @@ export interface RuleRecord {
   p_cu_price: number | null;
   p_max_sol_cost: number | null;
   p_spendable_sol_in: number | null;
-  p_max_holding_tokens: number | null;
-  p_total_max_trade_tokens: number | null;
+  p_max_concurrent_tokens: number | null;
+  p_max_total_tokens: number | null;
   p_ix_labels: unknown;
   trade_mode: string;
   buy_amount: number;
