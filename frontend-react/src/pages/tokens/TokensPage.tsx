@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { DataTable } from 'components/table/DataTable';
 import { FilterPanel } from 'components/tokens/FilterPanel';
 import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
+import { TokenTradeChart } from 'components/tokens/TokenTradeChart';
 import { tokenColumns } from 'components/tokens/tokenColumns';
 import {
   activeFilterCount,
@@ -151,7 +152,10 @@ export function TokensPage() {
           selectedKey={selectedMint}
           onSelect={setSelectedMint}
           rowDetail={() => (
-            <TokenDetailPanel detail={detail ?? null} loading={detailLoading} error={detailError} />
+            <div className="flex flex-col gap-2.5">
+              <TokenDetailPanel detail={detail ?? null} loading={detailLoading} error={detailError} />
+              <TokenTradeChart detail={detail ?? null} />
+            </div>
           )}
           searchable
           colFilters
