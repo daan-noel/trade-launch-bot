@@ -31,7 +31,8 @@ pub struct SimulatedTokenResult {
     pub pnl_percent: Option<f64>,
     /// PnL in SOL based on the rule's buy_amount.
     pub pnl_sol: Option<f64>,
-    /// "TakeProfit", "StopLoss", "TrailingStop", "Stall", "TimeStop", or "Open"
+    /// "LiquidityExit", "TakeProfit", "StopLoss", "TrailingStop", "Stall",
+    /// "TimeStop", or "Open"
     pub exit_reason: String,
     pub total_trades: usize,
 }
@@ -138,12 +139,11 @@ pub fn find_exit(
 
 /// Exit-walk skeleton ([P-exit]). Walks post-entry trades chronologically
 /// (trades are already slot/time-sorted upstream) while holding running state
-/// (`peak_price`, `last_higher_high_time`) and tests each exit feature on every
-/// trade.
+/// (`peak_price`, `peak_reserves`, `last_higher_high_time`) and tests each exit
+/// feature on every trade.
 ///
-/// Exit priority (the subset that exists today; the full ladder per the plan is
-/// LiquidityExit → StopLoss → TakeProfit → TrailingStop → Stall → TimeStop):
-///   StopLoss → TakeProfit → TrailingStop → Stall → TimeStop.
+/// Exit priority (the full ladder per the plan, first match on a trade wins):
+///   LiquidityExit → StopLoss → TakeProfit → TrailingStop → Stall → TimeStop.
 ///
 /// Every feature is inert by default: with all exit params unset/zero this
 /// reproduces the legacy [`find_exit`] result exactly (StopLoss/TakeProfit only).
@@ -166,6 +166,8 @@ pub fn simulate_exit(
         .map(|secs| entry_time + chrono::Duration::seconds(secs as i64));
     // E3 · Stall stop: max seconds allowed without a new higher-high (None → disabled).
     let stall_secs = ignore_zero_u64(rule.p_stall_secs);
+    // E4 · Liquidity-death exit: max % reserves may fall below peak (None → disabled).
+    let liquidity_drop_pct = ignore_zero_f64(rule.p_liquidity_drop_pct);
 
     let later: Vec<&crate::models::trade::Trade> = trades
         .iter()
@@ -177,6 +179,9 @@ pub fn simulate_exit(
     // E3: time of the most recent new higher-high; the stall clock runs from here
     // (starts at entry, so a position that never prints a new high can still stall).
     let mut last_higher_high_time = entry_time;
+    // E4: peak virtual SOL reserves seen since entry; the liquidity drop measures
+    // against this. Starts at 0 — only trades that carry reserves update/test it.
+    let mut peak_reserves: f64 = 0.0;
 
     for t in later.iter() {
         let price = t.price_per_token;
@@ -184,11 +189,28 @@ pub fn simulate_exit(
             peak_price = price;
             last_higher_high_time = t.block_time;
         }
+        if let Some(reserves) = t.virtual_sol_reserves {
+            if reserves > peak_reserves {
+                peak_reserves = reserves;
+            }
+        }
 
         let pct = ((price - entry_price) / entry_price) * 100.0;
 
         // Exit checks in priority order; the first that fires on this trade wins.
         let reason: Option<&str> = None
+            .or_else(|| {
+                // E4: bail when liquidity is being pulled — reserves crash below
+                // the peak-since-entry. Highest priority: a reserve crash leads
+                // the price move that the other exits would only catch later.
+                liquidity_drop_pct.and_then(|drop| {
+                    t.virtual_sol_reserves.and_then(|reserves| {
+                        (peak_reserves > 0.0
+                            && reserves < peak_reserves * (1.0 - drop / 100.0))
+                        .then_some("LiquidityExit")
+                    })
+                })
+            })
             .or_else(|| (pct <= -stop_loss_pct).then_some("StopLoss"))
             .or_else(|| (pct >= take_profit_pct).then_some("TakeProfit"))
             .or_else(|| {
@@ -419,13 +441,22 @@ mod tests {
         )
     }
 
-    /// Minimal rule with explicit TP/SL/trailing/time-stop/stall; else inert.
+    /// A buy carrying explicit virtual SOL reserves (price still equals `price`).
+    fn buy_resv(price: f64, slot: u64, secs: i64, reserves: f64) -> Trade {
+        let mut t = buy(price, slot, secs);
+        t.virtual_sol_reserves = Some(reserves);
+        t
+    }
+
+    /// Minimal rule with explicit TP/SL/trailing/time-stop/stall/liquidity; else
+    /// inert.
     fn rule_with(
         take_profit: f64,
         stop_loss: f64,
         trailing: Option<f64>,
         time_stop_secs: Option<u64>,
         stall_secs: Option<u64>,
+        liquidity_drop_pct: Option<f64>,
     ) -> StrategyTPSLRule {
         StrategyTPSLRule::new(
             "test".into(),
@@ -445,6 +476,7 @@ mod tests {
             trailing,
             time_stop_secs,
             stall_secs,
+            liquidity_drop_pct,
         )
     }
 
@@ -461,7 +493,7 @@ mod tests {
     #[test]
     fn trailing_stop_fires_on_reversal() {
         let trades = moonshot_then_reversal();
-        let rule = rule_with(1000.0, 90.0, Some(30.0), None, None);
+        let rule = rule_with(1000.0, 90.0, Some(30.0), None, None, None);
 
         let exit = simulate_exit(&trades, base_time(), 1.0, &rule)
             .expect("trailing stop should trigger an exit, not stay Open");
@@ -476,7 +508,7 @@ mod tests {
     fn disabled_trailing_leaves_position_open() {
         let trades = moonshot_then_reversal();
         // TP unreachable, SL unreachable, trailing + time stop disabled → no exit.
-        let rule = rule_with(1000.0, 90.0, None, None, None);
+        let rule = rule_with(1000.0, 90.0, None, None, None, None);
 
         assert!(
             simulate_exit(&trades, base_time(), 1.0, &rule).is_none(),
@@ -484,7 +516,7 @@ mod tests {
         );
 
         // Zero behaves identically to None (ignore_zero convention).
-        let rule_zero = rule_with(1000.0, 90.0, Some(0.0), Some(0), Some(0));
+        let rule_zero = rule_with(1000.0, 90.0, Some(0.0), Some(0), Some(0), Some(0.0));
         assert!(simulate_exit(&trades, base_time(), 1.0, &rule_zero).is_none());
     }
 
@@ -495,7 +527,7 @@ mod tests {
             buy(3.0, 2, 1),  // peak
             buy(0.05, 3, 2), // -95% from entry 1.0 → StopLoss (and below trailing floor)
         ];
-        let rule = rule_with(1000.0, 90.0, Some(30.0), None, None);
+        let rule = rule_with(1000.0, 90.0, Some(30.0), None, None, None);
 
         let exit = simulate_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
         assert_eq!(exit.3, "StopLoss", "stop-loss outranks trailing on the same trade");
@@ -509,7 +541,7 @@ mod tests {
             buy(0.7, 3, 2), // -30% → StopLoss at SL=20
             buy(2.0, 4, 3),
         ];
-        let rule = rule_with(50.0, 20.0, None, None, None);
+        let rule = rule_with(50.0, 20.0, None, None, None, None);
 
         let legacy = find_exit(&trades, base_time(), 1.0, rule.take_profit, rule.stop_loss);
         let walked = simulate_exit(&trades, base_time(), 1.0, &rule);
@@ -532,7 +564,7 @@ mod tests {
     fn time_stop_fires_at_deadline_trade() {
         let trades = flat_series();
         // TP/SL unreachable, trailing off, time stop at 25s.
-        let rule = rule_with(1000.0, 90.0, None, Some(25), None);
+        let rule = rule_with(1000.0, 90.0, None, Some(25), None, None);
 
         let exit = simulate_exit(&trades, base_time(), 1.0, &rule)
             .expect("time stop should cut the flat position, not stay Open");
@@ -545,7 +577,7 @@ mod tests {
     #[test]
     fn disabled_time_stop_leaves_flat_position_open() {
         let trades = flat_series();
-        let rule = rule_with(1000.0, 90.0, None, None, None);
+        let rule = rule_with(1000.0, 90.0, None, None, None, None);
         assert!(
             simulate_exit(&trades, base_time(), 1.0, &rule).is_none(),
             "a flat series with no exits enabled must stay Open"
@@ -559,7 +591,7 @@ mod tests {
             buy(0.5, 2, 10), // -50% → StopLoss at SL=20
             buy(0.5, 3, 30), // past the deadline, but we already exited
         ];
-        let rule = rule_with(1000.0, 20.0, None, Some(25), None);
+        let rule = rule_with(1000.0, 20.0, None, Some(25), None, None);
 
         let exit = simulate_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
         assert_eq!(exit.3, "StopLoss");
@@ -582,7 +614,7 @@ mod tests {
     fn stall_fires_after_flatline() {
         let trades = peak_then_stall();
         // TP/SL unreachable, trailing + time stop off, stall at 25s.
-        let rule = rule_with(1000.0, 90.0, None, None, Some(25));
+        let rule = rule_with(1000.0, 90.0, None, None, Some(25), None);
 
         let exit = simulate_exit(&trades, base_time(), 1.0, &rule)
             .expect("stall should cut the flatline, not stay Open");
@@ -602,7 +634,7 @@ mod tests {
             buy(4.0, 4, 30),
             buy(5.0, 5, 40),
         ];
-        let rule = rule_with(1000.0, 90.0, None, None, Some(15));
+        let rule = rule_with(1000.0, 90.0, None, None, Some(15), None);
         assert!(
             simulate_exit(&trades, base_time(), 1.0, &rule).is_none(),
             "a series making steady new highs must never stall"
@@ -612,7 +644,7 @@ mod tests {
     #[test]
     fn disabled_stall_leaves_flatline_open() {
         let trades = peak_then_stall();
-        let rule = rule_with(1000.0, 90.0, None, None, None);
+        let rule = rule_with(1000.0, 90.0, None, None, None, None);
         assert!(
             simulate_exit(&trades, base_time(), 1.0, &rule).is_none(),
             "with stall disabled the flatline must stay Open"
@@ -630,10 +662,60 @@ mod tests {
             buy(1.45, 4, 30), // still above the floor
             buy(1.3, 5, 40),  // ≤1.4 → trailing; also 30s stalled
         ];
-        let rule = rule_with(1000.0, 90.0, Some(30.0), None, Some(25));
+        let rule = rule_with(1000.0, 90.0, Some(30.0), None, Some(25), None);
 
         let exit = simulate_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
         assert_eq!(exit.3, "TrailingStop", "trailing outranks stall on the same trade");
         assert_eq!(exit.2, base_time() + chrono::Duration::seconds(40));
+    }
+
+    // ── E4 · Liquidity-death exit ────────────────────────────────────────────
+
+    /// Reserves climb, then crash on the last trade (price stays flat throughout).
+    fn rising_then_reserve_crash() -> Vec<Trade> {
+        vec![
+            buy_resv(1.0, 2, 10, 100.0), // reserves 100 (peak)
+            buy_resv(1.0, 3, 20, 120.0), // reserves 120 (new peak)
+            buy_resv(1.0, 4, 30, 130.0), // reserves 130 (new peak)
+            buy_resv(1.0, 5, 40, 50.0),  // crash: 50 < 130·(1−0.5)=65 → LiquidityExit
+        ]
+    }
+
+    #[test]
+    fn liquidity_exit_fires_on_reserve_crash() {
+        let trades = rising_then_reserve_crash();
+        // Price-based exits unreachable; liquidity drop at 50%.
+        let rule = rule_with(1000.0, 90.0, None, None, None, Some(50.0));
+
+        let exit = simulate_exit(&trades, base_time(), 1.0, &rule)
+            .expect("a reserve crash should exit, not stay Open");
+
+        assert_eq!(exit.3, "LiquidityExit");
+        // Fires on the crash trade; earlier rising-reserve trades never trigger.
+        assert_eq!(exit.2, base_time() + chrono::Duration::seconds(40));
+    }
+
+    #[test]
+    fn disabled_liquidity_leaves_reserve_crash_open() {
+        let trades = rising_then_reserve_crash();
+        let rule = rule_with(1000.0, 90.0, None, None, None, None);
+        assert!(
+            simulate_exit(&trades, base_time(), 1.0, &rule).is_none(),
+            "with the liquidity exit off, a reserve crash alone must stay Open"
+        );
+    }
+
+    #[test]
+    fn liquidity_exit_outranks_stop_loss() {
+        // The crash trade is also a −95% price move (StopLoss). LiquidityExit is
+        // the top of the ladder, so it must win on the shared trade.
+        let trades = vec![
+            buy_resv(1.0, 2, 10, 100.0),  // reserves peak
+            buy_resv(0.05, 3, 20, 40.0),  // −95% price AND reserves 40 < 50 floor
+        ];
+        let rule = rule_with(1000.0, 90.0, None, None, None, Some(50.0));
+
+        let exit = simulate_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
+        assert_eq!(exit.3, "LiquidityExit", "liquidity exit outranks stop-loss");
     }
 }

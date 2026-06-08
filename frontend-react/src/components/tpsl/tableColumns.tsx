@@ -259,6 +259,8 @@ export function simColumns(
       label: 'Reason',
       sortable: true,
       render: (r) => {
+        if (r.exit_reason === 'LiquidityExit')
+          return <span className="font-bold text-primary">LIQ</span>;
         if (r.exit_reason === 'TakeProfit') return <span className="font-bold text-green">TP</span>;
         if (r.exit_reason === 'StopLoss') return <span className="font-bold text-red">SL</span>;
         if (r.exit_reason === 'TrailingStop')

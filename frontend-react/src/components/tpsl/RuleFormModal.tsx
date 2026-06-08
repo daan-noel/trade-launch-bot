@@ -25,6 +25,7 @@ export interface RuleFormData {
   trailingStopPct: string;
   timeStopSecs: string;
   stallSecs: string;
+  liquidityDropPct: string;
 }
 
 export function emptyForm(): RuleFormData {
@@ -46,6 +47,7 @@ export function emptyForm(): RuleFormData {
     trailingStopPct: '',
     timeStopSecs: '',
     stallSecs: '',
+    liquidityDropPct: '',
   };
 }
 
@@ -71,6 +73,7 @@ export function formFromRule(rule: RuleRecord): RuleFormData {
     trailingStopPct: rule.p_trailing_stop_pct?.toString() ?? '',
     timeStopSecs: rule.p_time_stop_secs?.toString() ?? '',
     stallSecs: rule.p_stall_secs?.toString() ?? '',
+    liquidityDropPct: rule.p_liquidity_drop_pct?.toString() ?? '',
   };
 }
 
@@ -248,6 +251,12 @@ export function RuleFormModal({
               onChange={(e) => set({ stallSecs: e.target.value })}
               className={fieldCls('focus:border-accent')} placeholder="0 = off" />
           </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Liquidity Drop %</span>
+            <Input type="number" fieldSize="md" step="1" value={form.liquidityDropPct}
+              onChange={(e) => set({ liquidityDropPct: e.target.value })}
+              className={fieldCls('focus:border-primary')} placeholder="0 = off" />
+          </label>
         </div>
 
         {error && <InlineAlert variant="error">{error}</InlineAlert>}
@@ -285,6 +294,7 @@ export function buildCreatePayload(form: RuleFormData) {
     p_trailing_stop_pct: parseOptF(form.trailingStopPct) ?? null,
     p_time_stop_secs: parseOptU(form.timeStopSecs) ?? null,
     p_stall_secs: parseOptU(form.stallSecs) ?? null,
+    p_liquidity_drop_pct: parseOptF(form.liquidityDropPct) ?? null,
     tolerance_pct: form.tolerance.trim() ? parseFloat(form.tolerance) : null,
   };
 }
@@ -299,6 +309,7 @@ export function buildUpdatePayload(form: RuleFormData, allowParams: boolean) {
     p_trailing_stop_pct: form.trailingStopPct.trim() ? parseFloat(form.trailingStopPct) : 0,
     p_time_stop_secs: form.timeStopSecs.trim() ? parseInt(form.timeStopSecs, 10) : 0,
     p_stall_secs: form.stallSecs.trim() ? parseInt(form.stallSecs, 10) : 0,
+    p_liquidity_drop_pct: form.liquidityDropPct.trim() ? parseFloat(form.liquidityDropPct) : 0,
     trade_mode: form.tradeMode,
     tolerance_pct: form.tolerance.trim() ? parseFloat(form.tolerance) : undefined,
   };

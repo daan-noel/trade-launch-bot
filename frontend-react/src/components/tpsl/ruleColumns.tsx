@@ -175,6 +175,19 @@ export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnD
       searchValue: (r) => String(r.p_stall_secs ?? ''),
     },
     {
+      key: 'liq',
+      label: 'Liq',
+      tooltip:
+        'Liquidity-death exit (%) — bail when virtual SOL reserves crash this far below the peak-since-entry, catching liquidity pulls price stops miss. Blank/0 = off.',
+      group: 'rule_param',
+      sortable: true,
+      render: (r) => (
+        <span className="font-bold text-primary">{dashPercent(r.p_liquidity_drop_pct ?? 0)}</span>
+      ),
+      sortValue: (r) => r.p_liquidity_drop_pct ?? 0,
+      searchValue: (r) => String(r.p_liquidity_drop_pct ?? ''),
+    },
+    {
       key: 'tol',
       label: 'Tolerance',
       tooltip:

@@ -61,6 +61,7 @@ export interface RuleRecord {
   p_trailing_stop_pct: number | null;
   p_time_stop_secs: number | null;
   p_stall_secs: number | null;
+  p_liquidity_drop_pct: number | null;
   tolerance_pct: number;
   is_active: boolean;
   created_at: string;
