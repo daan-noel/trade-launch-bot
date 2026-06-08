@@ -228,6 +228,8 @@ export interface ChartToolbarProps {
   swingOverlayAvailable: boolean;
   showSwingOverlay: boolean;
   connectSwings: boolean;
+  chainHighlightAvailable: boolean;
+  showChainHighlight: boolean;
   crosshair: ChartCrosshairInfo | null;
   isMigrated?: boolean;
   isMayhemMode?: boolean;
@@ -242,4 +244,5 @@ export interface ChartToolbarProps {
   onTrimEmptyBarsChange: (trim: boolean) => void;
   onShowSwingOverlayChange: (show: boolean) => void;
   onConnectSwingsChange: (connected: boolean) => void;
+  onShowChainHighlightChange: (show: boolean) => void;
 }

@@ -73,6 +73,16 @@ function ConnectSwingsIcon({ connected }: { connected: boolean }) {
   );
 }
 
+/** Two interlocking links — the longest-chain highlight band. */
+function ChainLinkIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3.5">
+      <rect x="2.25" y="7" width="9" height="6" rx="3" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="8.75" y="7" width="9" height="6" rx="3" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
 /** Up (buy) + down (sell) arrows — per-bar buy/sell count markers. */
 function BuySellCountsIcon() {
   return (
@@ -177,12 +187,14 @@ function IconToggleButton({
   onClick,
   label,
   tooltip,
+  disabled = false,
   children,
 }: {
   active: boolean;
   onClick: () => void;
   label: string;
   tooltip: string;
+  disabled?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -190,11 +202,13 @@ function IconToggleButton({
       <button
         type="button"
         onClick={onClick}
+        disabled={disabled}
         aria-label={label}
         aria-pressed={active}
         className={cn(
           'flex size-7 items-center justify-center rounded-md transition-colors',
           active ? 'text-[#0a0a0a]' : 'hover:text-white',
+          disabled && 'cursor-not-allowed opacity-40 hover:text-inherit',
         )}
         style={
           active
@@ -226,6 +240,8 @@ export function ChartToolbar({
   swingOverlayAvailable,
   showSwingOverlay,
   connectSwings,
+  chainHighlightAvailable,
+  showChainHighlight,
   crosshair,
   isMigrated,
   isMayhemMode,
@@ -240,6 +256,7 @@ export function ChartToolbar({
   onTrimEmptyBarsChange,
   onShowSwingOverlayChange,
   onConnectSwingsChange,
+  onShowChainHighlightChange,
 }: ChartToolbarProps) {
   const intervalsDisabled = groupMode === 'slot';
   const formatChartPrice = createChartPriceFormatter(priceUnit);
@@ -258,209 +275,216 @@ export function ChartToolbar({
   const showStatusBadges = isMigrated != null;
 
   return (
-    <div
-      className="flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2"
-      style={{ borderColor: CHART_COLORS.border }}
-    >
-      <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <div
-            className="min-w-0 truncate text-[13px] font-bold"
-            style={{ color: CHART_COLORS.panelText }}
-          >
-            {symbol}{' '}
-            <span className="font-normal" style={{ color: CHART_COLORS.panelTextDim }}>
-              · {groupMode === 'slot' ? 'slot' : interval} · {CHART_STYLE_LABELS[style]} · {tradeCount}{' '}
-              trades · {priceLabel}
-            </span>
-          </div>
-          {showStatusBadges && (
-            <div className="flex shrink-0 items-center gap-1.5">
-              <StatusBadge
-                label={isMigrated ? 'Migrated ✓' : 'Bonding Curve'}
-                color={isMigrated ? STATUS_BADGE_COLOR.migrated : STATUS_BADGE_COLOR.bonding}
-              />
-              {isMayhemMode && <StatusBadge label="Mayhem" color={STATUS_BADGE_COLOR.mayhem} />}
-              {isCashbackEnabled && (
-                <StatusBadge label="Cashback" color={STATUS_BADGE_COLOR.cashback} />
-              )}
+    <div>
+      <div
+        className="flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2"
+        style={{ borderColor: CHART_COLORS.border }}
+      >
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <div
+              className="min-w-0 truncate text-[13px] font-bold"
+              style={{ color: CHART_COLORS.panelText }}
+            >
+              {symbol}{' '}
+              <span className="font-normal" style={{ color: CHART_COLORS.panelTextDim }}>
+                · {groupMode === 'slot' ? 'slot' : interval} · {CHART_STYLE_LABELS[style]} · {tradeCount}{' '}
+                trades · {priceLabel}
+              </span>
             </div>
-          )}
-        </div>
-        <div
-          className="mt-0.5 h-[14px] overflow-hidden font-mono text-[11px] leading-[14px]"
-          aria-live="polite"
-        >
-          {crosshairLine ?? <span className="invisible select-none" aria-hidden="true">—</span>}
-        </div>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-2">
-        <div
-          className="flex rounded-md p-0.5"
-          style={{ backgroundColor: CHART_COLORS.grid }}
-        >
-          {CHART_GROUP_MODES.map((key) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => onGroupModeChange(key)}
-              className={cn(
-                'rounded px-2 py-0.5 text-[11px] font-semibold transition-colors',
-                groupMode === key ? 'text-[#0a0a0a]' : 'hover:text-white',
-              )}
-              style={
-                groupMode === key
-                  ? { backgroundColor: CHART_COLORS.activePill }
-                  : { color: CHART_COLORS.panelTextDim }
-              }
-            >
-              {CHART_GROUP_MODE_LABELS[key]}
-            </button>
-          ))}
-        </div>
-
-        <div
-          className={cn(
-            'flex rounded-md p-0.5',
-            intervalsDisabled && 'opacity-40',
-          )}
-          style={{ backgroundColor: CHART_COLORS.grid }}
-        >
-          {CHART_INTERVAL_LABELS.map((key) => (
-            <button
-              key={key}
-              type="button"
-              disabled={intervalsDisabled}
-              onClick={() => onIntervalChange(key)}
-              className={cn(
-                'rounded px-2 py-0.5 text-[11px] font-semibold transition-colors',
-                interval === key ? 'text-[#0a0a0a]' : 'hover:text-white',
-                intervalsDisabled && 'cursor-not-allowed hover:text-inherit',
-              )}
-              style={
-                interval === key
-                  ? { backgroundColor: CHART_COLORS.activePill }
-                  : { color: CHART_COLORS.panelTextDim }
-              }
-            >
-              {key}
-            </button>
-          ))}
-        </div>
-
-        <div
-          className="flex rounded-md p-0.5"
-          style={{ backgroundColor: CHART_COLORS.grid }}
-        >
-          {CHART_STYLES.map((key) => (
-            <div key={key} className="group relative inline-flex">
-              <button
-                type="button"
-                onClick={() => onStyleChange(key)}
-                aria-label={`${CHART_STYLE_LABELS[key]} chart`}
-                aria-pressed={style === key}
-                className={cn(
-                  'flex items-center justify-center rounded px-2.5 py-0.5 transition-colors',
-                  style === key ? 'text-[#0a0a0a]' : 'hover:text-white',
+            {showStatusBadges && (
+              <div className="flex shrink-0 items-center gap-1.5">
+                <StatusBadge
+                  label={isMigrated ? 'Migrated ✓' : 'Bonding Curve'}
+                  color={isMigrated ? STATUS_BADGE_COLOR.migrated : STATUS_BADGE_COLOR.bonding}
+                />
+                {isMayhemMode && <StatusBadge label="Mayhem" color={STATUS_BADGE_COLOR.mayhem} />}
+                {isCashbackEnabled && (
+                  <StatusBadge label="Cashback" color={STATUS_BADGE_COLOR.cashback} />
                 )}
-                style={
-                  style === key
-                    ? { backgroundColor: CHART_COLORS.activePill }
-                    : { color: CHART_COLORS.panelTextDim }
-                }
-              >
-                {CHART_STYLE_ICONS[key]}
-              </button>
-              <HoverTooltip>{CHART_STYLE_LABELS[key]}</HoverTooltip>
-            </div>
-          ))}
+              </div>
+            )}
+          </div>
+          <div
+            className="mt-0.5 h-[14px] overflow-hidden font-mono text-[11px] leading-[14px]"
+            aria-live="polite"
+          >
+            {crosshairLine ?? <span className="invisible select-none" aria-hidden="true">—</span>}
+          </div>
         </div>
 
-        {onMetricChange && metric != null && (
+        <div className="flex flex-wrap items-center gap-2">
           <div
             className="flex rounded-md p-0.5"
             style={{ backgroundColor: CHART_COLORS.grid }}
           >
-            {CHART_METRICS.map((key) => (
+            {CHART_GROUP_MODES.map((key) => (
               <button
                 key={key}
                 type="button"
-                onClick={() => onMetricChange(key)}
+                onClick={() => onGroupModeChange(key)}
                 className={cn(
                   'rounded px-2 py-0.5 text-[11px] font-semibold transition-colors',
-                  metric === key ? 'text-[#0a0a0a]' : 'hover:text-white',
+                  groupMode === key ? 'text-[#0a0a0a]' : 'hover:text-white',
                 )}
                 style={
-                  metric === key
+                  groupMode === key
                     ? { backgroundColor: CHART_COLORS.activePill }
                     : { color: CHART_COLORS.panelTextDim }
                 }
               >
-                {CHART_METRIC_LABELS[key]}
+                {CHART_GROUP_MODE_LABELS[key]}
               </button>
             ))}
           </div>
-        )}
 
-        <IconToggleButton
-          active={showTradeMarkers}
-          onClick={() => onShowTradeMarkersChange(!showTradeMarkers)}
-          label="Toggle buy/sell counts per bar"
-          tooltip="Buy/sell counts per bar"
-        >
-          <BuySellCountsIcon />
-        </IconToggleButton>
+          <div
+            className={cn(
+              'flex rounded-md p-0.5',
+              intervalsDisabled && 'opacity-40',
+            )}
+            style={{ backgroundColor: CHART_COLORS.grid }}
+          >
+            {CHART_INTERVAL_LABELS.map((key) => (
+              <button
+                key={key}
+                type="button"
+                disabled={intervalsDisabled}
+                onClick={() => onIntervalChange(key)}
+                className={cn(
+                  'rounded px-2 py-0.5 text-[11px] font-semibold transition-colors',
+                  interval === key ? 'text-[#0a0a0a]' : 'hover:text-white',
+                  intervalsDisabled && 'cursor-not-allowed hover:text-inherit',
+                )}
+                style={
+                  interval === key
+                    ? { backgroundColor: CHART_COLORS.activePill }
+                    : { color: CHART_COLORS.panelTextDim }
+                }
+              >
+                {key}
+              </button>
+            ))}
+          </div>
 
-        <IconToggleButton
-          active={trimEmptyBars}
-          onClick={() => onTrimEmptyBarsChange(!trimEmptyBars)}
-          label="Toggle trimming of empty candles"
-          tooltip="Hide flat candles for intervals with no trades"
-        >
-          <TrimGapsIcon />
-        </IconToggleButton>
+          <div
+            className="flex rounded-md p-0.5"
+            style={{ backgroundColor: CHART_COLORS.grid }}
+          >
+            {CHART_STYLES.map((key) => (
+              <div key={key} className="group relative inline-flex">
+                <button
+                  type="button"
+                  onClick={() => onStyleChange(key)}
+                  aria-label={`${CHART_STYLE_LABELS[key]} chart`}
+                  aria-pressed={style === key}
+                  className={cn(
+                    'flex items-center justify-center rounded px-2.5 py-0.5 transition-colors',
+                    style === key ? 'text-[#0a0a0a]' : 'hover:text-white',
+                  )}
+                  style={
+                    style === key
+                      ? { backgroundColor: CHART_COLORS.activePill }
+                      : { color: CHART_COLORS.panelTextDim }
+                  }
+                >
+                  {CHART_STYLE_ICONS[key]}
+                </button>
+                <HoverTooltip>{CHART_STYLE_LABELS[key]}</HoverTooltip>
+              </div>
+            ))}
+          </div>
 
-        <label
-          className={cn(
-            'flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-semibold',
-            !athLineAvailable && 'cursor-not-allowed opacity-40',
+          {onMetricChange && metric != null && (
+            <div
+              className="flex rounded-md p-0.5"
+              style={{ backgroundColor: CHART_COLORS.grid }}
+            >
+              {CHART_METRICS.map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => onMetricChange(key)}
+                  className={cn(
+                    'rounded px-2 py-0.5 text-[11px] font-semibold transition-colors',
+                    metric === key ? 'text-[#0a0a0a]' : 'hover:text-white',
+                  )}
+                  style={
+                    metric === key
+                      ? { backgroundColor: CHART_COLORS.activePill }
+                      : { color: CHART_COLORS.panelTextDim }
+                  }
+                >
+                  {CHART_METRIC_LABELS[key]}
+                </button>
+              ))}
+            </div>
           )}
-          style={{ backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }}
-          title={
-            athLineAvailable
-              ? 'Show all-time high price line'
-              : 'No ATH price recorded for this token'
-          }
-        >
-          <Checkbox
-            boxSize="sm"
-            checked={showAthLine}
-            disabled={!athLineAvailable}
-            onChange={(e) => onShowAthLineChange(e.target.checked)}
-            className="accent-[#f0b429]"
-          />
-          <span style={showAthLine && athLineAvailable ? { color: CHART_COLORS.athLine } : undefined}>
-            ATH
-          </span>
-        </label>
 
-        <label
-          className="flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-semibold"
-          style={{ backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }}
-          title="Show pump.fun bonding-curve graduation price"
-        >
-          <Checkbox
-            boxSize="sm"
-            checked={showMigrationLine}
-            onChange={(e) => onShowMigrationLineChange(e.target.checked)}
-            className="accent-[#5dade2]"
-          />
-          <span style={showMigrationLine ? { color: CHART_COLORS.migrationLine } : undefined}>
-            Migration
-          </span>
-        </label>
+          <IconToggleButton
+            active={showTradeMarkers}
+            onClick={() => onShowTradeMarkersChange(!showTradeMarkers)}
+            label="Toggle buy/sell counts per bar"
+            tooltip="Buy/sell counts per bar"
+          >
+            <BuySellCountsIcon />
+          </IconToggleButton>
 
+          <IconToggleButton
+            active={trimEmptyBars}
+            onClick={() => onTrimEmptyBarsChange(!trimEmptyBars)}
+            label="Toggle trimming of empty candles"
+            tooltip="Hide flat candles for intervals with no trades"
+          >
+            <TrimGapsIcon />
+          </IconToggleButton>
+
+          <label
+            className={cn(
+              'flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-semibold',
+              !athLineAvailable && 'cursor-not-allowed opacity-40',
+            )}
+            style={{ backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }}
+            title={
+              athLineAvailable
+                ? 'Show all-time high price line'
+                : 'No ATH price recorded for this token'
+            }
+          >
+            <Checkbox
+              boxSize="sm"
+              checked={showAthLine}
+              disabled={!athLineAvailable}
+              onChange={(e) => onShowAthLineChange(e.target.checked)}
+              className="accent-[#f0b429]"
+            />
+            <span style={showAthLine && athLineAvailable ? { color: CHART_COLORS.athLine } : undefined}>
+              ATH
+            </span>
+          </label>
+
+          <label
+            className="flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-semibold"
+            style={{ backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }}
+            title="Show pump.fun bonding-curve graduation price"
+          >
+            <Checkbox
+              boxSize="sm"
+              checked={showMigrationLine}
+              onChange={(e) => onShowMigrationLineChange(e.target.checked)}
+              className="accent-[#5dade2]"
+            />
+            <span style={showMigrationLine ? { color: CHART_COLORS.migrationLine } : undefined}>
+              Migration
+            </span>
+          </label>
+        </div>
+      </div>
+
+      <div
+        className="flex flex-wrap items-center gap-2 border-b px-3 py-1.5"
+        style={{ borderColor: CHART_COLORS.border }}
+      >
         <div
           className={cn(
             'flex items-center gap-0.5 rounded-md py-1 pl-2 pr-1 text-[11px] font-semibold',
@@ -521,6 +545,20 @@ export function ChartToolbar({
             <ConnectSwingsIcon connected={connectSwings} />
           </Button>
         </div>
+
+        <IconToggleButton
+          active={showChainHighlight}
+          disabled={!chainHighlightAvailable}
+          onClick={() => onShowChainHighlightChange(!showChainHighlight)}
+          label="Toggle longest chain highlight"
+          tooltip={
+            chainHighlightAvailable
+              ? 'Longest chain highlight'
+              : 'Run swing detection to highlight the longest chain'
+          }
+        >
+          <ChainLinkIcon />
+        </IconToggleButton>
       </div>
     </div>
   );

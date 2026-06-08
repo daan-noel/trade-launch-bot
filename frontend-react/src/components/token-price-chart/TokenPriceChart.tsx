@@ -421,7 +421,9 @@ export function TokenPriceChart({
   const [trimEmptyBars, setTrimEmptyBars] = useState(initialPrefs.trimEmptyBars);
   const { timezone: chartTimezone } = useTimezone();
   const swingOverlayAvailable = (swingOverlay?.legs.length ?? 0) > 0;
+  const chainHighlightAvailable = highlightChain != null;
   const [showSwingOverlay, setShowSwingOverlay] = useState(true);
+  const [showChainHighlight, setShowChainHighlight] = useState(true);
   const [connectSwingsInternal, setConnectSwingsInternal] = useState(true);
   const connectSwings = connectSwingsProp ?? connectSwingsInternal;
   const setConnectSwings = onConnectSwingsChange ?? setConnectSwingsInternal;
@@ -552,6 +554,10 @@ export function TokenPriceChart({
   useEffect(() => {
     if (swingOverlayAvailable) setShowSwingOverlay(true);
   }, [swingOverlayAvailable, swingOverlay?.legs]);
+
+  useEffect(() => {
+    if (chainHighlightAvailable) setShowChainHighlight(true);
+  }, [chainHighlightAvailable, highlightChain]);
 
   const handleGroupModeChange = useCallback(
     (next: ChartGroupMode) => {
@@ -1068,8 +1074,9 @@ export function TokenPriceChart({
     const prim = chainHighlightPrimRef.current;
     if (!prim || !showChart) return;
 
-    if (!highlightChain) {
+    if (!highlightChain || !showChainHighlight) {
       prim.setHighlight(null);
+      setChainTooltip(null);
       return;
     }
 
@@ -1090,7 +1097,7 @@ export function TokenPriceChart({
       hiTime: range.hi as UTCTimestamp,
       pairCount: highlightChain.pairCount,
     });
-  }, [highlightChain, groupMode, intervalSec, sortedTrades, showChart, style, bars]);
+  }, [highlightChain, showChainHighlight, groupMode, intervalSec, sortedTrades, showChart, style, bars]);
 
   useEffect(() => {
     const series = seriesRef.current;
@@ -1320,6 +1327,8 @@ export function TokenPriceChart({
         swingOverlayAvailable={swingOverlayAvailable}
         showSwingOverlay={showSwingOverlay}
         connectSwings={connectSwings}
+        chainHighlightAvailable={chainHighlightAvailable}
+        showChainHighlight={showChainHighlight}
         crosshair={crosshair}
         isMigrated={isMigrated}
         isMayhemMode={isMayhemMode}
@@ -1334,6 +1343,7 @@ export function TokenPriceChart({
         onTrimEmptyBarsChange={handleTrimEmptyBarsChange}
         onShowSwingOverlayChange={setShowSwingOverlay}
         onConnectSwingsChange={setConnectSwings}
+        onShowChainHighlightChange={setShowChainHighlight}
       />
       <div className="relative" style={{ height, width: '100%' }}>
         <div ref={containerRef} style={{ height: '100%', width: '100%' }} />
