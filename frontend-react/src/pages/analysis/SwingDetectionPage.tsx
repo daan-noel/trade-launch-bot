@@ -1559,6 +1559,7 @@ export function SwingDetectionPage() {
           isMayhemMode={selectedToken?.is_mayhem_mode}
           isCashbackEnabled={selectedToken?.is_cashback_enabled}
           profileWallets={profileWallets}
+          tokenCreatedAt={selectedToken?.created_at}
         />
       </div>
 

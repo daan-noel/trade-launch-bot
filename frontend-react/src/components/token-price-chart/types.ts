@@ -158,6 +158,8 @@ export interface ChartBarTooltipState {
   outflow: number;
   liquiditySol: number | null;
   barTime: UTCTimestamp;
+  /** Age of the bar's earliest trade since token creation (seconds); null when unknown. */
+  ageSec: number | null;
   style: ChartStyle;
   point: { x: number; y: number };
 }
@@ -213,6 +215,8 @@ export interface TokenPriceChartProps {
   onConnectSwingsChange?: (connected: boolean) => void;
   /** Tracked profile wallets to render as colored buy/sell markers. */
   profileWallets?: ProfileWalletInfo[];
+  /** Token creation time (ISO string) — used to show per-bar tx age in the crosshair tooltip. */
+  tokenCreatedAt?: string;
 }
 
 export interface ChartToolbarProps {

@@ -384,6 +384,7 @@ export function TokenPriceChart({
   isMayhemMode,
   isCashbackEnabled,
   profileWallets,
+  tokenCreatedAt,
 }: TokenPriceChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -484,6 +485,43 @@ export function TokenPriceChart({
   barsRef.current = bars;
   sortedTradesRef.current = sortedTrades;
   showSwingOverlayRef.current = showSwingOverlay;
+
+  // Token creation time (epoch seconds) for per-bar tx age in the crosshair tooltip.
+  const tokenCreatedAtSec = useMemo(() => {
+    if (!tokenCreatedAt) return null;
+    const ms = Date.parse(tokenCreatedAt);
+    return Number.isNaN(ms) ? null : Math.floor(ms / 1000);
+  }, [tokenCreatedAt]);
+
+  // Earliest real trade time (epoch seconds) per bar key, keyed exactly as bars are
+  // bucketed: slot number in slot mode, bucket-start seconds in time mode.
+  const barEarliestTradeSec = useMemo(() => {
+    const map = new Map<number, number>();
+    for (const trade of sortedTrades) {
+      const key = groupMode === 'slot' ? tradeBarSlot(trade) : tradeBarTime(trade.block_time, intervalSec);
+      if (key == null) continue;
+      const ms = Date.parse(trade.block_time);
+      if (Number.isNaN(ms)) continue;
+      const sec = Math.floor(ms / 1000);
+      const prev = map.get(key as number);
+      if (prev == null || sec < prev) map.set(key as number, sec);
+    }
+    return map;
+  }, [sortedTrades, groupMode, intervalSec]);
+
+  const computeBarAgeSec = useCallback(
+    (barTime: number): number | null => {
+      if (tokenCreatedAtSec == null) return null;
+      const earliest = barEarliestTradeSec.get(barTime);
+      if (earliest != null) return Math.max(0, earliest - tokenCreatedAtSec);
+      // Empty/flat bar (no trades): bar time is a real timestamp only in time mode.
+      if (groupMode === 'slot') return null;
+      return Math.max(0, barTime - tokenCreatedAtSec);
+    },
+    [tokenCreatedAtSec, barEarliestTradeSec, groupMode],
+  );
+  const computeBarAgeSecRef = useRef(computeBarAgeSec);
+  computeBarAgeSecRef.current = computeBarAgeSec;
 
   const highlightBarTimes = useMemo(() => {
     const times = new Set<number>();
@@ -766,6 +804,7 @@ export function TokenPriceChart({
           setBarTooltip({
             ...info,
             barTime: bar.time,
+            ageSec: computeBarAgeSecRef.current(bar.time as number),
             style: styleRef.current,
             point: param.point,
           });

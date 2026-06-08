@@ -600,6 +600,7 @@ export function SyncTokenPage() {
               isMayhemMode={selected.token.is_mayhem_mode}
               isCashbackEnabled={selected.token.is_cashback_enabled}
               profileWallets={profileWallets}
+              tokenCreatedAt={selected.token.created_at}
             />
           </div>
 

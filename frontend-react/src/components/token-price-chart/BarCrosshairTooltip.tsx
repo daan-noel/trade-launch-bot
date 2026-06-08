@@ -1,4 +1,5 @@
 import { CHART_COLORS } from './constants';
+import { formatAge } from 'utils/format';
 import { BarFlowFields } from './BarFlowFields';
 import type { ChartBarTooltipState } from './types';
 
@@ -11,7 +12,7 @@ export function BarCrosshairTooltip({
   formatVol: (value: number) => string;
   formatTime: (barTime: ChartBarTooltipState['barTime']) => string;
 }) {
-  const { point, barTime } = tooltip;
+  const { point, barTime, ageSec } = tooltip;
 
   return (
     <div
@@ -29,6 +30,9 @@ export function BarCrosshairTooltip({
         style={{ color: CHART_COLORS.panelTextDim }}
       >
         {formatTime(barTime)}
+        {ageSec != null && (
+          <span style={{ color: CHART_COLORS.panelText }}> · +{formatAge(ageSec)}</span>
+        )}
       </div>
       <BarFlowFields crosshair={tooltip} formatVol={formatVol} layout="grid" />
     </div>
