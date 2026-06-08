@@ -60,6 +60,7 @@ export interface RuleRecord {
   stop_loss: number;
   p_trailing_stop_pct: number | null;
   p_time_stop_secs: number | null;
+  p_stall_secs: number | null;
   tolerance_pct: number;
   is_active: boolean;
   created_at: string;
@@ -100,6 +101,7 @@ export interface SimulatedTokenResult {
   mint: string;
   symbol: string;
   entry_price: number;
+  ath_price: number;
   entry_amount: number;
   entry_tx: string;
   entry_time: string;

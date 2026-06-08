@@ -24,6 +24,7 @@ export interface RuleFormData {
   stopLoss: string;
   trailingStopPct: string;
   timeStopSecs: string;
+  stallSecs: string;
 }
 
 export function emptyForm(): RuleFormData {
@@ -44,6 +45,7 @@ export function emptyForm(): RuleFormData {
     stopLoss: '',
     trailingStopPct: '',
     timeStopSecs: '',
+    stallSecs: '',
   };
 }
 
@@ -68,6 +70,7 @@ export function formFromRule(rule: RuleRecord): RuleFormData {
     stopLoss: rule.stop_loss.toString(),
     trailingStopPct: rule.p_trailing_stop_pct?.toString() ?? '',
     timeStopSecs: rule.p_time_stop_secs?.toString() ?? '',
+    stallSecs: rule.p_stall_secs?.toString() ?? '',
   };
 }
 
@@ -239,6 +242,12 @@ export function RuleFormModal({
               onChange={(e) => set({ timeStopSecs: e.target.value })}
               className={fieldCls('focus:border-info')} placeholder="0 = off" />
           </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Stall (s)</span>
+            <Input type="number" fieldSize="md" step="1" value={form.stallSecs}
+              onChange={(e) => set({ stallSecs: e.target.value })}
+              className={fieldCls('focus:border-accent')} placeholder="0 = off" />
+          </label>
         </div>
 
         {error && <InlineAlert variant="error">{error}</InlineAlert>}
@@ -275,6 +284,7 @@ export function buildCreatePayload(form: RuleFormData) {
     stop_loss: parseFloat(form.stopLoss),
     p_trailing_stop_pct: parseOptF(form.trailingStopPct) ?? null,
     p_time_stop_secs: parseOptU(form.timeStopSecs) ?? null,
+    p_stall_secs: parseOptU(form.stallSecs) ?? null,
     tolerance_pct: form.tolerance.trim() ? parseFloat(form.tolerance) : null,
   };
 }
@@ -288,6 +298,7 @@ export function buildUpdatePayload(form: RuleFormData, allowParams: boolean) {
     // Exit params (always editable): 0 disables, per the ignore_zero convention.
     p_trailing_stop_pct: form.trailingStopPct.trim() ? parseFloat(form.trailingStopPct) : 0,
     p_time_stop_secs: form.timeStopSecs.trim() ? parseInt(form.timeStopSecs, 10) : 0,
+    p_stall_secs: form.stallSecs.trim() ? parseInt(form.stallSecs, 10) : 0,
     trade_mode: form.tradeMode,
     tolerance_pct: form.tolerance.trim() ? parseFloat(form.tolerance) : undefined,
   };

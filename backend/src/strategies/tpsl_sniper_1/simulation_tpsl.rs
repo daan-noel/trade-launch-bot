@@ -18,6 +18,8 @@ pub struct SimulatedTokenResult {
     pub mint: String,
     pub symbol: String,
     pub entry_price: f64,
+    /// All-time-high price across every one of the token's trades.
+    pub ath_price: f64,
     pub entry_amount: f64,
     pub entry_tx: String,
     pub entry_time: DateTime<Utc>,
@@ -29,7 +31,7 @@ pub struct SimulatedTokenResult {
     pub pnl_percent: Option<f64>,
     /// PnL in SOL based on the rule's buy_amount.
     pub pnl_sol: Option<f64>,
-    /// "TakeProfit", "StopLoss", "TrailingStop", "TimeStop", or "Open"
+    /// "TakeProfit", "StopLoss", "TrailingStop", "Stall", "TimeStop", or "Open"
     pub exit_reason: String,
     pub total_trades: usize,
 }
@@ -136,11 +138,12 @@ pub fn find_exit(
 
 /// Exit-walk skeleton ([P-exit]). Walks post-entry trades chronologically
 /// (trades are already slot/time-sorted upstream) while holding running state
-/// (`peak_price`) and tests each exit feature on every trade.
+/// (`peak_price`, `last_higher_high_time`) and tests each exit feature on every
+/// trade.
 ///
 /// Exit priority (the subset that exists today; the full ladder per the plan is
 /// LiquidityExit → StopLoss → TakeProfit → TrailingStop → Stall → TimeStop):
-///   StopLoss → TakeProfit → TrailingStop → TimeStop.
+///   StopLoss → TakeProfit → TrailingStop → Stall → TimeStop.
 ///
 /// Every feature is inert by default: with all exit params unset/zero this
 /// reproduces the legacy [`find_exit`] result exactly (StopLoss/TakeProfit only).
@@ -161,6 +164,8 @@ pub fn simulate_exit(
     // E2 · Time stop: precompute the absolute deadline (None → disabled).
     let time_stop_deadline = ignore_zero_u64(rule.p_time_stop_secs)
         .map(|secs| entry_time + chrono::Duration::seconds(secs as i64));
+    // E3 · Stall stop: max seconds allowed without a new higher-high (None → disabled).
+    let stall_secs = ignore_zero_u64(rule.p_stall_secs);
 
     let later: Vec<&crate::models::trade::Trade> = trades
         .iter()
@@ -169,11 +174,15 @@ pub fn simulate_exit(
 
     // Running state carried across the walk; the peak starts at the entry price.
     let mut peak_price = entry_price;
+    // E3: time of the most recent new higher-high; the stall clock runs from here
+    // (starts at entry, so a position that never prints a new high can still stall).
+    let mut last_higher_high_time = entry_time;
 
     for t in later.iter() {
         let price = t.price_per_token;
         if price > peak_price {
             peak_price = price;
+            last_higher_high_time = t.block_time;
         }
 
         let pct = ((price - entry_price) / entry_price) * 100.0;
@@ -187,6 +196,14 @@ pub fn simulate_exit(
                 trailing_stop_pct.and_then(|trail| {
                     (peak_price > 0.0 && price <= peak_price * (1.0 - trail / 100.0))
                         .then_some("TrailingStop")
+                })
+            })
+            .or_else(|| {
+                // E3: sell the flatline once no new higher-high has printed for
+                // `stall_secs`. Ranks above the time stop, below trailing.
+                stall_secs.and_then(|secs| {
+                    ((t.block_time - last_higher_high_time).num_seconds() >= secs as i64)
+                        .then_some("Stall")
                 })
             })
             .or_else(|| {
@@ -306,6 +323,12 @@ pub async fn run_simulation(
             continue;
         };
 
+        // All-time high across the token's full trade history.
+        let ath_price = trades
+            .iter()
+            .map(|t| t.price_per_token)
+            .fold(entry_price, f64::max);
+
         let exit = simulate_exit(&trades, entry_time, entry_price, &rule);
 
         let (exit_price, exit_tx, exit_time, exit_reason, holding_secs, pnl_percent, pnl_sol) =
@@ -331,6 +354,7 @@ pub async fn run_simulation(
             mint: token.mint_address.clone(),
             symbol: token.symbol.clone(),
             entry_price,
+            ath_price,
             entry_amount: rule.buy_amount,
             entry_tx,
             entry_time,
@@ -395,12 +419,13 @@ mod tests {
         )
     }
 
-    /// Minimal rule with explicit TP/SL/trailing/time-stop; everything else inert.
+    /// Minimal rule with explicit TP/SL/trailing/time-stop/stall; else inert.
     fn rule_with(
         take_profit: f64,
         stop_loss: f64,
         trailing: Option<f64>,
         time_stop_secs: Option<u64>,
+        stall_secs: Option<u64>,
     ) -> StrategyTPSLRule {
         StrategyTPSLRule::new(
             "test".into(),
@@ -419,6 +444,7 @@ mod tests {
             Some(0.0),
             trailing,
             time_stop_secs,
+            stall_secs,
         )
     }
 
@@ -435,7 +461,7 @@ mod tests {
     #[test]
     fn trailing_stop_fires_on_reversal() {
         let trades = moonshot_then_reversal();
-        let rule = rule_with(1000.0, 90.0, Some(30.0), None);
+        let rule = rule_with(1000.0, 90.0, Some(30.0), None, None);
 
         let exit = simulate_exit(&trades, base_time(), 1.0, &rule)
             .expect("trailing stop should trigger an exit, not stay Open");
@@ -450,7 +476,7 @@ mod tests {
     fn disabled_trailing_leaves_position_open() {
         let trades = moonshot_then_reversal();
         // TP unreachable, SL unreachable, trailing + time stop disabled → no exit.
-        let rule = rule_with(1000.0, 90.0, None, None);
+        let rule = rule_with(1000.0, 90.0, None, None, None);
 
         assert!(
             simulate_exit(&trades, base_time(), 1.0, &rule).is_none(),
@@ -458,7 +484,7 @@ mod tests {
         );
 
         // Zero behaves identically to None (ignore_zero convention).
-        let rule_zero = rule_with(1000.0, 90.0, Some(0.0), Some(0));
+        let rule_zero = rule_with(1000.0, 90.0, Some(0.0), Some(0), Some(0));
         assert!(simulate_exit(&trades, base_time(), 1.0, &rule_zero).is_none());
     }
 
@@ -469,7 +495,7 @@ mod tests {
             buy(3.0, 2, 1),  // peak
             buy(0.05, 3, 2), // -95% from entry 1.0 → StopLoss (and below trailing floor)
         ];
-        let rule = rule_with(1000.0, 90.0, Some(30.0), None);
+        let rule = rule_with(1000.0, 90.0, Some(30.0), None, None);
 
         let exit = simulate_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
         assert_eq!(exit.3, "StopLoss", "stop-loss outranks trailing on the same trade");
@@ -483,7 +509,7 @@ mod tests {
             buy(0.7, 3, 2), // -30% → StopLoss at SL=20
             buy(2.0, 4, 3),
         ];
-        let rule = rule_with(50.0, 20.0, None, None);
+        let rule = rule_with(50.0, 20.0, None, None, None);
 
         let legacy = find_exit(&trades, base_time(), 1.0, rule.take_profit, rule.stop_loss);
         let walked = simulate_exit(&trades, base_time(), 1.0, &rule);
@@ -506,7 +532,7 @@ mod tests {
     fn time_stop_fires_at_deadline_trade() {
         let trades = flat_series();
         // TP/SL unreachable, trailing off, time stop at 25s.
-        let rule = rule_with(1000.0, 90.0, None, Some(25));
+        let rule = rule_with(1000.0, 90.0, None, Some(25), None);
 
         let exit = simulate_exit(&trades, base_time(), 1.0, &rule)
             .expect("time stop should cut the flat position, not stay Open");
@@ -519,7 +545,7 @@ mod tests {
     #[test]
     fn disabled_time_stop_leaves_flat_position_open() {
         let trades = flat_series();
-        let rule = rule_with(1000.0, 90.0, None, None);
+        let rule = rule_with(1000.0, 90.0, None, None, None);
         assert!(
             simulate_exit(&trades, base_time(), 1.0, &rule).is_none(),
             "a flat series with no exits enabled must stay Open"
@@ -533,10 +559,81 @@ mod tests {
             buy(0.5, 2, 10), // -50% → StopLoss at SL=20
             buy(0.5, 3, 30), // past the deadline, but we already exited
         ];
-        let rule = rule_with(1000.0, 20.0, None, Some(25));
+        let rule = rule_with(1000.0, 20.0, None, Some(25), None);
 
         let exit = simulate_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
         assert_eq!(exit.3, "StopLoss");
         assert_eq!(exit.2, base_time() + chrono::Duration::seconds(10));
+    }
+
+    // ── E3 · Stall stop ──────────────────────────────────────────────────────
+
+    /// Peaks at +10s, then flatlines at/below the peak (no new higher-high).
+    fn peak_then_stall() -> Vec<Trade> {
+        vec![
+            buy(2.0, 2, 10), // +100% — new higher-high at +10s
+            buy(2.0, 3, 20), // equal, not a *new* high → last_hh stays +10s
+            buy(2.0, 4, 30), // flat
+            buy(2.0, 5, 40), // flat; +40s − +10s = 30s without a new high
+        ]
+    }
+
+    #[test]
+    fn stall_fires_after_flatline() {
+        let trades = peak_then_stall();
+        // TP/SL unreachable, trailing + time stop off, stall at 25s.
+        let rule = rule_with(1000.0, 90.0, None, None, Some(25));
+
+        let exit = simulate_exit(&trades, base_time(), 1.0, &rule)
+            .expect("stall should cut the flatline, not stay Open");
+
+        assert_eq!(exit.3, "Stall");
+        // First trade ≥25s after the last higher-high (+10s) is the +40s trade
+        // (+30s is only 20s out, still under the threshold).
+        assert_eq!(exit.2, base_time() + chrono::Duration::seconds(40));
+    }
+
+    #[test]
+    fn steady_new_highs_do_not_stall() {
+        // Every trade prints a new higher-high, so the stall clock keeps resetting.
+        let trades = vec![
+            buy(2.0, 2, 10),
+            buy(3.0, 3, 20),
+            buy(4.0, 4, 30),
+            buy(5.0, 5, 40),
+        ];
+        let rule = rule_with(1000.0, 90.0, None, None, Some(15));
+        assert!(
+            simulate_exit(&trades, base_time(), 1.0, &rule).is_none(),
+            "a series making steady new highs must never stall"
+        );
+    }
+
+    #[test]
+    fn disabled_stall_leaves_flatline_open() {
+        let trades = peak_then_stall();
+        let rule = rule_with(1000.0, 90.0, None, None, None);
+        assert!(
+            simulate_exit(&trades, base_time(), 1.0, &rule).is_none(),
+            "with stall disabled the flatline must stay Open"
+        );
+    }
+
+    #[test]
+    fn trailing_outranks_stall_on_same_trade() {
+        // Peaks at +10s then drifts below the peak. At +40s both fire: price is
+        // ≤ peak·(1−0.30)=1.4 (trailing) and 30s have passed without a new high
+        // (stall). Trailing ranks above stall, so it must win.
+        let trades = vec![
+            buy(2.0, 2, 10),  // peak; last higher-high at +10s
+            buy(1.5, 3, 20),  // above the 1.4 trailing floor
+            buy(1.45, 4, 30), // still above the floor
+            buy(1.3, 5, 40),  // ≤1.4 → trailing; also 30s stalled
+        ];
+        let rule = rule_with(1000.0, 90.0, Some(30.0), None, Some(25));
+
+        let exit = simulate_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
+        assert_eq!(exit.3, "TrailingStop", "trailing outranks stall on the same trade");
+        assert_eq!(exit.2, base_time() + chrono::Duration::seconds(40));
     }
 }

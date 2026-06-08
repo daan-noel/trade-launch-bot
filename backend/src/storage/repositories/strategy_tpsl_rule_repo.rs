@@ -30,6 +30,7 @@ struct StrategyTPSLRuleDbRow {
     stop_loss: f64,
     p_trailing_stop_pct: Option<f64>,
     p_time_stop_secs: Option<i64>,
+    p_stall_secs: Option<i64>,
     tolerance_pct: f64,
     is_active: bool,
     created_at: DateTime<Utc>,
@@ -55,6 +56,7 @@ impl From<StrategyTPSLRuleDbRow> for StrategyTPSLRule {
             stop_loss: r.stop_loss,
             p_trailing_stop_pct: r.p_trailing_stop_pct,
             p_time_stop_secs: r.p_time_stop_secs.map(|v| v as u64),
+            p_stall_secs: r.p_stall_secs.map(|v| v as u64),
             tolerance_pct: r.tolerance_pct,
             is_active: r.is_active,
             created_at: r.created_at,
@@ -78,8 +80,8 @@ impl StrategyTPSLRuleRepo {
             r#"
             INSERT INTO strategy_TPSL_rules
                 (id, rule_name, p_initial_buy_sol, p_cu_limit, p_cu_price, p_max_sol_cost, p_spendable_sol_in, p_max_concurrent_tokens, p_max_total_tokens, p_ix_labels,
-                 trade_mode, buy_amount, take_profit, stop_loss, tolerance_pct, is_active, created_at, updated_at, p_trailing_stop_pct, p_time_stop_secs)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+                 trade_mode, buy_amount, take_profit, stop_loss, tolerance_pct, is_active, created_at, updated_at, p_trailing_stop_pct, p_time_stop_secs, p_stall_secs)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
             "#,
         )
         .bind(rule.id)
@@ -102,6 +104,7 @@ impl StrategyTPSLRuleRepo {
         .bind(rule.updated_at)
         .bind(rule.p_trailing_stop_pct)
         .bind(rule.p_time_stop_secs.map(|v| v as i64))
+        .bind(rule.p_stall_secs.map(|v| v as i64))
         .execute(&self.pool)
         .await?;
 
@@ -113,7 +116,7 @@ impl StrategyTPSLRuleRepo {
         let rows = sqlx::query_as::<_, StrategyTPSLRuleDbRow>(
             r#"
                  SELECT id, rule_name, p_initial_buy_sol, p_cu_limit, p_cu_price, p_max_sol_cost, p_spendable_sol_in, p_max_concurrent_tokens, p_max_total_tokens, p_ix_labels,
-                     trade_mode, buy_amount, take_profit, stop_loss, p_trailing_stop_pct, p_time_stop_secs, tolerance_pct, is_active, created_at, updated_at
+                     trade_mode, buy_amount, take_profit, stop_loss, p_trailing_stop_pct, p_time_stop_secs, p_stall_secs, tolerance_pct, is_active, created_at, updated_at
             FROM strategy_TPSL_rules
             ORDER BY created_at DESC
             "#,
@@ -129,7 +132,7 @@ impl StrategyTPSLRuleRepo {
         let row = sqlx::query_as::<_, StrategyTPSLRuleDbRow>(
             r#"
                  SELECT id, rule_name, p_initial_buy_sol, p_cu_limit, p_cu_price, p_max_sol_cost, p_spendable_sol_in, p_max_concurrent_tokens, p_max_total_tokens, p_ix_labels,
-                     trade_mode, buy_amount, take_profit, stop_loss, p_trailing_stop_pct, p_time_stop_secs, tolerance_pct, is_active, created_at, updated_at
+                     trade_mode, buy_amount, take_profit, stop_loss, p_trailing_stop_pct, p_time_stop_secs, p_stall_secs, tolerance_pct, is_active, created_at, updated_at
             FROM strategy_TPSL_rules
             WHERE id = $1
             "#,
@@ -148,8 +151,8 @@ impl StrategyTPSLRuleRepo {
             UPDATE strategy_TPSL_rules
             SET rule_name = $1, p_initial_buy_sol = $2, p_cu_limit = $3, p_cu_price = $4,
                 p_ix_labels = $5, trade_mode = $6, buy_amount = $7, take_profit = $8, stop_loss = $9,
-                p_max_sol_cost = $10, p_spendable_sol_in = $11, p_max_concurrent_tokens = $12, p_max_total_tokens = $13, tolerance_pct = $14, is_active = $15, updated_at = $16, p_trailing_stop_pct = $17, p_time_stop_secs = $18
-            WHERE id = $19
+                p_max_sol_cost = $10, p_spendable_sol_in = $11, p_max_concurrent_tokens = $12, p_max_total_tokens = $13, tolerance_pct = $14, is_active = $15, updated_at = $16, p_trailing_stop_pct = $17, p_time_stop_secs = $18, p_stall_secs = $19
+            WHERE id = $20
             "#,
         )
         .bind(&rule.rule_name)
@@ -170,6 +173,7 @@ impl StrategyTPSLRuleRepo {
         .bind(Utc::now())
         .bind(rule.p_trailing_stop_pct)
         .bind(rule.p_time_stop_secs.map(|v| v as i64))
+        .bind(rule.p_stall_secs.map(|v| v as i64))
         .bind(rule.id)
         .execute(&self.pool)
         .await?;

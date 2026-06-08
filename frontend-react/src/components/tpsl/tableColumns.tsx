@@ -183,6 +183,15 @@ export function simColumns(
       searchValue: (r) => String(r.entry_price),
     },
     {
+      key: 'ath_price',
+      label: 'ATH',
+      tooltip: 'All-time-high price across the token’s full trade history.',
+      sortable: true,
+      render: (r) => price.displayPrice(r.ath_price),
+      sortValue: (r) => r.ath_price,
+      searchValue: (r) => String(r.ath_price),
+    },
+    {
       key: 'entry_time',
       label: 'Entry Time',
       sortable: true,
@@ -254,6 +263,8 @@ export function simColumns(
         if (r.exit_reason === 'StopLoss') return <span className="font-bold text-red">SL</span>;
         if (r.exit_reason === 'TrailingStop')
           return <span className="font-bold text-warning">TRAIL</span>;
+        if (r.exit_reason === 'Stall')
+          return <span className="font-bold text-accent">STALL</span>;
         if (r.exit_reason === 'TimeStop')
           return <span className="font-bold text-info">TIME</span>;
         return <span className="text-text-dim">Open</span>;

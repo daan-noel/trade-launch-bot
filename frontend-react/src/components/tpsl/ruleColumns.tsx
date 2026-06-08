@@ -62,24 +62,6 @@ export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnD
       searchValue: (r) => String(r.p_spendable_sol_in ?? ''),
     },
     {
-      key: 'max_concurrent_tokens',
-      label: 'Max Concurrent Tokens',
-      group: 'token_fingerprint',
-      sortable: true,
-      render: (r) => dashNum(r.p_max_concurrent_tokens),
-      sortValue: (r) => r.p_max_concurrent_tokens,
-      searchValue: (r) => String(r.p_max_concurrent_tokens ?? ''),
-    },
-    {
-      key: 'max_total_tokens',
-      label: 'Max Total Tokens',
-      group: 'token_fingerprint',
-      sortable: true,
-      render: (r) => dashNum(r.p_max_total_tokens),
-      sortValue: (r) => r.p_max_total_tokens,
-      searchValue: (r) => String(r.p_max_total_tokens ?? ''),
-    },
-    {
       key: 'labels',
       label: 'Labels',
       group: 'token_fingerprint',
@@ -96,6 +78,26 @@ export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnD
       sortValue: (r) => (Array.isArray(r.p_ix_labels) ? r.p_ix_labels.length : 0),
       searchValue: (r) =>
         Array.isArray(r.p_ix_labels) ? r.p_ix_labels.map(String).join(' ') : '',
+    },
+    {
+      key: 'max_concurrent_tokens',
+      label: 'Max Concurrent Tokens',
+      group: 'max_concurrency_and_total',
+      width: '120px',
+      sortable: true,
+      render: (r) => dashNum(r.p_max_concurrent_tokens),
+      sortValue: (r) => r.p_max_concurrent_tokens,
+      searchValue: (r) => String(r.p_max_concurrent_tokens ?? ''),
+    },
+    {
+      key: 'max_total_tokens',
+      label: 'Max Total Tokens',
+      group: 'max_concurrency_and_total',
+      width: '120px',
+      sortable: true,
+      render: (r) => dashNum(r.p_max_total_tokens),
+      sortValue: (r) => r.p_max_total_tokens,
+      searchValue: (r) => String(r.p_max_total_tokens ?? ''),
     },
     {
       key: 'buy_amt',
@@ -155,6 +157,22 @@ export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnD
         ),
       sortValue: (r) => r.p_time_stop_secs ?? 0,
       searchValue: (r) => String(r.p_time_stop_secs ?? ''),
+    },
+    {
+      key: 'stall',
+      label: 'Stall',
+      tooltip:
+        'Stall / momentum-death — exit once no new higher-high has printed for this long, selling into the flatline. Blank/0 = off.',
+      group: 'rule_param',
+      sortable: true,
+      render: (r) =>
+        r.p_stall_secs ? (
+          <span className="font-bold text-accent">{formatAge(r.p_stall_secs)}</span>
+        ) : (
+          '-'
+        ),
+      sortValue: (r) => r.p_stall_secs ?? 0,
+      searchValue: (r) => String(r.p_stall_secs ?? ''),
     },
     {
       key: 'tol',
