@@ -19,7 +19,7 @@ export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnD
     {
       key: 'init_buy',
       label: 'Init Buy',
-      group: 'params',
+      group: 'token_fingerprint',
       sortable: true,
       render: (r) => dashF(r.p_initial_buy_sol ?? 0, 15),
       sortValue: (r) => r.p_initial_buy_sol ?? 0,
@@ -28,7 +28,7 @@ export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnD
     {
       key: 'cu_limit',
       label: 'CU Lim',
-      group: 'params',
+      group: 'token_fingerprint',
       sortable: true,
       render: (r) => dashNum(r.p_cu_limit),
       sortValue: (r) => r.p_cu_limit,
@@ -37,7 +37,7 @@ export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnD
     {
       key: 'cu_price',
       label: 'CU Price',
-      group: 'params',
+      group: 'token_fingerprint',
       sortable: true,
       render: (r) => dashNum(r.p_cu_price),
       sortValue: (r) => r.p_cu_price,
@@ -46,7 +46,7 @@ export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnD
     {
       key: 'max_sol',
       label: 'Max SOL',
-      group: 'params',
+      group: 'token_fingerprint',
       sortable: true,
       render: (r) => dashF(r.p_max_sol_cost ?? 0, 3),
       sortValue: (r) => r.p_max_sol_cost ?? 0,
@@ -55,7 +55,7 @@ export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnD
     {
       key: 'spendable',
       label: 'Spendable',
-      group: 'params',
+      group: 'token_fingerprint',
       sortable: true,
       render: (r) => dashF(r.p_spendable_sol_in ?? 0, 3),
       sortValue: (r) => r.p_spendable_sol_in ?? 0,
@@ -64,7 +64,7 @@ export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnD
     {
       key: 'max_concurrent_tokens',
       label: 'Max Concurrent Tokens',
-      group: 'params',
+      group: 'token_fingerprint',
       sortable: true,
       render: (r) => dashNum(r.p_max_concurrent_tokens),
       sortValue: (r) => r.p_max_concurrent_tokens,
@@ -73,7 +73,7 @@ export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnD
     {
       key: 'max_total_tokens',
       label: 'Max Total Tokens',
-      group: 'params',
+      group: 'token_fingerprint',
       sortable: true,
       render: (r) => dashNum(r.p_max_total_tokens),
       sortValue: (r) => r.p_max_total_tokens,
@@ -82,7 +82,7 @@ export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnD
     {
       key: 'labels',
       label: 'Labels',
-      group: 'params',
+      group: 'token_fingerprint',
       sortable: true,
       render: (r) => {
         const arr = Array.isArray(r.p_ix_labels) ? r.p_ix_labels : [];
@@ -100,7 +100,8 @@ export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnD
     {
       key: 'buy_amt',
       label: 'Buy Amt',
-      group: 'tpsl',
+      tooltip: 'Position size — SOL allocated per buy (paper or real).',
+      group: 'rule_param',
       sortable: true,
       render: (r) => dashF(r.buy_amount, 15),
       sortValue: (r) => r.buy_amount,
@@ -109,7 +110,8 @@ export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnD
     {
       key: 'tp',
       label: 'TP',
-      group: 'tpsl',
+      tooltip: 'Take profit (%) — exit once price rises this far above the entry price.',
+      group: 'rule_param',
       sortable: true,
       render: (r) => <span className="font-bold text-green">{dashPercent(r.take_profit)}</span>,
       sortValue: (r) => r.take_profit,
@@ -118,7 +120,8 @@ export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnD
     {
       key: 'sl',
       label: 'SL',
-      group: 'tpsl',
+      tooltip: 'Stop loss (%) — exit once price falls this far below the entry price.',
+      group: 'rule_param',
       sortable: true,
       render: (r) => <span className="font-bold text-red">{dashPercent(r.stop_loss)}</span>,
       sortValue: (r) => r.stop_loss,
@@ -127,7 +130,9 @@ export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnD
     {
       key: 'trail',
       label: 'Trail',
-      group: 'tpsl',
+      tooltip:
+        'Trailing stop (%) — exit when price falls this far below the peak reached since entry, banking a reversal. Blank/0 = off.',
+      group: 'rule_param',
       sortable: true,
       render: (r) => (
         <span className="font-bold text-warning">{dashPercent(r.p_trailing_stop_pct ?? 0)}</span>
@@ -138,7 +143,9 @@ export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnD
     {
       key: 'time_stop',
       label: 'Time',
-      group: 'tpsl',
+      tooltip:
+        'Time stop / max-hold — exit at the first trade this long after entry, cutting positions that neither moon nor crash. Blank/0 = off.',
+      group: 'rule_param',
       sortable: true,
       render: (r) =>
         r.p_time_stop_secs ? (
@@ -152,7 +159,9 @@ export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnD
     {
       key: 'tol',
       label: 'Tolerance',
-      group: 'tpsl',
+      tooltip:
+        'Match tolerance (%) applied to the numeric entry filters (Init Buy, CU Lim, CU Price, Max SOL, Spendable).',
+      group: 'rule_param',
       sortable: true,
       render: (r) => dashPercent(r.tolerance_pct),
       sortValue: (r) => r.tolerance_pct,

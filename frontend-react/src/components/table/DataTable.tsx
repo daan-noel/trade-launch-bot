@@ -271,9 +271,11 @@ export function DataTable<R>({
                   <th
                     key={col.key}
                     style={col.width ? { width: col.width } : undefined}
+                    title={col.tooltip}
                     className={cn(
                       'sticky top-0 bg-bg-panel px-2 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-primary',
                       col.sortable !== false && 'cursor-pointer hover:text-accent',
+                      col.tooltip && 'decoration-dotted underline-offset-4 hover:underline',
                       groupCellCls(ci),
                       hoverable && hoveredCol === ci + 1 && 'bg-primary/12',
                     )}
