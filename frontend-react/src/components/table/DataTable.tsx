@@ -160,6 +160,13 @@ export function DataTable<R>({
     return list;
   }, [rows, columns, search, colFiltersMap, sortCol, sortDir]);
 
+  // Reset paging when the *view* changes (search/filter/sort/selection), jumping
+  // to the selected row's page when one is selected. `processed` and `rowKey` are
+  // deliberately NOT dependencies: a poll hands back a new `rows`/`processed`
+  // identity (and parents typically pass an inline `rowKey`), so depending on them
+  // would reset the page out from under the user on every refresh. The listed
+  // deps are the genuine view changes, and they read the up-to-date `processed`
+  // from the current render.
   useEffect(() => {
     if (!paginate) return;
     if (selectedKey) {
@@ -170,7 +177,8 @@ export function DataTable<R>({
       }
     }
     setPage(1);
-  }, [search, colFiltersMap, sortCol, sortDir, selectedKey, processed, pageSize, paginate, rowKey]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, colFiltersMap, sortCol, sortDir, selectedKey, pageSize, paginate]);
 
   const totalFiltered = processed.length;
   const totalPages = paginate
