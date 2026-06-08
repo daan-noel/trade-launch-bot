@@ -1,4 +1,6 @@
+import type { ReactNode } from 'react';
 import { Input } from 'components/ui/Input';
+import { InfoTooltip } from 'components/ui/InfoTooltip';
 import type { SwingParams } from 'types';
 
 export const DEFAULT_SWING_PARAMS: SwingParams = {
@@ -65,6 +67,67 @@ export function mergeSwingParams(partial: Partial<SwingParams> | undefined): Swi
 export const swingParamLabelClassName =
   'flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim';
 
+/** Per-field tooltip copy. Keyed by the field's representative (left) {@link SwingParams}
+ *  key — paired SOL/% and min/max cells share one entry whose body covers both sides.
+ *  Looked up automatically by {@link SwingRangeField} and the Big-tx field. */
+export const SWING_PARAM_HELP: Partial<Record<keyof SwingParams, { title: string; body: string }>> = {
+  high_to_low_threshold_sol: {
+    title: 'High → low reversal',
+    body:
+      'Confirms a swing high (buy-dominant) flipping into a swing low. While in the high, sell SOL is accumulated; the reversal fires when it reaches whichever is smaller — the SOL value (left) or that percent (right) of the current high’s net flow when selling began. Set a term to 0 to ignore it. Lower = more sensitive (more, shorter legs).',
+  },
+  low_to_high_threshold_sol: {
+    title: 'Low → high reversal',
+    body:
+      'Confirms a swing low (sell-dominant) flipping into a swing high. Buy SOL accumulated during the low triggers the flip when it reaches whichever is smaller — the SOL value (left) or that percent (right) of the current low’s net flow when buying began. Set a term to 0 to ignore it. Lower = more sensitive.',
+  },
+  min_leg_trades: {
+    title: 'Leg trades (min / max)',
+    body:
+      'Quality filter on the number of trades in a leg. Legs with fewer than min or more than max trades are dropped after detection. A high→low pair is removed if either side fails. Min 0 and max 0 each mean “no bound”. Raise min to discard 1–2 trade blips.',
+  },
+  min_leg_duration_ms: {
+    title: 'Leg duration (min / max, ms)',
+    body:
+      'Quality filter on a leg’s wall-clock span (end − start) in milliseconds. Legs shorter than min or longer than max are filtered out; a high→low pair is dropped if either fails. 0 = no bound. Use to keep sustained moves or exclude very long drifts.',
+  },
+  min_leg_volume: {
+    title: 'Leg volume (min / max, SOL)',
+    body:
+      'Quality filter on a leg’s total traded SOL — inflow + outflow, both sides combined. Legs outside [min, max] are filtered; a high→low pair is dropped if either fails. 0 = no bound. Raise min to keep only legs with real money behind them.',
+  },
+  min_leg_net_flow: {
+    title: 'Leg net flow (min / max, SOL)',
+    body:
+      'Quality filter on |net flow| = |inflow − outflow|, a leg’s net directional pressure. Compared by magnitude so swing lows (negative) use the same positive bounds. Outside [min, max] → filtered; pair dropped if either fails. 0 = no bound.',
+  },
+  swing_high_min_delta_pct: {
+    title: 'Swing-high delta (min / max, %)',
+    body:
+      'Quality filter on the leg’s price change: |(end − start) / start| × 100. For a swing high this is the size of the rise. Keeps legs that moved at least min% and at most max%. 0 = no bound.',
+  },
+  swing_high_min_net_flow_per_sec: {
+    title: 'Swing-high net flow / s (min / max, SOL)',
+    body:
+      'Quality filter on net-flow rate: |net flow| ÷ leg duration in seconds — how fast buy pressure built. Keeps legs whose rate is within [min, max] SOL/s. Instant (0-duration) legs skip this bound. 0 = no bound.',
+  },
+  swing_low_min_delta_pct: {
+    title: 'Swing-low delta (min / max, %)',
+    body:
+      'Quality filter on the leg’s price change by magnitude: |(end − start) / start| × 100. For a swing low this is the size of the drop, e.g. min 30 keeps only lows that fell ≥ 30%. 0 = no bound.',
+  },
+  swing_low_min_net_flow_per_sec: {
+    title: 'Swing-low net flow / s (min / max, SOL)',
+    body:
+      'Quality filter on net-flow rate by magnitude: |net flow| ÷ leg duration in seconds — how fast sell pressure drained SOL. Keeps legs within [min, max] SOL/s. Instant (0-duration) legs skip this bound. 0 = no bound.',
+  },
+  big_tx_sol: {
+    title: 'Big tx (SOL)',
+    body:
+      'Marks a single trade as “big” when its SOL ≥ this value. A big tx (1) instantly confirms a reversal on its own — independent of the thresholds above — so large buys/sells always start a new leg; and (2) anchors the leg’s drawn end point to the last big same-side tx (the real pump/dump) instead of a trailing dust trade. 0 = disabled (end snaps to the leg’s price extreme).',
+  },
+};
+
 interface SwingParamsGridProps {
   params: SwingParamsForm;
   onChange: <K extends keyof SwingParams>(key: K, raw: string) => void;
@@ -86,7 +149,7 @@ export interface RangeInputSide {
 }
 
 interface RangeInputsProps {
-  label: string;
+  label: ReactNode;
   left: RangeInputSide;
   right: RangeInputSide;
   /** Glyph between the two inputs: `–` for a min/max range, `/` for a SOL/% pair. */
@@ -151,7 +214,16 @@ export function SwingRangeField({ label, left, right, separator, params, onChang
     max: s.max,
     step: s.step,
   });
-  return <RangeInputs label={label} separator={separator} left={side(left)} right={side(right)} />;
+  const help = SWING_PARAM_HELP[left.key];
+  const labelNode = help ? (
+    <span className="inline-flex items-center gap-1">
+      {label}
+      <InfoTooltip title={help.title} body={help.body} />
+    </span>
+  ) : (
+    label
+  );
+  return <RangeInputs label={labelNode} separator={separator} left={side(left)} right={side(right)} />;
 }
 
 /** The swing-detection parameter grid (the reversal thresholds render as SOL/%
@@ -207,7 +279,15 @@ export function SwingParamsGrid({ params, onChange }: SwingParamsGridProps) {
       />
 
       <label className={swingParamLabelClassName}>
-        Big tx (SOL)
+        <span className="inline-flex items-center gap-1">
+          Big tx (SOL)
+          {SWING_PARAM_HELP.big_tx_sol && (
+            <InfoTooltip
+              title={SWING_PARAM_HELP.big_tx_sol.title}
+              body={SWING_PARAM_HELP.big_tx_sol.body}
+            />
+          )}
+        </span>
         <Input
           fieldSize="md"
           variant="card"

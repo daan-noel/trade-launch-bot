@@ -118,8 +118,8 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       searchValue: (r) => r.create_tx_address,
     },
     {
-      key: 'age',
-      label: 'Age',
+      key: 'token_age',
+      label: 'Token Age',
       width: '72px',
       sortable: true,
       render: (r) => <span className={ageClass(r.age)}>{formatAge(r.age)}</span>,
@@ -143,6 +143,23 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       render: (r) => <DateCell iso={r.last_trade_at} />,
       sortValue: (r) => r.last_trade_at,
       searchValue: (r) => r.last_trade_at ?? '',
+    },
+    {
+      key: 'lifetime',
+      label: 'Lifetime',
+      width: '72px',
+      sortable: true,
+      render: (r) =>
+        r.active_lifetime_secs != null ? (
+          <span className={ageClass(r.active_lifetime_secs)}>
+            {formatAge(r.active_lifetime_secs)}
+          </span>
+        ) : (
+          '-'
+        ),
+      sortValue: (r) => r.active_lifetime_secs,
+      searchValue: (r) =>
+        r.active_lifetime_secs != null ? formatAge(r.active_lifetime_secs) : '',
     },
     {
       key: 'last_synced',
