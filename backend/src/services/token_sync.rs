@@ -8,9 +8,10 @@ use std::{
 
 use anyhow::Context;
 use chrono::Utc;
+use dashmap::DashMap;
 use serde::Serialize;
 use solana_sdk::pubkey::Pubkey;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 
 use crate::{
     config::constants::{PUMP_SWAP_PROGRAM_ID, WSOL_MINT},
@@ -110,6 +111,11 @@ pub struct TokenSyncContext {
     pub token_cache: Arc<TokenCache>,
     pub helius_rpc_url: String,
     pub pump_program_id: String,
+    /// Shared pool → mint index. A sync that confirms a token is migrated
+    /// registers its PumpSwap pool here so the live WS subscribes to it.
+    pub pool_index: Arc<DashMap<String, String>>,
+    /// Pinged after registering a new pool, waking the WS task to subscribe.
+    pub pools_changed: Arc<Notify>,
 }
 
 pub fn derive_bonding_curve(mint: &str, pump_program_id: &str) -> anyhow::Result<String> {
@@ -444,6 +450,17 @@ pub async fn run_token_sync(
     state.last_synced_at = Some(synced_at);
 
     ctx.token_cache.insert(mint.clone(), state.clone());
+
+    // A synced migrated token is one the user wants to watch — register its pool
+    // so the live WS subscribes immediately (rather than waiting for the periodic
+    // revival sweep). The next reconnect re-prunes it if it's since gone quiet.
+    if is_migrated {
+        if let Ok(pool) = derive_pump_swap_pool(&mint, &ctx.pump_program_id) {
+            if ctx.pool_index.insert(pool, mint.clone()).is_none() {
+                ctx.pools_changed.notify_one();
+            }
+        }
+    }
 
     Ok(SyncOutput { state, trades })
 }

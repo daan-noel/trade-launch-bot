@@ -63,6 +63,8 @@ pub async fn sync_token(
         token_cache: state.token_cache.clone(),
         helius_rpc_url: state.helius_rpc_url.clone(),
         pump_program_id: state.pump_program_id.clone(),
+        pool_index: state.pool_index.clone(),
+        pools_changed: state.pools_changed.clone(),
     };
 
     let req = TokenSyncRequest {
@@ -129,6 +131,8 @@ pub async fn preview_sync(
         token_cache: state.token_cache.clone(),
         helius_rpc_url: state.helius_rpc_url.clone(),
         pump_program_id: state.pump_program_id.clone(),
+        pool_index: state.pool_index.clone(),
+        pools_changed: state.pools_changed.clone(),
     };
 
     let req = TokenSyncRequest {

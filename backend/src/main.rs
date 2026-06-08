@@ -86,6 +86,21 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("Failed to load TPSL runtime cache")?;
 
+    let (db_tx, db_rx, strategy_tx, strategy_rx) = ingest::IngestPipeline::channel_pair();
+
+    let (raw_tx, raw_rx) = tokio::sync::mpsc::channel::<String>(1024);
+
+    // Built before AppState so its pool→mint index and migration signal can be
+    // shared with the HTTP handlers — a token sync registers a migrated token's
+    // pool here so the live WS subscribes to it immediately.
+    let pipeline = ingest::IngestPipeline::new(
+        settings.pump_program_id.clone(),
+        token_cache.clone(),
+        db_tx,
+        strategy_tx,
+        sse_tx.clone(),
+    );
+
     let app_state = Arc::new(state::AppState::new(
         db.clone(),
         settings.helius_rpc_url.clone(),
@@ -96,19 +111,9 @@ async fn main() -> anyhow::Result<()> {
         sol_price.clone(),
         trader.clone(),
         tpsl_cache.clone(),
+        pipeline.pool_index(),
+        pipeline.pools_changed(),
     ));
-
-    let (db_tx, db_rx, strategy_tx, strategy_rx) = ingest::IngestPipeline::channel_pair();
-
-    let (raw_tx, raw_rx) = tokio::sync::mpsc::channel::<String>(1024);
-
-    let pipeline = ingest::IngestPipeline::new(
-        settings.pump_program_id.clone(),
-        token_cache.clone(),
-        db_tx,
-        strategy_tx,
-        sse_tx,
-    );
 
     // The WS task drives its PumpSwap pool subscriptions from the pipeline's
     // pool→mint index (seeded with migrated tokens) and re-subscribes, via the

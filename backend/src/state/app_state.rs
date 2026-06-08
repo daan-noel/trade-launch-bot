@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
+use dashmap::DashMap;
 use sqlx::PgPool;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{broadcast, watch, Notify};
 
 use crate::models::ingest::SseEvent;
 use crate::strategies::tpsl::TpslRuntimeCache;
@@ -22,9 +23,15 @@ pub struct AppState {
     pub sol_price: Arc<watch::Sender<Option<f64>>>,
     pub trader: Arc<PumpFunTrader>,
     pub tpsl_cache: Arc<TpslRuntimeCache>,
+    /// Live PumpSwap pool → mint index (shared with the ingest pipeline and WS
+    /// task). A token sync registers a migrated token's pool here to subscribe.
+    pub pool_index: Arc<DashMap<String, String>>,
+    /// Pinged when a new pool is registered, waking the WS task to subscribe.
+    pub pools_changed: Arc<Notify>,
 }
 
 impl AppState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         db: PgPool,
         helius_rpc_url: String,
@@ -35,6 +42,8 @@ impl AppState {
         sol_price: Arc<watch::Sender<Option<f64>>>,
         trader: Arc<PumpFunTrader>,
         tpsl_cache: Arc<TpslRuntimeCache>,
+        pool_index: Arc<DashMap<String, String>>,
+        pools_changed: Arc<Notify>,
     ) -> Self {
         Self {
             db,
@@ -46,6 +55,8 @@ impl AppState {
             sol_price,
             trader,
             tpsl_cache,
+            pool_index,
+            pools_changed,
         }
     }
 
