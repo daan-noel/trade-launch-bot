@@ -254,6 +254,8 @@ export function simColumns(
         if (r.exit_reason === 'StopLoss') return <span className="font-bold text-red">SL</span>;
         if (r.exit_reason === 'TrailingStop')
           return <span className="font-bold text-warning">TRAIL</span>;
+        if (r.exit_reason === 'TimeStop')
+          return <span className="font-bold text-info">TIME</span>;
         return <span className="text-text-dim">Open</span>;
       },
       sortValue: (r) => r.exit_reason,

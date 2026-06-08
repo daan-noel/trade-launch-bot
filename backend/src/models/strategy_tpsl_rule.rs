@@ -37,6 +37,9 @@ pub struct StrategyTPSLRule {
     /// E1 · Trailing stop percentage: exit when price falls this far below the
     /// peak-since-entry. `None`/`0` disables (per `ignore_zero_f64`).
     pub p_trailing_stop_pct: Option<f64>,
+    /// E2 · Time stop (seconds): exit at the first trade at least this many
+    /// seconds after entry. `None`/`0` disables (per `ignore_zero_u64`).
+    pub p_time_stop_secs: Option<u64>,
     /// Price tolerance percent when matching p_initial_buy_sol.
     pub tolerance_pct: f64,
     /// Whether this rule is currently active.
@@ -62,6 +65,7 @@ impl StrategyTPSLRule {
         p_max_total_tokens: Option<u64>,
         tolerance_pct: Option<f64>,
         p_trailing_stop_pct: Option<f64>,
+        p_time_stop_secs: Option<u64>,
     ) -> Self {
         let now = Utc::now();
         Self {
@@ -76,6 +80,7 @@ impl StrategyTPSLRule {
             take_profit,
             stop_loss,
             p_trailing_stop_pct,
+            p_time_stop_secs,
             p_max_sol_cost,
             p_spendable_sol_in,
             p_max_concurrent_tokens: p_max_concurrent_tokens,

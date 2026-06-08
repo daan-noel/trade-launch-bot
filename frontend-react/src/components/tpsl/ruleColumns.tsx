@@ -1,6 +1,7 @@
 import type { ColumnDef } from 'components/table/types';
 import type { RuleRecord } from 'types';
 import { dashF, dashNum, dashPercent } from './utils';
+import { formatAge } from 'utils/format';
 import { cn } from 'lib/cn';
 import { Badge } from 'components/ui/Badge';
 
@@ -133,6 +134,20 @@ export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnD
       ),
       sortValue: (r) => r.p_trailing_stop_pct ?? 0,
       searchValue: (r) => String(r.p_trailing_stop_pct ?? ''),
+    },
+    {
+      key: 'time_stop',
+      label: 'Time',
+      group: 'tpsl',
+      sortable: true,
+      render: (r) =>
+        r.p_time_stop_secs ? (
+          <span className="font-bold text-info">{formatAge(r.p_time_stop_secs)}</span>
+        ) : (
+          '-'
+        ),
+      sortValue: (r) => r.p_time_stop_secs ?? 0,
+      searchValue: (r) => String(r.p_time_stop_secs ?? ''),
     },
     {
       key: 'tol',

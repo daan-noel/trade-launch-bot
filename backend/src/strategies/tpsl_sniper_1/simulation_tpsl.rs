@@ -29,7 +29,7 @@ pub struct SimulatedTokenResult {
     pub pnl_percent: Option<f64>,
     /// PnL in SOL based on the rule's buy_amount.
     pub pnl_sol: Option<f64>,
-    /// "TakeProfit", "StopLoss", "TrailingStop", or "Open"
+    /// "TakeProfit", "StopLoss", "TrailingStop", "TimeStop", or "Open"
     pub exit_reason: String,
     pub total_trades: usize,
 }
@@ -140,9 +140,9 @@ pub fn find_exit(
 ///
 /// Exit priority (the subset that exists today; the full ladder per the plan is
 /// LiquidityExit → StopLoss → TakeProfit → TrailingStop → Stall → TimeStop):
-///   StopLoss → TakeProfit → TrailingStop.
+///   StopLoss → TakeProfit → TrailingStop → TimeStop.
 ///
-/// Every feature is inert by default: with `p_trailing_stop_pct` unset/zero this
+/// Every feature is inert by default: with all exit params unset/zero this
 /// reproduces the legacy [`find_exit`] result exactly (StopLoss/TakeProfit only).
 pub fn simulate_exit(
     trades: &[crate::models::trade::Trade],
@@ -158,6 +158,9 @@ pub fn simulate_exit(
     let stop_loss_pct = rule.stop_loss;
     // E1 · Trailing stop (None when unset/zero → feature disabled).
     let trailing_stop_pct = ignore_zero_f64(rule.p_trailing_stop_pct);
+    // E2 · Time stop: precompute the absolute deadline (None → disabled).
+    let time_stop_deadline = ignore_zero_u64(rule.p_time_stop_secs)
+        .map(|secs| entry_time + chrono::Duration::seconds(secs as i64));
 
     let later: Vec<&crate::models::trade::Trade> = trades
         .iter()
@@ -175,20 +178,24 @@ pub fn simulate_exit(
 
         let pct = ((price - entry_price) / entry_price) * 100.0;
 
-        let reason: Option<&str> = if pct <= -stop_loss_pct {
-            Some("StopLoss")
-        } else if pct >= take_profit_pct {
-            Some("TakeProfit")
-        } else if let Some(trail) = trailing_stop_pct {
-            // E1: bank the reversal once price falls `trail`% below the peak.
-            if peak_price > 0.0 && price <= peak_price * (1.0 - trail / 100.0) {
-                Some("TrailingStop")
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        // Exit checks in priority order; the first that fires on this trade wins.
+        let reason: Option<&str> = None
+            .or_else(|| (pct <= -stop_loss_pct).then_some("StopLoss"))
+            .or_else(|| (pct >= take_profit_pct).then_some("TakeProfit"))
+            .or_else(|| {
+                // E1: bank the reversal once price falls `trail`% below the peak.
+                trailing_stop_pct.and_then(|trail| {
+                    (peak_price > 0.0 && price <= peak_price * (1.0 - trail / 100.0))
+                        .then_some("TrailingStop")
+                })
+            })
+            .or_else(|| {
+                // E2: cut once held past the deadline. Lowest priority — only when
+                // no price-based exit fired on this trade.
+                time_stop_deadline
+                    .filter(|deadline| t.block_time >= *deadline)
+                    .map(|_| "TimeStop")
+            });
 
         let Some(reason) = reason else {
             continue;
@@ -388,8 +395,13 @@ mod tests {
         )
     }
 
-    /// Minimal rule with explicit TP/SL/trailing; everything else inert.
-    fn rule_with(take_profit: f64, stop_loss: f64, trailing: Option<f64>) -> StrategyTPSLRule {
+    /// Minimal rule with explicit TP/SL/trailing/time-stop; everything else inert.
+    fn rule_with(
+        take_profit: f64,
+        stop_loss: f64,
+        trailing: Option<f64>,
+        time_stop_secs: Option<u64>,
+    ) -> StrategyTPSLRule {
         StrategyTPSLRule::new(
             "test".into(),
             None,
@@ -406,6 +418,7 @@ mod tests {
             None,
             Some(0.0),
             trailing,
+            time_stop_secs,
         )
     }
 
@@ -422,7 +435,7 @@ mod tests {
     #[test]
     fn trailing_stop_fires_on_reversal() {
         let trades = moonshot_then_reversal();
-        let rule = rule_with(1000.0, 90.0, Some(30.0));
+        let rule = rule_with(1000.0, 90.0, Some(30.0), None);
 
         let exit = simulate_exit(&trades, base_time(), 1.0, &rule)
             .expect("trailing stop should trigger an exit, not stay Open");
@@ -436,8 +449,8 @@ mod tests {
     #[test]
     fn disabled_trailing_leaves_position_open() {
         let trades = moonshot_then_reversal();
-        // TP unreachable, SL unreachable, trailing disabled → no exit.
-        let rule = rule_with(1000.0, 90.0, None);
+        // TP unreachable, SL unreachable, trailing + time stop disabled → no exit.
+        let rule = rule_with(1000.0, 90.0, None, None);
 
         assert!(
             simulate_exit(&trades, base_time(), 1.0, &rule).is_none(),
@@ -445,7 +458,7 @@ mod tests {
         );
 
         // Zero behaves identically to None (ignore_zero convention).
-        let rule_zero = rule_with(1000.0, 90.0, Some(0.0));
+        let rule_zero = rule_with(1000.0, 90.0, Some(0.0), Some(0));
         assert!(simulate_exit(&trades, base_time(), 1.0, &rule_zero).is_none());
     }
 
@@ -456,7 +469,7 @@ mod tests {
             buy(3.0, 2, 1),  // peak
             buy(0.05, 3, 2), // -95% from entry 1.0 → StopLoss (and below trailing floor)
         ];
-        let rule = rule_with(1000.0, 90.0, Some(30.0));
+        let rule = rule_with(1000.0, 90.0, Some(30.0), None);
 
         let exit = simulate_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
         assert_eq!(exit.3, "StopLoss", "stop-loss outranks trailing on the same trade");
@@ -470,10 +483,60 @@ mod tests {
             buy(0.7, 3, 2), // -30% → StopLoss at SL=20
             buy(2.0, 4, 3),
         ];
-        let rule = rule_with(50.0, 20.0, None);
+        let rule = rule_with(50.0, 20.0, None, None);
 
         let legacy = find_exit(&trades, base_time(), 1.0, rule.take_profit, rule.stop_loss);
         let walked = simulate_exit(&trades, base_time(), 1.0, &rule);
         assert_eq!(legacy, walked);
+    }
+
+    // ── E2 · Time stop ──────────────────────────────────────────────────────
+
+    /// Flat price series at 10s intervals; nothing moons or crashes.
+    fn flat_series() -> Vec<Trade> {
+        vec![
+            buy(1.0, 2, 10),
+            buy(1.0, 3, 20),
+            buy(1.0, 4, 30),
+            buy(1.0, 5, 40),
+        ]
+    }
+
+    #[test]
+    fn time_stop_fires_at_deadline_trade() {
+        let trades = flat_series();
+        // TP/SL unreachable, trailing off, time stop at 25s.
+        let rule = rule_with(1000.0, 90.0, None, Some(25));
+
+        let exit = simulate_exit(&trades, base_time(), 1.0, &rule)
+            .expect("time stop should cut the flat position, not stay Open");
+
+        assert_eq!(exit.3, "TimeStop");
+        // First trade with block_time >= entry + 25s is the +30s trade.
+        assert_eq!(exit.2, base_time() + chrono::Duration::seconds(30));
+    }
+
+    #[test]
+    fn disabled_time_stop_leaves_flat_position_open() {
+        let trades = flat_series();
+        let rule = rule_with(1000.0, 90.0, None, None);
+        assert!(
+            simulate_exit(&trades, base_time(), 1.0, &rule).is_none(),
+            "a flat series with no exits enabled must stay Open"
+        );
+    }
+
+    #[test]
+    fn price_exit_preempts_later_time_stop() {
+        // Crashes at +10s (well before the 25s deadline) → StopLoss, not TimeStop.
+        let trades = vec![
+            buy(0.5, 2, 10), // -50% → StopLoss at SL=20
+            buy(0.5, 3, 30), // past the deadline, but we already exited
+        ];
+        let rule = rule_with(1000.0, 20.0, None, Some(25));
+
+        let exit = simulate_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
+        assert_eq!(exit.3, "StopLoss");
+        assert_eq!(exit.2, base_time() + chrono::Duration::seconds(10));
     }
 }

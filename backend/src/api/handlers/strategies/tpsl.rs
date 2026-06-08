@@ -34,6 +34,7 @@ pub struct RuleResponse {
     pub take_profit: f64,
     pub stop_loss: f64,
     pub p_trailing_stop_pct: Option<f64>,
+    pub p_time_stop_secs: Option<u64>,
     pub tolerance_pct: f64,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
@@ -58,6 +59,7 @@ impl From<StrategyTPSLRule> for RuleResponse {
             take_profit: r.take_profit,
             stop_loss: r.stop_loss,
             p_trailing_stop_pct: r.p_trailing_stop_pct,
+            p_time_stop_secs: r.p_time_stop_secs,
             tolerance_pct: r.tolerance_pct,
             is_active: r.is_active,
             created_at: r.created_at,
@@ -82,6 +84,7 @@ pub struct CreateRuleRequest {
     pub take_profit: f64,
     pub stop_loss: f64,
     pub p_trailing_stop_pct: Option<f64>,
+    pub p_time_stop_secs: Option<u64>,
     pub tolerance_pct: Option<f64>,
 }
 
@@ -92,6 +95,7 @@ pub struct UpdateRuleRequest {
     pub take_profit: Option<f64>,
     pub stop_loss: Option<f64>,
     pub p_trailing_stop_pct: Option<f64>,
+    pub p_time_stop_secs: Option<u64>,
     #[serde(default)]
     pub p_initial_buy_sol: Option<Option<f64>>,
     #[serde(default)]
@@ -175,6 +179,7 @@ pub async fn create_tpsl_rule(
         req.p_max_total_tokens,
         req.tolerance_pct,
         req.p_trailing_stop_pct,
+        req.p_time_stop_secs,
     );
 
     let repo = StrategyTPSLRuleRepo::new(app_state.db.clone());
@@ -225,6 +230,9 @@ pub async fn update_tpsl_rule(
             }
             if let Some(trailing_stop_pct) = req.p_trailing_stop_pct {
                 rule.p_trailing_stop_pct = Some(trailing_stop_pct);
+            }
+            if let Some(time_stop_secs) = req.p_time_stop_secs {
+                rule.p_time_stop_secs = Some(time_stop_secs);
             }
             if let Some(initial_buy_sol_opt) = &req.p_initial_buy_sol {
                 rule.p_initial_buy_sol = initial_buy_sol_opt.clone();
