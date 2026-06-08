@@ -73,6 +73,28 @@ function ConnectSwingsIcon({ connected }: { connected: boolean }) {
   );
 }
 
+/** Brackets around a dashed span — drag-to-select a time range. */
+function RangeSelectIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3.5">
+      <path
+        d="M6 4H4v12h2M14 4h2v12h-2"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M7.5 10h5"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeDasharray="1.5 2"
+      />
+    </svg>
+  );
+}
+
 /** Two interlocking links — the longest-chain highlight band. */
 function ChainLinkIcon() {
   return (
@@ -188,6 +210,7 @@ function IconToggleButton({
   label,
   tooltip,
   disabled = false,
+  activeColor = CHART_COLORS.activePill,
   children,
 }: {
   active: boolean;
@@ -195,6 +218,7 @@ function IconToggleButton({
   label: string;
   tooltip: string;
   disabled?: boolean;
+  activeColor?: string;
   children: ReactNode;
 }) {
   return (
@@ -212,7 +236,7 @@ function IconToggleButton({
         )}
         style={
           active
-            ? { backgroundColor: CHART_COLORS.activePill }
+            ? { backgroundColor: activeColor }
             : { backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }
         }
       >
@@ -242,6 +266,7 @@ export function ChartToolbar({
   connectSwings,
   chainHighlightAvailable,
   showChainHighlight,
+  rangeSelectMode,
   crosshair,
   isMigrated,
   isMayhemMode,
@@ -257,6 +282,7 @@ export function ChartToolbar({
   onShowSwingOverlayChange,
   onConnectSwingsChange,
   onShowChainHighlightChange,
+  onRangeSelectModeChange,
 }: ChartToolbarProps) {
   const intervalsDisabled = groupMode === 'slot';
   const formatChartPrice = createChartPriceFormatter(priceUnit);
@@ -549,6 +575,7 @@ export function ChartToolbar({
         <IconToggleButton
           active={showChainHighlight}
           disabled={!chainHighlightAvailable}
+          activeColor={CHART_COLORS.chainBandLabelBg}
           onClick={() => onShowChainHighlightChange(!showChainHighlight)}
           label="Toggle longest chain highlight"
           tooltip={
@@ -558,6 +585,15 @@ export function ChartToolbar({
           }
         >
           <ChainLinkIcon />
+        </IconToggleButton>
+
+        <IconToggleButton
+          active={rangeSelectMode}
+          onClick={() => onRangeSelectModeChange(!rangeSelectMode)}
+          label="Toggle range-select mode"
+          tooltip="Drag to select a time range; hover its label for totals"
+        >
+          <RangeSelectIcon />
         </IconToggleButton>
       </div>
     </div>

@@ -115,7 +115,7 @@ export function TokensPage() {
         />
       </div>
 
-      <div className="mb-1.5 flex gap-1.5">
+      <div className="mb-1.5 flex gap-1.5 justify-end">
         <Button
           variant="subtle"
           size="sm"

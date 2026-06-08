@@ -4,6 +4,7 @@ import {
   createSeriesMarkers,
   LineSeries,
   LineStyle,
+  type Coordinate,
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
@@ -27,6 +28,7 @@ import {
   barsToLineData,
   barSelectionMarker,
   compareTradesChronologically,
+  computeRangeStats,
   dropEmptyBars,
   tradeBarSlot,
   tradeBarTime,
@@ -54,8 +56,10 @@ import { BarCrosshairTooltip } from './BarCrosshairTooltip';
 import { SwingCrosshairTooltip } from './SwingCrosshairTooltip';
 import { ChainHighlightTooltip, type ChainTradeCounts } from './ChainHighlightTooltip';
 import { WalletMarkersTooltip } from './WalletMarkersTooltip';
+import { RangeSelectTooltip, formatRangeDuration } from './RangeSelectTooltip';
 import { WalletMarkersPlugin, asSeriesPrimitive, type WalletMarkerDef } from './walletMarkersPlugin';
 import { ChainHighlightPlugin, asChainPrimitive } from './chainHighlightPlugin';
+import { RangeSelectPlugin, asRangePrimitive } from './rangeSelectPlugin';
 import {
   buildLegSegment,
   chartTimeRangeForSpan,
@@ -77,6 +81,8 @@ import type {
   ChartSwingTooltipState,
   ChartChainTooltipState,
   ChartChainHighlight,
+  ChartRangeSelection,
+  ChartRangeTooltipState,
   ChartWalletMarkersTooltipState,
   ChartTrade,
   OhlcBar,
@@ -408,6 +414,7 @@ export function TokenPriceChart({
   const markersPluginRef = useRef<MarkersPlugin | null>(null);
   const walletMarkersPrimRef = useRef<WalletMarkersPlugin | null>(null);
   const chainHighlightPrimRef = useRef<ChainHighlightPlugin | null>(null);
+  const rangeSelectPrimRef = useRef<RangeSelectPlugin | null>(null);
   const highlightChainRef = useRef(highlightChain);
   highlightChainRef.current = highlightChain;
   const barsRef = useRef<OhlcBar[]>([]);
@@ -428,10 +435,13 @@ export function TokenPriceChart({
   const [connectSwingsInternal, setConnectSwingsInternal] = useState(true);
   const connectSwings = connectSwingsProp ?? connectSwingsInternal;
   const setConnectSwings = onConnectSwingsChange ?? setConnectSwingsInternal;
+  const [rangeSelectMode, setRangeSelectMode] = useState(false);
+  const [selectedRange, setSelectedRange] = useState<ChartRangeSelection | null>(null);
   const [crosshair, setCrosshair] = useState<ChartCrosshairInfo | null>(null);
   const [barTooltip, setBarTooltip] = useState<ChartBarTooltipState | null>(null);
   const [swingTooltip, setSwingTooltip] = useState<ChartSwingTooltipState | null>(null);
   const [chainTooltip, setChainTooltip] = useState<ChartChainTooltipState | null>(null);
+  const [rangeTooltip, setRangeTooltip] = useState<ChartRangeTooltipState | null>(null);
   const [walletMarkersTooltip, setWalletMarkersTooltip] = useState<ChartWalletMarkersTooltipState | null>(null);
   /** Visible window mirrored from the chart's time scale, drives the range slider. */
   const [sliderWindow, setSliderWindow] = useState<{ from: number; to: number } | null>(null);
@@ -587,6 +597,22 @@ export function TokenPriceChart({
     [sortedTrades, highlightChain],
   );
 
+  const rangeStats = useMemo(
+    () =>
+      selectedRange
+        ? computeRangeStats(sortedTrades, selectedRange, groupMode, intervalSec)
+        : null,
+    [selectedRange, sortedTrades, groupMode, intervalSec],
+  );
+  // Mirrored into refs so the (mount-time) crosshair handler can read the live
+  // selection/stats and gate bar-selection clicks while in range-select mode.
+  const rangeStatsRef = useRef(rangeStats);
+  rangeStatsRef.current = rangeStats;
+  const selectedRangeRef = useRef(selectedRange);
+  selectedRangeRef.current = selectedRange;
+  const rangeSelectModeRef = useRef(rangeSelectMode);
+  rangeSelectModeRef.current = rangeSelectMode;
+
   const athLineAvailable = athChartValue(athPriceInSol, metric, toValue) != null;
 
   useEffect(() => {
@@ -675,6 +701,8 @@ export function TokenPriceChart({
       prevIdRef.current = id;
       prevGroupingKeyRef.current = groupingKey;
       setSliderWindow(null);
+      // Range bounds are in the old grouping's units (slot vs bucket-sec) — drop them.
+      setSelectedRange(null);
     }
   }, [id, groupingKey]);
 
@@ -715,9 +743,25 @@ export function TokenPriceChart({
         setSwingTooltip(null);
         setBarTooltip(null);
         setWalletMarkersTooltip(null);
+        setRangeTooltip(null);
         return;
       }
       setChainTooltip(null);
+
+      // Hovering the range-selection label chip shows the range totals tooltip
+      // and suppresses every other tooltip (same pattern as the chain label).
+      const onRangeLabel =
+        param.point != null &&
+        (rangeSelectPrimRef.current?.containsLabelPoint(param.point.x, param.point.y) ??
+          false);
+      if (onRangeLabel && selectedRangeRef.current && rangeStatsRef.current && param.point) {
+        setRangeTooltip({ stats: rangeStatsRef.current, point: param.point });
+        setSwingTooltip(null);
+        setBarTooltip(null);
+        setWalletMarkersTooltip(null);
+        return;
+      }
+      setRangeTooltip(null);
 
       const hovered =
         param.hoveredSeries ?? param.hoveredInfo?.series;
@@ -817,6 +861,9 @@ export function TokenPriceChart({
     const groupModeAtMount = groupMode;
     const intervalAtMount = intervalSec;
     chart.subscribeClick((param) => {
+      // In range-select mode the pointer-drag handler owns clicks; don't also
+      // toggle a bar selection.
+      if (rangeSelectModeRef.current) return;
       const hovered =
         param.hoveredSeries ?? param.hoveredInfo?.series;
       const onSwingSeries =
@@ -906,6 +953,7 @@ export function TokenPriceChart({
       markersPluginRef.current = null;
       walletMarkersPrimRef.current = null;
       chainHighlightPrimRef.current = null;
+      rangeSelectPrimRef.current = null;
       seriesRef.current = null;
       swingSeriesRefs.current = [];
       chart.remove();
@@ -914,6 +962,7 @@ export function TokenPriceChart({
       setBarTooltip(null);
       setSwingTooltip(null);
       setChainTooltip(null);
+      setRangeTooltip(null);
       setWalletMarkersTooltip(null);
     };
   }, [showChart, height, groupingKey, groupMode, priceUnit, chartTimezone]);
@@ -1000,6 +1049,10 @@ export function TokenPriceChart({
         existing.detachPrimitive(asChainPrimitive(chainHighlightPrimRef.current));
         chainHighlightPrimRef.current = null;
       }
+      if (rangeSelectPrimRef.current) {
+        existing.detachPrimitive(asRangePrimitive(rangeSelectPrimRef.current));
+        rangeSelectPrimRef.current = null;
+      }
       chart.removeSeries(existing);
       seriesRef.current = null;
     }
@@ -1020,6 +1073,10 @@ export function TokenPriceChart({
     const chainPrim = new ChainHighlightPlugin();
     series.attachPrimitive(asChainPrimitive(chainPrim));
     chainHighlightPrimRef.current = chainPrim;
+
+    const rangePrim = new RangeSelectPlugin();
+    series.attachPrimitive(asRangePrimitive(rangePrim));
+    rangeSelectPrimRef.current = rangePrim;
 
     if (style === 'line') {
       series.setData(barsToLineData(bars));
@@ -1137,6 +1194,124 @@ export function TokenPriceChart({
       pairCount: highlightChain.pairCount,
     });
   }, [highlightChain, showChainHighlight, groupMode, intervalSec, sortedTrades, showChart, style, bars]);
+
+  // Render the committed range selection as a band with a duration chip. Keyed
+  // on style/grouping/bars so it re-applies after the series (and its plugin)
+  // is recreated; the live drag preview is driven directly from the pointer
+  // handlers below. `rangeSelectMode` is a dep so flipping the mode wipes any
+  // stale draft band left over from an interrupted drag.
+  useEffect(() => {
+    const prim = rangeSelectPrimRef.current;
+    if (!prim || !showChart) return;
+
+    if (!selectedRange) {
+      prim.setBand(null);
+      setRangeTooltip(null);
+      return;
+    }
+
+    const label = rangeStats ? formatRangeDuration(rangeStats.durationMs) : 'Range';
+    prim.setBand({
+      loTime: Math.min(selectedRange.lo, selectedRange.hi) as UTCTimestamp,
+      hiTime: Math.max(selectedRange.lo, selectedRange.hi) as UTCTimestamp,
+      label,
+      dashed: false,
+    });
+  }, [selectedRange, rangeStats, rangeSelectMode, showChart, style, groupingKey, bars]);
+
+  // Drag-to-select a time range. Active only in range-select mode: disable the
+  // chart's pan/zoom so a horizontal drag draws a band instead of scrolling,
+  // and snap both edges to the nearest bar via the logical coordinate.
+  useEffect(() => {
+    if (!showChart || !rangeSelectMode) return;
+    const el = containerRef.current;
+    const chart = chartRef.current;
+    if (!el || !chart) return;
+
+    chart.applyOptions({ handleScroll: false, handleScale: false });
+    el.style.cursor = 'crosshair';
+
+    const coordToBarTime = (clientX: number): number | null => {
+      const chartBars = barsRef.current;
+      if (chartBars.length === 0) return null;
+      const rect = el.getBoundingClientRect();
+      const logical = chart.timeScale().coordinateToLogical((clientX - rect.left) as Coordinate);
+      if (logical == null) return null;
+      const idx = Math.max(0, Math.min(chartBars.length - 1, Math.round(logical)));
+      return chartBars[idx].time as number;
+    };
+
+    let dragging = false;
+    let startX = 0;
+    let startTime: number | null = null;
+
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      const t = coordToBarTime(e.clientX);
+      if (t == null) return;
+      dragging = true;
+      startX = e.clientX;
+      startTime = t;
+      try { el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+      rangeSelectPrimRef.current?.setBand({
+        loTime: t as UTCTimestamp,
+        hiTime: t as UTCTimestamp,
+        dashed: true,
+      });
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      if (!dragging || startTime == null) return;
+      const t = coordToBarTime(e.clientX);
+      if (t == null) return;
+      rangeSelectPrimRef.current?.setBand({
+        loTime: Math.min(startTime, t) as UTCTimestamp,
+        hiTime: Math.max(startTime, t) as UTCTimestamp,
+        dashed: true,
+      });
+    };
+
+    const finishDrag = (e: PointerEvent) => {
+      if (!dragging) return;
+      dragging = false;
+      try { el.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+      const t = coordToBarTime(e.clientX);
+      // A drag too short to clear the threshold reads as a click → clear. Drop
+      // the draft band directly too: if no selection existed, setSelectedRange
+      // is a no-op and the band effect won't fire to clear the pointerdown dot.
+      if (startTime == null || t == null || Math.abs(e.clientX - startX) < 4) {
+        startTime = null;
+        rangeSelectPrimRef.current?.setBand(null);
+        setSelectedRange(null);
+        return;
+      }
+      setSelectedRange({ lo: Math.min(startTime, t), hi: Math.max(startTime, t) });
+      startTime = null;
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSelectedRange(null);
+    };
+
+    el.addEventListener('pointerdown', onPointerDown);
+    el.addEventListener('pointermove', onPointerMove);
+    el.addEventListener('pointerup', finishDrag);
+    el.addEventListener('pointercancel', finishDrag);
+    window.addEventListener('keydown', onKeyDown);
+
+    return () => {
+      el.removeEventListener('pointerdown', onPointerDown);
+      el.removeEventListener('pointermove', onPointerMove);
+      el.removeEventListener('pointerup', finishDrag);
+      el.removeEventListener('pointercancel', finishDrag);
+      window.removeEventListener('keydown', onKeyDown);
+      el.style.cursor = '';
+      // Restore pan/zoom unless the chart was already torn down/replaced.
+      if (chartRef.current === chart) {
+        chart.applyOptions({ handleScroll: true, handleScale: true });
+      }
+    };
+  }, [showChart, height, groupingKey, groupMode, priceUnit, chartTimezone, rangeSelectMode]);
 
   useEffect(() => {
     const series = seriesRef.current;
@@ -1368,6 +1543,7 @@ export function TokenPriceChart({
         connectSwings={connectSwings}
         chainHighlightAvailable={chainHighlightAvailable}
         showChainHighlight={showChainHighlight}
+        rangeSelectMode={rangeSelectMode}
         crosshair={crosshair}
         isMigrated={isMigrated}
         isMayhemMode={isMayhemMode}
@@ -1383,6 +1559,7 @@ export function TokenPriceChart({
         onShowSwingOverlayChange={setShowSwingOverlay}
         onConnectSwingsChange={setConnectSwings}
         onShowChainHighlightChange={setShowChainHighlight}
+        onRangeSelectModeChange={setRangeSelectMode}
       />
       <div className="relative" style={{ height, width: '100%' }}>
         <div ref={containerRef} style={{ height: '100%', width: '100%' }} />
@@ -1410,6 +1587,13 @@ export function TokenPriceChart({
         )}
         {walletMarkersTooltip && (
           <WalletMarkersTooltip tooltip={walletMarkersTooltip} />
+        )}
+        {rangeTooltip && (
+          <RangeSelectTooltip
+            tooltip={rangeTooltip}
+            formatAmount={formatSwingAmount}
+            formatPrice={formatSwingPrice}
+          />
         )}
       </div>
       {bars.length > 1 && (

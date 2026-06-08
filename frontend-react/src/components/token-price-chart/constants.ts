@@ -80,6 +80,11 @@ export const CHART_COLORS = {
   chainBandBorder: 'rgba(250, 204, 21, 0.6)',
   chainBandLabelBg: 'rgba(250, 204, 21, 0.92)',
   chainBandLabelText: '#1a1a1a',
+  /** User-drawn range selection band (teal wash + solid label chip) */
+  rangeBandFill: 'rgba(19, 206, 175, 0.12)',
+  rangeBandBorder: 'rgba(19, 206, 175, 0.7)',
+  rangeBandLabelBg: 'rgba(19, 206, 175, 0.92)',
+  rangeBandLabelText: '#0a1a17',
 } as const;
 
 /** Crosshair tooltip / toolbar — distinct hue per field on dark panels. */

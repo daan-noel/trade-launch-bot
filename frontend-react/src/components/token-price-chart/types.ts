@@ -135,6 +135,45 @@ export interface ChartChainTooltipState {
   point: { x: number; y: number };
 }
 
+/** Aggregate stats for a user-drawn time range (snapped to bar bounds). */
+export interface ChartRangeStats {
+  /** Buy-side SOL flow over the range. */
+  inflow: number;
+  /** Sell-side SOL flow over the range. */
+  outflow: number;
+  /** inflow − outflow. */
+  netFlow: number;
+  tradeCount: number;
+  buyCount: number;
+  sellCount: number;
+  /** Distinct wallets that traded in the range. */
+  uniqueWallets: number;
+  uniqueBuyers: number;
+  uniqueSellers: number;
+  /** Largest single buy `sol_amount` in the range (0 if none). */
+  maxBuySol: number;
+  /** Largest single sell `sol_amount` in the range (0 if none). */
+  maxSellSol: number;
+  /** Wall-clock span from first to last trade in the range (ms). */
+  durationMs: number;
+  /** Price change (priceInSol) across the range: last − first trade price. */
+  priceDelta: number;
+  /** `priceDelta` as a percentage of the first trade price; null if unknown. */
+  priceDeltaPct: number | null;
+}
+
+/** User-drawn analysis range, in chart-time units (bucket-start sec, or slot). */
+export interface ChartRangeSelection {
+  lo: number;
+  hi: number;
+}
+
+/** Tooltip shown when the crosshair hovers the range-selection label chip. */
+export interface ChartRangeTooltipState {
+  stats: ChartRangeStats;
+  point: { x: number; y: number };
+}
+
 export interface WalletBarActivity {
   wallet: ProfileWalletInfo;
   buyCount: number;
@@ -238,6 +277,8 @@ export interface ChartToolbarProps {
   connectSwings: boolean;
   chainHighlightAvailable: boolean;
   showChainHighlight: boolean;
+  /** Range-select (drag-to-highlight) mode is active. */
+  rangeSelectMode: boolean;
   crosshair: ChartCrosshairInfo | null;
   isMigrated?: boolean;
   isMayhemMode?: boolean;
@@ -253,4 +294,5 @@ export interface ChartToolbarProps {
   onShowSwingOverlayChange: (show: boolean) => void;
   onConnectSwingsChange: (connected: boolean) => void;
   onShowChainHighlightChange: (show: boolean) => void;
+  onRangeSelectModeChange: (active: boolean) => void;
 }

@@ -1,6 +1,13 @@
 import type { SeriesMarker, UTCTimestamp } from 'lightweight-charts';
 import { CHART_COLORS, PUMP_MIGRATION_SPOT_PRICE_SOL, TOKEN_TOTAL_SUPPLY } from './constants';
-import type { ChartMetric, ChartTrade, OhlcBar } from './types';
+import type {
+  ChartGroupMode,
+  ChartMetric,
+  ChartRangeSelection,
+  ChartRangeStats,
+  ChartTrade,
+  OhlcBar,
+} from './types';
 
 function tradeTimestampSec(blockTime: string): number | null {
   const ms = Date.parse(blockTime);
@@ -501,6 +508,98 @@ export function barsToCandleData(
     }
     return candle;
   });
+}
+
+/**
+ * Aggregate trade stats over a user-drawn range, snapped to bar bounds.
+ *
+ * `range.lo`/`range.hi` are chart-time bounds (bucket-start seconds in time
+ * mode, slot numbers in slot mode); a trade is in range when its bar key falls
+ * within `[lo, hi]`, so the numbers match exactly the bars the band highlights.
+ * `trades` must be in chronological order (pass the chart's sorted trades) —
+ * duration and price delta are read from the first/last in-range trade.
+ */
+export function computeRangeStats(
+  trades: ChartTrade[],
+  range: ChartRangeSelection,
+  groupMode: ChartGroupMode,
+  intervalSec: number,
+): ChartRangeStats {
+  const lo = Math.min(range.lo, range.hi);
+  const hi = Math.max(range.lo, range.hi);
+
+  let inflow = 0;
+  let outflow = 0;
+  let buyCount = 0;
+  let sellCount = 0;
+  let maxBuySol = 0;
+  let maxSellSol = 0;
+  let firstTrade: ChartTrade | null = null;
+  let lastTrade: ChartTrade | null = null;
+  const wallets = new Set<string>();
+  const buyers = new Set<string>();
+  const sellers = new Set<string>();
+
+  for (const trade of trades) {
+    const key =
+      groupMode === 'slot'
+        ? tradeBarSlot(trade)
+        : tradeBarTime(trade.block_time, intervalSec);
+    if (key == null) continue;
+    const k = key as number;
+    if (k < lo || k > hi) continue;
+
+    const sol = trade.sol_amount ?? 0;
+    if (trade.wallet_address) wallets.add(trade.wallet_address);
+    if (trade.trade_type === 'buy') {
+      inflow += sol;
+      buyCount += 1;
+      if (sol > maxBuySol) maxBuySol = sol;
+      if (trade.wallet_address) buyers.add(trade.wallet_address);
+    } else {
+      outflow += sol;
+      sellCount += 1;
+      if (sol > maxSellSol) maxSellSol = sol;
+      if (trade.wallet_address) sellers.add(trade.wallet_address);
+    }
+
+    if (firstTrade == null) firstTrade = trade;
+    lastTrade = trade;
+  }
+
+  let durationMs = 0;
+  let priceDelta = 0;
+  let priceDeltaPct: number | null = null;
+  if (firstTrade && lastTrade) {
+    const startMs = Date.parse(firstTrade.block_time);
+    const endMs = Date.parse(lastTrade.block_time);
+    if (!Number.isNaN(startMs) && !Number.isNaN(endMs)) {
+      durationMs = Math.max(0, endMs - startMs);
+    }
+    const startSpot = tradeSpotPriceSol(firstTrade);
+    const endSpot = tradeSpotPriceSol(lastTrade);
+    if (startSpot != null && endSpot != null) {
+      priceDelta = endSpot - startSpot;
+      if (startSpot > 0) priceDeltaPct = (priceDelta / startSpot) * 100;
+    }
+  }
+
+  return {
+    inflow,
+    outflow,
+    netFlow: inflow - outflow,
+    tradeCount: buyCount + sellCount,
+    buyCount,
+    sellCount,
+    uniqueWallets: wallets.size,
+    uniqueBuyers: buyers.size,
+    uniqueSellers: sellers.size,
+    maxBuySol,
+    maxSellSol,
+    durationMs,
+    priceDelta,
+    priceDeltaPct,
+  };
 }
 
 /** Arrow marker for a selected bar (line + candle charts). */
