@@ -148,6 +148,11 @@ pub const TOKEN_TOTAL_SUPPLY: f64 = 1000000000000000.0;
 /// How long a token can go without a price change before being considered rugged.
 pub const RUGGED_STALE_SECONDS: i64 = 3600; // 1 hour
 
+/// A silence longer than this between consecutive trades marks the token going
+/// quiet. Trailing trades after such a gap are stripped when computing a token's
+/// active lifetime, so a lone late trade hours after death doesn't inflate it.
+pub const LIFETIME_GAP_SECONDS: i64 = 600; // 10 minutes
+
 
 
 

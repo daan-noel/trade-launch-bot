@@ -31,7 +31,9 @@ import { swingColumns } from 'components/analysis/swingColumns';
 import {
   DEFAULT_SWING_PARAMS,
   SWING_PARAM_INT_KEYS,
+  RangeInputs,
   SwingParamsGrid,
+  SwingRangeField,
   isFiniteNumber,
   mergeSwingParams,
   swingParamsFromForm,
@@ -724,24 +726,6 @@ export function SwingDetectionPage() {
 
   // Inline element generators — plain functions that read this component's
   // scope directly, so there are no props to thread through.
-  function renderSingleThresholdField(label: string, key: keyof SwingParams) {
-    return (
-      <label className={labelClassName} key={key}>
-        {label}
-        <Input
-          fieldSize="md"
-          variant="card"
-          className="min-w-0 font-normal normal-case tracking-normal"
-          type="number"
-          min={0}
-          step="any"
-          value={singleSwingParams[key]}
-          onChange={(e) => updateSingleSwingParam(key, e.target.value)}
-        />
-      </label>
-    );
-  }
-
   function renderControlsBar() {
     return (
       <div className="mb-3 flex flex-wrap items-end gap-3">
@@ -837,22 +821,6 @@ export function SwingDetectionPage() {
       ? 'Running…'
       : `Run on ${tokenCount} token${tokenCount === 1 ? '' : 's'}`;
 
-    const renderThresholdField = (label: string, key: keyof SwingParams) => (
-      <label className={labelClassName} key={key}>
-        {label}
-        <Input
-          fieldSize="md"
-          variant="card"
-          className="min-w-0 font-normal normal-case tracking-normal"
-          type="number"
-          min={0}
-          step="any"
-          value={swingParams[key]}
-          onChange={(e) => updateSwingParam(key, e.target.value)}
-        />
-      </label>
-    );
-
     return (
       loaded && showSwingAll &&
       <div className="w-full mb-3 rounded-lg border border-white/8 bg-bg-card/40 p-4">
@@ -941,40 +909,27 @@ export function SwingDetectionPage() {
               </span>
             </label>
             <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <label className={labelClassName}>
-                Start (s after launch)
-                <Input
-                  fieldSize="md"
-                  variant="card"
-                  className="min-w-0 font-normal normal-case tracking-normal"
-                  type="number"
-                  min={0}
-                  step="any"
-                  disabled={curveOnly}
-                  value={windowStartSec}
-                  onChange={(e) => {
-                    const parsed = parseFloat(e.target.value);
+              <RangeInputs
+                label="Window (s after launch)"
+                left={{
+                  value: windowStartSec,
+                  placeholder: 'start',
+                  disabled: curveOnly,
+                  onChange: (raw) => {
+                    const parsed = parseFloat(raw);
                     setWindowStartSec(Number.isFinite(parsed) ? parsed : '');
-                  }}
-                />
-              </label>
-              <label className={labelClassName}>
-                End (s after launch)
-                <Input
-                  fieldSize="md"
-                  variant="card"
-                  className="min-w-0 font-normal normal-case tracking-normal"
-                  type="number"
-                  min={0}
-                  step="any"
-                  disabled={curveOnly}
-                  value={windowEndSec}
-                  onChange={(e) => {
-                    const parsed = parseFloat(e.target.value);
+                  },
+                }}
+                right={{
+                  value: windowEndSec,
+                  placeholder: 'end',
+                  disabled: curveOnly,
+                  onChange: (raw) => {
+                    const parsed = parseFloat(raw);
                     setWindowEndSec(Number.isFinite(parsed) ? parsed : '');
-                  }}
-                />
-              </label>
+                  },
+                }}
+              />
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
@@ -1002,19 +957,39 @@ export function SwingDetectionPage() {
               <div>
                 <h4 className="mb-3 text-[12px] font-bold text-text">Swing High</h4>
                 <div className="grid gap-3 sm:grid-cols-2">
-                  {renderThresholdField('Min delta (%)', 'swing_high_min_delta_pct')}
-                  {renderThresholdField('Max delta (%)', 'swing_high_max_delta_pct')}
-                  {renderThresholdField('Min net flow / s (SOL)', 'swing_high_min_net_flow_per_sec')}
-                  {renderThresholdField('Max net flow / s (SOL)', 'swing_high_max_net_flow_per_sec')}
+                  <SwingRangeField
+                    label="Delta (%)"
+                    left={{ key: 'swing_high_min_delta_pct', placeholder: 'min' }}
+                    right={{ key: 'swing_high_max_delta_pct', placeholder: 'max' }}
+                    params={swingParams}
+                    onChange={updateSwingParam}
+                  />
+                  <SwingRangeField
+                    label="Net flow / s (SOL)"
+                    left={{ key: 'swing_high_min_net_flow_per_sec', placeholder: 'min' }}
+                    right={{ key: 'swing_high_max_net_flow_per_sec', placeholder: 'max' }}
+                    params={swingParams}
+                    onChange={updateSwingParam}
+                  />
                 </div>
               </div>
               <div>
                 <h4 className="mb-3 text-[12px] font-bold text-text">Swing Low</h4>
                 <div className="grid gap-3 sm:grid-cols-2">
-                  {renderThresholdField('Min delta (%)', 'swing_low_min_delta_pct')}
-                  {renderThresholdField('Max delta (%)', 'swing_low_max_delta_pct')}
-                  {renderThresholdField('Min net flow / s (SOL)', 'swing_low_min_net_flow_per_sec')}
-                  {renderThresholdField('Max net flow / s (SOL)', 'swing_low_max_net_flow_per_sec')}
+                  <SwingRangeField
+                    label="Delta (%)"
+                    left={{ key: 'swing_low_min_delta_pct', placeholder: 'min' }}
+                    right={{ key: 'swing_low_max_delta_pct', placeholder: 'max' }}
+                    params={swingParams}
+                    onChange={updateSwingParam}
+                  />
+                  <SwingRangeField
+                    label="Net flow / s (SOL)"
+                    left={{ key: 'swing_low_min_net_flow_per_sec', placeholder: 'min' }}
+                    right={{ key: 'swing_low_max_net_flow_per_sec', placeholder: 'max' }}
+                    params={swingParams}
+                    onChange={updateSwingParam}
+                  />
                 </div>
               </div>
             </div>
@@ -1225,40 +1200,27 @@ export function SwingDetectionPage() {
                   </span>
                 </label>
                 <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                  <label className={labelClassName}>
-                    Start (s after launch)
-                    <Input
-                      fieldSize="md"
-                      variant="card"
-                      className="min-w-0 font-normal normal-case tracking-normal"
-                      type="number"
-                      min={0}
-                      step="any"
-                      disabled={singleCurveOnly}
-                      value={singleWindowStartSec}
-                      onChange={(e) => {
-                        const parsed = parseFloat(e.target.value);
+                  <RangeInputs
+                    label="Window (s after launch)"
+                    left={{
+                      value: singleWindowStartSec,
+                      placeholder: 'start',
+                      disabled: singleCurveOnly,
+                      onChange: (raw) => {
+                        const parsed = parseFloat(raw);
                         setSingleWindowStartSec(Number.isFinite(parsed) ? parsed : '');
-                      }}
-                    />
-                  </label>
-                  <label className={labelClassName}>
-                    End (s after launch)
-                    <Input
-                      fieldSize="md"
-                      variant="card"
-                      className="min-w-0 font-normal normal-case tracking-normal"
-                      type="number"
-                      min={0}
-                      step="any"
-                      disabled={singleCurveOnly}
-                      value={singleWindowEndSec}
-                      onChange={(e) => {
-                        const parsed = parseFloat(e.target.value);
+                      },
+                    }}
+                    right={{
+                      value: singleWindowEndSec,
+                      placeholder: 'end',
+                      disabled: singleCurveOnly,
+                      onChange: (raw) => {
+                        const parsed = parseFloat(raw);
                         setSingleWindowEndSec(Number.isFinite(parsed) ? parsed : '');
-                      }}
-                    />
-                  </label>
+                      },
+                    }}
+                  />
                 </div>
 
                 <div className="flex flex-wrap items-center gap-3">
@@ -1286,19 +1248,39 @@ export function SwingDetectionPage() {
                   <div>
                     <h4 className="mb-3 text-[12px] font-bold text-text">Swing High</h4>
                     <div className="grid gap-3 sm:grid-cols-2">
-                      {renderSingleThresholdField('Min delta (%)', 'swing_high_min_delta_pct')}
-                      {renderSingleThresholdField('Max delta (%)', 'swing_high_max_delta_pct')}
-                      {renderSingleThresholdField('Min net flow / s (SOL)', 'swing_high_min_net_flow_per_sec')}
-                      {renderSingleThresholdField('Max net flow / s (SOL)', 'swing_high_max_net_flow_per_sec')}
+                      <SwingRangeField
+                        label="Delta (%)"
+                        left={{ key: 'swing_high_min_delta_pct', placeholder: 'min' }}
+                        right={{ key: 'swing_high_max_delta_pct', placeholder: 'max' }}
+                        params={singleSwingParams}
+                        onChange={updateSingleSwingParam}
+                      />
+                      <SwingRangeField
+                        label="Net flow / s (SOL)"
+                        left={{ key: 'swing_high_min_net_flow_per_sec', placeholder: 'min' }}
+                        right={{ key: 'swing_high_max_net_flow_per_sec', placeholder: 'max' }}
+                        params={singleSwingParams}
+                        onChange={updateSingleSwingParam}
+                      />
                     </div>
                   </div>
                   <div>
                     <h4 className="mb-3 text-[12px] font-bold text-text">Swing Low</h4>
                     <div className="grid gap-3 sm:grid-cols-2">
-                      {renderSingleThresholdField('Min delta (%)', 'swing_low_min_delta_pct')}
-                      {renderSingleThresholdField('Max delta (%)', 'swing_low_max_delta_pct')}
-                      {renderSingleThresholdField('Min net flow / s (SOL)', 'swing_low_min_net_flow_per_sec')}
-                      {renderSingleThresholdField('Max net flow / s (SOL)', 'swing_low_max_net_flow_per_sec')}
+                      <SwingRangeField
+                        label="Delta (%)"
+                        left={{ key: 'swing_low_min_delta_pct', placeholder: 'min' }}
+                        right={{ key: 'swing_low_max_delta_pct', placeholder: 'max' }}
+                        params={singleSwingParams}
+                        onChange={updateSingleSwingParam}
+                      />
+                      <SwingRangeField
+                        label="Net flow / s (SOL)"
+                        left={{ key: 'swing_low_min_net_flow_per_sec', placeholder: 'min' }}
+                        right={{ key: 'swing_low_max_net_flow_per_sec', placeholder: 'max' }}
+                        params={singleSwingParams}
+                        onChange={updateSingleSwingParam}
+                      />
                     </div>
                   </div>
                 </div>
@@ -1353,152 +1335,79 @@ export function SwingDetectionPage() {
                           <option value="swing_low">Swing low</option>
                         </Select>
                       </label>
-                      <label className={labelClassName}>
-                        Filter min duration (ms)
-                        <Input
-                          fieldSize="md"
-                          variant="card"
-                          className="min-w-0 font-normal normal-case tracking-normal"
-                          type="number"
-                          min={0}
-                          step={1}
-                          value={swingFilter.filter_min_duration_ms}
-                          onChange={(e) =>
-                            updateSwingFilter('filter_min_duration_ms', e.target.value)
-                          }
-                        />
-                      </label>
-                      <label className={labelClassName}>
-                        Filter max duration (ms)
-                        <Input
-                          fieldSize="md"
-                          variant="card"
-                          className="min-w-0 font-normal normal-case tracking-normal"
-                          type="number"
-                          min={0}
-                          step={1}
-                          value={swingFilter.filter_max_duration_ms}
-                          onChange={(e) =>
-                            updateSwingFilter('filter_max_duration_ms', e.target.value)
-                          }
-                        />
-                      </label>
-                      <label className={labelClassName}>
-                        Filter min trades
-                        <Input
-                          fieldSize="md"
-                          variant="card"
-                          className="min-w-0 font-normal normal-case tracking-normal"
-                          type="number"
-                          min={0}
-                          step={1}
-                          value={swingFilter.filter_min_trades}
-                          onChange={(e) =>
-                            updateSwingFilter('filter_min_trades', e.target.value)
-                          }
-                        />
-                      </label>
-                      <label className={labelClassName}>
-                        Filter max trades
-                        <Input
-                          fieldSize="md"
-                          variant="card"
-                          className="min-w-0 font-normal normal-case tracking-normal"
-                          type="number"
-                          min={0}
-                          step={1}
-                          value={swingFilter.filter_max_trades}
-                          onChange={(e) =>
-                            updateSwingFilter('filter_max_trades', e.target.value)
-                          }
-                        />
-                      </label>
-                      <label className={labelClassName}>
-                        Filter min volume (SOL)
-                        <Input
-                          fieldSize="md"
-                          variant="card"
-                          className="min-w-0 font-normal normal-case tracking-normal"
-                          type="number"
-                          min={0}
-                          step="any"
-                          value={swingFilter.filter_min_volume_sol}
-                          onChange={(e) =>
-                            updateSwingFilter('filter_min_volume_sol', e.target.value)
-                          }
-                        />
-                      </label>
-                      <label className={labelClassName}>
-                        Filter max volume (SOL)
-                        <Input
-                          fieldSize="md"
-                          variant="card"
-                          className="min-w-0 font-normal normal-case tracking-normal"
-                          type="number"
-                          min={0}
-                          step="any"
-                          value={swingFilter.filter_max_volume_sol}
-                          onChange={(e) =>
-                            updateSwingFilter('filter_max_volume_sol', e.target.value)
-                          }
-                        />
-                      </label>
-                      <label className={labelClassName}>
-                        Filter min net flow (SOL)
-                        <Input
-                          fieldSize="md"
-                          variant="card"
-                          className="min-w-0 font-normal normal-case tracking-normal"
-                          type="number"
-                          step="any"
-                          value={swingFilter.filter_min_net_flow_sol}
-                          onChange={(e) =>
-                            updateSwingFilter('filter_min_net_flow_sol', e.target.value)
-                          }
-                        />
-                      </label>
-                      <label className={labelClassName}>
-                        Filter max net flow (SOL)
-                        <Input
-                          fieldSize="md"
-                          variant="card"
-                          className="min-w-0 font-normal normal-case tracking-normal"
-                          type="number"
-                          step="any"
-                          value={swingFilter.filter_max_net_flow_sol}
-                          onChange={(e) =>
-                            updateSwingFilter('filter_max_net_flow_sol', e.target.value)
-                          }
-                        />
-                      </label>
-                      <label className={labelClassName}>
-                        Filter min change (%)
-                        <Input
-                          fieldSize="md"
-                          variant="card"
-                          className="min-w-0 font-normal normal-case tracking-normal"
-                          type="number"
-                          step="any"
-                          value={swingFilter.filter_min_change_pct}
-                          onChange={(e) =>
-                            updateSwingFilter('filter_min_change_pct', e.target.value)
-                          }
-                        />
-                      </label>
-                      <label className={labelClassName}>
-                        Filter max change (%)
-                        <Input
-                          fieldSize="md"
-                          variant="card"
-                          className="min-w-0 font-normal normal-case tracking-normal"
-                          type="number"
-                          step="any"
-                          value={swingFilter.filter_max_change_pct}
-                          onChange={(e) =>
-                            updateSwingFilter('filter_max_change_pct', e.target.value)
-                          }
-                        />
-                      </label>
+                      <RangeInputs
+                        label="Filter duration (ms)"
+                        left={{
+                          value: swingFilter.filter_min_duration_ms,
+                          placeholder: 'min',
+                          step: 1,
+                          onChange: (raw) => updateSwingFilter('filter_min_duration_ms', raw),
+                        }}
+                        right={{
+                          value: swingFilter.filter_max_duration_ms,
+                          placeholder: 'max',
+                          step: 1,
+                          onChange: (raw) => updateSwingFilter('filter_max_duration_ms', raw),
+                        }}
+                      />
+                      <RangeInputs
+                        label="Filter trades"
+                        left={{
+                          value: swingFilter.filter_min_trades,
+                          placeholder: 'min',
+                          step: 1,
+                          onChange: (raw) => updateSwingFilter('filter_min_trades', raw),
+                        }}
+                        right={{
+                          value: swingFilter.filter_max_trades,
+                          placeholder: 'max',
+                          step: 1,
+                          onChange: (raw) => updateSwingFilter('filter_max_trades', raw),
+                        }}
+                      />
+                      <RangeInputs
+                        label="Filter volume (SOL)"
+                        left={{
+                          value: swingFilter.filter_min_volume_sol,
+                          placeholder: 'min',
+                          onChange: (raw) => updateSwingFilter('filter_min_volume_sol', raw),
+                        }}
+                        right={{
+                          value: swingFilter.filter_max_volume_sol,
+                          placeholder: 'max',
+                          onChange: (raw) => updateSwingFilter('filter_max_volume_sol', raw),
+                        }}
+                      />
+                      <RangeInputs
+                        label="Filter net flow (SOL)"
+                        left={{
+                          value: swingFilter.filter_min_net_flow_sol,
+                          placeholder: 'min',
+                          min: null,
+                          onChange: (raw) => updateSwingFilter('filter_min_net_flow_sol', raw),
+                        }}
+                        right={{
+                          value: swingFilter.filter_max_net_flow_sol,
+                          placeholder: 'max',
+                          min: null,
+                          onChange: (raw) => updateSwingFilter('filter_max_net_flow_sol', raw),
+                        }}
+                      />
+                      <RangeInputs
+                        label="Filter change (%)"
+                        left={{
+                          value: swingFilter.filter_min_change_pct,
+                          placeholder: 'min',
+                          min: null,
+                          onChange: (raw) => updateSwingFilter('filter_min_change_pct', raw),
+                        }}
+                        right={{
+                          value: swingFilter.filter_max_change_pct,
+                          placeholder: 'max',
+                          min: null,
+                          onChange: (raw) => updateSwingFilter('filter_max_change_pct', raw),
+                        }}
+                      />
                     </div>
 
                     <div className="mb-4 flex flex-wrap items-center gap-3">

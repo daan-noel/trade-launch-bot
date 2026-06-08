@@ -89,6 +89,10 @@ export interface ChartSwingLeg {
   end_at: number;
   start_price: number;
   end_price: number;
+  /** Terminal pivot drawn as the leg's end point (last big tx / price extreme).
+   *  Falls back to `end_at`/`end_price` when absent. */
+  pivot_end_at?: number;
+  pivot_end_price?: number;
   duration_ms?: number;
   inflow?: number;
   outflow?: number;

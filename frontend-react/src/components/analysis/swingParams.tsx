@@ -22,6 +22,7 @@ export const DEFAULT_SWING_PARAMS: SwingParams = {
   swing_low_max_delta_pct: 0,
   swing_low_min_net_flow_per_sec: 0,
   swing_low_max_net_flow_per_sec: 0,
+  big_tx_sol: 5,
 };
 
 /** Params parsed as integers (the rest are parsed as floats). */
@@ -69,13 +70,144 @@ interface SwingParamsGridProps {
   onChange: <K extends keyof SwingParams>(key: K, raw: string) => void;
 }
 
-/** The 12-input swing-detection parameter grid, shared by the single-token and
- *  all-tokens ("Swing Detection All") Analysis panels. */
+const swingRangeInputClassName = 'min-w-0 font-normal normal-case tracking-normal';
+
+/** One side of a {@link RangeInputs} pair: its current value and how to update it. */
+export interface RangeInputSide {
+  value: number | '';
+  onChange: (raw: string) => void;
+  placeholder?: string;
+  /** `min` attribute for the native input (default 0). Pass `null` to allow negatives. */
+  min?: number | null;
+  /** `max` attribute for the native input (e.g. 100 for a percentage). */
+  max?: number;
+  step?: number | string;
+  disabled?: boolean;
+}
+
+interface RangeInputsProps {
+  label: string;
+  left: RangeInputSide;
+  right: RangeInputSide;
+  /** Glyph between the two inputs: `–` for a min/max range, `/` for a SOL/% pair. */
+  separator?: string;
+}
+
+/** A labelled cell holding two paired number inputs — a min/max range, a SOL/%
+ *  threshold pair, a start/end window, etc. Presentational: each side carries
+ *  its own value/onChange, so it isn't tied to any particular form shape. */
+export function RangeInputs({ label, left, right, separator = '–' }: RangeInputsProps) {
+  const renderInput = (side: RangeInputSide) => (
+    <Input
+      fieldSize="md"
+      variant="card"
+      className={swingRangeInputClassName}
+      type="number"
+      min={side.min === null ? undefined : (side.min ?? 0)}
+      max={side.max}
+      step={side.step ?? 'any'}
+      placeholder={side.placeholder}
+      disabled={side.disabled}
+      value={side.value}
+      onChange={(e) => side.onChange(e.target.value)}
+    />
+  );
+  return (
+    <div className={swingParamLabelClassName}>
+      {label}
+      <div className="flex items-center gap-1">
+        {renderInput(left)}
+        <span className="text-[10px] text-text-dim/50">{separator}</span>
+        {renderInput(right)}
+      </div>
+    </div>
+  );
+}
+
+/** One side of a {@link SwingRangeField} — which {@link SwingParams} key it edits. */
+interface SwingRangeSide {
+  key: keyof SwingParams;
+  placeholder?: string;
+  /** `max` attribute for the native input (e.g. 100 for a percentage). */
+  max?: number;
+  step?: number | string;
+}
+
+interface SwingRangeFieldProps {
+  label: string;
+  left: SwingRangeSide;
+  right: SwingRangeSide;
+  separator?: string;
+  params: SwingParamsForm;
+  onChange: <K extends keyof SwingParams>(key: K, raw: string) => void;
+}
+
+/** {@link RangeInputs} bound to a pair of {@link SwingParams} keys (0 = unbounded). */
+export function SwingRangeField({ label, left, right, separator, params, onChange }: SwingRangeFieldProps) {
+  const side = (s: SwingRangeSide): RangeInputSide => ({
+    value: params[s.key],
+    onChange: (raw) => onChange(s.key, raw),
+    placeholder: s.placeholder,
+    max: s.max,
+    step: s.step,
+  });
+  return <RangeInputs label={label} separator={separator} left={side(left)} right={side(right)} />;
+}
+
+/** The swing-detection parameter grid (the reversal thresholds render as SOL/%
+ *  pairs and the four leg min/max bounds as range fields), shared by the
+ *  single-token and all-tokens ("Swing Detection All") Analysis panels. */
 export function SwingParamsGrid({ params, onChange }: SwingParamsGridProps) {
   return (
     <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <SwingRangeField
+        label="High → low (SOL / %)"
+        left={{ key: 'high_to_low_threshold_sol', placeholder: 'SOL' }}
+        right={{ key: 'high_to_low_threshold_pct', placeholder: '%', max: 100 }}
+        separator="/"
+        params={params}
+        onChange={onChange}
+      />
+      <SwingRangeField
+        label="Low → high (SOL / %)"
+        left={{ key: 'low_to_high_threshold_sol', placeholder: 'SOL' }}
+        right={{ key: 'low_to_high_threshold_pct', placeholder: '%', max: 100 }}
+        separator="/"
+        params={params}
+        onChange={onChange}
+      />
+
+      <SwingRangeField
+        label="Leg trades"
+        left={{ key: 'min_leg_trades', placeholder: 'min', step: 1 }}
+        right={{ key: 'max_leg_trades', placeholder: 'max', step: 1 }}
+        params={params}
+        onChange={onChange}
+      />
+      <SwingRangeField
+        label="Leg duration (ms)"
+        left={{ key: 'min_leg_duration_ms', placeholder: 'min', step: 1 }}
+        right={{ key: 'max_leg_duration_ms', placeholder: 'max', step: 1 }}
+        params={params}
+        onChange={onChange}
+      />
+      <SwingRangeField
+        label="Leg volume (SOL)"
+        left={{ key: 'min_leg_volume', placeholder: 'min' }}
+        right={{ key: 'max_leg_volume', placeholder: 'max' }}
+        params={params}
+        onChange={onChange}
+      />
+      <SwingRangeField
+        label="Leg net flow (SOL)"
+        left={{ key: 'min_leg_net_flow', placeholder: 'min' }}
+        right={{ key: 'max_leg_net_flow', placeholder: 'max' }}
+        params={params}
+        onChange={onChange}
+      />
+
       <label className={swingParamLabelClassName}>
-        High → low (SOL)
+        Big tx (SOL)
         <Input
           fieldSize="md"
           variant="card"
@@ -83,153 +215,8 @@ export function SwingParamsGrid({ params, onChange }: SwingParamsGridProps) {
           type="number"
           min={0}
           step="any"
-          value={params.high_to_low_threshold_sol}
-          onChange={(e) => onChange('high_to_low_threshold_sol', e.target.value)}
-        />
-      </label>
-      <label className={swingParamLabelClassName}>
-        High → low (%)
-        <Input
-          fieldSize="md"
-          variant="card"
-          className="min-w-0 font-normal normal-case tracking-normal"
-          type="number"
-          min={0}
-          max={100}
-          step="any"
-          value={params.high_to_low_threshold_pct}
-          onChange={(e) => onChange('high_to_low_threshold_pct', e.target.value)}
-        />
-      </label>
-      <label className={swingParamLabelClassName}>
-        Low → high (SOL)
-        <Input
-          fieldSize="md"
-          variant="card"
-          className="min-w-0 font-normal normal-case tracking-normal"
-          type="number"
-          min={0}
-          step="any"
-          value={params.low_to_high_threshold_sol}
-          onChange={(e) => onChange('low_to_high_threshold_sol', e.target.value)}
-        />
-      </label>
-      <label className={swingParamLabelClassName}>
-        Low → high (%)
-        <Input
-          fieldSize="md"
-          variant="card"
-          className="min-w-0 font-normal normal-case tracking-normal"
-          type="number"
-          min={0}
-          max={100}
-          step="any"
-          value={params.low_to_high_threshold_pct}
-          onChange={(e) => onChange('low_to_high_threshold_pct', e.target.value)}
-        />
-      </label>
-      <label className={swingParamLabelClassName}>
-        Min leg trades
-        <Input
-          fieldSize="md"
-          variant="card"
-          className="min-w-0 font-normal normal-case tracking-normal"
-          type="number"
-          min={0}
-          step={1}
-          value={params.min_leg_trades}
-          onChange={(e) => onChange('min_leg_trades', e.target.value)}
-        />
-      </label>
-      <label className={swingParamLabelClassName}>
-        Min leg duration (ms)
-        <Input
-          fieldSize="md"
-          variant="card"
-          className="min-w-0 font-normal normal-case tracking-normal"
-          type="number"
-          min={0}
-          step={1}
-          value={params.min_leg_duration_ms}
-          onChange={(e) => onChange('min_leg_duration_ms', e.target.value)}
-        />
-      </label>
-      <label className={swingParamLabelClassName}>
-        Min leg volume (SOL)
-        <Input
-          fieldSize="md"
-          variant="card"
-          className="min-w-0 font-normal normal-case tracking-normal"
-          type="number"
-          min={0}
-          step="any"
-          value={params.min_leg_volume}
-          onChange={(e) => onChange('min_leg_volume', e.target.value)}
-        />
-      </label>
-      <label className={swingParamLabelClassName}>
-        Min leg net flow (SOL)
-        <Input
-          fieldSize="md"
-          variant="card"
-          className="min-w-0 font-normal normal-case tracking-normal"
-          type="number"
-          min={0}
-          step="any"
-          value={params.min_leg_net_flow}
-          onChange={(e) => onChange('min_leg_net_flow', e.target.value)}
-        />
-      </label>
-      <label className={swingParamLabelClassName}>
-        Max leg trades
-        <Input
-          fieldSize="md"
-          variant="card"
-          className="min-w-0 font-normal normal-case tracking-normal"
-          type="number"
-          min={0}
-          step={1}
-          value={params.max_leg_trades}
-          onChange={(e) => onChange('max_leg_trades', e.target.value)}
-        />
-      </label>
-      <label className={swingParamLabelClassName}>
-        Max leg duration (ms)
-        <Input
-          fieldSize="md"
-          variant="card"
-          className="min-w-0 font-normal normal-case tracking-normal"
-          type="number"
-          min={0}
-          step={1}
-          value={params.max_leg_duration_ms}
-          onChange={(e) => onChange('max_leg_duration_ms', e.target.value)}
-        />
-      </label>
-      <label className={swingParamLabelClassName}>
-        Max leg volume (SOL)
-        <Input
-          fieldSize="md"
-          variant="card"
-          className="min-w-0 font-normal normal-case tracking-normal"
-          type="number"
-          min={0}
-          step="any"
-          value={params.max_leg_volume}
-          onChange={(e) => onChange('max_leg_volume', e.target.value)}
-        />
-      </label>
-      <label className={swingParamLabelClassName}>
-        Max leg net flow (SOL)
-        <Input
-          fieldSize="md"
-          variant="card"
-          className="min-w-0 font-normal normal-case tracking-normal"
-          type="number"
-          min={0}
-          step="any"
-          value={params.max_leg_net_flow}
-          onChange={(e) => onChange('max_leg_net_flow', e.target.value)}
+          value={params.big_tx_sol}
+          onChange={(e) => onChange('big_tx_sol', e.target.value)}
         />
       </label>
     </div>

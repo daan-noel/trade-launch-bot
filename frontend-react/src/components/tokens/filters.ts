@@ -16,6 +16,9 @@ export interface TokenFilters {
   last_trade_to: string;
   ath_from: string;
   ath_to: string;
+  // Lifetime in minutes (last trade − creation); applies to dead tokens only
+  life_min: string;
+  life_max: string;
   // Performance
   ath_fep_min: string;
   ath_fep_max: string;
@@ -112,6 +115,8 @@ export const defaultFilters = (): TokenFilters => ({
   last_trade_to: '',
   ath_from: '',
   ath_to: '',
+  life_min: '',
+  life_max: '',
   ath_fep_min: '',
   ath_fep_max: '',
   cur_fep_min: '',
@@ -186,6 +191,32 @@ function dateInRange(iso: string | null | undefined, from: string, to: string): 
   const u = parseDt(to);
   if (u != null && t > u) return false;
   return true;
+}
+
+/**
+ * Inactivity window after which a token is treated as dead, so its lifetime is "final".
+ * Mirrors the backend's RUGGED_STALE_SECONDS = 3600 (constants.rs).
+ */
+const LIFETIME_STALE_MS = 60 * 60 * 1000;
+
+/**
+ * Token lifetime in minutes. Returns null (→ "not short-lived", keep the token) when it
+ * can't be determined (no last trade / unparseable timestamps) or when the token is still
+ * alive (last trade within LIFETIME_STALE_MS), since a live token's lifetime isn't final.
+ *
+ * Prefers the backend's gap-aware `active_lifetime_secs` (creation → last non-stray trade,
+ * stripping lone trades after the token went quiet) and falls back to the raw
+ * last-trade − creation span when the field is absent.
+ */
+function lifetimeMinutes(t: TokenRecord): number | null {
+  if (!t.last_trade_at) return null;
+  const last = Date.parse(t.last_trade_at);
+  if (Number.isNaN(last)) return null;
+  if (Date.now() - last < LIFETIME_STALE_MS) return null; // still trading → exempt
+  if (t.active_lifetime_secs != null) return t.active_lifetime_secs / 60;
+  const created = Date.parse(t.created_at);
+  if (Number.isNaN(created)) return null;
+  return (last - created) / 60_000;
 }
 
 function textMatch(value: string | null | undefined, needle: string): boolean {
@@ -274,6 +305,7 @@ export function activeFilterCount(f: TokenFilters): number {
     f.created_from || f.created_to,
     f.last_trade_from || f.last_trade_to,
     f.ath_from || f.ath_to,
+    f.life_min || f.life_max,
     f.ath_fep_min || f.ath_fep_max,
     f.cur_fep_min || f.cur_fep_max,
     f.ath_price_min || f.ath_price_max,
@@ -310,6 +342,12 @@ export function tokenPassesFilters(f: TokenFilters, t: TokenRecord): boolean {
   if (!dateInRange(t.created_at, f.created_from, f.created_to)) return false;
   if (!dateInRange(t.last_trade_at, f.last_trade_from, f.last_trade_to)) return false;
   if (!dateInRange(t.ath_timestamp, f.ath_from, f.ath_to)) return false;
+
+  // Lifetime (minutes): dead tokens only — still-alive/unknown tokens are exempt (kept).
+  if (f.life_min || f.life_max) {
+    const life = lifetimeMinutes(t);
+    if (life != null && !rangeF64(life, f.life_min, f.life_max)) return false;
+  }
 
   // Performance
   const entry = fep(t);

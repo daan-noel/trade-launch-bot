@@ -33,6 +33,8 @@ export interface TokenRecord {
   created_at: string;
   create_tx_address: string;
   last_trade_at: string | null;
+  /** Gap-aware lifetime in seconds (creation → last non-stray trade); null if no trades. */
+  active_lifetime_secs: number | null;
   last_synced_at: string | null;
 }
 
@@ -238,6 +240,9 @@ export interface SwingParams {
   swing_low_max_delta_pct: number;
   swing_low_min_net_flow_per_sec: number;
   swing_low_max_net_flow_per_sec: number;
+  /** "Big tx" threshold (SOL); 0 = disabled. A single tx >= this confirms a
+   *  reversal on its own and anchors a leg's terminal pivot to the last such tx. */
+  big_tx_sol: number;
 }
 
 export type SwingLegType = 'swing_high' | 'swing_low';
@@ -249,6 +254,10 @@ export interface SwingLegRecord {
   duration_ms: number;
   start_price: number;
   end_price: number;
+  /** Terminal pivot for charting: last big same-side tx (or price extreme fallback).
+   *  Optional for backward compatibility with cached/old responses. */
+  pivot_end_at?: number;
+  pivot_end_price?: number;
   inflow: number;
   outflow: number;
   net_flow: number;

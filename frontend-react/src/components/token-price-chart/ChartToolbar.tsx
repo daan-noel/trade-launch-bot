@@ -482,7 +482,7 @@ export function ChartToolbar({
       </div>
 
       <div
-        className="flex flex-wrap items-center gap-2 border-b px-3 py-1.5"
+        className="flex flex-wrap items-center gap-2 border-b px-3 py-1.5 justify-end"
         style={{ borderColor: CHART_COLORS.border }}
       >
         <div

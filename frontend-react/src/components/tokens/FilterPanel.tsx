@@ -70,6 +70,7 @@ function TextField({
 
 function RangeField({
   label,
+  hint,
   minKey,
   maxKey,
   draft,
@@ -77,6 +78,7 @@ function RangeField({
   step = 'any',
 }: {
   label: string;
+  hint?: string;
   minKey: keyof TokenFilters;
   maxKey: keyof TokenFilters;
   draft: TokenFilters;
@@ -84,7 +86,7 @@ function RangeField({
   step?: string;
 }) {
   return (
-    <Field label={label} className="w-[150px]">
+    <Field label={label} hint={hint} className="w-[150px]">
       <div className="flex items-center gap-1">
         <Input
           type="number"
@@ -269,6 +271,7 @@ export function FilterPanel({ filters, onApply, onClear }: FilterPanelProps) {
           <DateRangeField label="Created" fromKey="created_from" toKey="created_to" draft={draft} set={set} />
           <DateRangeField label="Last Trade" fromKey="last_trade_from" toKey="last_trade_to" draft={draft} set={set} />
           <DateRangeField label="ATH At" fromKey="ath_from" toKey="ath_to" draft={draft} set={set} />
+          <RangeField label="Life (min)" hint="dead only" minKey="life_min" maxKey="life_max" draft={draft} set={set} step="0.5" />
         </Section>
 
         <Section title="Performance">

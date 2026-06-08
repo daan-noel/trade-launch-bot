@@ -1,7 +1,9 @@
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 
-use crate::config::constants::{INITIAL_VIRTUAL_TOKEN_RESERVES, TOKEN_TOTAL_SUPPLY};
+use crate::config::constants::{
+    INITIAL_VIRTUAL_TOKEN_RESERVES, LIFETIME_GAP_SECONDS, TOKEN_TOTAL_SUPPLY,
+};
 use crate::models::{token::Token, trade::Trade};
 
 // ---------------------------------------------------------------------------
@@ -120,6 +122,37 @@ impl TokenState {
             seen.insert(t.wallet_address.as_str());
         }
         seen.len()
+    }
+
+    /// Gap-aware active lifetime in seconds: from token creation to the last
+    /// "real" trade. Trailing trades separated from their predecessor by a
+    /// silence longer than `LIFETIME_GAP_SECONDS` are stripped first, so a lone
+    /// late trade after the token went quiet doesn't inflate the lifetime.
+    /// `None` when the token has no trades. Trades are stored oldest-first.
+    pub fn active_lifetime_secs(&self) -> Option<i64> {
+        let trades = &self.trades;
+        let mut end = trades.len();
+        if end == 0 {
+            return None;
+        }
+        while end >= 2 {
+            let gap = trades[end - 1]
+                .block_time
+                .signed_duration_since(trades[end - 2].block_time)
+                .num_seconds();
+            if gap > LIFETIME_GAP_SECONDS {
+                end -= 1;
+            } else {
+                break;
+            }
+        }
+        let death = trades[end - 1].block_time;
+        Some(
+            death
+                .signed_duration_since(self.token.created_at)
+                .num_seconds()
+                .max(0),
+        )
     }
 }
 

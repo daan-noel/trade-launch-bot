@@ -51,6 +51,8 @@ pub struct TokenSummary {
     pub name: String,
     pub trade_count: u64,
     pub last_trade_at: Option<DateTime<Utc>>,
+    /// Gap-aware lifetime in seconds (creation → last non-stray trade).
+    pub active_lifetime_secs: Option<i64>,
     pub last_synced_at: Option<DateTime<Utc>>,
 }
 
@@ -96,6 +98,7 @@ impl From<&TokenState> for TokenSummary {
             name: s.token.name.clone(),
             trade_count: s.trade_count,
             last_trade_at: s.last_trade_at,
+            active_lifetime_secs: s.active_lifetime_secs(),
             last_synced_at: s.last_synced_at,
         }
     }

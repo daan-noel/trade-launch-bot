@@ -68,6 +68,14 @@ pub struct SwingParams {
     pub swing_low_min_net_flow_per_sec: f64,
     #[serde(default)]
     pub swing_low_max_net_flow_per_sec: f64,
+
+    // "Big transaction" threshold (SOL). 0 = disabled. When > 0, a single tx with
+    // `sol_amount >= big_tx_sol` (a) confirms a reversal immediately, regardless of
+    // the net-flow reversal threshold, and (b) anchors a leg's terminal pivot
+    // (`pivot_end_*`) to the LAST such same-side tx — the real pump/dump point —
+    // instead of the chronologically last (possibly dust) trade.
+    #[serde(default)]
+    pub big_tx_sol: f64,
 }
 
 fn default_high_to_low_sol() -> f64 {
@@ -106,6 +114,7 @@ impl Default for SwingParams {
             swing_low_max_delta_pct: 0.0,
             swing_low_min_net_flow_per_sec: 0.0,
             swing_low_max_net_flow_per_sec: 0.0,
+            big_tx_sol: 0.0,
         }
     }
 }
@@ -131,6 +140,12 @@ pub struct SwingLeg {
     pub duration_ms: i64,
     pub start_price: f64,
     pub end_price: f64,
+    /// Terminal pivot for charting: timestamp/price of the leg's last "big" same-side
+    /// tx (`sol_amount >= big_tx_sol`), falling back to the leg's price extreme
+    /// (max spot for highs, min spot for lows) when the leg has no big tx. Distinct
+    /// from `end_*`, which stays the full-leg span used by stats/filters.
+    pub pivot_end_at: i64,
+    pub pivot_end_price: f64,
     pub inflow: f64,
     pub outflow: f64,
     pub net_flow: f64,
@@ -181,12 +196,20 @@ struct LegAcc {
     inflow: f64,
     outflow: f64,
     trade_count: u32,
+    // Terminal-pivot tracking (does not affect stats/filters). `last_big_*` is the
+    // last same-side tx with `sol_amount >= big_tx_sol`; `extreme_*` is the price
+    // extreme (max spot for highs, min spot for lows) used as the fallback when the
+    // leg contains no big tx.
+    last_big_at: Option<i64>,
+    last_big_price: Option<f64>,
+    extreme_at: i64,
+    extreme_price: f64,
 }
 
 impl LegAcc {
     /// Create a swing-high leg seeded from a BUY (fully consumes the tx).
-    fn seed_high(tx: &Tx) -> Self {
-        Self {
+    fn seed_high(tx: &Tx, big_tx_sol: f64) -> Self {
+        let mut leg = Self {
             leg_type: SwingType::SwingHigh,
             start_at: tx.timestamp_ms,
             end_at: tx.timestamp_ms,
@@ -195,12 +218,18 @@ impl LegAcc {
             inflow: tx.sol_amount,
             outflow: 0.0,
             trade_count: 1,
-        }
+            last_big_at: None,
+            last_big_price: None,
+            extreme_at: tx.timestamp_ms,
+            extreme_price: tx.price,
+        };
+        leg.consider_pivot(tx, big_tx_sol);
+        leg
     }
 
     /// Create a swing-low leg seeded from a SELL (fully consumes the tx).
-    fn seed_low(tx: &Tx) -> Self {
-        Self {
+    fn seed_low(tx: &Tx, big_tx_sol: f64) -> Self {
+        let mut leg = Self {
             leg_type: SwingType::SwingLow,
             start_at: tx.timestamp_ms,
             end_at: tx.timestamp_ms,
@@ -209,30 +238,60 @@ impl LegAcc {
             inflow: 0.0,
             outflow: tx.sol_amount,
             trade_count: 1,
-        }
+            last_big_at: None,
+            last_big_price: None,
+            extreme_at: tx.timestamp_ms,
+            extreme_price: tx.price,
+        };
+        leg.consider_pivot(tx, big_tx_sol);
+        leg
     }
 
     fn net_flow(&self) -> f64 {
         self.inflow - self.outflow
     }
 
+    /// Update the terminal-pivot trackers from a same-side tx: advance the price
+    /// extreme, and record this tx as the last big one when it clears `big_tx_sol`.
+    fn consider_pivot(&mut self, tx: &Tx, big_tx_sol: f64) {
+        let beats_extreme = match self.leg_type {
+            SwingType::SwingHigh => tx.price > self.extreme_price,
+            SwingType::SwingLow => tx.price < self.extreme_price,
+        };
+        if beats_extreme {
+            self.extreme_at = tx.timestamp_ms;
+            self.extreme_price = tx.price;
+        }
+        if big_tx_sol > 0.0 && tx.sol_amount >= big_tx_sol {
+            self.last_big_at = Some(tx.timestamp_ms);
+            self.last_big_price = Some(tx.price);
+        }
+    }
+
     /// Apply a same-side BUY to a swing-high leg.
-    fn apply_buy(&mut self, tx: &Tx) {
+    fn apply_buy(&mut self, tx: &Tx, big_tx_sol: f64) {
         self.inflow += tx.sol_amount;
         self.end_at = tx.timestamp_ms;
         self.end_price = tx.price;
         self.trade_count += 1;
+        self.consider_pivot(tx, big_tx_sol);
     }
 
     /// Apply a same-side SELL to a swing-low leg.
-    fn apply_sell(&mut self, tx: &Tx) {
+    fn apply_sell(&mut self, tx: &Tx, big_tx_sol: f64) {
         self.outflow += tx.sol_amount;
         self.end_at = tx.timestamp_ms;
         self.end_price = tx.price;
         self.trade_count += 1;
+        self.consider_pivot(tx, big_tx_sol);
     }
 
     fn finalize(self) -> SwingLeg {
+        // Terminal pivot: last big same-side tx, else the leg's price extreme.
+        let (pivot_end_at, pivot_end_price) = match (self.last_big_at, self.last_big_price) {
+            (Some(at), Some(price)) => (at, price),
+            _ => (self.extreme_at, self.extreme_price),
+        };
         SwingLeg {
             leg_type: self.leg_type,
             start_at: self.start_at,
@@ -240,6 +299,8 @@ impl LegAcc {
             duration_ms: self.end_at - self.start_at,
             start_price: self.start_price,
             end_price: self.end_price,
+            pivot_end_at,
+            pivot_end_price,
             inflow: self.inflow,
             outflow: self.outflow,
             net_flow: self.net_flow(),
@@ -332,15 +393,20 @@ fn scan(txs: &[Tx], params: &SwingParams) -> Vec<LegAcc> {
     let mut temp: Option<LegAcc> = None;
     let mut frozen_threshold: f64 = 0.0;
 
+    let big = params.big_tx_sol;
+    // A single tx clearing the big-tx threshold confirms a reversal on its own,
+    // independent of the accumulated net-flow threshold.
+    let is_big = |tx: &Tx| big > 0.0 && tx.sol_amount >= big;
+
     // Initialization from the first transaction.
     let first = &txs[0];
     let mut phase = match first.side {
         Side::Buy => {
-            current_high = Some(LegAcc::seed_high(first));
+            current_high = Some(LegAcc::seed_high(first, big));
             Phase::SwingHigh
         }
         Side::Sell => {
-            current_low = Some(LegAcc::seed_low(first));
+            current_low = Some(LegAcc::seed_low(first, big));
             Phase::SwingLow
         }
     };
@@ -348,7 +414,7 @@ fn scan(txs: &[Tx], params: &SwingParams) -> Vec<LegAcc> {
     for tx in &txs[1..] {
         match phase {
             Phase::SwingHigh => match tx.side {
-                Side::Buy => current_high.as_mut().unwrap().apply_buy(tx),
+                Side::Buy => current_high.as_mut().unwrap().apply_buy(tx, big),
                 Side::Sell => {
                     let snapshot = current_high.as_ref().unwrap().net_flow();
                     frozen_threshold = reversal_threshold(
@@ -356,10 +422,10 @@ fn scan(txs: &[Tx], params: &SwingParams) -> Vec<LegAcc> {
                         params.high_to_low_threshold_pct,
                         snapshot.abs(),
                     );
-                    temp = Some(LegAcc::seed_low(tx));
+                    temp = Some(LegAcc::seed_low(tx, big));
                     phase = Phase::TempSwingLow;
 
-                    if temp.as_ref().unwrap().outflow >= frozen_threshold {
+                    if temp.as_ref().unwrap().outflow >= frozen_threshold || is_big(tx) {
                         ledger.push(current_high.take().unwrap());
                         current_low = temp.take();
                         phase = Phase::SwingLow;
@@ -370,8 +436,8 @@ fn scan(txs: &[Tx], params: &SwingParams) -> Vec<LegAcc> {
             Phase::TempSwingLow => match tx.side {
                 Side::Sell => {
                     let t = temp.as_mut().unwrap();
-                    t.apply_sell(tx);
-                    if t.outflow >= frozen_threshold {
+                    t.apply_sell(tx, big);
+                    if t.outflow >= frozen_threshold || is_big(tx) {
                         ledger.push(current_high.take().unwrap());
                         current_low = temp.take();
                         phase = Phase::SwingLow;
@@ -385,12 +451,12 @@ fn scan(txs: &[Tx], params: &SwingParams) -> Vec<LegAcc> {
                     h.trade_count += t.trade_count;
                     phase = Phase::SwingHigh;
                     // The triggering BUY is then counted exactly once here.
-                    h.apply_buy(tx);
+                    h.apply_buy(tx, big);
                 }
             },
 
             Phase::SwingLow => match tx.side {
-                Side::Sell => current_low.as_mut().unwrap().apply_sell(tx),
+                Side::Sell => current_low.as_mut().unwrap().apply_sell(tx, big),
                 Side::Buy => {
                     let snapshot = current_low.as_ref().unwrap().net_flow(); // negative
                     frozen_threshold = reversal_threshold(
@@ -398,10 +464,10 @@ fn scan(txs: &[Tx], params: &SwingParams) -> Vec<LegAcc> {
                         params.low_to_high_threshold_pct,
                         snapshot.abs(),
                     );
-                    temp = Some(LegAcc::seed_high(tx));
+                    temp = Some(LegAcc::seed_high(tx, big));
                     phase = Phase::TempSwingHigh;
 
-                    if temp.as_ref().unwrap().inflow >= frozen_threshold {
+                    if temp.as_ref().unwrap().inflow >= frozen_threshold || is_big(tx) {
                         ledger.push(current_low.take().unwrap());
                         current_high = temp.take();
                         phase = Phase::SwingHigh;
@@ -412,8 +478,8 @@ fn scan(txs: &[Tx], params: &SwingParams) -> Vec<LegAcc> {
             Phase::TempSwingHigh => match tx.side {
                 Side::Buy => {
                     let t = temp.as_mut().unwrap();
-                    t.apply_buy(tx);
-                    if t.inflow >= frozen_threshold {
+                    t.apply_buy(tx, big);
+                    if t.inflow >= frozen_threshold || is_big(tx) {
                         ledger.push(current_low.take().unwrap());
                         current_high = temp.take();
                         phase = Phase::SwingHigh;
@@ -427,7 +493,7 @@ fn scan(txs: &[Tx], params: &SwingParams) -> Vec<LegAcc> {
                     l.trade_count += t.trade_count;
                     phase = Phase::SwingLow;
                     // The triggering SELL is then counted exactly once here.
-                    l.apply_sell(tx);
+                    l.apply_sell(tx, big);
                 }
             },
         }

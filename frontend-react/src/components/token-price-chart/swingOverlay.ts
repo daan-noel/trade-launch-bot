@@ -54,6 +54,16 @@ function swingLegColor(type: ChartSwingLeg['type']): string {
   return type === 'swing_high' ? CHART_COLORS.swingHigh : CHART_COLORS.swingLow;
 }
 
+/** Leg end point used for the overlay line: the terminal pivot (last big tx /
+ *  price extreme) when present, else the full-leg end. `end_at`/`end_price` stay
+ *  the leg's full span and still drive candle highlighting + bar ranges. */
+function legEndMs(leg: ChartSwingLeg): number {
+  return leg.pivot_end_at ?? leg.end_at;
+}
+function legEndPrice(leg: ChartSwingLeg): number {
+  return leg.pivot_end_price ?? leg.end_price;
+}
+
 function swingPriceToChartY(
   priceInSol: number,
   metric: ChartMetric,
@@ -127,8 +137,8 @@ function buildSwingPathVertices(
     }
     prevTime = pushVertex(
       vertices,
-      resolveChartTime(leg.end_at, groupMode, trades),
-      swingPriceToChartY(leg.end_price, metric, toValue),
+      resolveChartTime(legEndMs(leg), groupMode, trades),
+      swingPriceToChartY(legEndPrice(leg), metric, toValue),
       prevTime,
     );
   }
@@ -264,8 +274,8 @@ export function buildLegSegment(
   );
   prevTime = pushColoredVertex(
     data,
-    resolveChartTime(leg.end_at, groupMode, trades),
-    swingPriceToChartY(leg.end_price, metric, toValue),
+    resolveChartTime(legEndMs(leg), groupMode, trades),
+    swingPriceToChartY(legEndPrice(leg), metric, toValue),
     prevTime,
   );
   if (data.filter((p) => 'value' in p).length < 2) return null;
@@ -403,7 +413,7 @@ export function findSwingLegIndexAtChartTime(
   if (segmentMode === 'perLeg') {
     for (let i = 0; i < swings.length; i++) {
       const start = resolveChartTime(swings[i].start_at, groupMode, trades);
-      const end = resolveChartTime(swings[i].end_at, groupMode, trades);
+      const end = resolveChartTime(legEndMs(swings[i]), groupMode, trades);
       if (start == null || end == null) continue;
       const lo = Math.min(start as number, end as number);
       const hi = Math.max(start as number, end as number);
