@@ -5,4 +5,4 @@ pub mod pipeline;
 pub mod subscription;
 
 pub use db_writer::DbWriter;
-pub use pipeline::IngestPipeline;
+pub use pipeline::{run_pool_subscription_refresh, IngestPipeline};

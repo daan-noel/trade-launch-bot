@@ -153,6 +153,18 @@ pub const RUGGED_STALE_SECONDS: i64 = 3600; // 1 hour
 /// active lifetime, so a lone late trade hours after death doesn't inflate it.
 pub const LIFETIME_GAP_SECONDS: i64 = 600; // 10 minutes
 
+/// A migrated token's PumpSwap pool is included in the live subscription set
+/// only if it has traded within this window. Bounds the subscription to
+/// recently-active pools instead of every token that ever graduated; quiet pools
+/// are re-added when fresh activity appears (e.g. a manual sync refreshes
+/// `last_trade_at`). Tune up to keep slower pools live, down to subscribe to
+/// fewer accounts.
+pub const POOL_SUBSCRIBE_ACTIVITY_WINDOW_SECONDS: i64 = 6 * 3600; // 6 hours
+
+/// How often the pool-subscription refresh re-evaluates token liveness and
+/// subscribes the pools of migrated tokens that have become active since.
+pub const POOL_REFRESH_INTERVAL_SECONDS: u64 = 120; // 2 minutes
+
 
 
 

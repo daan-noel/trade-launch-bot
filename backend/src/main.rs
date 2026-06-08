@@ -122,6 +122,15 @@ async fn main() -> anyhow::Result<()> {
         pipeline.pools_changed(),
     ));
 
+    // Revival sweep: re-subscribe pools of migrated tokens that become active
+    // again (e.g. after a manual sync), so pruned-as-quiet pools aren't blind.
+    tokio::spawn(ingest::run_pool_subscription_refresh(
+        token_cache.clone(),
+        pipeline.pool_index(),
+        pipeline.pools_changed(),
+        settings.pump_program_id.clone(),
+    ));
+
     let pipeline_task = tokio::spawn(pipeline.run(raw_rx));
 
     let db_writer = ingest::DbWriter::new(db.clone());

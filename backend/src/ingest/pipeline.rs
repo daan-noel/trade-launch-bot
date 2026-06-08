@@ -1,11 +1,14 @@
+use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use tokio::sync::{broadcast, mpsc, Notify};
 use tracing::{debug, info, warn};
 
 use crate::{
+    config::constants::{POOL_REFRESH_INTERVAL_SECONDS, POOL_SUBSCRIBE_ACTIVITY_WINDOW_SECONDS},
     ingest::{
         db_writer::{DbWriteOp, TokenMetricsWrite},
         decoder::{DecodeOutput, HeliusDecoder},
@@ -50,13 +53,15 @@ impl IngestPipeline {
         strategy_tx: mpsc::Sender<StrategyPing>,
         sse_tx: broadcast::Sender<SseEvent>,
     ) -> Self {
-        // Seed the pool→mint index for tokens already migrated before this
-        // process started, so live AMM swaps for them are captured immediately.
-        // Tokens created/migrating during this session register their pool
-        // lazily (see `register_pool`).
+        // Seed the pool→mint index for tokens already migrated AND recently
+        // active before this process started, so live AMM swaps for them are
+        // captured immediately — without subscribing to every pool that ever
+        // graduated. Quiet pools are re-added by `run_pool_subscription_refresh`
+        // once they trade again; live migrations register via `register_pool`.
         let pool_index: Arc<DashMap<String, String>> = Arc::new(DashMap::new());
+        let now = Utc::now();
         for entry in token_cache.iter() {
-            if entry.is_migrated {
+            if entry.is_migrated && pool_is_live(entry.value(), now) {
                 if let Ok(pool) = derive_pump_swap_pool(entry.key(), &pump_program_id) {
                     pool_index.insert(pool, entry.key().clone());
                 }
@@ -371,5 +376,60 @@ fn metrics_from_state(mint: &str, state: &TokenState, recompute_rugged: bool) ->
         is_migrated: state.is_migrated,
         creator_wallet: state.token.creator_wallet.clone(),
         recompute_rugged,
+    }
+}
+
+/// True when a migrated token traded recently enough to keep its PumpSwap pool
+/// in the live subscription set. A token with no recorded trades, or quiet
+/// beyond the window, is treated as not live (and pruned from the subscription).
+fn pool_is_live(state: &TokenState, now: DateTime<Utc>) -> bool {
+    state
+        .last_trade_at
+        .map(|t| {
+            now.signed_duration_since(t).num_seconds() < POOL_SUBSCRIBE_ACTIVITY_WINDOW_SECONDS
+        })
+        .unwrap_or(false)
+}
+
+/// Periodic revival sweep: subscribe to the PumpSwap pools of migrated tokens
+/// that have become active since the last pass but aren't yet covered. This is
+/// what keeps a pool pruned from the startup set (or whose live `Migrate` event
+/// was missed) from going blind permanently — once fresh trades land in the
+/// cache (e.g. via a manual sync that refreshes `last_trade_at`), its pool is
+/// added and the WS task subscribes on the next ping. Only ever adds; the live
+/// subscription set is trimmed back to active pools on the next reconnect.
+pub async fn run_pool_subscription_refresh(
+    token_cache: Arc<TokenCache>,
+    pool_index: Arc<DashMap<String, String>>,
+    pools_changed: Arc<Notify>,
+    pump_program_id: String,
+) {
+    let mut tick = tokio::time::interval(Duration::from_secs(POOL_REFRESH_INTERVAL_SECONDS));
+    loop {
+        tick.tick().await;
+
+        let now = Utc::now();
+        // Mints already covered (pool_index values), so we only derive pools for
+        // the newly-active delta.
+        let covered: HashSet<String> = pool_index.iter().map(|e| e.value().clone()).collect();
+
+        let mut added = false;
+        for entry in token_cache.iter() {
+            if !entry.is_migrated
+                || covered.contains(entry.key())
+                || !pool_is_live(entry.value(), now)
+            {
+                continue;
+            }
+            if let Ok(pool) = derive_pump_swap_pool(entry.key(), &pump_program_id) {
+                if pool_index.insert(pool, entry.key().clone()).is_none() {
+                    added = true;
+                }
+            }
+        }
+
+        if added {
+            pools_changed.notify_one();
+        }
     }
 }
