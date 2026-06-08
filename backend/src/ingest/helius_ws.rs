@@ -1,22 +1,40 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
+use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Notify};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{error, info, trace};
 
 use crate::config::Settings;
 use crate::ingest::subscription;
 
+/// Max pool accounts per `accountInclude` array. Helius caps how many accounts a
+/// single subscription may list, so large pool sets are chunked across several
+/// subscription messages on the same connection.
+const POOLS_PER_SUB: usize = 90;
+
+/// The write half of the Helius WebSocket, after `split()`.
+type WsSink = futures_util::stream::SplitSink<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    Message,
+>;
+
 /// Spawn-ready entry point. Loops forever: connect → subscribe → read → reconnect.
 /// Raw JSON text frames are forwarded to `raw_tx` for decoding.
+///
+/// `pool_index` (pool → mint, populated by the pipeline for migrated tokens)
+/// drives the dynamic PumpSwap pool subscriptions; `pools_changed` is pinged
+/// whenever a new token migrates so we can subscribe to its pool without
+/// dropping the connection.
 pub async fn run(
     settings: Arc<Settings>,
     raw_tx: mpsc::Sender<String>,
     mut live_rx: watch::Receiver<bool>,
+    pool_index: Arc<DashMap<String, String>>,
+    pools_changed: Arc<Notify>,
 ) {
-    let subscribe_msg = subscription::build_subscribe_message(&settings);
-
     loop {
         while !*live_rx.borrow() {
             info!("Helius WS: live mode disabled, paused");
@@ -25,7 +43,7 @@ pub async fn run(
             }
         }
 
-        match run_once(&settings, &raw_tx, &subscribe_msg, &mut live_rx).await {
+        match run_once(&settings, &raw_tx, &mut live_rx, &pool_index, &pools_changed).await {
             Ok(()) => info!("Helius WS: connection closed gracefully"),
             Err(e) => error!("Helius WS: connection error — {e}"),
         }
@@ -42,8 +60,9 @@ pub async fn run(
 async fn run_once(
     settings: &Settings,
     raw_tx: &mpsc::Sender<String>,
-    subscribe_msg: &str,
     live_rx: &mut watch::Receiver<bool>,
+    pool_index: &DashMap<String, String>,
+    pools_changed: &Notify,
 ) -> anyhow::Result<()> {
     info!("Helius WS: connecting to {}", settings.helius_ws_url);
 
@@ -55,13 +74,31 @@ async fn run_once(
 
     let (mut write, mut read) = ws_stream.split();
 
-    // Send the subscription request immediately after connecting
+    // 1) Static subscription on the bonding-curve program: token discovery,
+    //    curve trades, and migrations. id = 1.
     write
-        .send(Message::Text(subscribe_msg.to_string()))
+        .send(Message::Text(subscription::build_subscribe_message(
+            settings,
+            1,
+            &[settings.pump_program_id.as_str()],
+        )))
         .await
-        .map_err(|e| anyhow::anyhow!("WS send subscription failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("WS send curve subscription failed: {e}"))?;
 
-    info!("Helius WS: subscription sent");
+    // 2) Dynamic subscriptions on the specific PumpSwap pools of migrated tokens.
+    //    `subscribed` tracks what this connection already covers so a later
+    //    `pools_changed` ping only subscribes to the delta — never double-
+    //    subscribing (which would duplicate messages).
+    let mut next_id: u64 = 2;
+    let mut subscribed: HashSet<String> = HashSet::new();
+    let pools: Vec<String> = pool_index.iter().map(|e| e.key().clone()).collect();
+    next_id = send_pool_subscriptions(&mut write, settings, &pools, next_id).await?;
+    subscribed.extend(pools);
+
+    info!(
+        "Helius WS: subscriptions sent (curve + {} pool(s))",
+        subscribed.len()
+    );
 
     // Send pings starting one interval after connection (not immediately)
     let ping_start = tokio::time::Instant::now() + settings.ping_interval;
@@ -73,6 +110,28 @@ async fn run_once(
                 if !*live_rx.borrow() {
                     info!("Helius WS: live mode disabled, closing websocket");
                     return Ok(());
+                }
+            }
+
+            _ = pools_changed.notified() => {
+                // A token migrated — subscribe to any pools this connection
+                // doesn't yet cover. Diffing against `subscribed` keeps it
+                // idempotent across coalesced notifications and stale wakeups.
+                let new_pools: Vec<String> = pool_index
+                    .iter()
+                    .filter_map(|e| {
+                        let pool = e.key();
+                        (!subscribed.contains(pool)).then(|| pool.clone())
+                    })
+                    .collect();
+                if !new_pools.is_empty() {
+                    next_id =
+                        send_pool_subscriptions(&mut write, settings, &new_pools, next_id).await?;
+                    info!(
+                        "Helius WS: subscribed to {} newly-migrated pool(s)",
+                        new_pools.len()
+                    );
+                    subscribed.extend(new_pools);
                 }
             }
 
@@ -111,4 +170,24 @@ async fn run_once(
             }
         }
     }
+}
+
+/// Send one `transactionSubscribe` per chunk of up to [`POOLS_PER_SUB`] pool
+/// accounts. Returns the next free request id.
+async fn send_pool_subscriptions(
+    write: &mut WsSink,
+    settings: &Settings,
+    pools: &[String],
+    mut next_id: u64,
+) -> anyhow::Result<u64> {
+    for chunk in pools.chunks(POOLS_PER_SUB) {
+        let refs: Vec<&str> = chunk.iter().map(|s| s.as_str()).collect();
+        let msg = subscription::build_subscribe_message(settings, next_id, &refs);
+        write
+            .send(Message::Text(msg))
+            .await
+            .map_err(|e| anyhow::anyhow!("WS send pool subscription failed: {e}"))?;
+        next_id += 1;
+    }
+    Ok(next_id)
 }

@@ -1,22 +1,23 @@
-use crate::config::constants::PUMP_SWAP_PROGRAM_ID;
 use crate::config::Settings;
 
-/// Builds the Helius `transactionSubscribe` JSON-RPC subscription payload.
-/// Filters for all transactions that touch the Pump.fun bonding-curve program
-/// OR the PumpSwap AMM program — `accountInclude` is a union, so this delivers
-/// both pre-migration curve trades and post-migration pool swaps.
-pub fn build_subscribe_message(settings: &Settings) -> String {
+/// Build a Helius `transactionSubscribe` message for an arbitrary
+/// `account_include` list. `id` is the JSON-RPC request id, echoed back in the
+/// subscription confirmation; we never unsubscribe, so any unique value works.
+///
+/// The ingest runs two kinds of subscription over one connection:
+///   - a static one on the pump.fun bonding-curve program — token discovery,
+///     curve trades, and migrations; and
+///   - dynamic ones on the specific PumpSwap *pool* accounts of migrated tokens,
+///     so post-migration AMM swaps are delivered without subscribing to the
+///     entire PumpSwap program (which would fire-hose every token's swaps).
+pub fn build_subscribe_message(settings: &Settings, id: u64, account_include: &[&str]) -> String {
     serde_json::json!({
         "jsonrpc": "2.0",
-        "id": 1,
+        "id": id,
         "method": settings.subscription_method,
         "params": [
             {
-                // Any txn that includes the bonding-curve program (curve trades,
-                // creates, migrations) or the PumpSwap program (post-migration
-                // AMM swaps). Without the latter, a token's recorded trades stop
-                // at graduation and its "lifetime" freezes there.
-                "accountInclude": [&settings.pump_program_id, PUMP_SWAP_PROGRAM_ID],
+                "accountInclude": account_include,
                 "failed": false
             },
             {

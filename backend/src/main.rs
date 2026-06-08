@@ -102,9 +102,6 @@ async fn main() -> anyhow::Result<()> {
 
     let (raw_tx, raw_rx) = tokio::sync::mpsc::channel::<String>(1024);
 
-    let ws_settings = Arc::new(settings.clone());
-    let ws_task = tokio::spawn(ingest::helius_ws::run(ws_settings, raw_tx, live_rx));
-
     let pipeline = ingest::IngestPipeline::new(
         settings.pump_program_id.clone(),
         token_cache.clone(),
@@ -112,6 +109,19 @@ async fn main() -> anyhow::Result<()> {
         strategy_tx,
         sse_tx,
     );
+
+    // The WS task drives its PumpSwap pool subscriptions from the pipeline's
+    // pool→mint index (seeded with migrated tokens) and re-subscribes, via the
+    // `pools_changed` signal, as new tokens migrate.
+    let ws_settings = Arc::new(settings.clone());
+    let ws_task = tokio::spawn(ingest::helius_ws::run(
+        ws_settings,
+        raw_tx,
+        live_rx,
+        pipeline.pool_index(),
+        pipeline.pools_changed(),
+    ));
+
     let pipeline_task = tokio::spawn(pipeline.run(raw_rx));
 
     let db_writer = ingest::DbWriter::new(db.clone());
