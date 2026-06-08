@@ -108,12 +108,9 @@ export function formatTimestampMsCompact(ms: number, timeZone: string): string {
       second: '2-digit',
       hour12: false,
     }).formatToParts(new Date(ms));
-    const mo = dtfPart(parts, 'month');
-    const da = dtfPart(parts, 'day');
     const h = dtfPart(parts, 'hour');
     const mi = dtfPart(parts, 'minute');
     const s = dtfPart(parts, 'second');
-    // return `${mo}/${da} ${h}:${mi}:${s}`;
     return `${h}:${mi}:${s}`;
   } catch {
     const d = new Date(ms);

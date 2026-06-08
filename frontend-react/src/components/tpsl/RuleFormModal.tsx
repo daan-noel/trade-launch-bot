@@ -22,6 +22,7 @@ export interface RuleFormData {
   buyAmount: string;
   takeProfit: string;
   stopLoss: string;
+  trailingStopPct: string;
 }
 
 export function emptyForm(): RuleFormData {
@@ -40,6 +41,7 @@ export function emptyForm(): RuleFormData {
     buyAmount: '',
     takeProfit: '',
     stopLoss: '',
+    trailingStopPct: '',
   };
 }
 
@@ -62,6 +64,7 @@ export function formFromRule(rule: RuleRecord): RuleFormData {
     buyAmount: rule.buy_amount.toString(),
     takeProfit: rule.take_profit.toString(),
     stopLoss: rule.stop_loss.toString(),
+    trailingStopPct: rule.p_trailing_stop_pct?.toString() ?? '',
   };
 }
 
@@ -221,6 +224,12 @@ export function RuleFormModal({
             <Input type="number" fieldSize="md" step="1" value={form.stopLoss}
               onChange={(e) => set({ stopLoss: e.target.value })} className={fieldCls('focus:border-red')} />
           </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Trailing Stop %</span>
+            <Input type="number" fieldSize="md" step="1" value={form.trailingStopPct}
+              onChange={(e) => set({ trailingStopPct: e.target.value })}
+              className={fieldCls('focus:border-warning')} placeholder="0 = off" />
+          </label>
         </div>
 
         {error && <InlineAlert variant="error">{error}</InlineAlert>}
@@ -255,6 +264,7 @@ export function buildCreatePayload(form: RuleFormData) {
     buy_amount: parseFloat(form.buyAmount),
     take_profit: parseFloat(form.takeProfit),
     stop_loss: parseFloat(form.stopLoss),
+    p_trailing_stop_pct: parseOptF(form.trailingStopPct) ?? null,
     tolerance_pct: form.tolerance.trim() ? parseFloat(form.tolerance) : null,
   };
 }
@@ -265,6 +275,8 @@ export function buildUpdatePayload(form: RuleFormData, allowParams: boolean) {
     buy_amount: parseFloat(form.buyAmount),
     take_profit: parseFloat(form.takeProfit),
     stop_loss: parseFloat(form.stopLoss),
+    // Exit param (always editable): 0 disables, per the ignore_zero convention.
+    p_trailing_stop_pct: form.trailingStopPct.trim() ? parseFloat(form.trailingStopPct) : 0,
     trade_mode: form.tradeMode,
     tolerance_pct: form.tolerance.trim() ? parseFloat(form.tolerance) : undefined,
   };

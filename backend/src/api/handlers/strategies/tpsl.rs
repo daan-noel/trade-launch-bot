@@ -33,6 +33,7 @@ pub struct RuleResponse {
     pub buy_amount: f64,
     pub take_profit: f64,
     pub stop_loss: f64,
+    pub p_trailing_stop_pct: Option<f64>,
     pub tolerance_pct: f64,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
@@ -56,6 +57,7 @@ impl From<StrategyTPSLRule> for RuleResponse {
             buy_amount: r.buy_amount,
             take_profit: r.take_profit,
             stop_loss: r.stop_loss,
+            p_trailing_stop_pct: r.p_trailing_stop_pct,
             tolerance_pct: r.tolerance_pct,
             is_active: r.is_active,
             created_at: r.created_at,
@@ -79,6 +81,7 @@ pub struct CreateRuleRequest {
     pub buy_amount: f64,
     pub take_profit: f64,
     pub stop_loss: f64,
+    pub p_trailing_stop_pct: Option<f64>,
     pub tolerance_pct: Option<f64>,
 }
 
@@ -88,6 +91,7 @@ pub struct UpdateRuleRequest {
     pub buy_amount: Option<f64>,
     pub take_profit: Option<f64>,
     pub stop_loss: Option<f64>,
+    pub p_trailing_stop_pct: Option<f64>,
     #[serde(default)]
     pub p_initial_buy_sol: Option<Option<f64>>,
     #[serde(default)]
@@ -170,6 +174,7 @@ pub async fn create_tpsl_rule(
         req.p_max_concurrent_tokens,
         req.p_max_total_tokens,
         req.tolerance_pct,
+        req.p_trailing_stop_pct,
     );
 
     let repo = StrategyTPSLRuleRepo::new(app_state.db.clone());
@@ -217,6 +222,9 @@ pub async fn update_tpsl_rule(
             }
             if let Some(stop_loss) = req.stop_loss {
                 rule.stop_loss = stop_loss;
+            }
+            if let Some(trailing_stop_pct) = req.p_trailing_stop_pct {
+                rule.p_trailing_stop_pct = Some(trailing_stop_pct);
             }
             if let Some(initial_buy_sol_opt) = &req.p_initial_buy_sol {
                 rule.p_initial_buy_sol = initial_buy_sol_opt.clone();
@@ -376,9 +384,9 @@ pub async fn simulate_tpsl_rule(
     app_state: web::Data<Arc<AppState>>,
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
-    // delegate to strategies/tpsl simulation module (returns domain summary)
+    // delegate to the tpsl_sniper_1 simulation module (E1+ exit-walk engine)
     let rid = rule_id.into_inner();
-    match crate::strategies::tpsl::run_simulation(app_state.clone(), rid).await {
+    match crate::strategies::tpsl_sniper_1::run_simulation(app_state.clone(), rid).await {
         Ok(summary) => HttpResponse::Ok().json(summary),
         Err(e) => {
             let msg = e.to_string();

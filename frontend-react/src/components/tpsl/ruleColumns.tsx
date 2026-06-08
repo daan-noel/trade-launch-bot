@@ -112,6 +112,16 @@ export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnD
       searchValue: (r) => String(r.stop_loss),
     },
     {
+      key: 'trail',
+      label: 'Trail',
+      sortable: true,
+      render: (r) => (
+        <span className="font-bold text-warning">{dashPercent(r.p_trailing_stop_pct ?? 0)}</span>
+      ),
+      sortValue: (r) => r.p_trailing_stop_pct ?? 0,
+      searchValue: (r) => String(r.p_trailing_stop_pct ?? ''),
+    },
+    {
       key: 'tol',
       label: 'Tolerance',
       sortable: true,

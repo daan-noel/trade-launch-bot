@@ -12,25 +12,26 @@ interface SimSummaryCardProps {
 
 export function SimSummaryCard({ ruleName, tokens, price, onClose }: SimSummaryCardProps) {
   const tokensMatched = tokens.length;
-  const winCount = tokens.filter((t) => t.exit_reason === 'TakeProfit').length;
-  const lossCount = tokens.filter((t) => t.exit_reason === 'StopLoss').length;
   const openCount = tokens.filter((t) => t.exit_reason === 'Open').length;
-  const closedCount = tokensMatched - openCount;
+  const closed = tokens.filter((t) => t.exit_reason !== 'Open');
+  const closedCount = closed.length;
+  // Win/loss by realized-PnL sign — a TrailingStop (or any future exit reason)
+  // can resolve to either, so classify on PnL, not the exit reason.
+  const winCount = closed.filter((t) => (t.pnl_sol ?? 0) >= 0).length;
+  const lossCount = closedCount - winCount;
   const winRate = closedCount > 0 ? (winCount / closedCount) * 100 : 0;
 
   const totalEntry = tokens.reduce((s, t) => s + t.entry_amount, 0);
   const totalHolding = tokens
     .filter((t) => t.exit_reason === 'Open')
     .reduce((s, t) => s + t.entry_amount, 0);
-  const totalTp = tokens
-    .filter((t) => t.exit_reason === 'TakeProfit')
+  const totalGains = closed
+    .filter((t) => (t.pnl_sol ?? 0) >= 0)
     .reduce((s, t) => s + (t.pnl_sol ?? 0), 0);
-  const totalSl = tokens
-    .filter((t) => t.exit_reason === 'StopLoss')
+  const totalLosses = closed
+    .filter((t) => (t.pnl_sol ?? 0) < 0)
     .reduce((s, t) => s + Math.abs(t.pnl_sol ?? 0), 0);
-  const totalPnl = totalTp - totalSl;
-
-  const closed = tokens.filter((t) => t.exit_reason !== 'Open');
+  const totalPnl = totalGains - totalLosses;
   const avgPnl =
     closed.length > 0
       ? closed.reduce((s, t) => s + (t.pnl_percent ?? 0), 0) / closed.length
@@ -83,13 +84,13 @@ export function SimSummaryCard({ ruleName, tokens, price, onClose }: SimSummaryC
       cls: avgPnl != null ? (avgPnl >= 0 ? 'text-primary' : 'text-red') : undefined,
     },
     {
-      label: `Total TP (${price.unitLabel})`,
-      value: price.displayAmount(totalTp),
+      label: `Total Gains (${price.unitLabel})`,
+      value: price.displayAmount(totalGains),
       cls: 'text-green',
     },
     {
-      label: `Total SL (${price.unitLabel})`,
-      value: price.displayAmount(totalSl),
+      label: `Total Losses (${price.unitLabel})`,
+      value: price.displayAmount(totalLosses),
       cls: 'text-red',
     },
     {

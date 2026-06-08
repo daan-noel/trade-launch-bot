@@ -58,6 +58,7 @@ export interface RuleRecord {
   buy_amount: number;
   take_profit: number;
   stop_loss: number;
+  p_trailing_stop_pct: number | null;
   tolerance_pct: number;
   is_active: boolean;
   created_at: string;
