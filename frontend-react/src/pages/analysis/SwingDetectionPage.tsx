@@ -119,7 +119,7 @@ function SectionDivider() {
 }
 
 type AnalysisKind = 'swing';
-type SwingPanelTab = 'analysis' | 'filter';
+type SwingPanelTab = 'analysis' | 'chain' | 'timerange' | 'thresholds' | 'filter';
 type SwingAllTab = 'analysis' | 'chain' | 'timerange' | 'thresholds';
 
 const LS_SWING_DETECTION_KEY = 'swing_detection_criteria';
@@ -145,7 +145,8 @@ function mergeSwingFilter(partial: Partial<SwingFilterCriteria> | undefined): Sw
   return merged;
 }
 
-function loadStoredSwingCriteria(): {
+interface StoredSwingCriteria {
+  // Global ("Swing Detection All") panel state.
   params: SwingParams;
   filter: SwingFilterCriteria;
   appliedFilter: SwingFilterCriteria;
@@ -154,21 +155,35 @@ function loadStoredSwingCriteria(): {
   windowStartSec: number | null;
   windowEndSec: number | null;
   curveOnly: boolean;
-} {
+  // Single-token panel state — kept fully independent of the global panel so
+  // tuning one never affects the other.
+  singleParams: SwingParams;
+  singleChainLatencyMs: number;
+  singleWindowStartSec: number | null;
+  singleWindowEndSec: number | null;
+  singleCurveOnly: boolean;
+}
+
+const DEFAULT_SWING_CRITERIA: StoredSwingCriteria = {
+  params: DEFAULT_SWING_PARAMS,
+  filter: DEFAULT_SWING_FILTER,
+  appliedFilter: DEFAULT_SWING_FILTER,
+  connectSwings: true,
+  chainLatencyMs: DEFAULT_CHAIN_LATENCY_MS,
+  windowStartSec: null,
+  windowEndSec: null,
+  curveOnly: false,
+  singleParams: DEFAULT_SWING_PARAMS,
+  singleChainLatencyMs: DEFAULT_CHAIN_LATENCY_MS,
+  singleWindowStartSec: null,
+  singleWindowEndSec: null,
+  singleCurveOnly: false,
+};
+
+function loadStoredSwingCriteria(): StoredSwingCriteria {
   try {
     const raw = localStorage.getItem(LS_SWING_DETECTION_KEY);
-    if (!raw) {
-      return {
-        params: DEFAULT_SWING_PARAMS,
-        filter: DEFAULT_SWING_FILTER,
-        appliedFilter: DEFAULT_SWING_FILTER,
-        connectSwings: true,
-        chainLatencyMs: DEFAULT_CHAIN_LATENCY_MS,
-        windowStartSec: null,
-        windowEndSec: null,
-        curveOnly: false,
-      };
-    }
+    if (!raw) return DEFAULT_SWING_CRITERIA;
     const parsed = JSON.parse(raw) as {
       params?: Partial<SwingParams>;
       filter?: Partial<SwingFilterCriteria>;
@@ -178,6 +193,11 @@ function loadStoredSwingCriteria(): {
       windowStartSec?: number | null;
       windowEndSec?: number | null;
       curveOnly?: boolean;
+      singleParams?: Partial<SwingParams>;
+      singleChainLatencyMs?: number;
+      singleWindowStartSec?: number | null;
+      singleWindowEndSec?: number | null;
+      singleCurveOnly?: boolean;
     };
     return {
       params: mergeSwingParams(parsed.params),
@@ -190,45 +210,28 @@ function loadStoredSwingCriteria(): {
       windowStartSec: isFiniteNumber(parsed.windowStartSec) ? parsed.windowStartSec : null,
       windowEndSec: isFiniteNumber(parsed.windowEndSec) ? parsed.windowEndSec : null,
       curveOnly: parsed.curveOnly === true,
+      // Migration fallback: seed the single panel from the (formerly shared)
+      // global params so existing setups don't reset to defaults on first load.
+      singleParams: mergeSwingParams(parsed.singleParams ?? parsed.params),
+      singleChainLatencyMs: isFiniteNumber(parsed.singleChainLatencyMs)
+        ? parsed.singleChainLatencyMs
+        : DEFAULT_CHAIN_LATENCY_MS,
+      singleWindowStartSec: isFiniteNumber(parsed.singleWindowStartSec)
+        ? parsed.singleWindowStartSec
+        : null,
+      singleWindowEndSec: isFiniteNumber(parsed.singleWindowEndSec)
+        ? parsed.singleWindowEndSec
+        : null,
+      singleCurveOnly: parsed.singleCurveOnly === true,
     };
   } catch {
-    return {
-      params: DEFAULT_SWING_PARAMS,
-      filter: DEFAULT_SWING_FILTER,
-      appliedFilter: DEFAULT_SWING_FILTER,
-      connectSwings: true,
-      chainLatencyMs: DEFAULT_CHAIN_LATENCY_MS,
-      windowStartSec: null,
-      windowEndSec: null,
-      curveOnly: false,
-    };
+    return DEFAULT_SWING_CRITERIA;
   }
 }
 
-function saveStoredSwingCriteria(
-  params: SwingParams,
-  filter: SwingFilterCriteria,
-  appliedFilter: SwingFilterCriteria,
-  connectSwings: boolean,
-  chainLatencyMs: number,
-  windowStartSec: number | null,
-  windowEndSec: number | null,
-  curveOnly: boolean,
-): void {
+function saveStoredSwingCriteria(criteria: StoredSwingCriteria): void {
   try {
-    localStorage.setItem(
-      LS_SWING_DETECTION_KEY,
-      JSON.stringify({
-        params,
-        filter,
-        appliedFilter,
-        connectSwings,
-        chainLatencyMs,
-        windowStartSec,
-        windowEndSec,
-        curveOnly,
-      }),
-    );
+    localStorage.setItem(LS_SWING_DETECTION_KEY, JSON.stringify(criteria));
   } catch {
     /* ignore */
   }
@@ -331,6 +334,23 @@ export function SwingDetectionPage() {
   const [showSwingResultsTable, setShowSwingResultsTable] = useState(false);
   const [connectSwings, setConnectSwings] = useState(storedSwingCriteria.connectSwings);
 
+  // Single-token panel parameters — independent copies of the global panel's
+  // controls (Analysis / Chain of Swings / Time Range / Leg Thresholds) so the
+  // single token can be tuned and run on its own.
+  const [singleSwingParams, setSingleSwingParams] = useState<SwingParamsForm>(
+    storedSwingCriteria.singleParams,
+  );
+  const [singleChainLatencyMs, setSingleChainLatencyMs] = useState<number | ''>(
+    storedSwingCriteria.singleChainLatencyMs,
+  );
+  const [singleWindowStartSec, setSingleWindowStartSec] = useState<number | ''>(
+    storedSwingCriteria.singleWindowStartSec ?? '',
+  );
+  const [singleWindowEndSec, setSingleWindowEndSec] = useState<number | ''>(
+    storedSwingCriteria.singleWindowEndSec ?? '',
+  );
+  const [singleCurveOnly, setSingleCurveOnly] = useState(storedSwingCriteria.singleCurveOnly);
+
   // "Swing Detection All" — global detection across every filtered token. Raw
   // swings per mint are kept so tuning the chain latency re-groups instantly
   // without re-fetching.
@@ -365,6 +385,8 @@ export function SwingDetectionPage() {
   const swingAllRanCount = swingAllResults ? swingAllResults.length : null;
 
   const chainLatencyValue = typeof chainLatencyMs === 'number' ? chainLatencyMs : 0;
+  const singleChainLatencyValue =
+    typeof singleChainLatencyMs === 'number' ? singleChainLatencyMs : 0;
 
   const chainStatsByMint = useMemo(() => {
     const map = new Map<string, SwingChainStats>();
@@ -396,6 +418,19 @@ export function SwingDetectionPage() {
     [],
   );
 
+  const updateSingleSwingParam = useCallback(
+    <K extends keyof SwingParams>(key: K, raw: string) => {
+      const parsed = SWING_PARAM_INT_KEYS.has(key)
+        ? parseInt(raw, 10)
+        : parseFloat(raw);
+      setSingleSwingParams((prev) => ({
+        ...prev,
+        [key]: Number.isFinite(parsed) ? parsed : '',
+      }));
+    },
+    [],
+  );
+
   const updateSwingFilter = useCallback(
     <K extends keyof SwingFilterCriteria>(key: K, raw: string) => {
       setSwingFilter((prev) => ({
@@ -411,7 +446,21 @@ export function SwingDetectionPage() {
     setSwingLoading(true);
     setSwingError(null);
     try {
-      const result = await fetchTokenSwings(selectedMint, swingParamsFromForm(swingParams));
+      const result = await fetchTokenSwings(
+        selectedMint,
+        swingParamsFromForm(singleSwingParams),
+        {
+          startMs:
+            singleCurveOnly || singleWindowStartSec === ''
+              ? null
+              : Math.round(singleWindowStartSec * 1000),
+          endMs:
+            singleCurveOnly || singleWindowEndSec === ''
+              ? null
+              : Math.round(singleWindowEndSec * 1000),
+          curveOnly: singleCurveOnly,
+        },
+      );
       dispatch(setSwingResult(result));
     } catch (e) {
       dispatch(setSwingResult(null));
@@ -419,7 +468,14 @@ export function SwingDetectionPage() {
     } finally {
       setSwingLoading(false);
     }
-  }, [selectedMint, swingParams, dispatch]);
+  }, [
+    selectedMint,
+    singleSwingParams,
+    singleWindowStartSec,
+    singleWindowEndSec,
+    singleCurveOnly,
+    dispatch,
+  ]);
 
   const displayed = useMemo(
     () => filterDisplayedTokens(tokens, createdFrom, createdTo, filters),
@@ -473,16 +529,21 @@ export function SwingDetectionPage() {
   );
 
   useEffect(() => {
-    saveStoredSwingCriteria(
-      swingParamsFromForm(swingParams),
-      swingFilterFromForm(swingFilter),
-      appliedSwingFilter,
+    saveStoredSwingCriteria({
+      params: swingParamsFromForm(swingParams),
+      filter: swingFilterFromForm(swingFilter),
+      appliedFilter: appliedSwingFilter,
       connectSwings,
-      chainLatencyValue,
-      windowStartSec === '' ? null : windowStartSec,
-      windowEndSec === '' ? null : windowEndSec,
+      chainLatencyMs: chainLatencyValue,
+      windowStartSec: windowStartSec === '' ? null : windowStartSec,
+      windowEndSec: windowEndSec === '' ? null : windowEndSec,
       curveOnly,
-    );
+      singleParams: swingParamsFromForm(singleSwingParams),
+      singleChainLatencyMs: singleChainLatencyValue,
+      singleWindowStartSec: singleWindowStartSec === '' ? null : singleWindowStartSec,
+      singleWindowEndSec: singleWindowEndSec === '' ? null : singleWindowEndSec,
+      singleCurveOnly,
+    });
   }, [
     swingParams,
     swingFilter,
@@ -492,6 +553,11 @@ export function SwingDetectionPage() {
     windowStartSec,
     windowEndSec,
     curveOnly,
+    singleSwingParams,
+    singleChainLatencyValue,
+    singleWindowStartSec,
+    singleWindowEndSec,
+    singleCurveOnly,
   ]);
 
   // Reset local selection-derived UI when the chosen token changes. The Redux
@@ -592,12 +658,20 @@ export function SwingDetectionPage() {
     return selectedMintSwings.find((leg) => swingLegKey(leg) === selectedSwingKey) ?? null;
   }, [selectedSwingKey, selectedMintSwings]);
 
-  // Longest swing chain for the selected token (from the batch "All" run),
-  // highlighted on the chart as a band. Re-derives when the chain latency is
-  // tuned, since `chainStatsByMint` recomputes with it.
+  // Chain-of-swings stats for the selected token, grouped with the single
+  // panel's own chain-latency budget (independent of the global "All" panel).
+  const singleChainStats = useMemo(
+    () =>
+      selectedMintSwings ? computeChainStats(selectedMintSwings, singleChainLatencyValue) : null,
+    [selectedMintSwings, singleChainLatencyValue],
+  );
+
+  // Longest swing chain for the selected token, highlighted on the chart as a
+  // band. Driven by the single panel's chain latency so the per-token view is
+  // controlled entirely from the single panel.
   const longestChainHighlight = useMemo(
-    () => (selectedMint ? chainStatsByMint.get(selectedMint)?.longestChain ?? null : null),
-    [selectedMint, chainStatsByMint],
+    () => singleChainStats?.longestChain ?? null,
+    [singleChainStats],
   );
 
   const swingTrades = useMemo(() => {
@@ -650,6 +724,24 @@ export function SwingDetectionPage() {
 
   // Inline element generators — plain functions that read this component's
   // scope directly, so there are no props to thread through.
+  function renderSingleThresholdField(label: string, key: keyof SwingParams) {
+    return (
+      <label className={labelClassName} key={key}>
+        {label}
+        <Input
+          fieldSize="md"
+          variant="card"
+          className="min-w-0 font-normal normal-case tracking-normal"
+          type="number"
+          min={0}
+          step="any"
+          value={singleSwingParams[key]}
+          onChange={(e) => updateSingleSwingParam(key, e.target.value)}
+        />
+      </label>
+    );
+  }
+
   function renderControlsBar() {
     return (
       <div className="mb-3 flex flex-wrap items-end gap-3">
@@ -1047,79 +1139,197 @@ export function SwingDetectionPage() {
             >
               <TabsList className="px-4">
                 <TabsTrigger value="analysis">Analysis</TabsTrigger>
+                <TabsTrigger value="chain">Chain of Swings</TabsTrigger>
+                <TabsTrigger value="timerange">Time Range</TabsTrigger>
+                <TabsTrigger value="thresholds">Leg Thresholds</TabsTrigger>
                 <TabsTrigger value="filter">Filter</TabsTrigger>
               </TabsList>
 
               <TabsPanel value="analysis" className="px-4">
-                <SwingParamsGrid params={swingParams} onChange={updateSwingParam} />
+                <SwingParamsGrid params={singleSwingParams} onChange={updateSingleSwingParam} />
 
                 <div className="flex flex-wrap items-center gap-3">
                   <Button
-                    variant="primary"
-                    disabled={!selectedMint || swingLoading}
-                    onClick={handleRunSwing}
-                  >
-                    {swingLoading ? 'Running…' : 'Run'}
-                  </Button>
-                  <Button
                     variant="ghost"
                     className="text-[11px] text-text-dim"
-                    onClick={() => setSwingParams(DEFAULT_SWING_PARAMS)}
+                    onClick={() => setSingleSwingParams(DEFAULT_SWING_PARAMS)}
                   >
                     Reset defaults
                   </Button>
                 </div>
+              </TabsPanel>
 
-                {swingError && (
-                  <p className="mt-4 text-sm text-red">{swingError}</p>
+              <TabsPanel value="chain" className="px-4">
+                <p className="mb-3 text-[11px] text-text-dim">
+                  Two consecutive high→low pairs stay in the same chain when the idle gap
+                  between them (one pair's low ending to the next pair's high starting) is
+                  within this latency. A chain needs at least 2 linked pairs. Changing it
+                  re-groups instantly — no need to re-run detection.
+                </p>
+                <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <label className={labelClassName}>
+                    Chain latency (ms)
+                    <Input
+                      fieldSize="md"
+                      variant="card"
+                      className="min-w-0 font-normal normal-case tracking-normal"
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={singleChainLatencyMs}
+                      onChange={(e) => {
+                        const parsed = parseInt(e.target.value, 10);
+                        setSingleChainLatencyMs(Number.isFinite(parsed) ? parsed : '');
+                      }}
+                    />
+                  </label>
+                </div>
+
+                {!swingResult ? (
+                  <p className="text-[11px] text-text-dim">
+                    Run detection to populate the chain stats.
+                  </p>
+                ) : (
+                  singleChainStats && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="primary" className="font-mono font-normal">
+                        {singleChainStats.totalPairCount} pair
+                        {singleChainStats.totalPairCount === 1 ? '' : 's'}
+                      </Badge>
+                      <Badge variant="primary" className="font-mono font-normal">
+                        max seq {singleChainStats.maxSequentialPairCount}
+                      </Badge>
+                      <Badge variant="primary" className="font-mono font-normal">
+                        {singleChainStats.chainCount} chain
+                        {singleChainStats.chainCount === 1 ? '' : 's'}
+                      </Badge>
+                    </div>
+                  )
                 )}
+              </TabsPanel>
 
-                <div className="mt-4">
-                  {swingLoading && (
-                    <p className="text-[12px] text-text-dim">Running swing detection…</p>
-                  )}
-                  {!swingLoading && !swingError && !swingResult && (
-                    <p className="rounded-md border border-dashed border-white/10 px-3 py-6 text-center text-[12px] text-text-dim">
-                      Click Run to detect swings for the selected token.
-                    </p>
-                  )}
-                  {swingResult && !swingLoading && (
-                    <>
-                      <div className="mb-2 flex flex-wrap items-center gap-2">
-                        <span className="text-[12px] font-bold text-text">Results</span>
-                        <Badge variant="primary" className="font-mono font-normal">
-                          {swingResult.count} swing{swingResult.count === 1 ? '' : 's'}
-                        </Badge>
-                        <span className="flex-1" />
-                        <VisibilityToggleButton
-                          visible={showSwingResultsTable}
-                          onToggle={() => setShowSwingResultsTable((v) => !v)}
-                          label="swing results table"
-                        />
-                      </div>
-                      {showSwingResultsTable && (
-                        <DataTable
-                          columns={swingTableColumns}
-                          rows={swingResult.swings}
-                          rowKey={swingLegKey}
-                          selectedKey={selectedSwingKey}
-                          onSelect={handleSwingSelect}
-                          defaultPageSize={5}
-                          searchable
-                          colFilters
-                          hoverable
-                          emptyMessage="No swings detected with these parameters."
-                        />
-                      )}
-                    </>
-                  )}
+              <TabsPanel value="timerange" className="px-4">
+                <p className="mb-3 text-[11px] text-text-dim">
+                  Restrict detection to a window measured in seconds from the token's
+                  first trade (its launch). Leave a field blank to leave that side open.
+                  Applies during detection — re-run after changing it.
+                </p>
+                <label className="mb-4 flex items-center gap-2 text-[12px] text-text">
+                  <Checkbox
+                    checked={singleCurveOnly}
+                    onChange={(e) => setSingleCurveOnly(e.target.checked)}
+                  />
+                  Token create → migration (bonding-curve trades only)
+                  <span className="text-[11px] text-text-dim">
+                    — ignores the seconds window below
+                  </span>
+                </label>
+                <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <label className={labelClassName}>
+                    Start (s after launch)
+                    <Input
+                      fieldSize="md"
+                      variant="card"
+                      className="min-w-0 font-normal normal-case tracking-normal"
+                      type="number"
+                      min={0}
+                      step="any"
+                      disabled={singleCurveOnly}
+                      value={singleWindowStartSec}
+                      onChange={(e) => {
+                        const parsed = parseFloat(e.target.value);
+                        setSingleWindowStartSec(Number.isFinite(parsed) ? parsed : '');
+                      }}
+                    />
+                  </label>
+                  <label className={labelClassName}>
+                    End (s after launch)
+                    <Input
+                      fieldSize="md"
+                      variant="card"
+                      className="min-w-0 font-normal normal-case tracking-normal"
+                      type="number"
+                      min={0}
+                      step="any"
+                      disabled={singleCurveOnly}
+                      value={singleWindowEndSec}
+                      onChange={(e) => {
+                        const parsed = parseFloat(e.target.value);
+                        setSingleWindowEndSec(Number.isFinite(parsed) ? parsed : '');
+                      }}
+                    />
+                  </label>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <Button
+                    variant="ghost"
+                    className="text-[11px] text-text-dim"
+                    onClick={() => {
+                      setSingleWindowStartSec('');
+                      setSingleWindowEndSec('');
+                    }}
+                  >
+                    Clear range
+                  </Button>
+                </div>
+              </TabsPanel>
+
+              <TabsPanel value="thresholds" className="px-4">
+                <p className="mb-3 text-[11px] text-text-dim">
+                  Bound each detected leg by its price change (delta %) and net flow rate
+                  (SOL per second), compared by magnitude — enter positive values (e.g. 30
+                  keeps swing lows that drop ≥ 30%). 0 = ignore that bound. Applies during
+                  detection — re-run after changing.
+                </p>
+                <div className="mb-4 grid gap-6 sm:grid-cols-2">
+                  <div>
+                    <h4 className="mb-3 text-[12px] font-bold text-text">Swing High</h4>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {renderSingleThresholdField('Min delta (%)', 'swing_high_min_delta_pct')}
+                      {renderSingleThresholdField('Max delta (%)', 'swing_high_max_delta_pct')}
+                      {renderSingleThresholdField('Min net flow / s (SOL)', 'swing_high_min_net_flow_per_sec')}
+                      {renderSingleThresholdField('Max net flow / s (SOL)', 'swing_high_max_net_flow_per_sec')}
+                    </div>
+                  </div>
+                  <div>
+                    <h4 className="mb-3 text-[12px] font-bold text-text">Swing Low</h4>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {renderSingleThresholdField('Min delta (%)', 'swing_low_min_delta_pct')}
+                      {renderSingleThresholdField('Max delta (%)', 'swing_low_max_delta_pct')}
+                      {renderSingleThresholdField('Min net flow / s (SOL)', 'swing_low_min_net_flow_per_sec')}
+                      {renderSingleThresholdField('Max net flow / s (SOL)', 'swing_low_max_net_flow_per_sec')}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <Button
+                    variant="ghost"
+                    className="text-[11px] text-text-dim"
+                    onClick={() =>
+                      setSingleSwingParams((prev) => ({
+                        ...prev,
+                        swing_high_min_delta_pct: 0,
+                        swing_high_max_delta_pct: 0,
+                        swing_high_min_net_flow_per_sec: 0,
+                        swing_high_max_net_flow_per_sec: 0,
+                        swing_low_min_delta_pct: 0,
+                        swing_low_max_delta_pct: 0,
+                        swing_low_min_net_flow_per_sec: 0,
+                        swing_low_max_net_flow_per_sec: 0,
+                      }))
+                    }
+                  >
+                    Clear thresholds
+                  </Button>
                 </div>
               </TabsPanel>
 
               <TabsPanel value="filter" className="px-4">
                 {!swingResult && !swingLoading && (
                   <p className="rounded-md border border-dashed border-white/10 px-3 py-6 text-center text-[12px] text-text-dim">
-                    Run swing detection on the Analysis tab first.
+                    Run swing detection first.
                   </p>
                 )}
                 {swingResult && (
@@ -1350,6 +1560,65 @@ export function SwingDetectionPage() {
                 )}
               </TabsPanel>
             </Tabs>
+
+            {/* Run + results are shared across the config tabs (the Filter tab
+                renders its own filtered table). */}
+            {swingPanelTab !== 'filter' && (
+              <div className="mt-4 border-t border-white/8 pt-4">
+                <div className="flex flex-wrap items-center gap-3">
+                  <Button
+                    variant="primary"
+                    disabled={!selectedMint || swingLoading}
+                    onClick={handleRunSwing}
+                  >
+                    {swingLoading ? 'Running…' : 'Run'}
+                  </Button>
+                </div>
+
+                {swingError && <p className="mt-4 text-sm text-red">{swingError}</p>}
+
+                <div className="mt-4">
+                  {swingLoading && (
+                    <p className="text-[12px] text-text-dim">Running swing detection…</p>
+                  )}
+                  {!swingLoading && !swingError && !swingResult && (
+                    <p className="rounded-md border border-dashed border-white/10 px-3 py-6 text-center text-[12px] text-text-dim">
+                      Click Run to detect swings for the selected token.
+                    </p>
+                  )}
+                  {swingResult && !swingLoading && (
+                    <>
+                      <div className="mb-2 flex flex-wrap items-center gap-2">
+                        <span className="text-[12px] font-bold text-text">Results</span>
+                        <Badge variant="primary" className="font-mono font-normal">
+                          {swingResult.count} swing{swingResult.count === 1 ? '' : 's'}
+                        </Badge>
+                        <span className="flex-1" />
+                        <VisibilityToggleButton
+                          visible={showSwingResultsTable}
+                          onToggle={() => setShowSwingResultsTable((v) => !v)}
+                          label="swing results table"
+                        />
+                      </div>
+                      {showSwingResultsTable && (
+                        <DataTable
+                          columns={swingTableColumns}
+                          rows={swingResult.swings}
+                          rowKey={swingLegKey}
+                          selectedKey={selectedSwingKey}
+                          onSelect={handleSwingSelect}
+                          defaultPageSize={5}
+                          searchable
+                          colFilters
+                          hoverable
+                          emptyMessage="No swings detected with these parameters."
+                        />
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </section>

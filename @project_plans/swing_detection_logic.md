@@ -37,8 +37,8 @@ Output is a flat, time-ordered ledger: `swing_high, swing_low, swing_high, swing
 
 ```
 Frontend (SwingDetectionPage)
-  ├─ Single token:  POST /api/tokens/:mint/swings        body = SwingParams (JSON; {} = defaults)
-  └─ All filtered:  POST /api/tokens/swings/batch         body = { mints[], params }
+  ├─ Single token:  POST /api/tokens/:mint/swings        body = { params, window_start_ms?, window_end_ms?, curve_only? } ({} = defaults)
+  └─ All filtered:  POST /api/tokens/swings/batch         body = { mints[], params, window_start_ms?, window_end_ms?, curve_only? }
         │
         ▼
 Backend handler  →  load trades (in-memory token_cache first, else TradeRepo from DB)

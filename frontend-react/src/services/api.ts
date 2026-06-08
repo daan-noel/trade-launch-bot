@@ -55,14 +55,28 @@ export async function fetchTokenTrades(
   return request(`${API_BASE}/api/tokens/${encodeURIComponent(mint)}/trades`);
 }
 
+/**
+ * Run swing detection over a single token.
+ *
+ * `opts.startMs` / `opts.endMs` restrict detection to a time range expressed in
+ * milliseconds relative to the token's first trade; a `null` bound is left open.
+ * `opts.curveOnly` restricts detection to bonding-curve trades (the
+ * token-creation → migration phase). Omit `opts` to run over full history.
+ */
 export async function fetchTokenSwings(
   mint: string,
   params: import('types').SwingParams,
+  opts?: { startMs: number | null; endMs: number | null; curveOnly?: boolean },
 ): Promise<import('types').SwingDetectionResult> {
   return request(`${API_BASE}/api/tokens/${encodeURIComponent(mint)}/swings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params),
+    body: JSON.stringify({
+      params,
+      window_start_ms: opts?.startMs ?? null,
+      window_end_ms: opts?.endMs ?? null,
+      curve_only: opts?.curveOnly ?? false,
+    }),
   });
 }
 

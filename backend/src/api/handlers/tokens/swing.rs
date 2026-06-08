@@ -17,6 +17,26 @@ pub struct SwingResponse {
     pub swings: Vec<SwingLeg>,
 }
 
+/// Request body for single-token swing detection. Mirrors the batch request's
+/// trade-filtering options so the single-token panel can scope detection the
+/// same way (time window + bonding-curve-only), independently of any batch run.
+#[derive(Deserialize)]
+pub struct SwingDetectRequest {
+    /// Tunable parameters; omit to use defaults.
+    #[serde(default)]
+    pub params: SwingParams,
+    /// Optional detection window, in milliseconds relative to the token's first
+    /// trade. A `null`/omitted bound leaves that side open.
+    #[serde(default)]
+    pub window_start_ms: Option<i64>,
+    #[serde(default)]
+    pub window_end_ms: Option<i64>,
+    /// When true, restrict detection to bonding-curve trades (`venue == "curve"`),
+    /// i.e. the token-creation → migration phase. Applied before the window.
+    #[serde(default)]
+    pub curve_only: bool,
+}
+
 /// Request body for batched, multi-token swing detection.
 #[derive(Deserialize)]
 pub struct SwingBatchRequest {
@@ -85,14 +105,21 @@ pub struct SwingBatchResponse {
 
 /// `POST /api/tokens/:mint/swings` — run swing detection over a token's trade
 /// history (cache first, else DB). The (optional) JSON body carries tunable
-/// `SwingParams`; send `{}` to use defaults.
+/// `params` plus the same `window_start_ms` / `window_end_ms` / `curve_only`
+/// trade filters as the batch endpoint; send `{}` to use defaults over full
+/// history.
 pub async fn detect_token_swings(
     state: web::Data<Arc<AppState>>,
     path: web::Path<String>,
-    body: web::Json<SwingParams>,
+    body: web::Json<SwingDetectRequest>,
 ) -> impl Responder {
     let mint = path.into_inner();
-    let params = body.into_inner();
+    let SwingDetectRequest {
+        params,
+        window_start_ms,
+        window_end_ms,
+        curve_only,
+    } = body.into_inner();
 
     let trades = if let Some(entry) = state.token_cache.get(&mint) {
         entry.trades.clone()
@@ -108,6 +135,13 @@ pub async fn detect_token_swings(
             }
         }
     };
+
+    let trades = if curve_only {
+        trades.into_iter().filter(|t| t.venue == "curve").collect()
+    } else {
+        trades
+    };
+    let trades = filter_trades_to_window(trades, window_start_ms, window_end_ms);
 
     let swings = detect_swings(&trades, &params);
     HttpResponse::Ok().json(SwingResponse {
