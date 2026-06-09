@@ -3,9 +3,6 @@ name = "backend"
 version = "0.1.0"
 edition = "2021"
 
-[profile.dev]
-debug = true
-
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }

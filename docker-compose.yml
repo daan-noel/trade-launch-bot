@@ -1,0 +1,60 @@
+# ---------------------------------------------------------------------------
+# Full stack: postgres + Rust backend + nginx (frontend static + /api proxy).
+#
+# Up / update:   docker compose up -d --build
+# Logs:          docker compose logs -f backend
+# Stop:          docker compose down            (data persists in the pgdata volume)
+#
+# Secrets/config come from a local .env file (see .env.example). Only nginx is
+# published; postgres and backend stay on the internal network.
+# ---------------------------------------------------------------------------
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-meme_bot}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-meme_bot}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # These OVERRIDE anything in .env (compose `environment` wins over env_file):
+      # - bind on all interfaces so nginx can reach it (code default is 127.0.0.1)
+      # - point at the postgres service, not localhost
+      HOST: 0.0.0.0
+      PORT: 8081
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-meme_bot}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: frontend-react/Dockerfile
+      args:
+        # Empty => SPA uses relative /api, proxied to backend by nginx.
+        VITE_API_BASE: ""
+        VITE_POLL_INTERVAL_MS: ${VITE_POLL_INTERVAL_MS:-5000}
+    restart: unless-stopped
+    ports:
+      - "80:80"     # add "443:443" + TLS later (certbot / a TLS-terminating proxy)
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:

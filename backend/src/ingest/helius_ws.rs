@@ -80,7 +80,7 @@ async fn run_once(
         .send(Message::Text(subscription::build_subscribe_message(
             settings,
             1,
-            &[settings.pump_program_id.as_str()],
+            &[crate::constants::PUMP_FUN_PROGRAM_ID],
         )))
         .await
         .map_err(|e| anyhow::anyhow!("WS send curve subscription failed: {e}"))?;

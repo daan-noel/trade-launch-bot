@@ -15,7 +15,8 @@ pub async fn fetch_prices(mints: &[String]) -> anyhow::Result<HashMap<String, Ju
         return Ok(HashMap::new());
     }
     let ids = mints.join(",");
-    let url = format!("https://api.jup.ag/price/v3?ids={ids}");
+    let base = &crate::config::settings::get().jupiter_price_api_url;
+    let url = format!("{base}?ids={ids}");
     let resp: serde_json::Value = http::client().get(&url).send().await?.json().await?;
 
     let mut result = HashMap::new();

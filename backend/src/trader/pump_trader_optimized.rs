@@ -68,18 +68,6 @@ const JITO_TIP_ACCOUNTS: &[&str] = &[
     "4ACfpUFoaSD9bfPdeu6DBt89gB6ENTeHBXCAi87NhDEE",
 ];
 
-/// Minimum Jito tip in SOL.
-const MIN_JITO_TIP_SOL: f64 = 0.0002;
-
-/// How many times sell_token will retry before giving up.
-const MAX_SELL_ATTEMPTS: usize = 5;
-
-/// How many times we poll for transaction confirmation.
-const CONFIRM_MAX_RETRIES: usize = 5;
-
-/// Milliseconds between confirmation polls.
-const CONFIRM_POLL_MS: u64 = 1_000;
-
 /// Maximum spin-wait iterations when all nonce slots are in use.
 const NONCE_MAX_WAIT_ITERS: usize = 200;
 
@@ -139,8 +127,18 @@ pub struct TraderConfig {
     pub nonce_accounts: Vec<String>,
     /// Micro-lamports per compute unit for priority fee.
     pub priority_fee_lamports: u64,
+    /// Compute-unit limit set on every trade transaction.
+    pub compute_unit_limit: u32,
     /// How many buy templates to keep pre-built per token-program pool.
     pub buy_seed_pool_size: usize,
+    /// Jito tip per transaction, in SOL.
+    pub jito_tip_sol: f64,
+    /// How many times `sell_token` retries before giving up.
+    pub max_sell_attempts: usize,
+    /// How many times we poll for transaction confirmation.
+    pub confirm_max_retries: usize,
+    /// Delay between confirmation polls.
+    pub confirm_poll: Duration,
 }
 
 // ---------------------------------------------------------------------------
@@ -450,7 +448,7 @@ impl PumpFunTrader {
 
         // 3. Compute budget instructions — built once, cloned per tx
         self.compute_budget_ixs = vec![
-            ComputeBudgetInstruction::set_compute_unit_limit(200_000),
+            ComputeBudgetInstruction::set_compute_unit_limit(self.config.compute_unit_limit),
             ComputeBudgetInstruction::set_compute_unit_price(self.config.priority_fee_lamports),
         ];
         info!(
@@ -459,7 +457,7 @@ impl PumpFunTrader {
         );
 
         // 4. Jito tip instruction — built once, reused every tx
-        let jito_lamports = (MIN_JITO_TIP_SOL * LAMPORTS_PER_SOL as f64) as u64;
+        let jito_lamports = (self.config.jito_tip_sol * LAMPORTS_PER_SOL as f64) as u64;
         let tip_account = JITO_TIP_ACCOUNTS
             .choose(&mut rand::thread_rng())
             .context("No Jito tip accounts")?;
@@ -649,7 +647,8 @@ impl PumpFunTrader {
                 t0.elapsed().as_millis()
             );
 
-            self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES).await?;
+            self.confirm_transaction(&sig, self.config.confirm_max_retries)
+                .await?;
             info!(
                 "✅ Buy confirmed — sig: {} | {}ms",
                 sig,
@@ -679,7 +678,7 @@ impl PumpFunTrader {
     ) -> Result<bool> {
         let mut last_err: Option<anyhow::Error> = None;
 
-        for attempt in 0..MAX_SELL_ATTEMPTS {
+        for attempt in 0..self.config.max_sell_attempts {
             // Ensure PDAs are cached
             if !self.token_pdas.lock().await.contains_key(token_mint) {
                 if let Err(e) = self.get_creator_from_mint_pda(token_mint).await {
@@ -755,7 +754,7 @@ impl PumpFunTrader {
             info!(
                 "🔁 Sell attempt {}/{} — token: {} nonce: {}",
                 attempt + 1,
-                MAX_SELL_ATTEMPTS,
+                self.config.max_sell_attempts,
                 token_mint,
                 nonce_pubkey
             );
@@ -786,13 +785,17 @@ impl PumpFunTrader {
                 }
             }
 
-            if attempt < MAX_SELL_ATTEMPTS - 1 {
+            if attempt < self.config.max_sell_attempts - 1 {
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
         }
 
-        Err(last_err
-            .unwrap_or_else(|| anyhow::anyhow!("Sell failed after {} attempts", MAX_SELL_ATTEMPTS)))
+        Err(last_err.unwrap_or_else(|| {
+            anyhow::anyhow!(
+                "Sell failed after {} attempts",
+                self.config.max_sell_attempts
+            )
+        }))
     }
     // -----------------------------------------------------------------------
     // Sell inner
@@ -905,7 +908,8 @@ impl PumpFunTrader {
             t0.elapsed().as_millis()
         );
 
-        self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES).await?;
+        self.confirm_transaction(&sig, self.config.confirm_max_retries)
+            .await?;
 
         info!(
             "✅ Sell confirmed — sig: {} | {}ms",
@@ -979,7 +983,7 @@ impl PumpFunTrader {
         let sig = Signature::from_str(signature)?;
 
         for i in 0..max_retries {
-            tokio::time::sleep(Duration::from_millis(CONFIRM_POLL_MS)).await;
+            tokio::time::sleep(self.config.confirm_poll).await;
 
             match self.rpc.get_signature_status(&sig).await? {
                 Some(Ok(())) => return Ok(()),

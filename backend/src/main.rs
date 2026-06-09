@@ -42,11 +42,13 @@ async fn main() -> anyhow::Result<()> {
 
     // Config
     let settings = config::Settings::from_env().context("Failed to load configuration")?;
+    // Install the process-wide copy for leaf consumers (price clients, HTTP client).
+    config::settings::init_global(settings.clone());
 
     info!(
         host = %settings.host,
         port = settings.port,
-        pump_program = %settings.pump_program_id,
+        pump_program = constants::PUMP_FUN_PROGRAM_ID,
         "Configuration loaded"
     );
 
@@ -57,7 +59,12 @@ async fn main() -> anyhow::Result<()> {
             .context("Failed to parse trader wallet private key")?,
         nonce_accounts: settings.nonce_accounts.clone(),
         priority_fee_lamports: settings.compute_unit_price,
+        compute_unit_limit: settings.compute_unit_limit as u32,
         buy_seed_pool_size: settings.buy_seed_pool_size,
+        jito_tip_sol: settings.jito_tip_sol,
+        max_sell_attempts: settings.max_sell_attempts,
+        confirm_max_retries: settings.confirm_max_retries,
+        confirm_poll: settings.confirm_poll,
     });
 
     let mut trader = PumpFunTrader::new(trader_config);
@@ -94,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
     // shared with the HTTP handlers — a token sync registers a migrated token's
     // pool here so the live WS subscribes to it immediately.
     let pipeline = ingest::IngestPipeline::new(
-        settings.pump_program_id.clone(),
+        constants::PUMP_FUN_PROGRAM_ID.to_string(),
         token_cache.clone(),
         db_tx,
         strategy_tx,
@@ -104,7 +111,7 @@ async fn main() -> anyhow::Result<()> {
     let app_state = Arc::new(state::AppState::new(
         db.clone(),
         settings.helius_rpc_url.clone(),
-        settings.pump_program_id.clone(),
+        constants::PUMP_FUN_PROGRAM_ID.to_string(),
         token_cache.clone(),
         sse_tx.clone(),
         live_tx.clone(),
@@ -133,7 +140,7 @@ async fn main() -> anyhow::Result<()> {
         token_cache.clone(),
         pipeline.pool_index(),
         pipeline.pools_changed(),
-        settings.pump_program_id.clone(),
+        constants::PUMP_FUN_PROGRAM_ID.to_string(),
     ));
 
     let pipeline_task = tokio::spawn(pipeline.run(raw_rx));
@@ -161,16 +168,19 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Service: SOL price polling — updates the in-memory SOL/USD cache
-    let price_task = tokio::spawn(services::sol_price::run_poller(sol_price.clone()));
+    let price_task = tokio::spawn(services::sol_price::run_poller(
+        sol_price.clone(),
+        settings.sol_price_poll,
+    ));
 
     let server_task = if settings.http_enabled {
         let bind_addr = format!("{}:{}", settings.host, settings.port);
         info!(addr = %bind_addr, workers = settings.http_workers, "Starting HTTP server");
         let http_state = app_state.clone();
         let http_workers = settings.http_workers;
+        let cors_origin = settings.cors_allowed_origin.clone();
         let http_server = HttpServer::new(move || {
-            let allowed_origin =
-                std::env::var("CORS_ALLOWED_ORIGIN").unwrap_or_else(|_| "*".to_string());
+            let allowed_origin = cors_origin.clone();
 
             let cors = if allowed_origin == "*" {
                 Cors::default()

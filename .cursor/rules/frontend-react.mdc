@@ -24,7 +24,7 @@ React 19 · Vite 8 · TS 6 · Tailwind 4 · react-router 7. Hooks/context only (
 - Feature UI → `components/{layout,table,ui,tokens,tpsl,transactions,wallet,analysis}/`
 
 Routes: `/` `/dashboard` `/tokens` `/transactions` `/analysis` `/wallet` `/strategies/tpsl` `/settings`
-Dev: `npm run dev` (:5173, proxies `/api` → :8080). `VITE_API_BASE` in `.env` only.
+Dev: `npm run dev` (:5173, proxies `/api` → :8081). `VITE_API_BASE` in `.env` only.
 
 ## Rules
 `cn()` + `@theme` tokens; memo columns when price unit changes; localStorage try/catch.

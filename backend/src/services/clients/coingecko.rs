@@ -2,13 +2,12 @@ use reqwest::header::{ACCEPT, USER_AGENT};
 
 use crate::services::http;
 
-const SOL_USD_URL: &str =
-    "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd";
-
 pub async fn fetch_sol_usd() -> anyhow::Result<f64> {
+    let base = &crate::config::settings::get().coingecko_price_url;
+    let url = format!("{base}?ids=solana&vs_currencies=usd");
     let client = http::client();
     let resp = client
-        .get(SOL_USD_URL)
+        .get(&url)
         .header(ACCEPT, "application/json")
         .header(USER_AGENT, http::USER_AGENT)
         .send()
