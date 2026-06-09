@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useRef, type ReactNode } from 'react';
 import { cn } from 'lib/cn';
 
 interface ModalProps {
@@ -9,16 +9,22 @@ interface ModalProps {
 }
 
 export function Modal({ title, open, onClose, children }: ModalProps) {
+  const pressedOnBackdrop = useRef(false);
+
   if (!open) return null;
 
   return (
     <div
       className="fixed inset-0 z-[200] flex justify-center overflow-y-auto bg-black/65 p-5 backdrop-blur-sm"
-      onClick={onClose}
+      onMouseDown={(e) => {
+        pressedOnBackdrop.current = e.target === e.currentTarget;
+      }}
+      onClick={(e) => {
+        if (pressedOnBackdrop.current && e.target === e.currentTarget) onClose();
+      }}
     >
       <div
         className="flex h-fit w-full max-w-[600px] flex-col overflow-hidden rounded-xl border border-white/8 bg-bg-panel shadow-[0_24px_80px_rgba(0,0,0,0.7)]"
-        onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-white/6 px-5 py-3.5">
           <h2 className="text-[15px] font-bold text-text">{title}</h2>

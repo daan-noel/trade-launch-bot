@@ -31,6 +31,40 @@ import { POLL_INTERVAL_MS } from 'services/config';
 import type { RulePositionRecord, RuleRecord, SimulatedTokenResult } from 'types';
 import { cn } from 'lib/cn';
 
+function SectionDivider() {
+  return <div role="separator" className="my-6 border-t border-white/6" />;
+}
+
+/** Indeterminate "trickle" progress bar for a simulation run. The simulate
+ *  endpoint returns its result in one shot with no streaming progress, so we
+ *  ease toward ~90% while the request is in flight rather than reporting real
+ *  percentages; the bar unmounts when the result lands. */
+function SimProgressBar() {
+  const [percent, setPercent] = useState(8);
+  useEffect(() => {
+    const id = setInterval(() => {
+      setPercent((p) => (p >= 90 ? p : p + (90 - p) * 0.12));
+    }, 200);
+    return () => clearInterval(id);
+  }, []);
+  return (
+    <div className="mt-4 rounded-lg border border-white/6 bg-white/2 p-4">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-[11px] font-bold uppercase tracking-widest text-primary">
+          Running Simulation
+        </span>
+        <span className="font-mono text-[11px] text-text-dim">{Math.round(percent)}%</span>
+      </div>
+      <div className="h-2 overflow-hidden rounded-full bg-white/6">
+        <div
+          className="h-full animate-pulse rounded-full bg-primary transition-[width] duration-300"
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
 export function TpslPage() {
   const price = usePriceDisplay();
 
@@ -385,7 +419,8 @@ export function TpslPage() {
         </div>
       )}
 
-      {simLoading && <p className="mt-4 text-text-dim">Running simulation…</p>}
+      {(simLoading || simError || simResult) && <SectionDivider />}
+      {simLoading && <SimProgressBar />}
       {simError && <InlineAlert variant="error">{simError}</InlineAlert>}
       {simResult && !simLoading && (
         <div className="mt-4 overflow-hidden rounded-[10px] border border-primary/20 bg-white/2">
