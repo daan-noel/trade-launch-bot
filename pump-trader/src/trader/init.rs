@@ -1,0 +1,180 @@
+// ============================================================
+// Initialization — runs once before any buy/sell.
+//
+// `initialize` performs all the up-front RPC work and pre-building;
+// `fetch_global_account` and `collect_nonce_pubkeys` are its private
+// helpers.
+// ============================================================
+
+use super::{GlobalAccount, NonceSlot, PumpFunTrader};
+use crate::constants::{
+    BUY_SEED_POOL_SIZE, COMPUTE_UNIT_LIMIT, COMPUTE_UNIT_PRICE_MICRO_LAMPORTS, JITO_TIP_ACCOUNTS,
+    LAMPORTS_PER_SOL, MIN_JITO_TIP_SOL, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID,
+};
+use anyhow::{Context, Result};
+use rand::seq::SliceRandom;
+use solana_sdk::system_instruction;
+use solana_sdk::{compute_budget::ComputeBudgetInstruction, pubkey::Pubkey, signature::Signer};
+use std::collections::HashSet;
+use std::str::FromStr;
+use tracing::info;
+
+impl PumpFunTrader {
+    // -----------------------------------------------------------------------
+    // Initialization  (call once before any buy/sell)
+    // -----------------------------------------------------------------------
+
+    pub async fn initialize(&mut self) -> Result<()> {
+        info!("🔧 Initializing PumpFunTrader...");
+
+        // 1. Global account
+        self.global_account = Some(self.fetch_global_account().await?);
+        info!("✅ Global account initialized");
+
+        // 2. Rent exemption amounts (one RPC call each)
+        self.token_account_rent = self
+            .rpc
+            .get_minimum_balance_for_rent_exemption(self.token_account_space as usize)
+            .await
+            .context("Failed to get rent for token account")?;
+        self.token_2022_account_rent = self
+            .rpc
+            .get_minimum_balance_for_rent_exemption(self.token_2022_account_space as usize)
+            .await
+            .context("Failed to get rent for token-2022 account")?;
+
+        // 3. Compute budget instructions — built once, cloned per tx
+        self.compute_budget_ixs = vec![
+            ComputeBudgetInstruction::set_compute_unit_limit(COMPUTE_UNIT_LIMIT),
+            ComputeBudgetInstruction::set_compute_unit_price(COMPUTE_UNIT_PRICE_MICRO_LAMPORTS),
+        ];
+        info!(
+            "⚡ Priority fee: {} µlamports/cu",
+            COMPUTE_UNIT_PRICE_MICRO_LAMPORTS
+        );
+
+        // 4. Jito tip instruction — built once, reused every tx
+        let jito_lamports = (MIN_JITO_TIP_SOL * LAMPORTS_PER_SOL as f64) as u64;
+        let tip_account = JITO_TIP_ACCOUNTS
+            .choose(&mut rand::thread_rng())
+            .context("No Jito tip accounts")?;
+        *self.jito_tip_ix.lock().await = Some(system_instruction::transfer(
+            &self.config.keypair.pubkey(),
+            &Pubkey::from_str(tip_account)?,
+            jito_lamports,
+        ));
+        info!("💸 Jito tip: {} lamports → {}", jito_lamports, tip_account);
+
+        // 5. Parse & deduplicate nonce accounts
+        self.collect_nonce_pubkeys()?;
+
+        // 6. Pre-fetch all nonce hashes
+        info!("🔧 Pre-fetching nonce hashes...");
+        {
+            let mut slots = self.nonce_slots.lock().await;
+            for &pubkey in &self.nonce_pubkeys {
+                let hash = self.fetch_nonce_hash_async(&pubkey).await?;
+                slots.insert(
+                    pubkey,
+                    NonceSlot {
+                        cached_hash: Some(hash),
+                        in_use: false,
+                    },
+                );
+            }
+        }
+        info!(
+            "✅ Nonce hashes cached for {} account(s)",
+            self.nonce_pubkeys.len()
+        );
+
+        // 7. Pre-build buy seed pools for both token programs
+        info!(
+            "🌱 Pre-building buy seed pools (target={})",
+            BUY_SEED_POOL_SIZE
+        );
+        self.fill_buy_pool(TOKEN_PROGRAM_ID).await?;
+        self.fill_buy_pool(TOKEN_2022_PROGRAM_ID).await?;
+        info!("✅ Buy seed pools ready");
+
+        info!(
+            "🚀 PumpFunTrader ready — wallet: {}",
+            self.config.keypair.pubkey()
+        );
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Global account
+    // -----------------------------------------------------------------------
+
+    async fn fetch_global_account(&self) -> Result<GlobalAccount> {
+        let pump = self.pump_program;
+        let (global_pda, _) = Pubkey::find_program_address(&[b"global"], &pump);
+
+        // Fetch fee_recipient from chain (offset 41 in account data)
+        let fee_recipient = {
+            let account = self
+                .rpc
+                .get_account(&global_pda)
+                .await
+                .context("Failed to fetch pump global account")?;
+            if account.data.len() < 73 {
+                anyhow::bail!("Global account data too short");
+            }
+            Pubkey::try_from(&account.data[41..73]).context("Failed to parse fee_recipient")?
+        };
+
+        let (global_volume_accumulator, _) =
+            Pubkey::find_program_address(&[b"global_volume_accumulator"], &pump);
+
+        let wallet = self.config.keypair.pubkey();
+        let (user_volume_accumulator, _) =
+            Pubkey::find_program_address(&[b"user_volume_accumulator", wallet.as_ref()], &pump);
+
+        let fee_prog = self.fee_program;
+        let (fee_config, _) =
+            Pubkey::find_program_address(&[b"fee_config", pump.as_ref()], &fee_prog);
+
+        Ok(GlobalAccount {
+            global_pda,
+            fee_recipient,
+            global_volume_accumulator,
+            user_volume_accumulator,
+            fee_config,
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // Nonce account parsing
+    // -----------------------------------------------------------------------
+
+    fn collect_nonce_pubkeys(&mut self) -> Result<()> {
+        if self.config.nonce_accounts.is_empty() {
+            anyhow::bail!("At least one nonce account is required");
+        }
+        if BUY_SEED_POOL_SIZE == 0 {
+            anyhow::bail!("buy_seed_pool_size must be >= 1");
+        }
+
+        let mut seen = HashSet::new();
+        self.nonce_pubkeys.clear();
+
+        for raw in &self.config.nonce_accounts {
+            if raw.is_empty() {
+                anyhow::bail!("Nonce account string must not be empty");
+            }
+            let pk =
+                Pubkey::from_str(raw).with_context(|| format!("Invalid nonce pubkey: {}", raw))?;
+            if seen.insert(pk) {
+                self.nonce_pubkeys.push(pk);
+            }
+        }
+
+        info!(
+            "✅ {} unique nonce account(s) configured",
+            self.nonce_pubkeys.len()
+        );
+        Ok(())
+    }
+}
