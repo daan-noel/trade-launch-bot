@@ -61,6 +61,23 @@ export function formatWithCommas(n: number): string {
   return n.toLocaleString('en-US', { maximumFractionDigits: 0 });
 }
 
+/**
+ * Format a USD value: engineering-notation cents for sub-$0.01 prices,
+ * comma-grouped dollars-and-cents otherwise.
+ */
+export function formatUsd(value: number): string {
+  if (value === 0) return '$0';
+  const abs = Math.abs(value);
+  const sign = value < 0 ? '-' : '';
+  if (abs < 0.01) return `${sign}$${formatPrice(abs)}`;
+  const rounded = Math.round(abs * 100) / 100;
+  const whole = Math.trunc(rounded);
+  const frac = Math.round((rounded - whole) * 100);
+  const wholeStr = formatWithCommas(whole);
+  if (frac === 0) return `${sign}$${wholeStr}`;
+  return `${sign}$${wholeStr}.${String(frac).padStart(2, '0')}`;
+}
+
 /** True when a numeric cell should show "-" (null, undefined, zero, NaN). */
 export function isEmptyNum(n: number | null | undefined): boolean {
   return n == null || n === 0 || Number.isNaN(n);

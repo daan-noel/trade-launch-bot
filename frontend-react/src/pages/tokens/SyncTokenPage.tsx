@@ -14,7 +14,7 @@ import { Checkbox } from 'components/ui/Checkbox';
 import { Textarea } from 'components/ui/Input';
 import { usePriceUnit } from 'context/PriceUnitContext';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
-import { fetchProfiles, syncToken } from 'services/api';
+import { fetchProfiles, fetchTrackingSettings, syncToken } from 'services/api';
 import type { SyncProgressEvent, TokenDetailRecord, WalletProfile } from 'types';
 import type { AppDispatch, RootState } from '../../store';
 import {
@@ -265,6 +265,9 @@ export function SyncTokenPage() {
 
   const [mint, setMint] = useState('');
   const [includePostMigrate, setIncludePostMigrate] = useState(false);
+  // True once the user toggles the checkbox, so the async global-default seed
+  // below never clobbers an explicit choice.
+  const postMigrateTouchedRef = useRef(false);
   const [syncing, setSyncing] = useState(false);
   const [progress, setProgress] = useState<SyncProgressEvent | null>(null);
   const [batch, setBatch] = useState<{ index: number; total: number } | null>(null);
@@ -276,6 +279,16 @@ export function SyncTokenPage() {
 
   useEffect(() => {
     fetchProfiles().then(setProfiles).catch(() => { });
+  }, []);
+
+  // Default the post-migration checkbox to the global tracking policy, unless
+  // the user has already chosen. Overridable per-sync.
+  useEffect(() => {
+    fetchTrackingSettings()
+      .then((s) => {
+        if (!postMigrateTouchedRef.current) setIncludePostMigrate(s.track_post_migration);
+      })
+      .catch(() => { });
   }, []);
 
   const profileWallets = useMemo(() => buildProfileWallets(profiles), [profiles]);
@@ -468,7 +481,10 @@ export function SyncTokenPage() {
         <label className="flex cursor-pointer items-center gap-2 pb-2 text-[13px] text-text-mid">
           <Checkbox
             checked={includePostMigrate}
-            onChange={(e) => setIncludePostMigrate(e.target.checked)}
+            onChange={(e) => {
+              postMigrateTouchedRef.current = true;
+              setIncludePostMigrate(e.target.checked);
+            }}
             disabled={syncing}
           />
           Include post-migrate trades

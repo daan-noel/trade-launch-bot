@@ -1,5 +1,6 @@
 pub mod analysis_repo;
 pub mod position_repo;
+pub mod settings_repo;
 pub mod strategy_tpsl_rule_repo;
 pub mod token_info_repo;
 pub mod token_repo;

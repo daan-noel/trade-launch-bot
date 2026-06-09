@@ -7,6 +7,7 @@ import { Input } from 'components/ui/Input';
 import { InlineAlert, Modal } from 'components/ui/Modal';
 import { walletColumns } from 'components/wallet/walletColumns';
 import { tradeBuy, tradeSell } from 'services/api';
+import { useWalletPriceDisplay } from 'hooks/useWalletPriceDisplay';
 import type { AppDispatch, RootState } from '../../store';
 import { loadWalletHoldings } from 'store/walletSlice';
 
@@ -20,6 +21,7 @@ interface BuyDialog {
 
 export function MyWalletPage() {
   const dispatch = useDispatch<AppDispatch>();
+  const price = useWalletPriceDisplay();
   const holdings = useSelector((s: RootState) => s.wallet.holdings);
   const loading = useSelector((s: RootState) => s.wallet.loading);
   const error = useSelector((s: RootState) => s.wallet.error);
@@ -109,12 +111,15 @@ export function MyWalletPage() {
 
   const columns = useMemo(
     () =>
-      walletColumns({
-        onBuy: handleBuyOpen,
-        onSell: handleSell,
-        sellingMint,
-      }),
-    [handleBuyOpen, handleSell, sellingMint],
+      walletColumns(
+        {
+          onBuy: handleBuyOpen,
+          onSell: handleSell,
+          sellingMint,
+        },
+        price,
+      ),
+    [handleBuyOpen, handleSell, sellingMint, price],
   );
 
   const buyTitle = buyDialog
@@ -152,6 +157,7 @@ export function MyWalletPage() {
           defaultPageSize={25}
           pageSizeOptions={[25, 50, 100]}
           searchable
+          colFilters
           colToggle
           hoverable
           storageKey="wallet_visible_cols"

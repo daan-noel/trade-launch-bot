@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
-use tokio::sync::{broadcast, mpsc, Notify};
+use tokio::sync::{broadcast, mpsc, watch, Notify};
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -43,6 +43,12 @@ pub struct IngestPipeline {
     /// Pinged whenever a token migrates and a new pool is added to `pool_index`,
     /// so the WS task subscribes to it without dropping the connection.
     pools_changed: Arc<Notify>,
+    /// Tracking policy (persisted in `app_settings`, mutated via the settings
+    /// API). When `track_mayhem` is false, Mayhem-mode tokens are not ingested;
+    /// when `track_post_migration` is false, migrated tokens' AMM trades are not
+    /// recorded. Flipping either off also applies to already-tracked state.
+    track_mayhem_rx: watch::Receiver<bool>,
+    track_post_migration_rx: watch::Receiver<bool>,
 }
 
 impl IngestPipeline {
@@ -52,19 +58,44 @@ impl IngestPipeline {
         db_tx: mpsc::Sender<DbWriteOp>,
         strategy_tx: mpsc::Sender<StrategyPing>,
         sse_tx: broadcast::Sender<SseEvent>,
+        track_mayhem_rx: watch::Receiver<bool>,
+        track_post_migration_rx: watch::Receiver<bool>,
     ) -> Self {
         // Seed the pool→mint index for tokens already migrated AND recently
         // active before this process started, so live AMM swaps for them are
         // captured immediately — without subscribing to every pool that ever
         // graduated. Quiet pools are re-added by `run_pool_subscription_refresh`
         // once they trade again; live migrations register via `register_pool`.
+        // Skipped entirely when post-migration tracking is disabled.
         let pool_index: Arc<DashMap<String, String>> = Arc::new(DashMap::new());
-        let now = Utc::now();
-        for entry in token_cache.iter() {
-            if entry.is_migrated && pool_is_live(entry.value(), now) {
-                if let Ok(pool) = derive_pump_swap_pool(entry.key(), &pump_program_id) {
-                    pool_index.insert(pool, entry.key().clone());
+        if *track_post_migration_rx.borrow() {
+            let now = Utc::now();
+            for entry in token_cache.iter() {
+                if entry.is_migrated && pool_is_live(entry.value(), now) {
+                    if let Ok(pool) = derive_pump_swap_pool(entry.key(), &pump_program_id) {
+                        pool_index.insert(pool, entry.key().clone());
+                    }
                 }
+            }
+        }
+
+        // Honor the Mayhem policy against the seeded cache: if tracking is off at
+        // startup, drop any Mayhem tokens the seed loaded so they aren't tracked
+        // live (their historical rows stay in the DB).
+        if !*track_mayhem_rx.borrow() {
+            let mayhem: Vec<String> = token_cache
+                .iter()
+                .filter(|e| e.token.is_mayhem_mode)
+                .map(|e| e.key().clone())
+                .collect();
+            for mint in &mayhem {
+                token_cache.remove(mint);
+            }
+            if !mayhem.is_empty() {
+                info!(
+                    "Tracking: Mayhem disabled — dropped {} seeded Mayhem token(s)",
+                    mayhem.len()
+                );
             }
         }
 
@@ -80,6 +111,8 @@ impl IngestPipeline {
             pump_program_id,
             pool_index,
             pools_changed: Arc::new(Notify::new()),
+            track_mayhem_rx,
+            track_post_migration_rx,
         }
     }
 
@@ -107,31 +140,116 @@ impl IngestPipeline {
     pub async fn run(self, mut raw_rx: mpsc::Receiver<String>) {
         info!("IngestPipeline: starting");
 
-        while let Some(raw) = raw_rx.recv().await {
-            match self.decoder.decode(&raw) {
-                DecodeOutput::Subscribed(id) => {
-                    info!("Helius subscription confirmed — id={id}");
-                }
-                DecodeOutput::Transaction { raw_tx, mut events } => {
-                    sort_events(&mut events);
-                    let (events, save_raw) = filter_events(events, &self.token_cache);
-                    if events.is_empty() {
-                        continue;
-                    }
+        // Independent receivers for change notifications, so the hot path's
+        // `borrow()` reads (in the event handlers) never contend with `changed()`.
+        let mut mayhem_changed = self.track_mayhem_rx.clone();
+        let mut post_migration_changed = self.track_post_migration_rx.clone();
 
-                    if save_raw {
-                        self.enqueue_db(DbWriteOp::Raw(raw_tx.clone()));
-                    }
+        loop {
+            tokio::select! {
+                maybe_raw = raw_rx.recv() => {
+                    let Some(raw) = maybe_raw else { break };
+                    match self.decoder.decode(&raw) {
+                        DecodeOutput::Subscribed(id) => {
+                            info!("Helius subscription confirmed — id={id}");
+                        }
+                        DecodeOutput::Transaction { raw_tx, mut events } => {
+                            sort_events(&mut events);
+                            let (events, save_raw) = filter_events(
+                                events,
+                                &self.token_cache,
+                                *self.track_mayhem_rx.borrow(),
+                            );
+                            if events.is_empty() {
+                                continue;
+                            }
 
-                    for event in events {
-                        self.apply_event(event, &raw_tx).await;
+                            if save_raw {
+                                self.enqueue_db(DbWriteOp::Raw(raw_tx.clone()));
+                            }
+
+                            for event in events {
+                                self.apply_event(event, &raw_tx).await;
+                            }
+                        }
+                        DecodeOutput::Ignored => {}
                     }
                 }
-                DecodeOutput::Ignored => {}
+
+                // Mayhem tracking flipped off — evict already-tracked Mayhem
+                // tokens so they stop receiving live updates (go-forward for new
+                // ones is enforced in `filter_events`).
+                _ = mayhem_changed.changed() => {
+                    if !*mayhem_changed.borrow() {
+                        self.evict_mayhem_tokens();
+                    }
+                }
+
+                // Post-migration tracking toggled — clear subscribed pools (off)
+                // so the decoder stops attributing AMM swaps, or re-seed the live
+                // pools (on) so recording resumes for active migrated tokens.
+                _ = post_migration_changed.changed() => {
+                    if *post_migration_changed.borrow() {
+                        self.reseed_live_pools();
+                    } else {
+                        self.clear_pools();
+                    }
+                }
             }
         }
 
         info!("IngestPipeline: raw_rx closed — stopping");
+    }
+
+    /// Drop every Mayhem-mode token from the cache. Their historical DB rows are
+    /// left intact; they simply stop receiving live trade/metric updates (and
+    /// subsequent trades for them early-return on the cache miss). Re-enabling is
+    /// go-forward — evicted tokens require a manual re-sync to track again.
+    fn evict_mayhem_tokens(&self) {
+        let mints: Vec<String> = self
+            .token_cache
+            .iter()
+            .filter(|e| e.token.is_mayhem_mode)
+            .map(|e| e.key().clone())
+            .collect();
+        for mint in &mints {
+            self.token_cache.remove(mint);
+        }
+        info!(
+            "Tracking: Mayhem disabled — evicted {} Mayhem token(s) from cache",
+            mints.len()
+        );
+    }
+
+    /// Drop all subscribed PumpSwap pools. The decoder attributes live AMM swaps
+    /// via `pool_index`, so clearing it stops recording post-migration trades
+    /// immediately; the WS connection's now-orphaned subscriptions are trimmed on
+    /// its next natural reconnect.
+    fn clear_pools(&self) {
+        let n = self.pool_index.len();
+        self.pool_index.clear();
+        info!("Tracking: post-migration disabled — cleared {n} pool(s); AMM trades no longer recorded");
+    }
+
+    /// Re-seed `pool_index` with the pools of currently-active migrated tokens and
+    /// wake the WS task to subscribe. Inverse of [`Self::clear_pools`], used when
+    /// post-migration tracking is re-enabled.
+    fn reseed_live_pools(&self) {
+        let now = Utc::now();
+        let mut added = false;
+        for entry in self.token_cache.iter() {
+            if entry.is_migrated && pool_is_live(entry.value(), now) {
+                if let Ok(pool) = derive_pump_swap_pool(entry.key(), &self.pump_program_id) {
+                    if self.pool_index.insert(pool, entry.key().clone()).is_none() {
+                        added = true;
+                    }
+                }
+            }
+        }
+        if added {
+            self.pools_changed.notify_one();
+        }
+        info!("Tracking: post-migration enabled — re-seeded live pools");
     }
 
     async fn apply_event(&self, event: InternalEvent, raw_tx: &RawTransaction) {
@@ -254,8 +372,12 @@ impl IngestPipeline {
         }
 
         // Register the pool now (before AMM swaps begin) so the decoder can
-        // attribute them and the WS task subscribes to this pool.
-        self.register_pool(&mint);
+        // attribute them and the WS task subscribes to this pool — unless
+        // post-migration tracking is disabled, in which case the migration is
+        // still recorded but its AMM trades are not.
+        if *self.track_post_migration_rx.borrow() {
+            self.register_pool(&mint);
+        }
 
         if let Some(mut token_state) = self.token_cache.get_mut(&mint) {
             token_state.is_migrated = true;
@@ -319,13 +441,19 @@ fn sort_events(events: &mut [InternalEvent]) {
 fn filter_events(
     events: Vec<InternalEvent>,
     cache: &TokenCache,
+    track_mayhem: bool,
 ) -> (Vec<InternalEvent>, bool) {
     let mut out = Vec::new();
     let mut save_raw = false;
 
     for event in events {
         match &event {
-            InternalEvent::TokenCreated(_) => {
+            InternalEvent::TokenCreated(e) => {
+                // Tracking policy: drop Mayhem-mode creates entirely when
+                // disabled, so neither the token nor its raw tx is persisted.
+                if e.token.is_mayhem_mode && !track_mayhem {
+                    continue;
+                }
                 save_raw = true;
                 out.push(event);
             }
@@ -403,10 +531,17 @@ pub async fn run_pool_subscription_refresh(
     pool_index: Arc<DashMap<String, String>>,
     pools_changed: Arc<Notify>,
     pump_program_id: String,
+    track_post_migration_rx: watch::Receiver<bool>,
 ) {
     let mut tick = tokio::time::interval(Duration::from_secs(POOL_REFRESH_INTERVAL_SECONDS));
     loop {
         tick.tick().await;
+
+        // Respect the tracking policy: never revive pools while post-migration
+        // tracking is disabled (it would undo `clear_pools`).
+        if !*track_post_migration_rx.borrow() {
+            continue;
+        }
 
         let now = Utc::now();
         // Mints already covered (pool_index values), so we only derive pools for

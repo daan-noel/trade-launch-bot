@@ -80,6 +80,22 @@ async fn main() -> anyhow::Result<()> {
     let (sse_tx, _) = tokio::sync::broadcast::channel::<models::ingest::SseEvent>(512);
 
     let (live_tx, live_rx) = tokio::sync::watch::channel(false);
+
+    // Load the persisted tracking policy and seed runtime watch flags from it, so
+    // a policy set in a previous run is in force before the first event arrives.
+    let tracking = storage::repositories::settings_repo::SettingsRepo::new(db.clone())
+        .get()
+        .await
+        .context("Failed to load app settings")?;
+    info!(
+        track_mayhem = tracking.track_mayhem,
+        track_post_migration = tracking.track_post_migration,
+        "Tracking policy loaded"
+    );
+    let (track_mayhem_tx, _) = tokio::sync::watch::channel(tracking.track_mayhem);
+    let (track_post_migration_tx, _) =
+        tokio::sync::watch::channel(tracking.track_post_migration);
+
     let (sol_price_tx, _sol_price_rx) = tokio::sync::watch::channel::<Option<f64>>(None);
     let sol_price = Arc::new(sol_price_tx);
     let tpsl_cache = Arc::new(strategies::tpsl::TpslRuntimeCache::new());
@@ -101,6 +117,8 @@ async fn main() -> anyhow::Result<()> {
         db_tx,
         strategy_tx,
         sse_tx.clone(),
+        track_mayhem_tx.subscribe(),
+        track_post_migration_tx.subscribe(),
     );
 
     let app_state = Arc::new(state::AppState::new(
@@ -110,6 +128,8 @@ async fn main() -> anyhow::Result<()> {
         token_cache.clone(),
         sse_tx.clone(),
         live_tx.clone(),
+        track_mayhem_tx.clone(),
+        track_post_migration_tx.clone(),
         sol_price.clone(),
         trader.clone(),
         tpsl_cache.clone(),
@@ -136,6 +156,7 @@ async fn main() -> anyhow::Result<()> {
         pipeline.pool_index(),
         pipeline.pools_changed(),
         constants::PUMP_FUN_PROGRAM_ID.to_string(),
+        track_post_migration_tx.subscribe(),
     ));
 
     let pipeline_task = tokio::spawn(pipeline.run(raw_rx));

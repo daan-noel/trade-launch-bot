@@ -33,6 +33,27 @@ export async function setLiveMode(live: boolean): Promise<boolean> {
   return data.live;
 }
 
+/** Global, server-wide token-tracking policy (persisted in `app_settings`). */
+export interface TrackingSettings {
+  track_mayhem: boolean;
+  track_post_migration: boolean;
+}
+
+export async function fetchTrackingSettings(): Promise<TrackingSettings> {
+  return request<TrackingSettings>(`${API_BASE}/api/system/settings`);
+}
+
+/** Update one or both toggles; omitted fields keep their current value. */
+export async function setTrackingSettings(
+  patch: Partial<TrackingSettings>,
+): Promise<TrackingSettings> {
+  return request<TrackingSettings>(`${API_BASE}/api/system/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+}
+
 export async function fetchTokens(
   search: string,
   limit: number,
