@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use actix_web::{web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
+use crate::config::constants::SLIPPAGE_MAX_BPS;
 use crate::services::sol_price;
 use crate::state::app_state::AppState;
 use crate::storage::repositories::settings_repo::SettingsRepo;
@@ -54,6 +55,9 @@ pub struct UpdateSettingsRequest {
     pub track_post_migration: Option<bool>,
     pub timezone: Option<String>,
     pub price_unit: Option<String>,
+    /// Default trade slippage in basis points (100 = 1%); clamped to
+    /// [`SLIPPAGE_MAX_BPS`]. Present = set the global default.
+    pub slippage_bps: Option<u64>,
 }
 
 pub async fn get_settings(state: web::Data<Arc<AppState>>) -> impl Responder {
@@ -69,6 +73,7 @@ pub async fn update_settings(
         track_post_migration,
         timezone,
         price_unit,
+        slippage_bps,
     } = req.into_inner();
 
     if let Some(pu) = &price_unit {
@@ -94,6 +99,9 @@ pub async fn update_settings(
     }
     if let Some(v) = price_unit {
         next.price_unit = Some(v);
+    }
+    if let Some(v) = slippage_bps {
+        next.slippage_bps = Some(v.min(SLIPPAGE_MAX_BPS));
     }
 
     // Persist first; only publish to the live watch if the write succeeds, so a

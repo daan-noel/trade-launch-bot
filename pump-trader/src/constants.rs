@@ -88,6 +88,14 @@ pub const NONCE_WAIT_SLEEP_MS: u64 = 20;
 /// `min_out` when the caller doesn't specify one. 500 bps = 5%.
 pub const AMM_DEFAULT_SLIPPAGE_BPS: u64 = 500;
 
+/// Conservative fee allowance (basis points) subtracted from the bonding-curve
+/// quote before applying slippage, when computing a curve buy/sell `min_out`.
+/// The deployed curve charges protocol + creator (+ dynamic) fees we don't read
+/// off-chain here; over-estimating them keeps `min_out` a safe lower bound so a
+/// fee misestimate never causes a false slippage failure (only looser
+/// protection). 200 bps comfortably covers the ~1% standard curve fee.
+pub const CURVE_FEE_BUFFER_BPS: u128 = 200;
+
 /// Byte offsets into a PumpSwap `Pool` account (after the 8-byte Anchor
 /// discriminator). Layout: pool_bump(u8) index(u16) creator(32) base_mint(32)
 /// quote_mint(32) lp_mint(32) pool_base_token_account(32)

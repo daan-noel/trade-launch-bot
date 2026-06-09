@@ -9,7 +9,7 @@
 // ============================================================
 
 use super::PumpFunTrader;
-use crate::constants::{CONFIRM_MAX_RETRIES, MAX_SELL_ATTEMPTS};
+use crate::constants::{CONFIRM_MAX_RETRIES, CURVE_FEE_BUFFER_BPS, MAX_SELL_ATTEMPTS};
 use anyhow::{Context, Result};
 use solana_sdk::{
     hash::Hash,
@@ -29,6 +29,7 @@ impl PumpFunTrader {
         creator_override: Option<&str>,
         is_cashback: bool,
         token_account_override: Option<&str>,
+        slippage_bps: Option<u64>,
     ) -> Result<bool> {
         let mut last_err: Option<anyhow::Error> = None;
 
@@ -119,6 +120,7 @@ impl PumpFunTrader {
                     token_amount,
                     creator_override,
                     is_cashback,
+                    slippage_bps,
                     &nonce_pubkey,
                     nonce_hash,
                 )
@@ -162,6 +164,7 @@ impl PumpFunTrader {
         token_amount: u64,
         creator_override: Option<&str>,
         is_cashback: bool,
+        slippage_bps: Option<u64>,
         nonce_pubkey: &Pubkey,
         nonce_hash: Hash,
     ) -> Result<bool> {
@@ -212,10 +215,30 @@ impl PumpFunTrader {
         let mut ixs = Vec::with_capacity(5);
         ixs.extend_from_slice(&self.compute_budget_ixs);
 
+        // `sell(amount, min_sol_output)`: slippage floor on SOL received. `None`
+        // keeps the legacy min_out=1 (snipe path, no extra RPC); `Some` reads the
+        // curve's virtual reserves for a conservative lower bound, falling back to
+        // 1 if the read fails so slippage never blocks a sell.
+        let min_sol_output: u64 = match slippage_bps {
+            Some(slip) => match self.curve_virtual_reserves(&pdas.bonding_curve).await {
+                Ok((vt, vq)) => {
+                    let gross =
+                        vq.saturating_mul(token_amount as u128) / (vt + token_amount as u128);
+                    let net = gross.saturating_mul(10_000 - CURVE_FEE_BUFFER_BPS) / 10_000;
+                    ((net * 10_000u128.saturating_sub(slip as u128) / 10_000) as u64).max(1)
+                }
+                Err(e) => {
+                    warn!("curve sell slippage: reserve read failed ({e}); using min_out=1");
+                    1
+                }
+            },
+            None => 1,
+        };
+
         // Sell (Sell exact token in)
         let mut sell_data = vec![0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad];
         sell_data.extend_from_slice(&token_amount.to_le_bytes());
-        sell_data.extend_from_slice(&1u64.to_le_bytes()); // min_sol_output = 1
+        sell_data.extend_from_slice(&min_sol_output.to_le_bytes()); // min_sol_output (slippage floor)
 
         let mut accounts = vec![
             AccountMeta::new_readonly(global.global_pda, false),

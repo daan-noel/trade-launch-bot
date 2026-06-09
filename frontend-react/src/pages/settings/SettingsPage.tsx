@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { fetchSettings, updateSettings, type AppSettings } from 'services/api';
 import { Switch } from 'components/ui/Switch';
+import { Input } from 'components/ui/Input';
 
 interface ToggleRowProps {
   title: string;
@@ -29,6 +30,9 @@ export function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Slippage edited as a percent string, committed on blur. Synced from the
+  // persisted bps value whenever it changes.
+  const [slipText, setSlipText] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -46,6 +50,28 @@ export function SettingsPage() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    setSlipText(
+      settings && settings.slippage_bps != null ? String(settings.slippage_bps / 100) : '',
+    );
+  }, [settings?.slippage_bps]);
+
+  function commitSlippage() {
+    if (!settings) return;
+    const raw = slipText.trim();
+    // Blank = leave the persisted default untouched.
+    if (raw === '') return;
+    const pct = parseFloat(raw);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 50) {
+      setError('Slippage must be between 0 and 50%');
+      return;
+    }
+    const bps = Math.round(pct * 100);
+    if (bps !== settings.slippage_bps) {
+      update({ slippage_bps: bps });
+    }
+  }
 
   async function update(patch: Partial<AppSettings>) {
     if (!settings) return;
@@ -98,6 +124,40 @@ export function SettingsPage() {
         ) : null}
 
         {error && <p className="mt-3 text-xs text-danger">{error}</p>}
+      </section>
+
+      <section className="mt-4 max-w-2xl rounded-xl border border-white/8 bg-bg-panel p-4">
+        <h3 className="text-sm font-semibold text-text">Trading</h3>
+        <p className="mt-0.5 mb-3.5 text-xs text-text-dim">
+          Default slippage tolerance applied to manual buys and sells that don't specify
+          their own. Applies to both bonding-curve and AMM trades. Leave blank to use the
+          server default (5%).
+        </p>
+
+        {loading ? (
+          <p className="text-xs text-text-dim">Loading…</p>
+        ) : settings ? (
+          <label className="flex max-w-[220px] flex-col gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
+              Default slippage %
+            </span>
+            <Input
+              type="number"
+              fieldSize="md"
+              min={0}
+              max={50}
+              step={0.1}
+              placeholder="5"
+              value={slipText}
+              disabled={saving}
+              onChange={(e) => setSlipText(e.target.value)}
+              onBlur={commitSlippage}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+              }}
+            />
+          </label>
+        ) : null}
       </section>
     </div>
   );

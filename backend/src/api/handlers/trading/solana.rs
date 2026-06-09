@@ -3,7 +3,7 @@ use std::sync::Arc;
 use actix_web::{web, HttpResponse, Responder};
 use serde::Deserialize;
 
-use crate::config::constants::TOKEN_PROGRAM_ID;
+use crate::config::constants::{DEFAULT_SLIPPAGE_BPS, SLIPPAGE_MAX_BPS};
 use crate::services::wallet_tokens;
 use crate::state::app_state::AppState;
 
@@ -14,6 +14,9 @@ pub struct BuyRequest {
     /// Optional: when omitted (manual buy by mint), the backend resolves it
     /// on-chain alongside the migration status.
     pub token_program_id: Option<String>,
+    /// Optional per-trade slippage tolerance in basis points (100 = 1%). When
+    /// omitted, falls back to the persisted default, then the built-in constant.
+    pub slippage_bps: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -21,6 +24,18 @@ pub struct SellRequest {
     pub mint: String,
     pub token_amount: u64,
     pub token_account: Option<String>,
+    /// Optional per-trade slippage tolerance in basis points (100 = 1%). See
+    /// [`BuyRequest::slippage_bps`].
+    pub slippage_bps: Option<u64>,
+}
+
+/// Resolve the effective slippage (bps) for a trade: per-request override →
+/// persisted global default → built-in constant, clamped to the hard ceiling.
+fn resolve_slippage(app_state: &AppState, request: Option<u64>) -> u64 {
+    request
+        .or_else(|| app_state.settings().slippage_bps)
+        .unwrap_or(DEFAULT_SLIPPAGE_BPS)
+        .min(SLIPPAGE_MAX_BPS)
 }
 
 /// POST /api/solana/wallet/buy
@@ -46,19 +61,20 @@ pub async fn manual_buy(
         .clone()
         .unwrap_or(routing.token_program_id);
     let sol_amount = body.sol_amount;
+    let slippage_bps = resolve_slippage(&app_state, body.slippage_bps);
 
     let buy_result = if routing.is_migrated {
-        // Migrated → PumpSwap AMM (canonical pool derived, default slippage).
+        // Migrated → PumpSwap AMM (canonical pool derived).
         // Mayhem tokens never migrate, so the AMM path needs no mayhem handling.
         app_state
             .trader
-            .amm_buy(&body.mint, &token_program_id, sol_amount, None, None)
+            .amm_buy(&body.mint, &token_program_id, sol_amount, None, Some(slippage_bps))
             .await
     } else {
         // Still on the bonding curve.
         app_state
             .trader
-            .buy_token(&body.mint, &routing.creator, &token_program_id, sol_amount)
+            .buy_token(&body.mint, &routing.creator, &token_program_id, sol_amount, Some(slippage_bps))
             .await
     };
     match buy_result {
@@ -76,31 +92,55 @@ pub async fn manual_sell(
     body: web::Json<SellRequest>,
 ) -> impl Responder {
     let token_account_override = body.token_account.as_deref();
-    let sell_amount = (body.token_amount * 90 / 100) as u64; // Sell 99% to avoid dust issues
+    let sell_amount = (body.token_amount * 90 / 100) as u64; // Sell 90% to avoid dust issues
 
-    // Routing facts from the in-memory cache (extract values, then drop the Ref
-    // before any await): is_migrated picks bonding-curve vs PumpSwap AMM,
-    // is_cashback gates the curve's cashback account, token_program_id builds
-    // AMM accounts.
-    let (is_migrated, is_cashback, base_tp) = match app_state.token_cache.get(&body.mint) {
-        Some(e) => (
-            e.is_migrated,
-            e.token.is_cashback_enabled,
-            e.token.token_program_id.clone(),
-        ),
-        None => (false, false, None),
+    // Resolve routing live on-chain — same as manual_buy. The in-memory
+    // token_cache can be stale or empty for a freshly-migrated token, and a
+    // false `is_migrated` would misroute a migrated sell to the bonding curve,
+    // which the on-chain program rejects with BondingCurveComplete (6005).
+    let routing = match app_state.trader.resolve_buy_routing(&body.mint).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("manual_sell: resolve_buy_routing failed for {}: {e}", body.mint);
+            return HttpResponse::BadRequest()
+                .json(serde_json::json!({ "error": format!("Could not resolve token: {e}") }));
+        }
     };
-    let base_tp = base_tp.unwrap_or_else(|| TOKEN_PROGRAM_ID.to_string());
 
-    let sell_result = if is_migrated {
+    // is_cashback only gates the bonding-curve sell's cashback account; the AMM
+    // reads it from the pool on-chain. Pull it from the cache when present (the
+    // Ref is dropped within this statement, never held across an await).
+    let is_cashback = app_state
+        .token_cache
+        .get(&body.mint)
+        .map(|e| e.token.is_cashback_enabled)
+        .unwrap_or(false);
+
+    let slippage_bps = resolve_slippage(&app_state, body.slippage_bps);
+
+    let sell_result = if routing.is_migrated {
         app_state
             .trader
-            .amm_sell(&body.mint, sell_amount, &base_tp, None, token_account_override, None)
+            .amm_sell(
+                &body.mint,
+                sell_amount,
+                &routing.token_program_id,
+                None,
+                token_account_override,
+                Some(slippage_bps),
+            )
             .await
     } else {
         app_state
             .trader
-            .sell_token(&body.mint, sell_amount, None, is_cashback, token_account_override)
+            .sell_token(
+                &body.mint,
+                sell_amount,
+                Some(&routing.creator),
+                is_cashback,
+                token_account_override,
+                Some(slippage_bps),
+            )
             .await
     };
     match sell_result {

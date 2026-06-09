@@ -19,6 +19,10 @@ pub struct AppSettings {
     pub timezone: Option<String>,
     /// Header price-unit preference ("SOL" | "USD"). `None` = never set.
     pub price_unit: Option<String>,
+    /// Default trade slippage tolerance in basis points (100 = 1%). Used when a
+    /// buy/sell request doesn't specify its own. `None` = fall back to the
+    /// server's built-in default (`DEFAULT_SLIPPAGE_BPS`).
+    pub slippage_bps: Option<u64>,
 }
 
 impl Default for AppSettings {
@@ -28,6 +32,7 @@ impl Default for AppSettings {
             track_post_migration: true,
             timezone: None,
             price_unit: None,
+            slippage_bps: None,
         }
     }
 }

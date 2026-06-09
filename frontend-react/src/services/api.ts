@@ -43,6 +43,8 @@ export interface AppSettings {
   track_post_migration: boolean;
   timezone: string | null;
   price_unit: 'SOL' | 'USD' | null;
+  /** Default trade slippage in basis points (100 = 1%); null = use server default. */
+  slippage_bps: number | null;
 }
 
 export async function fetchSettings(): Promise<AppSettings> {
@@ -200,6 +202,7 @@ export async function tradeBuy(req: {
   mint: string;
   sol_amount: number;
   token_program_id?: string;
+  slippage_bps?: number;
 }): Promise<boolean> {
   await request(`${API_BASE}/api/solana/wallet/buy`, {
     method: 'POST',
@@ -213,6 +216,7 @@ export async function tradeSell(req: {
   mint: string;
   token_amount: number;
   token_account: string;
+  slippage_bps?: number;
 }): Promise<boolean> {
   await request(`${API_BASE}/api/solana/wallet/sell`, {
     method: 'POST',

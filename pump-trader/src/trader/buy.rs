@@ -8,7 +8,9 @@
 // ============================================================
 
 use super::{PumpFunTrader, TokenPDAs};
-use crate::constants::{CONFIRM_MAX_RETRIES, LAMPORTS_PER_SOL, TOKEN_PROGRAM_ID};
+use crate::constants::{
+    CONFIRM_MAX_RETRIES, CURVE_FEE_BUFFER_BPS, LAMPORTS_PER_SOL, TOKEN_PROGRAM_ID,
+};
 use anyhow::{Context, Result};
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
@@ -18,7 +20,7 @@ use solana_sdk::{
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::str::FromStr;
 use std::time::Instant;
-use tracing::info;
+use tracing::{info, warn};
 
 impl PumpFunTrader {
     pub async fn buy_token(
@@ -27,6 +29,7 @@ impl PumpFunTrader {
         creator: &str,
         token_program_id: &str,
         sol_amount: f64,
+        slippage_bps: Option<u64>,
     ) -> Result<bool> {
         let t0 = Instant::now();
         let buy_lamports = (sol_amount * LAMPORTS_PER_SOL as f64) as u64;
@@ -116,9 +119,32 @@ impl PumpFunTrader {
                 ixs.push(init_ix);
             }
 
+            // `buy_exact_sol_in(spendable_quote_in, min_tokens_out)`: slippage
+            // floor on tokens received. `None` keeps the legacy min_out=1 (no
+            // protection) and skips the reserve read — the latency-critical snipe
+            // path. `Some` reads the curve's virtual reserves and sets a
+            // conservative lower bound; a failed read falls back to 1 so slippage
+            // never blocks a buy.
+            let min_tokens_out: u64 = match slippage_bps {
+                Some(slip) => match self.curve_virtual_reserves(&bonding_curve).await {
+                    Ok((vt, vq)) => {
+                        let net = (buy_lamports as u128)
+                            .saturating_mul(10_000 - CURVE_FEE_BUFFER_BPS)
+                            / 10_000;
+                        let expected = vt.saturating_mul(net) / (vq + net);
+                        ((expected * 10_000u128.saturating_sub(slip as u128) / 10_000) as u64).max(1)
+                    }
+                    Err(e) => {
+                        warn!("curve buy slippage: reserve read failed ({e}); using min_out=1");
+                        1
+                    }
+                },
+                None => 1,
+            };
+
             let mut buy_data = vec![0x38, 0xfc, 0x74, 0x08, 0x9e, 0xdf, 0xcd, 0x5f];
             buy_data.extend_from_slice(&buy_lamports.to_le_bytes());
-            buy_data.extend_from_slice(&1u64.to_le_bytes());
+            buy_data.extend_from_slice(&min_tokens_out.to_le_bytes());
             ixs.push(Instruction {
                 program_id: self.pump_program,
                 accounts: vec![

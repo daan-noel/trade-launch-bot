@@ -409,7 +409,7 @@ async fn buy_with_retries(
     while attempt < max_attempts {
         attempt += 1;
         match trader
-            .buy_token(&mint, &creator, &token_program_id, buy_amount)
+            .buy_token(&mint, &creator, &token_program_id, buy_amount, None)
             .await
         {
             Ok(true) => {
@@ -601,7 +601,7 @@ async fn sell_with_retries(
                 .await
         } else {
             trader
-                .sell_token(&mint, amount, None, is_cashback, token_account_override.as_deref())
+                .sell_token(&mint, amount, None, is_cashback, token_account_override.as_deref(), None)
                 .await
         };
         match sell_result {

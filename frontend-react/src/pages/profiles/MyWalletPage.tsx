@@ -16,6 +16,8 @@ interface BuyDialog {
   /// Known for row-triggered buys; undefined for manual buys (backend resolves on-chain).
   tokenProgramId?: string;
   solInput: string;
+  /// Slippage tolerance as a percent string; blank = use the global default.
+  slippageInput: string;
   manual: boolean;
 }
 
@@ -69,11 +71,11 @@ export function MyWalletPage() {
   );
 
   const handleBuyOpen = useCallback((mint: string, tokenProgramId: string) => {
-    setBuyDialog({ mint, tokenProgramId, solInput: '0.1', manual: false });
+    setBuyDialog({ mint, tokenProgramId, solInput: '0.1', slippageInput: '', manual: false });
   }, []);
 
   const handleManualBuyOpen = useCallback(() => {
-    setBuyDialog({ mint: '', solInput: '0.1', manual: true });
+    setBuyDialog({ mint: '', solInput: '0.1', slippageInput: '', manual: true });
   }, []);
 
   const handleBuySubmit = useCallback(async () => {
@@ -89,6 +91,19 @@ export function MyWalletPage() {
       return;
     }
 
+    // Slippage is entered as a percent; blank = let the backend use the global
+    // default. Convert to basis points (1% = 100 bps).
+    let slippageBps: number | undefined;
+    const slipRaw = buyDialog.slippageInput.trim();
+    if (slipRaw) {
+      const slipPct = parseFloat(slipRaw);
+      if (!Number.isFinite(slipPct) || slipPct < 0 || slipPct > 50) {
+        setActionError('Enter a valid slippage % between 0 and 50');
+        return;
+      }
+      slippageBps = Math.round(slipPct * 100);
+    }
+
     setActionError(null);
     setActionSuccess(null);
     setBuyDialog(null);
@@ -101,6 +116,7 @@ export function MyWalletPage() {
         ...(buyDialog.tokenProgramId
           ? { token_program_id: buyDialog.tokenProgramId }
           : {}),
+        ...(slippageBps !== undefined ? { slippage_bps: slippageBps } : {}),
       });
       setActionSuccess('Buy successful! Refreshing…');
       setTimeout(loadHoldings, 1500);
@@ -204,6 +220,24 @@ export function MyWalletPage() {
                 value={buyDialog.solInput}
                 onChange={(e) =>
                   setBuyDialog((d) => (d ? { ...d, solInput: e.target.value } : d))
+                }
+                className="focus:shadow-[0_0_0_2px_rgba(19,206,175,0.15)]"
+              />
+            </label>
+            <label className="mb-4 flex flex-col gap-1.5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
+                Slippage % (optional)
+              </span>
+              <Input
+                type="number"
+                fieldSize="md"
+                min={0}
+                max={50}
+                step={0.1}
+                placeholder="Default"
+                value={buyDialog.slippageInput}
+                onChange={(e) =>
+                  setBuyDialog((d) => (d ? { ...d, slippageInput: e.target.value } : d))
                 }
                 className="focus:shadow-[0_0_0_2px_rgba(19,206,175,0.15)]"
               />

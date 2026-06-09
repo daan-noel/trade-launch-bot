@@ -73,6 +73,14 @@ pub const BUY_V2_DISCRIMINATOR: [u8; 8] = [0xb8, 0x17, 0xee, 0x61, 0x67, 0xc5, 0
 pub const BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR: [u8; 8] =
     [0xc2, 0xab, 0x1c, 0x46, 0x68, 0x4d, 0x5b, 0x2f];
 
+// ── Trade slippage ───────────────────────────────────────────────────────────
+/// Default trade slippage tolerance in basis points (100 = 1%) when neither the
+/// request nor the persisted `AppSettings.slippage_bps` specifies one. 500 = 5%.
+pub const DEFAULT_SLIPPAGE_BPS: u64 = 500;
+/// Hard ceiling applied to any client-supplied slippage, to guard against a
+/// fat-finger or hostile value. 5000 bps = 50%.
+pub const SLIPPAGE_MAX_BPS: u64 = 5_000;
+
 // ---------------------------------------------------------------------------
 // On-chain event discriminators (emitted via `emit!` in "Program data:" logs)
 // ---------------------------------------------------------------------------

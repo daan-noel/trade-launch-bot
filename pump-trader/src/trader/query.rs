@@ -82,6 +82,31 @@ impl PumpFunTrader {
         Ok(holdings)
     }
 
+    /// Read the bonding curve's virtual reserves — `(virtual_token, virtual_quote)`
+    /// in raw units (quote = lamports) — for slippage quoting on the curve path.
+    /// Layout after the 8-byte Anchor discriminator: `virtual_token_reserves` @8,
+    /// `virtual_quote_reserves` @16 (both u64 LE).
+    pub(crate) async fn curve_virtual_reserves(
+        &self,
+        bonding_curve: &Pubkey,
+    ) -> anyhow::Result<(u128, u128)> {
+        let acct = self
+            .rpc
+            .get_account(bonding_curve)
+            .await
+            .map_err(|e| anyhow::anyhow!("read bonding curve {bonding_curve}: {e}"))?;
+        let d = &acct.data;
+        if d.len() < 24 {
+            anyhow::bail!("bonding curve account too short: {} bytes", d.len());
+        }
+        let vt = u64::from_le_bytes(d[8..16].try_into().unwrap()) as u128;
+        let vq = u64::from_le_bytes(d[16..24].try_into().unwrap()) as u128;
+        if vt == 0 || vq == 0 {
+            anyhow::bail!("bonding curve has zero virtual reserves");
+        }
+        Ok((vt, vq))
+    }
+
     /// Query the on-chain SPL token balance for a given wallet + mint.
     /// Tries both classic Token and Token-2022 ATAs; returns 0 if none found.
     pub async fn get_token_balance(
