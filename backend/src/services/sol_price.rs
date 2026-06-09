@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use tokio::sync::watch;
 use tracing::{info, warn};
@@ -7,6 +6,8 @@ use tracing::{info, warn};
 use crate::state::app_state::AppState;
 
 use super::clients::coingecko;
+
+const POLL_INTERVAL_SECS: u64 = 60;
 
 pub async fn fetch_latest_sol_price() -> anyhow::Result<f64> {
     coingecko::fetch_sol_usd().await
@@ -26,9 +27,9 @@ pub async fn refresh(state: &AppState) -> Option<f64> {
     }
 }
 
-/// Background task that polls CoinGecko on `interval` and updates the SOL/USD watch channel.
-pub async fn run_poller(sol_price_tx: Arc<watch::Sender<Option<f64>>>, interval: Duration) {
-    info!("SOL price poller: starting (every {}s)", interval.as_secs());
+/// Background task that polls CoinGecko every 60 s and updates the SOL/USD watch channel.
+pub async fn run_poller(sol_price_tx: Arc<watch::Sender<Option<f64>>>) {
+    info!("SOL price poller: starting (every {POLL_INTERVAL_SECS}s)");
 
     loop {
         match fetch_latest_sol_price().await {
@@ -41,6 +42,6 @@ pub async fn run_poller(sol_price_tx: Arc<watch::Sender<Option<f64>>>, interval:
             }
         }
 
-        tokio::time::sleep(interval).await;
+        tokio::time::sleep(std::time::Duration::from_secs(POLL_INTERVAL_SECS)).await;
     }
 }

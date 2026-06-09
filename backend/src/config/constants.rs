@@ -1,16 +1,15 @@
 #![allow(dead_code)]
 
-// Shared program ID constants used across trading modules
-pub const PUMP_FUN_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+// Protocol constants shared with the standalone trader are owned by the
+// `pump_trader` crate; re-export them so the backend keeps a single source.
+pub use pump_trader::constants::{
+    ASSOCIATED_TOKEN_PROGRAM_ID, EVENT_AUTHORITY, FEE_PROGRAM_ID, LAMPORTS_PER_SOL,
+    PUMP_FUN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID,
+};
+
+// Backend-only program IDs.
 pub const SYSTEM_PROGRAM_ID: &str = "11111111111111111111111111111111";
-pub const ASSOCIATED_TOKEN_PROGRAM_ID: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 pub const COMPUTE_BUDGET_PROGRAM_ID: &str = "ComputeBudget111111111111111111111111111111";
-
-/// Classic SPL Token program.
-pub const TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
-
-/// Token-2022 / Token Extensions program.
-pub const TOKEN_2022_PROGRAM_ID: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 
 /// Address Lookup Table program.
 pub const ADDRESS_LOOKUP_TABLE_PROGRAM_ID: &str = "AddressLookupTab1e1111111111111111111111111";
@@ -169,10 +168,6 @@ pub const POOL_REFRESH_INTERVAL_SECONDS: u64 = 120; // 2 minutes
 
 
 
-pub const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
-
 /// Trades below this size are dust (bot noise / probe txs) and are not ingested.
 pub const MIN_TRADE_LAMPORTS: u64 = 10_000;
 pub const MIN_TRADE_SOL: f64 = MIN_TRADE_LAMPORTS as f64 / LAMPORTS_PER_SOL as f64;
-pub const EVENT_AUTHORITY: &str = "Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1";
-pub const FEE_PROGRAM_ID: &str = "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ";

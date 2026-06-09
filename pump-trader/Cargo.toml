@@ -1,0 +1,45 @@
+[package]
+name = "pump-trader"
+version = "0.1.0"
+edition = "2021"
+description = "Standalone Pump.fun trader: pre-built nonce/seed pools, Jito tips, confirmation polling."
+
+[lib]
+name = "pump_trader"
+path = "src/lib.rs"
+
+[dependencies]
+# Async runtime (consumer provides the runtime; the trader spawns background tasks).
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+
+# Error handling
+anyhow = "1"
+
+# Serialization (WalletHolding / TokenBalance derive Serialize)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logging
+tracing = "0.1"
+
+# Time (JSON-RPC request id)
+chrono = "0.4"
+
+# Encodings for transaction submission
+base64 = "0.22"
+bincode = "1.3"
+
+# Random Jito tip-account selection
+rand = "0.8"
+
+# HTTP client for the Helius sender JSON-RPC
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+
+# Solana on-chain transaction construction and RPC
+solana-client = "1.17.27"
+solana-sdk = "1.17.27"
+
+# Token program account-initialization helpers (versions pinned to match solana 1.17)
+spl-associated-token-account = "2.2"
+spl-token = "=4.0.0"
+spl-token-2022 = "=1.0.0"

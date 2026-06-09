@@ -1,4 +1,3 @@
-use std::sync::OnceLock;
 use std::time::Duration;
 
 /// All configuration loaded from environment variables at startup.
@@ -18,33 +17,8 @@ pub struct Settings {
     pub wallet_private_key: String,
     pub nonce_accounts: Vec<String>,
 
-    // --- Trading ---
-    pub compute_unit_limit: u64,
-    pub compute_unit_price: u64,
-    pub buy_seed_pool_size: usize,
-    /// Jito tip per transaction, in SOL.
-    pub jito_tip_sol: f64,
-    /// How many times `sell_token` retries before giving up.
-    pub max_sell_attempts: usize,
-    /// How many times we poll for transaction confirmation.
-    pub confirm_max_retries: usize,
-    /// Delay between confirmation polls.
-    pub confirm_poll: Duration,
-
     // --- Helius subscription ---
     pub subscription_method: String,
-
-    // --- Price feeds ---
-    /// Jupiter price API base (versioned; e.g. https://api.jup.ag/price/v3).
-    pub jupiter_price_api_url: String,
-    /// CoinGecko simple-price endpoint (query params appended in code).
-    pub coingecko_price_url: String,
-    /// How often the SOL/USD poller refreshes.
-    pub sol_price_poll: Duration,
-
-    // --- Outbound HTTP ---
-    /// Request timeout for the shared third-party HTTP client.
-    pub http_timeout: Duration,
 
     // --- Timing ---
     /// How often to send a WS ping (keepalive)
@@ -60,8 +34,6 @@ pub struct Settings {
     pub port: u16,
     pub http_enabled: bool,
     pub http_workers: usize,
-    /// CORS allow-origin; "*" allows any origin.
-    pub cors_allowed_origin: String,
 }
 
 impl Settings {
@@ -79,21 +51,7 @@ impl Settings {
             helius_sender_url: required("HELIUS_FAST_SENDER_URL")?,
             wallet_private_key: required("WALLET_PRIVATE_KEY")?,
             nonce_accounts: parse_required_list("NONCE_ACCOUNTS")?,
-            compute_unit_limit: env_parse("COMPUTE_UNIT_LIMIT", 200_000)?,
-            compute_unit_price: env_parse("COMPUTE_UNIT_PRICE", 1_000_000)?,
-            buy_seed_pool_size: env_parse("BUY_SEED_POOL_SIZE", 16)?,
-            jito_tip_sol: env_parse("JITO_TIP_SOL", 0.0002)?,
-            max_sell_attempts: env_parse("MAX_SELL_ATTEMPTS", 5)?,
-            confirm_max_retries: env_parse("CONFIRM_MAX_RETRIES", 5)?,
-            confirm_poll: Duration::from_millis(env_parse("CONFIRM_POLL_MS", 1_000)?),
             subscription_method: env_or("SUBSCRIPTION_METHOD", "transactionSubscribe"),
-            jupiter_price_api_url: env_or("JUPITER_PRICE_API_URL", "https://api.jup.ag/price/v3"),
-            coingecko_price_url: env_or(
-                "COINGECKO_PRICE_URL",
-                "https://api.coingecko.com/api/v3/simple/price",
-            ),
-            sol_price_poll: Duration::from_secs(env_parse("SOL_PRICE_POLL_SECONDS", 60)?),
-            http_timeout: Duration::from_secs(env_parse("HTTP_TIMEOUT_SECONDS", 10)?),
             ping_interval: Duration::from_millis(env_parse("PING_INTERVAL", 30_000)?),
             reconnect_interval: Duration::from_millis(env_parse("RECONNECT_INTERVAL", 10_000)?),
             database_url: required("DATABASE_URL")?,
@@ -101,39 +59,8 @@ impl Settings {
             port: env_parse("PORT", 8081)?,
             http_enabled: env_or("HTTP_ENABLED", "true").parse().unwrap_or(true),
             http_workers: env_parse("HTTP_WORKERS", 2)?,
-            cors_allowed_origin: env_or("CORS_ALLOWED_ORIGIN", "*"),
         })
     }
-}
-
-// ---------------------------------------------------------------------------
-// Process-wide accessor
-//
-// Settings is loaded once at startup and never mutated. Most consumers receive
-// it via explicit injection (TraderConfig, function params), but a few leaf
-// helpers (price clients, the shared HTTP client) are reached from deep call
-// stacks where threading would be noise — they read it here instead. Mirrors
-// the OnceLock pattern already used for the shared HTTP client.
-// ---------------------------------------------------------------------------
-
-static GLOBAL: OnceLock<Settings> = OnceLock::new();
-
-/// Install the process-wide settings. Call once at startup, right after `from_env`.
-pub fn init_global(settings: Settings) {
-    let _ = GLOBAL.set(settings);
-}
-
-/// Access the process-wide settings. Panics if `init_global` was not called.
-pub fn get() -> &'static Settings {
-    GLOBAL
-        .get()
-        .expect("Settings::init_global must be called before settings::get")
-}
-
-/// Like `get`, but returns `None` instead of panicking — for early/global
-/// initializers that may run before `init_global`.
-pub fn try_get() -> Option<&'static Settings> {
-    GLOBAL.get()
 }
 
 fn parse_required_list(key: &str) -> anyhow::Result<Vec<String>> {

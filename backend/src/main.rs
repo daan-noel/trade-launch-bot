@@ -19,6 +19,10 @@ use actix_cors::Cors;
 use actix_web::{web, App, HttpServer};
 use crate::trader::{PumpFunTrader, TraderConfig};
 
+/// CORS allow-origin for the HTTP API. "*" allows any origin; tighten to your
+/// frontend origin for production.
+const CORS_ALLOWED_ORIGIN: &str = "*";
+
 fn parse_wallet_keypair(base58_key: &str) -> anyhow::Result<Keypair> {
     let bytes = bs58::decode(base58_key)
         .into_vec()
@@ -42,8 +46,6 @@ async fn main() -> anyhow::Result<()> {
 
     // Config
     let settings = config::Settings::from_env().context("Failed to load configuration")?;
-    // Install the process-wide copy for leaf consumers (price clients, HTTP client).
-    config::settings::init_global(settings.clone());
 
     info!(
         host = %settings.host,
@@ -58,13 +60,6 @@ async fn main() -> anyhow::Result<()> {
         keypair: parse_wallet_keypair(&settings.wallet_private_key)
             .context("Failed to parse trader wallet private key")?,
         nonce_accounts: settings.nonce_accounts.clone(),
-        priority_fee_lamports: settings.compute_unit_price,
-        compute_unit_limit: settings.compute_unit_limit as u32,
-        buy_seed_pool_size: settings.buy_seed_pool_size,
-        jito_tip_sol: settings.jito_tip_sol,
-        max_sell_attempts: settings.max_sell_attempts,
-        confirm_max_retries: settings.confirm_max_retries,
-        confirm_poll: settings.confirm_poll,
     });
 
     let mut trader = PumpFunTrader::new(trader_config);
@@ -168,19 +163,15 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Service: SOL price polling — updates the in-memory SOL/USD cache
-    let price_task = tokio::spawn(services::sol_price::run_poller(
-        sol_price.clone(),
-        settings.sol_price_poll,
-    ));
+    let price_task = tokio::spawn(services::sol_price::run_poller(sol_price.clone()));
 
     let server_task = if settings.http_enabled {
         let bind_addr = format!("{}:{}", settings.host, settings.port);
         info!(addr = %bind_addr, workers = settings.http_workers, "Starting HTTP server");
         let http_state = app_state.clone();
         let http_workers = settings.http_workers;
-        let cors_origin = settings.cors_allowed_origin.clone();
         let http_server = HttpServer::new(move || {
-            let allowed_origin = cors_origin.clone();
+            let allowed_origin = CORS_ALLOWED_ORIGIN;
 
             let cors = if allowed_origin == "*" {
                 Cors::default()
@@ -191,7 +182,7 @@ async fn main() -> anyhow::Result<()> {
                     .max_age(3600)
             } else {
                 Cors::default()
-                    .allowed_origin(&allowed_origin)
+                    .allowed_origin(allowed_origin)
                     .allowed_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"])
                     .allowed_header(actix_web::http::header::CONTENT_TYPE)
                     .allowed_header(actix_web::http::header::ACCEPT)

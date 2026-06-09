@@ -18,8 +18,11 @@
 // ============================================================
 
 use crate::constants::{
-    ASSOCIATED_TOKEN_PROGRAM_ID, EVENT_AUTHORITY, FEE_PROGRAM_ID, LAMPORTS_PER_SOL,
-    PUMP_FUN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID, BUY_SEED_POOL_SIZE, COMPUTE_UNIT_LIMIT,
+    COMPUTE_UNIT_PRICE_MICRO_LAMPORTS, CONFIRM_MAX_RETRIES, CONFIRM_POLL_MS, EVENT_AUTHORITY,
+    FEE_PROGRAM_ID, JITO_TIP_ACCOUNTS, LAMPORTS_PER_SOL, MAX_SELL_ATTEMPTS, MIN_JITO_TIP_SOL,
+    NONCE_MAX_WAIT_ITERS, NONCE_WAIT_SLEEP_MS, PUMP_FUN_PROGRAM_ID,
+    PUMP_PROGRAM_UPGRADE_FEE_RECIPIENT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID,
 };
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose, Engine as _};
@@ -49,32 +52,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const JITO_TIP_ACCOUNTS: &[&str] = &[
-    "9bnz4RShgq1hAnLnZbP8kbgBg1kEmcJBYQq3gQbmnSta",
-    "4TQLFNWK8AovT1gFvda5jfw2oJeRMKEmw7aH6MGBJ3or",
-    "2nyhqdwKcJZR2vcqCyrYsaPVdAnFoJjiksCXJ7hfEYgD",
-    "wyvPkWjVZz1M8fHQnMMCDTQDbkManefNNhweYk5WkcF",
-    "D2L6yPZ2FmmmTKPgzaMKdhu6EWZcTpLy1Vhx8uvZe7NZ",
-    "3KCKozbAaF75qEU33jtzozcJ29yJuaLJTy2jFdzUY8bT",
-    "2q5pghRs6arqVjRvT5gfgWfWcHWmw1ZuCzphgd5KfWGJ",
-    "5VY91ws6B2hMmBFRsXkoAAdsPHBJwRfBht4DXox3xkwn",
-    "4vieeGHPYPG2MmyPRcYjdiDmmhN3ww7hsFNap8pVN3Ey",
-    "D1Mc6j9xQWgR1o1Z7yU5nVVXFQiAYx7FG9AW1aVfwrUM",
-    "4ACfpUFoaSD9bfPdeu6DBt89gB6ENTeHBXCAi87NhDEE",
-];
-
-/// Maximum spin-wait iterations when all nonce slots are in use.
-const NONCE_MAX_WAIT_ITERS: usize = 200;
-
-/// Sleep between nonce spin-wait iterations.
-const NONCE_WAIT_SLEEP_MS: u64 = 20;
-
-const PUMP_PROGRAM_UPGRADE_FEE_RECIPIENT: &str = "5YxQFdt3Tr9zJLvkFccqXVUwhdTWJQc1fFg2YPbxvxeD";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -125,20 +102,6 @@ pub struct TraderConfig {
     pub helius_sender_url: String,
     pub keypair: Keypair,
     pub nonce_accounts: Vec<String>,
-    /// Micro-lamports per compute unit for priority fee.
-    pub priority_fee_lamports: u64,
-    /// Compute-unit limit set on every trade transaction.
-    pub compute_unit_limit: u32,
-    /// How many buy templates to keep pre-built per token-program pool.
-    pub buy_seed_pool_size: usize,
-    /// Jito tip per transaction, in SOL.
-    pub jito_tip_sol: f64,
-    /// How many times `sell_token` retries before giving up.
-    pub max_sell_attempts: usize,
-    /// How many times we poll for transaction confirmation.
-    pub confirm_max_retries: usize,
-    /// Delay between confirmation polls.
-    pub confirm_poll: Duration,
 }
 
 // ---------------------------------------------------------------------------
@@ -195,13 +158,11 @@ impl PumpFunTrader {
     /// Uses raw JSON-RPC via reqwest to avoid extra Solana SDK dependencies.
     pub async fn get_all_token_accounts(
         &self,
-    ) -> anyhow::Result<Vec<crate::trader::WalletHolding>> {
-        use crate::config::constants::{TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
-
+    ) -> anyhow::Result<Vec<crate::types::WalletHolding>> {
         let wallet = self.wallet_pubkey();
         let rpc_url = self.rpc_url().to_string();
         let client = reqwest::Client::new();
-        let mut holdings: Vec<crate::trader::WalletHolding> = Vec::new();
+        let mut holdings: Vec<crate::types::WalletHolding> = Vec::new();
 
         for prog in [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID] {
             let body = serde_json::json!({
@@ -242,7 +203,7 @@ impl PumpFunTrader {
                 let decimals = ta["decimals"].as_u64().unwrap_or(0) as u8;
                 let token_account = account["pubkey"].as_str().unwrap_or("").to_string();
 
-                holdings.push(crate::trader::WalletHolding {
+                holdings.push(crate::types::WalletHolding {
                     mint,
                     amount,
                     ui_amount,
@@ -370,7 +331,7 @@ impl PumpFunTrader {
         &self,
         wallet: &str,
         mint: &str,
-    ) -> anyhow::Result<crate::trader::TokenBalance> {
+    ) -> anyhow::Result<crate::types::TokenBalance> {
         // FIX: don't derive ATA — look up actual on-chain account
         // Check cache first
         let cached = self.user_token_accounts.lock().await.get(mint).copied();
@@ -383,7 +344,7 @@ impl PumpFunTrader {
                     Some(h) => Pubkey::from_str(&h.token_account)?,
                     None => {
                         // Truly not found
-                        return Ok(crate::trader::TokenBalance {
+                        return Ok(crate::types::TokenBalance {
                             mint: mint.to_string(),
                             wallet: wallet.to_string(),
                             amount: 0,
@@ -405,7 +366,7 @@ impl PumpFunTrader {
                     .lock()
                     .await
                     .insert(mint.to_string(), token_account_pk);
-                Ok(crate::trader::TokenBalance {
+                Ok(crate::types::TokenBalance {
                     mint: mint.to_string(),
                     wallet: wallet.to_string(),
                     amount,
@@ -448,16 +409,16 @@ impl PumpFunTrader {
 
         // 3. Compute budget instructions — built once, cloned per tx
         self.compute_budget_ixs = vec![
-            ComputeBudgetInstruction::set_compute_unit_limit(self.config.compute_unit_limit),
-            ComputeBudgetInstruction::set_compute_unit_price(self.config.priority_fee_lamports),
+            ComputeBudgetInstruction::set_compute_unit_limit(COMPUTE_UNIT_LIMIT),
+            ComputeBudgetInstruction::set_compute_unit_price(COMPUTE_UNIT_PRICE_MICRO_LAMPORTS),
         ];
         info!(
-            "⚡ Priority fee: {} lamports/cu",
-            self.config.priority_fee_lamports
+            "⚡ Priority fee: {} µlamports/cu",
+            COMPUTE_UNIT_PRICE_MICRO_LAMPORTS
         );
 
         // 4. Jito tip instruction — built once, reused every tx
-        let jito_lamports = (self.config.jito_tip_sol * LAMPORTS_PER_SOL as f64) as u64;
+        let jito_lamports = (MIN_JITO_TIP_SOL * LAMPORTS_PER_SOL as f64) as u64;
         let tip_account = JITO_TIP_ACCOUNTS
             .choose(&mut rand::thread_rng())
             .context("No Jito tip accounts")?;
@@ -494,7 +455,7 @@ impl PumpFunTrader {
         // 7. Pre-build buy seed pools for both token programs
         info!(
             "🌱 Pre-building buy seed pools (target={})",
-            self.config.buy_seed_pool_size
+            BUY_SEED_POOL_SIZE
         );
         self.fill_buy_pool(TOKEN_PROGRAM_ID).await?;
         self.fill_buy_pool(TOKEN_2022_PROGRAM_ID).await?;
@@ -647,7 +608,7 @@ impl PumpFunTrader {
                 t0.elapsed().as_millis()
             );
 
-            self.confirm_transaction(&sig, self.config.confirm_max_retries)
+            self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES)
                 .await?;
             info!(
                 "✅ Buy confirmed — sig: {} | {}ms",
@@ -678,7 +639,7 @@ impl PumpFunTrader {
     ) -> Result<bool> {
         let mut last_err: Option<anyhow::Error> = None;
 
-        for attempt in 0..self.config.max_sell_attempts {
+        for attempt in 0..MAX_SELL_ATTEMPTS {
             // Ensure PDAs are cached
             if !self.token_pdas.lock().await.contains_key(token_mint) {
                 if let Err(e) = self.get_creator_from_mint_pda(token_mint).await {
@@ -754,7 +715,7 @@ impl PumpFunTrader {
             info!(
                 "🔁 Sell attempt {}/{} — token: {} nonce: {}",
                 attempt + 1,
-                self.config.max_sell_attempts,
+                MAX_SELL_ATTEMPTS,
                 token_mint,
                 nonce_pubkey
             );
@@ -785,7 +746,7 @@ impl PumpFunTrader {
                 }
             }
 
-            if attempt < self.config.max_sell_attempts - 1 {
+            if attempt < MAX_SELL_ATTEMPTS - 1 {
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
         }
@@ -793,7 +754,7 @@ impl PumpFunTrader {
         Err(last_err.unwrap_or_else(|| {
             anyhow::anyhow!(
                 "Sell failed after {} attempts",
-                self.config.max_sell_attempts
+                MAX_SELL_ATTEMPTS
             )
         }))
     }
@@ -908,7 +869,7 @@ impl PumpFunTrader {
             t0.elapsed().as_millis()
         );
 
-        self.confirm_transaction(&sig, self.config.confirm_max_retries)
+        self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES)
             .await?;
 
         info!(
@@ -983,7 +944,7 @@ impl PumpFunTrader {
         let sig = Signature::from_str(signature)?;
 
         for i in 0..max_retries {
-            tokio::time::sleep(self.config.confirm_poll).await;
+            tokio::time::sleep(Duration::from_millis(CONFIRM_POLL_MS)).await;
 
             match self.rpc.get_signature_status(&sig).await? {
                 Some(Ok(())) => return Ok(()),
@@ -1007,7 +968,7 @@ impl PumpFunTrader {
         if self.config.nonce_accounts.is_empty() {
             anyhow::bail!("At least one nonce account is required");
         }
-        if self.config.buy_seed_pool_size == 0 {
+        if BUY_SEED_POOL_SIZE == 0 {
             anyhow::bail!("buy_seed_pool_size must be >= 1");
         }
 
@@ -1175,7 +1136,7 @@ impl PumpFunTrader {
 
     async fn fill_buy_pool(&self, token_program_id: &str) -> Result<()> {
         let pool = self.pool_for(token_program_id);
-        let target = self.config.buy_seed_pool_size;
+        let target = BUY_SEED_POOL_SIZE;
         loop {
             if pool.lock().await.len() >= target {
                 break;
@@ -1215,7 +1176,7 @@ impl PumpFunTrader {
         };
 
         let pool = Arc::clone(self.pool_for(prog_id));
-        let target = self.config.buy_seed_pool_size;
+        let target = BUY_SEED_POOL_SIZE;
         let kp = self.config.keypair.insecure_clone();
         let (space, rent) = if prog_id == TOKEN_PROGRAM_ID {
             (self.token_account_space, self.token_account_rent)

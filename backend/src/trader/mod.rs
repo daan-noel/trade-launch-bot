@@ -1,5 +1,4 @@
-pub mod pump_trader_optimized;
-pub mod types;
+//! The trader lives in the standalone `pump-trader` crate. Re-export it here so
+//! the rest of the backend keeps using `crate::trader::{...}` unchanged.
 
-pub use pump_trader_optimized::{PumpFunTrader, TraderConfig};
-pub use types::{TokenBalance, WalletHolding};
+pub use pump_trader::{PumpFunTrader, TraderConfig, WalletHolding};
