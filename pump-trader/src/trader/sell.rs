@@ -234,7 +234,11 @@ impl PumpFunTrader {
             AccountMeta::new_readonly(self.fee_program, false),
         ];
 
-        if pdas.cashback_enabled {
+        // Include the cashback account if the caller knows the token is
+        // cashback-enabled, or if the chain-read PDA flag says so. The caller
+        // flag matters because `buy_token` caches `cashback_enabled: false`,
+        // so a buy→sell flow would otherwise never include this account.
+        if is_cashback || pdas.cashback_enabled {
             accounts.push(AccountMeta::new(global.user_volume_accumulator, false));
         }
 

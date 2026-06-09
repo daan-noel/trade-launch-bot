@@ -36,8 +36,7 @@ mod sell;
 mod tx;
 
 use crate::constants::{
-    ASSOCIATED_TOKEN_PROGRAM_ID, EVENT_AUTHORITY, FEE_PROGRAM_ID, PUMP_FUN_PROGRAM_ID,
-    PUMP_PROGRAM_UPGRADE_FEE_RECIPIENT,
+    EVENT_AUTHORITY, FEE_PROGRAM_ID, PUMP_FUN_PROGRAM_ID, PUMP_PROGRAM_UPGRADE_FEE_RECIPIENT,
 };
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::system_program;
@@ -144,7 +143,6 @@ pub struct PumpFunTrader {
     // Static program IDs (parsed once)
     pump_program: Pubkey,
     system_program: Pubkey,
-    assoc_token_program: Pubkey,
     event_authority: Pubkey,
     fee_program: Pubkey,
     upgrade_fee_recipient: Pubkey,
@@ -188,7 +186,6 @@ impl PumpFunTrader {
             token_2022_account_rent: 2_000_000,
             pump_program: Pubkey::from_str(PUMP_FUN_PROGRAM_ID).unwrap(),
             system_program: system_program::id(),
-            assoc_token_program: Pubkey::from_str(ASSOCIATED_TOKEN_PROGRAM_ID).unwrap(),
             event_authority: Pubkey::from_str(EVENT_AUTHORITY).unwrap(),
             fee_program: Pubkey::from_str(FEE_PROGRAM_ID).unwrap(),
             upgrade_fee_recipient: Pubkey::from_str(PUMP_PROGRAM_UPGRADE_FEE_RECIPIENT).unwrap(),

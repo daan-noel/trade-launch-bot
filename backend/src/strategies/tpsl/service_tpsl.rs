@@ -340,6 +340,12 @@ impl TpslStrategyService {
                         let position_repo = self.position_repo.clone();
                         let trade_repo = self.trade_repo.clone();
                         let runtime = self.runtime.clone();
+                        // Cashback-enabled tokens need the extra sell account; read the
+                        // flag from the cache (the buy path can't, so it caches `false`).
+                        let is_cashback = cache
+                            .get(&mint)
+                            .map(|e| e.value().token.is_cashback_enabled)
+                            .unwrap_or(false);
                         let mut retries = 0;
                         let max_retries = 10;
                         let mut found = false;
@@ -350,6 +356,7 @@ impl TpslStrategyService {
                                 position_repo.clone(),
                                 trade_repo.clone(),
                                 runtime.clone(),
+                                is_cashback,
                             )
                             .await;
                             if let Ok(pos) = position_repo.find_by_id(position.id).await {
@@ -464,6 +471,7 @@ async fn execute_sell_for_position(
     position_repo: PositionRepo,
     trade_repo: TradeRepo,
     runtime: Arc<TpslRuntimeCache>,
+    is_cashback: bool,
 ) {
     let mint = position.mint.clone();
     let wallet = trader.wallet_pubkey();
@@ -475,7 +483,8 @@ async fn execute_sell_for_position(
     );
 
     let completed =
-        sell_with_retries(trader.clone(), mint.clone(), amount, trade_repo.clone()).await;
+        sell_with_retries(trader.clone(), mint.clone(), amount, trade_repo.clone(), is_cashback)
+            .await;
     if !completed {
         warn!(
             position_id = %position.id, mint = %mint,
@@ -542,6 +551,7 @@ async fn sell_with_retries(
     mint: String,
     mut amount: u64,
     trade_repo: TradeRepo,
+    is_cashback: bool,
 ) -> bool {
     let mut attempt = 0usize;
     let max_attempts = TpslStrategyService::SELL_MAX_ATTEMPTS;
@@ -560,7 +570,7 @@ async fn sell_with_retries(
             Ok(accounts) => accounts.iter().find(|a| a.mint == mint).map(|a| a.token_account.clone()),
             Err(_) => None,
         };
-        match trader.sell_token(&mint, amount, None, false, token_account_override.as_deref()).await {
+        match trader.sell_token(&mint, amount, None, is_cashback, token_account_override.as_deref()).await {
             Ok(true) => {
                 info!(mint = %mint, attempt, amount, "sell submitted");
                 let mut poll_attempts = 0usize;

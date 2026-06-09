@@ -59,9 +59,16 @@ pub async fn manual_sell(
 ) -> impl Responder {
     let token_account_override = body.token_account.as_deref();
     let sell_amount = (body.token_amount * 90 / 100) as u64; // Sell 99% to avoid dust issues
+    // Include the cashback account when the token is cashback-enabled (per the
+    // in-memory cache); falls back to the trader's chain read for unknown mints.
+    let is_cashback = app_state
+        .token_cache
+        .get(&body.mint)
+        .map(|e| e.value().token.is_cashback_enabled)
+        .unwrap_or(false);
     match app_state
         .trader
-        .sell_token(&body.mint, sell_amount, None, false, token_account_override)
+        .sell_token(&body.mint, sell_amount, None, is_cashback, token_account_override)
         .await
     {
         Ok(success) => HttpResponse::Ok().json(serde_json::json!({ "success": success })),
