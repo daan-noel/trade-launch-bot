@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 
 use crate::config::constants::{
-    INITIAL_VIRTUAL_TOKEN_RESERVES, LIFETIME_GAP_SECONDS, TOKEN_TOTAL_SUPPLY,
+    total_supply_for, INITIAL_VIRTUAL_TOKEN_RESERVES, LIFETIME_GAP_SECONDS,
 };
 use crate::models::{token::Token, trade::Trade};
 
@@ -111,8 +111,10 @@ impl TokenState {
     }
 
     fn update_market_cap(&mut self, price: f64) {
-        // FDV in SOL: total supply × curve spot price (GMGN-style).
-        self.market_cap = Some(TOKEN_TOTAL_SUPPLY * price);
+        // FDV in SOL: total supply × curve spot price (GMGN-style). Mayhem-mode
+        // tokens are minted with 2× supply, so scale accordingly.
+        let supply = total_supply_for(self.token.is_mayhem_mode);
+        self.market_cap = Some(supply * price);
     }
 
     /// Count unique wallets across the full trade history.

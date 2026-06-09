@@ -144,6 +144,17 @@ pub const INITIAL_VIRTUAL_SOL_RESERVES: f64 = 30000000000.0;
 pub const INITIAL_REAL_TOKEN_RESERVES: f64 = 793100000000000.0;
 pub const TOKEN_TOTAL_SUPPLY: f64 = 1000000000000000.0;
 
+/// Total token supply (raw units) for a token, accounting for Mayhem-mode
+/// tokens which are minted via `create_v2` with 2× the standard supply (2B vs
+/// 1B). Use this anywhere FDV / market cap is computed as `supply × price`.
+pub fn total_supply_for(is_mayhem_mode: bool) -> f64 {
+    if is_mayhem_mode {
+        TOKEN_TOTAL_SUPPLY * 2.0
+    } else {
+        TOKEN_TOTAL_SUPPLY
+    }
+}
+
 /// How long a token can go without a price change before being considered rugged.
 pub const RUGGED_STALE_SECONDS: i64 = 3600; // 1 hour
 

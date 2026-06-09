@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use sqlx::{types::Json, PgPool};
 use uuid::Uuid;
 
-use crate::config::constants::TOKEN_TOTAL_SUPPLY;
+use crate::config::constants::total_supply_for;
 use crate::models::trade::{Trade, TradeType};
 
 pub struct TradeRepo {
@@ -262,6 +262,7 @@ impl TradeRepo {
             last_trade_at: Option<DateTime<Utc>>,
             last_price: Option<f64>,
             current_virtual_token_reserves: Option<f64>,
+            is_mayhem_mode: bool,
         }
         let rows = sqlx::query_as::<_, AggRow>(
             r#"
@@ -288,9 +289,11 @@ impl TradeRepo {
                 a.volume_sol_total,
                 a.last_trade_at,
                 l.last_price,
-                l.current_virtual_token_reserves
+                l.current_virtual_token_reserves,
+                COALESCE(t.is_mayhem_mode, FALSE) AS is_mayhem_mode
             FROM agg a
             LEFT JOIN last_trade l ON l.mint_address = a.mint_address
+            LEFT JOIN tokens t ON t.mint_address = a.mint_address
             "#,
         )
         .fetch_all(&self.pool)
@@ -301,7 +304,7 @@ impl TradeRepo {
             .map(|r| {
                 let market_cap = r
                     .last_price
-                    .map(|price| TOKEN_TOTAL_SUPPLY * price);
+                    .map(|price| total_supply_for(r.is_mayhem_mode) * price);
 
                 (
                     r.mint_address,
