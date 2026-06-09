@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { fetchSettings, updateSettings, type AppSettings } from 'services/api';
+import type { AppSettings } from 'services/api';
+import { useGetSettingsQuery, useUpdateSettingsMutation } from 'store/apiSlice';
 import { Switch } from 'components/ui/Switch';
 import { Input } from 'components/ui/Input';
 
@@ -26,30 +27,12 @@ function ToggleRow({ title, description, checked, disabled, onChange }: ToggleRo
 }
 
 export function SettingsPage() {
-  const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const { data: settings, isLoading: loading } = useGetSettingsQuery();
+  const [updateSettings, { isLoading: saving }] = useUpdateSettingsMutation();
   const [error, setError] = useState<string | null>(null);
   // Slippage edited as a percent string, committed on blur. Synced from the
   // persisted bps value whenever it changes.
   const [slipText, setSlipText] = useState('');
-
-  useEffect(() => {
-    let cancelled = false;
-    fetchSettings()
-      .then((s) => {
-        if (!cancelled) setSettings(s);
-      })
-      .catch((e) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load settings');
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   useEffect(() => {
     setSlipText(
@@ -73,21 +56,14 @@ export function SettingsPage() {
     }
   }
 
+  // The shared cache is patched optimistically inside the mutation, so toggles
+  // flip instantly and roll back centrally if the PUT fails.
   async function update(patch: Partial<AppSettings>) {
-    if (!settings) return;
-    const previous = settings;
-    // Optimistic: reflect the change immediately, roll back if the PUT fails.
-    setSettings({ ...settings, ...patch });
-    setSaving(true);
     setError(null);
     try {
-      const next = await updateSettings(patch);
-      setSettings(next);
+      await updateSettings(patch).unwrap();
     } catch (e) {
-      setSettings(previous);
       setError(e instanceof Error ? e.message : 'Failed to save settings');
-    } finally {
-      setSaving(false);
     }
   }
 

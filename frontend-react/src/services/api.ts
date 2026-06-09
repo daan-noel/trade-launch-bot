@@ -14,24 +14,10 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return resp.json() as Promise<T>;
 }
 
-export async function fetchSolPrice(): Promise<number | null> {
-  const data = await request<{ usd_rate: number | null }>(`${API_BASE}/api/system/price`);
-  return data.usd_rate;
-}
-
-export async function fetchLiveMode(): Promise<boolean> {
-  const data = await request<{ live: boolean }>(`${API_BASE}/api/system/live`);
-  return data.live;
-}
-
-export async function setLiveMode(live: boolean): Promise<boolean> {
-  const data = await request<{ live: boolean }>(`${API_BASE}/api/system/live`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ live }),
-  });
-  return data.live;
-}
+// System reads (SOL price, live mode) and global app settings are served via
+// RTK Query in `store/apiSlice.ts` (single deduped cache per endpoint) rather
+// than these one-off fetch wrappers. `AppSettings` stays here as the shared
+// shape the query/mutation are typed against.
 
 /**
  * Global, server-wide app settings (persisted in `app_settings`). `timezone` and
@@ -45,19 +31,6 @@ export interface AppSettings {
   price_unit: 'SOL' | 'USD' | null;
   /** Default trade slippage in basis points (100 = 1%); null = use server default. */
   slippage_bps: number | null;
-}
-
-export async function fetchSettings(): Promise<AppSettings> {
-  return request<AppSettings>(`${API_BASE}/api/system/settings`);
-}
-
-/** Update any subset of settings; omitted fields keep their current value. */
-export async function updateSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
-  return request<AppSettings>(`${API_BASE}/api/system/settings`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(patch),
-  });
 }
 
 export async function fetchTokens(

@@ -14,7 +14,8 @@ import { Checkbox } from 'components/ui/Checkbox';
 import { Textarea } from 'components/ui/Input';
 import { usePriceUnit } from 'context/PriceUnitContext';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
-import { fetchProfiles, fetchSettings, syncToken } from 'services/api';
+import { fetchProfiles, syncToken } from 'services/api';
+import { useGetSettingsQuery } from 'store/apiSlice';
 import type { SyncProgressEvent, TokenDetailRecord, WalletProfile } from 'types';
 import type { AppDispatch, RootState } from '../../store';
 import {
@@ -282,14 +283,14 @@ export function SyncTokenPage() {
   }, []);
 
   // Default the post-migration checkbox to the global tracking policy, unless
-  // the user has already chosen. Overridable per-sync.
+  // the user has already chosen. Overridable per-sync. Settings come from the
+  // shared RTK Query cache (deduped with the rest of the app).
+  const { data: settings } = useGetSettingsQuery();
   useEffect(() => {
-    fetchSettings()
-      .then((s) => {
-        if (!postMigrateTouchedRef.current) setIncludePostMigrate(s.track_post_migration);
-      })
-      .catch(() => { });
-  }, []);
+    if (settings && !postMigrateTouchedRef.current) {
+      setIncludePostMigrate(settings.track_post_migration);
+    }
+  }, [settings]);
 
   const profileWallets = useMemo(() => buildProfileWallets(profiles), [profiles]);
   const mints = useMemo(() => parseMints(mint), [mint]);

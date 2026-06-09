@@ -5,10 +5,11 @@ import {
   useEffect,
   useMemo,
   useReducer,
+  useRef,
   type ReactNode,
 } from 'react';
 import type { PriceUnit, PriceUnitState } from 'types';
-import { fetchSettings, updateSettings } from 'services/api';
+import { useGetSettingsQuery, useUpdateSettingsMutation } from 'store/apiSlice';
 
 const LS_PRICE_UNIT_KEY = 'price_unit';
 
@@ -52,32 +53,32 @@ const PriceUnitContext = createContext<PriceUnitContextValue | null>(null);
 
 export function PriceUnitProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, undefined, loadPriceUnit);
+  const { data: settings } = useGetSettingsQuery();
+  const [updateSettings] = useUpdateSettingsMutation();
+  const hydratedRef = useRef(false);
 
-  // Hydrate the unit from server-side settings (localStorage is the instant
-  // cache). If the server has no stored preference yet, upload the local one so
-  // the existing per-browser choice isn't lost on first load. `usdRate` is a
-  // fetched value, not a setting, so it stays local.
+  // Hydrate the unit once server-side settings arrive (localStorage is the
+  // instant cache). If the server has no stored preference yet, upload the
+  // local one so the existing per-browser choice isn't lost on first load.
+  // `usdRate` is a fetched value, not a setting, so it stays local. The
+  // settings fetch itself is owned (and deduped) by the shared RTK Query cache.
   useEffect(() => {
-    let cancelled = false;
-    fetchSettings()
-      .then((s) => {
-        if (cancelled) return;
-        if (s.price_unit === 'SOL' || s.price_unit === 'USD') {
-          dispatch({ type: 'SET_UNIT', unit: s.price_unit });
-        } else {
-          updateSettings({ price_unit: loadPriceUnit().unit }).catch(() => {});
-        }
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    if (!settings || hydratedRef.current) return;
+    hydratedRef.current = true;
+    if (settings.price_unit === 'SOL' || settings.price_unit === 'USD') {
+      dispatch({ type: 'SET_UNIT', unit: settings.price_unit });
+    } else {
+      updateSettings({ price_unit: loadPriceUnit().unit });
+    }
+  }, [settings, updateSettings]);
 
-  const setUnit = useCallback((unit: PriceUnit) => {
-    dispatch({ type: 'SET_UNIT', unit });
-    updateSettings({ price_unit: unit }).catch(() => {});
-  }, []);
+  const setUnit = useCallback(
+    (unit: PriceUnit) => {
+      dispatch({ type: 'SET_UNIT', unit });
+      updateSettings({ price_unit: unit });
+    },
+    [updateSettings],
+  );
 
   const setUsdRate = useCallback((rate: number | null) => {
     dispatch({ type: 'SET_USD_RATE', rate });

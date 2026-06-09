@@ -1,16 +1,19 @@
 import { usePriceUnit } from 'context/PriceUnitContext';
-import { fetchSolPrice } from 'services/api';
+import { useLazyGetSolPriceQuery } from 'store/apiSlice';
 import { cn } from 'lib/cn';
 
 export function PriceUnitToggle() {
   const { unit, usdRate, setUnit, setUsdRate } = usePriceUnit();
+  const [fetchSolPrice] = useLazyGetSolPriceQuery();
 
   const toggleUnit = async () => {
     const next = unit === 'SOL' ? 'USD' : 'SOL';
     setUnit(next);
     if (next === 'USD') {
       try {
-        const rate = await fetchSolPrice();
+        // `preferCacheValue` reuses the header's already-fetched rate instead of
+        // hitting the network again on every SOL→USD toggle.
+        const rate = await fetchSolPrice(undefined, true).unwrap();
         setUsdRate(rate);
       } catch {
         /* ignore */

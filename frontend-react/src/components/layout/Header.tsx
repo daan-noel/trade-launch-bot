@@ -1,10 +1,14 @@
 import { Link, NavLink, useLocation } from 'react-router-dom';
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { StatusButton } from 'components/ui/StatusButton';
 import { NavDropdown } from 'components/ui/NavDropdown';
 import { PriceUnitToggle } from 'components/ui/PriceUnitToggle';
 import { TimezoneSelect } from 'components/ui/TimezoneSelect';
-import { fetchLiveMode, fetchSolPrice, setLiveMode } from 'services/api';
+import {
+  useGetLiveModeQuery,
+  useGetSolPriceQuery,
+  useSetLiveModeMutation,
+} from 'store/apiSlice';
 import { usePriceUnit } from 'context/PriceUnitContext';
 import { cn } from 'lib/cn';
 
@@ -34,18 +38,20 @@ export function Header() {
   const analysisActive = location.pathname.startsWith('/analysis');
   const strategiesActive = location.pathname.startsWith('/strategies');
   const profilesActive = location.pathname.startsWith('/profiles');
-  const [liveMode, setLiveModeState] = useState(false);
+  const { data: liveMode = false } = useGetLiveModeQuery();
+  const { data: usdRate } = useGetSolPriceQuery();
+  const [setLiveMode] = useSetLiveModeMutation();
   const { setUsdRate } = usePriceUnit();
 
+  // Mirror the fetched SOL/USD rate into the price-unit context so USD display
+  // works app-wide. The fetch itself is owned (and deduped) by the query above.
   useEffect(() => {
-    fetchLiveMode().then(setLiveModeState).catch(() => { });
-    fetchSolPrice().then(setUsdRate).catch(() => { });
-  }, [setUsdRate]);
+    if (usdRate !== undefined) setUsdRate(usdRate);
+  }, [usdRate, setUsdRate]);
 
   const toggleLive = async () => {
     try {
-      const next = await setLiveMode(!liveMode);
-      setLiveModeState(next);
+      await setLiveMode(!liveMode).unwrap();
     } catch {
       /* ignore */
     }

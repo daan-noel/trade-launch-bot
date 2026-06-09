@@ -14,9 +14,22 @@ const initialState: WalletState = {
   error: null,
 };
 
-export const loadWalletHoldings = createAsyncThunk('wallet/loadHoldings', async () => {
-  return fetchWalletHoldings();
-});
+export const loadWalletHoldings = createAsyncThunk(
+  'wallet/loadHoldings',
+  async () => {
+    return fetchWalletHoldings();
+  },
+  {
+    // Skip if a load is already in flight. Without this, React 18 StrictMode's
+    // double-mounted effect fires two real Solana-RPC reads on every page open.
+    // The retry-loop in MyWalletPage still works: each attempt awaits the prior
+    // dispatch to settle (loading back to false) before the next one runs.
+    condition: (_arg, { getState }) => {
+      const { wallet } = getState() as { wallet: WalletState };
+      return !wallet.loading;
+    },
+  },
+);
 
 const walletSlice = createSlice({
   name: 'wallet',

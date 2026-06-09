@@ -2,6 +2,7 @@ import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
 import type { FetchBaseQueryError } from '@reduxjs/toolkit/query';
 import type { SerializedError } from '@reduxjs/toolkit';
 import { API_BASE } from 'services/config';
+import type { AppSettings } from 'services/api';
 import type { TokenDetailRecord, TokenRecord, TradeRecord } from 'types';
 
 export interface TokensArgs {
@@ -29,6 +30,7 @@ export const apiSlice = createApi({
   baseQuery: fetchBaseQuery({ baseUrl: API_BASE }),
   keepUnusedDataFor: 300,
   refetchOnMountOrArgChange: false,
+  tagTypes: ['Settings', 'LiveMode'],
   endpoints: (builder) => ({
     getTokens: builder.query<TokensResponse, TokensArgs>({
       query: ({ search, limit, offset }) => {
@@ -46,6 +48,62 @@ export const apiSlice = createApi({
     getTokenTrades: builder.query<TradeRecord[], string>({
       query: (mint) => `/api/tokens/${encodeURIComponent(mint)}/trades`,
     }),
+
+    // System reads shared app-wide (header + price toggle). Folding them into
+    // RTK Query collapses the StrictMode double-fire and the multiple
+    // independent callers into a single deduped request per cache key.
+    getSolPrice: builder.query<number | null, void>({
+      query: () => '/api/system/price',
+      transformResponse: (r: { usd_rate: number | null }) => r.usd_rate,
+    }),
+    getLiveMode: builder.query<boolean, void>({
+      query: () => '/api/system/live',
+      transformResponse: (r: { live: boolean }) => r.live,
+      providesTags: ['LiveMode'],
+    }),
+    setLiveMode: builder.mutation<boolean, boolean>({
+      query: (live) => ({
+        url: '/api/system/live',
+        method: 'PUT',
+        body: { live },
+      }),
+      transformResponse: (r: { live: boolean }) => r.live,
+      invalidatesTags: ['LiveMode'],
+    }),
+
+    // Global app settings — one shared object read by both root contexts
+    // (timezone / price-unit), the Settings page, and the Sync page. A single
+    // cache entry replaces what used to be 4+ independent fetches on startup.
+    getSettings: builder.query<AppSettings, void>({
+      query: () => '/api/system/settings',
+      providesTags: ['Settings'],
+    }),
+    updateSettings: builder.mutation<AppSettings, Partial<AppSettings>>({
+      query: (patch) => ({
+        url: '/api/system/settings',
+        method: 'PUT',
+        body: patch,
+      }),
+      // Optimistically patch the shared cache so every consumer (toggles,
+      // contexts) reflects the change instantly; roll back if the PUT fails.
+      async onQueryStarted(patch, { dispatch, queryFulfilled }) {
+        const undo = dispatch(
+          apiSlice.util.updateQueryData('getSettings', undefined, (draft) => {
+            Object.assign(draft, patch);
+          }),
+        );
+        try {
+          const { data } = await queryFulfilled;
+          dispatch(
+            apiSlice.util.updateQueryData('getSettings', undefined, (draft) => {
+              Object.assign(draft, data);
+            }),
+          );
+        } catch {
+          undo.undo();
+        }
+      },
+    }),
   }),
 });
 
@@ -53,6 +111,12 @@ export const {
   useGetTokensQuery,
   useGetTokenDetailQuery,
   useGetTokenTradesQuery,
+  useGetSolPriceQuery,
+  useLazyGetSolPriceQuery,
+  useGetLiveModeQuery,
+  useSetLiveModeMutation,
+  useGetSettingsQuery,
+  useUpdateSettingsMutation,
 } = apiSlice;
 
 /**
