@@ -1,19 +1,33 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sqlx::PgPool;
 
-/// Global, server-wide tracking policy backing the `app_settings` singleton row.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct TrackingSettings {
+/// Global, server-wide settings — the typed view of the `app_settings` singleton
+/// row's JSONB document. This struct is the source of truth for the document
+/// shape: add a field (with a default) to add a setting; no migration needed.
+///
+/// `#[serde(default)]` makes every missing JSON key fall back to [`Default`], so
+/// rows written by an older binary still deserialize cleanly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppSettings {
+    /// Track Mayhem-mode tokens in the ingest pipeline.
     pub track_mayhem: bool,
+    /// Record AMM trade histories for migrated tokens.
     pub track_post_migration: bool,
+    /// Header timezone preference (IANA name). `None` = never set by a client.
+    pub timezone: Option<String>,
+    /// Header price-unit preference ("SOL" | "USD"). `None` = never set.
+    pub price_unit: Option<String>,
 }
 
-impl Default for TrackingSettings {
+impl Default for AppSettings {
     fn default() -> Self {
-        // Mirrors the migration's column defaults: track everything.
         Self {
             track_mayhem: true,
             track_post_migration: true,
+            timezone: None,
+            price_unit: None,
         }
     }
 }
@@ -27,38 +41,33 @@ impl SettingsRepo {
         Self { pool }
     }
 
-    /// Read the tracking policy. Falls back to [`TrackingSettings::default`] if the
-    /// singleton row is somehow absent (the migration seeds it, so this is just a
-    /// safety net).
-    pub async fn get(&self) -> anyhow::Result<TrackingSettings> {
-        let row = sqlx::query_as::<_, (bool, bool)>(
-            "SELECT track_mayhem, track_post_migration FROM app_settings WHERE id = TRUE",
-        )
-        .fetch_optional(&self.pool)
-        .await?;
+    /// Read the settings document. Unknown/missing keys are filled from
+    /// [`AppSettings::default`]; an absent row also yields defaults.
+    pub async fn get(&self) -> anyhow::Result<AppSettings> {
+        let row = sqlx::query_as::<_, (Value,)>("SELECT data FROM app_settings WHERE id = 1")
+            .fetch_optional(&self.pool)
+            .await?;
 
-        Ok(row
-            .map(|(track_mayhem, track_post_migration)| TrackingSettings {
-                track_mayhem,
-                track_post_migration,
-            })
-            .unwrap_or_default())
+        let settings = match row {
+            Some((data,)) => serde_json::from_value(data).unwrap_or_default(),
+            None => AppSettings::default(),
+        };
+        Ok(settings)
     }
 
-    /// Persist the tracking policy, upserting the singleton row.
-    pub async fn set(&self, settings: TrackingSettings) -> anyhow::Result<()> {
+    /// Persist the full settings document, upserting the singleton row.
+    pub async fn set(&self, settings: &AppSettings) -> anyhow::Result<()> {
+        let data = serde_json::to_value(settings)?;
         sqlx::query(
             r#"
-            INSERT INTO app_settings (id, track_mayhem, track_post_migration, updated_at)
-            VALUES (TRUE, $1, $2, now())
+            INSERT INTO app_settings (id, data, updated_at)
+            VALUES (1, $1, now())
             ON CONFLICT (id) DO UPDATE
-                SET track_mayhem = EXCLUDED.track_mayhem,
-                    track_post_migration = EXCLUDED.track_post_migration,
+                SET data = EXCLUDED.data,
                     updated_at = EXCLUDED.updated_at
             "#,
         )
-        .bind(settings.track_mayhem)
-        .bind(settings.track_post_migration)
+        .bind(data)
         .execute(&self.pool)
         .await?;
 

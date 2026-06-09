@@ -23,6 +23,7 @@ use crate::{
     },
     services::token_sync::derive_pump_swap_pool,
     state::token_cache::{TokenCache, TokenState},
+    storage::repositories::settings_repo::AppSettings,
 };
 
 const DB_QUEUE_CAP: usize = 4096;
@@ -43,12 +44,11 @@ pub struct IngestPipeline {
     /// Pinged whenever a token migrates and a new pool is added to `pool_index`,
     /// so the WS task subscribes to it without dropping the connection.
     pools_changed: Arc<Notify>,
-    /// Tracking policy (persisted in `app_settings`, mutated via the settings
-    /// API). When `track_mayhem` is false, Mayhem-mode tokens are not ingested;
-    /// when `track_post_migration` is false, migrated tokens' AMM trades are not
-    /// recorded. Flipping either off also applies to already-tracked state.
-    track_mayhem_rx: watch::Receiver<bool>,
-    track_post_migration_rx: watch::Receiver<bool>,
+    /// Live settings (persisted in `app_settings`, mutated via the settings API).
+    /// `track_mayhem` gates Mayhem-mode ingestion; `track_post_migration` gates
+    /// recording migrated tokens' AMM trades. Flipping either off also applies to
+    /// already-tracked state (see [`Self::run`]).
+    settings_rx: watch::Receiver<AppSettings>,
 }
 
 impl IngestPipeline {
@@ -58,9 +58,13 @@ impl IngestPipeline {
         db_tx: mpsc::Sender<DbWriteOp>,
         strategy_tx: mpsc::Sender<StrategyPing>,
         sse_tx: broadcast::Sender<SseEvent>,
-        track_mayhem_rx: watch::Receiver<bool>,
-        track_post_migration_rx: watch::Receiver<bool>,
+        settings_rx: watch::Receiver<AppSettings>,
     ) -> Self {
+        let (track_mayhem, track_post_migration) = {
+            let s = settings_rx.borrow();
+            (s.track_mayhem, s.track_post_migration)
+        };
+
         // Seed the pool→mint index for tokens already migrated AND recently
         // active before this process started, so live AMM swaps for them are
         // captured immediately — without subscribing to every pool that ever
@@ -68,7 +72,7 @@ impl IngestPipeline {
         // once they trade again; live migrations register via `register_pool`.
         // Skipped entirely when post-migration tracking is disabled.
         let pool_index: Arc<DashMap<String, String>> = Arc::new(DashMap::new());
-        if *track_post_migration_rx.borrow() {
+        if track_post_migration {
             let now = Utc::now();
             for entry in token_cache.iter() {
                 if entry.is_migrated && pool_is_live(entry.value(), now) {
@@ -82,7 +86,7 @@ impl IngestPipeline {
         // Honor the Mayhem policy against the seeded cache: if tracking is off at
         // startup, drop any Mayhem tokens the seed loaded so they aren't tracked
         // live (their historical rows stay in the DB).
-        if !*track_mayhem_rx.borrow() {
+        if !track_mayhem {
             let mayhem: Vec<String> = token_cache
                 .iter()
                 .filter(|e| e.token.is_mayhem_mode)
@@ -111,8 +115,7 @@ impl IngestPipeline {
             pump_program_id,
             pool_index,
             pools_changed: Arc::new(Notify::new()),
-            track_mayhem_rx,
-            track_post_migration_rx,
+            settings_rx,
         }
     }
 
@@ -140,10 +143,15 @@ impl IngestPipeline {
     pub async fn run(self, mut raw_rx: mpsc::Receiver<String>) {
         info!("IngestPipeline: starting");
 
-        // Independent receivers for change notifications, so the hot path's
+        // Independent receiver for change notifications, so the hot path's
         // `borrow()` reads (in the event handlers) never contend with `changed()`.
-        let mut mayhem_changed = self.track_mayhem_rx.clone();
-        let mut post_migration_changed = self.track_post_migration_rx.clone();
+        // Track the previous values of the two flags we act on, so an unrelated
+        // settings change (e.g. timezone) never triggers cache/pool work.
+        let mut settings_changed = self.settings_rx.clone();
+        let (mut prev_mayhem, mut prev_post_migration) = {
+            let s = settings_changed.borrow();
+            (s.track_mayhem, s.track_post_migration)
+        };
 
         loop {
             tokio::select! {
@@ -158,7 +166,7 @@ impl IngestPipeline {
                             let (events, save_raw) = filter_events(
                                 events,
                                 &self.token_cache,
-                                *self.track_mayhem_rx.borrow(),
+                                self.settings_rx.borrow().track_mayhem,
                             );
                             if events.is_empty() {
                                 continue;
@@ -176,23 +184,31 @@ impl IngestPipeline {
                     }
                 }
 
-                // Mayhem tracking flipped off — evict already-tracked Mayhem
-                // tokens so they stop receiving live updates (go-forward for new
-                // ones is enforced in `filter_events`).
-                _ = mayhem_changed.changed() => {
-                    if !*mayhem_changed.borrow() {
+                // A setting changed — act only on genuine transitions of the two
+                // flags this pipeline reacts to.
+                _ = settings_changed.changed() => {
+                    let (mayhem, post_migration) = {
+                        let s = settings_changed.borrow();
+                        (s.track_mayhem, s.track_post_migration)
+                    };
+
+                    // Mayhem flipped off → evict already-tracked Mayhem tokens
+                    // (go-forward for new ones is enforced in `filter_events`).
+                    if prev_mayhem && !mayhem {
                         self.evict_mayhem_tokens();
                     }
-                }
+                    prev_mayhem = mayhem;
 
-                // Post-migration tracking toggled — clear subscribed pools (off)
-                // so the decoder stops attributing AMM swaps, or re-seed the live
-                // pools (on) so recording resumes for active migrated tokens.
-                _ = post_migration_changed.changed() => {
-                    if *post_migration_changed.borrow() {
-                        self.reseed_live_pools();
-                    } else {
-                        self.clear_pools();
+                    // Post-migration toggled → clear subscribed pools (off) so the
+                    // decoder stops attributing AMM swaps, or re-seed live pools
+                    // (on) so recording resumes for active migrated tokens.
+                    if prev_post_migration != post_migration {
+                        if post_migration {
+                            self.reseed_live_pools();
+                        } else {
+                            self.clear_pools();
+                        }
+                        prev_post_migration = post_migration;
                     }
                 }
             }
@@ -375,7 +391,7 @@ impl IngestPipeline {
         // attribute them and the WS task subscribes to this pool — unless
         // post-migration tracking is disabled, in which case the migration is
         // still recorded but its AMM trades are not.
-        if *self.track_post_migration_rx.borrow() {
+        if self.settings_rx.borrow().track_post_migration {
             self.register_pool(&mint);
         }
 
@@ -531,7 +547,7 @@ pub async fn run_pool_subscription_refresh(
     pool_index: Arc<DashMap<String, String>>,
     pools_changed: Arc<Notify>,
     pump_program_id: String,
-    track_post_migration_rx: watch::Receiver<bool>,
+    settings_rx: watch::Receiver<AppSettings>,
 ) {
     let mut tick = tokio::time::interval(Duration::from_secs(POOL_REFRESH_INTERVAL_SECONDS));
     loop {
@@ -539,7 +555,7 @@ pub async fn run_pool_subscription_refresh(
 
         // Respect the tracking policy: never revive pools while post-migration
         // tracking is disabled (it would undo `clear_pools`).
-        if !*track_post_migration_rx.borrow() {
+        if !settings_rx.borrow().track_post_migration {
             continue;
         }
 

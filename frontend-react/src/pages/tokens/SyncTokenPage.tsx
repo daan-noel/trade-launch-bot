@@ -14,7 +14,7 @@ import { Checkbox } from 'components/ui/Checkbox';
 import { Textarea } from 'components/ui/Input';
 import { usePriceUnit } from 'context/PriceUnitContext';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
-import { fetchProfiles, fetchTrackingSettings, syncToken } from 'services/api';
+import { fetchProfiles, fetchSettings, syncToken } from 'services/api';
 import type { SyncProgressEvent, TokenDetailRecord, WalletProfile } from 'types';
 import type { AppDispatch, RootState } from '../../store';
 import {
@@ -284,7 +284,7 @@ export function SyncTokenPage() {
   // Default the post-migration checkbox to the global tracking policy, unless
   // the user has already chosen. Overridable per-sync.
   useEffect(() => {
-    fetchTrackingSettings()
+    fetchSettings()
       .then((s) => {
         if (!postMigrateTouchedRef.current) setIncludePostMigrate(s.track_post_migration);
       })

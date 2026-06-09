@@ -5,6 +5,7 @@ use sqlx::PgPool;
 use tokio::sync::{broadcast, watch, Notify};
 
 use crate::models::ingest::SseEvent;
+use crate::storage::repositories::settings_repo::AppSettings;
 use crate::strategies::tpsl::TpslRuntimeCache;
 use crate::trader::PumpFunTrader;
 
@@ -20,12 +21,9 @@ pub struct AppState {
     /// Cold lane: SSE subscribers only (fed after cache update in ingest pipeline).
     pub sse_tx: broadcast::Sender<SseEvent>,
     pub live_mode: watch::Sender<bool>,
-    /// When false, the ingest pipeline stops tracking Mayhem-mode tokens.
-    /// Persisted in `app_settings`; seeded from there at startup.
-    pub track_mayhem: watch::Sender<bool>,
-    /// When false, the ingest pipeline stops recording AMM trade histories for
-    /// migrated tokens. Persisted in `app_settings`; seeded from there at startup.
-    pub track_post_migration: watch::Sender<bool>,
+    /// In-memory source of truth for the persisted settings document. The PUT
+    /// handler updates this (and the DB); the ingest pipeline subscribes to it.
+    pub settings: watch::Sender<AppSettings>,
     pub sol_price: Arc<watch::Sender<Option<f64>>>,
     pub trader: Arc<PumpFunTrader>,
     pub tpsl_cache: Arc<TpslRuntimeCache>,
@@ -45,8 +43,7 @@ impl AppState {
         token_cache: Arc<TokenCache>,
         sse_tx: broadcast::Sender<SseEvent>,
         live_mode: watch::Sender<bool>,
-        track_mayhem: watch::Sender<bool>,
-        track_post_migration: watch::Sender<bool>,
+        settings: watch::Sender<AppSettings>,
         sol_price: Arc<watch::Sender<Option<f64>>>,
         trader: Arc<PumpFunTrader>,
         tpsl_cache: Arc<TpslRuntimeCache>,
@@ -60,8 +57,7 @@ impl AppState {
             token_cache,
             sse_tx,
             live_mode,
-            track_mayhem,
-            track_post_migration,
+            settings,
             sol_price,
             trader,
             tpsl_cache,
@@ -78,20 +74,12 @@ impl AppState {
         let _ = self.live_mode.send(live);
     }
 
-    pub fn track_mayhem(&self) -> bool {
-        *self.track_mayhem.borrow()
+    pub fn settings(&self) -> AppSettings {
+        self.settings.borrow().clone()
     }
 
-    pub fn set_track_mayhem(&self, track: bool) {
-        let _ = self.track_mayhem.send(track);
-    }
-
-    pub fn track_post_migration(&self) -> bool {
-        *self.track_post_migration.borrow()
-    }
-
-    pub fn set_track_post_migration(&self, track: bool) {
-        let _ = self.track_post_migration.send(track);
+    pub fn set_settings(&self, settings: AppSettings) {
+        let _ = self.settings.send(settings);
     }
 
     pub fn set_sol_price(&self, price: Option<f64>) {

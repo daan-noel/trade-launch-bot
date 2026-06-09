@@ -2,11 +2,13 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useReducer,
   type ReactNode,
 } from 'react';
 import type { PriceUnit, PriceUnitState } from 'types';
+import { fetchSettings, updateSettings } from 'services/api';
 
 const LS_PRICE_UNIT_KEY = 'price_unit';
 
@@ -51,8 +53,30 @@ const PriceUnitContext = createContext<PriceUnitContextValue | null>(null);
 export function PriceUnitProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, undefined, loadPriceUnit);
 
+  // Hydrate the unit from server-side settings (localStorage is the instant
+  // cache). If the server has no stored preference yet, upload the local one so
+  // the existing per-browser choice isn't lost on first load. `usdRate` is a
+  // fetched value, not a setting, so it stays local.
+  useEffect(() => {
+    let cancelled = false;
+    fetchSettings()
+      .then((s) => {
+        if (cancelled) return;
+        if (s.price_unit === 'SOL' || s.price_unit === 'USD') {
+          dispatch({ type: 'SET_UNIT', unit: s.price_unit });
+        } else {
+          updateSettings({ price_unit: loadPriceUnit().unit }).catch(() => {});
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const setUnit = useCallback((unit: PriceUnit) => {
     dispatch({ type: 'SET_UNIT', unit });
+    updateSettings({ price_unit: unit }).catch(() => {});
   }, []);
 
   const setUsdRate = useCallback((rate: number | null) => {

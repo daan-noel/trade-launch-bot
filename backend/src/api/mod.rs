@@ -59,14 +59,14 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 "/system/price",
                 web::get().to(handlers::system::get_sol_price),
             )
-            // Tracking policy (persisted): Mayhem + post-migration ingestion toggles
+            // Persisted app settings (tracking policy + header prefs)
             .route(
                 "/system/settings",
-                web::get().to(handlers::system::get_tracking_settings),
+                web::get().to(handlers::system::get_settings),
             )
             .route(
                 "/system/settings",
-                web::put().to(handlers::system::set_tracking_settings),
+                web::put().to(handlers::system::update_settings),
             )
             // Profile endpoints
             .route(

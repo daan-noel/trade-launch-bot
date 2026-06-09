@@ -12,6 +12,7 @@ import {
   isValidTimezone,
 } from 'components/token-price-chart/chartTimezone';
 import { LS_CHART_PREFS_KEY } from 'components/token-price-chart/constants';
+import { fetchSettings, updateSettings } from 'services/api';
 
 export const LS_TIMEZONE_KEY = 'app_timezone';
 
@@ -57,9 +58,30 @@ export function TimezoneProvider({ children }: { children: ReactNode }) {
     saveTimezone(timezone);
   }, [timezone]);
 
+  // Hydrate from server-side settings (localStorage above is the instant cache).
+  // If the server has no stored timezone yet, upload the local one so the
+  // existing per-browser choice isn't lost on first load.
+  useEffect(() => {
+    let cancelled = false;
+    fetchSettings()
+      .then((s) => {
+        if (cancelled) return;
+        if (s.timezone && isValidTimezone(s.timezone)) {
+          setTimezoneState(s.timezone);
+        } else {
+          updateSettings({ timezone: loadTimezone() }).catch(() => {});
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const setTimezone = useCallback((next: string) => {
     if (!isValidTimezone(next)) return;
     setTimezoneState(next);
+    updateSettings({ timezone: next }).catch(() => {});
   }, []);
 
   const value = useMemo(() => ({ timezone, setTimezone }), [timezone, setTimezone]);

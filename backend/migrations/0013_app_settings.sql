@@ -1,21 +1,21 @@
--- Global, server-wide tracking policy. A single-row table (enforced by the
--- `id` boolean primary key + CHECK) holding runtime toggles that govern what the
--- live ingest pipeline records. Persisted so a policy set once survives restarts
--- (unlike the in-memory `live_mode` flag, which resets on every boot).
+-- Global, server-wide settings store. A single-row table (enforced by the `id`
+-- boolean primary key + CHECK) holding ALL app settings as one JSONB document.
 --
---   track_mayhem          — when false, the pipeline stops ingesting Mayhem-mode
---                           tokens (and evicts already-tracked ones from cache).
---   track_post_migration  — when false, the pipeline stops recording AMM trade
---                           histories for migrated tokens (and clears their
---                           subscribed pools).
+-- The document's shape is owned by the application's `AppSettings` struct, not by
+-- this schema: adding a setting is a struct field with a default, never a
+-- migration. Missing keys fall back to per-field defaults on read, so old rows
+-- stay forward/backward compatible. Persisted so policy survives restarts (unlike
+-- the in-memory `live_mode` flag).
 --
--- Defaults are ON so first boot preserves the prior "track everything" behavior.
+-- Current keys: track_mayhem (bool), track_post_migration (bool),
+-- timezone (string|null), price_unit ("SOL"|"USD"|null). null = unset.
+-- `id` is a fixed sentinel pinned to 1: the CHECK + primary key make a second
+-- row impossible, so this table always holds exactly one settings document.
 CREATE TABLE IF NOT EXISTS app_settings (
-    id                   BOOLEAN PRIMARY KEY DEFAULT TRUE,
-    track_mayhem         BOOLEAN NOT NULL DEFAULT TRUE,
-    track_post_migration BOOLEAN NOT NULL DEFAULT TRUE,
-    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT app_settings_singleton CHECK (id)
+    id         INTEGER PRIMARY KEY DEFAULT 1,
+    data       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT app_settings_singleton CHECK (id = 1)
 );
 
-INSERT INTO app_settings (id) VALUES (TRUE) ON CONFLICT (id) DO NOTHING;
+INSERT INTO app_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;

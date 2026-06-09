@@ -1,9 +1,5 @@
 import { useEffect, useState } from 'react';
-import {
-  fetchTrackingSettings,
-  setTrackingSettings,
-  type TrackingSettings,
-} from 'services/api';
+import { fetchSettings, updateSettings, type AppSettings } from 'services/api';
 import { Switch } from 'components/ui/Switch';
 
 interface ToggleRowProps {
@@ -29,14 +25,14 @@ function ToggleRow({ title, description, checked, disabled, onChange }: ToggleRo
 }
 
 export function SettingsPage() {
-  const [settings, setSettings] = useState<TrackingSettings | null>(null);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    fetchTrackingSettings()
+    fetchSettings()
       .then((s) => {
         if (!cancelled) setSettings(s);
       })
@@ -51,7 +47,7 @@ export function SettingsPage() {
     };
   }, []);
 
-  async function update(patch: Partial<TrackingSettings>) {
+  async function update(patch: Partial<AppSettings>) {
     if (!settings) return;
     const previous = settings;
     // Optimistic: reflect the change immediately, roll back if the PUT fails.
@@ -59,7 +55,7 @@ export function SettingsPage() {
     setSaving(true);
     setError(null);
     try {
-      const next = await setTrackingSettings(patch);
+      const next = await updateSettings(patch);
       setSettings(next);
     } catch (e) {
       setSettings(previous);

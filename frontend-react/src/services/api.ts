@@ -33,21 +33,25 @@ export async function setLiveMode(live: boolean): Promise<boolean> {
   return data.live;
 }
 
-/** Global, server-wide token-tracking policy (persisted in `app_settings`). */
-export interface TrackingSettings {
+/**
+ * Global, server-wide app settings (persisted in `app_settings`). `timezone` and
+ * `price_unit` are `null` until a client has set them. The shape mirrors the
+ * backend `AppSettings` struct — add a field on both sides to add a setting.
+ */
+export interface AppSettings {
   track_mayhem: boolean;
   track_post_migration: boolean;
+  timezone: string | null;
+  price_unit: 'SOL' | 'USD' | null;
 }
 
-export async function fetchTrackingSettings(): Promise<TrackingSettings> {
-  return request<TrackingSettings>(`${API_BASE}/api/system/settings`);
+export async function fetchSettings(): Promise<AppSettings> {
+  return request<AppSettings>(`${API_BASE}/api/system/settings`);
 }
 
-/** Update one or both toggles; omitted fields keep their current value. */
-export async function setTrackingSettings(
-  patch: Partial<TrackingSettings>,
-): Promise<TrackingSettings> {
-  return request<TrackingSettings>(`${API_BASE}/api/system/settings`, {
+/** Update any subset of settings; omitted fields keep their current value. */
+export async function updateSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
+  return request<AppSettings>(`${API_BASE}/api/system/settings`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
