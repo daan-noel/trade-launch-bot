@@ -26,6 +26,7 @@ use crate::constants::{
     CONFIRM_MAX_RETRIES, LAMPORTS_PER_SOL, PUMP_AMM_CASHBACK_GLOBAL, TOKEN_PROGRAM_ID,
 };
 use anyhow::{anyhow, bail, Context, Result};
+use serde_json::json;
 use solana_client::rpc_config::RpcSimulateTransactionConfig;
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
@@ -450,12 +451,14 @@ impl PumpFunTrader {
                 Pubkey::from_str(PUMP_AMM_CASHBACK_GLOBAL).expect("valid PUMP_AMM_CASHBACK_GLOBAL"),
                 false,
             ));
+        } else if let Some(marker) = pool.fee_share_marker {
+            // Non-cashback swaps carry a single per-coin "fee-share" marker
+            // (readonly) in this slot, on both buy and sell. The deployed program
+            // derives it but no published IDL documents it and it isn't
+            // reproducible offline — so it's read from a recent on-chain swap and
+            // cached on `AmmPoolInfo` (see `fetch_fee_share_marker`).
+            accounts.push(AccountMeta::new_readonly(marker, false));
         }
-        // NOTE: non-cashback *sells* carry one extra readonly account before the
-        // buyback pair on-chain (varies per tx, not yet identified) that we do
-        // NOT emit here — so the non-cashback AMM sell tail is still unverified.
-        // Cashback sells are fully matched; non-cashback sells need that account
-        // resolved + a live-validated send before they can be trusted.
 
         // Trailing buyback-fee block — required by the deployed pump_amm program
         // but absent from its published IDL: the buyback recipient (readonly)
@@ -524,6 +527,25 @@ impl PumpFunTrader {
             bail!("PumpSwap pool account too short: {} bytes", data.len());
         }
 
+        let is_cashback_coin = data[AMM_POOL_IS_CASHBACK_OFFSET] != 0;
+        // Non-cashback swaps require a per-coin fee-share marker the deployed
+        // program derives but we can't reproduce offline — recover it from a
+        // recent on-chain swap. Cashback pools use a derivable block in that slot
+        // and don't need it. Done once per coin (the whole AmmPoolInfo is cached).
+        let fee_share_marker = if is_cashback_coin {
+            None
+        } else {
+            match self.fetch_fee_share_marker(&pool).await? {
+                Some(m) => Some(m),
+                None => bail!(
+                    "No recent PumpSwap swap found for pool {} to read its fee-share \
+                     marker — cannot build a valid non-cashback AMM swap (token may \
+                     have no AMM trades yet)",
+                    pool
+                ),
+            }
+        };
+
         let info = AmmPoolInfo {
             pool,
             base_mint: read_pubkey(data, 43)?,
@@ -532,13 +554,66 @@ impl PumpFunTrader {
             pool_base_token_account: read_pubkey(data, AMM_POOL_BASE_VAULT_OFFSET)?,
             pool_quote_token_account: read_pubkey(data, AMM_POOL_QUOTE_VAULT_OFFSET)?,
             coin_creator: read_pubkey(data, AMM_POOL_COIN_CREATOR_OFFSET)?,
-            is_cashback_coin: data[AMM_POOL_IS_CASHBACK_OFFSET] != 0,
+            is_cashback_coin,
+            fee_share_marker,
         };
         self.amm_pool_cache
             .lock()
             .await
             .insert(token_mint.to_string(), info);
         Ok(info)
+    }
+
+    /// Read the per-coin fee-share marker from a recent on-chain swap of `pool`.
+    /// The deployed pump_amm places this account 3rd-from-last in every swap
+    /// (`[marker, buyback_recipient, buyback_recipient_wsol]`); it's per-coin and
+    /// constant, so any recent successful swap yields it. `None` if the pool has
+    /// no swap in its recent history.
+    async fn fetch_fee_share_marker(&self, pool: &Pubkey) -> Result<Option<Pubkey>> {
+        let pool_str = pool.to_string();
+        let sigs = self
+            .rpc_json("getSignaturesForAddress", json!([pool_str, { "limit": 15 }]))
+            .await?;
+        let program_str = self.pump_swap_program.to_string();
+        for s in sigs.as_array().into_iter().flatten() {
+            // Only successful swaps carry the correct accounts — skip failed txs.
+            let errored = s.get("err").map(|e| !e.is_null()).unwrap_or(false);
+            if errored {
+                continue;
+            }
+            let sig = match s.get("signature").and_then(|v| v.as_str()) {
+                Some(x) => x,
+                None => continue,
+            };
+            let tx = self
+                .rpc_json(
+                    "getTransaction",
+                    json!([sig, { "encoding": "jsonParsed", "maxSupportedTransactionVersion": 0 }]),
+                )
+                .await?;
+            if let Some(marker) = extract_swap_marker(&tx, &program_str, &pool_str) {
+                return Ok(Some(Pubkey::from_str(&marker)?));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Minimal JSON-RPC call against the configured full RPC node, used for the
+    /// read-only transaction-history lookups above.
+    async fn rpc_json(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
+        let resp = self
+            .http
+            .post(&self.config.rpc_url)
+            .json(&body)
+            .send()
+            .await
+            .with_context(|| format!("RPC {method} request failed"))?;
+        let v: serde_json::Value = resp.json().await.context("RPC response not JSON")?;
+        if let Some(e) = v.get("error") {
+            bail!("RPC {method} error: {e}");
+        }
+        Ok(v.get("result").cloned().unwrap_or(serde_json::Value::Null))
     }
 
     /// Fetch + cache GlobalConfig (fee bps + a protocol fee recipient).
@@ -704,6 +779,56 @@ impl PumpFunTrader {
 // ---------------------------------------------------------------------------
 // Free helpers
 // ---------------------------------------------------------------------------
+
+/// Find a pump_amm buy/sell instruction (top-level or inner) for `pool` in a
+/// jsonParsed transaction and return its fee-share marker — the 3rd-from-last
+/// account. A swap is identified by program id, `accounts[0] == pool`, and the
+/// buy/sell discriminator in its data (so deposit/withdraw don't match).
+fn extract_swap_marker(tx: &serde_json::Value, program: &str, pool: &str) -> Option<String> {
+    let msg = tx.get("transaction")?.get("message")?;
+
+    let mut ixs: Vec<&serde_json::Value> = Vec::new();
+    if let Some(arr) = msg.get("instructions").and_then(|v| v.as_array()) {
+        ixs.extend(arr.iter());
+    }
+    if let Some(groups) = tx
+        .get("meta")
+        .and_then(|m| m.get("innerInstructions"))
+        .and_then(|v| v.as_array())
+    {
+        for g in groups {
+            if let Some(arr) = g.get("instructions").and_then(|v| v.as_array()) {
+                ixs.extend(arr.iter());
+            }
+        }
+    }
+
+    for ix in ixs {
+        if ix.get("programId").and_then(|v| v.as_str()) != Some(program) {
+            continue;
+        }
+        let accounts = match ix.get("accounts").and_then(|v| v.as_array()) {
+            Some(a) => a,
+            None => continue,
+        };
+        if accounts.first().and_then(|v| v.as_str()) != Some(pool) {
+            continue;
+        }
+        // Confirm buy/sell (not deposit/withdraw) via the instruction discriminator.
+        let data = ix.get("data").and_then(|v| v.as_str()).unwrap_or("");
+        let is_swap = bs58::decode(data)
+            .into_vec()
+            .ok()
+            .map(|d| d.starts_with(&BUY_DISC) || d.starts_with(&SELL_DISC))
+            .unwrap_or(false);
+        if !is_swap || accounts.len() < 3 {
+            continue;
+        }
+        // marker = 3rd-from-last ([marker, buyback_recipient, buyback_recipient_wsol]).
+        return accounts[accounts.len() - 3].as_str().map(str::to_string);
+    }
+    None
+}
 
 /// Constant-product output amount: `reserve_out * amount_in / (reserve_in + amount_in)`.
 fn cp_amount_out(amount_in: u128, reserve_in: u128, reserve_out: u128) -> u128 {

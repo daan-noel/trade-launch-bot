@@ -106,6 +106,12 @@ pub(crate) struct AmmPoolInfo {
     pub pool_quote_token_account: Pubkey,
     pub coin_creator: Pubkey,
     pub is_cashback_coin: bool,
+    /// Per-coin "fee-share" marker account the deployed pump_amm requires in
+    /// non-cashback swaps (between `fee_program` and the buyback pair). It's an
+    /// uninitialized PDA the program derives but no published IDL documents and
+    /// we can't reproduce offline — read from a recent on-chain swap and cached.
+    /// `None` for cashback pools (they use a derivable cashback block instead).
+    pub fee_share_marker: Option<Pubkey>,
 }
 
 /// Cached PumpSwap `GlobalConfig` facts: fee rates (bps) and a chosen protocol
