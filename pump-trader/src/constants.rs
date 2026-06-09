@@ -17,6 +17,17 @@ pub const TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 /// Token-2022 / Token Extensions program.
 pub const TOKEN_2022_PROGRAM_ID: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 
+/// PumpSwap (pump_amm) program — handles trading once a token has migrated off
+/// the bonding curve. Used for buy/sell of migrated tokens.
+pub const PUMP_SWAP_PROGRAM_ID: &str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
+/// Wrapped SOL mint — the quote mint for PumpSwap pools.
+pub const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
+
+/// pfee "fee program global" account appended to PumpSwap buy/sell by the
+/// deployed program (newer than its published IDL). Observed constant across
+/// all on-chain swaps; passed in the trailing upgrade-fee block.
+pub const PUMP_AMM_FEE_GLOBAL: &str = "78do7DvTK4zeP3VAer4FeL8JEXNhGpdZFAgnrqAZcGGS";
+
 /// Pump.fun program-upgrade fee recipient (an account on every trade tx).
 pub const PUMP_PROGRAM_UPGRADE_FEE_RECIPIENT: &str = "5YxQFdt3Tr9zJLvkFccqXVUwhdTWJQc1fFg2YPbxvxeD";
 
@@ -64,3 +75,33 @@ pub const CONFIRM_POLL_MS: u64 = 1_000;
 pub const NONCE_MAX_WAIT_ITERS: usize = 200;
 /// Sleep between nonce spin-wait iterations, in milliseconds.
 pub const NONCE_WAIT_SLEEP_MS: u64 = 20;
+
+
+// ---------------------------------------------------------------------------
+// PumpSwap AMM (migrated tokens)
+// ---------------------------------------------------------------------------
+
+/// Default AMM slippage tolerance, in basis points, applied to the computed
+/// `min_out` when the caller doesn't specify one. 500 bps = 5%.
+pub const AMM_DEFAULT_SLIPPAGE_BPS: u64 = 500;
+
+/// Byte offsets into a PumpSwap `Pool` account (after the 8-byte Anchor
+/// discriminator). Layout: pool_bump(u8) index(u16) creator(32) base_mint(32)
+/// quote_mint(32) lp_mint(32) pool_base_token_account(32)
+/// pool_quote_token_account(32) lp_supply(u64) coin_creator(32)
+/// is_mayhem_mode(bool) is_cashback_coin(bool).
+pub const AMM_POOL_BASE_VAULT_OFFSET: usize = 139;
+pub const AMM_POOL_QUOTE_VAULT_OFFSET: usize = 171;
+pub const AMM_POOL_COIN_CREATOR_OFFSET: usize = 211;
+pub const AMM_POOL_IS_CASHBACK_OFFSET: usize = 244;
+pub const AMM_POOL_MIN_LEN: usize = 245;
+
+/// Byte offsets into a PumpSwap `GlobalConfig` account (after the 8-byte
+/// discriminator). Layout: admin(32) lp_fee_basis_points(u64)
+/// protocol_fee_basis_points(u64) disable_flags(u8)
+/// protocol_fee_recipients([pubkey;8]) coin_creator_fee_basis_points(u64) ...
+pub const AMM_CONFIG_LP_FEE_BPS_OFFSET: usize = 40;
+pub const AMM_CONFIG_PROTOCOL_FEE_BPS_OFFSET: usize = 48;
+pub const AMM_CONFIG_FEE_RECIPIENTS_OFFSET: usize = 57;
+pub const AMM_CONFIG_COIN_CREATOR_FEE_BPS_OFFSET: usize = 313;
+pub const AMM_CONFIG_MIN_LEN: usize = 321;

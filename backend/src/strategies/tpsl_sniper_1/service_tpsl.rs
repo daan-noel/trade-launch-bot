@@ -341,12 +341,14 @@ impl TpslStrategyService {
                         let position_repo = self.position_repo.clone();
                         let trade_repo = self.trade_repo.clone();
                         let runtime = self.runtime.clone();
-                        // Cashback-enabled tokens need the extra sell account; read the
-                        // flag from the cache (the buy path can't, so it caches `false`).
-                        let is_cashback = cache
-                            .get(&mint)
-                            .map(|e| e.value().token.is_cashback_enabled)
-                            .unwrap_or(false);
+                        // Routing flags from the cache: is_cashback gates the
+                        // bonding-curve cashback account; is_migrated selects the
+                        // PumpSwap AMM path (the buy path can't set these, so they
+                        // default to false).
+                        let (is_cashback, is_migrated) = match cache.get(&mint) {
+                            Some(e) => (e.token.is_cashback_enabled, e.is_migrated),
+                            None => (false, false),
+                        };
                         let mut retries = 0;
                         let max_retries = 10;
                         let mut found = false;
@@ -358,6 +360,7 @@ impl TpslStrategyService {
                                 trade_repo.clone(),
                                 runtime.clone(),
                                 is_cashback,
+                                is_migrated,
                             )
                             .await;
                             if let Ok(pos) = position_repo.find_by_id(position.id).await {
@@ -473,19 +476,31 @@ async fn execute_sell_for_position(
     trade_repo: TradeRepo,
     runtime: Arc<TpslRuntimeCache>,
     is_cashback: bool,
+    is_migrated: bool,
 ) {
     let mint = position.mint.clone();
     let wallet = trader.wallet_pubkey();
     let amount = position.entry_amount as u64;
+    let base_token_program = position
+        .token_program_id
+        .clone()
+        .unwrap_or_else(|| crate::config::constants::TOKEN_PROGRAM_ID.to_string());
 
     info!(
         position_id = %position.id, mint = %mint, amount,
         "Executing sell for exited position"
     );
 
-    let completed =
-        sell_with_retries(trader.clone(), mint.clone(), amount, trade_repo.clone(), is_cashback)
-            .await;
+    let completed = sell_with_retries(
+        trader.clone(),
+        mint.clone(),
+        amount,
+        trade_repo.clone(),
+        is_cashback,
+        is_migrated,
+        base_token_program,
+    )
+    .await;
     if !completed {
         warn!(
             position_id = %position.id, mint = %mint,
@@ -553,6 +568,8 @@ async fn sell_with_retries(
     mut amount: u64,
     trade_repo: TradeRepo,
     is_cashback: bool,
+    is_migrated: bool,
+    base_token_program: String,
 ) -> bool {
     let mut attempt = 0usize;
     let max_attempts = TpslStrategyService::SELL_MAX_ATTEMPTS;
@@ -571,7 +588,23 @@ async fn sell_with_retries(
             Ok(accounts) => accounts.iter().find(|a| a.mint == mint).map(|a| a.token_account.clone()),
             Err(_) => None,
         };
-        match trader.sell_token(&mint, amount, None, is_cashback, token_account_override.as_deref()).await {
+        let sell_result = if is_migrated {
+            trader
+                .amm_sell(
+                    &mint,
+                    amount,
+                    &base_token_program,
+                    None,
+                    token_account_override.as_deref(),
+                    None,
+                )
+                .await
+        } else {
+            trader
+                .sell_token(&mint, amount, None, is_cashback, token_account_override.as_deref())
+                .await
+        };
+        match sell_result {
             Ok(true) => {
                 info!(mint = %mint, attempt, amount, "sell submitted");
                 let mut poll_attempts = 0usize;

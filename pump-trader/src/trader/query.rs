@@ -137,6 +137,46 @@ impl PumpFunTrader {
         }
     }
 
+    /// Resolve everything a manual buy needs straight from chain (source of
+    /// truth, so it handles freshly-migrated and Token-2022 tokens the local
+    /// cache may not know about yet). Reads the bonding-curve PDA for the
+    /// creator and the `complete` flag, and the mint account owner for the
+    /// token program.
+    ///
+    /// BondingCurve layout: 8-byte discriminator, 5×u64 reserves/supply, then
+    /// `complete: bool` at offset 48 and `creator: Pubkey` at offset 49 — the
+    /// same account [`get_creator_from_mint_pda`] reads.
+    pub async fn resolve_buy_routing(
+        &self,
+        mint_address: &str,
+    ) -> anyhow::Result<crate::types::BuyRouting> {
+        let rpc = &self.rpc;
+        let program_id = Pubkey::from_str(PUMP_FUN_PROGRAM_ID)?;
+        let mint = Pubkey::from_str(mint_address)?;
+        let (bonding_curve, _) =
+            Pubkey::find_program_address(&[b"bonding-curve", mint.as_ref()], &program_id);
+
+        let account = rpc.get_account(&bonding_curve).await?;
+        const COMPLETE_OFFSET: usize = 48;
+        const CREATOR_OFFSET: usize = 49;
+        if account.data.len() < CREATOR_OFFSET + 32 {
+            anyhow::bail!("Bonding curve account data too short");
+        }
+        let is_migrated = account.data[COMPLETE_OFFSET] != 0;
+        let creator_bytes: [u8; 32] =
+            account.data[CREATOR_OFFSET..CREATOR_OFFSET + 32].try_into()?;
+        let creator = Pubkey::from(creator_bytes).to_string();
+
+        let mint_account = rpc.get_account(&mint).await?;
+        let token_program_id = mint_account.owner.to_string();
+
+        Ok(crate::types::BuyRouting {
+            creator,
+            token_program_id,
+            is_migrated,
+        })
+    }
+
     /// Utility to fetch the creator pubkey for a given mint by reading the bonding curve PDA account.
     /// Returns the creator as a String.
     pub async fn get_creator_from_mint_pda(&self, mint_address: &str) -> anyhow::Result<String> {

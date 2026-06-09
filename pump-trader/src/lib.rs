@@ -14,5 +14,5 @@ pub mod constants;
 pub mod types;
 mod trader;
 
-pub use trader::{PumpFunTrader, TraderConfig};
-pub use types::{TokenBalance, WalletHolding};
+pub use trader::{AmmSimulation, PumpFunTrader, TraderConfig};
+pub use types::{BuyRouting, TokenBalance, WalletHolding};

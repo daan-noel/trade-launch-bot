@@ -174,7 +174,7 @@ export async function fetchCreators(
 export async function tradeBuy(req: {
   mint: string;
   sol_amount: number;
-  token_program_id: string;
+  token_program_id?: string;
 }): Promise<boolean> {
   await request(`${API_BASE}/api/solana/wallet/buy`, {
     method: 'POST',

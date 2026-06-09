@@ -12,8 +12,10 @@ import { loadWalletHoldings } from 'store/walletSlice';
 
 interface BuyDialog {
   mint: string;
-  tokenProgramId: string;
+  /// Known for row-triggered buys; undefined for manual buys (backend resolves on-chain).
+  tokenProgramId?: string;
   solInput: string;
+  manual: boolean;
 }
 
 export function MyWalletPage() {
@@ -65,11 +67,20 @@ export function MyWalletPage() {
   );
 
   const handleBuyOpen = useCallback((mint: string, tokenProgramId: string) => {
-    setBuyDialog({ mint, tokenProgramId, solInput: '0.1' });
+    setBuyDialog({ mint, tokenProgramId, solInput: '0.1', manual: false });
+  }, []);
+
+  const handleManualBuyOpen = useCallback(() => {
+    setBuyDialog({ mint: '', solInput: '0.1', manual: true });
   }, []);
 
   const handleBuySubmit = useCallback(async () => {
     if (!buyDialog) return;
+    const mint = buyDialog.mint.trim();
+    if (!mint) {
+      setActionError('Enter a mint address');
+      return;
+    }
     const solAmount = parseFloat(buyDialog.solInput.trim());
     if (!Number.isFinite(solAmount) || solAmount <= 0) {
       setActionError('Enter a valid SOL amount > 0');
@@ -82,9 +93,12 @@ export function MyWalletPage() {
 
     try {
       await tradeBuy({
-        mint: buyDialog.mint,
+        mint,
         sol_amount: solAmount,
-        token_program_id: buyDialog.tokenProgramId,
+        // Omit for manual buys — the backend resolves the token program on-chain.
+        ...(buyDialog.tokenProgramId
+          ? { token_program_id: buyDialog.tokenProgramId }
+          : {}),
       });
       setActionSuccess('Buy successful! Refreshing…');
       setTimeout(loadHoldings, 1500);
@@ -103,9 +117,11 @@ export function MyWalletPage() {
     [handleBuyOpen, handleSell, sellingMint],
   );
 
-  const buySymbol =
-    buyDialog &&
-    (holdings.find((h) => h.mint === buyDialog.mint)?.symbol ?? buyDialog.mint);
+  const buyTitle = buyDialog
+    ? buyDialog.manual
+      ? 'Manual Buy'
+      : `Buy ${holdings.find((h) => h.mint === buyDialog.mint)?.symbol ?? buyDialog.mint}`
+    : '';
 
   return (
     <div>
@@ -116,6 +132,9 @@ export function MyWalletPage() {
         </Badge>
         <Button variant="subtle" size="sm" onClick={loadHoldings} disabled={loading}>
           {loading ? 'Loading…' : '↻ Refresh'}
+        </Button>
+        <Button variant="primary" size="sm" onClick={handleManualBuyOpen}>
+          + Manual Buy
         </Button>
       </div>
 
@@ -142,13 +161,31 @@ export function MyWalletPage() {
       )}
 
       <Modal
-        title={buyDialog ? `Buy ${buySymbol}` : ''}
+        title={buyTitle}
         open={buyDialog != null}
         onClose={() => setBuyDialog(null)}
       >
         {buyDialog && (
           <>
-            <p className="mb-4 text-xs text-text-mid">Mint: {buyDialog.mint}</p>
+            {buyDialog.manual ? (
+              <label className="mb-4 flex flex-col gap-1.5">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
+                  Mint Address
+                </span>
+                <Input
+                  type="text"
+                  fieldSize="md"
+                  placeholder="Token mint address"
+                  value={buyDialog.mint}
+                  onChange={(e) =>
+                    setBuyDialog((d) => (d ? { ...d, mint: e.target.value } : d))
+                  }
+                  className="font-mono focus:shadow-[0_0_0_2px_rgba(19,206,175,0.15)]"
+                />
+              </label>
+            ) : (
+              <p className="mb-4 text-xs text-text-mid">Mint: {buyDialog.mint}</p>
+            )}
             <label className="mb-4 flex flex-col gap-1.5">
               <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
                 SOL Amount

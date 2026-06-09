@@ -27,6 +27,7 @@
 //   query.rs — read-only RPC queries (balances, holdings, creator)
 // ============================================================
 
+mod amm;
 mod buy;
 mod init;
 mod nonce;
@@ -37,6 +38,7 @@ mod tx;
 
 use crate::constants::{
     EVENT_AUTHORITY, FEE_PROGRAM_ID, PUMP_FUN_PROGRAM_ID, PUMP_PROGRAM_UPGRADE_FEE_RECIPIENT,
+    PUMP_SWAP_PROGRAM_ID, WSOL_MINT,
 };
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::system_program;
@@ -90,6 +92,41 @@ pub struct GlobalAccount {
     pub global_volume_accumulator: Pubkey,
     pub user_volume_accumulator: Pubkey,
     pub fee_config: Pubkey,
+}
+
+/// Cached PumpSwap pool facts for a migrated token, read once from the on-chain
+/// `Pool` account (see offsets in `constants`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AmmPoolInfo {
+    pub pool: Pubkey,
+    pub base_mint: Pubkey,
+    pub quote_mint: Pubkey,
+    pub base_token_program: Pubkey,
+    pub pool_base_token_account: Pubkey,
+    pub pool_quote_token_account: Pubkey,
+    pub coin_creator: Pubkey,
+    pub is_cashback_coin: bool,
+}
+
+/// Cached PumpSwap `GlobalConfig` facts: fee rates (bps) and a chosen protocol
+/// fee recipient. Fetched once and reused for slippage math + account building.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AmmGlobalConfig {
+    pub lp_fee_bps: u64,
+    pub protocol_fee_bps: u64,
+    pub coin_creator_fee_bps: u64,
+    pub protocol_fee_recipient: Pubkey,
+}
+
+/// Outcome of a dry-run `simulateTransaction` for an AMM swap.
+#[derive(Debug, Clone)]
+pub struct AmmSimulation {
+    /// `Some(..)` if the transaction would fail; the on-chain error, debug-formatted.
+    pub err: Option<String>,
+    /// Compute units the simulation consumed, if reported.
+    pub units_consumed: Option<u64>,
+    /// Program log lines from the simulation.
+    pub logs: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +184,12 @@ pub struct PumpFunTrader {
     fee_program: Pubkey,
     upgrade_fee_recipient: Pubkey,
 
+    // PumpSwap AMM (migrated tokens)
+    pump_swap_program: Pubkey,
+    wsol_mint: Pubkey,
+    amm_pool_cache: Arc<Mutex<HashMap<String, AmmPoolInfo>>>,
+    amm_global_config: Arc<Mutex<Option<AmmGlobalConfig>>>,
+
     // Per-token caches
     user_token_accounts: Arc<Mutex<HashMap<String, Pubkey>>>,
     token_pdas: Arc<Mutex<HashMap<String, TokenPDAs>>>,
@@ -189,6 +232,10 @@ impl PumpFunTrader {
             event_authority: Pubkey::from_str(EVENT_AUTHORITY).unwrap(),
             fee_program: Pubkey::from_str(FEE_PROGRAM_ID).unwrap(),
             upgrade_fee_recipient: Pubkey::from_str(PUMP_PROGRAM_UPGRADE_FEE_RECIPIENT).unwrap(),
+            pump_swap_program: Pubkey::from_str(PUMP_SWAP_PROGRAM_ID).unwrap(),
+            wsol_mint: Pubkey::from_str(WSOL_MINT).unwrap(),
+            amm_pool_cache: Arc::new(Mutex::new(HashMap::new())),
+            amm_global_config: Arc::new(Mutex::new(None)),
             user_token_accounts: Arc::new(Mutex::new(HashMap::new())),
             token_pdas: Arc::new(Mutex::new(HashMap::new())),
         }
