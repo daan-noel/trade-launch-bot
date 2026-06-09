@@ -49,6 +49,7 @@ pub async fn manual_buy(
 
     let buy_result = if routing.is_migrated {
         // Migrated → PumpSwap AMM (canonical pool derived, default slippage).
+        // Mayhem tokens never migrate, so the AMM path needs no mayhem handling.
         app_state
             .trader
             .amm_buy(&body.mint, &token_program_id, sol_amount, None, None)

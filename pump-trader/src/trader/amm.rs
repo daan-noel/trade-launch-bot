@@ -22,8 +22,8 @@ use crate::constants::{
     AMM_CONFIG_COIN_CREATOR_FEE_BPS_OFFSET, AMM_CONFIG_FEE_RECIPIENTS_OFFSET,
     AMM_CONFIG_LP_FEE_BPS_OFFSET, AMM_CONFIG_MIN_LEN, AMM_CONFIG_PROTOCOL_FEE_BPS_OFFSET,
     AMM_DEFAULT_SLIPPAGE_BPS, AMM_POOL_BASE_VAULT_OFFSET, AMM_POOL_COIN_CREATOR_OFFSET,
-    AMM_POOL_IS_CASHBACK_OFFSET, AMM_POOL_MIN_LEN, AMM_POOL_QUOTE_VAULT_OFFSET, CONFIRM_MAX_RETRIES,
-    LAMPORTS_PER_SOL, PUMP_AMM_FEE_GLOBAL, TOKEN_PROGRAM_ID,
+    AMM_POOL_IS_CASHBACK_OFFSET, AMM_POOL_MIN_LEN, AMM_POOL_QUOTE_VAULT_OFFSET,
+    CONFIRM_MAX_RETRIES, LAMPORTS_PER_SOL, PUMP_AMM_CASHBACK_GLOBAL, TOKEN_PROGRAM_ID,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use solana_client::rpc_config::RpcSimulateTransactionConfig;
@@ -78,52 +78,47 @@ impl PumpFunTrader {
     ) -> Result<bool> {
         let t0 = Instant::now();
         let user = self.config.keypair.pubkey();
-        let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
 
-        let result: Result<bool> = async {
-            let (core_ixs, user_base) = self
-                .build_amm_buy_ixs(
-                    token_mint,
-                    base_token_program_id,
-                    sol_amount,
-                    pool_override,
-                    slippage_bps,
-                    &user,
-                )
-                .await?;
-
-            let mut ixs = Vec::with_capacity(core_ixs.len() + self.compute_budget_ixs.len() + 1);
-            ixs.extend_from_slice(&self.compute_budget_ixs);
-            ixs.extend(core_ixs);
-            if let Some(tip) = self.jito_tip_ix.lock().await.clone() {
-                ixs.push(tip);
-            }
-
-            let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, &self.config.keypair)?;
-            let sig = self.send_transaction(&tx).await?;
-            info!(
-                "📤 AMM buy sent — sig: {} | SOL: {} | {}ms",
-                sig,
+        let (core_ixs, user_base) = self
+            .build_amm_buy_ixs(
+                token_mint,
+                base_token_program_id,
                 sol_amount,
-                t0.elapsed().as_millis()
-            );
-            self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES).await?;
-            // Tokens land in the base ATA — cache it for a later sell.
-            self.user_token_accounts
-                .lock()
-                .await
-                .insert(token_mint.to_string(), user_base);
-            info!(
-                "✅ AMM buy confirmed — sig: {} | {}ms",
-                sig,
-                t0.elapsed().as_millis()
-            );
-            Ok(true)
-        }
-        .await;
+                pool_override,
+                slippage_bps,
+                &user,
+            )
+            .await?;
 
-        self.schedule_nonce_refresh(nonce_pubkey);
-        result
+        let mut ixs = Vec::with_capacity(core_ixs.len() + self.compute_budget_ixs.len() + 1);
+        ixs.extend_from_slice(&self.compute_budget_ixs);
+        ixs.extend(core_ixs);
+        if let Some(tip) = self.jito_tip_ix.lock().await.clone() {
+            ixs.push(tip);
+        }
+
+        // Recent blockhash (not durable nonce): the swap already carries ~27
+        // accounts, and a nonce-advance would push the legacy tx over 1232 bytes.
+        let tx = self.build_recent_tx(ixs, &self.config.keypair).await?;
+        let sig = self.send_transaction(&tx).await?;
+        info!(
+            "📤 AMM buy sent — sig: {} | SOL: {} | {}ms",
+            sig,
+            sol_amount,
+            t0.elapsed().as_millis()
+        );
+        self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES).await?;
+        // Tokens land in the base ATA — cache it for a later sell.
+        self.user_token_accounts
+            .lock()
+            .await
+            .insert(token_mint.to_string(), user_base);
+        info!(
+            "✅ AMM buy confirmed — sig: {} | {}ms",
+            sig,
+            t0.elapsed().as_millis()
+        );
+        Ok(true)
     }
 
     /// Sell `token_amount` raw base-token units of a migrated token on the AMM.
@@ -235,6 +230,7 @@ impl PumpFunTrader {
     // Instruction builders
     // -----------------------------------------------------------------------
 
+    #[allow(clippy::too_many_arguments)]
     async fn build_amm_buy_ixs(
         &self,
         token_mint: &str,
@@ -295,7 +291,9 @@ impl PumpFunTrader {
         data.push(u8::from(pool.is_cashback_coin));
         ixs.push(Instruction {
             program_id: self.pump_swap_program,
-            accounts: self.amm_swap_accounts(&pool, user, &cfg, user_base, user_quote, quote_tp, true),
+            accounts: self.amm_swap_accounts(
+                &pool, user, &cfg, user_base, user_quote, quote_tp, true,
+            ),
             data,
         });
 
@@ -352,7 +350,9 @@ impl PumpFunTrader {
         data.extend_from_slice(&min_quote_out.to_le_bytes());
         ixs.push(Instruction {
             program_id: self.pump_swap_program,
-            accounts: self.amm_swap_accounts(&pool, user, &cfg, user_base, user_quote, quote_tp, false),
+            accounts: self.amm_swap_accounts(
+                &pool, user, &cfg, user_base, user_quote, quote_tp, false,
+            ),
             data,
         });
 
@@ -387,6 +387,7 @@ impl PumpFunTrader {
             &quote_token_program,
         );
         let fee_config = self.amm_fee_config();
+        // The rotating protocol_fee_recipients[0]; accepted by the program.
         let pf_recipient = cfg.protocol_fee_recipient;
         let pf_recipient_ta = get_associated_token_address_with_program_id(
             &pf_recipient,
@@ -416,26 +417,58 @@ impl PumpFunTrader {
             AccountMeta::new_readonly(cc_authority, false),           // 18 coin_creator_vault_authority
         ];
         if with_volume {
-            accounts.push(AccountMeta::new_readonly(self.amm_global_volume_accumulator(), false)); // 19
+            // global_volume_accumulator is WRITTEN only when cashback volume is
+            // tracked; readonly otherwise (matches real swaps). user_volume_
+            // accumulator is always writable on the buy path.
+            if pool.is_cashback_coin {
+                accounts.push(AccountMeta::new(self.amm_global_volume_accumulator(), false)); // 19
+            } else {
+                accounts.push(AccountMeta::new_readonly(self.amm_global_volume_accumulator(), false));
+            }
             accounts.push(AccountMeta::new(self.amm_user_volume_accumulator(user), false)); // 20
         }
         accounts.push(AccountMeta::new_readonly(fee_config, false)); // fee_config
         accounts.push(AccountMeta::new_readonly(self.fee_program, false)); // fee_program
 
-        // Trailing upgrade-fee block — required by the deployed pump_amm program
-        // but absent from its published IDL (verified against real on-chain
-        // swaps): the pfee global, the upgrade-fee recipient, and that
-        // recipient's WSOL ATA. The recipient rotates across a set on-chain; we
-        // use the canonical upgrade-fee recipient, which the program accepts.
-        let fee_global = Pubkey::from_str(PUMP_AMM_FEE_GLOBAL).expect("valid PUMP_AMM_FEE_GLOBAL");
+        // Cashback pools append the user's cashback accumulator + a fixed pfee
+        // marker before the buyback pair. The layout differs by side (both
+        // verified against live on-chain swaps, PDAs matched):
+        //   buy  (volume block present): [cashback_ata(W), marker(r)]      → 27 accts
+        //   sell (no volume block):      [cashback_ata(W), uva(W), marker(r)] → 26 accts
+        // cashback_ata = ATA(user_volume_accumulator, WSOL). On the sell side the
+        // user_volume_accumulator (uva) rides in this tail because there is no
+        // earlier volume block to carry it.
+        if pool.is_cashback_coin {
+            let uva = self.amm_user_volume_accumulator(user);
+            let cashback_ata =
+                get_associated_token_address_with_program_id(&uva, &self.wsol_mint, &quote_token_program);
+            accounts.push(AccountMeta::new(cashback_ata, false)); // writable
+            if !with_volume {
+                accounts.push(AccountMeta::new(uva, false)); // writable, sell-only
+            }
+            accounts.push(AccountMeta::new_readonly(
+                Pubkey::from_str(PUMP_AMM_CASHBACK_GLOBAL).expect("valid PUMP_AMM_CASHBACK_GLOBAL"),
+                false,
+            ));
+        }
+        // NOTE: non-cashback *sells* carry one extra readonly account before the
+        // buyback pair on-chain (varies per tx, not yet identified) that we do
+        // NOT emit here — so the non-cashback AMM sell tail is still unverified.
+        // Cashback sells are fully matched; non-cashback sells need that account
+        // resolved + a live-validated send before they can be trusted.
+
+        // Trailing buyback-fee block — required by the deployed pump_amm program
+        // but absent from its published IDL: the buyback recipient (readonly)
+        // and that recipient's WSOL ATA (writable). Verified against live
+        // on-chain swaps. The recipient rotates across a whitelist; we use
+        // buyback_fee_recipients[0], which the program accepts.
         let fee_recipient = self.upgrade_fee_recipient;
         let fee_recipient_wsol = get_associated_token_address_with_program_id(
             &fee_recipient,
             &self.wsol_mint,
             &quote_token_program,
         );
-        accounts.push(AccountMeta::new(fee_global, false));
-        accounts.push(AccountMeta::new(fee_recipient, false));
+        accounts.push(AccountMeta::new_readonly(fee_recipient, false));
         accounts.push(AccountMeta::new(fee_recipient_wsol, false));
         accounts
     }

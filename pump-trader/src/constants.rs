@@ -23,12 +23,15 @@ pub const PUMP_SWAP_PROGRAM_ID: &str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMf
 /// Wrapped SOL mint — the quote mint for PumpSwap pools.
 pub const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
 
-/// pfee "fee program global" account appended to PumpSwap buy/sell by the
-/// deployed program (newer than its published IDL). Observed constant across
-/// all on-chain swaps; passed in the trailing upgrade-fee block.
-pub const PUMP_AMM_FEE_GLOBAL: &str = "78do7DvTK4zeP3VAer4FeL8JEXNhGpdZFAgnrqAZcGGS";
+/// Fixed pfee account that cashback-enabled PumpSwap pools append in the
+/// trailing fee block, just before the buyback recipient pair. Constant across
+/// on-chain cashback swaps; has no account data of its own (a program marker).
+/// Only present when the pool's `is_cashback_coin` flag is set.
+pub const PUMP_AMM_CASHBACK_GLOBAL: &str = "5817UmPM7KLKu2mSQVsXMJ7X2rr3PtEb3j4EioyoJgd1";
 
-/// Pump.fun program-upgrade fee recipient (an account on every trade tx).
+/// Buyback fee recipient appended to every PumpSwap swap (the deployed program
+/// is newer than its published IDL). This is `buyback_fee_recipients[0]` from
+/// the on-chain global config; the program accepts any whitelist member.
 pub const PUMP_PROGRAM_UPGRADE_FEE_RECIPIENT: &str = "5YxQFdt3Tr9zJLvkFccqXVUwhdTWJQc1fFg2YPbxvxeD";
 
 /// Jito tip accounts (mainnet); one is chosen at random per trader instance.
@@ -104,4 +107,4 @@ pub const AMM_CONFIG_LP_FEE_BPS_OFFSET: usize = 40;
 pub const AMM_CONFIG_PROTOCOL_FEE_BPS_OFFSET: usize = 48;
 pub const AMM_CONFIG_FEE_RECIPIENTS_OFFSET: usize = 57;
 pub const AMM_CONFIG_COIN_CREATOR_FEE_BPS_OFFSET: usize = 313;
-pub const AMM_CONFIG_MIN_LEN: usize = 321;
+pub const AMM_CONFIG_MIN_LEN: usize = 417;

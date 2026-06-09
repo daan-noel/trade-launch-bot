@@ -44,6 +44,26 @@ impl PumpFunTrader {
         Ok(tx)
     }
 
+    /// Build + sign a legacy tx against a freshly-fetched recent blockhash
+    /// (no durable nonce). Used for AMM swaps, whose ~27-account instruction
+    /// would otherwise overflow the 1232-byte tx limit once a nonce-advance
+    /// (+2 accounts) is prepended. Not for the latency-critical snipe path.
+    pub(super) async fn build_recent_tx(
+        &self,
+        instructions: Vec<Instruction>,
+        keypair: &Keypair,
+    ) -> Result<Transaction> {
+        let blockhash = self
+            .rpc
+            .get_latest_blockhash()
+            .await
+            .context("fetch recent blockhash")?;
+        let msg = Message::new(&instructions, Some(&keypair.pubkey()));
+        let mut tx = Transaction::new_unsigned(msg);
+        tx.sign(&[keypair], blockhash);
+        Ok(tx)
+    }
+
     pub(super) async fn send_transaction(&self, tx: &Transaction) -> Result<String> {
         let encoded = general_purpose::STANDARD.encode(bincode::serialize(tx)?);
 

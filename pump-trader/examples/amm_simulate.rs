@@ -33,7 +33,7 @@ async fn main() -> Result<()> {
     let side = args[2].as_str();
     let amount = &args[3];
     let base_tp = args.get(4).map(String::as_str).unwrap_or(TOKEN_PROGRAM_ID);
-    let pool = args.get(5).map(String::as_str);
+    let pool = args.get(5).filter(|s| !s.is_empty() && s.as_str() != "-").map(String::as_str);
 
     let rpc = std::env::var("HELIUS_RPC_URL").context("HELIUS_RPC_URL not set")?;
     let wallet = std::env::var("WALLET_PRIVATE_KEY").context("WALLET_PRIVATE_KEY not set")?;
