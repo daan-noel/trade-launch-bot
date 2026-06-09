@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import type { SimulatedTokenResult } from 'types';
 import { formatAge } from 'utils/format';
 import type { usePriceDisplay } from 'hooks/usePriceDisplay';
@@ -50,39 +51,42 @@ export function SimSummaryCard({ ruleName, tokens, price, onClose }: SimSummaryC
     return m == null ? t.pnl_percent : Math.min(m, t.pnl_percent);
   }, null);
 
-  const stats = [
-    { label: 'Tokens', value: String(tokensMatched) },
-    {
-      label: 'Win Rate',
-      value: `${winRate.toFixed(1)}%`,
-      cls: winRate >= 50 ? 'text-primary' : 'text-red',
-    },
-    {
-      label: 'W / L / Open',
-      value: `${winCount} / ${lossCount} / ${openCount}`,
-    },
-    {
-      label: `Total Entry (${price.unitLabel})`,
-      value: price.displayAmount(totalEntry),
-    },
-    {
-      label: `Total Holding (${price.unitLabel})`,
-      value: price.displayAmount(totalHolding),
-    },
-    {
-      label: 'Avg Entry',
-      value: avgEntry != null ? price.displayAmount(avgEntry) : '—',
-    },
+  // Headline KPIs, shown large; the rest read as a lighter secondary strip.
+  const heroStats = [
     {
       label: `Total PnL (${price.unitLabel})`,
       value: price.displayAmount(totalPnl),
       cls: totalPnl >= 0 ? 'text-primary' : 'text-red',
     },
     {
+      label: 'Win Rate',
+      value: `${winRate.toFixed(1)}%`,
+      cls: winRate >= 50 ? 'text-primary' : 'text-red',
+    },
+    {
       label: 'Avg PnL',
       value: avgPnl != null ? `${avgPnl >= 0 ? '+' : ''}${avgPnl.toFixed(1)}%` : '—',
       cls: avgPnl != null ? (avgPnl >= 0 ? 'text-primary' : 'text-red') : undefined,
     },
+    { label: 'Tokens', value: String(tokensMatched) },
+  ];
+
+  const detailStats: { label: string; value?: string; node?: ReactNode; cls?: string }[] = [
+    {
+      label: 'W / L / Open',
+      node: (
+        <>
+          <span className="text-green">{winCount}</span>
+          <span className="text-text-dim"> / </span>
+          <span className="text-red">{lossCount}</span>
+          <span className="text-text-dim"> / </span>
+          <span className="text-text-mid">{openCount}</span>
+        </>
+      ),
+    },
+    { label: `Total Entry (${price.unitLabel})`, value: price.displayAmount(totalEntry) },
+    { label: `Total Holding (${price.unitLabel})`, value: price.displayAmount(totalHolding) },
+    { label: 'Avg Entry', value: avgEntry != null ? price.displayAmount(avgEntry) : '—' },
     {
       label: `Total Gains (${price.unitLabel})`,
       value: price.displayAmount(totalGains),
@@ -93,10 +97,7 @@ export function SimSummaryCard({ ruleName, tokens, price, onClose }: SimSummaryC
       value: price.displayAmount(totalLosses),
       cls: 'text-red',
     },
-    {
-      label: 'Avg Hold',
-      value: avgHold != null ? formatAge(Math.round(avgHold)) : '—',
-    },
+    { label: 'Avg Hold', value: avgHold != null ? formatAge(Math.round(avgHold)) : '—' },
     {
       label: 'Best',
       value: best != null ? `${best >= 0 ? '+' : ''}${best.toFixed(1)}%` : '—',
@@ -110,21 +111,47 @@ export function SimSummaryCard({ ruleName, tokens, price, onClose }: SimSummaryC
   ];
 
   return (
-    <div className="mb-4 overflow-hidden rounded-[10px] border border-primary/25 bg-white/2">
-      <div className="flex items-center justify-between border-b border-primary/18 bg-primary/9 px-4 py-2.5">
-        <span className="text-[13px] font-bold text-primary">Simulation — {ruleName}</span>
-        <button type="button" onClick={onClose} className="text-text-dim hover:text-text">
+    <div className="mb-5">
+      <div className="mb-4 flex items-center gap-2.5">
+        <span className="h-4 w-1 rounded-full bg-primary" />
+        <h3 className="text-sm font-bold text-text">Simulation Results</h3>
+        <span className="truncate font-mono text-[11px] text-text-dim">{ruleName}</span>
+        <span className="flex-1" />
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-text-dim transition hover:text-text"
+        >
           ✕
         </button>
       </div>
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(130px,1fr))] gap-px bg-white/4 p-px">
-        {stats.map((s) => (
-          <div key={s.label} className="flex flex-col gap-0.5 bg-bg-panel px-3.5 py-2.5">
-            <span className="text-[9px] font-bold uppercase tracking-wider text-text-dim">
+
+      <div className="flex flex-wrap gap-x-10 gap-y-4">
+        {heroStats.map((s) => (
+          <div key={s.label} className="flex flex-col gap-1">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-text-dim">
               {s.label}
             </span>
-            <span className={cn('font-mono text-lg font-extrabold text-text', s.cls)}>
+            <span
+              className={cn(
+                'font-mono text-3xl font-extrabold leading-none tracking-tight text-text',
+                s.cls,
+              )}
+            >
               {s.value}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-5 flex flex-wrap gap-x-8 gap-y-3 border-t border-white/6 pt-4">
+        {detailStats.map((s) => (
+          <div key={s.label} className="flex min-w-[84px] flex-col gap-0.5">
+            <span className="text-[9px] font-semibold uppercase tracking-wider text-text-dim">
+              {s.label}
+            </span>
+            <span className={cn('font-mono text-sm font-bold text-text', s.cls)}>
+              {s.node ?? s.value}
             </span>
           </div>
         ))}

@@ -1,6 +1,6 @@
 import type { ColumnDef } from 'components/table/types';
 import type { RulePositionRecord, MatchedTokenRecord, SimulatedTokenResult } from 'types';
-import { formatAge, formatDecimalTrim } from 'utils/format';
+import { ageClass, formatAge, formatDecimalTrim, priceClass } from 'utils/format';
 import type { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { fmtTime } from './utils';
 import { cn } from 'lib/cn';
@@ -13,6 +13,7 @@ export function positionColumns(
     {
       key: 'mint',
       label: 'Mint',
+      group: 'identity',
       render: (r) => (
         <AddressDisplay
           address={r.mint}
@@ -25,14 +26,18 @@ export function positionColumns(
     {
       key: 'entry_price',
       label: 'Entry Price',
+      group: 'entry',
       sortable: true,
-      render: (r) => price.displayPrice(r.entry_price),
+      render: (r) => (
+        <span className={priceClass(r.entry_price)}>{price.displayPrice(r.entry_price)}</span>
+      ),
       sortValue: (r) => r.entry_price,
       searchValue: (r) => String(r.entry_price),
     },
     {
       key: 'entry_time',
       label: 'Entry Time',
+      group: 'entry',
       sortable: true,
       render: (r) => fmtTime(r.entry_time),
       sortValue: (r) => r.entry_time ?? '',
@@ -41,14 +46,21 @@ export function positionColumns(
     {
       key: 'exit_price',
       label: 'Exit Price',
+      group: 'exit',
       sortable: true,
-      render: (r) => (r.exit_price != null ? price.displayPrice(r.exit_price) : '—'),
+      render: (r) =>
+        r.exit_price != null ? (
+          <span className={priceClass(r.exit_price)}>{price.displayPrice(r.exit_price)}</span>
+        ) : (
+          '—'
+        ),
       sortValue: (r) => r.exit_price,
       searchValue: (r) => String(r.exit_price ?? ''),
     },
     {
       key: 'exit_time',
       label: 'Exit Time',
+      group: 'exit',
       sortable: true,
       render: (r) => fmtTime(r.exit_time),
       sortValue: (r) => r.exit_time ?? '',
@@ -57,6 +69,7 @@ export function positionColumns(
     {
       key: 'holding',
       label: 'Holding',
+      group: 'pnl',
       render: (r) =>
         r.exit_amount != null ? formatDecimalTrim(r.exit_amount, 3) : '—',
       searchValue: () => '',
@@ -64,6 +77,7 @@ export function positionColumns(
     {
       key: 'pnl_pct',
       label: 'PnL%',
+      group: 'pnl',
       sortable: true,
       render: (r) => {
         if (r.pnl_percent == null) return <span className="text-text-dim">—</span>;
@@ -80,6 +94,7 @@ export function positionColumns(
     {
       key: 'pnl_sol',
       label: 'PnL',
+      group: 'pnl',
       render: (r) => {
         if (r.exit_price == null) return <span className="text-text-dim">—</span>;
         const amt = r.exit_amount ?? 0;
@@ -95,6 +110,7 @@ export function positionColumns(
     {
       key: 'status',
       label: 'Status',
+      group: 'state',
       sortable: true,
       render: (r) => {
         if (r.status === 'TakeProfit') return <span className="font-bold text-green">TP</span>;
@@ -111,6 +127,7 @@ export const matchedColumns: ColumnDef<MatchedTokenRecord>[] = [
   {
     key: 'symbol',
     label: 'Symbol',
+    group: 'identity',
     sortable: true,
     render: (r) => (
       <AddressDisplay address={r.mint} kind="token" display={r.symbol} />
@@ -121,6 +138,7 @@ export const matchedColumns: ColumnDef<MatchedTokenRecord>[] = [
   {
     key: 'name',
     label: 'Name',
+    group: 'identity',
     sortable: true,
     render: (r) => <span className="text-text-dim">{r.name}</span>,
     sortValue: (r) => r.name,
@@ -129,6 +147,7 @@ export const matchedColumns: ColumnDef<MatchedTokenRecord>[] = [
   {
     key: 'created',
     label: 'Created',
+    group: 'activity',
     sortable: true,
     render: (r) => fmtTime(r.created_at),
     sortValue: (r) => r.created_at,
@@ -137,6 +156,7 @@ export const matchedColumns: ColumnDef<MatchedTokenRecord>[] = [
   {
     key: 'init_buy',
     label: 'Init Buy (SOL)',
+    group: 'params',
     sortable: true,
     render: (r) => (r.initial_buy_sol != null ? r.initial_buy_sol.toFixed(4) : '—'),
     sortValue: (r) => r.initial_buy_sol,
@@ -145,6 +165,7 @@ export const matchedColumns: ColumnDef<MatchedTokenRecord>[] = [
   {
     key: 'cu_limit',
     label: 'CU Limit',
+    group: 'params',
     sortable: true,
     render: (r) => (r.cu_limit != null ? r.cu_limit : '—'),
     sortValue: (r) => r.cu_limit,
@@ -153,6 +174,7 @@ export const matchedColumns: ColumnDef<MatchedTokenRecord>[] = [
   {
     key: 'cu_price',
     label: 'CU Price',
+    group: 'params',
     sortable: true,
     render: (r) => (r.cu_price != null ? r.cu_price : '—'),
     sortValue: (r) => r.cu_price,
@@ -167,6 +189,7 @@ export function simColumns(
     {
       key: 'symbol',
       label: 'Symbol',
+      group: 'identity',
       sortable: true,
       render: (r) => (
         <AddressDisplay address={r.mint} kind="token" display={r.symbol} />
@@ -177,39 +200,53 @@ export function simColumns(
     {
       key: 'entry_price',
       label: 'Entry Price',
+      group: 'entry',
       sortable: true,
-      render: (r) => price.displayPrice(r.entry_price),
+      render: (r) => (
+        <span className={priceClass(r.entry_price)}>{price.displayPrice(r.entry_price)}</span>
+      ),
       sortValue: (r) => r.entry_price,
       searchValue: (r) => String(r.entry_price),
     },
     {
-      key: 'ath_price',
-      label: 'ATH',
-      tooltip: 'All-time-high price across the token’s full trade history.',
-      sortable: true,
-      render: (r) => price.displayPrice(r.ath_price),
-      sortValue: (r) => r.ath_price,
-      searchValue: (r) => String(r.ath_price),
-    },
-    {
       key: 'entry_time',
       label: 'Entry Time',
+      group: 'entry',
       sortable: true,
       render: (r) => fmtTime(r.entry_time),
       sortValue: (r) => r.entry_time,
       searchValue: (r) => r.entry_time,
     },
     {
+      key: 'ath_price',
+      label: 'ATH',
+      tooltip: 'All-time-high price across the token’s full trade history.',
+      group: 'ath',
+      sortable: true,
+      render: (r) => (
+        <span className={priceClass(r.ath_price)}>{price.displayPrice(r.ath_price)}</span>
+      ),
+      sortValue: (r) => r.ath_price,
+      searchValue: (r) => String(r.ath_price),
+    },
+    {
       key: 'exit_price',
       label: 'Exit Price',
+      group: 'exit',
       sortable: true,
-      render: (r) => (r.exit_price != null ? price.displayPrice(r.exit_price) : '—'),
+      render: (r) =>
+        r.exit_price != null ? (
+          <span className={priceClass(r.exit_price)}>{price.displayPrice(r.exit_price)}</span>
+        ) : (
+          '—'
+        ),
       sortValue: (r) => r.exit_price,
       searchValue: (r) => String(r.exit_price ?? ''),
     },
     {
       key: 'exit_time',
       label: 'Exit Time',
+      group: 'exit',
       sortable: true,
       render: (r) => fmtTime(r.exit_time),
       sortValue: (r) => r.exit_time ?? '',
@@ -218,14 +255,21 @@ export function simColumns(
     {
       key: 'holding',
       label: 'Holding',
+      group: 'holding',
       sortable: true,
-      render: (r) => (r.holding_secs != null ? formatAge(r.holding_secs) : '—'),
+      render: (r) =>
+        r.holding_secs != null ? (
+          <span className={ageClass(r.holding_secs)}>{formatAge(r.holding_secs)}</span>
+        ) : (
+          '—'
+        ),
       sortValue: (r) => r.holding_secs,
       searchValue: () => '',
     },
     {
       key: 'pnl_pct',
       label: 'PnL%',
+      group: 'pnl',
       sortable: true,
       render: (r) => {
         if (r.pnl_percent == null) return <span className="text-text-dim">—</span>;
@@ -242,6 +286,7 @@ export function simColumns(
     {
       key: 'pnl_sol',
       label: 'PnL',
+      group: 'pnl',
       sortable: true,
       render: (r) => {
         if (r.pnl_sol == null) return <span className="text-text-dim">—</span>;
@@ -257,6 +302,7 @@ export function simColumns(
     {
       key: 'reason',
       label: 'Reason',
+      group: 'result',
       sortable: true,
       render: (r) => {
         if (r.exit_reason === 'LiquidityExit')
@@ -277,6 +323,7 @@ export function simColumns(
     {
       key: 'trades',
       label: 'Trades',
+      group: 'result',
       sortable: true,
       render: (r) => r.total_trades,
       sortValue: (r) => r.total_trades,

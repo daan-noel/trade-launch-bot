@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { DataTable } from 'components/table/DataTable';
+import { Badge, type BadgeVariant } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
 import { InlineAlert } from 'components/ui/Modal';
 import {
@@ -48,7 +49,7 @@ function SimProgressBar() {
     return () => clearInterval(id);
   }, []);
   return (
-    <div className="mt-4 rounded-lg border border-white/6 bg-white/2 p-4">
+    <div className="mt-4">
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className="text-[11px] font-bold uppercase tracking-widest text-primary">
           Running Simulation
@@ -61,6 +62,53 @@ function SimProgressBar() {
           style={{ width: `${percent}%` }}
         />
       </div>
+    </div>
+  );
+}
+
+/** Heading for a section: a colored marker bar + title + optional count badge,
+ *  subtitle, and right-aligned actions. Reused across the page so every section
+ *  reads at a glance — content sits directly below it, with no surrounding card
+ *  chrome, so only the real tables look like tables. */
+function SectionHeading({
+  title,
+  count,
+  marker = 'bg-primary',
+  badge = 'primary',
+  badgeClass,
+  size = 'h3',
+  subtitle,
+  action,
+}: {
+  title: string;
+  count?: number;
+  marker?: string;
+  badge?: BadgeVariant;
+  badgeClass?: string;
+  size?: 'h2' | 'h3';
+  subtitle?: ReactNode;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="mb-3.5 flex items-center gap-2.5">
+      <span className={cn('w-1 rounded-full', size === 'h2' ? 'h-5' : 'h-4', marker)} />
+      {size === 'h2' ? (
+        <h2 className="text-base font-bold text-primary">{title}</h2>
+      ) : (
+        <h3 className="text-sm font-bold text-text">{title}</h3>
+      )}
+      {count != null && (
+        <Badge variant={badge} size="sm" className={cn('font-mono font-normal', badgeClass)}>
+          {count}
+        </Badge>
+      )}
+      {subtitle && <span className="truncate font-mono text-[11px] text-text-dim">{subtitle}</span>}
+      {action && (
+        <>
+          <span className="flex-1" />
+          {action}
+        </>
+      )}
     </div>
   );
 }
@@ -317,26 +365,22 @@ export function TpslPage() {
     matchedResult &&
     rules.find((r) => r.id === matchedResult.ruleId)?.rule_name;
 
+  const selectedRuleName = selectedRuleId
+    ? rules.find((r) => r.id === selectedRuleId)?.rule_name ?? null
+    : null;
+
   return (
     <div>
-      {simResult && (
-        <SimSummaryCard
-          ruleName={simResult.ruleName}
-          tokens={simResult.tokens}
-          price={price}
-          onClose={() => {
-            setSimResult(null);
-            setSimError(null);
-          }}
-        />
-      )}
-
-      <div className="mb-3.5 flex items-center justify-between">
-        <h2 className="text-base font-bold text-primary">TPSL Strategies</h2>
-        <Button variant="primary" onClick={openAdd}>
-          + Add Rule
-        </Button>
-      </div>
+      <SectionHeading
+        size="h2"
+        title="TPSL Strategies"
+        count={!loading && !error ? rules.length : undefined}
+        action={
+          <Button variant="primary" onClick={openAdd}>
+            + Add Rule
+          </Button>
+        }
+      />
 
       {loading && <p className="text-text-dim">Loading rules…</p>}
       {error && <InlineAlert variant="error">{error}</InlineAlert>}
@@ -360,84 +404,99 @@ export function TpslPage() {
       )}
 
       {selectedRuleId && (
-        <div className="mt-4">
-          {positionsLoading && (
-            <p className="text-text-dim">Loading positions…</p>
-          )}
-          {positionsError && <InlineAlert variant="error">{positionsError}</InlineAlert>}
-          {!positionsLoading && !positionsError && (
-            <DataTable
-              columns={posCols}
-              rows={positions}
-              rowKey={(r) => r.id}
-              defaultPageSize={20}
-              pageSizeOptions={[20, 50, 100]}
-              colFilters
-              colToggle
-              selectable={false}
-              emptyMessage="No positions for this rule."
+        <>
+          <SectionDivider />
+          <section>
+            <SectionHeading
+              title="Positions"
+              marker="bg-info"
+              badge="info"
+              count={positionsLoading || positionsError ? undefined : positions.length}
+              subtitle={selectedRuleName ?? undefined}
             />
-          )}
-        </div>
+            {positionsLoading && <p className="text-text-dim">Loading positions…</p>}
+            {positionsError && <InlineAlert variant="error">{positionsError}</InlineAlert>}
+            {!positionsLoading && !positionsError && (
+              <DataTable
+                columns={posCols}
+                rows={positions}
+                rowKey={(r) => r.id}
+                defaultPageSize={20}
+                pageSizeOptions={[20, 50, 100]}
+                colFilters
+                colToggle
+                selectable={false}
+                emptyMessage="No positions for this rule."
+              />
+            )}
+          </section>
+        </>
       )}
 
-      {matchedLoading && (
-        <p className="mt-4 text-text-dim">Loading matched tokens…</p>
-      )}
+      {(matchedLoading || matchedError || matchedResult) && <SectionDivider />}
+      {matchedLoading && <p className="text-text-dim">Loading matched tokens…</p>}
       {matchedError && <InlineAlert variant="error">{matchedError}</InlineAlert>}
       {matchedResult && !matchedLoading && (
-        <div className="mt-4 overflow-hidden rounded-[10px] border border-primary/20 bg-white/2">
-          <div className="flex items-center justify-between border-b border-[#9370db]/12 bg-[#9370db]/6 px-4 py-2.5">
-            <span className="text-[13px] font-bold text-[#9370db]">
-              Matched Tokens — {matchedRuleName}{' '}
-              <span className="ml-2 rounded-full bg-[#9370db]/15 px-2 py-0.5 text-[10px]">
-                {matchedResult.tokens.length}
-              </span>
-            </span>
-            <button type="button" onClick={() => setMatchedResult(null)} className="text-text-dim">
-              ✕
-            </button>
-          </div>
+        <section>
+          <SectionHeading
+            title="Matched Tokens"
+            marker="bg-[#9370db]"
+            badge="neutral"
+            badgeClass="border-[#9370db]/40 bg-[#9370db]/12 text-[#9370db]"
+            count={matchedResult.tokens.length}
+            subtitle={matchedRuleName ?? undefined}
+            action={
+              <button
+                type="button"
+                onClick={() => setMatchedResult(null)}
+                className="text-text-dim transition hover:text-text"
+              >
+                ✕
+              </button>
+            }
+          />
           {matchedResult.tokens.length === 0 ? (
-            <p className="p-6 text-center text-text-dim">
+            <p className="text-text-dim">
               No tokens in the database match this rule&apos;s entry criteria.
             </p>
           ) : (
-            <div className="p-2">
-              <DataTable
-                columns={matchedColumns}
-                rows={matchedResult.tokens}
-                rowKey={(r) => r.mint}
-                defaultPageSize={20}
-                pageSizeOptions={[20, 50, 100]}
-                searchable
-                colFilters
-                selectable={false}
-              />
-            </div>
+            <DataTable
+              columns={matchedColumns}
+              rows={matchedResult.tokens}
+              rowKey={(r) => r.mint}
+              defaultPageSize={20}
+              pageSizeOptions={[20, 50, 100]}
+              searchable
+              colFilters
+              selectable={false}
+            />
           )}
-        </div>
+        </section>
       )}
 
       {(simLoading || simError || simResult) && <SectionDivider />}
       {simLoading && <SimProgressBar />}
       {simError && <InlineAlert variant="error">{simError}</InlineAlert>}
       {simResult && !simLoading && (
-        <div className="mt-4 overflow-hidden rounded-[10px] border border-primary/20 bg-white/2">
-          <div className="flex items-center justify-between border-b border-primary/15 bg-primary/7 px-4 py-2.5">
-            <span className="text-[13px] font-bold text-primary">
-              Simulated Tokens — {simResult.ruleName}{' '}
-              <span className="ml-2 rounded-full bg-primary/15 px-2 py-0.5 text-[10px]">
-                {simResult.tokens.length}
-              </span>
-            </span>
-          </div>
-          {simResult.tokens.length === 0 ? (
-            <p className="p-6 text-center text-text-dim">
-              No tokens matched this rule&apos;s entry criteria.
-            </p>
-          ) : (
-            <div className="p-2">
+        <>
+          <SimSummaryCard
+            ruleName={simResult.ruleName}
+            tokens={simResult.tokens}
+            price={price}
+            onClose={() => {
+              setSimResult(null);
+              setSimError(null);
+            }}
+          />
+          <section>
+            <SectionHeading
+              title="Simulated Tokens"
+              count={simResult.tokens.length}
+              subtitle={simResult.ruleName}
+            />
+            {simResult.tokens.length === 0 ? (
+              <p className="text-text-dim">No tokens matched this rule&apos;s entry criteria.</p>
+            ) : (
               <DataTable
                 columns={simCols}
                 rows={simResult.tokens}
@@ -448,9 +507,9 @@ export function TpslPage() {
                 colFilters
                 selectable={false}
               />
-            </div>
-          )}
-        </div>
+            )}
+          </section>
+        </>
       )}
 
       <RuleFormModal
