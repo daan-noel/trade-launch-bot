@@ -11,6 +11,7 @@ use super::{PumpFunTrader, TokenPDAs};
 use crate::constants::{PUMP_FUN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
 use solana_sdk::pubkey::Pubkey;
 use spl_associated_token_account::get_associated_token_address_with_program_id;
+use std::collections::HashMap;
 use std::str::FromStr;
 
 impl PumpFunTrader {
@@ -200,6 +201,58 @@ impl PumpFunTrader {
             token_program_id,
             is_migrated,
         })
+    }
+
+    /// Batch-resolve on-chain migration status for many mints in as few RPC
+    /// round-trips as possible. Reads each mint's bonding-curve PDA and inspects
+    /// the `complete` byte at offset 48 — the same source of truth the trade
+    /// path uses in [`resolve_buy_routing`], but via `getMultipleAccounts` so a
+    /// whole wallet costs one request per 100 mints instead of one per mint.
+    ///
+    /// Returns a map of mint -> is_migrated holding only the mints whose bonding
+    /// curve account exists and is long enough to read. Mints absent from the
+    /// map could not be resolved (not a pump.fun bonding-curve token, account
+    /// missing, or the RPC chunk errored); the caller decides how to treat that
+    /// "unknown" — e.g. fall back to a cached value.
+    pub async fn resolve_migrated_batch(&self, mints: &[String]) -> HashMap<String, bool> {
+        const COMPLETE_OFFSET: usize = 48;
+        let program_id = match Pubkey::from_str(PUMP_FUN_PROGRAM_ID) {
+            Ok(p) => p,
+            Err(_) => return HashMap::new(),
+        };
+
+        // Derive the bonding-curve PDA for every mint we can parse, keeping the
+        // mint string alongside it so results map back to the caller's keys.
+        let derived: Vec<(String, Pubkey)> = mints
+            .iter()
+            .filter_map(|m| {
+                let mint = Pubkey::from_str(m).ok()?;
+                let (bonding_curve, _) =
+                    Pubkey::find_program_address(&[b"bonding-curve", mint.as_ref()], &program_id);
+                Some((m.clone(), bonding_curve))
+            })
+            .collect();
+
+        let mut out = HashMap::new();
+        // getMultipleAccounts is capped at 100 accounts per request.
+        for chunk in derived.chunks(100) {
+            let pubkeys: Vec<Pubkey> = chunk.iter().map(|(_, pda)| *pda).collect();
+            let accounts = match self.rpc.get_multiple_accounts(&pubkeys).await {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::warn!("resolve_migrated_batch: get_multiple_accounts failed: {e}");
+                    continue;
+                }
+            };
+            for ((mint, _), account) in chunk.iter().zip(accounts) {
+                if let Some(acct) = account {
+                    if acct.data.len() > COMPLETE_OFFSET {
+                        out.insert(mint.clone(), acct.data[COMPLETE_OFFSET] != 0);
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Utility to fetch the creator pubkey for a given mint by reading the bonding curve PDA account.

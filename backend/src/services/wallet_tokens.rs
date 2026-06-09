@@ -36,7 +36,23 @@ async fn enrich_holdings(
 ) -> Vec<EnrichedWalletHolding> {
     let mints: Vec<String> = holdings.iter().map(|h| h.mint.clone()).collect();
 
-    let jupiter = match jupiter::fetch_prices(&mints).await {
+    // The cache is authoritative for tracked tokens — the live stream flips
+    // `is_migrated` on the migration event. Only mints the cache has never seen
+    // (e.g. one bought manually and never ingested) need the on-chain fallback,
+    // so resolve just those; with none, `resolve_migrated_batch` skips the RPC.
+    let uncached: Vec<String> = mints
+        .iter()
+        .filter(|m| !state.token_cache.contains_key(m.as_str()))
+        .cloned()
+        .collect();
+
+    // Prices (Jupiter) and the on-chain migration fallback are independent
+    // network reads — fire them together.
+    let (jupiter, chain_migrated) = tokio::join!(
+        jupiter::fetch_prices(&mints),
+        state.trader.resolve_migrated_batch(&uncached),
+    );
+    let jupiter = match jupiter {
         Ok(prices) => prices,
         Err(e) => {
             warn!("Jupiter price fetch failed: {e}");
@@ -53,7 +69,14 @@ async fn enrich_holdings(
             let cached = state.token_cache.get(&h.mint);
             EnrichedWalletHolding {
                 symbol: cached.as_ref().map(|s| s.token.symbol.clone()),
-                is_migrated: cached.as_ref().map(|s| s.is_migrated).unwrap_or(false),
+                // Cache first (live stream is authoritative for tracked tokens);
+                // fall back to the on-chain read only for mints the cache never
+                // saw, so a manually-bought migrated token still shows as AMM.
+                is_migrated: cached
+                    .as_ref()
+                    .map(|s| s.is_migrated)
+                    .or_else(|| chain_migrated.get(&h.mint).copied())
+                    .unwrap_or(false),
                 is_cashback_enabled: cached
                     .as_ref()
                     .map(|s| s.token.is_cashback_enabled)

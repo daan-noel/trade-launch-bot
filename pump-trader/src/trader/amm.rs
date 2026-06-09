@@ -2,9 +2,7 @@
 // PumpSwap AMM (migrated tokens).
 //
 // Once a token graduates off the bonding curve, trading moves to the PumpSwap
-// (pump_amm) program. This module implements buy/sell against that AMM, plus a
-// `simulateTransaction` dry-run for validating the account layout before any
-// live send.
+// (pump_amm) program. This module implements buy/sell against that AMM.
 //
 // Account layouts, discriminators, PDA seeds, and the Pool/GlobalConfig struct
 // offsets are taken from the on-chain Anchor IDL committed at
@@ -17,7 +15,7 @@
 // a WSOL token account (buy) / unwraps proceeds (sell) and closes it afterward.
 // ============================================================
 
-use super::{AmmGlobalConfig, AmmPoolInfo, AmmSimulation, PumpFunTrader};
+use super::{AmmGlobalConfig, AmmPoolInfo, PumpFunTrader};
 use crate::constants::{
     AMM_CONFIG_COIN_CREATOR_FEE_BPS_OFFSET, AMM_CONFIG_FEE_RECIPIENTS_OFFSET,
     AMM_CONFIG_LP_FEE_BPS_OFFSET, AMM_CONFIG_MIN_LEN, AMM_CONFIG_PROTOCOL_FEE_BPS_OFFSET,
@@ -27,14 +25,11 @@ use crate::constants::{
 };
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::json;
-use solana_client::rpc_config::RpcSimulateTransactionConfig;
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
-    message::Message,
     pubkey::Pubkey,
     signature::Signer,
     system_instruction,
-    transaction::Transaction,
 };
 use spl_associated_token_account::{
     get_associated_token_address_with_program_id,
@@ -42,7 +37,7 @@ use spl_associated_token_account::{
 };
 use std::str::FromStr;
 use std::time::Instant;
-use tracing::{info, warn};
+use tracing::info;
 
 // Anchor instruction discriminators (from pump_amm.json). We use the original
 // `buy` (exact base out, max quote in); `buy_exact_quote_in` would also work.
@@ -176,55 +171,6 @@ impl PumpFunTrader {
 
         self.schedule_nonce_refresh(nonce_pubkey);
         result
-    }
-
-    /// Dry-run an AMM buy via `simulateTransaction` (no nonce, no send).
-    /// Use this to validate account derivations before enabling live sends.
-    pub async fn amm_simulate_buy(
-        &self,
-        token_mint: &str,
-        base_token_program_id: &str,
-        sol_amount: f64,
-        pool_override: Option<&str>,
-        slippage_bps: Option<u64>,
-    ) -> Result<AmmSimulation> {
-        let user = self.config.keypair.pubkey();
-        let (core_ixs, _) = self
-            .build_amm_buy_ixs(
-                token_mint,
-                base_token_program_id,
-                sol_amount,
-                pool_override,
-                slippage_bps,
-                &user,
-            )
-            .await?;
-        self.simulate_amm(core_ixs).await
-    }
-
-    /// Dry-run an AMM sell via `simulateTransaction` (no nonce, no send).
-    pub async fn amm_simulate_sell(
-        &self,
-        token_mint: &str,
-        token_amount: u64,
-        base_token_program_id: &str,
-        pool_override: Option<&str>,
-        token_account_override: Option<&str>,
-        slippage_bps: Option<u64>,
-    ) -> Result<AmmSimulation> {
-        let user = self.config.keypair.pubkey();
-        let core_ixs = self
-            .build_amm_sell_ixs(
-                token_mint,
-                token_amount,
-                base_token_program_id,
-                pool_override,
-                token_account_override,
-                slippage_bps,
-                &user,
-            )
-            .await?;
-        self.simulate_amm(core_ixs).await
     }
 
     // -----------------------------------------------------------------------
@@ -733,46 +679,6 @@ impl PumpFunTrader {
             &self.fee_program,
         )
         .0
-    }
-
-    // -----------------------------------------------------------------------
-    // Simulation
-    // -----------------------------------------------------------------------
-
-    async fn simulate_amm(&self, core_ixs: Vec<Instruction>) -> Result<AmmSimulation> {
-        let mut ixs = Vec::with_capacity(core_ixs.len() + self.compute_budget_ixs.len());
-        ixs.extend_from_slice(&self.compute_budget_ixs);
-        ixs.extend(core_ixs);
-
-        let payer = self.config.keypair.pubkey();
-        let msg = Message::new(&ixs, Some(&payer));
-        let tx = Transaction::new_unsigned(msg);
-
-        let cfg = RpcSimulateTransactionConfig {
-            sig_verify: false,
-            replace_recent_blockhash: true,
-            ..Default::default()
-        };
-        let res = self
-            .rpc
-            .simulate_transaction_with_config(&tx, cfg)
-            .await
-            .context("simulateTransaction failed")?;
-
-        let sim = AmmSimulation {
-            err: res.value.err.map(|e| format!("{:?}", e)),
-            units_consumed: res.value.units_consumed,
-            logs: res.value.logs.unwrap_or_default(),
-        };
-        if let Some(err) = &sim.err {
-            warn!("🧪 AMM simulate returned error: {}", err);
-        } else {
-            info!(
-                "🧪 AMM simulate OK — {} CU",
-                sim.units_consumed.unwrap_or(0)
-            );
-        }
-        Ok(sim)
     }
 }
 

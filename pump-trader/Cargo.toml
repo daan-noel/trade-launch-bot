@@ -46,9 +46,3 @@ solana-sdk = "1.17.27"
 spl-associated-token-account = "2.2"
 spl-token = "=4.0.0"
 spl-token-2022 = "=1.0.0"
-
-[dev-dependencies]
-# Used only by examples (e.g. amm_simulate): decode WALLET_PRIVATE_KEY + load .env.
-bs58 = "0.5"
-dotenvy = "0.15"
-tokio = { version = "1", features = ["rt", "macros"] }

@@ -124,17 +124,6 @@ pub(crate) struct AmmGlobalConfig {
     pub protocol_fee_recipient: Pubkey,
 }
 
-/// Outcome of a dry-run `simulateTransaction` for an AMM swap.
-#[derive(Debug, Clone)]
-pub struct AmmSimulation {
-    /// `Some(..)` if the transaction would fail; the on-chain error, debug-formatted.
-    pub err: Option<String>,
-    /// Compute units the simulation consumed, if reported.
-    pub units_consumed: Option<u64>,
-    /// Program log lines from the simulation.
-    pub logs: Vec<String>,
-}
-
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
