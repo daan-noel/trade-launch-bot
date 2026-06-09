@@ -41,6 +41,34 @@ export function MyWalletPage() {
     loadHoldings();
   }, [loadHoldings]);
 
+  // After a confirmed trade the wallet's new on-chain balance can lag the RPC
+  // read by a moment, so a single refresh often captures the pre-trade balance
+  // and the table appears unchanged. Re-fetch a few times until the affected
+  // holding's raw amount actually moves (buy → up / new token appears,
+  // sell → down), then resolve the status message so it never looks stuck.
+  const refreshAfterTrade = useCallback(
+    async (mint: string, prevAmount: number | undefined, label: string) => {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        try {
+          const next = await dispatch(loadWalletHoldings()).unwrap();
+          const current = next.find((h) => h.mint === mint)?.amount;
+          if (current !== prevAmount) {
+            setActionSuccess(`${label} successful — holdings updated.`);
+            return;
+          }
+        } catch {
+          // Transient RPC/Jupiter error during refresh; the thunk already
+          // recorded it for the inline alert. Keep retrying.
+        }
+      }
+      setActionSuccess(
+        `${label} confirmed. Balances are taking a moment to update on-chain — hit ↻ Refresh.`,
+      );
+    },
+    [dispatch],
+  );
+
   const handleSell = useCallback(
     async (mint: string, tokenAmount: number) => {
       const holding = holdings.find((h) => h.mint === mint);
@@ -59,23 +87,23 @@ export function MyWalletPage() {
           token_amount: tokenAmount,
           token_account: holding.token_account,
         });
-        setActionSuccess('Sell successful! Refreshing…');
-        setTimeout(loadHoldings, 1500);
+        setActionSuccess('Sell submitted — refreshing holdings…');
+        void refreshAfterTrade(mint, holding.amount, 'Sell');
       } catch (e) {
         setActionError(`Sell failed: ${e instanceof Error ? e.message : 'unknown error'}`);
       } finally {
         setSellingMint(null);
       }
     },
-    [holdings, loadHoldings],
+    [holdings, refreshAfterTrade],
   );
 
   const handleBuyOpen = useCallback((mint: string, tokenProgramId: string) => {
-    setBuyDialog({ mint, tokenProgramId, solInput: '0.1', slippageInput: '', manual: false });
+    setBuyDialog({ mint, tokenProgramId, solInput: '0.001', slippageInput: '', manual: false });
   }, []);
 
   const handleManualBuyOpen = useCallback(() => {
-    setBuyDialog({ mint: '', solInput: '0.1', slippageInput: '', manual: true });
+    setBuyDialog({ mint: '', solInput: '0.001', slippageInput: '', manual: true });
   }, []);
 
   const handleBuySubmit = useCallback(async () => {
@@ -104,6 +132,10 @@ export function MyWalletPage() {
       slippageBps = Math.round(slipPct * 100);
     }
 
+    // Snapshot the pre-buy balance (undefined for a token we don't hold yet) so
+    // the refresh can tell when the new tokens have landed.
+    const prevAmount = holdings.find((h) => h.mint === mint)?.amount;
+
     setActionError(null);
     setActionSuccess(null);
     setBuyDialog(null);
@@ -118,12 +150,12 @@ export function MyWalletPage() {
           : {}),
         ...(slippageBps !== undefined ? { slippage_bps: slippageBps } : {}),
       });
-      setActionSuccess('Buy successful! Refreshing…');
-      setTimeout(loadHoldings, 1500);
+      setActionSuccess('Buy submitted — refreshing holdings…');
+      void refreshAfterTrade(mint, prevAmount, 'Buy');
     } catch (e) {
       setActionError(`Buy failed: ${e instanceof Error ? e.message : 'unknown error'}`);
     }
-  }, [buyDialog, loadHoldings]);
+  }, [buyDialog, holdings, refreshAfterTrade]);
 
   const columns = useMemo(
     () =>
@@ -216,7 +248,7 @@ export function MyWalletPage() {
                 type="number"
                 fieldSize="md"
                 min={0.001}
-                step={0.01}
+                step={0.001}
                 value={buyDialog.solInput}
                 onChange={(e) =>
                   setBuyDialog((d) => (d ? { ...d, solInput: e.target.value } : d))
