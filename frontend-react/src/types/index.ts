@@ -129,6 +129,8 @@ export interface WalletHolding {
   liquidity: number | null;
   price_change_24h: number | null;
   token_created_at: string | null;
+  is_migrated: boolean;
+  is_cashback_enabled: boolean;
 }
 
 export interface TokenDetailRecord {

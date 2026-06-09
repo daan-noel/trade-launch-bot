@@ -2,6 +2,7 @@ import type { ColumnDef } from 'components/table/types';
 import type { WalletHolding } from 'types';
 import { cn } from 'lib/cn';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
+import { Badge } from 'components/ui/Badge';
 
 function formatPriceUsd(p: number): string {
   if (p < 0.0001) return `$${p.toFixed(8)}`;
@@ -116,6 +117,34 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
         ),
       sortValue: (r) => r.token_created_at ?? '',
       searchValue: (r) => r.token_created_at ?? '',
+    },
+    {
+      key: 'migrated',
+      label: 'Migrated',
+      width: '80px',
+      sortable: true,
+      render: (r) =>
+        r.is_migrated ? (
+          <Badge variant="primary">AMM</Badge>
+        ) : (
+          <span className="text-text-dim">Curve</span>
+        ),
+      sortValue: (r) => (r.is_migrated ? 1 : 0),
+      searchValue: (r) => (r.is_migrated ? 'migrated amm' : 'curve'),
+    },
+    {
+      key: 'cashback',
+      label: 'Cashback',
+      width: '80px',
+      sortable: true,
+      render: (r) =>
+        r.is_cashback_enabled ? (
+          <Badge variant="success">✓</Badge>
+        ) : (
+          <span className="text-text-dim">—</span>
+        ),
+      sortValue: (r) => (r.is_cashback_enabled ? 1 : 0),
+      searchValue: (r) => String(r.is_cashback_enabled),
     },
     {
       key: 'amount',

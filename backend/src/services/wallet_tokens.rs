@@ -19,6 +19,10 @@ pub struct EnrichedWalletHolding {
     pub liquidity: Option<f64>,
     pub price_change_24h: Option<f64>,
     pub token_created_at: Option<String>,
+    /// Whether this token has migrated from the bonding curve to the AMM.
+    pub is_migrated: bool,
+    /// Whether cashback was enabled at token creation (create_v2 only).
+    pub is_cashback_enabled: bool,
 }
 
 pub async fn list_enriched(state: &AppState) -> anyhow::Result<Vec<EnrichedWalletHolding>> {
@@ -46,11 +50,14 @@ async fn enrich_holdings(
             let entry = jupiter.get(&h.mint);
             let price_usd = entry.and_then(|e| e.price_usd);
             let value_usd = price_usd.map(|p| p * h.ui_amount);
+            let cached = state.token_cache.get(&h.mint);
             EnrichedWalletHolding {
-                symbol: state
-                    .token_cache
-                    .get(&h.mint)
-                    .map(|s| s.token.symbol.clone()),
+                symbol: cached.as_ref().map(|s| s.token.symbol.clone()),
+                is_migrated: cached.as_ref().map(|s| s.is_migrated).unwrap_or(false),
+                is_cashback_enabled: cached
+                    .as_ref()
+                    .map(|s| s.token.is_cashback_enabled)
+                    .unwrap_or(false),
                 price_usd,
                 value_usd,
                 liquidity: entry.and_then(|e| e.liquidity),
