@@ -365,6 +365,32 @@ impl TpslStrategyService {
 // Trading helpers — used only by TPSL for now
 // ---------------------------------------------------------------------------
 
+/// Decision for a snipe buy that was sent but whose fill never appeared in the
+/// WS/DB feed within the poll window. Centralizing it keeps the **double-buy
+/// safety rule** — *re-send only on a confirmed on-chain revert* — in one place
+/// that is unit-tested without a live chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SilentSendOutcome {
+    /// Tx reverted on-chain (no tokens bought) — safe to re-send.
+    Resend,
+    /// Tx landed but isn't indexed yet — wait for the row; never re-send (a
+    /// second buy would double-fill).
+    WaitThenSettle,
+    /// Pending/dropped, or the status check failed — ambiguous, so give up rather
+    /// than risk double-buying from a nonce tx that could still land.
+    GiveUp,
+}
+
+/// Map a one-shot `signature_state` result to the post-poll action. Pure; generic
+/// over the error type so tests need no `anyhow` value.
+fn classify_silent_send<E>(status: &Result<Option<bool>, E>) -> SilentSendOutcome {
+    match status {
+        Ok(Some(false)) => SilentSendOutcome::Resend,
+        Ok(Some(true)) => SilentSendOutcome::WaitThenSettle,
+        Ok(None) | Err(_) => SilentSendOutcome::GiveUp,
+    }
+}
+
 async fn buy_with_retries(
     trader: Arc<PumpFunTrader>,
     mint: String,
@@ -414,14 +440,16 @@ async fn buy_with_retries(
             return;
         }
 
-        // The fill never showed within the window. Classify the submitted tx with a
-        // single status check, and only re-send when it provably produced no fill.
-        match trader.signature_state(&signature).await {
-            Ok(Some(false)) => {
+        // The fill never showed within the window. One status check decides the
+        // next move; the decision table lives in `classify_silent_send` so the
+        // double-buy invariant is unit-tested without a live chain.
+        let status = trader.signature_state(&signature).await;
+        match classify_silent_send(&status) {
+            SilentSendOutcome::Resend => {
                 // Reverted on-chain (e.g. slippage) → no tokens bought → safe to retry.
                 warn!(mint = %mint, attempt, sig = %signature, "buy reverted on-chain; retrying");
             }
-            Ok(Some(true)) => {
+            SilentSendOutcome::WaitThenSettle => {
                 // Landed, but the indexer is lagging. Re-sending would double-buy, so
                 // wait one more window for the row rather than fire again.
                 warn!(mint = %mint, sig = %signature,
@@ -435,16 +463,15 @@ async fn buy_with_retries(
                     "buy confirmed on-chain but never indexed — leaving position unentered for review");
                 return;
             }
-            Ok(None) => {
-                // Neither indexed nor visible on-chain. A durable-nonce tx can still
-                // land later, so re-sending risks a double-buy — give up instead.
-                warn!(mint = %mint, sig = %signature,
-                    "buy neither indexed nor on-chain; not re-sending (double-buy risk)");
-                return;
-            }
-            Err(err) => {
-                warn!(mint = %mint, sig = %signature,
-                    "buy status check failed: {err}; not re-sending (double-buy risk)");
+            SilentSendOutcome::GiveUp => {
+                // Pending/dropped, or the status check failed. A durable-nonce tx can
+                // still land later, so re-sending risks a double-buy — give up instead.
+                match &status {
+                    Err(err) => warn!(mint = %mint, sig = %signature,
+                        "buy status check failed: {err}; not re-sending (double-buy risk)"),
+                    _ => warn!(mint = %mint, sig = %signature,
+                        "buy neither indexed nor on-chain; not re-sending (double-buy risk)"),
+                }
                 return;
             }
         }
@@ -719,4 +746,42 @@ async fn sell_with_retries(
     }
 
     amount == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{classify_silent_send, SilentSendOutcome};
+
+    fn outcome(status: Result<Option<bool>, &'static str>) -> SilentSendOutcome {
+        classify_silent_send(&status)
+    }
+
+    #[test]
+    fn confirmed_revert_is_the_only_resend() {
+        // `Ok(Some(false))` == landed-but-failed on-chain → no fill → safe to retry.
+        assert_eq!(outcome(Ok(Some(false))), SilentSendOutcome::Resend);
+    }
+
+    #[test]
+    fn landed_but_unindexed_waits_never_resends() {
+        assert_eq!(outcome(Ok(Some(true))), SilentSendOutcome::WaitThenSettle);
+    }
+
+    #[test]
+    fn pending_gives_up_to_avoid_double_buy() {
+        assert_eq!(outcome(Ok(None)), SilentSendOutcome::GiveUp);
+    }
+
+    #[test]
+    fn status_error_gives_up_to_avoid_double_buy() {
+        assert_eq!(outcome(Err("rpc down")), SilentSendOutcome::GiveUp);
+    }
+
+    #[test]
+    fn nothing_but_a_confirmed_revert_ever_resends() {
+        // The double-buy invariant: only a proven on-chain revert may re-send.
+        for status in [Ok(Some(true)), Ok(None), Err("x")] {
+            assert_ne!(outcome(status), SilentSendOutcome::Resend);
+        }
+    }
 }

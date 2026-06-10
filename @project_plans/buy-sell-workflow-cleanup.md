@@ -130,8 +130,11 @@ Net sell attempts per exit: curve **300 → ≤ 6**, AMM **60 → ≤ 6**.
   pending/unknown (`None`) give up — never re-send a possibly-live nonce tx
   (double-buy guard). A top-of-attempt `record_entry_if_present` adopts any fill
   that landed before re-sending. Net: happy path drops ~5 RPC calls + the
-  serialized confirm window; failure path keeps revert-retry. **Open:** validate on
-  a low-size live snipe (watch re-send / poll-timeout rates); tune the per-attempt
+  serialized confirm window; failure path keeps revert-retry. The post-poll
+  decision is extracted into a pure `classify_silent_send` (enum `SilentSendOutcome`)
+  with 5 unit tests (`service_tpsl.rs`) that lock the double-buy invariant —
+  *re-send only on a confirmed on-chain revert* — without a chain/SOL. **Open:**
+  validate on a low-size live snipe (watch re-send / poll-timeout rates); tune the per-attempt
   poll window (currently `BUY_POLL_MAX_ATTEMPTS`×`BUY_POLL_INTERVAL_MS` = 12×1s) for
   faster revert detection; a dropped-tx (`None`) could later be safely re-sent via
   nonce-account introspection (future).
