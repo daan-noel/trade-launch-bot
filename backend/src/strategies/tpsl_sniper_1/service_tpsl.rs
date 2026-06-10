@@ -376,65 +376,77 @@ async fn buy_with_retries(
     trade_repo: TradeRepo,
     runtime: Arc<TpslRuntimeCache>,
 ) {
-    let mut attempt = 0usize;
+    let wallet = trader.wallet_pubkey();
     let max_attempts = TpslStrategyService::BUY_MAX_ATTEMPTS;
     let mut backoff_ms = 500u64;
 
-    while attempt < max_attempts {
-        attempt += 1;
-        // Snipe path: this token was just seen via the create event, so the
-        // wallet provably holds no account for it yet — skip the ATA-existence
-        // RPC and go straight to the seed-account buy.
-        match trader
+    for attempt in 1..=max_attempts {
+        // Never double-send: if a previous attempt's buy has since landed and been
+        // indexed, adopt that fill instead of firing another buy.
+        if record_entry_if_present(&mint, &wallet, position_id, &position_repo, &trade_repo, &runtime)
+            .await
+        {
+            return;
+        }
+
+        // Snipe send WITHOUT the blocking RPC confirm — the WS/DB trade feed below
+        // is the sole confirmation and the entry-price source. `buy_token_snipe`
+        // returns the submitted signature so a silent feed can be classified.
+        let signature = match trader
             .buy_token_snipe(&mint, &creator, &token_program_id, buy_amount, None)
             .await
         {
-            Ok(true) => {
-                info!(mint = %mint, attempt, "buy succeeded");
-                let wallet = trader.wallet_pubkey();
-                let mut poll_attempts = 0usize;
-                while poll_attempts < TpslStrategyService::BUY_POLL_MAX_ATTEMPTS {
-                    poll_attempts += 1;
-                    match trade_repo.find_by_mint(&mint, 20).await {
-                        Ok(trades) => {
-                            if let Some(t) = trades.into_iter().find(|t| {
-                                t.wallet_address == wallet
-                                    && t.trade_type == crate::models::trade::TradeType::Buy
-                            }) {
-                                if let Ok(Some(prev)) = position_repo.find_by_id(position_id).await {
-                                    if let Err(err) = position_repo
-                                        .update_entry(
-                                            position_id,
-                                            &t.tx_signature,
-                                            t.token_amount,
-                                            t.price_per_token,
-                                            t.block_time,
-                                        )
-                                        .await
-                                    {
-                                        warn!("Failed to update position entry after buy confirmation: {err}");
-                                    } else if let Ok(Some(current)) =
-                                        position_repo.find_by_id(position_id).await
-                                    {
-                                        runtime.sync_position(Some(&prev), &current);
-                                        info!(mint = %mint, tx = %t.tx_signature,
-                                            "Position updated with buy confirmation");
-                                    }
-                                }
-                                return;
-                            }
-                        }
-                        Err(err) => {
-                            warn!("Failed to query trades for confirmation: {err}");
-                        }
-                    }
-                    sleep(Duration::from_millis(TpslStrategyService::BUY_POLL_INTERVAL_MS)).await;
+            Ok(sig) => sig,
+            Err(err) => {
+                warn!(mint = %mint, attempt, "buy send failed: {err}");
+                if attempt < max_attempts {
+                    sleep(Duration::from_millis(backoff_ms)).await;
+                    backoff_ms = (backoff_ms * 2).saturating_add(100);
                 }
-                warn!(mint = %mint, "Timed out waiting for buy confirmation events");
+                continue;
+            }
+        };
+        info!(mint = %mint, attempt, sig = %signature,
+            "buy submitted (no RPC confirm); polling WS feed for fill");
+
+        // Poll the WS-fed trade feed for this wallet's buy row.
+        if poll_for_entry(&mint, &wallet, position_id, &position_repo, &trade_repo, &runtime).await {
+            return;
+        }
+
+        // The fill never showed within the window. Classify the submitted tx with a
+        // single status check, and only re-send when it provably produced no fill.
+        match trader.signature_state(&signature).await {
+            Ok(Some(false)) => {
+                // Reverted on-chain (e.g. slippage) → no tokens bought → safe to retry.
+                warn!(mint = %mint, attempt, sig = %signature, "buy reverted on-chain; retrying");
+            }
+            Ok(Some(true)) => {
+                // Landed, but the indexer is lagging. Re-sending would double-buy, so
+                // wait one more window for the row rather than fire again.
+                warn!(mint = %mint, sig = %signature,
+                    "buy landed but not yet indexed; awaiting fill without re-send");
+                if poll_for_entry(&mint, &wallet, position_id, &position_repo, &trade_repo, &runtime)
+                    .await
+                {
+                    return;
+                }
+                warn!(mint = %mint, sig = %signature,
+                    "buy confirmed on-chain but never indexed — leaving position unentered for review");
                 return;
             }
-            Ok(false) => warn!(mint = %mint, attempt, "buy returned false (no-op)"),
-            Err(err) => warn!(mint = %mint, attempt, "buy error: {err}"),
+            Ok(None) => {
+                // Neither indexed nor visible on-chain. A durable-nonce tx can still
+                // land later, so re-sending risks a double-buy — give up instead.
+                warn!(mint = %mint, sig = %signature,
+                    "buy neither indexed nor on-chain; not re-sending (double-buy risk)");
+                return;
+            }
+            Err(err) => {
+                warn!(mint = %mint, sig = %signature,
+                    "buy status check failed: {err}; not re-sending (double-buy risk)");
+                return;
+            }
         }
 
         if attempt < max_attempts {
@@ -444,6 +456,70 @@ async fn buy_with_retries(
             warn!(mint = %mint, "buy failed after {max_attempts} attempts");
         }
     }
+}
+
+/// Poll the WS-fed trade feed for this wallet's buy on `mint`; on first sight,
+/// record the entry and sync the runtime cache. Returns true once an entry has
+/// been recorded, false if the poll window elapses without a fill.
+async fn poll_for_entry(
+    mint: &str,
+    wallet: &str,
+    position_id: Uuid,
+    position_repo: &PositionRepo,
+    trade_repo: &TradeRepo,
+    runtime: &Arc<TpslRuntimeCache>,
+) -> bool {
+    for _ in 0..TpslStrategyService::BUY_POLL_MAX_ATTEMPTS {
+        if record_entry_if_present(mint, wallet, position_id, position_repo, trade_repo, runtime).await
+        {
+            return true;
+        }
+        sleep(Duration::from_millis(TpslStrategyService::BUY_POLL_INTERVAL_MS)).await;
+    }
+    false
+}
+
+/// If a buy by `wallet` on `mint` is already present in the trade feed, record it
+/// as the position entry (price/amount/tx/time come from the on-chain fill) and
+/// return true; otherwise return false without sleeping.
+async fn record_entry_if_present(
+    mint: &str,
+    wallet: &str,
+    position_id: Uuid,
+    position_repo: &PositionRepo,
+    trade_repo: &TradeRepo,
+    runtime: &Arc<TpslRuntimeCache>,
+) -> bool {
+    let trades = match trade_repo.find_by_mint(mint, 20).await {
+        Ok(trades) => trades,
+        Err(err) => {
+            warn!(mint = %mint, "failed to query trades for buy confirmation: {err}");
+            return false;
+        }
+    };
+    let Some(fill) = trades.into_iter().find(|t| {
+        t.wallet_address == wallet && t.trade_type == crate::models::trade::TradeType::Buy
+    }) else {
+        return false;
+    };
+    if let Ok(Some(prev)) = position_repo.find_by_id(position_id).await {
+        if let Err(err) = position_repo
+            .update_entry(
+                position_id,
+                &fill.tx_signature,
+                fill.token_amount,
+                fill.price_per_token,
+                fill.block_time,
+            )
+            .await
+        {
+            warn!(mint = %mint, "failed to update position entry after buy: {err}");
+        } else if let Ok(Some(current)) = position_repo.find_by_id(position_id).await {
+            runtime.sync_position(Some(&prev), &current);
+            info!(mint = %mint, tx = %fill.tx_signature, "position entry recorded from buy fill");
+        }
+    }
+    true
 }
 
 async fn execute_sell_for_position(

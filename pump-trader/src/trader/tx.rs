@@ -133,4 +133,18 @@ impl PumpFunTrader {
 
         anyhow::bail!("Confirmation timed out for {}", signature)
     }
+
+    /// One-shot signature status (no polling). Lets the snipe buy path classify a
+    /// sent-but-unconfirmed tx without blocking on confirmation:
+    ///   `Ok(Some(true))`  — landed and succeeded
+    ///   `Ok(Some(false))` — landed but failed on-chain (reverted)
+    ///   `Ok(None)`        — not yet visible (still pending, or dropped)
+    pub async fn signature_state(&self, signature: &str) -> Result<Option<bool>> {
+        let sig = Signature::from_str(signature)?;
+        Ok(match self.rpc.get_signature_status(&sig).await? {
+            Some(Ok(())) => Some(true),
+            Some(Err(_)) => Some(false),
+            None => None,
+        })
+    }
 }

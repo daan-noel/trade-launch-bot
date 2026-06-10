@@ -31,8 +31,9 @@ impl PumpFunTrader {
         sol_amount: f64,
         slippage_bps: Option<u64>,
     ) -> Result<bool> {
-        self.buy_token_inner(token_mint, creator, token_program_id, sol_amount, slippage_bps, false)
+        self.buy_token_inner(token_mint, creator, token_program_id, sol_amount, slippage_bps, false, false)
             .await
+            .map(|_sig| true)
     }
 
     /// Latency-optimized buy for fresh-token snipes. Identical to [`buy_token`]
@@ -42,6 +43,10 @@ impl PumpFunTrader {
     /// regardless. If that assumption is ever wrong, the only consequence is one
     /// extra create-with-seed token account (a few thousand lamports of rent),
     /// never a failed or misrouted trade.
+    ///
+    /// Returns the submitted transaction signature *without* blocking on RPC
+    /// confirmation — the caller confirms via the WS/DB trade feed and may use
+    /// `signature_state` to classify a send that the feed never surfaces.
     pub async fn buy_token_snipe(
         &self,
         token_mint: &str,
@@ -49,8 +54,8 @@ impl PumpFunTrader {
         token_program_id: &str,
         sol_amount: f64,
         slippage_bps: Option<u64>,
-    ) -> Result<bool> {
-        self.buy_token_inner(token_mint, creator, token_program_id, sol_amount, slippage_bps, true)
+    ) -> Result<String> {
+        self.buy_token_inner(token_mint, creator, token_program_id, sol_amount, slippage_bps, true, true)
             .await
     }
 
@@ -62,14 +67,15 @@ impl PumpFunTrader {
         sol_amount: f64,
         slippage_bps: Option<u64>,
         skip_ata_check: bool,
-    ) -> Result<bool> {
+        skip_confirm: bool,
+    ) -> Result<String> {
         let t0 = Instant::now();
         let buy_lamports = (sol_amount * LAMPORTS_PER_SOL as f64) as u64;
         let keypair = &self.config.keypair;
 
         let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
 
-        let result: Result<bool> = async {
+        let result: Result<String> = async {
             let global = self.global_account.as_ref().context("Not initialized")?;
 
             let mint = Pubkey::from_str(token_mint)?;
@@ -221,14 +227,16 @@ impl PumpFunTrader {
                 t0.elapsed().as_millis()
             );
 
-            self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES)
-                .await?;
-            info!(
-                "✅ Buy confirmed — sig: {} | {}ms",
-                sig,
-                t0.elapsed().as_millis()
-            );
-            Ok(true)
+            if !skip_confirm {
+                self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES)
+                    .await?;
+                info!(
+                    "✅ Buy confirmed — sig: {} | {}ms",
+                    sig,
+                    t0.elapsed().as_millis()
+                );
+            }
+            Ok(sig)
         }
         .await;
 

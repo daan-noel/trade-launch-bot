@@ -117,9 +117,24 @@ Net sell attempts per exit: curve **300 → ≤ 6**, AMM **60 → ≤ 6**.
   No trait abstraction was needed. Future `tpsl_sniper_2/3/4` differ only in
   entry/exit; the next step is a shared core with a swappable `find_entry` /
   `find_exit` seam.
-- **Single confirmation source.** Drop the blocking RPC confirm on the snipe buy
-  entirely and let the WS/DB poll be the sole confirmation (it already sets entry
-  price). Left out of this pass to keep the change set reviewable.
+- ~~**Single confirmation source.**~~ **IMPLEMENTED (2026-06-10) — pending live
+  validation.** The snipe buy double-confirmed the same event in series: an RPC
+  `confirm_transaction` inside `buy_token_snipe` (`buy.rs`), *then* the strategy's
+  WS/DB poll (`service_tpsl.rs`) which is what actually sets entry price/amount
+  from the on-chain fill. Dropped the RPC confirm on the snipe path only
+  (`skip_confirm`; manual `buy_token` keeps it). `buy_token_snipe` now returns the
+  submitted signature; `buy_with_retries` was restructured so the WS/DB poll is the
+  sole confirmation, with `signature_state` (one-shot status check, new in `tx.rs`)
+  classifying a silent send: **re-send only on a confirmed on-chain revert**
+  (`Some(false)`); on landed-but-lagging (`Some(true)`) wait without re-send; on
+  pending/unknown (`None`) give up — never re-send a possibly-live nonce tx
+  (double-buy guard). A top-of-attempt `record_entry_if_present` adopts any fill
+  that landed before re-sending. Net: happy path drops ~5 RPC calls + the
+  serialized confirm window; failure path keeps revert-retry. **Open:** validate on
+  a low-size live snipe (watch re-send / poll-timeout rates); tune the per-attempt
+  poll window (currently `BUY_POLL_MAX_ATTEMPTS`×`BUY_POLL_INTERVAL_MS` = 12×1s) for
+  faster revert detection; a dropped-tx (`None`) could later be safely re-sent via
+  nonce-account introspection (future).
 - **`getMultipleAccounts`/PDA-derivation helper** shared across buy + query.
 
 ---
