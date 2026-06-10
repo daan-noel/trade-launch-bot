@@ -204,6 +204,7 @@ impl TpslStrategyService {
                             position_repo.clone(),
                             trade_repo.clone(),
                             runtime.clone(),
+                            BuyRetryCfg::production(),
                         )
                         .await;
                         if let Ok(Some(pos)) = position_repo.find_by_id(position_id).await {
@@ -391,8 +392,67 @@ fn classify_silent_send<E>(status: &Result<Option<bool>, E>) -> SilentSendOutcom
     }
 }
 
-async fn buy_with_retries(
-    trader: Arc<PumpFunTrader>,
+/// Off-chain dependency of the snipe buy flow: send a buy (no RPC confirm) and
+/// classify a sent signature. A trait so `buy_with_retries` can be driven by a
+/// scripted fake in tests (see the `tests` module) instead of a live chain.
+#[async_trait::async_trait]
+pub(crate) trait SnipeExecutor: Send + Sync {
+    fn wallet(&self) -> String;
+    async fn send_snipe_buy(
+        &self,
+        mint: &str,
+        creator: &str,
+        token_program_id: &str,
+        amount: f64,
+    ) -> anyhow::Result<String>;
+    async fn check_signature(&self, signature: &str) -> anyhow::Result<Option<bool>>;
+}
+
+#[async_trait::async_trait]
+impl SnipeExecutor for PumpFunTrader {
+    fn wallet(&self) -> String {
+        self.wallet_pubkey()
+    }
+    async fn send_snipe_buy(
+        &self,
+        mint: &str,
+        creator: &str,
+        token_program_id: &str,
+        amount: f64,
+    ) -> anyhow::Result<String> {
+        // Snipe slippage is `None` (min_out=1) — see `buy_token_snipe`.
+        self.buy_token_snipe(mint, creator, token_program_id, amount, None)
+            .await
+    }
+    async fn check_signature(&self, signature: &str) -> anyhow::Result<Option<bool>> {
+        self.signature_state(signature).await
+    }
+}
+
+/// Retry/poll timing for `buy_with_retries`. `production()` mirrors the
+/// `TpslStrategyService::BUY_*` constants; tests shrink it so the give-up and
+/// re-send paths don't wait out real 12×1s poll windows.
+#[derive(Clone, Copy)]
+struct BuyRetryCfg {
+    max_attempts: usize,
+    backoff_ms: u64,
+    poll_attempts: usize,
+    poll_interval: Duration,
+}
+
+impl BuyRetryCfg {
+    fn production() -> Self {
+        Self {
+            max_attempts: TpslStrategyService::BUY_MAX_ATTEMPTS,
+            backoff_ms: 500,
+            poll_attempts: TpslStrategyService::BUY_POLL_MAX_ATTEMPTS,
+            poll_interval: Duration::from_millis(TpslStrategyService::BUY_POLL_INTERVAL_MS),
+        }
+    }
+}
+
+async fn buy_with_retries<E: SnipeExecutor + 'static>(
+    trader: Arc<E>,
     mint: String,
     creator: String,
     token_program_id: String,
@@ -401,10 +461,11 @@ async fn buy_with_retries(
     position_repo: PositionRepo,
     trade_repo: TradeRepo,
     runtime: Arc<TpslRuntimeCache>,
+    cfg: BuyRetryCfg,
 ) {
-    let wallet = trader.wallet_pubkey();
-    let max_attempts = TpslStrategyService::BUY_MAX_ATTEMPTS;
-    let mut backoff_ms = 500u64;
+    let wallet = trader.wallet();
+    let max_attempts = cfg.max_attempts;
+    let mut backoff_ms = cfg.backoff_ms;
 
     for attempt in 1..=max_attempts {
         // Never double-send: if a previous attempt's buy has since landed and been
@@ -419,7 +480,7 @@ async fn buy_with_retries(
         // is the sole confirmation and the entry-price source. `buy_token_snipe`
         // returns the submitted signature so a silent feed can be classified.
         let signature = match trader
-            .buy_token_snipe(&mint, &creator, &token_program_id, buy_amount, None)
+            .send_snipe_buy(&mint, &creator, &token_program_id, buy_amount)
             .await
         {
             Ok(sig) => sig,
@@ -436,14 +497,16 @@ async fn buy_with_retries(
             "buy submitted (no RPC confirm); polling WS feed for fill");
 
         // Poll the WS-fed trade feed for this wallet's buy row.
-        if poll_for_entry(&mint, &wallet, position_id, &position_repo, &trade_repo, &runtime).await {
+        if poll_for_entry(&mint, &wallet, position_id, &position_repo, &trade_repo, &runtime, &cfg)
+            .await
+        {
             return;
         }
 
         // The fill never showed within the window. One status check decides the
         // next move; the decision table lives in `classify_silent_send` so the
         // double-buy invariant is unit-tested without a live chain.
-        let status = trader.signature_state(&signature).await;
+        let status = trader.check_signature(&signature).await;
         match classify_silent_send(&status) {
             SilentSendOutcome::Resend => {
                 // Reverted on-chain (e.g. slippage) → no tokens bought → safe to retry.
@@ -454,7 +517,7 @@ async fn buy_with_retries(
                 // wait one more window for the row rather than fire again.
                 warn!(mint = %mint, sig = %signature,
                     "buy landed but not yet indexed; awaiting fill without re-send");
-                if poll_for_entry(&mint, &wallet, position_id, &position_repo, &trade_repo, &runtime)
+                if poll_for_entry(&mint, &wallet, position_id, &position_repo, &trade_repo, &runtime, &cfg)
                     .await
                 {
                     return;
@@ -495,13 +558,14 @@ async fn poll_for_entry(
     position_repo: &PositionRepo,
     trade_repo: &TradeRepo,
     runtime: &Arc<TpslRuntimeCache>,
+    cfg: &BuyRetryCfg,
 ) -> bool {
-    for _ in 0..TpslStrategyService::BUY_POLL_MAX_ATTEMPTS {
+    for _ in 0..cfg.poll_attempts {
         if record_entry_if_present(mint, wallet, position_id, position_repo, trade_repo, runtime).await
         {
             return true;
         }
-        sleep(Duration::from_millis(TpslStrategyService::BUY_POLL_INTERVAL_MS)).await;
+        sleep(cfg.poll_interval).await;
     }
     false
 }
@@ -750,7 +814,7 @@ async fn sell_with_retries(
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_silent_send, SilentSendOutcome};
+    use super::*;
 
     fn outcome(status: Result<Option<bool>, &'static str>) -> SilentSendOutcome {
         classify_silent_send(&status)
@@ -783,5 +847,316 @@ mod tests {
         for status in [Ok(Some(true)), Ok(None), Err("x")] {
             assert_ne!(outcome(status), SilentSendOutcome::Resend);
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Full-flow integration tests for `buy_with_retries`, driven by a scripted
+    // fake executor against a real local Postgres. `#[ignore]` like the other
+    // DB/network tests — run with a local DB:
+    //   $env:DATABASE_URL = "postgres://..."; cargo test -p backend -- --ignored
+    // Unique mint/wallet ids keep them from colliding with real data, and each
+    // test cleans up the rows it created.
+    // -------------------------------------------------------------------------
+
+    use crate::config::constants::TOKEN_PROGRAM_ID;
+    use crate::models::trade::{Trade, TradeType};
+    use chrono::Utc;
+    use sqlx::postgres::PgPoolOptions;
+    use sqlx::PgPool;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// What the chain "reports" for a sent-but-unindexed signature.
+    #[derive(Clone, Copy)]
+    enum FakeStatus {
+        Reverted,
+        Landed,
+        Pending,
+        Error,
+    }
+
+    /// Scripted `SnipeExecutor` — never touches the chain. Optionally writes a Buy
+    /// trade row (as the WS indexer would) on the Nth send or on a status check, so
+    /// the tests can drive every branch of `buy_with_retries` deterministically.
+    struct FakeExecutor {
+        wallet: String,
+        pool: PgPool,
+        mint: String,
+        status: FakeStatus,
+        fill_on_send: Option<usize>,
+        fill_on_status_check: bool,
+        sends: AtomicUsize,
+    }
+
+    impl FakeExecutor {
+        fn new(wallet: String, pool: PgPool, mint: String) -> Self {
+            Self {
+                wallet,
+                pool,
+                mint,
+                status: FakeStatus::Pending,
+                fill_on_send: None,
+                fill_on_status_check: false,
+                sends: AtomicUsize::new(0),
+            }
+        }
+        fn status(mut self, status: FakeStatus) -> Self {
+            self.status = status;
+            self
+        }
+        fn fill_on_send(mut self, n: usize) -> Self {
+            self.fill_on_send = Some(n);
+            self
+        }
+        fn fill_on_status_check(mut self) -> Self {
+            self.fill_on_status_check = true;
+            self
+        }
+        fn send_count(&self) -> usize {
+            self.sends.load(Ordering::SeqCst)
+        }
+        /// Write a Buy trade row for this wallet+mint, simulating the WS feed.
+        async fn insert_fill(&self) {
+            let trade = Trade::new(
+                self.mint.clone(),
+                self.wallet.clone(),
+                TradeType::Buy,
+                0.05,
+                1000.0,
+                format!("fill-{}", Uuid::new_v4().simple()),
+                100,
+                Utc::now(),
+            );
+            TradeRepo::new(self.pool.clone())
+                .insert(&trade)
+                .await
+                .expect("insert fill trade");
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SnipeExecutor for FakeExecutor {
+        fn wallet(&self) -> String {
+            self.wallet.clone()
+        }
+        async fn send_snipe_buy(
+            &self,
+            _mint: &str,
+            _creator: &str,
+            _token_program_id: &str,
+            _amount: f64,
+        ) -> anyhow::Result<String> {
+            let n = self.sends.fetch_add(1, Ordering::SeqCst) + 1;
+            if self.fill_on_send == Some(n) {
+                self.insert_fill().await;
+            }
+            Ok(format!("fakesig-{n}"))
+        }
+        async fn check_signature(&self, _signature: &str) -> anyhow::Result<Option<bool>> {
+            if self.fill_on_status_check {
+                self.insert_fill().await;
+            }
+            match self.status {
+                FakeStatus::Reverted => Ok(Some(false)),
+                FakeStatus::Landed => Ok(Some(true)),
+                FakeStatus::Pending => Ok(None),
+                FakeStatus::Error => Err(anyhow::anyhow!("fake rpc error")),
+            }
+        }
+    }
+
+    /// Tiny poll/retry timing so give-up and re-send paths don't wait real windows.
+    fn test_cfg() -> BuyRetryCfg {
+        BuyRetryCfg {
+            max_attempts: 3,
+            backoff_ms: 1,
+            poll_attempts: 3,
+            poll_interval: Duration::from_millis(5),
+        }
+    }
+
+    /// Connect to the local test DB, or `None` to skip when `DATABASE_URL` is unset.
+    async fn test_pool() -> Option<PgPool> {
+        let url = std::env::var("DATABASE_URL").ok()?;
+        PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .ok()
+    }
+
+    fn unique(prefix: &str) -> String {
+        format!("{prefix}{}", Uuid::new_v4().simple())
+    }
+
+    /// Insert a fresh Holding position (entry_price 0) and return it + repos + a
+    /// runtime cache seeded with it.
+    async fn setup(
+        pool: &PgPool,
+        mint: &str,
+        wallet: &str,
+    ) -> (Position, PositionRepo, TradeRepo, Arc<TpslRuntimeCache>) {
+        let position_repo = PositionRepo::new(pool.clone());
+        let trade_repo = TradeRepo::new(pool.clone());
+        let runtime = Arc::new(TpslRuntimeCache::new());
+        let position = Position::new(
+            mint.to_string(),
+            wallet.to_string(),
+            0.0,
+            unique("create-"),
+            "TPSL".to_string(),
+            Uuid::new_v4(),
+            0.001,
+        );
+        position_repo.insert(&position).await.expect("insert position");
+        runtime.sync_position(None, &position);
+        (position, position_repo, trade_repo, runtime)
+    }
+
+    async fn cleanup(pool: &PgPool, mint: &str, position_id: Uuid) {
+        let _ = sqlx::query("DELETE FROM trades WHERE mint_address = $1")
+            .bind(mint)
+            .execute(pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM positions WHERE id = $1")
+            .bind(position_id)
+            .execute(pool)
+            .await;
+    }
+
+    async fn run_buy(
+        fake: Arc<FakeExecutor>,
+        mint: &str,
+        position: &Position,
+        position_repo: &PositionRepo,
+        trade_repo: &TradeRepo,
+        runtime: &Arc<TpslRuntimeCache>,
+    ) {
+        buy_with_retries(
+            fake,
+            mint.to_string(),
+            "creator".to_string(),
+            TOKEN_PROGRAM_ID.to_string(),
+            0.001,
+            position.id,
+            position_repo.clone(),
+            trade_repo.clone(),
+            runtime.clone(),
+            test_cfg(),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
+    async fn db_happy_path_records_entry_from_ws_fill() {
+        let Some(pool) = test_pool().await else { return };
+        let (mint, wallet) = (unique("MINT"), unique("WALLET"));
+        let (position, position_repo, trade_repo, runtime) = setup(&pool, &mint, &wallet).await;
+
+        // First send produces the on-chain fill row; the poll picks it up.
+        let fake = Arc::new(FakeExecutor::new(wallet, pool.clone(), mint.clone()).fill_on_send(1));
+        run_buy(fake.clone(), &mint, &position, &position_repo, &trade_repo, &runtime).await;
+
+        let updated = position_repo.find_by_id(position.id).await.unwrap().unwrap();
+        assert!(updated.entry_price > 0.0, "entry recorded from the WS fill");
+        assert_eq!(fake.send_count(), 1, "exactly one buy sent");
+        cleanup(&pool, &mint, position.id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
+    async fn db_top_guard_adopts_existing_fill_without_sending() {
+        let Some(pool) = test_pool().await else { return };
+        let (mint, wallet) = (unique("MINT"), unique("WALLET"));
+        let (position, position_repo, trade_repo, runtime) = setup(&pool, &mint, &wallet).await;
+
+        // A fill is ALREADY present before the buy task runs → adopt, never send.
+        let fake = Arc::new(FakeExecutor::new(wallet, pool.clone(), mint.clone()));
+        fake.insert_fill().await;
+        run_buy(fake.clone(), &mint, &position, &position_repo, &trade_repo, &runtime).await;
+
+        let updated = position_repo.find_by_id(position.id).await.unwrap().unwrap();
+        assert!(updated.entry_price > 0.0, "adopted the pre-existing fill");
+        assert_eq!(fake.send_count(), 0, "guard adopted the fill — no buy sent (no double-buy)");
+        cleanup(&pool, &mint, position.id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
+    async fn db_revert_resends_then_records() {
+        let Some(pool) = test_pool().await else { return };
+        let (mint, wallet) = (unique("MINT"), unique("WALLET"));
+        let (position, position_repo, trade_repo, runtime) = setup(&pool, &mint, &wallet).await;
+
+        // 1st send doesn't fill; chain reports a revert → re-send; 2nd send fills.
+        let fake = Arc::new(
+            FakeExecutor::new(wallet, pool.clone(), mint.clone())
+                .status(FakeStatus::Reverted)
+                .fill_on_send(2),
+        );
+        run_buy(fake.clone(), &mint, &position, &position_repo, &trade_repo, &runtime).await;
+
+        let updated = position_repo.find_by_id(position.id).await.unwrap().unwrap();
+        assert!(updated.entry_price > 0.0, "entry recorded after the re-send filled");
+        assert_eq!(fake.send_count(), 2, "reverted buy was re-sent exactly once");
+        cleanup(&pool, &mint, position.id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
+    async fn db_pending_gives_up_without_double_buy() {
+        let Some(pool) = test_pool().await else { return };
+        let (mint, wallet) = (unique("MINT"), unique("WALLET"));
+        let (position, position_repo, trade_repo, runtime) = setup(&pool, &mint, &wallet).await;
+
+        // No fill ever; status stays Pending → give up, never re-send.
+        let fake =
+            Arc::new(FakeExecutor::new(wallet, pool.clone(), mint.clone()).status(FakeStatus::Pending));
+        run_buy(fake.clone(), &mint, &position, &position_repo, &trade_repo, &runtime).await;
+
+        let updated = position_repo.find_by_id(position.id).await.unwrap().unwrap();
+        assert_eq!(updated.entry_price, 0.0, "no entry recorded");
+        assert_eq!(fake.send_count(), 1, "pending tx must NOT be re-sent (double-buy guard)");
+        cleanup(&pool, &mint, position.id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
+    async fn db_status_error_gives_up_without_double_buy() {
+        let Some(pool) = test_pool().await else { return };
+        let (mint, wallet) = (unique("MINT"), unique("WALLET"));
+        let (position, position_repo, trade_repo, runtime) = setup(&pool, &mint, &wallet).await;
+
+        // The status check itself errors → ambiguous → give up, never re-send.
+        let fake =
+            Arc::new(FakeExecutor::new(wallet, pool.clone(), mint.clone()).status(FakeStatus::Error));
+        run_buy(fake.clone(), &mint, &position, &position_repo, &trade_repo, &runtime).await;
+
+        let updated = position_repo.find_by_id(position.id).await.unwrap().unwrap();
+        assert_eq!(updated.entry_price, 0.0, "no entry recorded");
+        assert_eq!(fake.send_count(), 1, "status-check error must NOT trigger a re-send");
+        cleanup(&pool, &mint, position.id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
+    async fn db_landed_but_lagging_records_without_resend() {
+        let Some(pool) = test_pool().await else { return };
+        let (mint, wallet) = (unique("MINT"), unique("WALLET"));
+        let (position, position_repo, trade_repo, runtime) = setup(&pool, &mint, &wallet).await;
+
+        // Poll window elapses with no row; status says it landed and the indexer
+        // catches up (fill written on the status check) → extended poll records it.
+        let fake = Arc::new(
+            FakeExecutor::new(wallet, pool.clone(), mint.clone())
+                .status(FakeStatus::Landed)
+                .fill_on_status_check(),
+        );
+        run_buy(fake.clone(), &mint, &position, &position_repo, &trade_repo, &runtime).await;
+
+        let updated = position_repo.find_by_id(position.id).await.unwrap().unwrap();
+        assert!(updated.entry_price > 0.0, "entry recorded after the indexer caught up");
+        assert_eq!(fake.send_count(), 1, "landed tx must NOT be re-sent (double-buy guard)");
+        cleanup(&pool, &mint, position.id).await;
     }
 }

@@ -133,7 +133,18 @@ Net sell attempts per exit: curve **300 → ≤ 6**, AMM **60 → ≤ 6**.
   serialized confirm window; failure path keeps revert-retry. The post-poll
   decision is extracted into a pure `classify_silent_send` (enum `SilentSendOutcome`)
   with 5 unit tests (`service_tpsl.rs`) that lock the double-buy invariant —
-  *re-send only on a confirmed on-chain revert* — without a chain/SOL. **Open:**
+  *re-send only on a confirmed on-chain revert* — without a chain/SOL.
+  **Tier B (no-SOL full-flow tests):** the trader is abstracted behind a
+  `SnipeExecutor` trait (`send_snipe_buy` / `check_signature` / `wallet`; impl'd for
+  `PumpFunTrader`); `buy_with_retries` is now generic over it with injectable
+  `BuyRetryCfg` timing. 6 `#[ignore]` `#[tokio::test]`s drive a scripted
+  `FakeExecutor` against a **real local Postgres** (unique mint/wallet ids,
+  self-cleaning) covering: happy-path entry record, top-guard adoption (0 sends),
+  revert→resend→record (2 sends), pending→give-up (1 send), status-error→give-up
+  (1 send), landed-lag→record-without-resend (1 send) — each asserts the send count
+  so the double-buy guard is proven end-to-end. **Run:**
+  `$env:DATABASE_URL=...; cargo test -p backend -- --ignored` (they compile in CI but
+  skip without a DB). **Open:**
   validate on a low-size live snipe (watch re-send / poll-timeout rates); tune the per-attempt
   poll window (currently `BUY_POLL_MAX_ATTEMPTS`×`BUY_POLL_INTERVAL_MS` = 12×1s) for
   faster revert detection; a dropped-tx (`None`) could later be safely re-sent via
