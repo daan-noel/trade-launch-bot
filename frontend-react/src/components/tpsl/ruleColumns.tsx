@@ -80,6 +80,17 @@ export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnD
         Array.isArray(r.p_ix_labels) ? r.p_ix_labels.map(String).join(' ') : '',
     },
     {
+      key: 'tol',
+      label: 'Tolerance',
+      tooltip:
+        'Match tolerance (%) applied to the numeric entry filters (Init Buy, CU Lim, CU Price, Max SOL, Spendable).',
+      group: 'rule_param',
+      sortable: true,
+      render: (r) => dashPercent(r.tolerance_pct),
+      sortValue: (r) => r.tolerance_pct,
+      searchValue: (r) => String(r.tolerance_pct),
+    },
+    {
       key: 'max_concurrent_tokens',
       label: 'Max Concurrent Tokens',
       group: 'max_concurrency_and_total',
@@ -186,17 +197,6 @@ export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnD
       ),
       sortValue: (r) => r.p_liquidity_drop_pct ?? 0,
       searchValue: (r) => String(r.p_liquidity_drop_pct ?? ''),
-    },
-    {
-      key: 'tol',
-      label: 'Tolerance',
-      tooltip:
-        'Match tolerance (%) applied to the numeric entry filters (Init Buy, CU Lim, CU Price, Max SOL, Spendable).',
-      group: 'rule_param',
-      sortable: true,
-      render: (r) => dashPercent(r.tolerance_pct),
-      sortValue: (r) => r.tolerance_pct,
-      searchValue: (r) => String(r.tolerance_pct),
     },
     {
       key: 'mode',
