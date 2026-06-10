@@ -1,12 +1,17 @@
 use actix_web::{web, HttpResponse, Responder};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
-    models::Position, state::app_state::AppState,
-    storage::repositories::position_repo::PositionRepo,
+    models::Position,
+    state::app_state::AppState,
+    storage::repositories::{
+        paper_trading_repo::PaperTradingRepo, position_repo::PositionRepo,
+        strategy_tpsl_rule_repo::StrategyTPSLRuleRepo,
+    },
 };
 
 // ---------------------------------------------------------------------------
@@ -63,15 +68,42 @@ impl From<Position> for PositionResponse {
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// Get all positions for a specific TPSL rule (by rule_id)
+/// Load a rule's positions from the correct table.
+///
+/// Paper-mode rules record to `paper_positions` (only the latest run is
+/// retained), so they're served from the paper repo's current run; real rules
+/// use `positions`. A paper rule with no run yet yields an empty list.
+///
+/// Shared by the positions endpoint below and exercised directly in tests so it
+/// stays in lock-step with the paper-result endpoint (same run, same rows).
+pub(crate) async fn load_rule_positions(
+    db: &PgPool,
+    rule_id: Uuid,
+) -> anyhow::Result<Vec<Position>> {
+    let is_paper = match StrategyTPSLRuleRepo::new(db.clone()).find_by_id(rule_id).await? {
+        Some(rule) => rule.trade_mode == "paper",
+        None => false,
+    };
+
+    if is_paper {
+        let paper_repo = PaperTradingRepo::new(db.clone());
+        match paper_repo.current_run(rule_id).await? {
+            Some(run) => paper_repo.find_by_run(run.id).await,
+            None => Ok(Vec::new()),
+        }
+    } else {
+        PositionRepo::new(db.clone()).find_by_rule(rule_id).await
+    }
+}
+
+/// Get all positions for a specific TPSL rule (by rule_id).
 /// GET /api/strategies/tpsl/rules/{rule_id}/positions
 pub async fn get_positions_by_rule(
     app_state: web::Data<Arc<AppState>>,
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
-    let repo = PositionRepo::new(app_state.db.clone());
     let rule_id = rule_id.into_inner();
-    match repo.find_by_rule(rule_id).await {
+    match load_rule_positions(&app_state.db, rule_id).await {
         Ok(positions) => {
             let responses: Vec<PositionResponse> =
                 positions.into_iter().map(PositionResponse::from).collect();
@@ -165,5 +197,163 @@ pub async fn get_position(
             HttpResponse::InternalServerError()
                 .json(serde_json::json!({"error": "Failed to get position"}))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::tpsl::paper_position_to_sim_result;
+    use crate::models::StrategyTPSLRule;
+    use sqlx::postgres::PgPoolOptions;
+    use std::collections::{HashMap, HashSet};
+
+    // DB-backed, like the other repo/network tests — `#[ignore]`d so it only runs
+    // against a real local Postgres:
+    //   $env:DATABASE_URL = "postgres://..."; cargo test -p backend -- --ignored
+    // It creates a paper rule + run with unique ids and cleans up after itself.
+
+    /// Connect to the local test DB, or `None` to skip when `DATABASE_URL` is unset.
+    async fn test_pool() -> Option<PgPool> {
+        let url = std::env::var("DATABASE_URL").ok()?;
+        PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .ok()
+    }
+
+    fn unique(prefix: &str) -> String {
+        format!("{prefix}{}", Uuid::new_v4().simple())
+    }
+
+    /// The positions endpoint (paper branch, via `load_rule_positions`) and the
+    /// paper-result endpoint both funnel through `current_run` + `find_by_run`,
+    /// so they must enumerate the SAME rows for a run. This locks that invariant
+    /// — including open + closed positions — so the two views can't silently
+    /// diverge in count or token set.
+    #[tokio::test]
+    #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
+    async fn paper_positions_and_paper_result_agree_on_rows() {
+        let Some(pool) = test_pool().await else {
+            return;
+        };
+
+        // A paper rule with an active run (max total = 3).
+        let rule = StrategyTPSLRule::new(
+            unique("paper-rule-"),
+            None,
+            None,
+            None,
+            serde_json::json!([]),
+            "paper".to_string(),
+            0.05,
+            50.0,
+            20.0,
+            None,
+            None,
+            None,
+            Some(3),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let rule_repo = StrategyTPSLRuleRepo::new(pool.clone());
+        rule_repo.insert(&rule).await.expect("insert rule");
+
+        let paper_repo = PaperTradingRepo::new(pool.clone());
+        let run = paper_repo
+            .start_run(rule.id, Some(3))
+            .await
+            .expect("start run");
+
+        // Three positions for this run: one still Holding, one closed win, one
+        // closed loss — exercising both open and exited rows.
+        let mints = [unique("MINTA"), unique("MINTB"), unique("MINTC")];
+
+        let mut open = Position::new(
+            mints[0].clone(),
+            unique("W"),
+            0.001,
+            unique("tx-"),
+            "TPSL".into(),
+            rule.id,
+            0.05,
+        );
+        open.entry_time = Some(Utc::now());
+
+        let mut win = Position::new(
+            mints[1].clone(),
+            unique("W"),
+            0.001,
+            unique("tx-"),
+            "TPSL".into(),
+            rule.id,
+            0.05,
+        );
+        win.entry_time = Some(Utc::now());
+        win.close(0.0015, unique("xtx-"), 0.075, Utc::now());
+
+        let mut loss = Position::new(
+            mints[2].clone(),
+            unique("W"),
+            0.001,
+            unique("tx-"),
+            "TPSL".into(),
+            rule.id,
+            0.05,
+        );
+        loss.entry_time = Some(Utc::now());
+        loss.close(0.0008, unique("xtx-"), 0.04, Utc::now());
+
+        for p in [&open, &win, &loss] {
+            paper_repo
+                .insert(p, run.id)
+                .await
+                .expect("insert paper position");
+        }
+
+        // Endpoint A: positions endpoint (paper rule → paper table, current run).
+        let via_positions = load_rule_positions(&pool, rule.id)
+            .await
+            .expect("load_rule_positions");
+
+        // Endpoint B: paper-result endpoint's selection (current run → its rows).
+        let cur = paper_repo
+            .current_run(rule.id)
+            .await
+            .expect("current_run")
+            .expect("a run exists");
+        let via_result_rows = paper_repo.find_by_run(cur.id).await.expect("find_by_run");
+
+        // Same count, including the still-open position.
+        assert_eq!(via_positions.len(), 3, "all three run positions are returned");
+        assert_eq!(
+            via_positions.len(),
+            via_result_rows.len(),
+            "both endpoints return the same row count",
+        );
+
+        // Same token set after each endpoint's real mapping.
+        let symbols: HashMap<String, String> = HashMap::new();
+        let a_mints: HashSet<String> = via_positions
+            .into_iter()
+            .map(PositionResponse::from)
+            .map(|r| r.mint)
+            .collect();
+        let b_mints: HashSet<String> = via_result_rows
+            .into_iter()
+            .map(|p| paper_position_to_sim_result(p, &symbols))
+            .map(|r| r.mint)
+            .collect();
+        assert_eq!(a_mints, b_mints, "both endpoints return the same token set");
+
+        let expected: HashSet<String> = mints.iter().cloned().collect();
+        assert_eq!(a_mints, expected, "the set is exactly the inserted mints");
+
+        // Cleanup: deleting the rule cascades the run and its paper positions.
+        rule_repo.delete(rule.id).await.expect("delete rule");
     }
 }

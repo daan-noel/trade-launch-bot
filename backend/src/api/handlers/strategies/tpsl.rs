@@ -5,7 +5,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
-    models::{PositionStatus, StrategyTPSLRule},
+    models::{Position, PositionStatus, StrategyTPSLRule},
     state::app_state::AppState,
     storage::repositories::{
         paper_trading_repo::PaperTradingRepo, strategy_tpsl_rule_repo::StrategyTPSLRuleRepo,
@@ -544,49 +544,7 @@ pub async fn paper_result_tpsl_rule(
 
     let tokens: Vec<SimulatedTokenResult> = positions
         .into_iter()
-        .map(|p| {
-            let closed = p.status == PositionStatus::End;
-            let pnl_percent = p.pnl_percentage();
-            // The live paper exit path only ever fires take-profit / stop-loss, so
-            // a closed position's reason is recoverable from its realized PnL sign.
-            let exit_reason = if closed {
-                if pnl_percent.unwrap_or(0.0) >= 0.0 {
-                    "TakeProfit"
-                } else {
-                    "StopLoss"
-                }
-            } else {
-                "Open"
-            }
-            .to_string();
-            // entry_amount is the SOL allocated per buy, so PnL in SOL is direct.
-            let pnl_sol = pnl_percent.map(|pct| p.entry_amount * (pct / 100.0));
-            let holding_secs = match (p.entry_time, p.exit_time) {
-                (Some(e), Some(x)) => Some((x - e).num_seconds()),
-                _ => None,
-            };
-            let ath_price = p
-                .exit_price
-                .map(|x| x.max(p.entry_price))
-                .unwrap_or(p.entry_price);
-            SimulatedTokenResult {
-                symbol: symbols.get(&p.mint).cloned().unwrap_or_default(),
-                mint: p.mint,
-                entry_price: p.entry_price,
-                ath_price,
-                entry_amount: p.entry_amount,
-                entry_tx: p.entry_tx,
-                entry_time: p.entry_time.unwrap_or(p.created_at),
-                exit_price: p.exit_price,
-                exit_tx: p.exit_tx,
-                exit_time: p.exit_time,
-                holding_secs,
-                pnl_percent,
-                pnl_sol,
-                exit_reason,
-                total_trades: 0,
-            }
-        })
+        .map(|p| paper_position_to_sim_result(p, &symbols))
         .collect();
 
     HttpResponse::Ok().json(PaperResultResponse {
@@ -600,4 +558,54 @@ pub async fn paper_result_tpsl_rule(
         }),
         tokens,
     })
+}
+
+/// Map one recorded paper position into the simulation-shaped result the shared
+/// frontend card/table renders. Pure (no DB) so it stays unit-testable and so
+/// the positions endpoint and this endpoint provably enumerate the same rows.
+pub(crate) fn paper_position_to_sim_result(
+    p: Position,
+    symbols: &std::collections::HashMap<String, String>,
+) -> SimulatedTokenResult {
+    let closed = p.status == PositionStatus::End;
+    let pnl_percent = p.pnl_percentage();
+    // The live paper exit path only ever fires take-profit / stop-loss, so a
+    // closed position's reason is recoverable from its realized PnL sign.
+    let exit_reason = if closed {
+        if pnl_percent.unwrap_or(0.0) >= 0.0 {
+            "TakeProfit"
+        } else {
+            "StopLoss"
+        }
+    } else {
+        "Open"
+    }
+    .to_string();
+    // entry_amount is the SOL allocated per buy, so PnL in SOL is direct.
+    let pnl_sol = pnl_percent.map(|pct| p.entry_amount * (pct / 100.0));
+    let holding_secs = match (p.entry_time, p.exit_time) {
+        (Some(e), Some(x)) => Some((x - e).num_seconds()),
+        _ => None,
+    };
+    let ath_price = p
+        .exit_price
+        .map(|x| x.max(p.entry_price))
+        .unwrap_or(p.entry_price);
+    SimulatedTokenResult {
+        symbol: symbols.get(&p.mint).cloned().unwrap_or_default(),
+        mint: p.mint,
+        entry_price: p.entry_price,
+        ath_price,
+        entry_amount: p.entry_amount,
+        entry_tx: p.entry_tx,
+        entry_time: p.entry_time.unwrap_or(p.created_at),
+        exit_price: p.exit_price,
+        exit_tx: p.exit_tx,
+        exit_time: p.exit_time,
+        holding_secs,
+        pnl_percent,
+        pnl_sol,
+        exit_reason,
+        total_trades: 0,
+    }
 }
