@@ -93,14 +93,8 @@ impl TpslStrategyService {
 
     pub async fn on_token_created(&self, mint: &str, cache: &TokenCache) {
         let mint = mint.to_string();
-        // Capture the token and the price observed at the instant the entry is
-        // decided. In paper mode this is the fallback entry price when no
-        // first/second-slot fill ever gets indexed (see the paper branch below).
-        let (token, entry_price_at_create) = match cache.get(&mint) {
-            Some(entry) => {
-                let state = entry.value();
-                (state.token.clone(), state.current_price)
-            }
+        let token = match cache.get(&mint) {
+            Some(entry) => entry.value().token.clone(),
             None => {
                 debug!("Token {mint} not in cache — skipping TPSL create");
                 return;
@@ -202,19 +196,11 @@ impl TpslStrategyService {
                     let runtime = self.runtime.clone();
                     let position_id = position.id;
                     let buy_amount = rule.buy_amount;
-                    // Paper entry fallback: the token price at the moment this entry
-                    // was decided, plus the creation tx/time to tag the simulated fill.
-                    let entry_fallback_price = entry_price_at_create;
-                    let entry_fallback_tx = token.creation_tx_signature.clone();
-                    let entry_fallback_time = token.created_at;
                     tokio::spawn(async move {
-                        // Poll the WS-fed trade feed for the token's opening trades
-                        // rather than taking a single 1s snapshot. Under indexer lag
-                        // the first/second-slot buys may not be in the DB within one
-                        // second; the old single shot then left the position stranded
-                        // at entry_price 0.0 forever (it never retried), which both
-                        // mis-reports PnL and — before the check_exit guard — flapped
-                        // the position ExitPending↔Holding. Mirrors `poll_for_entry`.
+                        // Poll the WS-fed trade feed for the token's opening trades,
+                        // exactly as real mode polls for its on-chain fill. The entry
+                        // price/tx/time come only from a real indexed trade — paper mode
+                        // never synthesizes a fill from a create-time snapshot.
                         let mut recorded = false;
                         for _ in 0..TpslStrategyService::BUY_POLL_MAX_ATTEMPTS {
                             sleep(Duration::from_millis(
@@ -245,45 +231,18 @@ impl TpslStrategyService {
                             }
                         }
                         if !recorded {
-                            // No first/second-slot fill was indexed within the poll
-                            // window. Mirror real mode (entry price = whatever the buy
-                            // filled at) by filling the simulated buy at the token
-                            // price observed when the entry was decided. If no usable
-                            // price exists either, drop the position rather than leave
-                            // a 0-entry row that can never trade — same as the real
-                            // path's "buy not found" cleanup.
-                            match entry_fallback_price.filter(|p| *p > 0.0) {
-                                Some(price) => {
-                                    if let Ok(Some(prev)) = position_repo.find_by_id(position_id).await {
-                                        let _ = position_repo
-                                            .update_entry(
-                                                position_id,
-                                                &entry_fallback_tx,
-                                                buy_amount,
-                                                price,
-                                                entry_fallback_time,
-                                            )
-                                            .await;
-                                        if let Ok(Some(current)) = position_repo.find_by_id(position_id).await {
-                                            runtime.sync_position(Some(&prev), &current);
-                                        }
-                                    }
+                            // No real fill was indexed within the poll window. Mirror
+                            // real mode's "buy not found" cleanup: drop the unentered
+                            // position rather than leave a 0-entry row that can never
+                            // trade. No create-time price is ever synthesized.
+                            if let Ok(Some(pos)) = position_repo.find_by_id(position_id).await {
+                                if pos.entry_price <= 0.0 {
+                                    let _ = position_repo.delete_position(position_id).await;
+                                    runtime.remove_position(&pos);
                                     info!(
-                                        "[PAPER] No fill indexed; set fallback entry for position {} at token price {}",
-                                        position_id, price
+                                        "[PAPER] Removed position {} for mint {}: no entry fill indexed",
+                                        position_id, mint_for_trades
                                     );
-                                }
-                                None => {
-                                    if let Ok(Some(pos)) = position_repo.find_by_id(position_id).await {
-                                        if pos.entry_price <= 0.0 {
-                                            let _ = position_repo.delete_position(position_id).await;
-                                            runtime.remove_position(&pos);
-                                            info!(
-                                                "[PAPER] Removed position {} for mint {}: no entry price found",
-                                                position_id, mint_for_trades
-                                            );
-                                        }
-                                    }
                                 }
                             }
                         }
@@ -336,20 +295,8 @@ impl TpslStrategyService {
 
     pub async fn on_trade_executed(&self, mint: &str, cache: &TokenCache) {
         let mint = mint.to_string();
-        // Capture the price that drove this event plus the trade that produced
-        // it. In paper mode these are the exit fallback (price/tx/time) used when
-        // no post-entry exit trade gets indexed within the poll window — the exit
-        // analog of the entry fallback in `on_token_created`. The Ref is dropped
-        // (values copied/cloned out) before any await.
-        let (current_price, trigger_tx, trigger_time) = match cache.get(&mint) {
-            Some(entry) => {
-                let state = entry.value();
-                let price = state.current_price.unwrap_or(0.0);
-                match state.trades.last() {
-                    Some(t) => (price, Some(t.tx_signature.clone()), Some(t.block_time)),
-                    None => (price, None, None),
-                }
-            }
+        let current_price = match cache.get(&mint) {
+            Some(entry) => entry.value().current_price.unwrap_or(0.0),
             None => return,
         };
 
@@ -399,14 +346,6 @@ impl TpslStrategyService {
                         let rule_id = rule.id;
                         let rule_name = rule.rule_name.clone();
                         let max_total = ignore_zero_u64(rule.p_max_total_tokens);
-                        // Paper exit fallback (price/tx/time): the token price at the
-                        // moment this exit was decided, tagged with the trade that
-                        // tripped `check_exit`. Falls back to the entry tx / now when
-                        // the cache carried no trade row. Mirrors the entry fallback.
-                        let exit_fallback_price = current_price;
-                        let exit_fallback_tx =
-                            trigger_tx.clone().unwrap_or_else(|| entry_tx.clone());
-                        let exit_fallback_time = trigger_time.unwrap_or_else(chrono::Utc::now);
                         tokio::spawn(async move {
                             let mut found = false;
                             let start = std::time::Instant::now();
@@ -457,43 +396,22 @@ impl TpslStrategyService {
                                 sleep(Duration::from_millis(500)).await;
                             }
                             if !found {
-                                // No post-entry exit trade was indexed within the poll
-                                // window. Mirror the entry-fallback path (fill at the
-                                // decision-time token price under indexer lag): fill the
-                                // simulated exit at the token price observed when the exit
-                                // was decided. If no usable price exists, revert to Holding
-                                // so the next trade event can re-trigger the exit — same as
-                                // the old timeout behaviour.
-                                if exit_fallback_price > 0.0 {
-                                    if let Ok(Some(prev)) = position_repo.find_by_id(position_id).await {
-                                        let _ = position_repo
-                                            .update_exit(
-                                                position_id,
-                                                &exit_fallback_tx,
-                                                exit_fallback_price,
-                                                exit_fallback_time,
-                                            )
-                                            .await;
-                                        if let Ok(Some(current)) = position_repo.find_by_id(position_id).await {
-                                            runtime.sync_position(Some(&prev), &current);
-                                        }
+                                // No real post-entry exit trade was indexed within the
+                                // poll window. Don't synthesize an exit price — revert to
+                                // Holding so the next trade event can re-trigger the exit
+                                // (mirrors real mode reopening a position when the sell
+                                // doesn't go through). The exit price only ever comes from
+                                // a real indexed trade via `find_exit`.
+                                if let Ok(Some(prev)) = position_repo.find_by_id(position_id).await {
+                                    let _ = position_repo.revert_exit_pending(position_id).await;
+                                    if let Ok(Some(current)) = position_repo.find_by_id(position_id).await {
+                                        runtime.sync_position(Some(&prev), &current);
                                     }
-                                    info!(
-                                        "[PAPER] No exit fill indexed; set fallback exit for position {} at token price {}",
-                                        position_id, exit_fallback_price
-                                    );
-                                } else {
-                                    if let Ok(Some(prev)) = position_repo.find_by_id(position_id).await {
-                                        let _ = position_repo.revert_exit_pending(position_id).await;
-                                        if let Ok(Some(current)) = position_repo.find_by_id(position_id).await {
-                                            runtime.sync_position(Some(&prev), &current);
-                                        }
-                                    }
-                                    info!(
-                                        "[PAPER] ExitPending timed out, reverted to Holding for position {}",
-                                        position_id
-                                    );
                                 }
+                                info!(
+                                    "[PAPER] No exit fill indexed; reverted position {} to Holding",
+                                    position_id
+                                );
                             }
 
                             // If this exit closed the position, the run may now be
