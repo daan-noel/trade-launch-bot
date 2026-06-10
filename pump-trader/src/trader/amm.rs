@@ -89,8 +89,8 @@ impl PumpFunTrader {
         let mut ixs = Vec::with_capacity(core_ixs.len() + self.compute_budget_ixs.len() + 1);
         ixs.extend_from_slice(&self.compute_budget_ixs);
         ixs.extend(core_ixs);
-        if let Some(tip) = self.jito_tip_ix.lock().await.clone() {
-            ixs.push(tip);
+        if let Some(tip) = &self.jito_tip_ix {
+            ixs.push(tip.clone());
         }
 
         // Recent blockhash (not durable nonce): the swap already carries ~27
@@ -107,7 +107,7 @@ impl PumpFunTrader {
         // Tokens land in the base ATA — cache it for a later sell.
         self.user_token_accounts
             .lock()
-            .await
+            .unwrap()
             .insert(token_mint.to_string(), user_base);
         info!(
             "✅ AMM buy confirmed — sig: {} | {}ms",
@@ -147,8 +147,8 @@ impl PumpFunTrader {
             let mut ixs = Vec::with_capacity(core_ixs.len() + self.compute_budget_ixs.len() + 1);
             ixs.extend_from_slice(&self.compute_budget_ixs);
             ixs.extend(core_ixs);
-            if let Some(tip) = self.jito_tip_ix.lock().await.clone() {
-                ixs.push(tip);
+            if let Some(tip) = &self.jito_tip_ix {
+                ixs.push(tip.clone());
             }
 
             let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, &self.config.keypair)?;
@@ -325,15 +325,15 @@ impl PumpFunTrader {
         quote_token_program: Pubkey,
         with_volume: bool,
     ) -> Vec<AccountMeta> {
-        let global_config = self.amm_global_config_pda();
-        let event_authority = self.amm_event_authority();
+        let global_config = self.amm_global_config_pda;
+        let event_authority = self.amm_event_authority;
         let cc_authority = self.amm_coin_creator_vault_authority(&pool.coin_creator);
         let cc_ata = get_associated_token_address_with_program_id(
             &cc_authority,
             &self.wsol_mint,
             &quote_token_program,
         );
-        let fee_config = self.amm_fee_config();
+        let fee_config = self.amm_fee_config;
         // The rotating protocol_fee_recipients[0]; accepted by the program.
         let pf_recipient = cfg.protocol_fee_recipient;
         let pf_recipient_ta = get_associated_token_address_with_program_id(
@@ -368,11 +368,11 @@ impl PumpFunTrader {
             // tracked; readonly otherwise (matches real swaps). user_volume_
             // accumulator is always writable on the buy path.
             if pool.is_cashback_coin {
-                accounts.push(AccountMeta::new(self.amm_global_volume_accumulator(), false)); // 19
+                accounts.push(AccountMeta::new(self.amm_global_volume_accumulator, false)); // 19
             } else {
-                accounts.push(AccountMeta::new_readonly(self.amm_global_volume_accumulator(), false));
+                accounts.push(AccountMeta::new_readonly(self.amm_global_volume_accumulator, false));
             }
-            accounts.push(AccountMeta::new(self.amm_user_volume_accumulator(user), false)); // 20
+            accounts.push(AccountMeta::new(self.amm_user_volume_accumulator, false)); // 20
         }
         accounts.push(AccountMeta::new_readonly(fee_config, false)); // fee_config
         accounts.push(AccountMeta::new_readonly(self.fee_program, false)); // fee_program
@@ -386,7 +386,7 @@ impl PumpFunTrader {
         // user_volume_accumulator (uva) rides in this tail because there is no
         // earlier volume block to carry it.
         if pool.is_cashback_coin {
-            let uva = self.amm_user_volume_accumulator(user);
+            let uva = self.amm_user_volume_accumulator;
             let cashback_ata =
                 get_associated_token_address_with_program_id(&uva, &self.wsol_mint, &quote_token_program);
             accounts.push(AccountMeta::new(cashback_ata, false)); // writable
@@ -453,7 +453,7 @@ impl PumpFunTrader {
         pool_override: Option<&str>,
         base_token_program_id: &str,
     ) -> Result<AmmPoolInfo> {
-        if let Some(info) = self.amm_pool_cache.lock().await.get(token_mint).copied() {
+        if let Some(info) = self.amm_pool_cache.lock().unwrap().get(token_mint).copied() {
             return Ok(info);
         }
 
@@ -505,7 +505,7 @@ impl PumpFunTrader {
         };
         self.amm_pool_cache
             .lock()
-            .await
+            .unwrap()
             .insert(token_mint.to_string(), info);
         Ok(info)
     }
@@ -564,11 +564,11 @@ impl PumpFunTrader {
 
     /// Fetch + cache GlobalConfig (fee bps + a protocol fee recipient).
     async fn amm_config(&self) -> Result<AmmGlobalConfig> {
-        if let Some(c) = *self.amm_global_config.lock().await {
+        if let Some(c) = *self.amm_global_config.lock().unwrap() {
             return Ok(c);
         }
 
-        let pda = self.amm_global_config_pda();
+        let pda = self.amm_global_config_pda;
         let account = self
             .rpc
             .get_account(&pda)
@@ -602,7 +602,7 @@ impl PumpFunTrader {
             coin_creator_fee_bps,
             protocol_fee_recipient,
         };
-        *self.amm_global_config.lock().await = Some(cfg);
+        *self.amm_global_config.lock().unwrap() = Some(cfg);
         Ok(cfg)
     }
 
@@ -678,7 +678,7 @@ impl PumpFunTrader {
         if let Some(o) = token_account_override {
             return Pubkey::from_str(o).context("invalid token_account_override");
         }
-        if let Some(pk) = self.user_token_accounts.lock().await.get(token_mint).copied() {
+        if let Some(pk) = self.user_token_accounts.lock().unwrap().get(token_mint).copied() {
             return Ok(pk);
         }
         let holdings = self.get_all_token_accounts().await?;
@@ -692,34 +692,12 @@ impl PumpFunTrader {
     // PDA helpers (program = pump_amm unless noted)
     // -----------------------------------------------------------------------
 
-    fn amm_global_config_pda(&self) -> Pubkey {
-        Pubkey::find_program_address(&[b"global_config"], &self.pump_swap_program).0
-    }
-    fn amm_event_authority(&self) -> Pubkey {
-        Pubkey::find_program_address(&[b"__event_authority"], &self.pump_swap_program).0
-    }
-    fn amm_global_volume_accumulator(&self) -> Pubkey {
-        Pubkey::find_program_address(&[b"global_volume_accumulator"], &self.pump_swap_program).0
-    }
-    fn amm_user_volume_accumulator(&self, user: &Pubkey) -> Pubkey {
-        Pubkey::find_program_address(
-            &[b"user_volume_accumulator", user.as_ref()],
-            &self.pump_swap_program,
-        )
-        .0
-    }
+    /// Per-coin (not program-constant) vault authority, so it stays derived here
+    /// rather than precomputed in `new()` like the other AMM PDAs.
     fn amm_coin_creator_vault_authority(&self, coin_creator: &Pubkey) -> Pubkey {
         Pubkey::find_program_address(
             &[b"creator_vault", coin_creator.as_ref()],
             &self.pump_swap_program,
-        )
-        .0
-    }
-    /// fee_config = PDA(["fee_config", pump_amm_program_id]) under the fee program.
-    fn amm_fee_config(&self) -> Pubkey {
-        Pubkey::find_program_address(
-            &[b"fee_config", self.pump_swap_program.as_ref()],
-            &self.fee_program,
         )
         .0
     }

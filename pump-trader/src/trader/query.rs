@@ -21,8 +21,7 @@ impl PumpFunTrader {
         &self,
     ) -> anyhow::Result<Vec<crate::types::WalletHolding>> {
         let wallet = self.wallet_pubkey();
-        let rpc_url = self.rpc_url().to_string();
-        let client = reqwest::Client::new();
+        let rpc_url = self.rpc_url();
         let mut holdings: Vec<crate::types::WalletHolding> = Vec::new();
 
         for prog in [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID] {
@@ -37,8 +36,11 @@ impl PumpFunTrader {
                 ]
             });
 
-            let resp: serde_json::Value = client
-                .post(&rpc_url)
+            // Reuse the trader's shared HTTP client (connection pool / TLS reuse)
+            // instead of constructing a fresh `reqwest::Client` per wallet scan.
+            let resp: serde_json::Value = self
+                .http
+                .post(rpc_url)
                 .json(&body)
                 .send()
                 .await?
@@ -96,7 +98,7 @@ impl PumpFunTrader {
         &self,
         mint: &str,
     ) -> anyhow::Result<Option<Pubkey>> {
-        if let Some(pk) = self.user_token_accounts.lock().await.get(mint).copied() {
+        if let Some(pk) = self.user_token_accounts.lock().unwrap().get(mint).copied() {
             return Ok(Some(pk));
         }
         // The scan already returns every holding in the wallet, so cache all of
@@ -105,7 +107,7 @@ impl PumpFunTrader {
         // re-scanning the whole wallet. On-chain is the source of truth, so we
         // overwrite any existing entries with the freshly-read accounts.
         let holdings = self.get_all_token_accounts().await?;
-        let mut cache = self.user_token_accounts.lock().await;
+        let mut cache = self.user_token_accounts.lock().unwrap();
         let mut resolved = None;
         for h in &holdings {
             // A malformed token_account from a valid RPC response shouldn't
@@ -355,7 +357,7 @@ impl PumpFunTrader {
         let cashback_enabled = account.data.len() > 82 && account.data[82] != 0;
 
         // Cache PDAs for this mint
-        self.token_pdas.lock().await.insert(
+        self.token_pdas.lock().unwrap().insert(
             mint_address.to_string(),
             TokenPDAs {
                 token_program,

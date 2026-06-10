@@ -115,15 +115,17 @@ impl PumpFunTrader {
     pub(super) async fn confirm_transaction(&self, signature: &str, max_retries: usize) -> Result<()> {
         let sig = Signature::from_str(signature)?;
 
+        // Poll status first, then sleep *between* polls (not before the first and
+        // not after the last) — so a tx that already landed returns immediately
+        // and the worst-case wait is `(max_retries - 1) × CONFIRM_POLL_MS`.
         for i in 0..max_retries {
-            tokio::time::sleep(Duration::from_millis(CONFIRM_POLL_MS)).await;
-
             match self.rpc.get_signature_status(&sig).await? {
                 Some(Ok(())) => return Ok(()),
                 Some(Err(e)) => anyhow::bail!("Transaction failed on-chain: {:?}", e),
                 None => {
                     if i + 1 < max_retries {
                         info!("⏳ Confirmation pending ({}/{})", i + 1, max_retries);
+                        tokio::time::sleep(Duration::from_millis(CONFIRM_POLL_MS)).await;
                     }
                 }
             }

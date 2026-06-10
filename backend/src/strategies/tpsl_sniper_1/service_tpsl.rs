@@ -337,52 +337,24 @@ impl TpslStrategyService {
                             info!(position_id = %position.id, mint = %mint,
                                 "[REAL] Position marked ExitPending");
                         }
-                        let trader = self.trader.clone();
-                        let position_repo = self.position_repo.clone();
-                        let trade_repo = self.trade_repo.clone();
-                        let runtime = self.runtime.clone();
-                        let mut retries = 0;
-                        let max_retries = 10;
-                        let mut found = false;
-                        while retries < max_retries {
-                            // Re-read routing from the WS-fed cache every attempt:
-                            // is_cashback gates the bonding-curve cashback account;
-                            // is_migrated selects the PumpSwap AMM path. A held token
-                            // can migrate mid-exit and the cache flips is_migrated
-                            // within ~a slot — reading it once would pin all retries
-                            // to the stale bonding-curve route, so the sell would
-                            // keep failing until a later trade event re-triggered it.
-                            let (is_cashback, is_migrated) = match cache.get(&mint) {
-                                Some(e) => (e.token.is_cashback_enabled, e.is_migrated),
-                                None => (false, false),
-                            };
-                            execute_sell_for_position(
-                                trader.clone(),
-                                position.clone(),
-                                position_repo.clone(),
-                                trade_repo.clone(),
-                                runtime.clone(),
-                                is_cashback,
-                                is_migrated,
-                            )
-                            .await;
-                            if let Ok(pos) = position_repo.find_by_id(position.id).await {
-                                if let Some(pos) = pos {
-                                    if pos.exit_price.is_some() {
-                                        found = true;
-                                        break;
-                                    }
-                                }
-                            }
-                            retries += 1;
-                            sleep(Duration::from_secs(1)).await;
-                        }
-                        if !found {
-                            info!(
-                                "[REAL] Sell not confirmed after {} retries for position {}",
-                                max_retries, position.id
-                            );
-                        }
+                        // Single exit pass. `sell_with_retries` (inside) owns the
+                        // retry + partial-fill loop and re-reads migration routing
+                        // from the WS cache on every attempt, so a mid-exit
+                        // migration self-heals to the AMM path.
+                        // `execute_sell_for_position` then closes the position (on a
+                        // confirmed sell) or reopens it to Holding — in which case
+                        // the next trade event re-triggers the exit. This replaces
+                        // the old outer 10× loop, which multiplied with the inner
+                        // retries (10×6×5) for no benefit.
+                        execute_sell_for_position(
+                            self.trader.clone(),
+                            position.clone(),
+                            self.position_repo.clone(),
+                            self.trade_repo.clone(),
+                            self.runtime.clone(),
+                            cache,
+                        )
+                        .await;
                     }
                 }
             }
@@ -481,8 +453,7 @@ async fn execute_sell_for_position(
     position_repo: PositionRepo,
     trade_repo: TradeRepo,
     runtime: Arc<TpslRuntimeCache>,
-    is_cashback: bool,
-    is_migrated: bool,
+    cache: &TokenCache,
 ) {
     let mint = position.mint.clone();
     let wallet = trader.wallet_pubkey();
@@ -502,8 +473,7 @@ async fn execute_sell_for_position(
         mint.clone(),
         amount,
         trade_repo.clone(),
-        is_cashback,
-        is_migrated,
+        cache,
         base_token_program,
     )
     .await;
@@ -573,8 +543,7 @@ async fn sell_with_retries(
     mint: String,
     mut amount: u64,
     trade_repo: TradeRepo,
-    is_cashback: bool,
-    is_migrated: bool,
+    cache: &TokenCache,
     base_token_program: String,
 ) -> bool {
     let mut attempt = 0usize;
@@ -589,8 +558,8 @@ async fn sell_with_retries(
 
     // Resolve the token account once (cache-first; at most one wallet scan) and
     // reuse it across every attempt — it never changes for a given mint. If this
-    // is None, sell_token/amm_sell still fall back to their own internal lookup,
-    // so correctness is preserved while the per-attempt wallet scan is removed.
+    // is None, sell_token_once/amm_sell still fall back to their own internal
+    // lookup, so correctness is preserved while the per-attempt wallet scan is removed.
     let token_account_override = trader
         .resolve_cached_token_account(&mint)
         .await
@@ -600,6 +569,16 @@ async fn sell_with_retries(
 
     while attempt < max_attempts && amount > 0 {
         attempt += 1;
+        // Re-read routing from the WS-fed cache each attempt: `is_cashback` gates
+        // the bonding-curve cashback account; `is_migrated` selects the PumpSwap
+        // AMM path. A held token can migrate mid-exit (is_migrated flips within
+        // ~a slot) — re-reading re-routes the next attempt to the AMM instead of
+        // pinning every retry to the stale curve route. The Ref is dropped (bools
+        // copied out) before any await.
+        let (is_cashback, is_migrated) = match cache.get(&mint) {
+            Some(e) => (e.token.is_cashback_enabled, e.is_migrated),
+            None => (false, false),
+        };
         let sell_result = if is_migrated {
             trader
                 .amm_sell(
@@ -613,7 +592,7 @@ async fn sell_with_retries(
                 .await
         } else {
             trader
-                .sell_token(&mint, amount, None, is_cashback, token_account_override.as_deref(), None)
+                .sell_token_once(&mint, amount, None, is_cashback, token_account_override.as_deref(), None)
                 .await
         };
         match sell_result {

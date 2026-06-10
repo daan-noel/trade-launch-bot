@@ -91,7 +91,7 @@ impl PumpFunTrader {
                 &self.pump_program,
             );
 
-            self.token_pdas.lock().await.insert(
+            self.token_pdas.lock().unwrap().insert(
                 token_mint.to_string(),
                 TokenPDAs {
                     token_program,
@@ -129,7 +129,7 @@ impl PumpFunTrader {
             // Cache for sell
             self.user_token_accounts
                 .lock()
-                .await
+                .unwrap()
                 .insert(token_mint.to_string(), user_token_account);
 
             let mut ixs = Vec::with_capacity(6);
@@ -208,8 +208,8 @@ impl PumpFunTrader {
                 data: buy_data,
             });
 
-            if let Some(tip) = self.jito_tip_ix.lock().await.clone() {
-                ixs.push(tip);
+            if let Some(tip) = &self.jito_tip_ix {
+                ixs.push(tip.clone());
             }
 
             let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, keypair)?;
@@ -234,7 +234,6 @@ impl PumpFunTrader {
 
         self.schedule_nonce_refresh(nonce_pubkey);
         self.replenish_pool_async(token_program_id);
-        self.prebuild_one_template_async(token_program_id);
 
         result
     }

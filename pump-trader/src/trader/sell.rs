@@ -22,6 +22,10 @@ use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
 impl PumpFunTrader {
+    /// Manual/standalone curve sell: retries [`sell_token_once`] up to
+    /// `MAX_SELL_ATTEMPTS` (fresh nonce each time). Callers that own their own
+    /// retry/partial-fill loop (the TPSL service) should call `sell_token_once`
+    /// directly so the two retry loops don't multiply.
     pub async fn sell_token(
         &self,
         token_mint: &str,
@@ -34,101 +38,17 @@ impl PumpFunTrader {
         let mut last_err: Option<anyhow::Error> = None;
 
         for attempt in 0..MAX_SELL_ATTEMPTS {
-            // Ensure PDAs are cached
-            if !self.token_pdas.lock().await.contains_key(token_mint) {
-                if let Err(e) = self.get_creator_from_mint_pda(token_mint).await {
-                    last_err = Some(e);
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    continue;
-                }
-            }
-
-            // Ensure user token account is cached
-            // FIX: fallback chain — override → cache → on-chain lookup
-            {
-                let cache = self.user_token_accounts.lock().await;
-                if !cache.contains_key(token_mint) {
-                    let pk = if let Some(token_account) = token_account_override {
-                        // Use provided override
-                        let pk = match Pubkey::from_str(token_account) {
-                            Ok(pk) => pk,
-                            Err(e) => {
-                                last_err =
-                                    Some(anyhow::anyhow!("Invalid token_account_override: {e}"));
-                                continue;
-                            }
-                        };
-                        drop(cache); // release lock before re-acquiring for insert
-                        pk
-                    } else {
-                        // FIX: look up actual on-chain account, don't derive ATA
-                        drop(cache); // release lock before async call
-                        let holdings = match self.get_all_token_accounts().await {
-                            Ok(h) => h,
-                            Err(e) => {
-                                last_err = Some(e);
-                                tokio::time::sleep(Duration::from_millis(50)).await;
-                                continue;
-                            }
-                        };
-                        match holdings.iter().find(|h| h.mint == token_mint) {
-                            Some(h) => match Pubkey::from_str(&h.token_account) {
-                                Ok(pk) => pk,
-                                Err(e) => {
-                                    last_err =
-                                        Some(anyhow::anyhow!("Invalid token account pubkey: {e}"));
-                                    continue;
-                                }
-                            },
-                            None => {
-                                last_err = Some(anyhow::anyhow!(
-                                    "No token account found for mint {}",
-                                    token_mint
-                                ));
-                                tokio::time::sleep(Duration::from_millis(50)).await;
-                                continue;
-                            }
-                        }
-                    };
-                    self.user_token_accounts
-                        .lock()
-                        .await
-                        .insert(token_mint.to_string(), pk);
-                }
-            }
-
-            let (nonce_pubkey, nonce_hash) = match self.acquire_nonce().await {
-                Ok(v) => v,
-                Err(e) => {
-                    last_err = Some(e);
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    continue;
-                }
-            };
-
-            info!(
-                "🔁 Sell attempt {}/{} — token: {} nonce: {}",
-                attempt + 1,
-                MAX_SELL_ATTEMPTS,
-                token_mint,
-                nonce_pubkey
-            );
-
-            let res = self
-                .execute_sell(
+            match self
+                .sell_token_once(
                     token_mint,
                     token_amount,
                     creator_override,
                     is_cashback,
+                    token_account_override,
                     slippage_bps,
-                    &nonce_pubkey,
-                    nonce_hash,
                 )
-                .await;
-
-            self.schedule_nonce_refresh(nonce_pubkey);
-
-            match res {
+                .await
+            {
                 Ok(true) => return Ok(true),
                 Ok(false) => {
                     let e = anyhow::anyhow!("Sell returned false on attempt {}", attempt + 1);
@@ -146,12 +66,60 @@ impl PumpFunTrader {
             }
         }
 
-        Err(last_err.unwrap_or_else(|| {
-            anyhow::anyhow!(
-                "Sell failed after {} attempts",
-                MAX_SELL_ATTEMPTS
+        Err(last_err
+            .unwrap_or_else(|| anyhow::anyhow!("Sell failed after {} attempts", MAX_SELL_ATTEMPTS)))
+    }
+
+    /// One curve-sell attempt: ensure the mint's PDAs and the wallet's token
+    /// account are known (cache-first, single on-chain read on a miss), acquire a
+    /// fresh nonce, then build/send/confirm exactly one sell tx. Public so an
+    /// outer orchestrator (TPSL `sell_with_retries`, which already re-reads the
+    /// balance and re-routes on migration each pass) can drive retries without
+    /// the redundant inner loop `sell_token` keeps for manual callers.
+    pub async fn sell_token_once(
+        &self,
+        token_mint: &str,
+        token_amount: u64,
+        creator_override: Option<&str>,
+        is_cashback: bool,
+        token_account_override: Option<&str>,
+        slippage_bps: Option<u64>,
+    ) -> Result<bool> {
+        // Ensure PDAs are cached (reads the bonding-curve PDA on a miss).
+        if !self.token_pdas.lock().unwrap().contains_key(token_mint) {
+            self.get_creator_from_mint_pda(token_mint).await?;
+        }
+
+        // Ensure the wallet's token account is known: an explicit override wins;
+        // otherwise resolve cache-first (one wallet scan on a miss). `execute_sell`
+        // reads the cached account, so populate it here.
+        if let Some(token_account) = token_account_override {
+            let pk = Pubkey::from_str(token_account).context("Invalid token_account_override")?;
+            self.user_token_accounts
+                .lock()
+                .unwrap()
+                .insert(token_mint.to_string(), pk);
+        } else if self.resolve_cached_token_account(token_mint).await?.is_none() {
+            anyhow::bail!("No token account found for mint {token_mint}");
+        }
+
+        let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
+        info!("🔁 Sell — token: {} nonce: {}", token_mint, nonce_pubkey);
+
+        let res = self
+            .execute_sell(
+                token_mint,
+                token_amount,
+                creator_override,
+                is_cashback,
+                slippage_bps,
+                &nonce_pubkey,
+                nonce_hash,
             )
-        }))
+            .await;
+
+        self.schedule_nonce_refresh(nonce_pubkey);
+        res
     }
 
     // -----------------------------------------------------------------------
@@ -178,7 +146,7 @@ impl PumpFunTrader {
         let mut pdas = self
             .token_pdas
             .lock()
-            .await
+            .unwrap()
             .get(token_mint)
             .copied()
             .context("Token PDAs not cached — buy must precede sell")?;
@@ -203,7 +171,7 @@ impl PumpFunTrader {
         let user_token_account = self
             .user_token_accounts
             .lock()
-            .await
+            .unwrap()
             .get(token_mint)
             .copied()
             .context("User token account not cached — buy must precede sell")?;
@@ -275,8 +243,8 @@ impl PumpFunTrader {
         });
 
         // Jito tip
-        if let Some(tip) = self.jito_tip_ix.lock().await.clone() {
-            ixs.push(tip);
+        if let Some(tip) = &self.jito_tip_ix {
+            ixs.push(tip.clone());
         }
 
         // ── Sign & send ─────────────────────────────────────────────────────

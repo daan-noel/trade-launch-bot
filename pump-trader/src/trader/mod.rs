@@ -8,10 +8,11 @@
 //    so account creation instructions are always ready.
 //  - Pre-built Jito tip and compute-budget instructions, built
 //    once at init and reused every transaction.
-//  - Retry loop on sell (up to 5 attempts, fresh nonce each time).
-//  - Background prebuild of the *next* buy template immediately
-//    after a buy succeeds or fails, on top of the pool refill —
-//    double safety net.
+//  - Retry loop on sell (up to 5 attempts, fresh nonce each time);
+//    `sell_token_once` exposes a single attempt for callers that own
+//    their own retry loop.
+//  - Background pool refill immediately after a buy consumes a
+//    template, so the next buy starts warm.
 //  - base64 encoding (correct for the JSON-RPC "base64" param).
 //  - Confirmation polling extracted into a reusable helper with
 //    configurable retries; sell retries re-use it too.
@@ -153,7 +154,9 @@ pub struct PumpFunTrader {
     // Set once in initialize()
     global_account: Option<GlobalAccount>,
     compute_budget_ixs: Vec<Instruction>,
-    jito_tip_ix: Arc<Mutex<Option<Instruction>>>,
+    // Built once in `initialize` and never mutated afterwards, so it needs no
+    // interior mutability — read directly on every buy/sell.
+    jito_tip_ix: Option<Instruction>,
 
     // Nonce management
     nonce_pubkeys: Vec<Pubkey>,
@@ -187,12 +190,22 @@ pub struct PumpFunTrader {
     // PumpSwap AMM (migrated tokens)
     pump_swap_program: Pubkey,
     wsol_mint: Pubkey,
-    amm_pool_cache: Arc<Mutex<HashMap<String, AmmPoolInfo>>>,
-    amm_global_config: Arc<Mutex<Option<AmmGlobalConfig>>>,
+    // Program-constant PumpSwap PDAs, derived once in `new()` (they never depend
+    // on the token, only on the program / fee-program / this wallet) instead of
+    // re-running `find_program_address` on every AMM swap.
+    amm_global_config_pda: Pubkey,
+    amm_event_authority: Pubkey,
+    amm_fee_config: Pubkey,
+    amm_global_volume_accumulator: Pubkey,
+    amm_user_volume_accumulator: Pubkey,
+    amm_pool_cache: Arc<std::sync::Mutex<HashMap<String, AmmPoolInfo>>>,
+    amm_global_config: Arc<std::sync::Mutex<Option<AmmGlobalConfig>>>,
 
-    // Per-token caches
-    user_token_accounts: Arc<Mutex<HashMap<String, Pubkey>>>,
-    token_pdas: Arc<Mutex<HashMap<String, TokenPDAs>>>,
+    // Per-token caches. Plain `std::sync::Mutex` (like `ReserveCache` /
+    // `BlockhashCache`): the critical sections are a single get/insert with no
+    // `.await` held, so the async mutex bought nothing.
+    user_token_accounts: Arc<std::sync::Mutex<HashMap<String, Pubkey>>>,
+    token_pdas: Arc<std::sync::Mutex<HashMap<String, TokenPDAs>>>,
 
     // WS-fed live reserve snapshots (mint → latest post-trade reserves), read on
     // the slippage / AMM-reserve hot path with an on-chain fallback.
@@ -214,13 +227,34 @@ impl PumpFunTrader {
             CommitmentConfig::confirmed(),
         ));
 
+        // Program ids parsed once, reused below to derive the constant AMM PDAs.
+        let pump_swap_program = Pubkey::from_str(PUMP_SWAP_PROGRAM_ID).unwrap();
+        let fee_program = Pubkey::from_str(FEE_PROGRAM_ID).unwrap();
+        let wallet = config.keypair.pubkey();
+
+        // PumpSwap PDAs that never change for this wallet — derived once here so
+        // `amm_swap_accounts` is a few field reads instead of ~5 `find_program_address`.
+        let amm_global_config_pda =
+            Pubkey::find_program_address(&[b"global_config"], &pump_swap_program).0;
+        let amm_event_authority =
+            Pubkey::find_program_address(&[b"__event_authority"], &pump_swap_program).0;
+        let amm_fee_config =
+            Pubkey::find_program_address(&[b"fee_config", pump_swap_program.as_ref()], &fee_program).0;
+        let amm_global_volume_accumulator =
+            Pubkey::find_program_address(&[b"global_volume_accumulator"], &pump_swap_program).0;
+        let amm_user_volume_accumulator = Pubkey::find_program_address(
+            &[b"user_volume_accumulator", wallet.as_ref()],
+            &pump_swap_program,
+        )
+        .0;
+
         Self {
             config,
             http: reqwest::Client::new(),
             rpc,
             global_account: None,
             compute_budget_ixs: Vec::new(),
-            jito_tip_ix: Arc::new(Mutex::new(None)),
+            jito_tip_ix: None,
             nonce_pubkeys: Vec::new(),
             nonce_cursor: AtomicUsize::new(0),
             nonce_slots: Arc::new(Mutex::new(HashMap::new())),
@@ -238,14 +272,19 @@ impl PumpFunTrader {
             pump_program: Pubkey::from_str(PUMP_FUN_PROGRAM_ID).unwrap(),
             system_program: system_program::id(),
             event_authority: Pubkey::from_str(EVENT_AUTHORITY).unwrap(),
-            fee_program: Pubkey::from_str(FEE_PROGRAM_ID).unwrap(),
+            fee_program,
             upgrade_fee_recipient: Pubkey::from_str(PUMP_PROGRAM_UPGRADE_FEE_RECIPIENT).unwrap(),
-            pump_swap_program: Pubkey::from_str(PUMP_SWAP_PROGRAM_ID).unwrap(),
+            pump_swap_program,
             wsol_mint: Pubkey::from_str(WSOL_MINT).unwrap(),
-            amm_pool_cache: Arc::new(Mutex::new(HashMap::new())),
-            amm_global_config: Arc::new(Mutex::new(None)),
-            user_token_accounts: Arc::new(Mutex::new(HashMap::new())),
-            token_pdas: Arc::new(Mutex::new(HashMap::new())),
+            amm_global_config_pda,
+            amm_event_authority,
+            amm_fee_config,
+            amm_global_volume_accumulator,
+            amm_user_volume_accumulator,
+            amm_pool_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            amm_global_config: Arc::new(std::sync::Mutex::new(None)),
+            user_token_accounts: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            token_pdas: Arc::new(std::sync::Mutex::new(HashMap::new())),
             reserve_cache: Arc::new(ReserveCache::default()),
             blockhash_cache: Arc::new(BlockhashCache::default()),
         }

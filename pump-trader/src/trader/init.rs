@@ -60,7 +60,7 @@ impl PumpFunTrader {
         let tip_account = JITO_TIP_ACCOUNTS
             .choose(&mut rand::thread_rng())
             .context("No Jito tip accounts")?;
-        *self.jito_tip_ix.lock().await = Some(system_instruction::transfer(
+        self.jito_tip_ix = Some(system_instruction::transfer(
             &self.config.keypair.pubkey(),
             &Pubkey::from_str(tip_account)?,
             jito_lamports,

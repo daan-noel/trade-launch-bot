@@ -16,7 +16,10 @@ use super::{BuyTemplate, PumpFunTrader};
 use crate::constants::{BUY_SEED_POOL_SIZE, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
 use anyhow::Result;
 use solana_sdk::system_instruction;
-use solana_sdk::{pubkey::Pubkey, signature::Signer};
+use solana_sdk::{
+    pubkey::Pubkey,
+    signature::{Keypair, Signer},
+};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash as StdHash, Hasher};
 use std::str::FromStr;
@@ -47,32 +50,20 @@ impl PumpFunTrader {
         format!("{:x}", h.finish())
     }
 
-    fn build_template(&self, token_program_id: &str) -> Result<BuyTemplate> {
-        let kp = &self.config.keypair;
-        let program_id = Pubkey::from_str(token_program_id)?;
-        let seed = self.next_seed();
-        let user_token_account = Pubkey::create_with_seed(&kp.pubkey(), &seed, &program_id)?;
-
-        let (space, rent) = if token_program_id == TOKEN_PROGRAM_ID {
+    /// (space, rent) for a token account of the given program — legacy vs 2022.
+    fn space_rent_for(&self, token_program_id: &str) -> (u64, u64) {
+        if token_program_id == TOKEN_PROGRAM_ID {
             (self.token_account_space, self.token_account_rent)
         } else {
             (self.token_2022_account_space, self.token_2022_account_rent)
-        };
+        }
+    }
 
-        let ix = system_instruction::create_account_with_seed(
-            &kp.pubkey(),
-            &user_token_account,
-            &kp.pubkey(),
-            &seed,
-            rent,
-            space,
-            &program_id,
-        );
-
-        Ok(BuyTemplate {
-            create_with_seed_ix: ix,
-            user_token_account,
-        })
+    fn build_template(&self, token_program_id: &str) -> Result<BuyTemplate> {
+        let program_id = Pubkey::from_str(token_program_id)?;
+        let seed = self.next_seed();
+        let (space, rent) = self.space_rent_for(token_program_id);
+        build_template_with_seed(&self.config.keypair, &program_id, &seed, space, rent)
     }
 
     pub(super) async fn fill_buy_pool(&self, token_program_id: &str) -> Result<()> {
@@ -107,7 +98,9 @@ impl PumpFunTrader {
         self.build_template(token_program_id)
     }
 
-    /// Refill the pool up to target in background (pool-level replenishment).
+    /// Refill the pool back up to target in the background after a buy consumed a
+    /// template. Builds one (a buy consumes one), reusing the same builder the
+    /// sync path uses, so there's a single copy of the seed/derivation logic.
     pub(super) fn replenish_pool_async(&self, token_program_id: &str) {
         // Determine which static string to use so we can 'static the spawn
         let prog_id: &'static str = if token_program_id == TOKEN_PROGRAM_ID {
@@ -119,21 +112,19 @@ impl PumpFunTrader {
         let pool = Arc::clone(self.pool_for(prog_id));
         let target = BUY_SEED_POOL_SIZE;
         let kp = self.config.keypair.insecure_clone();
-        let (space, rent) = if prog_id == TOKEN_PROGRAM_ID {
-            (self.token_account_space, self.token_account_rent)
-        } else {
-            (self.token_2022_account_space, self.token_2022_account_rent)
-        };
+        let (space, rent) = self.space_rent_for(prog_id);
 
         tokio::spawn(async move {
             if pool.lock().await.len() >= target {
                 return;
             }
-
             let program_id = match Pubkey::from_str(prog_id) {
                 Ok(p) => p,
                 Err(_) => return,
             };
+            // No `&self` in the spawn, so derive a unique seed from the clock
+            // rather than `next_seed`'s counter (a rare collision just yields a
+            // duplicate template — harmless).
             let seed = format!(
                 "{:x}",
                 SystemTime::now()
@@ -141,71 +132,37 @@ impl PumpFunTrader {
                     .map(|d| d.as_nanos())
                     .unwrap_or_default()
             );
-            let user_token_account =
-                match Pubkey::create_with_seed(&kp.pubkey(), &seed, &program_id) {
-                    Ok(p) => p,
-                    Err(_) => return,
-                };
-            let ix = system_instruction::create_account_with_seed(
-                &kp.pubkey(),
-                &user_token_account,
-                &kp.pubkey(),
-                &seed,
-                rent,
-                space,
-                &program_id,
-            );
-            pool.lock().await.push(BuyTemplate {
-                create_with_seed_ix: ix,
-                user_token_account,
-            });
-        });
-    }
-
-    /// Eagerly prebuild one extra template in background right after a buy
-    /// (borrowed from file 2's post-buy rebuild pattern).
-    pub(super) fn prebuild_one_template_async(&self, token_program_id: &str) {
-        let prog_id: &'static str = if token_program_id == TOKEN_PROGRAM_ID {
-            TOKEN_PROGRAM_ID
-        } else {
-            TOKEN_2022_PROGRAM_ID
-        };
-
-        let pool = Arc::clone(self.pool_for(prog_id));
-        let kp = self.config.keypair.insecure_clone();
-        let (space, rent) = if prog_id == TOKEN_PROGRAM_ID {
-            (self.token_account_space, self.token_account_rent)
-        } else {
-            (self.token_2022_account_space, self.token_2022_account_rent)
-        };
-
-        tokio::spawn(async move {
-            let program_id = match Pubkey::from_str(prog_id) {
-                Ok(p) => p,
-                Err(_) => return,
-            };
-            let seed = format!(
-                "{:x}",
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or_default()
-            );
-            if let Ok(account) = Pubkey::create_with_seed(&kp.pubkey(), &seed, &program_id) {
-                let ix = system_instruction::create_account_with_seed(
-                    &kp.pubkey(),
-                    &account,
-                    &kp.pubkey(),
-                    &seed,
-                    rent,
-                    space,
-                    &program_id,
-                );
-                pool.lock().await.push(BuyTemplate {
-                    create_with_seed_ix: ix,
-                    user_token_account: account,
-                });
+            if let Ok(template) = build_template_with_seed(&kp, &program_id, &seed, space, rent) {
+                pool.lock().await.push(template);
             }
         });
     }
+}
+
+/// Build one buy template (a create-account-with-seed instruction + the resulting
+/// token account address) for `program_id`. Shared by the synchronous fill path
+/// ([`PumpFunTrader::build_template`]) and the background replenisher so the
+/// derivation lives in exactly one place.
+fn build_template_with_seed(
+    keypair: &Keypair,
+    program_id: &Pubkey,
+    seed: &str,
+    space: u64,
+    rent: u64,
+) -> Result<BuyTemplate> {
+    let owner = keypair.pubkey();
+    let user_token_account = Pubkey::create_with_seed(&owner, seed, program_id)?;
+    let ix = system_instruction::create_account_with_seed(
+        &owner,
+        &user_token_account,
+        &owner,
+        seed,
+        rent,
+        space,
+        program_id,
+    );
+    Ok(BuyTemplate {
+        create_with_seed_ix: ix,
+        user_token_account,
+    })
 }
