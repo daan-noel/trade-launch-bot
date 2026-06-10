@@ -153,10 +153,6 @@ export async function fetchRulePositions(
   return request(`${API_BASE}/api/strategies/tpsl/rules/${ruleId}/positions`);
 }
 
-export async function fetchWalletHoldings(): Promise<import('types').WalletHolding[]> {
-  return request(`${API_BASE}/api/solana/wallet/tokens`);
-}
-
 export async function fetchAnalysis(
   limit: number,
   offset: number,
@@ -169,34 +165,6 @@ export async function fetchCreators(
   offset: number,
 ): Promise<{ total: number; items: import('types').CreatorRecord[] }> {
   return request(`${API_BASE}/api/creators?limit=${limit}&offset=${offset}`);
-}
-
-export async function tradeBuy(req: {
-  mint: string;
-  sol_amount: number;
-  token_program_id?: string;
-  slippage_bps?: number;
-}): Promise<boolean> {
-  await request(`${API_BASE}/api/solana/wallet/buy`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(req),
-  });
-  return true;
-}
-
-export async function tradeSell(req: {
-  mint: string;
-  token_amount: number;
-  token_account: string;
-  slippage_bps?: number;
-}): Promise<boolean> {
-  await request(`${API_BASE}/api/solana/wallet/sell`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(req),
-  });
-  return true;
 }
 
 // ---------------------------------------------------------------------------

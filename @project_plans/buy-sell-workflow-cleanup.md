@@ -104,10 +104,19 @@ Net sell attempts per exit: curve **300 → ≤ 6**, AMM **60 → ≤ 6**.
 
 ## Deferred (recommended next, higher-risk)
 
-- **Merge the two TPSL services into one shared module.** They're byte-identical
-  bar module paths, but `TpslRuntimeCache` / `TPSLStrategyHandler` are *distinct
-  types* per module, so sharing needs a trait abstraction over them. High value,
-  but wants integration tests before doing it blind.
+- ~~**Merge the two TPSL services into one shared module.**~~ **DONE (2026-06-10).**
+  The premise was wrong: `TpslRuntimeCache` / `TPSLStrategyHandler` / the service /
+  util were *byte-identical* copies (not divergent types), and the live functions
+  `find_entry` / `find_exit` were byte-identical too — the only real fork was
+  `simulation_tpsl.rs` (`tpsl_sniper_1` has the richer `simulate_exit` /
+  `run_simulation` backtest). `tpsl` was the live-wired copy; `tpsl_sniper_1` is a
+  strict superset. Resolved by repointing the live wiring (runner, app_state, main,
+  `strategies/mod.rs`, api handler) `tpsl::` → `tpsl_sniper_1::` and **deleting the
+  `strategies/tpsl/` folder** — zero live-behavior change (the
+  `disabled_trailing_matches_legacy_find_exit` test guards the legacy exit path).
+  No trait abstraction was needed. Future `tpsl_sniper_2/3/4` differ only in
+  entry/exit; the next step is a shared core with a swappable `find_entry` /
+  `find_exit` seam.
 - **Single confirmation source.** Drop the blocking RPC confirm on the snipe buy
   entirely and let the WS/DB poll be the sole confirmation (it already sets entry
   price). Left out of this pass to keep the change set reviewable.

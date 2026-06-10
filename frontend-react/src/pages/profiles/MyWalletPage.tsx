@@ -1,15 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useDispatch, useSelector } from 'react-redux';
+import { useCallback, useMemo, useState } from 'react';
+import { useDispatch } from 'react-redux';
+import type { FetchBaseQueryError } from '@reduxjs/toolkit/query';
+import type { SerializedError } from '@reduxjs/toolkit';
 import { DataTable } from 'components/table/DataTable';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
 import { Input } from 'components/ui/Input';
 import { InlineAlert, Modal } from 'components/ui/Modal';
 import { walletColumns } from 'components/wallet/walletColumns';
-import { tradeBuy, tradeSell } from 'services/api';
+import {
+  apiSlice,
+  apiErrorMessage,
+  useGetWalletHoldingsQuery,
+  useBuyTokenMutation,
+  useSellTokenMutation,
+} from 'store/apiSlice';
 import { useWalletPriceDisplay } from 'hooks/useWalletPriceDisplay';
-import type { AppDispatch, RootState } from '../../store';
-import { loadWalletHoldings } from 'store/walletSlice';
+import type { AppDispatch } from '../../store';
 
 interface BuyDialog {
   mint: string;
@@ -24,46 +31,68 @@ interface BuyDialog {
 export function MyWalletPage() {
   const dispatch = useDispatch<AppDispatch>();
   const price = useWalletPriceDisplay();
-  const holdings = useSelector((s: RootState) => s.wallet.holdings);
-  const loading = useSelector((s: RootState) => s.wallet.loading);
-  const error = useSelector((s: RootState) => s.wallet.error);
+  // RTK Query owns the fetch, the cache, and StrictMode/dedup. Navigating back
+  // to this page reuses the cached holdings (keepUnusedDataFor) instead of
+  // re-scanning the chain; a manual trade refreshes a single row (see below).
+  const {
+    data: holdings = [],
+    isLoading,
+    isFetching,
+    error: holdingsError,
+    refetch,
+  } = useGetWalletHoldingsQuery();
+  const [buyToken] = useBuyTokenMutation();
+  const [sellToken] = useSellTokenMutation();
 
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
   const [sellingMint, setSellingMint] = useState<string | null>(null);
   const [buyDialog, setBuyDialog] = useState<BuyDialog | null>(null);
 
-  const loadHoldings = useCallback(() => {
-    dispatch(loadWalletHoldings());
-  }, [dispatch]);
-
-  useEffect(() => {
-    loadHoldings();
-  }, [loadHoldings]);
+  const error = apiErrorMessage(holdingsError);
 
   // After a confirmed trade the wallet's new on-chain balance can lag the RPC
-  // read by a moment, so a single refresh often captures the pre-trade balance
-  // and the table appears unchanged. Re-fetch a few times until the affected
-  // holding's raw amount actually moves (buy → up / new token appears,
-  // sell → down), then resolve the status message so it never looks stuck.
-  const refreshAfterTrade = useCallback(
+  // read by a moment. Rather than re-fetching (and re-pricing) the entire
+  // wallet repeatedly, poll just the traded mint — one cheap RPC + price each
+  // attempt — until its raw amount actually moves (buy → up / new token
+  // appears, sell → down), then patch that single row into the cached list.
+  // No full wallet re-scan. If the change never lands within the window, fall
+  // back to one authoritative refresh so the table can't sit on stale data.
+  const confirmTrade = useCallback(
     async (mint: string, prevAmount: number | undefined, label: string) => {
       for (let attempt = 0; attempt < 5; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 1500));
+        const sub = dispatch(
+          apiSlice.endpoints.getWalletHolding.initiate(mint, { forceRefetch: true }),
+        );
         try {
-          const next = await dispatch(loadWalletHoldings()).unwrap();
-          const current = next.find((h) => h.mint === mint)?.amount;
-          if (current !== prevAmount) {
+          const holding = await sub.unwrap();
+          if ((holding?.amount ?? undefined) !== prevAmount) {
+            dispatch(
+              apiSlice.util.updateQueryData('getWalletHoldings', undefined, (draft) => {
+                const idx = draft.findIndex((h) => h.mint === mint);
+                if (holding) {
+                  if (idx >= 0) draft[idx] = holding;
+                  else draft.unshift(holding);
+                } else if (idx >= 0) {
+                  draft.splice(idx, 1);
+                }
+              }),
+            );
             setActionSuccess(`${label} successful — holdings updated.`);
             return;
           }
         } catch {
-          // Transient RPC/Jupiter error during refresh; the thunk already
-          // recorded it for the inline alert. Keep retrying.
+          // Transient RPC/Jupiter error during confirmation; keep retrying.
+        } finally {
+          // Drop the imperative subscription so the single-mint cache entry
+          // doesn't linger past its purpose.
+          sub.unsubscribe();
         }
       }
+      dispatch(apiSlice.util.invalidateTags(['WalletHoldings']));
       setActionSuccess(
-        `${label} confirmed. Balances are taking a moment to update on-chain — hit ↻ Refresh.`,
+        `${label} confirmed. Balances took a moment to update on-chain — refreshed.`,
       );
     },
     [dispatch],
@@ -82,20 +111,22 @@ export function MyWalletPage() {
       setActionSuccess(null);
 
       try {
-        await tradeSell({
+        await sellToken({
           mint,
           token_amount: tokenAmount,
           token_account: holding.token_account,
-        });
-        setActionSuccess('Sell submitted — refreshing holdings…');
-        void refreshAfterTrade(mint, holding.amount, 'Sell');
+        }).unwrap();
+        setActionSuccess('Sell submitted — confirming on-chain…');
+        void confirmTrade(mint, holding.amount, 'Sell');
       } catch (e) {
-        setActionError(`Sell failed: ${e instanceof Error ? e.message : 'unknown error'}`);
+        setActionError(
+          `Sell failed: ${apiErrorMessage(e as FetchBaseQueryError | SerializedError) ?? 'unknown error'}`,
+        );
       } finally {
         setSellingMint(null);
       }
     },
-    [holdings, refreshAfterTrade],
+    [holdings, sellToken, confirmTrade],
   );
 
   const handleBuyOpen = useCallback((mint: string, tokenProgramId: string) => {
@@ -133,7 +164,7 @@ export function MyWalletPage() {
     }
 
     // Snapshot the pre-buy balance (undefined for a token we don't hold yet) so
-    // the refresh can tell when the new tokens have landed.
+    // the confirmation can tell when the new tokens have landed.
     const prevAmount = holdings.find((h) => h.mint === mint)?.amount;
 
     setActionError(null);
@@ -141,7 +172,7 @@ export function MyWalletPage() {
     setBuyDialog(null);
 
     try {
-      await tradeBuy({
+      await buyToken({
         mint,
         sol_amount: solAmount,
         // Omit for manual buys — the backend resolves the token program on-chain.
@@ -149,13 +180,15 @@ export function MyWalletPage() {
           ? { token_program_id: buyDialog.tokenProgramId }
           : {}),
         ...(slippageBps !== undefined ? { slippage_bps: slippageBps } : {}),
-      });
-      setActionSuccess('Buy submitted — refreshing holdings…');
-      void refreshAfterTrade(mint, prevAmount, 'Buy');
+      }).unwrap();
+      setActionSuccess('Buy submitted — confirming on-chain…');
+      void confirmTrade(mint, prevAmount, 'Buy');
     } catch (e) {
-      setActionError(`Buy failed: ${e instanceof Error ? e.message : 'unknown error'}`);
+      setActionError(
+        `Buy failed: ${apiErrorMessage(e as FetchBaseQueryError | SerializedError) ?? 'unknown error'}`,
+      );
     }
-  }, [buyDialog, holdings, refreshAfterTrade]);
+  }, [buyDialog, holdings, buyToken, confirmTrade]);
 
   const columns = useMemo(
     () =>
@@ -183,8 +216,8 @@ export function MyWalletPage() {
         <Badge variant="primary" className="font-mono">
           {holdings.length} tokens
         </Badge>
-        <Button variant="subtle" size="sm" onClick={loadHoldings} disabled={loading}>
-          {loading ? 'Loading…' : '↻ Refresh'}
+        <Button variant="subtle" size="sm" onClick={() => refetch()} disabled={isFetching}>
+          {isFetching ? 'Loading…' : '↻ Refresh'}
         </Button>
         <div className='flex-grow' />
         <Button variant="primary" size="md" onClick={handleManualBuyOpen}>
@@ -196,7 +229,7 @@ export function MyWalletPage() {
       {actionError && <InlineAlert variant="error">{actionError}</InlineAlert>}
       {actionSuccess && <InlineAlert variant="success">{actionSuccess}</InlineAlert>}
 
-      {loading && holdings.length === 0 ? (
+      {isLoading ? (
         <p className="py-10 text-center text-text-dim">Loading wallet holdings from Solana…</p>
       ) : (
         <DataTable

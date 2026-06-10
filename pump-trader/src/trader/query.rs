@@ -85,6 +85,70 @@ impl PumpFunTrader {
         Ok(holdings)
     }
 
+    /// Return the wallet's holding for a single `mint`, or `None` if not held.
+    ///
+    /// A single `getTokenAccountsByOwner` call with a **mint filter** — no full
+    /// wallet scan and no ATA derivation. The mint belongs to exactly one token
+    /// program, so the response covers both classic Token and Token-2022 (the
+    /// owning program is read back from `account.owner`). Used to confirm a
+    /// balance change after a manual trade cheaply: a not-yet-created ATA simply
+    /// returns `None` until the buy lands.
+    pub async fn get_token_account_for_mint(
+        &self,
+        mint: &str,
+    ) -> anyhow::Result<Option<crate::types::WalletHolding>> {
+        let wallet = self.wallet_pubkey();
+        let rpc_url = self.rpc_url();
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getTokenAccountsByOwner",
+            "params": [
+                wallet,
+                { "mint": mint },
+                { "encoding": "jsonParsed" }
+            ]
+        });
+
+        let resp: serde_json::Value = self
+            .http
+            .post(rpc_url)
+            .json(&body)
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        let Some(accounts) = resp["result"]["value"].as_array() else {
+            return Ok(None);
+        };
+
+        for account in accounts {
+            let info = &account["account"]["data"]["parsed"]["info"];
+            let ta = &info["tokenAmount"];
+            let amount: u64 = ta["amount"].as_str().unwrap_or("0").parse().unwrap_or(0);
+            if amount == 0 {
+                continue;
+            }
+            let ui_amount = ta["uiAmount"].as_f64().unwrap_or(0.0);
+            let decimals = ta["decimals"].as_u64().unwrap_or(0) as u8;
+            let token_account = account["pubkey"].as_str().unwrap_or("").to_string();
+            // The owning token program (classic vs Token-2022) is the account
+            // owner, not derivable from the mint filter alone.
+            let token_program_id = account["account"]["owner"].as_str().unwrap_or("").to_string();
+
+            return Ok(Some(crate::types::WalletHolding {
+                mint: mint.to_string(),
+                amount,
+                ui_amount,
+                decimals,
+                token_account,
+                token_program_id,
+            }));
+        }
+        Ok(None)
+    }
+
     /// Resolve the wallet's token account for `mint` with at most one on-chain
     /// lookup. Serves from the in-memory cache when the account is already known
     /// (populated by a prior buy/sell on this trader), otherwise performs a

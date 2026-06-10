@@ -30,6 +30,20 @@ pub async fn list_enriched(state: &AppState) -> anyhow::Result<Vec<EnrichedWalle
     Ok(enrich_holdings(state, holdings).await)
 }
 
+/// Enrich a single mint's holding for the trader's wallet, or `None` if the
+/// wallet holds none of it. A cheap one-mint read (single RPC + one Jupiter
+/// price) used to confirm a balance change after a manual trade without
+/// re-scanning and re-pricing the whole wallet.
+pub async fn enrich_one(
+    state: &AppState,
+    mint: &str,
+) -> anyhow::Result<Option<EnrichedWalletHolding>> {
+    let Some(holding) = state.trader.get_token_account_for_mint(mint).await? else {
+        return Ok(None);
+    };
+    Ok(enrich_holdings(state, vec![holding]).await.into_iter().next())
+}
+
 async fn enrich_holdings(
     state: &AppState,
     holdings: Vec<WalletHolding>,

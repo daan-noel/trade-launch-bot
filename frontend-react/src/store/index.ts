@@ -1,12 +1,10 @@
 import { configureStore } from '@reduxjs/toolkit';
-import walletReducer from './walletSlice';
 import swingDetectionReducer from './swingDetectionSlice';
 import syncTokenReducer from './syncTokenSlice';
 import { apiSlice } from './apiSlice';
 
 export const store = configureStore({
   reducer: {
-    wallet: walletReducer,
     swingDetection: swingDetectionReducer,
     syncToken: syncTokenReducer,
     [apiSlice.reducerPath]: apiSlice.reducer,

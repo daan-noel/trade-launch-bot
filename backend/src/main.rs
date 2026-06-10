@@ -97,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
 
     let (sol_price_tx, _sol_price_rx) = tokio::sync::watch::channel::<Option<f64>>(None);
     let sol_price = Arc::new(sol_price_tx);
-    let tpsl_cache = Arc::new(strategies::tpsl::TpslRuntimeCache::new());
+    let tpsl_cache = Arc::new(strategies::tpsl_sniper_1::TpslRuntimeCache::new());
     tpsl_cache
         .load_from_db(&db)
         .await

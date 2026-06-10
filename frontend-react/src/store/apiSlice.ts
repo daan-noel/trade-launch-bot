@@ -3,7 +3,12 @@ import type { FetchBaseQueryError } from '@reduxjs/toolkit/query';
 import type { SerializedError } from '@reduxjs/toolkit';
 import { API_BASE } from 'services/config';
 import type { AppSettings } from 'services/api';
-import type { TokenDetailRecord, TokenRecord, TradeRecord } from 'types';
+import type {
+  TokenDetailRecord,
+  TokenRecord,
+  TradeRecord,
+  WalletHolding,
+} from 'types';
 
 export interface TokensArgs {
   search: string;
@@ -14,6 +19,22 @@ export interface TokensArgs {
 export interface TokensResponse {
   total: number;
   items: TokenRecord[];
+}
+
+export interface BuyTokenArgs {
+  mint: string;
+  sol_amount: number;
+  /// Omitted for manual buys — the backend resolves the token program on-chain.
+  token_program_id?: string;
+  /// Per-trade slippage in basis points; omit to use the global default.
+  slippage_bps?: number;
+}
+
+export interface SellTokenArgs {
+  mint: string;
+  token_amount: number;
+  token_account: string;
+  slippage_bps?: number;
 }
 
 /**
@@ -30,7 +51,7 @@ export const apiSlice = createApi({
   baseQuery: fetchBaseQuery({ baseUrl: API_BASE }),
   keepUnusedDataFor: 300,
   refetchOnMountOrArgChange: false,
-  tagTypes: ['Settings', 'LiveMode'],
+  tagTypes: ['Settings', 'LiveMode', 'WalletHoldings'],
   endpoints: (builder) => ({
     getTokens: builder.query<TokensResponse, TokensArgs>({
       query: ({ search, limit, offset }) => {
@@ -47,6 +68,27 @@ export const apiSlice = createApi({
     }),
     getTokenTrades: builder.query<TradeRecord[], string>({
       query: (mint) => `/api/tokens/${encodeURIComponent(mint)}/trades`,
+    }),
+
+    // Wallet holdings — an expensive read (full wallet RPC scan + Jupiter batch
+    // price + migration resolution). Cached like the token list so revisiting
+    // the page reuses it instead of re-scanning the chain. A manual trade
+    // refreshes it surgically (see getWalletHolding) rather than re-fetching.
+    getWalletHoldings: builder.query<WalletHolding[], void>({
+      query: () => '/api/solana/wallet/tokens',
+      providesTags: ['WalletHoldings'],
+    }),
+    // Single-mint counterpart used only for post-trade confirmation polling:
+    // one cheap RPC + one price lookup. Not exposed as a hook — callers drive
+    // it imperatively via `initiate` and patch the result into the list cache.
+    getWalletHolding: builder.query<WalletHolding | null, string>({
+      query: (mint) => `/api/solana/wallet/tokens/${encodeURIComponent(mint)}`,
+    }),
+    buyToken: builder.mutation<{ success: boolean }, BuyTokenArgs>({
+      query: (body) => ({ url: '/api/solana/wallet/buy', method: 'POST', body }),
+    }),
+    sellToken: builder.mutation<{ success: boolean }, SellTokenArgs>({
+      query: (body) => ({ url: '/api/solana/wallet/sell', method: 'POST', body }),
     }),
 
     // System reads shared app-wide (header + price toggle). Folding them into
@@ -111,6 +153,9 @@ export const {
   useGetTokensQuery,
   useGetTokenDetailQuery,
   useGetTokenTradesQuery,
+  useGetWalletHoldingsQuery,
+  useBuyTokenMutation,
+  useSellTokenMutation,
   useGetSolPriceQuery,
   useLazyGetSolPriceQuery,
   useGetLiveModeQuery,

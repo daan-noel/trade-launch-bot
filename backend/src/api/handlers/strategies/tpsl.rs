@@ -10,7 +10,7 @@ use crate::{
     storage::repositories::{
         strategy_tpsl_rule_repo::StrategyTPSLRuleRepo, token_repo::TokenRepo,
     },
-    strategies::tpsl::handler_tpsl::token_matches_rule,
+    strategies::tpsl_sniper_1::handler_tpsl::token_matches_rule,
 };
 
 // ---------------------------------------------------------------------------

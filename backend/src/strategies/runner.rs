@@ -10,7 +10,7 @@ use crate::{
     trader::PumpFunTrader,
 };
 
-use super::tpsl::{TpslRuntimeCache, TpslStrategyService};
+use super::tpsl_sniper_1::{TpslRuntimeCache, TpslStrategyService};
 
 /// Dispatches ingest pings to strategy implementations (token cache is source of truth).
 pub struct StrategyRunner {

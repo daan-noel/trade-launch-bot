@@ -6,7 +6,7 @@ use tokio::sync::{broadcast, watch, Notify};
 
 use crate::models::ingest::SseEvent;
 use crate::storage::repositories::settings_repo::AppSettings;
-use crate::strategies::tpsl::TpslRuntimeCache;
+use crate::strategies::tpsl_sniper_1::TpslRuntimeCache;
 use crate::trader::PumpFunTrader;
 
 use super::token_cache::TokenCache;

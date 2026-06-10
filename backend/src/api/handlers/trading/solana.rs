@@ -167,6 +167,27 @@ pub async fn get_wallet_tokens(app_state: web::Data<Arc<AppState>>) -> impl Resp
     }
 }
 
+/// GET /api/solana/wallet/tokens/{mint}
+///
+/// Single enriched holding for the trader's own wallet, or `null` if not held.
+/// A cheap one-mint read (one RPC + one Jupiter price) used to confirm a
+/// balance change after a manual trade without re-scanning/re-pricing the
+/// whole wallet.
+pub async fn get_wallet_token(
+    app_state: web::Data<Arc<AppState>>,
+    path: web::Path<String>,
+) -> impl Responder {
+    let mint = path.into_inner();
+    match wallet_tokens::enrich_one(app_state.get_ref(), &mint).await {
+        Ok(holding) => HttpResponse::Ok().json(holding),
+        Err(e) => {
+            tracing::warn!("get_wallet_token failed mint={mint}: {e}");
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({ "error": e.to_string() }))
+        }
+    }
+}
+
 /// GET /api/solana/wallet/{wallet}/token/{mint}
 ///
 /// Returns the on-chain token balance for the given wallet and mint,
