@@ -295,8 +295,15 @@ impl TpslStrategyService {
 
     pub async fn on_trade_executed(&self, mint: &str, cache: &TokenCache) {
         let mint = mint.to_string();
-        let current_price = match cache.get(&mint) {
-            Some(entry) => entry.value().current_price.unwrap_or(0.0),
+        // Snapshot the latest price and the in-memory trade history once. The
+        // exit ladder (fixed TP/SL + E1–E4) walks these post-entry trades per
+        // position via `check_exit` → `simulate_exit`; `current_price` is still
+        // the reference price for the resulting paper/real fill.
+        let (current_price, trades) = match cache.get(&mint) {
+            Some(entry) => {
+                let state = entry.value();
+                (state.current_price.unwrap_or(0.0), state.trades.clone())
+            }
             None => return,
         };
 
@@ -309,7 +316,7 @@ impl TpslStrategyService {
 
         for mut position in positions {
             if let Some(rule) = handler.get_rule(position.rule_id) {
-                if let Some(exit_reason) = handler.check_exit(&position, current_price, rule) {
+                if let Some(exit_reason) = handler.check_exit(&position, &trades, rule) {
                     debug!(
                         "Position {} for token {mint} triggered exit: {:?}",
                         position.id, exit_reason
@@ -336,14 +343,20 @@ impl TpslStrategyService {
                         let entry_tx = position.entry_tx.clone();
                         let entry_price = position.entry_price;
                         // The block time of this position's recorded entry. Used to
-                        // window `find_exit` to post-entry trades only.
+                        // window the exit walk (`simulate_exit`) to post-entry
+                        // trades only.
                         let entry_time_db = position.entry_time;
-                        let take_profit = rule.take_profit;
-                        let stop_loss = rule.stop_loss;
+                        // The full rule drives the exit-fill resolver so the
+                        // recorded paper exit honors the same E1–E4 ladder that
+                        // `check_exit` triggered on.
+                        let rule_for_exit = rule.clone();
                         // The price/time the exit condition met (this trade's cached
                         // price). Used as the hypothetical exit if no real fill confirms.
                         let trigger_price = current_price;
                         let trigger_time = Utc::now();
+                        // The reason that tripped the gate. Recorded on the ExitFailed
+                        // fallback (where there is no resolved fill to read it from).
+                        let trigger_reason = exit_reason.to_string();
                         // Captured for the post-close finish check (cap reached + all exited).
                         let pool = self.pool.clone();
                         let sse_tx = self.sse_tx.clone();
@@ -362,7 +375,7 @@ impl TpslStrategyService {
                                     // (set together with entry_price). The old
                                     // `Utc::now()` fallback made every trade look
                                     // pre-entry whenever the entry row wasn't in the
-                                    // fetched set, so `find_exit` saw nothing and the
+                                    // fetched set, so the walk saw nothing and the
                                     // position always reverted to Holding.
                                     let entry_block_time = trades
                                         .iter()
@@ -371,17 +384,16 @@ impl TpslStrategyService {
                                         .or(entry_time_db)
                                         .unwrap_or_else(chrono::Utc::now);
                                     if let Some((exit_price, exit_tx, exit_time, reason)) =
-                                        super::simulation_tpsl::find_exit(
+                                        super::simulation_tpsl::simulate_exit(
                                             &trades,
                                             entry_block_time,
                                             entry_price,
-                                            take_profit,
-                                            stop_loss,
+                                            &rule_for_exit,
                                         )
                                     {
                                         if let Ok(Some(prev)) = position_repo.find_by_id(position_id).await {
                                             let _ = position_repo
-                                                .update_exit(position_id, &exit_tx, exit_price, exit_time)
+                                                .update_exit(position_id, &exit_tx, exit_price, exit_time, &reason)
                                                 .await;
                                             if let Ok(Some(current)) =
                                                 position_repo.find_by_id(position_id).await
@@ -405,10 +417,10 @@ impl TpslStrategyService {
                                 // end of the line — mark the position ExitFailed rather
                                 // than reverting to Holding for another attempt. The exit
                                 // price only ever comes from a real indexed trade via
-                                // `find_exit`, so with none found there is nothing to fill.
+                                // `simulate_exit`, so with none found there is nothing to fill.
                                 if let Ok(Some(prev)) = position_repo.find_by_id(position_id).await {
                                     let _ = position_repo
-                                        .mark_exit_failed(position_id, trigger_price, trigger_time)
+                                        .mark_exit_failed(position_id, trigger_price, trigger_time, &trigger_reason)
                                         .await;
                                     if let Ok(Some(current)) = position_repo.find_by_id(position_id).await {
                                         runtime.sync_position(Some(&prev), &current);
@@ -466,6 +478,7 @@ impl TpslStrategyService {
                             cache,
                             current_price,
                             Utc::now(),
+                            exit_reason.to_string(),
                         )
                         .await;
                     }
@@ -792,6 +805,9 @@ async fn execute_sell_for_position(
     // the sell fails (the position never actually sold).
     trigger_price: f64,
     trigger_time: chrono::DateTime<Utc>,
+    // The exit-ladder reason that triggered this sell ("TakeProfit", "StopLoss",
+    // "TrailingStop", …); persisted on both the confirmed close and the failure.
+    exit_reason: String,
 ) {
     let mint = position.mint.clone();
     let wallet = trader.wallet_pubkey();
@@ -822,6 +838,7 @@ async fn execute_sell_for_position(
         );
         let prev = position.clone();
         position.mark_exit_failed(trigger_price, trigger_time);
+        position.exit_reason = Some(exit_reason.clone());
         if let Err(err) = position_repo.update(&position).await {
             warn!(
                 position_id = %position.id, mint = %mint,
@@ -850,6 +867,7 @@ async fn execute_sell_for_position(
                     exit_amount,
                     last_sell.block_time,
                 );
+                position.exit_reason = Some(exit_reason.clone());
                 let prev = position.clone();
                 if let Err(err) = position_repo.update(&position).await {
                     warn!(

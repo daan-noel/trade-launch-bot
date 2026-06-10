@@ -84,6 +84,9 @@ export interface RulePositionRecord {
   pnl_percent: number | null;
   entry_time: string | null;
   exit_time: string | null;
+  /** Why the position exited (TakeProfit/StopLoss/TrailingStop/Stall/TimeStop/
+   * LiquidityExit); null while still open. */
+  exit_reason: string | null;
   created_at: string;
   updated_at: string;
 }

@@ -14,7 +14,7 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
   -keyout nginx/tls/key.pem \
   -out    nginx/tls/cert.pem \
   -subj "/CN=localhost" \
-  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1,IP:172.31.46.217"
 ```
 
 On Git Bash for Windows, prefix the command with `MSYS_NO_PATHCONV=1` so the

@@ -87,6 +87,7 @@ struct PositionDbRow {
     exit_amount: Option<f64>,
     entry_time: Option<DateTime<Utc>>,
     exit_time: Option<DateTime<Utc>>,
+    exit_reason: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -119,6 +120,7 @@ impl TryFrom<PositionDbRow> for Position {
             exit_amount: r.exit_amount,
             entry_time: r.entry_time,
             exit_time: r.exit_time,
+            exit_reason: r.exit_reason,
             created_at: r.created_at,
             updated_at: r.updated_at,
         })
@@ -178,8 +180,8 @@ impl PositionRepo {
             INSERT INTO positions
                 (id, mint, wallet, token_program_id, entry_price, exit_price, entry_tx, exit_tx,
                  status, strategy, rule_id, entry_amount, exit_amount,
-                 entry_time, exit_time, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+                 entry_time, exit_time, exit_reason, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
             "#,
         )
         .bind(position.id)
@@ -197,6 +199,7 @@ impl PositionRepo {
         .bind(position.exit_amount)
         .bind(position.entry_time)
         .bind(position.exit_time)
+        .bind(position.exit_reason.as_ref())
         .bind(position.created_at)
         .bind(position.updated_at)
         .execute(&self.pool)
@@ -211,8 +214,8 @@ impl PositionRepo {
             r#"
             UPDATE positions
             SET exit_price = $1, exit_tx = $2, status = $3, exit_amount = $4,
-                exit_time = $5, updated_at = $6
-            WHERE id = $7
+                exit_time = $5, exit_reason = $6, updated_at = $7
+            WHERE id = $8
             "#,
         )
         .bind(position.exit_price)
@@ -220,6 +223,7 @@ impl PositionRepo {
         .bind(position_status_str(position.status))
         .bind(position.exit_amount)
         .bind(position.exit_time)
+        .bind(position.exit_reason.as_ref())
         .bind(Utc::now())
         .bind(position.id)
         .execute(&self.pool)
@@ -234,7 +238,7 @@ impl PositionRepo {
             r#"
                  SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
                    status, strategy, rule_id, entry_amount, exit_amount,
-                   entry_time, exit_time, created_at, updated_at
+                   entry_time, exit_time, exit_reason, created_at, updated_at
             FROM positions
             WHERE mint = $1 AND status = 'Holding'
             ORDER BY created_at DESC
@@ -253,7 +257,7 @@ impl PositionRepo {
             r#"
                  SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
                    status, strategy, rule_id, entry_amount, exit_amount,
-                   entry_time, exit_time, created_at, updated_at
+                   entry_time, exit_time, exit_reason, created_at, updated_at
             FROM positions
             WHERE wallet = $1 AND status = 'Holding'
             ORDER BY created_at DESC
@@ -272,7 +276,7 @@ impl PositionRepo {
             r#"
             SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
                    status, strategy, rule_id, entry_amount, exit_amount,
-                   entry_time, exit_time, created_at, updated_at
+                   entry_time, exit_time, exit_reason, created_at, updated_at
             FROM positions
             WHERE id = $1
             "#,
@@ -290,7 +294,7 @@ impl PositionRepo {
                 r#"
                 SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
                         status, strategy, rule_id, entry_amount, exit_amount,
-                   entry_time, exit_time, created_at, updated_at
+                   entry_time, exit_time, exit_reason, created_at, updated_at
                 FROM positions
                 WHERE rule_id = $1
                 ORDER BY created_at DESC
@@ -334,7 +338,7 @@ impl PositionRepo {
             r#"
             SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
                    status, strategy, rule_id, entry_amount, exit_amount,
-                   entry_time, exit_time, created_at, updated_at
+                   entry_time, exit_time, exit_reason, created_at, updated_at
             FROM positions
             WHERE strategy = $1
             ORDER BY created_at DESC
@@ -353,7 +357,7 @@ impl PositionRepo {
             r#"
             SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
                    status, strategy, rule_id, entry_amount, exit_amount,
-                   entry_time, exit_time, created_at, updated_at
+                   entry_time, exit_time, exit_reason, created_at, updated_at
             FROM positions
             WHERE status = 'Holding'
             ORDER BY created_at DESC

@@ -6,6 +6,30 @@ import { fmtTime } from './utils';
 import { cn } from 'lib/cn';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 
+/** Render an exit reason as a compact colored badge, shared by the live-position
+ * and simulation-result tables. Falsy/unknown reasons (e.g. a still-open
+ * position) render as a dim "Open". */
+export function exitReasonBadge(reason: string | null | undefined) {
+  switch (reason) {
+    case 'LiquidityExit':
+      return <span className="font-bold text-primary">LIQ</span>;
+    case 'TakeProfit':
+      return <span className="font-bold text-green">TP</span>;
+    case 'StopLoss':
+      return <span className="font-bold text-red">SL</span>;
+    case 'TrailingStop':
+      return <span className="font-bold text-warning">TRAIL</span>;
+    case 'Stall':
+      return <span className="font-bold text-accent">STALL</span>;
+    case 'TimeStop':
+      return <span className="font-bold text-info">TIME</span>;
+    case 'ExitFailed':
+      return <span className="font-bold text-red">FAIL</span>;
+    default:
+      return <span className="text-text-dim">Open</span>;
+  }
+}
+
 export function positionColumns(
   price: ReturnType<typeof usePriceDisplay>,
 ): ColumnDef<RulePositionRecord>[] {
@@ -119,6 +143,15 @@ export function positionColumns(
       },
       sortValue: (r) => r.status,
       searchValue: (r) => r.status,
+    },
+    {
+      key: 'exit_reason',
+      label: 'Exit Reason',
+      group: 'state',
+      sortable: true,
+      render: (r) => exitReasonBadge(r.exit_reason),
+      sortValue: (r) => r.exit_reason ?? '',
+      searchValue: (r) => r.exit_reason ?? '',
     },
   ];
 }
@@ -304,19 +337,7 @@ export function simColumns(
       label: 'Reason',
       group: 'result',
       sortable: true,
-      render: (r) => {
-        if (r.exit_reason === 'LiquidityExit')
-          return <span className="font-bold text-primary">LIQ</span>;
-        if (r.exit_reason === 'TakeProfit') return <span className="font-bold text-green">TP</span>;
-        if (r.exit_reason === 'StopLoss') return <span className="font-bold text-red">SL</span>;
-        if (r.exit_reason === 'TrailingStop')
-          return <span className="font-bold text-warning">TRAIL</span>;
-        if (r.exit_reason === 'Stall')
-          return <span className="font-bold text-accent">STALL</span>;
-        if (r.exit_reason === 'TimeStop')
-          return <span className="font-bold text-info">TIME</span>;
-        return <span className="text-text-dim">Open</span>;
-      },
+      render: (r) => exitReasonBadge(r.exit_reason),
       sortValue: (r) => r.exit_reason,
       searchValue: (r) => r.exit_reason,
     },

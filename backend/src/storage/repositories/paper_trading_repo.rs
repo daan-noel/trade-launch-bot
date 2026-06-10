@@ -69,6 +69,7 @@ struct PaperPositionDbRow {
     exit_amount: Option<f64>,
     entry_time: Option<DateTime<Utc>>,
     exit_time: Option<DateTime<Utc>>,
+    exit_reason: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -100,6 +101,7 @@ impl TryFrom<PaperPositionDbRow> for Position {
             exit_amount: r.exit_amount,
             entry_time: r.entry_time,
             exit_time: r.exit_time,
+            exit_reason: r.exit_reason,
             created_at: r.created_at,
             updated_at: r.updated_at,
         })
@@ -117,7 +119,7 @@ fn position_status_str(s: PositionStatus) -> &'static str {
 
 const POSITION_COLS: &str = "id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, \
      exit_tx, status, strategy, rule_id, entry_amount, exit_amount, entry_time, exit_time, \
-     created_at, updated_at";
+     exit_reason, created_at, updated_at";
 
 // ---------------------------------------------------------------------------
 // Repo
@@ -247,8 +249,8 @@ impl PaperTradingRepo {
             INSERT INTO paper_positions
                 (id, run_id, mint, wallet, token_program_id, entry_price, exit_price, entry_tx, exit_tx,
                  status, strategy, rule_id, entry_amount, exit_amount,
-                 entry_time, exit_time, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                 entry_time, exit_time, exit_reason, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
             "#,
         )
         .bind(position.id)
@@ -267,6 +269,7 @@ impl PaperTradingRepo {
         .bind(position.exit_amount)
         .bind(position.entry_time)
         .bind(position.exit_time)
+        .bind(position.exit_reason.as_ref())
         .bind(position.created_at)
         .bind(position.updated_at)
         .execute(&self.pool)
@@ -301,18 +304,21 @@ impl PaperTradingRepo {
         Ok(())
     }
 
-    /// Close a position with the (simulated) exit fill.
+    /// Close a position with the (simulated) exit fill, recording the exit
+    /// reason that fired (`"TakeProfit"`, `"TrailingStop"`, …).
     pub async fn update_exit(
         &self,
         position_id: Uuid,
         exit_tx: &str,
         exit_price: f64,
         exit_time: DateTime<Utc>,
+        exit_reason: &str,
     ) -> anyhow::Result<()> {
         sqlx::query(
             r#"
             UPDATE paper_positions
-            SET exit_tx = $2, exit_price = $3, exit_time = $4, status = 'End', updated_at = $5
+            SET exit_tx = $2, exit_price = $3, exit_time = $4, exit_reason = $5,
+                status = 'End', updated_at = $6
             WHERE id = $1
             "#,
         )
@@ -320,6 +326,7 @@ impl PaperTradingRepo {
         .bind(exit_tx)
         .bind(exit_price)
         .bind(exit_time)
+        .bind(exit_reason)
         .bind(Utc::now())
         .execute(&self.pool)
         .await?;
@@ -357,15 +364,17 @@ impl PaperTradingRepo {
         position_id: Uuid,
         exit_price: f64,
         exit_time: DateTime<Utc>,
+        exit_reason: &str,
     ) -> anyhow::Result<()> {
         sqlx::query(
             "UPDATE paper_positions \
-             SET status = 'ExitFailed', exit_price = $2, exit_time = $3, updated_at = $4 \
+             SET status = 'ExitFailed', exit_price = $2, exit_time = $3, exit_reason = $4, updated_at = $5 \
              WHERE id = $1",
         )
         .bind(position_id)
         .bind(exit_price)
         .bind(exit_time)
+        .bind(exit_reason)
         .bind(Utc::now())
         .execute(&self.pool)
         .await?;

@@ -37,6 +37,10 @@ pub struct Position {
     pub entry_time: Option<DateTime<Utc>>,
     /// On-chain block time of the confirmed sell trade.
     pub exit_time: Option<DateTime<Utc>>,
+    /// Why the position exited — one of the exit-ladder reasons ("TakeProfit",
+    /// "StopLoss", "TrailingStop", "Stall", "TimeStop", "LiquidityExit"). `None`
+    /// while still Holding/ExitPending (or for legacy rows predating this field).
+    pub exit_reason: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -105,6 +109,7 @@ impl Position {
             exit_amount: None,
             entry_time: None,
             exit_time: None,
+            exit_reason: None,
             created_at: now,
             updated_at: now,
         }
@@ -142,5 +147,27 @@ impl Position {
     pub fn pnl_percentage(&self) -> Option<f64> {
         self.exit_price
             .map(|ep| ((ep - self.entry_price) / self.entry_price) * 100.0)
+    }
+
+    /// The exit reason to display: the reason recorded at exit time when present,
+    /// otherwise a best-effort fallback for legacy rows that closed before the
+    /// `exit_reason` column existed (PnL sign for a clean close, the status for a
+    /// failed one). `None` while the position is still open.
+    pub fn exit_reason_or_derived(&self) -> Option<String> {
+        if let Some(reason) = &self.exit_reason {
+            return Some(reason.clone());
+        }
+        match self.status {
+            PositionStatus::End => Some(
+                if self.pnl_percentage().unwrap_or(0.0) >= 0.0 {
+                    "TakeProfit"
+                } else {
+                    "StopLoss"
+                }
+                .to_string(),
+            ),
+            PositionStatus::ExitFailed => Some("ExitFailed".to_string()),
+            PositionStatus::Holding | PositionStatus::ExitPending => None,
+        }
     }
 }

@@ -35,6 +35,9 @@ pub struct PositionResponse {
     pub pnl_percent: Option<f64>,
     pub entry_time: Option<DateTime<Utc>>,
     pub exit_time: Option<DateTime<Utc>>,
+    /// Why the position exited ("TakeProfit", "StopLoss", "TrailingStop",
+    /// "Stall", "TimeStop", "LiquidityExit"); `None` while still open.
+    pub exit_reason: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -42,6 +45,7 @@ pub struct PositionResponse {
 impl From<Position> for PositionResponse {
     fn from(p: Position) -> Self {
         let pnl_percent = p.pnl_percentage();
+        let exit_reason = p.exit_reason_or_derived();
         Self {
             id: p.id,
             mint: p.mint,
@@ -58,6 +62,7 @@ impl From<Position> for PositionResponse {
             pnl_percent,
             entry_time: p.entry_time,
             exit_time: p.exit_time,
+            exit_reason,
             created_at: p.created_at,
             updated_at: p.updated_at,
         }

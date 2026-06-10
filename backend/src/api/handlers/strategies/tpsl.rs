@@ -5,7 +5,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
-    models::{Position, PositionStatus, StrategyTPSLRule},
+    models::{Position, StrategyTPSLRule},
     state::app_state::AppState,
     storage::repositories::{
         paper_trading_repo::PaperTradingRepo, strategy_tpsl_rule_repo::StrategyTPSLRuleRepo,
@@ -568,21 +568,12 @@ pub(crate) fn paper_position_to_sim_result(
     symbols: &std::collections::HashMap<String, String>,
 ) -> SimulatedTokenResult {
     let pnl_percent = p.pnl_percentage();
-    // The live paper exit path only ever fires take-profit / stop-loss, so a
-    // closed position's reason is recoverable from its realized PnL sign. A
-    // terminally failed exit surfaces as its own reason; everything else is open.
-    let exit_reason = match p.status {
-        PositionStatus::End => {
-            if pnl_percent.unwrap_or(0.0) >= 0.0 {
-                "TakeProfit"
-            } else {
-                "StopLoss"
-            }
-        }
-        PositionStatus::ExitFailed => "ExitFailed",
-        _ => "Open",
-    }
-    .to_string();
+    // The reason recorded at exit time (the live path now fires the full E1–E4
+    // ladder, so it can't be inferred from the PnL sign), with the legacy-row
+    // fallback baked into the model. A still-open row shows "Open".
+    let exit_reason = p
+        .exit_reason_or_derived()
+        .unwrap_or_else(|| "Open".to_string());
     // entry_amount is the SOL allocated per buy, so PnL in SOL is direct.
     let pnl_sol = pnl_percent.map(|pct| p.entry_amount * (pct / 100.0));
     let holding_secs = match (p.entry_time, p.exit_time) {
@@ -609,5 +600,65 @@ pub(crate) fn paper_position_to_sim_result(
         pnl_sol,
         exit_reason,
         total_trades: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// A closed position entered at `entry`, exited at `exit` (no stored reason).
+    fn closed(entry: f64, exit: f64) -> Position {
+        let mut p = Position::new(
+            "mint".into(),
+            "wallet".into(),
+            entry,
+            "etx".into(),
+            "TPSL".into(),
+            Uuid::new_v4(),
+            0.05,
+        );
+        p.entry_time = Some(Utc::now());
+        p.close(exit, "xtx".into(), 0.05, Utc::now());
+        p
+    }
+
+    // The stored reason wins over the PnL-sign heuristic — the regression the
+    // live E1–E4 exits introduced: a trailing stop that banks a gain must show
+    // as TrailingStop, not TakeProfit.
+    #[test]
+    fn uses_stored_exit_reason_not_pnl_sign() {
+        let mut p = closed(1.0, 1.5); // +50%, would heuristically read TakeProfit
+        p.exit_reason = Some("TrailingStop".into());
+        let r = paper_position_to_sim_result(p, &HashMap::new());
+        assert_eq!(r.exit_reason, "TrailingStop");
+    }
+
+    // Legacy rows (column added after they closed) have no stored reason and
+    // fall back to the PnL sign for a clean close.
+    #[test]
+    fn legacy_rows_fall_back_to_pnl_sign() {
+        let win = paper_position_to_sim_result(closed(1.0, 1.5), &HashMap::new());
+        assert_eq!(win.exit_reason, "TakeProfit");
+        let loss = paper_position_to_sim_result(closed(1.0, 0.5), &HashMap::new());
+        assert_eq!(loss.exit_reason, "StopLoss");
+    }
+
+    // A still-open position carries no exit reason.
+    #[test]
+    fn open_position_reads_as_open() {
+        let mut p = Position::new(
+            "mint".into(),
+            "wallet".into(),
+            1.0,
+            "etx".into(),
+            "TPSL".into(),
+            Uuid::new_v4(),
+            0.05,
+        );
+        p.entry_time = Some(Utc::now());
+        let r = paper_position_to_sim_result(p, &HashMap::new());
+        assert_eq!(r.exit_reason, "Open");
     }
 }

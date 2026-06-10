@@ -81,8 +81,12 @@ pub fn find_entry(
         .map(|t| (t.price_per_token, t.tx_signature.clone(), t.block_time))
 }
 
-/// Legacy fixed take-profit / stop-loss exit. Retained for the live paper-trading
-/// path (`service_tpsl`); the simulation uses [`simulate_exit`].
+/// Legacy fixed take-profit / stop-loss exit. Superseded everywhere by
+/// [`simulate_exit`] — which reproduces it exactly when E1–E4 are unset and is
+/// now used by both the simulation and the live path (`service_tpsl`). Retained
+/// only as the reference oracle for the `disabled_*_matches_legacy_find_exit`
+/// regression tests.
+#[allow(dead_code)] // test-only oracle since the live path moved to `simulate_exit`
 pub fn find_exit(
     trades: &[crate::models::trade::Trade],
     entry_time: DateTime<Utc>,
