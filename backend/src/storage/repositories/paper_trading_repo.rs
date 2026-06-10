@@ -1,0 +1,428 @@
+use chrono::{DateTime, Utc};
+use sqlx::PgPool;
+use uuid::Uuid;
+
+use crate::models::{PaperRun, PaperRunStatus, Position, PositionStatus};
+
+/// Repository for the paper-trading tables (`paper_test_runs` + `paper_positions`),
+/// kept entirely separate from the real `positions` table. Positions are mapped
+/// to/from the shared [`Position`] model (the `run_id` binding lives only on the
+/// row); runs use [`PaperRun`].
+pub struct PaperTradingRepo {
+    pool: PgPool,
+}
+
+impl Clone for PaperTradingRepo {
+    fn clone(&self) -> Self {
+        Self {
+            pool: self.pool.clone(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DB rows
+// ---------------------------------------------------------------------------
+
+#[derive(sqlx::FromRow)]
+struct PaperRunDbRow {
+    id: Uuid,
+    rule_id: Uuid,
+    run_seq: i64,
+    status: String,
+    max_total_tokens: Option<i64>,
+    started_at: DateTime<Utc>,
+    finished_at: Option<DateTime<Utc>>,
+}
+
+impl TryFrom<PaperRunDbRow> for PaperRun {
+    type Error = anyhow::Error;
+
+    fn try_from(r: PaperRunDbRow) -> Result<Self, Self::Error> {
+        let status: PaperRunStatus = r.status.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+        Ok(Self {
+            id: r.id,
+            rule_id: r.rule_id,
+            run_seq: r.run_seq,
+            status,
+            max_total_tokens: r.max_total_tokens.map(|v| v as u64),
+            started_at: r.started_at,
+            finished_at: r.finished_at,
+        })
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct PaperPositionDbRow {
+    id: Uuid,
+    mint: String,
+    wallet: String,
+    entry_price: f64,
+    exit_price: Option<f64>,
+    token_program_id: Option<String>,
+    entry_tx: String,
+    exit_tx: Option<String>,
+    status: String,
+    strategy: String,
+    rule_id: Uuid,
+    entry_amount: f64,
+    exit_amount: Option<f64>,
+    entry_time: Option<DateTime<Utc>>,
+    exit_time: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+impl TryFrom<PaperPositionDbRow> for Position {
+    type Error = anyhow::Error;
+
+    fn try_from(r: PaperPositionDbRow) -> Result<Self, Self::Error> {
+        let status = match r.status.as_str() {
+            "Holding" => PositionStatus::Holding,
+            "ExitPending" => PositionStatus::ExitPending,
+            "End" => PositionStatus::End,
+            other => anyhow::bail!("Unknown paper position status in DB: {other}"),
+        };
+        Ok(Self {
+            id: r.id,
+            mint: r.mint,
+            wallet: r.wallet,
+            entry_price: r.entry_price,
+            exit_price: r.exit_price,
+            token_program_id: r.token_program_id,
+            entry_tx: r.entry_tx,
+            exit_tx: r.exit_tx,
+            status,
+            strategy: r.strategy,
+            rule_id: r.rule_id,
+            entry_amount: r.entry_amount,
+            exit_amount: r.exit_amount,
+            entry_time: r.entry_time,
+            exit_time: r.exit_time,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        })
+    }
+}
+
+fn position_status_str(s: PositionStatus) -> &'static str {
+    match s {
+        PositionStatus::Holding => "Holding",
+        PositionStatus::ExitPending => "ExitPending",
+        PositionStatus::End => "End",
+    }
+}
+
+const POSITION_COLS: &str = "id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, \
+     exit_tx, status, strategy, rule_id, entry_amount, exit_amount, entry_time, exit_time, \
+     created_at, updated_at";
+
+// ---------------------------------------------------------------------------
+// Repo
+// ---------------------------------------------------------------------------
+
+impl PaperTradingRepo {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+
+    // ---- runs -------------------------------------------------------------
+
+    /// Start a fresh run for a rule. Deletes the rule's prior run (and, via
+    /// CASCADE, its positions) so only the latest run is ever retained, then
+    /// inserts a new `Running` row with a monotonically incremented `run_seq`.
+    pub async fn start_run(
+        &self,
+        rule_id: Uuid,
+        max_total_tokens: Option<u64>,
+    ) -> anyhow::Result<PaperRun> {
+        let mut tx = self.pool.begin().await?;
+
+        let prev_seq: Option<i64> =
+            sqlx::query_scalar("SELECT MAX(run_seq) FROM paper_test_runs WHERE rule_id = $1")
+                .bind(rule_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        let run_seq = prev_seq.unwrap_or(0) + 1;
+
+        sqlx::query("DELETE FROM paper_test_runs WHERE rule_id = $1")
+            .bind(rule_id)
+            .execute(&mut *tx)
+            .await?;
+
+        let id = Uuid::new_v4();
+        let now = Utc::now();
+        sqlx::query(
+            r#"
+            INSERT INTO paper_test_runs (id, rule_id, run_seq, status, max_total_tokens, started_at, finished_at)
+            VALUES ($1, $2, $3, 'Running', $4, $5, NULL)
+            "#,
+        )
+        .bind(id)
+        .bind(rule_id)
+        .bind(run_seq)
+        .bind(max_total_tokens.map(|v| v as i64))
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        Ok(PaperRun {
+            id,
+            rule_id,
+            run_seq,
+            status: PaperRunStatus::Running,
+            max_total_tokens,
+            started_at: now,
+            finished_at: None,
+        })
+    }
+
+    /// The rule's latest run (the only one retained), if any.
+    pub async fn current_run(&self, rule_id: Uuid) -> anyhow::Result<Option<PaperRun>> {
+        let row = sqlx::query_as::<_, PaperRunDbRow>(
+            r#"
+            SELECT id, rule_id, run_seq, status, max_total_tokens, started_at, finished_at
+            FROM paper_test_runs
+            WHERE rule_id = $1
+            ORDER BY run_seq DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(rule_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(PaperRun::try_from).transpose()
+    }
+
+    /// The latest run for every rule that has one (used to warm the cache).
+    pub async fn find_all_runs(&self) -> anyhow::Result<Vec<PaperRun>> {
+        let rows = sqlx::query_as::<_, PaperRunDbRow>(
+            r#"
+            SELECT DISTINCT ON (rule_id)
+                   id, rule_id, run_seq, status, max_total_tokens, started_at, finished_at
+            FROM paper_test_runs
+            ORDER BY rule_id, run_seq DESC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(PaperRun::try_from).collect()
+    }
+
+    /// Set a run's status, optionally stamping `finished_at = now()`.
+    pub async fn mark_run_status(
+        &self,
+        run_id: Uuid,
+        status: PaperRunStatus,
+        finished: bool,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE paper_test_runs
+            SET status = $2,
+                finished_at = CASE WHEN $3 THEN now() ELSE finished_at END
+            WHERE id = $1
+            "#,
+        )
+        .bind(run_id)
+        .bind(status.as_str())
+        .bind(finished)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    // ---- positions --------------------------------------------------------
+
+    /// Create a paper position bound to a run.
+    pub async fn insert(&self, position: &Position, run_id: Uuid) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO paper_positions
+                (id, run_id, mint, wallet, token_program_id, entry_price, exit_price, entry_tx, exit_tx,
+                 status, strategy, rule_id, entry_amount, exit_amount,
+                 entry_time, exit_time, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+            "#,
+        )
+        .bind(position.id)
+        .bind(run_id)
+        .bind(&position.mint)
+        .bind(&position.wallet)
+        .bind(position.token_program_id.as_ref())
+        .bind(position.entry_price)
+        .bind(position.exit_price)
+        .bind(&position.entry_tx)
+        .bind(&position.exit_tx)
+        .bind(position_status_str(position.status))
+        .bind(&position.strategy)
+        .bind(position.rule_id)
+        .bind(position.entry_amount)
+        .bind(position.exit_amount)
+        .bind(position.entry_time)
+        .bind(position.exit_time)
+        .bind(position.created_at)
+        .bind(position.updated_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Update entry fields after a (simulated) fill is recorded.
+    pub async fn update_entry(
+        &self,
+        position_id: Uuid,
+        entry_tx: &str,
+        entry_amount: f64,
+        entry_price: f64,
+        entry_time: DateTime<Utc>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE paper_positions
+            SET entry_tx = $2, entry_amount = $3, entry_price = $4, entry_time = $5, updated_at = $6
+            WHERE id = $1
+            "#,
+        )
+        .bind(position_id)
+        .bind(entry_tx)
+        .bind(entry_amount)
+        .bind(entry_price)
+        .bind(entry_time)
+        .bind(Utc::now())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Close a position with the (simulated) exit fill.
+    pub async fn update_exit(
+        &self,
+        position_id: Uuid,
+        exit_tx: &str,
+        exit_price: f64,
+        exit_time: DateTime<Utc>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE paper_positions
+            SET exit_tx = $2, exit_price = $3, exit_time = $4, status = 'End', updated_at = $5
+            WHERE id = $1
+            "#,
+        )
+        .bind(position_id)
+        .bind(exit_tx)
+        .bind(exit_price)
+        .bind(exit_time)
+        .bind(Utc::now())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Persist status/exit fields of an existing position (e.g. mark ExitPending).
+    pub async fn update(&self, position: &Position) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE paper_positions
+            SET exit_price = $1, exit_tx = $2, status = $3, exit_amount = $4,
+                exit_time = $5, updated_at = $6
+            WHERE id = $7
+            "#,
+        )
+        .bind(position.exit_price)
+        .bind(&position.exit_tx)
+        .bind(position_status_str(position.status))
+        .bind(position.exit_amount)
+        .bind(position.exit_time)
+        .bind(Utc::now())
+        .bind(position.id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Revert an ExitPending position back to Holding (exit attempt timed out).
+    pub async fn revert_exit_pending(&self, position_id: Uuid) -> anyhow::Result<()> {
+        sqlx::query("UPDATE paper_positions SET status = 'Holding', updated_at = $2 WHERE id = $1")
+            .bind(position_id)
+            .bind(Utc::now())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Delete a paper position (e.g. a 0-entry row that never filled).
+    pub async fn delete_position(&self, position_id: Uuid) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM paper_positions WHERE id = $1")
+            .bind(position_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn find_by_id(&self, position_id: Uuid) -> anyhow::Result<Option<Position>> {
+        let row = sqlx::query_as::<_, PaperPositionDbRow>(&format!(
+            "SELECT {POSITION_COLS} FROM paper_positions WHERE id = $1"
+        ))
+        .bind(position_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(Position::try_from).transpose()
+    }
+
+    /// All positions in a run, oldest first (for the run result aggregation).
+    pub async fn find_by_run(&self, run_id: Uuid) -> anyhow::Result<Vec<Position>> {
+        let rows = sqlx::query_as::<_, PaperPositionDbRow>(&format!(
+            "SELECT {POSITION_COLS} FROM paper_positions WHERE run_id = $1 ORDER BY created_at ASC"
+        ))
+        .bind(run_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(Position::try_from).collect()
+    }
+
+    /// All Holding paper positions across every (current) run — warms the cache.
+    pub async fn find_all_holding(&self) -> anyhow::Result<Vec<Position>> {
+        let rows = sqlx::query_as::<_, PaperPositionDbRow>(&format!(
+            "SELECT {POSITION_COLS} FROM paper_positions WHERE status = 'Holding' ORDER BY created_at DESC"
+        ))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(Position::try_from).collect()
+    }
+
+    /// Number of positions recorded in a run (the per-run total-cap counter).
+    pub async fn count_by_run(&self, run_id: Uuid) -> anyhow::Result<i64> {
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM paper_positions WHERE run_id = $1")
+            .bind(run_id)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(n)
+    }
+
+    /// Reopen paper positions stuck in ExitPending past the staleness window
+    /// (mirrors the real-position safety net). Returns rows reopened.
+    pub async fn reopen_stale_exit_pending(
+        &self,
+        stale_after: std::time::Duration,
+    ) -> anyhow::Result<u64> {
+        let cutoff = Utc::now() - chrono::Duration::from_std(stale_after)?;
+        let result = sqlx::query(
+            r#"
+            UPDATE paper_positions
+            SET status = 'Holding', updated_at = $1
+            WHERE status = 'ExitPending' AND updated_at < $2
+            "#,
+        )
+        .bind(Utc::now())
+        .bind(cutoff)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+}

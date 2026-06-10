@@ -116,6 +116,34 @@ export interface SimulatedTokenResult {
   total_trades: number;
 }
 
+/** Metadata for one paper-test run (a single activate→finish cycle). */
+export interface PaperRunResponse {
+  run_seq: number;
+  /** "Running" | "Finished" | "Stopped". */
+  status: string;
+  max_total_tokens: number | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
+/** Result of `GET /strategies/tpsl/rules/{id}/paper-result`. `run` is null when
+ *  the rule has never been run in paper mode; `tokens` are the latest run's
+ *  recorded positions, shaped like a simulation result for the shared card/table. */
+export interface PaperResultResponse {
+  rule_name: string;
+  run: PaperRunResponse | null;
+  tokens: SimulatedTokenResult[];
+}
+
+/** Payload of the `paper_test_finished` SSE event (cap reached + all positions exited). */
+export interface PaperTestFinishedEvent {
+  rule_id: string;
+  rule_name: string;
+  run_seq: number;
+  tokens_traded: number;
+  timestamp: string;
+}
+
 export interface WalletHolding {
   mint: string;
   amount: number;

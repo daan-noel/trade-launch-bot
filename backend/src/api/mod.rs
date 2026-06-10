@@ -146,6 +146,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 web::get().to(handlers::strategies::simulate_tpsl_rule),
             )
             .route(
+                "/strategies/tpsl/rules/{rule_id}/paper-result",
+                web::get().to(handlers::strategies::paper_result_tpsl_rule),
+            )
+            .route(
                 "/strategies/tpsl/rules/{rule_id}/matched",
                 web::get().to(handlers::strategies::get_matched_tokens),
             )

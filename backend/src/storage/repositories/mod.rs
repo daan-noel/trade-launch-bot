@@ -1,4 +1,5 @@
 pub mod analysis_repo;
+pub mod paper_trading_repo;
 pub mod position_repo;
 pub mod settings_repo;
 pub mod strategy_tpsl_rule_repo;

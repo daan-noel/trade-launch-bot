@@ -131,6 +131,23 @@ fn to_sse_frame(event: &SseEvent, mint_filter: Option<&str>, state: &AppState) -
             });
             (event_type, data)
         }
+        SseEvent::PaperTestFinished {
+            rule_id,
+            rule_name,
+            run_seq,
+            tokens_traded,
+            timestamp,
+        } => {
+            // Not mint-scoped: deliver to every subscriber regardless of filter.
+            let data = json!({
+                "rule_id": rule_id,
+                "rule_name": rule_name,
+                "run_seq": run_seq,
+                "tokens_traded": tokens_traded,
+                "timestamp": timestamp,
+            });
+            ("paper_test_finished", data)
+        }
     };
 
     let frame = format!(

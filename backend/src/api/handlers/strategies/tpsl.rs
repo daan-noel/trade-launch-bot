@@ -5,12 +5,15 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
-    models::StrategyTPSLRule,
+    models::{PositionStatus, StrategyTPSLRule},
     state::app_state::AppState,
     storage::repositories::{
-        strategy_tpsl_rule_repo::StrategyTPSLRuleRepo, token_repo::TokenRepo,
+        paper_trading_repo::PaperTradingRepo, strategy_tpsl_rule_repo::StrategyTPSLRuleRepo,
+        token_repo::TokenRepo,
     },
-    strategies::tpsl_sniper_1::handler_tpsl::token_matches_rule,
+    strategies::tpsl_sniper_1::{
+        handler_tpsl::token_matches_rule, simulation_tpsl::SimulatedTokenResult,
+    },
 };
 
 // ---------------------------------------------------------------------------
@@ -220,6 +223,9 @@ pub async fn update_tpsl_rule(
 
     match repo.find_by_id(rule_id).await {
         Ok(Some(mut rule)) => {
+            // Captured before the update is applied to detect the activate /
+            // deactivate transition that begins / ends a paper-test run.
+            let was_active = rule.is_active;
             // Log incoming update request for debugging
             match serde_json::to_value(&req.0) {
                 Ok(v) => tracing::debug!("UpdateRuleRequest JSON: {}", v),
@@ -288,6 +294,29 @@ pub async fn update_tpsl_rule(
 
             match repo.update(&rule).await {
                 Ok(_) => {
+                    // Paper-run lifecycle on the active toggle: activating starts a
+                    // fresh run (resets per-run caps); deactivating stops the current
+                    // one (open positions still drain).
+                    if rule.trade_mode == "paper" {
+                        if rule.is_active && !was_active {
+                            let max_total = rule.p_max_total_tokens.filter(|v| *v > 0);
+                            if let Err(e) = app_state
+                                .tpsl_cache
+                                .start_paper_run(&app_state.db, rule.id, max_total)
+                                .await
+                            {
+                                tracing::warn!("Failed to start paper run for {}: {e}", rule.id);
+                            }
+                        } else if !rule.is_active && was_active {
+                            if let Err(e) = app_state
+                                .tpsl_cache
+                                .stop_paper_run(&app_state.db, rule.id)
+                                .await
+                            {
+                                tracing::warn!("Failed to stop paper run for {}: {e}", rule.id);
+                            }
+                        }
+                    }
                     if let Err(e) = app_state.tpsl_cache.reload_rules(&app_state.db).await {
                         tracing::warn!("TPSL rule cache reload after update failed: {e}");
                     }
@@ -424,4 +453,151 @@ pub async fn simulate_tpsl_rule(
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Paper-test result
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct PaperRunResponse {
+    pub run_seq: i64,
+    /// "Running" | "Finished" | "Stopped".
+    pub status: String,
+    pub max_total_tokens: Option<u64>,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Serialize)]
+pub struct PaperResultResponse {
+    pub rule_name: String,
+    /// None when the rule has never been run in paper mode.
+    pub run: Option<PaperRunResponse>,
+    /// Per-token outcomes for the latest run, shaped like a simulation result so
+    /// the frontend renders them through the shared summary card / table.
+    pub tokens: Vec<SimulatedTokenResult>,
+}
+
+/// Aggregate the latest paper-test run's recorded positions into a
+/// simulation-shaped result.
+///
+/// GET /api/strategies/tpsl/rules/{rule_id}/paper-result
+pub async fn paper_result_tpsl_rule(
+    app_state: web::Data<Arc<AppState>>,
+    rule_id: web::Path<Uuid>,
+) -> impl Responder {
+    let rule_id = rule_id.into_inner();
+    let rule_repo = StrategyTPSLRuleRepo::new(app_state.db.clone());
+    let paper_repo = PaperTradingRepo::new(app_state.db.clone());
+
+    let rule = match rule_repo.find_by_id(rule_id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return HttpResponse::NotFound().json(serde_json::json!({"error": "Rule not found"}));
+        }
+        Err(e) => {
+            tracing::error!("Failed to get rule {rule_id}: {e}");
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "Failed to get rule"}));
+        }
+    };
+
+    let run = match paper_repo.current_run(rule_id).await {
+        Ok(run) => run,
+        Err(e) => {
+            tracing::error!("Failed to load paper run for {rule_id}: {e}");
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "Failed to load paper run"}));
+        }
+    };
+
+    let Some(run) = run else {
+        return HttpResponse::Ok().json(PaperResultResponse {
+            rule_name: rule.rule_name,
+            run: None,
+            tokens: vec![],
+        });
+    };
+
+    let positions = match paper_repo.find_by_run(run.id).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("Failed to load paper positions for run {}: {e}", run.id);
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "Failed to load paper positions"}));
+        }
+    };
+
+    // Resolve token symbols for display (best-effort; blank if unknown).
+    let symbols: std::collections::HashMap<String, String> =
+        match TokenRepo::new(app_state.db.clone()).find_all().await {
+            Ok(tokens) => tokens
+                .into_iter()
+                .map(|t| (t.mint_address, t.symbol))
+                .collect(),
+            Err(e) => {
+                tracing::warn!("Failed to load token symbols for paper result: {e}");
+                std::collections::HashMap::new()
+            }
+        };
+
+    let tokens: Vec<SimulatedTokenResult> = positions
+        .into_iter()
+        .map(|p| {
+            let closed = p.status == PositionStatus::End;
+            let pnl_percent = p.pnl_percentage();
+            // The live paper exit path only ever fires take-profit / stop-loss, so
+            // a closed position's reason is recoverable from its realized PnL sign.
+            let exit_reason = if closed {
+                if pnl_percent.unwrap_or(0.0) >= 0.0 {
+                    "TakeProfit"
+                } else {
+                    "StopLoss"
+                }
+            } else {
+                "Open"
+            }
+            .to_string();
+            // entry_amount is the SOL allocated per buy, so PnL in SOL is direct.
+            let pnl_sol = pnl_percent.map(|pct| p.entry_amount * (pct / 100.0));
+            let holding_secs = match (p.entry_time, p.exit_time) {
+                (Some(e), Some(x)) => Some((x - e).num_seconds()),
+                _ => None,
+            };
+            let ath_price = p
+                .exit_price
+                .map(|x| x.max(p.entry_price))
+                .unwrap_or(p.entry_price);
+            SimulatedTokenResult {
+                symbol: symbols.get(&p.mint).cloned().unwrap_or_default(),
+                mint: p.mint,
+                entry_price: p.entry_price,
+                ath_price,
+                entry_amount: p.entry_amount,
+                entry_tx: p.entry_tx,
+                entry_time: p.entry_time.unwrap_or(p.created_at),
+                exit_price: p.exit_price,
+                exit_tx: p.exit_tx,
+                exit_time: p.exit_time,
+                holding_secs,
+                pnl_percent,
+                pnl_sol,
+                exit_reason,
+                total_trades: 0,
+            }
+        })
+        .collect();
+
+    HttpResponse::Ok().json(PaperResultResponse {
+        rule_name: rule.rule_name,
+        run: Some(PaperRunResponse {
+            run_seq: run.run_seq,
+            status: run.status.as_str().to_string(),
+            max_total_tokens: run.max_total_tokens,
+            started_at: run.started_at,
+            finished_at: run.finished_at,
+        }),
+        tokens,
+    })
 }

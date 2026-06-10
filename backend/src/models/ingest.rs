@@ -57,4 +57,13 @@ pub enum SseEvent {
         slot: u64,
         timestamp: DateTime<Utc>,
     },
+    /// A paper-test run reached its total-token cap and every position exited;
+    /// the rule was auto-deactivated. Not mint-scoped — always delivered.
+    PaperTestFinished {
+        rule_id: uuid::Uuid,
+        rule_name: String,
+        run_seq: i64,
+        tokens_traded: i64,
+        timestamp: DateTime<Utc>,
+    },
 }

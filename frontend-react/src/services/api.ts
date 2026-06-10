@@ -147,6 +147,17 @@ export async function fetchMatchedTokens(
   return request(`${API_BASE}/api/strategies/tpsl/rules/${ruleId}/matched`);
 }
 
+/**
+ * Latest paper-test run for a rule: run metadata + recorded positions aggregated
+ * into a simulation-shaped result. `run` is null if the rule has never run in
+ * paper mode.
+ */
+export async function fetchPaperResult(
+  ruleId: string,
+): Promise<import('types').PaperResultResponse> {
+  return request(`${API_BASE}/api/strategies/tpsl/rules/${ruleId}/paper-result`);
+}
+
 export async function fetchRulePositions(
   ruleId: string,
 ): Promise<import('types').RulePositionRecord[]> {

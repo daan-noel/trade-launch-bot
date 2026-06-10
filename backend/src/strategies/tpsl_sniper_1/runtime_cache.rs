@@ -1,16 +1,30 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use dashmap::DashMap;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::models::{Position, PositionStatus, StrategyTPSLRule};
+use crate::models::{PaperRun, PaperRunStatus, Position, PositionStatus, StrategyTPSLRule};
 use crate::storage::repositories::{
-    position_repo::PositionRepo, strategy_tpsl_rule_repo::StrategyTPSLRuleRepo,
+    paper_trading_repo::PaperTradingRepo, position_repo::PositionRepo,
+    strategy_tpsl_rule_repo::StrategyTPSLRuleRepo,
 };
 
+/// Pointer to a paper rule's current run — the run new paper positions are
+/// stamped with and the run the result view surfaces.
+#[derive(Clone, Copy)]
+pub struct PaperRunRef {
+    pub run_id: Uuid,
+    pub run_seq: i64,
+}
+
 /// In-memory TPSL state for the strategy hot path (rules + open positions + rule counters).
+///
+/// Counters are mode-aware: for real rules `total_count_by_rule` is all-time
+/// (from `positions`); for paper rules it is scoped to the current run (reset on
+/// each run start). `holding_*` track open positions of both modes (paper rule
+/// ids and real rule ids are disjoint, so the shared maps never collide).
 #[derive(Clone)]
 pub struct TpslRuntimeCache {
     active_rules: Arc<RwLock<Vec<StrategyTPSLRule>>>,
@@ -18,6 +32,8 @@ pub struct TpslRuntimeCache {
     holding_by_mint: Arc<DashMap<String, Vec<Position>>>,
     holding_count_by_rule: Arc<DashMap<Uuid, i64>>,
     total_count_by_rule: Arc<DashMap<Uuid, i64>>,
+    /// Current paper run per paper rule (stamping target + result pointer).
+    paper_run_by_rule: Arc<DashMap<Uuid, PaperRunRef>>,
 }
 
 impl TpslRuntimeCache {
@@ -28,21 +44,73 @@ impl TpslRuntimeCache {
             holding_by_mint: Arc::new(DashMap::new()),
             holding_count_by_rule: Arc::new(DashMap::new()),
             total_count_by_rule: Arc::new(DashMap::new()),
+            paper_run_by_rule: Arc::new(DashMap::new()),
         }
     }
 
     pub async fn load_from_db(&self, pool: &PgPool) -> anyhow::Result<()> {
         let rule_repo = StrategyTPSLRuleRepo::new(pool.clone());
         let position_repo = PositionRepo::new(pool.clone());
+        let paper_repo = PaperTradingRepo::new(pool.clone());
 
         self.set_rules(rule_repo.find_all().await?);
-        self.set_holding_positions(position_repo.find_all_holding().await?);
+        // Holding index (real + paper) — rebuilt from both tables.
+        self.load_holdings(pool).await?;
 
+        let paper_ids = self.paper_rule_ids();
+
+        // Total counts: real rules all-time from `positions` (exclude any legacy
+        // paper rows still keyed to paper rules); paper rules per current run.
         self.total_count_by_rule.clear();
         for (rule_id, count) in position_repo.count_all_by_rule().await? {
-            self.total_count_by_rule.insert(rule_id, count);
+            if !paper_ids.contains(&rule_id) {
+                self.total_count_by_rule.insert(rule_id, count);
+            }
         }
 
+        self.paper_run_by_rule.clear();
+        for run in paper_repo.find_all_runs().await? {
+            let count = paper_repo.count_by_run(run.id).await?;
+            if count > 0 {
+                self.total_count_by_rule.insert(run.rule_id, count);
+            }
+            self.paper_run_by_rule.insert(
+                run.rule_id,
+                PaperRunRef {
+                    run_id: run.id,
+                    run_seq: run.run_seq,
+                },
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Rule ids whose `trade_mode == "paper"`, from the loaded rule set.
+    fn paper_rule_ids(&self) -> HashSet<Uuid> {
+        self.rules_by_id
+            .read()
+            .map(|m| {
+                m.values()
+                    .filter(|r| r.trade_mode == "paper")
+                    .map(|r| r.id)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Rebuild the holding index (and holding counts) from both the real
+    /// `positions` table (excluding paper-rule rows) and `paper_positions`.
+    async fn load_holdings(&self, pool: &PgPool) -> anyhow::Result<()> {
+        let paper_ids = self.paper_rule_ids();
+        let mut all: Vec<Position> = PositionRepo::new(pool.clone())
+            .find_all_holding()
+            .await?
+            .into_iter()
+            .filter(|p| !paper_ids.contains(&p.rule_id))
+            .collect();
+        all.extend(PaperTradingRepo::new(pool.clone()).find_all_holding().await?);
+        self.set_holding_positions(all);
         Ok(())
     }
 
@@ -119,9 +187,88 @@ impl TpslRuntimeCache {
     }
 
     pub async fn reload_holding(&self, pool: &PgPool) -> anyhow::Result<()> {
-        let holding = PositionRepo::new(pool.clone()).find_all_holding().await?;
-        self.set_holding_positions(holding);
+        self.load_holdings(pool).await
+    }
+
+    // -----------------------------------------------------------------------
+    // Paper-run lifecycle (paper rules only)
+    // -----------------------------------------------------------------------
+
+    /// The current run for a paper rule (None until a run has started).
+    pub fn current_paper_run(&self, rule_id: Uuid) -> Option<PaperRunRef> {
+        self.paper_run_by_rule.get(&rule_id).map(|e| *e.value())
+    }
+
+    /// Begin a fresh run for a paper rule: persist it (deleting the prior run +
+    /// its positions), purge any lingering holdings of this rule from the cache,
+    /// and reset the per-run counters. Called on activation and lazily on the
+    /// first matching token.
+    pub async fn start_paper_run(
+        &self,
+        pool: &PgPool,
+        rule_id: Uuid,
+        max_total_tokens: Option<u64>,
+    ) -> anyhow::Result<PaperRun> {
+        let run = PaperTradingRepo::new(pool.clone())
+            .start_run(rule_id, max_total_tokens)
+            .await?;
+        // The prior run's positions were deleted in the DB; drop any that linger
+        // in the in-memory holding index so counts start from zero.
+        self.purge_rule_from_holding_index(rule_id);
+        self.holding_count_by_rule.remove(&rule_id);
+        self.total_count_by_rule.remove(&rule_id);
+        self.paper_run_by_rule.insert(
+            rule_id,
+            PaperRunRef {
+                run_id: run.id,
+                run_seq: run.run_seq,
+            },
+        );
+        Ok(run)
+    }
+
+    /// Mark a paper rule's current run as Stopped (manual deactivation). Open
+    /// positions are left to drain — `on_trade_executed` still exits them.
+    pub async fn stop_paper_run(&self, pool: &PgPool, rule_id: Uuid) -> anyhow::Result<()> {
+        let repo = PaperTradingRepo::new(pool.clone());
+        if let Some(run) = repo.current_run(rule_id).await? {
+            if run.status == PaperRunStatus::Running {
+                repo.mark_run_status(run.id, PaperRunStatus::Stopped, true).await?;
+            }
+        }
         Ok(())
+    }
+
+    /// Mark a paper rule's current run as Finished (cap reached + all exited).
+    /// Returns the run if it transitioned, else None.
+    pub async fn finish_paper_run(
+        &self,
+        pool: &PgPool,
+        rule_id: Uuid,
+    ) -> anyhow::Result<Option<PaperRun>> {
+        let repo = PaperTradingRepo::new(pool.clone());
+        if let Some(run) = repo.current_run(rule_id).await? {
+            if run.status == PaperRunStatus::Running {
+                repo.mark_run_status(run.id, PaperRunStatus::Finished, true).await?;
+                return Ok(Some(run));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Drop every holding-index entry belonging to a rule (used when a new run
+    /// deletes the prior run's positions out from under the cache).
+    fn purge_rule_from_holding_index(&self, rule_id: Uuid) {
+        let mut emptied: Vec<String> = Vec::new();
+        for mut entry in self.holding_by_mint.iter_mut() {
+            entry.value_mut().retain(|p| p.rule_id != rule_id);
+            if entry.value().is_empty() {
+                emptied.push(entry.key().clone());
+            }
+        }
+        for mint in emptied {
+            self.holding_by_mint.remove(&mint);
+        }
     }
 
     /// Call after DB writes that change position status or create/delete a position.

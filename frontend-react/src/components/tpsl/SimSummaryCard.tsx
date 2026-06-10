@@ -9,9 +9,17 @@ interface SimSummaryCardProps {
   tokens: SimulatedTokenResult[];
   price: ReturnType<typeof usePriceDisplay>;
   onClose: () => void;
+  /** Card heading; defaults to "Simulation Results". */
+  title?: string;
 }
 
-export function SimSummaryCard({ ruleName, tokens, price, onClose }: SimSummaryCardProps) {
+export function SimSummaryCard({
+  ruleName,
+  tokens,
+  price,
+  onClose,
+  title = 'Simulation Results',
+}: SimSummaryCardProps) {
   const tokensMatched = tokens.length;
   const openCount = tokens.filter((t) => t.exit_reason === 'Open').length;
   const closed = tokens.filter((t) => t.exit_reason !== 'Open');
@@ -114,7 +122,7 @@ export function SimSummaryCard({ ruleName, tokens, price, onClose }: SimSummaryC
     <div className="mb-5">
       <div className="mb-4 flex items-center gap-2.5">
         <span className="h-4 w-1 rounded-full bg-primary" />
-        <h3 className="text-sm font-bold text-text">Simulation Results</h3>
+        <h3 className="text-sm font-bold text-text">{title}</h3>
         <span className="truncate font-mono text-[11px] text-text-dim">{ruleName}</span>
         <span className="flex-1" />
         <button

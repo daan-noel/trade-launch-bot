@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { DataTable } from 'components/table/DataTable';
 import { Badge, type BadgeVariant } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
@@ -18,18 +18,27 @@ import {
   positionColumns,
   simColumns,
 } from 'components/tpsl/tableColumns';
+import { fmtTime } from 'components/tpsl/utils';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import {
   createTpslRule,
   deleteTpslRule,
   fetchMatchedTokens,
+  fetchPaperResult,
   fetchRulePositions,
   fetchTpslRules,
   simulateTpslRule,
   updateTpslRule,
 } from 'services/api';
+import { connectPaperTestStream } from 'services/sse';
 import { POLL_INTERVAL_MS } from 'services/config';
-import type { RulePositionRecord, RuleRecord, SimulatedTokenResult } from 'types';
+import type {
+  PaperResultResponse,
+  PaperTestFinishedEvent,
+  RulePositionRecord,
+  RuleRecord,
+  SimulatedTokenResult,
+} from 'types';
 import { cn } from 'lib/cn';
 
 function SectionDivider() {
@@ -113,6 +122,101 @@ function SectionHeading({
   );
 }
 
+/** Renders the latest paper-test run for a rule: run-status header, the shared
+ *  summary card, and the per-token table (reusing the simulation column set). */
+function PaperResultSection({
+  data,
+  price,
+  simCols,
+  onClose,
+}: {
+  data: PaperResultResponse;
+  price: ReturnType<typeof usePriceDisplay>;
+  simCols: ReturnType<typeof simColumns>;
+  onClose: () => void;
+}) {
+  const { run } = data;
+
+  if (!run) {
+    return (
+      <section>
+        <SectionHeading
+          title="Paper Test"
+          marker="bg-info"
+          badge="info"
+          subtitle={data.rule_name}
+          action={
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-text-dim transition hover:text-text"
+            >
+              ✕
+            </button>
+          }
+        />
+        <p className="text-text-dim">
+          This rule hasn&apos;t been run in paper mode yet. Activate it to start a paper test.
+        </p>
+      </section>
+    );
+  }
+
+  const statusVariant: BadgeVariant =
+    run.status === 'Finished' ? 'primary' : run.status === 'Stopped' ? 'neutral' : 'info';
+
+  return (
+    <>
+      <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-text-dim">
+        <Badge variant={statusVariant} size="sm" pill className="uppercase">
+          {run.status === 'Running' ? '● Running' : run.status}
+        </Badge>
+        <span className="font-mono">Run #{run.run_seq}</span>
+        <span>
+          Cap:{' '}
+          <span className="font-mono text-text">
+            {run.max_total_tokens != null ? run.max_total_tokens : '∞'}
+          </span>
+        </span>
+        <span>
+          Started <span className="font-mono text-text">{fmtTime(run.started_at)}</span>
+        </span>
+        {run.finished_at && (
+          <span>
+            Ended <span className="font-mono text-text">{fmtTime(run.finished_at)}</span>
+          </span>
+        )}
+      </div>
+
+      <SimSummaryCard
+        title="Paper Test Results"
+        ruleName={data.rule_name}
+        tokens={data.tokens}
+        price={price}
+        onClose={onClose}
+      />
+
+      <section>
+        <SectionHeading title="Paper Positions" count={data.tokens.length} subtitle={data.rule_name} />
+        {data.tokens.length === 0 ? (
+          <p className="text-text-dim">No positions recorded for this run yet.</p>
+        ) : (
+          <DataTable
+            columns={simCols}
+            rows={data.tokens}
+            rowKey={(r) => r.mint}
+            defaultPageSize={20}
+            pageSizeOptions={[20, 50, 100]}
+            searchable
+            colFilters
+            selectable={false}
+          />
+        )}
+      </section>
+    </>
+  );
+}
+
 export function TpslPage() {
   const price = usePriceDisplay();
 
@@ -147,6 +251,21 @@ export function TpslPage() {
   } | null>(null);
   const [matchedError, setMatchedError] = useState<string | null>(null);
   const [matchedLoading, setMatchedLoading] = useState(false);
+
+  const [paperResult, setPaperResult] = useState<{
+    ruleId: string;
+    data: PaperResultResponse;
+  } | null>(null);
+  const [paperError, setPaperError] = useState<string | null>(null);
+  const [paperLoading, setPaperLoading] = useState(false);
+  // Transient banner shown when a paper test finishes (cap reached + all exited).
+  const [paperNotice, setPaperNotice] = useState<PaperTestFinishedEvent | null>(null);
+  // Mirror of the rule whose paper result is open, read by the SSE handler so it
+  // can refresh that view (status → Finished) without re-subscribing the stream.
+  const openPaperRuleId = useRef<string | null>(null);
+  useEffect(() => {
+    openPaperRuleId.current = paperResult?.ruleId ?? null;
+  }, [paperResult]);
 
   const loadRules = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -188,6 +307,29 @@ export function TpslPage() {
     }, POLL_INTERVAL_MS);
     return () => clearInterval(id);
   }, [selectedRuleId]);
+
+  // Live paper-test completion: when a run finishes (cap reached + all exited)
+  // the backend auto-deactivates the rule and broadcasts `paper_test_finished`.
+  // Show a banner, refresh the rule list (so it flips to Inactive), and refresh
+  // the open paper-result view if it's the finished rule.
+  useEffect(() => {
+    const es = connectPaperTestStream((ev) => {
+      setPaperNotice(ev);
+      loadRules(true);
+      if (openPaperRuleId.current === ev.rule_id) {
+        fetchPaperResult(ev.rule_id)
+          .then((data) => setPaperResult({ ruleId: ev.rule_id, data }))
+          .catch(() => {});
+      }
+    });
+    return () => es.close();
+  }, [loadRules]);
+
+  useEffect(() => {
+    if (!paperNotice) return;
+    const id = setTimeout(() => setPaperNotice(null), 9000);
+    return () => clearTimeout(id);
+  }, [paperNotice]);
 
   const handleToggleActive = useCallback(async (rule: RuleRecord) => {
     try {
@@ -299,6 +441,26 @@ export function TpslPage() {
     }
   };
 
+  const handlePaperResult = async (rule: RuleRecord) => {
+    // Toggle: a second click on the open rule closes the result.
+    if (paperResult?.ruleId === rule.id) {
+      setPaperResult(null);
+      setPaperError(null);
+      return;
+    }
+    setPaperResult(null);
+    setPaperError(null);
+    setPaperLoading(true);
+    try {
+      const data = await fetchPaperResult(rule.id);
+      setPaperResult({ ruleId: rule.id, data });
+    } catch (e) {
+      setPaperError(e instanceof Error ? e.message : 'Failed to load paper result');
+    } finally {
+      setPaperLoading(false);
+    }
+  };
+
   const ruleActions = (rule: RuleRecord) => {
     if (confirmDeleteId === rule.id) {
       return (
@@ -357,6 +519,21 @@ export function TpslPage() {
         >
           ⊞
         </Button>
+        {rule.trade_mode === 'paper' && (
+          <Button
+            variant="ghost"
+            size="xs"
+            disabled={paperLoading}
+            onClick={() => handlePaperResult(rule)}
+            className={cn(
+              'text-info',
+              paperResult?.ruleId === rule.id && 'border-info/45 bg-info/8',
+            )}
+            title="Paper test result"
+          >
+            ▦
+          </Button>
+        )}
       </div>
     );
   };
@@ -371,6 +548,28 @@ export function TpslPage() {
 
   return (
     <div>
+      {paperNotice && (
+        <div className="mb-4 flex items-center gap-3 rounded-lg border border-primary/40 bg-primary/10 px-4 py-3">
+          <span className="text-base text-primary">✓</span>
+          <div className="flex-1 text-sm text-text">
+            <span className="font-bold text-primary">Paper test finished</span>
+            <span className="text-text-dim"> — </span>
+            <span className="font-mono">{paperNotice.rule_name}</span>
+            <span className="text-text-dim">
+              {' '}(run #{paperNotice.run_seq}, {paperNotice.tokens_traded} tokens). Rule
+              deactivated.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setPaperNotice(null)}
+            className="text-text-dim transition hover:text-text"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       <SectionHeading
         size="h2"
         title="TPSL Strategies"
@@ -510,6 +709,21 @@ export function TpslPage() {
             )}
           </section>
         </>
+      )}
+
+      {(paperLoading || paperError || paperResult) && <SectionDivider />}
+      {paperLoading && <p className="text-text-dim">Loading paper-test result…</p>}
+      {paperError && <InlineAlert variant="error">{paperError}</InlineAlert>}
+      {paperResult && !paperLoading && (
+        <PaperResultSection
+          data={paperResult.data}
+          price={price}
+          simCols={simCols}
+          onClose={() => {
+            setPaperResult(null);
+            setPaperError(null);
+          }}
+        />
       )}
 
       <RuleFormModal

@@ -1,14 +1,20 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::Utc;
 use sqlx::PgPool;
+use tokio::sync::broadcast;
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use crate::models::ingest::SseEvent;
 use crate::models::Position;
 use crate::state::token_cache::TokenCache;
-use crate::storage::repositories::{position_repo::PositionRepo, trade_repo::TradeRepo};
+use crate::storage::repositories::{
+    paper_trading_repo::PaperTradingRepo, position_repo::PositionRepo,
+    strategy_tpsl_rule_repo::StrategyTPSLRuleRepo, trade_repo::TradeRepo,
+};
 use super::{TPSLStrategyHandler, TpslRuntimeCache};
 use crate::trader::PumpFunTrader;
 use super::util::ignore_zero_u64;
@@ -16,19 +22,29 @@ use super::util::ignore_zero_u64;
 pub struct TpslStrategyService {
     pool: PgPool,
     position_repo: PositionRepo,
+    paper_repo: PaperTradingRepo,
     trade_repo: TradeRepo,
     trader: Arc<PumpFunTrader>,
     runtime: Arc<TpslRuntimeCache>,
+    /// Cold-lane broadcast for client notifications (e.g. paper-run finished).
+    sse_tx: broadcast::Sender<SseEvent>,
 }
 
 impl TpslStrategyService {
-    pub fn new(pool: PgPool, trader: Arc<PumpFunTrader>, runtime: Arc<TpslRuntimeCache>) -> Self {
+    pub fn new(
+        pool: PgPool,
+        trader: Arc<PumpFunTrader>,
+        runtime: Arc<TpslRuntimeCache>,
+        sse_tx: broadcast::Sender<SseEvent>,
+    ) -> Self {
         Self {
             position_repo: PositionRepo::new(pool.clone()),
+            paper_repo: PaperTradingRepo::new(pool.clone()),
             trade_repo: TradeRepo::new(pool.clone()),
             pool,
             trader,
             runtime,
+            sse_tx,
         }
     }
 
@@ -46,30 +62,29 @@ impl TpslStrategyService {
 impl TpslStrategyService {
     pub fn spawn_background_tasks(&self) {
         let cleanup_repo = self.position_repo.clone();
+        let paper_repo = self.paper_repo.clone();
         let runtime = self.runtime.clone();
         let pool = self.pool.clone();
         tokio::spawn(async move {
+            let stale = Duration::from_millis(TpslStrategyService::EXIT_PENDING_STALE_MS);
             let mut interval = tokio::time::interval(Duration::from_millis(
                 TpslStrategyService::EXIT_PENDING_CLEANUP_INTERVAL_MS,
             ));
             loop {
                 interval.tick().await;
-                match cleanup_repo
-                    .reopen_stale_exit_pending(Duration::from_millis(
-                        TpslStrategyService::EXIT_PENDING_STALE_MS,
-                    ))
-                    .await
-                {
-                    Ok(reopened) => {
-                        if reopened > 0 {
-                            info!("Reopened {reopened} stale ExitPending positions");
-                            if let Err(err) = runtime.reload_holding(&pool).await {
-                                warn!("Failed to refresh TPSL holding cache after cleanup: {err}");
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        warn!("Failed to clean stale ExitPending positions: {err}");
+                let mut reopened_total: u64 = 0;
+                match cleanup_repo.reopen_stale_exit_pending(stale).await {
+                    Ok(n) => reopened_total += n,
+                    Err(err) => warn!("Failed to clean stale ExitPending positions: {err}"),
+                }
+                match paper_repo.reopen_stale_exit_pending(stale).await {
+                    Ok(n) => reopened_total += n,
+                    Err(err) => warn!("Failed to clean stale paper ExitPending positions: {err}"),
+                }
+                if reopened_total > 0 {
+                    info!("Reopened {reopened_total} stale ExitPending positions");
+                    if let Err(err) = runtime.reload_holding(&pool).await {
+                        warn!("Failed to refresh TPSL holding cache after cleanup: {err}");
                     }
                 }
             }
@@ -104,9 +119,33 @@ impl TpslStrategyService {
             info!("Token {mint} matches TPSL buy entry rule {rule_id}");
 
             if let Some(rule) = handler.get_rule(rule_id) {
+                let is_paper = rule.trade_mode == "paper";
                 let max_concurrent_tokens = ignore_zero_u64(rule.p_max_concurrent_tokens).map(|v| v as usize);
                 let max_total_tokens =
                     ignore_zero_u64(rule.p_max_total_tokens).map(|v| v as usize);
+
+                // Paper rules trade inside a run; ensure one exists before the
+                // caps are checked (its counters are scoped to the run). A run is
+                // normally started on activation — this lazily starts one for a
+                // rule that became active without going through the API path.
+                let paper_run_id = if is_paper {
+                    Some(match self.runtime.current_paper_run(rule_id) {
+                        Some(r) => r.run_id,
+                        None => match self
+                            .runtime
+                            .start_paper_run(&self.pool, rule_id, ignore_zero_u64(rule.p_max_total_tokens))
+                            .await
+                        {
+                            Ok(r) => r.id,
+                            Err(err) => {
+                                warn!("Failed to start paper run for rule {rule_id}: {err}");
+                                return;
+                            }
+                        },
+                    })
+                } else {
+                    None
+                };
 
                 if let Some(cap) = max_concurrent_tokens {
                     let current_holding = self.runtime.holding_count_by_rule(rule_id);
@@ -141,7 +180,11 @@ impl TpslStrategyService {
                 );
                 position.token_program_id = token.token_program_id.clone();
 
-                if let Err(err) = self.position_repo.insert(&position).await {
+                let insert_res = match paper_run_id {
+                    Some(run_id) => self.paper_repo.insert(&position, run_id).await,
+                    None => self.position_repo.insert(&position).await,
+                };
+                if let Err(err) = insert_res {
                     warn!("Failed to create position for token {mint}: {err}");
                     return;
                 }
@@ -155,7 +198,7 @@ impl TpslStrategyService {
                 if rule.trade_mode == "paper" {
                     let trade_repo = self.trade_repo.clone();
                     let mint_for_trades = mint.clone();
-                    let position_repo = self.position_repo.clone();
+                    let position_repo = self.paper_repo.clone();
                     let runtime = self.runtime.clone();
                     let position_id = position.id;
                     let buy_amount = rule.buy_amount;
@@ -328,7 +371,7 @@ impl TpslStrategyService {
                     if rule.trade_mode == "paper" {
                         let prev = position.clone();
                         position.mark_exit_pending();
-                        if let Err(err) = self.position_repo.update(&position).await {
+                        if let Err(err) = self.paper_repo.update(&position).await {
                             warn!(
                                 "Failed to mark position {} as ExitPending: {err}",
                                 position.id
@@ -340,7 +383,7 @@ impl TpslStrategyService {
                         }
                         let trade_repo = self.trade_repo.clone();
                         let mint_for_trades = mint.clone();
-                        let position_repo = self.position_repo.clone();
+                        let position_repo = self.paper_repo.clone();
                         let runtime = self.runtime.clone();
                         let position_id = position.id;
                         let entry_tx = position.entry_tx.clone();
@@ -350,6 +393,12 @@ impl TpslStrategyService {
                         let entry_time_db = position.entry_time;
                         let take_profit = rule.take_profit;
                         let stop_loss = rule.stop_loss;
+                        // Captured for the post-close finish check (cap reached + all exited).
+                        let pool = self.pool.clone();
+                        let sse_tx = self.sse_tx.clone();
+                        let rule_id = rule.id;
+                        let rule_name = rule.rule_name.clone();
+                        let max_total = ignore_zero_u64(rule.p_max_total_tokens);
                         // Paper exit fallback (price/tx/time): the token price at the
                         // moment this exit was decided, tagged with the trade that
                         // tripped `check_exit`. Falls back to the entry tx / now when
@@ -446,6 +495,17 @@ impl TpslStrategyService {
                                     );
                                 }
                             }
+
+                            // If this exit closed the position, the run may now be
+                            // complete (cap reached and nothing left open).
+                            if let Ok(Some(pos)) = position_repo.find_by_id(position_id).await {
+                                if pos.status == crate::models::PositionStatus::End {
+                                    maybe_finish_paper_run(
+                                        &pool, &runtime, &sse_tx, rule_id, &rule_name, max_total,
+                                    )
+                                    .await;
+                                }
+                            }
                         });
                     } else if rule.trade_mode == "real" {
                         let prev = position.clone();
@@ -482,6 +542,61 @@ impl TpslStrategyService {
                 }
             }
         }
+    }
+}
+
+/// After a paper position closes, finish the run if its total-token cap has
+/// been reached and no positions remain open: auto-deactivate the rule, refresh
+/// the rules cache, and broadcast a [`SseEvent::PaperTestFinished`] notification.
+///
+/// No-ops when the rule has no cap (`max_total` is `None`) — such a run only ends
+/// on manual stop — or when the cap/holding conditions are not yet met.
+async fn maybe_finish_paper_run(
+    pool: &PgPool,
+    runtime: &Arc<TpslRuntimeCache>,
+    sse_tx: &broadcast::Sender<SseEvent>,
+    rule_id: Uuid,
+    rule_name: &str,
+    max_total: Option<u64>,
+) {
+    let Some(cap) = max_total else { return };
+    let total = runtime.total_count_by_rule(rule_id);
+    let holding = runtime.holding_count_by_rule(rule_id);
+    if total < cap as i64 || holding > 0 {
+        return;
+    }
+
+    match runtime.finish_paper_run(pool, rule_id).await {
+        Ok(Some(run)) => {
+            // Auto-deactivate the rule so it stops cleanly, then refresh the cache.
+            let rule_repo = StrategyTPSLRuleRepo::new(pool.clone());
+            match rule_repo.find_by_id(rule_id).await {
+                Ok(Some(mut rule)) if rule.is_active => {
+                    rule.is_active = false;
+                    if let Err(err) = rule_repo.update(&rule).await {
+                        warn!("Failed to deactivate finished paper rule {rule_id}: {err}");
+                    }
+                }
+                Ok(_) => {}
+                Err(err) => warn!("Failed to load rule {rule_id} for paper finish: {err}"),
+            }
+            if let Err(err) = runtime.reload_rules(pool).await {
+                warn!("Failed to reload rules after paper finish: {err}");
+            }
+            let _ = sse_tx.send(SseEvent::PaperTestFinished {
+                rule_id,
+                rule_name: rule_name.to_string(),
+                run_seq: run.run_seq,
+                tokens_traded: total,
+                timestamp: Utc::now(),
+            });
+            info!(
+                %rule_id, run_seq = run.run_seq, tokens = total,
+                "[PAPER] run finished — rule auto-deactivated"
+            );
+        }
+        Ok(None) => {} // already finished or stopped
+        Err(err) => warn!("Failed to finish paper run for rule {rule_id}: {err}"),
     }
 }
 

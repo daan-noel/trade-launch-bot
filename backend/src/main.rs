@@ -167,6 +167,7 @@ async fn main() -> anyhow::Result<()> {
         trader.clone(),
         token_cache.clone(),
         tpsl_cache,
+        sse_tx.clone(),
     );
     let strategy_task = tokio::spawn(strategy_runner.run(strategy_rx));
 
