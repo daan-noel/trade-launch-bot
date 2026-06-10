@@ -12,7 +12,10 @@ WORKDIR /app
 
 # Install deps first for layer caching.
 COPY frontend-react/package*.json ./
-RUN npm ci
+# package-lock.json is written by npm 11 (local toolchain), but node:22-slim
+# ships npm 10, whose stricter `npm ci` sync-check rejects it. Match the major
+# so `npm ci` stays deterministic.
+RUN npm install -g npm@11 && npm ci
 
 # Build-time config baked into the static bundle.
 # Empty API base => frontend uses relative /api (proxied by nginx, same-origin).
