@@ -4,6 +4,7 @@ use actix_web::{web, HttpResponse, Responder};
 use serde::Deserialize;
 
 use crate::config::constants::{DEFAULT_SLIPPAGE_BPS, SLIPPAGE_MAX_BPS};
+use crate::services::clients::jupiter;
 use crate::services::wallet_tokens;
 use crate::state::app_state::AppState;
 
@@ -184,6 +185,35 @@ pub async fn get_wallet_token(
             tracing::warn!("get_wallet_token failed mint={mint}: {e}");
             HttpResponse::InternalServerError()
                 .json(serde_json::json!({ "error": e.to_string() }))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct PricesQuery {
+    /// Comma-separated mint addresses.
+    pub ids: String,
+}
+
+/// GET /api/solana/prices?ids=mint1,mint2,...
+///
+/// Live Jupiter prices for a set of mints, decoupled from the (slow,
+/// RPC-bound) wallet balance read so the wallet table can refresh values on a
+/// short poll without re-scanning the chain. Returns a
+/// `{ mint: { price_usd, liquidity, price_change_24h, token_created_at } }`
+/// map; mints Jupiter doesn't price are simply absent.
+pub async fn get_prices(query: web::Query<PricesQuery>) -> impl Responder {
+    let mints: Vec<String> = query
+        .ids
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    match jupiter::fetch_prices(&mints).await {
+        Ok(prices) => HttpResponse::Ok().json(prices),
+        Err(e) => {
+            tracing::warn!("get_prices failed: {e}");
+            HttpResponse::InternalServerError().json(serde_json::json!({ "error": e.to_string() }))
         }
     }
 }

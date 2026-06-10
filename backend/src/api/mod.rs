@@ -176,6 +176,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 web::get().to(handlers::trading::get_wallet_token),
             )
             .route(
+                "/solana/prices",
+                web::get().to(handlers::trading::get_prices),
+            )
+            .route(
                 "/solana/wallet/buy",
                 web::post().to(handlers::trading::manual_buy),
             )

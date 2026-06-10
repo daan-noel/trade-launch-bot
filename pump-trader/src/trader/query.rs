@@ -22,31 +22,51 @@ impl PumpFunTrader {
     ) -> anyhow::Result<Vec<crate::types::WalletHolding>> {
         let wallet = self.wallet_pubkey();
         let rpc_url = self.rpc_url();
-        let mut holdings: Vec<crate::types::WalletHolding> = Vec::new();
 
-        for prog in [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID] {
-            let body = serde_json::json!({
+        let req = |prog: &str| {
+            serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "getTokenAccountsByOwner",
                 "params": [
-                    wallet,
+                    wallet.clone(),
                     { "programId": prog },
                     { "encoding": "jsonParsed" }
                 ]
-            });
+            })
+        };
 
-            // Reuse the trader's shared HTTP client (connection pool / TLS reuse)
-            // instead of constructing a fresh `reqwest::Client` per wallet scan.
-            let resp: serde_json::Value = self
-                .http
-                .post(rpc_url)
-                .json(&body)
-                .send()
-                .await?
-                .json()
-                .await?;
+        // The classic-Token and Token-2022 scans are independent reads. Fire
+        // both concurrently (reusing the trader's shared HTTP client for
+        // connection-pool / TLS reuse) rather than sequentially, halving the
+        // wallet-scan latency on the page-load / refresh path.
+        let (spl, t22) = tokio::join!(
+            async {
+                let resp: serde_json::Value = self
+                    .http
+                    .post(rpc_url)
+                    .json(&req(TOKEN_PROGRAM_ID))
+                    .send()
+                    .await?
+                    .json()
+                    .await?;
+                anyhow::Ok::<serde_json::Value>(resp)
+            },
+            async {
+                let resp: serde_json::Value = self
+                    .http
+                    .post(rpc_url)
+                    .json(&req(TOKEN_2022_PROGRAM_ID))
+                    .send()
+                    .await?
+                    .json()
+                    .await?;
+                anyhow::Ok::<serde_json::Value>(resp)
+            },
+        );
 
+        let mut holdings: Vec<crate::types::WalletHolding> = Vec::new();
+        for (prog, resp) in [(TOKEN_PROGRAM_ID, spl?), (TOKEN_2022_PROGRAM_ID, t22?)] {
             let Some(accounts) = resp["result"]["value"].as_array() else {
                 continue;
             };

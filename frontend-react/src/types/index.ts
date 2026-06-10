@@ -133,6 +133,16 @@ export interface WalletHolding {
   is_cashback_enabled: boolean;
 }
 
+/// Live, fast-changing market data for one mint (Jupiter). Fetched separately
+/// from the slow wallet balance read so the wallet table can refresh values on
+/// a poll without re-scanning the chain; merged onto {@link WalletHolding}.
+export interface WalletPrice {
+  price_usd: number | null;
+  liquidity: number | null;
+  price_change_24h: number | null;
+  token_created_at: string | null;
+}
+
 export interface TokenDetailRecord {
   mint_address: string;
   name: string;

@@ -12,6 +12,7 @@ import {
   apiSlice,
   apiErrorMessage,
   useGetWalletHoldingsQuery,
+  useGetWalletPricesQuery,
   useBuyTokenMutation,
   useSellTokenMutation,
 } from 'store/apiSlice';
@@ -43,6 +44,37 @@ export function MyWalletPage() {
   } = useGetWalletHoldingsQuery();
   const [buyToken] = useBuyTokenMutation();
   const [sellToken] = useSellTokenMutation();
+
+  // Live prices are fetched separately from the (slow, RPC-bound) balances and
+  // polled on a short interval, so the Value/Price columns tick without ever
+  // re-scanning the wallet. Keyed by the sorted held mints for a stable cache
+  // key; paused while the tab is unfocused.
+  const mints = useMemo(() => holdings.map((h) => h.mint).sort(), [holdings]);
+  const { data: prices } = useGetWalletPricesQuery(mints, {
+    skip: mints.length === 0,
+    pollingInterval: 20000,
+    skipPollingIfUnfocused: true,
+  });
+
+  // Overlay the latest polled prices onto each balance row. Falls back to the
+  // price the balances endpoint returned at load time until the first poll
+  // lands (and for any mint Jupiter doesn't return).
+  const rows = useMemo(
+    () =>
+      holdings.map((h) => {
+        const p = prices?.[h.mint];
+        if (!p) return h;
+        return {
+          ...h,
+          price_usd: p.price_usd,
+          value_usd: p.price_usd != null ? p.price_usd * h.ui_amount : null,
+          liquidity: p.liquidity,
+          price_change_24h: p.price_change_24h,
+          token_created_at: p.token_created_at,
+        };
+      }),
+    [holdings, prices],
+  );
 
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
@@ -234,7 +266,7 @@ export function MyWalletPage() {
       ) : (
         <DataTable
           columns={columns}
-          rows={holdings}
+          rows={rows}
           rowKey={(r) => r.mint}
           defaultPageSize={25}
           pageSizeOptions={[25, 50, 100]}

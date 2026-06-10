@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 
+use serde::Serialize;
+
 use crate::services::http;
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct JupiterPriceEntry {
     pub price_usd: Option<f64>,
     pub liquidity: Option<f64>,

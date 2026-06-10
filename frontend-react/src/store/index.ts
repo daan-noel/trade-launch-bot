@@ -1,4 +1,5 @@
 import { configureStore } from '@reduxjs/toolkit';
+import { setupListeners } from '@reduxjs/toolkit/query';
 import swingDetectionReducer from './swingDetectionSlice';
 import syncTokenReducer from './syncTokenSlice';
 import { apiSlice } from './apiSlice';
@@ -20,6 +21,10 @@ export const store = configureStore({
       },
     }).concat(apiSlice.middleware),
 });
+
+// Enable focus/online tracking so RTK Query's `skipPollingIfUnfocused` (used
+// by the wallet price poll) and refetch-on-reconnect behaviours work.
+setupListeners(store.dispatch);
 
 export type RootState = ReturnType<typeof store.getState>;
 export type AppDispatch = typeof store.dispatch;

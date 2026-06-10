@@ -8,6 +8,7 @@ import type {
   TokenRecord,
   TradeRecord,
   WalletHolding,
+  WalletPrice,
 } from 'types';
 
 export interface TokensArgs {
@@ -84,6 +85,14 @@ export const apiSlice = createApi({
     getWalletHolding: builder.query<WalletHolding | null, string>({
       query: (mint) => `/api/solana/wallet/tokens/${encodeURIComponent(mint)}`,
     }),
+    // Live prices for the held mints, decoupled from the balance read. Polled
+    // on a short interval (see the page) so the value column ticks without
+    // re-scanning the wallet. Keyed by the (sorted) mint list — caller passes
+    // the mints already in the balances cache.
+    getWalletPrices: builder.query<Record<string, WalletPrice>, string[]>({
+      query: (mints) =>
+        `/api/solana/prices?ids=${mints.map(encodeURIComponent).join(',')}`,
+    }),
     buyToken: builder.mutation<{ success: boolean }, BuyTokenArgs>({
       query: (body) => ({ url: '/api/solana/wallet/buy', method: 'POST', body }),
     }),
@@ -154,6 +163,7 @@ export const {
   useGetTokenDetailQuery,
   useGetTokenTradesQuery,
   useGetWalletHoldingsQuery,
+  useGetWalletPricesQuery,
   useBuyTokenMutation,
   useSellTokenMutation,
   useGetSolPriceQuery,
