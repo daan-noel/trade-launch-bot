@@ -31,5 +31,8 @@ RUN npm run build
 FROM nginx:1.27-alpine AS runtime
 COPY nginx/default.conf /etc/nginx/conf.d/default.conf
 COPY nginx/.htpasswd /etc/nginx/.htpasswd
+# Self-signed TLS cert+key for local/testing. The .pem files are gitignored —
+# you must generate them before building (see nginx/tls/README.md).
+COPY nginx/tls/cert.pem nginx/tls/key.pem /etc/nginx/tls/
 COPY --from=build /app/dist /usr/share/nginx/html
-EXPOSE 80
+EXPOSE 80 443

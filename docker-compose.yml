@@ -52,7 +52,8 @@ services:
         VITE_POLL_INTERVAL_MS: ${VITE_POLL_INTERVAL_MS:-5000}
     restart: unless-stopped
     ports:
-      - "80:80"     # add "443:443" + TLS later (certbot / a TLS-terminating proxy)
+      - "80:80"      # redirects to HTTPS
+      - "443:443"    # TLS (self-signed for local/testing; see nginx/tls/)
     depends_on:
       - backend
 

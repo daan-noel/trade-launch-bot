@@ -13,6 +13,10 @@ frontend/.vite/
 .env.local
 .env.*.local
 
+# TLS cert + private key (self-signed, generated locally — regenerate via openssl;
+# see nginx/tls/README.md). Required locally before `docker compose up --build`.
+nginx/tls/*.pem
+
 # Editor
 .vscode/
 .idea/
