@@ -14,6 +14,20 @@ use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::collections::HashMap;
 use std::str::FromStr;
 
+/// Routing + PDA-seed facts parsed from a mint's bonding-curve and mint
+/// accounts in a single `getMultipleAccounts` round-trip. Shared by
+/// [`PumpFunTrader::resolve_buy_routing`] and
+/// [`PumpFunTrader::get_creator_from_mint_pda`] so the read and the offset
+/// parsing live in exactly one place.
+struct CurveRouting {
+    creator: Pubkey,
+    token_program: Pubkey,
+    /// Bonding-curve `complete` flag — true once migrated to the AMM.
+    is_migrated: bool,
+    /// create_v2 cashback flag (bonding-curve account offset 82).
+    cashback_enabled: bool,
+}
+
 impl PumpFunTrader {
     /// Return all non-zero token accounts held by the trader's wallet.
     /// Uses raw JSON-RPC via reqwest to avoid extra Solana SDK dependencies.
@@ -328,6 +342,43 @@ impl PumpFunTrader {
         }
     }
 
+    /// Read a mint's bonding-curve PDA and mint account in one
+    /// `getMultipleAccounts` request and parse the routing facts both trade
+    /// paths need. BondingCurve layout after the 8-byte Anchor discriminator:
+    /// `complete: bool` @48, `creator: Pubkey` @49, cashback flag @82; the
+    /// token program is the mint account's owner. Shared by
+    /// [`Self::resolve_buy_routing`] and [`Self::get_creator_from_mint_pda`].
+    async fn read_curve_routing(&self, mint: &Pubkey) -> anyhow::Result<CurveRouting> {
+        let bonding_curve = self.bonding_curve_pda(mint);
+
+        // Both independent accounts in one request — this gates every manual
+        // buy/sell, so keep it a single round-trip.
+        let accounts = self.rpc.get_multiple_accounts(&[bonding_curve, *mint]).await?;
+        let [bonding_acct, mint_acct]: [Option<_>; 2] = accounts
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("getMultipleAccounts returned an unexpected count"))?;
+        let account =
+            bonding_acct.ok_or_else(|| anyhow::anyhow!("bonding curve account not found"))?;
+        let mint_account =
+            mint_acct.ok_or_else(|| anyhow::anyhow!("mint account not found"))?;
+
+        const COMPLETE_OFFSET: usize = 48;
+        const CREATOR_OFFSET: usize = 49;
+        const CASHBACK_OFFSET: usize = 82;
+        if account.data.len() < CREATOR_OFFSET + 32 {
+            anyhow::bail!("Bonding curve account data too short");
+        }
+        let creator_bytes: [u8; 32] =
+            account.data[CREATOR_OFFSET..CREATOR_OFFSET + 32].try_into()?;
+        Ok(CurveRouting {
+            creator: Pubkey::from(creator_bytes),
+            token_program: mint_account.owner,
+            is_migrated: account.data[COMPLETE_OFFSET] != 0,
+            cashback_enabled: account.data.len() > CASHBACK_OFFSET
+                && account.data[CASHBACK_OFFSET] != 0,
+        })
+    }
+
     /// Resolve everything a manual buy needs straight from chain (source of
     /// truth, so it handles freshly-migrated and Token-2022 tokens the local
     /// cache may not know about yet). Reads the bonding-curve PDA for the
@@ -341,35 +392,12 @@ impl PumpFunTrader {
         &self,
         mint_address: &str,
     ) -> anyhow::Result<crate::types::BuyRouting> {
-        let rpc = &self.rpc;
         let mint = Pubkey::from_str(mint_address)?;
-        let bonding_curve = self.bonding_curve_pda(&mint);
-
-        // Both independent accounts in one request (getMultipleAccounts) — this
-        // gates every manual buy/sell.
-        let accounts = rpc.get_multiple_accounts(&[bonding_curve, mint]).await?;
-        let [bonding_acct, mint_acct]: [Option<_>; 2] = accounts
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("getMultipleAccounts returned an unexpected count"))?;
-        let account =
-            bonding_acct.ok_or_else(|| anyhow::anyhow!("bonding curve account not found"))?;
-        let mint_account =
-            mint_acct.ok_or_else(|| anyhow::anyhow!("mint account not found"))?;
-        const COMPLETE_OFFSET: usize = 48;
-        const CREATOR_OFFSET: usize = 49;
-        if account.data.len() < CREATOR_OFFSET + 32 {
-            anyhow::bail!("Bonding curve account data too short");
-        }
-        let is_migrated = account.data[COMPLETE_OFFSET] != 0;
-        let creator_bytes: [u8; 32] =
-            account.data[CREATOR_OFFSET..CREATOR_OFFSET + 32].try_into()?;
-        let creator = Pubkey::from(creator_bytes).to_string();
-        let token_program_id = mint_account.owner.to_string();
-
+        let routing = self.read_curve_routing(&mint).await?;
         Ok(crate::types::BuyRouting {
-            creator,
-            token_program_id,
-            is_migrated,
+            creator: routing.creator.to_string(),
+            token_program_id: routing.token_program.to_string(),
+            is_migrated: routing.is_migrated,
         })
     }
 
@@ -422,40 +450,21 @@ impl PumpFunTrader {
     /// Utility to fetch the creator pubkey for a given mint by reading the bonding curve PDA account.
     /// Returns the creator as a String.
     pub async fn get_creator_from_mint_pda(&self, mint_address: &str) -> anyhow::Result<String> {
-        let rpc = &self.rpc;
-
         let mint = Pubkey::from_str(mint_address)?;
-        let bonding_curve = self.bonding_curve_pda(&mint);
+        let routing = self.read_curve_routing(&mint).await?;
 
-        // Fetch the bonding-curve and mint accounts in one request
-        // (getMultipleAccounts) — independent reads, so a single round-trip.
-        let accounts = rpc.get_multiple_accounts(&[bonding_curve, mint]).await?;
-        let [bonding_acct, mint_acct]: [Option<_>; 2] = accounts
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("getMultipleAccounts returned an unexpected count"))?;
-        let account =
-            bonding_acct.ok_or_else(|| anyhow::anyhow!("bonding curve account not found"))?;
-        let mint_account =
-            mint_acct.ok_or_else(|| anyhow::anyhow!("mint account not found"))?;
-
-        // Parse creator from account data
-        const CREATOR_OFFSET: usize = 49;
-        if account.data.len() < CREATOR_OFFSET + 32 {
-            anyhow::bail!("Account data too short");
-        }
-        let creator_bytes: [u8; 32] =
-            account.data[CREATOR_OFFSET..CREATOR_OFFSET + 32].try_into()?;
-        let creator = Pubkey::from(creator_bytes);
-
-        let token_program = mint_account.owner;
-        let cashback_enabled = account.data.len() > 82 && account.data[82] != 0;
-
-        // Cache the full PDA set for this mint (shared derivation with the buy path).
+        // Cache the full PDA set for this mint (shared derivation with the buy
+        // path; pure PDA math, no RPC).
         self.token_pdas.lock().unwrap().insert(
             mint_address.to_string(),
-            self.derive_token_pdas(&mint, &creator, &token_program, cashback_enabled),
+            self.derive_token_pdas(
+                &mint,
+                &routing.creator,
+                &routing.token_program,
+                routing.cashback_enabled,
+            ),
         );
 
-        Ok(creator.to_string())
+        Ok(routing.creator.to_string())
     }
 }
