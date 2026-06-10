@@ -167,6 +167,13 @@ impl TPSLStrategyHandler {
             return None;
         }
 
+        // Entry fill not recorded yet (entry_price set asynchronously after the
+        // buy is indexed). Guard the division — a 0 entry price yields +inf and
+        // fires a phantom TakeProfit, flapping the position ExitPending→Holding.
+        if position.entry_price <= 0.0 {
+            return None;
+        }
+
         let price_change_percent =
             ((current_price - position.entry_price) / position.entry_price) * 100.0;
 
