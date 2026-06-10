@@ -186,7 +186,8 @@ export function MyWalletPage() {
         <Button variant="subtle" size="sm" onClick={loadHoldings} disabled={loading}>
           {loading ? 'Loading…' : '↻ Refresh'}
         </Button>
-        <Button variant="primary" size="sm" onClick={handleManualBuyOpen}>
+        <div className='flex-grow' />
+        <Button variant="primary" size="md" onClick={handleManualBuyOpen}>
           + Manual Buy
         </Button>
       </div>

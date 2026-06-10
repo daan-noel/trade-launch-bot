@@ -164,7 +164,7 @@ impl PumpFunTrader {
             // conservative lower bound; a failed read falls back to 1 so slippage
             // never blocks a buy.
             let min_tokens_out: u64 = match slippage_bps {
-                Some(slip) => match self.curve_virtual_reserves(&bonding_curve).await {
+                Some(slip) => match self.curve_reserves(token_mint, &bonding_curve).await {
                     Ok((vt, vq)) => {
                         let net = (buy_lamports as u128)
                             .saturating_mul(10_000 - CURVE_FEE_BUFFER_BPS)

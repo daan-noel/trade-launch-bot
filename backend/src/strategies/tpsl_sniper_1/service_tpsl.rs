@@ -341,18 +341,21 @@ impl TpslStrategyService {
                         let position_repo = self.position_repo.clone();
                         let trade_repo = self.trade_repo.clone();
                         let runtime = self.runtime.clone();
-                        // Routing flags from the cache: is_cashback gates the
-                        // bonding-curve cashback account; is_migrated selects the
-                        // PumpSwap AMM path (the buy path can't set these, so they
-                        // default to false).
-                        let (is_cashback, is_migrated) = match cache.get(&mint) {
-                            Some(e) => (e.token.is_cashback_enabled, e.is_migrated),
-                            None => (false, false),
-                        };
                         let mut retries = 0;
                         let max_retries = 10;
                         let mut found = false;
                         while retries < max_retries {
+                            // Re-read routing from the WS-fed cache every attempt:
+                            // is_cashback gates the bonding-curve cashback account;
+                            // is_migrated selects the PumpSwap AMM path. A held token
+                            // can migrate mid-exit and the cache flips is_migrated
+                            // within ~a slot — reading it once would pin all retries
+                            // to the stale bonding-curve route, so the sell would
+                            // keep failing until a later trade event re-triggered it.
+                            let (is_cashback, is_migrated) = match cache.get(&mint) {
+                                Some(e) => (e.token.is_cashback_enabled, e.is_migrated),
+                                None => (false, false),
+                            };
                             execute_sell_for_position(
                                 trader.clone(),
                                 position.clone(),

@@ -79,6 +79,13 @@ pub const NONCE_MAX_WAIT_ITERS: usize = 200;
 /// Sleep between nonce spin-wait iterations, in milliseconds.
 pub const NONCE_WAIT_SLEEP_MS: u64 = 20;
 
+/// Max age of a WS-fed reserve snapshot still trusted on the trade path before
+/// falling back to an on-chain read. Within this window the cached reserve is as
+/// fresh as an RPC would be (and only goes "stale" when the token is quiet, in
+/// which case the reserve hasn't changed). Beyond it — e.g. after a WS gap — the
+/// trade path re-reads on-chain. 3 s.
+pub const RESERVE_CACHE_MAX_AGE_MS: u64 = 3_000;
+
 
 // ---------------------------------------------------------------------------
 // PumpSwap AMM (migrated tokens)

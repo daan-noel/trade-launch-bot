@@ -24,6 +24,7 @@ use crate::{
     services::token_sync::derive_pump_swap_pool,
     state::token_cache::{TokenCache, TokenState},
     storage::repositories::settings_repo::AppSettings,
+    trader::PumpFunTrader,
 };
 
 const DB_QUEUE_CAP: usize = 4096;
@@ -49,6 +50,14 @@ pub struct IngestPipeline {
     /// recording migrated tokens' AMM trades. Flipping either off also applies to
     /// already-tracked state (see [`Self::run`]).
     settings_rx: watch::Receiver<AppSettings>,
+    /// Trader handle — fed live reserve snapshots from each tracked-token trade
+    /// and asked to pre-warm a token's AMM pool caches on its first AMM trade, so
+    /// the trade path reads cached reserves / a warm pool instead of RPC.
+    trader: Arc<PumpFunTrader>,
+    /// Mints whose AMM pool caches have already been pre-warmed (or are warming),
+    /// so we spawn the warm task at most once per token. An entry is removed if
+    /// its warm attempt fails, letting a later AMM trade retry.
+    prewarmed_pools: Arc<DashMap<String, ()>>,
 }
 
 impl IngestPipeline {
@@ -59,6 +68,7 @@ impl IngestPipeline {
         strategy_tx: mpsc::Sender<StrategyPing>,
         sse_tx: broadcast::Sender<SseEvent>,
         settings_rx: watch::Receiver<AppSettings>,
+        trader: Arc<PumpFunTrader>,
     ) -> Self {
         let (track_mayhem, track_post_migration) = {
             let s = settings_rx.borrow();
@@ -116,6 +126,8 @@ impl IngestPipeline {
             pool_index,
             pools_changed: Arc::new(Notify::new()),
             settings_rx,
+            trader,
+            prewarmed_pools: Arc::new(DashMap::new()),
         }
     }
 
@@ -365,6 +377,46 @@ impl IngestPipeline {
             let metrics = metrics_from_state(&mint, &token_state, true);
             drop(token_state);
             self.enqueue_db(DbWriteOp::Metrics(metrics));
+        }
+
+        // Feed the trader's live reserve cache from this trade's post-trade
+        // snapshot, so a subsequent buy/sell skips the on-chain reserve read. The
+        // venue tag keeps curve and AMM snapshots from being mixed up.
+        let is_amm = e.trade.venue == "amm";
+        if let (Some(token_reserves), Some(sol_reserves)) =
+            (e.trade.virtual_token_reserves, e.trade.virtual_sol_reserves)
+        {
+            self.trader
+                .update_live_reserves(&mint, token_reserves, sol_reserves, is_amm);
+        }
+
+        // On a token's first AMM trade, warm its PumpSwap pool caches (pool facts
+        // + fee-share marker + global config) in the background. This swap gives
+        // the marker scan something to read, and moves that cold fetch off the
+        // bot's eventual exit path. Only when the token program is known, so we
+        // never cache a guessed pool layout; spawned once per mint.
+        if is_amm && self.prewarmed_pools.insert(mint.clone(), ()).is_none() {
+            match self
+                .token_cache
+                .get(&mint)
+                .and_then(|s| s.token.token_program_id.clone())
+            {
+                Some(token_program) => {
+                    let trader = self.trader.clone();
+                    let prewarmed = self.prewarmed_pools.clone();
+                    let warm_mint = mint.clone();
+                    tokio::spawn(async move {
+                        if let Err(err) = trader.prewarm_amm_pool(&warm_mint, &token_program).await {
+                            debug!("AMM pool prewarm failed for {warm_mint}: {err}");
+                            prewarmed.remove(&warm_mint); // let a later AMM trade retry
+                        }
+                    });
+                }
+                None => {
+                    // Unknown token program — don't warm with a guess; allow retry.
+                    self.prewarmed_pools.remove(&mint);
+                }
+            }
         }
 
         self.ping_strategy(mint.clone(), IngestKind::Trade);

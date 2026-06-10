@@ -220,7 +220,7 @@ impl PumpFunTrader {
         // curve's virtual reserves for a conservative lower bound, falling back to
         // 1 if the read fails so slippage never blocks a sell.
         let min_sol_output: u64 = match slippage_bps {
-            Some(slip) => match self.curve_virtual_reserves(&pdas.bonding_curve).await {
+            Some(slip) => match self.curve_reserves(token_mint, &pdas.bonding_curve).await {
                 Ok((vt, vq)) => {
                     let gross =
                         vq.saturating_mul(token_amount as u128) / (vt + token_amount as u128);

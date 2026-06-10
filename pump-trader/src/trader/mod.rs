@@ -33,8 +33,11 @@ mod init;
 mod nonce;
 mod pool;
 mod query;
+mod reserves;
 mod sell;
 mod tx;
+
+use reserves::ReserveCache;
 
 use crate::constants::{
     EVENT_AUTHORITY, FEE_PROGRAM_ID, PUMP_FUN_PROGRAM_ID, PUMP_PROGRAM_UPGRADE_FEE_RECIPIENT,
@@ -188,6 +191,10 @@ pub struct PumpFunTrader {
     // Per-token caches
     user_token_accounts: Arc<Mutex<HashMap<String, Pubkey>>>,
     token_pdas: Arc<Mutex<HashMap<String, TokenPDAs>>>,
+
+    // WS-fed live reserve snapshots (mint → latest post-trade reserves), read on
+    // the slippage / AMM-reserve hot path with an on-chain fallback.
+    reserve_cache: Arc<ReserveCache>,
 }
 
 impl PumpFunTrader {
@@ -233,12 +240,29 @@ impl PumpFunTrader {
             amm_global_config: Arc::new(Mutex::new(None)),
             user_token_accounts: Arc::new(Mutex::new(HashMap::new())),
             token_pdas: Arc::new(Mutex::new(HashMap::new())),
+            reserve_cache: Arc::new(ReserveCache::default()),
         }
     }
 
     /// Wallet public key for trade correlation.
     pub fn wallet_pubkey(&self) -> String {
         self.config.keypair.pubkey().to_string()
+    }
+
+    /// Feed a post-trade reserve snapshot into the live cache. Called by the WS
+    /// ingest for every tracked-token trade. `token_reserves` is raw token base
+    /// units; `sol_reserves` is in SOL; `is_amm` tags the venue (curve vs AMM).
+    /// The trade path reads these (cache-first, freshness-bounded) instead of an
+    /// on-chain reserve read — see `curve_reserves` / `amm_reserves_cached`.
+    pub fn update_live_reserves(
+        &self,
+        mint: &str,
+        token_reserves: f64,
+        sol_reserves: f64,
+        is_amm: bool,
+    ) {
+        self.reserve_cache
+            .update(mint, token_reserves, sol_reserves, is_amm);
     }
 
     /// Expose the RPC URL for callers that need to make their own RPC requests.

@@ -146,6 +146,25 @@ impl PumpFunTrader {
         Ok((vt, vq))
     }
 
+    /// Curve virtual reserves with a WS-cache fast path: serve a fresh cached
+    /// snapshot for `mint` (same `(virtual_token, virtual_quote=lamports)` units
+    /// as [`curve_virtual_reserves`]) when one is available, otherwise read the
+    /// bonding-curve account on-chain. Used for curve buy/sell slippage quoting.
+    pub(crate) async fn curve_reserves(
+        &self,
+        mint: &str,
+        bonding_curve: &Pubkey,
+    ) -> anyhow::Result<(u128, u128)> {
+        if let Some(r) = self.reserve_cache.get_fresh(
+            mint,
+            std::time::Duration::from_millis(crate::constants::RESERVE_CACHE_MAX_AGE_MS),
+            false,
+        ) {
+            return Ok(r);
+        }
+        self.curve_virtual_reserves(bonding_curve).await
+    }
+
     /// Query the on-chain SPL token balance for a given wallet + mint.
     /// Tries both classic Token and Token-2022 ATAs; returns 0 if none found.
     pub async fn get_token_balance(

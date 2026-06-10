@@ -117,6 +117,7 @@ async fn main() -> anyhow::Result<()> {
         strategy_tx,
         sse_tx.clone(),
         settings_tx.subscribe(),
+        trader.clone(),
     );
 
     let app_state = Arc::new(state::AppState::new(

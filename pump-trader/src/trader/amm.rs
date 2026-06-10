@@ -191,7 +191,7 @@ impl PumpFunTrader {
             .amm_pool_info(token_mint, pool_override, base_token_program_id)
             .await?;
         let cfg = self.amm_config().await?;
-        let (base_res, quote_res) = self.amm_reserves(&pool).await?;
+        let (base_res, quote_res) = self.amm_reserves_cached(token_mint, &pool).await?;
 
         let spendable = (sol_amount * LAMPORTS_PER_SOL as f64) as u64;
         let slip = slippage_bps.unwrap_or(AMM_DEFAULT_SLIPPAGE_BPS) as u128;
@@ -267,7 +267,7 @@ impl PumpFunTrader {
             .amm_pool_info(token_mint, pool_override, base_token_program_id)
             .await?;
         let cfg = self.amm_config().await?;
-        let (base_res, quote_res) = self.amm_reserves(&pool).await?;
+        let (base_res, quote_res) = self.amm_reserves_cached(token_mint, &pool).await?;
 
         let slip = slippage_bps.unwrap_or(AMM_DEFAULT_SLIPPAGE_BPS) as u128;
         let fee_bps = (cfg.lp_fee_bps + cfg.protocol_fee_bps + cfg.coin_creator_fee_bps) as u128;
@@ -623,6 +623,43 @@ impl PumpFunTrader {
             bail!("PumpSwap pool has zero reserves");
         }
         Ok((base_res, quote_res))
+    }
+
+    /// Pool reserves with a WS-cache fast path: serve a fresh AMM snapshot for
+    /// `mint` (same `(base, quote=lamports)` units as [`amm_reserves`]) when one
+    /// is available, otherwise read the vault balances on-chain. Curve snapshots
+    /// are never served here (the cache is venue-tagged), so a just-migrated
+    /// token reads on-chain until its first AMM trade lands.
+    async fn amm_reserves_cached(
+        &self,
+        mint: &str,
+        pool: &AmmPoolInfo,
+    ) -> Result<(u128, u128)> {
+        if let Some(r) = self.reserve_cache.get_fresh(
+            mint,
+            std::time::Duration::from_millis(crate::constants::RESERVE_CACHE_MAX_AGE_MS),
+            true,
+        ) {
+            return Ok(r);
+        }
+        self.amm_reserves(pool).await
+    }
+
+    /// Warm the per-token AMM caches (pool facts + fee-share marker + global
+    /// config) ahead of a trade, off the hot path. Idempotent — returns fast once
+    /// cached. Best-effort: callers spawn this in the background and ignore the
+    /// error (the live swap path falls back to the same cold fetch on a miss).
+    /// Needs at least one prior on-chain AMM swap to exist for the pool, so the
+    /// fee-share marker can be read — i.e. call it on/after the first AMM trade.
+    pub async fn prewarm_amm_pool(
+        &self,
+        token_mint: &str,
+        base_token_program_id: &str,
+    ) -> Result<()> {
+        self.amm_pool_info(token_mint, None, base_token_program_id)
+            .await?;
+        self.amm_config().await?;
+        Ok(())
     }
 
     /// override → cache → on-chain lookup (mirrors `sell_token`).

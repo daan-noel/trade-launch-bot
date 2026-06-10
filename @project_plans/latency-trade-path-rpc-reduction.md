@@ -181,3 +181,189 @@ safe and non-breaking:
 - `backend/src/strategies/tpsl/service_tpsl.rs` — sell account resolved once; buy
   uses snipe path.
 - `backend/src/strategies/tpsl_sniper_1/service_tpsl.rs` — same.
+
+---
+
+# Phase 2 — WS-fed live reserve cache + AMM pool pre-warm
+
+**Date:** 2026-06-10
+**Goal:** Remove the remaining per-trade reserve RPC by serving reserves from the
+existing Helius WS feed, and remove the cold AMM pool/marker fetch from the bot's
+exit path. Targets the last RPCs left after Phase 1 — chiefly **TPSL migrated
+(AMM) sells** and **manual curve/AMM slippage reads**.
+
+## Key realization
+
+The ingest already decodes a **post-trade reserve snapshot on every tracked
+token's trade** — bonding-curve `virtual_*_reserves`, and (rolled PRE→POST) the
+AMM `pool_base/quote_token_reserves` — and stores them on the `Trade`
+([decoder/trade.rs](../backend/src/ingest/decoder/trade.rs)). So the reserves the
+trade path was reading via RPC are *already arriving over the WS*; they just
+weren't reaching the trader. Phase 2 bridges that gap. No new subscriptions, no
+Geyser — it rides the existing pipeline.
+
+## What was implemented
+
+### 1. `ReserveCache` (new) — `pump-trader/src/trader/reserves.rs`
+A small, freshness-bounded, **venue-tagged** cache: `mint → {token, quote_lamports,
+is_amm, at}` behind a `std::sync::Mutex` (tiny sync critical sections, never held
+across `.await`).
+- `update(mint, token_f64, sol_f64, is_amm)` — converts to the trader's exact
+  on-chain units (token raw; quote `sol × 1e9` lamports); ignores zero/non-finite.
+- `get_fresh(mint, max_age, want_amm)` — returns only a **fresh** snapshot of the
+  **matching venue**; miss/stale/wrong-venue → `None` (→ caller reads on-chain).
+
+The **venue tag is the key safety property**: it closes the migration-window gap
+where the last bonding-curve snapshot would otherwise be served to the first AMM
+sell (curve and AMM reserves are different accounts on different scales). After
+migration, AMM reads (`want_amm = true`) miss the curve entry and fall back to RPC
+until the first AMM trade caches an AMM-tagged snapshot.
+
+### 2. Trader integration — `mod.rs` / `query.rs` / `amm.rs`
+- `PumpFunTrader` holds `reserve_cache: Arc<ReserveCache>` and exposes
+  `update_live_reserves(mint, token, sol, is_amm)` (pub, called by the ingest).
+- `curve_reserves(mint, bonding_curve)` — cache-first wrapper over
+  `curve_virtual_reserves`; used by curve buy/sell slippage.
+- `amm_reserves_cached(mint, pool)` — cache-first wrapper over `amm_reserves`;
+  used by `build_amm_buy_ixs` / `build_amm_sell_ixs`.
+- Freshness bound: `RESERVE_CACHE_MAX_AGE_MS = 3000` (constants.rs).
+
+### 3. `prewarm_amm_pool(mint, base_token_program_id)` — `amm.rs`
+Public, idempotent, best-effort: warms `amm_pool_cache` (pool facts + fee-share
+marker) + `amm_global_config`. Moves the cold pool read + up-to-15-`getTransaction`
+marker scan **off the exit hot path**.
+
+### 4. Pipeline wiring — `ingest/pipeline.rs` (+ `main.rs`)
+`IngestPipeline` now holds an `Arc<PumpFunTrader>`. In `on_trade_executed` (runs
+only for tracked tokens):
+- feeds the trade's post-trade reserves into `update_live_reserves` (venue from
+  `trade.venue`);
+- on a token's **first AMM trade**, spawns `prewarm_amm_pool` in the background
+  (guarded by a `prewarmed_pools` set, once per mint; retried if it fails). Only
+  when the token program is known, so a guessed pool layout is never cached.
+
+## Why this is safe (freshness reasoning)
+
+A cached reserve is only "stale" if **no trade has happened** since it was written
+— in which case the reserves *haven't changed*, so the cached value is still
+accurate. The 3 s bound therefore really guards against a **WS gap/disconnect**:
+if updates stop arriving, the trade path silently reverts to on-chain reads. And
+because reserves feed a slippage **floor** with built-in tolerance, any residual
+lag is absorbed. Every read is cache-first **with RPC fallback** — a miss, a stale
+entry, a wrong-venue entry, or a zero snapshot all transparently fall back to the
+proven on-chain path. Nothing about what gets built/signed changed.
+
+## Impact (per-trade reserve RPC)
+
+| Path | Phase 1 | Phase 2 (active token) |
+|---|---|---|
+| **TPSL AMM sell** — reserves | 1 RTT (concurrent) | **0** (cache hit) |
+| **TPSL AMM sell** — first cold pool+marker fetch | on exit path | **pre-warmed** off-path |
+| **Manual curve buy/sell** — slippage reserves | 1 RTT | **0** (cache hit) |
+| **Manual AMM buy/sell** — reserves | 1 RTT | **0** (cache hit) |
+| Quiet token / post–WS-gap | 1 RTT | 1 RTT (RPC fallback) |
+
+For an active migrated token, a TPSL exit now reaches the signer with **no reserve
+RPC and a warm pool** — the reserve that *triggered* the exit is the same snapshot
+used for the sell's slippage. (TPSL curve buy/sell already pass `slippage=None`, so
+they never read reserves; Phase 2 mainly benefits AMM sells and all manual trades.)
+
+## Pros / cons
+
+**Pros**
+- Removes the last recurring per-trade reserve RPC for actively-traded tokens, and
+  the worst cold fetch (marker scan) from the exit path.
+- Reuses the existing WS ingest — no new subscriptions, no Geyser, no new deps
+  (std Mutex/HashMap only).
+- Cache-first + RPC-fallback + venue-tag + freshness-bound ⇒ no new failure mode:
+  any doubt falls back to the Phase-1 behavior.
+
+**Cons / trade-offs**
+- Couples `IngestPipeline` to `Arc<PumpFunTrader>` (cache feed + prewarm trigger).
+- Reserve cache is unbounded in principle (one small entry per traded mint), but
+  bounded in practice by the tracked-token set; entries are cheap (~48 B + key).
+- `prewarm` fires on the first AMM trade seen, not at the migration instant (the
+  marker scan needs a prior swap to read) — a sell in the tiny window before that
+  still takes the cold path (then it's cached).
+
+## Verification
+
+- `cargo check -p pump-trader` / `-p backend` → clean (only pre-existing
+  dead-code/import warnings).
+- **Unit tests** (`pump-trader/src/trader/reserves.rs`, 6 tests, all pass) cover
+  the riskiest new logic: SOL→lamports unit round-trip, **venue isolation** (a
+  curve snapshot never serves an AMM read and vice-versa), the freshness bound,
+  and the zero/negative/NaN/±inf guard. `cargo test -p pump-trader --lib` → 6/6.
+- **Regression**: `cargo test -p backend --bins` → 19/19 pass (1 ignored —
+  network-gated AMM integration test), confirming the pipeline + Phase-1 changes
+  break nothing.
+
+### Files touched (Phase 2)
+- `pump-trader/src/trader/reserves.rs` — **new** `ReserveCache`.
+- `pump-trader/src/trader/mod.rs` — cache field + `update_live_reserves`.
+- `pump-trader/src/trader/query.rs` — `curve_reserves` wrapper.
+- `pump-trader/src/trader/amm.rs` — `amm_reserves_cached`, `prewarm_amm_pool`,
+  build paths use the cached reader.
+- `pump-trader/src/trader/buy.rs`, `sell.rs` — curve slippage uses `curve_reserves`.
+- `pump-trader/src/constants.rs` — `RESERVE_CACHE_MAX_AGE_MS`.
+- `backend/src/ingest/pipeline.rs` — trader handle; reserve feed + prewarm in
+  `on_trade_executed`.
+- `backend/src/main.rs` — pass `trader` into `IngestPipeline::new`.
+
+## Still open (future)
+
+- ~~**Bonding-curve migration self-heal**~~ — done in Phase 3 below.
+- **Background blockhash cache** for the AMM buy path's `get_latest_blockhash`
+  (the last per-trade RPC on AMM buys; manual AMM buys only — TPSL AMM sells use a
+  durable nonce).
+- **Account-stream (Geyser) reserves** for tokens we *don't* trade through the WS
+  trade feed (not needed for the current TPSL/manual flows).
+
+---
+
+# Phase 3 — TPSL exit migration self-heal
+
+**Date:** 2026-06-10
+**Goal:** Stop a held position from getting stuck unsellable when it migrates
+*during* its own exit.
+
+## The bug
+
+In both TPSL services' `on_trade_executed` (real mode), the exit ran a 10×
+retry loop but read the routing flags **once, before the loop**:
+
+```rust
+let (is_cashback, is_migrated) = match cache.get(&mint) { ... };  // read once
+while retries < max_retries {
+    execute_sell_for_position(.., is_cashback, is_migrated).await; // stale forever
+    ...
+}
+```
+
+If a token migrated *during* the exit window, the WS-fed cache flips
+`is_migrated` true within ~a slot — but the loop kept its stale `false`, so **all
+10 retries routed to the bonding curve** and the on-chain program rejected each
+with `BondingCurveComplete (6005)`. The position couldn't sell until a *later*
+trade event happened to re-enter `on_trade_executed` and re-snapshot the flag.
+
+## The fix
+
+Move the `cache.get(&mint)` routing read **inside** the retry loop, so each
+attempt re-reads `is_migrated` / `is_cashback` from the WS cache. The moment the
+migration event lands, the next retry re-routes to the PumpSwap AMM path — and,
+thanks to Phase 2, that AMM retry reads cached reserves and hits a pre-warmed
+pool. Net effect: a mid-exit migration self-heals within one retry instead of
+hanging the position.
+
+- Cost: one extra `DashMap` read per retry (≤ 10, 1 s apart) — negligible.
+- Safety: the `Ref` is dropped before the `await` (values copied out in the
+  `match`), so no cross-await lock is held; behavior is identical when no
+  migration occurs.
+
+## Verification
+- `cargo test -p backend --bins` → 19/19 pass (1 ignored, network-gated).
+
+### Files touched (Phase 3)
+- `backend/src/strategies/tpsl/service_tpsl.rs` — routing re-read inside the exit
+  retry loop.
+- `backend/src/strategies/tpsl_sniper_1/service_tpsl.rs` — same.
