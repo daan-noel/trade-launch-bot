@@ -6,9 +6,16 @@ interface ModalProps {
   open: boolean;
   onClose: () => void;
   children: ReactNode;
+  /** Width preset: `md` (default, ~600px) or `xl` (~1200px, e.g. for a chart). */
+  size?: 'md' | 'xl';
 }
 
-export function Modal({ title, open, onClose, children }: ModalProps) {
+const MODAL_WIDTH: Record<NonNullable<ModalProps['size']>, string> = {
+  md: 'max-w-[600px]',
+  xl: 'max-w-[1200px]',
+};
+
+export function Modal({ title, open, onClose, children, size = 'md' }: ModalProps) {
   const pressedOnBackdrop = useRef(false);
 
   if (!open) return null;
@@ -24,7 +31,10 @@ export function Modal({ title, open, onClose, children }: ModalProps) {
       }}
     >
       <div
-        className="flex h-fit w-full max-w-[600px] flex-col overflow-hidden rounded-xl border border-white/8 bg-bg-panel shadow-[0_24px_80px_rgba(0,0,0,0.7)]"
+        className={cn(
+          'flex h-fit w-full flex-col overflow-hidden rounded-xl border border-white/8 bg-bg-panel shadow-[0_24px_80px_rgba(0,0,0,0.7)]',
+          MODAL_WIDTH[size],
+        )}
       >
         <div className="flex items-center justify-between border-b border-white/6 px-5 py-3.5">
           <h2 className="text-[15px] font-bold text-text">{title}</h2>
@@ -36,7 +46,7 @@ export function Modal({ title, open, onClose, children }: ModalProps) {
             ×
           </button>
         </div>
-        <div className="overflow-auto p-5">{children}</div>
+        <div className="overflow-y-auto overflow-x-hidden p-5">{children}</div>
       </div>
     </div>
   );

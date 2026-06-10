@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import {
   TokenPriceChart,
   type ChartBarSelection,
+  type ChartEventMarker,
   type ChartMetric,
 } from 'components/token-price-chart';
 import { usePriceUnit } from 'context/PriceUnitContext';
@@ -13,6 +14,8 @@ const EMPTY_TRADES: TradeRecord[] = [];
 
 interface TokenTradeChartProps {
   detail: TokenDetailRecord | null;
+  /** Strategy entry/exit points to overlay (TPSL result inspection). */
+  eventMarkers?: ChartEventMarker[] | null;
 }
 
 /**
@@ -21,7 +24,7 @@ interface TokenTradeChartProps {
  * detection page, so a token already viewed there renders instantly) and feeds
  * them to the reusable {@link TokenPriceChart}.
  */
-export function TokenTradeChart({ detail }: TokenTradeChartProps) {
+export function TokenTradeChart({ detail, eventMarkers = null }: TokenTradeChartProps) {
   const { unit, usdRate } = usePriceUnit();
   const [metric, setMetric] = useState<ChartMetric>('price');
   const [selectedBar, setSelectedBar] = useState<ChartBarSelection | null>(null);
@@ -68,6 +71,7 @@ export function TokenTradeChart({ detail }: TokenTradeChartProps) {
         isMayhemMode={detail.is_mayhem_mode}
         isCashbackEnabled={detail.is_cashback_enabled}
         tokenCreatedAt={detail.created_at}
+        eventMarkers={eventMarkers}
       />
     </div>
   );

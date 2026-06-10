@@ -81,6 +81,7 @@ import type {
   ChartSwingTooltipState,
   ChartChainTooltipState,
   ChartChainHighlight,
+  ChartEventMarker,
   ChartRangeSelection,
   ChartRangeTooltipState,
   ChartWalletMarkersTooltipState,
@@ -194,6 +195,87 @@ function buildTradeMarkers(
     });
   }
   return markers;
+}
+
+/** Resolve a strategy entry/exit point to the bar it belongs on. Prefers the
+ *  exact bar of the matching tx; otherwise buckets the event time (time mode) or
+ *  snaps to the nearest trade's slot (slot mode), then snaps to the closest real
+ *  bar so the marker always lands on rendered data. */
+function resolveEventBarTime(
+  marker: ChartEventMarker,
+  sortedTrades: ChartTrade[],
+  bars: OhlcBar[],
+  groupMode: ChartGroupMode,
+  intervalSec: number,
+): UTCTimestamp | null {
+  if (bars.length === 0) return null;
+  const eventMs = Date.parse(marker.time);
+
+  let candidate: number | null = null;
+
+  if (marker.txSignature) {
+    const hit = sortedTrades.find((t) => t.tx_signature === marker.txSignature);
+    if (hit) {
+      const key =
+        groupMode === 'slot' ? tradeBarSlot(hit) : tradeBarTime(hit.block_time, intervalSec);
+      if (key != null) candidate = key as number;
+    }
+  }
+
+  if (candidate == null && !Number.isNaN(eventMs)) {
+    if (groupMode === 'slot') {
+      let best: { slot: number; dist: number } | null = null;
+      for (const t of sortedTrades) {
+        if (t.slot == null) continue;
+        const ms = Date.parse(t.block_time);
+        if (Number.isNaN(ms)) continue;
+        const dist = Math.abs(ms - eventMs);
+        if (!best || dist < best.dist) best = { slot: t.slot, dist };
+      }
+      if (best) candidate = best.slot;
+    } else {
+      const key = tradeBarTime(marker.time, intervalSec);
+      if (key != null) candidate = key as number;
+    }
+  }
+
+  if (candidate == null) return null;
+
+  // Snap to the nearest existing bar so the marker always lands on data.
+  let nearest = bars[0].time as number;
+  let nearestDist = Math.abs(nearest - candidate);
+  for (const b of bars) {
+    const d = Math.abs((b.time as number) - candidate);
+    if (d < nearestDist) {
+      nearest = b.time as number;
+      nearestDist = d;
+    }
+  }
+  return nearest as UTCTimestamp;
+}
+
+function buildEventSeriesMarkers(
+  eventMarkers: ChartEventMarker[],
+  sortedTrades: ChartTrade[],
+  bars: OhlcBar[],
+  groupMode: ChartGroupMode,
+  intervalSec: number,
+): SeriesMarker<UTCTimestamp>[] {
+  const out: SeriesMarker<UTCTimestamp>[] = [];
+  for (const m of eventMarkers) {
+    const time = resolveEventBarTime(m, sortedTrades, bars, groupMode, intervalSec);
+    if (time == null) continue;
+    const isEntry = m.kind === 'entry';
+    out.push({
+      time,
+      position: isEntry ? 'belowBar' : 'aboveBar',
+      color: isEntry ? CHART_COLORS.entry : CHART_COLORS.exit,
+      shape: isEntry ? 'arrowUp' : 'arrowDown',
+      text: m.label ?? (isEntry ? 'Entry' : 'Exit'),
+      size: 2,
+    });
+  }
+  return out;
 }
 
 type MarkersPlugin = {
@@ -391,6 +473,7 @@ export function TokenPriceChart({
   isCashbackEnabled,
   profileWallets,
   tokenCreatedAt,
+  eventMarkers = null,
 }: TokenPriceChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -450,6 +533,7 @@ export function TokenPriceChart({
   styleRef.current = style;
   const athLineRef = useRef<IPriceLine | null>(null);
   const migrationLineRef = useRef<IPriceLine | null>(null);
+  const eventLineRefs = useRef<IPriceLine[]>([]);
 
   const toValue = useCallback(
     (sol: number) => (toValueProp ? toValueProp(sol) : sol),
@@ -1140,6 +1224,12 @@ export function TokenPriceChart({
       }
     }
 
+    if (eventMarkers && eventMarkers.length > 0) {
+      markers.push(
+        ...buildEventSeriesMarkers(eventMarkers, sortedTrades, bars, groupMode, intervalSec),
+      );
+    }
+
     const sorted = sortSeriesMarkers(markers);
 
     markersPluginRef.current?.detach();
@@ -1161,6 +1251,7 @@ export function TokenPriceChart({
     sortedTrades,
     bars,
     profileWallets,
+    eventMarkers,
   ]);
 
   // Highlight the longest swing chain as a full-height band. Resolving the
@@ -1359,6 +1450,37 @@ export function TokenPriceChart({
       title: 'Migration',
     });
   }, [showMigrationLine, metric, toValue, showChart, style]);
+
+  // Dashed horizontal lines at the strategy's entry/exit fill prices. `bars` is a
+  // dep so the lines are re-created on the fresh series after a grouping/interval
+  // change recreates it (mirrors how the markers effect re-runs).
+  useEffect(() => {
+    const series = seriesRef.current;
+    if (!series || !showChart) return;
+
+    for (const line of eventLineRefs.current) {
+      series.removePriceLine(line);
+    }
+    eventLineRefs.current = [];
+
+    if (!eventMarkers) return;
+
+    for (const m of eventMarkers) {
+      const value = athChartValue(m.priceInSol, metric, toValue);
+      if (value == null) continue;
+      const isEntry = m.kind === 'entry';
+      eventLineRefs.current.push(
+        series.createPriceLine({
+          price: value,
+          color: isEntry ? CHART_COLORS.entry : CHART_COLORS.exit,
+          lineWidth: 1,
+          lineStyle: LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: isEntry ? 'Entry' : 'Exit',
+        }),
+      );
+    }
+  }, [eventMarkers, metric, toValue, showChart, style, bars]);
 
   useEffect(() => {
     const chart = chartRef.current;

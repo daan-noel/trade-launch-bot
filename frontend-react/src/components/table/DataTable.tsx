@@ -89,7 +89,12 @@ export function DataTable<R>({
   const [showFilterRow, setShowFilterRow] = useState(false);
   const [hoveredCol, setHoveredCol] = useState<number | null>(null);
 
-  const selectedKey = externalSelected ?? internalSelected;
+  // Controlled callers pass `selectedKey` (string | null); an explicit null then
+  // means "nothing selected" and must win over any stale internal selection (e.g.
+  // sibling tables sharing one selection). Uncontrolled callers omit it
+  // (undefined) and fall back to the table's own internal selection.
+  const selectedKey =
+    externalSelected !== undefined ? externalSelected : internalSelected;
 
   useEffect(() => {
     if (storageKey) saveVisibleCols(storageKey, visibleCols);

@@ -69,6 +69,10 @@ export const CHART_COLORS = {
   activePill: '#13ceaf',
   athLine: '#f0b429',
   migrationLine: '#5dade2',
+  /** Strategy entry/exit overlay (TPSL result inspection): bright green/red,
+   *  distinct from the candle up/down greens & reds so they pop at a glance. */
+  entry: '#02c076',
+  exit: '#f6465d',
   swingOverlay: '#e879f9',
   /** Swing path segments — distinct from candle up/down greens and reds */
   swingHigh: '#0eb5ff',

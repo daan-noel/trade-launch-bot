@@ -37,6 +37,23 @@ export interface ProfileWalletInfo {
   tags?: ProfileTagInfo[];
 }
 
+/**
+ * A strategy entry/exit point to overlay on the chart: an arrow marker pinned to
+ * the matching bar plus a dashed horizontal line at the fill price. Used by the
+ * TPSL paper/simulation/position result inspector.
+ */
+export interface ChartEventMarker {
+  kind: 'entry' | 'exit';
+  /** ISO block time of the entry/exit trade — bucketed to a bar. */
+  time: string;
+  /** Spot price in SOL at the fill — drives the dashed price line. */
+  priceInSol: number;
+  /** Tx signature; pins the marker to that trade's exact bar when present in `trades`. */
+  txSignature?: string | null;
+  /** Short label drawn on the marker / axis, e.g. "Entry" or "Exit · TP". */
+  label?: string;
+}
+
 export type ChartGroupMode = 'time' | 'slot';
 
 export type ChartMetric = 'price' | 'mc';
@@ -256,6 +273,8 @@ export interface TokenPriceChartProps {
   profileWallets?: ProfileWalletInfo[];
   /** Token creation time (ISO string) — used to show per-bar tx age in the crosshair tooltip. */
   tokenCreatedAt?: string;
+  /** Strategy entry/exit points to overlay as arrows + dashed price lines. */
+  eventMarkers?: ChartEventMarker[] | null;
 }
 
 export interface ChartToolbarProps {

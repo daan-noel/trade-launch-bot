@@ -50,6 +50,7 @@ export type {
   ChartStyle,
   ChartCrosshairInfo,
   ChartBarSelection,
+  ChartEventMarker,
   ChartSwingLeg,
   ChartSwingOverlay,
   ChartChainHighlight,

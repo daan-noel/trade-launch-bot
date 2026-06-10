@@ -13,6 +13,7 @@ import {
 } from 'components/tpsl/RuleFormModal';
 import { ruleColumns } from 'components/tpsl/ruleColumns';
 import { SimSummaryCard } from 'components/tpsl/SimSummaryCard';
+import { TokenInspectModal, type InspectTarget } from 'components/tpsl/TokenInspectModal';
 import {
   matchedColumns,
   positionColumns,
@@ -128,11 +129,15 @@ function PaperResultSection({
   data,
   price,
   simCols,
+  selectedMint,
+  onSelectToken,
   onClose,
 }: {
   data: PaperResultResponse;
   price: ReturnType<typeof usePriceDisplay>;
   simCols: ReturnType<typeof simColumns>;
+  selectedMint: string | null;
+  onSelectToken: (row: SimulatedTokenResult | null) => void;
   onClose: () => void;
 }) {
   const { run } = data;
@@ -205,16 +210,54 @@ function PaperResultSection({
             columns={simCols}
             rows={data.tokens}
             rowKey={(r) => r.mint}
+            selectedKey={selectedMint}
+            onSelect={(key) =>
+              onSelectToken(key ? data.tokens.find((t) => t.mint === key) ?? null : null)
+            }
             defaultPageSize={20}
             pageSizeOptions={[20, 50, 100]}
             searchable
             colFilters
-            selectable={false}
           />
         )}
       </section>
     </>
   );
+}
+
+/** A row selected for inspection, tagged with its source table so only that
+ *  table highlights the selection (the three tables can share a mint/key). */
+type InspectState = {
+  table: 'positions' | 'sim' | 'paper';
+  key: string;
+  target: InspectTarget;
+};
+
+function inspectFromSim(r: SimulatedTokenResult): InspectTarget {
+  return {
+    mint: r.mint,
+    symbol: r.symbol,
+    entryTime: r.entry_time,
+    entryPrice: r.entry_price,
+    entryTx: r.entry_tx,
+    exitTime: r.exit_time,
+    exitPrice: r.exit_price,
+    exitTx: r.exit_tx,
+    exitLabel: r.exit_reason && r.exit_reason !== 'Open' ? r.exit_reason : null,
+  };
+}
+
+function inspectFromPosition(r: RulePositionRecord): InspectTarget {
+  return {
+    mint: r.mint,
+    entryTime: r.entry_time,
+    entryPrice: r.entry_price,
+    entryTx: r.entry_tx,
+    exitTime: r.exit_time,
+    exitPrice: r.exit_price,
+    exitTx: r.exit_tx,
+    exitLabel: r.status && r.status !== 'Open' ? r.status : null,
+  };
 }
 
 export function TpslPage() {
@@ -258,6 +301,8 @@ export function TpslPage() {
   } | null>(null);
   const [paperError, setPaperError] = useState<string | null>(null);
   const [paperLoading, setPaperLoading] = useState(false);
+  // Token selected (in any result table) to inspect in the detail/chart modal.
+  const [inspect, setInspect] = useState<InspectState | null>(null);
   // Transient banner shown when a paper test finishes (cap reached + all exited).
   const [paperNotice, setPaperNotice] = useState<PaperTestFinishedEvent | null>(null);
   // Mirror of the rule whose paper result is open, read by the SSE handler so it
@@ -620,11 +665,19 @@ export function TpslPage() {
                 columns={posCols}
                 rows={positions}
                 rowKey={(r) => r.id}
+                selectedKey={inspect?.table === 'positions' ? inspect.key : null}
+                onSelect={(key) => {
+                  const row = key ? positions.find((p) => p.id === key) ?? null : null;
+                  setInspect(
+                    row
+                      ? { table: 'positions', key: row.id, target: inspectFromPosition(row) }
+                      : null,
+                  );
+                }}
                 defaultPageSize={20}
                 pageSizeOptions={[20, 50, 100]}
                 colFilters
                 colToggle
-                selectable={false}
                 emptyMessage="No positions for this rule."
               />
             )}
@@ -700,11 +753,17 @@ export function TpslPage() {
                 columns={simCols}
                 rows={simResult.tokens}
                 rowKey={(r) => r.mint}
+                selectedKey={inspect?.table === 'sim' ? inspect.key : null}
+                onSelect={(key) => {
+                  const row = key ? simResult.tokens.find((t) => t.mint === key) ?? null : null;
+                  setInspect(
+                    row ? { table: 'sim', key: row.mint, target: inspectFromSim(row) } : null,
+                  );
+                }}
                 defaultPageSize={20}
                 pageSizeOptions={[20, 50, 100]}
                 searchable
                 colFilters
-                selectable={false}
               />
             )}
           </section>
@@ -719,11 +778,21 @@ export function TpslPage() {
           data={paperResult.data}
           price={price}
           simCols={simCols}
+          selectedMint={inspect?.table === 'paper' ? inspect.key : null}
+          onSelectToken={(row) =>
+            setInspect(
+              row ? { table: 'paper', key: row.mint, target: inspectFromSim(row) } : null,
+            )
+          }
           onClose={() => {
             setPaperResult(null);
             setPaperError(null);
           }}
         />
+      )}
+
+      {inspect && (
+        <TokenInspectModal target={inspect.target} onClose={() => setInspect(null)} />
       )}
 
       <RuleFormModal
