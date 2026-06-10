@@ -313,11 +313,11 @@ they never read reserves; Phase 2 mainly benefits AMM sells and all manual trade
 ## Still open (future)
 
 - ~~**Bonding-curve migration self-heal**~~ — done in Phase 3 below.
-- **Background blockhash cache** for the AMM buy path's `get_latest_blockhash`
+- ~~**Background blockhash cache** for the AMM buy path's `get_latest_blockhash`
   (the last per-trade RPC on AMM buys; manual AMM buys only — TPSL AMM sells use a
-  durable nonce).
+  durable nonce).~~ — done in Phase 5 below.
 - **Account-stream (Geyser) reserves** for tokens we *don't* trade through the WS
-  trade feed (not needed for the current TPSL/manual flows).
+  trade feed (not needed for the current TPSL/manual flows) — still open by design.
 
 ---
 

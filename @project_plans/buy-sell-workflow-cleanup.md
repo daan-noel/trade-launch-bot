@@ -145,8 +145,13 @@ Net sell attempts per exit: curve **300 → ≤ 6**, AMM **60 → ≤ 6**.
   `Pubkey::from_str(PUMP_FUN_PROGRAM_ID)` re-parses (import removed from `query.rs`)
   and `TokenPDAs` from `buy.rs`'s imports. Behaviour-identical by construction
   (same seeds, same program id); `cargo check`/`test -p pump-trader` clean, backend
-  builds. The account *reads* (`getMultipleAccounts`) stay where needed; only the
-  pure derivation was shared.
+  builds. The pure derivation was shared first; the single-mint
+  `getMultipleAccounts` read + offset-parse was then also extracted into
+  `read_curve_routing(mint) -> CurveRouting` (creator / token_program /
+  is_migrated / cashback), so `resolve_buy_routing` and `get_creator_from_mint_pda`
+  now share **both** the read and the derivation. The only standalone read left is
+  `resolve_migrated_batch` (a batched 100-mint-per-request variant — intentionally
+  separate).
 
 ## Live validation (pending — snipe-buy confirmation change)
 
