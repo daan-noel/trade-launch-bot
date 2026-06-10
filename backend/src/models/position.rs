@@ -21,7 +21,9 @@ pub struct Position {
     pub entry_tx: String,
     /// Transaction signature of the sell transaction.
     pub exit_tx: Option<String>,
-    /// "Holding" — still owns tokens | "End" — all tokens sold.
+    /// "Holding" — owns tokens, exit not yet triggered | "ExitPending" — exit
+    /// triggered, sell/confirmation in flight | "End" — exited cleanly |
+    /// "ExitFailed" — terminal: the exit attempt ran and failed.
     pub status: PositionStatus,
     /// Strategy name (e.g., "TPSL").
     pub strategy: String,
@@ -45,6 +47,10 @@ pub enum PositionStatus {
     Holding,
     ExitPending,
     End,
+    /// Terminal: the exit attempt completed and failed (real: sell retries
+    /// exhausted without clearing the balance; paper: no confirming trade
+    /// indexed within the poll window). The position is never re-evaluated.
+    ExitFailed,
 }
 
 impl std::fmt::Display for PositionStatus {
@@ -53,6 +59,7 @@ impl std::fmt::Display for PositionStatus {
             Self::Holding => write!(f, "Holding"),
             Self::ExitPending => write!(f, "ExitPending"),
             Self::End => write!(f, "End"),
+            Self::ExitFailed => write!(f, "ExitFailed"),
         }
     }
 }
@@ -65,6 +72,7 @@ impl std::str::FromStr for PositionStatus {
             "Holding" => Ok(Self::Holding),
             "ExitPending" => Ok(Self::ExitPending),
             "End" => Ok(Self::End),
+            "ExitFailed" => Ok(Self::ExitFailed),
             _ => Err(format!("Unknown status: {}", s)),
         }
     }
@@ -108,9 +116,15 @@ impl Position {
         self.updated_at = Utc::now();
     }
 
-    /// Re-open a position if the exit attempt fails.
-    pub fn reopen(&mut self) {
-        self.status = PositionStatus::Holding;
+    /// Terminally mark the position as failed-to-exit — the exit attempt ran and
+    /// failed. Final: the position is never re-evaluated for exit again. Records
+    /// the price (and time) at which the exit condition was met — i.e. the price
+    /// it *would* have exited at had the sell/confirmation succeeded — so the row
+    /// still carries a (hypothetical) PnL for analysis.
+    pub fn mark_exit_failed(&mut self, exit_price: f64, exit_time: DateTime<Utc>) {
+        self.exit_price = Some(exit_price);
+        self.exit_time = Some(exit_time);
+        self.status = PositionStatus::ExitFailed;
         self.updated_at = Utc::now();
     }
 

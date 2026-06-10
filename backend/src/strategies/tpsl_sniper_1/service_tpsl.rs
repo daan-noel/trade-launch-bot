@@ -72,17 +72,17 @@ impl TpslStrategyService {
             ));
             loop {
                 interval.tick().await;
-                let mut reopened_total: u64 = 0;
-                match cleanup_repo.reopen_stale_exit_pending(stale).await {
-                    Ok(n) => reopened_total += n,
+                let mut failed_total: u64 = 0;
+                match cleanup_repo.fail_stale_exit_pending(stale).await {
+                    Ok(n) => failed_total += n,
                     Err(err) => warn!("Failed to clean stale ExitPending positions: {err}"),
                 }
-                match paper_repo.reopen_stale_exit_pending(stale).await {
-                    Ok(n) => reopened_total += n,
+                match paper_repo.fail_stale_exit_pending(stale).await {
+                    Ok(n) => failed_total += n,
                     Err(err) => warn!("Failed to clean stale paper ExitPending positions: {err}"),
                 }
-                if reopened_total > 0 {
-                    info!("Reopened {reopened_total} stale ExitPending positions");
+                if failed_total > 0 {
+                    info!("Marked {failed_total} stale (orphaned) ExitPending positions ExitFailed");
                     if let Err(err) = runtime.reload_holding(&pool).await {
                         warn!("Failed to refresh TPSL holding cache after cleanup: {err}");
                     }
@@ -340,6 +340,10 @@ impl TpslStrategyService {
                         let entry_time_db = position.entry_time;
                         let take_profit = rule.take_profit;
                         let stop_loss = rule.stop_loss;
+                        // The price/time the exit condition met (this trade's cached
+                        // price). Used as the hypothetical exit if no real fill confirms.
+                        let trigger_price = current_price;
+                        let trigger_time = Utc::now();
                         // Captured for the post-close finish check (cap reached + all exited).
                         let pool = self.pool.clone();
                         let sse_tx = self.sse_tx.clone();
@@ -396,28 +400,34 @@ impl TpslStrategyService {
                                 sleep(Duration::from_millis(500)).await;
                             }
                             if !found {
-                                // No real post-entry exit trade was indexed within the
-                                // poll window. Don't synthesize an exit price — revert to
-                                // Holding so the next trade event can re-trigger the exit
-                                // (mirrors real mode reopening a position when the sell
-                                // doesn't go through). The exit price only ever comes from
-                                // a real indexed trade via `find_exit`.
+                                // No confirming exit trade was indexed within the poll
+                                // window. Per the terminal-failure design this is the
+                                // end of the line — mark the position ExitFailed rather
+                                // than reverting to Holding for another attempt. The exit
+                                // price only ever comes from a real indexed trade via
+                                // `find_exit`, so with none found there is nothing to fill.
                                 if let Ok(Some(prev)) = position_repo.find_by_id(position_id).await {
-                                    let _ = position_repo.revert_exit_pending(position_id).await;
+                                    let _ = position_repo
+                                        .mark_exit_failed(position_id, trigger_price, trigger_time)
+                                        .await;
                                     if let Ok(Some(current)) = position_repo.find_by_id(position_id).await {
                                         runtime.sync_position(Some(&prev), &current);
                                     }
                                 }
                                 info!(
-                                    "[PAPER] No exit fill indexed; reverted position {} to Holding",
-                                    position_id
+                                    "[PAPER] No exit fill indexed; marked position {} ExitFailed at {}",
+                                    position_id, trigger_price
                                 );
                             }
 
-                            // If this exit closed the position, the run may now be
-                            // complete (cap reached and nothing left open).
+                            // A terminal outcome (clean exit or failed exit) may have
+                            // been the last open position — the run can now complete.
                             if let Ok(Some(pos)) = position_repo.find_by_id(position_id).await {
-                                if pos.status == crate::models::PositionStatus::End {
+                                if matches!(
+                                    pos.status,
+                                    crate::models::PositionStatus::End
+                                        | crate::models::PositionStatus::ExitFailed
+                                ) {
                                     maybe_finish_paper_run(
                                         &pool, &runtime, &sse_tx, rule_id, &rule_name, max_total,
                                     )
@@ -454,6 +464,8 @@ impl TpslStrategyService {
                             self.trade_repo.clone(),
                             self.runtime.clone(),
                             cache,
+                            current_price,
+                            Utc::now(),
                         )
                         .await;
                     }
@@ -776,6 +788,10 @@ async fn execute_sell_for_position(
     trade_repo: TradeRepo,
     runtime: Arc<TpslRuntimeCache>,
     cache: &TokenCache,
+    // Price/time the exit condition met — recorded as the hypothetical exit if
+    // the sell fails (the position never actually sold).
+    trigger_price: f64,
+    trigger_time: chrono::DateTime<Utc>,
 ) {
     let mint = position.mint.clone();
     let wallet = trader.wallet_pubkey();
@@ -802,14 +818,14 @@ async fn execute_sell_for_position(
     if !completed {
         warn!(
             position_id = %position.id, mint = %mint,
-            "Sell execution finished without clearing token balance; reverting position to Holding"
+            "Sell execution finished without clearing token balance; marking position ExitFailed"
         );
         let prev = position.clone();
-        position.reopen();
+        position.mark_exit_failed(trigger_price, trigger_time);
         if let Err(err) = position_repo.update(&position).await {
             warn!(
                 position_id = %position.id, mint = %mint,
-                "Failed to revert position {} to Holding: {err}", position.id
+                "Failed to mark position {} ExitFailed: {err}", position.id
             );
         } else {
             runtime.sync_position(Some(&prev), &position);

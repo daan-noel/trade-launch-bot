@@ -99,6 +99,7 @@ impl TryFrom<PositionDbRow> for Position {
             "Holding" => PositionStatus::Holding,
             "ExitPending" => PositionStatus::ExitPending,
             "End" => PositionStatus::End,
+            "ExitFailed" => PositionStatus::ExitFailed,
             other => anyhow::bail!("Unknown position status in DB: {other}"),
         };
 
@@ -129,6 +130,7 @@ fn position_status_str(s: PositionStatus) -> &'static str {
         PositionStatus::Holding => "Holding",
         PositionStatus::ExitPending => "ExitPending",
         PositionStatus::End => "End",
+        PositionStatus::ExitFailed => "ExitFailed",
     }
 }
 
@@ -301,8 +303,12 @@ impl PositionRepo {
         rows.into_iter().map(Position::try_from).collect()
     }
 
-    /// Reopen stale exit-pending positions after the timeout has elapsed.
-    pub async fn reopen_stale_exit_pending(
+    /// Terminally fail positions stuck in ExitPending past the timeout. Under
+    /// normal operation the exit task resolves ExitPending to End/ExitFailed
+    /// within seconds; a row lingering this long was orphaned (e.g. the process
+    /// restarted mid-exit), so fail it rather than re-arm it — re-arming a
+    /// half-done real exit risks a double-sell. Returns rows failed.
+    pub async fn fail_stale_exit_pending(
         &self,
         stale_after: std::time::Duration,
     ) -> anyhow::Result<u64> {
@@ -310,7 +316,7 @@ impl PositionRepo {
         let result = sqlx::query(
             r#"
             UPDATE positions
-            SET status = 'Holding', updated_at = $1
+            SET status = 'ExitFailed', updated_at = $1
                 WHERE status = 'ExitPending' AND updated_at < $2
             "#,
         )

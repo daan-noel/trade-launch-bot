@@ -81,6 +81,7 @@ impl TryFrom<PaperPositionDbRow> for Position {
             "Holding" => PositionStatus::Holding,
             "ExitPending" => PositionStatus::ExitPending,
             "End" => PositionStatus::End,
+            "ExitFailed" => PositionStatus::ExitFailed,
             other => anyhow::bail!("Unknown paper position status in DB: {other}"),
         };
         Ok(Self {
@@ -110,6 +111,7 @@ fn position_status_str(s: PositionStatus) -> &'static str {
         PositionStatus::Holding => "Holding",
         PositionStatus::ExitPending => "ExitPending",
         PositionStatus::End => "End",
+        PositionStatus::ExitFailed => "ExitFailed",
     }
 }
 
@@ -346,13 +348,27 @@ impl PaperTradingRepo {
         Ok(())
     }
 
-    /// Revert an ExitPending position back to Holding (exit attempt timed out).
-    pub async fn revert_exit_pending(&self, position_id: Uuid) -> anyhow::Result<()> {
-        sqlx::query("UPDATE paper_positions SET status = 'Holding', updated_at = $2 WHERE id = $1")
-            .bind(position_id)
-            .bind(Utc::now())
-            .execute(&self.pool)
-            .await?;
+    /// Terminally mark an ExitPending position as ExitFailed (no confirming exit
+    /// trade was indexed within the poll window). Records the price/time at which
+    /// the exit condition was met (the trigger price) so the row carries a
+    /// hypothetical exit. The position is never re-evaluated for exit again.
+    pub async fn mark_exit_failed(
+        &self,
+        position_id: Uuid,
+        exit_price: f64,
+        exit_time: DateTime<Utc>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE paper_positions \
+             SET status = 'ExitFailed', exit_price = $2, exit_time = $3, updated_at = $4 \
+             WHERE id = $1",
+        )
+        .bind(position_id)
+        .bind(exit_price)
+        .bind(exit_time)
+        .bind(Utc::now())
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -405,9 +421,11 @@ impl PaperTradingRepo {
         Ok(n)
     }
 
-    /// Reopen paper positions stuck in ExitPending past the staleness window
-    /// (mirrors the real-position safety net). Returns rows reopened.
-    pub async fn reopen_stale_exit_pending(
+    /// Terminally fail paper positions stuck in ExitPending past the staleness
+    /// window (mirrors the real-position safety net). Such a row was orphaned —
+    /// the exit task normally resolves within seconds — so fail it rather than
+    /// re-arm it. Returns rows failed.
+    pub async fn fail_stale_exit_pending(
         &self,
         stale_after: std::time::Duration,
     ) -> anyhow::Result<u64> {
@@ -415,7 +433,7 @@ impl PaperTradingRepo {
         let result = sqlx::query(
             r#"
             UPDATE paper_positions
-            SET status = 'Holding', updated_at = $1
+            SET status = 'ExitFailed', updated_at = $1
             WHERE status = 'ExitPending' AND updated_at < $2
             "#,
         )

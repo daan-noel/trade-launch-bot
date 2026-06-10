@@ -567,18 +567,20 @@ pub(crate) fn paper_position_to_sim_result(
     p: Position,
     symbols: &std::collections::HashMap<String, String>,
 ) -> SimulatedTokenResult {
-    let closed = p.status == PositionStatus::End;
     let pnl_percent = p.pnl_percentage();
     // The live paper exit path only ever fires take-profit / stop-loss, so a
-    // closed position's reason is recoverable from its realized PnL sign.
-    let exit_reason = if closed {
-        if pnl_percent.unwrap_or(0.0) >= 0.0 {
-            "TakeProfit"
-        } else {
-            "StopLoss"
+    // closed position's reason is recoverable from its realized PnL sign. A
+    // terminally failed exit surfaces as its own reason; everything else is open.
+    let exit_reason = match p.status {
+        PositionStatus::End => {
+            if pnl_percent.unwrap_or(0.0) >= 0.0 {
+                "TakeProfit"
+            } else {
+                "StopLoss"
+            }
         }
-    } else {
-        "Open"
+        PositionStatus::ExitFailed => "ExitFailed",
+        _ => "Open",
     }
     .to_string();
     // entry_amount is the SOL allocated per buy, so PnL in SOL is direct.
