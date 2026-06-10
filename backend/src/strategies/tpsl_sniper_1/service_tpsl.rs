@@ -408,8 +408,11 @@ async fn buy_with_retries(
 
     while attempt < max_attempts {
         attempt += 1;
+        // Snipe path: this token was just seen via the create event, so the
+        // wallet provably holds no account for it yet — skip the ATA-existence
+        // RPC and go straight to the seed-account buy.
         match trader
-            .buy_token(&mint, &creator, &token_program_id, buy_amount, None)
+            .buy_token_snipe(&mint, &creator, &token_program_id, buy_amount, None)
             .await
         {
             Ok(true) => {
@@ -581,13 +584,19 @@ async fn sell_with_retries(
         return true;
     }
 
+    // Resolve the token account once (cache-first; at most one wallet scan) and
+    // reuse it across every attempt — it never changes for a given mint. If this
+    // is None, sell_token/amm_sell still fall back to their own internal lookup,
+    // so correctness is preserved while the per-attempt wallet scan is removed.
+    let token_account_override = trader
+        .resolve_cached_token_account(&mint)
+        .await
+        .ok()
+        .flatten()
+        .map(|pk| pk.to_string());
+
     while attempt < max_attempts && amount > 0 {
         attempt += 1;
-        // Look up token_account for this mint
-        let token_account_override = match trader.get_all_token_accounts().await {
-            Ok(accounts) => accounts.iter().find(|a| a.mint == mint).map(|a| a.token_account.clone()),
-            Err(_) => None,
-        };
         let sell_result = if is_migrated {
             trader
                 .amm_sell(

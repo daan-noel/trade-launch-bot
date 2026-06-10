@@ -83,6 +83,44 @@ impl PumpFunTrader {
         Ok(holdings)
     }
 
+    /// Resolve the wallet's token account for `mint` with at most one on-chain
+    /// lookup. Serves from the in-memory cache when the account is already known
+    /// (populated by a prior buy/sell on this trader), otherwise performs a
+    /// single `get_all_token_accounts` scan and caches the result. Returns
+    /// `None` when the wallet holds no account for the mint.
+    ///
+    /// Hot-path callers (e.g. the TPSL sell retry loop) use this so repeated
+    /// attempts don't each re-scan the entire wallet — the lookup happens once
+    /// and every later attempt hits the cache (zero RPC).
+    pub async fn resolve_cached_token_account(
+        &self,
+        mint: &str,
+    ) -> anyhow::Result<Option<Pubkey>> {
+        if let Some(pk) = self.user_token_accounts.lock().await.get(mint).copied() {
+            return Ok(Some(pk));
+        }
+        // The scan already returns every holding in the wallet, so cache all of
+        // them in one pass instead of keeping only `mint`. A later lookup for
+        // any other held mint then hits the cache (zero RPC) rather than
+        // re-scanning the whole wallet. On-chain is the source of truth, so we
+        // overwrite any existing entries with the freshly-read accounts.
+        let holdings = self.get_all_token_accounts().await?;
+        let mut cache = self.user_token_accounts.lock().await;
+        let mut resolved = None;
+        for h in &holdings {
+            // A malformed token_account from a valid RPC response shouldn't
+            // happen; skip rather than fail the whole resolve if it does.
+            let Ok(pk) = Pubkey::from_str(&h.token_account) else {
+                continue;
+            };
+            if h.mint == mint {
+                resolved = Some(pk);
+            }
+            cache.insert(h.mint.clone(), pk);
+        }
+        Ok(resolved)
+    }
+
     /// Read the bonding curve's virtual reserves — `(virtual_token, virtual_quote)`
     /// in raw units (quote = lamports) — for slippage quoting on the curve path.
     /// Layout after the 8-byte Anchor discriminator: `virtual_token_reserves` @8,
@@ -115,40 +153,28 @@ impl PumpFunTrader {
         wallet: &str,
         mint: &str,
     ) -> anyhow::Result<crate::types::TokenBalance> {
-        // FIX: don't derive ATA — look up actual on-chain account
-        // Check cache first
-        let cached = self.user_token_accounts.lock().await.get(mint).copied();
-
-        let token_account_pk = match cached {
+        // FIX: don't derive ATA — look up actual on-chain account. Serve from
+        // the cache, or do a single wallet scan (which also warms the cache for
+        // every other held mint).
+        let token_account_pk = match self.resolve_cached_token_account(mint).await? {
             Some(pk) => pk,
             None => {
-                let holdings = self.get_all_token_accounts().await?;
-                match holdings.iter().find(|h| h.mint == mint) {
-                    Some(h) => Pubkey::from_str(&h.token_account)?,
-                    None => {
-                        // Truly not found
-                        return Ok(crate::types::TokenBalance {
-                            mint: mint.to_string(),
-                            wallet: wallet.to_string(),
-                            amount: 0,
-                            ui_amount: 0.0,
-                            decimals: 0,
-                            token_account: None,
-                            token_program_id: String::new(),
-                        });
-                    }
-                }
+                // Truly not found
+                return Ok(crate::types::TokenBalance {
+                    mint: mint.to_string(),
+                    wallet: wallet.to_string(),
+                    amount: 0,
+                    ui_amount: 0.0,
+                    decimals: 0,
+                    token_account: None,
+                    token_program_id: String::new(),
+                });
             }
         };
 
         match self.rpc.get_token_account_balance(&token_account_pk).await {
             Ok(ui_amount) => {
                 let amount: u64 = ui_amount.amount.parse().unwrap_or(0);
-                // Also cache it for future use
-                self.user_token_accounts
-                    .lock()
-                    .await
-                    .insert(mint.to_string(), token_account_pk);
                 Ok(crate::types::TokenBalance {
                     mint: mint.to_string(),
                     wallet: wallet.to_string(),
@@ -182,7 +208,10 @@ impl PumpFunTrader {
         let (bonding_curve, _) =
             Pubkey::find_program_address(&[b"bonding-curve", mint.as_ref()], &program_id);
 
-        let account = rpc.get_account(&bonding_curve).await?;
+        // Both reads are independent — fetch them concurrently (one round-trip
+        // instead of two) since this gates every manual buy/sell.
+        let (account, mint_account) =
+            tokio::try_join!(rpc.get_account(&bonding_curve), rpc.get_account(&mint))?;
         const COMPLETE_OFFSET: usize = 48;
         const CREATOR_OFFSET: usize = 49;
         if account.data.len() < CREATOR_OFFSET + 32 {
@@ -192,8 +221,6 @@ impl PumpFunTrader {
         let creator_bytes: [u8; 32] =
             account.data[CREATOR_OFFSET..CREATOR_OFFSET + 32].try_into()?;
         let creator = Pubkey::from(creator_bytes).to_string();
-
-        let mint_account = rpc.get_account(&mint).await?;
         let token_program_id = mint_account.owner.to_string();
 
         Ok(crate::types::BuyRouting {
@@ -266,8 +293,10 @@ impl PumpFunTrader {
         let (bonding_curve, _) =
             Pubkey::find_program_address(&[b"bonding-curve", mint.as_ref()], &program_id);
 
-        // Fetch account data
-        let account = rpc.get_account(&bonding_curve).await?;
+        // Fetch the bonding-curve and mint accounts concurrently — independent
+        // reads, so one round-trip instead of two.
+        let (account, mint_account) =
+            tokio::try_join!(rpc.get_account(&bonding_curve), rpc.get_account(&mint))?;
 
         // Parse creator from account data
         const CREATOR_OFFSET: usize = 49;
@@ -281,7 +310,6 @@ impl PumpFunTrader {
         // Derive all PDAs needed for sell
         let (bonding_curve_v2, _) =
             Pubkey::find_program_address(&[b"bonding-curve-v2", mint.as_ref()], &program_id);
-        let mint_account = rpc.get_account(&mint).await?;
         let token_program = mint_account.owner;
 
         let assoc_bonding_curve = get_associated_token_address_with_program_id(

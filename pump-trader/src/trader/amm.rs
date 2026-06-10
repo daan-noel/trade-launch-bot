@@ -608,16 +608,15 @@ impl PumpFunTrader {
 
     /// Current pool reserves = the base/quote vault token balances (raw units).
     async fn amm_reserves(&self, pool: &AmmPoolInfo) -> Result<(u128, u128)> {
-        let base = self
-            .rpc
-            .get_token_account_balance(&pool.pool_base_token_account)
-            .await
-            .context("read pool base reserve")?;
-        let quote = self
-            .rpc
-            .get_token_account_balance(&pool.pool_quote_token_account)
-            .await
-            .context("read pool quote reserve")?;
+        // Both vault balances are independent reads — fetch concurrently so a
+        // swap pays one round-trip for reserves instead of two.
+        let (base, quote) = tokio::try_join!(
+            self.rpc
+                .get_token_account_balance(&pool.pool_base_token_account),
+            self.rpc
+                .get_token_account_balance(&pool.pool_quote_token_account),
+        )
+        .context("read pool reserves")?;
         let base_res: u128 = base.amount.parse().unwrap_or(0);
         let quote_res: u128 = quote.amount.parse().unwrap_or(0);
         if base_res == 0 || quote_res == 0 {

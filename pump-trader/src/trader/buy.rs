@@ -31,6 +31,38 @@ impl PumpFunTrader {
         sol_amount: f64,
         slippage_bps: Option<u64>,
     ) -> Result<bool> {
+        self.buy_token_inner(token_mint, creator, token_program_id, sol_amount, slippage_bps, false)
+            .await
+    }
+
+    /// Latency-optimized buy for fresh-token snipes. Identical to [`buy_token`]
+    /// but skips the ATA-existence RPC round-trip. Safe only when the wallet
+    /// provably holds no account for `token_mint` yet — e.g. a token just seen
+    /// via the pump.fun create event — because the check would return "missing"
+    /// regardless. If that assumption is ever wrong, the only consequence is one
+    /// extra create-with-seed token account (a few thousand lamports of rent),
+    /// never a failed or misrouted trade.
+    pub async fn buy_token_snipe(
+        &self,
+        token_mint: &str,
+        creator: &str,
+        token_program_id: &str,
+        sol_amount: f64,
+        slippage_bps: Option<u64>,
+    ) -> Result<bool> {
+        self.buy_token_inner(token_mint, creator, token_program_id, sol_amount, slippage_bps, true)
+            .await
+    }
+
+    async fn buy_token_inner(
+        &self,
+        token_mint: &str,
+        creator: &str,
+        token_program_id: &str,
+        sol_amount: f64,
+        slippage_bps: Option<u64>,
+        skip_ata_check: bool,
+    ) -> Result<bool> {
         let t0 = Instant::now();
         let buy_lamports = (sol_amount * LAMPORTS_PER_SOL as f64) as u64;
         let keypair = &self.config.keypair;
@@ -71,13 +103,19 @@ impl PumpFunTrader {
                 },
             );
 
-            // Check if ATA exists
+            // Check if ATA exists. On the snipe path the wallet provably holds
+            // no account for this just-created mint, so we skip the RPC and go
+            // straight to the seed-account (template) path.
             let ata = get_associated_token_address_with_program_id(
                 &keypair.pubkey(),
                 &mint,
                 &token_program,
             );
-            let ata_exists = self.rpc.get_account(&ata).await.is_ok();
+            let ata_exists = if skip_ata_check {
+                false
+            } else {
+                self.rpc.get_account(&ata).await.is_ok()
+            };
 
             // FIX: acquire template ONCE, use same address for both create ix and buy ix
             let (user_token_account, template_opt) = if ata_exists {
