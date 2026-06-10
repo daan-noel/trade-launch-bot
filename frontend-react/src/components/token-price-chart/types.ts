@@ -185,6 +185,15 @@ export interface ChartRangeSelection {
   hi: number;
 }
 
+/** A committed range selection plus the grouping context needed to map it back
+ *  to trades: `lo`/`hi` are bucket-start seconds in time mode, slot numbers in
+ *  slot mode. Emitted by {@link TokenPriceChartProps.onRangeChange}. */
+export interface ChartRangeSelectionDetail extends ChartRangeSelection {
+  groupMode: ChartGroupMode;
+  /** Bar interval (seconds) when `groupMode` is `time`; unused in slot mode. */
+  intervalSec: number;
+}
+
 /** Tooltip shown when the crosshair hovers the range-selection label chip. */
 export interface ChartRangeTooltipState {
   stats: ChartRangeStats;
@@ -253,6 +262,9 @@ export interface TokenPriceChartProps {
   onBarClick?: (selection: ChartBarSelection | null) => void;
   /** Highlights the clicked bar/candle on the main series. */
   selectedBar?: ChartBarSelection | null;
+  /** Fired when the drag-selected time range changes; null clears it. Carries
+   *  the grouping context so the consumer can filter trades to the range. */
+  onRangeChange?: (range: ChartRangeSelectionDetail | null) => void;
   /** Swing detection legs to draw as an overlay line. */
   swingOverlay?: ChartSwingOverlay | null;
   /** Longest swing chain to highlight as a translucent band (after batch detection). */

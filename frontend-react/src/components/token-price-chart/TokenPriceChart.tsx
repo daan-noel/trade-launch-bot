@@ -461,6 +461,7 @@ export function TokenPriceChart({
   height = 320,
   onBarClick,
   selectedBar = null,
+  onRangeChange,
   swingOverlay = null,
   highlightChain = null,
   selectedSwingLegKey = null,
@@ -479,6 +480,8 @@ export function TokenPriceChart({
   const chartRef = useRef<IChartApi | null>(null);
   const onBarClickRef = useRef(onBarClick);
   onBarClickRef.current = onBarClick;
+  const onRangeChangeRef = useRef(onRangeChange);
+  onRangeChangeRef.current = onRangeChange;
   const onSwingLegClickRef = useRef(onSwingLegClick);
   onSwingLegClickRef.current = onSwingLegClick;
   const selectedSwingLegKeyRef = useRef(selectedSwingLegKey);
@@ -1309,6 +1312,17 @@ export function TokenPriceChart({
       dashed: false,
     });
   }, [selectedRange, rangeStats, rangeSelectMode, showChart, style, groupingKey, bars]);
+
+  // Surface the committed range (with grouping context) to the parent so it can
+  // list the range's trades below the chart. `selectedRange` is reset to null on
+  // id/grouping changes, so this also clears the parent's selection on those.
+  useEffect(() => {
+    onRangeChangeRef.current?.(
+      selectedRange
+        ? { lo: selectedRange.lo, hi: selectedRange.hi, groupMode, intervalSec }
+        : null,
+    );
+  }, [selectedRange, groupMode, intervalSec]);
 
   // Drag-to-select a time range. Active only in range-select mode: disable the
   // chart's pan/zoom so a horizontal drag draws a band instead of scrolling,

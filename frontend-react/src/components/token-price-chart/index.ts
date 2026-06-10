@@ -55,6 +55,7 @@ export type {
   ChartSwingOverlay,
   ChartChainHighlight,
   ChartRangeSelection,
+  ChartRangeSelectionDetail,
   ChartRangeStats,
   ChartRangeTooltipState,
   ProfileWalletInfo,
