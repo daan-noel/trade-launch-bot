@@ -240,6 +240,102 @@ impl TradeRepo {
         Ok(balance)
     }
 
+    /// Peak and most-recent `real_sol_reserves` (SOL) for a mint across its whole
+    /// trade history (curve + post-migration AMM). Returns `None` when no trade
+    /// carries a reserve snapshot. A latest value far below the peak means the
+    /// SOL backing was drained — the spoof-proof signature of a rug, since wash
+    /// trades between many wallets net ~zero SOL and cannot inflate real reserves.
+    pub async fn real_sol_reserve_extremes(
+        &self,
+        mint: &str,
+    ) -> anyhow::Result<Option<(f64, f64)>> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            peak: Option<f64>,
+            latest: Option<f64>,
+        }
+        let row = sqlx::query_as::<_, Row>(
+            r#"
+            SELECT
+              (SELECT MAX(real_sol_reserves) FROM trades
+                 WHERE mint_address = $1 AND real_sol_reserves IS NOT NULL) AS peak,
+              (SELECT real_sol_reserves FROM trades
+                 WHERE mint_address = $1 AND real_sol_reserves IS NOT NULL
+                 ORDER BY slot DESC, block_time DESC, leg_index DESC
+                 LIMIT 1) AS latest
+            "#,
+        )
+        .bind(mint)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(match (row.peak, row.latest) {
+            (Some(peak), Some(latest)) => Some((peak, latest)),
+            _ => None,
+        })
+    }
+
+    /// Token flow for the *early-buyer cohort* — every wallet that bought within
+    /// `slot_window` slots of the token's first trade (launch snipers / bundlers).
+    /// Returns `(cohort_bought, cohort_net, total_bought)` in token units:
+    /// `cohort_bought` is everything the cohort ever bought, `cohort_net` is its
+    /// buys minus sells, and `total_bought` is the mint's whole buy volume (to
+    /// judge whether the cohort actually controlled the launch). A dominant
+    /// cohort whose net has collapsed to ~zero is the multi-wallet rug signature
+    /// that a single-creator check misses.
+    pub async fn early_buyer_cohort_net(
+        &self,
+        mint: &str,
+        slot_window: i64,
+    ) -> anyhow::Result<(f64, f64, f64)> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            cohort_bought: f64,
+            cohort_net: f64,
+            total_bought: f64,
+        }
+        let row = sqlx::query_as::<_, Row>(
+            r#"
+            WITH first_slot AS (
+                SELECT MIN(slot) AS s0 FROM trades WHERE mint_address = $1
+            ),
+            cohort AS (
+                SELECT DISTINCT t.wallet_address
+                FROM trades t, first_slot
+                WHERE t.mint_address = $1
+                  AND t.trade_type = 'buy'
+                  AND t.slot <= first_slot.s0 + $2
+            )
+            SELECT
+              COALESCE((
+                SELECT SUM(CASE WHEN trade_type = 'buy' THEN token_amount ELSE 0 END)
+                FROM trades
+                WHERE mint_address = $1
+                  AND wallet_address IN (SELECT wallet_address FROM cohort)
+              ), 0.0) AS cohort_bought,
+              COALESCE((
+                SELECT SUM(CASE WHEN trade_type = 'buy' THEN token_amount
+                                WHEN trade_type = 'sell' THEN -token_amount
+                                ELSE 0 END)
+                FROM trades
+                WHERE mint_address = $1
+                  AND wallet_address IN (SELECT wallet_address FROM cohort)
+              ), 0.0) AS cohort_net,
+              COALESCE((
+                SELECT SUM(CASE WHEN trade_type = 'buy' THEN token_amount ELSE 0 END)
+                FROM trades
+                WHERE mint_address = $1
+              ), 0.0) AS total_bought
+            "#,
+        )
+        .bind(mint)
+        .bind(slot_window)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok((row.cohort_bought, row.cohort_net, row.total_bought))
+    }
+
     /// Aggregate stats (count, volume, last_trade_at) for every token in one query.
     /// Returns rows as (mint_address, trade_count, volume_sol_total, last_trade_at, market_cap, current_virtual_token_reserves).
     pub async fn load_all_aggregates(

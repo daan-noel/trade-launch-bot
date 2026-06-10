@@ -2,7 +2,10 @@ use chrono::Utc;
 use tracing::warn;
 
 use crate::{
-    config::constants::RUGGED_STALE_SECONDS,
+    config::constants::{
+        RUGGED_COHORT_EXIT_RATIO, RUGGED_COHORT_MIN_SHARE, RUGGED_EARLY_SLOT_WINDOW,
+        RUGGED_MIN_PEAK_SOL, RUGGED_RESERVE_DRAWDOWN_RATIO, RUGGED_STALE_SECONDS,
+    },
     ingest::db_writer::TokenMetricsWrite,
     state::token_cache::TokenState,
     storage::repositories::trade_repo::TradeRepo,
@@ -42,6 +45,17 @@ pub fn metrics_from_state(mint: &str, state: &TokenState, recompute_rugged: bool
     }
 }
 
+/// Decide whether a token is rugged. All signals are gated behind staleness — an
+/// actively trading token is never flagged — and any one of them is sufficient.
+///
+/// 1. **Liquidity collapse** (spoof-proof): real SOL reserves crashed from their
+///    peak. Wash trading across many wallets nets ~zero SOL, so it cannot mask
+///    this; covers both bonding-curve and post-migration AMM rugs.
+/// 2. **Early-buyer cohort exit**: the launch sniper/bundler cohort that
+///    controlled the token has dumped almost everything it bought. Generalises
+///    the legacy single-creator check to the whole insider cluster, defeating
+///    the "40-50 wallets doing fake trades" pattern.
+/// 3. **Creator dump** (legacy): the creator wallet itself net-sold everything.
 pub async fn compute_is_rugged(trade_repo: &TradeRepo, m: &TokenMetricsWrite) -> bool {
     let last_trade_at = match m.last_trade_at {
         Some(ts) => ts,
@@ -56,6 +70,35 @@ pub async fn compute_is_rugged(trade_repo: &TradeRepo, m: &TokenMetricsWrite) ->
         return false;
     }
 
+    // ── Signal 1: liquidity collapse ─────────────────────────────────────────
+    match trade_repo.real_sol_reserve_extremes(&m.mint).await {
+        Ok(Some((peak, latest))) => {
+            if peak >= RUGGED_MIN_PEAK_SOL && latest <= peak * RUGGED_RESERVE_DRAWDOWN_RATIO {
+                return true;
+            }
+        }
+        Ok(None) => {}
+        Err(err) => warn!("rugged reserve check {}: {err}", m.mint),
+    }
+
+    // ── Signal 2: early-buyer cohort exit ────────────────────────────────────
+    match trade_repo
+        .early_buyer_cohort_net(&m.mint, RUGGED_EARLY_SLOT_WINDOW)
+        .await
+    {
+        Ok((cohort_bought, cohort_net, total_bought)) => {
+            let dominant =
+                total_bought > 0.0 && cohort_bought >= total_bought * RUGGED_COHORT_MIN_SHARE;
+            let exited =
+                cohort_bought > 0.0 && cohort_net <= cohort_bought * RUGGED_COHORT_EXIT_RATIO;
+            if dominant && exited {
+                return true;
+            }
+        }
+        Err(err) => warn!("rugged cohort check {}: {err}", m.mint),
+    }
+
+    // ── Signal 3: creator wallet dump (legacy) ───────────────────────────────
     if m.creator_wallet.is_empty() {
         return false;
     }

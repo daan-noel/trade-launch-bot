@@ -166,6 +166,37 @@ pub fn total_supply_for(is_mayhem_mode: bool) -> f64 {
 /// How long a token can go without a price change before being considered rugged.
 pub const RUGGED_STALE_SECONDS: i64 = 3600; // 1 hour
 
+// ── Rug detection signals ───────────────────────────────────────────────────
+// All signals below are gated behind `RUGGED_STALE_SECONDS`: an actively trading
+// token is never flagged. They are evaluated in order and any one is sufficient.
+
+/// Signal 1 — liquidity collapse. A stale token is rugged when its most recent
+/// `real_sol_reserves` has fallen to this fraction of its all-time peak. Real
+/// SOL reserves cannot be inflated by wash trading across many wallets (a buy
+/// adds SOL, the matching wash-sell removes it, net ≈ 0), so this is the single
+/// most spoof-proof signal and covers both curve and post-migration AMM rugs.
+pub const RUGGED_RESERVE_DRAWDOWN_RATIO: f64 = 0.10;
+
+/// Minimum peak `real_sol_reserves` (SOL) a token must have reached before the
+/// liquidity-collapse signal applies. Tokens that never attracted real SOL are
+/// "dead", not "rugged", and are left to the other signals.
+pub const RUGGED_MIN_PEAK_SOL: f64 = 2.0;
+
+/// Signal 2 — early-buyer cohort exit. Wallets that bought within this many slots
+/// of a token's first trade are treated as the launch sniper / bundler cohort
+/// (Solana slots are ≈400 ms, so ~150 ≈ the first minute).
+pub const RUGGED_EARLY_SLOT_WINDOW: i64 = 150;
+
+/// The early-buyer cohort signal only fires when that cohort controlled the
+/// launch, i.e. its share of total buy volume is at least this fraction. Stops a
+/// handful of tiny early buyers exiting from flagging an otherwise healthy token.
+pub const RUGGED_COHORT_MIN_SHARE: f64 = 0.30;
+
+/// The early-buyer cohort counts as having exited when its net holdings fall to
+/// this fraction of everything it ever bought. Generalises the single-creator
+/// dump check to the whole insider cluster, defeating multi-wallet spoofing.
+pub const RUGGED_COHORT_EXIT_RATIO: f64 = 0.05;
+
 /// A silence longer than this between consecutive trades marks the token going
 /// quiet. Trailing trades after such a gap are stripped when computing a token's
 /// active lifetime, so a lone late trade hours after death doesn't inflate it.
