@@ -608,17 +608,24 @@ impl PumpFunTrader {
 
     /// Current pool reserves = the base/quote vault token balances (raw units).
     async fn amm_reserves(&self, pool: &AmmPoolInfo) -> Result<(u128, u128)> {
-        // Both vault balances are independent reads — fetch concurrently so a
-        // swap pays one round-trip for reserves instead of two.
-        let (base, quote) = tokio::try_join!(
-            self.rpc
-                .get_token_account_balance(&pool.pool_base_token_account),
-            self.rpc
-                .get_token_account_balance(&pool.pool_quote_token_account),
-        )
-        .context("read pool reserves")?;
-        let base_res: u128 = base.amount.parse().unwrap_or(0);
-        let quote_res: u128 = quote.amount.parse().unwrap_or(0);
+        // Both vault balances in a single request (getMultipleAccounts). Read the
+        // raw SPL `amount` (u64 @ offset 64, after mint[32] + owner[32]) — the base
+        // token-account layout is identical for Token and Token-2022.
+        let accounts = self
+            .rpc
+            .get_multiple_accounts(&[
+                pool.pool_base_token_account,
+                pool.pool_quote_token_account,
+            ])
+            .await
+            .context("read pool reserves")?;
+        let [base, quote]: [Option<_>; 2] = accounts
+            .try_into()
+            .map_err(|_| anyhow!("getMultipleAccounts returned an unexpected count"))?;
+        let base = base.context("pool base vault not found")?;
+        let quote = quote.context("pool quote vault not found")?;
+        let base_res = read_u64(&base.data, 64)? as u128;
+        let quote_res = read_u64(&quote.data, 64)? as u128;
         if base_res == 0 || quote_res == 0 {
             bail!("PumpSwap pool has zero reserves");
         }
@@ -794,4 +801,187 @@ fn read_u64(data: &[u8], off: usize) -> Result<u64> {
         bail!("account data too short for u64 at offset {}", off);
     }
     Ok(u64::from_le_bytes(data[off..end].try_into().unwrap()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{read_u64, AmmGlobalConfig, AmmPoolInfo, PumpFunTrader, BUY_DISC, SELL_DISC};
+    use crate::constants::{
+        COMPUTE_UNIT_LIMIT, COMPUTE_UNIT_PRICE_MICRO_LAMPORTS, TOKEN_2022_PROGRAM_ID,
+        TOKEN_PROGRAM_ID, WSOL_MINT,
+    };
+    use crate::trader::TraderConfig;
+    use solana_sdk::{
+        compute_budget::ComputeBudgetInstruction, instruction::Instruction, message::Message,
+        pubkey::Pubkey, signature::Keypair, system_instruction,
+    };
+    use spl_associated_token_account::{
+        get_associated_token_address_with_program_id,
+        instruction::create_associated_token_account_idempotent,
+    };
+    use std::str::FromStr;
+    use std::sync::Arc;
+
+    /// Hard Solana transaction wire-size limit (bytes).
+    const TX_LIMIT: usize = 1232;
+
+    #[test]
+    fn token_account_amount_lives_at_offset_64() {
+        // SPL / Token-2022 token account base layout: mint[0..32], owner[32..64],
+        // amount: u64 LE @ 64. `amm_reserves` reads vault balances from this offset.
+        let mut data = vec![0u8; 165];
+        let amount: u64 = 987_654_321;
+        data[64..72].copy_from_slice(&amount.to_le_bytes());
+        assert_eq!(read_u64(&data, 64).unwrap(), amount);
+    }
+
+    #[test]
+    fn read_u64_rejects_short_buffer() {
+        assert!(read_u64(&[0u8; 40], 64).is_err());
+    }
+
+    // --- AMM swap transaction-size guards -------------------------------------
+    //
+    // Build the worst-case (cashback coin, Token-2022 base) AMM buy/sell with the
+    // REAL account list (`amm_swap_accounts`) + the real wrapper instructions, and
+    // measure the on-wire size. These lock in the nonce-vs-blockhash decision:
+    //   - the sell (durable nonce) must stay under the limit;
+    //   - the buy fits with a recent blockhash but NOT with a nonce-advance —
+    //     which is exactly why `amm_buy` uses a recent blockhash.
+
+    fn dummy_trader() -> PumpFunTrader {
+        let config = Arc::new(TraderConfig {
+            rpc_url: "http://localhost".into(),
+            helius_sender_url: "http://localhost".into(),
+            keypair: Keypair::new(),
+            nonce_accounts: vec![Pubkey::new_unique().to_string()],
+        });
+        PumpFunTrader::new(config)
+    }
+
+    fn cfg() -> AmmGlobalConfig {
+        AmmGlobalConfig {
+            lp_fee_bps: 20,
+            protocol_fee_bps: 5,
+            coin_creator_fee_bps: 5,
+            protocol_fee_recipient: Pubkey::new_unique(),
+        }
+    }
+
+    /// Worst case for tx size: a cashback coin (largest swap account list) with a
+    /// Token-2022 base program (distinct from the legacy quote program, so the two
+    /// token-program accounts don't dedup).
+    fn worst_case_pool() -> AmmPoolInfo {
+        AmmPoolInfo {
+            pool: Pubkey::new_unique(),
+            base_mint: Pubkey::new_unique(),
+            quote_mint: Pubkey::from_str(WSOL_MINT).unwrap(),
+            base_token_program: Pubkey::from_str(TOKEN_2022_PROGRAM_ID).unwrap(),
+            pool_base_token_account: Pubkey::new_unique(),
+            pool_quote_token_account: Pubkey::new_unique(),
+            coin_creator: Pubkey::new_unique(),
+            is_cashback_coin: true,
+            fee_share_marker: None,
+        }
+    }
+
+    fn compute_budget_ixs() -> Vec<Instruction> {
+        vec![
+            ComputeBudgetInstruction::set_compute_unit_limit(COMPUTE_UNIT_LIMIT),
+            ComputeBudgetInstruction::set_compute_unit_price(COMPUTE_UNIT_PRICE_MICRO_LAMPORTS),
+        ]
+    }
+
+    fn build_buy_ixs(t: &PumpFunTrader, user: &Pubkey) -> Vec<Instruction> {
+        let legacy = Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap();
+        let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
+        let pool = worst_case_pool();
+        let user_base =
+            get_associated_token_address_with_program_id(user, &pool.base_mint, &pool.base_token_program);
+        let user_quote = get_associated_token_address_with_program_id(user, &wsol, &legacy);
+        let mut ixs = compute_budget_ixs();
+        ixs.push(create_associated_token_account_idempotent(
+            user,
+            user,
+            &pool.base_mint,
+            &pool.base_token_program,
+        ));
+        ixs.push(create_associated_token_account_idempotent(user, user, &wsol, &legacy));
+        ixs.push(system_instruction::transfer(user, &user_quote, 1_000_000));
+        ixs.push(spl_token::instruction::sync_native(&legacy, &user_quote).unwrap());
+        let mut data = BUY_DISC.to_vec();
+        data.extend_from_slice(&0u64.to_le_bytes()); // base_amount_out
+        data.extend_from_slice(&0u64.to_le_bytes()); // max_quote_amount_in
+        data.push(1); // track_volume
+        ixs.push(Instruction {
+            program_id: t.pump_swap_program,
+            accounts: t.amm_swap_accounts(&pool, user, &cfg(), user_base, user_quote, legacy, true),
+            data,
+        });
+        ixs.push(spl_token::instruction::close_account(&legacy, &user_quote, user, user, &[]).unwrap());
+        ixs.push(system_instruction::transfer(user, &Pubkey::new_unique(), 200_000)); // jito tip
+        ixs
+    }
+
+    fn build_sell_ixs(t: &PumpFunTrader, user: &Pubkey) -> Vec<Instruction> {
+        let legacy = Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap();
+        let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
+        let pool = worst_case_pool();
+        let user_base =
+            get_associated_token_address_with_program_id(user, &pool.base_mint, &pool.base_token_program);
+        let user_quote = get_associated_token_address_with_program_id(user, &wsol, &legacy);
+        let mut ixs = compute_budget_ixs();
+        ixs.push(create_associated_token_account_idempotent(user, user, &wsol, &legacy));
+        let mut data = SELL_DISC.to_vec();
+        data.extend_from_slice(&0u64.to_le_bytes()); // base_amount_in
+        data.extend_from_slice(&0u64.to_le_bytes()); // min_quote_amount_out
+        ixs.push(Instruction {
+            program_id: t.pump_swap_program,
+            accounts: t.amm_swap_accounts(&pool, user, &cfg(), user_base, user_quote, legacy, false),
+            data,
+        });
+        ixs.push(spl_token::instruction::close_account(&legacy, &user_quote, user, user, &[]).unwrap());
+        ixs.push(system_instruction::transfer(user, &Pubkey::new_unique(), 200_000)); // jito tip
+        ixs
+    }
+
+    fn wire_size(msg: &Message) -> usize {
+        // 1-byte signature count (compact-u16, 1 sig) + 64 B per signature + message.
+        1 + 64 * msg.header.num_required_signatures as usize + msg.serialize().len()
+    }
+
+    #[test]
+    fn cashback_amm_sell_with_nonce_fits() {
+        let t = dummy_trader();
+        let user = Pubkey::new_unique();
+        let nonce = Pubkey::new_unique();
+        let msg = Message::new_with_nonce(build_sell_ixs(&t, &user), Some(&user), &nonce, &user);
+        let size = wire_size(&msg);
+        eprintln!("worst-case AMM sell + nonce     = {size} B (limit {TX_LIMIT})");
+        assert!(size <= TX_LIMIT, "cashback AMM sell + nonce = {size} B (limit {TX_LIMIT})");
+    }
+
+    #[test]
+    fn cashback_amm_buy_with_blockhash_fits() {
+        let t = dummy_trader();
+        let user = Pubkey::new_unique();
+        let msg = Message::new(&build_buy_ixs(&t, &user), Some(&user));
+        let size = wire_size(&msg);
+        eprintln!("worst-case AMM buy  + blockhash = {size} B (limit {TX_LIMIT})");
+        assert!(size <= TX_LIMIT, "cashback AMM buy + blockhash = {size} B (limit {TX_LIMIT})");
+    }
+
+    #[test]
+    fn cashback_amm_buy_with_nonce_overflows() {
+        // The justification for `amm_buy` using a recent blockhash, not a durable
+        // nonce: the nonce-advance's extra accounts push the largest buy over the
+        // limit. If this ever stops being true, revisit `build_recent_tx`.
+        let t = dummy_trader();
+        let user = Pubkey::new_unique();
+        let nonce = Pubkey::new_unique();
+        let msg = Message::new_with_nonce(build_buy_ixs(&t, &user), Some(&user), &nonce, &user);
+        let size = wire_size(&msg);
+        eprintln!("worst-case AMM buy  + nonce     = {size} B (limit {TX_LIMIT})");
+        assert!(size > TX_LIMIT, "expected cashback AMM buy + nonce > {TX_LIMIT}, got {size} B");
+    }
 }

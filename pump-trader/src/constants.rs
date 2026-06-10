@@ -86,6 +86,13 @@ pub const NONCE_WAIT_SLEEP_MS: u64 = 20;
 /// trade path re-reads on-chain. 3 s.
 pub const RESERVE_CACHE_MAX_AGE_MS: u64 = 3_000;
 
+/// Background refresh interval for the recent-blockhash cache, in milliseconds.
+pub const BLOCKHASH_REFRESH_MS: u64 = 2_000;
+/// Max age of a cached recent blockhash still used on the AMM buy path before a
+/// fresh fetch. Well inside a blockhash's ~60-90 s validity, so a built tx never
+/// rides an expired hash even if the refresher briefly stalls.
+pub const BLOCKHASH_CACHE_MAX_AGE_MS: u64 = 10_000;
+
 
 // ---------------------------------------------------------------------------
 // PumpSwap AMM (migrated tokens)

@@ -28,6 +28,7 @@
 // ============================================================
 
 mod amm;
+mod blockhash;
 mod buy;
 mod init;
 mod nonce;
@@ -37,6 +38,7 @@ mod reserves;
 mod sell;
 mod tx;
 
+use blockhash::BlockhashCache;
 use reserves::ReserveCache;
 
 use crate::constants::{
@@ -195,6 +197,10 @@ pub struct PumpFunTrader {
     // WS-fed live reserve snapshots (mint → latest post-trade reserves), read on
     // the slippage / AMM-reserve hot path with an on-chain fallback.
     reserve_cache: Arc<ReserveCache>,
+
+    // Background-refreshed recent blockhash for the AMM buy path (which can't use
+    // a durable nonce — see `build_recent_tx`).
+    blockhash_cache: Arc<BlockhashCache>,
 }
 
 impl PumpFunTrader {
@@ -241,6 +247,7 @@ impl PumpFunTrader {
             user_token_accounts: Arc::new(Mutex::new(HashMap::new())),
             token_pdas: Arc::new(Mutex::new(HashMap::new())),
             reserve_cache: Arc::new(ReserveCache::default()),
+            blockhash_cache: Arc::new(BlockhashCache::default()),
         }
     }
 

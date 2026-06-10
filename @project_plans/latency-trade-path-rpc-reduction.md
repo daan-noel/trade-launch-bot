@@ -367,3 +367,134 @@ hanging the position.
 - `backend/src/strategies/tpsl/service_tpsl.rs` — routing re-read inside the exit
   retry loop.
 - `backend/src/strategies/tpsl_sniper_1/service_tpsl.rs` — same.
+
+---
+
+# Phase 4 — true `getMultipleAccounts` batching
+
+**Date:** 2026-06-10
+**Goal:** Collapse the paired reads that Phase 1 only *parallelized* into a single
+RPC request.
+
+## Context (what Phase 1 actually did)
+
+Phase 1 used `tokio::try_join!` on the independent read pairs — that runs them
+**concurrently** (≈ 1 RTT) but still sends **two** requests. Phase 4 upgrades
+those pairs to one `getMultipleAccounts` call: same ~1 RTT, but a single request
+(half the request count / RPC-quota, one fewer connection's overhead).
+
+## Changes
+
+- **`resolve_buy_routing`** (query.rs) — `[bonding_curve, mint]` →
+  `get_multiple_accounts` (one request). Gates every manual buy/sell.
+- **`get_creator_from_mint_pda`** (query.rs) — same `[bonding_curve, mint]` pair.
+- **`amm_reserves`** (amm.rs) — `[base_vault, quote_vault]` →
+  `get_multiple_accounts`, reading the raw SPL `amount` (u64 LE @ **offset 64**,
+  after `mint[32] + owner[32]`) via the existing `read_u64` helper. Replaces the
+  two `get_token_account_balance` calls. Layout is identical for Token and
+  Token-2022, so it covers both vault kinds.
+
+Result count is validated (`Vec → [Option<Account>; 2]`), and a missing account
+errors explicitly (same outcome as the old per-account read failing).
+
+## Why it's safe
+
+- Routing/creator: `getMultipleAccounts` returns the same `Account` objects the
+  old `get_account` calls did — byte-identical parsing, no decode change.
+- `amm_reserves`: the only new assumption is the SPL `amount` offset (64). It's
+  the well-known token-account layout and is now pinned by a unit test
+  (`token_account_amount_lives_at_offset_64`). `amm_reserves` is also behind the
+  Phase-2 cache, so it's a cold-path read, not the common case.
+
+## Verification
+- `cargo test -p pump-trader --lib` → **8/8** pass (6 reserve-cache + 2 new
+  token-account-offset tests).
+- `cargo check -p backend` → clean (public signatures unchanged).
+
+### Files touched (Phase 4)
+- `pump-trader/src/trader/query.rs` — `resolve_buy_routing`,
+  `get_creator_from_mint_pda` → `getMultipleAccounts`.
+- `pump-trader/src/trader/amm.rs` — `amm_reserves` → `getMultipleAccounts` +
+  offset-64 read; offset unit tests.
+
+---
+
+## Status of the original future-work list
+
+1. WS-fed reserve cache (curve + AMM) — **done (Phase 2)**.
+2. AMM pool/config pre-warm on migration — **done (Phase 2)**.
+3. `getMultipleAccounts` batching — **done (Phase 4)**.
+4. Background blockhash cache — **done (Phase 5)**.
+
+---
+
+# Phase 5 — nonce-vs-blockhash investigation + background blockhash cache
+
+**Date:** 2026-06-10
+
+## The question
+
+Why does `amm_buy` use a recent blockhash while `amm_sell` uses a durable nonce —
+and is the nonce size limit (claimed earlier) actually real? (Note: *both* manual
+and TPSL AMM **sells** use the nonce path; only the **buy** uses a blockhash, and
+TPSL never AMM-buys — it buys on the curve, sells on AMM.)
+
+## Measured answer (regression-guarded)
+
+Built the **worst-case** AMM swaps (cashback coin + Token-2022 base — the largest
+account list, no token-program dedup) from the **real** `amm_swap_accounts` + real
+wrapper instructions, and measured the on-wire size (`amm::tests`):
+
+| Tx | Size | vs 1232-byte limit |
+|---|---|---|
+| AMM **sell** + durable nonce | **1179 B** | fits (53 B headroom) |
+| AMM **buy** + recent blockhash | **1171 B** | fits (61 B headroom) |
+| AMM **buy** + durable nonce | **1245 B** | **over by 13 B** ✗ |
+
+So the limit is **real**: a nonce-advance (+2 accounts ≈ +74 B) pushes the largest
+buy past 1232. `amm_buy` must keep the recent blockhash; `amm_sell` is correctly
+on the nonce. These three measurements are now assertions (`cashback_amm_*`), so
+adding an account to the swap that would break either live path fails CI.
+
+## Decision
+
+Don't switch the buy to a nonce. Instead remove its per-buy `getLatestBlockhash`
+RPC with a **background blockhash cache** — same latency win as a nonce, zero size
+risk, no expiry risk.
+
+## What was implemented
+
+- **`BlockhashCache`** (new, `pump-trader/src/trader/blockhash.rs`) — `Mutex<Option<(Hash,
+  Instant)>>`; `store` / `get_fresh(max_age)`.
+- A **background refresher** spawned in `initialize()` primes the cache once, then
+  refreshes every `BLOCKHASH_REFRESH_MS` (2 s).
+- **`build_recent_tx`** reads the cache when fresh (`BLOCKHASH_CACHE_MAX_AGE_MS` =
+  10 s, well inside a blockhash's ~60–90 s validity) and falls back to a live
+  `getLatestBlockhash` otherwise — so a tx never rides an expired hash.
+
+Effect: **manual AMM buys** drop their last per-trade RPC (`getLatestBlockhash`) →
+served from cache. (TPSL is unaffected — it never AMM-buys — but the manual side
+is now ~0-RPC on ready-time too.)
+
+## Verification
+- `cargo test -p pump-trader --lib` → **11/11** pass (6 reserve-cache + 2
+  token-account-offset + 3 tx-size guards).
+- `cargo test -p backend --bins` → **19/19** pass (1 ignored, network-gated).
+
+### Files touched (Phase 5)
+- `pump-trader/src/trader/blockhash.rs` — **new** `BlockhashCache`.
+- `pump-trader/src/trader/mod.rs` — cache field + module.
+- `pump-trader/src/trader/init.rs` — prime + background refresher.
+- `pump-trader/src/trader/tx.rs` — `build_recent_tx` cache-first + fallback.
+- `pump-trader/src/trader/amm.rs` — tx-size guard tests.
+- `pump-trader/src/constants.rs` — `BLOCKHASH_REFRESH_MS`, `BLOCKHASH_CACHE_MAX_AGE_MS`.
+
+---
+
+## All four items complete
+
+Across Phases 1–5, the original ready-time RPCs are gone for actively-traded
+tokens: routing/account/reserve reads are cached or batched, AMM pools pre-warm on
+first AMM trade, the exit path self-heals across migration, and the AMM buy's
+blockhash is cached. Remaining latency now lives in **send/landing** (Jito tip,
+sender, leader targeting) — a separate area, not ready-time.

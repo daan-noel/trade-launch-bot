@@ -8,8 +8,9 @@
 
 use super::{GlobalAccount, NonceSlot, PumpFunTrader};
 use crate::constants::{
-    BUY_SEED_POOL_SIZE, COMPUTE_UNIT_LIMIT, COMPUTE_UNIT_PRICE_MICRO_LAMPORTS, JITO_TIP_ACCOUNTS,
-    LAMPORTS_PER_SOL, MIN_JITO_TIP_SOL, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID,
+    BLOCKHASH_REFRESH_MS, BUY_SEED_POOL_SIZE, COMPUTE_UNIT_LIMIT,
+    COMPUTE_UNIT_PRICE_MICRO_LAMPORTS, JITO_TIP_ACCOUNTS, LAMPORTS_PER_SOL, MIN_JITO_TIP_SOL,
+    TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID,
 };
 use anyhow::{Context, Result};
 use rand::seq::SliceRandom;
@@ -17,7 +18,8 @@ use solana_sdk::system_instruction;
 use solana_sdk::{compute_budget::ComputeBudgetInstruction, pubkey::Pubkey, signature::Signer};
 use std::collections::HashSet;
 use std::str::FromStr;
-use tracing::info;
+use std::time::Duration;
+use tracing::{info, warn};
 
 impl PumpFunTrader {
     // -----------------------------------------------------------------------
@@ -96,6 +98,27 @@ impl PumpFunTrader {
         self.fill_buy_pool(TOKEN_PROGRAM_ID).await?;
         self.fill_buy_pool(TOKEN_2022_PROGRAM_ID).await?;
         info!("✅ Buy seed pools ready");
+
+        // 8. Recent-blockhash refresher for the AMM buy path. Prime it once now so
+        // the first AMM buy is already warm, then refresh in the background.
+        match self.rpc.get_latest_blockhash().await {
+            Ok(hash) => self.blockhash_cache.store(hash),
+            Err(e) => warn!("Initial blockhash fetch failed: {e}"),
+        }
+        {
+            let rpc = self.rpc.clone();
+            let cache = self.blockhash_cache.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(BLOCKHASH_REFRESH_MS)).await;
+                    match rpc.get_latest_blockhash().await {
+                        Ok(hash) => cache.store(hash),
+                        Err(e) => warn!("Blockhash refresh failed: {e}"),
+                    }
+                }
+            });
+        }
+        info!("✅ Blockhash refresher started");
 
         info!(
             "🚀 PumpFunTrader ready — wallet: {}",

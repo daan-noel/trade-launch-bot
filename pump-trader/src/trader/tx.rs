@@ -9,7 +9,7 @@
 // ============================================================
 
 use super::PumpFunTrader;
-use crate::constants::CONFIRM_POLL_MS;
+use crate::constants::{BLOCKHASH_CACHE_MAX_AGE_MS, CONFIRM_POLL_MS};
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose, Engine as _};
 use serde_json::json;
@@ -44,20 +44,30 @@ impl PumpFunTrader {
         Ok(tx)
     }
 
-    /// Build + sign a legacy tx against a freshly-fetched recent blockhash
-    /// (no durable nonce). Used for AMM swaps, whose ~27-account instruction
-    /// would otherwise overflow the 1232-byte tx limit once a nonce-advance
-    /// (+2 accounts) is prepended. Not for the latency-critical snipe path.
+    /// Build + sign a legacy tx against a recent blockhash (no durable nonce).
+    /// Used for AMM buys, whose ~27-account instruction would overflow the
+    /// 1232-byte tx limit once a nonce-advance (+2 accounts) is prepended (the
+    /// largest cashback buy measures 1245 B with a nonce vs 1171 B with a
+    /// blockhash — see `amm::tests`). Reads the background-refreshed blockhash
+    /// cache and only fetches on-chain when it's empty/stale, so the AMM buy
+    /// avoids a `getLatestBlockhash` RPC on the hot path without ever riding an
+    /// expired hash.
     pub(super) async fn build_recent_tx(
         &self,
         instructions: Vec<Instruction>,
         keypair: &Keypair,
     ) -> Result<Transaction> {
-        let blockhash = self
-            .rpc
-            .get_latest_blockhash()
-            .await
-            .context("fetch recent blockhash")?;
+        let blockhash = match self
+            .blockhash_cache
+            .get_fresh(Duration::from_millis(BLOCKHASH_CACHE_MAX_AGE_MS))
+        {
+            Some(hash) => hash,
+            None => self
+                .rpc
+                .get_latest_blockhash()
+                .await
+                .context("fetch recent blockhash")?,
+        };
         let msg = Message::new(&instructions, Some(&keypair.pubkey()));
         let mut tx = Transaction::new_unsigned(msg);
         tx.sign(&[keypair], blockhash);

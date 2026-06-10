@@ -227,10 +227,16 @@ impl PumpFunTrader {
         let (bonding_curve, _) =
             Pubkey::find_program_address(&[b"bonding-curve", mint.as_ref()], &program_id);
 
-        // Both reads are independent — fetch them concurrently (one round-trip
-        // instead of two) since this gates every manual buy/sell.
-        let (account, mint_account) =
-            tokio::try_join!(rpc.get_account(&bonding_curve), rpc.get_account(&mint))?;
+        // Both independent accounts in one request (getMultipleAccounts) — this
+        // gates every manual buy/sell.
+        let accounts = rpc.get_multiple_accounts(&[bonding_curve, mint]).await?;
+        let [bonding_acct, mint_acct]: [Option<_>; 2] = accounts
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("getMultipleAccounts returned an unexpected count"))?;
+        let account =
+            bonding_acct.ok_or_else(|| anyhow::anyhow!("bonding curve account not found"))?;
+        let mint_account =
+            mint_acct.ok_or_else(|| anyhow::anyhow!("mint account not found"))?;
         const COMPLETE_OFFSET: usize = 48;
         const CREATOR_OFFSET: usize = 49;
         if account.data.len() < CREATOR_OFFSET + 32 {
@@ -312,10 +318,16 @@ impl PumpFunTrader {
         let (bonding_curve, _) =
             Pubkey::find_program_address(&[b"bonding-curve", mint.as_ref()], &program_id);
 
-        // Fetch the bonding-curve and mint accounts concurrently — independent
-        // reads, so one round-trip instead of two.
-        let (account, mint_account) =
-            tokio::try_join!(rpc.get_account(&bonding_curve), rpc.get_account(&mint))?;
+        // Fetch the bonding-curve and mint accounts in one request
+        // (getMultipleAccounts) — independent reads, so a single round-trip.
+        let accounts = rpc.get_multiple_accounts(&[bonding_curve, mint]).await?;
+        let [bonding_acct, mint_acct]: [Option<_>; 2] = accounts
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("getMultipleAccounts returned an unexpected count"))?;
+        let account =
+            bonding_acct.ok_or_else(|| anyhow::anyhow!("bonding curve account not found"))?;
+        let mint_account =
+            mint_acct.ok_or_else(|| anyhow::anyhow!("mint account not found"))?;
 
         // Parse creator from account data
         const CREATOR_OFFSET: usize = 49;
