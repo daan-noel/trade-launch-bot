@@ -7,7 +7,7 @@
 // and pool replenishment so the next buy starts warm.
 // ============================================================
 
-use super::{PumpFunTrader, TokenPDAs};
+use super::PumpFunTrader;
 use crate::constants::{
     CONFIRM_MAX_RETRIES, CURVE_FEE_BUFFER_BPS, LAMPORTS_PER_SOL, TOKEN_PROGRAM_ID,
 };
@@ -82,32 +82,19 @@ impl PumpFunTrader {
             let creator_pubkey = Pubkey::from_str(creator)?;
             let token_program = Pubkey::from_str(token_program_id)?;
 
-            let (bonding_curve, _) = Pubkey::find_program_address(
-                &[b"bonding-curve", mint.as_ref()],
-                &self.pump_program,
-            );
-            let (bonding_curve_v2, _) = Pubkey::find_program_address(
-                &[b"bonding-curve-v2", mint.as_ref()],
-                &self.pump_program,
-            );
-            let assoc_bonding_curve =
-                get_associated_token_address_with_program_id(&bonding_curve, &mint, &token_program);
-            let (creator_vault, _) = Pubkey::find_program_address(
-                &[b"creator-vault", creator_pubkey.as_ref()],
-                &self.pump_program,
-            );
+            // Curve PDAs via the shared derivation (same source of truth as the
+            // query path). `Pubkey` is `Copy`, so the locals below are copies and
+            // `pdas` is still moved into the cache.
+            let pdas = self.derive_token_pdas(&mint, &creator_pubkey, &token_program, false);
+            let bonding_curve = pdas.bonding_curve;
+            let bonding_curve_v2 = pdas.bonding_curve_v2;
+            let assoc_bonding_curve = pdas.associated_bonding_curve;
+            let creator_vault = pdas.creator_vault;
 
-            self.token_pdas.lock().unwrap().insert(
-                token_mint.to_string(),
-                TokenPDAs {
-                    token_program,
-                    bonding_curve,
-                    bonding_curve_v2,
-                    associated_bonding_curve: assoc_bonding_curve,
-                    creator_vault,
-                    cashback_enabled: false,
-                },
-            );
+            self.token_pdas
+                .lock()
+                .unwrap()
+                .insert(token_mint.to_string(), pdas);
 
             // Check if ATA exists. On the snipe path the wallet provably holds
             // no account for this just-created mint, so we skip the RPC and go

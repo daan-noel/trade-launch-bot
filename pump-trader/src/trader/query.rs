@@ -8,7 +8,7 @@
 // ============================================================
 
 use super::{PumpFunTrader, TokenPDAs};
-use crate::constants::{PUMP_FUN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
+use crate::constants::{TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
 use solana_sdk::pubkey::Pubkey;
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::collections::HashMap;
@@ -294,6 +294,40 @@ impl PumpFunTrader {
         }
     }
 
+    /// The `bonding-curve` PDA for a mint — single source of truth for the
+    /// `find_program_address(&[b"bonding-curve", ..])` previously inlined across
+    /// the buy and query paths.
+    pub(super) fn bonding_curve_pda(&self, mint: &Pubkey) -> Pubkey {
+        Pubkey::find_program_address(&[b"bonding-curve", mint.as_ref()], &self.pump_program).0
+    }
+
+    /// All curve PDAs needed to build a buy/sell for `mint`, given its `creator`
+    /// and SPL token program. Pure (no RPC) and deterministic — shared by the
+    /// snipe buy path and `get_creator_from_mint_pda`.
+    pub(super) fn derive_token_pdas(
+        &self,
+        mint: &Pubkey,
+        creator: &Pubkey,
+        token_program: &Pubkey,
+        cashback_enabled: bool,
+    ) -> TokenPDAs {
+        let bonding_curve = self.bonding_curve_pda(mint);
+        let (bonding_curve_v2, _) =
+            Pubkey::find_program_address(&[b"bonding-curve-v2", mint.as_ref()], &self.pump_program);
+        let associated_bonding_curve =
+            get_associated_token_address_with_program_id(&bonding_curve, mint, token_program);
+        let (creator_vault, _) =
+            Pubkey::find_program_address(&[b"creator-vault", creator.as_ref()], &self.pump_program);
+        TokenPDAs {
+            token_program: *token_program,
+            bonding_curve,
+            bonding_curve_v2,
+            associated_bonding_curve,
+            creator_vault,
+            cashback_enabled,
+        }
+    }
+
     /// Resolve everything a manual buy needs straight from chain (source of
     /// truth, so it handles freshly-migrated and Token-2022 tokens the local
     /// cache may not know about yet). Reads the bonding-curve PDA for the
@@ -308,10 +342,8 @@ impl PumpFunTrader {
         mint_address: &str,
     ) -> anyhow::Result<crate::types::BuyRouting> {
         let rpc = &self.rpc;
-        let program_id = Pubkey::from_str(PUMP_FUN_PROGRAM_ID)?;
         let mint = Pubkey::from_str(mint_address)?;
-        let (bonding_curve, _) =
-            Pubkey::find_program_address(&[b"bonding-curve", mint.as_ref()], &program_id);
+        let bonding_curve = self.bonding_curve_pda(&mint);
 
         // Both independent accounts in one request (getMultipleAccounts) — this
         // gates every manual buy/sell.
@@ -354,10 +386,6 @@ impl PumpFunTrader {
     /// "unknown" — e.g. fall back to a cached value.
     pub async fn resolve_migrated_batch(&self, mints: &[String]) -> HashMap<String, bool> {
         const COMPLETE_OFFSET: usize = 48;
-        let program_id = match Pubkey::from_str(PUMP_FUN_PROGRAM_ID) {
-            Ok(p) => p,
-            Err(_) => return HashMap::new(),
-        };
 
         // Derive the bonding-curve PDA for every mint we can parse, keeping the
         // mint string alongside it so results map back to the caller's keys.
@@ -365,9 +393,7 @@ impl PumpFunTrader {
             .iter()
             .filter_map(|m| {
                 let mint = Pubkey::from_str(m).ok()?;
-                let (bonding_curve, _) =
-                    Pubkey::find_program_address(&[b"bonding-curve", mint.as_ref()], &program_id);
-                Some((m.clone(), bonding_curve))
+                Some((m.clone(), self.bonding_curve_pda(&mint)))
             })
             .collect();
 
@@ -398,11 +424,8 @@ impl PumpFunTrader {
     pub async fn get_creator_from_mint_pda(&self, mint_address: &str) -> anyhow::Result<String> {
         let rpc = &self.rpc;
 
-        // Get bonding curve PDA
-        let program_id = Pubkey::from_str(PUMP_FUN_PROGRAM_ID)?;
         let mint = Pubkey::from_str(mint_address)?;
-        let (bonding_curve, _) =
-            Pubkey::find_program_address(&[b"bonding-curve", mint.as_ref()], &program_id);
+        let bonding_curve = self.bonding_curve_pda(&mint);
 
         // Fetch the bonding-curve and mint accounts in one request
         // (getMultipleAccounts) — independent reads, so a single round-trip.
@@ -424,33 +447,13 @@ impl PumpFunTrader {
             account.data[CREATOR_OFFSET..CREATOR_OFFSET + 32].try_into()?;
         let creator = Pubkey::from(creator_bytes);
 
-        // Derive all PDAs needed for sell
-        let (bonding_curve_v2, _) =
-            Pubkey::find_program_address(&[b"bonding-curve-v2", mint.as_ref()], &program_id);
         let token_program = mint_account.owner;
-
-        let assoc_bonding_curve = get_associated_token_address_with_program_id(
-            &bonding_curve, // owner = bonding curve PDA
-            &mint,
-            &token_program,
-        );
-
-        let (creator_vault, _) =
-            Pubkey::find_program_address(&[b"creator-vault", creator.as_ref()], &program_id);
-
         let cashback_enabled = account.data.len() > 82 && account.data[82] != 0;
 
-        // Cache PDAs for this mint
+        // Cache the full PDA set for this mint (shared derivation with the buy path).
         self.token_pdas.lock().unwrap().insert(
             mint_address.to_string(),
-            TokenPDAs {
-                token_program,
-                bonding_curve,
-                bonding_curve_v2,
-                associated_bonding_curve: assoc_bonding_curve,
-                creator_vault,
-                cashback_enabled,
-            },
+            self.derive_token_pdas(&mint, &creator, &token_program, cashback_enabled),
         );
 
         Ok(creator.to_string())

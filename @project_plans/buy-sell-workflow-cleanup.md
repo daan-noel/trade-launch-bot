@@ -135,7 +135,25 @@ Net sell attempts per exit: curve **300 → ≤ 6**, AMM **60 → ≤ 6**.
   poll window (currently `BUY_POLL_MAX_ATTEMPTS`×`BUY_POLL_INTERVAL_MS` = 12×1s) for
   faster revert detection; a dropped-tx (`None`) could later be safely re-sent via
   nonce-account introspection (future).
-- **`getMultipleAccounts`/PDA-derivation helper** shared across buy + query.
+- ~~**`getMultipleAccounts`/PDA-derivation helper** shared across buy + query.~~
+  **DONE (2026-06-10).** Two `pub(super)` helpers in `query.rs`:
+  `bonding_curve_pda(mint)` (the single `bonding-curve` PDA) and
+  `derive_token_pdas(mint, creator, token_program, cashback)` (the full curve-PDA
+  set → `TokenPDAs`), both off `self.pump_program`. Rewired all four inline sites —
+  `buy_token_inner` (`buy.rs`), `resolve_buy_routing`, `resolve_migrated_batch`,
+  `get_creator_from_mint_pda` (`query.rs`) — dropping the redundant
+  `Pubkey::from_str(PUMP_FUN_PROGRAM_ID)` re-parses (import removed from `query.rs`)
+  and `TokenPDAs` from `buy.rs`'s imports. Behaviour-identical by construction
+  (same seeds, same program id); `cargo check`/`test -p pump-trader` clean, backend
+  builds. The account *reads* (`getMultipleAccounts`) stay where needed; only the
+  pure derivation was shared.
+
+## Live validation (pending — snipe-buy confirmation change)
+
+Use a **0.001 SOL** buy size for the first live snipe test (the ~0.0004 SOL tx fee
+is a large fraction of anything smaller). Buy size is the TPSL rule's `buy_amount`
+(DB-driven, set via the API/frontend) — not a code constant. Watch the re-send /
+poll-timeout log rates and entry-record latency.
 
 ---
 
