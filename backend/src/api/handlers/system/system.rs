@@ -37,6 +37,21 @@ pub async fn set_live_mode(
     state: web::Data<Arc<AppState>>,
     req: web::Json<UpdateLiveModeRequest>,
 ) -> impl Responder {
+    // Persist the toggle into the settings document first; only flip the runtime
+    // live mode if the write succeeds, so a failed save never leaves the WS task
+    // running against a state the DB won't restore on the next boot. The full
+    // document is re-published too, keeping `state.settings().live` in sync (so a
+    // later `update_settings` read-modify-write doesn't clobber it back to false).
+    let mut next = state.settings();
+    next.live = req.live;
+    let repo = SettingsRepo::new(state.db.clone());
+    if let Err(e) = repo.set(&next).await {
+        return HttpResponse::InternalServerError().json(ErrorBody {
+            error: format!("Failed to persist live mode: {e}"),
+        });
+    }
+    state.set_settings(next);
+
     state.set_live(req.live);
     HttpResponse::Ok().json(LiveModeResponse {
         live: state.is_live(),

@@ -79,8 +79,6 @@ async fn main() -> anyhow::Result<()> {
 
     let (sse_tx, _) = tokio::sync::broadcast::channel::<models::ingest::SseEvent>(512);
 
-    let (live_tx, live_rx) = tokio::sync::watch::channel(false);
-
     // Load the persisted settings document and hold it in a watch channel as the
     // in-memory source of truth, so a policy set in a previous run is in force
     // before the first event arrives.
@@ -91,8 +89,14 @@ async fn main() -> anyhow::Result<()> {
     info!(
         track_mayhem = app_settings.track_mayhem,
         track_post_migration = app_settings.track_post_migration,
+        live = app_settings.live,
         "Settings loaded"
     );
+
+    // Seed live mode from the persisted toggle so a restart resumes the
+    // operator's last on/off choice instead of always booting paused.
+    let (live_tx, live_rx) = tokio::sync::watch::channel(app_settings.live);
+
     let (settings_tx, _) = tokio::sync::watch::channel(app_settings);
 
     let (sol_price_tx, _sol_price_rx) = tokio::sync::watch::channel::<Option<f64>>(None);
