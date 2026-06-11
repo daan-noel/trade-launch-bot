@@ -3,13 +3,27 @@
 //! `tpsl2_paper_*`, own runtime cache, own API surface under `/strategies/tpsl2`).
 //! It exists so the N1–N10 sniper features can be developed here without touching
 //! the live `tpsl_sniper_1` strategy.
-pub mod handler_tpsl;
+//!
+//! Module map:
+//!   - `entry`        — buy-criteria matching + entry-fill resolution.
+//!   - `exit`         — the single exit ladder (trade-driven + clock-driven).
+//!   - `handler`      — thin active-rule holder over `entry` (`check_buy_entry`).
+//!   - `execution`    — real/paper trade execution (buy, sell, fill polling).
+//!   - `backtest`     — the DB-backed backtest harness over `entry` + `exit`.
+//!   - `service`      — live event/timer drivers wiring it all together.
+//!   - `paper_run`    — paper-run completion lifecycle.
+//!   - `runtime_cache`— in-memory rules/positions/run state.
+pub mod backtest;
+pub mod entry;
+pub mod execution;
+pub mod exit;
+pub mod handler;
+pub mod paper_run;
 pub mod runtime_cache;
-pub mod service_tpsl;
-pub mod simulation_tpsl;
+pub mod service;
 mod util;
 
+pub use backtest::run_backtest;
+pub use handler::TPSL2StrategyHandler;
 pub use runtime_cache::Tpsl2RuntimeCache;
-pub use handler_tpsl::TPSL2StrategyHandler;
-pub use service_tpsl::Tpsl2StrategyService;
-pub use simulation_tpsl::run_simulation;
+pub use service::Tpsl2StrategyService;

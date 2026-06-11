@@ -158,11 +158,13 @@ impl Tpsl2RuntimeCache {
             .unwrap_or_default()
     }
 
-    pub fn all_rules_vec(&self) -> Vec<StrategyTPSLRule> {
+    /// O(1) lookup of a single rule by id (clones just that rule). The hot path
+    /// uses this instead of cloning every rule per event.
+    pub fn rule_by_id(&self, rule_id: Uuid) -> Option<StrategyTPSLRule> {
         self.rules_by_id
             .read()
-            .map(|m| m.values().cloned().collect())
-            .unwrap_or_default()
+            .ok()
+            .and_then(|m| m.get(&rule_id).cloned())
     }
 
     pub fn holding_by_mint(&self, mint: &str) -> Vec<Position> {

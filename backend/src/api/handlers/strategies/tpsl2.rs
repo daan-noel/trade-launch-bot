@@ -12,7 +12,7 @@ use crate::{
         token_repo::TokenRepo,
     },
     strategies::tpsl_sniper_2::{
-        handler_tpsl::token_matches_rule, simulation_tpsl::SimulatedTokenResult,
+        backtest::BacktestTokenResult, entry::token_matches_buy_rule,
     },
 };
 
@@ -411,7 +411,7 @@ pub async fn get_matched_tokens(
 
     let matched: Vec<MatchedTokenResult> = tokens
         .into_iter()
-        .filter(|t| token_matches_rule(t, &rule))
+        .filter(|t| token_matches_buy_rule(t, &rule))
         .map(|t| MatchedTokenResult {
             mint: t.mint_address,
             symbol: t.symbol,
@@ -439,7 +439,7 @@ pub async fn simulate_tpsl_rule(
 ) -> impl Responder {
     // delegate to the tpsl_sniper_2 simulation module (E1+ exit-walk engine)
     let rid = rule_id.into_inner();
-    match crate::strategies::tpsl_sniper_2::run_simulation(app_state.clone(), rid).await {
+    match crate::strategies::tpsl_sniper_2::run_backtest(app_state.clone(), rid).await {
         Ok(summary) => HttpResponse::Ok().json(summary),
         Err(e) => {
             let msg = e.to_string();
@@ -476,7 +476,7 @@ pub struct PaperResultResponse {
     pub run: Option<PaperRunResponse>,
     /// Per-token outcomes for the latest run, shaped like a simulation result so
     /// the frontend renders them through the shared summary card / table.
-    pub tokens: Vec<SimulatedTokenResult>,
+    pub tokens: Vec<BacktestTokenResult>,
 }
 
 /// Aggregate the latest paper-test run's recorded positions into a
@@ -542,7 +542,7 @@ pub async fn paper_result_tpsl_rule(
             }
         };
 
-    let tokens: Vec<SimulatedTokenResult> = positions
+    let tokens: Vec<BacktestTokenResult> = positions
         .into_iter()
         .map(|p| paper_position_to_sim_result(p, &symbols))
         .collect();
@@ -566,7 +566,7 @@ pub async fn paper_result_tpsl_rule(
 pub(crate) fn paper_position_to_sim_result(
     p: Position,
     symbols: &std::collections::HashMap<String, String>,
-) -> SimulatedTokenResult {
+) -> BacktestTokenResult {
     let pnl_percent = p.pnl_percentage();
     // The reason recorded at exit time (the live path now fires the full E1–E4
     // ladder, so it can't be inferred from the PnL sign), with the legacy-row
@@ -584,7 +584,7 @@ pub(crate) fn paper_position_to_sim_result(
         .exit_price
         .map(|x| x.max(p.entry_price))
         .unwrap_or(p.entry_price);
-    SimulatedTokenResult {
+    BacktestTokenResult {
         symbol: symbols.get(&p.mint).cloned().unwrap_or_default(),
         mint: p.mint,
         entry_price: p.entry_price,
