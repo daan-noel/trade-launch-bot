@@ -1,9 +1,12 @@
 -- ============================================================================
 -- Initial schema (squashed).
 --
--- This single migration represents the full schema after the original
--- 0001–0014 migrations were merged. Tables are ordered so foreign-key targets
--- are created before their referrers.
+-- This single migration is the full schema after the original 0001–0013
+-- migrations were merged. It reflects the FINAL state: table/column renames
+-- (tpsl1_*/tpsl2_* prefixes, p_token_/p_entry_/p_exit_ param prefixes),
+-- partitioned raw_transactions / raw_transactions_grpc, and all added columns
+-- are baked in directly. Tables are ordered so foreign-key targets are created
+-- before their referrers.
 -- ============================================================================
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -77,45 +80,150 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_tx_leg ON trades(tx_signature, leg_
 CREATE INDEX IF NOT EXISTS idx_trades_mint_venue_slot ON trades(mint_address, venue, slot DESC);
 
 -- -------------------------------------------------------------------------
--- raw_transactions  (Helius transaction result, never mutated — replay source)
+-- raw_transactions  (WS ingest raw result — never mutated, replay source)
+--   WEEKLY range partitions on received_at with ~2-month retention (managed by
+--   the app's partition-maintenance task; KEEP_WEEKS must match
+--   ingest::maintenance::KEEP_WEEKS = 9). No UNIQUE(signature): a unique
+--   constraint on a partitioned table must include the partition key, and
+--   received_at isn't stable across reconnect re-delivery — duplicates are
+--   tolerated in this write-only analysis table.
 -- -------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS raw_transactions (
-    id              UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
-    signature       TEXT        UNIQUE NOT NULL,
-    slot            BIGINT      NOT NULL,
-    block_time      TIMESTAMPTZ NOT NULL,
-    raw_data        JSONB       NOT NULL,
-    received_at     TIMESTAMPTZ NOT NULL
-);
+    id          UUID        NOT NULL DEFAULT uuid_generate_v4(),
+    signature   TEXT        NOT NULL,
+    slot        BIGINT      NOT NULL,
+    block_time  TIMESTAMPTZ NOT NULL,
+    raw_data    JSONB       NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (received_at, id)
+) PARTITION BY RANGE (received_at);
 
-CREATE INDEX IF NOT EXISTS idx_raw_tx_signature ON raw_transactions(signature);
-CREATE INDEX IF NOT EXISTS idx_raw_tx_slot      ON raw_transactions(slot DESC);
+-- Non-unique indexes on the parent cascade to all (incl. future) partitions.
+CREATE INDEX IF NOT EXISTS idx_raw_tx_signature ON raw_transactions (signature);
+CREATE INDEX IF NOT EXISTS idx_raw_tx_slot      ON raw_transactions (slot DESC);
+
+-- Idempotently create the weekly partition (Mon–Mon) containing p_anchor.
+CREATE OR REPLACE FUNCTION ensure_raw_partition(p_anchor date)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+    v_start date := date_trunc('week', p_anchor::timestamp)::date;
+    v_end   date := v_start + 7;
+    v_name  text := format('raw_transactions_%s', to_char(v_start, 'YYYY_MM_DD'));
+BEGIN
+    EXECUTE format(
+        'CREATE TABLE IF NOT EXISTS %I PARTITION OF raw_transactions FOR VALUES FROM (%L) TO (%L)',
+        v_name, v_start::timestamptz, v_end::timestamptz
+    );
+END;
+$$;
+
+-- Drop the weekly partition containing p_anchor, if it exists (retention).
+CREATE OR REPLACE FUNCTION drop_raw_partition(p_anchor date)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+    v_start date := date_trunc('week', p_anchor::timestamp)::date;
+    v_name  text := format('raw_transactions_%s', to_char(v_start, 'YYYY_MM_DD'));
+BEGIN
+    EXECUTE format('DROP TABLE IF EXISTS %I', v_name);
+END;
+$$;
+
+-- Pre-create the retained window (now-9w .. now+2w) so the first inserts always
+-- have a target partition before the maintenance task first runs.
+DO $$
+DECLARE w date := date_trunc('week', (now() - interval '9 weeks'))::date;
+BEGIN
+    WHILE w <= date_trunc('week', (now() + interval '2 weeks'))::date LOOP
+        PERFORM ensure_raw_partition(w);
+        w := w + 7;
+    END LOOP;
+END $$;
+
+-- -------------------------------------------------------------------------
+-- raw_transactions_grpc
+--   Raw LaserStream (Yellowstone gRPC) transaction results, kept SEPARATE from
+--   the WS `raw_transactions` table so the two raw formats never co-mingle.
+--   Stored as the adapted jsonParsed-shaped JSON. Write-only analysis source.
+--   WEEKLY range partitions on received_at, ~2-month retention (same scheme as
+--   raw_transactions). No UNIQUE(signature) for the same partition-key reason.
+-- -------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS raw_transactions_grpc (
+    id          UUID        NOT NULL DEFAULT uuid_generate_v4(),
+    signature   TEXT        NOT NULL,
+    slot        BIGINT      NOT NULL,
+    block_time  TIMESTAMPTZ NOT NULL,
+    raw_data    JSONB       NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (received_at, id)
+) PARTITION BY RANGE (received_at);
+
+CREATE INDEX IF NOT EXISTS idx_raw_tx_grpc_signature ON raw_transactions_grpc (signature);
+CREATE INDEX IF NOT EXISTS idx_raw_tx_grpc_slot      ON raw_transactions_grpc (slot DESC);
+
+-- Idempotently create the weekly partition (Mon–Mon) containing p_anchor.
+CREATE OR REPLACE FUNCTION ensure_raw_grpc_partition(p_anchor date)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+    v_start date := date_trunc('week', p_anchor::timestamp)::date;
+    v_end   date := v_start + 7;
+    v_name  text := format('raw_transactions_grpc_%s', to_char(v_start, 'YYYY_MM_DD'));
+BEGIN
+    EXECUTE format(
+        'CREATE TABLE IF NOT EXISTS %I PARTITION OF raw_transactions_grpc FOR VALUES FROM (%L) TO (%L)',
+        v_name, v_start::timestamptz, v_end::timestamptz
+    );
+END;
+$$;
+
+-- Drop the weekly partition containing p_anchor, if it exists (retention).
+CREATE OR REPLACE FUNCTION drop_raw_grpc_partition(p_anchor date)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+    v_start date := date_trunc('week', p_anchor::timestamp)::date;
+    v_name  text := format('raw_transactions_grpc_%s', to_char(v_start, 'YYYY_MM_DD'));
+BEGIN
+    EXECUTE format('DROP TABLE IF EXISTS %I', v_name);
+END;
+$$;
+
+DO $$
+DECLARE w date := date_trunc('week', (now() - interval '9 weeks'))::date;
+BEGIN
+    WHILE w <= date_trunc('week', (now() + interval '2 weeks'))::date LOOP
+        PERFORM ensure_raw_grpc_partition(w);
+        w := w + 7;
+    END LOOP;
+END $$;
 
 -- -------------------------------------------------------------------------
 -- tokens_info
---   last_synced_at        — wall-clock time of the last successful sync (display).
---   last_synced_curve_sig — newest bonding-curve signature seen, used as the
---                           `until` boundary for the next incremental sync.
---   last_synced_amm_sig   — same, for post-migration PumpSwap (AMM) signatures.
+--   last_synced_at         — wall-clock time of the last successful sync (display).
+--   last_synced_curve_sig  — newest bonding-curve signature seen, used as the
+--                            `until` boundary for the next incremental sync.
+--   last_synced_amm_sig    — same, for post-migration PumpSwap (AMM) signatures.
+--   last_synced_*_slot     — slot of the newest signature per venue, so a
+--                            LaserStream-replay Fetch New can resume by slot.
 -- -------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tokens_info (
-    id                    UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
-    mint_address          TEXT        UNIQUE NOT NULL,
-    ath_price             DOUBLE PRECISION,
-    ath_timestamp         TIMESTAMPTZ,
-    age                   BIGINT,
-    volume                DOUBLE PRECISION DEFAULT 0.0,
-    market_cap            DOUBLE PRECISION,
-    trade_count           BIGINT      NOT NULL DEFAULT 0,
-    last_trade_at         TIMESTAMPTZ,
-    current_price         DOUBLE PRECISION,
-    is_rugged             BOOLEAN     NOT NULL DEFAULT FALSE,
-    is_migrated           BOOLEAN     NOT NULL DEFAULT FALSE,
-    last_synced_at        TIMESTAMPTZ,
-    last_synced_curve_sig TEXT,
-    last_synced_amm_sig   TEXT,
-    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+    id                     UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    mint_address           TEXT        UNIQUE NOT NULL,
+    ath_price              DOUBLE PRECISION,
+    ath_timestamp          TIMESTAMPTZ,
+    age                    BIGINT,
+    volume                 DOUBLE PRECISION DEFAULT 0.0,
+    market_cap             DOUBLE PRECISION,
+    trade_count            BIGINT      NOT NULL DEFAULT 0,
+    last_trade_at          TIMESTAMPTZ,
+    current_price          DOUBLE PRECISION,
+    is_rugged              BOOLEAN     NOT NULL DEFAULT FALSE,
+    is_migrated            BOOLEAN     NOT NULL DEFAULT FALSE,
+    last_synced_at         TIMESTAMPTZ,
+    last_synced_curve_sig  TEXT,
+    last_synced_amm_sig    TEXT,
+    last_synced_curve_slot BIGINT,
+    last_synced_amm_slot   BIGINT,
+    created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_tokens_info_mint ON tokens_info(mint_address);
@@ -151,46 +259,56 @@ CREATE TABLE IF NOT EXISTS creator_profiles (
 
 CREATE INDEX IF NOT EXISTS idx_creator_profiles_wallet ON creator_profiles(wallet_address);
 
+-- =========================================================================
+-- tpsl_sniper_1 storage (live strategy)
+-- =========================================================================
+
 -- -------------------------------------------------------------------------
--- strategy_TPSL_rules
---   p_trailing_stop_pct  — exit when price falls X% below peak-since-entry.
---   p_time_stop_secs     — exit at first trade >= N secs after entry.
---   p_stall_secs         — exit when no new higher-high for N secs.
---   p_liquidity_drop_pct — exit once virtual SOL reserves crash X% below peak.
--- All four are inert by default (0 / NULL = disabled, per the ignore_zero_*
--- convention in the tpsl strategy).
+-- tpsl1_strategy_rules
+--   Param prefixes:
+--     p_token_*  — token fingerprint (which token the rule matches at creation)
+--     p_exit_*   — exit gates (thresholds that decide when to sell)
+--   p_exit_trailing_stop_pct  — exit when price falls X% below peak-since-entry.
+--   p_exit_time_stop_secs     — exit at first trade >= N secs after entry.
+--   p_exit_stall_secs         — exit when no new higher-high for N secs.
+--   p_exit_liquidity_drop_pct — exit once virtual SOL reserves crash X% below peak.
+--   All exit gates are inert by default (0 / NULL = disabled, per the
+--   ignore_zero_* convention in the tpsl strategy).
 -- -------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS strategy_TPSL_rules (
-    id                      UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
-    rule_name               TEXT        NOT NULL,
-    p_initial_buy_sol       DOUBLE PRECISION,
-    p_cu_limit              BIGINT,
-    p_cu_price              BIGINT,
-    p_max_sol_cost          DOUBLE PRECISION,
-    p_spendable_sol_in      DOUBLE PRECISION,
-    p_max_concurrent_tokens BIGINT,
-    p_max_total_tokens      BIGINT,
-    p_ix_labels             JSONB       NOT NULL DEFAULT '[]',
-    p_trailing_stop_pct     DOUBLE PRECISION,
-    p_time_stop_secs        BIGINT,
-    p_stall_secs            BIGINT,
-    p_liquidity_drop_pct    DOUBLE PRECISION,
-    buy_amount              DOUBLE PRECISION NOT NULL,
-    take_profit             DOUBLE PRECISION NOT NULL,
-    stop_loss               DOUBLE PRECISION NOT NULL,
-    tolerance_pct           DOUBLE PRECISION NOT NULL DEFAULT 1.0,
-    trade_mode              TEXT        NOT NULL DEFAULT 'paper',
-    is_active               BOOLEAN     NOT NULL DEFAULT TRUE,
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+CREATE TABLE IF NOT EXISTS tpsl1_strategy_rules (
+    id                          UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    rule_name                   TEXT        NOT NULL,
+    p_token_initial_buy_sol     DOUBLE PRECISION,
+    p_token_cu_limit            BIGINT,
+    p_token_cu_price            BIGINT,
+    p_token_max_sol_cost        DOUBLE PRECISION,
+    p_token_spendable_sol_in    DOUBLE PRECISION,
+    p_max_concurrent_tokens     BIGINT,
+    p_max_total_tokens          BIGINT,
+    p_token_ix_labels           JSONB       NOT NULL DEFAULT '[]',
+    p_exit_trailing_stop_pct    DOUBLE PRECISION,
+    p_exit_time_stop_secs       BIGINT,
+    p_exit_stall_secs           BIGINT,
+    p_exit_liquidity_drop_pct   DOUBLE PRECISION,
+    buy_amount                  DOUBLE PRECISION NOT NULL,
+    p_exit_take_profit          DOUBLE PRECISION NOT NULL,
+    p_exit_stop_loss            DOUBLE PRECISION NOT NULL,
+    tolerance_pct               DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+    trade_mode                  TEXT        NOT NULL DEFAULT 'paper',
+    is_active                   BOOLEAN     NOT NULL DEFAULT TRUE,
+    created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_strategy_TPSL_rules_active ON strategy_TPSL_rules(is_active);
+CREATE INDEX IF NOT EXISTS idx_tpsl1_strategy_rules_active ON tpsl1_strategy_rules(is_active);
 
 -- -------------------------------------------------------------------------
--- positions
+-- tpsl1_real_positions
+--   status      — Holding / ExitPending / End / ExitFailed.
+--   exit_reason — TakeProfit / StopLoss / TrailingStop / Stall / TimeStop /
+--                 LiquidityExit (NULL until the position exits).
 -- -------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS positions (
+CREATE TABLE IF NOT EXISTS tpsl1_real_positions (
     id                  UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
     mint                TEXT        NOT NULL,
     wallet              TEXT        NOT NULL,
@@ -203,22 +321,219 @@ CREATE TABLE IF NOT EXISTS positions (
     exit_amount         DOUBLE PRECISION,
     exit_time           TIMESTAMPTZ,
     exit_tx             TEXT        UNIQUE,
-    status              TEXT        NOT NULL CHECK (status IN ('Holding', 'ExitPending', 'End')),
+    status              TEXT        NOT NULL CHECK (status IN ('Holding', 'ExitPending', 'End', 'ExitFailed')),
     strategy            TEXT        NOT NULL,
     rule_id             UUID        NOT NULL,
+    exit_reason         TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-    FOREIGN KEY (rule_id) REFERENCES strategy_TPSL_rules(id) ON DELETE SET NULL
+    FOREIGN KEY (rule_id) REFERENCES tpsl1_strategy_rules(id) ON DELETE SET NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_positions_mint              ON positions(mint);
-CREATE INDEX IF NOT EXISTS idx_positions_wallet            ON positions(wallet);
-CREATE INDEX IF NOT EXISTS idx_positions_status            ON positions(status);
-CREATE INDEX IF NOT EXISTS idx_positions_strategy          ON positions(strategy);
-CREATE INDEX IF NOT EXISTS idx_positions_rule_id           ON positions(rule_id);
-CREATE INDEX IF NOT EXISTS idx_positions_mint_status       ON positions(mint, status);
-CREATE INDEX IF NOT EXISTS idx_positions_token_program_id  ON positions(token_program_id);
+CREATE INDEX IF NOT EXISTS idx_tpsl1_real_positions_mint              ON tpsl1_real_positions(mint);
+CREATE INDEX IF NOT EXISTS idx_tpsl1_real_positions_wallet            ON tpsl1_real_positions(wallet);
+CREATE INDEX IF NOT EXISTS idx_tpsl1_real_positions_status            ON tpsl1_real_positions(status);
+CREATE INDEX IF NOT EXISTS idx_tpsl1_real_positions_strategy          ON tpsl1_real_positions(strategy);
+CREATE INDEX IF NOT EXISTS idx_tpsl1_real_positions_rule_id           ON tpsl1_real_positions(rule_id);
+CREATE INDEX IF NOT EXISTS idx_tpsl1_real_positions_mint_status       ON tpsl1_real_positions(mint, status);
+CREATE INDEX IF NOT EXISTS idx_tpsl1_real_positions_token_program_id  ON tpsl1_real_positions(token_program_id);
+
+-- -------------------------------------------------------------------------
+-- tpsl1_paper_test_run
+-- Paper-trading runs, isolated from the real positions table. A paper "run"
+-- begins when a paper rule is activated and ends when its total-token cap is
+-- reached (rule auto-deactivates) or it is manually stopped. Only the latest
+-- run per rule is retained (starting a new run deletes the prior run, and its
+-- positions go with it via ON DELETE CASCADE).
+-- -------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tpsl1_paper_test_run (
+    id                 UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    rule_id            UUID        NOT NULL REFERENCES tpsl1_strategy_rules(id) ON DELETE CASCADE,
+    -- Monotonic per-rule run counter (1, 2, 3 …) for display ("run #N").
+    run_seq            BIGINT      NOT NULL,
+    status             TEXT        NOT NULL CHECK (status IN ('Running', 'Finished', 'Stopped')),
+    -- Snapshot of the rule's total-token cap at run start (NULL = unlimited).
+    max_total_tokens   BIGINT,
+    started_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at        TIMESTAMPTZ,
+    UNIQUE (rule_id, run_seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tpsl1_paper_test_run_rule ON tpsl1_paper_test_run(rule_id);
+
+-- -------------------------------------------------------------------------
+-- tpsl1_paper_positions
+-- Mirrors tpsl1_real_positions (minus the UNIQUE constraints on entry_tx /
+-- exit_tx — a paper position is seeded with the token's creation tx and the same
+-- token may be traded again in a later run) plus a run_id binding each position
+-- to its run.
+-- -------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tpsl1_paper_positions (
+    id                  UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    run_id              UUID        NOT NULL REFERENCES tpsl1_paper_test_run(id) ON DELETE CASCADE,
+    mint                TEXT        NOT NULL,
+    wallet              TEXT        NOT NULL,
+    token_program_id    TEXT,
+    entry_price         DOUBLE PRECISION NOT NULL,
+    entry_amount        DOUBLE PRECISION NOT NULL,
+    entry_time          TIMESTAMPTZ,
+    entry_tx            TEXT        NOT NULL,
+    exit_price          DOUBLE PRECISION,
+    exit_amount         DOUBLE PRECISION,
+    exit_time           TIMESTAMPTZ,
+    exit_tx             TEXT,
+    status              TEXT        NOT NULL CHECK (status IN ('Holding', 'ExitPending', 'End', 'ExitFailed')),
+    strategy            TEXT        NOT NULL,
+    rule_id             UUID        NOT NULL,
+    exit_reason         TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tpsl1_paper_positions_run         ON tpsl1_paper_positions(run_id);
+CREATE INDEX IF NOT EXISTS idx_tpsl1_paper_positions_mint_status ON tpsl1_paper_positions(mint, status);
+CREATE INDEX IF NOT EXISTS idx_tpsl1_paper_positions_rule        ON tpsl1_paper_positions(rule_id);
+
+-- =========================================================================
+-- tpsl_sniper_2 storage (independent clone; diverges with the scalp experiment)
+-- =========================================================================
+
+-- -------------------------------------------------------------------------
+-- tpsl2_strategy_rules
+--   Adds the scalp-continuation entry gates (p_entry_*) and the cohort-dump
+--   exit gate (p_exit_cohort_ratio) on top of the tpsl1 shape. All gates are
+--   nullable and inert at NULL/0 (ignore_zero convention).
+--     p_entry_min_age_secs       — skip the launch spike (entry age >= N secs)
+--     p_entry_min_alive_sol      — liveness: total SOL traded in trailing window
+--     p_entry_min_organic_sol    — net SOL bought by outside (non-cohort) wallets
+--     p_entry_pullback_pct       — higher-low: min dip off the local high to count
+--     p_entry_higher_low_secs    — higher-low: min span the pattern must form over
+--     p_entry_max_cohort_held    — launch cohort must have sold down to <= this ratio
+--     p_entry_min_liquidity_sol  — min real SOL reserves
+--     p_entry_min_organic_liq    — min real reserves sourced from outside buyers
+--     p_exit_cohort_ratio        — cohort net holdings collapsed to <= this -> exit
+-- -------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tpsl2_strategy_rules (
+    id                          UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    rule_name                   TEXT        NOT NULL,
+    p_token_initial_buy_sol     DOUBLE PRECISION,
+    p_token_cu_limit            BIGINT,
+    p_token_cu_price            BIGINT,
+    p_token_max_sol_cost        DOUBLE PRECISION,
+    p_token_spendable_sol_in    DOUBLE PRECISION,
+    p_max_concurrent_tokens     BIGINT,
+    p_max_total_tokens          BIGINT,
+    p_token_ix_labels           JSONB       NOT NULL DEFAULT '[]',
+    p_exit_trailing_stop_pct    DOUBLE PRECISION,
+    p_exit_time_stop_secs       BIGINT,
+    p_exit_stall_secs           BIGINT,
+    p_exit_liquidity_drop_pct   DOUBLE PRECISION,
+    buy_amount                  DOUBLE PRECISION NOT NULL,
+    p_exit_take_profit          DOUBLE PRECISION NOT NULL,
+    p_exit_stop_loss            DOUBLE PRECISION NOT NULL,
+    tolerance_pct               DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+    trade_mode                  TEXT        NOT NULL DEFAULT 'paper',
+    is_active                   BOOLEAN     NOT NULL DEFAULT TRUE,
+    -- Scalp-continuation entry gates (tpsl2 only).
+    p_entry_min_age_secs        BIGINT,
+    p_entry_min_alive_sol       DOUBLE PRECISION,
+    p_entry_min_organic_sol     DOUBLE PRECISION,
+    p_entry_pullback_pct        DOUBLE PRECISION,
+    p_entry_higher_low_secs     BIGINT,
+    p_entry_max_cohort_held     DOUBLE PRECISION,
+    p_entry_min_liquidity_sol   DOUBLE PRECISION,
+    p_entry_min_organic_liq     DOUBLE PRECISION,
+    -- Scalp-continuation cohort-dump exit gate (tpsl2 only).
+    p_exit_cohort_ratio         DOUBLE PRECISION,
+    created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tpsl2_strategy_rules_active ON tpsl2_strategy_rules(is_active);
+
+-- -------------------------------------------------------------------------
+-- tpsl2_real_positions  (clone of tpsl1_real_positions)
+-- -------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tpsl2_real_positions (
+    id                  UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    mint                TEXT        NOT NULL,
+    wallet              TEXT        NOT NULL,
+    token_program_id    TEXT,
+    entry_price         DOUBLE PRECISION NOT NULL,
+    entry_amount        DOUBLE PRECISION NOT NULL,
+    entry_time          TIMESTAMPTZ,
+    entry_tx            TEXT        NOT NULL UNIQUE,
+    exit_price          DOUBLE PRECISION,
+    exit_amount         DOUBLE PRECISION,
+    exit_time           TIMESTAMPTZ,
+    exit_tx             TEXT        UNIQUE,
+    status              TEXT        NOT NULL CHECK (status IN ('Holding', 'ExitPending', 'End', 'ExitFailed')),
+    strategy            TEXT        NOT NULL,
+    rule_id             UUID        NOT NULL,
+    exit_reason         TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    FOREIGN KEY (rule_id) REFERENCES tpsl2_strategy_rules(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tpsl2_real_positions_mint              ON tpsl2_real_positions(mint);
+CREATE INDEX IF NOT EXISTS idx_tpsl2_real_positions_wallet            ON tpsl2_real_positions(wallet);
+CREATE INDEX IF NOT EXISTS idx_tpsl2_real_positions_status            ON tpsl2_real_positions(status);
+CREATE INDEX IF NOT EXISTS idx_tpsl2_real_positions_strategy          ON tpsl2_real_positions(strategy);
+CREATE INDEX IF NOT EXISTS idx_tpsl2_real_positions_rule_id           ON tpsl2_real_positions(rule_id);
+CREATE INDEX IF NOT EXISTS idx_tpsl2_real_positions_mint_status       ON tpsl2_real_positions(mint, status);
+CREATE INDEX IF NOT EXISTS idx_tpsl2_real_positions_token_program_id  ON tpsl2_real_positions(token_program_id);
+
+-- -------------------------------------------------------------------------
+-- tpsl2_paper_test_run  (clone of tpsl1_paper_test_run)
+-- -------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tpsl2_paper_test_run (
+    id                 UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    rule_id            UUID        NOT NULL REFERENCES tpsl2_strategy_rules(id) ON DELETE CASCADE,
+    run_seq            BIGINT      NOT NULL,
+    status             TEXT        NOT NULL CHECK (status IN ('Running', 'Finished', 'Stopped')),
+    max_total_tokens   BIGINT,
+    started_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at        TIMESTAMPTZ,
+    UNIQUE (rule_id, run_seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tpsl2_paper_test_run_rule ON tpsl2_paper_test_run(rule_id);
+
+-- -------------------------------------------------------------------------
+-- tpsl2_paper_positions  (clone of tpsl1_paper_positions)
+-- -------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tpsl2_paper_positions (
+    id                  UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    run_id              UUID        NOT NULL REFERENCES tpsl2_paper_test_run(id) ON DELETE CASCADE,
+    mint                TEXT        NOT NULL,
+    wallet              TEXT        NOT NULL,
+    token_program_id    TEXT,
+    entry_price         DOUBLE PRECISION NOT NULL,
+    entry_amount        DOUBLE PRECISION NOT NULL,
+    entry_time          TIMESTAMPTZ,
+    entry_tx            TEXT        NOT NULL,
+    exit_price          DOUBLE PRECISION,
+    exit_amount         DOUBLE PRECISION,
+    exit_time           TIMESTAMPTZ,
+    exit_tx             TEXT,
+    status              TEXT        NOT NULL CHECK (status IN ('Holding', 'ExitPending', 'End', 'ExitFailed')),
+    strategy            TEXT        NOT NULL,
+    rule_id             UUID        NOT NULL,
+    exit_reason         TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tpsl2_paper_positions_run         ON tpsl2_paper_positions(run_id);
+CREATE INDEX IF NOT EXISTS idx_tpsl2_paper_positions_mint_status ON tpsl2_paper_positions(mint, status);
+CREATE INDEX IF NOT EXISTS idx_tpsl2_paper_positions_rule        ON tpsl2_paper_positions(rule_id);
+
+-- =========================================================================
+-- Wallet directory + global settings
+-- =========================================================================
 
 -- -------------------------------------------------------------------------
 -- wallet_profiles
@@ -310,57 +625,3 @@ CREATE TABLE IF NOT EXISTS app_settings (
 );
 
 INSERT INTO app_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
-
--- -------------------------------------------------------------------------
--- paper_test_runs
--- Paper-trading runs, isolated from the real `positions` table. A paper "run"
--- begins when a paper rule is activated and ends when its total-token cap is
--- reached (rule auto-deactivates) or it is manually stopped. Only the latest
--- run per rule is retained (starting a new run deletes the prior run, and its
--- positions go with it via ON DELETE CASCADE).
--- -------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS paper_test_runs (
-    id                 UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
-    rule_id            UUID        NOT NULL REFERENCES strategy_TPSL_rules(id) ON DELETE CASCADE,
-    -- Monotonic per-rule run counter (1, 2, 3 …) for display ("run #N").
-    run_seq            BIGINT      NOT NULL,
-    status             TEXT        NOT NULL CHECK (status IN ('Running', 'Finished', 'Stopped')),
-    -- Snapshot of the rule's total-token cap at run start (NULL = unlimited).
-    max_total_tokens   BIGINT,
-    started_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    finished_at        TIMESTAMPTZ,
-    UNIQUE (rule_id, run_seq)
-);
-
-CREATE INDEX IF NOT EXISTS idx_paper_test_runs_rule ON paper_test_runs(rule_id);
-
--- -------------------------------------------------------------------------
--- paper_positions
--- Mirrors `positions` (minus the UNIQUE constraints on entry_tx / exit_tx — a
--- paper position is seeded with the token's creation tx and the same token may
--- be traded again in a later run) plus a run_id binding each position to its run.
--- -------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS paper_positions (
-    id                  UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
-    run_id              UUID        NOT NULL REFERENCES paper_test_runs(id) ON DELETE CASCADE,
-    mint                TEXT        NOT NULL,
-    wallet              TEXT        NOT NULL,
-    token_program_id    TEXT,
-    entry_price         DOUBLE PRECISION NOT NULL,
-    entry_amount        DOUBLE PRECISION NOT NULL,
-    entry_time          TIMESTAMPTZ,
-    entry_tx            TEXT        NOT NULL,
-    exit_price          DOUBLE PRECISION,
-    exit_amount         DOUBLE PRECISION,
-    exit_time           TIMESTAMPTZ,
-    exit_tx             TEXT,
-    status              TEXT        NOT NULL CHECK (status IN ('Holding', 'ExitPending', 'End')),
-    strategy            TEXT        NOT NULL,
-    rule_id             UUID        NOT NULL,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_paper_positions_run         ON paper_positions(run_id);
-CREATE INDEX IF NOT EXISTS idx_paper_positions_mint_status ON paper_positions(mint, status);
-CREATE INDEX IF NOT EXISTS idx_paper_positions_rule        ON paper_positions(rule_id);
