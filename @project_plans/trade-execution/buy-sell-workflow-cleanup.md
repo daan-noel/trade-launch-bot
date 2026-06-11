@@ -11,6 +11,12 @@ shaving the tx-build path further.
 
 > Continuation of [latency-trade-path-rpc-reduction.md](latency-trade-path-rpc-reduction.md)
 > (Phases 1–5). Think of this as "Phase 6".
+>
+> **Note (current state):** the `strategies/tpsl/` folder referenced in the Findings and
+> "Files touched" below has since been **deleted** — the two services were byte-identical
+> and live wiring was repointed to `tpsl_sniper_1/` (now the canonical module, with
+> `tpsl_sniper_2/` as its sibling). Treat any `tpsl/service_tpsl.rs` mention here as
+> historical; the equivalent edit lives only in `tpsl_sniper_1/`.
 
 ---
 

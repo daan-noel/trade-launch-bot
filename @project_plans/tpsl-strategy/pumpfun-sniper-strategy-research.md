@@ -1,5 +1,11 @@
 # Pump.fun Launch-Sniper TPSL — Entry/Exit Strategy (research-grounded)
 
+> ⚠️ **Strategy superseded.** The active strategy is now the scalp/continuation model in
+> [`tpsl-scalp-continuation-plan.md`](tpsl-scalp-continuation-plan.md) (it replaces the
+> launch-sniper N1–N10 approach). This doc is retained as the **research baseline + sources**
+> that ground that work — the market reality, academic predictors, and bundle/sniper findings
+> below still hold.
+
 > Scope: improve **which tokens to buy** and the **entry/exit logic** for a launch/sniper-style TPSL, for both paper and real modes. "Force-close at end of data" is dropped (a backtest-DB artifact, not a trading rule). Kept and recalibrated: **max-hold, trailing-peak, momentum-death**.
 
 ## The market reality (2025–2026) — this rewrites the timescale

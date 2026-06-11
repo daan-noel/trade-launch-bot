@@ -5,14 +5,13 @@
 > Reuse this file as a prompt to re-implement or extend the feature.
 >
 > **Key files**
-> - Backend algorithm: [`backend/src/analyzers/swing_analyzer.rs`](../backend/src/analyzers/swing_analyzer.rs)
-> - API handlers: [`backend/src/api/handlers/tokens/swing.rs`](../backend/src/api/handlers/tokens/swing.rs)
-> - Older TA spec (partially stale — see deltas below): [`token_swing_analyzer_spec_using_TA_terms.md`](token_swing_analyzer_spec_using_TA_terms.md)
-> - Params UI / form coercion: [`frontend-react/src/components/analysis/swingParams.tsx`](../frontend-react/src/components/analysis/swingParams.tsx)
-> - Post-detection visibility filter (client only): [`frontend-react/src/components/analysis/swingFilter.ts`](../frontend-react/src/components/analysis/swingFilter.ts)
-> - Chain-of-swings grouping (client only): [`frontend-react/src/components/analysis/swingChains.ts`](../frontend-react/src/components/analysis/swingChains.ts)
-> - Chart overlay rendering: [`frontend-react/src/components/token-price-chart/swingOverlay.ts`](../frontend-react/src/components/token-price-chart/swingOverlay.ts)
-> - Page wiring: [`frontend-react/src/pages/analysis/SwingDetectionPage.tsx`](../frontend-react/src/pages/analysis/SwingDetectionPage.tsx)
+> - Backend algorithm: [`backend/src/analyzers/swing_analyzer.rs`](../../backend/src/analyzers/swing_analyzer.rs)
+> - API handlers: [`backend/src/api/handlers/tokens/swing.rs`](../../backend/src/api/handlers/tokens/swing.rs)
+> - Params UI / form coercion: [`frontend-react/src/components/analysis/swingParams.tsx`](../../frontend-react/src/components/analysis/swingParams.tsx)
+> - Post-detection visibility filter (client only): [`frontend-react/src/components/analysis/swingFilter.ts`](../../frontend-react/src/components/analysis/swingFilter.ts)
+> - Chain-of-swings grouping (client only): [`frontend-react/src/components/analysis/swingChains.ts`](../../frontend-react/src/components/analysis/swingChains.ts)
+> - Chart overlay rendering: [`frontend-react/src/components/token-price-chart/swingOverlay.ts`](../../frontend-react/src/components/token-price-chart/swingOverlay.ts)
+> - Page wiring: [`frontend-react/src/pages/analysis/SwingDetectionPage.tsx`](../../frontend-react/src/pages/analysis/SwingDetectionPage.tsx)
 
 ---
 

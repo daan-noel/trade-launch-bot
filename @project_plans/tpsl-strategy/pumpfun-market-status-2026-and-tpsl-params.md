@@ -1,5 +1,11 @@
 # Pump.fun Market Status (Mid-2026) & TPSL Param Recommendations
 
+> ⚠️ **Strategy/params superseded.** The current entry/exit strategy and starting param values
+> now live in [`tpsl-scalp-continuation-plan.md`](tpsl-scalp-continuation-plan.md). This doc is
+> kept for its **market data (§1–§2, §5)**, **Mayhem analysis**, and **sources**, which the
+> scalp plan still cites. The §4 launch-sniper param table is historical — use the scalp plan's
+> table instead.
+
 > Snapshot date: **2026-06-08**. Companion to `pumpfun-sniper-strategy-research.md` (which set the
 > 2025→early-2026 baseline). This doc updates that baseline to the **current** regime and converts it
 > into concrete values for the **implemented** TPSL columns. Numbers vary by source/date — ranges and

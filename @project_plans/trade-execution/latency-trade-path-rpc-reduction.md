@@ -197,7 +197,7 @@ exit path. Targets the last RPCs left after Phase 1 — chiefly **TPSL migrated
 The ingest already decodes a **post-trade reserve snapshot on every tracked
 token's trade** — bonding-curve `virtual_*_reserves`, and (rolled PRE→POST) the
 AMM `pool_base/quote_token_reserves` — and stores them on the `Trade`
-([decoder/trade.rs](../backend/src/ingest/decoder/trade.rs)). So the reserves the
+([decoder/trade.rs](../../backend/src/ingest/decoder/trade.rs)). So the reserves the
 trade path was reading via RPC are *already arriving over the WS*; they just
 weren't reaching the trader. Phase 2 bridges that gap. No new subscriptions, no
 Geyser — it rides the existing pipeline.
