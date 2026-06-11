@@ -432,7 +432,13 @@ pub async fn run_token_sync(
     token_metrics::recompute_token_state(&mut state);
 
     let metrics = metrics_from_state(&mint, &state, true);
-    let rugged = token_metrics::compute_is_rugged(&trade_repo, &metrics).await;
+    let rugged = token_metrics::compute_is_rugged(
+        &trade_repo,
+        &metrics.mint,
+        &metrics.creator_wallet,
+        metrics.last_trade_at,
+    )
+    .await;
     write_metrics(&info_repo, &metrics, rugged).await?;
 
     // Stamp the sync watermark so the next "Fetch new" resumes from here, and

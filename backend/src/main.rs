@@ -2,6 +2,7 @@ mod api;
 mod config;
 pub use config::constants as constants;
 mod ingest;
+mod ingest_laserstream;
 mod models;
 mod analyzers;
 mod state;
@@ -112,23 +113,120 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("Failed to load TPSL2 runtime cache")?;
 
-    let (db_tx, db_rx, strategy_tx, strategy_rx) = ingest::IngestPipeline::channel_pair();
+    if settings.ingest_transport.eq_ignore_ascii_case("laserstream")
+        && settings.helius_laserstream_url.trim().is_empty()
+    {
+        anyhow::bail!("INGEST_TRANSPORT=laserstream requires HELIUS_LASERSTREAM_URL to be set");
+    }
 
-    let (raw_tx, raw_rx) = tokio::sync::mpsc::channel::<String>(1024);
+    // ── Ingest transport: WS (legacy) or LaserStream gRPC, by INGEST_TRANSPORT ──
+    // Both feed the same shared token cache / strategy / SSE / DB; only the
+    // transport, decoder clone, and raw-tx table differ. The branch yields the
+    // pool→mint index + migration signal (for AppState) and the strategy receiver
+    // plus the long-lived task handles the supervising select watches.
+    let (pool_index, pools_changed, strategy_rx, producer_task, pipeline_task, db_writer_task) =
+        if settings.ingest_transport.eq_ignore_ascii_case("laserstream") {
+            info!("Ingest transport: LaserStream (gRPC)");
+            let (db_tx, db_rx, strategy_tx, strategy_rx) =
+                ingest_laserstream::pipeline::IngestPipeline::channel_pair();
+            let (value_tx, value_rx) = tokio::sync::mpsc::channel::<serde_json::Value>(1024);
 
-    // Built before AppState so its pool→mint index and migration signal can be
-    // shared with the HTTP handlers — a token sync registers a migrated token's
-    // pool here so the live WS subscribes to it immediately.
-    let pipeline = ingest::IngestPipeline::new(
-        constants::PUMP_FUN_PROGRAM_ID.to_string(),
-        token_cache.clone(),
-        db_tx,
-        strategy_tx,
-        sse_tx.clone(),
-        settings_tx.subscribe(),
-        trader.clone(),
-    );
+            let pipeline = ingest_laserstream::pipeline::IngestPipeline::new(
+                constants::PUMP_FUN_PROGRAM_ID.to_string(),
+                token_cache.clone(),
+                db_tx,
+                strategy_tx,
+                sse_tx.clone(),
+                settings_tx.subscribe(),
+                trader.clone(),
+            );
+            let pool_index = pipeline.pool_index();
+            let pools_changed = pipeline.pools_changed();
 
+            let producer_task = tokio::spawn(ingest_laserstream::client::run(
+                settings.helius_laserstream_url.clone(),
+                settings.helius_api_key.clone(),
+                constants::PUMP_FUN_PROGRAM_ID.to_string(),
+                value_tx,
+                live_rx,
+                pool_index.clone(),
+                pools_changed.clone(),
+                settings.reconnect_interval,
+            ));
+
+            tokio::spawn(ingest_laserstream::pipeline::run_pool_subscription_refresh(
+                token_cache.clone(),
+                pool_index.clone(),
+                pools_changed.clone(),
+                constants::PUMP_FUN_PROGRAM_ID.to_string(),
+                settings_tx.subscribe(),
+            ));
+
+            let pipeline_task = tokio::spawn(pipeline.run(value_rx));
+            let db_writer = ingest_laserstream::db_writer::DbWriter::new(db.clone());
+            let db_writer_task = tokio::spawn(db_writer.run(db_rx));
+
+            (
+                pool_index,
+                pools_changed,
+                strategy_rx,
+                producer_task,
+                pipeline_task,
+                db_writer_task,
+            )
+        } else {
+            info!("Ingest transport: WebSocket");
+            let (db_tx, db_rx, strategy_tx, strategy_rx) = ingest::IngestPipeline::channel_pair();
+            let (raw_tx, raw_rx) = tokio::sync::mpsc::channel::<String>(1024);
+
+            let pipeline = ingest::IngestPipeline::new(
+                constants::PUMP_FUN_PROGRAM_ID.to_string(),
+                token_cache.clone(),
+                db_tx,
+                strategy_tx,
+                sse_tx.clone(),
+                settings_tx.subscribe(),
+                trader.clone(),
+            );
+            let pool_index = pipeline.pool_index();
+            let pools_changed = pipeline.pools_changed();
+
+            // The WS task drives its PumpSwap pool subscriptions from the pool→mint
+            // index and re-subscribes, via `pools_changed`, as new tokens migrate.
+            let ws_settings = Arc::new(settings.clone());
+            let producer_task = tokio::spawn(ingest::helius_ws::run(
+                ws_settings,
+                raw_tx,
+                live_rx,
+                pool_index.clone(),
+                pools_changed.clone(),
+            ));
+
+            tokio::spawn(ingest::run_pool_subscription_refresh(
+                token_cache.clone(),
+                pool_index.clone(),
+                pools_changed.clone(),
+                constants::PUMP_FUN_PROGRAM_ID.to_string(),
+                settings_tx.subscribe(),
+            ));
+
+            let pipeline_task = tokio::spawn(pipeline.run(raw_rx));
+            let db_writer = ingest::DbWriter::new(db.clone());
+            let db_writer_task = tokio::spawn(db_writer.run(db_rx));
+
+            (
+                pool_index,
+                pools_changed,
+                strategy_rx,
+                producer_task,
+                pipeline_task,
+                db_writer_task,
+            )
+        };
+
+    // Built after the transport branch so AppState shares the active pipeline's
+    // pool→mint index and migration signal with the HTTP handlers (a token sync
+    // registers a migrated token's pool so live ingest subscribes immediately).
     let app_state = Arc::new(state::AppState::new(
         db.clone(),
         settings.helius_rpc_url.clone(),
@@ -141,36 +239,9 @@ async fn main() -> anyhow::Result<()> {
         trader.clone(),
         tpsl1_cache.clone(),
         tpsl2_cache.clone(),
-        pipeline.pool_index(),
-        pipeline.pools_changed(),
+        pool_index,
+        pools_changed,
     ));
-
-    // The WS task drives its PumpSwap pool subscriptions from the pipeline's
-    // pool→mint index (seeded with migrated tokens) and re-subscribes, via the
-    // `pools_changed` signal, as new tokens migrate.
-    let ws_settings = Arc::new(settings.clone());
-    let ws_task = tokio::spawn(ingest::helius_ws::run(
-        ws_settings,
-        raw_tx,
-        live_rx,
-        pipeline.pool_index(),
-        pipeline.pools_changed(),
-    ));
-
-    // Revival sweep: re-subscribe pools of migrated tokens that become active
-    // again (e.g. after a manual sync), so pruned-as-quiet pools aren't blind.
-    tokio::spawn(ingest::run_pool_subscription_refresh(
-        token_cache.clone(),
-        pipeline.pool_index(),
-        pipeline.pools_changed(),
-        constants::PUMP_FUN_PROGRAM_ID.to_string(),
-        settings_tx.subscribe(),
-    ));
-
-    let pipeline_task = tokio::spawn(pipeline.run(raw_rx));
-
-    let db_writer = ingest::DbWriter::new(db.clone());
-    let db_writer_task = tokio::spawn(db_writer.run(db_rx));
 
     let strategy_runner = strategies::StrategyRunner::new(
         db.clone(),
@@ -237,7 +308,7 @@ async fn main() -> anyhow::Result<()> {
     info!("System running — waiting for events");
 
     tokio::select! {
-        _ = ws_task       => error!("WS task exited unexpectedly"),
+        _ = producer_task => error!("Ingest producer task exited unexpectedly"),
         _ = pipeline_task  => error!("Ingest pipeline exited unexpectedly"),
         _ = db_writer_task  => error!("DbWriter task exited unexpectedly"),
         _ = strategy_task => error!("Strategy runner exited unexpectedly"),

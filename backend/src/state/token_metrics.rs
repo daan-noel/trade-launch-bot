@@ -56,8 +56,13 @@ pub fn metrics_from_state(mint: &str, state: &TokenState, recompute_rugged: bool
 ///    the legacy single-creator check to the whole insider cluster, defeating
 ///    the "40-50 wallets doing fake trades" pattern.
 /// 3. **Creator dump** (legacy): the creator wallet itself net-sold everything.
-pub async fn compute_is_rugged(trade_repo: &TradeRepo, m: &TokenMetricsWrite) -> bool {
-    let last_trade_at = match m.last_trade_at {
+pub async fn compute_is_rugged(
+    trade_repo: &TradeRepo,
+    mint: &str,
+    creator_wallet: &str,
+    last_trade_at: Option<chrono::DateTime<Utc>>,
+) -> bool {
+    let last_trade_at = match last_trade_at {
         Some(ts) => ts,
         None => return false,
     };
@@ -71,19 +76,19 @@ pub async fn compute_is_rugged(trade_repo: &TradeRepo, m: &TokenMetricsWrite) ->
     }
 
     // ── Signal 1: liquidity collapse ─────────────────────────────────────────
-    match trade_repo.real_sol_reserve_extremes(&m.mint).await {
+    match trade_repo.real_sol_reserve_extremes(mint).await {
         Ok(Some((peak, latest))) => {
             if peak >= RUGGED_MIN_PEAK_SOL && latest <= peak * RUGGED_RESERVE_DRAWDOWN_RATIO {
                 return true;
             }
         }
         Ok(None) => {}
-        Err(err) => warn!("rugged reserve check {}: {err}", m.mint),
+        Err(err) => warn!("rugged reserve check {}: {err}", mint),
     }
 
     // ── Signal 2: early-buyer cohort exit ────────────────────────────────────
     match trade_repo
-        .early_buyer_cohort_net(&m.mint, RUGGED_EARLY_SLOT_WINDOW)
+        .early_buyer_cohort_net(mint, RUGGED_EARLY_SLOT_WINDOW)
         .await
     {
         Ok((cohort_bought, cohort_net, total_bought)) => {
@@ -95,21 +100,21 @@ pub async fn compute_is_rugged(trade_repo: &TradeRepo, m: &TokenMetricsWrite) ->
                 return true;
             }
         }
-        Err(err) => warn!("rugged cohort check {}: {err}", m.mint),
+        Err(err) => warn!("rugged cohort check {}: {err}", mint),
     }
 
     // ── Signal 3: creator wallet dump (legacy) ───────────────────────────────
-    if m.creator_wallet.is_empty() {
+    if creator_wallet.is_empty() {
         return false;
     }
 
     match trade_repo
-        .net_token_amount_by_wallet_and_mint(&m.creator_wallet, &m.mint)
+        .net_token_amount_by_wallet_and_mint(creator_wallet, mint)
         .await
     {
         Ok(balance) => balance <= 0.0,
         Err(err) => {
-            warn!("rugged check {}: {err}", m.mint);
+            warn!("rugged check {}: {err}", mint);
             false
         }
     }

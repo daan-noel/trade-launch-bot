@@ -12,6 +12,9 @@ pub struct Settings {
     pub helius_ws_url: String,
     pub helius_rpc_url: String,
     pub helius_sender_url: String,
+    /// LaserStream (Yellowstone gRPC) endpoint, used when
+    /// `INGEST_TRANSPORT=laserstream`. Auth reuses `helius_api_key` via x-token.
+    pub helius_laserstream_url: String,
 
     // --- Solana ---
     pub wallet_private_key: String,
@@ -19,6 +22,8 @@ pub struct Settings {
 
     // --- Helius subscription ---
     pub subscription_method: String,
+    /// Ingest transport: "ws" (default, Atlas WebSocket) or "laserstream" (gRPC).
+    pub ingest_transport: String,
 
     // --- Timing ---
     /// How often to send a WS ping (keepalive)
@@ -49,9 +54,11 @@ impl Settings {
             helius_api_key: api_key,
             helius_rpc_url: required("HELIUS_RPC_URL")?,
             helius_sender_url: required("HELIUS_FAST_SENDER_URL")?,
+            helius_laserstream_url: env_or("HELIUS_LASERSTREAM_URL", ""),
             wallet_private_key: required("WALLET_PRIVATE_KEY")?,
             nonce_accounts: parse_required_list("NONCE_ACCOUNTS")?,
             subscription_method: env_or("SUBSCRIPTION_METHOD", "transactionSubscribe"),
+            ingest_transport: env_or("INGEST_TRANSPORT", "ws"),
             ping_interval: Duration::from_millis(env_parse("PING_INTERVAL", 30_000)?),
             reconnect_interval: Duration::from_millis(env_parse("RECONNECT_INTERVAL", 10_000)?),
             database_url: required("DATABASE_URL")?,

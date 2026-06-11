@@ -4,6 +4,37 @@
 > cost, while keeping the existing pipeline / decoder-downstream / strategy flow
 > intact. WS stays as a toggleable fallback.
 
+## Implementation status (2026-06-11) — IMPLEMENTED, compiles; runtime-validation pending
+
+Built in `backend/src/ingest_laserstream/` (self-contained clone), toggled by
+`INGEST_TRANSPORT=ws|laserstream` (default `ws`). Compiles + binary links on
+Windows; adapter unit test passes.
+
+- **Codegen committed** under `generated/` — no build-time protoc (the
+  `yellowstone-grpc-proto` crate force-builds protoc from C++ via `protobuf-src`,
+  which fails on Windows). Regen via Docker: see `src/ingest_laserstream/proto/README.md`.
+  Runtime deps: `tonic 0.10` + `prost 0.12` + `tokio-stream` (solana resolves to
+  1.18.26).
+- **adapter.rs** turns protobuf `SubscribeUpdateTransaction` into the Helius
+  jsonParsed-shaped `Value`, so the cloned `decoder/` is reused via `decode_result`
+  with no decoder rewrite. (accountKeys = static ++ loaded-writable ++
+  loaded-readonly; base58 `data`; token amount kept as string.)
+- **client.rs** — TLS + `x-token`, Subscribe stream, dynamic pool re-subscribe,
+  reconnect **`from_slot` replay** (proto field 11 added locally; replays from
+  last-seen-slot+1, falls back to live if no progress).
+- **Cloned** pipeline (run consumes a `Value` channel) + db_writer (raw →
+  `raw_transactions_grpc`, migration 0009 + `transaction_grpc_repo`). Reused
+  shared: token_cache, trader, strategy/SSE channels, models, repos, constants,
+  `derive_pump_swap_pool`. `compute_is_rugged` made field-based so both pipelines
+  share it.
+
+Deviations from the original plan: `derive_pump_swap_pool` is reused (not
+duplicated); `from_slot` IS available now (proto extended) rather than deferred;
+the adapter rebuilds a `Value` (small alloc) — native protobuf decode is a future
+optimization. Remaining: fill `HELIUS_LASERSTREAM_URL` + region, run with
+`INGEST_TRANSPORT=laserstream`, compare decoded trades vs WS; backfill reduction
+(#1) on `token_sync` untouched.
+
 ## Context — current state
 
 - `backend/src/ingest/helius_ws.rs` opens a WS (`tokio_tungstenite`) to Helius

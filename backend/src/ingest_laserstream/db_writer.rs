@@ -10,7 +10,7 @@ use crate::{
     state::token_metrics::compute_is_rugged,
     storage::repositories::{
         token_info_repo::TokenInfoRepo, token_repo::TokenRepo, trade_repo::TradeRepo,
-        transaction_repo::TransactionRepo, wallet_repo::WalletRepo,
+        transaction_grpc_repo::TransactionGrpcRepo, wallet_repo::WalletRepo,
     },
 };
 
@@ -89,7 +89,7 @@ impl DbWriter {
         let token_repo = TokenRepo::new(self.pool.clone());
         let trade_repo = TradeRepo::new(self.pool.clone());
         let wallet_repo = WalletRepo::new(self.pool.clone());
-        let tx_repo = TransactionRepo::new(self.pool.clone());
+        let tx_repo = TransactionGrpcRepo::new(self.pool.clone());
         let info_repo = TokenInfoRepo::new(self.pool.clone());
 
         for op in ops {
