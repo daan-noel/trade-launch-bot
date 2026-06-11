@@ -6,7 +6,7 @@ use crate::{
         RUGGED_COHORT_EXIT_RATIO, RUGGED_COHORT_MIN_SHARE, RUGGED_EARLY_SLOT_WINDOW,
         RUGGED_MIN_PEAK_SOL, RUGGED_RESERVE_DRAWDOWN_RATIO, RUGGED_STALE_SECONDS,
     },
-    ingest::db_writer::TokenMetricsWrite,
+    ingest_laserstream::db_writer::TokenMetricsWrite,
     state::token_cache::TokenState,
     storage::repositories::trade_repo::TradeRepo,
 };
@@ -25,7 +25,7 @@ pub fn recompute_token_state(state: &mut TokenState) {
     *state = fresh;
 }
 
-pub fn metrics_from_state(mint: &str, state: &TokenState, recompute_rugged: bool) -> TokenMetricsWrite {
+pub fn metrics_from_state(mint: &str, state: &TokenState) -> TokenMetricsWrite {
     let age_seconds = Utc::now()
         .signed_duration_since(state.token.created_at)
         .num_seconds();
@@ -41,7 +41,9 @@ pub fn metrics_from_state(mint: &str, state: &TokenState, recompute_rugged: bool
         current_price: state.current_price,
         is_migrated: state.is_migrated,
         creator_wallet: state.token.creator_wallet.clone(),
-        recompute_rugged,
+        // token_sync's write path computes is_rugged itself (see write_metrics),
+        // so this carrier flag is irrelevant here; only the live DbWriter reads it.
+        recompute_rugged: false,
     }
 }
 

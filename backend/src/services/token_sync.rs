@@ -15,7 +15,7 @@ use tokio::sync::{mpsc, Notify};
 
 use crate::{
     config::constants::{PUMP_SWAP_PROGRAM_ID, WSOL_MINT},
-    ingest::decoder::{DecodeOutput, HeliusDecoder},
+    ingest_laserstream::decoder::{DecodeOutput, HeliusDecoder},
     models::{
         events::InternalEvent,
         token::Token,
@@ -512,7 +512,7 @@ pub async fn run_token_sync(
 
     token_metrics::recompute_token_state(&mut state);
 
-    let metrics = metrics_from_state(&mint, &state, true);
+    let metrics = metrics_from_state(&mint, &state);
     let rugged = token_metrics::compute_is_rugged(
         &trade_repo,
         &metrics.mint,
@@ -1059,7 +1059,7 @@ fn sort_sync_events(events: &mut [InternalEvent]) {
 
 async fn write_metrics(
     info_repo: &TokenInfoRepo,
-    m: &crate::ingest::db_writer::TokenMetricsWrite,
+    m: &crate::ingest_laserstream::db_writer::TokenMetricsWrite,
     is_rugged: bool,
 ) -> Result<(), SyncError> {
     info_repo
@@ -1088,7 +1088,7 @@ mod amm_verification {
     //!   HELIUS_RPC_URL="<url>" cargo test -p backend amm_pool_derivation -- --ignored --nocapture
     use super::*;
     use crate::config::constants::{PUMP_FUN_PROGRAM_ID, PUMP_SWAP_PROGRAM_ID, WSOL_MINT};
-    use crate::ingest::decoder::HeliusDecoder;
+    use crate::ingest_laserstream::decoder::HeliusDecoder;
     use crate::services::helius_rpc::wrap_transaction_result;
     use serde_json::{json, Value};
 
