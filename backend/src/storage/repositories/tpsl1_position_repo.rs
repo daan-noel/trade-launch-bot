@@ -1,4 +1,4 @@
-impl PositionRepo {
+impl Tpsl1PositionRepo {
     /// Update exit fields for an existing position (exit_tx, exit_price, exit_time, status).
     pub async fn update_exit(
         &self,
@@ -9,7 +9,7 @@ impl PositionRepo {
     ) -> anyhow::Result<()> {
         sqlx::query(
             r#"
-            UPDATE positions
+            UPDATE tpsl1_real_positions
             SET exit_tx = $2, exit_price = $3, exit_time = $4, status = 'End', updated_at = $5
             WHERE id = $1
             "#,
@@ -29,7 +29,7 @@ impl PositionRepo {
     pub async fn revert_exit_pending(&self, position_id: Uuid) -> anyhow::Result<()> {
         sqlx::query(
             r#"
-            UPDATE positions SET status = 'Holding', updated_at = $2 WHERE id = $1
+            UPDATE tpsl1_real_positions SET status = 'Holding', updated_at = $2 WHERE id = $1
             "#,
         )
         .bind(position_id)
@@ -41,7 +41,7 @@ impl PositionRepo {
 
     /// Delete a position by ID.
     pub async fn delete_position(&self, position_id: Uuid) -> anyhow::Result<()> {
-        sqlx::query("DELETE FROM positions WHERE id = $1")
+        sqlx::query("DELETE FROM tpsl1_real_positions WHERE id = $1")
             .bind(position_id)
             .execute(&self.pool)
             .await?;
@@ -54,11 +54,11 @@ use uuid::Uuid;
 
 use crate::models::{Position, PositionStatus};
 
-pub struct PositionRepo {
+pub struct Tpsl1PositionRepo {
     pool: PgPool,
 }
 
-impl Clone for PositionRepo {
+impl Clone for Tpsl1PositionRepo {
     fn clone(&self) -> Self {
         Self {
             pool: self.pool.clone(),
@@ -140,7 +140,7 @@ fn position_status_str(s: PositionStatus) -> &'static str {
 // Repo
 // ---------------------------------------------------------------------------
 
-impl PositionRepo {
+impl Tpsl1PositionRepo {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
@@ -156,7 +156,7 @@ impl PositionRepo {
     ) -> anyhow::Result<()> {
         sqlx::query(
             r#"
-            UPDATE positions
+            UPDATE tpsl1_real_positions
             SET entry_tx = $2, entry_amount = $3, entry_price = $4, entry_time = $5, updated_at = $6
             WHERE id = $1
             "#,
@@ -177,7 +177,7 @@ impl PositionRepo {
     pub async fn insert(&self, position: &Position) -> anyhow::Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO positions
+            INSERT INTO tpsl1_real_positions
                 (id, mint, wallet, token_program_id, entry_price, exit_price, entry_tx, exit_tx,
                  status, strategy, rule_id, entry_amount, exit_amount,
                  entry_time, exit_time, exit_reason, created_at, updated_at)
@@ -212,7 +212,7 @@ impl PositionRepo {
     pub async fn update(&self, position: &Position) -> anyhow::Result<()> {
         sqlx::query(
             r#"
-            UPDATE positions
+            UPDATE tpsl1_real_positions
             SET exit_price = $1, exit_tx = $2, status = $3, exit_amount = $4,
                 exit_time = $5, exit_reason = $6, updated_at = $7
             WHERE id = $8
@@ -239,7 +239,7 @@ impl PositionRepo {
                  SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
                    status, strategy, rule_id, entry_amount, exit_amount,
                    entry_time, exit_time, exit_reason, created_at, updated_at
-            FROM positions
+            FROM tpsl1_real_positions
             WHERE mint = $1 AND status = 'Holding'
             ORDER BY created_at DESC
             "#,
@@ -258,7 +258,7 @@ impl PositionRepo {
                  SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
                    status, strategy, rule_id, entry_amount, exit_amount,
                    entry_time, exit_time, exit_reason, created_at, updated_at
-            FROM positions
+            FROM tpsl1_real_positions
             WHERE wallet = $1 AND status = 'Holding'
             ORDER BY created_at DESC
             "#,
@@ -277,7 +277,7 @@ impl PositionRepo {
             SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
                    status, strategy, rule_id, entry_amount, exit_amount,
                    entry_time, exit_time, exit_reason, created_at, updated_at
-            FROM positions
+            FROM tpsl1_real_positions
             WHERE id = $1
             "#,
         )
@@ -295,7 +295,7 @@ impl PositionRepo {
                 SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
                         status, strategy, rule_id, entry_amount, exit_amount,
                    entry_time, exit_time, exit_reason, created_at, updated_at
-                FROM positions
+                FROM tpsl1_real_positions
                 WHERE rule_id = $1
                 ORDER BY created_at DESC
                 "#,
@@ -319,7 +319,7 @@ impl PositionRepo {
         let cutoff = chrono::Utc::now() - chrono::Duration::from_std(stale_after)?;
         let result = sqlx::query(
             r#"
-            UPDATE positions
+            UPDATE tpsl1_real_positions
             SET status = 'ExitFailed', updated_at = $1
                 WHERE status = 'ExitPending' AND updated_at < $2
             "#,
@@ -339,7 +339,7 @@ impl PositionRepo {
             SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
                    status, strategy, rule_id, entry_amount, exit_amount,
                    entry_time, exit_time, exit_reason, created_at, updated_at
-            FROM positions
+            FROM tpsl1_real_positions
             WHERE strategy = $1
             ORDER BY created_at DESC
             "#,
@@ -358,7 +358,7 @@ impl PositionRepo {
             SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
                    status, strategy, rule_id, entry_amount, exit_amount,
                    entry_time, exit_time, exit_reason, created_at, updated_at
-            FROM positions
+            FROM tpsl1_real_positions
             WHERE status = 'Holding'
             ORDER BY created_at DESC
             "#,
@@ -374,7 +374,7 @@ impl PositionRepo {
         let rows: Vec<(Uuid, i64)> = sqlx::query_as(
             r#"
             SELECT rule_id, COUNT(*)::bigint
-            FROM positions
+            FROM tpsl1_real_positions
             GROUP BY rule_id
             "#,
         )

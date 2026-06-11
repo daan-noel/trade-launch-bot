@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::models::{PaperRun, PaperRunStatus, Position, PositionStatus, StrategyTPSLRule};
 use crate::storage::repositories::{
     tpsl2_paper_trading_repo::Tpsl2PaperTradingRepo, tpsl2_position_repo::Tpsl2PositionRepo,
-    strategy_tpsl2_rule_repo::StrategyTPSL2RuleRepo,
+    tpsl2_strategy_rule_repo::Tpsl2StrategyRuleRepo,
 };
 
 /// Pointer to a paper rule's current run — the run new paper positions are
@@ -49,7 +49,7 @@ impl Tpsl2RuntimeCache {
     }
 
     pub async fn load_from_db(&self, pool: &PgPool) -> anyhow::Result<()> {
-        let rule_repo = StrategyTPSL2RuleRepo::new(pool.clone());
+        let rule_repo = Tpsl2StrategyRuleRepo::new(pool.clone());
         let position_repo = Tpsl2PositionRepo::new(pool.clone());
         let paper_repo = Tpsl2PaperTradingRepo::new(pool.clone());
 
@@ -100,7 +100,7 @@ impl Tpsl2RuntimeCache {
     }
 
     /// Rebuild the holding index (and holding counts) from both the real
-    /// `positions` table (excluding paper-rule rows) and `paper_positions`.
+    /// `tpsl2_real_positions` table (excluding paper-rule rows) and `tpsl2_paper_positions`.
     async fn load_holdings(&self, pool: &PgPool) -> anyhow::Result<()> {
         let paper_ids = self.paper_rule_ids();
         let mut all: Vec<Position> = Tpsl2PositionRepo::new(pool.clone())
@@ -115,7 +115,7 @@ impl Tpsl2RuntimeCache {
     }
 
     pub async fn reload_rules(&self, pool: &PgPool) -> anyhow::Result<()> {
-        let rules = StrategyTPSL2RuleRepo::new(pool.clone()).find_all().await?;
+        let rules = Tpsl2StrategyRuleRepo::new(pool.clone()).find_all().await?;
         self.set_rules(rules);
         Ok(())
     }
@@ -170,6 +170,17 @@ impl Tpsl2RuntimeCache {
             .get(mint)
             .map(|e| e.value().clone())
             .unwrap_or_default()
+    }
+
+    /// Snapshot of every Holding position across all mints. Used by the
+    /// time-driven exit sweep, which must scan all open positions on each tick
+    /// (not just those of a mint that just traded). Clones out so no DashMap
+    /// guard is held across the caller's awaits.
+    pub fn all_holding_positions(&self) -> Vec<Position> {
+        self.holding_by_mint
+            .iter()
+            .flat_map(|e| e.value().clone())
+            .collect()
     }
 
     pub fn holding_count_by_rule(&self, rule_id: Uuid) -> i64 {

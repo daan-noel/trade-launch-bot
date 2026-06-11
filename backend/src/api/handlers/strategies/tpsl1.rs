@@ -8,7 +8,7 @@ use crate::{
     models::{Position, StrategyTPSLRule},
     state::app_state::AppState,
     storage::repositories::{
-        paper_trading_repo::PaperTradingRepo, strategy_tpsl1_rule_repo::StrategyTPSL1RuleRepo,
+        tpsl1_paper_trading_repo::Tpsl1PaperTradingRepo, tpsl1_strategy_rule_repo::Tpsl1StrategyRuleRepo,
         token_repo::TokenRepo,
     },
     strategies::tpsl_sniper_1::{
@@ -135,7 +135,7 @@ pub struct UpdateRuleRequest {
 
 /// List all TPSL rules
 pub async fn list_tpsl_rules(app_state: web::Data<Arc<AppState>>) -> impl Responder {
-    let repo = StrategyTPSL1RuleRepo::new(app_state.db.clone());
+    let repo = Tpsl1StrategyRuleRepo::new(app_state.db.clone());
 
     match repo.find_all().await {
         Ok(rules) => {
@@ -155,7 +155,7 @@ pub async fn get_tpsl_rule(
     app_state: web::Data<Arc<AppState>>,
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
-    let repo = StrategyTPSL1RuleRepo::new(app_state.db.clone());
+    let repo = Tpsl1StrategyRuleRepo::new(app_state.db.clone());
     let rule_id = rule_id.into_inner();
 
     match repo.find_by_id(rule_id).await {
@@ -195,7 +195,7 @@ pub async fn create_tpsl_rule(
         req.p_liquidity_drop_pct,
     );
 
-    let repo = StrategyTPSL1RuleRepo::new(app_state.db.clone());
+    let repo = Tpsl1StrategyRuleRepo::new(app_state.db.clone());
 
     match repo.insert(&rule).await {
         Ok(_) => {
@@ -219,7 +219,7 @@ pub async fn update_tpsl_rule(
     req: web::Json<UpdateRuleRequest>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
-    let repo = StrategyTPSL1RuleRepo::new(app_state.db.clone());
+    let repo = Tpsl1StrategyRuleRepo::new(app_state.db.clone());
 
     match repo.find_by_id(rule_id).await {
         Ok(Some(mut rule)) => {
@@ -344,7 +344,7 @@ pub async fn delete_tpsl_rule(
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
-    let repo = StrategyTPSL1RuleRepo::new(app_state.db.clone());
+    let repo = Tpsl1StrategyRuleRepo::new(app_state.db.clone());
 
     match repo.delete(rule_id).await {
         Ok(_) => {
@@ -378,13 +378,13 @@ pub struct MatchedTokenResult {
 
 /// Return all tokens in the database that satisfy a rule's entry criteria.
 ///
-/// GET /api/strategies/tpsl/rules/{rule_id}/matched
+/// GET /api/strategies/tpsl1/rules/{rule_id}/matched
 pub async fn get_matched_tokens(
     app_state: web::Data<Arc<AppState>>,
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
-    let rule_repo = StrategyTPSL1RuleRepo::new(app_state.db.clone());
+    let rule_repo = Tpsl1StrategyRuleRepo::new(app_state.db.clone());
     let token_repo = TokenRepo::new(app_state.db.clone());
 
     let rule = match rule_repo.find_by_id(rule_id).await {
@@ -432,7 +432,7 @@ pub async fn get_matched_tokens(
 
 /// Simulate a TPSL rule against all historically matched tokens.
 ///
-/// GET /api/strategies/tpsl/rules/{rule_id}/simulate
+/// GET /api/strategies/tpsl1/rules/{rule_id}/simulate
 pub async fn simulate_tpsl_rule(
     app_state: web::Data<Arc<AppState>>,
     rule_id: web::Path<Uuid>,
@@ -482,14 +482,14 @@ pub struct PaperResultResponse {
 /// Aggregate the latest paper-test run's recorded positions into a
 /// simulation-shaped result.
 ///
-/// GET /api/strategies/tpsl/rules/{rule_id}/paper-result
+/// GET /api/strategies/tpsl1/rules/{rule_id}/paper-result
 pub async fn paper_result_tpsl_rule(
     app_state: web::Data<Arc<AppState>>,
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
-    let rule_repo = StrategyTPSL1RuleRepo::new(app_state.db.clone());
-    let paper_repo = PaperTradingRepo::new(app_state.db.clone());
+    let rule_repo = Tpsl1StrategyRuleRepo::new(app_state.db.clone());
+    let paper_repo = Tpsl1PaperTradingRepo::new(app_state.db.clone());
 
     let rule = match rule_repo.find_by_id(rule_id).await {
         Ok(Some(r)) => r,

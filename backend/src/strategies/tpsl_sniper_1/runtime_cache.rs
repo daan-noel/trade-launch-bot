@@ -7,8 +7,8 @@ use uuid::Uuid;
 
 use crate::models::{PaperRun, PaperRunStatus, Position, PositionStatus, StrategyTPSLRule};
 use crate::storage::repositories::{
-    paper_trading_repo::PaperTradingRepo, position_repo::PositionRepo,
-    strategy_tpsl1_rule_repo::StrategyTPSL1RuleRepo,
+    tpsl1_paper_trading_repo::Tpsl1PaperTradingRepo, tpsl1_position_repo::Tpsl1PositionRepo,
+    tpsl1_strategy_rule_repo::Tpsl1StrategyRuleRepo,
 };
 
 /// Pointer to a paper rule's current run — the run new paper positions are
@@ -49,9 +49,9 @@ impl Tpsl1RuntimeCache {
     }
 
     pub async fn load_from_db(&self, pool: &PgPool) -> anyhow::Result<()> {
-        let rule_repo = StrategyTPSL1RuleRepo::new(pool.clone());
-        let position_repo = PositionRepo::new(pool.clone());
-        let paper_repo = PaperTradingRepo::new(pool.clone());
+        let rule_repo = Tpsl1StrategyRuleRepo::new(pool.clone());
+        let position_repo = Tpsl1PositionRepo::new(pool.clone());
+        let paper_repo = Tpsl1PaperTradingRepo::new(pool.clone());
 
         self.set_rules(rule_repo.find_all().await?);
         // Holding index (real + paper) — rebuilt from both tables.
@@ -100,22 +100,22 @@ impl Tpsl1RuntimeCache {
     }
 
     /// Rebuild the holding index (and holding counts) from both the real
-    /// `positions` table (excluding paper-rule rows) and `paper_positions`.
+    /// `tpsl1_real_positions` table (excluding paper-rule rows) and `tpsl1_paper_positions`.
     async fn load_holdings(&self, pool: &PgPool) -> anyhow::Result<()> {
         let paper_ids = self.paper_rule_ids();
-        let mut all: Vec<Position> = PositionRepo::new(pool.clone())
+        let mut all: Vec<Position> = Tpsl1PositionRepo::new(pool.clone())
             .find_all_holding()
             .await?
             .into_iter()
             .filter(|p| !paper_ids.contains(&p.rule_id))
             .collect();
-        all.extend(PaperTradingRepo::new(pool.clone()).find_all_holding().await?);
+        all.extend(Tpsl1PaperTradingRepo::new(pool.clone()).find_all_holding().await?);
         self.set_holding_positions(all);
         Ok(())
     }
 
     pub async fn reload_rules(&self, pool: &PgPool) -> anyhow::Result<()> {
-        let rules = StrategyTPSL1RuleRepo::new(pool.clone()).find_all().await?;
+        let rules = Tpsl1StrategyRuleRepo::new(pool.clone()).find_all().await?;
         self.set_rules(rules);
         Ok(())
     }
@@ -172,6 +172,17 @@ impl Tpsl1RuntimeCache {
             .unwrap_or_default()
     }
 
+    /// Snapshot of every Holding position across all mints. Used by the
+    /// time-driven exit sweep, which must scan all open positions on each tick
+    /// (not just those of a mint that just traded). Clones out so no DashMap
+    /// guard is held across the caller's awaits.
+    pub fn all_holding_positions(&self) -> Vec<Position> {
+        self.holding_by_mint
+            .iter()
+            .flat_map(|e| e.value().clone())
+            .collect()
+    }
+
     pub fn holding_count_by_rule(&self, rule_id: Uuid) -> i64 {
         self.holding_count_by_rule
             .get(&rule_id)
@@ -209,7 +220,7 @@ impl Tpsl1RuntimeCache {
         rule_id: Uuid,
         max_total_tokens: Option<u64>,
     ) -> anyhow::Result<PaperRun> {
-        let run = PaperTradingRepo::new(pool.clone())
+        let run = Tpsl1PaperTradingRepo::new(pool.clone())
             .start_run(rule_id, max_total_tokens)
             .await?;
         // The prior run's positions were deleted in the DB; drop any that linger
@@ -230,7 +241,7 @@ impl Tpsl1RuntimeCache {
     /// Mark a paper rule's current run as Stopped (manual deactivation). Open
     /// positions are left to drain — `on_trade_executed` still exits them.
     pub async fn stop_paper_run(&self, pool: &PgPool, rule_id: Uuid) -> anyhow::Result<()> {
-        let repo = PaperTradingRepo::new(pool.clone());
+        let repo = Tpsl1PaperTradingRepo::new(pool.clone());
         if let Some(run) = repo.current_run(rule_id).await? {
             if run.status == PaperRunStatus::Running {
                 repo.mark_run_status(run.id, PaperRunStatus::Stopped, true).await?;
@@ -246,7 +257,7 @@ impl Tpsl1RuntimeCache {
         pool: &PgPool,
         rule_id: Uuid,
     ) -> anyhow::Result<Option<PaperRun>> {
-        let repo = PaperTradingRepo::new(pool.clone());
+        let repo = Tpsl1PaperTradingRepo::new(pool.clone());
         if let Some(run) = repo.current_run(rule_id).await? {
             if run.status == PaperRunStatus::Running {
                 repo.mark_run_status(run.id, PaperRunStatus::Finished, true).await?;

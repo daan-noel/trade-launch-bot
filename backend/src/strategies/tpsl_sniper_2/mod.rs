@@ -1,5 +1,5 @@
 //! `tpsl_sniper_2` — a clone of `tpsl_sniper_1`, structurally identical but fully
-//! separate (own DB tables `strategy_TPSL2_rules` / `tpsl2_positions` /
+//! separate (own DB tables `tpsl2_strategy_rules` / `tpsl2_real_positions` /
 //! `tpsl2_paper_*`, own runtime cache, own API surface under `/strategies/tpsl2`).
 //! It exists so the N1–N10 sniper features can be developed here without touching
 //! the live `tpsl_sniper_1` strategy.

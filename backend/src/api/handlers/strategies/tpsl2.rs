@@ -8,7 +8,7 @@ use crate::{
     models::{Position, StrategyTPSLRule},
     state::app_state::AppState,
     storage::repositories::{
-        tpsl2_paper_trading_repo::Tpsl2PaperTradingRepo, strategy_tpsl2_rule_repo::StrategyTPSL2RuleRepo,
+        tpsl2_paper_trading_repo::Tpsl2PaperTradingRepo, tpsl2_strategy_rule_repo::Tpsl2StrategyRuleRepo,
         token_repo::TokenRepo,
     },
     strategies::tpsl_sniper_2::{
@@ -135,7 +135,7 @@ pub struct UpdateRuleRequest {
 
 /// List all TPSL rules
 pub async fn list_tpsl_rules(app_state: web::Data<Arc<AppState>>) -> impl Responder {
-    let repo = StrategyTPSL2RuleRepo::new(app_state.db.clone());
+    let repo = Tpsl2StrategyRuleRepo::new(app_state.db.clone());
 
     match repo.find_all().await {
         Ok(rules) => {
@@ -155,7 +155,7 @@ pub async fn get_tpsl_rule(
     app_state: web::Data<Arc<AppState>>,
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
-    let repo = StrategyTPSL2RuleRepo::new(app_state.db.clone());
+    let repo = Tpsl2StrategyRuleRepo::new(app_state.db.clone());
     let rule_id = rule_id.into_inner();
 
     match repo.find_by_id(rule_id).await {
@@ -195,7 +195,7 @@ pub async fn create_tpsl_rule(
         req.p_liquidity_drop_pct,
     );
 
-    let repo = StrategyTPSL2RuleRepo::new(app_state.db.clone());
+    let repo = Tpsl2StrategyRuleRepo::new(app_state.db.clone());
 
     match repo.insert(&rule).await {
         Ok(_) => {
@@ -219,7 +219,7 @@ pub async fn update_tpsl_rule(
     req: web::Json<UpdateRuleRequest>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
-    let repo = StrategyTPSL2RuleRepo::new(app_state.db.clone());
+    let repo = Tpsl2StrategyRuleRepo::new(app_state.db.clone());
 
     match repo.find_by_id(rule_id).await {
         Ok(Some(mut rule)) => {
@@ -344,7 +344,7 @@ pub async fn delete_tpsl_rule(
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
-    let repo = StrategyTPSL2RuleRepo::new(app_state.db.clone());
+    let repo = Tpsl2StrategyRuleRepo::new(app_state.db.clone());
 
     match repo.delete(rule_id).await {
         Ok(_) => {
@@ -384,7 +384,7 @@ pub async fn get_matched_tokens(
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
-    let rule_repo = StrategyTPSL2RuleRepo::new(app_state.db.clone());
+    let rule_repo = Tpsl2StrategyRuleRepo::new(app_state.db.clone());
     let token_repo = TokenRepo::new(app_state.db.clone());
 
     let rule = match rule_repo.find_by_id(rule_id).await {
@@ -488,7 +488,7 @@ pub async fn paper_result_tpsl_rule(
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
-    let rule_repo = StrategyTPSL2RuleRepo::new(app_state.db.clone());
+    let rule_repo = Tpsl2StrategyRuleRepo::new(app_state.db.clone());
     let paper_repo = Tpsl2PaperTradingRepo::new(app_state.db.clone());
 
     let rule = match rule_repo.find_by_id(rule_id).await {
@@ -660,107 +660,5 @@ mod tests {
         p.entry_time = Some(Utc::now());
         let r = paper_position_to_sim_result(p, &HashMap::new());
         assert_eq!(r.exit_reason, "Open");
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Rule positions (tpsl2 — served from tpsl2_positions / tpsl2_paper_* tables)
-// ---------------------------------------------------------------------------
-
-#[derive(Serialize)]
-pub struct PositionResponse {
-    pub id: Uuid,
-    pub mint: String,
-    pub wallet: String,
-    pub entry_price: f64,
-    pub exit_price: Option<f64>,
-    pub entry_tx: String,
-    pub exit_tx: Option<String>,
-    pub status: String,
-    pub strategy: String,
-    pub rule_id: Uuid,
-    pub entry_amount: f64,
-    pub exit_amount: Option<f64>,
-    pub pnl_percent: Option<f64>,
-    pub entry_time: Option<DateTime<Utc>>,
-    pub exit_time: Option<DateTime<Utc>>,
-    pub exit_reason: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-impl From<Position> for PositionResponse {
-    fn from(p: Position) -> Self {
-        let pnl_percent = p.pnl_percentage();
-        let exit_reason = p.exit_reason_or_derived();
-        Self {
-            id: p.id,
-            mint: p.mint,
-            wallet: p.wallet,
-            entry_price: p.entry_price,
-            exit_price: p.exit_price,
-            entry_tx: p.entry_tx,
-            exit_tx: p.exit_tx,
-            status: p.status.to_string(),
-            strategy: p.strategy,
-            rule_id: p.rule_id,
-            entry_amount: p.entry_amount,
-            exit_amount: p.exit_amount,
-            pnl_percent,
-            entry_time: p.entry_time,
-            exit_time: p.exit_time,
-            exit_reason,
-            created_at: p.created_at,
-            updated_at: p.updated_at,
-        }
-    }
-}
-
-/// Load a rule's positions from the correct tpsl2 table (paper rules from the
-/// current paper run, real rules from `tpsl2_positions`).
-pub(crate) async fn load_rule_positions(
-    db: &sqlx::PgPool,
-    rule_id: Uuid,
-) -> anyhow::Result<Vec<Position>> {
-    let is_paper = match crate::storage::repositories::strategy_tpsl2_rule_repo::StrategyTPSL2RuleRepo::new(db.clone())
-        .find_by_id(rule_id)
-        .await?
-    {
-        Some(rule) => rule.trade_mode == "paper",
-        None => false,
-    };
-
-    if is_paper {
-        let paper_repo =
-            crate::storage::repositories::tpsl2_paper_trading_repo::Tpsl2PaperTradingRepo::new(db.clone());
-        match paper_repo.current_run(rule_id).await? {
-            Some(run) => paper_repo.find_by_run(run.id).await,
-            None => Ok(Vec::new()),
-        }
-    } else {
-        crate::storage::repositories::tpsl2_position_repo::Tpsl2PositionRepo::new(db.clone())
-            .find_by_rule(rule_id)
-            .await
-    }
-}
-
-/// Get all positions for a specific TPSL2 rule (by rule_id).
-/// GET /api/strategies/tpsl2/rules/{rule_id}/positions
-pub async fn get_positions_by_rule(
-    app_state: web::Data<Arc<AppState>>,
-    rule_id: web::Path<Uuid>,
-) -> impl Responder {
-    let rule_id = rule_id.into_inner();
-    match load_rule_positions(&app_state.db, rule_id).await {
-        Ok(positions) => {
-            let responses: Vec<PositionResponse> =
-                positions.into_iter().map(PositionResponse::from).collect();
-            HttpResponse::Ok().json(responses)
-        }
-        Err(e) => {
-            tracing::error!("Failed to get positions for rule {rule_id}: {e}");
-            HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "Failed to get positions"}))
-        }
     }
 }

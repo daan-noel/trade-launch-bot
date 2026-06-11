@@ -189,6 +189,62 @@ impl TPSL1StrategyHandler {
         ExitReason::from_sim_reason(&exit.3)
     }
 
+    /// Wall-clock exit gate. Unlike [`check_exit`] — which only re-evaluates when
+    /// a trade prints — this is driven by a timer and measured against `now`, so
+    /// the deadline-style exits fire even when a token has gone silent and no new
+    /// trade is arriving. It checks **only** the time-based exits, E2 TimeStop and
+    /// E3 Stall, both measured from the position's recorded entry. Price-based
+    /// exits (TP/SL/Trailing/Liquidity) can only change on a trade, so they stay
+    /// on the trade-driven path and are deliberately excluded here — that keeps the
+    /// two paths non-overlapping and avoids double-firing.
+    ///
+    /// Stall outranks TimeStop, matching `simulate_exit`'s ladder order. Returns
+    /// the triggering reason, or `None` if no time-based condition is due.
+    pub fn check_time_exit(
+        &self,
+        position: &Position,
+        trades: &[crate::models::trade::Trade],
+        rule: &StrategyTPSLRule,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Option<ExitReason> {
+        if position.status != crate::models::PositionStatus::Holding {
+            return None;
+        }
+        // No recorded entry yet ⇒ no clock to measure from (mirrors `check_exit`).
+        if position.entry_price <= 0.0 {
+            return None;
+        }
+        let entry_time = position.entry_time?;
+
+        let time_stop_secs = ignore_zero_u64(rule.p_time_stop_secs);
+        let stall_secs = ignore_zero_u64(rule.p_stall_secs);
+        if time_stop_secs.is_none() && stall_secs.is_none() {
+            return None;
+        }
+
+        // E3 · Stall: derive the last new-higher-high time from history, then
+        // measure the flatline against `now` (not the last trade's time).
+        if let Some(secs) = stall_secs {
+            let (_, last_higher_high_time) = super::simulation_tpsl::peak_state_since_entry(
+                trades,
+                entry_time,
+                position.entry_price,
+            );
+            if (now - last_higher_high_time).num_seconds() >= secs as i64 {
+                return Some(ExitReason::Stall);
+            }
+        }
+
+        // E2 · Time stop: held past the deadline. Lowest priority of the two.
+        if let Some(secs) = time_stop_secs {
+            if now >= entry_time + chrono::Duration::seconds(secs as i64) {
+                return Some(ExitReason::TimeStop);
+            }
+        }
+
+        None
+    }
+
     /// Get a specific rule by ID.
     pub fn get_rule(&self, rule_id: Uuid) -> Option<&StrategyTPSLRule> {
         self.rules.iter().find(|r| r.id == rule_id)
@@ -467,5 +523,80 @@ mod tests {
         pos.status = PositionStatus::ExitPending;
         let trades = vec![buy(0.1, 2, 1)];
         assert_eq!(check(&pos, &trades, &rule), None);
+    }
+
+    // ── Time-driven exit gate (`check_time_exit`) ────────────────────────────
+
+    fn check_time(
+        pos: &Position,
+        trades: &[Trade],
+        rule: &StrategyTPSLRule,
+        now: DateTime<Utc>,
+    ) -> Option<ExitReason> {
+        TPSL1StrategyHandler::new(vec![rule.clone()]).check_time_exit(pos, trades, rule, now)
+    }
+
+    // The core bug fix: a token whose last trade was long ago still time-stops
+    // out, because the deadline is measured against `now`, not the last trade.
+    // Last trade at +30s; time stop 300s; now = entry + 10 min ⇒ TimeStop.
+    #[test]
+    fn time_exit_fires_after_silence() {
+        let rule = rule_with(1000.0, 90.0, None, Some(300), None, None);
+        let pos = holding(1.0, rule.id);
+        let trades = vec![buy(1.0, 2, 30)]; // one trade then silence
+        let now = base_time() + Duration::seconds(600);
+        assert_eq!(check_time(&pos, &trades, &rule, now), Some(ExitReason::TimeStop));
+    }
+
+    // Stall measured against `now`: peak at +10s, then silence; with stall 60s
+    // and now = entry + 5 min, the flatline trips even with no further trades.
+    #[test]
+    fn time_exit_stall_fires_during_silence() {
+        let rule = rule_with(1000.0, 90.0, None, None, Some(60), None);
+        let pos = holding(1.0, rule.id);
+        let trades = vec![buy(2.0, 2, 10)]; // new high at +10s, then quiet
+        let now = base_time() + Duration::seconds(300);
+        assert_eq!(check_time(&pos, &trades, &rule, now), Some(ExitReason::Stall));
+    }
+
+    // Stall outranks TimeStop when both are due on the same sweep (matches the
+    // `simulate_exit` ladder order).
+    #[test]
+    fn time_exit_stall_outranks_time_stop() {
+        let rule = rule_with(1000.0, 90.0, None, Some(100), Some(60), None);
+        let pos = holding(1.0, rule.id);
+        let trades = vec![buy(2.0, 2, 10)];
+        let now = base_time() + Duration::seconds(300);
+        assert_eq!(check_time(&pos, &trades, &rule, now), Some(ExitReason::Stall));
+    }
+
+    // Before either deadline, nothing fires.
+    #[test]
+    fn time_exit_inert_before_deadline() {
+        let rule = rule_with(1000.0, 90.0, None, Some(300), Some(300), None);
+        let pos = holding(1.0, rule.id);
+        let trades = vec![buy(1.0, 2, 30)];
+        let now = base_time() + Duration::seconds(100);
+        assert_eq!(check_time(&pos, &trades, &rule, now), None);
+    }
+
+    // No time-based params set ⇒ the gate is a no-op regardless of elapsed time.
+    #[test]
+    fn time_exit_inert_when_unconfigured() {
+        let rule = rule_with(50.0, 20.0, Some(30.0), None, None, Some(50.0));
+        let pos = holding(1.0, rule.id);
+        let trades = vec![buy(1.0, 2, 30)];
+        let now = base_time() + Duration::seconds(86_400);
+        assert_eq!(check_time(&pos, &trades, &rule, now), None);
+    }
+
+    // Entry not recorded yet (entry_time None) ⇒ no clock, no exit.
+    #[test]
+    fn time_exit_waits_for_recorded_entry() {
+        let rule = rule_with(1000.0, 90.0, None, Some(60), None, None);
+        let mut pos = holding(1.0, rule.id);
+        pos.entry_time = None;
+        let now = base_time() + Duration::seconds(600);
+        assert_eq!(check_time(&pos, &[], &rule, now), None);
     }
 }

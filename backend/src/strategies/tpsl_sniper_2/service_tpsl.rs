@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use tokio::sync::broadcast;
 use tokio::time::sleep;
@@ -13,7 +13,7 @@ use crate::models::Position;
 use crate::state::token_cache::TokenCache;
 use crate::storage::repositories::{
     tpsl2_paper_trading_repo::Tpsl2PaperTradingRepo, tpsl2_position_repo::Tpsl2PositionRepo,
-    strategy_tpsl2_rule_repo::StrategyTPSL2RuleRepo, trade_repo::TradeRepo,
+    tpsl2_strategy_rule_repo::Tpsl2StrategyRuleRepo, trade_repo::TradeRepo,
 };
 use super::{TPSL2StrategyHandler, Tpsl2RuntimeCache};
 use crate::trader::PumpFunTrader;
@@ -448,33 +448,8 @@ impl Tpsl2StrategyService {
                             }
                         });
                     } else if rule.trade_mode == "real" {
-                        let prev = position.clone();
-                        position.mark_exit_pending();
-                        if let Err(err) = self.position_repo.update(&position).await {
-                            warn!(
-                                "Failed to mark position {} as ExitPending: {err}",
-                                position.id
-                            );
-                        } else {
-                            self.runtime.sync_position(Some(&prev), &position);
-                            info!(position_id = %position.id, mint = %mint,
-                                "[REAL] Position marked ExitPending");
-                        }
-                        // Single exit pass. `sell_with_retries` (inside) owns the
-                        // retry + partial-fill loop and re-reads migration routing
-                        // from the WS cache on every attempt, so a mid-exit
-                        // migration self-heals to the AMM path.
-                        // `execute_sell_for_position` then closes the position (on a
-                        // confirmed sell) or reopens it to Holding — in which case
-                        // the next trade event re-triggers the exit. This replaces
-                        // the old outer 10× loop, which multiplied with the inner
-                        // retries (10×6×5) for no benefit.
-                        execute_sell_for_position(
-                            self.trader.clone(),
-                            position.clone(),
-                            self.position_repo.clone(),
-                            self.trade_repo.clone(),
-                            self.runtime.clone(),
+                        self.trigger_real_exit(
+                            position,
                             cache,
                             current_price,
                             Utc::now(),
@@ -485,6 +460,154 @@ impl Tpsl2StrategyService {
                 }
             }
         }
+    }
+
+    /// Wall-clock exit sweep. For every Holding position, evaluate the
+    /// **time-based** exits (E2 TimeStop / E3 Stall) against `now` via
+    /// [`TPSL2StrategyHandler::check_time_exit`], so they fire even when a token
+    /// has gone silent and no trade ping is arriving — the gap the trade-driven
+    /// `on_trade_executed` leaves open. Price-based exits stay on the trade path
+    /// (price can't change between trades), so the two paths never overlap.
+    ///
+    /// Runs on the strategy runner's timer in the **same task** as
+    /// `on_trade_executed`, so the two can never race on a position's
+    /// Holding→ExitPending transition without any DB-level locking.
+    pub async fn sweep_time_exits(&self, cache: &TokenCache) {
+        let now = Utc::now();
+        let handler = TPSL2StrategyHandler::new(self.runtime.all_rules_vec());
+
+        for position in self.runtime.all_holding_positions() {
+            let Some(rule) = handler.get_rule(position.rule_id) else {
+                continue;
+            };
+            // Cheap short-circuit: nothing to do for rules with no time exit.
+            if ignore_zero_u64(rule.p_time_stop_secs).is_none()
+                && ignore_zero_u64(rule.p_stall_secs).is_none()
+            {
+                continue;
+            }
+
+            // Trades drive the Stall derivation; last price is the paper fill mark.
+            // A token absent from the cache (e.g. evicted) can still TimeStop from
+            // entry_time alone — fall back to an empty history and the entry price.
+            let (trades, last_price) = match cache.get(&position.mint) {
+                Some(entry) => {
+                    let state = entry.value();
+                    (
+                        state.trades.clone(),
+                        state.current_price.unwrap_or(position.entry_price),
+                    )
+                }
+                None => (Vec::new(), position.entry_price),
+            };
+
+            let Some(exit_reason) = handler.check_time_exit(&position, &trades, rule, now) else {
+                continue;
+            };
+
+            info!(
+                position_id = %position.id, mint = %position.mint,
+                "Time-driven exit triggered: {exit_reason}"
+            );
+
+            if rule.trade_mode == "paper" {
+                self.close_paper_time_exit(position, last_price, now, exit_reason.to_string(), rule)
+                    .await;
+            } else if rule.trade_mode == "real" {
+                self.trigger_real_exit(position, cache, last_price, now, exit_reason.to_string())
+                    .await;
+            }
+        }
+    }
+
+    /// Record a paper time-driven exit immediately at the last observed price.
+    /// Unlike the trade-driven paper resolver, this does **not** poll for a
+    /// confirming trade — a time/stall exit on a silent token has none by
+    /// definition. The last seen price is the honest mark for a time stop ("held
+    /// N seconds, sell at the current mark"). Transitions Holding→End in one write
+    /// and, if the run's cap is met with nothing left open, finishes the run.
+    async fn close_paper_time_exit(
+        &self,
+        mut position: Position,
+        exit_price: f64,
+        exit_time: DateTime<Utc>,
+        reason: String,
+        rule: &crate::models::StrategyTPSLRule,
+    ) {
+        let exit_tx = format!("paper-time-exit-{}", position.id);
+        let prev = position.clone();
+        if let Err(err) = self
+            .paper_repo
+            .update_exit(position.id, &exit_tx, exit_price, exit_time, &reason)
+            .await
+        {
+            warn!(
+                position_id = %position.id,
+                "Failed to record paper time exit: {err}"
+            );
+            return;
+        }
+        // Reflect the close in the snapshot synced to the runtime cache.
+        position.close(exit_price, exit_tx, position.entry_amount, exit_time);
+        position.exit_reason = Some(reason);
+        self.runtime.sync_position(Some(&prev), &position);
+        info!(
+            position_id = %position.id, mint = %position.mint, exit_price,
+            "[PAPER] Time-driven exit recorded"
+        );
+
+        maybe_finish_paper_run(
+            &self.pool,
+            &self.runtime,
+            &self.sse_tx,
+            rule.id,
+            &rule.rule_name,
+            ignore_zero_u64(rule.p_max_total_tokens),
+        )
+        .await;
+    }
+
+    /// Mark a real position ExitPending and run the single sell pass. Shared by
+    /// the trade-driven exit (`on_trade_executed`) and the time-driven sweep.
+    ///
+    /// `sell_with_retries` (inside `execute_sell_for_position`) owns the retry +
+    /// partial-fill loop and re-reads migration routing from the WS cache on every
+    /// attempt, so a mid-exit migration self-heals to the AMM path.
+    /// `execute_sell_for_position` then closes the position (on a confirmed sell)
+    /// or marks it ExitFailed. `trigger_price`/`trigger_time` are the hypothetical
+    /// exit recorded if the sell never confirms.
+    async fn trigger_real_exit(
+        &self,
+        mut position: Position,
+        cache: &TokenCache,
+        trigger_price: f64,
+        trigger_time: DateTime<Utc>,
+        reason: String,
+    ) {
+        let prev = position.clone();
+        position.mark_exit_pending();
+        if let Err(err) = self.position_repo.update(&position).await {
+            warn!(
+                "Failed to mark position {} as ExitPending: {err}",
+                position.id
+            );
+        } else {
+            self.runtime.sync_position(Some(&prev), &position);
+            info!(position_id = %position.id, mint = %position.mint,
+                "[REAL] Position marked ExitPending");
+        }
+        execute_sell_for_position(
+            self.trader.clone(),
+            position,
+            self.position_repo.clone(),
+            self.trade_repo.clone(),
+            self.runtime.clone(),
+            cache,
+            trigger_price,
+            trigger_time,
+            reason,
+        )
+        .await;
     }
 }
 
@@ -512,7 +635,7 @@ async fn maybe_finish_paper_run(
     match runtime.finish_paper_run(pool, rule_id).await {
         Ok(Some(run)) => {
             // Auto-deactivate the rule so it stops cleanly, then refresh the cache.
-            let rule_repo = StrategyTPSL2RuleRepo::new(pool.clone());
+            let rule_repo = Tpsl2StrategyRuleRepo::new(pool.clone());
             match rule_repo.find_by_id(rule_id).await {
                 Ok(Some(mut rule)) if rule.is_active => {
                     rule.is_active = false;
@@ -1207,7 +1330,7 @@ mod tests {
             .bind(mint)
             .execute(pool)
             .await;
-        let _ = sqlx::query("DELETE FROM tpsl2_positions WHERE id = $1")
+        let _ = sqlx::query("DELETE FROM tpsl2_real_positions WHERE id = $1")
             .bind(position_id)
             .execute(pool)
             .await;

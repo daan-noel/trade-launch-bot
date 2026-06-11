@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::models::{PaperRun, PaperRunStatus, Position, PositionStatus};
 
-/// Repository for the paper-trading tables (`tpsl2_paper_test_runs` + `tpsl2_paper_positions`),
+/// Repository for the paper-trading tables (`tpsl2_paper_test_run` + `tpsl2_paper_positions`),
 /// kept entirely separate from the real `positions` table. Positions are mapped
 /// to/from the shared [`Position`] model (the `run_id` binding lives only on the
 /// row); runs use [`PaperRun`].
@@ -143,13 +143,13 @@ impl Tpsl2PaperTradingRepo {
         let mut tx = self.pool.begin().await?;
 
         let prev_seq: Option<i64> =
-            sqlx::query_scalar("SELECT MAX(run_seq) FROM tpsl2_paper_test_runs WHERE rule_id = $1")
+            sqlx::query_scalar("SELECT MAX(run_seq) FROM tpsl2_paper_test_run WHERE rule_id = $1")
                 .bind(rule_id)
                 .fetch_one(&mut *tx)
                 .await?;
         let run_seq = prev_seq.unwrap_or(0) + 1;
 
-        sqlx::query("DELETE FROM tpsl2_paper_test_runs WHERE rule_id = $1")
+        sqlx::query("DELETE FROM tpsl2_paper_test_run WHERE rule_id = $1")
             .bind(rule_id)
             .execute(&mut *tx)
             .await?;
@@ -158,7 +158,7 @@ impl Tpsl2PaperTradingRepo {
         let now = Utc::now();
         sqlx::query(
             r#"
-            INSERT INTO tpsl2_paper_test_runs (id, rule_id, run_seq, status, max_total_tokens, started_at, finished_at)
+            INSERT INTO tpsl2_paper_test_run (id, rule_id, run_seq, status, max_total_tokens, started_at, finished_at)
             VALUES ($1, $2, $3, 'Running', $4, $5, NULL)
             "#,
         )
@@ -188,7 +188,7 @@ impl Tpsl2PaperTradingRepo {
         let row = sqlx::query_as::<_, PaperRunDbRow>(
             r#"
             SELECT id, rule_id, run_seq, status, max_total_tokens, started_at, finished_at
-            FROM tpsl2_paper_test_runs
+            FROM tpsl2_paper_test_run
             WHERE rule_id = $1
             ORDER BY run_seq DESC
             LIMIT 1
@@ -207,7 +207,7 @@ impl Tpsl2PaperTradingRepo {
             r#"
             SELECT DISTINCT ON (rule_id)
                    id, rule_id, run_seq, status, max_total_tokens, started_at, finished_at
-            FROM tpsl2_paper_test_runs
+            FROM tpsl2_paper_test_run
             ORDER BY rule_id, run_seq DESC
             "#,
         )
@@ -226,7 +226,7 @@ impl Tpsl2PaperTradingRepo {
     ) -> anyhow::Result<()> {
         sqlx::query(
             r#"
-            UPDATE tpsl2_paper_test_runs
+            UPDATE tpsl2_paper_test_run
             SET status = $2,
                 finished_at = CASE WHEN $3 THEN now() ELSE finished_at END
             WHERE id = $1

@@ -9,8 +9,8 @@ use crate::{
     models::Position,
     state::app_state::AppState,
     storage::repositories::{
-        paper_trading_repo::PaperTradingRepo, position_repo::PositionRepo,
-        strategy_tpsl1_rule_repo::StrategyTPSL1RuleRepo,
+        tpsl1_paper_trading_repo::Tpsl1PaperTradingRepo, tpsl1_position_repo::Tpsl1PositionRepo,
+        tpsl1_strategy_rule_repo::Tpsl1StrategyRuleRepo,
     },
 };
 
@@ -75,9 +75,9 @@ impl From<Position> for PositionResponse {
 
 /// Load a rule's positions from the correct table.
 ///
-/// Paper-mode rules record to `paper_positions` (only the latest run is
+/// Paper-mode rules record to `tpsl1_paper_positions` (only the latest run is
 /// retained), so they're served from the paper repo's current run; real rules
-/// use `positions`. A paper rule with no run yet yields an empty list.
+/// use `tpsl1_real_positions`. A paper rule with no run yet yields an empty list.
 ///
 /// Shared by the positions endpoint below and exercised directly in tests so it
 /// stays in lock-step with the paper-result endpoint (same run, same rows).
@@ -85,24 +85,24 @@ pub(crate) async fn load_rule_positions(
     db: &PgPool,
     rule_id: Uuid,
 ) -> anyhow::Result<Vec<Position>> {
-    let is_paper = match StrategyTPSL1RuleRepo::new(db.clone()).find_by_id(rule_id).await? {
+    let is_paper = match Tpsl1StrategyRuleRepo::new(db.clone()).find_by_id(rule_id).await? {
         Some(rule) => rule.trade_mode == "paper",
         None => false,
     };
 
     if is_paper {
-        let paper_repo = PaperTradingRepo::new(db.clone());
+        let paper_repo = Tpsl1PaperTradingRepo::new(db.clone());
         match paper_repo.current_run(rule_id).await? {
             Some(run) => paper_repo.find_by_run(run.id).await,
             None => Ok(Vec::new()),
         }
     } else {
-        PositionRepo::new(db.clone()).find_by_rule(rule_id).await
+        Tpsl1PositionRepo::new(db.clone()).find_by_rule(rule_id).await
     }
 }
 
 /// Get all positions for a specific TPSL rule (by rule_id).
-/// GET /api/strategies/tpsl/rules/{rule_id}/positions
+/// GET /api/strategies/tpsl1/rules/{rule_id}/positions
 pub async fn get_positions_by_rule(
     app_state: web::Data<Arc<AppState>>,
     rule_id: web::Path<Uuid>,
@@ -124,7 +124,7 @@ pub async fn get_positions_by_rule(
 
 /// List all positions
 pub async fn list_positions(app_state: web::Data<Arc<AppState>>) -> impl Responder {
-    let repo = PositionRepo::new(app_state.db.clone());
+    let repo = Tpsl1PositionRepo::new(app_state.db.clone());
 
     match repo.find_by_strategy("TPSL1").await {
         Ok(positions) => {
@@ -145,7 +145,7 @@ pub async fn get_positions_by_mint(
     app_state: web::Data<Arc<AppState>>,
     mint: web::Path<String>,
 ) -> impl Responder {
-    let repo = PositionRepo::new(app_state.db.clone());
+    let repo = Tpsl1PositionRepo::new(app_state.db.clone());
     let mint = mint.into_inner();
 
     match repo.find_holding_by_mint(&mint).await {
@@ -167,7 +167,7 @@ pub async fn get_positions_by_wallet(
     app_state: web::Data<Arc<AppState>>,
     wallet: web::Path<String>,
 ) -> impl Responder {
-    let repo = PositionRepo::new(app_state.db.clone());
+    let repo = Tpsl1PositionRepo::new(app_state.db.clone());
     let wallet = wallet.into_inner();
 
     match repo.find_holding_by_wallet(&wallet).await {
@@ -189,7 +189,7 @@ pub async fn get_position(
     app_state: web::Data<Arc<AppState>>,
     position_id: web::Path<Uuid>,
 ) -> impl Responder {
-    let repo = PositionRepo::new(app_state.db.clone());
+    let repo = Tpsl1PositionRepo::new(app_state.db.clone());
     let position_id = position_id.into_inner();
 
     match repo.find_by_id(position_id).await {
@@ -265,10 +265,10 @@ mod tests {
             None,
             None,
         );
-        let rule_repo = StrategyTPSL1RuleRepo::new(pool.clone());
+        let rule_repo = Tpsl1StrategyRuleRepo::new(pool.clone());
         rule_repo.insert(&rule).await.expect("insert rule");
 
-        let paper_repo = PaperTradingRepo::new(pool.clone());
+        let paper_repo = Tpsl1PaperTradingRepo::new(pool.clone());
         let run = paper_repo
             .start_run(rule.id, Some(3))
             .await

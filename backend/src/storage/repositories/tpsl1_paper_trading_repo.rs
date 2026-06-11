@@ -4,15 +4,15 @@ use uuid::Uuid;
 
 use crate::models::{PaperRun, PaperRunStatus, Position, PositionStatus};
 
-/// Repository for the paper-trading tables (`paper_test_runs` + `paper_positions`),
+/// Repository for the paper-trading tables (`tpsl1_paper_test_run` + `tpsl1_paper_positions`),
 /// kept entirely separate from the real `positions` table. Positions are mapped
 /// to/from the shared [`Position`] model (the `run_id` binding lives only on the
 /// row); runs use [`PaperRun`].
-pub struct PaperTradingRepo {
+pub struct Tpsl1PaperTradingRepo {
     pool: PgPool,
 }
 
-impl Clone for PaperTradingRepo {
+impl Clone for Tpsl1PaperTradingRepo {
     fn clone(&self) -> Self {
         Self {
             pool: self.pool.clone(),
@@ -125,7 +125,7 @@ const POSITION_COLS: &str = "id, mint, wallet, entry_price, exit_price, token_pr
 // Repo
 // ---------------------------------------------------------------------------
 
-impl PaperTradingRepo {
+impl Tpsl1PaperTradingRepo {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
@@ -143,13 +143,13 @@ impl PaperTradingRepo {
         let mut tx = self.pool.begin().await?;
 
         let prev_seq: Option<i64> =
-            sqlx::query_scalar("SELECT MAX(run_seq) FROM paper_test_runs WHERE rule_id = $1")
+            sqlx::query_scalar("SELECT MAX(run_seq) FROM tpsl1_paper_test_run WHERE rule_id = $1")
                 .bind(rule_id)
                 .fetch_one(&mut *tx)
                 .await?;
         let run_seq = prev_seq.unwrap_or(0) + 1;
 
-        sqlx::query("DELETE FROM paper_test_runs WHERE rule_id = $1")
+        sqlx::query("DELETE FROM tpsl1_paper_test_run WHERE rule_id = $1")
             .bind(rule_id)
             .execute(&mut *tx)
             .await?;
@@ -158,7 +158,7 @@ impl PaperTradingRepo {
         let now = Utc::now();
         sqlx::query(
             r#"
-            INSERT INTO paper_test_runs (id, rule_id, run_seq, status, max_total_tokens, started_at, finished_at)
+            INSERT INTO tpsl1_paper_test_run (id, rule_id, run_seq, status, max_total_tokens, started_at, finished_at)
             VALUES ($1, $2, $3, 'Running', $4, $5, NULL)
             "#,
         )
@@ -188,7 +188,7 @@ impl PaperTradingRepo {
         let row = sqlx::query_as::<_, PaperRunDbRow>(
             r#"
             SELECT id, rule_id, run_seq, status, max_total_tokens, started_at, finished_at
-            FROM paper_test_runs
+            FROM tpsl1_paper_test_run
             WHERE rule_id = $1
             ORDER BY run_seq DESC
             LIMIT 1
@@ -207,7 +207,7 @@ impl PaperTradingRepo {
             r#"
             SELECT DISTINCT ON (rule_id)
                    id, rule_id, run_seq, status, max_total_tokens, started_at, finished_at
-            FROM paper_test_runs
+            FROM tpsl1_paper_test_run
             ORDER BY rule_id, run_seq DESC
             "#,
         )
@@ -226,7 +226,7 @@ impl PaperTradingRepo {
     ) -> anyhow::Result<()> {
         sqlx::query(
             r#"
-            UPDATE paper_test_runs
+            UPDATE tpsl1_paper_test_run
             SET status = $2,
                 finished_at = CASE WHEN $3 THEN now() ELSE finished_at END
             WHERE id = $1
@@ -246,7 +246,7 @@ impl PaperTradingRepo {
     pub async fn insert(&self, position: &Position, run_id: Uuid) -> anyhow::Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO paper_positions
+            INSERT INTO tpsl1_paper_positions
                 (id, run_id, mint, wallet, token_program_id, entry_price, exit_price, entry_tx, exit_tx,
                  status, strategy, rule_id, entry_amount, exit_amount,
                  entry_time, exit_time, exit_reason, created_at, updated_at)
@@ -288,7 +288,7 @@ impl PaperTradingRepo {
     ) -> anyhow::Result<()> {
         sqlx::query(
             r#"
-            UPDATE paper_positions
+            UPDATE tpsl1_paper_positions
             SET entry_tx = $2, entry_amount = $3, entry_price = $4, entry_time = $5, updated_at = $6
             WHERE id = $1
             "#,
@@ -316,7 +316,7 @@ impl PaperTradingRepo {
     ) -> anyhow::Result<()> {
         sqlx::query(
             r#"
-            UPDATE paper_positions
+            UPDATE tpsl1_paper_positions
             SET exit_tx = $2, exit_price = $3, exit_time = $4, exit_reason = $5,
                 status = 'End', updated_at = $6
             WHERE id = $1
@@ -337,7 +337,7 @@ impl PaperTradingRepo {
     pub async fn update(&self, position: &Position) -> anyhow::Result<()> {
         sqlx::query(
             r#"
-            UPDATE paper_positions
+            UPDATE tpsl1_paper_positions
             SET exit_price = $1, exit_tx = $2, status = $3, exit_amount = $4,
                 exit_time = $5, updated_at = $6
             WHERE id = $7
@@ -367,7 +367,7 @@ impl PaperTradingRepo {
         exit_reason: &str,
     ) -> anyhow::Result<()> {
         sqlx::query(
-            "UPDATE paper_positions \
+            "UPDATE tpsl1_paper_positions \
              SET status = 'ExitFailed', exit_price = $2, exit_time = $3, exit_reason = $4, updated_at = $5 \
              WHERE id = $1",
         )
@@ -383,7 +383,7 @@ impl PaperTradingRepo {
 
     /// Delete a paper position (e.g. a 0-entry row that never filled).
     pub async fn delete_position(&self, position_id: Uuid) -> anyhow::Result<()> {
-        sqlx::query("DELETE FROM paper_positions WHERE id = $1")
+        sqlx::query("DELETE FROM tpsl1_paper_positions WHERE id = $1")
             .bind(position_id)
             .execute(&self.pool)
             .await?;
@@ -392,7 +392,7 @@ impl PaperTradingRepo {
 
     pub async fn find_by_id(&self, position_id: Uuid) -> anyhow::Result<Option<Position>> {
         let row = sqlx::query_as::<_, PaperPositionDbRow>(&format!(
-            "SELECT {POSITION_COLS} FROM paper_positions WHERE id = $1"
+            "SELECT {POSITION_COLS} FROM tpsl1_paper_positions WHERE id = $1"
         ))
         .bind(position_id)
         .fetch_optional(&self.pool)
@@ -403,7 +403,7 @@ impl PaperTradingRepo {
     /// All positions in a run, oldest first (for the run result aggregation).
     pub async fn find_by_run(&self, run_id: Uuid) -> anyhow::Result<Vec<Position>> {
         let rows = sqlx::query_as::<_, PaperPositionDbRow>(&format!(
-            "SELECT {POSITION_COLS} FROM paper_positions WHERE run_id = $1 ORDER BY created_at ASC"
+            "SELECT {POSITION_COLS} FROM tpsl1_paper_positions WHERE run_id = $1 ORDER BY created_at ASC"
         ))
         .bind(run_id)
         .fetch_all(&self.pool)
@@ -414,7 +414,7 @@ impl PaperTradingRepo {
     /// All Holding paper positions across every (current) run — warms the cache.
     pub async fn find_all_holding(&self) -> anyhow::Result<Vec<Position>> {
         let rows = sqlx::query_as::<_, PaperPositionDbRow>(&format!(
-            "SELECT {POSITION_COLS} FROM paper_positions WHERE status = 'Holding' ORDER BY created_at DESC"
+            "SELECT {POSITION_COLS} FROM tpsl1_paper_positions WHERE status = 'Holding' ORDER BY created_at DESC"
         ))
         .fetch_all(&self.pool)
         .await?;
@@ -423,7 +423,7 @@ impl PaperTradingRepo {
 
     /// Number of positions recorded in a run (the per-run total-cap counter).
     pub async fn count_by_run(&self, run_id: Uuid) -> anyhow::Result<i64> {
-        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM paper_positions WHERE run_id = $1")
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tpsl1_paper_positions WHERE run_id = $1")
             .bind(run_id)
             .fetch_one(&self.pool)
             .await?;
@@ -441,7 +441,7 @@ impl PaperTradingRepo {
         let cutoff = Utc::now() - chrono::Duration::from_std(stale_after)?;
         let result = sqlx::query(
             r#"
-            UPDATE paper_positions
+            UPDATE tpsl1_paper_positions
             SET status = 'ExitFailed', updated_at = $1
             WHERE status = 'ExitPending' AND updated_at < $2
             "#,

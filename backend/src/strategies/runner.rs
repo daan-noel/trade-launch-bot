@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use sqlx::PgPool;
 use tokio::sync::{broadcast, mpsc};
@@ -36,28 +37,55 @@ impl StrategyRunner {
         Self { token_cache, tpsl1, tpsl2 }
     }
 
+    /// How often the wall-clock exit sweep runs. Time/stall stops are minute-scale,
+    /// so a 1s cadence is plenty while staying cheap (it iterates only open
+    /// positions and no-ops for rules without time-based exits).
+    const TIME_EXIT_SWEEP_INTERVAL: Duration = Duration::from_secs(1);
+
     pub async fn run(self, mut ping_rx: mpsc::Receiver<StrategyPing>) {
         info!("StrategyRunner: starting");
 
-        while let Some(ping) = ping_rx.recv().await {
-            match ping.kind {
-                IngestKind::TokenCreated => {
+        // The sweep shares this single task with ping handling (via `select!`), so
+        // a time-driven exit can never interleave with `on_trade_executed` on the
+        // same position — the Holding→ExitPending transition stays serialized
+        // without any DB-level locking.
+        let mut sweep = tokio::time::interval(Self::TIME_EXIT_SWEEP_INTERVAL);
+        sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                maybe_ping = ping_rx.recv() => {
+                    let Some(ping) = maybe_ping else { break };
+                    match ping.kind {
+                        IngestKind::TokenCreated => {
+                            self.tpsl1
+                                .on_token_created(&ping.mint, self.token_cache.as_ref())
+                                .await;
+                            self.tpsl2
+                                .on_token_created(&ping.mint, self.token_cache.as_ref())
+                                .await;
+                        }
+                        IngestKind::Trade => {
+                            self.tpsl1
+                                .on_trade_executed(&ping.mint, self.token_cache.as_ref())
+                                .await;
+                            self.tpsl2
+                                .on_trade_executed(&ping.mint, self.token_cache.as_ref())
+                                .await;
+                        }
+                        IngestKind::Migrated | IngestKind::CreatorActivity => {}
+                    }
+                }
+                _ = sweep.tick() => {
+                    // Time-driven exits (TimeStop / Stall) that come due while a
+                    // token is silent — no trade ping would otherwise fire them.
                     self.tpsl1
-                        .on_token_created(&ping.mint, self.token_cache.as_ref())
+                        .sweep_time_exits(self.token_cache.as_ref())
                         .await;
                     self.tpsl2
-                        .on_token_created(&ping.mint, self.token_cache.as_ref())
+                        .sweep_time_exits(self.token_cache.as_ref())
                         .await;
                 }
-                IngestKind::Trade => {
-                    self.tpsl1
-                        .on_trade_executed(&ping.mint, self.token_cache.as_ref())
-                        .await;
-                    self.tpsl2
-                        .on_trade_executed(&ping.mint, self.token_cache.as_ref())
-                        .await;
-                }
-                IngestKind::Migrated | IngestKind::CreatorActivity => {}
             }
         }
 

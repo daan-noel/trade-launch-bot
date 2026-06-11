@@ -164,6 +164,39 @@ export async function fetchTpsl1RulePositions(
   return request(`${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/positions`);
 }
 
+/**
+ * All recorded positions for the tpsl1 strategy (the `tpsl1_real_positions`
+ * table, tagged `strategy = 'TPSL1'`) — not scoped to a single rule.
+ */
+export async function fetchTpsl1Positions(): Promise<import('types').RulePositionRecord[]> {
+  return request(`${API_BASE}/api/strategies/tpsl1/positions`);
+}
+
+/** Holding tpsl1 positions for a token (mint). */
+export async function fetchTpsl1PositionsByMint(
+  mint: string,
+): Promise<import('types').RulePositionRecord[]> {
+  return request(
+    `${API_BASE}/api/strategies/tpsl1/positions/mint/${encodeURIComponent(mint)}`,
+  );
+}
+
+/** Holding tpsl1 positions for a wallet. */
+export async function fetchTpsl1PositionsByWallet(
+  wallet: string,
+): Promise<import('types').RulePositionRecord[]> {
+  return request(
+    `${API_BASE}/api/strategies/tpsl1/positions/wallet/${encodeURIComponent(wallet)}`,
+  );
+}
+
+/** A single tpsl1 position by id. */
+export async function fetchTpsl1Position(
+  positionId: string,
+): Promise<import('types').RulePositionRecord> {
+  return request(`${API_BASE}/api/strategies/tpsl1/positions/${positionId}`);
+}
+
 // ---------------------------------------------------------------------------
 // Strategy: tpsl_sniper_2 (clone of tpsl, separate /strategies/tpsl2 endpoints)
 // ---------------------------------------------------------------------------
@@ -219,6 +252,39 @@ export async function fetchTpsl2RulePositions(
   ruleId: string,
 ): Promise<import('types').RulePositionRecord[]> {
   return request(`${API_BASE}/api/strategies/tpsl2/rules/${ruleId}/positions`);
+}
+
+/**
+ * All recorded positions for the tpsl2 strategy (the `tpsl2_real_positions`
+ * table, tagged `strategy = 'TPSL2'`) — not scoped to a single rule.
+ */
+export async function fetchTpsl2Positions(): Promise<import('types').RulePositionRecord[]> {
+  return request(`${API_BASE}/api/strategies/tpsl2/positions`);
+}
+
+/** Holding tpsl2 positions for a token (mint). */
+export async function fetchTpsl2PositionsByMint(
+  mint: string,
+): Promise<import('types').RulePositionRecord[]> {
+  return request(
+    `${API_BASE}/api/strategies/tpsl2/positions/mint/${encodeURIComponent(mint)}`,
+  );
+}
+
+/** Holding tpsl2 positions for a wallet. */
+export async function fetchTpsl2PositionsByWallet(
+  wallet: string,
+): Promise<import('types').RulePositionRecord[]> {
+  return request(
+    `${API_BASE}/api/strategies/tpsl2/positions/wallet/${encodeURIComponent(wallet)}`,
+  );
+}
+
+/** A single tpsl2 position by id. */
+export async function fetchTpsl2Position(
+  positionId: string,
+): Promise<import('types').RulePositionRecord> {
+  return request(`${API_BASE}/api/strategies/tpsl2/positions/${positionId}`);
 }
 
 export async function fetchAnalysis(

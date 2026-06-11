@@ -139,7 +139,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             )
             .route(
                 "/strategies/tpsl1/rules/{rule_id}/positions",
-                web::get().to(handlers::strategies::get_positions_by_rule),
+                web::get().to(handlers::strategies::tpsl1_positions::get_positions_by_rule),
             )
             .route(
                 "/strategies/tpsl1/rules/{rule_id}/simulate",
@@ -152,6 +152,23 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route(
                 "/strategies/tpsl1/rules/{rule_id}/matched",
                 web::get().to(handlers::strategies::tpsl1::get_matched_tokens),
+            )
+            // tpsl1 positions
+            .route(
+                "/strategies/tpsl1/positions",
+                web::get().to(handlers::strategies::tpsl1_positions::list_positions),
+            )
+            .route(
+                "/strategies/tpsl1/positions/mint/{mint}",
+                web::get().to(handlers::strategies::tpsl1_positions::get_positions_by_mint),
+            )
+            .route(
+                "/strategies/tpsl1/positions/wallet/{wallet}",
+                web::get().to(handlers::strategies::tpsl1_positions::get_positions_by_wallet),
+            )
+            .route(
+                "/strategies/tpsl1/positions/{position_id}",
+                web::get().to(handlers::strategies::tpsl1_positions::get_position),
             )
             // Strategy endpoints — tpsl_sniper_2 (clone of tpsl)
             .route(
@@ -176,7 +193,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             )
             .route(
                 "/strategies/tpsl2/rules/{rule_id}/positions",
-                web::get().to(handlers::strategies::tpsl2::get_positions_by_rule),
+                web::get().to(handlers::strategies::tpsl2_positions::get_positions_by_rule),
             )
             .route(
                 "/strategies/tpsl2/rules/{rule_id}/simulate",
@@ -190,22 +207,22 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 "/strategies/tpsl2/rules/{rule_id}/matched",
                 web::get().to(handlers::strategies::tpsl2::get_matched_tokens),
             )
-            // Position endpoints
+            // tpsl2 positions
             .route(
-                "/positions",
-                web::get().to(handlers::strategies::list_positions),
+                "/strategies/tpsl2/positions",
+                web::get().to(handlers::strategies::tpsl2_positions::list_positions),
             )
             .route(
-                "/positions/{position_id}",
-                web::get().to(handlers::strategies::get_position),
+                "/strategies/tpsl2/positions/mint/{mint}",
+                web::get().to(handlers::strategies::tpsl2_positions::get_positions_by_mint),
             )
             .route(
-                "/positions/mint/{mint}",
-                web::get().to(handlers::strategies::get_positions_by_mint),
+                "/strategies/tpsl2/positions/wallet/{wallet}",
+                web::get().to(handlers::strategies::tpsl2_positions::get_positions_by_wallet),
             )
             .route(
-                "/positions/wallet/{wallet}",
-                web::get().to(handlers::strategies::get_positions_by_wallet),
+                "/strategies/tpsl2/positions/{position_id}",
+                web::get().to(handlers::strategies::tpsl2_positions::get_position),
             )
             // On-chain Solana queries — bypass local DB entirely
             .route(

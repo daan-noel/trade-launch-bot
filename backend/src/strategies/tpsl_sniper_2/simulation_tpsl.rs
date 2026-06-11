@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::models::trade::TradeType;
 use crate::models::StrategyTPSLRule;
 use crate::state::app_state::AppState;
-use crate::storage::repositories::strategy_tpsl2_rule_repo::StrategyTPSL2RuleRepo;
+use crate::storage::repositories::tpsl2_strategy_rule_repo::Tpsl2StrategyRuleRepo;
 use crate::storage::repositories::token_repo::TokenRepo;
 use crate::storage::repositories::trade_repo::TradeRepo;
 use super::handler_tpsl::token_matches_rule;
@@ -139,6 +139,29 @@ pub fn find_exit(
         }
     }
     None
+}
+
+/// Running peak price and the time of the most recent new higher-high across a
+/// position's post-entry trades, as of its last trade. `last_higher_high_time`
+/// starts at `entry_time` (so a position that never prints a new high stalls
+/// from entry). This is the same state `simulate_exit` carries in its walk,
+/// extracted so the time-driven exit sweep can evaluate E3 Stall against
+/// wall-clock `now` instead of a trade timestamp — the key difference that lets
+/// a stall fire while a token is silent.
+pub fn peak_state_since_entry(
+    trades: &[crate::models::trade::Trade],
+    entry_time: DateTime<Utc>,
+    entry_price: f64,
+) -> (f64, DateTime<Utc>) {
+    let mut peak_price = entry_price;
+    let mut last_higher_high_time = entry_time;
+    for t in trades.iter().filter(|t| t.block_time > entry_time) {
+        if t.price_per_token > peak_price {
+            peak_price = t.price_per_token;
+            last_higher_high_time = t.block_time;
+        }
+    }
+    (peak_price, last_higher_high_time)
 }
 
 /// Exit-walk skeleton ([P-exit]). Walks post-entry trades chronologically
@@ -309,7 +332,7 @@ pub async fn run_simulation(
     app_state: actix_web::web::Data<Arc<AppState>>,
     rule_id: Uuid,
 ) -> Result<Vec<SimulatedTokenResult>> {
-    let rule_repo = StrategyTPSL2RuleRepo::new(app_state.db.clone());
+    let rule_repo = Tpsl2StrategyRuleRepo::new(app_state.db.clone());
 
     let rule = rule_repo
         .find_by_id(rule_id)
