@@ -106,6 +106,11 @@ async fn main() -> anyhow::Result<()> {
         .load_from_db(&db)
         .await
         .context("Failed to load TPSL runtime cache")?;
+    let tpsl2_cache = Arc::new(strategies::tpsl_sniper_2::Tpsl2RuntimeCache::new());
+    tpsl2_cache
+        .load_from_db(&db)
+        .await
+        .context("Failed to load TPSL2 runtime cache")?;
 
     let (db_tx, db_rx, strategy_tx, strategy_rx) = ingest::IngestPipeline::channel_pair();
 
@@ -135,6 +140,7 @@ async fn main() -> anyhow::Result<()> {
         sol_price.clone(),
         trader.clone(),
         tpsl_cache.clone(),
+        tpsl2_cache.clone(),
         pipeline.pool_index(),
         pipeline.pools_changed(),
     ));
@@ -171,6 +177,7 @@ async fn main() -> anyhow::Result<()> {
         trader.clone(),
         token_cache.clone(),
         tpsl_cache,
+        tpsl2_cache,
         sse_tx.clone(),
     );
     let strategy_task = tokio::spawn(strategy_runner.run(strategy_rx));

@@ -11,6 +11,7 @@ import { SwingDetectionPage } from 'pages/analysis/SwingDetectionPage';
 import { MyWalletPage } from 'pages/profiles/MyWalletPage';
 import { OtherProfilesPage } from 'pages/profiles/OtherProfilesPage';
 import { TpslPage } from 'pages/strategies/TpslPage';
+import { Tpsl2Page } from 'pages/strategies/Tpsl2Page';
 import { SettingsPage } from 'pages/settings/SettingsPage';
 import { NotFoundPage } from 'pages/not-found/NotFoundPage';
 
@@ -32,6 +33,7 @@ export default function App() {
             <Route path="profiles/mine" element={<MyWalletPage />} />
             <Route path="profiles/other" element={<OtherProfilesPage />} />
             <Route path="strategies/tpsl" element={<TpslPage />} />
+            <Route path="strategies/tpsl2" element={<Tpsl2Page />} />
             <Route path="strategies" element={<Navigate to="/strategies/tpsl" replace />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="*" element={<NotFoundPage />} />

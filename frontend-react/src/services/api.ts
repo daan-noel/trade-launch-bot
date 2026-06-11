@@ -164,6 +164,63 @@ export async function fetchRulePositions(
   return request(`${API_BASE}/api/strategies/tpsl/rules/${ruleId}/positions`);
 }
 
+// ---------------------------------------------------------------------------
+// Strategy: tpsl_sniper_2 (clone of tpsl, separate /strategies/tpsl2 endpoints)
+// ---------------------------------------------------------------------------
+
+export async function fetchTpsl2Rules(): Promise<import('types').RuleRecord[]> {
+  return request(`${API_BASE}/api/strategies/tpsl2/rules`);
+}
+
+export async function createTpsl2Rule(
+  req: Record<string, unknown>,
+): Promise<import('types').RuleRecord> {
+  return request(`${API_BASE}/api/strategies/tpsl2/rules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+}
+
+export async function updateTpsl2Rule(
+  ruleId: string,
+  req: Record<string, unknown>,
+): Promise<import('types').RuleRecord> {
+  return request(`${API_BASE}/api/strategies/tpsl2/rules/${ruleId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+}
+
+export async function deleteTpsl2Rule(ruleId: string): Promise<void> {
+  await request(`${API_BASE}/api/strategies/tpsl2/rules/${ruleId}`, { method: 'DELETE' });
+}
+
+export async function simulateTpsl2Rule(
+  ruleId: string,
+): Promise<import('types').SimulatedTokenResult[]> {
+  return request(`${API_BASE}/api/strategies/tpsl2/rules/${ruleId}/simulate`);
+}
+
+export async function fetchTpsl2MatchedTokens(
+  ruleId: string,
+): Promise<import('types').MatchedTokenRecord[]> {
+  return request(`${API_BASE}/api/strategies/tpsl2/rules/${ruleId}/matched`);
+}
+
+export async function fetchTpsl2PaperResult(
+  ruleId: string,
+): Promise<import('types').PaperResultResponse> {
+  return request(`${API_BASE}/api/strategies/tpsl2/rules/${ruleId}/paper-result`);
+}
+
+export async function fetchTpsl2RulePositions(
+  ruleId: string,
+): Promise<import('types').RulePositionRecord[]> {
+  return request(`${API_BASE}/api/strategies/tpsl2/rules/${ruleId}/positions`);
+}
+
 export async function fetchAnalysis(
   limit: number,
   offset: number,

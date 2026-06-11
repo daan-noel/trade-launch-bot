@@ -7,6 +7,7 @@ use tokio::sync::{broadcast, watch, Notify};
 use crate::models::ingest::SseEvent;
 use crate::storage::repositories::settings_repo::AppSettings;
 use crate::strategies::tpsl_sniper_1::TpslRuntimeCache;
+use crate::strategies::tpsl_sniper_2::Tpsl2RuntimeCache;
 use crate::trader::PumpFunTrader;
 
 use super::token_cache::TokenCache;
@@ -27,6 +28,7 @@ pub struct AppState {
     pub sol_price: Arc<watch::Sender<Option<f64>>>,
     pub trader: Arc<PumpFunTrader>,
     pub tpsl_cache: Arc<TpslRuntimeCache>,
+    pub tpsl2_cache: Arc<Tpsl2RuntimeCache>,
     /// Live PumpSwap pool → mint index (shared with the ingest pipeline and WS
     /// task). A token sync registers a migrated token's pool here to subscribe.
     pub pool_index: Arc<DashMap<String, String>>,
@@ -47,6 +49,7 @@ impl AppState {
         sol_price: Arc<watch::Sender<Option<f64>>>,
         trader: Arc<PumpFunTrader>,
         tpsl_cache: Arc<TpslRuntimeCache>,
+        tpsl2_cache: Arc<Tpsl2RuntimeCache>,
         pool_index: Arc<DashMap<String, String>>,
         pools_changed: Arc<Notify>,
     ) -> Self {
@@ -61,6 +64,7 @@ impl AppState {
             sol_price,
             trader,
             tpsl_cache,
+            tpsl2_cache,
             pool_index,
             pools_changed,
         }

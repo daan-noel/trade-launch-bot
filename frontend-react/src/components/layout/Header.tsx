@@ -108,7 +108,10 @@ export function Header() {
           <NavDropdown
             label="Strategies"
             isActive={strategiesActive}
-            items={[{ to: '/strategies/tpsl', label: 'TP / SL Rules' }]}
+            items={[
+              { to: '/strategies/tpsl', label: 'TP / SL Rules' },
+              { to: '/strategies/tpsl2', label: 'TP / SL Sniper 2' },
+            ]}
           />
           <NavItem to="/settings">Settings</NavItem>
         </nav>
