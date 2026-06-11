@@ -14,14 +14,16 @@ impl TransactionGrpcRepo {
         Self { pool }
     }
 
-    /// Persist the adapted gRPC transaction result. Ignores duplicates (idempotent).
+    /// Persist the adapted gRPC transaction result. Plain insert — the weekly
+    /// partitioned table has no `signature` unique constraint (the partition key
+    /// must be included and isn't stable across re-delivery), so dedup is handled
+    /// upstream by `from_slot = last + 1` replay; rare duplicate rows are tolerated.
     pub async fn insert(&self, tx: &RawTransaction) -> anyhow::Result<()> {
         sqlx::query(
             r#"
             INSERT INTO raw_transactions_grpc
                 (id, signature, slot, block_time, raw_data, received_at)
             VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (signature) DO NOTHING
             "#,
         )
         .bind(tx.id)

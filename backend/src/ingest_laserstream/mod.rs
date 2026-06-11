@@ -21,4 +21,5 @@ pub mod adapter;
 pub mod client;
 pub mod db_writer;
 pub mod decoder;
+pub mod maintenance;
 pub mod pipeline;
