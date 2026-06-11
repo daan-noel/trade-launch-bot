@@ -95,6 +95,14 @@ pub async fn run_backtest(
     let max_concurrent_tokens = none_if_zero_u64(rule.p_max_concurrent_tokens).map(|v| v as usize);
     let max_total_tokens = none_if_zero_u64(rule.p_max_total_tokens).map(|v| v as usize);
 
+    // A rule must configure at least one entry criterion — token-level OR a scalp
+    // trade-window gate — else it would match every token. The API maps this exact
+    // message to a 400.
+    let scalp_entry = entry::rule_configures_any_scalp_gate(&rule);
+    if !entry::rule_configures_any_criterion(&rule) && !scalp_entry {
+        return Err(anyhow!("All rule criteria are empty"));
+    }
+
     let all_tokens = token_repo
         .find_all()
         .await
@@ -103,9 +111,13 @@ pub async fn run_backtest(
     // Never trade Mayhem-Mode tokens: they carry an AI random-walk agent (2B supply,
     // net-sell drift, ±300% noise) for their first 24h — manufactured chaos, not a
     // snipeable edge. Exclude them outright (legacy-only policy, 2026-06 regime).
+    //
+    // Token-level pre-filter: every *configured* token criterion must hold. A
+    // scalp rule may set none (its gating happens on the trade stream), so this is
+    // the vacuous-true variant rather than `token_matches_buy_rule`.
     let tokens: Vec<_> = all_tokens
         .into_iter()
-        .filter(|t| !t.is_mayhem_mode && entry::token_matches_buy_rule(t, &rule))
+        .filter(|t| !t.is_mayhem_mode && entry::token_criteria_satisfied(t, &rule))
         .collect();
 
     let trade_repo = TradeRepo::new(app_state.db.clone());
@@ -121,7 +133,14 @@ pub async fn run_backtest(
             }
         };
 
-        let Some(entry) = entry::find_entry_fill_in_trades(&trades, 1) else {
+        // Scalp rules buy on the first trade where all gates hold; legacy rules
+        // use the first-slot fill. Both share `exit::find_trade_driven_exit`.
+        let entry = if scalp_entry {
+            entry::find_scalp_entry(&trades, &rule)
+        } else {
+            entry::find_entry_fill_in_trades(&trades, 1)
+        };
+        let Some(entry) = entry else {
             continue;
         };
         let (entry_price, entry_tx, entry_time) = (entry.price, entry.tx_signature, entry.block_time);

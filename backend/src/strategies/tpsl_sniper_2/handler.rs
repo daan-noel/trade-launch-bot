@@ -1,15 +1,15 @@
-use crate::models::{StrategyTPSLRule, Token};
+use crate::models::{Tpsl2StrategyRule, Token};
 use uuid::Uuid;
 
 /// Holds the active TPSL rule set for the live path and answers two questions on
 /// token creation: which rule (if any) a token matches, and lookups by id. The
 /// matching logic itself lives in [`super::entry`]; this is a thin holder.
 pub struct TPSL2StrategyHandler {
-    rules: Vec<StrategyTPSLRule>,
+    rules: Vec<Tpsl2StrategyRule>,
 }
 
 impl TPSL2StrategyHandler {
-    pub fn new(rules: Vec<StrategyTPSLRule>) -> Self {
+    pub fn new(rules: Vec<Tpsl2StrategyRule>) -> Self {
         Self { rules }
     }
 
@@ -19,7 +19,7 @@ impl TPSL2StrategyHandler {
     }
 
     /// Get a specific rule by ID.
-    pub fn get_rule(&self, rule_id: Uuid) -> Option<&StrategyTPSLRule> {
+    pub fn get_rule(&self, rule_id: Uuid) -> Option<&Tpsl2StrategyRule> {
         self.rules.iter().find(|r| r.id == rule_id)
     }
 }

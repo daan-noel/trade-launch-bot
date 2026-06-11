@@ -5,7 +5,7 @@ use dashmap::DashMap;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::models::{PaperRun, PaperRunStatus, Position, PositionStatus, StrategyTPSLRule};
+use crate::models::{PaperRun, PaperRunStatus, Position, PositionStatus, Tpsl1StrategyRule};
 use crate::storage::repositories::{
     tpsl1_paper_trading_repo::Tpsl1PaperTradingRepo, tpsl1_position_repo::Tpsl1PositionRepo,
     tpsl1_strategy_rule_repo::Tpsl1StrategyRuleRepo,
@@ -27,8 +27,8 @@ pub struct PaperRunRef {
 /// ids and real rule ids are disjoint, so the shared maps never collide).
 #[derive(Clone)]
 pub struct Tpsl1RuntimeCache {
-    active_rules: Arc<RwLock<Vec<StrategyTPSLRule>>>,
-    rules_by_id: Arc<RwLock<HashMap<Uuid, StrategyTPSLRule>>>,
+    active_rules: Arc<RwLock<Vec<Tpsl1StrategyRule>>>,
+    rules_by_id: Arc<RwLock<HashMap<Uuid, Tpsl1StrategyRule>>>,
     holding_by_mint: Arc<DashMap<String, Vec<Position>>>,
     holding_count_by_rule: Arc<DashMap<Uuid, i64>>,
     total_count_by_rule: Arc<DashMap<Uuid, i64>>,
@@ -120,7 +120,7 @@ impl Tpsl1RuntimeCache {
         Ok(())
     }
 
-    fn set_rules(&self, rules: Vec<StrategyTPSLRule>) {
+    fn set_rules(&self, rules: Vec<Tpsl1StrategyRule>) {
         let active: Vec<_> = rules.iter().filter(|r| r.is_active).cloned().collect();
         let by_id: HashMap<_, _> = rules.into_iter().map(|r| (r.id, r)).collect();
         if let Ok(mut a) = self.active_rules.write() {
@@ -151,7 +151,7 @@ impl Tpsl1RuntimeCache {
         }
     }
 
-    pub fn active_rules(&self) -> Vec<StrategyTPSLRule> {
+    pub fn active_rules(&self) -> Vec<Tpsl1StrategyRule> {
         self.active_rules
             .read()
             .map(|r| r.clone())
@@ -160,7 +160,7 @@ impl Tpsl1RuntimeCache {
 
     /// O(1) lookup of a single rule by id (clones just that rule). The hot path
     /// uses this instead of cloning every rule per event.
-    pub fn rule_by_id(&self, rule_id: Uuid) -> Option<StrategyTPSLRule> {
+    pub fn rule_by_id(&self, rule_id: Uuid) -> Option<Tpsl1StrategyRule> {
         self.rules_by_id
             .read()
             .ok()

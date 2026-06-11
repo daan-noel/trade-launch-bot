@@ -3,10 +3,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-/// Represents a TPSL (Take Profit Stop Loss) strategy rule.
-/// Each rule defines the conditions and parameters for when to buy and sell a token.
+/// Represents a tpsl_sniper_2 strategy rule (backs the `tpsl2_strategy_rules`
+/// table). Same shape as the tpsl1 rule plus the **scalp-continuation gates** —
+/// the trade-stream entry gates and the E5 cohort-dump exit that only tpsl2
+/// evaluates. tpsl1 has its own [`crate::models::Tpsl1StrategyRule`] without
+/// these columns.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StrategyTPSLRule {
+pub struct Tpsl2StrategyRule {
     pub id: Uuid,
     /// Human-readable name for this rule.
     pub rule_name: String,
@@ -44,10 +47,44 @@ pub struct StrategyTPSLRule {
     /// least this many seconds, selling into the flatline. `None`/`0` disables
     /// (per `ignore_zero_u64`).
     pub p_stall_secs: Option<u64>,
-    /// E4 · Liquidity-death exit (percent): exit when virtual SOL reserves fall
+    /// E4 · Liquidity-death exit (percent): exit when **real** SOL reserves fall
     /// this far below the peak-since-entry. `None`/`0` disables (per
     /// `ignore_zero_f64`).
     pub p_liquidity_drop_pct: Option<f64>,
+
+    // ── Scalp-continuation entry gates (tpsl_sniper_2 only) ───────────────────
+    // Evaluated over a token's trade window — "buy on the first trade where ALL
+    // configured gates hold". All inert at `None`/`0`.
+    /// Skip the launch spike: the entry trade must be at least this many seconds
+    /// after the token's first trade. `None`/`0` disables.
+    pub p_min_age_secs: Option<u64>,
+    /// Liveness: total SOL traded (buys + sells, any wallet) in the trailing
+    /// window ending at the candidate trade must be ≥ this. `None`/`0` disables.
+    pub p_min_alive_sol: Option<f64>,
+    /// Real demand: net SOL bought by *outside* (non-cohort) wallets so far must
+    /// be ≥ this. `None`/`0` disables.
+    pub p_min_organic_sol: Option<f64>,
+    /// Higher-low shape gate — minimum dip off the local high (percent) for a dip
+    /// to count. Paired with `p_higher_low_secs`. `None`/`0` disables the gate.
+    pub p_pullback_pct: Option<f64>,
+    /// Higher-low shape gate — minimum seconds the higher-low pattern must form
+    /// over (filters sub-second fakes). Only active alongside `p_pullback_pct`.
+    pub p_higher_low_secs: Option<u64>,
+    /// Overhang cap: the launch cohort's held ratio (net / bought) must be ≤ this
+    /// (cohort already sold most of its bag). `None`/`0` disables.
+    pub p_max_cohort_held: Option<f64>,
+    /// Minimum **real** SOL reserves at entry. `None`/`0` disables.
+    pub p_min_liquidity_sol: Option<f64>,
+    /// Minimum real reserves attributable to outside buyers (real reserves minus
+    /// the cohort's net SOL deposit). `None`/`0` disables.
+    pub p_min_organic_liq: Option<f64>,
+
+    // ── Scalp-continuation exit gate (tpsl_sniper_2 only) ─────────────────────
+    /// E5 · Cohort-dump exit: exit once the launch cohort's net holdings collapse
+    /// to ≤ this fraction of everything it ever bought (the multi-wallet rug
+    /// signature). Top ladder priority. `None`/`0` disables.
+    pub p_cohort_exit_ratio: Option<f64>,
+
     /// Price tolerance percent when matching p_initial_buy_sol.
     pub tolerance_pct: f64,
     /// Whether this rule is currently active.
@@ -56,7 +93,7 @@ pub struct StrategyTPSLRule {
     pub updated_at: DateTime<Utc>,
 }
 
-impl StrategyTPSLRule {
+impl Tpsl2StrategyRule {
     pub fn new(
         rule_name: String,
         p_initial_buy_sol: Option<f64>,
@@ -93,10 +130,22 @@ impl StrategyTPSLRule {
             p_time_stop_secs,
             p_stall_secs,
             p_liquidity_drop_pct,
+            // Scalp-continuation gates default to disabled; the tpsl2 API sets
+            // them post-construction (so `new()`'s signature stays in lockstep
+            // with tpsl1's and its call sites stay unchanged).
+            p_min_age_secs: None,
+            p_min_alive_sol: None,
+            p_min_organic_sol: None,
+            p_pullback_pct: None,
+            p_higher_low_secs: None,
+            p_max_cohort_held: None,
+            p_min_liquidity_sol: None,
+            p_min_organic_liq: None,
+            p_cohort_exit_ratio: None,
             p_max_sol_cost,
             p_spendable_sol_in,
-            p_max_concurrent_tokens: p_max_concurrent_tokens,
-            p_max_total_tokens: p_max_total_tokens,
+            p_max_concurrent_tokens,
+            p_max_total_tokens,
             tolerance_pct: tolerance_pct.unwrap_or(0.0),
             is_active: false,
             created_at: now,

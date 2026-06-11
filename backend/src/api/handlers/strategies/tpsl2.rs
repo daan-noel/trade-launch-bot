@@ -6,7 +6,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
-    models::{PaperRunStatus, Position, StrategyTPSLRule},
+    models::{PaperRunStatus, Position, Tpsl2StrategyRule},
     state::app_state::AppState,
     storage::repositories::{
         tpsl2_paper_trading_repo::Tpsl2PaperTradingRepo, tpsl2_strategy_rule_repo::Tpsl2StrategyRuleRepo,
@@ -41,6 +41,16 @@ pub struct RuleResponse {
     pub p_time_stop_secs: Option<u64>,
     pub p_stall_secs: Option<u64>,
     pub p_liquidity_drop_pct: Option<f64>,
+    // Scalp-continuation gates (see tpsl-scalp-continuation-plan.md).
+    pub p_min_age_secs: Option<u64>,
+    pub p_min_alive_sol: Option<f64>,
+    pub p_min_organic_sol: Option<f64>,
+    pub p_pullback_pct: Option<f64>,
+    pub p_higher_low_secs: Option<u64>,
+    pub p_max_cohort_held: Option<f64>,
+    pub p_min_liquidity_sol: Option<f64>,
+    pub p_min_organic_liq: Option<f64>,
+    pub p_cohort_exit_ratio: Option<f64>,
     pub tolerance_pct: f64,
     pub is_active: bool,
     /// Derived lifecycle state for the UI — one of `Active`, `Draining`,
@@ -58,7 +68,7 @@ pub struct RuleResponse {
 /// only, so an inactive rule with open positions is still *Draining* (its exits
 /// run until they close). Paper rules that reached their cap read *Finished*;
 /// everything else inactive-and-flat is *Idle*.
-fn lifecycle_label(rule: &StrategyTPSLRule, open_positions: i64, paper_status: Option<PaperRunStatus>) -> &'static str {
+fn lifecycle_label(rule: &Tpsl2StrategyRule, open_positions: i64, paper_status: Option<PaperRunStatus>) -> &'static str {
     if rule.is_active {
         "Active"
     } else if open_positions > 0 {
@@ -74,7 +84,7 @@ impl RuleResponse {
     /// Build the response from a rule plus the live context needed to derive its
     /// lifecycle (`open_positions` from the runtime cache; `paper_status` from the
     /// rule's current run, or `None` for real rules / rules with no run).
-    fn build(r: StrategyTPSLRule, open_positions: i64, paper_status: Option<PaperRunStatus>) -> Self {
+    fn build(r: Tpsl2StrategyRule, open_positions: i64, paper_status: Option<PaperRunStatus>) -> Self {
         let lifecycle = lifecycle_label(&r, open_positions, paper_status).to_string();
         Self {
             id: r.id,
@@ -95,6 +105,15 @@ impl RuleResponse {
             p_time_stop_secs: r.p_time_stop_secs,
             p_stall_secs: r.p_stall_secs,
             p_liquidity_drop_pct: r.p_liquidity_drop_pct,
+            p_min_age_secs: r.p_min_age_secs,
+            p_min_alive_sol: r.p_min_alive_sol,
+            p_min_organic_sol: r.p_min_organic_sol,
+            p_pullback_pct: r.p_pullback_pct,
+            p_higher_low_secs: r.p_higher_low_secs,
+            p_max_cohort_held: r.p_max_cohort_held,
+            p_min_liquidity_sol: r.p_min_liquidity_sol,
+            p_min_organic_liq: r.p_min_organic_liq,
+            p_cohort_exit_ratio: r.p_cohort_exit_ratio,
             tolerance_pct: r.tolerance_pct,
             is_active: r.is_active,
             lifecycle,
@@ -107,7 +126,7 @@ impl RuleResponse {
 
 /// Enrich a single rule into a [`RuleResponse`] (one paper-run query for paper
 /// rules). The list endpoint avoids this per-rule query via a bulk run lookup.
-async fn rule_response(app_state: &Arc<AppState>, rule: StrategyTPSLRule) -> RuleResponse {
+async fn rule_response(app_state: &Arc<AppState>, rule: Tpsl2StrategyRule) -> RuleResponse {
     let open = app_state.tpsl2_cache.holding_count_by_rule(rule.id);
     let paper_status = if rule.trade_mode == "paper" {
         Tpsl2PaperTradingRepo::new(app_state.db.clone())
@@ -141,6 +160,25 @@ pub struct CreateRuleRequest {
     pub p_time_stop_secs: Option<u64>,
     pub p_stall_secs: Option<u64>,
     pub p_liquidity_drop_pct: Option<f64>,
+    // Scalp-continuation gates; absent/0 = disabled.
+    #[serde(default)]
+    pub p_min_age_secs: Option<u64>,
+    #[serde(default)]
+    pub p_min_alive_sol: Option<f64>,
+    #[serde(default)]
+    pub p_min_organic_sol: Option<f64>,
+    #[serde(default)]
+    pub p_pullback_pct: Option<f64>,
+    #[serde(default)]
+    pub p_higher_low_secs: Option<u64>,
+    #[serde(default)]
+    pub p_max_cohort_held: Option<f64>,
+    #[serde(default)]
+    pub p_min_liquidity_sol: Option<f64>,
+    #[serde(default)]
+    pub p_min_organic_liq: Option<f64>,
+    #[serde(default)]
+    pub p_cohort_exit_ratio: Option<f64>,
     pub tolerance_pct: Option<f64>,
 }
 
@@ -154,6 +192,16 @@ pub struct UpdateRuleRequest {
     pub p_time_stop_secs: Option<u64>,
     pub p_stall_secs: Option<u64>,
     pub p_liquidity_drop_pct: Option<f64>,
+    // Scalp-continuation gates; present → set (0 disables, per ignore_zero).
+    pub p_min_age_secs: Option<u64>,
+    pub p_min_alive_sol: Option<f64>,
+    pub p_min_organic_sol: Option<f64>,
+    pub p_pullback_pct: Option<f64>,
+    pub p_higher_low_secs: Option<u64>,
+    pub p_max_cohort_held: Option<f64>,
+    pub p_min_liquidity_sol: Option<f64>,
+    pub p_min_organic_liq: Option<f64>,
+    pub p_cohort_exit_ratio: Option<f64>,
     #[serde(default)]
     pub p_initial_buy_sol: Option<Option<f64>>,
     #[serde(default)]
@@ -242,7 +290,7 @@ pub async fn create_tpsl_rule(
     app_state: web::Data<Arc<AppState>>,
     req: web::Json<CreateRuleRequest>,
 ) -> impl Responder {
-    let rule = StrategyTPSLRule::new(
+    let mut rule = Tpsl2StrategyRule::new(
         req.rule_name.clone(),
         req.p_initial_buy_sol,
         req.p_cu_limit,
@@ -262,6 +310,17 @@ pub async fn create_tpsl_rule(
         req.p_stall_secs,
         req.p_liquidity_drop_pct,
     );
+    // Scalp-continuation gates are set post-`new()` (so the shared model's
+    // constructor signature — and tpsl1's call sites — stay untouched).
+    rule.p_min_age_secs = req.p_min_age_secs;
+    rule.p_min_alive_sol = req.p_min_alive_sol;
+    rule.p_min_organic_sol = req.p_min_organic_sol;
+    rule.p_pullback_pct = req.p_pullback_pct;
+    rule.p_higher_low_secs = req.p_higher_low_secs;
+    rule.p_max_cohort_held = req.p_max_cohort_held;
+    rule.p_min_liquidity_sol = req.p_min_liquidity_sol;
+    rule.p_min_organic_liq = req.p_min_organic_liq;
+    rule.p_cohort_exit_ratio = req.p_cohort_exit_ratio;
 
     let repo = Tpsl2StrategyRuleRepo::new(app_state.db.clone());
 
@@ -320,6 +379,34 @@ pub async fn update_tpsl_rule(
             }
             if let Some(liquidity_drop_pct) = req.p_liquidity_drop_pct {
                 rule.p_liquidity_drop_pct = Some(liquidity_drop_pct);
+            }
+            // Scalp-continuation gates (present → set; 0 disables).
+            if let Some(v) = req.p_min_age_secs {
+                rule.p_min_age_secs = Some(v);
+            }
+            if let Some(v) = req.p_min_alive_sol {
+                rule.p_min_alive_sol = Some(v);
+            }
+            if let Some(v) = req.p_min_organic_sol {
+                rule.p_min_organic_sol = Some(v);
+            }
+            if let Some(v) = req.p_pullback_pct {
+                rule.p_pullback_pct = Some(v);
+            }
+            if let Some(v) = req.p_higher_low_secs {
+                rule.p_higher_low_secs = Some(v);
+            }
+            if let Some(v) = req.p_max_cohort_held {
+                rule.p_max_cohort_held = Some(v);
+            }
+            if let Some(v) = req.p_min_liquidity_sol {
+                rule.p_min_liquidity_sol = Some(v);
+            }
+            if let Some(v) = req.p_min_organic_liq {
+                rule.p_min_organic_liq = Some(v);
+            }
+            if let Some(v) = req.p_cohort_exit_ratio {
+                rule.p_cohort_exit_ratio = Some(v);
             }
             if let Some(initial_buy_sol_opt) = &req.p_initial_buy_sol {
                 rule.p_initial_buy_sol = initial_buy_sol_opt.clone();

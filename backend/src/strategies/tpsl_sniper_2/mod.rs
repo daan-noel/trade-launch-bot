@@ -5,6 +5,7 @@
 //! the live `tpsl_sniper_1` strategy.
 //!
 //! Module map:
+//!   - `cohort`       — shared launch-cohort primitive (entry gates + E5 exit).
 //!   - `entry`        — buy-criteria matching + entry-fill resolution.
 //!   - `exit`         — the single exit ladder (trade-driven + clock-driven).
 //!   - `handler`      — thin active-rule holder over `entry` (`check_buy_entry`).
@@ -15,6 +16,7 @@
 //!   - `paper_run`    — paper-run completion lifecycle.
 //!   - `runtime_cache`— in-memory rules/positions/run state.
 pub mod backtest;
+pub mod cohort;
 pub mod entry;
 pub mod execution;
 pub mod exit;

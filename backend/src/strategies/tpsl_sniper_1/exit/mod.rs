@@ -20,7 +20,7 @@
 use chrono::{DateTime, Duration, Utc};
 
 use crate::models::trade::Trade;
-use crate::models::{Position, PositionStatus, StrategyTPSLRule};
+use crate::models::{Position, PositionStatus, Tpsl1StrategyRule};
 
 use super::util::{none_if_zero_f64, none_if_zero_u64};
 
@@ -147,7 +147,7 @@ pub fn find_trade_driven_exit(
     trades: &[Trade],
     entry_time: DateTime<Utc>,
     entry_price: f64,
-    rule: &StrategyTPSLRule,
+    rule: &Tpsl1StrategyRule,
 ) -> Option<ExitFill> {
     if entry_price <= 0.0 {
         return None;
@@ -243,7 +243,7 @@ pub fn find_trade_driven_exit(
 pub fn find_clock_driven_exit(
     state: &ExitWalkState,
     entry_time: DateTime<Utc>,
-    rule: &StrategyTPSLRule,
+    rule: &Tpsl1StrategyRule,
     now: DateTime<Utc>,
 ) -> Option<ExitReason> {
     if let Some(secs) = none_if_zero_u64(rule.p_stall_secs) {
@@ -266,7 +266,7 @@ pub fn find_clock_driven_exit(
 pub fn should_position_exit_on_trade(
     position: &Position,
     trades: &[Trade],
-    rule: &StrategyTPSLRule,
+    rule: &Tpsl1StrategyRule,
 ) -> Option<ExitReason> {
     let entry_time = exit_clock_entry(position)?;
     find_trade_driven_exit(trades, entry_time, position.entry_price, rule).map(|fill| fill.reason)
@@ -278,7 +278,7 @@ pub fn should_position_exit_on_trade(
 pub fn should_position_exit_on_clock(
     position: &Position,
     trades: &[Trade],
-    rule: &StrategyTPSLRule,
+    rule: &Tpsl1StrategyRule,
     now: DateTime<Utc>,
 ) -> Option<ExitReason> {
     let entry_time = exit_clock_entry(position)?;
@@ -341,8 +341,8 @@ mod tests {
         time_stop_secs: Option<u64>,
         stall_secs: Option<u64>,
         liquidity_drop_pct: Option<f64>,
-    ) -> StrategyTPSLRule {
-        StrategyTPSLRule::new(
+    ) -> Tpsl1StrategyRule {
+        Tpsl1StrategyRule::new(
             "test".into(),
             None,
             None,

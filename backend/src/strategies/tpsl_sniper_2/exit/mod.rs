@@ -7,7 +7,7 @@
 //!     silent and no trade is arriving.
 //!
 //! Ladder priority (first match on a trade wins):
-//!   LiquidityExit → StopLoss → TakeProfit → TrailingStop → Stall → TimeStop.
+//!   CohortExit → LiquidityExit → StopLoss → TakeProfit → TrailingStop → Stall → TimeStop.
 //!
 //! Every feature is inert by default: with all `p_*` exit params unset/zero the
 //! trade walk reproduces the legacy fixed TP/SL behavior exactly.
@@ -19,9 +19,11 @@
 
 use chrono::{DateTime, Duration, Utc};
 
-use crate::models::trade::Trade;
-use crate::models::{Position, PositionStatus, StrategyTPSLRule};
+use crate::config::constants::RUGGED_EARLY_SLOT_WINDOW;
+use crate::models::trade::{Trade, TradeType};
+use crate::models::{Position, PositionStatus, Tpsl2StrategyRule};
 
+use super::cohort::{cohort_flow, early_cohort_wallets};
 use super::util::{none_if_zero_f64, none_if_zero_u64};
 
 /// The typed reason a position exited. Replaces the old stringly-typed reason
@@ -36,8 +38,11 @@ pub enum ExitReason {
     Stall,
     /// E2 · held past the `p_time_stop_secs` deadline.
     TimeStop,
-    /// E4 · virtual SOL reserves crashed `p_liquidity_drop_pct`% below their peak.
+    /// E4 · **real** SOL reserves crashed `p_liquidity_drop_pct`% below their peak.
     LiquidityExit,
+    /// E5 · the launch cohort's net holdings collapsed to ≤ `p_cohort_exit_ratio`
+    /// of everything it bought (the multi-wallet rug dump). Top ladder priority.
+    CohortExit,
 }
 
 impl ExitReason {
@@ -51,6 +56,7 @@ impl ExitReason {
             Self::Stall => "Stall",
             Self::TimeStop => "TimeStop",
             Self::LiquidityExit => "LiquidityExit",
+            Self::CohortExit => "CohortExit",
         }
     }
 }
@@ -75,9 +81,10 @@ pub struct ExitFill {
 
 /// Running state accumulated while walking a position's post-entry trades:
 /// the peak price (drives the trailing stop), the time of the most recent new
-/// higher-high (drives the stall clock), and the peak virtual SOL reserves
-/// (drives the liquidity-death exit). The clock-driven sweep rebuilds this from
-/// history so it can measure Stall against `now` instead of the last trade.
+/// higher-high (drives the stall clock), and the peak **real** SOL reserves
+/// (drives the liquidity-death exit — never virtual, which wash trading can
+/// fake). The clock-driven sweep rebuilds this from history so it can measure
+/// Stall against `now` instead of the last trade.
 #[derive(Debug, Clone, Copy)]
 pub struct ExitWalkState {
     pub peak_price: f64,
@@ -103,7 +110,7 @@ impl ExitWalkState {
             self.peak_price = trade.price_per_token;
             self.last_higher_high_time = trade.block_time;
         }
-        if let Some(reserves) = trade.virtual_sol_reserves {
+        if let Some(reserves) = trade.real_sol_reserves {
             if reserves > self.peak_reserves {
                 self.peak_reserves = reserves;
             }
@@ -147,7 +154,7 @@ pub fn find_trade_driven_exit(
     trades: &[Trade],
     entry_time: DateTime<Utc>,
     entry_price: f64,
-    rule: &StrategyTPSLRule,
+    rule: &Tpsl2StrategyRule,
 ) -> Option<ExitFill> {
     if entry_price <= 0.0 {
         return None;
@@ -159,6 +166,27 @@ pub fn find_trade_driven_exit(
     let time_stop_secs = none_if_zero_u64(rule.p_time_stop_secs); // E2 (None → off)
     let stall_secs = none_if_zero_u64(rule.p_stall_secs); // E3 (None → off)
     let liquidity_drop_pct = none_if_zero_f64(rule.p_liquidity_drop_pct); // E4 (None → off)
+    let cohort_exit_ratio = none_if_zero_f64(rule.p_cohort_exit_ratio); // E5 (None → off)
+
+    // E5 precompute: the launch cohort, the bag it ever bought (the denominator),
+    // and its net holdings as of entry. `cohort_net` then evolves causally as the
+    // walk replays each post-entry cohort trade. Skipped entirely when E5 is off.
+    let (cohort, cohort_bought, mut cohort_net) = match cohort_exit_ratio {
+        Some(_) => {
+            let cohort = early_cohort_wallets(trades, RUGGED_EARLY_SLOT_WINDOW);
+            let bought = cohort_flow(trades, &cohort).bought_tokens;
+            let net_at_entry: f64 = trades
+                .iter()
+                .filter(|t| t.block_time <= entry_time && cohort.contains(&t.wallet_address))
+                .map(|t| match t.trade_type {
+                    TradeType::Buy => t.token_amount,
+                    TradeType::Sell => -t.token_amount,
+                })
+                .sum();
+            (Some(cohort), bought, net_at_entry)
+        }
+        None => (None, 0.0, 0.0),
+    };
 
     let trades_after_entry: Vec<&Trade> =
         trades.iter().filter(|t| t.block_time > entry_time).collect();
@@ -167,16 +195,33 @@ pub fn find_trade_driven_exit(
 
     for t in trades_after_entry.iter() {
         state.update_with_trade(t);
+        // Evolve the cohort's net holdings as its trades replay (E5 only).
+        if let Some(cohort) = cohort.as_ref() {
+            if cohort.contains(&t.wallet_address) {
+                cohort_net += match t.trade_type {
+                    TradeType::Buy => t.token_amount,
+                    TradeType::Sell => -t.token_amount,
+                };
+            }
+        }
         let price = t.price_per_token;
         let pct = ((price - entry_price) / entry_price) * 100.0;
 
         // First feature that fires on this trade wins (ladder order).
         let reason: Option<ExitReason> = None
             .or_else(|| {
-                // E4: reserves crash below the peak-since-entry. Highest priority —
-                // a reserve crash leads the price move the others catch later.
+                // E5: the cohort dumped — its net collapsed to ≤ ratio of its bag.
+                // Top priority: the insider cluster bailing is the biggest danger.
+                cohort_exit_ratio.and_then(|ratio| {
+                    (cohort_bought > 0.0 && cohort_net <= cohort_bought * ratio)
+                        .then_some(ExitReason::CohortExit)
+                })
+            })
+            .or_else(|| {
+                // E4: reserves crash below the peak-since-entry. A reserve crash
+                // leads the price move the others catch later. REAL reserves only.
                 liquidity_drop_pct.and_then(|drop| {
-                    t.virtual_sol_reserves.and_then(|reserves| {
+                    t.real_sol_reserves.and_then(|reserves| {
                         (state.peak_reserves > 0.0
                             && reserves < state.peak_reserves * (1.0 - drop / 100.0))
                         .then_some(ExitReason::LiquidityExit)
@@ -243,7 +288,7 @@ pub fn find_trade_driven_exit(
 pub fn find_clock_driven_exit(
     state: &ExitWalkState,
     entry_time: DateTime<Utc>,
-    rule: &StrategyTPSLRule,
+    rule: &Tpsl2StrategyRule,
     now: DateTime<Utc>,
 ) -> Option<ExitReason> {
     if let Some(secs) = none_if_zero_u64(rule.p_stall_secs) {
@@ -266,7 +311,7 @@ pub fn find_clock_driven_exit(
 pub fn should_position_exit_on_trade(
     position: &Position,
     trades: &[Trade],
-    rule: &StrategyTPSLRule,
+    rule: &Tpsl2StrategyRule,
 ) -> Option<ExitReason> {
     let entry_time = exit_clock_entry(position)?;
     find_trade_driven_exit(trades, entry_time, position.entry_price, rule).map(|fill| fill.reason)
@@ -278,7 +323,7 @@ pub fn should_position_exit_on_trade(
 pub fn should_position_exit_on_clock(
     position: &Position,
     trades: &[Trade],
-    rule: &StrategyTPSLRule,
+    rule: &Tpsl2StrategyRule,
     now: DateTime<Utc>,
 ) -> Option<ExitReason> {
     let entry_time = exit_clock_entry(position)?;
@@ -326,11 +371,27 @@ mod tests {
         )
     }
 
-    /// A buy carrying explicit virtual SOL reserves (price still equals `price`).
+    /// A buy carrying explicit **real** SOL reserves (price still equals `price`).
+    /// E4 reads real reserves now (never virtual — wash trading can fake virtual).
     fn buy_resv(price: f64, slot: u64, secs: i64, reserves: f64) -> Trade {
         let mut t = buy(price, slot, secs);
-        t.virtual_sol_reserves = Some(reserves);
+        t.real_sol_reserves = Some(reserves);
         t
+    }
+
+    /// A trade by a specific wallet, with explicit side/sol/tokens/slot — for the
+    /// cohort-dump (E5) tests where wallet identity and token flow matter.
+    fn trade_w(wallet: &str, side: TradeType, sol: f64, tokens: f64, slot: u64, secs: i64) -> Trade {
+        Trade::new(
+            "mint".into(),
+            wallet.into(),
+            side,
+            sol,
+            tokens,
+            format!("sig-{wallet}-{slot}-{secs}"),
+            slot,
+            base_time() + Duration::seconds(secs),
+        )
     }
 
     /// Minimal rule with explicit TP/SL + optional E1/E2/E3/E4; else inert.
@@ -341,8 +402,8 @@ mod tests {
         time_stop_secs: Option<u64>,
         stall_secs: Option<u64>,
         liquidity_drop_pct: Option<f64>,
-    ) -> StrategyTPSLRule {
-        StrategyTPSLRule::new(
+    ) -> Tpsl2StrategyRule {
+        Tpsl2StrategyRule::new(
             "test".into(),
             None,
             None,
@@ -551,6 +612,56 @@ mod tests {
         let rule = rule_with(1000.0, 90.0, None, None, None, Some(50.0));
         let exit = find_trade_driven_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
         assert_eq!(exit.reason, ExitReason::LiquidityExit);
+    }
+
+    // ── E5 cohort-dump (`p_cohort_exit_ratio`) ───────────────────────────────
+
+    /// rule_with + an explicit E5 cohort-exit ratio.
+    fn rule_cohort(cohort_exit_ratio: f64) -> Tpsl2StrategyRule {
+        let mut r = rule_with(1000.0, 99.0, None, None, None, None);
+        r.p_cohort_exit_ratio = Some(cohort_exit_ratio);
+        r
+    }
+
+    #[test]
+    fn cohort_exit_fires_when_cohort_dumps() {
+        // "dev" buys 100 tokens at launch (slot 1, pre-entry). Entry at base_time,
+        // price 1.0. After entry an outside wallet trades (price ref), then "dev"
+        // dumps 96 → net 4 / 100 = 0.04 ≤ 0.05 → CohortExit.
+        let trades = vec![
+            trade_w("dev", TradeType::Buy, 5.0, 100.0, 1, -2),
+            trade_w("out", TradeType::Buy, 1.0, 1.0, 500, 1),
+            trade_w("dev", TradeType::Sell, 4.5, 96.0, 501, 2),
+        ];
+        let rule = rule_cohort(0.05);
+        let exit = find_trade_driven_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
+        assert_eq!(exit.reason, ExitReason::CohortExit);
+        assert_eq!(exit.block_time, base_time() + Duration::seconds(2));
+    }
+
+    #[test]
+    fn cohort_exit_does_not_fire_while_cohort_holds() {
+        // "dev" keeps its bag (only a tiny trim) → net 95/100 = 0.95 > 0.05.
+        let trades = vec![
+            trade_w("dev", TradeType::Buy, 5.0, 100.0, 1, -2),
+            trade_w("out", TradeType::Buy, 1.0, 1.0, 500, 1),
+            trade_w("dev", TradeType::Sell, 0.2, 5.0, 501, 2),
+        ];
+        let rule = rule_cohort(0.05);
+        assert!(find_trade_driven_exit(&trades, base_time(), 1.0, &rule).is_none());
+    }
+
+    #[test]
+    fn cohort_exit_inert_when_unconfigured() {
+        // Same 96-token dump, but E5 off → no CohortExit. Sell priced near entry
+        // (≈0.94) so the high TP/SL don't fire either → position stays open.
+        let trades = vec![
+            trade_w("dev", TradeType::Buy, 5.0, 100.0, 1, -2),
+            trade_w("out", TradeType::Buy, 1.0, 1.0, 500, 1),
+            trade_w("dev", TradeType::Sell, 90.0, 96.0, 501, 2),
+        ];
+        let rule = rule_with(1000.0, 99.0, None, None, None, None);
+        assert!(find_trade_driven_exit(&trades, base_time(), 1.0, &rule).is_none());
     }
 
     // ── Live trade gate (`should_position_exit_on_trade`) ────────────────────

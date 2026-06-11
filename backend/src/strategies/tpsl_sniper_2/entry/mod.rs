@@ -18,7 +18,10 @@ use uuid::Uuid;
 
 use super::util::{none_if_zero_f64, none_if_zero_u64};
 use crate::models::trade::{Trade, TradeType};
-use crate::models::{StrategyTPSLRule, Token};
+use crate::models::{Tpsl2StrategyRule, Token};
+
+mod scalp;
+pub use scalp::{find_scalp_entry, rule_configures_any_scalp_gate};
 
 const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 
@@ -34,7 +37,7 @@ enum CriterionOutcome {
 
 /// Every entry criterion, evaluated in order. Adding a filter = add its
 /// `check_*` here; nothing else changes.
-const CRITERIA: &[fn(&Token, &StrategyTPSLRule) -> CriterionOutcome] = &[
+const CRITERIA: &[fn(&Token, &Tpsl2StrategyRule) -> CriterionOutcome] = &[
     check_initial_buy_sol,
     check_compute_unit_limit,
     check_compute_unit_price,
@@ -46,7 +49,7 @@ const CRITERIA: &[fn(&Token, &StrategyTPSLRule) -> CriterionOutcome] = &[
 /// Whether a token satisfies a rule's buy criteria. A rule must configure at
 /// least one criterion, and every configured criterion must be satisfied.
 /// Shared by the live entry gate and the backtest.
-pub fn token_matches_buy_rule(token: &Token, rule: &StrategyTPSLRule) -> bool {
+pub fn token_matches_buy_rule(token: &Token, rule: &Tpsl2StrategyRule) -> bool {
     let mut any_configured = false;
     for check in CRITERIA {
         match check(token, rule) {
@@ -58,10 +61,24 @@ pub fn token_matches_buy_rule(token: &Token, rule: &StrategyTPSLRule) -> bool {
     any_configured
 }
 
+/// Whether a token satisfies every *configured* token-level criterion. Unlike
+/// [`token_matches_buy_rule`], a rule that configures **no** token criterion
+/// passes vacuously. Used as the token pre-filter for the scalp entry path,
+/// where the trade-window gates ([`find_scalp_entry`]) do the real gating and a
+/// rule may set no creation-instruction filter at all.
+pub fn token_criteria_satisfied(token: &Token, rule: &Tpsl2StrategyRule) -> bool {
+    for check in CRITERIA {
+        if let CriterionOutcome::Rejected = check(token, rule) {
+            return false;
+        }
+    }
+    true
+}
+
 /// The first active rule whose criteria the token satisfies, or `None`. A rule
 /// that configures no criterion is skipped with a warning rather than matching
 /// every token.
-pub fn find_first_matching_buy_rule(token: &Token, rules: &[StrategyTPSLRule]) -> Option<Uuid> {
+pub fn find_first_matching_buy_rule(token: &Token, rules: &[Tpsl2StrategyRule]) -> Option<Uuid> {
     for rule in rules {
         if !rule.is_active {
             continue;
@@ -80,9 +97,10 @@ pub fn find_first_matching_buy_rule(token: &Token, rules: &[StrategyTPSLRule]) -
     None
 }
 
-/// Whether a rule sets at least one entry criterion (used to skip — and warn
-/// about — a misconfigured, match-everything rule).
-fn rule_configures_any_criterion(rule: &StrategyTPSLRule) -> bool {
+/// Whether a rule sets at least one **token-level** entry criterion (used to
+/// skip — and warn about — a misconfigured, match-everything rule). The scalp
+/// trade-window gates are checked separately via [`rule_configures_any_scalp_gate`].
+pub fn rule_configures_any_criterion(rule: &Tpsl2StrategyRule) -> bool {
     none_if_zero_f64(rule.p_initial_buy_sol).is_some()
         || none_if_zero_u64(rule.p_cu_limit).is_some()
         || none_if_zero_u64(rule.p_cu_price).is_some()
@@ -102,7 +120,7 @@ fn within_tolerance(token_val: f64, rule_val: f64, tolerance_pct: f64, eps: f64)
     (token_val - rule_val).abs() <= tol + eps
 }
 
-fn check_initial_buy_sol(token: &Token, rule: &StrategyTPSLRule) -> CriterionOutcome {
+fn check_initial_buy_sol(token: &Token, rule: &Tpsl2StrategyRule) -> CriterionOutcome {
     let Some(rule_val) = none_if_zero_f64(rule.p_initial_buy_sol) else {
         return CriterionOutcome::NotConfigured;
     };
@@ -114,7 +132,7 @@ fn check_initial_buy_sol(token: &Token, rule: &StrategyTPSLRule) -> CriterionOut
     }
 }
 
-fn check_compute_unit_limit(token: &Token, rule: &StrategyTPSLRule) -> CriterionOutcome {
+fn check_compute_unit_limit(token: &Token, rule: &Tpsl2StrategyRule) -> CriterionOutcome {
     let Some(rule_val) = none_if_zero_u64(rule.p_cu_limit) else {
         return CriterionOutcome::NotConfigured;
     };
@@ -126,7 +144,7 @@ fn check_compute_unit_limit(token: &Token, rule: &StrategyTPSLRule) -> Criterion
     }
 }
 
-fn check_compute_unit_price(token: &Token, rule: &StrategyTPSLRule) -> CriterionOutcome {
+fn check_compute_unit_price(token: &Token, rule: &Tpsl2StrategyRule) -> CriterionOutcome {
     let Some(rule_val) = none_if_zero_u64(rule.p_cu_price) else {
         return CriterionOutcome::NotConfigured;
     };
@@ -138,7 +156,7 @@ fn check_compute_unit_price(token: &Token, rule: &StrategyTPSLRule) -> Criterion
     }
 }
 
-fn check_max_sol_cost(token: &Token, rule: &StrategyTPSLRule) -> CriterionOutcome {
+fn check_max_sol_cost(token: &Token, rule: &Tpsl2StrategyRule) -> CriterionOutcome {
     let Some(rule_val) = none_if_zero_f64(rule.p_max_sol_cost) else {
         return CriterionOutcome::NotConfigured;
     };
@@ -150,7 +168,7 @@ fn check_max_sol_cost(token: &Token, rule: &StrategyTPSLRule) -> CriterionOutcom
     }
 }
 
-fn check_spendable_sol_in(token: &Token, rule: &StrategyTPSLRule) -> CriterionOutcome {
+fn check_spendable_sol_in(token: &Token, rule: &Tpsl2StrategyRule) -> CriterionOutcome {
     let Some(rule_val) = none_if_zero_f64(rule.p_spendable_sol_in) else {
         return CriterionOutcome::NotConfigured;
     };
@@ -162,7 +180,7 @@ fn check_spendable_sol_in(token: &Token, rule: &StrategyTPSLRule) -> CriterionOu
     }
 }
 
-fn check_instruction_labels(token: &Token, rule: &StrategyTPSLRule) -> CriterionOutcome {
+fn check_instruction_labels(token: &Token, rule: &Tpsl2StrategyRule) -> CriterionOutcome {
     if !rule.p_ix_labels.as_array().map_or(false, |a| !a.is_empty()) {
         return CriterionOutcome::NotConfigured;
     }
@@ -282,8 +300,8 @@ mod tests {
         p_max_sol_cost: Option<f64>,
         p_spendable_sol_in: Option<f64>,
         tolerance_pct: f64,
-    ) -> StrategyTPSLRule {
-        let mut r = StrategyTPSLRule::new(
+    ) -> Tpsl2StrategyRule {
+        let mut r = Tpsl2StrategyRule::new(
             "test".into(),
             p_initial_buy_sol,
             p_cu_limit,

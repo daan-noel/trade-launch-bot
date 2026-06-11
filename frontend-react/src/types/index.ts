@@ -62,6 +62,16 @@ export interface RuleRecord {
   p_time_stop_secs: number | null;
   p_stall_secs: number | null;
   p_liquidity_drop_pct: number | null;
+  // Scalp-continuation gates (tpsl2 only; null on tpsl1). 0/null = disabled.
+  p_min_age_secs: number | null;
+  p_min_alive_sol: number | null;
+  p_min_organic_sol: number | null;
+  p_pullback_pct: number | null;
+  p_higher_low_secs: number | null;
+  p_max_cohort_held: number | null;
+  p_min_liquidity_sol: number | null;
+  p_min_organic_liq: number | null;
+  p_cohort_exit_ratio: number | null;
   tolerance_pct: number;
   is_active: boolean;
   /** Derived lifecycle for the UI: 'Active' | 'Draining' | 'Idle' | 'Finished'.
@@ -92,7 +102,7 @@ export interface RulePositionRecord {
   entry_time: string | null;
   exit_time: string | null;
   /** Why the position exited (TakeProfit/StopLoss/TrailingStop/Stall/TimeStop/
-   * LiquidityExit); null while still open. */
+   * LiquidityExit/CohortExit); null while still open. */
   exit_reason: string | null;
   created_at: string;
   updated_at: string;
