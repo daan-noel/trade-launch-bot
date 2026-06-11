@@ -25,7 +25,7 @@ pub struct Position {
     /// triggered, sell/confirmation in flight | "End" — exited cleanly |
     /// "ExitFailed" — terminal: the exit attempt ran and failed.
     pub status: PositionStatus,
-    /// Strategy name (e.g., "TPSL").
+    /// Strategy name (e.g., "TPSL1" or "TPSL2").
     pub strategy: String,
     /// Rule ID from the strategy rules table that triggered this position.
     pub rule_id: Uuid,

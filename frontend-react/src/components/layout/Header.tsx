@@ -109,7 +109,7 @@ export function Header() {
             label="Strategies"
             isActive={strategiesActive}
             items={[
-              { to: '/strategies/tpsl', label: 'TP / SL Rules' },
+              { to: '/strategies/tpsl1', label: 'TP / SL Sniper 1' },
               { to: '/strategies/tpsl2', label: 'TP / SL Sniper 2' },
             ]}
           />

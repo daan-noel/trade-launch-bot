@@ -106,45 +106,45 @@ export async function fetchTokenSwingsBatch(
   });
 }
 
-export async function fetchTpslRules(): Promise<import('types').RuleRecord[]> {
-  return request(`${API_BASE}/api/strategies/tpsl/rules`);
+export async function fetchTpsl1Rules(): Promise<import('types').RuleRecord[]> {
+  return request(`${API_BASE}/api/strategies/tpsl1/rules`);
 }
 
-export async function createTpslRule(
+export async function createTpsl1Rule(
   req: Record<string, unknown>,
 ): Promise<import('types').RuleRecord> {
-  return request(`${API_BASE}/api/strategies/tpsl/rules`, {
+  return request(`${API_BASE}/api/strategies/tpsl1/rules`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),
   });
 }
 
-export async function updateTpslRule(
+export async function updateTpsl1Rule(
   ruleId: string,
   req: Record<string, unknown>,
 ): Promise<import('types').RuleRecord> {
-  return request(`${API_BASE}/api/strategies/tpsl/rules/${ruleId}`, {
+  return request(`${API_BASE}/api/strategies/tpsl1/rules/${ruleId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),
   });
 }
 
-export async function deleteTpslRule(ruleId: string): Promise<void> {
-  await request(`${API_BASE}/api/strategies/tpsl/rules/${ruleId}`, { method: 'DELETE' });
+export async function deleteTpsl1Rule(ruleId: string): Promise<void> {
+  await request(`${API_BASE}/api/strategies/tpsl1/rules/${ruleId}`, { method: 'DELETE' });
 }
 
-export async function simulateTpslRule(
+export async function simulateTpsl1Rule(
   ruleId: string,
 ): Promise<import('types').SimulatedTokenResult[]> {
-  return request(`${API_BASE}/api/strategies/tpsl/rules/${ruleId}/simulate`);
+  return request(`${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/simulate`);
 }
 
-export async function fetchMatchedTokens(
+export async function fetchTpsl1MatchedTokens(
   ruleId: string,
 ): Promise<import('types').MatchedTokenRecord[]> {
-  return request(`${API_BASE}/api/strategies/tpsl/rules/${ruleId}/matched`);
+  return request(`${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/matched`);
 }
 
 /**
@@ -152,16 +152,16 @@ export async function fetchMatchedTokens(
  * into a simulation-shaped result. `run` is null if the rule has never run in
  * paper mode.
  */
-export async function fetchPaperResult(
+export async function fetchTpsl1PaperResult(
   ruleId: string,
 ): Promise<import('types').PaperResultResponse> {
-  return request(`${API_BASE}/api/strategies/tpsl/rules/${ruleId}/paper-result`);
+  return request(`${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/paper-result`);
 }
 
-export async function fetchRulePositions(
+export async function fetchTpsl1RulePositions(
   ruleId: string,
 ): Promise<import('types').RulePositionRecord[]> {
-  return request(`${API_BASE}/api/strategies/tpsl/rules/${ruleId}/positions`);
+  return request(`${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/positions`);
 }
 
 // ---------------------------------------------------------------------------

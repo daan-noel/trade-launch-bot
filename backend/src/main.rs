@@ -101,11 +101,11 @@ async fn main() -> anyhow::Result<()> {
 
     let (sol_price_tx, _sol_price_rx) = tokio::sync::watch::channel::<Option<f64>>(None);
     let sol_price = Arc::new(sol_price_tx);
-    let tpsl_cache = Arc::new(strategies::tpsl_sniper_1::TpslRuntimeCache::new());
-    tpsl_cache
+    let tpsl1_cache = Arc::new(strategies::tpsl_sniper_1::Tpsl1RuntimeCache::new());
+    tpsl1_cache
         .load_from_db(&db)
         .await
-        .context("Failed to load TPSL runtime cache")?;
+        .context("Failed to load TPSL1 runtime cache")?;
     let tpsl2_cache = Arc::new(strategies::tpsl_sniper_2::Tpsl2RuntimeCache::new());
     tpsl2_cache
         .load_from_db(&db)
@@ -139,7 +139,7 @@ async fn main() -> anyhow::Result<()> {
         settings_tx.clone(),
         sol_price.clone(),
         trader.clone(),
-        tpsl_cache.clone(),
+        tpsl1_cache.clone(),
         tpsl2_cache.clone(),
         pipeline.pool_index(),
         pipeline.pools_changed(),
@@ -176,7 +176,7 @@ async fn main() -> anyhow::Result<()> {
         db.clone(),
         trader.clone(),
         token_cache.clone(),
-        tpsl_cache,
+        tpsl1_cache,
         tpsl2_cache,
         sse_tx.clone(),
     );

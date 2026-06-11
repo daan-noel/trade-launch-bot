@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::models::{PaperRun, PaperRunStatus, Position, PositionStatus, StrategyTPSLRule};
 use crate::storage::repositories::{
     paper_trading_repo::PaperTradingRepo, position_repo::PositionRepo,
-    strategy_tpsl_rule_repo::StrategyTPSLRuleRepo,
+    strategy_tpsl1_rule_repo::StrategyTPSL1RuleRepo,
 };
 
 /// Pointer to a paper rule's current run — the run new paper positions are
@@ -26,7 +26,7 @@ pub struct PaperRunRef {
 /// each run start). `holding_*` track open positions of both modes (paper rule
 /// ids and real rule ids are disjoint, so the shared maps never collide).
 #[derive(Clone)]
-pub struct TpslRuntimeCache {
+pub struct Tpsl1RuntimeCache {
     active_rules: Arc<RwLock<Vec<StrategyTPSLRule>>>,
     rules_by_id: Arc<RwLock<HashMap<Uuid, StrategyTPSLRule>>>,
     holding_by_mint: Arc<DashMap<String, Vec<Position>>>,
@@ -36,7 +36,7 @@ pub struct TpslRuntimeCache {
     paper_run_by_rule: Arc<DashMap<Uuid, PaperRunRef>>,
 }
 
-impl TpslRuntimeCache {
+impl Tpsl1RuntimeCache {
     pub fn new() -> Self {
         Self {
             active_rules: Arc::new(RwLock::new(Vec::new())),
@@ -49,7 +49,7 @@ impl TpslRuntimeCache {
     }
 
     pub async fn load_from_db(&self, pool: &PgPool) -> anyhow::Result<()> {
-        let rule_repo = StrategyTPSLRuleRepo::new(pool.clone());
+        let rule_repo = StrategyTPSL1RuleRepo::new(pool.clone());
         let position_repo = PositionRepo::new(pool.clone());
         let paper_repo = PaperTradingRepo::new(pool.clone());
 
@@ -115,7 +115,7 @@ impl TpslRuntimeCache {
     }
 
     pub async fn reload_rules(&self, pool: &PgPool) -> anyhow::Result<()> {
-        let rules = StrategyTPSLRuleRepo::new(pool.clone()).find_all().await?;
+        let rules = StrategyTPSL1RuleRepo::new(pool.clone()).find_all().await?;
         self.set_rules(rules);
         Ok(())
     }

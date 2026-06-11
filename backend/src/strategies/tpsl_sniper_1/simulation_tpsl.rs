@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::models::trade::TradeType;
 use crate::models::StrategyTPSLRule;
 use crate::state::app_state::AppState;
-use crate::storage::repositories::strategy_tpsl_rule_repo::StrategyTPSLRuleRepo;
+use crate::storage::repositories::strategy_tpsl1_rule_repo::StrategyTPSL1RuleRepo;
 use crate::storage::repositories::token_repo::TokenRepo;
 use crate::storage::repositories::trade_repo::TradeRepo;
 use super::handler_tpsl::token_matches_rule;
@@ -309,7 +309,7 @@ pub async fn run_simulation(
     app_state: actix_web::web::Data<Arc<AppState>>,
     rule_id: Uuid,
 ) -> Result<Vec<SimulatedTokenResult>> {
-    let rule_repo = StrategyTPSLRuleRepo::new(app_state.db.clone());
+    let rule_repo = StrategyTPSL1RuleRepo::new(app_state.db.clone());
 
     let rule = rule_repo
         .find_by_id(rule_id)

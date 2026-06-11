@@ -8,7 +8,7 @@ use crate::{
     models::{Position, StrategyTPSLRule},
     state::app_state::AppState,
     storage::repositories::{
-        paper_trading_repo::PaperTradingRepo, strategy_tpsl_rule_repo::StrategyTPSLRuleRepo,
+        paper_trading_repo::PaperTradingRepo, strategy_tpsl1_rule_repo::StrategyTPSL1RuleRepo,
         token_repo::TokenRepo,
     },
     strategies::tpsl_sniper_1::{
@@ -135,7 +135,7 @@ pub struct UpdateRuleRequest {
 
 /// List all TPSL rules
 pub async fn list_tpsl_rules(app_state: web::Data<Arc<AppState>>) -> impl Responder {
-    let repo = StrategyTPSLRuleRepo::new(app_state.db.clone());
+    let repo = StrategyTPSL1RuleRepo::new(app_state.db.clone());
 
     match repo.find_all().await {
         Ok(rules) => {
@@ -155,7 +155,7 @@ pub async fn get_tpsl_rule(
     app_state: web::Data<Arc<AppState>>,
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
-    let repo = StrategyTPSLRuleRepo::new(app_state.db.clone());
+    let repo = StrategyTPSL1RuleRepo::new(app_state.db.clone());
     let rule_id = rule_id.into_inner();
 
     match repo.find_by_id(rule_id).await {
@@ -195,11 +195,11 @@ pub async fn create_tpsl_rule(
         req.p_liquidity_drop_pct,
     );
 
-    let repo = StrategyTPSLRuleRepo::new(app_state.db.clone());
+    let repo = StrategyTPSL1RuleRepo::new(app_state.db.clone());
 
     match repo.insert(&rule).await {
         Ok(_) => {
-            if let Err(e) = app_state.tpsl_cache.reload_rules(&app_state.db).await {
+            if let Err(e) = app_state.tpsl1_cache.reload_rules(&app_state.db).await {
                 tracing::warn!("TPSL rule cache reload after create failed: {e}");
             }
             HttpResponse::Created().json(RuleResponse::from(rule))
@@ -219,7 +219,7 @@ pub async fn update_tpsl_rule(
     req: web::Json<UpdateRuleRequest>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
-    let repo = StrategyTPSLRuleRepo::new(app_state.db.clone());
+    let repo = StrategyTPSL1RuleRepo::new(app_state.db.clone());
 
     match repo.find_by_id(rule_id).await {
         Ok(Some(mut rule)) => {
@@ -301,7 +301,7 @@ pub async fn update_tpsl_rule(
                         if rule.is_active && !was_active {
                             let max_total = rule.p_max_total_tokens.filter(|v| *v > 0);
                             if let Err(e) = app_state
-                                .tpsl_cache
+                                .tpsl1_cache
                                 .start_paper_run(&app_state.db, rule.id, max_total)
                                 .await
                             {
@@ -309,7 +309,7 @@ pub async fn update_tpsl_rule(
                             }
                         } else if !rule.is_active && was_active {
                             if let Err(e) = app_state
-                                .tpsl_cache
+                                .tpsl1_cache
                                 .stop_paper_run(&app_state.db, rule.id)
                                 .await
                             {
@@ -317,7 +317,7 @@ pub async fn update_tpsl_rule(
                             }
                         }
                     }
-                    if let Err(e) = app_state.tpsl_cache.reload_rules(&app_state.db).await {
+                    if let Err(e) = app_state.tpsl1_cache.reload_rules(&app_state.db).await {
                         tracing::warn!("TPSL rule cache reload after update failed: {e}");
                     }
                     HttpResponse::Ok().json(RuleResponse::from(rule))
@@ -344,11 +344,11 @@ pub async fn delete_tpsl_rule(
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
-    let repo = StrategyTPSLRuleRepo::new(app_state.db.clone());
+    let repo = StrategyTPSL1RuleRepo::new(app_state.db.clone());
 
     match repo.delete(rule_id).await {
         Ok(_) => {
-            if let Err(e) = app_state.tpsl_cache.reload_rules(&app_state.db).await {
+            if let Err(e) = app_state.tpsl1_cache.reload_rules(&app_state.db).await {
                 tracing::warn!("TPSL rule cache reload after delete failed: {e}");
             }
             HttpResponse::NoContent().finish()
@@ -384,7 +384,7 @@ pub async fn get_matched_tokens(
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
-    let rule_repo = StrategyTPSLRuleRepo::new(app_state.db.clone());
+    let rule_repo = StrategyTPSL1RuleRepo::new(app_state.db.clone());
     let token_repo = TokenRepo::new(app_state.db.clone());
 
     let rule = match rule_repo.find_by_id(rule_id).await {
@@ -488,7 +488,7 @@ pub async fn paper_result_tpsl_rule(
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
-    let rule_repo = StrategyTPSLRuleRepo::new(app_state.db.clone());
+    let rule_repo = StrategyTPSL1RuleRepo::new(app_state.db.clone());
     let paper_repo = PaperTradingRepo::new(app_state.db.clone());
 
     let rule = match rule_repo.find_by_id(rule_id).await {
@@ -615,7 +615,7 @@ mod tests {
             "wallet".into(),
             entry,
             "etx".into(),
-            "TPSL".into(),
+            "TPSL1".into(),
             Uuid::new_v4(),
             0.05,
         );
@@ -653,7 +653,7 @@ mod tests {
             "wallet".into(),
             1.0,
             "etx".into(),
-            "TPSL".into(),
+            "TPSL1".into(),
             Uuid::new_v4(),
             0.05,
         );

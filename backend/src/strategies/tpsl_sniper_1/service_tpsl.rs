@@ -13,28 +13,28 @@ use crate::models::Position;
 use crate::state::token_cache::TokenCache;
 use crate::storage::repositories::{
     paper_trading_repo::PaperTradingRepo, position_repo::PositionRepo,
-    strategy_tpsl_rule_repo::StrategyTPSLRuleRepo, trade_repo::TradeRepo,
+    strategy_tpsl1_rule_repo::StrategyTPSL1RuleRepo, trade_repo::TradeRepo,
 };
-use super::{TPSLStrategyHandler, TpslRuntimeCache};
+use super::{TPSL1StrategyHandler, Tpsl1RuntimeCache};
 use crate::trader::PumpFunTrader;
 use super::util::ignore_zero_u64;
 
-pub struct TpslStrategyService {
+pub struct Tpsl1StrategyService {
     pool: PgPool,
     position_repo: PositionRepo,
     paper_repo: PaperTradingRepo,
     trade_repo: TradeRepo,
     trader: Arc<PumpFunTrader>,
-    runtime: Arc<TpslRuntimeCache>,
+    runtime: Arc<Tpsl1RuntimeCache>,
     /// Cold-lane broadcast for client notifications (e.g. paper-run finished).
     sse_tx: broadcast::Sender<SseEvent>,
 }
 
-impl TpslStrategyService {
+impl Tpsl1StrategyService {
     pub fn new(
         pool: PgPool,
         trader: Arc<PumpFunTrader>,
-        runtime: Arc<TpslRuntimeCache>,
+        runtime: Arc<Tpsl1RuntimeCache>,
         sse_tx: broadcast::Sender<SseEvent>,
     ) -> Self {
         Self {
@@ -59,16 +59,16 @@ impl TpslStrategyService {
     const EXIT_PENDING_STALE_MS: u64 = 300_000;
 }
 
-impl TpslStrategyService {
+impl Tpsl1StrategyService {
     pub fn spawn_background_tasks(&self) {
         let cleanup_repo = self.position_repo.clone();
         let paper_repo = self.paper_repo.clone();
         let runtime = self.runtime.clone();
         let pool = self.pool.clone();
         tokio::spawn(async move {
-            let stale = Duration::from_millis(TpslStrategyService::EXIT_PENDING_STALE_MS);
+            let stale = Duration::from_millis(Tpsl1StrategyService::EXIT_PENDING_STALE_MS);
             let mut interval = tokio::time::interval(Duration::from_millis(
-                TpslStrategyService::EXIT_PENDING_CLEANUP_INTERVAL_MS,
+                Tpsl1StrategyService::EXIT_PENDING_CLEANUP_INTERVAL_MS,
             ));
             loop {
                 interval.tick().await;
@@ -108,7 +108,7 @@ impl TpslStrategyService {
             return;
         }
 
-        let handler = TPSLStrategyHandler::new(rules);
+        let handler = TPSL1StrategyHandler::new(rules);
         if let Some(rule_id) = handler.check_buy_entry(&token) {
             info!("Token {mint} matches TPSL buy entry rule {rule_id}");
 
@@ -168,7 +168,7 @@ impl TpslStrategyService {
                     self.trader.wallet_pubkey(),
                     0.0,
                     token.creation_tx_signature.clone(),
-                    "TPSL".to_string(),
+                    "TPSL1".to_string(),
                     rule_id,
                     rule.buy_amount,
                 );
@@ -202,9 +202,9 @@ impl TpslStrategyService {
                         // price/tx/time come only from a real indexed trade — paper mode
                         // never synthesizes a fill from a create-time snapshot.
                         let mut recorded = false;
-                        for _ in 0..TpslStrategyService::BUY_POLL_MAX_ATTEMPTS {
+                        for _ in 0..Tpsl1StrategyService::BUY_POLL_MAX_ATTEMPTS {
                             sleep(Duration::from_millis(
-                                TpslStrategyService::BUY_POLL_INTERVAL_MS,
+                                Tpsl1StrategyService::BUY_POLL_INTERVAL_MS,
                             ))
                             .await;
                             let Ok(trades) = trade_repo.find_by_mint_all(&mint_for_trades).await
@@ -312,7 +312,7 @@ impl TpslStrategyService {
             return;
         }
 
-        let handler = TPSLStrategyHandler::new(self.runtime.all_rules_vec());
+        let handler = TPSL1StrategyHandler::new(self.runtime.all_rules_vec());
 
         for mut position in positions {
             if let Some(rule) = handler.get_rule(position.rule_id) {
@@ -496,7 +496,7 @@ impl TpslStrategyService {
 /// on manual stop — or when the cap/holding conditions are not yet met.
 async fn maybe_finish_paper_run(
     pool: &PgPool,
-    runtime: &Arc<TpslRuntimeCache>,
+    runtime: &Arc<Tpsl1RuntimeCache>,
     sse_tx: &broadcast::Sender<SseEvent>,
     rule_id: Uuid,
     rule_name: &str,
@@ -512,7 +512,7 @@ async fn maybe_finish_paper_run(
     match runtime.finish_paper_run(pool, rule_id).await {
         Ok(Some(run)) => {
             // Auto-deactivate the rule so it stops cleanly, then refresh the cache.
-            let rule_repo = StrategyTPSLRuleRepo::new(pool.clone());
+            let rule_repo = StrategyTPSL1RuleRepo::new(pool.clone());
             match rule_repo.find_by_id(rule_id).await {
                 Ok(Some(mut rule)) if rule.is_active => {
                     rule.is_active = false;
@@ -611,7 +611,7 @@ impl SnipeExecutor for PumpFunTrader {
 }
 
 /// Retry/poll timing for `buy_with_retries`. `production()` mirrors the
-/// `TpslStrategyService::BUY_*` constants; tests shrink it so the give-up and
+/// `Tpsl1StrategyService::BUY_*` constants; tests shrink it so the give-up and
 /// re-send paths don't wait out real 12×1s poll windows.
 #[derive(Clone, Copy)]
 struct BuyRetryCfg {
@@ -624,10 +624,10 @@ struct BuyRetryCfg {
 impl BuyRetryCfg {
     fn production() -> Self {
         Self {
-            max_attempts: TpslStrategyService::BUY_MAX_ATTEMPTS,
+            max_attempts: Tpsl1StrategyService::BUY_MAX_ATTEMPTS,
             backoff_ms: 500,
-            poll_attempts: TpslStrategyService::BUY_POLL_MAX_ATTEMPTS,
-            poll_interval: Duration::from_millis(TpslStrategyService::BUY_POLL_INTERVAL_MS),
+            poll_attempts: Tpsl1StrategyService::BUY_POLL_MAX_ATTEMPTS,
+            poll_interval: Duration::from_millis(Tpsl1StrategyService::BUY_POLL_INTERVAL_MS),
         }
     }
 }
@@ -641,7 +641,7 @@ async fn buy_with_retries<E: SnipeExecutor + 'static>(
     position_id: Uuid,
     position_repo: PositionRepo,
     trade_repo: TradeRepo,
-    runtime: Arc<TpslRuntimeCache>,
+    runtime: Arc<Tpsl1RuntimeCache>,
     cfg: BuyRetryCfg,
 ) {
     let wallet = trader.wallet();
@@ -738,7 +738,7 @@ async fn poll_for_entry(
     position_id: Uuid,
     position_repo: &PositionRepo,
     trade_repo: &TradeRepo,
-    runtime: &Arc<TpslRuntimeCache>,
+    runtime: &Arc<Tpsl1RuntimeCache>,
     cfg: &BuyRetryCfg,
 ) -> bool {
     for _ in 0..cfg.poll_attempts {
@@ -760,7 +760,7 @@ async fn record_entry_if_present(
     position_id: Uuid,
     position_repo: &PositionRepo,
     trade_repo: &TradeRepo,
-    runtime: &Arc<TpslRuntimeCache>,
+    runtime: &Arc<Tpsl1RuntimeCache>,
 ) -> bool {
     let trades = match trade_repo.find_by_mint(mint, 20).await {
         Ok(trades) => trades,
@@ -799,7 +799,7 @@ async fn execute_sell_for_position(
     mut position: Position,
     position_repo: PositionRepo,
     trade_repo: TradeRepo,
-    runtime: Arc<TpslRuntimeCache>,
+    runtime: Arc<Tpsl1RuntimeCache>,
     cache: &TokenCache,
     // Price/time the exit condition met — recorded as the hypothetical exit if
     // the sell fails (the position never actually sold).
@@ -859,7 +859,7 @@ async fn execute_sell_for_position(
                 .await
                 .unwrap_or(0.0)
                 .max(0.0);
-            if remaining <= TpslStrategyService::PARTIAL_FILL_THRESHOLD {
+            if remaining <= Tpsl1StrategyService::PARTIAL_FILL_THRESHOLD {
                 let exit_amount = last_sell.token_amount;
                 position.close(
                     last_sell.price_per_token,
@@ -903,7 +903,7 @@ async fn sell_with_retries(
     base_token_program: String,
 ) -> bool {
     let mut attempt = 0usize;
-    let max_attempts = TpslStrategyService::SELL_MAX_ATTEMPTS;
+    let max_attempts = Tpsl1StrategyService::SELL_MAX_ATTEMPTS;
     let mut backoff_ms = 300u64;
     let wallet = trader.wallet_pubkey();
 
@@ -955,7 +955,7 @@ async fn sell_with_retries(
             Ok(true) => {
                 info!(mint = %mint, attempt, amount, "sell submitted");
                 let mut poll_attempts = 0usize;
-                while poll_attempts < TpslStrategyService::SELL_POLL_MAX_ATTEMPTS {
+                while poll_attempts < Tpsl1StrategyService::SELL_POLL_MAX_ATTEMPTS {
                     poll_attempts += 1;
                     match trade_repo
                         .net_token_amount_by_wallet_and_mint(&wallet, &mint)
@@ -963,7 +963,7 @@ async fn sell_with_retries(
                     {
                         Ok(balance) => {
                             let remaining = balance.max(0.0);
-                            if remaining <= TpslStrategyService::PARTIAL_FILL_THRESHOLD {
+                            if remaining <= Tpsl1StrategyService::PARTIAL_FILL_THRESHOLD {
                                 info!(mint = %mint, attempt, amount,
                                     "sell completed, no remaining balance");
                                 return true;
@@ -975,10 +975,10 @@ async fn sell_with_retries(
                         }
                         Err(err) => warn!("Failed to query net token balance: {err}"),
                     }
-                    sleep(Duration::from_millis(TpslStrategyService::SELL_POLL_INTERVAL_MS)).await;
+                    sleep(Duration::from_millis(Tpsl1StrategyService::SELL_POLL_INTERVAL_MS)).await;
                 }
 
-                if poll_attempts >= TpslStrategyService::SELL_POLL_MAX_ATTEMPTS {
+                if poll_attempts >= Tpsl1StrategyService::SELL_POLL_MAX_ATTEMPTS {
                     warn!(
                         mint = %mint,
                         "Timed out waiting for sell confirmations; remaining amount: {}", amount
@@ -1184,16 +1184,16 @@ mod tests {
         pool: &PgPool,
         mint: &str,
         wallet: &str,
-    ) -> (Position, PositionRepo, TradeRepo, Arc<TpslRuntimeCache>) {
+    ) -> (Position, PositionRepo, TradeRepo, Arc<Tpsl1RuntimeCache>) {
         let position_repo = PositionRepo::new(pool.clone());
         let trade_repo = TradeRepo::new(pool.clone());
-        let runtime = Arc::new(TpslRuntimeCache::new());
+        let runtime = Arc::new(Tpsl1RuntimeCache::new());
         let position = Position::new(
             mint.to_string(),
             wallet.to_string(),
             0.0,
             unique("create-"),
-            "TPSL".to_string(),
+            "TPSL1".to_string(),
             Uuid::new_v4(),
             0.001,
         );
@@ -1219,7 +1219,7 @@ mod tests {
         position: &Position,
         position_repo: &PositionRepo,
         trade_repo: &TradeRepo,
-        runtime: &Arc<TpslRuntimeCache>,
+        runtime: &Arc<Tpsl1RuntimeCache>,
     ) {
         buy_with_retries(
             fake,

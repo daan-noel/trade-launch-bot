@@ -9,7 +9,7 @@ pub mod service_tpsl;
 pub mod simulation_tpsl;
 mod util;
 
-pub use runtime_cache::TpslRuntimeCache;
-pub use handler_tpsl::TPSLStrategyHandler;
-pub use service_tpsl::TpslStrategyService;
+pub use runtime_cache::Tpsl1RuntimeCache;
+pub use handler_tpsl::TPSL1StrategyHandler;
+pub use service_tpsl::Tpsl1StrategyService;
 pub use simulation_tpsl::run_simulation;

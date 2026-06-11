@@ -116,42 +116,42 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/tags", web::post().to(handlers::system::create_tag))
             .route("/tags/{id}", web::put().to(handlers::system::update_tag))
             .route("/tags/{id}", web::delete().to(handlers::system::delete_tag))
-            // Strategy endpoints
+            // Strategy endpoints — tpsl_sniper_1
             .route(
-                "/strategies/tpsl/rules",
-                web::get().to(handlers::strategies::list_tpsl_rules),
+                "/strategies/tpsl1/rules",
+                web::get().to(handlers::strategies::tpsl1::list_tpsl_rules),
             )
             .route(
-                "/strategies/tpsl/rules",
-                web::post().to(handlers::strategies::create_tpsl_rule),
+                "/strategies/tpsl1/rules",
+                web::post().to(handlers::strategies::tpsl1::create_tpsl_rule),
             )
             .route(
-                "/strategies/tpsl/rules/{rule_id}",
-                web::get().to(handlers::strategies::get_tpsl_rule),
+                "/strategies/tpsl1/rules/{rule_id}",
+                web::get().to(handlers::strategies::tpsl1::get_tpsl_rule),
             )
             .route(
-                "/strategies/tpsl/rules/{rule_id}",
-                web::put().to(handlers::strategies::update_tpsl_rule),
+                "/strategies/tpsl1/rules/{rule_id}",
+                web::put().to(handlers::strategies::tpsl1::update_tpsl_rule),
             )
             .route(
-                "/strategies/tpsl/rules/{rule_id}",
-                web::delete().to(handlers::strategies::delete_tpsl_rule),
+                "/strategies/tpsl1/rules/{rule_id}",
+                web::delete().to(handlers::strategies::tpsl1::delete_tpsl_rule),
             )
             .route(
-                "/strategies/tpsl/rules/{rule_id}/positions",
+                "/strategies/tpsl1/rules/{rule_id}/positions",
                 web::get().to(handlers::strategies::get_positions_by_rule),
             )
             .route(
-                "/strategies/tpsl/rules/{rule_id}/simulate",
-                web::get().to(handlers::strategies::simulate_tpsl_rule),
+                "/strategies/tpsl1/rules/{rule_id}/simulate",
+                web::get().to(handlers::strategies::tpsl1::simulate_tpsl_rule),
             )
             .route(
-                "/strategies/tpsl/rules/{rule_id}/paper-result",
-                web::get().to(handlers::strategies::paper_result_tpsl_rule),
+                "/strategies/tpsl1/rules/{rule_id}/paper-result",
+                web::get().to(handlers::strategies::tpsl1::paper_result_tpsl_rule),
             )
             .route(
-                "/strategies/tpsl/rules/{rule_id}/matched",
-                web::get().to(handlers::strategies::get_matched_tokens),
+                "/strategies/tpsl1/rules/{rule_id}/matched",
+                web::get().to(handlers::strategies::tpsl1::get_matched_tokens),
             )
             // Strategy endpoints — tpsl_sniper_2 (clone of tpsl)
             .route(

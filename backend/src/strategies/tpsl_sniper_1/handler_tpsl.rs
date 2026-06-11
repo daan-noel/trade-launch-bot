@@ -8,11 +8,11 @@ use uuid::Uuid;
 /// This strategy analyzes tokens based on defined rules and manages buy/sell positions.
 /// - On token creation: Check if token matches buy entry rule criteria
 /// - On trade events: Monitor positions for exit conditions (take profit or stop loss)
-pub struct TPSLStrategyHandler {
+pub struct TPSL1StrategyHandler {
     rules: Vec<StrategyTPSLRule>,
 }
 
-impl TPSLStrategyHandler {
+impl TPSL1StrategyHandler {
     pub fn new(rules: Vec<StrategyTPSLRule>) -> Self {
         Self { rules }
     }
@@ -408,7 +408,7 @@ mod tests {
             "wallet".into(),
             entry_price,
             "entry-sig".into(),
-            "TPSL".into(),
+            "TPSL1".into(),
             rule_id,
             1.0,
         );
@@ -417,7 +417,7 @@ mod tests {
     }
 
     fn check(pos: &Position, trades: &[Trade], rule: &StrategyTPSLRule) -> Option<ExitReason> {
-        TPSLStrategyHandler::new(vec![rule.clone()]).check_exit(pos, trades, rule)
+        TPSL1StrategyHandler::new(vec![rule.clone()]).check_exit(pos, trades, rule)
     }
 
     // E1 fires in the live gate, not just the sim: moon to 3.0 then reverse to

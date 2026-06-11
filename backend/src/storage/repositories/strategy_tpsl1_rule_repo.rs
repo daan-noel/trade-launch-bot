@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::models::StrategyTPSLRule;
 
-pub struct StrategyTPSLRuleRepo {
+pub struct StrategyTPSL1RuleRepo {
     pool: PgPool,
 }
 
@@ -13,7 +13,7 @@ pub struct StrategyTPSLRuleRepo {
 // ---------------------------------------------------------------------------
 
 #[derive(sqlx::FromRow)]
-struct StrategyTPSLRuleDbRow {
+struct StrategyTPSL1RuleDbRow {
     id: Uuid,
     rule_name: String,
     p_initial_buy_sol: Option<f64>,
@@ -38,8 +38,8 @@ struct StrategyTPSLRuleDbRow {
     updated_at: DateTime<Utc>,
 }
 
-impl From<StrategyTPSLRuleDbRow> for StrategyTPSLRule {
-    fn from(r: StrategyTPSLRuleDbRow) -> Self {
+impl From<StrategyTPSL1RuleDbRow> for StrategyTPSLRule {
+    fn from(r: StrategyTPSL1RuleDbRow) -> Self {
         Self {
             id: r.id,
             rule_name: r.rule_name,
@@ -71,7 +71,7 @@ impl From<StrategyTPSLRuleDbRow> for StrategyTPSLRule {
 // Repo
 // ---------------------------------------------------------------------------
 
-impl StrategyTPSLRuleRepo {
+impl StrategyTPSL1RuleRepo {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
@@ -80,7 +80,7 @@ impl StrategyTPSLRuleRepo {
     pub async fn insert(&self, rule: &StrategyTPSLRule) -> anyhow::Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO strategy_TPSL_rules
+            INSERT INTO strategy_TPSL1_rules
                 (id, rule_name, p_initial_buy_sol, p_cu_limit, p_cu_price, p_max_sol_cost, p_spendable_sol_in, p_max_concurrent_tokens, p_max_total_tokens, p_ix_labels,
                  trade_mode, buy_amount, take_profit, stop_loss, tolerance_pct, is_active, created_at, updated_at, p_trailing_stop_pct, p_time_stop_secs, p_stall_secs, p_liquidity_drop_pct)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
@@ -116,11 +116,11 @@ impl StrategyTPSLRuleRepo {
 
     /// Get all TPSL rules (active and inactive).
     pub async fn find_all(&self) -> anyhow::Result<Vec<StrategyTPSLRule>> {
-        let rows = sqlx::query_as::<_, StrategyTPSLRuleDbRow>(
+        let rows = sqlx::query_as::<_, StrategyTPSL1RuleDbRow>(
             r#"
                  SELECT id, rule_name, p_initial_buy_sol, p_cu_limit, p_cu_price, p_max_sol_cost, p_spendable_sol_in, p_max_concurrent_tokens, p_max_total_tokens, p_ix_labels,
                      trade_mode, buy_amount, take_profit, stop_loss, p_trailing_stop_pct, p_time_stop_secs, p_stall_secs, p_liquidity_drop_pct, tolerance_pct, is_active, created_at, updated_at
-            FROM strategy_TPSL_rules
+            FROM strategy_TPSL1_rules
             ORDER BY created_at DESC
             "#,
         )
@@ -132,11 +132,11 @@ impl StrategyTPSLRuleRepo {
 
     /// Get a specific rule by ID.
     pub async fn find_by_id(&self, rule_id: Uuid) -> anyhow::Result<Option<StrategyTPSLRule>> {
-        let row = sqlx::query_as::<_, StrategyTPSLRuleDbRow>(
+        let row = sqlx::query_as::<_, StrategyTPSL1RuleDbRow>(
             r#"
                  SELECT id, rule_name, p_initial_buy_sol, p_cu_limit, p_cu_price, p_max_sol_cost, p_spendable_sol_in, p_max_concurrent_tokens, p_max_total_tokens, p_ix_labels,
                      trade_mode, buy_amount, take_profit, stop_loss, p_trailing_stop_pct, p_time_stop_secs, p_stall_secs, p_liquidity_drop_pct, tolerance_pct, is_active, created_at, updated_at
-            FROM strategy_TPSL_rules
+            FROM strategy_TPSL1_rules
             WHERE id = $1
             "#,
         )
@@ -151,7 +151,7 @@ impl StrategyTPSLRuleRepo {
     pub async fn update(&self, rule: &StrategyTPSLRule) -> anyhow::Result<()> {
         sqlx::query(
             r#"
-            UPDATE strategy_TPSL_rules
+            UPDATE strategy_TPSL1_rules
             SET rule_name = $1, p_initial_buy_sol = $2, p_cu_limit = $3, p_cu_price = $4,
                 p_ix_labels = $5, trade_mode = $6, buy_amount = $7, take_profit = $8, stop_loss = $9,
                 p_max_sol_cost = $10, p_spendable_sol_in = $11, p_max_concurrent_tokens = $12, p_max_total_tokens = $13, tolerance_pct = $14, is_active = $15, updated_at = $16, p_trailing_stop_pct = $17, p_time_stop_secs = $18, p_stall_secs = $19, p_liquidity_drop_pct = $20
@@ -187,7 +187,7 @@ impl StrategyTPSLRuleRepo {
 
     /// Delete a rule by ID.
     pub async fn delete(&self, rule_id: Uuid) -> anyhow::Result<()> {
-        sqlx::query("DELETE FROM strategy_TPSL_rules WHERE id = $1")
+        sqlx::query("DELETE FROM strategy_TPSL1_rules WHERE id = $1")
             .bind(rule_id)
             .execute(&self.pool)
             .await?;

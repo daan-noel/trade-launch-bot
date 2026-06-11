@@ -108,7 +108,7 @@ export function RuleFormModal({
     cn('font-mono', locked && 'cursor-not-allowed opacity-50', extra);
 
   return (
-    <Modal title={isEdit ? 'Edit TPSL Rule' : 'New TPSL Rule'} open={open} onClose={onClose}>
+    <Modal title={isEdit ? 'Edit TPSL1 Rule' : 'New TPSL1 Rule'} open={open} onClose={onClose}>
       <div className="flex flex-col gap-4">
         <label className="flex flex-col gap-1.5">
           <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Mode</span>

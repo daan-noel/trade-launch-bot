@@ -10,26 +10,26 @@ import {
   formFromRule,
   RuleFormModal,
   type RuleFormData,
-} from 'components/tpsl/RuleFormModal';
-import { ruleColumns } from 'components/tpsl/ruleColumns';
-import { SimSummaryCard } from 'components/tpsl/SimSummaryCard';
-import { TokenInspectModal, type InspectTarget } from 'components/tpsl/TokenInspectModal';
+} from 'components/tpsl1/RuleFormModal';
+import { ruleColumns } from 'components/tpsl1/ruleColumns';
+import { SimSummaryCard } from 'components/tpsl1/SimSummaryCard';
+import { TokenInspectModal, type InspectTarget } from 'components/tpsl1/TokenInspectModal';
 import {
   matchedColumns,
   positionColumns,
   simColumns,
-} from 'components/tpsl/tableColumns';
-import { fmtTime } from 'components/tpsl/utils';
+} from 'components/tpsl1/tableColumns';
+import { fmtTime } from 'components/tpsl1/utils';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import {
-  createTpslRule,
-  deleteTpslRule,
-  fetchMatchedTokens,
-  fetchPaperResult,
-  fetchRulePositions,
-  fetchTpslRules,
-  simulateTpslRule,
-  updateTpslRule,
+  createTpsl1Rule,
+  deleteTpsl1Rule,
+  fetchTpsl1MatchedTokens,
+  fetchTpsl1PaperResult,
+  fetchTpsl1RulePositions,
+  fetchTpsl1Rules,
+  simulateTpsl1Rule,
+  updateTpsl1Rule,
 } from 'services/api';
 import { connectPaperTestStream } from 'services/sse';
 import { POLL_INTERVAL_MS } from 'services/config';
@@ -260,7 +260,7 @@ function inspectFromPosition(r: RulePositionRecord): InspectTarget {
   };
 }
 
-export function TpslPage() {
+export function Tpsl1Page() {
   const price = usePriceDisplay();
 
   const [rules, setRules] = useState<RuleRecord[]>([]);
@@ -315,7 +315,7 @@ export function TpslPage() {
   const loadRules = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const data = await fetchTpslRules();
+      const data = await fetchTpsl1Rules();
       setRules(data);
       setError(null);
     } catch (e) {
@@ -338,7 +338,7 @@ export function TpslPage() {
       return;
     }
     setPositionsLoading(true);
-    fetchRulePositions(selectedRuleId)
+    fetchTpsl1RulePositions(selectedRuleId)
       .then(setPositions)
       .catch((e) =>
         setPositionsError(e instanceof Error ? e.message : 'Failed to load positions'),
@@ -346,7 +346,7 @@ export function TpslPage() {
       .finally(() => setPositionsLoading(false));
 
     const id = setInterval(() => {
-      fetchRulePositions(selectedRuleId)
+      fetchTpsl1RulePositions(selectedRuleId)
         .then(setPositions)
         .catch(() => {});
     }, POLL_INTERVAL_MS);
@@ -362,7 +362,7 @@ export function TpslPage() {
       setPaperNotice(ev);
       loadRules(true);
       if (openPaperRuleId.current === ev.rule_id) {
-        fetchPaperResult(ev.rule_id)
+        fetchTpsl1PaperResult(ev.rule_id)
           .then((data) => setPaperResult({ ruleId: ev.rule_id, data }))
           .catch(() => {});
       }
@@ -378,7 +378,7 @@ export function TpslPage() {
 
   const handleToggleActive = useCallback(async (rule: RuleRecord) => {
     try {
-      const updated = await updateTpslRule(rule.id, { is_active: !rule.is_active });
+      const updated = await updateTpsl1Rule(rule.id, { is_active: !rule.is_active });
       setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
     } catch {
       /* ignore */
@@ -423,13 +423,13 @@ export function TpslPage() {
     setFormLoading(true);
     try {
       if (editRule) {
-        const updated = await updateTpslRule(
+        const updated = await updateTpsl1Rule(
           editRule.id,
           buildUpdatePayload(form, allowParams),
         );
         setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
       } else {
-        const created = await createTpslRule(buildCreatePayload(form));
+        const created = await createTpsl1Rule(buildCreatePayload(form));
         setRules((prev) => [...prev, created]);
       }
       setModalOpen(false);
@@ -443,7 +443,7 @@ export function TpslPage() {
   const handleDelete = async (ruleId: string) => {
     setDeleteLoading(true);
     try {
-      await deleteTpslRule(ruleId);
+      await deleteTpsl1Rule(ruleId);
       setRules((prev) => prev.filter((r) => r.id !== ruleId));
       if (selectedRuleId === ruleId) setSelectedRuleId(null);
     } catch {
@@ -459,7 +459,7 @@ export function TpslPage() {
     setSimError(null);
     setSimLoading(true);
     try {
-      const tokens = await simulateTpslRule(rule.id);
+      const tokens = await simulateTpsl1Rule(rule.id);
       setSimResult({ ruleName: rule.rule_name, tokens });
     } catch (e) {
       setSimError(e instanceof Error ? e.message : 'Simulation failed');
@@ -477,7 +477,7 @@ export function TpslPage() {
     setMatchedError(null);
     setMatchedLoading(true);
     try {
-      const tokens = await fetchMatchedTokens(rule.id);
+      const tokens = await fetchTpsl1MatchedTokens(rule.id);
       setMatchedResult({ ruleId: rule.id, tokens });
     } catch (e) {
       setMatchedError(e instanceof Error ? e.message : 'Failed to load matched tokens');
@@ -497,7 +497,7 @@ export function TpslPage() {
     setPaperError(null);
     setPaperLoading(true);
     try {
-      const data = await fetchPaperResult(rule.id);
+      const data = await fetchTpsl1PaperResult(rule.id);
       setPaperResult({ ruleId: rule.id, data });
     } catch (e) {
       setPaperError(e instanceof Error ? e.message : 'Failed to load paper result');
@@ -617,7 +617,7 @@ export function TpslPage() {
 
       <SectionHeading
         size="h2"
-        title="TPSL Strategies"
+        title="TPSL1 Strategies"
         count={!loading && !error ? rules.length : undefined}
         action={
           <Button variant="primary" onClick={openAdd}>
@@ -642,7 +642,7 @@ export function TpslPage() {
           searchable
           colFilters
           colToggle
-          storageKey="tpsl_rules_cols"
+          storageKey="tpsl1_rules_cols"
           emptyMessage="No rules found"
         />
       )}

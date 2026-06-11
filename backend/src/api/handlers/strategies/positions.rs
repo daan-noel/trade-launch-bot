@@ -10,7 +10,7 @@ use crate::{
     state::app_state::AppState,
     storage::repositories::{
         paper_trading_repo::PaperTradingRepo, position_repo::PositionRepo,
-        strategy_tpsl_rule_repo::StrategyTPSLRuleRepo,
+        strategy_tpsl1_rule_repo::StrategyTPSL1RuleRepo,
     },
 };
 
@@ -85,7 +85,7 @@ pub(crate) async fn load_rule_positions(
     db: &PgPool,
     rule_id: Uuid,
 ) -> anyhow::Result<Vec<Position>> {
-    let is_paper = match StrategyTPSLRuleRepo::new(db.clone()).find_by_id(rule_id).await? {
+    let is_paper = match StrategyTPSL1RuleRepo::new(db.clone()).find_by_id(rule_id).await? {
         Some(rule) => rule.trade_mode == "paper",
         None => false,
     };
@@ -126,7 +126,7 @@ pub async fn get_positions_by_rule(
 pub async fn list_positions(app_state: web::Data<Arc<AppState>>) -> impl Responder {
     let repo = PositionRepo::new(app_state.db.clone());
 
-    match repo.find_by_strategy("TPSL").await {
+    match repo.find_by_strategy("TPSL1").await {
         Ok(positions) => {
             let responses: Vec<PositionResponse> =
                 positions.into_iter().map(PositionResponse::from).collect();
@@ -208,7 +208,7 @@ pub async fn get_position(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::tpsl::paper_position_to_sim_result;
+    use super::super::tpsl1::paper_position_to_sim_result;
     use crate::models::StrategyTPSLRule;
     use sqlx::postgres::PgPoolOptions;
     use std::collections::{HashMap, HashSet};
@@ -265,7 +265,7 @@ mod tests {
             None,
             None,
         );
-        let rule_repo = StrategyTPSLRuleRepo::new(pool.clone());
+        let rule_repo = StrategyTPSL1RuleRepo::new(pool.clone());
         rule_repo.insert(&rule).await.expect("insert rule");
 
         let paper_repo = PaperTradingRepo::new(pool.clone());
@@ -283,7 +283,7 @@ mod tests {
             unique("W"),
             0.001,
             unique("tx-"),
-            "TPSL".into(),
+            "TPSL1".into(),
             rule.id,
             0.05,
         );
@@ -294,7 +294,7 @@ mod tests {
             unique("W"),
             0.001,
             unique("tx-"),
-            "TPSL".into(),
+            "TPSL1".into(),
             rule.id,
             0.05,
         );
@@ -306,7 +306,7 @@ mod tests {
             unique("W"),
             0.001,
             unique("tx-"),
-            "TPSL".into(),
+            "TPSL1".into(),
             rule.id,
             0.05,
         );
