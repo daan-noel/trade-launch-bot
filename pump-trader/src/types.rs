@@ -21,6 +21,16 @@ pub struct BuyRouting {
     pub is_migrated: bool,
 }
 
+/// Bonding-curve facts the wallet view needs for a mint the local cache has
+/// never tracked: migration status (`complete` @48) and the create_v2 cashback
+/// flag (@82). Both are read from the same bonding-curve account, so a single
+/// batched read yields both. Returned by `PumpFunTrader::resolve_curve_facts_batch`.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct CurveFacts {
+    pub is_migrated: bool,
+    pub cashback_enabled: bool,
+}
+
 /// On-chain token balance for a wallet + mint pair.
 #[derive(Debug, Clone, Serialize)]
 pub struct TokenBalance {

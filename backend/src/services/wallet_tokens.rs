@@ -51,20 +51,22 @@ async fn enrich_holdings(
     let mints: Vec<String> = holdings.iter().map(|h| h.mint.clone()).collect();
 
     // The cache is authoritative for tracked tokens — the live stream flips
-    // `is_migrated` on the migration event. Only mints the cache has never seen
-    // (e.g. one bought manually and never ingested) need the on-chain fallback,
-    // so resolve just those; with none, `resolve_migrated_batch` skips the RPC.
+    // `is_migrated` on the migration event, and `is_cashback_enabled` is set at
+    // create-decode time. Only mints the cache has never seen (e.g. one bought
+    // manually and never ingested) need the on-chain fallback, so resolve just
+    // those; with none, `resolve_curve_facts_batch` skips the RPC.
     let uncached: Vec<String> = mints
         .iter()
         .filter(|m| !state.token_cache.contains_key(m.as_str()))
         .cloned()
         .collect();
 
-    // Prices (Jupiter) and the on-chain migration fallback are independent
-    // network reads — fire them together.
-    let (jupiter, chain_migrated) = tokio::join!(
+    // Prices (Jupiter) and the on-chain bonding-curve fallback (migration +
+    // cashback, both read from the same account) are independent network reads
+    // — fire them together.
+    let (jupiter, chain_facts) = tokio::join!(
         jupiter::fetch_prices(&mints),
-        state.trader.resolve_migrated_batch(&uncached),
+        state.trader.resolve_curve_facts_batch(&uncached),
     );
     let jupiter = match jupiter {
         Ok(prices) => prices,
@@ -89,11 +91,16 @@ async fn enrich_holdings(
                 is_migrated: cached
                     .as_ref()
                     .map(|s| s.is_migrated)
-                    .or_else(|| chain_migrated.get(&h.mint).copied())
+                    .or_else(|| chain_facts.get(&h.mint).map(|f| f.is_migrated))
                     .unwrap_or(false),
+                // Same fallback shape as migration: the create_v2 cashback flag
+                // persists on the bonding-curve account (offset 82), so a mint
+                // the cache never saw still resolves from chain instead of
+                // silently defaulting to "no cashback".
                 is_cashback_enabled: cached
                     .as_ref()
                     .map(|s| s.token.is_cashback_enabled)
+                    .or_else(|| chain_facts.get(&h.mint).map(|f| f.cashback_enabled))
                     .unwrap_or(false),
                 price_usd,
                 value_usd,

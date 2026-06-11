@@ -401,19 +401,25 @@ impl PumpFunTrader {
         })
     }
 
-    /// Batch-resolve on-chain migration status for many mints in as few RPC
-    /// round-trips as possible. Reads each mint's bonding-curve PDA and inspects
-    /// the `complete` byte at offset 48 — the same source of truth the trade
-    /// path uses in [`resolve_buy_routing`], but via `getMultipleAccounts` so a
-    /// whole wallet costs one request per 100 mints instead of one per mint.
+    /// Batch-resolve on-chain bonding-curve facts (migration + cashback) for
+    /// many mints in as few RPC round-trips as possible. Reads each mint's
+    /// bonding-curve PDA and inspects the `complete` byte at offset 48 and the
+    /// create_v2 cashback byte at offset 82 — the same account and offsets the
+    /// trade path reads in [`Self::resolve_buy_routing`], but via
+    /// `getMultipleAccounts` so a whole wallet costs one request per 100 mints
+    /// instead of one per mint.
     ///
-    /// Returns a map of mint -> is_migrated holding only the mints whose bonding
-    /// curve account exists and is long enough to read. Mints absent from the
-    /// map could not be resolved (not a pump.fun bonding-curve token, account
-    /// missing, or the RPC chunk errored); the caller decides how to treat that
-    /// "unknown" — e.g. fall back to a cached value.
-    pub async fn resolve_migrated_batch(&self, mints: &[String]) -> HashMap<String, bool> {
+    /// Returns a map of mint -> [`CurveFacts`] holding only the mints whose
+    /// bonding curve account exists and is long enough to read. Mints absent
+    /// from the map could not be resolved (not a pump.fun bonding-curve token,
+    /// account missing, or the RPC chunk errored); the caller decides how to
+    /// treat that "unknown" — e.g. fall back to a cached value.
+    pub async fn resolve_curve_facts_batch(
+        &self,
+        mints: &[String],
+    ) -> HashMap<String, crate::types::CurveFacts> {
         const COMPLETE_OFFSET: usize = 48;
+        const CASHBACK_OFFSET: usize = 82;
 
         // Derive the bonding-curve PDA for every mint we can parse, keeping the
         // mint string alongside it so results map back to the caller's keys.
@@ -432,14 +438,21 @@ impl PumpFunTrader {
             let accounts = match self.rpc.get_multiple_accounts(&pubkeys).await {
                 Ok(a) => a,
                 Err(e) => {
-                    tracing::warn!("resolve_migrated_batch: get_multiple_accounts failed: {e}");
+                    tracing::warn!("resolve_curve_facts_batch: get_multiple_accounts failed: {e}");
                     continue;
                 }
             };
             for ((mint, _), account) in chunk.iter().zip(accounts) {
                 if let Some(acct) = account {
                     if acct.data.len() > COMPLETE_OFFSET {
-                        out.insert(mint.clone(), acct.data[COMPLETE_OFFSET] != 0);
+                        out.insert(
+                            mint.clone(),
+                            crate::types::CurveFacts {
+                                is_migrated: acct.data[COMPLETE_OFFSET] != 0,
+                                cashback_enabled: acct.data.len() > CASHBACK_OFFSET
+                                    && acct.data[CASHBACK_OFFSET] != 0,
+                            },
+                        );
                     }
                 }
             }
