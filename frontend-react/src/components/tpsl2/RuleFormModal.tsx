@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { RuleRecord } from 'types';
 import { Button } from 'components/ui/Button';
 import { Input, Textarea } from 'components/ui/Input';
@@ -71,37 +71,37 @@ export function emptyForm(): RuleFormData {
 }
 
 export function formFromRule(rule: RuleRecord): RuleFormData {
-  const labels = Array.isArray(rule.p_ix_labels)
-    ? JSON.stringify(rule.p_ix_labels)
+  const labels = Array.isArray(rule.p_token_ix_labels)
+    ? JSON.stringify(rule.p_token_ix_labels)
     : '';
   return {
     ruleName: rule.rule_name,
     tradeMode: rule.trade_mode,
-    initialBuy: rule.p_initial_buy_sol?.toString() ?? '',
+    initialBuy: rule.p_token_initial_buy_sol?.toString() ?? '',
     tolerance: rule.tolerance_pct.toString(),
-    cuLimit: rule.p_cu_limit?.toString() ?? '',
-    cuPrice: rule.p_cu_price?.toString() ?? '',
-    maxSolCost: rule.p_max_sol_cost?.toString() ?? '',
-    spendableSolIn: rule.p_spendable_sol_in?.toString() ?? '',
+    cuLimit: rule.p_token_cu_limit?.toString() ?? '',
+    cuPrice: rule.p_token_cu_price?.toString() ?? '',
+    maxSolCost: rule.p_token_max_sol_cost?.toString() ?? '',
+    spendableSolIn: rule.p_token_spendable_sol_in?.toString() ?? '',
     maxConcurrentTokens: rule.p_max_concurrent_tokens?.toString() ?? '',
     maxTotalTokens: rule.p_max_total_tokens?.toString() ?? '',
     ixLabels: labels,
     buyAmount: rule.buy_amount.toString(),
-    takeProfit: rule.take_profit.toString(),
-    stopLoss: rule.stop_loss.toString(),
-    trailingStopPct: rule.p_trailing_stop_pct?.toString() ?? '',
-    timeStopSecs: rule.p_time_stop_secs?.toString() ?? '',
-    stallSecs: rule.p_stall_secs?.toString() ?? '',
-    liquidityDropPct: rule.p_liquidity_drop_pct?.toString() ?? '',
-    minAgeSecs: rule.p_min_age_secs?.toString() ?? '',
-    minAliveSol: rule.p_min_alive_sol?.toString() ?? '',
-    minOrganicSol: rule.p_min_organic_sol?.toString() ?? '',
-    pullbackPct: rule.p_pullback_pct?.toString() ?? '',
-    higherLowSecs: rule.p_higher_low_secs?.toString() ?? '',
-    maxCohortHeld: rule.p_max_cohort_held?.toString() ?? '',
-    minLiquiditySol: rule.p_min_liquidity_sol?.toString() ?? '',
-    minOrganicLiq: rule.p_min_organic_liq?.toString() ?? '',
-    cohortExitRatio: rule.p_cohort_exit_ratio?.toString() ?? '',
+    takeProfit: rule.p_exit_take_profit.toString(),
+    stopLoss: rule.p_exit_stop_loss.toString(),
+    trailingStopPct: rule.p_exit_trailing_stop_pct?.toString() ?? '',
+    timeStopSecs: rule.p_exit_time_stop_secs?.toString() ?? '',
+    stallSecs: rule.p_exit_stall_secs?.toString() ?? '',
+    liquidityDropPct: rule.p_exit_liquidity_drop_pct?.toString() ?? '',
+    minAgeSecs: rule.p_entry_min_age_secs?.toString() ?? '',
+    minAliveSol: rule.p_entry_min_alive_sol?.toString() ?? '',
+    minOrganicSol: rule.p_entry_min_organic_sol?.toString() ?? '',
+    pullbackPct: rule.p_entry_pullback_pct?.toString() ?? '',
+    higherLowSecs: rule.p_entry_higher_low_secs?.toString() ?? '',
+    maxCohortHeld: rule.p_entry_max_cohort_held?.toString() ?? '',
+    minLiquiditySol: rule.p_entry_min_liquidity_sol?.toString() ?? '',
+    minOrganicLiq: rule.p_entry_min_organic_liq?.toString() ?? '',
+    cohortExitRatio: rule.p_exit_cohort_ratio?.toString() ?? '',
   };
 }
 
@@ -114,6 +114,31 @@ interface RuleFormModalProps {
   onChange: (form: RuleFormData) => void;
   onClose: () => void;
   onSave: (allowParams: boolean) => void;
+}
+
+/** A labelled divider that groups the form fields by the param's ROLE
+ *  (p_token_ fingerprint / sizing / p_entry_ entry / p_exit_ exit), so each
+ *  category is obvious at a glance. `right` hosts the section's action. */
+function SectionHeader({
+  title,
+  hint,
+  accent = 'text-primary',
+  right,
+}: {
+  title: string;
+  hint?: string;
+  accent?: string;
+  right?: ReactNode;
+}) {
+  return (
+    <div className="mt-1 flex items-center justify-between border-t border-white/10 pt-3">
+      <div className="flex items-baseline gap-2">
+        <span className={cn('text-[11px] font-bold uppercase tracking-wider', accent)}>{title}</span>
+        {hint && <span className="text-[10px] lowercase text-text-dim">{hint}</span>}
+      </div>
+      {right}
+    </div>
+  );
 }
 
 export function RuleFormModal({
@@ -163,6 +188,25 @@ export function RuleFormModal({
           />
         </label>
 
+        {/* ── Token fingerprint: which token this rule matches at creation
+            (p_token_*). Locked behind the 🔓 toggle when editing. ── */}
+        <SectionHeader
+          title="Token Fingerprint"
+          hint="which token to match"
+          accent="text-info"
+          right={
+            isEdit ? (
+              <button
+                type="button"
+                onClick={() => setAllowEditParams((v) => !v)}
+                className="rounded-lg border border-white/12 bg-white/4 px-2 py-1 text-xs"
+                title={allowEditParams ? 'Lock match criteria' : 'Unlock match criteria'}
+              >
+                {allowEditParams ? '🔒' : '🔓'}
+              </button>
+            ) : undefined
+          }
+        />
         <div className="grid grid-cols-2 gap-3">
           <label className="flex flex-col gap-1.5">
             <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Initial Buy SOL</span>
@@ -194,16 +238,6 @@ export function RuleFormModal({
             <Input type="number" fieldSize="md" step="0.001" value={form.spendableSolIn} readOnly={locked}
               onChange={(e) => set({ spendableSolIn: e.target.value })} className={fieldCls()} />
           </label>
-          <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Max Concurrent Tokens</span>
-            <Input type="number" fieldSize="md" value={form.maxConcurrentTokens} readOnly={locked}
-              onChange={(e) => set({ maxConcurrentTokens: e.target.value })} className={fieldCls()} />
-          </label>
-          <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Max Total Tokens</span>
-            <Input type="number" fieldSize="md" value={form.maxTotalTokens} readOnly={locked}
-              onChange={(e) => set({ maxTotalTokens: e.target.value })} className={fieldCls()} />
-          </label>
         </div>
 
         <div className="flex flex-col gap-1.5">
@@ -211,28 +245,16 @@ export function RuleFormModal({
             <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
               Instruction Labels
             </span>
-            <div className="flex gap-1">
-              {isEdit && (
-                <button
-                  type="button"
-                  onClick={() => setAllowEditParams((v) => !v)}
-                  className="rounded-lg border border-white/12 bg-white/4 px-2 py-1 text-xs"
-                  title={allowEditParams ? 'Lock criteria' : 'Unlock criteria'}
-                >
-                  {allowEditParams ? '🔒' : '🔓'}
-                </button>
-              )}
-              {!isEdit && (
-                <button
-                  type="button"
-                  onClick={() => set({ ixLabels: EXAMPLE_IX_LABELS })}
-                  className="rounded-lg border border-white/12 bg-white/4 px-2 py-1 text-xs"
-                  title="Insert example labels"
-                >
-                  ⎘
-                </button>
-              )}
-            </div>
+            {!isEdit && (
+              <button
+                type="button"
+                onClick={() => set({ ixLabels: EXAMPLE_IX_LABELS })}
+                className="rounded-lg border border-white/12 bg-white/4 px-2 py-1 text-xs"
+                title="Insert example labels"
+              >
+                ⎘
+              </button>
+            )}
           </div>
           <Textarea
             fieldSize="md"
@@ -245,12 +267,75 @@ export function RuleFormModal({
           />
         </div>
 
+        {/* ── Sizing & limits: position size + concurrency caps (unprefixed). ── */}
+        <SectionHeader title="Sizing & Limits" hint="position size + concurrency" accent="text-text-dim" />
         <div className="grid grid-cols-3 gap-3">
           <label className="flex flex-col gap-1.5">
             <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Buy Amount (SOL)</span>
             <Input type="number" fieldSize="md" step="0.001" value={form.buyAmount}
               onChange={(e) => set({ buyAmount: e.target.value })} className={fieldCls()} />
           </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Max Concurrent Tokens</span>
+            <Input type="number" fieldSize="md" value={form.maxConcurrentTokens} readOnly={locked}
+              onChange={(e) => set({ maxConcurrentTokens: e.target.value })} className={fieldCls()} />
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Max Total Tokens</span>
+            <Input type="number" fieldSize="md" value={form.maxTotalTokens} readOnly={locked}
+              onChange={(e) => set({ maxTotalTokens: e.target.value })} className={fieldCls()} />
+          </label>
+        </div>
+
+        {/* ── Entry gates · scalp continuation (p_entry_*, tpsl2 only). All inert
+            at blank/0; these decide the buy on the trade stream. ── */}
+        <SectionHeader title="Entry Gates · Scalp" hint="when to buy (trade-stream shape + cohort)" accent="text-accent" />
+        <div className="grid grid-cols-3 gap-3">
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Min Age (s)</span>
+            <Input type="number" fieldSize="md" step="1" value={form.minAgeSecs}
+              onChange={(e) => set({ minAgeSecs: e.target.value })} className={fieldCls()} placeholder="0 = off" />
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Min Alive SOL</span>
+            <Input type="number" fieldSize="md" step="0.01" value={form.minAliveSol}
+              onChange={(e) => set({ minAliveSol: e.target.value })} className={fieldCls()} placeholder="0 = off" />
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Min Organic SOL</span>
+            <Input type="number" fieldSize="md" step="0.01" value={form.minOrganicSol}
+              onChange={(e) => set({ minOrganicSol: e.target.value })} className={fieldCls()} placeholder="0 = off" />
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Pullback %</span>
+            <Input type="number" fieldSize="md" step="1" value={form.pullbackPct}
+              onChange={(e) => set({ pullbackPct: e.target.value })} className={fieldCls()} placeholder="0 = off" />
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Higher-Low (s)</span>
+            <Input type="number" fieldSize="md" step="1" value={form.higherLowSecs}
+              onChange={(e) => set({ higherLowSecs: e.target.value })} className={fieldCls()} placeholder="0 = off" />
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Max Cohort Held</span>
+            <Input type="number" fieldSize="md" step="0.05" value={form.maxCohortHeld}
+              onChange={(e) => set({ maxCohortHeld: e.target.value })} className={fieldCls()} placeholder="0 = off" />
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Min Liquidity SOL</span>
+            <Input type="number" fieldSize="md" step="0.1" value={form.minLiquiditySol}
+              onChange={(e) => set({ minLiquiditySol: e.target.value })} className={fieldCls()} placeholder="0 = off" />
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Min Organic Liq</span>
+            <Input type="number" fieldSize="md" step="0.1" value={form.minOrganicLiq}
+              onChange={(e) => set({ minOrganicLiq: e.target.value })} className={fieldCls()} placeholder="0 = off" />
+          </label>
+        </div>
+
+        {/* ── Exit gates: when to sell (p_exit_*). 0 = off. ── */}
+        <SectionHeader title="Exit Gates" hint="when to sell" accent="text-warning" />
+        <div className="grid grid-cols-3 gap-3">
           <label className="flex flex-col gap-1.5">
             <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Take Profit %</span>
             <Input type="number" fieldSize="md" step="1" value={form.takeProfit}
@@ -285,62 +370,12 @@ export function RuleFormModal({
               onChange={(e) => set({ liquidityDropPct: e.target.value })}
               className={fieldCls('focus:border-primary')} placeholder="0 = off" />
           </label>
-        </div>
-
-        {/* Scalp-continuation gates (tpsl2 only). All inert at blank/0; entry
-            gates decide the buy on the trade stream, cohort-dump is exit E5. */}
-        <div className="flex flex-col gap-2">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-accent">
-            Scalp Gates · entry shape + cohort
-          </span>
-          <div className="grid grid-cols-3 gap-3">
-            <label className="flex flex-col gap-1.5">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Min Age (s)</span>
-              <Input type="number" fieldSize="md" step="1" value={form.minAgeSecs}
-                onChange={(e) => set({ minAgeSecs: e.target.value })} className={fieldCls()} placeholder="0 = off" />
-            </label>
-            <label className="flex flex-col gap-1.5">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Min Alive SOL</span>
-              <Input type="number" fieldSize="md" step="0.01" value={form.minAliveSol}
-                onChange={(e) => set({ minAliveSol: e.target.value })} className={fieldCls()} placeholder="0 = off" />
-            </label>
-            <label className="flex flex-col gap-1.5">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Min Organic SOL</span>
-              <Input type="number" fieldSize="md" step="0.01" value={form.minOrganicSol}
-                onChange={(e) => set({ minOrganicSol: e.target.value })} className={fieldCls()} placeholder="0 = off" />
-            </label>
-            <label className="flex flex-col gap-1.5">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Pullback %</span>
-              <Input type="number" fieldSize="md" step="1" value={form.pullbackPct}
-                onChange={(e) => set({ pullbackPct: e.target.value })} className={fieldCls()} placeholder="0 = off" />
-            </label>
-            <label className="flex flex-col gap-1.5">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Higher-Low (s)</span>
-              <Input type="number" fieldSize="md" step="1" value={form.higherLowSecs}
-                onChange={(e) => set({ higherLowSecs: e.target.value })} className={fieldCls()} placeholder="0 = off" />
-            </label>
-            <label className="flex flex-col gap-1.5">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Max Cohort Held</span>
-              <Input type="number" fieldSize="md" step="0.05" value={form.maxCohortHeld}
-                onChange={(e) => set({ maxCohortHeld: e.target.value })} className={fieldCls()} placeholder="0 = off" />
-            </label>
-            <label className="flex flex-col gap-1.5">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Min Liquidity SOL</span>
-              <Input type="number" fieldSize="md" step="0.1" value={form.minLiquiditySol}
-                onChange={(e) => set({ minLiquiditySol: e.target.value })} className={fieldCls()} placeholder="0 = off" />
-            </label>
-            <label className="flex flex-col gap-1.5">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Min Organic Liq</span>
-              <Input type="number" fieldSize="md" step="0.1" value={form.minOrganicLiq}
-                onChange={(e) => set({ minOrganicLiq: e.target.value })} className={fieldCls()} placeholder="0 = off" />
-            </label>
-            <label className="flex flex-col gap-1.5">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Cohort Exit Ratio</span>
-              <Input type="number" fieldSize="md" step="0.01" value={form.cohortExitRatio}
-                onChange={(e) => set({ cohortExitRatio: e.target.value })}
-                className={fieldCls('focus:border-red')} placeholder="0 = off" />
-            </label>
-          </div>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Cohort Exit Ratio</span>
+            <Input type="number" fieldSize="md" step="0.01" value={form.cohortExitRatio}
+              onChange={(e) => set({ cohortExitRatio: e.target.value })}
+              className={fieldCls('focus:border-red')} placeholder="0 = off" />
+          </label>
         </div>
 
         {error && <InlineAlert variant="error">{error}</InlineAlert>}
@@ -363,32 +398,32 @@ export function buildCreatePayload(form: RuleFormData) {
   const parseOptU = (s: string) => (s.trim() ? parseInt(s, 10) : undefined);
   return {
     rule_name: form.ruleName,
-    p_initial_buy_sol: parseOptF(form.initialBuy) ?? null,
-    p_cu_limit: parseOptU(form.cuLimit) ?? null,
-    p_cu_price: parseOptU(form.cuPrice) ?? null,
-    p_max_sol_cost: parseOptF(form.maxSolCost) ?? null,
-    p_spendable_sol_in: parseOptF(form.spendableSolIn) ?? null,
+    p_token_initial_buy_sol: parseOptF(form.initialBuy) ?? null,
+    p_token_cu_limit: parseOptU(form.cuLimit) ?? null,
+    p_token_cu_price: parseOptU(form.cuPrice) ?? null,
+    p_token_max_sol_cost: parseOptF(form.maxSolCost) ?? null,
+    p_token_spendable_sol_in: parseOptF(form.spendableSolIn) ?? null,
     p_max_concurrent_tokens: parseOptU(form.maxConcurrentTokens) ?? null,
     p_max_total_tokens: parseOptU(form.maxTotalTokens) ?? null,
-    p_ix_labels: parseIxLabels(form.ixLabels),
+    p_token_ix_labels: parseIxLabels(form.ixLabels),
     trade_mode: form.tradeMode,
     buy_amount: parseFloat(form.buyAmount),
-    take_profit: parseFloat(form.takeProfit),
-    stop_loss: parseFloat(form.stopLoss),
-    p_trailing_stop_pct: parseOptF(form.trailingStopPct) ?? null,
-    p_time_stop_secs: parseOptU(form.timeStopSecs) ?? null,
-    p_stall_secs: parseOptU(form.stallSecs) ?? null,
-    p_liquidity_drop_pct: parseOptF(form.liquidityDropPct) ?? null,
+    p_exit_take_profit: parseFloat(form.takeProfit),
+    p_exit_stop_loss: parseFloat(form.stopLoss),
+    p_exit_trailing_stop_pct: parseOptF(form.trailingStopPct) ?? null,
+    p_exit_time_stop_secs: parseOptU(form.timeStopSecs) ?? null,
+    p_exit_stall_secs: parseOptU(form.stallSecs) ?? null,
+    p_exit_liquidity_drop_pct: parseOptF(form.liquidityDropPct) ?? null,
     // Scalp-continuation gates.
-    p_min_age_secs: parseOptU(form.minAgeSecs) ?? null,
-    p_min_alive_sol: parseOptF(form.minAliveSol) ?? null,
-    p_min_organic_sol: parseOptF(form.minOrganicSol) ?? null,
-    p_pullback_pct: parseOptF(form.pullbackPct) ?? null,
-    p_higher_low_secs: parseOptU(form.higherLowSecs) ?? null,
-    p_max_cohort_held: parseOptF(form.maxCohortHeld) ?? null,
-    p_min_liquidity_sol: parseOptF(form.minLiquiditySol) ?? null,
-    p_min_organic_liq: parseOptF(form.minOrganicLiq) ?? null,
-    p_cohort_exit_ratio: parseOptF(form.cohortExitRatio) ?? null,
+    p_entry_min_age_secs: parseOptU(form.minAgeSecs) ?? null,
+    p_entry_min_alive_sol: parseOptF(form.minAliveSol) ?? null,
+    p_entry_min_organic_sol: parseOptF(form.minOrganicSol) ?? null,
+    p_entry_pullback_pct: parseOptF(form.pullbackPct) ?? null,
+    p_entry_higher_low_secs: parseOptU(form.higherLowSecs) ?? null,
+    p_entry_max_cohort_held: parseOptF(form.maxCohortHeld) ?? null,
+    p_entry_min_liquidity_sol: parseOptF(form.minLiquiditySol) ?? null,
+    p_entry_min_organic_liq: parseOptF(form.minOrganicLiq) ?? null,
+    p_exit_cohort_ratio: parseOptF(form.cohortExitRatio) ?? null,
     tolerance_pct: form.tolerance.trim() ? parseFloat(form.tolerance) : null,
   };
 }
@@ -397,40 +432,40 @@ export function buildUpdatePayload(form: RuleFormData, allowParams: boolean) {
   const base: Record<string, unknown> = {
     rule_name: form.ruleName,
     buy_amount: parseFloat(form.buyAmount),
-    take_profit: parseFloat(form.takeProfit),
-    stop_loss: parseFloat(form.stopLoss),
+    p_exit_take_profit: parseFloat(form.takeProfit),
+    p_exit_stop_loss: parseFloat(form.stopLoss),
     // Exit params (always editable): 0 disables, per the ignore_zero convention.
-    p_trailing_stop_pct: form.trailingStopPct.trim() ? parseFloat(form.trailingStopPct) : 0,
-    p_time_stop_secs: form.timeStopSecs.trim() ? parseInt(form.timeStopSecs, 10) : 0,
-    p_stall_secs: form.stallSecs.trim() ? parseInt(form.stallSecs, 10) : 0,
-    p_liquidity_drop_pct: form.liquidityDropPct.trim() ? parseFloat(form.liquidityDropPct) : 0,
+    p_exit_trailing_stop_pct: form.trailingStopPct.trim() ? parseFloat(form.trailingStopPct) : 0,
+    p_exit_time_stop_secs: form.timeStopSecs.trim() ? parseInt(form.timeStopSecs, 10) : 0,
+    p_exit_stall_secs: form.stallSecs.trim() ? parseInt(form.stallSecs, 10) : 0,
+    p_exit_liquidity_drop_pct: form.liquidityDropPct.trim() ? parseFloat(form.liquidityDropPct) : 0,
     // Scalp-continuation gates (always editable; 0 disables, per ignore_zero).
-    p_min_age_secs: form.minAgeSecs.trim() ? parseInt(form.minAgeSecs, 10) : 0,
-    p_min_alive_sol: form.minAliveSol.trim() ? parseFloat(form.minAliveSol) : 0,
-    p_min_organic_sol: form.minOrganicSol.trim() ? parseFloat(form.minOrganicSol) : 0,
-    p_pullback_pct: form.pullbackPct.trim() ? parseFloat(form.pullbackPct) : 0,
-    p_higher_low_secs: form.higherLowSecs.trim() ? parseInt(form.higherLowSecs, 10) : 0,
-    p_max_cohort_held: form.maxCohortHeld.trim() ? parseFloat(form.maxCohortHeld) : 0,
-    p_min_liquidity_sol: form.minLiquiditySol.trim() ? parseFloat(form.minLiquiditySol) : 0,
-    p_min_organic_liq: form.minOrganicLiq.trim() ? parseFloat(form.minOrganicLiq) : 0,
-    p_cohort_exit_ratio: form.cohortExitRatio.trim() ? parseFloat(form.cohortExitRatio) : 0,
+    p_entry_min_age_secs: form.minAgeSecs.trim() ? parseInt(form.minAgeSecs, 10) : 0,
+    p_entry_min_alive_sol: form.minAliveSol.trim() ? parseFloat(form.minAliveSol) : 0,
+    p_entry_min_organic_sol: form.minOrganicSol.trim() ? parseFloat(form.minOrganicSol) : 0,
+    p_entry_pullback_pct: form.pullbackPct.trim() ? parseFloat(form.pullbackPct) : 0,
+    p_entry_higher_low_secs: form.higherLowSecs.trim() ? parseInt(form.higherLowSecs, 10) : 0,
+    p_entry_max_cohort_held: form.maxCohortHeld.trim() ? parseFloat(form.maxCohortHeld) : 0,
+    p_entry_min_liquidity_sol: form.minLiquiditySol.trim() ? parseFloat(form.minLiquiditySol) : 0,
+    p_entry_min_organic_liq: form.minOrganicLiq.trim() ? parseFloat(form.minOrganicLiq) : 0,
+    p_exit_cohort_ratio: form.cohortExitRatio.trim() ? parseFloat(form.cohortExitRatio) : 0,
     trade_mode: form.tradeMode,
     tolerance_pct: form.tolerance.trim() ? parseFloat(form.tolerance) : undefined,
   };
   if (!allowParams) return base;
   return {
     ...base,
-    p_initial_buy_sol: form.initialBuy.trim() ? parseFloat(form.initialBuy) : 0,
-    p_cu_limit: form.cuLimit.trim() ? parseInt(form.cuLimit, 10) : 0,
-    p_cu_price: form.cuPrice.trim() ? parseInt(form.cuPrice, 10) : 0,
-    p_max_sol_cost: form.maxSolCost.trim() ? parseFloat(form.maxSolCost) : 0,
-    p_spendable_sol_in: form.spendableSolIn.trim() ? parseFloat(form.spendableSolIn) : 0,
+    p_token_initial_buy_sol: form.initialBuy.trim() ? parseFloat(form.initialBuy) : 0,
+    p_token_cu_limit: form.cuLimit.trim() ? parseInt(form.cuLimit, 10) : 0,
+    p_token_cu_price: form.cuPrice.trim() ? parseInt(form.cuPrice, 10) : 0,
+    p_token_max_sol_cost: form.maxSolCost.trim() ? parseFloat(form.maxSolCost) : 0,
+    p_token_spendable_sol_in: form.spendableSolIn.trim() ? parseFloat(form.spendableSolIn) : 0,
     p_max_concurrent_tokens: form.maxConcurrentTokens.trim()
       ? parseInt(form.maxConcurrentTokens, 10)
       : 0,
     p_max_total_tokens: form.maxTotalTokens.trim()
       ? parseInt(form.maxTotalTokens, 10)
       : 0,
-    p_ix_labels: parseIxLabels(form.ixLabels),
+    p_token_ix_labels: parseIxLabels(form.ixLabels),
   };
 }

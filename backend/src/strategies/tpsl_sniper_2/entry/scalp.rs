@@ -6,13 +6,13 @@
 //! live trade-watcher resolve identical entries.
 //!
 //! The gates, all inert at `None`/`0`:
-//!   • `p_min_age_secs`      — skip the launch spike (entry age ≥ N s after t0).
-//!   • `p_min_alive_sol`     — still trading (total SOL in the trailing window).
-//!   • `p_min_organic_sol`   — new people buying (net SOL by outside wallets).
-//!   • `p_pullback_pct` (+ `p_higher_low_secs`) — higher-low continuation shape.
-//!   • `p_max_cohort_held`   — launch cohort already sold its bag.
-//!   • `p_min_liquidity_sol` — real reserves ≥ N SOL.
-//!   • `p_min_organic_liq`   — real reserves from buyers, not one dev deposit.
+//!   • `p_entry_min_age_secs`      — skip the launch spike (entry age ≥ N s after t0).
+//!   • `p_entry_min_alive_sol`     — still trading (total SOL in the trailing window).
+//!   • `p_entry_min_organic_sol`   — new people buying (net SOL by outside wallets).
+//!   • `p_entry_pullback_pct` (+ `p_entry_higher_low_secs`) — higher-low continuation shape.
+//!   • `p_entry_max_cohort_held`   — launch cohort already sold its bag.
+//!   • `p_entry_min_liquidity_sol` — real reserves ≥ N SOL.
+//!   • `p_entry_min_organic_liq`   — real reserves from buyers, not one dev deposit.
 //!
 //! Cohort / outside split reuses [`super::super::cohort`] so it matches rug
 //! detection and the E5 exit exactly.
@@ -26,7 +26,7 @@ use crate::config::constants::RUGGED_EARLY_SLOT_WINDOW;
 use crate::models::trade::{Trade, TradeType};
 use crate::models::Tpsl2StrategyRule;
 
-/// Liveness window for `p_min_alive_sol`: total SOL traded in the trailing
+/// Liveness window for `p_entry_min_alive_sol`: total SOL traded in the trailing
 /// `ALIVE_WINDOW_SECS` ending at the candidate trade. Kept a module constant (not
 /// a per-rule param) so the "still trading" gate has one well-defined window;
 /// sized to the launch-spike horizon. Revisit here if it needs tuning.
@@ -36,13 +36,13 @@ const ALIVE_WINDOW_SECS: i64 = 10;
 /// entry path is skipped entirely (callers fall back to the legacy entry-fill),
 /// so a rule with no scalp gates behaves exactly as before.
 pub fn rule_configures_any_scalp_gate(rule: &Tpsl2StrategyRule) -> bool {
-    none_if_zero_u64(rule.p_min_age_secs).is_some()
-        || none_if_zero_f64(rule.p_min_alive_sol).is_some()
-        || none_if_zero_f64(rule.p_min_organic_sol).is_some()
-        || none_if_zero_f64(rule.p_pullback_pct).is_some()
-        || none_if_zero_f64(rule.p_max_cohort_held).is_some()
-        || none_if_zero_f64(rule.p_min_liquidity_sol).is_some()
-        || none_if_zero_f64(rule.p_min_organic_liq).is_some()
+    none_if_zero_u64(rule.p_entry_min_age_secs).is_some()
+        || none_if_zero_f64(rule.p_entry_min_alive_sol).is_some()
+        || none_if_zero_f64(rule.p_entry_min_organic_sol).is_some()
+        || none_if_zero_f64(rule.p_entry_pullback_pct).is_some()
+        || none_if_zero_f64(rule.p_entry_max_cohort_held).is_some()
+        || none_if_zero_f64(rule.p_entry_min_liquidity_sol).is_some()
+        || none_if_zero_f64(rule.p_entry_min_organic_liq).is_some()
 }
 
 /// Trade-window features computed over a **causal prefix** (`trades[0..=i]`, the
@@ -188,14 +188,14 @@ pub fn find_scalp_entry(trades: &[Trade], rule: &Tpsl2StrategyRule) -> Option<En
         return None;
     }
 
-    let min_age = none_if_zero_u64(rule.p_min_age_secs).map(|v| v as i64);
-    let min_alive = none_if_zero_f64(rule.p_min_alive_sol);
-    let min_organic = none_if_zero_f64(rule.p_min_organic_sol);
-    let pullback = none_if_zero_f64(rule.p_pullback_pct);
-    let higher_low_secs = none_if_zero_u64(rule.p_higher_low_secs).map(|v| v as i64).unwrap_or(0);
-    let max_cohort_held = none_if_zero_f64(rule.p_max_cohort_held);
-    let min_liq = none_if_zero_f64(rule.p_min_liquidity_sol);
-    let min_organic_liq = none_if_zero_f64(rule.p_min_organic_liq);
+    let min_age = none_if_zero_u64(rule.p_entry_min_age_secs).map(|v| v as i64);
+    let min_alive = none_if_zero_f64(rule.p_entry_min_alive_sol);
+    let min_organic = none_if_zero_f64(rule.p_entry_min_organic_sol);
+    let pullback = none_if_zero_f64(rule.p_entry_pullback_pct);
+    let higher_low_secs = none_if_zero_u64(rule.p_entry_higher_low_secs).map(|v| v as i64).unwrap_or(0);
+    let max_cohort_held = none_if_zero_f64(rule.p_entry_max_cohort_held);
+    let min_liq = none_if_zero_f64(rule.p_entry_min_liquidity_sol);
+    let min_organic_liq = none_if_zero_f64(rule.p_entry_min_organic_liq);
 
     for i in 0..trades.len() {
         let cand = &trades[i];
@@ -307,7 +307,7 @@ mod tests {
     fn age_gate_waits_for_min_age() {
         let trades = vec![pbuy(1.0, 1, 0), pbuy(1.0, 2, 4), pbuy(1.0, 3, 12)];
         let mut r = rule();
-        r.p_min_age_secs = Some(10);
+        r.p_entry_min_age_secs = Some(10);
         let fill = find_scalp_entry(&trades, &r).expect("should enter once old enough");
         // First candidate with age >= 10s is the trade at +12s.
         assert_eq!(fill.block_time, base_time() + chrono::Duration::seconds(12));
@@ -316,7 +316,7 @@ mod tests {
     #[test]
     fn alive_gate_requires_recent_volume() {
         let mut r = rule();
-        r.p_min_alive_sol = Some(2.0);
+        r.p_entry_min_alive_sol = Some(2.0);
         // A lone 1 SOL buy: alive window total is 1.0 < 2.0 → no entry.
         let quiet = vec![pbuy(1.0, 1, 0)];
         assert!(find_scalp_entry(&quiet, &r).is_none());
@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn organic_gate_ignores_cohort_buys() {
         let mut r = rule();
-        r.p_min_organic_sol = Some(1.0);
+        r.p_entry_min_organic_sol = Some(1.0);
         // Only cohort (early-slot) buys → organic stays 0 → never enters.
         let cohort_only = vec![buy("dev", 5.0, 100.0, 1, 0), buy("dev2", 5.0, 100.0, 2, 1)];
         assert!(find_scalp_entry(&cohort_only, &r).is_none());
@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn cohort_held_gate_requires_cohort_sold_down() {
         let mut r = rule();
-        r.p_max_cohort_held = Some(0.30);
+        r.p_entry_max_cohort_held = Some(0.30);
         // Cohort holds its full bag (ratio 1.0) → blocked on the outside buy.
         let holding = vec![buy("dev", 5.0, 100.0, 1, 0), buy("out", 1.0, 5.0, 500, 5)];
         assert!(find_scalp_entry(&holding, &r).is_none());
@@ -360,7 +360,7 @@ mod tests {
     #[test]
     fn liquidity_gate_uses_real_reserves() {
         let mut r = rule();
-        r.p_min_liquidity_sol = Some(10.0);
+        r.p_entry_min_liquidity_sol = Some(10.0);
         let mut low = pbuy(1.0, 1, 0);
         low.real_sol_reserves = Some(3.0);
         let mut high = buy("out", 1.0, 1.0, 2, 2);

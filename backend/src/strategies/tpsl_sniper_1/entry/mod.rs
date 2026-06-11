@@ -83,12 +83,12 @@ pub fn find_first_matching_buy_rule(token: &Token, rules: &[Tpsl1StrategyRule]) 
 /// Whether a rule sets at least one entry criterion (used to skip — and warn
 /// about — a misconfigured, match-everything rule).
 fn rule_configures_any_criterion(rule: &Tpsl1StrategyRule) -> bool {
-    none_if_zero_f64(rule.p_initial_buy_sol).is_some()
-        || none_if_zero_u64(rule.p_cu_limit).is_some()
-        || none_if_zero_u64(rule.p_cu_price).is_some()
-        || none_if_zero_f64(rule.p_max_sol_cost).is_some()
-        || none_if_zero_f64(rule.p_spendable_sol_in).is_some()
-        || rule.p_ix_labels.as_array().map_or(false, |a| !a.is_empty())
+    none_if_zero_f64(rule.p_token_initial_buy_sol).is_some()
+        || none_if_zero_u64(rule.p_token_cu_limit).is_some()
+        || none_if_zero_u64(rule.p_token_cu_price).is_some()
+        || none_if_zero_f64(rule.p_token_max_sol_cost).is_some()
+        || none_if_zero_f64(rule.p_token_spendable_sol_in).is_some()
+        || rule.p_token_ix_labels.as_array().map_or(false, |a| !a.is_empty())
 }
 
 // ── Criteria ─────────────────────────────────────────────────────────────────
@@ -103,7 +103,7 @@ fn within_tolerance(token_val: f64, rule_val: f64, tolerance_pct: f64, eps: f64)
 }
 
 fn check_initial_buy_sol(token: &Token, rule: &Tpsl1StrategyRule) -> CriterionOutcome {
-    let Some(rule_val) = none_if_zero_f64(rule.p_initial_buy_sol) else {
+    let Some(rule_val) = none_if_zero_f64(rule.p_token_initial_buy_sol) else {
         return CriterionOutcome::NotConfigured;
     };
     match token.initial_buy_sol {
@@ -115,7 +115,7 @@ fn check_initial_buy_sol(token: &Token, rule: &Tpsl1StrategyRule) -> CriterionOu
 }
 
 fn check_compute_unit_limit(token: &Token, rule: &Tpsl1StrategyRule) -> CriterionOutcome {
-    let Some(rule_val) = none_if_zero_u64(rule.p_cu_limit) else {
+    let Some(rule_val) = none_if_zero_u64(rule.p_token_cu_limit) else {
         return CriterionOutcome::NotConfigured;
     };
     match token.cu_limit {
@@ -127,7 +127,7 @@ fn check_compute_unit_limit(token: &Token, rule: &Tpsl1StrategyRule) -> Criterio
 }
 
 fn check_compute_unit_price(token: &Token, rule: &Tpsl1StrategyRule) -> CriterionOutcome {
-    let Some(rule_val) = none_if_zero_u64(rule.p_cu_price) else {
+    let Some(rule_val) = none_if_zero_u64(rule.p_token_cu_price) else {
         return CriterionOutcome::NotConfigured;
     };
     match token.cu_price {
@@ -139,7 +139,7 @@ fn check_compute_unit_price(token: &Token, rule: &Tpsl1StrategyRule) -> Criterio
 }
 
 fn check_max_sol_cost(token: &Token, rule: &Tpsl1StrategyRule) -> CriterionOutcome {
-    let Some(rule_val) = none_if_zero_f64(rule.p_max_sol_cost) else {
+    let Some(rule_val) = none_if_zero_f64(rule.p_token_max_sol_cost) else {
         return CriterionOutcome::NotConfigured;
     };
     match instruction_arg_as_sol(token, "max_sol_cost") {
@@ -151,7 +151,7 @@ fn check_max_sol_cost(token: &Token, rule: &Tpsl1StrategyRule) -> CriterionOutco
 }
 
 fn check_spendable_sol_in(token: &Token, rule: &Tpsl1StrategyRule) -> CriterionOutcome {
-    let Some(rule_val) = none_if_zero_f64(rule.p_spendable_sol_in) else {
+    let Some(rule_val) = none_if_zero_f64(rule.p_token_spendable_sol_in) else {
         return CriterionOutcome::NotConfigured;
     };
     match instruction_arg_as_sol(token, "spendable_sol_in") {
@@ -163,7 +163,7 @@ fn check_spendable_sol_in(token: &Token, rule: &Tpsl1StrategyRule) -> CriterionO
 }
 
 fn check_instruction_labels(token: &Token, rule: &Tpsl1StrategyRule) -> CriterionOutcome {
-    if !rule.p_ix_labels.as_array().map_or(false, |a| !a.is_empty()) {
+    if !rule.p_token_ix_labels.as_array().map_or(false, |a| !a.is_empty()) {
         return CriterionOutcome::NotConfigured;
     }
     // Presence check only for now (TODO: per-label matching).
@@ -275,26 +275,26 @@ mod tests {
 
     /// An active rule with the given entry criteria; exit params inert.
     fn rule_with_entry(
-        p_initial_buy_sol: Option<f64>,
-        p_cu_limit: Option<u64>,
-        p_cu_price: Option<u64>,
-        p_ix_labels: Value,
-        p_max_sol_cost: Option<f64>,
-        p_spendable_sol_in: Option<f64>,
+        p_token_initial_buy_sol: Option<f64>,
+        p_token_cu_limit: Option<u64>,
+        p_token_cu_price: Option<u64>,
+        p_token_ix_labels: Value,
+        p_token_max_sol_cost: Option<f64>,
+        p_token_spendable_sol_in: Option<f64>,
         tolerance_pct: f64,
     ) -> Tpsl1StrategyRule {
         let mut r = Tpsl1StrategyRule::new(
             "test".into(),
-            p_initial_buy_sol,
-            p_cu_limit,
-            p_cu_price,
-            p_ix_labels,
+            p_token_initial_buy_sol,
+            p_token_cu_limit,
+            p_token_cu_price,
+            p_token_ix_labels,
             "paper".into(),
             1.0,
             50.0,
             20.0,
-            p_max_sol_cost,
-            p_spendable_sol_in,
+            p_token_max_sol_cost,
+            p_token_spendable_sol_in,
             None,
             None,
             Some(tolerance_pct),

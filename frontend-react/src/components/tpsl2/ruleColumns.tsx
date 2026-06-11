@@ -145,45 +145,45 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
       label: 'Init Buy',
       group: 'token_fingerprint',
       sortable: true,
-      render: (r) => dashF(r.p_initial_buy_sol ?? 0, 15),
-      sortValue: (r) => r.p_initial_buy_sol ?? 0,
-      searchValue: (r) => String(r.p_initial_buy_sol ?? ''),
+      render: (r) => dashF(r.p_token_initial_buy_sol ?? 0, 15),
+      sortValue: (r) => r.p_token_initial_buy_sol ?? 0,
+      searchValue: (r) => String(r.p_token_initial_buy_sol ?? ''),
     },
     {
       key: 'cu_limit',
       label: 'CU Lim',
       group: 'token_fingerprint',
       sortable: true,
-      render: (r) => dashNum(r.p_cu_limit),
-      sortValue: (r) => r.p_cu_limit,
-      searchValue: (r) => String(r.p_cu_limit ?? ''),
+      render: (r) => dashNum(r.p_token_cu_limit),
+      sortValue: (r) => r.p_token_cu_limit,
+      searchValue: (r) => String(r.p_token_cu_limit ?? ''),
     },
     {
       key: 'cu_price',
       label: 'CU Price',
       group: 'token_fingerprint',
       sortable: true,
-      render: (r) => dashNum(r.p_cu_price),
-      sortValue: (r) => r.p_cu_price,
-      searchValue: (r) => String(r.p_cu_price ?? ''),
+      render: (r) => dashNum(r.p_token_cu_price),
+      sortValue: (r) => r.p_token_cu_price,
+      searchValue: (r) => String(r.p_token_cu_price ?? ''),
     },
     {
       key: 'max_sol',
       label: 'Max SOL',
       group: 'token_fingerprint',
       sortable: true,
-      render: (r) => dashF(r.p_max_sol_cost ?? 0, 3),
-      sortValue: (r) => r.p_max_sol_cost ?? 0,
-      searchValue: (r) => String(r.p_max_sol_cost ?? ''),
+      render: (r) => dashF(r.p_token_max_sol_cost ?? 0, 3),
+      sortValue: (r) => r.p_token_max_sol_cost ?? 0,
+      searchValue: (r) => String(r.p_token_max_sol_cost ?? ''),
     },
     {
       key: 'spendable',
       label: 'Spendable',
       group: 'token_fingerprint',
       sortable: true,
-      render: (r) => dashF(r.p_spendable_sol_in ?? 0, 3),
-      sortValue: (r) => r.p_spendable_sol_in ?? 0,
-      searchValue: (r) => String(r.p_spendable_sol_in ?? ''),
+      render: (r) => dashF(r.p_token_spendable_sol_in ?? 0, 3),
+      sortValue: (r) => r.p_token_spendable_sol_in ?? 0,
+      searchValue: (r) => String(r.p_token_spendable_sol_in ?? ''),
     },
     {
       key: 'labels',
@@ -191,7 +191,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
       group: 'token_fingerprint',
       sortable: true,
       render: (r) => {
-        const arr = Array.isArray(r.p_ix_labels) ? r.p_ix_labels : [];
+        const arr = Array.isArray(r.p_token_ix_labels) ? r.p_token_ix_labels : [];
         const tooltip = arr.map(String).join('\n');
         return (
           <span title={tooltip} className="font-mono">
@@ -199,16 +199,16 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
           </span>
         );
       },
-      sortValue: (r) => (Array.isArray(r.p_ix_labels) ? r.p_ix_labels.length : 0),
+      sortValue: (r) => (Array.isArray(r.p_token_ix_labels) ? r.p_token_ix_labels.length : 0),
       searchValue: (r) =>
-        Array.isArray(r.p_ix_labels) ? r.p_ix_labels.map(String).join(' ') : '',
+        Array.isArray(r.p_token_ix_labels) ? r.p_token_ix_labels.map(String).join(' ') : '',
     },
     {
       key: 'tol',
       label: 'Tolerance',
       tooltip:
-        'Match tolerance (%) applied to the numeric entry filters (Init Buy, CU Lim, CU Price, Max SOL, Spendable).',
-      group: 'rule_param',
+        'Match tolerance (%) applied to the numeric token-fingerprint filters (Init Buy, CU Lim, CU Price, Max SOL, Spendable).',
+      group: 'token_fingerprint',
       sortable: true,
       render: (r) => dashPercent(r.tolerance_pct),
       sortValue: (r) => r.tolerance_pct,
@@ -217,7 +217,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'max_concurrent_tokens',
       label: 'Max Concurrent Tokens',
-      group: 'max_concurrency_and_total',
+      group: 'sizing',
       width: '120px',
       sortable: true,
       render: (r) => dashNum(r.p_max_concurrent_tokens),
@@ -227,7 +227,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'max_total_tokens',
       label: 'Max Total Tokens',
-      group: 'max_concurrency_and_total',
+      group: 'sizing',
       width: '120px',
       sortable: true,
       render: (r) => dashNum(r.p_max_total_tokens),
@@ -238,7 +238,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
       key: 'buy_amt',
       label: 'Buy Amt',
       tooltip: 'Position size — SOL allocated per buy (paper or real).',
-      group: 'rule_param',
+      group: 'sizing',
       sortable: true,
       render: (r) => dashF(r.buy_amount, 15),
       sortValue: (r) => r.buy_amount,
@@ -248,79 +248,79 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
       key: 'tp',
       label: 'TP',
       tooltip: 'Take profit (%) — exit once price rises this far above the entry price.',
-      group: 'rule_param',
+      group: 'exit',
       sortable: true,
-      render: (r) => <span className="font-bold text-green">{dashPercent(r.take_profit)}</span>,
-      sortValue: (r) => r.take_profit,
-      searchValue: (r) => String(r.take_profit),
+      render: (r) => <span className="font-bold text-green">{dashPercent(r.p_exit_take_profit)}</span>,
+      sortValue: (r) => r.p_exit_take_profit,
+      searchValue: (r) => String(r.p_exit_take_profit),
     },
     {
       key: 'sl',
       label: 'SL',
       tooltip: 'Stop loss (%) — exit once price falls this far below the entry price.',
-      group: 'rule_param',
+      group: 'exit',
       sortable: true,
-      render: (r) => <span className="font-bold text-red">{dashPercent(r.stop_loss)}</span>,
-      sortValue: (r) => r.stop_loss,
-      searchValue: (r) => String(r.stop_loss),
+      render: (r) => <span className="font-bold text-red">{dashPercent(r.p_exit_stop_loss)}</span>,
+      sortValue: (r) => r.p_exit_stop_loss,
+      searchValue: (r) => String(r.p_exit_stop_loss),
     },
     {
       key: 'trail',
       label: 'Trail',
       tooltip:
         'Trailing stop (%) — exit when price falls this far below the peak reached since entry, banking a reversal. Blank/0 = off.',
-      group: 'rule_param',
+      group: 'exit',
       sortable: true,
       render: (r) => (
-        <span className="font-bold text-warning">{dashPercent(r.p_trailing_stop_pct ?? 0)}</span>
+        <span className="font-bold text-warning">{dashPercent(r.p_exit_trailing_stop_pct ?? 0)}</span>
       ),
-      sortValue: (r) => r.p_trailing_stop_pct ?? 0,
-      searchValue: (r) => String(r.p_trailing_stop_pct ?? ''),
+      sortValue: (r) => r.p_exit_trailing_stop_pct ?? 0,
+      searchValue: (r) => String(r.p_exit_trailing_stop_pct ?? ''),
     },
     {
       key: 'time_stop',
       label: 'Time',
       tooltip:
         'Time stop / max-hold — exit at the first trade this long after entry, cutting positions that neither moon nor crash. Blank/0 = off.',
-      group: 'rule_param',
+      group: 'exit',
       sortable: true,
       render: (r) =>
-        r.p_time_stop_secs ? (
-          <span className="font-bold text-info">{formatAge(r.p_time_stop_secs)}</span>
+        r.p_exit_time_stop_secs ? (
+          <span className="font-bold text-info">{formatAge(r.p_exit_time_stop_secs)}</span>
         ) : (
           '-'
         ),
-      sortValue: (r) => r.p_time_stop_secs ?? 0,
-      searchValue: (r) => String(r.p_time_stop_secs ?? ''),
+      sortValue: (r) => r.p_exit_time_stop_secs ?? 0,
+      searchValue: (r) => String(r.p_exit_time_stop_secs ?? ''),
     },
     {
       key: 'stall',
       label: 'Stall',
       tooltip:
         'Stall / momentum-death — exit once no new higher-high has printed for this long, selling into the flatline. Blank/0 = off.',
-      group: 'rule_param',
+      group: 'exit',
       sortable: true,
       render: (r) =>
-        r.p_stall_secs ? (
-          <span className="font-bold text-accent">{formatAge(r.p_stall_secs)}</span>
+        r.p_exit_stall_secs ? (
+          <span className="font-bold text-accent">{formatAge(r.p_exit_stall_secs)}</span>
         ) : (
           '-'
         ),
-      sortValue: (r) => r.p_stall_secs ?? 0,
-      searchValue: (r) => String(r.p_stall_secs ?? ''),
+      sortValue: (r) => r.p_exit_stall_secs ?? 0,
+      searchValue: (r) => String(r.p_exit_stall_secs ?? ''),
     },
     {
       key: 'liq',
       label: 'Liq',
       tooltip:
         'Liquidity-death exit (%) — bail when virtual SOL reserves crash this far below the peak-since-entry, catching liquidity pulls price stops miss. Blank/0 = off.',
-      group: 'rule_param',
+      group: 'exit',
       sortable: true,
       render: (r) => (
-        <span className="font-bold text-primary">{dashPercent(r.p_liquidity_drop_pct ?? 0)}</span>
+        <span className="font-bold text-primary">{dashPercent(r.p_exit_liquidity_drop_pct ?? 0)}</span>
       ),
-      sortValue: (r) => r.p_liquidity_drop_pct ?? 0,
-      searchValue: (r) => String(r.p_liquidity_drop_pct ?? ''),
+      sortValue: (r) => r.p_exit_liquidity_drop_pct ?? 0,
+      searchValue: (r) => String(r.p_exit_liquidity_drop_pct ?? ''),
     },
     {
       key: 'mode',

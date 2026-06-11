@@ -326,8 +326,8 @@ impl Tpsl2StrategyService {
                 continue;
             };
             // Cheap short-circuit: nothing to do for rules with no time exit.
-            if none_if_zero_u64(rule.p_time_stop_secs).is_none()
-                && none_if_zero_u64(rule.p_stall_secs).is_none()
+            if none_if_zero_u64(rule.p_exit_time_stop_secs).is_none()
+                && none_if_zero_u64(rule.p_exit_stall_secs).is_none()
             {
                 continue;
             }

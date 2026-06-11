@@ -25,22 +25,22 @@ use crate::{
 pub struct RuleResponse {
     pub id: Uuid,
     pub rule_name: String,
-    pub p_initial_buy_sol: Option<f64>,
-    pub p_cu_limit: Option<u64>,
-    pub p_cu_price: Option<u64>,
-    pub p_max_sol_cost: Option<f64>,
-    pub p_spendable_sol_in: Option<f64>,
+    pub p_token_initial_buy_sol: Option<f64>,
+    pub p_token_cu_limit: Option<u64>,
+    pub p_token_cu_price: Option<u64>,
+    pub p_token_max_sol_cost: Option<f64>,
+    pub p_token_spendable_sol_in: Option<f64>,
     pub p_max_concurrent_tokens: Option<u64>,
     pub p_max_total_tokens: Option<u64>,
-    pub p_ix_labels: serde_json::Value,
+    pub p_token_ix_labels: serde_json::Value,
     pub trade_mode: String,
     pub buy_amount: f64,
-    pub take_profit: f64,
-    pub stop_loss: f64,
-    pub p_trailing_stop_pct: Option<f64>,
-    pub p_time_stop_secs: Option<u64>,
-    pub p_stall_secs: Option<u64>,
-    pub p_liquidity_drop_pct: Option<f64>,
+    pub p_exit_take_profit: f64,
+    pub p_exit_stop_loss: f64,
+    pub p_exit_trailing_stop_pct: Option<f64>,
+    pub p_exit_time_stop_secs: Option<u64>,
+    pub p_exit_stall_secs: Option<u64>,
+    pub p_exit_liquidity_drop_pct: Option<f64>,
     pub tolerance_pct: f64,
     pub is_active: bool,
     /// Derived lifecycle state for the UI — one of `Active`, `Draining`,
@@ -79,22 +79,22 @@ impl RuleResponse {
         Self {
             id: r.id,
             rule_name: r.rule_name,
-            p_initial_buy_sol: r.p_initial_buy_sol,
-            p_cu_limit: r.p_cu_limit,
-            p_cu_price: r.p_cu_price,
-            p_max_sol_cost: r.p_max_sol_cost,
-            p_spendable_sol_in: r.p_spendable_sol_in,
+            p_token_initial_buy_sol: r.p_token_initial_buy_sol,
+            p_token_cu_limit: r.p_token_cu_limit,
+            p_token_cu_price: r.p_token_cu_price,
+            p_token_max_sol_cost: r.p_token_max_sol_cost,
+            p_token_spendable_sol_in: r.p_token_spendable_sol_in,
             p_max_concurrent_tokens: r.p_max_concurrent_tokens,
             p_max_total_tokens: r.p_max_total_tokens,
-            p_ix_labels: r.p_ix_labels,
+            p_token_ix_labels: r.p_token_ix_labels,
             trade_mode: r.trade_mode,
             buy_amount: r.buy_amount,
-            take_profit: r.take_profit,
-            stop_loss: r.stop_loss,
-            p_trailing_stop_pct: r.p_trailing_stop_pct,
-            p_time_stop_secs: r.p_time_stop_secs,
-            p_stall_secs: r.p_stall_secs,
-            p_liquidity_drop_pct: r.p_liquidity_drop_pct,
+            p_exit_take_profit: r.p_exit_take_profit,
+            p_exit_stop_loss: r.p_exit_stop_loss,
+            p_exit_trailing_stop_pct: r.p_exit_trailing_stop_pct,
+            p_exit_time_stop_secs: r.p_exit_time_stop_secs,
+            p_exit_stall_secs: r.p_exit_stall_secs,
+            p_exit_liquidity_drop_pct: r.p_exit_liquidity_drop_pct,
             tolerance_pct: r.tolerance_pct,
             is_active: r.is_active,
             lifecycle,
@@ -125,22 +125,22 @@ async fn rule_response(app_state: &Arc<AppState>, rule: Tpsl1StrategyRule) -> Ru
 #[derive(Deserialize)]
 pub struct CreateRuleRequest {
     pub rule_name: String,
-    pub p_initial_buy_sol: Option<f64>,
-    pub p_cu_limit: Option<u64>,
-    pub p_cu_price: Option<u64>,
-    pub p_max_sol_cost: Option<f64>,
-    pub p_spendable_sol_in: Option<f64>,
+    pub p_token_initial_buy_sol: Option<f64>,
+    pub p_token_cu_limit: Option<u64>,
+    pub p_token_cu_price: Option<u64>,
+    pub p_token_max_sol_cost: Option<f64>,
+    pub p_token_spendable_sol_in: Option<f64>,
     pub p_max_concurrent_tokens: Option<u64>,
     pub p_max_total_tokens: Option<u64>,
-    pub p_ix_labels: serde_json::Value,
+    pub p_token_ix_labels: serde_json::Value,
     pub trade_mode: String,
     pub buy_amount: f64,
-    pub take_profit: f64,
-    pub stop_loss: f64,
-    pub p_trailing_stop_pct: Option<f64>,
-    pub p_time_stop_secs: Option<u64>,
-    pub p_stall_secs: Option<u64>,
-    pub p_liquidity_drop_pct: Option<f64>,
+    pub p_exit_take_profit: f64,
+    pub p_exit_stop_loss: f64,
+    pub p_exit_trailing_stop_pct: Option<f64>,
+    pub p_exit_time_stop_secs: Option<u64>,
+    pub p_exit_stall_secs: Option<u64>,
+    pub p_exit_liquidity_drop_pct: Option<f64>,
     pub tolerance_pct: Option<f64>,
 }
 
@@ -148,24 +148,24 @@ pub struct CreateRuleRequest {
 pub struct UpdateRuleRequest {
     pub rule_name: Option<String>,
     pub buy_amount: Option<f64>,
-    pub take_profit: Option<f64>,
-    pub stop_loss: Option<f64>,
-    pub p_trailing_stop_pct: Option<f64>,
-    pub p_time_stop_secs: Option<u64>,
-    pub p_stall_secs: Option<u64>,
-    pub p_liquidity_drop_pct: Option<f64>,
+    pub p_exit_take_profit: Option<f64>,
+    pub p_exit_stop_loss: Option<f64>,
+    pub p_exit_trailing_stop_pct: Option<f64>,
+    pub p_exit_time_stop_secs: Option<u64>,
+    pub p_exit_stall_secs: Option<u64>,
+    pub p_exit_liquidity_drop_pct: Option<f64>,
     #[serde(default)]
-    pub p_initial_buy_sol: Option<Option<f64>>,
+    pub p_token_initial_buy_sol: Option<Option<f64>>,
     #[serde(default)]
-    pub p_cu_limit: Option<Option<u64>>,
+    pub p_token_cu_limit: Option<Option<u64>>,
     #[serde(default)]
-    pub p_cu_price: Option<Option<u64>>,
+    pub p_token_cu_price: Option<Option<u64>>,
     #[serde(default)]
-    pub p_ix_labels: Option<Option<serde_json::Value>>,
+    pub p_token_ix_labels: Option<Option<serde_json::Value>>,
     #[serde(default)]
-    pub p_max_sol_cost: Option<Option<f64>>,
+    pub p_token_max_sol_cost: Option<Option<f64>>,
     #[serde(default)]
-    pub p_spendable_sol_in: Option<Option<f64>>,
+    pub p_token_spendable_sol_in: Option<Option<f64>>,
     // Outer Option = field present; inner Option = value or explicit null
     #[serde(default)]
     pub p_max_concurrent_tokens: Option<Option<u64>>,
@@ -244,23 +244,23 @@ pub async fn create_tpsl_rule(
 ) -> impl Responder {
     let rule = Tpsl1StrategyRule::new(
         req.rule_name.clone(),
-        req.p_initial_buy_sol,
-        req.p_cu_limit,
-        req.p_cu_price,
-        req.p_ix_labels.clone(),
+        req.p_token_initial_buy_sol,
+        req.p_token_cu_limit,
+        req.p_token_cu_price,
+        req.p_token_ix_labels.clone(),
         req.trade_mode.clone(),
         req.buy_amount,
-        req.take_profit,
-        req.stop_loss,
-        req.p_max_sol_cost,
-        req.p_spendable_sol_in,
+        req.p_exit_take_profit,
+        req.p_exit_stop_loss,
+        req.p_token_max_sol_cost,
+        req.p_token_spendable_sol_in,
         req.p_max_concurrent_tokens,
         req.p_max_total_tokens,
         req.tolerance_pct,
-        req.p_trailing_stop_pct,
-        req.p_time_stop_secs,
-        req.p_stall_secs,
-        req.p_liquidity_drop_pct,
+        req.p_exit_trailing_stop_pct,
+        req.p_exit_time_stop_secs,
+        req.p_exit_stall_secs,
+        req.p_exit_liquidity_drop_pct,
     );
 
     let repo = Tpsl1StrategyRuleRepo::new(app_state.db.clone());
@@ -303,43 +303,43 @@ pub async fn update_tpsl_rule(
             if let Some(buy_amount) = req.buy_amount {
                 rule.buy_amount = buy_amount;
             }
-            if let Some(take_profit) = req.take_profit {
-                rule.take_profit = take_profit;
+            if let Some(p_exit_take_profit) = req.p_exit_take_profit {
+                rule.p_exit_take_profit = p_exit_take_profit;
             }
-            if let Some(stop_loss) = req.stop_loss {
-                rule.stop_loss = stop_loss;
+            if let Some(p_exit_stop_loss) = req.p_exit_stop_loss {
+                rule.p_exit_stop_loss = p_exit_stop_loss;
             }
-            if let Some(trailing_stop_pct) = req.p_trailing_stop_pct {
-                rule.p_trailing_stop_pct = Some(trailing_stop_pct);
+            if let Some(trailing_stop_pct) = req.p_exit_trailing_stop_pct {
+                rule.p_exit_trailing_stop_pct = Some(trailing_stop_pct);
             }
-            if let Some(time_stop_secs) = req.p_time_stop_secs {
-                rule.p_time_stop_secs = Some(time_stop_secs);
+            if let Some(time_stop_secs) = req.p_exit_time_stop_secs {
+                rule.p_exit_time_stop_secs = Some(time_stop_secs);
             }
-            if let Some(stall_secs) = req.p_stall_secs {
-                rule.p_stall_secs = Some(stall_secs);
+            if let Some(stall_secs) = req.p_exit_stall_secs {
+                rule.p_exit_stall_secs = Some(stall_secs);
             }
-            if let Some(liquidity_drop_pct) = req.p_liquidity_drop_pct {
-                rule.p_liquidity_drop_pct = Some(liquidity_drop_pct);
+            if let Some(liquidity_drop_pct) = req.p_exit_liquidity_drop_pct {
+                rule.p_exit_liquidity_drop_pct = Some(liquidity_drop_pct);
             }
-            if let Some(initial_buy_sol_opt) = &req.p_initial_buy_sol {
-                rule.p_initial_buy_sol = initial_buy_sol_opt.clone();
+            if let Some(initial_buy_sol_opt) = &req.p_token_initial_buy_sol {
+                rule.p_token_initial_buy_sol = initial_buy_sol_opt.clone();
             }
-            if let Some(cu_limit_opt) = &req.p_cu_limit {
-                rule.p_cu_limit = cu_limit_opt.clone();
+            if let Some(cu_limit_opt) = &req.p_token_cu_limit {
+                rule.p_token_cu_limit = cu_limit_opt.clone();
             }
-            if let Some(cu_price_opt) = &req.p_cu_price {
-                rule.p_cu_price = cu_price_opt.clone();
+            if let Some(cu_price_opt) = &req.p_token_cu_price {
+                rule.p_token_cu_price = cu_price_opt.clone();
             }
-            if let Some(ix_labels_opt) = &req.p_ix_labels {
-                rule.p_ix_labels = ix_labels_opt
+            if let Some(ix_labels_opt) = &req.p_token_ix_labels {
+                rule.p_token_ix_labels = ix_labels_opt
                     .clone()
                     .unwrap_or_else(|| serde_json::Value::Array(vec![]));
             }
-            if let Some(max_sol_cost_opt) = &req.p_max_sol_cost {
-                rule.p_max_sol_cost = max_sol_cost_opt.clone();
+            if let Some(max_sol_cost_opt) = &req.p_token_max_sol_cost {
+                rule.p_token_max_sol_cost = max_sol_cost_opt.clone();
             }
-            if let Some(spendable_sol_in_opt) = &req.p_spendable_sol_in {
-                rule.p_spendable_sol_in = spendable_sol_in_opt.clone();
+            if let Some(spendable_sol_in_opt) = &req.p_token_spendable_sol_in {
+                rule.p_token_spendable_sol_in = spendable_sol_in_opt.clone();
             }
             if let Some(max_concurrent_tokens_opt) = &req.p_max_concurrent_tokens {
                 rule.p_max_concurrent_tokens = max_concurrent_tokens_opt.clone();

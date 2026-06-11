@@ -32,15 +32,15 @@ use super::util::{none_if_zero_f64, none_if_zero_u64};
 pub enum ExitReason {
     TakeProfit,
     StopLoss,
-    /// E1 · price fell `p_trailing_stop_pct`% below the peak-since-entry.
+    /// E1 · price fell `p_exit_trailing_stop_pct`% below the peak-since-entry.
     TrailingStop,
-    /// E3 · no new higher-high for `p_stall_secs`.
+    /// E3 · no new higher-high for `p_exit_stall_secs`.
     Stall,
-    /// E2 · held past the `p_time_stop_secs` deadline.
+    /// E2 · held past the `p_exit_time_stop_secs` deadline.
     TimeStop,
-    /// E4 · **real** SOL reserves crashed `p_liquidity_drop_pct`% below their peak.
+    /// E4 · **real** SOL reserves crashed `p_exit_liquidity_drop_pct`% below their peak.
     LiquidityExit,
-    /// E5 · the launch cohort's net holdings collapsed to ≤ `p_cohort_exit_ratio`
+    /// E5 · the launch cohort's net holdings collapsed to ≤ `p_exit_cohort_ratio`
     /// of everything it bought (the multi-wallet rug dump). Top ladder priority.
     CohortExit,
 }
@@ -160,13 +160,13 @@ pub fn find_trade_driven_exit(
         return None;
     }
 
-    let take_profit_pct = rule.take_profit;
-    let stop_loss_pct = rule.stop_loss;
-    let trailing_stop_pct = none_if_zero_f64(rule.p_trailing_stop_pct); // E1 (None → off)
-    let time_stop_secs = none_if_zero_u64(rule.p_time_stop_secs); // E2 (None → off)
-    let stall_secs = none_if_zero_u64(rule.p_stall_secs); // E3 (None → off)
-    let liquidity_drop_pct = none_if_zero_f64(rule.p_liquidity_drop_pct); // E4 (None → off)
-    let cohort_exit_ratio = none_if_zero_f64(rule.p_cohort_exit_ratio); // E5 (None → off)
+    let take_profit_pct = rule.p_exit_take_profit;
+    let stop_loss_pct = rule.p_exit_stop_loss;
+    let trailing_stop_pct = none_if_zero_f64(rule.p_exit_trailing_stop_pct); // E1 (None → off)
+    let time_stop_secs = none_if_zero_u64(rule.p_exit_time_stop_secs); // E2 (None → off)
+    let stall_secs = none_if_zero_u64(rule.p_exit_stall_secs); // E3 (None → off)
+    let liquidity_drop_pct = none_if_zero_f64(rule.p_exit_liquidity_drop_pct); // E4 (None → off)
+    let cohort_exit_ratio = none_if_zero_f64(rule.p_exit_cohort_ratio); // E5 (None → off)
 
     // E5 precompute: the launch cohort, the bag it ever bought (the denominator),
     // and its net holdings as of entry. `cohort_net` then evolves causally as the
@@ -291,12 +291,12 @@ pub fn find_clock_driven_exit(
     rule: &Tpsl2StrategyRule,
     now: DateTime<Utc>,
 ) -> Option<ExitReason> {
-    if let Some(secs) = none_if_zero_u64(rule.p_stall_secs) {
+    if let Some(secs) = none_if_zero_u64(rule.p_exit_stall_secs) {
         if stall_triggered(state.last_higher_high_time, now, secs) {
             return Some(ExitReason::Stall);
         }
     }
-    if let Some(secs) = none_if_zero_u64(rule.p_time_stop_secs) {
+    if let Some(secs) = none_if_zero_u64(rule.p_exit_time_stop_secs) {
         if time_stop_triggered(entry_time, now, secs) {
             return Some(ExitReason::TimeStop);
         }
@@ -327,8 +327,8 @@ pub fn should_position_exit_on_clock(
     now: DateTime<Utc>,
 ) -> Option<ExitReason> {
     let entry_time = exit_clock_entry(position)?;
-    if none_if_zero_u64(rule.p_time_stop_secs).is_none()
-        && none_if_zero_u64(rule.p_stall_secs).is_none()
+    if none_if_zero_u64(rule.p_exit_time_stop_secs).is_none()
+        && none_if_zero_u64(rule.p_exit_stall_secs).is_none()
     {
         return None;
     }
@@ -532,7 +532,7 @@ mod tests {
         let trades = vec![buy(1.2, 2, 1), buy(0.7, 3, 2), buy(2.0, 4, 3)];
         let rule = rule_with(50.0, 20.0, None, None, None, None);
 
-        let legacy = legacy_fixed_take_profit_stop_loss(&trades, base_time(), 1.0, rule.take_profit, rule.stop_loss);
+        let legacy = legacy_fixed_take_profit_stop_loss(&trades, base_time(), 1.0, rule.p_exit_take_profit, rule.p_exit_stop_loss);
         let walked = find_trade_driven_exit(&trades, base_time(), 1.0, &rule);
         assert_eq!(legacy, walked);
     }
@@ -614,12 +614,12 @@ mod tests {
         assert_eq!(exit.reason, ExitReason::LiquidityExit);
     }
 
-    // ── E5 cohort-dump (`p_cohort_exit_ratio`) ───────────────────────────────
+    // ── E5 cohort-dump (`p_exit_cohort_ratio`) ───────────────────────────────
 
     /// rule_with + an explicit E5 cohort-exit ratio.
     fn rule_cohort(cohort_exit_ratio: f64) -> Tpsl2StrategyRule {
         let mut r = rule_with(1000.0, 99.0, None, None, None, None);
-        r.p_cohort_exit_ratio = Some(cohort_exit_ratio);
+        r.p_exit_cohort_ratio = Some(cohort_exit_ratio);
         r
     }
 

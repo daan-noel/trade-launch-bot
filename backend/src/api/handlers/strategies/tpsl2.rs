@@ -25,32 +25,32 @@ use crate::{
 pub struct RuleResponse {
     pub id: Uuid,
     pub rule_name: String,
-    pub p_initial_buy_sol: Option<f64>,
-    pub p_cu_limit: Option<u64>,
-    pub p_cu_price: Option<u64>,
-    pub p_max_sol_cost: Option<f64>,
-    pub p_spendable_sol_in: Option<f64>,
+    pub p_token_initial_buy_sol: Option<f64>,
+    pub p_token_cu_limit: Option<u64>,
+    pub p_token_cu_price: Option<u64>,
+    pub p_token_max_sol_cost: Option<f64>,
+    pub p_token_spendable_sol_in: Option<f64>,
     pub p_max_concurrent_tokens: Option<u64>,
     pub p_max_total_tokens: Option<u64>,
-    pub p_ix_labels: serde_json::Value,
+    pub p_token_ix_labels: serde_json::Value,
     pub trade_mode: String,
     pub buy_amount: f64,
-    pub take_profit: f64,
-    pub stop_loss: f64,
-    pub p_trailing_stop_pct: Option<f64>,
-    pub p_time_stop_secs: Option<u64>,
-    pub p_stall_secs: Option<u64>,
-    pub p_liquidity_drop_pct: Option<f64>,
+    pub p_exit_take_profit: f64,
+    pub p_exit_stop_loss: f64,
+    pub p_exit_trailing_stop_pct: Option<f64>,
+    pub p_exit_time_stop_secs: Option<u64>,
+    pub p_exit_stall_secs: Option<u64>,
+    pub p_exit_liquidity_drop_pct: Option<f64>,
     // Scalp-continuation gates (see tpsl-scalp-continuation-plan.md).
-    pub p_min_age_secs: Option<u64>,
-    pub p_min_alive_sol: Option<f64>,
-    pub p_min_organic_sol: Option<f64>,
-    pub p_pullback_pct: Option<f64>,
-    pub p_higher_low_secs: Option<u64>,
-    pub p_max_cohort_held: Option<f64>,
-    pub p_min_liquidity_sol: Option<f64>,
-    pub p_min_organic_liq: Option<f64>,
-    pub p_cohort_exit_ratio: Option<f64>,
+    pub p_entry_min_age_secs: Option<u64>,
+    pub p_entry_min_alive_sol: Option<f64>,
+    pub p_entry_min_organic_sol: Option<f64>,
+    pub p_entry_pullback_pct: Option<f64>,
+    pub p_entry_higher_low_secs: Option<u64>,
+    pub p_entry_max_cohort_held: Option<f64>,
+    pub p_entry_min_liquidity_sol: Option<f64>,
+    pub p_entry_min_organic_liq: Option<f64>,
+    pub p_exit_cohort_ratio: Option<f64>,
     pub tolerance_pct: f64,
     pub is_active: bool,
     /// Derived lifecycle state for the UI — one of `Active`, `Draining`,
@@ -89,31 +89,31 @@ impl RuleResponse {
         Self {
             id: r.id,
             rule_name: r.rule_name,
-            p_initial_buy_sol: r.p_initial_buy_sol,
-            p_cu_limit: r.p_cu_limit,
-            p_cu_price: r.p_cu_price,
-            p_max_sol_cost: r.p_max_sol_cost,
-            p_spendable_sol_in: r.p_spendable_sol_in,
+            p_token_initial_buy_sol: r.p_token_initial_buy_sol,
+            p_token_cu_limit: r.p_token_cu_limit,
+            p_token_cu_price: r.p_token_cu_price,
+            p_token_max_sol_cost: r.p_token_max_sol_cost,
+            p_token_spendable_sol_in: r.p_token_spendable_sol_in,
             p_max_concurrent_tokens: r.p_max_concurrent_tokens,
             p_max_total_tokens: r.p_max_total_tokens,
-            p_ix_labels: r.p_ix_labels,
+            p_token_ix_labels: r.p_token_ix_labels,
             trade_mode: r.trade_mode,
             buy_amount: r.buy_amount,
-            take_profit: r.take_profit,
-            stop_loss: r.stop_loss,
-            p_trailing_stop_pct: r.p_trailing_stop_pct,
-            p_time_stop_secs: r.p_time_stop_secs,
-            p_stall_secs: r.p_stall_secs,
-            p_liquidity_drop_pct: r.p_liquidity_drop_pct,
-            p_min_age_secs: r.p_min_age_secs,
-            p_min_alive_sol: r.p_min_alive_sol,
-            p_min_organic_sol: r.p_min_organic_sol,
-            p_pullback_pct: r.p_pullback_pct,
-            p_higher_low_secs: r.p_higher_low_secs,
-            p_max_cohort_held: r.p_max_cohort_held,
-            p_min_liquidity_sol: r.p_min_liquidity_sol,
-            p_min_organic_liq: r.p_min_organic_liq,
-            p_cohort_exit_ratio: r.p_cohort_exit_ratio,
+            p_exit_take_profit: r.p_exit_take_profit,
+            p_exit_stop_loss: r.p_exit_stop_loss,
+            p_exit_trailing_stop_pct: r.p_exit_trailing_stop_pct,
+            p_exit_time_stop_secs: r.p_exit_time_stop_secs,
+            p_exit_stall_secs: r.p_exit_stall_secs,
+            p_exit_liquidity_drop_pct: r.p_exit_liquidity_drop_pct,
+            p_entry_min_age_secs: r.p_entry_min_age_secs,
+            p_entry_min_alive_sol: r.p_entry_min_alive_sol,
+            p_entry_min_organic_sol: r.p_entry_min_organic_sol,
+            p_entry_pullback_pct: r.p_entry_pullback_pct,
+            p_entry_higher_low_secs: r.p_entry_higher_low_secs,
+            p_entry_max_cohort_held: r.p_entry_max_cohort_held,
+            p_entry_min_liquidity_sol: r.p_entry_min_liquidity_sol,
+            p_entry_min_organic_liq: r.p_entry_min_organic_liq,
+            p_exit_cohort_ratio: r.p_exit_cohort_ratio,
             tolerance_pct: r.tolerance_pct,
             is_active: r.is_active,
             lifecycle,
@@ -144,41 +144,41 @@ async fn rule_response(app_state: &Arc<AppState>, rule: Tpsl2StrategyRule) -> Ru
 #[derive(Deserialize)]
 pub struct CreateRuleRequest {
     pub rule_name: String,
-    pub p_initial_buy_sol: Option<f64>,
-    pub p_cu_limit: Option<u64>,
-    pub p_cu_price: Option<u64>,
-    pub p_max_sol_cost: Option<f64>,
-    pub p_spendable_sol_in: Option<f64>,
+    pub p_token_initial_buy_sol: Option<f64>,
+    pub p_token_cu_limit: Option<u64>,
+    pub p_token_cu_price: Option<u64>,
+    pub p_token_max_sol_cost: Option<f64>,
+    pub p_token_spendable_sol_in: Option<f64>,
     pub p_max_concurrent_tokens: Option<u64>,
     pub p_max_total_tokens: Option<u64>,
-    pub p_ix_labels: serde_json::Value,
+    pub p_token_ix_labels: serde_json::Value,
     pub trade_mode: String,
     pub buy_amount: f64,
-    pub take_profit: f64,
-    pub stop_loss: f64,
-    pub p_trailing_stop_pct: Option<f64>,
-    pub p_time_stop_secs: Option<u64>,
-    pub p_stall_secs: Option<u64>,
-    pub p_liquidity_drop_pct: Option<f64>,
+    pub p_exit_take_profit: f64,
+    pub p_exit_stop_loss: f64,
+    pub p_exit_trailing_stop_pct: Option<f64>,
+    pub p_exit_time_stop_secs: Option<u64>,
+    pub p_exit_stall_secs: Option<u64>,
+    pub p_exit_liquidity_drop_pct: Option<f64>,
     // Scalp-continuation gates; absent/0 = disabled.
     #[serde(default)]
-    pub p_min_age_secs: Option<u64>,
+    pub p_entry_min_age_secs: Option<u64>,
     #[serde(default)]
-    pub p_min_alive_sol: Option<f64>,
+    pub p_entry_min_alive_sol: Option<f64>,
     #[serde(default)]
-    pub p_min_organic_sol: Option<f64>,
+    pub p_entry_min_organic_sol: Option<f64>,
     #[serde(default)]
-    pub p_pullback_pct: Option<f64>,
+    pub p_entry_pullback_pct: Option<f64>,
     #[serde(default)]
-    pub p_higher_low_secs: Option<u64>,
+    pub p_entry_higher_low_secs: Option<u64>,
     #[serde(default)]
-    pub p_max_cohort_held: Option<f64>,
+    pub p_entry_max_cohort_held: Option<f64>,
     #[serde(default)]
-    pub p_min_liquidity_sol: Option<f64>,
+    pub p_entry_min_liquidity_sol: Option<f64>,
     #[serde(default)]
-    pub p_min_organic_liq: Option<f64>,
+    pub p_entry_min_organic_liq: Option<f64>,
     #[serde(default)]
-    pub p_cohort_exit_ratio: Option<f64>,
+    pub p_exit_cohort_ratio: Option<f64>,
     pub tolerance_pct: Option<f64>,
 }
 
@@ -186,34 +186,34 @@ pub struct CreateRuleRequest {
 pub struct UpdateRuleRequest {
     pub rule_name: Option<String>,
     pub buy_amount: Option<f64>,
-    pub take_profit: Option<f64>,
-    pub stop_loss: Option<f64>,
-    pub p_trailing_stop_pct: Option<f64>,
-    pub p_time_stop_secs: Option<u64>,
-    pub p_stall_secs: Option<u64>,
-    pub p_liquidity_drop_pct: Option<f64>,
+    pub p_exit_take_profit: Option<f64>,
+    pub p_exit_stop_loss: Option<f64>,
+    pub p_exit_trailing_stop_pct: Option<f64>,
+    pub p_exit_time_stop_secs: Option<u64>,
+    pub p_exit_stall_secs: Option<u64>,
+    pub p_exit_liquidity_drop_pct: Option<f64>,
     // Scalp-continuation gates; present → set (0 disables, per ignore_zero).
-    pub p_min_age_secs: Option<u64>,
-    pub p_min_alive_sol: Option<f64>,
-    pub p_min_organic_sol: Option<f64>,
-    pub p_pullback_pct: Option<f64>,
-    pub p_higher_low_secs: Option<u64>,
-    pub p_max_cohort_held: Option<f64>,
-    pub p_min_liquidity_sol: Option<f64>,
-    pub p_min_organic_liq: Option<f64>,
-    pub p_cohort_exit_ratio: Option<f64>,
+    pub p_entry_min_age_secs: Option<u64>,
+    pub p_entry_min_alive_sol: Option<f64>,
+    pub p_entry_min_organic_sol: Option<f64>,
+    pub p_entry_pullback_pct: Option<f64>,
+    pub p_entry_higher_low_secs: Option<u64>,
+    pub p_entry_max_cohort_held: Option<f64>,
+    pub p_entry_min_liquidity_sol: Option<f64>,
+    pub p_entry_min_organic_liq: Option<f64>,
+    pub p_exit_cohort_ratio: Option<f64>,
     #[serde(default)]
-    pub p_initial_buy_sol: Option<Option<f64>>,
+    pub p_token_initial_buy_sol: Option<Option<f64>>,
     #[serde(default)]
-    pub p_cu_limit: Option<Option<u64>>,
+    pub p_token_cu_limit: Option<Option<u64>>,
     #[serde(default)]
-    pub p_cu_price: Option<Option<u64>>,
+    pub p_token_cu_price: Option<Option<u64>>,
     #[serde(default)]
-    pub p_ix_labels: Option<Option<serde_json::Value>>,
+    pub p_token_ix_labels: Option<Option<serde_json::Value>>,
     #[serde(default)]
-    pub p_max_sol_cost: Option<Option<f64>>,
+    pub p_token_max_sol_cost: Option<Option<f64>>,
     #[serde(default)]
-    pub p_spendable_sol_in: Option<Option<f64>>,
+    pub p_token_spendable_sol_in: Option<Option<f64>>,
     // Outer Option = field present; inner Option = value or explicit null
     #[serde(default)]
     pub p_max_concurrent_tokens: Option<Option<u64>>,
@@ -292,35 +292,35 @@ pub async fn create_tpsl_rule(
 ) -> impl Responder {
     let mut rule = Tpsl2StrategyRule::new(
         req.rule_name.clone(),
-        req.p_initial_buy_sol,
-        req.p_cu_limit,
-        req.p_cu_price,
-        req.p_ix_labels.clone(),
+        req.p_token_initial_buy_sol,
+        req.p_token_cu_limit,
+        req.p_token_cu_price,
+        req.p_token_ix_labels.clone(),
         req.trade_mode.clone(),
         req.buy_amount,
-        req.take_profit,
-        req.stop_loss,
-        req.p_max_sol_cost,
-        req.p_spendable_sol_in,
+        req.p_exit_take_profit,
+        req.p_exit_stop_loss,
+        req.p_token_max_sol_cost,
+        req.p_token_spendable_sol_in,
         req.p_max_concurrent_tokens,
         req.p_max_total_tokens,
         req.tolerance_pct,
-        req.p_trailing_stop_pct,
-        req.p_time_stop_secs,
-        req.p_stall_secs,
-        req.p_liquidity_drop_pct,
+        req.p_exit_trailing_stop_pct,
+        req.p_exit_time_stop_secs,
+        req.p_exit_stall_secs,
+        req.p_exit_liquidity_drop_pct,
     );
     // Scalp-continuation gates are set post-`new()` (so the shared model's
     // constructor signature — and tpsl1's call sites — stay untouched).
-    rule.p_min_age_secs = req.p_min_age_secs;
-    rule.p_min_alive_sol = req.p_min_alive_sol;
-    rule.p_min_organic_sol = req.p_min_organic_sol;
-    rule.p_pullback_pct = req.p_pullback_pct;
-    rule.p_higher_low_secs = req.p_higher_low_secs;
-    rule.p_max_cohort_held = req.p_max_cohort_held;
-    rule.p_min_liquidity_sol = req.p_min_liquidity_sol;
-    rule.p_min_organic_liq = req.p_min_organic_liq;
-    rule.p_cohort_exit_ratio = req.p_cohort_exit_ratio;
+    rule.p_entry_min_age_secs = req.p_entry_min_age_secs;
+    rule.p_entry_min_alive_sol = req.p_entry_min_alive_sol;
+    rule.p_entry_min_organic_sol = req.p_entry_min_organic_sol;
+    rule.p_entry_pullback_pct = req.p_entry_pullback_pct;
+    rule.p_entry_higher_low_secs = req.p_entry_higher_low_secs;
+    rule.p_entry_max_cohort_held = req.p_entry_max_cohort_held;
+    rule.p_entry_min_liquidity_sol = req.p_entry_min_liquidity_sol;
+    rule.p_entry_min_organic_liq = req.p_entry_min_organic_liq;
+    rule.p_exit_cohort_ratio = req.p_exit_cohort_ratio;
 
     let repo = Tpsl2StrategyRuleRepo::new(app_state.db.clone());
 
@@ -362,71 +362,71 @@ pub async fn update_tpsl_rule(
             if let Some(buy_amount) = req.buy_amount {
                 rule.buy_amount = buy_amount;
             }
-            if let Some(take_profit) = req.take_profit {
-                rule.take_profit = take_profit;
+            if let Some(p_exit_take_profit) = req.p_exit_take_profit {
+                rule.p_exit_take_profit = p_exit_take_profit;
             }
-            if let Some(stop_loss) = req.stop_loss {
-                rule.stop_loss = stop_loss;
+            if let Some(p_exit_stop_loss) = req.p_exit_stop_loss {
+                rule.p_exit_stop_loss = p_exit_stop_loss;
             }
-            if let Some(trailing_stop_pct) = req.p_trailing_stop_pct {
-                rule.p_trailing_stop_pct = Some(trailing_stop_pct);
+            if let Some(trailing_stop_pct) = req.p_exit_trailing_stop_pct {
+                rule.p_exit_trailing_stop_pct = Some(trailing_stop_pct);
             }
-            if let Some(time_stop_secs) = req.p_time_stop_secs {
-                rule.p_time_stop_secs = Some(time_stop_secs);
+            if let Some(time_stop_secs) = req.p_exit_time_stop_secs {
+                rule.p_exit_time_stop_secs = Some(time_stop_secs);
             }
-            if let Some(stall_secs) = req.p_stall_secs {
-                rule.p_stall_secs = Some(stall_secs);
+            if let Some(stall_secs) = req.p_exit_stall_secs {
+                rule.p_exit_stall_secs = Some(stall_secs);
             }
-            if let Some(liquidity_drop_pct) = req.p_liquidity_drop_pct {
-                rule.p_liquidity_drop_pct = Some(liquidity_drop_pct);
+            if let Some(liquidity_drop_pct) = req.p_exit_liquidity_drop_pct {
+                rule.p_exit_liquidity_drop_pct = Some(liquidity_drop_pct);
             }
             // Scalp-continuation gates (present → set; 0 disables).
-            if let Some(v) = req.p_min_age_secs {
-                rule.p_min_age_secs = Some(v);
+            if let Some(v) = req.p_entry_min_age_secs {
+                rule.p_entry_min_age_secs = Some(v);
             }
-            if let Some(v) = req.p_min_alive_sol {
-                rule.p_min_alive_sol = Some(v);
+            if let Some(v) = req.p_entry_min_alive_sol {
+                rule.p_entry_min_alive_sol = Some(v);
             }
-            if let Some(v) = req.p_min_organic_sol {
-                rule.p_min_organic_sol = Some(v);
+            if let Some(v) = req.p_entry_min_organic_sol {
+                rule.p_entry_min_organic_sol = Some(v);
             }
-            if let Some(v) = req.p_pullback_pct {
-                rule.p_pullback_pct = Some(v);
+            if let Some(v) = req.p_entry_pullback_pct {
+                rule.p_entry_pullback_pct = Some(v);
             }
-            if let Some(v) = req.p_higher_low_secs {
-                rule.p_higher_low_secs = Some(v);
+            if let Some(v) = req.p_entry_higher_low_secs {
+                rule.p_entry_higher_low_secs = Some(v);
             }
-            if let Some(v) = req.p_max_cohort_held {
-                rule.p_max_cohort_held = Some(v);
+            if let Some(v) = req.p_entry_max_cohort_held {
+                rule.p_entry_max_cohort_held = Some(v);
             }
-            if let Some(v) = req.p_min_liquidity_sol {
-                rule.p_min_liquidity_sol = Some(v);
+            if let Some(v) = req.p_entry_min_liquidity_sol {
+                rule.p_entry_min_liquidity_sol = Some(v);
             }
-            if let Some(v) = req.p_min_organic_liq {
-                rule.p_min_organic_liq = Some(v);
+            if let Some(v) = req.p_entry_min_organic_liq {
+                rule.p_entry_min_organic_liq = Some(v);
             }
-            if let Some(v) = req.p_cohort_exit_ratio {
-                rule.p_cohort_exit_ratio = Some(v);
+            if let Some(v) = req.p_exit_cohort_ratio {
+                rule.p_exit_cohort_ratio = Some(v);
             }
-            if let Some(initial_buy_sol_opt) = &req.p_initial_buy_sol {
-                rule.p_initial_buy_sol = initial_buy_sol_opt.clone();
+            if let Some(initial_buy_sol_opt) = &req.p_token_initial_buy_sol {
+                rule.p_token_initial_buy_sol = initial_buy_sol_opt.clone();
             }
-            if let Some(cu_limit_opt) = &req.p_cu_limit {
-                rule.p_cu_limit = cu_limit_opt.clone();
+            if let Some(cu_limit_opt) = &req.p_token_cu_limit {
+                rule.p_token_cu_limit = cu_limit_opt.clone();
             }
-            if let Some(cu_price_opt) = &req.p_cu_price {
-                rule.p_cu_price = cu_price_opt.clone();
+            if let Some(cu_price_opt) = &req.p_token_cu_price {
+                rule.p_token_cu_price = cu_price_opt.clone();
             }
-            if let Some(ix_labels_opt) = &req.p_ix_labels {
-                rule.p_ix_labels = ix_labels_opt
+            if let Some(ix_labels_opt) = &req.p_token_ix_labels {
+                rule.p_token_ix_labels = ix_labels_opt
                     .clone()
                     .unwrap_or_else(|| serde_json::Value::Array(vec![]));
             }
-            if let Some(max_sol_cost_opt) = &req.p_max_sol_cost {
-                rule.p_max_sol_cost = max_sol_cost_opt.clone();
+            if let Some(max_sol_cost_opt) = &req.p_token_max_sol_cost {
+                rule.p_token_max_sol_cost = max_sol_cost_opt.clone();
             }
-            if let Some(spendable_sol_in_opt) = &req.p_spendable_sol_in {
-                rule.p_spendable_sol_in = spendable_sol_in_opt.clone();
+            if let Some(spendable_sol_in_opt) = &req.p_token_spendable_sol_in {
+                rule.p_token_spendable_sol_in = spendable_sol_in_opt.clone();
             }
             if let Some(max_concurrent_tokens_opt) = &req.p_max_concurrent_tokens {
                 rule.p_max_concurrent_tokens = max_concurrent_tokens_opt.clone();
