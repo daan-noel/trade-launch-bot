@@ -1,31 +1,63 @@
-# If I sync a new token, does it update all trades of the token?
-# I mean, does it compare all the old token trades with new ones?
+# Token sync: how does a re-sync treat existing trades?
 
-No, it does not update or compare existing trades. Here's what actually happens on a sync:
+> Status (2026-06-11): updated. The old "full re-fetch every time + trades are
+> never updated" answer below is superseded — sync is now dual-mode and trade
+> rows are upserted on replay. See `backend/src/services/token_sync.rs` and
+> `backend/src/services/helius_rpc.rs`.
 
-1. It fetches the **entire** signature history for the bonding curve from Helius (full re-fetch every time).
-2. It decodes each transaction into trade events and inserts each one via `trade_repo.insert`.
-3. That insert is idempotent — duplicates are simply skipped, not updated:
+## Two sync modes
 
-```93:106:backend/src/storage/repositories/trade_repo.rs
-    /// Insert a trade. Ignores duplicates (idempotent on replay).
+Sync is no longer a single "re-fetch the whole history" path. The mode is chosen
+by `req.incremental`:
+
+- **Fetch All** (`incremental = false`) — full backfill via the archival
+  `getTransactionsForAddress` ("gTFA"), one cursor-paginated call returning full
+  transactions at ~0.1 credit/tx (vs 1 credit/tx for per-sig `getTransaction`).
+  Deliberately re-fetches the entire history so decoder fixes propagate (see
+  upsert below). See `acquire_full_via_gtfa`.
+- **Fetch New** (`incremental = true`) — pages `getSignaturesForAddress` from the
+  last curve watermark, then **dedups against trades already saved**
+  (`TradeRepo::saved_signatures`, e.g. rows live ingest persisted ahead of the
+  sync) and only `getTransaction`s the genuinely-new signatures. Cheaper than
+  paying gTFA's per-tx rate over a range live ingest mostly already has.
+
+(Optional, opt-in: when `SYNC_REPLAY_FETCH_NEW=true` a recently-synced token's
+Fetch New tries the LaserStream replay window first — zero Helius credits —
+before the RPC path. Off by default until the LaserStream transport is
+runtime-validated.)
+
+## Are existing trade rows updated?
+
+**Yes, now — partially.** Trade insert is idempotent but is an **upsert**, not a
+skip:
+
+```98:117:backend/src/storage/repositories/trade_repo.rs
+    /// Insert a trade. On replay, refresh the decoded price/reserve columns so
+    /// decoder fixes (e.g. AMM pre- vs post-swap reserves) propagate on re-sync,
+    /// while preserving identity/time columns (`id`, `received_at`).
     pub async fn insert(&self, trade: &Trade) -> anyhow::Result<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO trades
-                (id, mint_address, wallet_address, trade_type,
-                ...
-            ON CONFLICT (tx_signature, leg_index) DO NOTHING
-            "#,
-        )
+        ...
+            ON CONFLICT (tx_signature, leg_index) DO UPDATE SET
+                price_per_token        = EXCLUDED.price_per_token,
+                virtual_sol_reserves   = EXCLUDED.virtual_sol_reserves,
+                virtual_token_reserves = EXCLUDED.virtual_token_reserves,
+                real_sol_reserves      = EXCLUDED.real_sol_reserves,
+                real_token_reserves    = EXCLUDED.real_token_reserves
 ```
 
-So the behavior is **additive only**:
-- Trades already in the DB (same `tx_signature` + `leg_index`) are left **untouched** — no field is recompared or overwritten.
-- Only genuinely new trades get inserted.
+So on a conflicting `(tx_signature, leg_index)`:
 
-After inserting, it reloads *all* trades for the mint (`find_by_mint_all`) and recomputes the token's metrics/state from that full set — but the individual old trade rows themselves are never modified.
+- The **decoded** columns (price + virtual/real reserves) are **refreshed** from
+  the re-decoded transaction — this is what makes a Fetch All re-sync repair old
+  rows after a decoder fix (e.g. the AMM pre-swap-reserves bug).
+- Identity/time columns (`id`, `received_at`) and the amount columns are **left
+  as-is**.
 
-One contrast: the **token** record itself *is* upserted (`ON CONFLICT ... DO UPDATE`), so token metadata can change on sync. Trades cannot.
+After inserting, sync reloads *all* trades for the mint (`find_by_mint_all`) and
+recomputes the token's metrics/state from that full set. The token record itself
+is also upserted (`ON CONFLICT ... DO UPDATE`), so token metadata can change on
+sync.
 
-So if a previously-stored trade was somehow wrong, a re-sync will **not** fix it — you'd have to delete those rows first.
+**Bottom line:** to propagate a decoder fix to historical rows, run **Fetch All**
+(it re-decodes and upserts the price/reserve columns). Fetch New only touches
+genuinely-new trades.

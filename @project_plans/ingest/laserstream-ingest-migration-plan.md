@@ -32,8 +32,23 @@ Deviations from the original plan: `derive_pump_swap_pool` is reused (not
 duplicated); `from_slot` IS available now (proto extended) rather than deferred;
 the adapter rebuilds a `Value` (small alloc) — native protobuf decode is a future
 optimization. Remaining: fill `HELIUS_LASERSTREAM_URL` + region, run with
-`INGEST_TRANSPORT=laserstream`, compare decoded trades vs WS; backfill reduction
-(#1) on `token_sync` untouched.
+`INGEST_TRANSPORT=laserstream`, compare decoded trades vs WS.
+
+### Backfill (#1) — DONE (separately from the ingest transport)
+
+The `token_sync` credit reduction landed independently of flipping the transport:
+
+- **Fetch All** now backfills via archival `getTransactionsForAddress` (gTFA),
+  ~0.1 credit/tx vs 1 credit/tx for per-sig `getTransaction`.
+- **Fetch New** dedups requested signatures against trades already saved
+  (`TradeRepo::saved_signatures`) so it doesn't re-`getTransaction` what live
+  ingest already persisted.
+- **LaserStream replay fast-path** for Fetch New is wired but **opt-in**
+  (`SYNC_REPLAY_FETCH_NEW`, default off) until the LaserStream transport is
+  runtime-validated. See `@project_plans/ingest/token-sync.md`.
+
+The transport itself stays opt-in: `INGEST_TRANSPORT` defaults to `ws`; flip to
+`laserstream` only after the A/B decoded-trade comparison passes.
 
 ## Context — current state
 
