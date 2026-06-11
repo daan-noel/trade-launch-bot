@@ -238,6 +238,8 @@ async fn main() -> anyhow::Result<()> {
     let app_state = Arc::new(state::AppState::new(
         db.clone(),
         settings.helius_rpc_url.clone(),
+        settings.helius_laserstream_url.clone(),
+        settings.helius_api_key.clone(),
         constants::PUMP_FUN_PROGRAM_ID.to_string(),
         token_cache.clone(),
         sse_tx.clone(),

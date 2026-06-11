@@ -36,7 +36,24 @@ use crate::{
 
 use super::helius_rpc::{HeliusRpc, SignatureEntry, wrap_transaction_result};
 
-const TX_FETCH_CONCURRENCY: usize = 8;
+/// Signatures per JSON-RPC batch request — one HTTP round-trip fetches this many
+/// transactions instead of one request each. Cuts latency, not Helius credits
+/// (billed per `getTransaction`). 100 is the common provider batch cap.
+const TX_BATCH_SIZE: usize = 100;
+/// Concurrent in-flight batches.
+const TX_BATCH_CONCURRENCY: usize = 5;
+
+/// Page size for `getTransactionsForAddress` (gTFA) full-mode backfill. 1000 is
+/// the max and the cheapest per-tx point (10 credits per 100 returned txs, so a
+/// full 1000-tx page is 0.1 credit/tx).
+const GTFA_PAGE_LIMIT: usize = 1000;
+
+/// Max watermark age for which a Fetch-New sync trusts the LaserStream replay
+/// window over the RPC path. The server's replay window is ~24h; we stay
+/// conservatively inside it so we never replay a slot the server has aged out
+/// (which could otherwise skip the gap between the watermark and the earliest
+/// still-replayable slot). Older watermarks fall back to the RPC path.
+const REPLAY_WINDOW_SECS: i64 = 20 * 3600;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SyncProgressEvent {
@@ -110,6 +127,10 @@ pub struct TokenSyncContext {
     pub db: sqlx::PgPool,
     pub token_cache: Arc<TokenCache>,
     pub helius_rpc_url: String,
+    /// LaserStream gRPC endpoint + API key for the Fetch-New replay fast path.
+    /// Empty URL ⇒ replay disabled; incremental syncs use the RPC path only.
+    pub helius_laserstream_url: String,
+    pub helius_api_key: String,
     pub pump_program_id: String,
     /// Shared pool → mint index. A sync that confirms a token is migrated
     /// registers its PumpSwap pool here so the live WS subscribes to it.
@@ -232,7 +253,8 @@ pub async fn run_token_sync(
     // Per-venue signature watermarks from the last successful sync. Preferred
     // over the latest saved trade as the incremental `until` boundary so a token
     // that synced with zero trades still resumes instead of re-fetching all txs.
-    let (_, prev_curve_sig, prev_amm_sig) = info_repo
+    // The slots + `last_synced_at` gate the LaserStream replay fast path below.
+    let (last_synced_at, prev_curve_sig, prev_amm_sig, prev_curve_slot, prev_amm_slot) = info_repo
         .get_sync_watermark(&mint)
         .await
         .map_err(|e| SyncError::Internal(e.to_string()))?;
@@ -251,41 +273,98 @@ pub async fn run_token_sync(
         None
     };
 
-    let signatures = rpc
-        .get_all_signatures(&bonding_curve, until_signature.as_deref(), |page, total| {
-            let line = serde_json::to_string(&SyncProgressEvent {
-                event_type: "progress",
-                stage: "fetching_signatures".into(),
-                current: page as u64,
-                total: 0,
-                message: format!("Fetched {total} signatures (page {page})"),
-            })
-            .unwrap_or_default()
-                + "\n";
-            let _ = progress_tx.try_send(line);
-        })
-        .await
-        .map_err(|e| SyncError::Internal(e.to_string()))?;
-
-    // Newest curve signature seen this run (signatures are slot-ascending, so
-    // the last entry is newest). Falls back to the prior watermark when nothing
-    // new was fetched, so a no-op incremental sync keeps the boundary intact.
-    let newest_curve_sig = signatures
-        .last()
-        .map(|e| e.signature.clone())
-        .or_else(|| prev_curve_sig.clone());
-
-    let sig_total = signatures.len() as u64;
-    send_progress(
+    // Full ("Fetch All") backfills use the archival getTransactionsForAddress
+    // (one cursor-paginated call returning full txs, ~0.1 credit/tx). Incremental
+    // ("Fetch New") uses the signatures + dedup + batched-getTransaction path: it
+    // only downloads the few genuinely-new txs, cheaper than paying gTFA's per-tx
+    // rate over a whole range that live ingest mostly already saved.
+    let (fetched, newest_curve_sig, newest_curve_slot) = if !req.incremental {
+        let (txs, newest) = acquire_full_via_gtfa(&rpc, &bonding_curve, &progress_tx).await?;
+        let newest_slot = txs.last().map(|t| t.slot as i64).or(prev_curve_slot);
+        (txs, newest.or_else(|| prev_curve_sig.clone()), newest_slot)
+    } else if let Some((txs, sig, slot)) = try_replay(
+        &ctx,
+        &bonding_curve,
+        prev_curve_slot,
+        last_synced_at,
+        "curve",
         &progress_tx,
-        "fetching_signatures",
-        sig_total,
-        sig_total,
-        &format!("{sig_total} signatures to process"),
     )
-    .await?;
+    .await
+    {
+        // LaserStream replay served the new txs for zero Helius credits.
+        let newest_slot = slot.map(|s| s as i64).or(prev_curve_slot);
+        (txs, sig.or_else(|| prev_curve_sig.clone()), newest_slot)
+    } else {
+        let signatures = rpc
+            .get_all_signatures(&bonding_curve, until_signature.as_deref(), |page, total| {
+                let line = serde_json::to_string(&SyncProgressEvent {
+                    event_type: "progress",
+                    stage: "fetching_signatures".into(),
+                    current: page as u64,
+                    total: 0,
+                    message: format!("Fetched {total} signatures (page {page})"),
+                })
+                .unwrap_or_default()
+                    + "\n";
+                let _ = progress_tx.try_send(line);
+            })
+            .await
+            .map_err(|e| SyncError::Internal(e.to_string()))?;
 
-    let fetched = fetch_transactions(&rpc, &signatures, &progress_tx).await?;
+        // Newest curve signature + slot seen this run (signatures are
+        // slot-ascending, so the last entry is newest). Falls back to the prior
+        // watermark when nothing new was fetched, so a no-op incremental sync
+        // keeps the boundary. The slot is stamped too so a future Fetch New can
+        // use the replay fast path.
+        let newest = signatures
+            .last()
+            .map(|e| e.signature.clone())
+            .or_else(|| prev_curve_sig.clone());
+        let newest_slot = signatures.last().map(|e| e.slot as i64).or(prev_curve_slot);
+
+        let sig_total = signatures.len() as u64;
+        send_progress(
+            &progress_tx,
+            "fetching_signatures",
+            sig_total,
+            sig_total,
+            &format!("{sig_total} signatures to process"),
+        )
+        .await?;
+
+        // Incremental syncs skip transactions already saved (e.g. by live ingest)
+        // so we don't re-spend getTransaction credits on them. "Fetch All" via the
+        // rpc path re-fetches everything so decoder fixes propagate via the trades
+        // ON CONFLICT DO UPDATE — dedup is intentionally incremental-only.
+        let to_fetch = if req.incremental {
+            let saved = TradeRepo::new(ctx.db.clone())
+                .saved_signatures(&mint, "curve")
+                .await
+                .map_err(|e| SyncError::Internal(e.to_string()))?;
+            let kept: Vec<SignatureEntry> = signatures
+                .into_iter()
+                .filter(|e| !saved.contains(&e.signature))
+                .collect();
+            let skipped = sig_total as usize - kept.len();
+            if skipped > 0 {
+                send_progress(
+                    &progress_tx,
+                    "fetching_transactions",
+                    0,
+                    kept.len() as u64,
+                    &format!("Skipping {skipped} already-saved tx; downloading {}", kept.len()),
+                )
+                .await?;
+            }
+            kept
+        } else {
+            signatures
+        };
+
+        let fetched = fetch_transactions(&rpc, &to_fetch, &progress_tx).await?;
+        (fetched, newest, newest_slot)
+    };
 
     send_progress(
         &progress_tx,
@@ -383,24 +462,26 @@ pub async fn run_token_sync(
     // ── Post-migration AMM (PumpSwap) trades ─────────────────────────────────
     // Bonding-curve signatures never include PumpSwap swaps (the curve account
     // isn't touched once trading moves to the pool), so fetch them separately.
-    let new_amm_sig = if req.include_post_migrate && is_migrated {
-        sync_amm_trades(
+    let (new_amm_sig, new_amm_slot) = if req.include_post_migrate && is_migrated {
+        let (sig, slot) = sync_amm_trades(
+            &ctx,
             &rpc,
             &decoder,
-            &ctx.pump_program_id,
             &mint,
             req.incremental,
             prev_amm_sig.as_deref(),
+            prev_amm_slot,
+            last_synced_at,
             &trade_repo,
             &tx_repo,
             &wallet_repo,
             &progress_tx,
         )
-        .await?
-        .or_else(|| prev_amm_sig.clone())
+        .await?;
+        (sig.or_else(|| prev_amm_sig.clone()), slot.or(prev_amm_slot))
     } else {
         // AMM not synced this run — keep any existing AMM watermark.
-        prev_amm_sig.clone()
+        (prev_amm_sig.clone(), prev_amm_slot)
     };
 
     send_progress(&progress_tx, "recomputing", 1, 1, "Rebuilding metrics").await?;
@@ -450,6 +531,8 @@ pub async fn run_token_sync(
             synced_at,
             newest_curve_sig.as_deref(),
             new_amm_sig.as_deref(),
+            newest_curve_slot,
+            new_amm_slot,
         )
         .await
         .map_err(|e| SyncError::Internal(e.to_string()))?;
@@ -504,7 +587,7 @@ pub async fn preview_sync(
     let info_repo = TokenInfoRepo::new(ctx.db.clone());
     let trade_repo = TradeRepo::new(ctx.db.clone());
 
-    let (_, prev_curve_sig, prev_amm_sig) = info_repo
+    let (_, prev_curve_sig, prev_amm_sig, _, _) = info_repo
         .get_sync_watermark(&mint)
         .await
         .map_err(|e| SyncError::Internal(e.to_string()))?;
@@ -522,10 +605,15 @@ pub async fn preview_sync(
         .count_signatures(&bonding_curve, curve_until.as_deref(), PREVIEW_MAX_PAGES)
         .await
         .map_err(|e| SyncError::Internal(e.to_string()))?;
-    let (mut total_count, mut total_capped) = rpc
-        .count_signatures(&bonding_curve, None, PREVIEW_MAX_PAGES)
-        .await
-        .map_err(|e| SyncError::Internal(e.to_string()))?;
+    // With no watermark, "new" already enumerated full history, so "total" is
+    // identical — reuse it instead of paging getSignaturesForAddress again.
+    let (mut total_count, mut total_capped) = match curve_until.as_deref() {
+        None => (new_count, new_capped),
+        Some(_) => rpc
+            .count_signatures(&bonding_curve, None, PREVIEW_MAX_PAGES)
+            .await
+            .map_err(|e| SyncError::Internal(e.to_string()))?,
+    };
 
     let is_migrated = info_repo
         .find_by_mint(&mint)
@@ -556,10 +644,14 @@ pub async fn preview_sync(
                 .count_signatures(&pool, amm_until.as_deref(), PREVIEW_MAX_PAGES)
                 .await
                 .map_err(|e| SyncError::Internal(e.to_string()))?;
-            let (amm_total, amm_total_capped) = rpc
-                .count_signatures(&pool, None, PREVIEW_MAX_PAGES)
-                .await
-                .map_err(|e| SyncError::Internal(e.to_string()))?;
+            // Same reuse as the curve path: no watermark ⇒ total == new.
+            let (amm_total, amm_total_capped) = match amm_until.as_deref() {
+                None => (amm_new, amm_new_capped),
+                Some(_) => rpc
+                    .count_signatures(&pool, None, PREVIEW_MAX_PAGES)
+                    .await
+                    .map_err(|e| SyncError::Internal(e.to_string()))?,
+            };
             new_count += amm_new;
             new_capped = new_capped || amm_new_capped;
             total_count += amm_total;
@@ -576,6 +668,87 @@ pub async fn preview_sync(
     })
 }
 
+/// Try to fetch new transactions for `account` from the LaserStream replay
+/// window instead of the RPC path (`getSignaturesForAddress` + `getTransaction`).
+///
+/// Returns `None` — so the caller falls back to the RPC path — when replay is
+/// ineligible (no LaserStream URL, no slot watermark yet, or the watermark is
+/// older than [`REPLAY_WINDOW_SECS`]) or on any replay error. Returns
+/// `Some((txs, newest_sig, newest_slot))` on success, where the values may be
+/// empty/`None` if nothing new was in the window.
+///
+/// Replay costs zero Helius credits. The caller stamps the watermark to the
+/// returned `newest_slot` (the max slot actually decoded), never to chain tip,
+/// so a partial drain can never skip data permanently — the next Fetch New just
+/// replays again from the same slot.
+async fn try_replay(
+    ctx: &TokenSyncContext,
+    account: &str,
+    prev_slot: Option<i64>,
+    last_synced_at: Option<chrono::DateTime<Utc>>,
+    venue: &str,
+    progress_tx: &mpsc::Sender<String>,
+) -> Option<(Vec<FetchedTx>, Option<String>, Option<u64>)> {
+    if ctx.helius_laserstream_url.trim().is_empty() {
+        return None; // replay not configured
+    }
+    // Need a slot boundary to replay from and a fresh-enough watermark to trust
+    // the replay window still covers it.
+    let from_slot = prev_slot? as u64;
+    let synced_at = last_synced_at?;
+    if (Utc::now() - synced_at).num_seconds() > REPLAY_WINDOW_SECS {
+        return None; // too old to replay reliably → RPC path
+    }
+
+    let replayed = match crate::services::laserstream_replay::replay_account_from_slot(
+        &ctx.helius_laserstream_url,
+        &ctx.helius_api_key,
+        account,
+        from_slot,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("token_sync: {venue} LaserStream replay failed ({e}); falling back to RPC");
+            return None;
+        }
+    };
+
+    // Newest signature + slot among the replayed txs (slot-ascending).
+    let mut newest_sig: Option<String> = None;
+    let mut newest_slot: Option<u64> = None;
+    let mut txs: Vec<FetchedTx> = Vec::with_capacity(replayed.len());
+    for r in replayed {
+        if newest_slot.map_or(true, |s| r.slot >= s) {
+            newest_slot = Some(r.slot);
+            newest_sig = r
+                .result
+                .get("signature")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+        }
+        txs.push(FetchedTx {
+            slot: r.slot,
+            result: r.result,
+        });
+    }
+
+    let _ = send_progress(
+        progress_tx,
+        "fetching_transactions",
+        txs.len() as u64,
+        txs.len() as u64,
+        &format!(
+            "Replayed {} new {venue} tx via LaserStream (0 Helius credits)",
+            txs.len()
+        ),
+    )
+    .await;
+
+    Some((txs, newest_sig, newest_slot))
+}
+
 /// Fetch and persist post-migration PumpSwap swaps for `mint`.
 ///
 /// Derives the canonical pool, pages its signatures (resuming from the last
@@ -583,23 +756,25 @@ pub async fn preview_sync(
 /// them as `venue = "amm"` trades. A missing pool (not yet created on-chain) is
 /// treated as "nothing to do", not an error.
 ///
-/// Returns the newest AMM signature seen this run (slot-ascending order, so the
-/// last entry), or `None` when nothing new was fetched — the caller uses it to
-/// advance the stored AMM watermark.
+/// Returns the newest AMM `(signature, slot)` seen this run (slot-ascending
+/// order, so the last entry), or `(None, None)` when nothing new was fetched —
+/// the caller uses them to advance the stored AMM watermark.
 #[allow(clippy::too_many_arguments)]
 async fn sync_amm_trades(
+    ctx: &TokenSyncContext,
     rpc: &HeliusRpc,
     decoder: &HeliusDecoder,
-    pump_program_id: &str,
     mint: &str,
     incremental: bool,
     prev_amm_sig: Option<&str>,
+    prev_amm_slot: Option<i64>,
+    last_synced_at: Option<chrono::DateTime<Utc>>,
     trade_repo: &TradeRepo,
     tx_repo: &TransactionRepo,
     wallet_repo: &WalletRepo,
     progress_tx: &mpsc::Sender<String>,
-) -> Result<Option<String>, SyncError> {
-    let pool = derive_pump_swap_pool(mint, pump_program_id)
+) -> Result<(Option<String>, Option<i64>), SyncError> {
+    let pool = derive_pump_swap_pool(mint, &ctx.pump_program_id)
         .map_err(|e| SyncError::Internal(e.to_string()))?;
 
     let exists = rpc
@@ -607,7 +782,7 @@ async fn sync_amm_trades(
         .await
         .map_err(|e| SyncError::Internal(e.to_string()))?;
     if !exists {
-        return Ok(None);
+        return Ok((None, None));
     }
 
     // Prefer the stored AMM watermark over the latest saved AMM trade, so a
@@ -626,25 +801,56 @@ async fn sync_amm_trades(
 
     send_progress(progress_tx, "fetching_signatures", 0, 0, "Fetching AMM pool signatures").await?;
 
-    let signatures = rpc
-        .get_all_signatures(&pool, until.as_deref(), |page, total| {
-            let line = serde_json::to_string(&SyncProgressEvent {
-                event_type: "progress",
-                stage: "fetching_signatures".into(),
-                current: page as u64,
-                total: 0,
-                message: format!("Fetched {total} AMM signatures (page {page})"),
+    // Full backfill via archival gTFA (cheaper + faster); incremental tries the
+    // LaserStream replay window first, then falls back to the signatures + dedup
+    // path. Mirrors the curve path in run_token_sync.
+    let (fetched, newest_amm_sig, newest_amm_slot) = if !incremental {
+        let (txs, newest) = acquire_full_via_gtfa(rpc, &pool, progress_tx).await?;
+        let newest_slot = txs.last().map(|t| t.slot as i64);
+        (txs, newest, newest_slot)
+    } else if let Some((txs, sig, slot)) =
+        try_replay(ctx, &pool, prev_amm_slot, last_synced_at, "amm", progress_tx).await
+    {
+        // LaserStream replay served the new AMM txs for zero Helius credits.
+        (txs, sig, slot.map(|s| s as i64))
+    } else {
+        let signatures = rpc
+            .get_all_signatures(&pool, until.as_deref(), |page, total| {
+                let line = serde_json::to_string(&SyncProgressEvent {
+                    event_type: "progress",
+                    stage: "fetching_signatures".into(),
+                    current: page as u64,
+                    total: 0,
+                    message: format!("Fetched {total} AMM signatures (page {page})"),
+                })
+                .unwrap_or_default()
+                    + "\n";
+                let _ = progress_tx.try_send(line);
             })
-            .unwrap_or_default()
-                + "\n";
-            let _ = progress_tx.try_send(line);
-        })
-        .await
-        .map_err(|e| SyncError::Internal(e.to_string()))?;
+            .await
+            .map_err(|e| SyncError::Internal(e.to_string()))?;
 
-    let newest_amm_sig = signatures.last().map(|e| e.signature.clone());
+        let newest = signatures.last().map(|e| e.signature.clone());
+        let newest_slot = signatures.last().map(|e| e.slot as i64);
 
-    let fetched = fetch_transactions(rpc, &signatures, progress_tx).await?;
+        // Incremental-only dedup: skip AMM swaps already saved (e.g. by live
+        // ingest) so we don't re-fetch them from Helius.
+        let to_fetch = if incremental {
+            let saved = trade_repo
+                .saved_signatures(mint, "amm")
+                .await
+                .map_err(|e| SyncError::Internal(e.to_string()))?;
+            signatures
+                .into_iter()
+                .filter(|e| !saved.contains(&e.signature))
+                .collect::<Vec<SignatureEntry>>()
+        } else {
+            signatures
+        };
+
+        let fetched = fetch_transactions(rpc, &to_fetch, progress_tx).await?;
+        (fetched, newest, newest_slot)
+    };
 
     send_progress(
         progress_tx,
@@ -666,12 +872,82 @@ async fn sync_amm_trades(
         }
     }
 
-    Ok(newest_amm_sig)
+    Ok((newest_amm_sig, newest_amm_slot))
 }
 
 struct FetchedTx {
     slot: u64,
     result: serde_json::Value,
+}
+
+/// Acquire an address's full transaction history via the archival
+/// `getTransactionsForAddress` (gTFA), cursor-paginated. Each returned item is
+/// already shaped like a `getTransaction` result, so we wrap it into the decoder
+/// shape directly — no second round-trip per signature. Returns the txs
+/// (slot-ascending) plus the newest signature seen (for the sync watermark).
+///
+/// Used for full ("Fetch All") backfills only: ~0.1 credit/tx at a 1000-tx page
+/// vs 1 credit/tx for per-sig `getTransaction`. Like the rpc "Fetch All" path it
+/// returns every tx, so decoder fixes still propagate via the trades upsert.
+async fn acquire_full_via_gtfa(
+    rpc: &HeliusRpc,
+    address: &str,
+    progress_tx: &mpsc::Sender<String>,
+) -> Result<(Vec<FetchedTx>, Option<String>), SyncError> {
+    let mut out: Vec<FetchedTx> = Vec::new();
+    let mut newest_sig: Option<String> = None;
+    let mut newest_slot: u64 = 0;
+    let mut token: Option<String> = None;
+    let mut page = 0usize;
+
+    loop {
+        page += 1;
+        // Oldest-first so the accumulated order is roughly chronological (still
+        // sorted by slot at the end as a guarantee).
+        let (data, next) = rpc
+            .get_transactions_for_address_full_page(address, "asc", GTFA_PAGE_LIMIT, token.as_deref())
+            .await
+            .map_err(|e| SyncError::Internal(e.to_string()))?;
+
+        for item in &data {
+            let Some(sig) = item
+                .get("transaction")
+                .and_then(|t| t.get("signatures"))
+                .and_then(|s| s.get(0))
+                .and_then(|s| s.as_str())
+            else {
+                continue;
+            };
+            let slot = item.get("slot").and_then(|v| v.as_u64()).unwrap_or(0);
+            if slot >= newest_slot {
+                newest_slot = slot;
+                newest_sig = Some(sig.to_string());
+            }
+            out.push(FetchedTx {
+                slot,
+                result: wrap_transaction_result(sig, item),
+            });
+        }
+
+        let line = serde_json::to_string(&SyncProgressEvent {
+            event_type: "progress",
+            stage: "fetching_transactions".into(),
+            current: out.len() as u64,
+            total: out.len() as u64,
+            message: format!("Downloaded {} transactions (page {page})", out.len()),
+        })
+        .unwrap_or_default()
+            + "\n";
+        let _ = progress_tx.try_send(line);
+
+        match next {
+            Some(t) => token = Some(t),
+            None => break,
+        }
+    }
+
+    out.sort_by_key(|t| t.slot);
+    Ok((out, newest_sig))
 }
 
 async fn fetch_transactions(
@@ -684,35 +960,63 @@ async fn fetch_transactions(
     let total = signatures.len();
     let done = Arc::new(AtomicUsize::new(0));
 
+    // Chunk into JSON-RPC batches; each batch is one HTTP request fetching up to
+    // TX_BATCH_SIZE transactions, with a few batches in flight at once.
+    let batches: Vec<Vec<SignatureEntry>> = signatures
+        .chunks(TX_BATCH_SIZE)
+        .map(|c| c.to_vec())
+        .collect();
+
     let rpc = rpc.clone();
-    let results: Vec<Option<FetchedTx>> = stream::iter(signatures.iter().cloned())
-        .map(|entry| {
+    let results: Vec<Vec<FetchedTx>> = stream::iter(batches)
+        .map(|batch| {
             let progress_tx = progress_tx.clone();
             let done = done.clone();
             let rpc = rpc.clone();
             async move {
-                let tx = rpc.get_transaction(&entry.signature).await.ok().flatten()?;
-                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                if n % 10 == 0 || n == total {
-                    let line = serde_json::to_string(&SyncProgressEvent {
-                        event_type: "progress",
-                        stage: "fetching_transactions".into(),
-                        current: n as u64,
-                        total: total as u64,
-                        message: format!("Downloaded {n} / {total} transactions"),
-                    })
-                    .unwrap_or_default()
-                        + "\n";
-                    let _ = progress_tx.try_send(line);
+                let sigs: Vec<String> = batch.iter().map(|e| e.signature.clone()).collect();
+
+                // On a whole-batch HTTP failure, fall back to individual fetches
+                // so one transient error doesn't drop up to TX_BATCH_SIZE txs.
+                let txs = match rpc.get_transactions_batch(&sigs).await {
+                    Ok(txs) => txs,
+                    Err(_) => {
+                        let mut indiv = Vec::with_capacity(sigs.len());
+                        for sig in &sigs {
+                            indiv.push(rpc.get_transaction(sig).await.ok().flatten());
+                        }
+                        indiv
+                    }
+                };
+
+                let mut out = Vec::with_capacity(batch.len());
+                for (entry, tx) in batch.iter().zip(txs.into_iter()) {
+                    if let Some(tx) = tx {
+                        out.push(FetchedTx {
+                            slot: entry.slot,
+                            result: wrap_transaction_result(&entry.signature, &tx),
+                        });
+                    }
                 }
-                let result = wrap_transaction_result(&entry.signature, &tx);
-                Some(FetchedTx {
-                    slot: entry.slot,
-                    result,
+
+                // Progress counts signatures processed (attempted), so it reaches
+                // `total` even when some txs were missing/failed.
+                let n = (done.fetch_add(batch.len(), Ordering::Relaxed) + batch.len()).min(total);
+                let line = serde_json::to_string(&SyncProgressEvent {
+                    event_type: "progress",
+                    stage: "fetching_transactions".into(),
+                    current: n as u64,
+                    total: total as u64,
+                    message: format!("Downloaded {n} / {total} transactions"),
                 })
+                .unwrap_or_default()
+                    + "\n";
+                let _ = progress_tx.try_send(line);
+
+                out
             }
         })
-        .buffer_unordered(TX_FETCH_CONCURRENCY)
+        .buffer_unordered(TX_BATCH_CONCURRENCY)
         .collect()
         .await;
 
@@ -938,5 +1242,70 @@ mod amm_verification {
             }
         }
         None
+    }
+
+    /// Proves the gTFA backfill path decodes identically to the per-sig
+    /// getTransaction path: for each tx in one gTFA page of the pump program,
+    /// decode the gTFA item AND the getTransaction of the same signature, and
+    /// assert the decoded trade legs match. Run with:
+    ///   HELIUS_RPC_URL="<url>" cargo test -p backend gtfa_matches_rpc -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "requires HELIUS_RPC_URL with the archival API + network"]
+    async fn gtfa_matches_rpc_decode() {
+        let url = std::env::var("HELIUS_RPC_URL").expect("set HELIUS_RPC_URL");
+        let rpc = HeliusRpc::new(url);
+        let decoder = HeliusDecoder::new(PUMP_FUN_PROGRAM_ID.to_string());
+
+        // One gTFA page (full mode) of recent pump-program transactions.
+        let (data, token) = rpc
+            .get_transactions_for_address_full_page(PUMP_FUN_PROGRAM_ID, "desc", 25, None)
+            .await
+            .expect("gTFA call failed");
+        assert!(!data.is_empty(), "gTFA returned no transactions");
+        println!("gTFA page: {} txs, next paginationToken={:?}", data.len(), token);
+
+        // Decoded trade legs for one DecodeOutput, in a comparable form.
+        fn legs(out: &DecodeOutput) -> Vec<(String, String, f64, f64)> {
+            match out {
+                DecodeOutput::Transaction { events, .. } => events
+                    .iter()
+                    .filter_map(|e| match e {
+                        InternalEvent::TradeExecuted(t) => Some((
+                            t.trade.wallet_address.clone(),
+                            format!("{:?}", t.trade.trade_type),
+                            t.trade.sol_amount,
+                            t.trade.token_amount,
+                        )),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            }
+        }
+
+        let (mut compared, mut trade_legs) = (0usize, 0usize);
+        for item in &data {
+            let sig = item["transaction"]["signatures"][0]
+                .as_str()
+                .expect("gTFA item missing signature")
+                .to_string();
+
+            // gTFA path: wrap the archival item and decode.
+            let gtfa_out = decoder.decode_result(&wrap_transaction_result(&sig, item));
+
+            // rpc path: fetch the same signature via getTransaction and decode.
+            let Some(rpc_tx) = rpc.get_transaction(&sig).await.expect("getTransaction failed") else {
+                continue;
+            };
+            let rpc_out = decoder.decode_result(&wrap_transaction_result(&sig, &rpc_tx));
+
+            let (g, r) = (legs(&gtfa_out), legs(&rpc_out));
+            assert_eq!(g, r, "decode mismatch for {sig}\n  gtfa={g:?}\n  rpc={r:?}");
+            trade_legs += g.len();
+            compared += 1;
+        }
+
+        println!("compared {compared} txs, {trade_legs} trade legs — gTFA decode == rpc decode ✓");
+        assert!(compared > 0, "no transactions compared");
     }
 }

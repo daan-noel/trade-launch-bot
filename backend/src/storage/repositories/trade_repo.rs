@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use chrono::{DateTime, Utc};
 use sqlx::{types::Json, PgPool};
 use uuid::Uuid;
@@ -162,6 +164,27 @@ impl TradeRepo {
         .await?;
 
         Ok(sig)
+    }
+
+    /// All transaction signatures already saved for a token on a venue
+    /// (`"curve"` or `"amm"`). The incremental sync uses this to skip
+    /// `getTransaction` for trades it already has (e.g. ones live ingest
+    /// persisted ahead of the sync), so it doesn't re-spend Helius RPC credits
+    /// re-downloading them. Returned as a set for O(1) membership tests.
+    pub async fn saved_signatures(
+        &self,
+        mint: &str,
+        venue: &str,
+    ) -> anyhow::Result<HashSet<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT DISTINCT tx_signature FROM trades WHERE mint_address = $1 AND venue = $2",
+        )
+        .bind(mint)
+        .bind(venue)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(sig,)| sig).collect())
     }
 
     /// Most recent trades for a token, newest first.

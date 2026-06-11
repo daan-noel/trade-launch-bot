@@ -236,6 +236,139 @@ impl HeliusRpc {
 
         Ok(Some(result))
     }
+
+    /// Fetch many confirmed transactions in one JSON-RPC batch request (an array
+    /// of call objects in a single HTTP POST). Returns one entry per input
+    /// signature, in the SAME order, with `None` for any transaction that is
+    /// missing, errored, or failed on-chain — matching [`Self::get_transaction`].
+    ///
+    /// Batching cuts HTTP round-trips (latency); it does NOT reduce Helius
+    /// credits, which are billed per `getTransaction`, not per request.
+    pub async fn get_transactions_batch(
+        &self,
+        signatures: &[String],
+    ) -> anyhow::Result<Vec<Option<Value>>> {
+        if signatures.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // One call object per signature; `id` is the index so results can be
+        // mapped back — a batch response may arrive out of order.
+        let batch: Vec<Value> = signatures
+            .iter()
+            .enumerate()
+            .map(|(i, sig)| {
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": i,
+                    "method": "getTransaction",
+                    "params": [
+                        sig,
+                        {
+                            "encoding": "jsonParsed",
+                            "commitment": "confirmed",
+                            "maxSupportedTransactionVersion": 0
+                        }
+                    ]
+                })
+            })
+            .collect();
+
+        let resp = self
+            .client
+            .post(&self.url)
+            .json(&Value::Array(batch))
+            .send()
+            .await
+            .context("Helius RPC batch request failed")?;
+
+        let status = resp.status();
+        let payload: Value = resp.json().await.context("Helius RPC batch invalid JSON")?;
+
+        // A non-array payload means the whole batch was rejected (e.g. an error
+        // object) rather than answered per-call.
+        let arr = match payload.as_array() {
+            Some(arr) => arr,
+            None => {
+                if let Some(err) = payload.get("error") {
+                    return Err(anyhow!("Helius RPC batch error: {err}"));
+                }
+                return Err(anyhow!("Helius RPC batch HTTP {status}: unexpected response"));
+            }
+        };
+
+        // Place each response by its `id`; leave missing/errored/failed as None.
+        let mut out: Vec<Option<Value>> = vec![None; signatures.len()];
+        for item in arr {
+            let Some(idx) = item.get("id").and_then(|v| v.as_u64()).map(|i| i as usize) else {
+                continue;
+            };
+            if idx >= out.len() || item.get("error").is_some() {
+                continue;
+            }
+            let result = match item.get("result") {
+                Some(r) if !r.is_null() => r,
+                _ => continue,
+            };
+            let failed = result
+                .get("meta")
+                .and_then(|m| m.get("err"))
+                .map(|e| !e.is_null())
+                .unwrap_or(false);
+            if failed {
+                continue;
+            }
+            out[idx] = Some(result.clone());
+        }
+
+        Ok(out)
+    }
+
+    /// One page of Helius `getTransactionsForAddress` (gTFA) in FULL mode,
+    /// `jsonParsed` encoding, succeeded-only. Returns the raw `data` items — each
+    /// already shaped like a `getTransaction` result (`slot`/`blockTime`/
+    /// `transaction`/`meta`) — and the next `paginationToken` (`None` at the end).
+    ///
+    /// This is the archival path for full backfills: ~0.1 credit/tx at limit 1000
+    /// (10 credits per 100 returned), vs 1 credit/tx for per-sig `getTransaction`,
+    /// AND it collapses the getSignaturesForAddress + N×getTransaction loop into
+    /// one cursor-paginated call. `params` is positional: `[address, {options}]`.
+    pub async fn get_transactions_for_address_full_page(
+        &self,
+        address: &str,
+        sort_order: &str,
+        limit: usize,
+        pagination_token: Option<&str>,
+    ) -> anyhow::Result<(Vec<Value>, Option<String>)> {
+        let mut options = json!({
+            "transactionDetails": "full",
+            "encoding": "jsonParsed",
+            "commitment": "confirmed",
+            "maxSupportedTransactionVersion": 0,
+            "sortOrder": sort_order,
+            "limit": limit,
+            "filters": { "status": "succeeded" }
+        });
+        if let Some(token) = pagination_token {
+            options["paginationToken"] = json!(token);
+        }
+
+        let result = self
+            .call("getTransactionsForAddress", json!([address, options]))
+            .await?;
+
+        let data = result
+            .get("data")
+            .and_then(|d| d.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let next = result
+            .get("paginationToken")
+            .and_then(|t| t.as_str())
+            .map(|s| s.to_string());
+
+        Ok((data, next))
+    }
 }
 
 #[derive(Debug, Clone)]

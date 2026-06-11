@@ -200,42 +200,68 @@ impl TokenInfoRepo {
             .collect())
     }
 
-    /// Read the per-token sync watermark: `(last_synced_at, curve_sig, amm_sig)`.
-    /// Any field is `None` if the token has never been synced (or predates the
-    /// watermark feature). Returns all-`None` when the row doesn't exist yet.
+    /// Read the per-token sync watermark:
+    /// `(last_synced_at, curve_sig, amm_sig, curve_slot, amm_slot)`.
+    /// Any field is `None` if the token has never been synced (or predates that
+    /// field). Returns all-`None` when the row doesn't exist yet. The `*_slot`
+    /// fields are the slots of the matching `*_sig` watermarks, used as the
+    /// `from_slot` boundary for the LaserStream replay fast path.
     pub async fn get_sync_watermark(
         &self,
         mint: &str,
-    ) -> anyhow::Result<(Option<DateTime<Utc>>, Option<String>, Option<String>)> {
-        let row = sqlx::query_as::<_, (Option<DateTime<Utc>>, Option<String>, Option<String>)>(
-            "SELECT last_synced_at, last_synced_curve_sig, last_synced_amm_sig FROM tokens_info WHERE mint_address = $1",
+    ) -> anyhow::Result<(
+        Option<DateTime<Utc>>,
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+    )> {
+        let row = sqlx::query_as::<
+            _,
+            (
+                Option<DateTime<Utc>>,
+                Option<String>,
+                Option<String>,
+                Option<i64>,
+                Option<i64>,
+            ),
+        >(
+            "SELECT last_synced_at, last_synced_curve_sig, last_synced_amm_sig, \
+                    last_synced_curve_slot, last_synced_amm_slot \
+             FROM tokens_info WHERE mint_address = $1",
         )
         .bind(mint)
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.unwrap_or((None, None, None)))
+        Ok(row.unwrap_or((None, None, None, None, None)))
     }
 
     /// Record a successful sync: stamp `last_synced_at = at` and store the newest
-    /// per-venue signatures seen. A `None` signature preserves the prior value
-    /// (e.g. an AMM-less sync leaves any existing AMM watermark intact).
+    /// per-venue signatures (and their slots) seen. A `None` signature/slot
+    /// preserves the prior value (e.g. an AMM-less sync leaves any existing AMM
+    /// watermark intact).
     pub async fn update_sync_watermark(
         &self,
         mint: &str,
         at: DateTime<Utc>,
         curve_sig: Option<&str>,
         amm_sig: Option<&str>,
+        curve_slot: Option<i64>,
+        amm_slot: Option<i64>,
     ) -> anyhow::Result<()> {
         sqlx::query(
             r#"
             INSERT INTO tokens_info
-                (mint_address, last_synced_at, last_synced_curve_sig, last_synced_amm_sig, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $2, $2)
+                (mint_address, last_synced_at, last_synced_curve_sig, last_synced_amm_sig,
+                 last_synced_curve_slot, last_synced_amm_slot, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $2, $2)
             ON CONFLICT (mint_address) DO UPDATE
                 SET last_synced_at = EXCLUDED.last_synced_at,
                     last_synced_curve_sig = COALESCE(EXCLUDED.last_synced_curve_sig, tokens_info.last_synced_curve_sig),
                     last_synced_amm_sig = COALESCE(EXCLUDED.last_synced_amm_sig, tokens_info.last_synced_amm_sig),
+                    last_synced_curve_slot = COALESCE(EXCLUDED.last_synced_curve_slot, tokens_info.last_synced_curve_slot),
+                    last_synced_amm_slot = COALESCE(EXCLUDED.last_synced_amm_slot, tokens_info.last_synced_amm_slot),
                     updated_at = EXCLUDED.updated_at
             "#,
         )
@@ -243,6 +269,8 @@ impl TokenInfoRepo {
         .bind(at)
         .bind(curve_sig)
         .bind(amm_sig)
+        .bind(curve_slot)
+        .bind(amm_slot)
         .execute(&self.pool)
         .await?;
 

@@ -17,6 +17,10 @@ use super::token_cache::TokenCache;
 pub struct AppState {
     pub db: PgPool,
     pub helius_rpc_url: String,
+    /// LaserStream gRPC endpoint + API key, used by the token-sync replay fast
+    /// path (Fetch New). Empty URL ⇒ replay disabled, RPC path only.
+    pub helius_laserstream_url: String,
+    pub helius_api_key: String,
     pub pump_program_id: String,
     pub token_cache: Arc<TokenCache>,
     /// Cold lane: SSE subscribers only (fed after cache update in ingest pipeline).
@@ -41,6 +45,8 @@ impl AppState {
     pub fn new(
         db: PgPool,
         helius_rpc_url: String,
+        helius_laserstream_url: String,
+        helius_api_key: String,
         pump_program_id: String,
         token_cache: Arc<TokenCache>,
         sse_tx: broadcast::Sender<SseEvent>,
@@ -56,6 +62,8 @@ impl AppState {
         Self {
             db,
             helius_rpc_url,
+            helius_laserstream_url,
+            helius_api_key,
             pump_program_id,
             token_cache,
             sse_tx,
