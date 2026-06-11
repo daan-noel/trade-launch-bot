@@ -1,18 +1,19 @@
 use actix_web::{web, HttpResponse, Responder};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
-    models::{Position, StrategyTPSLRule},
+    models::{PaperRunStatus, Position, StrategyTPSLRule},
     state::app_state::AppState,
     storage::repositories::{
         tpsl1_paper_trading_repo::Tpsl1PaperTradingRepo, tpsl1_strategy_rule_repo::Tpsl1StrategyRuleRepo,
         token_repo::TokenRepo,
     },
     strategies::tpsl_sniper_1::{
-        backtest::BacktestTokenResult, entry::token_matches_buy_rule,
+        self, backtest::BacktestTokenResult, entry::token_matches_buy_rule, PaperActivation,
     },
 };
 
@@ -42,12 +43,39 @@ pub struct RuleResponse {
     pub p_liquidity_drop_pct: Option<f64>,
     pub tolerance_pct: f64,
     pub is_active: bool,
+    /// Derived lifecycle state for the UI — one of `Active`, `Draining`,
+    /// `Finished`, `Idle`. See [`lifecycle_label`].
+    pub lifecycle: String,
+    /// Number of positions this rule currently holds open (drives the
+    /// `Draining (N open)` badge and gates the Stop & close action).
+    pub open_positions: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
-impl From<StrategyTPSLRule> for RuleResponse {
-    fn from(r: StrategyTPSLRule) -> Self {
+/// Collapse `(is_active, open positions, paper-run status)` into the single
+/// lifecycle label the frontend renders. The model: `is_active` gates **entries**
+/// only, so an inactive rule with open positions is still *Draining* (its exits
+/// run until they close). Paper rules that reached their cap read *Finished*;
+/// everything else inactive-and-flat is *Idle*.
+fn lifecycle_label(rule: &StrategyTPSLRule, open_positions: i64, paper_status: Option<PaperRunStatus>) -> &'static str {
+    if rule.is_active {
+        "Active"
+    } else if open_positions > 0 {
+        "Draining"
+    } else if rule.trade_mode == "paper" && paper_status == Some(PaperRunStatus::Finished) {
+        "Finished"
+    } else {
+        "Idle"
+    }
+}
+
+impl RuleResponse {
+    /// Build the response from a rule plus the live context needed to derive its
+    /// lifecycle (`open_positions` from the runtime cache; `paper_status` from the
+    /// rule's current run, or `None` for real rules / rules with no run).
+    fn build(r: StrategyTPSLRule, open_positions: i64, paper_status: Option<PaperRunStatus>) -> Self {
+        let lifecycle = lifecycle_label(&r, open_positions, paper_status).to_string();
         Self {
             id: r.id,
             rule_name: r.rule_name,
@@ -69,10 +97,29 @@ impl From<StrategyTPSLRule> for RuleResponse {
             p_liquidity_drop_pct: r.p_liquidity_drop_pct,
             tolerance_pct: r.tolerance_pct,
             is_active: r.is_active,
+            lifecycle,
+            open_positions,
             created_at: r.created_at,
             updated_at: r.updated_at,
         }
     }
+}
+
+/// Enrich a single rule into a [`RuleResponse`] (one paper-run query for paper
+/// rules). The list endpoint avoids this per-rule query via a bulk run lookup.
+async fn rule_response(app_state: &Arc<AppState>, rule: StrategyTPSLRule) -> RuleResponse {
+    let open = app_state.tpsl1_cache.holding_count_by_rule(rule.id);
+    let paper_status = if rule.trade_mode == "paper" {
+        Tpsl1PaperTradingRepo::new(app_state.db.clone())
+            .current_run(rule.id)
+            .await
+            .ok()
+            .flatten()
+            .map(|run| run.status)
+    } else {
+        None
+    };
+    RuleResponse::build(rule, open, paper_status)
 }
 
 #[derive(Deserialize)]
@@ -139,7 +186,28 @@ pub async fn list_tpsl_rules(app_state: web::Data<Arc<AppState>>) -> impl Respon
 
     match repo.find_all().await {
         Ok(rules) => {
-            let responses: Vec<RuleResponse> = rules.into_iter().map(RuleResponse::from).collect();
+            // One query for all latest runs → status map, so enriching N rules
+            // with their lifecycle stays a single round-trip (no N+1).
+            let paper_repo = Tpsl1PaperTradingRepo::new(app_state.db.clone());
+            let run_status: HashMap<Uuid, PaperRunStatus> = paper_repo
+                .find_all_runs()
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|run| (run.rule_id, run.status))
+                .collect();
+            let responses: Vec<RuleResponse> = rules
+                .into_iter()
+                .map(|r| {
+                    let open = app_state.tpsl1_cache.holding_count_by_rule(r.id);
+                    let status = if r.trade_mode == "paper" {
+                        run_status.get(&r.id).copied()
+                    } else {
+                        None
+                    };
+                    RuleResponse::build(r, open, status)
+                })
+                .collect();
             HttpResponse::Ok().json(responses)
         }
         Err(e) => {
@@ -159,7 +227,7 @@ pub async fn get_tpsl_rule(
     let rule_id = rule_id.into_inner();
 
     match repo.find_by_id(rule_id).await {
-        Ok(Some(rule)) => HttpResponse::Ok().json(RuleResponse::from(rule)),
+        Ok(Some(rule)) => HttpResponse::Ok().json(rule_response(&app_state, rule).await),
         Ok(None) => HttpResponse::NotFound().json(serde_json::json!({"error": "Rule not found"})),
         Err(e) => {
             tracing::error!("Failed to get TPSL rule {rule_id}: {e}");
@@ -202,7 +270,7 @@ pub async fn create_tpsl_rule(
             if let Err(e) = app_state.tpsl1_cache.reload_rules(&app_state.db).await {
                 tracing::warn!("TPSL rule cache reload after create failed: {e}");
             }
-            HttpResponse::Created().json(RuleResponse::from(rule))
+            HttpResponse::Created().json(rule_response(&app_state, rule).await)
         }
         Err(e) => {
             tracing::error!("Failed to create TPSL rule: {e}");
@@ -223,9 +291,6 @@ pub async fn update_tpsl_rule(
 
     match repo.find_by_id(rule_id).await {
         Ok(Some(mut rule)) => {
-            // Captured before the update is applied to detect the activate /
-            // deactivate transition that begins / ends a paper-test run.
-            let was_active = rule.is_active;
             // Log incoming update request for debugging
             match serde_json::to_value(&req.0) {
                 Ok(v) => tracing::debug!("UpdateRuleRequest JSON: {}", v),
@@ -285,42 +350,20 @@ pub async fn update_tpsl_rule(
             if let Some(tolerance_pct) = req.tolerance_pct {
                 rule.tolerance_pct = tolerance_pct;
             }
-            if let Some(is_active) = req.is_active {
-                rule.is_active = is_active;
-            }
+            // `is_active` is intentionally NOT applied here: activation/pause is
+            // owned by the dedicated lifecycle endpoints (`activate`/`pause`/
+            // `stop`) so the paper-run side effects can't drift. This PUT only
+            // edits rule fields.
             if let Some(trade_mode) = &req.trade_mode {
                 rule.trade_mode = trade_mode.clone();
             }
 
             match repo.update(&rule).await {
                 Ok(_) => {
-                    // Paper-run lifecycle on the active toggle: activating starts a
-                    // fresh run (resets per-run caps); deactivating stops the current
-                    // one (open positions still drain).
-                    if rule.trade_mode == "paper" {
-                        if rule.is_active && !was_active {
-                            let max_total = rule.p_max_total_tokens.filter(|v| *v > 0);
-                            if let Err(e) = app_state
-                                .tpsl1_cache
-                                .start_paper_run(&app_state.db, rule.id, max_total)
-                                .await
-                            {
-                                tracing::warn!("Failed to start paper run for {}: {e}", rule.id);
-                            }
-                        } else if !rule.is_active && was_active {
-                            if let Err(e) = app_state
-                                .tpsl1_cache
-                                .stop_paper_run(&app_state.db, rule.id)
-                                .await
-                            {
-                                tracing::warn!("Failed to stop paper run for {}: {e}", rule.id);
-                            }
-                        }
-                    }
                     if let Err(e) = app_state.tpsl1_cache.reload_rules(&app_state.db).await {
                         tracing::warn!("TPSL rule cache reload after update failed: {e}");
                     }
-                    HttpResponse::Ok().json(RuleResponse::from(rule))
+                    HttpResponse::Ok().json(rule_response(&app_state, rule).await)
                 }
                 Err(e) => {
                     tracing::error!("Failed to update TPSL rule {rule_id}: {e}");
@@ -358,6 +401,89 @@ pub async fn delete_tpsl_rule(
             HttpResponse::InternalServerError()
                 .json(serde_json::json!({"error": "Failed to delete rule"}))
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle: activate / pause / stop-and-close
+//
+// These replace the old `is_active` toggle on the PUT update endpoint. All three
+// route through `tpsl_sniper_1::lifecycle`, the single source of truth for the
+// paper-run + cache side effects (so activation and auto-finish can't drift).
+// ---------------------------------------------------------------------------
+
+/// Body for `activate`. For paper rules, `paper_run` selects whether to start a
+/// fresh run or continue the prior one; ignored for real rules. Absent / unknown
+/// defaults to a fresh run.
+#[derive(Deserialize)]
+pub struct ActivateRequest {
+    #[serde(default)]
+    pub paper_run: Option<String>,
+}
+
+/// Translate `lifecycle::*` errors into the right HTTP status (404 for a missing
+/// rule, 500 otherwise) — the helpers return `anyhow::Error` with `"Rule not
+/// found"` for the not-found case.
+fn lifecycle_error(action: &str, e: anyhow::Error) -> HttpResponse {
+    let msg = e.to_string();
+    if msg.contains("Rule not found") {
+        HttpResponse::NotFound().json(serde_json::json!({"error": "Rule not found"}))
+    } else {
+        tracing::error!("Failed to {action} TPSL rule: {e}");
+        HttpResponse::InternalServerError().json(serde_json::json!({"error": msg}))
+    }
+}
+
+/// Activate a rule (entries on). For paper rules, `{ "paper_run": "fresh" |
+/// "continue" }` chooses fresh-run vs resume.
+///
+/// POST /api/strategies/tpsl1/rules/{rule_id}/activate
+pub async fn activate_tpsl_rule(
+    app_state: web::Data<Arc<AppState>>,
+    rule_id: web::Path<Uuid>,
+    req: web::Json<ActivateRequest>,
+) -> impl Responder {
+    let rule_id = rule_id.into_inner();
+    let paper = match req.paper_run.as_deref() {
+        Some("continue") => PaperActivation::Continue,
+        _ => PaperActivation::Fresh,
+    };
+    match tpsl_sniper_1::activate_rule(&app_state, rule_id, paper).await {
+        Ok(rule) => HttpResponse::Ok().json(rule_response(&app_state, rule).await),
+        Err(e) => lifecycle_error("activate", e),
+    }
+}
+
+/// Pause a rule (entries off; open positions drain via the exit ladder).
+///
+/// POST /api/strategies/tpsl1/rules/{rule_id}/pause
+pub async fn pause_tpsl_rule(
+    app_state: web::Data<Arc<AppState>>,
+    rule_id: web::Path<Uuid>,
+) -> impl Responder {
+    let rule_id = rule_id.into_inner();
+    match tpsl_sniper_1::pause_rule(&app_state, rule_id).await {
+        Ok(rule) => HttpResponse::Ok().json(rule_response(&app_state, rule).await),
+        Err(e) => lifecycle_error("pause", e),
+    }
+}
+
+/// Stop a rule and force-close every open position now. The response is the
+/// enriched rule; `open_positions` reflects how many are still draining (real
+/// sells finish in the background, so they may briefly remain).
+///
+/// POST /api/strategies/tpsl1/rules/{rule_id}/stop
+pub async fn stop_tpsl_rule(
+    app_state: web::Data<Arc<AppState>>,
+    rule_id: web::Path<Uuid>,
+) -> impl Responder {
+    let rule_id = rule_id.into_inner();
+    match tpsl_sniper_1::stop_and_close_rule(&app_state, rule_id).await {
+        Ok((rule, closing)) => {
+            tracing::info!("Stop & close rule {rule_id}: {closing} position(s) closing");
+            HttpResponse::Ok().json(rule_response(&app_state, rule).await)
+        }
+        Err(e) => lifecycle_error("stop", e),
     }
 }
 

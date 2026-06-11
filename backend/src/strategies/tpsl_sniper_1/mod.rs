@@ -10,6 +10,7 @@
 //!   - `execution`    — real/paper trade execution (buy, sell, fill polling).
 //!   - `backtest`     — the DB-backed backtest harness over `entry` + `exit`.
 //!   - `service`      — live event/timer drivers wiring it all together.
+//!   - `lifecycle`    — manual activate / pause / stop-and-close transitions.
 //!   - `paper_run`    — paper-run completion lifecycle.
 //!   - `runtime_cache`— in-memory rules/positions/run state.
 pub mod backtest;
@@ -17,6 +18,7 @@ pub mod entry;
 pub mod execution;
 pub mod exit;
 pub mod handler;
+pub mod lifecycle;
 pub mod paper_run;
 pub mod runtime_cache;
 pub mod service;
@@ -24,5 +26,6 @@ mod util;
 
 pub use backtest::run_backtest;
 pub use handler::TPSL1StrategyHandler;
+pub use lifecycle::{activate_rule, pause_rule, stop_and_close_rule, PaperActivation};
 pub use runtime_cache::Tpsl1RuntimeCache;
 pub use service::Tpsl1StrategyService;

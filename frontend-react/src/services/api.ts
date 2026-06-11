@@ -135,6 +135,34 @@ export async function deleteTpsl1Rule(ruleId: string): Promise<void> {
   await request(`${API_BASE}/api/strategies/tpsl1/rules/${ruleId}`, { method: 'DELETE' });
 }
 
+/**
+ * Lifecycle transitions (the single source of truth on the backend is
+ * `tpsl_sniper_1::lifecycle`). Each returns the updated rule.
+ *
+ * `activate` — entries on. For paper rules, `paperRun` chooses a fresh run vs
+ * continuing the prior one (ignored for real rules).
+ */
+export async function activateTpsl1Rule(
+  ruleId: string,
+  paperRun: 'fresh' | 'continue' = 'fresh',
+): Promise<import('types').RuleRecord> {
+  return request(`${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/activate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paper_run: paperRun }),
+  });
+}
+
+/** `pause` — entries off; open positions drain via the exit ladder. */
+export async function pauseTpsl1Rule(ruleId: string): Promise<import('types').RuleRecord> {
+  return request(`${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/pause`, { method: 'POST' });
+}
+
+/** `stop` — pause and force-close every open position now (real = on-chain sells). */
+export async function stopTpsl1Rule(ruleId: string): Promise<import('types').RuleRecord> {
+  return request(`${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/stop`, { method: 'POST' });
+}
+
 export async function simulateTpsl1Rule(
   ruleId: string,
 ): Promise<import('types').SimulatedTokenResult[]> {

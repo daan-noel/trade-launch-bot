@@ -64,6 +64,13 @@ export interface RuleRecord {
   p_liquidity_drop_pct: number | null;
   tolerance_pct: number;
   is_active: boolean;
+  /** Derived lifecycle for the UI: 'Active' | 'Draining' | 'Idle' | 'Finished'.
+   *  `is_active` gates entries only, so an inactive rule with open positions is
+   *  'Draining' (its exits keep running until they close). */
+  lifecycle: string;
+  /** Positions this rule currently holds open (drives the 'Draining (N)' badge
+   *  and gates the Stop & close action). */
+  open_positions: number;
   created_at: string;
   updated_at: string;
 }
