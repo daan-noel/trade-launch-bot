@@ -198,31 +198,54 @@ impl Tpsl2StrategyService {
                     let position_repo = self.position_repo.clone();
                     let trade_repo = self.trade_repo.clone();
                     let runtime = self.runtime.clone();
+                    let rule_for_entry = rule.clone();
                     let token_program_id = position
                         .token_program_id
                         .clone()
                         .unwrap_or_else(|| crate::config::constants::TOKEN_PROGRAM_ID.to_string());
                     tokio::spawn(async move {
                         let mint_for_log = mint_clone.clone();
-                        super::execution::real::buy_until_filled_or_give_up(
-                            trader,
-                            mint_clone,
-                            creator,
-                            token_program_id,
-                            buy_amount,
-                            position_id,
-                            position_repo.clone(),
-                            trade_repo.clone(),
-                            runtime.clone(),
-                            super::execution::real::BuyRetryCfg::production(),
+                        // Arm on the scalp entry signal before sending any buy: real
+                        // mode waits for the first trade where every configured gate
+                        // holds (shared `find_scalp_entry`), so live entries honor
+                        // `p_entry_*` exactly like paper and simulation. The candidate
+                        // is only the timing trigger — the fill price comes from the
+                        // wallet's own on-chain buy. No signal in the window → fall
+                        // through and drop the unentered position, as a missed buy does.
+                        let armed = super::execution::real::await_scalp_entry_signal(
+                            &mint_clone,
+                            &rule_for_entry,
+                            &trade_repo,
+                            super::execution::real::ScalpWaitCfg::for_rule(&rule_for_entry),
                         )
                         .await;
+                        if armed {
+                            super::execution::real::buy_until_filled_or_give_up(
+                                trader,
+                                mint_clone,
+                                creator,
+                                token_program_id,
+                                buy_amount,
+                                position_id,
+                                position_repo.clone(),
+                                trade_repo.clone(),
+                                runtime.clone(),
+                                super::execution::real::BuyRetryCfg::production(),
+                            )
+                            .await;
+                        } else {
+                            info!(
+                                "[REAL] Scalp entry signal never fired for mint {} within the \
+                                 arming window; dropping unentered position {}",
+                                mint_for_log, position_id
+                            );
+                        }
                         if let Ok(Some(pos)) = position_repo.find_by_id(position_id).await {
                             if pos.entry_price == 0.0 {
                                 let _ = position_repo.delete_position(position_id).await;
                                 runtime.remove_position(&pos);
                                 info!(
-                                    "[REAL] Removed position {} for mint {}: buy not found",
+                                    "[REAL] Removed position {} for mint {}: no entry recorded",
                                     position_id, mint_for_log
                                 );
                             }

@@ -12,7 +12,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::super::Tpsl2RuntimeCache;
-use crate::models::Position;
+use crate::models::{Position, Tpsl2StrategyRule};
 use crate::state::token_cache::TokenCache;
 use crate::storage::repositories::{tpsl2_position_repo::Tpsl2PositionRepo, trade_repo::TradeRepo};
 use crate::trader::PumpFunTrader;
@@ -100,6 +100,58 @@ impl BuyRetryCfg {
             poll_interval: Duration::from_millis(super::BUY_POLL_INTERVAL_MS),
         }
     }
+}
+
+/// Poll/timeout timing for the scalp-entry arming wait ([`await_scalp_entry_signal`]).
+/// Separate from [`BuyRetryCfg`] because the entry signal can take far longer to
+/// form than a buy fill takes to index. `for_rule` sizes the window to the rule's
+/// own time gates (see `scalp_arming_attempts`); tests construct it directly.
+#[derive(Clone, Copy)]
+pub(crate) struct ScalpWaitCfg {
+    attempts: usize,
+    interval: Duration,
+}
+
+impl ScalpWaitCfg {
+    /// Window sized to the rule's gates, so a larger min-age / higher-low widens it
+    /// automatically — no fixed timeout to keep in sync with the params by hand.
+    pub(crate) fn for_rule(rule: &Tpsl2StrategyRule) -> Self {
+        Self {
+            attempts: super::scalp_arming_attempts(rule),
+            interval: Duration::from_millis(super::SCALP_ENTRY_WAIT_INTERVAL_MS),
+        }
+    }
+}
+
+/// Wait for the rule's scalp entry signal before any buy is sent: poll the WS-fed
+/// trade feed until [`find_scalp_entry`](super::super::entry::find_scalp_entry)
+/// holds on some trade, arming the snipe buy. Returns `true` once armed, `false`
+/// if the window elapses without a signal (the caller then drops the unentered
+/// position, exactly as a missed buy does).
+///
+/// In real mode the qualifying trade is only the **timing** signal — the actual
+/// entry price comes from the wallet's own on-chain fill, recorded later by
+/// [`adopt_existing_fill_if_present`] — so the returned fill is discarded and only
+/// its presence matters. This shares `find_scalp_entry` with the paper poll and the
+/// backtest, so all three resolve the same entry moment and live honors `p_entry_*`.
+pub(crate) async fn await_scalp_entry_signal(
+    mint: &str,
+    rule: &Tpsl2StrategyRule,
+    trade_repo: &TradeRepo,
+    cfg: ScalpWaitCfg,
+) -> bool {
+    for _ in 0..cfg.attempts {
+        match trade_repo.find_by_mint_all(mint).await {
+            Ok(trades) => {
+                if super::super::entry::find_scalp_entry(&trades, rule).is_some() {
+                    return true;
+                }
+            }
+            Err(err) => warn!(mint = %mint, "scalp-wait trade fetch failed: {err}"),
+        }
+        sleep(cfg.interval).await;
+    }
+    false
 }
 
 /// Snipe-buy `mint` and record the entry fill on first sight in the WS feed,

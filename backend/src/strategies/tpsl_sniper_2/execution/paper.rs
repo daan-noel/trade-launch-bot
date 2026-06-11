@@ -43,8 +43,13 @@ pub(crate) fn spawn_entry_fill_poll(
     let buy_amount = rule.buy_amount;
     tokio::spawn(async move {
         let mut recorded = false;
-        for _ in 0..super::BUY_POLL_MAX_ATTEMPTS {
-            sleep(Duration::from_millis(super::BUY_POLL_INTERVAL_MS)).await;
+        // Watch the live feed for the scalp entry signal over the arming window,
+        // sized to this rule's own gates (`scalp_arming_attempts`) so slow gates
+        // (min-age, higher-low) always have time to form. A signal needing longer
+        // than the window is missed live but still found by the backtest (no cutoff).
+        let attempts = super::scalp_arming_attempts(&rule);
+        for _ in 0..attempts {
+            sleep(Duration::from_millis(super::SCALP_ENTRY_WAIT_INTERVAL_MS)).await;
             let Ok(trades) = trade_repo.find_by_mint_all(&mint).await else {
                 continue;
             };
