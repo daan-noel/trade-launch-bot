@@ -26,14 +26,21 @@ use crate::storage::repositories::{
 /// fill. The entry price/tx/time come only from a real indexed trade; paper mode
 /// never synthesizes a fill from a create-time snapshot. If no fill is indexed
 /// within the window, the unentered position is dropped.
+///
+/// Entry resolution mirrors the backtest: the fill is the first trade where every
+/// configured scalp gate holds ([`find_scalp_entry`]). tpsl2 has no legacy
+/// first-slot fallback — a rule with no scalp gates never resolves a fill and the
+/// position is dropped — so paper entries always honor `p_entry_*` and agree with
+/// simulation.
 pub(crate) fn spawn_entry_fill_poll(
     trade_repo: TradeRepo,
     paper_repo: Tpsl2PaperTradingRepo,
     runtime: Arc<Tpsl2RuntimeCache>,
     mint: String,
     position_id: Uuid,
-    buy_amount: f64,
+    rule: Tpsl2StrategyRule,
 ) {
+    let buy_amount = rule.buy_amount;
     tokio::spawn(async move {
         let mut recorded = false;
         for _ in 0..super::BUY_POLL_MAX_ATTEMPTS {
@@ -41,7 +48,7 @@ pub(crate) fn spawn_entry_fill_poll(
             let Ok(trades) = trade_repo.find_by_mint_all(&mint).await else {
                 continue;
             };
-            if let Some(fill) = super::super::entry::find_entry_fill_in_trades(&trades, 5) {
+            if let Some(fill) = super::super::entry::find_scalp_entry(&trades, &rule) {
                 if let Ok(Some(prev)) = paper_repo.find_by_id(position_id).await {
                     let _ = paper_repo
                         .update_entry(

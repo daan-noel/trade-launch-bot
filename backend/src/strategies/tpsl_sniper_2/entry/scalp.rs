@@ -32,9 +32,10 @@ use crate::models::Tpsl2StrategyRule;
 /// sized to the launch-spike horizon. Revisit here if it needs tuning.
 const ALIVE_WINDOW_SECS: i64 = 10;
 
-/// Whether a rule configures **any** scalp entry gate. When false, the scalp
-/// entry path is skipped entirely (callers fall back to the legacy entry-fill),
-/// so a rule with no scalp gates behaves exactly as before.
+/// Whether a rule configures **any** scalp entry gate. tpsl2 has no other entry
+/// path (the legacy first-slot fill was removed), so when this is false the rule
+/// can never resolve an entry — the backtest rejects it up front and the live
+/// paper poll never fills.
 pub fn rule_configures_any_scalp_gate(rule: &Tpsl2StrategyRule) -> bool {
     none_if_zero_u64(rule.p_entry_min_age_secs).is_some()
         || none_if_zero_f64(rule.p_entry_min_alive_sol).is_some()
@@ -180,9 +181,9 @@ pub fn higher_low_confirmed(prefix: &[Trade], pullback_pct: f64, min_span_secs: 
 /// candidate must be a buy (we enter by buying, filling at its price). Trades are
 /// assumed chronologically sorted upstream.
 ///
-/// Returns `None` when the rule configures no scalp gate — callers must check
-/// [`rule_configures_any_scalp_gate`] and fall back to the legacy fill, so this
-/// can never silently buy the first trade.
+/// Returns `None` when the rule configures no scalp gate; callers gate on
+/// [`rule_configures_any_scalp_gate`] (the backtest rejects such a rule up front),
+/// so this is never a silent buy-everything path.
 pub fn find_scalp_entry(trades: &[Trade], rule: &Tpsl2StrategyRule) -> Option<EntryFill> {
     if !rule_configures_any_scalp_gate(rule) || trades.is_empty() {
         return None;

@@ -4,8 +4,8 @@
 //! Two concerns:
 //!   • criteria matching ([`token_matches_buy_rule`] / [`find_first_matching_buy_rule`])
 //!     — does a token satisfy a rule's buy filters?
-//!   • fill resolution ([`find_entry_fill_in_trades`]) — at what price/tx/time
-//!     did we actually enter?
+//!   • fill resolution ([`find_scalp_entry`], in [`scalp`]) — the first trade
+//!     where every configured scalp gate holds is the entry.
 //!
 //! **To add an entry criterion:** write a `check_*` function returning a
 //! [`CriterionOutcome`] and add it to the [`CRITERIA`] list. Every configured
@@ -17,7 +17,6 @@ use tracing::warn;
 use uuid::Uuid;
 
 use super::util::{none_if_zero_f64, none_if_zero_u64};
-use crate::models::trade::{Trade, TradeType};
 use crate::models::{Tpsl2StrategyRule, Token};
 
 mod scalp;
@@ -212,52 +211,9 @@ pub struct EntryFill {
     pub block_time: DateTime<Utc>,
 }
 
-/// Resolve the entry fill from a token's trade history: the highest-priced buy
-/// in the first slot block plus the first `second_block_cap` buys of the second
-/// block. Shared by the backtest (cap 1) and the live paper entry poll (cap 5).
-pub fn find_entry_fill_in_trades(trades: &[Trade], second_block_cap: usize) -> Option<EntryFill> {
-    if trades.is_empty() {
-        return None;
-    }
-
-    let first_slot = trades[0].slot;
-    let second_slot = trades.iter().find(|t| t.slot > first_slot).map(|t| t.slot);
-
-    let mut candidates: Vec<&Trade> = Vec::new();
-    for t in trades.iter() {
-        if t.trade_type != TradeType::Buy {
-            continue;
-        }
-        if t.slot == first_slot {
-            candidates.push(t);
-        } else if let Some(second_slot) = second_slot {
-            if t.slot == second_slot {
-                let already = candidates.iter().filter(|c| c.slot == second_slot).count();
-                if already < second_block_cap {
-                    candidates.push(t);
-                }
-            }
-        }
-    }
-
-    candidates
-        .into_iter()
-        .max_by(|a, b| {
-            a.price_per_token
-                .partial_cmp(&b.price_per_token)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .map(|t| EntryFill {
-            price: t.price_per_token,
-            tx_signature: t.tx_signature.clone(),
-            block_time: t.block_time,
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::trade::TradeType;
     use serde_json::{json, Value};
 
     fn base_time() -> DateTime<Utc> {
@@ -325,19 +281,6 @@ mod tests {
         r
     }
 
-    fn buy(price: f64, slot: u64, secs: i64) -> Trade {
-        Trade::new(
-            "mint".into(),
-            "wallet".into(),
-            TradeType::Buy,
-            price,
-            1.0,
-            format!("sig-{slot}-{secs}"),
-            slot,
-            base_time() + chrono::Duration::seconds(secs),
-        )
-    }
-
     #[test]
     fn matches_initial_buy_sol_within_tolerance() {
         let rule = rule_with_entry(Some(1.0), None, None, json!([]), None, None, 10.0);
@@ -393,14 +336,5 @@ mod tests {
 
         let rules = vec![inactive, active.clone()];
         assert_eq!(find_first_matching_buy_rule(&token, &rules), Some(active.id));
-    }
-
-    #[test]
-    fn entry_fill_picks_highest_among_admitted_buys() {
-        let trades = vec![buy(1.0, 5, 1), buy(2.0, 5, 1), buy(9.0, 6, 2)];
-        let fill = find_entry_fill_in_trades(&trades, 1).expect("entry fill");
-        // First block (slot 5) plus one admitted second-block buy (slot 6, cap 1);
-        // the highest price across them wins — here the 9.0 second-block trade.
-        assert_eq!(fill.price, 9.0);
     }
 }

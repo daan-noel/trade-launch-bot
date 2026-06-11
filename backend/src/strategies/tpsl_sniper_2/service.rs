@@ -187,7 +187,7 @@ impl Tpsl2StrategyService {
                         self.runtime.clone(),
                         mint.clone(),
                         position.id,
-                        rule.buy_amount,
+                        rule.clone(),
                     );
                 } else if rule.trade_mode == "real" {
                     let trader = self.trader.clone();

@@ -322,6 +322,14 @@ pub async fn create_tpsl_rule(
     rule.p_entry_min_organic_liq = req.p_entry_min_organic_liq;
     rule.p_exit_cohort_ratio = req.p_exit_cohort_ratio;
 
+    // A tpsl2 rule's only entry path is the scalp trade-window gates, so at least
+    // one must be configured — otherwise the rule can never resolve an entry. This
+    // is the scalp-side analogue of `rule_configures_any_criterion` on token params.
+    if !crate::strategies::tpsl_sniper_2::entry::rule_configures_any_scalp_gate(&rule) {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({"error": "Rule configures no scalp entry gate"}));
+    }
+
     let repo = Tpsl2StrategyRuleRepo::new(app_state.db.clone());
 
     match repo.insert(&rule).await {
@@ -443,6 +451,13 @@ pub async fn update_tpsl_rule(
             // edits rule fields.
             if let Some(trade_mode) = &req.trade_mode {
                 rule.trade_mode = trade_mode.clone();
+            }
+
+            // The merged rule must still carry at least one scalp entry gate — an
+            // edit that clears them all would leave a rule that can never enter.
+            if !crate::strategies::tpsl_sniper_2::entry::rule_configures_any_scalp_gate(&rule) {
+                return HttpResponse::BadRequest()
+                    .json(serde_json::json!({"error": "Rule configures no scalp entry gate"}));
             }
 
             match repo.update(&rule).await {
@@ -658,7 +673,7 @@ pub async fn simulate_tpsl_rule(
             let msg = e.to_string();
             if msg.contains("Rule not found") {
                 HttpResponse::NotFound().json(serde_json::json!({"error": msg}))
-            } else if msg.contains("All rule criteria are empty") {
+            } else if msg.contains("no scalp entry gate") {
                 HttpResponse::BadRequest().json(serde_json::json!({"error": msg}))
             } else {
                 tracing::error!("Simulation failed: {e}");

@@ -95,12 +95,13 @@ pub async fn run_backtest(
     let max_concurrent_tokens = none_if_zero_u64(rule.p_max_concurrent_tokens).map(|v| v as usize);
     let max_total_tokens = none_if_zero_u64(rule.p_max_total_tokens).map(|v| v as usize);
 
-    // A rule must configure at least one entry criterion — token-level OR a scalp
-    // trade-window gate — else it would match every token. The API maps this exact
-    // message to a 400.
-    let scalp_entry = entry::rule_configures_any_scalp_gate(&rule);
-    if !entry::rule_configures_any_criterion(&rule) && !scalp_entry {
-        return Err(anyhow!("All rule criteria are empty"));
+    // Scalp trade-window gates are the only entry path (the legacy first-slot fill
+    // was removed): a tpsl2 rule MUST configure at least one scalp gate, else it can
+    // never resolve an entry. Token-level criteria (p_token_*) remain an optional
+    // pre-filter for *which* tokens to weigh, not a fill resolver. The API maps this
+    // exact message to a 400.
+    if !entry::rule_configures_any_scalp_gate(&rule) {
+        return Err(anyhow!("Rule configures no scalp entry gate"));
     }
 
     let all_tokens = token_repo
@@ -133,14 +134,9 @@ pub async fn run_backtest(
             }
         };
 
-        // Scalp rules buy on the first trade where all gates hold; legacy rules
-        // use the first-slot fill. Both share `exit::find_trade_driven_exit`.
-        let entry = if scalp_entry {
-            entry::find_scalp_entry(&trades, &rule)
-        } else {
-            entry::find_entry_fill_in_trades(&trades, 1)
-        };
-        let Some(entry) = entry else {
+        // Buy on the first trade where every configured scalp gate holds; the exit
+        // then runs through `exit::find_trade_driven_exit`.
+        let Some(entry) = entry::find_scalp_entry(&trades, &rule) else {
             continue;
         };
         let (entry_price, entry_tx, entry_time) = (entry.price, entry.tx_signature, entry.block_time);
