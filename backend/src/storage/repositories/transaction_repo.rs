@@ -45,14 +45,19 @@ impl TransactionRepo {
         Self { pool }
     }
 
-    /// Persist the Helius transaction result. Ignores duplicates (idempotent).
+    /// Persist the Helius transaction result. Plain insert — `raw_transactions`
+    /// is weekly range-partitioned on `received_at` (migration 0012), and a
+    /// unique constraint on a partitioned table must include the partition key
+    /// (which isn't stable across reconnect re-delivery), so the old
+    /// `ON CONFLICT (signature)` dedup is gone. The WS pipeline writes each
+    /// signature once per session; rare duplicate rows are tolerated in this
+    /// write-only replay/analysis table.
     pub async fn insert(&self, tx: &RawTransaction) -> anyhow::Result<()> {
         sqlx::query(
             r#"
             INSERT INTO raw_transactions
                 (id, signature, slot, block_time, raw_data, received_at)
             VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (signature) DO NOTHING
             "#,
         )
         .bind(tx.id)

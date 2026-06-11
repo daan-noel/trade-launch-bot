@@ -215,6 +215,9 @@ async fn main() -> anyhow::Result<()> {
                 settings_tx.subscribe(),
             ));
 
+            // Weekly partition maintenance for raw_transactions (~2-month retention).
+            tokio::spawn(ingest::maintenance::run_partition_maintenance(db.clone()));
+
             let pipeline_task = tokio::spawn(pipeline.run(raw_rx));
             let db_writer = ingest::DbWriter::new(db.clone());
             let db_writer_task = tokio::spawn(db_writer.run(db_rx));
