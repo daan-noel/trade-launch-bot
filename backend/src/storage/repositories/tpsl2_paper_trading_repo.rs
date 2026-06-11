@@ -240,6 +240,19 @@ impl Tpsl2PaperTradingRepo {
         Ok(())
     }
 
+    /// Resume a run: set it back to `Running` and clear `finished_at` (the manual
+    /// "continue" path after a pause or finish). Recorded positions and counters
+    /// are left untouched so the run picks up exactly where it left off.
+    pub async fn resume_run(&self, run_id: Uuid) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE tpsl2_paper_test_run SET status = 'Running', finished_at = NULL WHERE id = $1",
+        )
+        .bind(run_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     // ---- positions --------------------------------------------------------
 
     /// Create a paper position bound to a run.

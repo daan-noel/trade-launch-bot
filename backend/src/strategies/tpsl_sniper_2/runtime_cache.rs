@@ -252,6 +252,35 @@ impl Tpsl2RuntimeCache {
         Ok(())
     }
 
+    /// Resume the rule's prior run (manual "continue"): flip its latest run back
+    /// to `Running` and keep its recorded positions + counters. Returns the run
+    /// if one was resumed, or `None` when the rule has no prior run (the caller
+    /// should `start_paper_run` a fresh one instead). Unlike `start_paper_run`,
+    /// the in-memory holding/total counters are preserved — they were warmed on
+    /// load (or carried live since the pause), so the run continues from where it
+    /// left off, including its progress toward the total-token cap.
+    pub async fn resume_paper_run(
+        &self,
+        pool: &PgPool,
+        rule_id: Uuid,
+    ) -> anyhow::Result<Option<PaperRun>> {
+        let repo = Tpsl2PaperTradingRepo::new(pool.clone());
+        let Some(run) = repo.current_run(rule_id).await? else {
+            return Ok(None);
+        };
+        if run.status != PaperRunStatus::Running {
+            repo.resume_run(run.id).await?;
+        }
+        self.paper_run_by_rule.insert(
+            rule_id,
+            PaperRunRef {
+                run_id: run.id,
+                run_seq: run.run_seq,
+            },
+        );
+        Ok(Some(run))
+    }
+
     /// Mark a paper rule's current run as Finished (cap reached + all exited).
     /// Returns the run if it transitioned, else None.
     pub async fn finish_paper_run(

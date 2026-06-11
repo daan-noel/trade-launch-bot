@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { DataTable } from 'components/table/DataTable';
 import { Badge, type BadgeVariant } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
-import { InlineAlert } from 'components/ui/Modal';
+import { InlineAlert, Modal } from 'components/ui/Modal';
 import {
   buildCreatePayload,
   buildUpdatePayload,
@@ -22,19 +22,23 @@ import {
 import { fmtTime } from 'components/tpsl2/utils';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import {
+  activateTpsl2Rule,
   createTpsl2Rule,
   deleteTpsl2Rule,
   fetchTpsl2MatchedTokens,
   fetchTpsl2PaperResult,
   fetchTpsl2RulePositions,
   fetchTpsl2Rules,
+  pauseTpsl2Rule,
   simulateTpsl2Rule,
+  stopTpsl2Rule,
   updateTpsl2Rule,
 } from 'services/api';
 import { connectPaperTestStream } from 'services/sse';
 import { POLL_INTERVAL_MS } from 'services/config';
 import type {
   PaperResultResponse,
+  PaperRunResponse,
   PaperTestFinishedEvent,
   RulePositionRecord,
   RuleRecord,
@@ -260,6 +264,165 @@ function inspectFromPosition(r: RulePositionRecord): InspectTarget {
   };
 }
 
+/** Confirm dialog for Stop & close. Spells out how many positions will be
+ *  force-exited and hard-warns when the rule trades real (on-chain sells). */
+function StopConfirmDialog({
+  rule,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  rule: RuleRecord;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: (rule: RuleRecord) => void;
+}) {
+  const open = rule.open_positions;
+  const real = rule.trade_mode === 'real';
+  return (
+    <Modal title={`Stop & close “${rule.rule_name}”?`} open onClose={onCancel}>
+      <div className="space-y-4 text-sm text-text">
+        {open > 0 ? (
+          <p>
+            <span className="font-mono font-bold">{open}</span> open position
+            {open === 1 ? '' : 's'} will be <span className="font-semibold">exited now</span> at the
+            current mark.
+          </p>
+        ) : (
+          <p className="text-text-dim">This rule has no open positions; it will just be deactivated.</p>
+        )}
+        {real && open > 0 && (
+          <InlineAlert variant="error">
+            ⚠ REAL mode — this sends live on-chain sell transactions.
+          </InlineAlert>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onCancel} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="danger" onClick={() => onConfirm(rule)} disabled={busy}>
+            {busy ? 'Stopping…' : 'Stop & close'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/** Re-activate prompt for a paper rule: loads the prior run so the user can
+ *  choose a fresh run vs continuing it. Defaults to Continue for a resumable
+ *  (non-finished) run, Fresh otherwise; warns that continuing a capped run takes
+ *  no new entries. Real rules never reach this — they activate directly. */
+function ReactivateDialog({
+  rule,
+  busy,
+  onCancel,
+  onActivate,
+}: {
+  rule: RuleRecord;
+  busy: boolean;
+  onCancel: () => void;
+  onActivate: (rule: RuleRecord, paperRun: 'fresh' | 'continue') => void;
+}) {
+  const [loading, setLoading] = useState(true);
+  const [run, setRun] = useState<PaperRunResponse | null>(null);
+  const [tokenCount, setTokenCount] = useState(0);
+  const [mode, setMode] = useState<'fresh' | 'continue'>('fresh');
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetchTpsl2PaperResult(rule.id)
+      .then((data) => {
+        if (cancelled) return;
+        setRun(data.run);
+        setTokenCount(data.tokens.length);
+        setMode(data.run && data.run.status !== 'Finished' ? 'continue' : 'fresh');
+      })
+      .catch(() => {
+        if (!cancelled) setRun(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rule.id]);
+
+  const finished = run?.status === 'Finished';
+
+  return (
+    <Modal title={`Activate “${rule.rule_name}”`} open onClose={onCancel}>
+      {loading ? (
+        <p className="text-text-dim">Loading previous run…</p>
+      ) : !run ? (
+        <div className="space-y-4 text-sm text-text">
+          <p>No previous run — a fresh paper run will start.</p>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={onCancel} disabled={busy}>
+              Cancel
+            </Button>
+            <Button variant="primary" onClick={() => onActivate(rule, 'fresh')} disabled={busy}>
+              {busy ? 'Activating…' : 'Activate'}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-4 text-sm text-text">
+          <p className="text-text-dim">
+            This rule has a previous run (
+            <span className="font-mono text-text">#{run.run_seq}</span>, {tokenCount} token
+            {tokenCount === 1 ? '' : 's'}). How do you want to start?
+          </p>
+          <div className="space-y-2">
+            <label className="flex cursor-pointer items-start gap-2">
+              <input
+                type="radio"
+                name="paperRun"
+                checked={mode === 'fresh'}
+                onChange={() => setMode('fresh')}
+                className="mt-1"
+              />
+              <span>
+                <span className="font-semibold">Fresh run</span>
+                <span className="text-text-dim"> — reset counters, clear run #{run.run_seq}’s positions.</span>
+              </span>
+            </label>
+            <label className="flex cursor-pointer items-start gap-2">
+              <input
+                type="radio"
+                name="paperRun"
+                checked={mode === 'continue'}
+                onChange={() => setMode('continue')}
+                className="mt-1"
+              />
+              <span>
+                <span className="font-semibold">Continue #{run.run_seq}</span>
+                <span className="text-text-dim"> — keep its tokens &amp; counters, resume taking entries.</span>
+              </span>
+            </label>
+          </div>
+          {finished && mode === 'continue' && (
+            <InlineAlert variant="error">
+              ⚠ Run #{run.run_seq} hit its token cap — continuing won’t take new entries until you
+              raise Max Total Tokens.
+            </InlineAlert>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={onCancel} disabled={busy}>
+              Cancel
+            </Button>
+            <Button variant="primary" onClick={() => onActivate(rule, mode)} disabled={busy}>
+              {busy ? 'Activating…' : 'Activate'}
+            </Button>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 export function Tpsl2Page() {
   const price = usePriceDisplay();
 
@@ -376,16 +539,88 @@ export function Tpsl2Page() {
     return () => clearTimeout(id);
   }, [paperNotice]);
 
-  const handleToggleActive = useCallback(async (rule: RuleRecord) => {
-    try {
-      const updated = await updateTpsl2Rule(rule.id, { is_active: !rule.is_active });
-      setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
-    } catch {
-      /* ignore */
-    }
+  // Lifecycle controls (activate / pause / stop & close). `lifecycleBusyId`
+  // disables a row's buttons mid-transition; the two dialogs gate the re-activate
+  // (fresh/continue) and stop-and-close (force-exit) flows.
+  const [lifecycleBusyId, setLifecycleBusyId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [stopConfirm, setStopConfirm] = useState<RuleRecord | null>(null);
+  const [reactivate, setReactivate] = useState<RuleRecord | null>(null);
+
+  const applyRuleUpdate = useCallback((updated: RuleRecord) => {
+    setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
   }, []);
 
-  const columns = useMemo(() => ruleColumns(handleToggleActive), [handleToggleActive]);
+  const handlePause = useCallback(
+    async (rule: RuleRecord) => {
+      setLifecycleBusyId(rule.id);
+      setActionError(null);
+      try {
+        applyRuleUpdate(await pauseTpsl2Rule(rule.id));
+      } catch (e) {
+        setActionError(e instanceof Error ? e.message : 'Failed to pause rule');
+      } finally {
+        setLifecycleBusyId(null);
+      }
+    },
+    [applyRuleUpdate],
+  );
+
+  const handleActivate = useCallback(
+    async (rule: RuleRecord, paperRun: 'fresh' | 'continue' = 'fresh') => {
+      setLifecycleBusyId(rule.id);
+      setActionError(null);
+      try {
+        applyRuleUpdate(await activateTpsl2Rule(rule.id, paperRun));
+        setReactivate(null);
+      } catch (e) {
+        setActionError(e instanceof Error ? e.message : 'Failed to activate rule');
+      } finally {
+        setLifecycleBusyId(null);
+      }
+    },
+    [applyRuleUpdate],
+  );
+
+  const handleActivateClick = useCallback(
+    (rule: RuleRecord) => {
+      // Paper rules prompt fresh-vs-continue; real rules activate immediately.
+      if (rule.trade_mode === 'paper') setReactivate(rule);
+      else handleActivate(rule, 'fresh');
+    },
+    [handleActivate],
+  );
+
+  const handleStopConfirm = useCallback(
+    async (rule: RuleRecord) => {
+      setLifecycleBusyId(rule.id);
+      setActionError(null);
+      try {
+        applyRuleUpdate(await stopTpsl2Rule(rule.id));
+        setStopConfirm(null);
+      } catch (e) {
+        setActionError(e instanceof Error ? e.message : 'Failed to stop rule');
+      } finally {
+        setLifecycleBusyId(null);
+      }
+    },
+    [applyRuleUpdate],
+  );
+
+  // Run-control column lives in `ruleColumns`; the lifecycle handlers stay here
+  // and are threaded in. Rebuilt only when the busy row changes (handlers are
+  // stable useCallbacks).
+  const ruleControls = useMemo(
+    () => ({
+      busyId: lifecycleBusyId,
+      onPause: handlePause,
+      onResume: (r: RuleRecord) => handleActivate(r, 'continue'),
+      onStop: (r: RuleRecord) => setStopConfirm(r),
+      onActivate: handleActivateClick,
+    }),
+    [lifecycleBusyId, handlePause, handleActivate, handleActivateClick],
+  );
+  const columns = useMemo(() => ruleColumns(ruleControls), [ruleControls]);
   const posCols = useMemo(() => positionColumns(price), [price]);
   const simCols = useMemo(() => simColumns(price), [price]);
 
@@ -626,6 +861,7 @@ export function Tpsl2Page() {
         }
       />
 
+      {actionError && <InlineAlert variant="error">{actionError}</InlineAlert>}
       {loading && <p className="text-text-dim">Loading rules…</p>}
       {error && <InlineAlert variant="error">{error}</InlineAlert>}
 
@@ -793,6 +1029,24 @@ export function Tpsl2Page() {
 
       {inspect && (
         <TokenInspectModal target={inspect.target} onClose={() => setInspect(null)} />
+      )}
+
+      {stopConfirm && (
+        <StopConfirmDialog
+          rule={stopConfirm}
+          busy={lifecycleBusyId === stopConfirm.id}
+          onCancel={() => setStopConfirm(null)}
+          onConfirm={handleStopConfirm}
+        />
+      )}
+
+      {reactivate && (
+        <ReactivateDialog
+          rule={reactivate}
+          busy={lifecycleBusyId === reactivate.id}
+          onCancel={() => setReactivate(null)}
+          onActivate={handleActivate}
+        />
       )}
 
       <RuleFormModal

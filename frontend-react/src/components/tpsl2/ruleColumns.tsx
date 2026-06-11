@@ -1,11 +1,135 @@
+import type { MouseEvent } from 'react';
 import type { ColumnDef } from 'components/table/types';
 import type { RuleRecord } from 'types';
 import { dashF, dashNum, dashPercent } from './utils';
 import { formatAge } from 'utils/format';
 import { cn } from 'lib/cn';
 import { Badge } from 'components/ui/Badge';
+import { Button } from 'components/ui/Button';
 
-export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnDef<RuleRecord>[] {
+/** Read-only lifecycle badge. The clickable activate/pause/stop controls now
+ *  live in the row actions; this column just *names* the state so it reads at a
+ *  glance — the amber `Draining` answers "why is an inactive rule still trading?"
+ *  (its open positions are still exiting). */
+function LifecycleBadge({ rule }: { rule: RuleRecord }) {
+  const style: Record<string, { cls: string; label: string }> = {
+    Active: { cls: 'border-green/40 bg-green/12 text-green', label: '● Active' },
+    Draining: {
+      cls: 'border-warning/40 bg-warning/12 text-warning',
+      label: `◐ Draining · ${rule.open_positions}`,
+    },
+    Finished: { cls: 'border-info/40 bg-info/12 text-info', label: '✓ Finished' },
+    Idle: { cls: 'border-white/10 bg-white/4 text-text-dim', label: '○ Idle' },
+  };
+  const s = style[rule.lifecycle] ?? style.Idle;
+  return (
+    <span
+      className={cn(
+        'inline-flex rounded-full border px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide',
+        s.cls,
+      )}
+      title={
+        rule.lifecycle === 'Draining'
+          ? `Inactive — ${rule.open_positions} open position(s) still exiting`
+          : rule.lifecycle
+      }
+    >
+      {s.label}
+    </span>
+  );
+}
+
+/** Callbacks + busy state the Run-control column needs. Supplied by the page so
+ *  the column can live in `ruleColumns` while the lifecycle handlers stay on the
+ *  page. */
+export interface RuleControlHandlers {
+  /** Id of the rule currently mid-transition (its buttons are disabled). */
+  busyId: string | null;
+  onPause: (rule: RuleRecord) => void;
+  onResume: (rule: RuleRecord) => void;
+  onStop: (rule: RuleRecord) => void;
+  onActivate: (rule: RuleRecord) => void;
+}
+
+/** State-aware run controls, rendered in their own column:
+ *   - Active        → Pause · Stop
+ *   - Draining (>0) → Resume · Stop
+ *   - Idle/Finished → Activate
+ *  Activate is visually distinct (green + outline ▷) from the teal filled ▶ Resume so
+ *  "start fresh" never reads the same as "continue". Clicks stop propagation so
+ *  they don't also select the row. */
+function RunControls({ rule, c }: { rule: RuleRecord; c: RuleControlHandlers }) {
+  const busy = c.busyId === rule.id;
+  const stop = (fn: () => void) => (e: MouseEvent) => {
+    e.stopPropagation();
+    fn();
+  };
+
+  if (rule.is_active) {
+    return (
+      <div className="flex items-center gap-1 justify-center">
+        <Button
+          variant="ghost"
+          size="xs"
+          disabled={busy}
+          onClick={stop(() => c.onPause(rule))}
+          title="Pause — stop new entries; open positions keep draining"
+        >
+          ⏸ Pause
+        </Button>
+        <Button
+          variant="danger"
+          size="xs"
+          disabled={busy}
+          onClick={stop(() => c.onStop(rule))}
+          title="Stop & close all open positions now"
+        >
+          ■ Stop
+        </Button>
+      </div>
+    );
+  }
+
+  if (rule.open_positions > 0) {
+    return (
+      <div className="flex items-center gap-1 justify-center">
+        <Button
+          variant="primary"
+          size="xs"
+          disabled={busy}
+          onClick={stop(() => c.onResume(rule))}
+          title="Resume — turn entries back on and keep the open positions (continues the run)"
+        >
+          ▶ Resume
+        </Button>
+        <Button
+          variant="danger"
+          size="xs"
+          disabled={busy}
+          onClick={stop(() => c.onStop(rule))}
+          title="Force-close the remaining open positions now"
+        >
+          ■ Stop
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <Button
+      variant="ghost"
+      size="xs"
+      disabled={busy}
+      onClick={stop(() => c.onActivate(rule))}
+      className="border-green/50 bg-green/10 font-semibold text-green hover:border-green/70 hover:bg-green/20 hover:text-green"
+      title="Activate — start taking entries"
+    >
+      ▷ Activate
+    </Button>
+  );
+}
+
+export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord>[] {
   return [
     {
       key: 'name',
@@ -221,26 +345,18 @@ export function ruleColumns(onToggleActive: (rule: RuleRecord) => void): ColumnD
       label: 'Status',
       group: 'state',
       sortable: true,
-      render: (r) => (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleActive(r);
-          }}
-          className={cn(
-            'inline-flex rounded-full border px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide transition hover:scale-105',
-            r.is_active
-              ? 'border-green/40 bg-green/12 text-green'
-              : 'border-white/10 bg-white/4 text-text-dim',
-          )}
-          title="Toggle active/inactive"
-        >
-          {r.is_active ? '● Active' : '○ Inactive'}
-        </button>
-      ),
-      sortValue: (r) => (r.is_active ? 1 : 0),
-      searchValue: (r) => String(r.is_active),
+      render: (r) => <LifecycleBadge rule={r} />,
+      sortValue: (r) => r.lifecycle,
+      searchValue: (r) => r.lifecycle,
+    },
+    {
+      key: 'controls',
+      label: 'Run',
+      group: 'run',
+      sortable: false,
+      width: '180px',
+      render: (r) => <RunControls rule={r} c={controls} />,
+      searchValue: () => '',
     },
   ];
 }

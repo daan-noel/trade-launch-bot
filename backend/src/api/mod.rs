@@ -220,6 +220,19 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 "/strategies/tpsl2/rules/{rule_id}/matched",
                 web::get().to(handlers::strategies::tpsl2::get_matched_tokens),
             )
+            // tpsl2 rule lifecycle (activate / pause / stop-and-close)
+            .route(
+                "/strategies/tpsl2/rules/{rule_id}/activate",
+                web::post().to(handlers::strategies::tpsl2::activate_tpsl_rule),
+            )
+            .route(
+                "/strategies/tpsl2/rules/{rule_id}/pause",
+                web::post().to(handlers::strategies::tpsl2::pause_tpsl_rule),
+            )
+            .route(
+                "/strategies/tpsl2/rules/{rule_id}/stop",
+                web::post().to(handlers::strategies::tpsl2::stop_tpsl_rule),
+            )
             // tpsl2 positions
             .route(
                 "/strategies/tpsl2/positions",
