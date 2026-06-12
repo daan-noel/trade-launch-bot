@@ -4,7 +4,6 @@ use uuid::Uuid;
 
 use crate::models::TpslRule;
 
-#[derive(Clone)]
 pub struct Tpsl2StrategyRuleRepo {
     pool: PgPool,
 }
