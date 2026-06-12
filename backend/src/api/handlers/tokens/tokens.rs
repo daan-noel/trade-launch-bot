@@ -238,7 +238,11 @@ pub async fn list_tokens(
         }
 
         let total = tokens.len();
-        let limit = limit_q.max(1).min(5_000) as usize;
+        // Paging happens over the in-memory cache (already cloned above), so a
+        // large page is cheap — only the JSON serialization grows. Keep a high
+        // ceiling so pages that load the whole list (e.g. Swing Detection's
+        // client-side filtering) aren't silently truncated as the cache grows.
+        let limit = limit_q.max(1).min(50_000) as usize;
         let offset = offset_q.max(0) as usize;
         let items: Vec<_> = tokens.into_iter().skip(offset).take(limit).collect();
         TokensListResponse { total, items }

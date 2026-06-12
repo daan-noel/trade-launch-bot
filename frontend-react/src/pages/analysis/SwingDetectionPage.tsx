@@ -61,6 +61,7 @@ import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 import { fetchProfiles, fetchTokenSwings, fetchTokenSwingsBatch } from 'services/api';
 import {
   apiErrorMessage,
+  TOKENS_LIST_LIMIT,
   useGetTokenTradesQuery,
   useGetTokensQuery,
 } from 'store/apiSlice';
@@ -76,6 +77,7 @@ import {
   setTokensFetched,
 } from 'store/swingDetectionSlice';
 import type {
+  SwingBatchEntry,
   SwingLegRecord,
   SwingParams,
   TokenRecord,
@@ -128,6 +130,14 @@ const LS_SWING_DETECTION_KEY = 'swing_detection_criteria';
 
 /** Default max idle gap (ms) for two swings to count as the same chain. */
 const DEFAULT_CHAIN_LATENCY_MS = 60_000;
+
+/**
+ * Max mints per `/api/tokens/swings/batch` request. The backend rejects batches
+ * larger than 200 (each mint is a serial DB load + scan on one worker thread),
+ * so "Swing Detection All" splits the filtered set into chunks of this size and
+ * runs them sequentially, merging the results. Keep this ≤ the backend cap.
+ */
+const SWING_BATCH_CHUNK_SIZE = 200;
 
 function mergeSwingFilter(partial: Partial<SwingFilterCriteria> | undefined): SwingFilterCriteria {
   if (!partial) return DEFAULT_SWING_FILTER;
@@ -274,7 +284,7 @@ export function SwingDetectionPage() {
     error: tokensError,
     refetch: refetchTokens,
   } = useGetTokensQuery(
-    { search: '', limit: 5000, offset: 0 },
+    { search: '', limit: TOKENS_LIST_LIMIT, offset: 0 },
     { skip: !tokensFetched },
   );
   const tokens = tokensData?.items ?? EMPTY_TOKENS;
@@ -374,6 +384,11 @@ export function SwingDetectionPage() {
   const [curveOnly, setCurveOnly] = useState(storedSwingCriteria.curveOnly);
   const [swingAllLoading, setSwingAllLoading] = useState(false);
   const [swingAllError, setSwingAllError] = useState<string | null>(null);
+  // Progress across the sequential batch chunks (done/total mints), so a run
+  // over thousands of tokens shows forward movement instead of a frozen spinner.
+  const [swingAllProgress, setSwingAllProgress] = useState<{ done: number; total: number } | null>(
+    null,
+  );
 
   // Batch result lives in Redux (as the serializable array the API returns);
   // index it by mint here for lookups and chain-stat grouping.
@@ -484,24 +499,37 @@ export function SwingDetectionPage() {
     [tokens, createdFrom, createdTo, filters],
   );
 
-  // Run detection across all currently-filtered tokens in one batch request,
-  // then keep the raw swings per mint for client-side chain grouping.
+  // Run detection across all currently-filtered tokens, then keep the raw swings
+  // per mint for client-side chain grouping. The backend caps each batch request
+  // at SWING_BATCH_CHUNK_SIZE mints, so the filtered set is split into chunks run
+  // sequentially (one at a time — the backend serves these on few worker threads)
+  // and their results merged.
   const handleRunAllSwings = useCallback(async () => {
     const mints = displayed.map((t) => t.mint_address);
     if (mints.length === 0) return;
     setSwingAllLoading(true);
     setSwingAllError(null);
+    setSwingAllProgress({ done: 0, total: mints.length });
     try {
-      const resp = await fetchTokenSwingsBatch(mints, swingParamsFromForm(swingParams), {
+      const params = swingParamsFromForm(swingParams);
+      const opts = {
         startMs: curveOnly || windowStartSec === '' ? null : Math.round(windowStartSec * 1000),
         endMs: curveOnly || windowEndSec === '' ? null : Math.round(windowEndSec * 1000),
         curveOnly,
-      });
-      dispatch(setSwingAllResults(resp.results));
+      };
+      const merged: SwingBatchEntry[] = [];
+      for (let i = 0; i < mints.length; i += SWING_BATCH_CHUNK_SIZE) {
+        const chunk = mints.slice(i, i + SWING_BATCH_CHUNK_SIZE);
+        const resp = await fetchTokenSwingsBatch(chunk, params, opts);
+        merged.push(...resp.results);
+        setSwingAllProgress({ done: i + chunk.length, total: mints.length });
+      }
+      dispatch(setSwingAllResults(merged));
     } catch (e) {
       setSwingAllError(e instanceof Error ? e.message : 'Swing detection failed');
     } finally {
       setSwingAllLoading(false);
+      setSwingAllProgress(null);
     }
   }, [displayed, swingParams, windowStartSec, windowEndSec, curveOnly, dispatch]);
 
@@ -1031,7 +1059,9 @@ export function SwingDetectionPage() {
         {swingAllError && <p className="mt-4 text-sm text-red">{swingAllError}</p>}
         {swingAllLoading && (
           <p className="mt-4 text-[12px] text-text-dim">
-            Running swing detection on {tokenCount} tokens…
+            {swingAllProgress
+              ? `Running swing detection… ${swingAllProgress.done} / ${swingAllProgress.total} tokens`
+              : `Running swing detection on ${tokenCount} tokens…`}
           </p>
         )}
       </div>

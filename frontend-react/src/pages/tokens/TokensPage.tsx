@@ -21,6 +21,7 @@ import type { TokenRecord } from 'types';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import {
   apiErrorMessage,
+  TOKENS_LIST_LIMIT,
   useGetTokenDetailQuery,
   useGetTokensQuery,
 } from 'store/apiSlice';
@@ -55,7 +56,7 @@ export function TokensPage() {
     isLoading: loading,
     error: tokensError,
   } = useGetTokensQuery(
-    { search: '', limit: 5000, offset: 0 },
+    { search: '', limit: TOKENS_LIST_LIMIT, offset: 0 },
     { pollingInterval: live ? POLL_INTERVAL_MS : 0 },
   );
   const tokens = tokensData?.items ?? EMPTY_TOKENS;

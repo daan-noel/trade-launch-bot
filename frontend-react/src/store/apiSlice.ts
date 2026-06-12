@@ -17,6 +17,15 @@ export interface TokensArgs {
   offset: number;
 }
 
+/**
+ * Page size used by the full-list consumers (Tokens + Swing detection) that
+ * pull the whole token set client-side for filtering/analysis. Kept as one
+ * shared constant so both pages request identical args and share the RTK cache
+ * entry, and so the value stays at or below the backend's list ceiling (50k) —
+ * a mismatch there would silently truncate the list again.
+ */
+export const TOKENS_LIST_LIMIT = 20_000;
+
 export interface TokensResponse {
   total: number;
   items: TokenRecord[];
@@ -44,8 +53,8 @@ export interface SellTokenArgs {
  * `keepUnusedDataFor` retains a cache entry for 5 minutes after the last
  * component unsubscribes, and `refetchOnMountOrArgChange: false` means
  * navigating back to a page reuses that cache instead of re-fetching. The big
- * 5000-row token list is therefore fetched once and shared by every page that
- * subscribes with the same args (Tokens + Swing detection).
+ * token list (see `TOKENS_LIST_LIMIT`) is therefore fetched once and shared by
+ * every page that subscribes with the same args (Tokens + Swing detection).
  */
 export const apiSlice = createApi({
   reducerPath: 'api',
