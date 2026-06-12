@@ -6,7 +6,10 @@
 //! become thin instantiations over a `TpslVariant`. See `TPSL_UNIFICATION_PLAN.md`.
 //!
 //! Built incrementally so every step compiles and is behavior-preserving:
-//! - step 2 (here): `repos` — the `PositionRepo` / `PaperRepo` / `RuleRepo`
-//!   traits + impls for the six concrete repos (additive; not yet consumed).
+//! - step 2: `repos` — the `PositionRepo` / `PaperRepo` / `RuleRepo` traits +
+//!   impls for the six concrete repos (additive; not yet consumed).
+//! - step 3 (here): `variant` — the `TpslVariant` trait (per-strategy repos,
+//!   tag, and scalp seam) + the `V1` / `V2` marker units.
 
 pub mod repos;
+pub mod variant;
