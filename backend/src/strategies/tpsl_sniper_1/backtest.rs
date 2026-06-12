@@ -1,15 +1,20 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
+use futures_util::stream::{self, StreamExt};
 use std::sync::Arc;
 use uuid::Uuid;
 
 use super::entry;
 use super::exit;
 use super::util::none_if_zero_u64;
+use crate::models::Token;
 use crate::state::app_state::AppState;
 use crate::storage::repositories::tpsl1_strategy_rule_repo::Tpsl1StrategyRuleRepo;
-use crate::storage::repositories::token_repo::TokenRepo;
 use crate::storage::repositories::trade_repo::TradeRepo;
+
+/// Max concurrent per-candidate trade fetches during a backtest. Bounds load on
+/// the PgPool while still replacing the old sequential per-token round-trip loop.
+const BACKTEST_FETCH_CONCURRENCY: usize = 16;
 
 /// Per-token simulation result.
 #[derive(Clone, serde::Serialize)]
@@ -90,89 +95,107 @@ pub async fn run_backtest(
         .map_err(|e| anyhow!("DB error fetching rule: {e}"))?
         .ok_or_else(|| anyhow!("Rule not found"))?;
 
-    let token_repo = TokenRepo::new(app_state.db.clone());
-
     let max_concurrent_tokens = none_if_zero_u64(rule.p_max_concurrent_tokens).map(|v| v as usize);
     let max_total_tokens = none_if_zero_u64(rule.p_max_total_tokens).map(|v| v as usize);
 
-    let all_tokens = token_repo
-        .find_all()
-        .await
-        .map_err(|e| anyhow!("DB error fetching tokens: {e}"))?;
-
+    // Candidate tokens come from the in-memory cache — the same source the live
+    // run evaluates — instead of `SELECT *`-ing the whole `tokens` table. Filter
+    // by reference, then clone only the matches into owned `Token`s for the
+    // concurrent fetch below.
+    //
     // Never trade Mayhem-Mode tokens: they carry an AI random-walk agent (2B supply,
     // net-sell drift, ±300% noise) for their first 24h — manufactured chaos, not a
     // snipeable edge. Exclude them outright (legacy-only policy, 2026-06 regime).
-    let tokens: Vec<_> = all_tokens
-        .into_iter()
-        .filter(|t| !t.is_mayhem_mode && entry::token_matches_buy_rule(t, &rule))
+    let tokens: Vec<Token> = app_state
+        .token_cache
+        .iter()
+        .filter(|e| {
+            let t = &e.value().token;
+            !t.is_mayhem_mode && entry::token_matches_buy_rule(t, &rule)
+        })
+        .map(|e| e.value().token.clone())
         .collect();
 
-    let trade_repo = TradeRepo::new(app_state.db.clone());
-    let mut candidates: Vec<(DateTime<Utc>, Option<DateTime<Utc>>, BacktestTokenResult)> =
-        Vec::with_capacity(tokens.len());
+    // Fetch each candidate's trades and resolve its entry/exit concurrently
+    // (bounded), replacing the old sequential per-token DB round-trip loop. Each
+    // future owns its data (a cloned-pool repo + an Arc'd rule); collecting the
+    // futures eagerly before the stream runs mirrors the db_writer pattern and
+    // sidesteps the `buffer_unordered` HRTB inference error a lazy `.map()` hits.
+    let rule = Arc::new(rule);
+    let per_token: Vec<_> = tokens
+        .into_iter()
+        .map(|token| {
+            let trade_repo = TradeRepo::new(app_state.db.clone());
+            let rule = rule.clone();
+            async move {
+                let trades = match trade_repo.find_by_mint_all(&token.mint_address).await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        tracing::warn!("Skipping {}: trade fetch failed: {e}", token.mint_address);
+                        return None;
+                    }
+                };
 
-    for token in &tokens {
-        let trades = match trade_repo.find_by_mint_all(&token.mint_address).await {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::warn!("Skipping {}: trade fetch failed: {e}", token.mint_address);
-                continue;
+                let entry = entry::find_entry_fill_in_trades(&trades, 1)?;
+                let (entry_price, entry_tx, entry_time) =
+                    (entry.price, entry.tx_signature, entry.block_time);
+
+                // All-time high across the token's full trade history.
+                let ath_price = trades
+                    .iter()
+                    .map(|t| t.price_per_token)
+                    .fold(entry_price, f64::max);
+
+                let exit = exit::find_trade_driven_exit(&trades, entry_time, entry_price, &rule);
+
+                let (exit_price, exit_tx, exit_time, exit_reason, holding_secs, pnl_percent, pnl_sol) =
+                    match exit {
+                        Some(fill) => {
+                            let secs = (fill.block_time - entry_time).num_seconds();
+                            let pct = ((fill.price - entry_price) / entry_price) * 100.0;
+                            let sol = rule.buy_amount * (pct / 100.0);
+                            (
+                                Some(fill.price),
+                                Some(fill.tx_signature),
+                                Some(fill.block_time),
+                                fill.reason.to_string(),
+                                Some(secs),
+                                Some(pct),
+                                Some(sol),
+                            )
+                        }
+                        None => (None, None, None, "Open".to_string(), None, None, None),
+                    };
+
+                let result = BacktestTokenResult {
+                    mint: token.mint_address.clone(),
+                    symbol: token.symbol.clone(),
+                    entry_price,
+                    ath_price,
+                    entry_amount: rule.buy_amount,
+                    entry_tx,
+                    entry_time,
+                    exit_price,
+                    exit_tx,
+                    exit_time,
+                    holding_secs,
+                    pnl_percent,
+                    pnl_sol,
+                    exit_reason,
+                    total_trades: trades.len(),
+                };
+
+                Some((entry_time, exit_time, result))
             }
-        };
+        })
+        .collect();
 
-        let Some(entry) = entry::find_entry_fill_in_trades(&trades, 1) else {
-            continue;
-        };
-        let (entry_price, entry_tx, entry_time) = (entry.price, entry.tx_signature, entry.block_time);
-
-        // All-time high across the token's full trade history.
-        let ath_price = trades
-            .iter()
-            .map(|t| t.price_per_token)
-            .fold(entry_price, f64::max);
-
-        let exit = exit::find_trade_driven_exit(&trades, entry_time, entry_price, &rule);
-
-        let (exit_price, exit_tx, exit_time, exit_reason, holding_secs, pnl_percent, pnl_sol) =
-            match exit {
-                Some(fill) => {
-                    let secs = (fill.block_time - entry_time).num_seconds();
-                    let pct = ((fill.price - entry_price) / entry_price) * 100.0;
-                    let sol = rule.buy_amount * (pct / 100.0);
-                    (
-                        Some(fill.price),
-                        Some(fill.tx_signature),
-                        Some(fill.block_time),
-                        fill.reason.to_string(),
-                        Some(secs),
-                        Some(pct),
-                        Some(sol),
-                    )
-                }
-                None => (None, None, None, "Open".to_string(), None, None, None),
-            };
-
-        let result = BacktestTokenResult {
-            mint: token.mint_address.clone(),
-            symbol: token.symbol.clone(),
-            entry_price,
-            ath_price,
-            entry_amount: rule.buy_amount,
-            entry_tx,
-            entry_time,
-            exit_price,
-            exit_tx,
-            exit_time,
-            holding_secs,
-            pnl_percent,
-            pnl_sol,
-            exit_reason,
-            total_trades: trades.len(),
-        };
-
-        candidates.push((entry_time, exit_time, result));
-    }
+    let mut candidates: Vec<(DateTime<Utc>, Option<DateTime<Utc>>, BacktestTokenResult)> =
+        stream::iter(per_token)
+            .buffer_unordered(BACKTEST_FETCH_CONCURRENCY)
+            .filter_map(|x| async move { x })
+            .collect()
+            .await;
 
     candidates.sort_by_key(|(entry_time, _, _)| *entry_time);
 

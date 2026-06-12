@@ -180,4 +180,23 @@ impl TokenRepo {
         Ok(rows.into_iter().map(Token::from).collect())
     }
 
+    /// Resolve display symbols for a specific set of mints (`mint = ANY($1)`), so a
+    /// caller that only needs a handful of symbols (e.g. a paper run's positions)
+    /// doesn't `SELECT *` the whole growing `tokens` table into memory. Returns a
+    /// `mint -> symbol` map; mints with no row are simply absent.
+    pub async fn find_symbols_for(
+        &self,
+        mints: &[String],
+    ) -> anyhow::Result<std::collections::HashMap<String, String>> {
+        if mints.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT mint_address, symbol FROM tokens WHERE mint_address = ANY($1)")
+                .bind(mints)
+                .fetch_all(&self.pool)
+                .await?;
+
+        Ok(rows.into_iter().collect())
+    }
 }

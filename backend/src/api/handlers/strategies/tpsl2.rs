@@ -624,7 +624,6 @@ pub async fn get_matched_tokens(
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
     let rule_repo = Tpsl2StrategyRuleRepo::new(app_state.db.clone());
-    let token_repo = TokenRepo::new(app_state.db.clone());
 
     let rule = match rule_repo.find_by_id(rule_id).await {
         Ok(Some(r)) => r,
@@ -639,30 +638,41 @@ pub async fn get_matched_tokens(
         }
     };
 
-    let tokens = match token_repo.find_all().await {
-        Ok(t) => t,
+    // Match against the in-memory token cache — the same source the live run
+    // evaluates — instead of `SELECT *`-ing the continuously-growing `tokens`
+    // table on every click. Filter by reference (non-matches are never cloned)
+    // on the blocking pool so the CPU scan can't stall an HTTP worker, mirroring
+    // the Tokens list endpoint.
+    let state = app_state.get_ref().clone();
+    let matched = web::block(move || -> Vec<MatchedTokenResult> {
+        state
+            .token_cache
+            .iter()
+            .filter(|e| token_matches_buy_rule(&e.value().token, &rule))
+            .map(|e| {
+                let t = &e.value().token;
+                MatchedTokenResult {
+                    mint: t.mint_address.clone(),
+                    symbol: t.symbol.clone(),
+                    name: t.name.clone(),
+                    created_at: t.created_at,
+                    initial_buy_sol: t.initial_buy_sol,
+                    cu_limit: t.cu_limit,
+                    cu_price: t.cu_price,
+                }
+            })
+            .collect()
+    })
+    .await;
+
+    match matched {
+        Ok(matched) => HttpResponse::Ok().json(matched),
         Err(e) => {
-            tracing::error!("Failed to load tokens for matched check: {e}");
-            return HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "Failed to load tokens"}));
+            tracing::error!("matched-token build failed: {e}");
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "Failed to build matched tokens"}))
         }
-    };
-
-    let matched: Vec<MatchedTokenResult> = tokens
-        .into_iter()
-        .filter(|t| token_matches_buy_rule(t, &rule))
-        .map(|t| MatchedTokenResult {
-            mint: t.mint_address,
-            symbol: t.symbol,
-            name: t.name,
-            created_at: t.created_at,
-            initial_buy_sol: t.initial_buy_sol,
-            cu_limit: t.cu_limit,
-            cu_price: t.cu_price,
-        })
-        .collect();
-
-    HttpResponse::Ok().json(matched)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -768,18 +778,16 @@ pub async fn paper_result_tpsl_rule(
         }
     };
 
-    // Resolve token symbols for display (best-effort; blank if unknown).
-    let symbols: std::collections::HashMap<String, String> =
-        match TokenRepo::new(app_state.db.clone()).find_all().await {
-            Ok(tokens) => tokens
-                .into_iter()
-                .map(|t| (t.mint_address, t.symbol))
-                .collect(),
-            Err(e) => {
-                tracing::warn!("Failed to load token symbols for paper result: {e}");
-                std::collections::HashMap::new()
-            }
-        };
+    // Resolve token symbols for display (best-effort; blank if unknown). Only the
+    // run's own position mints are looked up — no full-table scan.
+    let mints: Vec<String> = positions.iter().map(|p| p.mint.clone()).collect();
+    let symbols = TokenRepo::new(app_state.db.clone())
+        .find_symbols_for(&mints)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("Failed to load token symbols for paper result: {e}");
+            std::collections::HashMap::new()
+        });
 
     let tokens: Vec<BacktestTokenResult> = positions
         .into_iter()

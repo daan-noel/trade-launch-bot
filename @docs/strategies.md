@@ -25,7 +25,7 @@ The single `select!` loop **serializes** all position transitions across both st
 | `lifecycle.rs` | `PaperActivation{Fresh,Continue}`, `activate_rule`, `pause_rule`, `stop_and_close_rule` | rule state transitions (single source of truth) |
 | `runtime_cache.rs` | `Tpsl1RuntimeCache`, `PaperRunRef`, holding/position indexes, `time_exit_holding`, `exit_state_by_position` | in-memory rules/positions/counters/paper-runs/exit-memos; loaded from DB at boot |
 | `paper_run.rs` | `finish_paper_run_if_complete` | auto-finalize paper run when cap met + no open positions |
-| `backtest.rs` | `BacktestTokenResult`, `run_backtest` | DB-backed replay using the same `exit::find_trade_driven_exit` as live |
+| `backtest.rs` | `BacktestTokenResult`, `run_backtest` | replay using the same `exit::find_trade_driven_exit` as live; candidates from the in-memory `token_cache` (not a full `tokens` scan), per-candidate trade fetch is `buffer_unordered`-bounded (not a sequential N+1 loop) |
 | `util.rs` | `none_if_zero_f64/u64` | 0 = "unset" sentinel for rule params |
 
 `tpsl_sniper_2/` adds `cohort.rs` (launch-cohort primitive) and `entry/scalp.rs` (cohort-based scalp entry gates).
