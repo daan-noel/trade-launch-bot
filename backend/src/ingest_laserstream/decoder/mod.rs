@@ -224,6 +224,25 @@ impl HeliusDecoder {
             }));
         }
 
+        // The pump-instruction walk (`find_pump_ixs_anywhere`) is needed only by
+        // the balance-delta fallback (3b), Create (3c), and Migrate below — never
+        // by the common pure-trade tx, whose events all came from logs/inner-ixs.
+        // Resolve it at most once here and reuse it, instead of re-walking every
+        // instruction up to 3× per tx.
+        let has_create = kinds.iter().any(|k| matches!(k, InstructionKind::Create));
+        let has_migrate = kinds.iter().any(|k| matches!(k, InstructionKind::Migrate));
+        let needs_pump_ixs = (decoded_events.is_empty()
+            && kinds
+                .iter()
+                .any(|k| matches!(k, InstructionKind::Buy | InstructionKind::Sell)))
+            || has_create
+            || has_migrate;
+        let pump_ixs = if needs_pump_ixs {
+            find_pump_ixs_anywhere(message, meta, &account_keys, &self.pump_program_id)
+        } else {
+            Vec::new()
+        };
+
         // 3b. If no TradeEvent was decoded but logs indicate a buy/sell (rare
         //     edge case), fall back to balance-delta extraction.
         if decoded_events.is_empty() {
@@ -231,8 +250,6 @@ impl HeliusDecoder {
                 .iter()
                 .filter(|k| matches!(k, InstructionKind::Buy | InstructionKind::Sell))
             {
-                let pump_ixs =
-                    find_pump_ixs_anywhere(message, meta, &account_keys, &self.pump_program_id);
                 if let Some(pump_ix) = pump_ixs.first() {
                     let ix_accounts = resolve_pump_accounts(pump_ix, &account_keys);
                     if let Some(ev) = self.decode_trade_from_balances(
@@ -255,10 +272,7 @@ impl HeliusDecoder {
         }
 
         // 3c. Handle Create — look for the Create ix in outer OR inner instructions.
-        let has_create = kinds.iter().any(|k| matches!(k, InstructionKind::Create));
         if has_create {
-            let pump_ixs =
-                find_pump_ixs_anywhere(message, meta, &account_keys, &self.pump_program_id);
             if let Some(create_ix) = pump_ixs.iter().find(|ix| is_pump_create_ix(ix)) {
                 let ix_accounts = resolve_pump_accounts(create_ix, &account_keys);
                 events.extend(self.decode_create(
@@ -281,10 +295,7 @@ impl HeliusDecoder {
             }
         }
 
-        let has_migrate = kinds.iter().any(|k| matches!(k, InstructionKind::Migrate));
         if has_migrate {
-            let pump_ixs =
-                find_pump_ixs_anywhere(message, meta, &account_keys, &self.pump_program_id);
             if let Some(migrate_ix) = pump_ixs.iter().find(|ix| {
                 if let Some(bytes) = instruction_data_bytes(ix).as_deref() {
                     bytes.len() >= 8
