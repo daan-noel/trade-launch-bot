@@ -108,14 +108,16 @@ export function TokensPage() {
   // of a fresh round-trip. The short `keepUnusedDataFor` on `getTokensPage`
   // keeps these entries alive long enough for the click that follows.
   const prefetchPage = apiSlice.usePrefetch('getTokensPage');
+  // Depend on the boolean existence of an adjacent page, not on `total` itself:
+  // while live, every poll hands back a fresh `total` that's usually unchanged
+  // page-wise, and depending on the raw number re-fired both prefetches each
+  // tick. The booleans only flip when we actually cross a page boundary.
+  const hasNextPage = tableQuery.page * tableQuery.pageSize < total;
+  const hasPrevPage = tableQuery.page > 1;
   useEffect(() => {
-    if (tableQuery.page * tableQuery.pageSize < total) {
-      prefetchPage({ ...queryArgs, page: tableQuery.page + 1 });
-    }
-    if (tableQuery.page > 1) {
-      prefetchPage({ ...queryArgs, page: tableQuery.page - 1 });
-    }
-  }, [prefetchPage, queryArgs, tableQuery.page, tableQuery.pageSize, total]);
+    if (hasNextPage) prefetchPage({ ...queryArgs, page: tableQuery.page + 1 });
+    if (hasPrevPage) prefetchPage({ ...queryArgs, page: tableQuery.page - 1 });
+  }, [prefetchPage, queryArgs, tableQuery.page, hasNextPage, hasPrevPage]);
 
   // Resets the table to page 1 when the global filter panel changes.
   const filtersResetKey = useMemo(() => JSON.stringify(filters), [filters]);

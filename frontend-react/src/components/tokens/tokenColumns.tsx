@@ -19,8 +19,10 @@ import { cn } from 'lib/cn';
 /**
  * Token age in seconds, derived client-side from `created_at`. The server no
  * longer ships a `now`-relative `age` field (it would churn the list body on
- * every poll and defeat the endpoint's content-hash ETag); deriving it here also
- * lets the value tick live between fetches.
+ * every poll and defeat the endpoint's content-hash ETag); deriving it here
+ * recomputes the value on each render — i.e. it refreshes on every poll/refetch
+ * rather than baking a stale server snapshot into the row. (It does not tick on
+ * its own between fetches; nothing drives a re-render in that window.)
  */
 function ageSecondsOf(r: TokenRecord): number {
   return Math.max(0, (Date.now() - new Date(r.created_at).getTime()) / 1000);

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { cn } from 'lib/cn';
 import { Checkbox } from 'components/ui/Checkbox';
 import { Input } from 'components/ui/Input';
@@ -168,6 +168,20 @@ export function DataTable<R>({
     actionsTinted && 'shadow-[inset_0_0_0_1000px_rgba(255,255,255,0.02)]',
   );
 
+  // Per-visible-column group class (boundary divider + tint), precomputed once
+  // and held referentially stable so the memoized rows below can skip
+  // re-rendering when only the polled data — not the column layout — changes.
+  const groupClasses = useMemo(
+    () =>
+      colGroups.map((g, ci) =>
+        cn(
+          g?.isStart && ci > 0 && 'border-l border-white/10',
+          g?.tinted && 'shadow-[inset_0_0_0_1000px_rgba(255,255,255,0.02)]',
+        ),
+      ),
+    [colGroups],
+  );
+
   // Resolve each active column filter once (not per row): a numeric column whose
   // filter text is a comparison/range expression (`>5`, `1..10`) gets a numeric
   // predicate; everything else matches the displayed text as a substring.
@@ -177,6 +191,9 @@ export function DataTable<R>({
       needle: string;
       numeric: ((n: number) => boolean) | null;
     }[] = [];
+    // Server mode applies the per-column filters itself; resolving them locally
+    // would be dead work (`processed` short-circuits to `rows` below).
+    if (serverSide) return out;
     for (const [key, raw] of Object.entries(colFiltersMap)) {
       const text = raw.trim();
       if (!text) continue;
@@ -186,7 +203,7 @@ export function DataTable<R>({
       out.push({ col, needle: text.toLowerCase(), numeric });
     }
     return out;
-  }, [colFiltersMap, columns]);
+  }, [serverSide, colFiltersMap, columns]);
 
   const processed = useMemo(() => {
     // Server mode: `rows` already IS the filtered/sorted page — never reduce it
@@ -320,11 +337,16 @@ export function DataTable<R>({
     }
   };
 
-  const selectRow = (key: string, isSelected: boolean) => {
-    const next = isSelected ? null : key;
-    setInternalSelected(next);
-    onSelect?.(next);
-  };
+  // Stable identity so the memoized rows below don't re-render just because the
+  // table re-rendered (e.g. on a poll).
+  const selectRow = useCallback(
+    (key: string, isSelected: boolean) => {
+      const next = isSelected ? null : key;
+      setInternalSelected(next);
+      onSelect?.(next);
+    },
+    [onSelect],
+  );
 
   return (
     <div className="flex flex-col gap-0">
@@ -456,54 +478,25 @@ export function DataTable<R>({
               ) : (
                 pageRows.map((row, i) => {
                   const key = rowKey(row);
-                  const isSelected = selectedKey === key;
-                  const globalI = start + i;
                   return (
-                    <Fragment key={key}>
-                      <tr
-                        onClick={selectable ? () => selectRow(key, isSelected) : undefined}
-                        className={cn(
-                          selectable && 'cursor-pointer',
-                          'transition-colors hover:bg-primary/12',
-                          isSelected && selectable && 'bg-primary/18 shadow-[0_14px_32px_rgba(2,192,118,0.06)]',
-                        )}
-                      >
-                        <td className="border-b border-border px-2 py-1.5 text-center text-[11px] text-text-dim">
-                          {globalI + 1}
-                        </td>
-                        {visCols.map((col, ci) => (
-                          <td
-                            key={col.key}
-                            className={cn(
-                              'border-b border-border px-2 py-1.5 text-center text-text',
-                              groupCellCls(ci),
-                              hoverable && hoveredCol === ci + 1 && 'bg-primary/12',
-                            )}
-                            onMouseEnter={hoverable ? () => setHoveredCol(ci + 1) : undefined}
-                            onMouseLeave={hoverable ? () => setHoveredCol(null) : undefined}
-                          >
-                            {col.render(row)}
-                          </td>
-                        ))}
-                        {rowActions && (
-                          <td
-                            className={cn('border-b border-border px-2 py-1.5 text-center', actionsCellCls)}
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            {rowActions(row)}
-                          </td>
-                        )}
-                      </tr>
-                      {isSelected && rowDetail && (
-                        <tr className="bg-[rgba(15,23,42,0.88)]">
-                          <td colSpan={colCount} className="p-0">
-                            <div id={`detail-${key}`} className="border-t border-white/6 bg-bg-panel p-3">
-                              {rowDetail(row)}
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
+                    <TableRow
+                      key={key}
+                      row={row}
+                      rowKeyValue={key}
+                      index={start + i}
+                      visCols={visCols}
+                      groupClasses={groupClasses}
+                      hoverable={hoverable}
+                      hoveredCol={hoveredCol}
+                      setHoveredCol={setHoveredCol}
+                      selectable={selectable}
+                      isSelected={selectedKey === key}
+                      onSelectRow={selectRow}
+                      rowActions={rowActions}
+                      actionsCellCls={actionsCellCls}
+                      rowDetail={rowDetail}
+                      colCount={colCount}
+                    />
                   );
                 })
               )}
@@ -529,3 +522,100 @@ export function DataTable<R>({
     </div>
   );
 }
+
+interface TableRowProps<R> {
+  row: R;
+  rowKeyValue: string;
+  /** Zero-based global index → the `#` column shows `index + 1`. */
+  index: number;
+  visCols: ColumnDef<R>[];
+  /** Precomputed, referentially-stable group class per visible column. */
+  groupClasses: string[];
+  hoverable: boolean;
+  hoveredCol: number | null;
+  setHoveredCol: (col: number | null) => void;
+  selectable: boolean;
+  isSelected: boolean;
+  onSelectRow: (key: string, isSelected: boolean) => void;
+  rowActions?: (row: R) => ReactNode;
+  actionsCellCls: string;
+  rowDetail?: (row: R) => ReactNode;
+  colCount: number;
+}
+
+/**
+ * A single table row, extracted and memoized so that a re-render of the table
+ * (most often a poll handing back a fresh page) only re-renders the rows that
+ * actually changed. RTK Query's structural sharing preserves the object
+ * identity of unchanged rows across fetches, so their `row` prop stays
+ * referentially equal and `memo` skips them. Hover (shared `hoveredCol`) and
+ * selection still re-render the affected rows, exactly as before.
+ */
+function TableRowInner<R>({
+  row,
+  rowKeyValue,
+  index,
+  visCols,
+  groupClasses,
+  hoverable,
+  hoveredCol,
+  setHoveredCol,
+  selectable,
+  isSelected,
+  onSelectRow,
+  rowActions,
+  actionsCellCls,
+  rowDetail,
+  colCount,
+}: TableRowProps<R>) {
+  return (
+    <Fragment>
+      <tr
+        onClick={selectable ? () => onSelectRow(rowKeyValue, isSelected) : undefined}
+        className={cn(
+          selectable && 'cursor-pointer',
+          'transition-colors hover:bg-primary/12',
+          isSelected && selectable && 'bg-primary/18 shadow-[0_14px_32px_rgba(2,192,118,0.06)]',
+        )}
+      >
+        <td className="border-b border-border px-2 py-1.5 text-center text-[11px] text-text-dim">
+          {index + 1}
+        </td>
+        {visCols.map((col, ci) => (
+          <td
+            key={col.key}
+            className={cn(
+              'border-b border-border px-2 py-1.5 text-center text-text',
+              groupClasses[ci],
+              hoverable && hoveredCol === ci + 1 && 'bg-primary/12',
+            )}
+            onMouseEnter={hoverable ? () => setHoveredCol(ci + 1) : undefined}
+            onMouseLeave={hoverable ? () => setHoveredCol(null) : undefined}
+          >
+            {col.render(row)}
+          </td>
+        ))}
+        {rowActions && (
+          <td
+            className={cn('border-b border-border px-2 py-1.5 text-center', actionsCellCls)}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {rowActions(row)}
+          </td>
+        )}
+      </tr>
+      {isSelected && rowDetail && (
+        <tr className="bg-[rgba(15,23,42,0.88)]">
+          <td colSpan={colCount} className="p-0">
+            <div id={`detail-${rowKeyValue}`} className="border-t border-white/6 bg-bg-panel p-3">
+              {rowDetail(row)}
+            </div>
+          </td>
+        </tr>
+      )}
+    </Fragment>
+  );
+}
+
+// `memo` erases the generic; the cast restores the parameterized call signature.
+const TableRow = memo(TableRowInner) as typeof TableRowInner;
