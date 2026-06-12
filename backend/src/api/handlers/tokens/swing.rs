@@ -168,6 +168,16 @@ pub async fn detect_tokens_swings_batch(
         window_end_ms,
         curve_only,
     } = body.into_inner();
+
+    // Cap the request size: each mint can trigger a DB load + swing scan, all on
+    // one request thread, so an unbounded list could monopolize a worker.
+    const MAX_BATCH_MINTS: usize = 200;
+    if mints.len() > MAX_BATCH_MINTS {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": format!("too many mints: {} (max {MAX_BATCH_MINTS})", mints.len()),
+        }));
+    }
+
     let repo = TradeRepo::new(state.db.clone());
 
     let mut results = Vec::with_capacity(mints.len());

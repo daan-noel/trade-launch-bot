@@ -207,33 +207,52 @@ pub async fn list_tokens(
     state: web::Data<Arc<AppState>>,
     query: web::Query<PaginationParams>,
 ) -> impl Responder {
-    let mut tokens: Vec<TokenSummary> = state
-        .token_cache
-        .iter()
-        .map(|entry| TokenSummary::from(entry.value()))
-        .collect();
+    // Cloning + sorting + filtering the whole token cache is CPU work that would
+    // otherwise block one of the few (http_workers=2) async request threads.
+    // Run it on the blocking pool so a large cache can't stall other requests.
+    let state = state.get_ref().clone();
+    let search = query.search.clone();
+    let limit_q = query.limit;
+    let offset_q = query.offset;
 
-    // Sort by descending created_at so the newest tokens appear first.
-    tokens.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    let built = web::block(move || {
+        let mut tokens: Vec<TokenSummary> = state
+            .token_cache
+            .iter()
+            .map(|entry| TokenSummary::from(entry.value()))
+            .collect();
 
-    // Optional search filter (server-side, case-insensitive)
-    if let Some(q) = &query.search {
-        if !q.is_empty() {
-            let q = q.to_lowercase();
-            tokens.retain(|t| {
-                t.mint_address.to_lowercase().contains(&q)
-                    || t.symbol.to_lowercase().contains(&q)
-                    || t.name.to_lowercase().contains(&q)
-            });
+        // Sort by descending created_at so the newest tokens appear first.
+        tokens.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+        // Optional search filter (server-side, case-insensitive)
+        if let Some(q) = &search {
+            if !q.is_empty() {
+                let q = q.to_lowercase();
+                tokens.retain(|t| {
+                    t.mint_address.to_lowercase().contains(&q)
+                        || t.symbol.to_lowercase().contains(&q)
+                        || t.name.to_lowercase().contains(&q)
+                });
+            }
+        }
+
+        let total = tokens.len();
+        let limit = limit_q.max(1).min(5_000) as usize;
+        let offset = offset_q.max(0) as usize;
+        let items: Vec<_> = tokens.into_iter().skip(offset).take(limit).collect();
+        TokensListResponse { total, items }
+    })
+    .await;
+
+    match built {
+        Ok(resp) => HttpResponse::Ok().json(resp),
+        Err(e) => {
+            tracing::error!("list_tokens blocking build failed: {e}");
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({ "error": "failed to build token list" }))
         }
     }
-
-    let total = tokens.len();
-    let limit = query.limit.max(1).min(5_000) as usize;
-    let offset = query.offset.max(0) as usize;
-    let items: Vec<_> = tokens.into_iter().skip(offset).take(limit).collect();
-
-    HttpResponse::Ok().json(TokensListResponse { total, items })
 }
 
 /// `GET /api/tokens/:mint` — token detail from in-memory cache; falls back to DB.
