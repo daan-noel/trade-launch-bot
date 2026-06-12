@@ -24,7 +24,7 @@ pub use self::instructions::InstructionKind;
 use self::create::decode_create_events_from_logs;
 use self::instructions::{
     build_instruction_labels, collect_instruction_kinds, determine_instruction_type,
-    instruction_data_bytes,
+    instruction_data_bytes, prepare_instructions,
 };
 use self::parse::{
     extract_account_keys, extract_balances, extract_logs, find_pump_ixs_anywhere,
@@ -76,7 +76,12 @@ impl HeliusDecoder {
     }
 
     /// Decode a Helius `params.result` object (LaserStream update or wrapped RPC `getTransaction`).
-    pub fn decode_result(&self, result: &Value) -> DecodeOutput {
+    ///
+    /// Takes `result` **by value** and moves it into the shared
+    /// [`RawTransaction`]; the decode then borrows the `meta`/`message` subtrees
+    /// out of that stored copy, so the (large) JSON tree is moved once instead of
+    /// deep-cloned to keep it borrowable.
+    pub fn decode_result(&self, result: Value) -> DecodeOutput {
         let signature = match result["signature"].as_str() {
             Some(s) => s.to_string(),
             None => {
@@ -96,34 +101,37 @@ impl HeliusDecoder {
             .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
             .unwrap_or_else(Utc::now);
 
-        let meta = &result["transaction"]["meta"];
-        let message = &result["transaction"]["transaction"]["message"];
-
-        let logs = extract_logs(meta);
-
-        // Fast-path: a bonding-curve transaction mentions the pump.fun program.
-        // If it doesn't, it may still be a post-migration PumpSwap (AMM) swap for
-        // a token we track — those touch the AMM program instead and carry the
-        // pool rather than the base mint, so they're resolved via `pool_index`.
-        if !logs.iter().any(|l| l.contains(&self.pump_program_id)) {
-            if self.pool_index.is_some()
-                && logs.iter().any(|l| l.contains(PUMP_SWAP_PROGRAM_ID))
-            {
-                return self.decode_amm_live(result, &logs);
+        // Gate on logs before taking ownership of the JSON. A bonding-curve tx
+        // mentions the pump.fun program; if it doesn't, it may still be a
+        // post-migration PumpSwap (AMM) swap for a token we track — those touch
+        // the AMM program instead and carry the pool rather than the base mint,
+        // so they're resolved via `pool_index`. The borrow of `result` ends with
+        // this block so the Value can then be moved.
+        {
+            let logs = extract_logs(&result["transaction"]["meta"]);
+            if !logs.iter().any(|l| l.contains(&self.pump_program_id)) {
+                if self.pool_index.is_some() && logs.iter().any(|l| l.contains(PUMP_SWAP_PROGRAM_ID))
+                {
+                    drop(logs);
+                    return self.decode_amm_live(result);
+                }
+                return DecodeOutput::Ignored;
             }
-            return DecodeOutput::Ignored;
         }
 
-        let raw_tx = Arc::new(RawTransaction::new(
-            signature.clone(),
-            slot,
-            block_time,
-            result.clone(),
-        ));
+        // Move the JSON into the shared raw tx and borrow its subtrees from there.
+        let raw_tx = Arc::new(RawTransaction::new(signature.clone(), slot, block_time, result));
+        let meta = &raw_tx.raw_data["transaction"]["meta"];
+        let message = &raw_tx.raw_data["transaction"]["transaction"]["message"];
+        let logs = extract_logs(meta);
 
         let account_keys = extract_account_keys(message);
         let pre_balances = extract_balances(&meta["preBalances"]);
         let post_balances = extract_balances(&meta["postBalances"]);
+
+        // Decode each outer instruction's base58 `data` once, reused below for
+        // both kind-classification and label-building.
+        let outer_ixs = prepare_instructions(message, &account_keys);
 
         // ── Step 1a: decode all TradeEvents from "Program data:" log lines ────
         // Emitted by pump.fun via `emit!` for EVERY buy/sell, regardless of
@@ -155,15 +163,14 @@ impl HeliusDecoder {
         // known Pump.fun discriminators instead of relying on log text.
         // Note: Both SPL Token and Token-2022 use identical discriminators; token standard
         // is determined by examining instruction accounts, not the discriminator itself.
-        let kinds = collect_instruction_kinds(message, meta, &account_keys);
+        let kinds = collect_instruction_kinds(&outer_ixs, meta, &account_keys);
 
         // Determine the primary instruction type for this transaction.
         // If both buy and sell are present, choose whichever side moved more SOL.
         let instruction_type = determine_instruction_type(&kinds, &decoded_events);
 
         // ── Step 2: build instruction-order labels from message.instructions ───
-        let (instruction_labels, cu_limit, cu_price) =
-            build_instruction_labels(message, &account_keys);
+        let (instruction_labels, cu_limit, cu_price) = build_instruction_labels(&outer_ixs);
         let labels_json = json!(instruction_labels);
 
         debug!(
@@ -361,7 +368,7 @@ impl HeliusDecoder {
 
         let raw_tx = RawTransaction::new(signature.clone(), slot, block_time, result.clone());
         let account_keys = extract_account_keys(message);
-        let (labels, _, _) = build_instruction_labels(message, &account_keys);
+        let (labels, _, _) = build_instruction_labels(&prepare_instructions(message, &account_keys));
         let labels_json = json!(labels);
 
         let mut trades = Vec::new();
@@ -397,20 +404,24 @@ impl HeliusDecoder {
     /// LaserStream subscription. Mirrors [`decode_pump_swap_result`] but, since
     /// the stream gives us no mint up front, resolves each swap's `pool` to a tracked mint
     /// via the shared pool→mint index. Swaps for pools we don't track are
-    /// dropped. `logs` is reused from the caller to avoid re-extracting it for
-    /// the many AMM transactions that don't concern us.
-    fn decode_amm_live(&self, result: &Value, logs: &[&str]) -> DecodeOutput {
+    /// dropped. Takes `result` **by value** and moves it into the shared raw tx
+    /// (no deep clone), borrowing its subtrees from there for the decode.
+    fn decode_amm_live(&self, result: Value) -> DecodeOutput {
         let Some(index) = self.pool_index.as_ref() else {
             return DecodeOutput::Ignored;
         };
 
-        // Decode swaps and resolve pool→mint first; bail without cloning the
-        // (large) result JSON when none of the pools are ones we track.
-        let resolved: Vec<(DecodedAmmTrade, String)> = decode_pump_swap_trades_from_logs(logs)
-            .into_iter()
-            .filter(|ev| !Trade::is_dust(ev.quote_amount))
-            .filter_map(|ev| index.get(&ev.pool).map(|m| (ev, m.value().clone())))
-            .collect();
+        // Decode swaps and resolve pool→mint first; bail before moving the JSON
+        // into the raw tx when none of the pools are ones we track. The `logs`
+        // borrow ends with this block so the Value can then be moved.
+        let resolved: Vec<(DecodedAmmTrade, String)> = {
+            let logs = extract_logs(&result["transaction"]["meta"]);
+            decode_pump_swap_trades_from_logs(&logs)
+                .into_iter()
+                .filter(|ev| !Trade::is_dust(ev.quote_amount))
+                .filter_map(|ev| index.get(&ev.pool).map(|m| (ev, m.value().clone())))
+                .collect()
+        };
         if resolved.is_empty() {
             return DecodeOutput::Ignored;
         }
@@ -427,15 +438,10 @@ impl HeliusDecoder {
             .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
             .unwrap_or_else(Utc::now);
 
-        let message = &result["transaction"]["transaction"]["message"];
-        let raw_tx = Arc::new(RawTransaction::new(
-            signature.clone(),
-            slot,
-            block_time,
-            result.clone(),
-        ));
+        let raw_tx = Arc::new(RawTransaction::new(signature.clone(), slot, block_time, result));
+        let message = &raw_tx.raw_data["transaction"]["transaction"]["message"];
         let account_keys = extract_account_keys(message);
-        let (labels, _, _) = build_instruction_labels(message, &account_keys);
+        let (labels, _, _) = build_instruction_labels(&prepare_instructions(message, &account_keys));
         let labels_json = json!(labels);
 
         let mut events = Vec::with_capacity(resolved.len());

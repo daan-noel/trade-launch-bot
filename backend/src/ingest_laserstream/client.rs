@@ -242,7 +242,7 @@ async fn run_once(
                     Ok(Some(update)) => {
                         if let Some(UpdateOneof::Transaction(tx)) = update.update_oneof {
                             last_slot.fetch_max(tx.slot, Ordering::Relaxed);
-                            if let Some(value) = adapter::update_tx_to_value(&tx) {
+                            if let Some(value) = adapter::update_tx_to_value(&tx, pump_program_id) {
                                 if value_tx.send(value).await.is_err() {
                                     info!("LaserStream: pipeline receiver dropped — stopping");
                                     return Ok(());

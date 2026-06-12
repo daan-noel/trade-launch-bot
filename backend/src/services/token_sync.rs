@@ -413,7 +413,7 @@ pub async fn run_token_sync(
         let skip_trades = !req.include_post_migrate
             && migrate_slot.is_some_and(|ms| slot > ms);
 
-        match decoder.decode_result(&entry.result) {
+        match decoder.decode_result(entry.result.clone()) {
             DecodeOutput::Transaction { raw_tx, mut events } => {
                 sort_sync_events(&mut events);
 
@@ -725,6 +725,7 @@ async fn try_replay(
         &ctx.helius_api_key,
         account,
         from_slot,
+        &ctx.pump_program_id,
     )
     .await
     {
@@ -1361,13 +1362,13 @@ mod amm_verification {
                 .to_string();
 
             // gTFA path: wrap the archival item and decode.
-            let gtfa_out = decoder.decode_result(&wrap_transaction_result(&sig, item));
+            let gtfa_out = decoder.decode_result(wrap_transaction_result(&sig, item));
 
             // rpc path: fetch the same signature via getTransaction and decode.
             let Some(rpc_tx) = rpc.get_transaction(&sig).await.expect("getTransaction failed") else {
                 continue;
             };
-            let rpc_out = decoder.decode_result(&wrap_transaction_result(&sig, &rpc_tx));
+            let rpc_out = decoder.decode_result(wrap_transaction_result(&sig, &rpc_tx));
 
             let (g, r) = (legs(&gtfa_out), legs(&rpc_out));
             assert_eq!(g, r, "decode mismatch for {sig}\n  gtfa={g:?}\n  rpc={r:?}");

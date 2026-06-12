@@ -8,18 +8,39 @@
 
 use serde_json::{json, Value};
 
+use crate::config::constants::PUMP_SWAP_PROGRAM_ID;
+
 use super::proto::geyser::SubscribeUpdateTransaction;
 use super::proto::solana::storage::confirmed_block as scb;
 
 /// Convert a transaction update into the decoder's expected `result` object.
 ///
 /// Returns `None` if the update lacks the transaction / message / meta we need
-/// (e.g. a non-transaction update, or a malformed frame).
-pub fn update_tx_to_value(update: &SubscribeUpdateTransaction) -> Option<Value> {
+/// (e.g. a non-transaction update, or a malformed frame), or if a cheap log-based
+/// pre-filter shows the decoder would ignore it anyway — so the heap-heavy `Value`
+/// is never built for the many txs the subscription delivers that touch neither
+/// the pump.fun curve program nor a PumpSwap (AMM) pool. `pump_program_id` is the
+/// same curve program id the decoder gates on, so this never drops a decodable tx.
+pub fn update_tx_to_value(
+    update: &SubscribeUpdateTransaction,
+    pump_program_id: &str,
+) -> Option<Value> {
     let info = update.transaction.as_ref()?;
     let tx = info.transaction.as_ref()?;
     let message = tx.message.as_ref()?;
     let meta = info.meta.as_ref()?;
+
+    // Pre-filter: the decoder keeps only bonding-curve txs (curve program in the
+    // logs) and PumpSwap AMM swaps (AMM program in the logs); everything else is
+    // dropped one call later. Mirror that gate here on the raw `log_messages` and
+    // skip the whole `Value` build for the rest — the biggest per-event win.
+    if !meta
+        .log_messages
+        .iter()
+        .any(|l| l.contains(pump_program_id) || l.contains(PUMP_SWAP_PROGRAM_ID))
+    {
+        return None;
+    }
 
     let signature = bs58::encode(&info.signature).into_string();
 
@@ -127,6 +148,9 @@ mod tests {
         vec![b; 32]
     }
 
+    /// A pump.fun curve program id used to satisfy the log pre-filter in tests.
+    const TEST_PUMP_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+
     #[test]
     fn account_keys_concat_static_then_loaded_writable_then_readonly() {
         let message = scb::Message {
@@ -142,7 +166,10 @@ mod tests {
         let meta = scb::TransactionStatusMeta {
             loaded_writable_addresses: vec![pk(3)], // global index 2
             loaded_readonly_addresses: vec![pk(4)], // global index 3
-            log_messages: vec!["Program log: hi".to_string()],
+            log_messages: vec![
+                "Program log: hi".to_string(),
+                format!("Program {TEST_PUMP_PROGRAM_ID} invoke [1]"),
+            ],
             pre_token_balances: vec![scb::TokenBalance {
                 account_index: 1,
                 mint: "MINT".to_string(),
@@ -167,7 +194,8 @@ mod tests {
             slot: 42,
         };
 
-        let v = update_tx_to_value(&update).expect("adapter should produce a value");
+        let v = update_tx_to_value(&update, TEST_PUMP_PROGRAM_ID)
+            .expect("adapter should produce a value");
 
         // accountKeys order: static (0,1) -> loaded writable (2) -> loaded readonly (3)
         let keys = v["transaction"]["transaction"]["message"]["accountKeys"]

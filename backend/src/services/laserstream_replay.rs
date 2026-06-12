@@ -65,6 +65,7 @@ pub async fn replay_account_from_slot(
     api_key: &str,
     account: &str,
     from_slot: u64,
+    pump_program_id: &str,
 ) -> anyhow::Result<Vec<ReplayedTx>> {
     let mut client = connect(laserstream_url, api_key)
         .await
@@ -109,7 +110,7 @@ pub async fn replay_account_from_slot(
                         if let Some(UpdateOneof::Transaction(tx)) = update.update_oneof {
                             got_any = true;
                             if tx.slot >= from_slot {
-                                if let Some(result) = adapter::update_tx_to_value(&tx) {
+                                if let Some(result) = adapter::update_tx_to_value(&tx, pump_program_id) {
                                     out.push(ReplayedTx { slot: tx.slot, result });
                                 }
                             }

@@ -289,73 +289,32 @@ impl Tpsl1StrategyService {
             return;
         }
 
-        // Snapshot the latest price and the in-memory trade history once. The
-        // exit ladder (fixed TP/SL + E1–E4) walks these post-entry trades per
-        // position via `exit::should_position_exit_on_trade`; `current_price` is still
-        // the reference price for the resulting paper/real fill.
-        let (current_price, trades, trades_base) = match cache.get(&mint) {
-            Some(entry) => {
-                let state = entry.value();
-                (
-                    state.current_price.unwrap_or(0.0),
-                    state.trades.clone(),
-                    state.trades_base,
-                )
-            }
-            None => return,
-        };
+        // Evaluate every position's exit decision while holding the cache read
+        // guard. The exit ladder (fixed TP/SL + E1–E4) and the clock-state fold are
+        // synchronous, so we walk the in-memory trade history in place — no
+        // per-event deep clone of up to `MAX_TRADES_RETAINED` trades. We collect
+        // the positions that must exit, then drop the guard before any await on the
+        // (slow) paper/real exit path. `current_price` is the reference price for
+        // the resulting fill.
+        let current_price;
+        let mut to_exit = Vec::new();
+        {
+            let Some(entry) = cache.get(&mint) else {
+                return;
+            };
+            let state = entry.value();
+            current_price = state.current_price.unwrap_or(0.0);
+            let trades = &state.trades;
+            let trades_base = state.trades_base;
 
-        for position in positions {
-            if let Some(rule) = self.runtime.rule_by_id(position.rule_id) {
+            for position in positions {
+                let Some(rule) = self.runtime.rule_by_id(position.rule_id) else {
+                    continue;
+                };
                 if let Some(exit_reason) =
-                    super::exit::should_position_exit_on_trade(&position, &trades, &rule)
+                    super::exit::should_position_exit_on_trade(&position, trades, &rule)
                 {
-                    // Deep-clone only now that this position is actually exiting;
-                    // the holding index hands us a shared `Arc<Position>`.
-                    let mut position = (*position).clone();
-                    debug!(
-                        "Position {} for token {mint} triggered exit: {:?}",
-                        position.id, exit_reason
-                    );
-
-                    if rule.trade_mode == "paper" {
-                        let prev = position.clone();
-                        position.mark_exit_pending();
-                        if let Err(err) = self.paper_repo.update(&position).await {
-                            warn!(
-                                "Failed to mark position {} as ExitPending: {err}",
-                                position.id
-                            );
-                        } else {
-                            self.runtime.sync_position(Some(&prev), &position);
-                            info!(position_id = %position.id, mint = %mint,
-                                "[PAPER] Position marked ExitPending");
-                        }
-                        super::execution::paper::spawn_exit_fill_poll(
-                            self.trade_repo.clone(),
-                            self.paper_repo.clone(),
-                            self.runtime.clone(),
-                            self.pool.clone(),
-                            self.sse_tx.clone(),
-                            mint.clone(),
-                            position.id,
-                            position.entry_tx.clone(),
-                            position.entry_price,
-                            position.entry_time,
-                            rule.clone(),
-                            current_price,
-                            Utc::now(),
-                            exit_reason.to_string(),
-                        );
-                    } else if rule.trade_mode == "real" {
-                        self.trigger_real_exit(
-                            position,
-                            current_price,
-                            Utc::now(),
-                            exit_reason.to_string(),
-                        )
-                        .await;
-                    }
+                    to_exit.push((position, rule, exit_reason));
                 } else if position.entry_price > 0.0 {
                     // No exit on this trade — fold the freshly-printed trades into
                     // the position's memoized clock-exit state while we already
@@ -366,11 +325,60 @@ impl Tpsl1StrategyService {
                             position.id,
                             position.entry_price,
                             entry_time,
-                            &trades,
+                            trades,
                             trades_base,
                         );
                     }
                 }
+            }
+        }
+
+        for (position, rule, exit_reason) in to_exit {
+            // Deep-clone only now that this position is actually exiting; the
+            // holding index hands us a shared `Arc<Position>`.
+            let mut position = (*position).clone();
+            debug!(
+                "Position {} for token {mint} triggered exit: {:?}",
+                position.id, exit_reason
+            );
+
+            if rule.trade_mode == "paper" {
+                let prev = position.clone();
+                position.mark_exit_pending();
+                if let Err(err) = self.paper_repo.update(&position).await {
+                    warn!(
+                        "Failed to mark position {} as ExitPending: {err}",
+                        position.id
+                    );
+                } else {
+                    self.runtime.sync_position(Some(&prev), &position);
+                    info!(position_id = %position.id, mint = %mint,
+                        "[PAPER] Position marked ExitPending");
+                }
+                super::execution::paper::spawn_exit_fill_poll(
+                    self.trade_repo.clone(),
+                    self.paper_repo.clone(),
+                    self.runtime.clone(),
+                    self.pool.clone(),
+                    self.sse_tx.clone(),
+                    mint.clone(),
+                    position.id,
+                    position.entry_tx.clone(),
+                    position.entry_price,
+                    position.entry_time,
+                    rule.clone(),
+                    current_price,
+                    Utc::now(),
+                    exit_reason.to_string(),
+                );
+            } else if rule.trade_mode == "real" {
+                self.trigger_real_exit(
+                    position,
+                    current_price,
+                    Utc::now(),
+                    exit_reason.to_string(),
+                )
+                .await;
             }
         }
     }

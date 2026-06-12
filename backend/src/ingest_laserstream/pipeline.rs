@@ -171,7 +171,7 @@ impl IngestPipeline {
             tokio::select! {
                 maybe_val = value_rx.recv() => {
                     let Some(value) = maybe_val else { break };
-                    match self.decoder.decode_result(&value) {
+                    match self.decoder.decode_result(value) {
                         DecodeOutput::Transaction { raw_tx, mut events } => {
                             sort_events(&mut events);
                             let (events, save_raw) = filter_events(
