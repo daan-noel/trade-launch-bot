@@ -123,7 +123,11 @@ impl Trade {
             leg_index: 0,
             slot,
             block_time,
-            received_at: block_time,
+            // `received_at` is the wall-clock time this bot observed the trade,
+            // distinct from the on-chain `block_time`. The live decoder overrides
+            // it with the raw-tx receipt time; default to now (not block_time) so
+            // any path that doesn't override isn't mislabeled with chain time.
+            received_at: Utc::now(),
             virtual_sol_reserves: None,
             virtual_token_reserves: None,
             real_sol_reserves: None,
