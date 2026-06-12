@@ -24,8 +24,15 @@ use solana_sdk::{
     transaction::Transaction,
 };
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
+
+/// Monotonic JSON-RPC request id. A simple atomic counter replaces a
+/// `timestamp_millis` syscall on every `sendTransaction` (the id only needs to
+/// be unique per request, not a clock).
+static SEND_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 /// A transaction that landed on-chain and then reverted — as opposed to one
 /// that never landed (dropped / lost the Jito auction / expired). The
@@ -109,7 +116,7 @@ impl PumpFunTrader {
         let encoded = general_purpose::STANDARD.encode(bincode::serialize(tx)?);
         Ok(json!({
             "jsonrpc": "2.0",
-            "id": chrono::Utc::now().timestamp_millis().to_string(),
+            "id": SEND_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
             "method": "sendTransaction",
             "params": [
                 encoded,
@@ -160,12 +167,14 @@ impl PumpFunTrader {
         // Fan out: fire every endpoint concurrently as a detached task and return
         // the first acceptance. Losers keep submitting in the background (their
         // send on the dropped channel just no-ops), so the slowest endpoint never
-        // gates us while still adding its landing path.
+        // gates us while still adding its landing path. The serialized body is
+        // shared via `Arc` so each task clones a pointer, not the full tx JSON.
+        let body = Arc::new(body);
         let (done_tx, mut done_rx) = tokio::sync::mpsc::channel::<Result<String>>(urls.len());
         for url in urls {
             let http = self.http.clone();
             let url = url.clone();
-            let body = body.clone();
+            let body = Arc::clone(&body);
             let done_tx = done_tx.clone();
             tokio::spawn(async move {
                 let _ = done_tx.send(post_tx(&http, &url, &body).await).await;

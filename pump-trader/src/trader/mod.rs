@@ -47,7 +47,7 @@ use reserves::ReserveCache;
 
 use crate::constants::{
     EVENT_AUTHORITY, FEE_PROGRAM_ID, JITO_TIP_ACCOUNTS, PUMP_FUN_PROGRAM_ID,
-    PUMP_PROGRAM_UPGRADE_FEE_RECIPIENT, PUMP_SWAP_PROGRAM_ID, WSOL_MINT,
+    PUMP_PROGRAM_UPGRADE_FEE_RECIPIENT, PUMP_SWAP_PROGRAM_ID, TOKEN_PROGRAM_ID, WSOL_MINT,
 };
 use rand::seq::SliceRandom;
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -200,6 +200,9 @@ pub struct PumpFunTrader {
 
     // Static program IDs (parsed once)
     pump_program: Pubkey,
+    /// Legacy SPL Token program — the WSOL (quote) program on every AMM swap.
+    /// Parsed once here so the AMM hot path doesn't `Pubkey::from_str` it per trade.
+    token_program: Pubkey,
     system_program: Pubkey,
     event_authority: Pubkey,
     fee_program: Pubkey,
@@ -303,6 +306,7 @@ impl PumpFunTrader {
             token_2022_account_space: 182,
             token_2022_account_rent: 2_000_000,
             pump_program: Pubkey::from_str(PUMP_FUN_PROGRAM_ID).unwrap(),
+            token_program: Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap(),
             system_program: system_program::id(),
             event_authority: Pubkey::from_str(EVENT_AUTHORITY).unwrap(),
             fee_program,
