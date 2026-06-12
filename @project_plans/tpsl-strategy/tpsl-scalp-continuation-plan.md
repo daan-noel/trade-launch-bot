@@ -3,6 +3,40 @@
 > Single source of truth for entry + exit. **Supersedes** the old launch-sniper `N1–N10` plan
 > (deleted). Market numbers / param rationale live in `pumpfun-market-status-2026-and-tpsl-params.md`.
 
+## Implementation status (2026-06-11) — SHIPPED in `tpsl_sniper_2`
+
+The scalp model is **built and live in `tpsl_sniper_2`** (it is **tpsl2-only**;
+`tpsl_sniper_1` keeps the legacy token-fingerprint entry + virtual-reserve exits).
+
+- **Params:** all entry/exit columns exist on the rule, **renamed** to a
+  `p_entry_*` / `p_exit_*` convention (migration 0008 added them, 0010 renamed).
+  Map of plan-name → shipped column:
+  `p_min_age_secs`→`p_entry_min_age_secs`, `p_min_alive_sol`→`p_entry_min_alive_sol`,
+  `p_min_organic_sol`→`p_entry_min_organic_sol`, `p_pullback_pct`→`p_entry_pullback_pct`,
+  `p_higher_low_secs`→`p_entry_higher_low_secs`, `p_max_cohort_held`→`p_entry_max_cohort_held`,
+  `p_min_liquidity_sol`→`p_entry_min_liquidity_sol`, `p_min_organic_liq`→`p_entry_min_organic_liq`,
+  `p_cohort_exit_ratio`→`p_exit_cohort_ratio`, `take_profit`→`p_exit_take_profit`,
+  `stop_loss`→`p_exit_stop_loss`, `p_trailing_stop_pct`→`p_exit_trailing_stop_pct`,
+  `p_stall_secs`→`p_exit_stall_secs`, `p_time_stop_secs`→`p_exit_time_stop_secs`,
+  `p_liquidity_drop_pct`→`p_exit_liquidity_drop_pct`.
+- **Entry gate** — DONE: `tpsl_sniper_2/entry/scalp.rs` (`find_scalp_entry`,
+  `scalp_features`, `higher_low_confirmed`). All gates real + unit-tested
+  (age / alive / organic / higher-low / cohort-held / real-liquidity / organic-liq);
+  each inert at `None/0`. The backtest **requires** ≥1 scalp gate be set for a
+  tpsl2 rule.
+- **Cohort** — DONE: `tpsl_sniper_2/cohort.rs` (cohort window
+  `RUGGED_EARLY_SLOT_WINDOW = 150`, `held_ratio`, outside-net-SOL).
+- **Exit ladder** — DONE: all 7 in `tpsl_sniper_2/exit/mod.rs` in priority order
+  Cohort(E5) → Liquidity(E4) → StopLoss → TakeProfit → Trailing(E1) → Stall(E3) →
+  TimeStop(E2). **E4 reads REAL reserves** in tpsl2 (the "virtual→real switch" is
+  shipped); **E5 cohort-dump** is live. (tpsl1's E4 still uses virtual; no E5.)
+- **Mayhem exclusion** — DONE: `!t.is_mayhem_mode` filter in
+  `tpsl_sniper_2/backtest.rs` (and tpsl1's). *(The old `simulation_tpsl.rs:326`
+  reference is dead — that file no longer exists; the filter is now in `backtest.rs`.)*
+
+The remaining sections below are the original design rationale; the inline
+"build/built (EN)" markers are superseded by the status above.
+
 ## Goal
 
 - Skip rugs, catch the token that keeps climbing, take a **small** profit, get out fast.
@@ -51,8 +85,8 @@ skipped: 1.00 → 0.80 → 0.50   (freefall never makes a higher low)
 
 ## EXIT — sell on the FIRST that fires (top → bottom)
 
-- **Cohort/dev wallets start dumping** → out now (biggest danger). `p_cohort_exit_ratio` (~0.05) — **build (E5)**
-- **Liquidity draining** → out. `p_liquidity_drop_pct` (~25–30%) — built; **switch virtual→real reserves (E4)**
+- **Cohort/dev wallets start dumping** → out now (biggest danger). `p_exit_cohort_ratio` (~0.05) — **DONE (E5)**
+- **Liquidity draining** → out. `p_exit_liquidity_drop_pct` (~25–30%) — **DONE (E4), on REAL reserves**
 - **Down 25–30%** → cut loss. `stop_loss` — built (retune)
 - **Up 15–25%** → take the small profit *(the goal)*. `take_profit` — built (retune, was 60)
 - **Dropped 12–18% off peak** → lock it in. `p_trailing_stop_pct` — built (retune, was 25)
@@ -94,11 +128,12 @@ Reuses the rug-detection cohort window (`RUGGED_EARLY_SLOT_WINDOW = 150`) so the
 
 ---
 
-## Build order
+## Build order — all DONE (2026-06-11, in `tpsl_sniper_2`)
 
-1. **Higher-low gate + cohort-already-sold** — the two that split real continuation from the bot-eater. Backtest: does the gate split the shapes?
-2. **New-buyers + real-liquidity + age/alive.**
-3. **E5 cohort-dump + E4 real-reserves switch**, then retune TP/SL/trail/stall/time.
+1. ~~**Higher-low gate + cohort-already-sold**~~ — DONE (`entry/scalp.rs`, `cohort.rs`).
+2. ~~**New-buyers + real-liquidity + age/alive.**~~ — DONE (all entry gates in `scalp_features`).
+3. ~~**E5 cohort-dump + E4 real-reserves switch**~~ — DONE (`exit/mod.rs`).
+   Remaining is **tuning**, not building: retune TP/SL/trail/stall/time on recent data.
 
 ## Plumbing per new param (all inert at `0/NULL/false`)
 

@@ -64,7 +64,8 @@ Reference for how the candlestick/price chart is drawn from trade data — focus
 - Authoritative trade data comes from the pump `TradeEvent` (amounts + reserves).
 
 ## 10. Known pitfalls / correctness rules (bugs already fixed — keep these invariants)
-- **Truncated logs**: large/bundled txs get their `Program data:` log cut by Solana → no event → lossy balance-delta fallback (wrong SOL, no reserves). **Decode the `TradeEvent` from the `emit_cpi!` inner instruction instead** (Anchor tag `e445a52e51cb9a1d` + `TRADE_EVENT_DISCRIMINATOR`); inner-ix data is never truncated. (`decoder.rs::decode_trade_events_from_inner_ixs`)
+- **Truncated logs**: large/bundled txs get their `Program data:` log cut by Solana → no event → lossy balance-delta fallback (wrong SOL, no reserves). **Decode the `TradeEvent` from the `emit_cpi!` inner instruction instead** (Anchor tag `e445a52e51cb9a1d` + `TRADE_EVENT_DISCRIMINATOR`); inner-ix data is never truncated. (`ingest_laserstream/decoder/` —
+`decode_trade_events_from_inner_ixs`)
 - **Token units in fallback**: must read `uiTokenAmount.amount` (raw) not `uiAmount` (decimal) — else price inflated by 1e6.
 - **ATH stickiness**: store ATH authoritatively from the recompute so a re-sync can lower a previously over-stated value.
 - **Same-slot ordering**: never trust signature order for OHLC; use the reserve chain (§4).
@@ -74,4 +75,4 @@ Reference for how the candlestick/price chart is drawn from trade data — focus
 - `frontend-react/src/components/token-price-chart/chartBars.ts` — price selection, ordering, reserve chain, bucketing, OHLC.
 - `frontend-react/src/components/token-price-chart/TokenPriceChart.tsx` — rendering / lightweight-charts wiring.
 - `frontend-react/src/components/token-price-chart/{types.ts, BarFlowFields.tsx, constants.ts}`.
-- `backend/src/models/trade.rs`, `backend/src/ingest/decoder.rs`, `backend/src/state/token_cache.rs`, `backend/src/config/constants.rs`.
+- `backend/src/models/trade.rs`, `backend/src/ingest_laserstream/decoder/` (decoder split into `parse.rs`/`trade.rs`/`create.rs`/`instructions.rs`; WS `ingest/` removed), `backend/src/state/token_cache.rs`, `backend/src/config/constants.rs`.

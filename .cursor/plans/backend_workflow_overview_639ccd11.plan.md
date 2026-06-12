@@ -1,6 +1,6 @@
 ---
 name: Backend Workflow Overview
-overview: "The backend is a multi-task Tokio app: Helius WebSocket feeds a decode pipeline that updates in-memory caches, persists async to Postgres, triggers TP/SL strategies, and serves REST/SSE to the dashboard."
+overview: "The backend is a multi-task Tokio app: a LaserStream (Yellowstone gRPC) feed drives a decode pipeline that updates in-memory caches, persists async to Postgres, triggers TP/SL strategies, and serves REST/SSE to the dashboard."
 todos: []
 isProject: false
 ---
@@ -21,7 +21,7 @@ isProject: false
 ```mermaid
 flowchart LR
     subgraph ingest [Ingest Lane]
-        WS[HeliusWS] --> RawQ[raw_tx channel]
+        LS[LaserStream gRPC] --> RawQ[decoded_tx channel]
         RawQ --> Pipeline[IngestPipeline]
         Pipeline --> TokenCache[TokenCache]
         Pipeline --> CreatorCache[CreatorCache]
@@ -48,23 +48,23 @@ flowchart LR
         AppState --> Handlers["REST /api/*"]
     end
 
-    LiveMode[live_mode watch] --> WS
+    LiveMode[live_mode watch] --> LS
 ```
 
 ## Task Breakdown
 
 | Task | File | Role |
 |------|------|------|
-| **Helius WS** | [helius_ws.rs](backend/src/ingest/helius_ws.rs) | Connects to Helius, subscribes to pump program txs. Forwards raw JSON frames. Pauses when `live_mode=false`. |
-| **IngestPipeline** | [pipeline.rs](backend/src/ingest/pipeline.rs) | Hot path: decode → filter → update caches → enqueue DB writes → ping strategy → emit SSE |
-| **DbWriter** | [db_writer.rs](backend/src/ingest/db_writer.rs) | Batched async writes (tokens, trades, wallets, metrics, raw txs) — never blocks ingest |
+| **LaserStream ingest** | [client.rs](backend/src/ingest_laserstream/client.rs) | Connects to Helius LaserStream (Yellowstone gRPC), subscribes to pump program + dynamic migrated pools, reconnects with `from_slot` replay. Decodes via `adapter.rs` + `decoder/`. Pauses when `live_mode=false`. (WS `helius_ws.rs` removed — LaserStream is the sole transport.) |
+| **IngestPipeline** | [pipeline.rs](backend/src/ingest_laserstream/pipeline.rs) | Hot path: decode → filter → update caches → feed reserve cache / AMM prewarm → enqueue DB writes → ping strategy → emit SSE |
+| **DbWriter** | [db_writer.rs](backend/src/ingest_laserstream/db_writer.rs) | Batched async writes (tokens, trades, wallets, metrics, raw txs → `raw_transactions_grpc`) — never blocks ingest |
 | **StrategyRunner** | [runner.rs](backend/src/strategies/runner.rs) | Receives `StrategyPing` per mint; delegates to TP/SL |
-| **SOL price poller** | [sol_price.rs](backend/src/state/sol_price.rs) | Polls external price feed into `AppState` |
+| **SOL price poller** | [sol_price.rs](backend/src/services/sol_price.rs) | Polls external price feed into `AppState` |
 | **HTTP server** | [api/mod.rs](backend/src/api/mod.rs) | Optional (`HTTP_ENABLED`); serves dashboard + manual trades |
 
 ## Ingest Hot Path (per transaction)
 
-1. **Decode** — [decoder.rs](backend/src/ingest/decoder.rs) parses Helius JSON into `InternalEvent`s (TokenCreated, TradeExecuted, Migrated, CreatorActivity, Liquidity)
+1. **Decode** — [decoder/](backend/src/ingest_laserstream/decoder/) (via `adapter.rs`, which shapes the gRPC protobuf into the decoder's expected `Value`) parses into `InternalEvent`s (TokenCreated, TradeExecuted, Migrated, CreatorActivity, Liquidity)
 2. **Filter** — drop events for untracked tokens (except creation)
 3. **Cache update** — `TokenCache` / `CreatorCache` updated synchronously (source of truth for reads)
 4. **Queue DB** — `DbWriteOp` sent to `DbWriter` (try_send, drops if full)
@@ -73,20 +73,22 @@ flowchart LR
 
 ## Strategy Lane (TP/SL)
 
-- **TpslStrategyService** ([service_tpsl.rs](backend/src/strategies/tpsl/service_tpsl.rs)):
+- **TPSL services** — sibling strategies `tpsl_sniper_1/` (legacy) and
+  `tpsl_sniper_2/` (scalp/continuation), each with `service.rs` + `execution/`
+  ([service.rs](backend/src/strategies/tpsl_sniper_1/service.rs)):
   - `on_token_created` — evaluate rules against new token, may open position + buy via trader
   - `on_trade_executed` — check TP/SL triggers on price updates, may sell
-  - Background task reopens stale `ExitPending` positions
+  - Time-driven sweep exits stale positions even on silent tokens
 - **TpslRuntimeCache** — in-memory holding state loaded from DB at startup
-- **PumpFunTrader** ([pump_trader_optimized.rs](backend/src/trader/pump_trader_optimized.rs)) — on-chain buy/sell execution
+- **PumpFunTrader** (standalone [`pump-trader`](pump-trader/src/trader/) crate, re-exported via `backend/src/trader/mod.rs`) — on-chain buy/sell execution
 
 ## API Layer (read + control)
 
 Handlers read from **AppState** (caches, DB, trader). Key groups:
 
-- **Read**: `/api/tokens`, `/api/creators`, `/api/analysis`, `/api/positions`, `/api/strategies/tpsl/*`
+- **Read**: `/api/tokens`, `/api/creators`, `/api/analysis`, `/api/positions`, `/api/strategies/tpsl1/*` + `/api/strategies/tpsl2/*`
 - **Live stream**: `GET /api/stream` — SSE from ingest broadcast channel
-- **Control**: `PUT /api/system/live` toggles WS ingestion; CRUD for TP/SL rules
+- **Control**: `PUT /api/system/live` toggles ingestion; CRUD for TP/SL rules
 - **Manual trades**: `POST /api/solana/wallet/buy|sell` — direct on-chain via trader (bypasses strategy)
 
 ## Data Stores
@@ -98,4 +100,4 @@ Handlers read from **AppState** (caches, DB, trader). Key groups:
 
 - **Decoupled lanes**: ingest never awaits DB or strategy; uses bounded channels with drop-on-full
 - **Cache-first reads**: API and strategies read live state from caches; DB is persistence + history
-- **Live mode gate**: WS pauses without stopping the rest of the system (API still works)
+- **Live mode gate**: ingest pauses without stopping the rest of the system (API still works)

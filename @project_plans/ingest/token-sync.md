@@ -21,10 +21,12 @@ by `req.incremental`:
   sync) and only `getTransaction`s the genuinely-new signatures. Cheaper than
   paying gTFA's per-tx rate over a range live ingest mostly already has.
 
-(Optional, opt-in: when `SYNC_REPLAY_FETCH_NEW=true` a recently-synced token's
-Fetch New tries the LaserStream replay window first — zero Helius credits —
-before the RPC path. Off by default until the LaserStream transport is
-runtime-validated.)
+(LaserStream replay fast-path: a recently-synced token's Fetch New tries the
+LaserStream replay window first — zero Helius credits — before the RPC path. It is
+**on by default** when `HELIUS_LASERSTREAM_URL` is set, gated by that URL's presence
+plus a watermark-age window (`REPLAY_WINDOW_SECS`, 20 h) — there is **no**
+`SYNC_REPLAY_FETCH_NEW` env toggle. See `try_replay` in `token_sync.rs` and
+`services/laserstream_replay.rs`.)
 
 ## Are existing trade rows updated?
 

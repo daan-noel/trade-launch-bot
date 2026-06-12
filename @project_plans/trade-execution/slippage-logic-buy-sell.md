@@ -6,8 +6,11 @@ The trader has two venues, each with its own slippage handling:
 
 | | **Bonding curve** (pre-migration) | **PumpSwap AMM** (post-migration) |
 |---|---|---|
-| Buy | `buy.rs:166-181` | `amm.rs:197-206` |
-| Sell | `sell.rs:190-204` | `amm.rs:272-277` |
+| Buy | `buy.rs` (~159-174) | `amm.rs` (~203-207) |
+| Sell | `sell.rs` (~211-224) | `amm.rs` (~276-278) |
+
+> Line numbers below are approximate (the files drift); the named symbols are the
+> source of truth. All paths are in the `pump-trader/src/trader/` crate.
 
 Both take `slippage_bps: Option<u64>`, and in every case slippage is enforced
 **on-chain** by encoding a `min_out` floor into the instruction data — the
@@ -46,7 +49,7 @@ min_out = net * (10000 - slip) / 10000   (floored at 1)
 
 Two safety behaviors worth noting:
 
-- **`CURVE_FEE_BUFFER_BPS = 200`** (`constants.rs:111`) — a conservative 2% fee
+- **`CURVE_FEE_BUFFER_BPS = 200`** (`constants.rs`, ~L180) — a conservative 2% fee
   allowance subtracted before the slippage haircut. It deliberately
   *over*-estimates the fee so a fee misestimate only loosens protection, never
   causes a false revert (the real curve fee is ~1%).
@@ -57,7 +60,7 @@ Two safety behaviors worth noting:
 ## PumpSwap AMM
 
 Different default semantics: `None` here means **use the default 5%**, not "no
-protection" — `AMM_DEFAULT_SLIPPAGE_BPS = 500` (`constants.rs:103`). The AMM
+protection" — `AMM_DEFAULT_SLIPPAGE_BPS = 500` (`constants.rs`, ~L172). The AMM
 path is never the snipe path, so it always has reserves cached
 (`amm_reserves_cached`) and always applies a floor.
 

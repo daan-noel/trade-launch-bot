@@ -2,13 +2,22 @@
 
 > Goal: add a LaserStream **gRPC** transport for lower latency and reduced Helius
 > cost, while keeping the existing pipeline / decoder-downstream / strategy flow
-> intact. WS stays as a toggleable fallback.
+> intact.
 
-## Implementation status (2026-06-11) — IMPLEMENTED, compiles; runtime-validation pending
+## Implementation status (2026-06-11) — DONE; LaserStream is the SOLE transport
 
-Built in `backend/src/ingest_laserstream/` (self-contained clone), toggled by
-`INGEST_TRANSPORT=ws|laserstream` (default `ws`). Compiles + binary links on
-Windows; adapter unit test passes.
+The migration is complete and the WS path has been **removed**. `INGEST_TRANSPORT`
+and the `ws|laserstream` toggle are **gone** — `main.rs` spawns LaserStream
+unconditionally (`ingest_laserstream::client::run` with `HELIUS_LASERSTREAM_URL`).
+The old `backend/src/ingest/` folder (helius_ws.rs / WS pipeline) was deleted; the
+decoder now lives wholly under `backend/src/ingest_laserstream/decoder/` and is
+imported directly by `services::token_sync`. Everything below the "Context" header
+is the original plan, kept for history.
+
+- **Live transport:** `backend/src/ingest_laserstream/` is the only ingest module
+  (`client.rs`, `adapter.rs`, `pipeline.rs`, `db_writer.rs`, `maintenance.rs`,
+  `decoder/`, `generated/`). Compiles + binary links on Windows; adapter unit test
+  passes.
 
 - **Codegen committed** under `generated/` — no build-time protoc (the
   `yellowstone-grpc-proto` crate force-builds protoc from C++ via `protobuf-src`,
@@ -31,8 +40,9 @@ Windows; adapter unit test passes.
 Deviations from the original plan: `derive_pump_swap_pool` is reused (not
 duplicated); `from_slot` IS available now (proto extended) rather than deferred;
 the adapter rebuilds a `Value` (small alloc) — native protobuf decode is a future
-optimization. Remaining: fill `HELIUS_LASERSTREAM_URL` + region, run with
-`INGEST_TRANSPORT=laserstream`, compare decoded trades vs WS.
+optimization. The A/B-vs-WS validation step is moot now that WS is gone (a probe
+found the two transports effectively tied — see the LaserStream-vs-WS latency
+memory).
 
 ### Backfill (#1) — DONE (separately from the ingest transport)
 
@@ -43,14 +53,15 @@ The `token_sync` credit reduction landed independently of flipping the transport
 - **Fetch New** dedups requested signatures against trades already saved
   (`TradeRepo::saved_signatures`) so it doesn't re-`getTransaction` what live
   ingest already persisted.
-- **LaserStream replay fast-path** for Fetch New is wired but **opt-in**
-  (`SYNC_REPLAY_FETCH_NEW`, default off) until the LaserStream transport is
-  runtime-validated. See `@project_plans/ingest/token-sync.md`.
+- **LaserStream replay fast-path** for Fetch New is wired and **on by default**
+  when `HELIUS_LASERSTREAM_URL` is configured (gated by that URL's presence + a
+  20 h watermark-age window, not a separate env toggle). See
+  `@project_plans/ingest/token-sync.md`.
 
-The transport itself stays opt-in: `INGEST_TRANSPORT` defaults to `ws`; flip to
-`laserstream` only after the A/B decoded-trade comparison passes.
+## Context — original WS state (HISTORICAL — this folder/file is now deleted)
 
-## Context — current state
+> The WS pipeline described below was removed when LaserStream became the sole
+> transport. Kept only to explain what the migration replaced.
 
 - `backend/src/ingest/helius_ws.rs` opens a WS (`tokio_tungstenite`) to Helius
   **Atlas**, sends `transactionSubscribe` (`jsonParsed`), and forwards raw JSON
@@ -75,10 +86,10 @@ The transport itself stays opt-in: `INGEST_TRANSPORT` defaults to `ws`; flip to
 - **New folder**, fittable with the current workflow.
 - **gRPC raw data saved SEPARATELY** from the existing WS `raw_transactions`
   (its own table/store).
-- **Keep WS** as a toggleable alternative (`INGEST_TRANSPORT=ws|laserstream`);
-  may remove later after validation.
-- **LaserStream region/endpoint: TBD** (fill in later). API key already has the
-  LaserStream plan; same `HELIUS_API_KEY` authenticates gRPC via `x-token`.
+- ~~**Keep WS** as a toggleable alternative.~~ **Superseded:** WS was removed
+  2026-06-11 and LaserStream is now the sole transport (no `INGEST_TRANSPORT`).
+- **LaserStream region/endpoint:** now configured via `HELIUS_LASERSTREAM_URL`.
+  Same `HELIUS_API_KEY` authenticates gRPC via `x-token`.
 
 ## Target architecture
 
@@ -173,6 +184,10 @@ The transport itself stays opt-in: `INGEST_TRANSPORT` defaults to `ws`; flip to
 
 ## Open items
 
-- LaserStream region + gRPC endpoint URL.
-- Final gRPC raw persisted format (JSON vs protobuf bytes).
-- Whether to retire WS after validation.
+- ~~LaserStream region + gRPC endpoint URL.~~ — configured via `HELIUS_LASERSTREAM_URL`.
+- ~~Whether to retire WS after validation.~~ — **DONE: WS retired 2026-06-11**, LaserStream is sole transport.
+- Final gRPC raw persisted format: currently re-serialized JSON in
+  `raw_transactions_grpc` (migration 0009, partitioned). protobuf-bytes remains a
+  future option if storage size dominates.
+- Part A raw-storage retention/partitioning (`pg_partman`/cron drop) — partitioning
+  landed (migrations 0009/0011/0012); automated retention drop still open.

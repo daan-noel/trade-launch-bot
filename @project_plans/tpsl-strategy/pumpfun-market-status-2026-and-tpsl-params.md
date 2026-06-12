@@ -131,13 +131,14 @@ already correct: **LiquidityExit → StopLoss → TakeProfit → TrailingStop �
 
 ### 4a. Mayhem exclusion — shipped
 
-Config alone couldn't do it: `token_matches_rule` never read `is_mayhem_mode`, and the `p_ix_labels`
+Config alone couldn't do it: token matching never read `is_mayhem_mode`, and the `p_ix_labels`
 filter only checks labels are non-empty (not content), so `p_ix_labels=["Create"]` wouldn't exclude
-`"Create_v2"`/Mayhem. Fixed with a one-line filter in the live sim
-([`simulation_tpsl.rs:326`](../../backend/src/strategies/tpsl_sniper_1/simulation_tpsl.rs#L326)):
-`.filter(|t| !t.is_mayhem_mode && token_matches_rule(t, &rule))`. Mayhem tokens are now excluded from
-every backtest. (If real-mode trading later needs the same gate as a toggle, promote it to a
-`p_exclude_mayhem: bool` param via the N1 `p_exclude_rugged` plumbing pattern.)
+`"Create_v2"`/Mayhem. Fixed with a `!t.is_mayhem_mode` filter in the backtest entry path —
+now in [`tpsl_sniper_2/backtest.rs`](../../backend/src/strategies/tpsl_sniper_2/backtest.rs) (and
+tpsl1's `backtest.rs`). *(Originally `simulation_tpsl.rs:326`; that file was removed when the
+strategies were modularized into `entry/ exit/ execution/ backtest.rs`.)* Mayhem tokens are now
+excluded from every backtest. (If real-mode trading later needs the same gate as a toggle, promote
+it to a `p_exclude_mayhem: bool` param.)
 
 ---
 
