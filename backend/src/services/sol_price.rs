@@ -3,28 +3,12 @@ use std::sync::Arc;
 use tokio::sync::watch;
 use tracing::{info, warn};
 
-use crate::state::app_state::AppState;
-
 use super::clients::coingecko;
 
 const POLL_INTERVAL_SECS: u64 = 60;
 
 pub async fn fetch_latest_sol_price() -> anyhow::Result<f64> {
     coingecko::fetch_sol_usd().await
-}
-
-/// Fetches SOL/USD from CoinGecko and updates `AppState`; falls back to cached value on error.
-pub async fn refresh(state: &AppState) -> Option<f64> {
-    match fetch_latest_sol_price().await {
-        Ok(price) => {
-            state.set_sol_price(Some(price));
-            Some(price)
-        }
-        Err(err) => {
-            warn!("Failed to refresh SOL price: {err}");
-            state.latest_sol_price()
-        }
-    }
 }
 
 /// Background task that polls CoinGecko every 60 s and updates the SOL/USD watch channel.

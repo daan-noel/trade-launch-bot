@@ -3,7 +3,6 @@ use std::sync::Arc;
 use actix_web::{web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use crate::config::constants::SLIPPAGE_MAX_BPS;
-use crate::services::sol_price;
 use crate::state::app_state::AppState;
 use crate::storage::repositories::settings_repo::SettingsRepo;
 
@@ -23,7 +22,10 @@ pub struct UpdateLiveModeRequest {
 }
 
 pub async fn get_sol_price(state: web::Data<Arc<AppState>>) -> impl Responder {
-    let usd_rate = sol_price::refresh(state.get_ref()).await;
+    // Serve the cached price maintained by the background SOL-price poller
+    // (refreshed on the watch channel every 60s) rather than doing a synchronous
+    // CoinGecko fetch on every request.
+    let usd_rate = state.latest_sol_price();
     HttpResponse::Ok().json(SolPriceResponse { usd_rate })
 }
 
