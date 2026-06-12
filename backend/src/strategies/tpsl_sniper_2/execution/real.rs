@@ -496,23 +496,36 @@ async fn sell_until_balance_cleared(
         // confirm = false: this loop already confirms by polling the
         // LaserStream-fed `trades` balance below, so the trader skips its
         // redundant inner 1s RPC poll and returns as soon as the tx is accepted.
-        let sell_result = if is_migrated {
-            trader
-                .amm_sell(
-                    &mint,
-                    amount,
-                    &base_token_program,
-                    None,
-                    token_account_override.as_deref(),
-                    None,
-                    tip_level,
-                    false,
-                )
-                .await
-        } else {
-            trader
-                .sell_token_once(&mint, amount, None, is_cashback, token_account_override.as_deref(), None, tip_level, false)
-                .await
+        // Bound the send: a wedged RPC inside the trader (nonce fetch, reserve
+        // read, sender POST) must not hang the position until the 5-min stuck-
+        // position cleanup. On timeout we treat the attempt as a failed send and
+        // let the retry loop re-send with an escalated tip.
+        const SELL_SEND_TIMEOUT: Duration = Duration::from_secs(15);
+        let send = async {
+            if is_migrated {
+                trader
+                    .amm_sell(
+                        &mint,
+                        amount,
+                        &base_token_program,
+                        None,
+                        token_account_override.as_deref(),
+                        None,
+                        tip_level,
+                        false,
+                    )
+                    .await
+            } else {
+                trader
+                    .sell_token_once(&mint, amount, None, is_cashback, token_account_override.as_deref(), None, tip_level, false)
+                    .await
+            }
+        };
+        let sell_result = match tokio::time::timeout(SELL_SEND_TIMEOUT, send).await {
+            Ok(res) => res,
+            Err(_) => Err(anyhow::anyhow!(
+                "sell send timed out after {SELL_SEND_TIMEOUT:?}"
+            )),
         };
         match sell_result {
             Ok(true) => {
