@@ -1,4 +1,5 @@
 pub mod runner;
+pub mod tpsl_core;
 pub mod tpsl_sniper_1;
 pub mod tpsl_sniper_2;
 
