@@ -993,7 +993,7 @@ export function SwingDetectionPage() {
                     onChange={updateSwingParam}
                   />
                   <SwingRangeField
-                    label="Net flow / s (SOL)"
+                    label="Velocity (NetFlowSOL / Second)"
                     left={{ key: 'swing_high_min_net_flow_per_sec', placeholder: 'min' }}
                     right={{ key: 'swing_high_max_net_flow_per_sec', placeholder: 'max' }}
                     params={swingParams}
@@ -1012,7 +1012,7 @@ export function SwingDetectionPage() {
                     onChange={updateSwingParam}
                   />
                   <SwingRangeField
-                    label="Net flow / s (SOL)"
+                    label="Velocity (NetFlowSOL / Second)"
                     left={{ key: 'swing_low_min_net_flow_per_sec', placeholder: 'min' }}
                     right={{ key: 'swing_low_max_net_flow_per_sec', placeholder: 'max' }}
                     params={swingParams}
@@ -1286,7 +1286,7 @@ export function SwingDetectionPage() {
                         onChange={updateSingleSwingParam}
                       />
                       <SwingRangeField
-                        label="Net flow / s (SOL)"
+                        label="Velocity (NetFlowSOL / Second)"
                         left={{ key: 'swing_high_min_net_flow_per_sec', placeholder: 'min' }}
                         right={{ key: 'swing_high_max_net_flow_per_sec', placeholder: 'max' }}
                         params={singleSwingParams}
@@ -1305,7 +1305,7 @@ export function SwingDetectionPage() {
                         onChange={updateSingleSwingParam}
                       />
                       <SwingRangeField
-                        label="Net flow / s (SOL)"
+                        label="Velocity (NetFlowSOL / Second)"
                         left={{ key: 'swing_low_min_net_flow_per_sec', placeholder: 'min' }}
                         right={{ key: 'swing_low_max_net_flow_per_sec', placeholder: 'max' }}
                         params={singleSwingParams}
