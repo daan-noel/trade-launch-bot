@@ -226,8 +226,25 @@ impl TradeRepo {
         mint: &str,
         venue: &str,
     ) -> anyhow::Result<HashSet<String>> {
+        // Bound the scan to the venue's sync watermark: an incremental sync only
+        // ever lists signatures newer than that slot (`getSignaturesForAddress`
+        // `until` the watermark sig), so a saved signature below it can never be
+        // re-encountered and doesn't belong in the skip-set. COALESCE to 0 (all
+        // rows, the old behaviour) before the first sync stamps a watermark.
         let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT DISTINCT tx_signature FROM trades WHERE mint_address = $1 AND venue = $2",
+            r#"
+            SELECT DISTINCT t.tx_signature
+            FROM trades t
+            WHERE t.mint_address = $1
+              AND t.venue = $2
+              AND t.slot >= COALESCE(
+                  (SELECT CASE WHEN $2 = 'amm'
+                               THEN ti.last_synced_amm_slot
+                               ELSE ti.last_synced_curve_slot END
+                   FROM tokens_info ti
+                   WHERE ti.mint_address = $1),
+                  0)
+            "#,
         )
         .bind(mint)
         .bind(venue)
@@ -367,38 +384,40 @@ impl TradeRepo {
             cohort_net: f64,
             total_bought: f64,
         }
+        // One materialized scan of the mint's trades feeds the first-slot, cohort,
+        // and all three aggregates — instead of the previous four separate
+        // `WHERE mint_address = $1` scans of the trades table.
         let row = sqlx::query_as::<_, Row>(
             r#"
-            WITH first_slot AS (
-                SELECT MIN(slot) AS s0 FROM trades WHERE mint_address = $1
+            WITH mint_trades AS MATERIALIZED (
+                SELECT wallet_address, trade_type, token_amount, slot
+                FROM trades
+                WHERE mint_address = $1
+            ),
+            first_slot AS (
+                SELECT MIN(slot) AS s0 FROM mint_trades
             ),
             cohort AS (
-                SELECT DISTINCT t.wallet_address
-                FROM trades t, first_slot
-                WHERE t.mint_address = $1
-                  AND t.trade_type = 'buy'
-                  AND t.slot <= first_slot.s0 + $2
+                SELECT DISTINCT mt.wallet_address
+                FROM mint_trades mt, first_slot
+                WHERE mt.trade_type = 'buy'
+                  AND mt.slot <= first_slot.s0 + $2
             )
             SELECT
-              COALESCE((
-                SELECT SUM(CASE WHEN trade_type = 'buy' THEN token_amount ELSE 0 END)
-                FROM trades
-                WHERE mint_address = $1
-                  AND wallet_address IN (SELECT wallet_address FROM cohort)
-              ), 0.0) AS cohort_bought,
-              COALESCE((
-                SELECT SUM(CASE WHEN trade_type = 'buy' THEN token_amount
-                                WHEN trade_type = 'sell' THEN -token_amount
-                                ELSE 0 END)
-                FROM trades
-                WHERE mint_address = $1
-                  AND wallet_address IN (SELECT wallet_address FROM cohort)
-              ), 0.0) AS cohort_net,
-              COALESCE((
-                SELECT SUM(CASE WHEN trade_type = 'buy' THEN token_amount ELSE 0 END)
-                FROM trades
-                WHERE mint_address = $1
-              ), 0.0) AS total_bought
+              COALESCE(SUM(CASE
+                WHEN mt.wallet_address IN (SELECT wallet_address FROM cohort)
+                     AND mt.trade_type = 'buy' THEN mt.token_amount
+                ELSE 0 END), 0.0) AS cohort_bought,
+              COALESCE(SUM(CASE
+                WHEN mt.wallet_address IN (SELECT wallet_address FROM cohort) THEN
+                     CASE WHEN mt.trade_type = 'buy' THEN mt.token_amount
+                          WHEN mt.trade_type = 'sell' THEN -mt.token_amount
+                          ELSE 0 END
+                ELSE 0 END), 0.0) AS cohort_net,
+              COALESCE(SUM(CASE
+                WHEN mt.trade_type = 'buy' THEN mt.token_amount
+                ELSE 0 END), 0.0) AS total_bought
+            FROM mint_trades mt
             "#,
         )
         .bind(mint)
@@ -487,9 +506,16 @@ impl TradeRepo {
             .collect())
     }
 
-    /// Load all trades for every token in one query, oldest-first per mint.
-    pub async fn load_all_chronological(&self) -> anyhow::Result<Vec<Trade>> {
-        let rows = sqlx::query_as::<_, TradeDbRow>(
+    /// Stream every trade for every token, oldest-first per mint, invoking `f`
+    /// for each one as it arrives. Used by the cache seed so peak memory at
+    /// startup is a single row rather than a full in-memory copy of the entire
+    /// `trades` table on top of what then lands in the cache.
+    pub async fn for_each_chronological<F>(&self, mut f: F) -> anyhow::Result<()>
+    where
+        F: FnMut(Trade),
+    {
+        use futures_util::TryStreamExt;
+        let mut stream = sqlx::query_as::<_, TradeDbRow>(
             r#"
             SELECT id, mint_address, wallet_address, trade_type,
                    sol_amount, token_amount, price_per_token,
@@ -501,9 +527,11 @@ impl TradeRepo {
             ORDER BY mint_address, slot ASC, block_time ASC, tx_signature ASC, leg_index ASC
             "#,
         )
-        .fetch_all(&self.pool)
-        .await?;
+        .fetch(&self.pool);
 
-        rows.into_iter().map(Trade::try_from).collect()
+        while let Some(row) = stream.try_next().await? {
+            f(Trade::try_from(row)?);
+        }
+        Ok(())
     }
 }

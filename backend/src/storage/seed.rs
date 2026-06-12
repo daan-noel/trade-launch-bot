@@ -87,13 +87,15 @@ pub async fn seed_token_cache(pool: &PgPool, token_cache: Arc<TokenCache>) -> an
         }
     }
 
-    // 3. Full trade history per token
-    let all_trades = trade_repo.load_all_chronological().await?;
-    for trade in all_trades {
-        if let Some(mut state) = token_cache.get_mut(&trade.mint_address) {
-            state.trades.push(trade);
-        }
-    }
+    // 3. Full trade history per token — streamed row-by-row so startup never
+    // holds a full duplicate of the trades table on top of the cache copy.
+    trade_repo
+        .for_each_chronological(|trade| {
+            if let Some(mut state) = token_cache.get_mut(&trade.mint_address) {
+                state.trades.push(trade);
+            }
+        })
+        .await?;
 
     info!("Cache seed complete: {} tokens loaded from DB", total);
 
