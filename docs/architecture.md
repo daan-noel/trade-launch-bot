@@ -1,0 +1,65 @@
+# Architecture — backend skeleton & wiring
+
+File-level map of the `backend` crate (binary-only). Reference this instead of re-reading `backend/src/`.
+Subsystem deep-dives: [ingest.md](ingest.md) · [strategies.md](strategies.md) · [trade-execution.md](trade-execution.md) · [database.md](database.md) · [frontend.md](frontend.md).
+
+## Two-crate split
+- `pump-trader/` — standalone trade-execution crate (`pump_trader`). Has `lib.rs` + real unit tests. See [trade-execution.md](trade-execution.md).
+- `backend/` — ingest, strategies, storage, HTTP API. Binary-only (`--bin backend`, no `lib.rs`).
+- `backend/src/trader/mod.rs` re-exports `pump_trader::{PumpFunTrader, TraderConfig, WalletHolding}`.
+
+## Composition root — `backend/src/main.rs`
+`main` builds config → trader → DB → shared state → long-lived tokio tasks joined in one `tokio::select!` (any exit ⇒ log + stop).
+- `require_bearer_auth()` — Actix middleware; mutating verbs need bearer **only if** `API_AUTH_TOKEN` set, GET/OPTIONS always pass.
+- `parse_wallet_keypair()` — base58 → `Keypair`.
+- `run_probe()` — one-shot `probe` subcommands (ladder/fanout/simulate-sell/holdings), run before DB/ingest, then exit.
+
+**Long-lived tasks:** ingest gRPC producer → ingest pipeline → DbWriter · StrategyRunner · SOL price poller · pool-subscription refresh · partition maintenance · optional HTTP server.
+
+**Shared state (Arc + channels created here):** `TokenCache`, `Tpsl1RuntimeCache`/`Tpsl2RuntimeCache`, `TokenListCache`, `sol_price` watch, `app_settings` watch, `live_mode` watch, `sse_tx` broadcast, `TradeSignals` (wakeup hub), `pool_index` (DashMap), `pools_changed` (Notify).
+
+## Top-level module layout — `backend/src/`
+| Module | Responsibility |
+|---|---|
+| `api/` | HTTP route registration + handlers (tokens, trading, strategies, system) |
+| `analyzers/` | `swing_analyzer.rs` — price-reversal (swing) detection over in-memory trades |
+| `config/` | `settings.rs` (env load) + `constants.rs` (pump.fun/Raydium program IDs, curve params) |
+| `ingest_laserstream/` | Yellowstone gRPC live transport → pipeline → db_writer. See [ingest.md](ingest.md) |
+| `models/` | Domain types (Token, Trade, Position, PaperRun, SseEvent, Tpsl{1,2}Rule, Wallet*) |
+| `services/` | `sol_price.rs`, `token_sync.rs` (RPC backfill), `helius_rpc.rs`, `laserstream_replay.rs`, `wallet_tokens.rs`, `clients/`, `http.rs` |
+| `state/` | In-memory shared state (below) |
+| `storage/` | Postgres + repositories. See [database.md](database.md) |
+| `strategies/` | StrategyRunner + tpsl_sniper_{1,2}. See [strategies.md](strategies.md) |
+| `trader/` | Re-export shim for `pump-trader` |
+
+## HTTP API — `backend/src/api/`
+- `api/mod.rs` — `configure()` registers all `/api/*` routes. Scopes: `/api/token(s)/*`, `/api/stream`, `/api/system/*`, `/api/strategies/tpsl{1,2}/*`, `/api/solana/*`, `/api/profiles|wallets|tags`, `/api/creators`, `/api/analysis`.
+- Handlers are thin: take `web::Data<Arc<AppState>>`, delegate to services/repos.
+
+| Handler file | Owns |
+|---|---|
+| `handlers/tokens/tokens.rs` | `list_tokens`, `get_token`, `get_trades` |
+| `handlers/tokens/sync.rs` | `sync_token`, `preview_sync` (RPC backfill, gated by `SyncGate`) |
+| `handlers/tokens/analysis.rs` | `get_token_analysis`, `list_creators`, `get_creator`, `list_analysis_results` |
+| `handlers/tokens/swing.rs` | `detect_token_swings`, `detect_tokens_swings_batch` |
+| `handlers/trading/solana.rs` | `manual_buy`, `manual_sell`, `get_wallet_tokens`, `get_wallet_token(_balance)`, `get_prices` |
+| `handlers/system/stream.rs` | `stream_events` — SSE broadcast (`/api/stream`) |
+| `handlers/system/system.rs` | `get/set_live_mode`, `get_sol_price`, `get/update_settings` |
+| `handlers/system/wallets.rs` | profile/wallet/tag CRUD |
+| `handlers/strategies/tpsl1.rs` | rule CRUD + lifecycle (`activate`/`pause`/`stop`), `matched`, `simulate`, `paper-result` |
+| `handlers/strategies/tpsl1_positions.rs` | position queries (by id/mint/wallet/rule, list) |
+| `handlers/strategies/tpsl2*.rs` | identical surface for TPSL2 |
+
+## Shared state — `backend/src/state/`
+- `app_state.rs` — `AppState` (db, helius urls, all caches, watch channels, `sse_tx`, `pool_index`, `pools_changed`, `trade_signals`, `sync_gate`, `trader`, `pump_program_id`). `SyncGate` bounds `/api/token/sync` (max 4 concurrent, dedup by mint → 409 on collision).
+- `token_cache.rs` — `TokenCache` = `DashMap<mint, TokenState>`; `TokenState` holds Token + capped trade buffer (~50K, `trades_base` survives trims) + metrics + `is_migrated`. Cache-local; ingest never round-trips DB.
+- `token_list_cache.rs` — `TokenListCache`, pre-sorted snapshot served by `/api/tokens` (saves per-request sort+clone).
+- `trade_signals.rs` — `TradeSignals` per-`(wallet,mint)` wakeup hub; `register()`→`WaitGuard`, `notify()` called by DbWriter after a trade row is queryable. Pattern: **notify over poll**.
+- `token_metrics.rs` — price/market-cap/volume/ATH computation.
+
+## Config — `backend/src/config/`
+- `settings.rs` — `Settings::from_env()`: Helius (api key, RPC, Sender URLs, LaserStream), wallet key, nonce accounts, DB url + pool sizing, server host/port/workers/CORS/`API_AUTH_TOKEN`.
+- `constants.rs` — pump.fun + Raydium program IDs, bonding-curve reserve params, compute-budget/slippage constants.
+
+## Cross-refs
+Logic explainers live in `@project_plans/` (ingest, tpsl-strategy, trade-execution, token-analysis). This file maps *where code lives*; those explain *why*.
