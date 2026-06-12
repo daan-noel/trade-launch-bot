@@ -27,6 +27,11 @@ pub struct Settings {
 
     // --- Database ---
     pub database_url: String,
+    /// Postgres pool sizing. Defaults suit a busy ingest + API workload; override
+    /// via env when the database has more or less headroom.
+    pub db_max_connections: u32,
+    pub db_min_connections: u32,
+    pub db_acquire_timeout: Duration,
 
     // --- Server ---
     pub host: String,
@@ -49,6 +54,9 @@ impl Settings {
             nonce_accounts: parse_required_list("NONCE_ACCOUNTS")?,
             reconnect_interval: Duration::from_millis(env_parse("RECONNECT_INTERVAL", 10_000)?),
             database_url: required("DATABASE_URL")?,
+            db_max_connections: env_parse("DB_MAX_CONNECTIONS", 20u32)?,
+            db_min_connections: env_parse("DB_MIN_CONNECTIONS", 2u32)?,
+            db_acquire_timeout: Duration::from_secs(env_parse("DB_ACQUIRE_TIMEOUT_SECS", 10u64)?),
             host: env_or("HOST", "127.0.0.1"),
             port: env_parse("PORT", 8081)?,
             http_enabled: env_or("HTTP_ENABLED", "true").parse().unwrap_or(true),
