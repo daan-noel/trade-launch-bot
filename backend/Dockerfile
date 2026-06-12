@@ -34,12 +34,15 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 # Now bring in the real source and build just our crate.
 COPY . .
 # target/ is a cache mount, so it is NOT persisted into the image layer —
-# copy the finished binary out to /app/backend within the same RUN.
+# copy the finished binary out within the same RUN. NOTE: must NOT copy to
+# /app/backend — that path already exists as the `backend/` crate source dir
+# (from COPY . .), so `cp file /app/backend` drops the binary INSIDE it as
+# /app/backend/backend. Copy to /usr/local/bin/backend instead.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
     cargo build --release --bin backend \
-    && cp /app/target/release/backend /app/backend
+    && cp /app/target/release/backend /usr/local/bin/backend
 
 # --- Runtime: slim image with just the binary -------------------------------
 FROM debian:bookworm-slim AS runtime
@@ -48,7 +51,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY --from=builder /app/backend /usr/local/bin/backend
+COPY --from=builder /usr/local/bin/backend /usr/local/bin/backend
 # HOST/PORT are set in docker-compose.yml (must bind 0.0.0.0 inside the network).
 EXPOSE 8081
 CMD ["backend"]
