@@ -239,7 +239,7 @@ async fn main() -> anyhow::Result<()> {
     // in-memory source of truth, so a policy set in a previous run is in force
     // before the first event arrives.
     let app_settings = storage::repositories::settings_repo::SettingsRepo::new(db.clone())
-        .get()
+        .load_all()
         .await
         .context("Failed to load app settings")?;
     info!(

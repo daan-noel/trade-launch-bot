@@ -2,9 +2,10 @@ use std::sync::Arc;
 
 use actix_web::{web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use crate::config::constants::SLIPPAGE_MAX_BPS;
 use crate::state::app_state::AppState;
-use crate::storage::repositories::settings_repo::SettingsRepo;
+use crate::storage::repositories::settings_repo::{keys, SettingsRepo};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LiveModeResponse {
@@ -39,19 +40,18 @@ pub async fn set_live_mode(
     state: web::Data<Arc<AppState>>,
     req: web::Json<UpdateLiveModeRequest>,
 ) -> impl Responder {
-    // Persist the toggle into the settings document first; only flip the runtime
-    // live mode if the write succeeds, so a failed save never leaves the WS task
-    // running against a state the DB won't restore on the next boot. The full
-    // document is re-published too, keeping `state.settings().live` in sync (so a
-    // later `update_settings` read-modify-write doesn't clobber it back to false).
-    let mut next = state.settings();
-    next.live = req.live;
+    // Persist the toggle (its own row) first; only flip the runtime live mode if
+    // the write succeeds, so a failed save never leaves the WS task running
+    // against a state the DB won't restore on the next boot. The in-memory
+    // settings snapshot is updated too, keeping `state.settings().live` in sync.
     let repo = SettingsRepo::new(state.db.clone());
-    if let Err(e) = repo.set(&next).await {
+    if let Err(e) = repo.set_one(&keys::LIVE, &req.live).await {
         return HttpResponse::InternalServerError().json(ErrorBody {
             error: format!("Failed to persist live mode: {e}"),
         });
     }
+    let mut next = state.settings();
+    next.live = req.live;
     state.set_settings(next);
 
     state.set_live(req.live);
@@ -101,30 +101,39 @@ pub async fn update_settings(
         }
     }
 
-    // Merge the partial onto current settings (read-modify-write): only fields
-    // present in the request change, so concurrent updates of different fields
-    // (e.g. the settings page and the header) don't clobber each other.
+    // Build the set of per-key upserts for the fields the request actually sent,
+    // and mirror them onto an in-memory snapshot. Each setting is its own row, so
+    // this only touches the mentioned keys — concurrent updates of different
+    // fields (e.g. the settings page and the header) can't clobber each other.
+    let mut entries: Vec<(&str, Value)> = Vec::new();
     let mut next = state.settings();
     if let Some(v) = track_mayhem {
         next.track_mayhem = v;
+        entries.push((keys::TRACK_MAYHEM.key, json!(v)));
     }
     if let Some(v) = track_post_migration {
         next.track_post_migration = v;
+        entries.push((keys::TRACK_POST_MIGRATION.key, json!(v)));
     }
     if let Some(v) = timezone {
+        entries.push((keys::TIMEZONE.key, json!(v)));
         next.timezone = Some(v);
     }
     if let Some(v) = price_unit {
+        entries.push((keys::PRICE_UNIT.key, json!(v)));
         next.price_unit = Some(v);
     }
     if let Some(v) = slippage_bps {
-        next.slippage_bps = Some(v.min(SLIPPAGE_MAX_BPS));
+        let clamped = v.min(SLIPPAGE_MAX_BPS);
+        next.slippage_bps = Some(clamped);
+        entries.push((keys::SLIPPAGE_BPS.key, json!(clamped)));
     }
 
-    // Persist first; only publish to the live watch if the write succeeds, so a
-    // failed save never leaves the runtime diverged from the stored document.
+    // Persist (one transaction) first; only publish to the watch channel if the
+    // write succeeds, so a failed save never leaves the runtime diverged from the
+    // stored settings.
     let repo = SettingsRepo::new(state.db.clone());
-    if let Err(e) = repo.set(&next).await {
+    if let Err(e) = repo.set_many(&entries).await {
         return HttpResponse::InternalServerError().json(ErrorBody {
             error: format!("Failed to persist settings: {e}"),
         });
