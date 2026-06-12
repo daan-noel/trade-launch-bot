@@ -66,6 +66,13 @@ impl Tpsl1StrategyService {
 
     const EXIT_PENDING_CLEANUP_INTERVAL_MS: u64 = 60_000;
     const EXIT_PENDING_STALE_MS: u64 = 300_000;
+
+    /// Age past which an unentered (0-entry) Holding paper position is reaped as an
+    /// orphan. Must comfortably exceed the largest real arming window
+    /// (`SCALP_ARMING_BASE_SECS` + the rule's time gates, at most a few minutes) so
+    /// the reaper only ever catches rows whose in-memory arming task is gone — never
+    /// races a poll that is still legitimately working.
+    const UNENTERED_STALE_MS: u64 = 600_000;
 }
 
 impl Tpsl1StrategyService {
@@ -76,12 +83,15 @@ impl Tpsl1StrategyService {
         let pool = self.pool.clone();
         tokio::spawn(async move {
             let stale = Duration::from_millis(Tpsl1StrategyService::EXIT_PENDING_STALE_MS);
+            let unentered_stale =
+                Duration::from_millis(Tpsl1StrategyService::UNENTERED_STALE_MS);
             let mut interval = tokio::time::interval(Duration::from_millis(
                 Tpsl1StrategyService::EXIT_PENDING_CLEANUP_INTERVAL_MS,
             ));
             loop {
                 interval.tick().await;
                 let mut failed_total: u64 = 0;
+                let mut changed = false;
                 match cleanup_repo.fail_stale_exit_pending(stale).await {
                     Ok(n) => failed_total += n,
                     Err(err) => warn!("Failed to clean stale ExitPending positions: {err}"),
@@ -92,6 +102,20 @@ impl Tpsl1StrategyService {
                 }
                 if failed_total > 0 {
                     info!("Marked {failed_total} stale (orphaned) ExitPending positions ExitFailed");
+                    changed = true;
+                }
+                // Reap orphaned unentered paper positions whose in-memory arming
+                // task was lost to a restart/resume (never entered, exited, or
+                // deleted otherwise).
+                match paper_repo.delete_stale_unentered(unentered_stale).await {
+                    Ok(n) if n > 0 => {
+                        info!("Reaped {n} orphaned unentered paper positions");
+                        changed = true;
+                    }
+                    Ok(_) => {}
+                    Err(err) => warn!("Failed to reap orphaned unentered paper positions: {err}"),
+                }
+                if changed {
                     if let Err(err) = runtime.reload_holding(&pool).await {
                         warn!("Failed to refresh TPSL holding cache after cleanup: {err}");
                     }

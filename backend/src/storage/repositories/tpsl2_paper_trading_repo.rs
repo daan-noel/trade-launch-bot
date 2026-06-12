@@ -481,4 +481,30 @@ impl Tpsl2PaperTradingRepo {
         .await?;
         Ok(result.rows_affected())
     }
+
+    /// Delete orphaned **unentered** Holding positions older than the cutoff: rows
+    /// with no recorded fill (`entry_price <= 0`) that have outlived any plausible
+    /// arming window. The `spawn_entry_fill_poll` task normally enters or deletes
+    /// such a row within its arming window, but that task lives only in memory — a
+    /// backend restart or paper-run resume reloads the row from the DB without
+    /// re-arming it, leaving a zombie that is never entered (no poll), never exited
+    /// (the clock sweep skips `entry_price <= 0`), and never deleted. This reaps
+    /// them. The cutoff must exceed the largest real arming window so a live poll
+    /// is never raced. Returns rows deleted.
+    pub async fn delete_stale_unentered(
+        &self,
+        stale_after: std::time::Duration,
+    ) -> anyhow::Result<u64> {
+        let cutoff = Utc::now() - chrono::Duration::from_std(stale_after)?;
+        let result = sqlx::query(
+            r#"
+            DELETE FROM tpsl2_paper_positions
+            WHERE status = 'Holding' AND entry_price <= 0 AND created_at < $1
+            "#,
+        )
+        .bind(cutoff)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
 }
