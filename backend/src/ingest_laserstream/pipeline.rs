@@ -378,11 +378,24 @@ impl IngestPipeline {
             "Trade applied"
         );
 
+        // Capture the Copy reserve/venue/SSE facts before the trade is moved into
+        // the token-state aggregate below, so the (label-JSON-carrying) Trade is
+        // cloned exactly once — for the DB write — instead of twice.
+        let is_amm = e.trade.venue == "amm";
+        let reserve_snapshot = e
+            .trade
+            .virtual_token_reserves
+            .zip(e.trade.virtual_sol_reserves);
+        let trade_type = e.trade.trade_type;
+        let sol_amount = e.trade.sol_amount;
+        let token_amount = e.trade.token_amount;
+        let price_per_token = e.trade.price_per_token;
+
         self.enqueue_db(DbWriteOp::Trade(e.trade.clone())).await;
         self.enqueue_db(DbWriteOp::Wallet(wallet.clone())).await;
 
         let metrics = self.token_cache.get_mut(&mint).map(|mut token_state| {
-            token_state.add_trade(e.trade.clone());
+            token_state.add_trade(e.trade);
             metrics_from_state(&mint, &token_state, true)
         });
         if let Some(metrics) = metrics {
@@ -392,10 +405,7 @@ impl IngestPipeline {
         // Feed the trader's live reserve cache from this trade's post-trade
         // snapshot, so a subsequent buy/sell skips the on-chain reserve read. The
         // venue tag keeps curve and AMM snapshots from being mixed up.
-        let is_amm = e.trade.venue == "amm";
-        if let (Some(token_reserves), Some(sol_reserves)) =
-            (e.trade.virtual_token_reserves, e.trade.virtual_sol_reserves)
-        {
+        if let Some((token_reserves, sol_reserves)) = reserve_snapshot {
             self.trader
                 .update_live_reserves(&mint, token_reserves, sol_reserves, is_amm);
         }
@@ -433,10 +443,10 @@ impl IngestPipeline {
         self.emit_sse(SseEvent::TradeExecuted {
             mint,
             wallet,
-            trade_type: e.trade.trade_type,
-            sol_amount: e.trade.sol_amount,
-            token_amount: e.trade.token_amount,
-            price_per_token: e.trade.price_per_token,
+            trade_type,
+            sol_amount,
+            token_amount,
+            price_per_token,
             tx_signature: e.tx_signature,
             slot: e.slot,
             timestamp: e.timestamp,
