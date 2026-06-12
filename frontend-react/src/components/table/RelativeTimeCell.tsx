@@ -1,3 +1,4 @@
+import { memo, useMemo } from 'react';
 import { useTimezone } from 'context/TimezoneContext';
 import { formatIso } from 'utils/date';
 import { formatAge } from 'utils/format';
@@ -11,10 +12,14 @@ import { useNow } from 'hooks/useNow';
  * on its own between polls — every second while it's under a minute old, then
  * ~twice a minute past that. Hooks run unconditionally (before the null/NaN
  * early-outs) to satisfy the rules of hooks.
+ *
+ * Memoized so a poll-driven row re-render with an unchanged `iso` skips it; the
+ * cell still re-renders on its own clock tick (same pattern as {@link AgeCell}).
  */
-export function RelativeTimeCell({ iso }: { iso: string | null | undefined }) {
+function RelativeTimeCellInner({ iso }: { iso: string | null | undefined }) {
   const { timezone } = useTimezone();
-  const ms = iso ? Date.parse(iso) : NaN;
+  // Parse the ISO string once per value, not on every clock tick / row re-render.
+  const ms = useMemo(() => (iso ? Date.parse(iso) : NaN), [iso]);
   const provisionalAge = Number.isNaN(ms) ? Infinity : (Date.now() - ms) / 1000;
   const now = useNow(provisionalAge < 60 ? 1000 : 30_000);
 
@@ -28,3 +33,5 @@ export function RelativeTimeCell({ iso }: { iso: string | null | undefined }) {
     </span>
   );
 }
+
+export const RelativeTimeCell = memo(RelativeTimeCellInner);

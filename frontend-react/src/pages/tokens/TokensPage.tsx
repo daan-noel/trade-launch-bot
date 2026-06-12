@@ -32,6 +32,10 @@ const LS_LIVE_KEY = 'tokens_live';
 /** Stable empty reference so derived memos don't recompute every render. */
 const EMPTY_TOKENS: TokenRecord[] = [];
 
+/** Stable row-key accessor — hoisted so the DataTable receives the same
+ *  reference every render instead of a fresh inline closure each time. */
+const tokenRowKey = (r: TokenRecord) => r.mint_address;
+
 /** Initial table view-state; pageSize matches the DataTable's default (10). */
 const INITIAL_QUERY: TableQuery = {
   page: 1,
@@ -233,7 +237,7 @@ export function TokensPage() {
         <DataTable
           columns={columns}
           rows={tokens}
-          rowKey={(r) => r.mint_address}
+          rowKey={tokenRowKey}
           selectedKey={selectedMint}
           onSelect={setSelectedMint}
           serverSide

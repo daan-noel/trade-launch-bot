@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { cn } from 'lib/cn';
 import { Button } from 'components/ui/Button';
 import { Input, Textarea } from 'components/ui/Input';
@@ -42,17 +42,21 @@ function Field({
   );
 }
 
-function TextField({
+// Each field component takes its own primitive value(s) plus the stable `set`
+// callback — never the whole `draft` object. Wrapped in `memo`, a keystroke that
+// mutates one field only re-renders that field; the other ~40 inputs bail out of
+// React's shallow compare (their value prop and `set` reference are unchanged).
+const TextField = memo(function TextField({
   label,
   field,
-  draft,
+  value,
   set,
   placeholder,
   className,
 }: {
   label: string;
   field: keyof TokenFilters;
-  draft: TokenFilters;
+  value: string;
   set: SetField;
   placeholder?: string;
   className?: string;
@@ -60,20 +64,21 @@ function TextField({
   return (
     <Field label={label} className={cn('w-[170px]', className)}>
       <Input
-        value={draft[field] as string}
+        value={value}
         placeholder={placeholder}
         onChange={(e) => set(field, e.target.value as TokenFilters[typeof field])}
       />
     </Field>
   );
-}
+});
 
-function RangeField({
+const RangeField = memo(function RangeField({
   label,
   hint,
   minKey,
   maxKey,
-  draft,
+  minValue,
+  maxValue,
   set,
   step = 'any',
 }: {
@@ -81,7 +86,8 @@ function RangeField({
   hint?: string;
   minKey: keyof TokenFilters;
   maxKey: keyof TokenFilters;
-  draft: TokenFilters;
+  minValue: string;
+  maxValue: string;
   set: SetField;
   step?: string;
 }) {
@@ -92,7 +98,7 @@ function RangeField({
           type="number"
           step={step}
           placeholder="min"
-          value={draft[minKey] as string}
+          value={minValue}
           onChange={(e) => set(minKey, e.target.value as TokenFilters[typeof minKey])}
         />
         <span className="text-[10px] text-text-dim/50">–</span>
@@ -100,25 +106,27 @@ function RangeField({
           type="number"
           step={step}
           placeholder="max"
-          value={draft[maxKey] as string}
+          value={maxValue}
           onChange={(e) => set(maxKey, e.target.value as TokenFilters[typeof maxKey])}
         />
       </div>
     </Field>
   );
-}
+});
 
-function DateRangeField({
+const DateRangeField = memo(function DateRangeField({
   label,
   fromKey,
   toKey,
-  draft,
+  fromValue,
+  toValue,
   set,
 }: {
   label: string;
   fromKey: keyof TokenFilters;
   toKey: keyof TokenFilters;
-  draft: TokenFilters;
+  fromValue: string;
+  toValue: string;
   set: SetField;
 }) {
   return (
@@ -126,19 +134,19 @@ function DateRangeField({
       <div className="flex items-center gap-1">
         <Input
           type="datetime-local"
-          value={draft[fromKey] as string}
+          value={fromValue}
           onChange={(e) => set(fromKey, e.target.value as TokenFilters[typeof fromKey])}
         />
         <span className="text-[10px] text-text-dim/50">–</span>
         <Input
           type="datetime-local"
-          value={draft[toKey] as string}
+          value={toValue}
           onChange={(e) => set(toKey, e.target.value as TokenFilters[typeof toKey])}
         />
       </div>
     </Field>
   );
-}
+});
 
 const TRI_OPTIONS: { value: TriState; label: string }[] = [
   { value: '', label: 'All' },
@@ -146,18 +154,17 @@ const TRI_OPTIONS: { value: TriState; label: string }[] = [
   { value: 'no', label: 'No' },
 ];
 
-function TriToggle({
+const TriToggle = memo(function TriToggle({
   label,
   field,
-  draft,
+  value,
   set,
 }: {
   label: string;
   field: keyof TokenFilters;
-  draft: TokenFilters;
+  value: TriState;
   set: SetField;
 }) {
-  const value = draft[field] as TriState;
   return (
     <Field label={label} className="w-auto">
       <div className="inline-flex overflow-hidden rounded-md border border-white/10">
@@ -184,7 +191,7 @@ function TriToggle({
       </div>
     </Field>
   );
-}
+});
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -206,7 +213,12 @@ export function FilterPanel({ filters, onApply, onClear }: FilterPanelProps) {
     setDraft(filters);
   }, [filters]);
 
-  const set: SetField = (key, value) => setDraft((d) => ({ ...d, [key]: value }));
+  // Stable identity (functional update, no deps) so the memoized fields above
+  // don't re-render just because the parent did.
+  const set = useCallback<SetField>(
+    (key, value) => setDraft((d) => ({ ...d, [key]: value })),
+    [],
+  );
 
   const draftCount = activeFilterCount(draft);
   const dirty = useMemo(
@@ -260,43 +272,43 @@ export function FilterPanel({ filters, onApply, onClear }: FilterPanelProps) {
 
       <div className="flex flex-col gap-4">
         <Section title="Identity">
-          <TextField label="Symbol" field="symbol" draft={draft} set={set} placeholder="e.g. PEPE" className="w-[130px]" />
-          {/* <TextField label="Name" field="name" draft={draft} set={set} placeholder="name contains…" /> */}
-          <TextField label="Mint" field="mint" draft={draft} set={set} placeholder="address substring…" />
-          <TextField label="Creator" field="creator" draft={draft} set={set} placeholder="address substring…" />
-          <TextField label="Create TX" field="create_tx" draft={draft} set={set} placeholder="signature substring…" />
+          <TextField label="Symbol" field="symbol" value={draft.symbol} set={set} placeholder="e.g. PEPE" className="w-[130px]" />
+          {/* <TextField label="Name" field="name" value={draft.name} set={set} placeholder="name contains…" /> */}
+          <TextField label="Mint" field="mint" value={draft.mint} set={set} placeholder="address substring…" />
+          <TextField label="Creator" field="creator" value={draft.creator} set={set} placeholder="address substring…" />
+          <TextField label="Create TX" field="create_tx" value={draft.create_tx} set={set} placeholder="signature substring…" />
         </Section>
 
         <Section title="Time (UTC)">
-          <DateRangeField label="Created" fromKey="created_from" toKey="created_to" draft={draft} set={set} />
-          <DateRangeField label="Last Trade" fromKey="last_trade_from" toKey="last_trade_to" draft={draft} set={set} />
-          <DateRangeField label="ATH At" fromKey="ath_from" toKey="ath_to" draft={draft} set={set} />
-          <RangeField label="Life (min)" hint="dead only" minKey="life_min" maxKey="life_max" draft={draft} set={set} step="0.5" />
+          <DateRangeField label="Created" fromKey="created_from" toKey="created_to" fromValue={draft.created_from} toValue={draft.created_to} set={set} />
+          <DateRangeField label="Last Trade" fromKey="last_trade_from" toKey="last_trade_to" fromValue={draft.last_trade_from} toValue={draft.last_trade_to} set={set} />
+          <DateRangeField label="ATH At" fromKey="ath_from" toKey="ath_to" fromValue={draft.ath_from} toValue={draft.ath_to} set={set} />
+          <RangeField label="Life (min)" hint="dead only" minKey="life_min" maxKey="life_max" minValue={draft.life_min} maxValue={draft.life_max} set={set} step="0.5" />
         </Section>
 
         <Section title="Performance">
-          <RangeField label="ATH / FEP (×)" minKey="ath_fep_min" maxKey="ath_fep_max" draft={draft} set={set} step="0.1" />
-          <RangeField label="Cur / FEP (×)" minKey="cur_fep_min" maxKey="cur_fep_max" draft={draft} set={set} step="0.1" />
-          <RangeField label="ATH Price" minKey="ath_price_min" maxKey="ath_price_max" draft={draft} set={set} />
-          <RangeField label="Price" minKey="price_min" maxKey="price_max" draft={draft} set={set} />
+          <RangeField label="ATH / FEP (×)" minKey="ath_fep_min" maxKey="ath_fep_max" minValue={draft.ath_fep_min} maxValue={draft.ath_fep_max} set={set} step="0.1" />
+          <RangeField label="Cur / FEP (×)" minKey="cur_fep_min" maxKey="cur_fep_max" minValue={draft.cur_fep_min} maxValue={draft.cur_fep_max} set={set} step="0.1" />
+          <RangeField label="ATH Price" minKey="ath_price_min" maxKey="ath_price_max" minValue={draft.ath_price_min} maxValue={draft.ath_price_max} set={set} />
+          <RangeField label="Price" minKey="price_min" maxKey="price_max" minValue={draft.price_min} maxValue={draft.price_max} set={set} />
         </Section>
 
         <Section title="Market">
-          <RangeField label="Volume (SOL)" minKey="volume_min" maxKey="volume_max" draft={draft} set={set} step="0.01" />
-          <RangeField label="MCap (SOL)" minKey="mcap_min" maxKey="mcap_max" draft={draft} set={set} step="0.01" />
-          <RangeField label="Trades" minKey="trades_min" maxKey="trades_max" draft={draft} set={set} step="1" />
-          <RangeField label="Init Buy (SOL)" minKey="init_buy_min" maxKey="init_buy_max" draft={draft} set={set} step="0.001" />
-          <RangeField label="Init Supply" minKey="init_supply_min" maxKey="init_supply_max" draft={draft} set={set} step="1" />
-          <RangeField label="Token Amount" minKey="token_amount_min" maxKey="token_amount_max" draft={draft} set={set} step="1" />
-          <RangeField label="Max SOL Cost" minKey="max_sol_cost_min" maxKey="max_sol_cost_max" draft={draft} set={set} step="0.001" />
-          <RangeField label="Spendable SOL In" minKey="spendable_sol_in_min" maxKey="spendable_sol_in_max" draft={draft} set={set} step="0.001" />
-          <RangeField label="Min Tokens Out" minKey="min_tokens_out_min" maxKey="min_tokens_out_max" draft={draft} set={set} step="1" />
+          <RangeField label="Volume (SOL)" minKey="volume_min" maxKey="volume_max" minValue={draft.volume_min} maxValue={draft.volume_max} set={set} step="0.01" />
+          <RangeField label="MCap (SOL)" minKey="mcap_min" maxKey="mcap_max" minValue={draft.mcap_min} maxValue={draft.mcap_max} set={set} step="0.01" />
+          <RangeField label="Trades" minKey="trades_min" maxKey="trades_max" minValue={draft.trades_min} maxValue={draft.trades_max} set={set} step="1" />
+          <RangeField label="Init Buy (SOL)" minKey="init_buy_min" maxKey="init_buy_max" minValue={draft.init_buy_min} maxValue={draft.init_buy_max} set={set} step="0.001" />
+          <RangeField label="Init Supply" minKey="init_supply_min" maxKey="init_supply_max" minValue={draft.init_supply_min} maxValue={draft.init_supply_max} set={set} step="1" />
+          <RangeField label="Token Amount" minKey="token_amount_min" maxKey="token_amount_max" minValue={draft.token_amount_min} maxValue={draft.token_amount_max} set={set} step="1" />
+          <RangeField label="Max SOL Cost" minKey="max_sol_cost_min" maxKey="max_sol_cost_max" minValue={draft.max_sol_cost_min} maxValue={draft.max_sol_cost_max} set={set} step="0.001" />
+          <RangeField label="Spendable SOL In" minKey="spendable_sol_in_min" maxKey="spendable_sol_in_max" minValue={draft.spendable_sol_in_min} maxValue={draft.spendable_sol_in_max} set={set} step="0.001" />
+          <RangeField label="Min Tokens Out" minKey="min_tokens_out_min" maxKey="min_tokens_out_max" minValue={draft.min_tokens_out_min} maxValue={draft.min_tokens_out_max} set={set} step="1" />
         </Section>
 
         <Section title="Technical">
-          <RangeField label="CU Limit" minKey="cu_limit_min" maxKey="cu_limit_max" draft={draft} set={set} step="1" />
-          <RangeField label="CU Price" minKey="cu_price_min" maxKey="cu_price_max" draft={draft} set={set} step="1" />
-          <RangeField label="IX Count" minKey="ix_count_min" maxKey="ix_count_max" draft={draft} set={set} step="1" />
+          <RangeField label="CU Limit" minKey="cu_limit_min" maxKey="cu_limit_max" minValue={draft.cu_limit_min} maxValue={draft.cu_limit_max} set={set} step="1" />
+          <RangeField label="CU Price" minKey="cu_price_min" maxKey="cu_price_max" minValue={draft.cu_price_min} maxValue={draft.cu_price_max} set={set} step="1" />
+          <RangeField label="IX Count" minKey="ix_count_min" maxKey="ix_count_max" minValue={draft.ix_count_min} maxValue={draft.ix_count_max} set={set} step="1" />
           <Field label="IX Labels" hint="one per line — matches any" className="w-[280px]">
             <Textarea
               value={draft.ix_label}
@@ -307,9 +319,9 @@ export function FilterPanel({ filters, onApply, onClear }: FilterPanelProps) {
         </Section>
 
         <Section title="Flags">
-          <TriToggle label="Migrated" field="migrated" draft={draft} set={set} />
-          <TriToggle label="Mayhem Mode" field="mayhem" draft={draft} set={set} />
-          <TriToggle label="Cashback" field="cashback" draft={draft} set={set} />
+          <TriToggle label="Migrated" field="migrated" value={draft.migrated} set={set} />
+          <TriToggle label="Mayhem Mode" field="mayhem" value={draft.mayhem} set={set} />
+          <TriToggle label="Cashback" field="cashback" value={draft.cashback} set={set} />
         </Section>
       </div>
     </form>
