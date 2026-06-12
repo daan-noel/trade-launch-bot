@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sqlx::PgPool;
@@ -78,7 +80,7 @@ impl TransactionRepo {
     /// with the same `source`. Like [`insert`] it's a plain insert (no conflict
     /// target on the partitioned table). Used by the live ingest DB-writer to
     /// collapse a flush of raw transactions into one round-trip.
-    pub async fn insert_many(&self, txs: &[RawTransaction], source: &str) -> anyhow::Result<()> {
+    pub async fn insert_many(&self, txs: &[Arc<RawTransaction>], source: &str) -> anyhow::Result<()> {
         if txs.is_empty() {
             return Ok(());
         }

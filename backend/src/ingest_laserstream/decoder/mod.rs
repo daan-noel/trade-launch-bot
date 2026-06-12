@@ -51,7 +51,8 @@ pub struct HeliusDecoder {
 pub enum DecodeOutput {
     /// A Pump.fun transaction was decoded successfully.
     Transaction {
-        raw_tx: RawTransaction,
+        /// Shared so each embedded event clones a pointer, not the full JSON.
+        raw_tx: Arc<RawTransaction>,
         events: Vec<InternalEvent>,
     },
     /// Message was not relevant (other program, ping, unrecognised format, etc.)
@@ -113,7 +114,12 @@ impl HeliusDecoder {
             return DecodeOutput::Ignored;
         }
 
-        let raw_tx = RawTransaction::new(signature.clone(), slot, block_time, result.clone());
+        let raw_tx = Arc::new(RawTransaction::new(
+            signature.clone(),
+            slot,
+            block_time,
+            result.clone(),
+        ));
 
         let account_keys = extract_account_keys(message);
         let pre_balances = extract_balances(&meta["preBalances"]);
@@ -411,7 +417,12 @@ impl HeliusDecoder {
             .unwrap_or_else(Utc::now);
 
         let message = &result["transaction"]["transaction"]["message"];
-        let raw_tx = RawTransaction::new(signature.clone(), slot, block_time, result.clone());
+        let raw_tx = Arc::new(RawTransaction::new(
+            signature.clone(),
+            slot,
+            block_time,
+            result.clone(),
+        ));
         let account_keys = extract_account_keys(message);
         let (labels, _, _) = build_instruction_labels(message, &account_keys);
         let labels_json = json!(labels);
@@ -447,7 +458,7 @@ impl HeliusDecoder {
         block_time: DateTime<Utc>,
         _pump_ix: &Value,
         pump_accounts: &[String],
-        raw_tx: &RawTransaction,
+        raw_tx: &Arc<RawTransaction>,
     ) -> Option<InternalEvent> {
         let mint = pump_accounts.get(2)?.to_string();
         if mint.is_empty() {

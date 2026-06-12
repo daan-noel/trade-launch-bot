@@ -7,7 +7,7 @@ use tracing::info;
 
 use crate::{
     models::ingest::{IngestKind, SseEvent, StrategyPing},
-    state::token_cache::TokenCache,
+    state::{token_cache::TokenCache, trade_signals::TradeSignals},
     trader::PumpFunTrader,
 };
 
@@ -29,10 +29,17 @@ impl StrategyRunner {
         tpsl1_cache: Arc<Tpsl1RuntimeCache>,
         tpsl2_cache: Arc<Tpsl2RuntimeCache>,
         sse_tx: broadcast::Sender<SseEvent>,
+        trade_signals: Arc<TradeSignals>,
     ) -> Self {
-        let tpsl1 = Tpsl1StrategyService::new(pool.clone(), trader.clone(), tpsl1_cache, sse_tx.clone());
+        let tpsl1 = Tpsl1StrategyService::new(
+            pool.clone(),
+            trader.clone(),
+            tpsl1_cache,
+            sse_tx.clone(),
+            trade_signals.clone(),
+        );
         tpsl1.spawn_background_tasks();
-        let tpsl2 = Tpsl2StrategyService::new(pool, trader, tpsl2_cache, sse_tx);
+        let tpsl2 = Tpsl2StrategyService::new(pool, trader, tpsl2_cache, sse_tx, trade_signals);
         tpsl2.spawn_background_tasks();
         Self { token_cache, tpsl1, tpsl2 }
     }

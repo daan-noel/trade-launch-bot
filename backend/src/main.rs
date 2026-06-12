@@ -223,6 +223,11 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("Failed to load TPSL2 runtime cache")?;
 
+    // Shared (wallet, mint) wakeup hub: the DbWriter signals it once a trade is
+    // persisted; the live buy/sell confirm loops await it instead of polling the
+    // DB on a fixed timer (they keep their timeout as a fallback).
+    let trade_signals = Arc::new(state::trade_signals::TradeSignals::new());
+
     // ── Ingest transport: LaserStream (Yellowstone gRPC) ──
     // Feeds the shared token cache / strategy / SSE / DB. Yields the pool→mint
     // index + migration signal (for AppState), the strategy receiver, and the
@@ -270,7 +275,8 @@ async fn main() -> anyhow::Result<()> {
         ));
 
         let pipeline_task = tokio::spawn(pipeline.run(value_rx));
-        let db_writer = ingest_laserstream::db_writer::DbWriter::new(db.clone());
+        let db_writer =
+            ingest_laserstream::db_writer::DbWriter::new(db.clone(), trade_signals.clone());
         let db_writer_task = tokio::spawn(db_writer.run(db_rx));
 
         (
@@ -302,6 +308,7 @@ async fn main() -> anyhow::Result<()> {
         tpsl2_cache.clone(),
         pool_index,
         pools_changed,
+        trade_signals.clone(),
     ));
 
     let strategy_runner = strategies::StrategyRunner::new(
@@ -311,6 +318,7 @@ async fn main() -> anyhow::Result<()> {
         tpsl1_cache,
         tpsl2_cache,
         sse_tx.clone(),
+        trade_signals.clone(),
     );
     let strategy_task = tokio::spawn(strategy_runner.run(strategy_rx));
 

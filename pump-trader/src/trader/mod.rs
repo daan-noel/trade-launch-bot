@@ -224,6 +224,10 @@ pub struct PumpFunTrader {
     // `.await` held, so the async mutex bought nothing.
     user_token_accounts: Arc<std::sync::Mutex<HashMap<String, Pubkey>>>,
     token_pdas: Arc<std::sync::Mutex<HashMap<String, TokenPDAs>>>,
+    // Per-mint bonding-curve routing facts (creator / token program / cashback /
+    // migration). Served without RPC once a mint is observed migrated — see
+    // `read_curve_routing` for the monotonic-migration invariant this relies on.
+    curve_routing_cache: Arc<std::sync::Mutex<HashMap<String, query::CurveRouting>>>,
 
     // WS-fed live reserve snapshots (mint → latest post-trade reserves), read on
     // the slippage / AMM-reserve hot path with an on-chain fallback.
@@ -314,6 +318,7 @@ impl PumpFunTrader {
             amm_global_config: Arc::new(std::sync::Mutex::new(None)),
             user_token_accounts: Arc::new(std::sync::Mutex::new(HashMap::new())),
             token_pdas: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            curve_routing_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
             reserve_cache: Arc::new(ReserveCache::default()),
             blockhash_cache: Arc::new(BlockhashCache::default()),
         }

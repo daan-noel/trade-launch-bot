@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -43,7 +45,7 @@ pub struct TokenCreatedEvent {
     pub slot: u64,
     pub timestamp: DateTime<Utc>,
     /// Full raw transaction preserved for replay / debugging.
-    pub raw_tx: RawTransaction,
+    pub raw_tx: Arc<RawTransaction>,
 }
 
 /// Emitted when a tracked token migrates its bonding curve to PumpSwap.
@@ -53,7 +55,7 @@ pub struct TokenMigratedEvent {
     pub tx_signature: String,
     pub slot: u64,
     pub timestamp: DateTime<Utc>,
-    pub raw_tx: RawTransaction,
+    pub raw_tx: Arc<RawTransaction>,
 }
 
 /// Emitted for every buy or sell trade on a tracked token.
@@ -63,7 +65,7 @@ pub struct TradeExecutedEvent {
     pub tx_signature: String,
     pub slot: u64,
     pub timestamp: DateTime<Utc>,
-    pub raw_tx: RawTransaction,
+    pub raw_tx: Arc<RawTransaction>,
 }
 
 /// Emitted when liquidity changes on a tracked token's bonding curve.
@@ -77,7 +79,7 @@ pub struct LiquidityEvent {
     pub tx_signature: String,
     pub slot: u64,
     pub timestamp: DateTime<Utc>,
-    pub raw_tx: RawTransaction,
+    pub raw_tx: Arc<RawTransaction>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,7 +98,7 @@ pub struct CreatorActivityEvent {
     pub tx_signature: String,
     pub slot: u64,
     pub timestamp: DateTime<Utc>,
-    pub raw_tx: RawTransaction,
+    pub raw_tx: Arc<RawTransaction>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

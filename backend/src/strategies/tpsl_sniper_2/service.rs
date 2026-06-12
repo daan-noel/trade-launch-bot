@@ -9,6 +9,7 @@ use tracing::{debug, info, warn};
 use crate::models::ingest::SseEvent;
 use crate::models::Position;
 use crate::state::token_cache::TokenCache;
+use crate::state::trade_signals::TradeSignals;
 use crate::storage::repositories::{
     tpsl2_paper_trading_repo::Tpsl2PaperTradingRepo, tpsl2_position_repo::Tpsl2PositionRepo,
     trade_repo::TradeRepo,
@@ -26,6 +27,8 @@ pub struct Tpsl2StrategyService {
     runtime: Arc<Tpsl2RuntimeCache>,
     /// Cold-lane broadcast for client notifications (e.g. paper-run finished).
     sse_tx: broadcast::Sender<SseEvent>,
+    /// Persisted-trade wakeup hub for the snipe buy confirm loop.
+    trade_signals: Arc<TradeSignals>,
 }
 
 impl Tpsl2StrategyService {
@@ -34,6 +37,7 @@ impl Tpsl2StrategyService {
         trader: Arc<PumpFunTrader>,
         runtime: Arc<Tpsl2RuntimeCache>,
         sse_tx: broadcast::Sender<SseEvent>,
+        trade_signals: Arc<TradeSignals>,
     ) -> Self {
         Self {
             position_repo: Tpsl2PositionRepo::new(pool.clone()),
@@ -43,6 +47,7 @@ impl Tpsl2StrategyService {
             trader,
             runtime,
             sse_tx,
+            trade_signals,
         }
     }
 
@@ -198,6 +203,7 @@ impl Tpsl2StrategyService {
                     let position_repo = self.position_repo.clone();
                     let trade_repo = self.trade_repo.clone();
                     let runtime = self.runtime.clone();
+                    let trade_signals = self.trade_signals.clone();
                     let rule_for_entry = rule.clone();
                     let token_program_id = position
                         .token_program_id
@@ -230,6 +236,7 @@ impl Tpsl2StrategyService {
                                 position_repo.clone(),
                                 trade_repo.clone(),
                                 runtime.clone(),
+                                trade_signals,
                                 super::execution::real::BuyRetryCfg::production(),
                             )
                             .await;
@@ -476,6 +483,7 @@ impl Tpsl2StrategyService {
             self.trade_repo.clone(),
             self.runtime.clone(),
             cache,
+            self.trade_signals.clone(),
             trigger_price,
             trigger_time,
             reason,

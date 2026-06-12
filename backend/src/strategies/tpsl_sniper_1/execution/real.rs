@@ -7,13 +7,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use tokio::time::sleep;
+use tokio::time::{sleep, Instant};
 use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::super::Tpsl1RuntimeCache;
 use crate::models::Position;
 use crate::state::token_cache::TokenCache;
+use crate::state::trade_signals::TradeSignals;
 use crate::storage::repositories::{tpsl1_position_repo::Tpsl1PositionRepo, trade_repo::TradeRepo};
 use crate::trader::PumpFunTrader;
 
@@ -115,6 +116,7 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
     position_repo: Tpsl1PositionRepo,
     trade_repo: TradeRepo,
     runtime: Arc<Tpsl1RuntimeCache>,
+    trade_signals: Arc<TradeSignals>,
     cfg: BuyRetryCfg,
 ) {
     let wallet = trader.wallet();
@@ -151,7 +153,7 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
             "buy submitted (no RPC confirm); polling WS feed for fill");
 
         // Poll the WS-fed trade feed for this wallet's buy row.
-        if poll_feed_until_entry_fill(&mint, &wallet, position_id, &position_repo, &trade_repo, &runtime, &cfg)
+        if poll_feed_until_entry_fill(&mint, &wallet, position_id, &position_repo, &trade_repo, &runtime, &trade_signals, &cfg)
             .await
         {
             return;
@@ -171,7 +173,7 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
                 // wait one more window for the row rather than fire again.
                 warn!(mint = %mint, sig = %signature,
                     "buy landed but not yet indexed; awaiting fill without re-send");
-                if poll_feed_until_entry_fill(&mint, &wallet, position_id, &position_repo, &trade_repo, &runtime, &cfg)
+                if poll_feed_until_entry_fill(&mint, &wallet, position_id, &position_repo, &trade_repo, &runtime, &trade_signals, &cfg)
                     .await
                 {
                     return;
@@ -202,9 +204,15 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
     }
 }
 
-/// Poll the WS-fed trade feed for this wallet's buy on `mint`; on first sight,
-/// record the entry and sync the runtime cache. Returns true once an entry has
-/// been recorded, false if the poll window elapses without a fill.
+/// Wait for this wallet's buy on `mint` to land in the WS-fed trade feed; on first
+/// sight, record the entry and sync the runtime cache. Returns true once an entry
+/// has been recorded, false if the window elapses without a fill.
+///
+/// Event-driven: the DbWriter [`notify`](TradeSignals::notify)s the moment the row
+/// is persisted, so the common case adopts the fill immediately instead of waiting
+/// out a poll tick. A fallback tick (the old `poll_interval`) and a hard deadline
+/// equal to the old `poll_attempts × poll_interval` window are kept, so a missed
+/// signal degrades to exactly the previous polling behaviour — never worse.
 async fn poll_feed_until_entry_fill(
     mint: &str,
     wallet: &str,
@@ -212,16 +220,35 @@ async fn poll_feed_until_entry_fill(
     position_repo: &Tpsl1PositionRepo,
     trade_repo: &TradeRepo,
     runtime: &Arc<Tpsl1RuntimeCache>,
+    trade_signals: &Arc<TradeSignals>,
     cfg: &BuyRetryCfg,
 ) -> bool {
-    for _ in 0..cfg.poll_attempts {
+    let guard = trade_signals.register(wallet, mint);
+    let deadline = Instant::now() + cfg.poll_interval * cfg.poll_attempts as u32;
+
+    loop {
+        // Arm the wakeup BEFORE the DB check so a notify that fires in the gap
+        // between checking and awaiting isn't lost (tokio `notify_waiters` stores
+        // no permit; `enable()` registers this waiter up front).
+        let notified = guard.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+
         if adopt_existing_fill_if_present(mint, wallet, position_id, position_repo, trade_repo, runtime).await
         {
             return true;
         }
-        sleep(cfg.poll_interval).await;
+
+        let now = Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        let fallback = cfg.poll_interval.min(deadline - now);
+        tokio::select! {
+            _ = &mut notified => {}
+            _ = sleep(fallback) => {}
+        }
     }
-    false
 }
 
 /// If a buy by `wallet` on `mint` is already present in the trade feed, record it
@@ -278,6 +305,7 @@ pub(crate) async fn sell_and_close_position(
     trade_repo: TradeRepo,
     runtime: Arc<Tpsl1RuntimeCache>,
     cache: &TokenCache,
+    trade_signals: Arc<TradeSignals>,
     trigger_price: f64,
     trigger_time: DateTime<Utc>,
     exit_reason: String,
@@ -301,6 +329,7 @@ pub(crate) async fn sell_and_close_position(
         amount,
         trade_repo.clone(),
         cache,
+        trade_signals,
         base_token_program,
     )
     .await;
@@ -373,6 +402,7 @@ async fn sell_until_balance_cleared(
     mut amount: u64,
     trade_repo: TradeRepo,
     cache: &TokenCache,
+    trade_signals: Arc<TradeSignals>,
     base_token_program: String,
 ) -> bool {
     let mut attempt = 0usize;
@@ -436,15 +466,27 @@ async fn sell_until_balance_cleared(
         match sell_result {
             Ok(true) => {
                 info!(mint = %mint, attempt, amount, "sell submitted (feed-confirm)");
-                // Confirm via the LaserStream-fed `trades` balance. Poll the FULL
-                // window (poll-then-sleep, so an already-cleared sell returns at
-                // once) before concluding. A feed-confirmed send (confirm=false)
+                // Confirm via the LaserStream-fed `trades` balance, waking on the
+                // DbWriter's persist signal for this (wallet, mint) instead of
+                // blindly sleeping each tick. A feed-confirmed send (confirm=false)
                 // returns before its tx is indexed, so reading the balance once
                 // would show the pre-sell amount and fire a needless duplicate —
-                // the window gives the feed time to catch up.
+                // the window gives the feed time to catch up. The same overall
+                // window (SELL_POLL_MAX_ATTEMPTS × SELL_POLL_INTERVAL_MS) and a
+                // fallback tick are kept, so a missed signal is never worse than
+                // the old polling.
                 let mut remaining_amount = amount;
                 let mut cleared = false;
-                for poll in 0..super::SELL_POLL_MAX_ATTEMPTS {
+                let guard = trade_signals.register(&wallet, &mint);
+                let interval = Duration::from_millis(super::SELL_POLL_INTERVAL_MS);
+                let deadline = Instant::now() + interval * super::SELL_POLL_MAX_ATTEMPTS as u32;
+                loop {
+                    // Arm the wakeup before the balance read (see the buy path:
+                    // `notify_waiters` stores no permit, `enable()` registers up front).
+                    let notified = guard.notified();
+                    tokio::pin!(notified);
+                    notified.as_mut().enable();
+
                     match trade_repo
                         .net_token_amount_by_wallet_and_mint(&wallet, &mint)
                         .await
@@ -460,8 +502,14 @@ async fn sell_until_balance_cleared(
                         }
                         Err(err) => warn!("Failed to query net token balance: {err}"),
                     }
-                    if poll + 1 < super::SELL_POLL_MAX_ATTEMPTS {
-                        sleep(Duration::from_millis(super::SELL_POLL_INTERVAL_MS)).await;
+                    let now = Instant::now();
+                    if now >= deadline {
+                        break;
+                    }
+                    let fallback = interval.min(deadline - now);
+                    tokio::select! {
+                        _ = &mut notified => {}
+                        _ = sleep(fallback) => {}
                     }
                 }
                 if cleared {
@@ -720,6 +768,7 @@ mod tests {
             position_repo.clone(),
             trade_repo.clone(),
             runtime.clone(),
+            Arc::new(TradeSignals::new()),
             test_cfg(),
         )
         .await;

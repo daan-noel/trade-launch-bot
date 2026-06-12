@@ -2,6 +2,8 @@
 //! `CreateEvent` log, creator-wallet resolution, Anchor string/pubkey reading,
 //! and parsing of the initial-buy instruction args attached to a new token.
 
+use std::sync::Arc;
+
 use base64::{engine::general_purpose::STANDARD, Engine};
 use borsh::BorshDeserialize;
 use chrono::{DateTime, Utc};
@@ -46,7 +48,7 @@ impl HeliusDecoder {
         labels_json: &Value,
         cu_limit: Option<u64>,
         cu_price: Option<u64>,
-        raw_tx: &RawTransaction,
+        raw_tx: &Arc<RawTransaction>,
         message: &Value,
         meta: &Value,
     ) -> Vec<InternalEvent> {

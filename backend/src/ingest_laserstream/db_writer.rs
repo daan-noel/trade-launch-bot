@@ -1,13 +1,15 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
+use futures_util::future::join_all;
 use sqlx::PgPool;
 use tokio::sync::mpsc;
 use tracing::{error, warn};
 
 use crate::{
     models::{token::Token, trade::Trade, transaction::RawTransaction},
-    state::token_metrics::compute_is_rugged,
+    state::{token_metrics::compute_is_rugged, trade_signals::TradeSignals},
     storage::repositories::{
         token_info_repo::TokenInfoRepo, token_repo::TokenRepo, trade_repo::TradeRepo,
         transaction_repo::TransactionRepo, wallet_repo::WalletRepo,
@@ -20,7 +22,7 @@ const FLUSH_INTERVAL_MS: u64 = 25;
 /// Async persistence queue — never blocks the ingest hot path.
 #[derive(Debug)]
 pub enum DbWriteOp {
-    Raw(RawTransaction),
+    Raw(Arc<RawTransaction>),
     Token(Token),
     Wallet(String),
     Trade(Trade),
@@ -46,11 +48,18 @@ pub struct TokenMetricsWrite {
 
 pub struct DbWriter {
     pool: PgPool,
+    /// Wakes live buy/sell confirm loops the instant a trade they're waiting on is
+    /// persisted (see [`TradeSignals`]). Signalled only after the row is committed,
+    /// so a woken waiter that reads the DB is guaranteed to see it.
+    trade_signals: Arc<TradeSignals>,
 }
 
 impl DbWriter {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(pool: PgPool, trade_signals: Arc<TradeSignals>) -> Self {
+        Self {
+            pool,
+            trade_signals,
+        }
     }
 
     pub async fn run(self, mut rx: mpsc::Receiver<DbWriteOp>) {
@@ -103,7 +112,7 @@ impl DbWriter {
         //  • migrations → unique mints (idempotent OR-true)
         // Keeping the *last* op is exactly equivalent to applying them in order.
         let mut tokens: Vec<Token> = Vec::new();
-        let mut raws: Vec<RawTransaction> = Vec::new();
+        let mut raws: Vec<Arc<RawTransaction>> = Vec::new();
         let mut wallets: HashSet<String> = HashSet::new();
         let mut trades: HashMap<(String, i32), Trade> = HashMap::new();
         let mut metrics: HashMap<String, TokenMetricsWrite> = HashMap::new();
@@ -166,34 +175,50 @@ impl DbWriter {
             }
         }
 
+        // Now the rows are queryable: wake any live confirm loop waiting on one of
+        // these (wallet, mint) keys so it reads its fill immediately instead of
+        // waiting out its next poll tick. A no-op for every key with no waiter,
+        // which is virtually all of them.
+        for t in &trades {
+            self.trade_signals
+                .notify(&t.wallet_address, &t.mint_address);
+        }
+
         // Metrics — the (expensive) rugged recompute now runs once per unique
         // mint instead of once per trade. Trades above are already persisted, so
-        // the rugged reads see this batch's trades.
-        for m in metrics.values() {
-            let is_rugged = if m.recompute_rugged {
-                compute_is_rugged(&trade_repo, &m.mint, &m.creator_wallet, m.last_trade_at).await
-            } else {
-                false
-            };
-            if let Err(e) = info_repo
-                .upsert_metrics(
-                    &m.mint,
-                    m.ath_price,
-                    m.ath_timestamp,
-                    m.age_seconds,
-                    m.volume,
-                    m.market_cap,
-                    m.trade_count,
-                    m.last_trade_at,
-                    m.current_price,
-                    is_rugged,
-                    m.is_migrated,
-                )
-                .await
-            {
-                warn!("DbWriter: metrics {}: {e}", m.mint);
+        // the rugged reads see this batch's trades. Each mint's recompute+upsert
+        // is independent, so run them concurrently (bounded by the PgPool's
+        // connection cap) rather than serially across the batch's unique mints.
+        let metric_writes = metrics.values().map(|m| {
+            let trade_repo = &trade_repo;
+            let info_repo = &info_repo;
+            async move {
+                let is_rugged = if m.recompute_rugged {
+                    compute_is_rugged(trade_repo, &m.mint, &m.creator_wallet, m.last_trade_at).await
+                } else {
+                    false
+                };
+                if let Err(e) = info_repo
+                    .upsert_metrics(
+                        &m.mint,
+                        m.ath_price,
+                        m.ath_timestamp,
+                        m.age_seconds,
+                        m.volume,
+                        m.market_cap,
+                        m.trade_count,
+                        m.last_trade_at,
+                        m.current_price,
+                        is_rugged,
+                        m.is_migrated,
+                    )
+                    .await
+                {
+                    warn!("DbWriter: metrics {}: {e}", m.mint);
+                }
             }
-        }
+        });
+        join_all(metric_writes).await;
 
         // Migrations — idempotent, low volume.
         for mint in &migrations {

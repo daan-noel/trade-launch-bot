@@ -2,6 +2,8 @@
 //! PumpSwap (AMM) `BuyEvent`/`SellEvent`s, the shared AMM `Trade` builder, and
 //! the balance-delta fallback for buys/sells with no decodable event.
 
+use std::sync::Arc;
+
 use base64::{engine::general_purpose::STANDARD, Engine};
 use borsh::BorshDeserialize;
 use chrono::{DateTime, Utc};
@@ -365,7 +367,7 @@ impl HeliusDecoder {
         post_balances: &[u64],
         meta: &Value,
         labels_json: &Value,
-        raw_tx: &RawTransaction,
+        raw_tx: &Arc<RawTransaction>,
     ) -> Option<Vec<InternalEvent>> {
         let mint = pump_accounts.get(2)?.to_string();
         if mint.is_empty() {

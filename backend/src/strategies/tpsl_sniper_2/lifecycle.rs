@@ -167,6 +167,7 @@ pub async fn stop_and_close_rule(
             let token_cache = app_state.token_cache.clone();
             let position_repo = Tpsl2PositionRepo::new(app_state.db.clone());
             let trade_repo = TradeRepo::new(app_state.db.clone());
+            let trade_signals = app_state.trade_signals.clone();
             tokio::spawn(async move {
                 let mut pos = position;
                 let prev = pos.clone();
@@ -186,6 +187,7 @@ pub async fn stop_and_close_rule(
                     trade_repo,
                     runtime,
                     &token_cache,
+                    trade_signals,
                     exit_price,
                     now,
                     MANUAL_CLOSE_REASON.to_string(),

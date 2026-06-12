@@ -11,6 +11,7 @@ use crate::strategies::tpsl_sniper_2::Tpsl2RuntimeCache;
 use crate::trader::PumpFunTrader;
 
 use super::token_cache::TokenCache;
+use super::trade_signals::TradeSignals;
 
 /// Shared application state — passed to Actix handlers via `web::Data<AppState>`
 /// and injected into services.
@@ -38,6 +39,9 @@ pub struct AppState {
     pub pool_index: Arc<DashMap<String, String>>,
     /// Pinged when a new pool is registered, waking the WS task to subscribe.
     pub pools_changed: Arc<Notify>,
+    /// Persisted-trade wakeup hub: lets live buy/sell confirm loops (incl. the
+    /// manual-close sell spawned from lifecycle handlers) react to the feed.
+    pub trade_signals: Arc<TradeSignals>,
 }
 
 impl AppState {
@@ -58,6 +62,7 @@ impl AppState {
         tpsl2_cache: Arc<Tpsl2RuntimeCache>,
         pool_index: Arc<DashMap<String, String>>,
         pools_changed: Arc<Notify>,
+        trade_signals: Arc<TradeSignals>,
     ) -> Self {
         Self {
             db,
@@ -75,6 +80,7 @@ impl AppState {
             tpsl2_cache,
             pool_index,
             pools_changed,
+            trade_signals,
         }
     }
 

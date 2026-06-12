@@ -19,7 +19,8 @@ use std::str::FromStr;
 /// [`PumpFunTrader::resolve_buy_routing`] and
 /// [`PumpFunTrader::get_creator_from_mint_pda`] so the read and the offset
 /// parsing live in exactly one place.
-struct CurveRouting {
+#[derive(Clone, Copy)]
+pub(super) struct CurveRouting {
     creator: Pubkey,
     token_program: Pubkey,
     /// Bonding-curve `complete` flag — true once migrated to the AMM.
@@ -186,12 +187,12 @@ impl PumpFunTrader {
     /// Resolve the wallet's token account for `mint` with at most one on-chain
     /// lookup. Serves from the in-memory cache when the account is already known
     /// (populated by a prior buy/sell on this trader), otherwise performs a
-    /// single `get_all_token_accounts` scan and caches the result. Returns
-    /// `None` when the wallet holds no account for the mint.
+    /// single **mint-filtered** `getTokenAccountsByOwner` and caches the result.
+    /// Returns `None` when the wallet holds no account for the mint.
     ///
     /// Hot-path callers (e.g. the TPSL sell retry loop) use this so repeated
-    /// attempts don't each re-scan the entire wallet — the lookup happens once
-    /// and every later attempt hits the cache (zero RPC).
+    /// attempts don't each re-query — the lookup happens once and every later
+    /// attempt hits the cache (zero RPC).
     pub async fn resolve_cached_token_account(
         &self,
         mint: &str,
@@ -199,26 +200,20 @@ impl PumpFunTrader {
         if let Some(pk) = self.user_token_accounts.lock().unwrap().get(mint).copied() {
             return Ok(Some(pk));
         }
-        // The scan already returns every holding in the wallet, so cache all of
-        // them in one pass instead of keeping only `mint`. A later lookup for
-        // any other held mint then hits the cache (zero RPC) rather than
-        // re-scanning the whole wallet. On-chain is the source of truth, so we
-        // overwrite any existing entries with the freshly-read accounts.
-        let holdings = self.get_all_token_accounts().await?;
-        let mut cache = self.user_token_accounts.lock().unwrap();
-        let mut resolved = None;
-        for h in &holdings {
-            // A malformed token_account from a valid RPC response shouldn't
-            // happen; skip rather than fail the whole resolve if it does.
-            let Ok(pk) = Pubkey::from_str(&h.token_account) else {
-                continue;
-            };
-            if h.mint == mint {
-                resolved = Some(pk);
-            }
-            cache.insert(h.mint.clone(), pk);
-        }
-        Ok(resolved)
+        // Cache miss: a single mint-filtered lookup for just this mint, not a full
+        // two-program wallet scan. The hot path only needs this mint's account, so
+        // resolving it directly is one cheap RPC regardless of how many other
+        // tokens the wallet holds. Other mints warm their own cache entry on their
+        // first miss. On-chain is the source of truth, so overwrite any stale entry.
+        let Some(holding) = self.get_token_account_for_mint(mint).await? else {
+            return Ok(None);
+        };
+        let pk = Pubkey::from_str(&holding.token_account)?;
+        self.user_token_accounts
+            .lock()
+            .unwrap()
+            .insert(mint.to_string(), pk);
+        Ok(Some(pk))
     }
 
     /// Read the bonding curve's virtual reserves — `(virtual_token, virtual_quote)`
@@ -349,6 +344,22 @@ impl PumpFunTrader {
     /// token program is the mint account's owner. Shared by
     /// [`Self::resolve_buy_routing`] and [`Self::get_creator_from_mint_pda`].
     async fn read_curve_routing(&self, mint: &Pubkey) -> anyhow::Result<CurveRouting> {
+        let key = mint.to_string();
+
+        // creator / token_program / cashback are fixed at creation and migration
+        // is terminal on-chain (curve → AMM, never back). So once a mint is
+        // observed migrated, every routing fact is immutable and we can serve it
+        // from cache with zero RPC — the common case for trading a graduated
+        // token. A not-yet-migrated entry is deliberately re-read each call so we
+        // catch the curve→AMM transition; a stale `is_migrated = false` would
+        // misroute a now-migrated trade to the bonding curve, which the program
+        // rejects with BondingCurveComplete (6005).
+        if let Some(cached) = self.curve_routing_cache.lock().unwrap().get(&key).copied() {
+            if cached.is_migrated {
+                return Ok(cached);
+            }
+        }
+
         let bonding_curve = self.bonding_curve_pda(mint);
 
         // Both independent accounts in one request — this gates every manual
@@ -370,13 +381,21 @@ impl PumpFunTrader {
         }
         let creator_bytes: [u8; 32] =
             account.data[CREATOR_OFFSET..CREATOR_OFFSET + 32].try_into()?;
-        Ok(CurveRouting {
+        let routing = CurveRouting {
             creator: Pubkey::from(creator_bytes),
             token_program: mint_account.owner,
             is_migrated: account.data[COMPLETE_OFFSET] != 0,
             cashback_enabled: account.data.len() > CASHBACK_OFFSET
                 && account.data[CASHBACK_OFFSET] != 0,
-        })
+        };
+        // Cache the fresh read. A migrated entry is terminal and will be served
+        // directly next time; a not-yet-migrated entry is overwritten on the next
+        // re-read until it flips.
+        self.curve_routing_cache
+            .lock()
+            .unwrap()
+            .insert(key, routing);
+        Ok(routing)
     }
 
     /// Resolve everything a manual buy needs straight from chain (source of
