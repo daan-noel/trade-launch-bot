@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use futures_util::future::join_all;
+use futures_util::stream::{self, StreamExt};
 use sqlx::PgPool;
 use tokio::sync::mpsc;
 use tracing::{error, warn};
@@ -18,6 +18,9 @@ use crate::{
 
 const BATCH_MAX: usize = 64;
 const FLUSH_INTERVAL_MS: u64 = 25;
+/// Max concurrent per-mint rugged-recompute+upsert tasks per flush. Each does up
+/// to 3 DB queries, so this bounds the burst against the PgPool connection cap.
+const METRIC_WRITE_CONCURRENCY: usize = 8;
 
 /// Async persistence queue — never blocks the ingest hot path.
 #[derive(Debug)]
@@ -187,14 +190,21 @@ impl DbWriter {
         // Metrics — the (expensive) rugged recompute now runs once per unique
         // mint instead of once per trade. Trades above are already persisted, so
         // the rugged reads see this batch's trades. Each mint's recompute+upsert
-        // is independent, so run them concurrently (bounded by the PgPool's
-        // connection cap) rather than serially across the batch's unique mints.
-        let metric_writes = metrics.values().map(|m| {
-            let trade_repo = &trade_repo;
-            let info_repo = &info_repo;
+        // is independent, so run them concurrently — but bounded by
+        // `buffer_unordered` so a flush with hundreds of unique mints can't fire
+        // hundreds of (3-query) recomputes at once and exhaust the PgPool.
+        // Collect the per-mint write futures eagerly (each owns its data via a
+        // cloned PgPool that builds fresh repos). Collecting first releases the
+        // borrow on `metrics` before the stream runs — a lazy `.map()` fed into
+        // `buffer_unordered` trips an HRTB inference error instead.
+        let metric_writes: Vec<_> = metrics.values().map(|m| {
+            let pool = self.pool.clone();
+            let m = m.clone();
             async move {
+                let trade_repo = TradeRepo::new(pool.clone());
+                let info_repo = TokenInfoRepo::new(pool);
                 let is_rugged = if m.recompute_rugged {
-                    compute_is_rugged(trade_repo, &m.mint, &m.creator_wallet, m.last_trade_at).await
+                    compute_is_rugged(&trade_repo, &m.mint, &m.creator_wallet, m.last_trade_at).await
                 } else {
                     false
                 };
@@ -217,8 +227,11 @@ impl DbWriter {
                     warn!("DbWriter: metrics {}: {e}", m.mint);
                 }
             }
-        });
-        join_all(metric_writes).await;
+        }).collect();
+        stream::iter(metric_writes)
+            .buffer_unordered(METRIC_WRITE_CONCURRENCY)
+            .collect::<Vec<()>>()
+            .await;
 
         // Migrations — idempotent, low volume.
         for mint in &migrations {

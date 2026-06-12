@@ -75,8 +75,25 @@ pub async fn sync_token(
         incremental: body.incremental,
     };
 
+    // Dedup: reject a second sync of the same mint while one is in flight (two
+    // would race on the watermark write). The guard is released by the spawned
+    // task below on completion.
+    let dedup_mint = req.mint_address.clone();
+    if !state.sync_in_flight.insert(dedup_mint.clone()) {
+        return HttpResponse::Conflict().json(ErrorBody {
+            message: "A sync for this token is already in progress.".to_string(),
+        });
+    }
+
+    let semaphore = state.sync_semaphore.clone();
+    let in_flight = state.sync_in_flight.clone();
     tokio::spawn(async move {
-        match token_sync::run_token_sync(ctx, req, line_tx.clone()).await {
+        // Bound global concurrent syncs; the permit is held for the whole backfill
+        // and released on drop at task end (acquire only fails at shutdown).
+        let _permit = semaphore.acquire_owned().await;
+        let result = token_sync::run_token_sync(ctx, req, line_tx.clone()).await;
+        in_flight.remove(&dedup_mint);
+        match result {
             Ok(output) => {
                 let detail = TokenDetail::from(&output.state);
                 let complete = serde_json::to_string(&SyncCompleteEvent {

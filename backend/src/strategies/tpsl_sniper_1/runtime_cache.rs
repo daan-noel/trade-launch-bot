@@ -4,6 +4,7 @@ use std::sync::{Arc, RwLock};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use sqlx::PgPool;
+use tokio::sync::Semaphore;
 use uuid::Uuid;
 
 use super::exit::{CachedExitState, ExitWalkState};
@@ -41,7 +42,14 @@ pub struct Tpsl1RuntimeCache {
     /// time-exit sweep never re-walks a token's full history. Lifecycle is tied
     /// to the holding index: an entry is dropped when its position leaves Holding.
     exit_state_by_position: Arc<DashMap<Uuid, CachedExitState>>,
+    /// Caps concurrent paper entry/exit fill-poll tasks. Each spawn acquires a
+    /// permit before doing DB work, so a burst of fills can't spawn an unbounded
+    /// number of feed-polling tasks all hammering the DB at once.
+    paper_poll_sem: Arc<Semaphore>,
 }
+
+/// Max concurrent paper fill-poll tasks (entry + exit) for this strategy.
+const PAPER_POLL_CONCURRENCY: usize = 64;
 
 impl Tpsl1RuntimeCache {
     pub fn new() -> Self {
@@ -53,7 +61,13 @@ impl Tpsl1RuntimeCache {
             total_count_by_rule: Arc::new(DashMap::new()),
             paper_run_by_rule: Arc::new(DashMap::new()),
             exit_state_by_position: Arc::new(DashMap::new()),
+            paper_poll_sem: Arc::new(Semaphore::new(PAPER_POLL_CONCURRENCY)),
         }
+    }
+
+    /// Shared semaphore bounding concurrent paper fill-poll tasks.
+    pub fn paper_poll_sem(&self) -> Arc<Semaphore> {
+        self.paper_poll_sem.clone()
     }
 
     pub async fn load_from_db(&self, pool: &PgPool) -> anyhow::Result<()> {

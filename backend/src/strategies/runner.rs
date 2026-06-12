@@ -35,11 +35,19 @@ impl StrategyRunner {
             pool.clone(),
             trader.clone(),
             tpsl1_cache,
+            token_cache.clone(),
             sse_tx.clone(),
             trade_signals.clone(),
         );
         tpsl1.spawn_background_tasks();
-        let tpsl2 = Tpsl2StrategyService::new(pool, trader, tpsl2_cache, sse_tx, trade_signals);
+        let tpsl2 = Tpsl2StrategyService::new(
+            pool,
+            trader,
+            tpsl2_cache,
+            token_cache.clone(),
+            sse_tx,
+            trade_signals,
+        );
         tpsl2.spawn_background_tasks();
         Self { token_cache, tpsl1, tpsl2 }
     }

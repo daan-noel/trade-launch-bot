@@ -184,7 +184,7 @@ impl IngestPipeline {
                             }
 
                             if save_raw {
-                                self.enqueue_db(DbWriteOp::Raw(raw_tx.clone()));
+                                self.enqueue_db(DbWriteOp::Raw(raw_tx.clone())).await;
                             }
 
                             for event in events {
@@ -285,21 +285,30 @@ impl IngestPipeline {
             InternalEvent::TokenCreated(e) => self.on_token_created(e).await,
             InternalEvent::TradeExecuted(e) => self.on_trade_executed(e).await,
             InternalEvent::TokenMigrated(e) => self.on_token_migrated(e).await,
-            InternalEvent::CreatorActivityDetected(e) => self.on_creator_activity(e),
+            InternalEvent::CreatorActivityDetected(e) => self.on_creator_activity(e).await,
             InternalEvent::LiquidityAdded(e) => self.on_liquidity(e, true, raw_tx),
             InternalEvent::LiquidityRemoved(e) => self.on_liquidity(e, false, raw_tx),
         }
     }
 
-    fn enqueue_db(&self, op: DbWriteOp) {
-        if let Err(e) = self.db_tx.try_send(op) {
-            warn!("DbWriter queue full — dropping write: {e}");
+    /// Persist a write op. Uses `send().await` (real backpressure) rather than
+    /// `try_send`: a hot token bursting past `DB_QUEUE_CAP` must slow the ingest
+    /// loop — which propagates the stall up to the gRPC `send().await` in
+    /// `client.rs` — never silently drop persisted trades/metrics. The only error
+    /// here is a closed channel (DbWriter gone at shutdown).
+    async fn enqueue_db(&self, op: DbWriteOp) {
+        if let Err(e) = self.db_tx.send(op).await {
+            warn!("DbWriter channel closed — write not persisted: {e}");
         }
     }
 
-    fn ping_strategy(&self, mint: String, kind: IngestKind) {
-        if let Err(e) = self.strategy_tx.try_send(StrategyPing { mint, kind }) {
-            warn!("Strategy queue full — dropping ping: {e}");
+    /// Ping a strategy. Also `send().await` for the same reason a dropped ping is
+    /// a missed price exit (money). Backpressure here stalls the ingest loop until
+    /// the strategy runner drains; the runner no longer blocks on slow real sells
+    /// (those are spawned), so this queue drains promptly.
+    async fn ping_strategy(&self, mint: String, kind: IngestKind) {
+        if let Err(e) = self.strategy_tx.send(StrategyPing { mint, kind }).await {
+            warn!("Strategy channel closed — ping not delivered: {e}");
         }
     }
 
@@ -337,15 +346,15 @@ impl IngestPipeline {
         );
 
         let creator = e.token.creator_wallet.clone();
-        self.enqueue_db(DbWriteOp::Token(e.token.clone()));
-        self.enqueue_db(DbWriteOp::Wallet(creator));
+        self.enqueue_db(DbWriteOp::Token(e.token.clone())).await;
+        self.enqueue_db(DbWriteOp::Wallet(creator)).await;
 
         let token_state = TokenState::new(e.token);
         let metrics = metrics_from_state(&mint, &token_state, false);
         self.token_cache.insert(mint.clone(), token_state);
-        self.enqueue_db(DbWriteOp::Metrics(metrics));
+        self.enqueue_db(DbWriteOp::Metrics(metrics)).await;
 
-        self.ping_strategy(mint.clone(), IngestKind::TokenCreated);
+        self.ping_strategy(mint.clone(), IngestKind::TokenCreated).await;
         self.emit_sse(SseEvent::TokenCreated {
             mint,
             tx_signature: e.tx_signature,
@@ -369,14 +378,15 @@ impl IngestPipeline {
             "Trade applied"
         );
 
-        self.enqueue_db(DbWriteOp::Trade(e.trade.clone()));
-        self.enqueue_db(DbWriteOp::Wallet(wallet.clone()));
+        self.enqueue_db(DbWriteOp::Trade(e.trade.clone())).await;
+        self.enqueue_db(DbWriteOp::Wallet(wallet.clone())).await;
 
-        if let Some(mut token_state) = self.token_cache.get_mut(&mint) {
+        let metrics = self.token_cache.get_mut(&mint).map(|mut token_state| {
             token_state.add_trade(e.trade.clone());
-            let metrics = metrics_from_state(&mint, &token_state, true);
-            drop(token_state);
-            self.enqueue_db(DbWriteOp::Metrics(metrics));
+            metrics_from_state(&mint, &token_state, true)
+        });
+        if let Some(metrics) = metrics {
+            self.enqueue_db(DbWriteOp::Metrics(metrics)).await;
         }
 
         // Feed the trader's live reserve cache from this trade's post-trade
@@ -419,7 +429,7 @@ impl IngestPipeline {
             }
         }
 
-        self.ping_strategy(mint.clone(), IngestKind::Trade);
+        self.ping_strategy(mint.clone(), IngestKind::Trade).await;
         self.emit_sse(SseEvent::TradeExecuted {
             mint,
             wallet,
@@ -447,22 +457,24 @@ impl IngestPipeline {
             self.register_pool(&mint);
         }
 
-        if let Some(mut token_state) = self.token_cache.get_mut(&mint) {
+        let metrics = self.token_cache.get_mut(&mint).map(|mut token_state| {
             token_state.is_migrated = true;
-            let metrics = metrics_from_state(&mint, &token_state, false);
-            drop(token_state);
-            self.enqueue_db(DbWriteOp::Metrics(metrics));
+            metrics_from_state(&mint, &token_state, false)
+        });
+        if let Some(metrics) = metrics {
+            self.enqueue_db(DbWriteOp::Metrics(metrics)).await;
         }
 
-        self.enqueue_db(DbWriteOp::Migration { mint: mint.clone() });
-        self.ping_strategy(mint, IngestKind::Migrated);
+        self.enqueue_db(DbWriteOp::Migration { mint: mint.clone() }).await;
+        self.ping_strategy(mint, IngestKind::Migrated).await;
     }
 
-    fn on_creator_activity(&self, e: CreatorActivityEvent) {
+    async fn on_creator_activity(&self, e: CreatorActivityEvent) {
         if !self.token_cache.contains_key(&e.mint_address) {
             return;
         }
-        self.ping_strategy(e.mint_address, IngestKind::CreatorActivity);
+        self.ping_strategy(e.mint_address, IngestKind::CreatorActivity)
+            .await;
     }
 
     fn on_liquidity(&self, e: LiquidityEvent, added: bool, _raw_tx: &RawTransaction) {

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use sqlx::PgPool;
-use tokio::sync::{broadcast, watch, Notify};
+use tokio::sync::{broadcast, watch, Notify, Semaphore};
 
 use crate::models::ingest::SseEvent;
 use crate::storage::repositories::settings_repo::AppSettings;
@@ -42,7 +42,16 @@ pub struct AppState {
     /// Persisted-trade wakeup hub: lets live buy/sell confirm loops (incl. the
     /// manual-close sell spawned from lifecycle handlers) react to the feed.
     pub trade_signals: Arc<TradeSignals>,
+    /// Caps how many `POST /api/token/sync` backfills run at once, so a burst of
+    /// sync requests can't spawn unbounded RPC-heavy tasks.
+    pub sync_semaphore: Arc<Semaphore>,
+    /// Mints with a backfill sync currently in flight. Dedupes concurrent syncs
+    /// of one mint, which would otherwise race on the sync-watermark write.
+    pub sync_in_flight: Arc<DashSet<String>>,
 }
+
+/// Max concurrent token-sync backfills (each is RPC- and DB-heavy).
+const MAX_CONCURRENT_SYNCS: usize = 4;
 
 impl AppState {
     #[allow(clippy::too_many_arguments)]
@@ -81,6 +90,8 @@ impl AppState {
             pool_index,
             pools_changed,
             trade_signals,
+            sync_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_SYNCS)),
+            sync_in_flight: Arc::new(DashSet::new()),
         }
     }
 

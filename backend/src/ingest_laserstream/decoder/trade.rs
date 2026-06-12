@@ -264,7 +264,9 @@ pub(super) fn decode_pump_swap_trades_from_logs(logs: &[&str]) -> Vec<DecodedAmm
                     // trade's own price: base tokens leave the pool, quote (incl.
                     // the LP fee retained in the pool) enters it.
                     let post_base = e.pool_base_token_reserves.saturating_sub(e.base_amount_out);
-                    let post_quote = e.pool_quote_token_reserves + e.quote_amount_in_with_lp_fee;
+                    let post_quote = e
+                        .pool_quote_token_reserves
+                        .saturating_add(e.quote_amount_in_with_lp_fee);
                     out.push(DecodedAmmTrade {
                         is_buy: true,
                         base_amount: e.base_amount_out as f64,
@@ -282,7 +284,7 @@ pub(super) fn decode_pump_swap_trades_from_logs(logs: &[&str]) -> Vec<DecodedAmm
                 Ok(e) => {
                     // PRE-swap -> POST-swap: base tokens enter the pool, quote
                     // (excl. the LP fee retained in the pool) leaves it.
-                    let post_base = e.pool_base_token_reserves + e.base_amount_in;
+                    let post_base = e.pool_base_token_reserves.saturating_add(e.base_amount_in);
                     let post_quote = e
                         .pool_quote_token_reserves
                         .saturating_sub(e.quote_amount_out_without_lp_fee);

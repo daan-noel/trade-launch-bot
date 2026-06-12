@@ -41,7 +41,10 @@ pub(crate) fn spawn_entry_fill_poll(
     rule: Tpsl2StrategyRule,
 ) {
     let buy_amount = rule.buy_amount;
+    let poll_sem = runtime.paper_poll_sem();
     tokio::spawn(async move {
+        // Bound concurrent fill-poll tasks; held for the task's lifetime.
+        let _permit = poll_sem.acquire_owned().await;
         let mut recorded = false;
         // Watch the live feed for the scalp entry signal over the arming window,
         // sized to this rule's own gates (`scalp_arming_attempts`) so slow gates
@@ -119,7 +122,10 @@ pub(crate) fn spawn_exit_fill_poll(
     trigger_time: DateTime<Utc>,
     trigger_reason: String,
 ) {
+    let poll_sem = runtime.paper_poll_sem();
     tokio::spawn(async move {
+        // Bound concurrent fill-poll tasks; held for the task's lifetime.
+        let _permit = poll_sem.acquire_owned().await;
         let rule_id = rule.id;
         let max_total = none_if_zero_u64(rule.p_max_total_tokens);
         let mut found = false;

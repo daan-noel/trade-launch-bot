@@ -34,7 +34,10 @@ pub(crate) fn spawn_entry_fill_poll(
     position_id: Uuid,
     buy_amount: f64,
 ) {
+    let poll_sem = runtime.paper_poll_sem();
     tokio::spawn(async move {
+        // Bound concurrent fill-poll tasks; held for the task's lifetime.
+        let _permit = poll_sem.acquire_owned().await;
         let mut recorded = false;
         for _ in 0..super::BUY_POLL_MAX_ATTEMPTS {
             sleep(Duration::from_millis(super::BUY_POLL_INTERVAL_MS)).await;
@@ -107,7 +110,10 @@ pub(crate) fn spawn_exit_fill_poll(
     trigger_time: DateTime<Utc>,
     trigger_reason: String,
 ) {
+    let poll_sem = runtime.paper_poll_sem();
     tokio::spawn(async move {
+        // Bound concurrent fill-poll tasks; held for the task's lifetime.
+        let _permit = poll_sem.acquire_owned().await;
         let rule_id = rule.id;
         let max_total = none_if_zero_u64(rule.p_max_total_tokens);
         let mut found = false;

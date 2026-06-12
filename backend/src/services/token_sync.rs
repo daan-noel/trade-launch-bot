@@ -20,6 +20,7 @@ use crate::{
         events::InternalEvent,
         token::Token,
         trade::Trade,
+        transaction::RawTransaction,
     },
     state::{
         token_cache::{TokenCache, TokenState},
@@ -386,6 +387,16 @@ pub async fn run_token_sync(
         .await
         .map_err(|e| SyncError::Internal(e.to_string()))?;
 
+    // Decode the batch into accumulators, then bulk-persist once via
+    // `persist_backfill`. Replaces the old per-row `let _ = insert(...)` loop that
+    // swallowed every write error while the watermark (stamped below) advanced
+    // regardless — silently and permanently skipping any row that failed to save.
+    // Token-creation upsert and the migrate-slot discovery stay inline because the
+    // loop's `skip_trades` gate depends on a migration seen earlier in slot order.
+    let mut curve_txs: Vec<Arc<RawTransaction>> = Vec::new();
+    let mut curve_trades: Vec<Trade> = Vec::new();
+    let mut curve_wallets: Vec<String> = Vec::new();
+
     for (idx, entry) in fetched.iter().enumerate() {
         if idx > 0 && idx % 25 == 0 {
             send_progress(
@@ -406,7 +417,7 @@ pub async fn run_token_sync(
             DecodeOutput::Transaction { raw_tx, mut events } => {
                 sort_sync_events(&mut events);
 
-                let _ = tx_repo.insert(&raw_tx, "rpc").await;
+                curve_txs.push(raw_tx);
 
                 for event in events {
                     match event {
@@ -415,25 +426,23 @@ pub async fn run_token_sync(
                                 .upsert(&e.token)
                                 .await
                                 .map_err(|e| SyncError::Internal(e.to_string()))?;
-                            token_record = Some(e.token.clone());
-                            let now = Utc::now();
-                            let _ = wallet_repo
-                                .touch_last_seen(&e.token.creator_wallet, now)
-                                .await;
+                            curve_wallets.push(e.token.creator_wallet.clone());
+                            token_record = Some(e.token);
                         }
                         InternalEvent::TradeExecuted(e) if e.trade.mint_address == mint => {
                             if skip_trades {
                                 continue;
                             }
-                            let _ = trade_repo.insert(&e.trade).await;
-                            let now = Utc::now();
-                            let _ = wallet_repo
-                                .touch_last_seen(&e.trade.wallet_address, now)
-                                .await;
+                            curve_wallets.push(e.trade.wallet_address.clone());
+                            curve_trades.push(e.trade);
                         }
                         InternalEvent::TokenMigrated(e) if e.mint_address == mint => {
                             migrate_slot = Some(e.slot);
-                            let _ = info_repo.update_migration_status(&mint, true).await;
+                            if let Err(err) = info_repo.update_migration_status(&mint, true).await {
+                                tracing::warn!(
+                                    "token_sync: update_migration_status failed for {mint}: {err}"
+                                );
+                            }
                         }
                         _ => {}
                     }
@@ -442,6 +451,17 @@ pub async fn run_token_sync(
             _ => {}
         }
     }
+
+    persist_backfill(
+        &trade_repo,
+        &tx_repo,
+        &wallet_repo,
+        "curve",
+        &curve_txs,
+        &curve_trades,
+        &mut curve_wallets,
+    )
+    .await?;
 
     let db_migrated = info_repo
         .find_by_mint(&mint)
@@ -861,18 +881,68 @@ async fn sync_amm_trades(
     )
     .await?;
 
+    // Decode the whole batch first, then persist in bulk. The old per-row
+    // `let _ = insert(...)` swallowed every write error yet the caller still
+    // advanced the AMM watermark — so a transient DB failure permanently lost
+    // those swaps. Here a bulk-insert failure is propagated, and the caller only
+    // stamps the AMM watermark on `Ok`, so the next incremental sync re-pulls
+    // whatever didn't persist.
+    let mut amm_txs: Vec<Arc<RawTransaction>> = Vec::new();
+    let mut amm_trades: Vec<Trade> = Vec::new();
+    let mut amm_wallets: Vec<String> = Vec::new();
     for entry in &fetched {
         if let Some((raw_tx, trades)) = decoder.decode_pump_swap_result(&entry.result, mint, &pool) {
-            let _ = tx_repo.insert(&raw_tx, "rpc").await;
-            let now = Utc::now();
+            amm_txs.push(Arc::new(raw_tx));
             for trade in trades {
-                let _ = wallet_repo.touch_last_seen(&trade.wallet_address, now).await;
-                let _ = trade_repo.insert(&trade).await;
+                amm_wallets.push(trade.wallet_address.clone());
+                amm_trades.push(trade);
             }
         }
     }
 
+    persist_backfill(
+        trade_repo,
+        tx_repo,
+        wallet_repo,
+        "amm",
+        &amm_txs,
+        &amm_trades,
+        &mut amm_wallets,
+    )
+    .await?;
+
     Ok((newest_amm_sig, newest_amm_slot))
+}
+
+/// Bulk-persist a decoded backfill batch (raw txs, trades, touched wallets) for
+/// one venue and **propagate** any write failure to the caller. Centralizes the
+/// "never silently drop, never advance the watermark past a failed write" policy
+/// shared by the curve loop in `run_token_sync` and `sync_amm_trades`. `wallets`
+/// is sorted/deduped in place before the single bulk touch.
+async fn persist_backfill(
+    trade_repo: &TradeRepo,
+    tx_repo: &TransactionRepo,
+    wallet_repo: &WalletRepo,
+    venue: &str,
+    txs: &[Arc<RawTransaction>],
+    trades: &[Trade],
+    wallets: &mut Vec<String>,
+) -> Result<(), SyncError> {
+    tx_repo
+        .insert_many(txs, "rpc")
+        .await
+        .map_err(|e| SyncError::Internal(format!("{venue} tx bulk insert failed: {e}")))?;
+    trade_repo
+        .insert_many(trades)
+        .await
+        .map_err(|e| SyncError::Internal(format!("{venue} trade bulk insert failed: {e}")))?;
+    wallets.sort();
+    wallets.dedup();
+    wallet_repo
+        .touch_last_seen_many(wallets, Utc::now())
+        .await
+        .map_err(|e| SyncError::Internal(format!("{venue} wallet touch failed: {e}")))?;
+    Ok(())
 }
 
 struct FetchedTx {

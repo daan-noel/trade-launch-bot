@@ -39,6 +39,42 @@ fn resolve_slippage(app_state: &AppState, request: Option<u64>) -> u64 {
         .min(SLIPPAGE_MAX_BPS)
 }
 
+/// 90% of a raw token balance, rounded down (we sell 90% to leave dust headroom).
+/// Widens to `u128` first: the naive `amount * 90 / 100` overflows for any
+/// `amount > u64::MAX / 90` — a client-supplied raw amount can reach there — and
+/// would panic in debug or silently wrap in release, selling the wrong size.
+fn sell_ninety_percent(amount: u64) -> u64 {
+    ((amount as u128 * 90) / 100) as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sell_ninety_percent;
+
+    #[test]
+    fn computes_ninety_percent_for_normal_values() {
+        assert_eq!(sell_ninety_percent(0), 0);
+        assert_eq!(sell_ninety_percent(100), 90);
+        assert_eq!(sell_ninety_percent(1_000_000_000), 900_000_000);
+        // Rounds down.
+        assert_eq!(sell_ninety_percent(9), 8);
+    }
+
+    #[test]
+    fn does_not_overflow_near_u64_max() {
+        // The old `amount * 90` would panic (debug) / wrap (release) for any
+        // amount above this threshold; the u128 widening keeps it exact.
+        let threshold = u64::MAX / 90;
+        assert_eq!(sell_ninety_percent(threshold), (threshold as u128 * 90 / 100) as u64);
+
+        // u64::MAX itself must not panic and stays below the input.
+        let got = sell_ninety_percent(u64::MAX);
+        let expected = (u64::MAX as u128 * 90 / 100) as u64;
+        assert_eq!(got, expected);
+        assert!(got < u64::MAX);
+    }
+}
+
 /// POST /api/solana/wallet/buy
 pub async fn manual_buy(
     app_state: web::Data<Arc<AppState>>,
@@ -93,7 +129,7 @@ pub async fn manual_sell(
     body: web::Json<SellRequest>,
 ) -> impl Responder {
     let token_account_override = body.token_account.as_deref();
-    let sell_amount = (body.token_amount * 90 / 100) as u64; // Sell 90% to avoid dust issues
+    let sell_amount = sell_ninety_percent(body.token_amount);
 
     // Resolve routing live on-chain — same as manual_buy. The in-memory
     // token_cache can be stale or empty for a freshly-migrated token, and a

@@ -2,9 +2,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use dashmap::DashSet;
 use sqlx::PgPool;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 use crate::models::ingest::SseEvent;
 use crate::models::Position;
@@ -25,10 +27,18 @@ pub struct Tpsl2StrategyService {
     trade_repo: TradeRepo,
     trader: Arc<PumpFunTrader>,
     runtime: Arc<Tpsl2RuntimeCache>,
+    /// WS-fed price/trade source of truth; cloned into spawned real-sell tasks.
+    token_cache: Arc<TokenCache>,
     /// Cold-lane broadcast for client notifications (e.g. paper-run finished).
     sse_tx: broadcast::Sender<SseEvent>,
     /// Persisted-trade wakeup hub for the snipe buy confirm loop.
     trade_signals: Arc<TradeSignals>,
+    /// Positions with a real sell currently in flight. A real exit spawns its
+    /// slow sell loop off the runner's `select!` task (so a sell never blocks
+    /// ping handling or the time sweep); this set lets the next trade/sweep skip
+    /// a position already selling, preserving the no-double-sell invariant that
+    /// the previously-inline-awaited sell got from select-loop serialization.
+    selling: Arc<DashSet<Uuid>>,
 }
 
 impl Tpsl2StrategyService {
@@ -36,6 +46,7 @@ impl Tpsl2StrategyService {
         pool: PgPool,
         trader: Arc<PumpFunTrader>,
         runtime: Arc<Tpsl2RuntimeCache>,
+        token_cache: Arc<TokenCache>,
         sse_tx: broadcast::Sender<SseEvent>,
         trade_signals: Arc<TradeSignals>,
     ) -> Self {
@@ -46,8 +57,10 @@ impl Tpsl2StrategyService {
             pool,
             trader,
             runtime,
+            token_cache,
             sse_tx,
             trade_signals,
+            selling: Arc::new(DashSet::new()),
         }
     }
 
@@ -329,7 +342,6 @@ impl Tpsl2StrategyService {
                     } else if rule.trade_mode == "real" {
                         self.trigger_real_exit(
                             position,
-                            cache,
                             current_price,
                             Utc::now(),
                             exit_reason.to_string(),
@@ -441,29 +453,43 @@ impl Tpsl2StrategyService {
                 )
                 .await;
             } else if rule.trade_mode == "real" {
-                self.trigger_real_exit(position, cache, last_price, now, exit_reason.to_string())
+                self.trigger_real_exit(position, last_price, now, exit_reason.to_string())
                     .await;
             }
         }
     }
 
-    /// Mark a real position ExitPending and run the single sell pass. Shared by
-    /// the trade-driven exit (`on_trade_executed`) and the time-driven sweep.
+    /// Mark a real position ExitPending inline, then **spawn** the slow sell pass
+    /// off the runner's `select!` task. Shared by the trade-driven exit
+    /// (`on_trade_executed`) and the time-driven sweep.
     ///
-    /// `sell_with_retries` (inside `execute_sell_for_position`) owns the retry +
+    /// The ExitPending mark + holding-index sync happen inline (synchronously
+    /// within the select task) so the position leaves the holding index before
+    /// the next ping/sweep. The actual sell — which can await tens of seconds
+    /// (`SELL_MAX_ATTEMPTS × SELL_POLL_MAX_ATTEMPTS × 1s`) — is spawned so it
+    /// never stalls ping handling or the 1s time sweep. The `selling` in-flight
+    /// set guards the no-double-sell invariant across that spawn boundary even if
+    /// the ExitPending DB write fails (which would leave the position in the
+    /// holding index).
+    ///
+    /// `sell_with_retries` (inside `sell_and_close_position`) owns the retry +
     /// partial-fill loop and re-reads migration routing from the WS cache on every
-    /// attempt, so a mid-exit migration self-heals to the AMM path.
-    /// `execute_sell_for_position` then closes the position (on a confirmed sell)
-    /// or marks it ExitFailed. `trigger_price`/`trigger_time` are the hypothetical
-    /// exit recorded if the sell never confirms.
+    /// attempt, so a mid-exit migration self-heals to the AMM path. It then closes
+    /// the position (on a confirmed sell) or marks it ExitFailed.
+    /// `trigger_price`/`trigger_time` are the hypothetical exit recorded if the
+    /// sell never confirms.
     async fn trigger_real_exit(
         &self,
         mut position: Position,
-        cache: &TokenCache,
         trigger_price: f64,
         trigger_time: DateTime<Utc>,
         reason: String,
     ) {
+        // Claim the position; bail if a sell is already in flight for it.
+        if !self.selling.insert(position.id) {
+            return;
+        }
+
         let prev = position.clone();
         position.mark_exit_pending();
         if let Err(err) = self.position_repo.update(&position).await {
@@ -476,18 +502,30 @@ impl Tpsl2StrategyService {
             info!(position_id = %position.id, mint = %position.mint,
                 "[REAL] Position marked ExitPending");
         }
-        super::execution::real::sell_and_close_position(
-            self.trader.clone(),
-            position,
-            self.position_repo.clone(),
-            self.trade_repo.clone(),
-            self.runtime.clone(),
-            cache,
-            self.trade_signals.clone(),
-            trigger_price,
-            trigger_time,
-            reason,
-        )
-        .await;
+
+        let position_id = position.id;
+        let trader = self.trader.clone();
+        let position_repo = self.position_repo.clone();
+        let trade_repo = self.trade_repo.clone();
+        let runtime = self.runtime.clone();
+        let token_cache = self.token_cache.clone();
+        let trade_signals = self.trade_signals.clone();
+        let selling = self.selling.clone();
+        tokio::spawn(async move {
+            super::execution::real::sell_and_close_position(
+                trader,
+                position,
+                position_repo,
+                trade_repo,
+                runtime,
+                &token_cache,
+                trade_signals,
+                trigger_price,
+                trigger_time,
+                reason,
+            )
+            .await;
+            selling.remove(&position_id);
+        });
     }
 }
