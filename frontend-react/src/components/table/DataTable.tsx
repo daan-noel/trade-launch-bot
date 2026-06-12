@@ -6,6 +6,33 @@ import { Pagination, DEFAULT_PAGE_SIZE } from './Pagination';
 import { parseNumericPredicate } from './numericFilter';
 import type { ColumnDef, SortDir, SortValue, TableQuery } from './types';
 
+/**
+ * Column-hover highlight, done in pure CSS instead of React state.
+ *
+ * Previously a shared `hoveredCol` number was threaded into every (memoized)
+ * row, so moving the mouse across columns changed that prop for *all* rows and
+ * re-rendered the entire visible page on each hover-move — defeating the row
+ * memoization precisely during interaction. A `:has()` + `nth-child` rule keeps
+ * the highlight entirely in the style engine: hovering any cell in column N
+ * tints that column's header + body cells, at zero React cost. Injected once.
+ * (Column 1 is the `#` index column and is deliberately left out, matching the
+ * old behaviour.)
+ */
+const HOVER_STYLE_ID = 'dt-colhover-style';
+if (typeof document !== 'undefined' && !document.getElementById(HOVER_STYLE_ID)) {
+  const sels: string[] = [];
+  for (let n = 2; n <= 48; n++) {
+    sels.push(
+      `.dt-colhover:has(:is(td,th):nth-child(${n}):hover) :is(td,th):nth-child(${n})`,
+    );
+  }
+  const el = document.createElement('style');
+  el.id = HOVER_STYLE_ID;
+  // Matches the old `bg-primary/12` tint (--color-primary #13ceaf at 12%).
+  el.textContent = `${sels.join(',')}{background-color:rgba(19,206,175,0.12)}`;
+  document.head.appendChild(el);
+}
+
 /** Drop empty/whitespace entries so they don't churn the server query. */
 function cleanColFilters(map: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
@@ -119,7 +146,12 @@ export function DataTable<R>({
   const [internalSelected, setInternalSelected] = useState<string | null>(null);
   const [showColPanel, setShowColPanel] = useState(false);
   const [showFilterRow, setShowFilterRow] = useState(false);
-  const [hoveredCol, setHoveredCol] = useState<number | null>(null);
+  // Debounced mirrors of the search box / per-column filter inputs. Both the
+  // server-side emit and the client-side `processed` filter read these so a
+  // burst of keystrokes coalesces into a single query/recompute instead of one
+  // per character (the client list can be large — see TOKENS_LIST_LIMIT).
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [debouncedColFilters, setDebouncedColFilters] = useState<Record<string, string>>({});
 
   // Controlled callers pass `selectedKey` (string | null); an explicit null then
   // means "nothing selected" and must win over any stale internal selection (e.g.
@@ -194,7 +226,7 @@ export function DataTable<R>({
     // Server mode applies the per-column filters itself; resolving them locally
     // would be dead work (`processed` short-circuits to `rows` below).
     if (serverSide) return out;
-    for (const [key, raw] of Object.entries(colFiltersMap)) {
+    for (const [key, raw] of Object.entries(debouncedColFilters)) {
       const text = raw.trim();
       if (!text) continue;
       const col = columns.find((c) => c.key === key);
@@ -203,13 +235,13 @@ export function DataTable<R>({
       out.push({ col, needle: text.toLowerCase(), numeric });
     }
     return out;
-  }, [serverSide, colFiltersMap, columns]);
+  }, [serverSide, debouncedColFilters, columns]);
 
   const processed = useMemo(() => {
     // Server mode: `rows` already IS the filtered/sorted page — never reduce it
     // locally (that would hide rows the server legitimately returned).
     if (serverSide) return rows;
-    const searchLower = search.toLowerCase();
+    const searchLower = debouncedSearch.toLowerCase();
     let list = rows.filter((row) => {
       if (searchLower) {
         const hit = columns.some((col) =>
@@ -237,7 +269,7 @@ export function DataTable<R>({
       }
     }
     return list;
-  }, [serverSide, rows, columns, search, activeColFilters, sortCol, sortDir]);
+  }, [serverSide, rows, columns, debouncedSearch, activeColFilters, sortCol, sortDir]);
 
   // Reset paging when the *view* changes (search/filter/sort/selection), jumping
   // to the selected row's page when one is selected. `processed` and `rowKey` are
@@ -257,20 +289,18 @@ export function DataTable<R>({
     }
     setPage(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, colFiltersMap, sortCol, sortDir, selectedKey, pageSize, paginate, serverSide]);
+  }, [debouncedSearch, debouncedColFilters, sortCol, sortDir, selectedKey, pageSize, paginate, serverSide]);
 
-  // --- Server-side: debounce the text inputs, then emit the view-state -------
-  const [debouncedSearch, setDebouncedSearch] = useState(search);
-  const [debouncedColFilters, setDebouncedColFilters] =
-    useState<Record<string, string>>(colFiltersMap);
+  // Debounce the text inputs before they drive filtering: server mode emits the
+  // view-state from these; client mode feeds them into `processed` above. Either
+  // way a fast typist triggers one settle, not one per keystroke.
   useEffect(() => {
-    if (!serverSide) return;
     const id = setTimeout(() => {
       setDebouncedSearch(search);
       setDebouncedColFilters(colFiltersMap);
     }, 300);
     return () => clearTimeout(id);
-  }, [serverSide, search, colFiltersMap]);
+  }, [search, colFiltersMap]);
 
   // Signature of everything that changes the result set *except* the page. When
   // it changes we snap back to page 1; otherwise a plain page change emits as-is.
@@ -280,9 +310,13 @@ export function DataTable<R>({
     () => cleanColFilters(debouncedColFilters),
     [debouncedColFilters],
   );
-  const viewSig = `${resetKey ?? ''}|${pageSize}|${sortCol ?? ''}|${sortDir}|${debouncedSearch}|${JSON.stringify(
-    cleanedColFilters,
-  )}`;
+  const viewSig = useMemo(
+    () =>
+      `${resetKey ?? ''}|${pageSize}|${sortCol ?? ''}|${sortDir}|${debouncedSearch}|${JSON.stringify(
+        cleanedColFilters,
+      )}`,
+    [resetKey, pageSize, sortCol, sortDir, debouncedSearch, cleanedColFilters],
+  );
   const prevViewSig = useRef(viewSig);
   useEffect(() => {
     if (!serverSide) return;
@@ -412,7 +446,7 @@ export function DataTable<R>({
 
       <div className="overflow-hidden rounded-lg shadow-[0_2px_12px_rgba(0,0,0,0.4),0_8px_32px_rgba(0,0,0,0.3)]">
         <div className="overflow-x-auto border border-primary rounded-lg">
-          <table className="w-full border-collapse font-mono text-xs">
+          <table className={cn('w-full border-collapse font-mono text-xs', hoverable && 'dt-colhover')}>
             <thead>
               <tr>
                 <th className="sticky top-0 w-10 bg-bg-panel px-2 py-2.5 text-center text-[11px] font-semibold uppercase tracking-wider text-primary">
@@ -428,11 +462,8 @@ export function DataTable<R>({
                       col.sortable !== false && 'cursor-pointer hover:text-accent',
                       col.tooltip && 'decoration-dotted underline-offset-4 hover:underline',
                       groupCellCls(ci),
-                      hoverable && hoveredCol === ci + 1 && 'bg-primary/12',
                     )}
                     onClick={col.sortable !== false ? () => toggleSort(col.key) : undefined}
-                    onMouseEnter={hoverable ? () => setHoveredCol(ci + 1) : undefined}
-                    onMouseLeave={hoverable ? () => setHoveredCol(null) : undefined}
                   >
                     {col.label}
                     {sortCol === col.key && (
@@ -486,9 +517,6 @@ export function DataTable<R>({
                       index={start + i}
                       visCols={visCols}
                       groupClasses={groupClasses}
-                      hoverable={hoverable}
-                      hoveredCol={hoveredCol}
-                      setHoveredCol={setHoveredCol}
                       selectable={selectable}
                       isSelected={selectedKey === key}
                       onSelectRow={selectRow}
@@ -531,9 +559,6 @@ interface TableRowProps<R> {
   visCols: ColumnDef<R>[];
   /** Precomputed, referentially-stable group class per visible column. */
   groupClasses: string[];
-  hoverable: boolean;
-  hoveredCol: number | null;
-  setHoveredCol: (col: number | null) => void;
   selectable: boolean;
   isSelected: boolean;
   onSelectRow: (key: string, isSelected: boolean) => void;
@@ -557,9 +582,6 @@ function TableRowInner<R>({
   index,
   visCols,
   groupClasses,
-  hoverable,
-  hoveredCol,
-  setHoveredCol,
   selectable,
   isSelected,
   onSelectRow,
@@ -587,10 +609,7 @@ function TableRowInner<R>({
             className={cn(
               'border-b border-border px-2 py-1.5 text-center text-text',
               groupClasses[ci],
-              hoverable && hoveredCol === ci + 1 && 'bg-primary/12',
             )}
-            onMouseEnter={hoverable ? () => setHoveredCol(ci + 1) : undefined}
-            onMouseLeave={hoverable ? () => setHoveredCol(null) : undefined}
           >
             {col.render(row)}
           </td>

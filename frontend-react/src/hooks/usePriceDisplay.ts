@@ -5,6 +5,13 @@ import { formatCompact, formatDecimalTrim, formatPrice, formatUsd } from 'utils/
 export function usePriceDisplay() {
   const { unit, usdRate } = usePriceUnit();
 
+  // In SOL mode the rate isn't read by any formatter below, so fold it out of
+  // the memo key: otherwise every polled SOL/USD-rate tick hands back a fresh
+  // object, which rebuilds the consuming column definitions and re-renders the
+  // whole token table for nothing. In USD mode the rate genuinely drives the
+  // output, so it stays in the key and a tick correctly refreshes prices.
+  const rateKey = unit === 'USD' ? usdRate : null;
+
   return useMemo(
     () => ({
       unit,
@@ -28,6 +35,7 @@ export function usePriceDisplay() {
             ? `$${formatCompact(sol * usdRate, digits)}`
             : `◎${formatCompact(sol, digits)}`,
     }),
-    [unit, usdRate],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [unit, rateKey],
   );
 }
