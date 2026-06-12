@@ -17,6 +17,10 @@ interface InfoTooltipProps {
   body: string;
   /** Popover placement relative to the icon (default `bottom`). */
   side?: 'top' | 'bottom';
+  /** Which edge the popover anchors to (default `left`). Use `right` near a
+   *  container's right edge (e.g. an `overflow-x-hidden` modal) so the 256px
+   *  popover grows leftward instead of being clipped. */
+  align?: 'left' | 'right';
   className?: string;
 }
 
@@ -26,7 +30,7 @@ interface InfoTooltipProps {
  * toggled via `group-hover`/`group-focus-within`. Place it inline next to a
  * label. Note: it can be clipped by an ancestor with `overflow: hidden`.
  */
-export function InfoTooltip({ title, body, side = 'bottom', className }: InfoTooltipProps) {
+export function InfoTooltip({ title, body, side = 'bottom', align = 'left', className }: InfoTooltipProps) {
   return (
     <span className={cn('group/info relative inline-flex align-middle', className)}>
       <button
@@ -39,9 +43,10 @@ export function InfoTooltip({ title, body, side = 'bottom', className }: InfoToo
       <span
         role="tooltip"
         className={cn(
-          'pointer-events-none absolute left-0 z-50 w-64 rounded-md border border-border bg-bg-card p-2.5 text-left opacity-0 shadow-lg transition-opacity duration-100',
+          'pointer-events-none absolute z-50 w-64 rounded-md border border-border bg-bg-card p-2.5 text-left opacity-0 shadow-lg transition-opacity duration-100',
           'group-hover/info:opacity-100 group-focus-within/info:opacity-100',
           side === 'bottom' ? 'top-full mt-1.5' : 'bottom-full mb-1.5',
+          align === 'right' ? 'right-0' : 'left-0',
         )}
       >
         {title && (

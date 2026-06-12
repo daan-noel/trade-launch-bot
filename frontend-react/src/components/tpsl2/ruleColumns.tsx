@@ -3,6 +3,7 @@ import type { ColumnDef } from 'components/table/types';
 import type { RuleRecord } from 'types';
 import { dashF, dashNum, dashPercent } from './utils';
 import { formatAge } from 'utils/format';
+import { paramTip } from 'lib/tpslParamHelp';
 import { cn } from 'lib/cn';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
@@ -143,6 +144,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'init_buy',
       label: 'Init Buy',
+      tooltip: paramTip('initialBuy'),
       group: 'token_fingerprint',
       sortable: true,
       render: (r) => dashF(r.p_token_initial_buy_sol ?? 0, 15),
@@ -152,6 +154,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'cu_limit',
       label: 'CU Lim',
+      tooltip: paramTip('cuLimit'),
       group: 'token_fingerprint',
       sortable: true,
       render: (r) => dashNum(r.p_token_cu_limit),
@@ -161,6 +164,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'cu_price',
       label: 'CU Price',
+      tooltip: paramTip('cuPrice'),
       group: 'token_fingerprint',
       sortable: true,
       render: (r) => dashNum(r.p_token_cu_price),
@@ -170,6 +174,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'max_sol',
       label: 'Max SOL',
+      tooltip: paramTip('maxSolCost'),
       group: 'token_fingerprint',
       sortable: true,
       render: (r) => dashF(r.p_token_max_sol_cost ?? 0, 3),
@@ -179,6 +184,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'spendable',
       label: 'Spendable',
+      tooltip: paramTip('spendableSolIn'),
       group: 'token_fingerprint',
       sortable: true,
       render: (r) => dashF(r.p_token_spendable_sol_in ?? 0, 3),
@@ -188,6 +194,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'labels',
       label: 'Labels',
+      tooltip: paramTip('ixLabels'),
       group: 'token_fingerprint',
       sortable: true,
       render: (r) => {
@@ -217,6 +224,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'max_concurrent_tokens',
       label: 'Max Concurrent Tokens',
+      tooltip: paramTip('maxConcurrentTokens'),
       group: 'sizing',
       width: '120px',
       sortable: true,
@@ -227,6 +235,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'max_total_tokens',
       label: 'Max Total Tokens',
+      tooltip: paramTip('maxTotalTokens'),
       group: 'sizing',
       width: '120px',
       sortable: true,
@@ -237,7 +246,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'buy_amt',
       label: 'Buy Amt',
-      tooltip: 'Position size — SOL allocated per buy (paper or real).',
+      tooltip: paramTip('buyAmount'),
       group: 'sizing',
       sortable: true,
       render: (r) => dashF(r.buy_amount, 15),
@@ -247,8 +256,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'min_age',
       label: 'Min Age',
-      tooltip:
-        'Entry gate (scalp) — only buy once the token is at least this old, skipping the first chaotic seconds. Blank/0 = off.',
+      tooltip: paramTip('minAgeSecs'),
       group: 'entry',
       sortable: true,
       render: (r) =>
@@ -263,8 +271,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'min_alive',
       label: 'Min Alive',
-      tooltip:
-        'Entry gate (scalp) — require at least this much alive (real, un-pulled) SOL in the curve before buying. Blank/0 = off.',
+      tooltip: paramTip('minAliveSol'),
       group: 'entry',
       sortable: true,
       render: (r) => dashF(r.p_entry_min_alive_sol ?? 0, 3),
@@ -274,8 +281,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'min_organic',
       label: 'Min Org',
-      tooltip:
-        'Entry gate (scalp) — require at least this much organic (non-bot) SOL flow before buying. Blank/0 = off.',
+      tooltip: paramTip('minOrganicSol'),
       group: 'entry',
       sortable: true,
       render: (r) => dashF(r.p_entry_min_organic_sol ?? 0, 3),
@@ -285,8 +291,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'pullback',
       label: 'Pullback',
-      tooltip:
-        'Entry gate (scalp) — wait for a pullback of at least this % off the peak before buying the continuation. Blank/0 = off.',
+      tooltip: paramTip('pullbackPct'),
       group: 'entry',
       sortable: true,
       render: (r) => dashPercent(r.p_entry_pullback_pct ?? 0),
@@ -296,8 +301,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'higher_low',
       label: 'Higher-Low',
-      tooltip:
-        'Entry gate (scalp) — require a confirmed higher-low to have held for this long before buying. Blank/0 = off.',
+      tooltip: paramTip('higherLowSecs'),
       group: 'entry',
       sortable: true,
       render: (r) =>
@@ -312,8 +316,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'max_cohort',
       label: 'Max Cohort',
-      tooltip:
-        'Entry gate (scalp) — skip the buy if the cohort already holds more than this share of supply. Blank/0 = off.',
+      tooltip: paramTip('maxCohortHeld'),
       group: 'entry',
       sortable: true,
       render: (r) => dashF(r.p_entry_max_cohort_held ?? 0, 3),
@@ -323,8 +326,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'min_liq',
       label: 'Min Liq',
-      tooltip:
-        'Entry gate (scalp) — require at least this much virtual SOL liquidity before buying. Blank/0 = off.',
+      tooltip: paramTip('minLiquiditySol'),
       group: 'entry',
       sortable: true,
       render: (r) => dashF(r.p_entry_min_liquidity_sol ?? 0, 3),
@@ -334,8 +336,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'min_org_liq',
       label: 'Min Org Liq',
-      tooltip:
-        'Entry gate (scalp) — require at least this much organic liquidity before buying. Blank/0 = off.',
+      tooltip: paramTip('minOrganicLiq'),
       group: 'entry',
       sortable: true,
       render: (r) => dashF(r.p_entry_min_organic_liq ?? 0, 3),
@@ -345,7 +346,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'tp',
       label: 'TP',
-      tooltip: 'Take profit (%) — exit once price rises this far above the entry price.',
+      tooltip: paramTip('takeProfit'),
       group: 'exit',
       sortable: true,
       render: (r) => <span className="font-bold text-green">{dashPercent(r.p_exit_take_profit)}</span>,
@@ -355,7 +356,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'sl',
       label: 'SL',
-      tooltip: 'Stop loss (%) — exit once price falls this far below the entry price.',
+      tooltip: paramTip('stopLoss'),
       group: 'exit',
       sortable: true,
       render: (r) => <span className="font-bold text-red">{dashPercent(r.p_exit_stop_loss)}</span>,
@@ -365,8 +366,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'trail',
       label: 'Trail',
-      tooltip:
-        'Trailing stop (%) — exit when price falls this far below the peak reached since entry, banking a reversal. Blank/0 = off.',
+      tooltip: paramTip('trailingStopPct'),
       group: 'exit',
       sortable: true,
       render: (r) => (
@@ -378,8 +378,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'time_stop',
       label: 'Time',
-      tooltip:
-        'Time stop / max-hold — exit at the first trade this long after entry, cutting positions that neither moon nor crash. Blank/0 = off.',
+      tooltip: paramTip('timeStopSecs'),
       group: 'exit',
       sortable: true,
       render: (r) =>
@@ -394,8 +393,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'stall',
       label: 'Stall',
-      tooltip:
-        'Stall / momentum-death — exit once no new higher-high has printed for this long, selling into the flatline. Blank/0 = off.',
+      tooltip: paramTip('stallSecs'),
       group: 'exit',
       sortable: true,
       render: (r) =>
@@ -410,8 +408,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'liq',
       label: 'Liq',
-      tooltip:
-        'Liquidity-death exit (%) — bail when virtual SOL reserves crash this far below the peak-since-entry, catching liquidity pulls price stops miss. Blank/0 = off.',
+      tooltip: paramTip('liquidityDropPct'),
       group: 'exit',
       sortable: true,
       render: (r) => (
@@ -423,8 +420,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'cohort_exit',
       label: 'Cohort',
-      tooltip:
-        'Cohort exit ratio — bail when the cohort sheds this fraction of its peak holding, front-running a coordinated dump. Blank/0 = off.',
+      tooltip: paramTip('cohortExitRatio'),
       group: 'exit',
       sortable: true,
       render: (r) => (

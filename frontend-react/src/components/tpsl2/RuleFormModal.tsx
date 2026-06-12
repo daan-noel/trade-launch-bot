@@ -4,8 +4,39 @@ import { Button } from 'components/ui/Button';
 import { Input, Textarea } from 'components/ui/Input';
 import { Modal, InlineAlert } from 'components/ui/Modal';
 import { Select } from 'components/ui/Select';
+import { InfoTooltip } from 'components/ui/InfoTooltip';
+import { TPSL_PARAM_HELP, type TpslParamKey } from 'lib/tpslParamHelp';
 import { cn } from 'lib/cn';
 import { EXAMPLE_IX_LABELS, parseIxLabels } from './utils';
+
+/** A field label with the standard uppercase styling plus a ⓘ tooltip that
+ *  explains the parameter (copy lives in {@link TPSL_PARAM_HELP}). `align`
+ *  flips the popover to the right edge for right-hand grid columns, which the
+ *  modal's `overflow-x-hidden` body would otherwise clip. */
+function FieldLabel({
+  help,
+  children,
+  accent = 'text-text-dim',
+  align,
+}: {
+  help: TpslParamKey;
+  children: ReactNode;
+  accent?: string;
+  align?: 'left' | 'right';
+}) {
+  const h = TPSL_PARAM_HELP[help];
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider',
+        accent,
+      )}
+    >
+      {children}
+      <InfoTooltip title={h.title} body={h.body} align={align} />
+    </span>
+  );
+}
 
 export interface RuleFormData {
   ruleName: string;
@@ -209,32 +240,32 @@ export function RuleFormModal({
         />
         <div className="grid grid-cols-2 gap-3">
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Initial Buy SOL</span>
+            <FieldLabel help="initialBuy">Initial Buy SOL</FieldLabel>
             <Input type="number" fieldSize="md" step="0.001" value={form.initialBuy} readOnly={locked}
               onChange={(e) => set({ initialBuy: e.target.value })} className={fieldCls()} />
           </label>
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Tolerance %</span>
+            <FieldLabel help="tolerance" align="right">Tolerance %</FieldLabel>
             <Input type="number" fieldSize="md" step="0.1" value={form.tolerance} readOnly={locked}
               onChange={(e) => set({ tolerance: e.target.value })} className={fieldCls()} />
           </label>
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">CU Limit</span>
+            <FieldLabel help="cuLimit">CU Limit</FieldLabel>
             <Input type="number" fieldSize="md" value={form.cuLimit} readOnly={locked}
               onChange={(e) => set({ cuLimit: e.target.value })} className={fieldCls()} />
           </label>
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">CU Price</span>
+            <FieldLabel help="cuPrice" align="right">CU Price</FieldLabel>
             <Input type="number" fieldSize="md" value={form.cuPrice} readOnly={locked}
               onChange={(e) => set({ cuPrice: e.target.value })} className={fieldCls()} />
           </label>
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Max SOL Cost</span>
+            <FieldLabel help="maxSolCost">Max SOL Cost</FieldLabel>
             <Input type="number" fieldSize="md" step="0.001" value={form.maxSolCost} readOnly={locked}
               onChange={(e) => set({ maxSolCost: e.target.value })} className={fieldCls()} />
           </label>
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Spendable SOL In</span>
+            <FieldLabel help="spendableSolIn" align="right">Spendable SOL In</FieldLabel>
             <Input type="number" fieldSize="md" step="0.001" value={form.spendableSolIn} readOnly={locked}
               onChange={(e) => set({ spendableSolIn: e.target.value })} className={fieldCls()} />
           </label>
@@ -242,9 +273,7 @@ export function RuleFormModal({
 
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
-              Instruction Labels
-            </span>
+            <FieldLabel help="ixLabels">Instruction Labels</FieldLabel>
             {!isEdit && (
               <button
                 type="button"
@@ -271,17 +300,17 @@ export function RuleFormModal({
         <SectionHeader title="Sizing & Limits" hint="position size + concurrency" accent="text-text-dim" />
         <div className="grid grid-cols-3 gap-3">
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Buy Amount (SOL)</span>
+            <FieldLabel help="buyAmount" accent="text-primary">Buy Amount (SOL)</FieldLabel>
             <Input type="number" fieldSize="md" step="0.001" value={form.buyAmount}
               onChange={(e) => set({ buyAmount: e.target.value })} className={fieldCls()} />
           </label>
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Max Concurrent Tokens</span>
+            <FieldLabel help="maxConcurrentTokens">Max Concurrent Tokens</FieldLabel>
             <Input type="number" fieldSize="md" value={form.maxConcurrentTokens} readOnly={locked}
               onChange={(e) => set({ maxConcurrentTokens: e.target.value })} className={fieldCls()} />
           </label>
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Max Total Tokens</span>
+            <FieldLabel help="maxTotalTokens" align="right">Max Total Tokens</FieldLabel>
             <Input type="number" fieldSize="md" value={form.maxTotalTokens} readOnly={locked}
               onChange={(e) => set({ maxTotalTokens: e.target.value })} className={fieldCls()} />
           </label>
@@ -292,42 +321,42 @@ export function RuleFormModal({
         <SectionHeader title="Entry Gates · Scalp" hint="when to buy (trade-stream shape + cohort)" accent="text-accent" />
         <div className="grid grid-cols-3 gap-3">
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Min Age (s)</span>
+            <FieldLabel help="minAgeSecs">Min Age (s)</FieldLabel>
             <Input type="number" fieldSize="md" step="1" value={form.minAgeSecs}
               onChange={(e) => set({ minAgeSecs: e.target.value })} className={fieldCls()} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Min Alive SOL</span>
+            <FieldLabel help="minAliveSol">Min Alive SOL</FieldLabel>
             <Input type="number" fieldSize="md" step="0.01" value={form.minAliveSol}
               onChange={(e) => set({ minAliveSol: e.target.value })} className={fieldCls()} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Min Organic SOL</span>
+            <FieldLabel help="minOrganicSol" align="right">Min Organic SOL</FieldLabel>
             <Input type="number" fieldSize="md" step="0.01" value={form.minOrganicSol}
               onChange={(e) => set({ minOrganicSol: e.target.value })} className={fieldCls()} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Pullback %</span>
+            <FieldLabel help="pullbackPct">Pullback %</FieldLabel>
             <Input type="number" fieldSize="md" step="1" value={form.pullbackPct}
               onChange={(e) => set({ pullbackPct: e.target.value })} className={fieldCls()} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Higher-Low (s)</span>
+            <FieldLabel help="higherLowSecs">Higher-Low (s)</FieldLabel>
             <Input type="number" fieldSize="md" step="1" value={form.higherLowSecs}
               onChange={(e) => set({ higherLowSecs: e.target.value })} className={fieldCls()} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Max Cohort Held</span>
+            <FieldLabel help="maxCohortHeld" align="right">Max Cohort Held</FieldLabel>
             <Input type="number" fieldSize="md" step="0.05" value={form.maxCohortHeld}
               onChange={(e) => set({ maxCohortHeld: e.target.value })} className={fieldCls()} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Min Liquidity SOL</span>
+            <FieldLabel help="minLiquiditySol">Min Liquidity SOL</FieldLabel>
             <Input type="number" fieldSize="md" step="0.1" value={form.minLiquiditySol}
               onChange={(e) => set({ minLiquiditySol: e.target.value })} className={fieldCls()} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Min Organic Liq</span>
+            <FieldLabel help="minOrganicLiq">Min Organic Liq</FieldLabel>
             <Input type="number" fieldSize="md" step="0.1" value={form.minOrganicLiq}
               onChange={(e) => set({ minOrganicLiq: e.target.value })} className={fieldCls()} placeholder="0 = off" />
           </label>
@@ -337,41 +366,41 @@ export function RuleFormModal({
         <SectionHeader title="Exit Gates" hint="when to sell" accent="text-warning" />
         <div className="grid grid-cols-3 gap-3">
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Take Profit %</span>
+            <FieldLabel help="takeProfit" accent="text-primary">Take Profit %</FieldLabel>
             <Input type="number" fieldSize="md" step="1" value={form.takeProfit}
               onChange={(e) => set({ takeProfit: e.target.value })} className={fieldCls('focus:border-green')} />
           </label>
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Stop Loss %</span>
+            <FieldLabel help="stopLoss" accent="text-primary">Stop Loss %</FieldLabel>
             <Input type="number" fieldSize="md" step="1" value={form.stopLoss}
               onChange={(e) => set({ stopLoss: e.target.value })} className={fieldCls('focus:border-red')} />
           </label>
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Trailing Stop %</span>
+            <FieldLabel help="trailingStopPct" accent="text-primary" align="right">Trailing Stop %</FieldLabel>
             <Input type="number" fieldSize="md" step="1" value={form.trailingStopPct}
               onChange={(e) => set({ trailingStopPct: e.target.value })}
               className={fieldCls('focus:border-warning')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Time Stop (s)</span>
+            <FieldLabel help="timeStopSecs" accent="text-primary">Time Stop (s)</FieldLabel>
             <Input type="number" fieldSize="md" step="1" value={form.timeStopSecs}
               onChange={(e) => set({ timeStopSecs: e.target.value })}
               className={fieldCls('focus:border-info')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Stall (s)</span>
+            <FieldLabel help="stallSecs" accent="text-primary">Stall (s)</FieldLabel>
             <Input type="number" fieldSize="md" step="1" value={form.stallSecs}
               onChange={(e) => set({ stallSecs: e.target.value })}
               className={fieldCls('focus:border-accent')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Liquidity Drop %</span>
+            <FieldLabel help="liquidityDropPct" accent="text-primary" align="right">Liquidity Drop %</FieldLabel>
             <Input type="number" fieldSize="md" step="1" value={form.liquidityDropPct}
               onChange={(e) => set({ liquidityDropPct: e.target.value })}
               className={fieldCls('focus:border-primary')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Cohort Exit Ratio</span>
+            <FieldLabel help="cohortExitRatio" accent="text-primary">Cohort Exit Ratio</FieldLabel>
             <Input type="number" fieldSize="md" step="0.01" value={form.cohortExitRatio}
               onChange={(e) => set({ cohortExitRatio: e.target.value })}
               className={fieldCls('focus:border-red')} placeholder="0 = off" />

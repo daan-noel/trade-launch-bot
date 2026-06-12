@@ -3,6 +3,7 @@ import type { ColumnDef } from 'components/table/types';
 import type { RuleRecord } from 'types';
 import { dashF, dashNum, dashPercent } from './utils';
 import { formatAge } from 'utils/format';
+import { paramTip } from 'lib/tpslParamHelp';
 import { cn } from 'lib/cn';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
@@ -143,6 +144,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'init_buy',
       label: 'Init Buy',
+      tooltip: paramTip('initialBuy'),
       group: 'token_fingerprint',
       sortable: true,
       render: (r) => dashF(r.p_token_initial_buy_sol ?? 0, 15),
@@ -152,6 +154,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'cu_limit',
       label: 'CU Lim',
+      tooltip: paramTip('cuLimit'),
       group: 'token_fingerprint',
       sortable: true,
       render: (r) => dashNum(r.p_token_cu_limit),
@@ -161,6 +164,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'cu_price',
       label: 'CU Price',
+      tooltip: paramTip('cuPrice'),
       group: 'token_fingerprint',
       sortable: true,
       render: (r) => dashNum(r.p_token_cu_price),
@@ -170,6 +174,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'max_sol',
       label: 'Max SOL',
+      tooltip: paramTip('maxSolCost'),
       group: 'token_fingerprint',
       sortable: true,
       render: (r) => dashF(r.p_token_max_sol_cost ?? 0, 3),
@@ -179,6 +184,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'spendable',
       label: 'Spendable',
+      tooltip: paramTip('spendableSolIn'),
       group: 'token_fingerprint',
       sortable: true,
       render: (r) => dashF(r.p_token_spendable_sol_in ?? 0, 3),
@@ -188,6 +194,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'labels',
       label: 'Labels',
+      tooltip: paramTip('ixLabels'),
       group: 'token_fingerprint',
       sortable: true,
       render: (r) => {
@@ -206,8 +213,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'tol',
       label: 'Tolerance',
-      tooltip:
-        'Match tolerance (%) applied to the numeric token-fingerprint filters (Init Buy, CU Lim, CU Price, Max SOL, Spendable).',
+      tooltip: paramTip('tolerance'),
       group: 'token_fingerprint',
       sortable: true,
       render: (r) => dashPercent(r.tolerance_pct),
@@ -217,6 +223,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'max_concurrent_tokens',
       label: 'Max Concurrent Tokens',
+      tooltip: paramTip('maxConcurrentTokens'),
       group: 'sizing',
       width: '120px',
       sortable: true,
@@ -227,6 +234,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'max_total_tokens',
       label: 'Max Total Tokens',
+      tooltip: paramTip('maxTotalTokens'),
       group: 'sizing',
       width: '120px',
       sortable: true,
@@ -237,7 +245,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'buy_amt',
       label: 'Buy Amt',
-      tooltip: 'Position size — SOL allocated per buy (paper or real).',
+      tooltip: paramTip('buyAmount'),
       group: 'sizing',
       sortable: true,
       render: (r) => dashF(r.buy_amount, 15),
@@ -247,7 +255,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'tp',
       label: 'TP',
-      tooltip: 'Take profit (%) — exit once price rises this far above the entry price.',
+      tooltip: paramTip('takeProfit'),
       group: 'exit',
       sortable: true,
       render: (r) => <span className="font-bold text-green">{dashPercent(r.p_exit_take_profit)}</span>,
@@ -257,7 +265,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'sl',
       label: 'SL',
-      tooltip: 'Stop loss (%) — exit once price falls this far below the entry price.',
+      tooltip: paramTip('stopLoss'),
       group: 'exit',
       sortable: true,
       render: (r) => <span className="font-bold text-red">{dashPercent(r.p_exit_stop_loss)}</span>,
@@ -267,8 +275,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'trail',
       label: 'Trail',
-      tooltip:
-        'Trailing stop (%) — exit when price falls this far below the peak reached since entry, banking a reversal. Blank/0 = off.',
+      tooltip: paramTip('trailingStopPct'),
       group: 'exit',
       sortable: true,
       render: (r) => (
@@ -280,8 +287,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'time_stop',
       label: 'Time',
-      tooltip:
-        'Time stop / max-hold — exit at the first trade this long after entry, cutting positions that neither moon nor crash. Blank/0 = off.',
+      tooltip: paramTip('timeStopSecs'),
       group: 'exit',
       sortable: true,
       render: (r) =>
@@ -296,8 +302,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'stall',
       label: 'Stall',
-      tooltip:
-        'Stall / momentum-death — exit once no new higher-high has printed for this long, selling into the flatline. Blank/0 = off.',
+      tooltip: paramTip('stallSecs'),
       group: 'exit',
       sortable: true,
       render: (r) =>
@@ -312,8 +317,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
     {
       key: 'liq',
       label: 'Liq',
-      tooltip:
-        'Liquidity-death exit (%) — bail when virtual SOL reserves crash this far below the peak-since-entry, catching liquidity pulls price stops miss. Blank/0 = off.',
+      tooltip: paramTip('liquidityDropPct'),
       group: 'exit',
       sortable: true,
       render: (r) => (
