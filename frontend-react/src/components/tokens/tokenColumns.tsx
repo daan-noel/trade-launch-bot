@@ -1,6 +1,7 @@
-import { useState, type MouseEvent } from 'react';
+import { useMemo, useState, type MouseEvent } from 'react';
 import type { ColumnDef } from 'components/table/types';
 import type { TokenRecord } from 'types';
+import { AgeCell } from 'components/table/AgeCell';
 import { DateCell } from 'components/table/DateCell';
 import { RelativeTimeCell } from 'components/table/RelativeTimeCell';
 import {
@@ -17,15 +18,18 @@ import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { cn } from 'lib/cn';
 
 /**
- * Token age in seconds, derived client-side from `created_at`. The server no
- * longer ships a `now`-relative `age` field (it would churn the list body on
- * every poll and defeat the endpoint's content-hash ETag); deriving it here
- * recomputes the value on each render — i.e. it refreshes on every poll/refetch
- * rather than baking a stale server snapshot into the row. (It does not tick on
- * its own between fetches; nothing drives a re-render in that window.)
+ * Token creation as epoch-ms. Prefers the field the RTK transform pre-parsed
+ * once (`created_at_ms`), falling back to parsing the ISO string for any row
+ * that predates it. The age itself is rendered live by {@link AgeCell}, which
+ * subscribes to the shared clock and ticks on its own between polls.
  */
+function createdMsOf(r: TokenRecord): number {
+  return r.created_at_ms ?? Date.parse(r.created_at);
+}
+
+/** Age in whole seconds for the sort/search fallbacks (dead in server mode). */
 function ageSecondsOf(r: TokenRecord): number {
-  return Math.max(0, (Date.now() - new Date(r.created_at).getTime()) / 1000);
+  return Math.max(0, Math.floor((Date.now() - createdMsOf(r)) / 1000));
 }
 
 function fep(r: TokenRecord): number | null {
@@ -54,7 +58,9 @@ function ixLabelsJson(r: TokenRecord): string {
 
 function IxCountCell({ row }: { row: TokenRecord }) {
   const [copied, setCopied] = useState(false);
-  const json = ixLabelsJson(row);
+  // Only re-stringify when the labels actually change, not on every poll-driven
+  // render of the row.
+  const json = useMemo(() => ixLabelsJson(row), [row]);
 
   const copy = async (e: MouseEvent<HTMLSpanElement>) => {
     e.stopPropagation();
@@ -140,10 +146,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       group: 'activity',
       width: '72px',
       sortable: true,
-      render: (r) => {
-        const age = ageSecondsOf(r);
-        return <span className={ageClass(age)}>{formatAge(age)}</span>;
-      },
+      render: (r) => <AgeCell createdMs={createdMsOf(r)} />,
       sortValue: (r) => ageSecondsOf(r),
       searchValue: (r) => formatAge(ageSecondsOf(r)),
     },

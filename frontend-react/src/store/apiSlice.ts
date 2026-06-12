@@ -49,6 +49,19 @@ export interface TokensResponse {
   items: TokenRecord[];
 }
 
+/**
+ * Parse each row's `created_at` to epoch-ms exactly once, here, instead of in
+ * every age cell on every render/tick. RTK's structural sharing runs *after*
+ * this, so the derived field is deterministic and unchanged rows keep their
+ * object identity across polls (the row memoization still holds).
+ */
+function withCreatedMs(r: TokensResponse): TokensResponse {
+  return {
+    total: r.total,
+    items: r.items.map((t) => ({ ...t, created_at_ms: Date.parse(t.created_at) })),
+  };
+}
+
 export interface BuyTokenArgs {
   mint: string;
   sol_amount: number;
@@ -90,6 +103,7 @@ export const apiSlice = createApi({
         if (search) params.set('search', search);
         return `/api/tokens?${params.toString()}`;
       },
+      transformResponse: withCreatedMs,
     }),
     // Server-side paginated/filtered/sorted token list. The backend applies the
     // full TokenFilters set + search + per-column filters + sort over its
@@ -117,6 +131,7 @@ export const apiSlice = createApi({
         }
         return `/api/tokens?${p.toString()}`;
       },
+      transformResponse: withCreatedMs,
       keepUnusedDataFor: 30,
     }),
     getTokenDetail: builder.query<TokenDetailRecord, string>({
