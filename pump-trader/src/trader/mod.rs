@@ -42,6 +42,7 @@ mod sell;
 mod tx;
 
 use blockhash::BlockhashCache;
+use dashmap::DashMap;
 use jito_tip::JitoTipCache;
 use reserves::ReserveCache;
 
@@ -219,18 +220,19 @@ pub struct PumpFunTrader {
     amm_fee_config: Pubkey,
     amm_global_volume_accumulator: Pubkey,
     amm_user_volume_accumulator: Pubkey,
-    amm_pool_cache: Arc<std::sync::Mutex<HashMap<String, AmmPoolInfo>>>,
+    // Sharded concurrent maps (`DashMap`): each critical section is a single
+    // get/insert with no `.await` held, and sharding means the WS-ingest writer
+    // and the trade readers no longer serialize on one global mutex.
+    amm_pool_cache: Arc<DashMap<String, AmmPoolInfo>>,
     amm_global_config: Arc<std::sync::Mutex<Option<AmmGlobalConfig>>>,
 
-    // Per-token caches. Plain `std::sync::Mutex` (like `ReserveCache` /
-    // `BlockhashCache`): the critical sections are a single get/insert with no
-    // `.await` held, so the async mutex bought nothing.
-    user_token_accounts: Arc<std::sync::Mutex<HashMap<String, Pubkey>>>,
-    token_pdas: Arc<std::sync::Mutex<HashMap<String, TokenPDAs>>>,
+    // Per-token caches.
+    user_token_accounts: Arc<DashMap<String, Pubkey>>,
+    token_pdas: Arc<DashMap<String, TokenPDAs>>,
     // Per-mint bonding-curve routing facts (creator / token program / cashback /
     // migration). Served without RPC once a mint is observed migrated — see
     // `read_curve_routing` for the monotonic-migration invariant this relies on.
-    curve_routing_cache: Arc<std::sync::Mutex<HashMap<String, query::CurveRouting>>>,
+    curve_routing_cache: Arc<DashMap<String, query::CurveRouting>>,
 
     // WS-fed live reserve snapshots (mint → latest post-trade reserves), read on
     // the slippage / AMM-reserve hot path with an on-chain fallback.
@@ -318,11 +320,11 @@ impl PumpFunTrader {
             amm_fee_config,
             amm_global_volume_accumulator,
             amm_user_volume_accumulator,
-            amm_pool_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            amm_pool_cache: Arc::new(DashMap::new()),
             amm_global_config: Arc::new(std::sync::Mutex::new(None)),
-            user_token_accounts: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            token_pdas: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            curve_routing_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            user_token_accounts: Arc::new(DashMap::new()),
+            token_pdas: Arc::new(DashMap::new()),
+            curve_routing_cache: Arc::new(DashMap::new()),
             reserve_cache: Arc::new(ReserveCache::default()),
             blockhash_cache: Arc::new(BlockhashCache::default()),
         }

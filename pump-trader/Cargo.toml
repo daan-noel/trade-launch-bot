@@ -32,6 +32,11 @@ bs58 = "0.5"
 # Random Jito tip-account selection
 rand = "0.8"
 
+# Concurrent maps for the per-token / reserve caches. Sharded internally, so the
+# WS-ingest writer and the trade readers no longer contend on one global mutex.
+# Pinned to 4.0 to match the workspace (solana 1.17 already pulls dashmap 4.0.2).
+dashmap = "4.0"
+
 # HTTP client for the Helius sender JSON-RPC
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
 

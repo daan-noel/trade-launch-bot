@@ -96,10 +96,7 @@ impl PumpFunTrader {
             let assoc_bonding_curve = pdas.associated_bonding_curve;
             let creator_vault = pdas.creator_vault;
 
-            self.token_pdas
-                .lock()
-                .unwrap()
-                .insert(mint_str.clone(), pdas);
+            self.token_pdas.insert(mint_str.clone(), pdas);
 
             // Check if ATA exists. On the snipe path the wallet provably holds
             // no account for this just-created mint, so we skip the RPC and go
@@ -132,8 +129,6 @@ impl PumpFunTrader {
 
             // Cache for sell
             self.user_token_accounts
-                .lock()
-                .unwrap()
                 .insert(mint_str.clone(), user_token_account);
 
             let mut ixs = Vec::with_capacity(6);

@@ -111,8 +111,6 @@ impl PumpFunTrader {
         // Tokens land in the base ATA — cache it for a later sell. Done before
         // the (optional) confirm so a `confirm=false` caller still gets it cached.
         self.user_token_accounts
-            .lock()
-            .unwrap()
             .insert(token_mint.to_string(), user_base);
         if confirm {
             self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES).await?;
@@ -479,7 +477,7 @@ impl PumpFunTrader {
         pool_override: Option<&str>,
         base_token_program_id: &str,
     ) -> Result<AmmPoolInfo> {
-        if let Some(info) = self.amm_pool_cache.lock().unwrap().get(token_mint).copied() {
+        if let Some(info) = self.amm_pool_cache.get(token_mint).map(|r| *r) {
             return Ok(info);
         }
 
@@ -529,10 +527,7 @@ impl PumpFunTrader {
             is_cashback_coin,
             fee_share_marker,
         };
-        self.amm_pool_cache
-            .lock()
-            .unwrap()
-            .insert(token_mint.to_string(), info);
+        self.amm_pool_cache.insert(token_mint.to_string(), info);
         Ok(info)
     }
 
@@ -712,7 +707,7 @@ impl PumpFunTrader {
         if let Some(o) = token_account_override {
             return Pubkey::from_str(o).context("invalid token_account_override");
         }
-        if let Some(pk) = self.user_token_accounts.lock().unwrap().get(token_mint).copied() {
+        if let Some(pk) = self.user_token_accounts.get(token_mint).map(|r| *r) {
             return Ok(pk);
         }
         let holdings = self.get_all_token_accounts().await?;

@@ -114,7 +114,7 @@ impl PumpFunTrader {
         confirm: bool,
     ) -> Result<bool> {
         // Ensure PDAs are cached (reads the bonding-curve PDA on a miss).
-        if !self.token_pdas.lock().unwrap().contains_key(token_mint) {
+        if !self.token_pdas.contains_key(token_mint) {
             self.get_creator_from_mint_pda(token_mint).await?;
         }
 
@@ -124,8 +124,6 @@ impl PumpFunTrader {
         if let Some(token_account) = token_account_override {
             let pk = Pubkey::from_str(token_account).context("Invalid token_account_override")?;
             self.user_token_accounts
-                .lock()
-                .unwrap()
                 .insert(token_mint.to_string(), pk);
         } else if self.resolve_cached_token_account(token_mint).await?.is_none() {
             anyhow::bail!("No token account found for mint {token_mint}");
@@ -168,10 +166,8 @@ impl PumpFunTrader {
         // Read cached PDAs (must exist from buy)
         let mut pdas = self
             .token_pdas
-            .lock()
-            .unwrap()
             .get(token_mint)
-            .copied()
+            .map(|r| *r)
             .context("Token PDAs not cached — buy must precede sell")?;
 
         // Allow caller to override creator vault (e.g. after a creator update)
@@ -193,10 +189,8 @@ impl PumpFunTrader {
         // Read cached user token account (must exist from buy)
         let user_token_account = self
             .user_token_accounts
-            .lock()
-            .unwrap()
             .get(token_mint)
-            .copied()
+            .map(|r| *r)
             .context("User token account not cached — buy must precede sell")?;
         warn!(
             user_token_account = user_token_account.to_string(),

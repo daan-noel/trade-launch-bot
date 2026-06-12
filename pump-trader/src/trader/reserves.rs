@@ -16,8 +16,7 @@
 //   quote_lamports — lamports          (curve: virtual_sol;   AMM: pool quote/WSOL)
 // ============================================================
 
-use std::collections::HashMap;
-use std::sync::Mutex;
+use dashmap::DashMap;
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy)]
@@ -29,11 +28,12 @@ struct ReserveEntry {
 }
 
 /// Concurrent, freshness-bounded cache of the latest reserve snapshot per mint.
-/// Uses a plain `std::sync::Mutex`: every critical section is a single map
-/// op with no `.await` held, so it never blocks the async runtime.
+/// Backed by a sharded `DashMap`: the WS-ingest writer (one `update` per tracked
+/// trade) and the trade-path readers no longer serialize on a single global
+/// mutex, and every critical section is still a single map op with no `.await`.
 #[derive(Default)]
 pub struct ReserveCache {
-    inner: Mutex<HashMap<String, ReserveEntry>>,
+    inner: DashMap<String, ReserveEntry>,
 }
 
 impl ReserveCache {
@@ -56,17 +56,15 @@ impl ReserveCache {
         if token == 0 || quote_lamports == 0 {
             return;
         }
-        if let Ok(mut guard) = self.inner.lock() {
-            guard.insert(
-                mint.to_string(),
-                ReserveEntry {
-                    token,
-                    quote_lamports,
-                    is_amm,
-                    at: Instant::now(),
-                },
-            );
-        }
+        self.inner.insert(
+            mint.to_string(),
+            ReserveEntry {
+                token,
+                quote_lamports,
+                is_amm,
+                at: Instant::now(),
+            },
+        );
     }
 
     /// Return `(token_reserves, quote_lamports)` when a fresh snapshot for `mint`
@@ -74,8 +72,7 @@ impl ReserveCache {
     /// a curve snapshot is never served to an AMM swap (or vice-versa). `None`
     /// (miss / stale / wrong-venue) signals the caller to read on-chain.
     pub fn get_fresh(&self, mint: &str, max_age: Duration, want_amm: bool) -> Option<(u128, u128)> {
-        let guard = self.inner.lock().ok()?;
-        let entry = guard.get(mint)?;
+        let entry = self.inner.get(mint)?;
         if entry.is_amm == want_amm && entry.at.elapsed() <= max_age {
             Some((entry.token, entry.quote_lamports))
         } else {

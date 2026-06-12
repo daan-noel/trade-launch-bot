@@ -197,7 +197,7 @@ impl PumpFunTrader {
         &self,
         mint: &str,
     ) -> anyhow::Result<Option<Pubkey>> {
-        if let Some(pk) = self.user_token_accounts.lock().unwrap().get(mint).copied() {
+        if let Some(pk) = self.user_token_accounts.get(mint).map(|r| *r) {
             return Ok(Some(pk));
         }
         // Cache miss: a single mint-filtered lookup for just this mint, not a full
@@ -209,10 +209,7 @@ impl PumpFunTrader {
             return Ok(None);
         };
         let pk = Pubkey::from_str(&holding.token_account)?;
-        self.user_token_accounts
-            .lock()
-            .unwrap()
-            .insert(mint.to_string(), pk);
+        self.user_token_accounts.insert(mint.to_string(), pk);
         Ok(Some(pk))
     }
 
@@ -354,7 +351,7 @@ impl PumpFunTrader {
         // catch the curve→AMM transition; a stale `is_migrated = false` would
         // misroute a now-migrated trade to the bonding curve, which the program
         // rejects with BondingCurveComplete (6005).
-        if let Some(cached) = self.curve_routing_cache.lock().unwrap().get(&key).copied() {
+        if let Some(cached) = self.curve_routing_cache.get(&key).map(|r| *r) {
             if cached.is_migrated {
                 return Ok(cached);
             }
@@ -377,10 +374,7 @@ impl PumpFunTrader {
                     is_migrated: true,
                     ..cached
                 };
-                self.curve_routing_cache
-                    .lock()
-                    .unwrap()
-                    .insert(key, migrated);
+                self.curve_routing_cache.insert(key, migrated);
                 return Ok(migrated);
             }
         }
@@ -416,10 +410,7 @@ impl PumpFunTrader {
         // Cache the fresh read. A migrated entry is terminal and will be served
         // directly next time; a not-yet-migrated entry is overwritten on the next
         // re-read until it flips.
-        self.curve_routing_cache
-            .lock()
-            .unwrap()
-            .insert(key, routing);
+        self.curve_routing_cache.insert(key, routing);
         Ok(routing)
     }
 
@@ -515,7 +506,7 @@ impl PumpFunTrader {
 
         // Cache the full PDA set for this mint (shared derivation with the buy
         // path; pure PDA math, no RPC).
-        self.token_pdas.lock().unwrap().insert(
+        self.token_pdas.insert(
             mint_address.to_string(),
             self.derive_token_pdas(
                 &mint,
