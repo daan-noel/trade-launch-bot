@@ -1,0 +1,4 @@
+# Keep the lockfile byte-identical across Windows (dev) and Linux (EC2/Docker)
+# so cargo-chef's recipe.json — and therefore the dependency build cache — is
+# stable regardless of which machine last touched it.
+Cargo.lock -text
