@@ -1,7 +1,7 @@
 import type { ColumnDef } from 'components/table/types';
 import type { RulePositionRecord, MatchedTokenRecord, SimulatedTokenResult } from 'types';
-import { ageClass, formatAge, formatDecimalTrim, priceClass } from 'utils/format';
-import type { usePriceDisplay } from 'hooks/usePriceDisplay';
+import { ageClass, formatAge, formatDecimalTrim } from 'utils/format';
+import { AmountCell, CurrentPriceCell } from 'components/tokens/priceCells';
 import { fmtTime } from './utils';
 import { cn } from 'lib/cn';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
@@ -30,10 +30,10 @@ export function exitReasonBadge(reason: string | null | undefined) {
   }
 }
 
-export function positionColumns(
-  price: ReturnType<typeof usePriceDisplay>,
-): ColumnDef<RulePositionRecord>[] {
-  return [
+// Price/amount cells read the unit + USD rate from context themselves (see
+// priceCells), so these column arrays are referentially stable across a rate
+// tick: only the rate-aware cells re-render, not the whole table.
+export const positionColumns: ColumnDef<RulePositionRecord>[] = [
     {
       key: 'mint',
       label: 'Mint',
@@ -52,9 +52,7 @@ export function positionColumns(
       label: 'Entry Price',
       group: 'entry',
       sortable: true,
-      render: (r) => (
-        <span className={priceClass(r.entry_price)}>{price.displayPrice(r.entry_price)}</span>
-      ),
+      render: (r) => <CurrentPriceCell sol={r.entry_price} />,
       sortValue: (r) => r.entry_price,
       searchValue: (r) => String(r.entry_price),
     },
@@ -72,12 +70,7 @@ export function positionColumns(
       label: 'Exit Price',
       group: 'exit',
       sortable: true,
-      render: (r) =>
-        r.exit_price != null ? (
-          <span className={priceClass(r.exit_price)}>{price.displayPrice(r.exit_price)}</span>
-        ) : (
-          '—'
-        ),
+      render: (r) => (r.exit_price != null ? <CurrentPriceCell sol={r.exit_price} /> : '—'),
       sortValue: (r) => r.exit_price,
       searchValue: (r) => String(r.exit_price ?? ''),
     },
@@ -125,7 +118,7 @@ export function positionColumns(
         const positive = (r.pnl_percent ?? 0) >= 0;
         return (
           <span className={cn('font-bold', positive ? 'text-green' : 'text-red')}>
-            {price.displayAmount(amt)}
+            <AmountCell sol={amt} />
           </span>
         );
       },
@@ -153,8 +146,7 @@ export function positionColumns(
       sortValue: (r) => r.exit_reason ?? '',
       searchValue: (r) => r.exit_reason ?? '',
     },
-  ];
-}
+];
 
 export const matchedColumns: ColumnDef<MatchedTokenRecord>[] = [
   {
@@ -215,10 +207,7 @@ export const matchedColumns: ColumnDef<MatchedTokenRecord>[] = [
   },
 ];
 
-export function simColumns(
-  price: ReturnType<typeof usePriceDisplay>,
-): ColumnDef<SimulatedTokenResult>[] {
-  return [
+export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
     {
       key: 'symbol',
       label: 'Symbol',
@@ -235,9 +224,7 @@ export function simColumns(
       label: 'Entry Price',
       group: 'entry',
       sortable: true,
-      render: (r) => (
-        <span className={priceClass(r.entry_price)}>{price.displayPrice(r.entry_price)}</span>
-      ),
+      render: (r) => <CurrentPriceCell sol={r.entry_price} />,
       sortValue: (r) => r.entry_price,
       searchValue: (r) => String(r.entry_price),
     },
@@ -256,9 +243,7 @@ export function simColumns(
       tooltip: 'All-time-high price across the token’s full trade history.',
       group: 'ath',
       sortable: true,
-      render: (r) => (
-        <span className={priceClass(r.ath_price)}>{price.displayPrice(r.ath_price)}</span>
-      ),
+      render: (r) => <CurrentPriceCell sol={r.ath_price} />,
       sortValue: (r) => r.ath_price,
       searchValue: (r) => String(r.ath_price),
     },
@@ -267,12 +252,7 @@ export function simColumns(
       label: 'Exit Price',
       group: 'exit',
       sortable: true,
-      render: (r) =>
-        r.exit_price != null ? (
-          <span className={priceClass(r.exit_price)}>{price.displayPrice(r.exit_price)}</span>
-        ) : (
-          '—'
-        ),
+      render: (r) => (r.exit_price != null ? <CurrentPriceCell sol={r.exit_price} /> : '—'),
       sortValue: (r) => r.exit_price,
       searchValue: (r) => String(r.exit_price ?? ''),
     },
@@ -325,7 +305,7 @@ export function simColumns(
         if (r.pnl_sol == null) return <span className="text-text-dim">—</span>;
         return (
           <span className={cn('font-bold', r.pnl_sol >= 0 ? 'text-green' : 'text-red')}>
-            {price.displayAmount(r.pnl_sol)}
+            <AmountCell sol={r.pnl_sol} />
           </span>
         );
       },
@@ -350,5 +330,4 @@ export function simColumns(
       sortValue: (r) => r.total_trades,
       searchValue: (r) => String(r.total_trades),
     },
-  ];
-}
+];

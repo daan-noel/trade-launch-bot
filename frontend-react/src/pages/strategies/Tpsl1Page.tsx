@@ -140,7 +140,7 @@ function PaperResultSection({
 }: {
   data: PaperResultResponse;
   price: ReturnType<typeof usePriceDisplay>;
-  simCols: ReturnType<typeof simColumns>;
+  simCols: typeof simColumns;
   selectedMint: string | null;
   onSelectToken: (row: SimulatedTokenResult | null) => void;
   onClose: () => void;
@@ -587,8 +587,11 @@ export function Tpsl1Page() {
     [lifecycleBusyId, handlePause, handleActivate, handleActivateClick],
   );
   const columns = useMemo(() => ruleColumns(ruleControls), [ruleControls]);
-  const posCols = useMemo(() => positionColumns(price), [price]);
-  const simCols = useMemo(() => simColumns(price), [price]);
+  // positionColumns/simColumns are referentially-stable module constants — their
+  // price cells read the unit/rate from context, so a USD-rate tick no longer
+  // rebuilds the column arrays or re-renders the whole table.
+  const posCols = positionColumns;
+  const simCols = simColumns;
 
   const openAdd = () => {
     setEditRule(null);

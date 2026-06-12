@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { DataTable } from 'components/table/DataTable';
 import { Badge, type BadgeVariant } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
@@ -140,7 +140,7 @@ function PaperResultSection({
 }: {
   data: PaperResultResponse;
   price: ReturnType<typeof usePriceDisplay>;
-  simCols: ReturnType<typeof simColumns>;
+  simCols: typeof simColumns;
   selectedMint: string | null;
   onSelectToken: (row: SimulatedTokenResult | null) => void;
   onClose: () => void;
@@ -424,6 +424,114 @@ function ReactivateDialog({
   );
 }
 
+/** The per-row action buttons, split out and memoized so a change to one row's
+ *  state (or a global loading flag) only re-renders the rows whose buttons
+ *  actually change — not every row's button subtree. The handlers are stable
+ *  useCallbacks from the page; the booleans are pre-narrowed per row so an
+ *  unaffected row's props stay shallow-equal and `memo` skips it. */
+const RuleActionsCell = memo(function RuleActionsCell({
+  rule,
+  confirmingDelete,
+  deleteLoading,
+  matchedActive,
+  paperActive,
+  simLoading,
+  matchedLoading,
+  paperLoading,
+  onEdit,
+  onDelete,
+  onRequestDelete,
+  onCancelDelete,
+  onSimulate,
+  onMatched,
+  onPaperResult,
+}: {
+  rule: RuleRecord;
+  confirmingDelete: boolean;
+  deleteLoading: boolean;
+  matchedActive: boolean;
+  paperActive: boolean;
+  simLoading: boolean;
+  matchedLoading: boolean;
+  paperLoading: boolean;
+  onEdit: (rule: RuleRecord) => void;
+  onDelete: (ruleId: string) => void;
+  onRequestDelete: (ruleId: string) => void;
+  onCancelDelete: () => void;
+  onSimulate: (rule: RuleRecord) => void;
+  onMatched: (rule: RuleRecord) => void;
+  onPaperResult: (rule: RuleRecord) => void;
+}) {
+  if (confirmingDelete) {
+    return (
+      <div className="flex items-center justify-center gap-1">
+        <span className="text-[11px] font-semibold text-red">Delete?</span>
+        <Button variant="danger" size="xs" disabled={deleteLoading} onClick={() => onDelete(rule.id)}>
+          Yes
+        </Button>
+        <Button variant="ghost" size="xs" onClick={onCancelDelete}>
+          No
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center justify-center gap-1">
+      <Button
+        variant="ghost"
+        size="xs"
+        disabled={rule.is_active}
+        onClick={() => onEdit(rule)}
+        title={rule.is_active ? 'Cannot edit active rules' : 'Edit'}
+      >
+        Edit
+      </Button>
+      <Button
+        variant="ghost"
+        size="xs"
+        disabled={rule.is_active}
+        onClick={() => onRequestDelete(rule.id)}
+        title={rule.is_active ? 'Cannot delete active rules' : 'Delete'}
+        className="text-red"
+      >
+        Del
+      </Button>
+      <Button
+        variant="ghost"
+        size="xs"
+        disabled={simLoading}
+        onClick={() => onSimulate(rule)}
+        className="text-primary"
+        title="Simulate"
+      >
+        ▶
+      </Button>
+      <Button
+        variant="ghost"
+        size="xs"
+        disabled={matchedLoading}
+        onClick={() => onMatched(rule)}
+        className={cn(matchedActive && 'border-[#9370db]/45 bg-[#9370db]/8 text-[#9370db]')}
+        title="Matched tokens"
+      >
+        ⊞
+      </Button>
+      {rule.trade_mode === 'paper' && (
+        <Button
+          variant="ghost"
+          size="xs"
+          disabled={paperLoading}
+          onClick={() => onPaperResult(rule)}
+          className={cn('text-info', paperActive && 'border-info/45 bg-info/8')}
+          title="Paper test result"
+        >
+          ▦
+        </Button>
+      )}
+    </div>
+  );
+});
+
 export function Tpsl2Page() {
   const price = usePriceDisplay();
 
@@ -587,8 +695,11 @@ export function Tpsl2Page() {
     [lifecycleBusyId, handlePause, handleActivate, handleActivateClick],
   );
   const columns = useMemo(() => ruleColumns(ruleControls), [ruleControls]);
-  const posCols = useMemo(() => positionColumns(price), [price]);
-  const simCols = useMemo(() => simColumns(price), [price]);
+  // positionColumns/simColumns are now referentially-stable module constants —
+  // their price cells read the unit/rate from context, so a USD-rate tick no
+  // longer rebuilds the column arrays or re-renders the whole table.
+  const posCols = positionColumns;
+  const simCols = simColumns;
 
   const openAdd = () => {
     setEditRule(null);
@@ -716,98 +827,49 @@ export function Tpsl2Page() {
     [paperResult],
   );
 
-  // Row-action cell, memoized so the rule table's memoized rows only re-render
-  // when something the actions actually depend on changes — not on every page
-  // render (selection, polling, modals, the paper-finished banner timer…).
-  const ruleActions = useCallback((rule: RuleRecord) => {
-    if (confirmDeleteId === rule.id) {
-      return (
-        <div className="flex items-center justify-center gap-1">
-          <span className="text-[11px] font-semibold text-red">Delete?</span>
-          <Button variant="danger" size="xs" disabled={deleteLoading} onClick={() => handleDelete(rule.id)}>
-            Yes
-          </Button>
-          <Button variant="ghost" size="xs" onClick={() => setConfirmDeleteId(null)}>
-            No
-          </Button>
-        </div>
-      );
-    }
-    const matchedActive = matchedResult?.ruleId === rule.id;
-    return (
-      <div className="flex items-center justify-center gap-1">
-        <Button
-          variant="ghost"
-          size="xs"
-          disabled={rule.is_active}
-          onClick={() => openEdit(rule)}
-          title={rule.is_active ? 'Cannot edit active rules' : 'Edit'}
-        >
-          Edit
-        </Button>
-        <Button
-          variant="ghost"
-          size="xs"
-          disabled={rule.is_active}
-          onClick={() => setConfirmDeleteId(rule.id)}
-          title={rule.is_active ? 'Cannot delete active rules' : 'Delete'}
-          className="text-red"
-        >
-          Del
-        </Button>
-        <Button
-          variant="ghost"
-          size="xs"
-          disabled={simLoading}
-          onClick={() => handleSimulate(rule)}
-          className="text-primary"
-          title="Simulate"
-        >
-          ▶
-        </Button>
-        <Button
-          variant="ghost"
-          size="xs"
-          disabled={matchedLoading}
-          onClick={() => handleMatched(rule)}
-          className={cn(
-            matchedActive && 'border-[#9370db]/45 bg-[#9370db]/8 text-[#9370db]',
-          )}
-          title="Matched tokens"
-        >
-          ⊞
-        </Button>
-        {rule.trade_mode === 'paper' && (
-          <Button
-            variant="ghost"
-            size="xs"
-            disabled={paperLoading}
-            onClick={() => handlePaperResult(rule)}
-            className={cn(
-              'text-info',
-              paperResult?.ruleId === rule.id && 'border-info/45 bg-info/8',
-            )}
-            title="Paper test result"
-          >
-            ▦
-          </Button>
-        )}
-      </div>
-    );
-  }, [
-    confirmDeleteId,
-    deleteLoading,
-    matchedResult,
-    simLoading,
-    matchedLoading,
-    paperLoading,
-    paperResult,
-    openEdit,
-    handleDelete,
-    handleSimulate,
-    handleMatched,
-    handlePaperResult,
-  ]);
+  // Cancel a pending delete confirmation; stable so it doesn't churn the cell.
+  const cancelDelete = useCallback(() => setConfirmDeleteId(null), []);
+
+  // Row-action cell renders the memoized <RuleActionsCell>: the per-row booleans
+  // are narrowed here so a global toggle (simLoading, the open matched/paper
+  // rule…) only re-renders the rows whose buttons actually change. Selection,
+  // polling and the banner timer never touch these deps, so they don't churn it.
+  const ruleActions = useCallback(
+    (rule: RuleRecord) => (
+      <RuleActionsCell
+        rule={rule}
+        confirmingDelete={confirmDeleteId === rule.id}
+        deleteLoading={deleteLoading}
+        matchedActive={matchedResult?.ruleId === rule.id}
+        paperActive={paperResult?.ruleId === rule.id}
+        simLoading={simLoading}
+        matchedLoading={matchedLoading}
+        paperLoading={paperLoading}
+        onEdit={openEdit}
+        onDelete={handleDelete}
+        onRequestDelete={setConfirmDeleteId}
+        onCancelDelete={cancelDelete}
+        onSimulate={handleSimulate}
+        onMatched={handleMatched}
+        onPaperResult={handlePaperResult}
+      />
+    ),
+    [
+      confirmDeleteId,
+      deleteLoading,
+      matchedResult,
+      simLoading,
+      matchedLoading,
+      paperLoading,
+      paperResult,
+      openEdit,
+      handleDelete,
+      cancelDelete,
+      handleSimulate,
+      handleMatched,
+      handlePaperResult,
+    ],
+  );
 
   const matchedRuleName = useMemo(
     () => (matchedResult ? rules.find((r) => r.id === matchedResult.ruleId)?.rule_name : null),
