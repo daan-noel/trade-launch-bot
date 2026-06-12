@@ -406,7 +406,7 @@ pub async fn run_token_sync(
             DecodeOutput::Transaction { raw_tx, mut events } => {
                 sort_sync_events(&mut events);
 
-                let _ = tx_repo.insert(&raw_tx).await;
+                let _ = tx_repo.insert(&raw_tx, "rpc").await;
 
                 for event in events {
                     match event {
@@ -863,7 +863,7 @@ async fn sync_amm_trades(
 
     for entry in &fetched {
         if let Some((raw_tx, trades)) = decoder.decode_pump_swap_result(&entry.result, mint, &pool) {
-            let _ = tx_repo.insert(&raw_tx).await;
+            let _ = tx_repo.insert(&raw_tx, "rpc").await;
             let now = Utc::now();
             for trade in trades {
                 let _ = wallet_repo.touch_last_seen(&trade.wallet_address, now).await;

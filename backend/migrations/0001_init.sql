@@ -80,7 +80,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_tx_leg ON trades(tx_signature, leg_
 CREATE INDEX IF NOT EXISTS idx_trades_mint_venue_slot ON trades(mint_address, venue, slot DESC);
 
 -- -------------------------------------------------------------------------
--- raw_transactions  (WS ingest raw result — never mutated, replay source)
+-- raw_transactions  (unified raw tx result — never mutated, replay/analysis source)
+--   Single write-only table for both ingest provenances, tagged by `source`:
+--     'grpc' — live LaserStream (Yellowstone) pipeline
+--     'rpc'  — token_sync archival/replay backfill
 --   WEEKLY range partitions on received_at with ~2-month retention (managed by
 --   the app's partition-maintenance task; KEEP_WEEKS must match
 --   ingest::maintenance::KEEP_WEEKS = 9). No UNIQUE(signature): a unique
@@ -95,6 +98,7 @@ CREATE TABLE IF NOT EXISTS raw_transactions (
     block_time  TIMESTAMPTZ NOT NULL,
     raw_data    JSONB       NOT NULL,
     received_at TIMESTAMPTZ NOT NULL,
+    source      TEXT        NOT NULL DEFAULT 'grpc',
     PRIMARY KEY (received_at, id)
 ) PARTITION BY RANGE (received_at);
 
@@ -135,62 +139,6 @@ DECLARE w date := date_trunc('week', (now() - interval '9 weeks'))::date;
 BEGIN
     WHILE w <= date_trunc('week', (now() + interval '2 weeks'))::date LOOP
         PERFORM ensure_raw_partition(w);
-        w := w + 7;
-    END LOOP;
-END $$;
-
--- -------------------------------------------------------------------------
--- raw_transactions_grpc
---   Raw LaserStream (Yellowstone gRPC) transaction results, kept SEPARATE from
---   the WS `raw_transactions` table so the two raw formats never co-mingle.
---   Stored as the adapted jsonParsed-shaped JSON. Write-only analysis source.
---   WEEKLY range partitions on received_at, ~2-month retention (same scheme as
---   raw_transactions). No UNIQUE(signature) for the same partition-key reason.
--- -------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS raw_transactions_grpc (
-    id          UUID        NOT NULL DEFAULT uuid_generate_v4(),
-    signature   TEXT        NOT NULL,
-    slot        BIGINT      NOT NULL,
-    block_time  TIMESTAMPTZ NOT NULL,
-    raw_data    JSONB       NOT NULL,
-    received_at TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (received_at, id)
-) PARTITION BY RANGE (received_at);
-
-CREATE INDEX IF NOT EXISTS idx_raw_tx_grpc_signature ON raw_transactions_grpc (signature);
-CREATE INDEX IF NOT EXISTS idx_raw_tx_grpc_slot      ON raw_transactions_grpc (slot DESC);
-
--- Idempotently create the weekly partition (Mon–Mon) containing p_anchor.
-CREATE OR REPLACE FUNCTION ensure_raw_grpc_partition(p_anchor date)
-RETURNS void LANGUAGE plpgsql AS $$
-DECLARE
-    v_start date := date_trunc('week', p_anchor::timestamp)::date;
-    v_end   date := v_start + 7;
-    v_name  text := format('raw_transactions_grpc_%s', to_char(v_start, 'YYYY_MM_DD'));
-BEGIN
-    EXECUTE format(
-        'CREATE TABLE IF NOT EXISTS %I PARTITION OF raw_transactions_grpc FOR VALUES FROM (%L) TO (%L)',
-        v_name, v_start::timestamptz, v_end::timestamptz
-    );
-END;
-$$;
-
--- Drop the weekly partition containing p_anchor, if it exists (retention).
-CREATE OR REPLACE FUNCTION drop_raw_grpc_partition(p_anchor date)
-RETURNS void LANGUAGE plpgsql AS $$
-DECLARE
-    v_start date := date_trunc('week', p_anchor::timestamp)::date;
-    v_name  text := format('raw_transactions_grpc_%s', to_char(v_start, 'YYYY_MM_DD'));
-BEGIN
-    EXECUTE format('DROP TABLE IF EXISTS %I', v_name);
-END;
-$$;
-
-DO $$
-DECLARE w date := date_trunc('week', (now() - interval '9 weeks'))::date;
-BEGIN
-    WHILE w <= date_trunc('week', (now() + interval '2 weeks'))::date LOOP
-        PERFORM ensure_raw_grpc_partition(w);
         w := w + 7;
     END LOOP;
 END $$;

@@ -1,9 +1,9 @@
-//! Weekly partition maintenance for `raw_transactions_grpc`.
+//! Weekly partition maintenance for `raw_transactions`.
 //!
 //! Rolls the weekly partitions forward (so inserts always have a target) and
 //! drops partitions past the retention window. The partition naming/bounds live
-//! in SQL functions (`ensure_raw_grpc_partition` / `drop_raw_grpc_partition`,
-//! migration 0011); this task just passes anchor dates.
+//! in SQL functions (`ensure_raw_partition` / `drop_raw_partition`, migration
+//! 0001); this task just passes anchor dates.
 
 use std::time::Duration;
 
@@ -27,27 +27,27 @@ pub async fn run_partition_maintenance(pool: PgPool) {
         // Ensure the current week plus the next two exist (ahead of ingest).
         for k in 0i64..3 {
             let anchor = today + ChronoDuration::weeks(k);
-            if let Err(e) = sqlx::query("SELECT ensure_raw_grpc_partition($1)")
+            if let Err(e) = sqlx::query("SELECT ensure_raw_partition($1)")
                 .bind(anchor)
                 .execute(&pool)
                 .await
             {
-                warn!("raw_grpc partition ensure {anchor}: {e}");
+                warn!("raw_tx partition ensure {anchor}: {e}");
             }
         }
 
         // Drop a small window of weeks past the retention cutoff.
         for k in 0i64..4 {
             let anchor = today - ChronoDuration::weeks(KEEP_WEEKS + k);
-            if let Err(e) = sqlx::query("SELECT drop_raw_grpc_partition($1)")
+            if let Err(e) = sqlx::query("SELECT drop_raw_partition($1)")
                 .bind(anchor)
                 .execute(&pool)
                 .await
             {
-                warn!("raw_grpc partition drop {anchor}: {e}");
+                warn!("raw_tx partition drop {anchor}: {e}");
             }
         }
 
-        info!("raw_transactions_grpc: weekly partitions maintained (retain ~{KEEP_WEEKS} weeks)");
+        info!("raw_transactions: weekly partitions maintained (retain ~{KEEP_WEEKS} weeks)");
     }
 }

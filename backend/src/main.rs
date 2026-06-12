@@ -264,7 +264,7 @@ async fn main() -> anyhow::Result<()> {
             settings_tx.subscribe(),
         ));
 
-        // Weekly partition maintenance for raw_transactions_grpc (~2-month retention).
+        // Weekly partition maintenance for raw_transactions (~2-month retention).
         tokio::spawn(ingest_laserstream::maintenance::run_partition_maintenance(
             db.clone(),
         ));

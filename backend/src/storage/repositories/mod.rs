@@ -3,7 +3,6 @@ pub mod settings_repo;
 pub mod token_info_repo;
 pub mod token_repo;
 pub mod trade_repo;
-pub mod transaction_grpc_repo;
 pub mod transaction_repo;
 pub mod tpsl1_paper_trading_repo;
 pub mod tpsl1_position_repo;

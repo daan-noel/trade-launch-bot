@@ -10,7 +10,7 @@ use crate::{
     state::token_metrics::compute_is_rugged,
     storage::repositories::{
         token_info_repo::TokenInfoRepo, token_repo::TokenRepo, trade_repo::TradeRepo,
-        transaction_grpc_repo::TransactionGrpcRepo, wallet_repo::WalletRepo,
+        transaction_repo::TransactionRepo, wallet_repo::WalletRepo,
     },
 };
 
@@ -85,70 +85,120 @@ impl DbWriter {
     }
 
     async fn flush(&self, batch: &mut Vec<DbWriteOp>) {
+        use std::collections::{HashMap, HashSet};
+
         let ops: Vec<DbWriteOp> = batch.drain(..).collect();
         let token_repo = TokenRepo::new(self.pool.clone());
         let trade_repo = TradeRepo::new(self.pool.clone());
         let wallet_repo = WalletRepo::new(self.pool.clone());
-        let tx_repo = TransactionGrpcRepo::new(self.pool.clone());
+        let tx_repo = TransactionRepo::new(self.pool.clone());
         let info_repo = TokenInfoRepo::new(self.pool.clone());
+
+        // Partition the batch by type, collapsing redundant writes so a hot
+        // token/wallet doesn't turn one flush into dozens of round-trips:
+        //  • trades     → keep the last op per (tx_signature, leg_index)
+        //  • metrics    → keep the last op per mint (each is a full snapshot;
+        //                 the upsert is absolute, so the latest supersedes)
+        //  • wallets    → unique addresses (touch only stamps `now`)
+        //  • migrations → unique mints (idempotent OR-true)
+        // Keeping the *last* op is exactly equivalent to applying them in order.
+        let mut tokens: Vec<Token> = Vec::new();
+        let mut raws: Vec<RawTransaction> = Vec::new();
+        let mut wallets: HashSet<String> = HashSet::new();
+        let mut trades: HashMap<(String, i32), Trade> = HashMap::new();
+        let mut metrics: HashMap<String, TokenMetricsWrite> = HashMap::new();
+        let mut migrations: HashSet<String> = HashSet::new();
 
         for op in ops {
             match op {
-                DbWriteOp::Raw(tx) => {
-                    if let Err(e) = tx_repo.insert(&tx).await {
-                        error!("DbWriter: raw tx {}: {e}", tx.signature);
-                    }
-                }
-                DbWriteOp::Token(token) => {
-                    if let Err(e) = token_repo.insert(&token).await {
-                        warn!("DbWriter: token {}: {e}", token.mint_address);
-                    }
-                }
+                DbWriteOp::Token(t) => tokens.push(t),
+                DbWriteOp::Raw(tx) => raws.push(tx),
                 DbWriteOp::Wallet(addr) => {
-                    let now = Utc::now();
-                    if let Err(e) = wallet_repo.touch_last_seen(&addr, now).await {
-                        warn!("DbWriter: wallet touch {addr}: {e}");
-                    }
+                    wallets.insert(addr);
                 }
-                DbWriteOp::Trade(trade) => {
-                    if let Err(e) = trade_repo.insert(&trade).await {
-                        warn!(
-                            "DbWriter: trade {}#{}: {e}",
-                            trade.tx_signature, trade.leg_index
-                        );
-                    }
-                }
-                DbWriteOp::Migration { mint } => {
-                    if let Err(e) = info_repo.update_migration_status(&mint, true).await {
-                        warn!("DbWriter: migration {mint}: {e}");
-                    }
+                DbWriteOp::Trade(t) => {
+                    trades.insert((t.tx_signature.clone(), t.leg_index as i32), t);
                 }
                 DbWriteOp::Metrics(m) => {
-                    let is_rugged = if m.recompute_rugged {
-                        compute_is_rugged(&trade_repo, &m.mint, &m.creator_wallet, m.last_trade_at)
-                            .await
-                    } else {
-                        false
-                    };
-                    if let Err(e) = info_repo
-                        .upsert_metrics(
-                            &m.mint,
-                            m.ath_price,
-                            m.ath_timestamp,
-                            m.age_seconds,
-                            m.volume,
-                            m.market_cap,
-                            m.trade_count,
-                            m.last_trade_at,
-                            m.current_price,
-                            is_rugged,
-                            m.is_migrated,
-                        )
-                        .await
-                    {
-                        warn!("DbWriter: metrics {}: {e}", m.mint);
-                    }
+                    metrics.insert(m.mint.clone(), m);
                 }
+                DbWriteOp::Migration { mint } => {
+                    migrations.insert(mint);
+                }
+            }
+        }
+
+        // Tokens first — a same-batch create must land before its trades (FK).
+        // Low volume, so kept per-row: one malformed token can't drop the rest.
+        for token in &tokens {
+            if let Err(e) = token_repo.insert(token).await {
+                warn!("DbWriter: token {}: {e}", token.mint_address);
+            }
+        }
+
+        // Raw transactions — one multi-row insert, falling back to per-row on
+        // error so a single bad row doesn't drop the whole batch.
+        if let Err(e) = tx_repo.insert_many(&raws, "grpc").await {
+            warn!("DbWriter: raw bulk insert failed ({e}); retrying per-row");
+            for tx in &raws {
+                if let Err(e) = tx_repo.insert(tx, "grpc").await {
+                    error!("DbWriter: raw tx {}: {e}", tx.signature);
+                }
+            }
+        }
+
+        // Wallet last-seen — a single UPDATE over all unique addresses.
+        if !wallets.is_empty() {
+            let addrs: Vec<String> = wallets.into_iter().collect();
+            if let Err(e) = wallet_repo.touch_last_seen_many(&addrs, Utc::now()).await {
+                warn!("DbWriter: wallet touch ({} addrs): {e}", addrs.len());
+            }
+        }
+
+        // Trades — one multi-row upsert (deduped above), per-row fallback.
+        let trades: Vec<Trade> = trades.into_values().collect();
+        if let Err(e) = trade_repo.insert_many(&trades).await {
+            warn!("DbWriter: trade bulk insert failed ({e}); retrying per-row");
+            for t in &trades {
+                if let Err(e) = trade_repo.insert(t).await {
+                    warn!("DbWriter: trade {}#{}: {e}", t.tx_signature, t.leg_index);
+                }
+            }
+        }
+
+        // Metrics — the (expensive) rugged recompute now runs once per unique
+        // mint instead of once per trade. Trades above are already persisted, so
+        // the rugged reads see this batch's trades.
+        for m in metrics.values() {
+            let is_rugged = if m.recompute_rugged {
+                compute_is_rugged(&trade_repo, &m.mint, &m.creator_wallet, m.last_trade_at).await
+            } else {
+                false
+            };
+            if let Err(e) = info_repo
+                .upsert_metrics(
+                    &m.mint,
+                    m.ath_price,
+                    m.ath_timestamp,
+                    m.age_seconds,
+                    m.volume,
+                    m.market_cap,
+                    m.trade_count,
+                    m.last_trade_at,
+                    m.current_price,
+                    is_rugged,
+                    m.is_migrated,
+                )
+                .await
+            {
+                warn!("DbWriter: metrics {}: {e}", m.mint);
+            }
+        }
+
+        // Migrations — idempotent, low volume.
+        for mint in &migrations {
+            if let Err(e) = info_repo.update_migration_status(mint, true).await {
+                warn!("DbWriter: migration {mint}: {e}");
             }
         }
     }

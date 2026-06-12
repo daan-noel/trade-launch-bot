@@ -45,19 +45,20 @@ impl TransactionRepo {
         Self { pool }
     }
 
-    /// Persist the Helius transaction result. Plain insert — `raw_transactions`
-    /// is weekly range-partitioned on `received_at` (migration 0012), and a
+    /// Persist a raw transaction result, tagged by `source` ('grpc' = live
+    /// LaserStream pipeline, 'rpc' = token_sync backfill). Plain insert —
+    /// `raw_transactions` is weekly range-partitioned on `received_at`, and a
     /// unique constraint on a partitioned table must include the partition key
-    /// (which isn't stable across reconnect re-delivery), so the old
-    /// `ON CONFLICT (signature)` dedup is gone. The RPC-backfill path (token
-    /// sync) writes each signature once per run; rare duplicate rows are
-    /// tolerated in this write-only replay/analysis table.
-    pub async fn insert(&self, tx: &RawTransaction) -> anyhow::Result<()> {
+    /// (which isn't stable across reconnect re-delivery), so there's no
+    /// `ON CONFLICT (signature)` dedup. Each path writes a signature once per
+    /// run; rare duplicate rows are tolerated in this write-only replay/analysis
+    /// table.
+    pub async fn insert(&self, tx: &RawTransaction, source: &str) -> anyhow::Result<()> {
         sqlx::query(
             r#"
             INSERT INTO raw_transactions
-                (id, signature, slot, block_time, raw_data, received_at)
-            VALUES ($1, $2, $3, $4, $5, $6)
+                (id, signature, slot, block_time, raw_data, received_at, source)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             "#,
         )
         .bind(tx.id)
@@ -66,8 +67,35 @@ impl TransactionRepo {
         .bind(tx.block_time)
         .bind(sqlx::types::Json(&tx.raw_data))
         .bind(tx.received_at)
+        .bind(source)
         .execute(&self.pool)
         .await?;
+
+        Ok(())
+    }
+
+    /// Bulk version of [`insert`] — one multi-row statement tagging every row
+    /// with the same `source`. Like [`insert`] it's a plain insert (no conflict
+    /// target on the partitioned table). Used by the live ingest DB-writer to
+    /// collapse a flush of raw transactions into one round-trip.
+    pub async fn insert_many(&self, txs: &[RawTransaction], source: &str) -> anyhow::Result<()> {
+        if txs.is_empty() {
+            return Ok(());
+        }
+        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+            "INSERT INTO raw_transactions \
+             (id, signature, slot, block_time, raw_data, received_at, source) ",
+        );
+        qb.push_values(txs, |mut b, tx| {
+            b.push_bind(tx.id)
+                .push_bind(&tx.signature)
+                .push_bind(tx.slot as i64)
+                .push_bind(tx.block_time)
+                .push_bind(sqlx::types::Json(&tx.raw_data))
+                .push_bind(tx.received_at)
+                .push_bind(source);
+        });
+        qb.build().execute(&self.pool).await?;
 
         Ok(())
     }
