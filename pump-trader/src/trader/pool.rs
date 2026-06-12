@@ -13,7 +13,8 @@
 // ============================================================
 
 use super::{BuyTemplate, PumpFunTrader};
-use crate::constants::{BUY_SEED_POOL_SIZE, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
+use crate::constants::BUY_SEED_POOL_SIZE;
+use crate::types::TokenProgram;
 use anyhow::Result;
 use solana_sdk::system_instruction;
 use solana_sdk::{
@@ -22,7 +23,6 @@ use solana_sdk::{
 };
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash as StdHash, Hasher};
-use std::str::FromStr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -30,11 +30,10 @@ use tokio::sync::Mutex;
 use tracing::warn;
 
 impl PumpFunTrader {
-    fn pool_for(&self, token_program_id: &str) -> &Arc<Mutex<Vec<BuyTemplate>>> {
-        if token_program_id == TOKEN_PROGRAM_ID {
-            &self.buy_pool_legacy
-        } else {
-            &self.buy_pool_2022
+    fn pool_for(&self, token_program: TokenProgram) -> &Arc<Mutex<Vec<BuyTemplate>>> {
+        match token_program {
+            TokenProgram::Legacy => &self.buy_pool_legacy,
+            TokenProgram::Token2022 => &self.buy_pool_2022,
         }
     }
 
@@ -51,77 +50,72 @@ impl PumpFunTrader {
     }
 
     /// (space, rent) for a token account of the given program — legacy vs 2022.
-    fn space_rent_for(&self, token_program_id: &str) -> (u64, u64) {
-        if token_program_id == TOKEN_PROGRAM_ID {
-            (self.token_account_space, self.token_account_rent)
-        } else {
-            (self.token_2022_account_space, self.token_2022_account_rent)
+    fn space_rent_for(&self, token_program: TokenProgram) -> (u64, u64) {
+        match token_program {
+            TokenProgram::Legacy => (self.token_account_space, self.token_account_rent),
+            TokenProgram::Token2022 => {
+                (self.token_2022_account_space, self.token_2022_account_rent)
+            }
         }
     }
 
-    fn build_template(&self, token_program_id: &str) -> Result<BuyTemplate> {
-        let program_id = Pubkey::from_str(token_program_id)?;
+    fn build_template(&self, token_program: TokenProgram) -> Result<BuyTemplate> {
+        let program_id = token_program.pubkey();
         let seed = self.next_seed();
-        let (space, rent) = self.space_rent_for(token_program_id);
+        let (space, rent) = self.space_rent_for(token_program);
         build_template_with_seed(&self.config.keypair, &program_id, &seed, space, rent)
     }
 
-    pub(super) async fn fill_buy_pool(&self, token_program_id: &str) -> Result<()> {
-        let pool = self.pool_for(token_program_id);
+    pub(super) async fn fill_buy_pool(&self, token_program: TokenProgram) -> Result<()> {
+        let pool = self.pool_for(token_program);
         let target = BUY_SEED_POOL_SIZE;
         loop {
             if pool.lock().await.len() >= target {
                 break;
             }
-            let t = self.build_template(token_program_id)?;
+            let t = self.build_template(token_program)?;
             pool.lock().await.push(t);
         }
         Ok(())
     }
 
     /// Pop a template from the pool; build one on-the-fly on a miss (with logging).
-    pub(super) async fn acquire_buy_template(&self, token_program_id: &str) -> Result<BuyTemplate> {
-        if let Some(t) = self.pool_for(token_program_id).lock().await.pop() {
+    pub(super) async fn acquire_buy_template(
+        &self,
+        token_program: TokenProgram,
+    ) -> Result<BuyTemplate> {
+        if let Some(t) = self.pool_for(token_program).lock().await.pop() {
             return Ok(t);
         }
 
         // Pool miss — build inline and track
-        let count = if token_program_id == TOKEN_PROGRAM_ID {
-            self.buy_pool_misses_legacy.fetch_add(1, Ordering::Relaxed) + 1
-        } else {
-            self.buy_pool_misses_2022.fetch_add(1, Ordering::Relaxed) + 1
+        let count = match token_program {
+            TokenProgram::Legacy => self.buy_pool_misses_legacy.fetch_add(1, Ordering::Relaxed) + 1,
+            TokenProgram::Token2022 => {
+                self.buy_pool_misses_2022.fetch_add(1, Ordering::Relaxed) + 1
+            }
         };
         if count % 25 == 0 {
-            warn!("⚠️  Buy pool miss #{} for {}", count, token_program_id);
+            warn!("⚠️  Buy pool miss #{} for {}", count, token_program.as_id());
         }
 
-        self.build_template(token_program_id)
+        self.build_template(token_program)
     }
 
     /// Refill the pool back up to target in the background after a buy consumed a
     /// template. Builds one (a buy consumes one), reusing the same builder the
     /// sync path uses, so there's a single copy of the seed/derivation logic.
-    pub(super) fn replenish_pool_async(&self, token_program_id: &str) {
-        // Determine which static string to use so we can 'static the spawn
-        let prog_id: &'static str = if token_program_id == TOKEN_PROGRAM_ID {
-            TOKEN_PROGRAM_ID
-        } else {
-            TOKEN_2022_PROGRAM_ID
-        };
-
-        let pool = Arc::clone(self.pool_for(prog_id));
+    pub(super) fn replenish_pool_async(&self, token_program: TokenProgram) {
+        let pool = Arc::clone(self.pool_for(token_program));
         let target = BUY_SEED_POOL_SIZE;
         let kp = self.config.keypair.insecure_clone();
-        let (space, rent) = self.space_rent_for(prog_id);
+        let (space, rent) = self.space_rent_for(token_program);
+        let program_id = token_program.pubkey();
 
         tokio::spawn(async move {
             if pool.lock().await.len() >= target {
                 return;
             }
-            let program_id = match Pubkey::from_str(prog_id) {
-                Ok(p) => p,
-                Err(_) => return,
-            };
             // No `&self` in the spawn, so derive a unique seed from the clock
             // rather than `next_seed`'s counter (a rare collision just yields a
             // duplicate template — harmless).
@@ -197,18 +191,18 @@ mod tests {
         // Seed one short of target — the pool state immediately after a buy pops
         // a template.
         {
-            let mut pool = t.pool_for(TOKEN_PROGRAM_ID).lock().await;
+            let mut pool = t.pool_for(TokenProgram::Legacy).lock().await;
             for _ in 0..target - 1 {
-                pool.push(t.build_template(TOKEN_PROGRAM_ID).unwrap());
+                pool.push(t.build_template(TokenProgram::Legacy).unwrap());
             }
         }
 
-        t.replenish_pool_async(TOKEN_PROGRAM_ID);
+        t.replenish_pool_async(TokenProgram::Legacy);
 
         // The refill runs in a spawned task; poll briefly for it to land.
         let mut len = 0;
         for _ in 0..200 {
-            len = t.pool_for(TOKEN_PROGRAM_ID).lock().await.len();
+            len = t.pool_for(TokenProgram::Legacy).lock().await.len();
             if len >= target {
                 break;
             }
@@ -218,10 +212,10 @@ mod tests {
 
         // Idempotent: a call at target adds nothing (the early `len >= target`
         // guard), so firing it eagerly never overfills.
-        t.replenish_pool_async(TOKEN_PROGRAM_ID);
+        t.replenish_pool_async(TokenProgram::Legacy);
         tokio::time::sleep(Duration::from_millis(40)).await;
         assert_eq!(
-            t.pool_for(TOKEN_PROGRAM_ID).lock().await.len(),
+            t.pool_for(TokenProgram::Legacy).lock().await.len(),
             target,
             "refill at target must be a no-op"
         );

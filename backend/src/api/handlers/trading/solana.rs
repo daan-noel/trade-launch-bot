@@ -96,7 +96,7 @@ pub async fn manual_buy(
     let token_program_id = body
         .token_program_id
         .clone()
-        .unwrap_or(routing.token_program_id);
+        .unwrap_or_else(|| routing.token_program_id.clone());
     let sol_amount = body.sol_amount;
     let slippage_bps = resolve_slippage(&app_state, body.slippage_bps);
 
@@ -108,10 +108,16 @@ pub async fn manual_buy(
             .amm_buy(&body.mint, &token_program_id, sol_amount, None, Some(slippage_bps), true)
             .await
     } else {
-        // Still on the bonding curve.
+        // Still on the bonding curve. Pass the pubkeys `resolve_buy_routing`
+        // already parsed so the trade path doesn't re-parse them; a caller
+        // override re-derives the program enum from its string.
+        let token_program = match &body.token_program_id {
+            Some(id) => pump_trader::TokenProgram::from_id(id),
+            None => routing.token_program,
+        };
         app_state
             .trader
-            .buy_token(&body.mint, &routing.creator, &token_program_id, sol_amount, Some(slippage_bps))
+            .buy_token(&routing.mint, &routing.creator_pubkey, token_program, sol_amount, Some(slippage_bps))
             .await
     };
     match buy_result {

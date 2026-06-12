@@ -16,4 +16,4 @@ mod trader;
 
 pub use trader::probe::{EndpointResult, FanoutReport, SimReport};
 pub use trader::{PumpFunTrader, TraderConfig};
-pub use types::{BuyRouting, TokenBalance, WalletHolding};
+pub use types::{BuyRouting, TokenBalance, TokenProgram, WalletHolding};

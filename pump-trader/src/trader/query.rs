@@ -442,6 +442,9 @@ impl PumpFunTrader {
             creator: routing.creator.to_string(),
             token_program_id: routing.token_program.to_string(),
             is_migrated: routing.is_migrated,
+            mint,
+            creator_pubkey: routing.creator,
+            token_program: crate::types::TokenProgram::from_pubkey(&routing.token_program),
         })
     }
 

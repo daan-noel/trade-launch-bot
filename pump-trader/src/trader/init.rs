@@ -11,9 +11,9 @@ use super::{GlobalAccount, NonceSlot, PumpFunTrader};
 use crate::constants::{
     BLOCKHASH_REFRESH_MS, BUY_SEED_POOL_SIZE, COMPUTE_UNIT_LIMIT_AMM, COMPUTE_UNIT_LIMIT_CURVE_BUY,
     COMPUTE_UNIT_LIMIT_CURVE_SELL, COMPUTE_UNIT_PRICE_MICRO_LAMPORTS, JITO_TIP_FLOOR_REFRESH_MS,
-    JITO_TIP_PERCENTILE, MAX_JITO_TIP_SOL, MIN_JITO_TIP_SOL, TOKEN_2022_PROGRAM_ID,
-    TOKEN_PROGRAM_ID,
+    JITO_TIP_PERCENTILE, MAX_JITO_TIP_SOL, MIN_JITO_TIP_SOL,
 };
+use crate::types::TokenProgram;
 use anyhow::{Context, Result};
 use solana_sdk::{compute_budget::ComputeBudgetInstruction, pubkey::Pubkey, signature::Signer};
 use std::collections::HashSet;
@@ -122,8 +122,8 @@ impl PumpFunTrader {
             "🌱 Pre-building buy seed pools (target={})",
             BUY_SEED_POOL_SIZE
         );
-        self.fill_buy_pool(TOKEN_PROGRAM_ID).await?;
-        self.fill_buy_pool(TOKEN_2022_PROGRAM_ID).await?;
+        self.fill_buy_pool(TokenProgram::Legacy).await?;
+        self.fill_buy_pool(TokenProgram::Token2022).await?;
         info!("✅ Buy seed pools ready");
 
         // 8. Recent-blockhash refresher for the AMM buy path. Prime it once now so

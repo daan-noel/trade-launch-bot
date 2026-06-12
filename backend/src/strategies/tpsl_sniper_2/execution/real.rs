@@ -364,7 +364,6 @@ pub(crate) async fn sell_and_close_position(
     exit_reason: String,
 ) {
     let mint = position.mint.clone();
-    let wallet = trader.wallet_pubkey();
     let amount = position.entry_amount as u64;
     let base_token_program = position
         .token_program_id
@@ -376,7 +375,10 @@ pub(crate) async fn sell_and_close_position(
         "Executing sell for exited position"
     );
 
-    let completed = sell_until_balance_cleared(
+    // The retry loop confirms the clear by polling the net balance, so on a
+    // confirmed clear it hands back the confirming sell row — the close step
+    // reuses it instead of re-querying the latest sell and the net balance again.
+    let last_sell = match sell_until_balance_cleared(
         trader.clone(),
         mint.clone(),
         amount,
@@ -385,69 +387,68 @@ pub(crate) async fn sell_and_close_position(
         trade_signals,
         base_token_program,
     )
-    .await;
-    if !completed {
-        warn!(
-            position_id = %position.id, mint = %mint,
-            "Sell execution finished without clearing token balance; marking position ExitFailed"
+    .await
+    {
+        SellOutcome::Cleared(row) => row,
+        SellOutcome::Failed => {
+            warn!(
+                position_id = %position.id, mint = %mint,
+                "Sell execution finished without clearing token balance; marking position ExitFailed"
+            );
+            let prev = position.clone();
+            position.mark_exit_failed(trigger_price, trigger_time);
+            position.exit_reason = Some(exit_reason.clone());
+            if let Err(err) = position_repo.update(&position).await {
+                warn!(
+                    position_id = %position.id, mint = %mint,
+                    "Failed to mark position {} ExitFailed: {err}", position.id
+                );
+            } else {
+                runtime.sync_position(Some(&prev), &position);
+            }
+            return;
+        }
+    };
+
+    if let Some(last_sell) = last_sell {
+        let exit_amount = last_sell.token_amount;
+        position.close(
+            last_sell.price_per_token,
+            last_sell.tx_signature.clone(),
+            exit_amount,
+            last_sell.block_time,
         );
-        let prev = position.clone();
-        position.mark_exit_failed(trigger_price, trigger_time);
         position.exit_reason = Some(exit_reason.clone());
+        let prev = position.clone();
         if let Err(err) = position_repo.update(&position).await {
             warn!(
                 position_id = %position.id, mint = %mint,
-                "Failed to mark position {} ExitFailed: {err}", position.id
+                "Failed to close position after confirmed sell: {err}"
             );
         } else {
             runtime.sync_position(Some(&prev), &position);
+            let pnl_percent = position.pnl_percentage().unwrap_or(0.0);
+            info!(
+                position_id = %position.id, mint = %mint,
+                tx = %last_sell.tx_signature, pnl_percent,
+                "Position closed after confirmed sell"
+            );
         }
         return;
     }
 
-    if let Ok(Some(last_sell)) = trade_repo
-        .find_latest_by_wallet_mint_type(&wallet, &mint, crate::models::trade::TradeType::Sell)
-        .await
-    {
-        {
-            let remaining = trade_repo
-                .net_token_amount_by_wallet_and_mint(&wallet, &mint)
-                .await
-                .unwrap_or(0.0)
-                .max(0.0);
-            if remaining <= super::PARTIAL_FILL_THRESHOLD {
-                let exit_amount = last_sell.token_amount;
-                position.close(
-                    last_sell.price_per_token,
-                    last_sell.tx_signature.clone(),
-                    exit_amount,
-                    last_sell.block_time,
-                );
-                position.exit_reason = Some(exit_reason.clone());
-                let prev = position.clone();
-                if let Err(err) = position_repo.update(&position).await {
-                    warn!(
-                        position_id = %position.id, mint = %mint,
-                        "Failed to close position after confirmed sell: {err}"
-                    );
-                } else {
-                    runtime.sync_position(Some(&prev), &position);
-                    let pnl_percent = position.pnl_percentage().unwrap_or(0.0);
-                    info!(
-                        position_id = %position.id, mint = %mint,
-                        tx = %last_sell.tx_signature, pnl_percent,
-                        "Position closed after confirmed sell"
-                    );
-                }
-                return;
-            }
-        }
-    }
-
     warn!(
         position_id = %position.id, mint = %mint,
-        "Sell completed but no confirmed sell record found, or token balance remained"
+        "Sell completed but no confirmed sell record found"
     );
+}
+
+/// Outcome of [`sell_until_balance_cleared`]. `Cleared` carries the confirming
+/// sell trade row (when one was found) so the close path reuses it instead of
+/// re-querying the latest sell and the net balance a second time.
+enum SellOutcome {
+    Cleared(Option<crate::models::trade::Trade>),
+    Failed,
 }
 
 async fn sell_until_balance_cleared(
@@ -458,7 +459,7 @@ async fn sell_until_balance_cleared(
     cache: &TokenCache,
     trade_signals: Arc<TradeSignals>,
     base_token_program: String,
-) -> bool {
+) -> SellOutcome {
     let mut attempt = 0usize;
     let max_attempts = super::SELL_MAX_ATTEMPTS;
     let mut backoff_ms = 300u64;
@@ -466,7 +467,7 @@ async fn sell_until_balance_cleared(
 
     if amount == 0 {
         info!(mint = %mint, "sell skipped because amount is zero");
-        return true;
+        return SellOutcome::Cleared(None);
     }
 
     // Resolve the token account once (cache-first; at most one wallet scan) and
@@ -580,7 +581,19 @@ async fn sell_until_balance_cleared(
                     }
                 }
                 if cleared {
-                    return true;
+                    // Fetch the confirming sell row once, here, so the caller
+                    // closes the position off it without re-reading the latest
+                    // sell or the (already-cleared) net balance.
+                    let last_sell = trade_repo
+                        .find_latest_by_wallet_mint_type(
+                            &wallet,
+                            &mint,
+                            crate::models::trade::TradeType::Sell,
+                        )
+                        .await
+                        .ok()
+                        .flatten();
+                    return SellOutcome::Cleared(last_sell);
                 }
                 // Not cleared within the window: a partial fill retries the
                 // remainder; an unchanged balance means the tx never landed, so
@@ -600,11 +613,15 @@ async fn sell_until_balance_cleared(
             backoff_ms = (backoff_ms * 2).saturating_add(100);
         } else {
             warn!(mint = %mint, amount, "sell failed after {max_attempts} attempts");
-            return false;
+            return SellOutcome::Failed;
         }
     }
 
-    amount == 0
+    if amount == 0 {
+        SellOutcome::Cleared(None)
+    } else {
+        SellOutcome::Failed
+    }
 }
 
 #[cfg(test)]
