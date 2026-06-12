@@ -189,6 +189,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       render: (r) => r.trade_count,
       sortValue: (r) => r.trade_count,
       searchValue: (r) => String(r.trade_count),
+      filterNumber: (r) => r.trade_count,
     },
     {
       key: 'ath_price',
@@ -231,6 +232,15 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
         return entry && r.ath_price && entry !== 0 ? r.ath_price / entry : null;
       },
       searchValue: () => '',
+      filterValue: (r) => {
+        const entry = fep(r);
+        const ratio = entry && r.ath_price && entry !== 0 ? r.ath_price / entry : null;
+        return ratio != null ? `${formatDecimalTrim(ratio, 2)}x` : '';
+      },
+      filterNumber: (r) => {
+        const entry = fep(r);
+        return entry && r.ath_price && entry !== 0 ? r.ath_price / entry : null;
+      },
     },
     {
       key: 'current_price',
@@ -267,6 +277,15 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
         return entry && r.current_price && entry !== 0 ? r.current_price / entry : null;
       },
       searchValue: () => '',
+      filterValue: (r) => {
+        const entry = fep(r);
+        const ratio = entry && r.current_price && entry !== 0 ? r.current_price / entry : null;
+        return ratio != null ? `${formatDecimalTrim(ratio, 2)}x` : '';
+      },
+      filterNumber: (r) => {
+        const entry = fep(r);
+        return entry && r.current_price && entry !== 0 ? r.current_price / entry : null;
+      },
     },
     {
       key: 'market_cap',
@@ -277,6 +296,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       render: (r) => (r.market_cap != null ? price.displayCompact(r.market_cap, 3) : '-'),
       sortValue: (r) => r.market_cap,
       searchValue: (r) => String(r.market_cap ?? ''),
+      filterNumber: (r) => r.market_cap,
     },
     {
       key: 'volume',
@@ -287,6 +307,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       render: (r) => price.displayCompact(r.volume_sol_total, 4),
       sortValue: (r) => r.volume_sol_total,
       searchValue: (r) => String(r.volume_sol_total),
+      filterNumber: (r) => r.volume_sol_total,
     },
     {
       key: 'initial_buy',
@@ -297,6 +318,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       render: (r) => (r.initial_buy_sol != null ? price.displayAmount(r.initial_buy_sol) : '-'),
       sortValue: (r) => r.initial_buy_sol,
       searchValue: (r) => String(r.initial_buy_sol ?? ''),
+      filterNumber: (r) => r.initial_buy_sol,
     },
     {
       key: 'init_supply',
@@ -308,6 +330,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
         r.initial_supply_token != null ? formatCompact(r.initial_supply_token, 2) : '-',
       sortValue: (r) => r.initial_supply_token,
       searchValue: (r) => String(r.initial_supply_token ?? ''),
+      filterNumber: (r) => r.initial_supply_token,
     },
     {
       key: 'token_amount',
@@ -318,6 +341,8 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       render: (r) => (r.token_amount != null ? formatCompact(r.token_amount, 2) : '-'),
       sortValue: (r) => r.token_amount,
       searchValue: () => '',
+      filterValue: (r) => (r.token_amount != null ? formatCompact(r.token_amount, 2) : ''),
+      filterNumber: (r) => r.token_amount,
     },
     {
       key: 'max_sol_cost',
@@ -329,6 +354,9 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
         r.max_sol_cost != null ? formatDecimalTrim(r.max_sol_cost / 1e9, 3) : '-',
       sortValue: (r) => r.max_sol_cost,
       searchValue: () => '',
+      filterValue: (r) =>
+        r.max_sol_cost != null ? formatDecimalTrim(r.max_sol_cost / 1e9, 3) : '',
+      filterNumber: (r) => (r.max_sol_cost != null ? r.max_sol_cost / 1e9 : null),
     },
     {
       key: 'spendable_sol_in',
@@ -340,6 +368,9 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
         r.spendable_sol_in != null ? formatDecimalTrim(r.spendable_sol_in / 1e9, 3) : '-',
       sortValue: (r) => r.spendable_sol_in,
       searchValue: () => '',
+      filterValue: (r) =>
+        r.spendable_sol_in != null ? formatDecimalTrim(r.spendable_sol_in / 1e9, 3) : '',
+      filterNumber: (r) => (r.spendable_sol_in != null ? r.spendable_sol_in / 1e9 : null),
     },
     {
       key: 'min_tokens_out',
@@ -350,6 +381,8 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       render: (r) => (r.min_tokens_out != null ? formatCompact(r.min_tokens_out, 2) : '-'),
       sortValue: (r) => r.min_tokens_out,
       searchValue: () => '',
+      filterValue: (r) => (r.min_tokens_out != null ? formatCompact(r.min_tokens_out, 2) : ''),
+      filterNumber: (r) => r.min_tokens_out,
     },
     {
       key: 'cu_limit',
@@ -360,6 +393,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       render: (r) => (r.cu_limit != null ? r.cu_limit : '-'),
       sortValue: (r) => r.cu_limit,
       searchValue: (r) => String(r.cu_limit ?? ''),
+      filterNumber: (r) => r.cu_limit,
     },
     {
       key: 'cu_price',
@@ -370,6 +404,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       render: (r) => (r.cu_price != null ? formatWithCommas(r.cu_price) : '-'),
       sortValue: (r) => r.cu_price,
       searchValue: (r) => String(r.cu_price ?? ''),
+      filterNumber: (r) => r.cu_price,
     },
     {
       key: 'ix_count',
@@ -380,6 +415,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       render: (r) => <IxCountCell row={r} />,
       sortValue: (r) => r.ix_labels_count,
       searchValue: (r) => String(r.ix_labels_count),
+      filterNumber: (r) => r.ix_labels_count,
     },
     {
       key: 'ix_labels',

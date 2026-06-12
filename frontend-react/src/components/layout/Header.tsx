@@ -124,7 +124,7 @@ export function Header() {
 
           <StatusButton
             state={liveMode ? 'live' : 'dead'}
-            label={liveMode ? 'WS LIVE' : 'WS DEAD'}
+            label={liveMode ? 'Helius / LIVE' : 'Helius / DEAD'}
             onClick={toggleLive}
           />
         </div>

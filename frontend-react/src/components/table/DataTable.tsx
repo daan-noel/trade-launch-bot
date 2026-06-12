@@ -3,6 +3,7 @@ import { cn } from 'lib/cn';
 import { Checkbox } from 'components/ui/Checkbox';
 import { Input } from 'components/ui/Input';
 import { Pagination, DEFAULT_PAGE_SIZE } from './Pagination';
+import { parseNumericPredicate } from './numericFilter';
 import type { ColumnDef, SortDir, SortValue } from './types';
 
 function loadVisibleCols(storageKey: string, columns: ColumnDef<unknown>[]): Set<string> {
@@ -136,6 +137,26 @@ export function DataTable<R>({
     actionsTinted && 'shadow-[inset_0_0_0_1000px_rgba(255,255,255,0.02)]',
   );
 
+  // Resolve each active column filter once (not per row): a numeric column whose
+  // filter text is a comparison/range expression (`>5`, `1..10`) gets a numeric
+  // predicate; everything else matches the displayed text as a substring.
+  const activeColFilters = useMemo(() => {
+    const out: {
+      col: ColumnDef<R>;
+      needle: string;
+      numeric: ((n: number) => boolean) | null;
+    }[] = [];
+    for (const [key, raw] of Object.entries(colFiltersMap)) {
+      const text = raw.trim();
+      if (!text) continue;
+      const col = columns.find((c) => c.key === key);
+      if (!col) continue;
+      const numeric = col.filterNumber ? parseNumericPredicate(text) : null;
+      out.push({ col, needle: text.toLowerCase(), numeric });
+    }
+    return out;
+  }, [colFiltersMap, columns]);
+
   const processed = useMemo(() => {
     const searchLower = search.toLowerCase();
     let list = rows.filter((row) => {
@@ -145,11 +166,13 @@ export function DataTable<R>({
         );
         if (!hit) return false;
       }
-      for (const [key, text] of Object.entries(colFiltersMap)) {
-        if (!text) continue;
-        const col = columns.find((c) => c.key === key);
-        if (col && !col.searchValue(row).toLowerCase().includes(text.toLowerCase())) {
-          return false;
+      for (const { col, needle, numeric } of activeColFilters) {
+        if (numeric) {
+          const n = col.filterNumber!(row);
+          if (n == null || !numeric(n)) return false;
+        } else {
+          const value = (col.filterValue ?? col.searchValue)(row);
+          if (!value.toLowerCase().includes(needle)) return false;
         }
       }
       return true;
@@ -163,7 +186,7 @@ export function DataTable<R>({
       }
     }
     return list;
-  }, [rows, columns, search, colFiltersMap, sortCol, sortDir]);
+  }, [rows, columns, search, activeColFilters, sortCol, sortDir]);
 
   // Reset paging when the *view* changes (search/filter/sort/selection), jumping
   // to the selected row's page when one is selected. `processed` and `rowKey` are
@@ -316,7 +339,8 @@ export function DataTable<R>({
                       <Input
                         type="text"
                         fieldSize="table"
-                        placeholder="filter…"
+                        placeholder={col.filterNumber ? '>0  1..5' : 'filter…'}
+                        title={col.filterNumber ? 'Text matches; or use >  >=  <  <=  =  !=  or a range like 1..5' : undefined}
                         value={colFiltersMap[col.key] ?? ''}
                         onChange={(e) =>
                           setColFiltersMap((m) => ({ ...m, [col.key]: e.target.value }))
