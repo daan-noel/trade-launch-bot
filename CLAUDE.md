@@ -16,16 +16,16 @@ Meme-coin trading bot handling **massive token + trade volume**. Performance and
 
 Rust `backend` (ingest + strategies + HTTP API) + `pump-trader` crate (trade execution) + `frontend-react` SPA. Trades on the bonding curve and the migrated AMM; exposes a React dashboard. `backend` is the composition root in [main.rs](backend/src/main.rs): long-lived tokio tasks — ingest producer → pipeline → DbWriter, StrategyRunner, SOL price poller, partition maintenance, optional HTTP server — joined by one `tokio::select!`. Helius LaserStream (gRPC) is the **sole** live transport; the `trades` table *is* that feed.
 
-**File-level maps live in `docs/` — read the relevant one instead of re-exploring source.** (The *why* lives in `@project_plans/`.) When code moves, update the matching map (file-level, no line numbers — cheap to keep current).
+**File-level maps live in `@docs/` — read the relevant one instead of re-exploring source.** (The *why* lives in `@project_plans/`.) When code moves, update the matching map (file-level, no line numbers — cheap to keep current).
 
 | Doc | Covers |
 | --- | --- |
-| [docs/architecture.md](docs/architecture.md) | backend skeleton: `main.rs` wiring, module layout, `api/`, `state/`, `services/`, `config/`, two-crate split |
-| [docs/ingest.md](docs/ingest.md) | `ingest_laserstream/`: client → pipeline → db_writer flow, decoder, committed gRPC codegen, partition maintenance |
-| [docs/strategies.md](docs/strategies.md) | `strategies/`: StrategyRunner, tpsl_sniper_{1,2} clones, entry gating, exit ladder, real/paper execution, invariants |
-| [docs/trade-execution.md](docs/trade-execution.md) | `pump-trader/`: buy/sell/amm, durable-nonce + Jito tip escalation, Sender fan-out, caches/probes |
-| [docs/database.md](docs/database.md) | Postgres schema, migrations, partitioning, every repository → table → fns |
-| [docs/frontend.md](docs/frontend.md) | `frontend-react/src/`: pages, `components/ui` + DataTable, hooks, RTK Query/SSE services, perf patterns |
+| [@docs/architecture.md](@docs/architecture.md) | backend skeleton: `main.rs` wiring, module layout, `api/`, `state/`, `services/`, `config/`, two-crate split |
+| [@docs/ingest.md](@docs/ingest.md) | `ingest_laserstream/`: client → pipeline → db_writer flow, decoder, committed gRPC codegen, partition maintenance |
+| [@docs/strategies.md](@docs/strategies.md) | `strategies/`: StrategyRunner, tpsl_sniper_{1,2} clones, entry gating, exit ladder, real/paper execution, invariants |
+| [@docs/trade-execution.md](@docs/trade-execution.md) | `pump-trader/`: buy/sell/amm, durable-nonce + Jito tip escalation, Sender fan-out, caches/probes |
+| [@docs/database.md](@docs/database.md) | Postgres schema, migrations, partitioning, every repository → table → fns |
+| [@docs/frontend.md](@docs/frontend.md) | `frontend-react/src/`: pages, `components/ui` + DataTable, hooks, RTK Query/SSE services, perf patterns |
 
 ## Commands
 
@@ -68,6 +68,7 @@ Notes
 
 - **Backend:** `cargo check --bin backend` clean; `cargo clippy` on touched code; add/adjust a `--bin backend` (or `pump-trader`) test when logic changed.
 - **Frontend:** `npm run build` clean; no extra re-render on the SOL/USD tick or live-trade stream (reuse existing memo/context patterns).
+- **Docs:** any logic change updates its `@docs/` map and every referencing `@project_plans/` / `*-plan.md` file — after the task is finished and validated.
 - Smallest correct diff, stayed in the owning crate, no new warnings, no secrets in code.
 
 ## Gotchas
