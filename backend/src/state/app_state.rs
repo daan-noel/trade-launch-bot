@@ -11,6 +11,7 @@ use crate::strategies::tpsl_sniper_2::Tpsl2RuntimeCache;
 use crate::trader::PumpFunTrader;
 
 use super::token_cache::TokenCache;
+use super::token_list_cache::TokenListCache;
 use super::trade_signals::TradeSignals;
 
 /// Shared application state — passed to Actix handlers via `web::Data<AppState>`
@@ -24,6 +25,10 @@ pub struct AppState {
     pub helius_api_key: String,
     pub pump_program_id: String,
     pub token_cache: Arc<TokenCache>,
+    /// Shared, staleness-bounded snapshot of the token list backing
+    /// `GET /api/tokens`. Lets every client's poll read one pre-sorted, pre-built
+    /// view instead of each request cloning + sorting the whole cache.
+    pub token_list: Arc<TokenListCache>,
     /// Cold lane: SSE subscribers only (fed after cache update in ingest pipeline).
     pub sse_tx: broadcast::Sender<SseEvent>,
     pub live_mode: watch::Sender<bool>,
@@ -115,6 +120,9 @@ impl AppState {
         pools_changed: Arc<Notify>,
         trade_signals: Arc<TradeSignals>,
     ) -> Self {
+        // Seed the shared list snapshot from the (DB-seeded) cache before the
+        // borrow of `token_cache` is moved into the struct below.
+        let token_list = Arc::new(TokenListCache::new(&token_cache));
         Self {
             db,
             helius_rpc_url,
@@ -122,6 +130,7 @@ impl AppState {
             helius_api_key,
             pump_program_id,
             token_cache,
+            token_list,
             sse_tx,
             live_mode,
             settings,

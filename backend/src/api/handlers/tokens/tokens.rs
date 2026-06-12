@@ -22,8 +22,9 @@ fn extract_buy_arg_u64(value: &Option<Value>, field: &str) -> Option<u64> {
 // Response types
 // ---------------------------------------------------------------------------
 
-/// Compact token summary emitted in list responses.
-#[derive(Serialize)]
+/// Compact token summary emitted in list responses. `Clone` so the shared list
+/// snapshot can materialise just the requested page (see `TokenListCache`).
+#[derive(Serialize, Clone)]
 pub struct TokenSummary {
     pub mint_address: String,
     pub symbol: String,
@@ -274,9 +275,9 @@ pub async fn list_tokens(
     state: web::Data<Arc<AppState>>,
     query: web::Query<PaginationParams>,
 ) -> impl Responder {
-    // Cloning + sorting + filtering the whole token cache is CPU work that would
-    // otherwise block one of the few (http_workers=2) async request threads.
-    // Run it on the blocking pool so a large cache can't stall other requests.
+    // Filtering + sorting the token set is CPU work that would otherwise block one
+    // of the few (http_workers=2) async request threads. Run it on the blocking
+    // pool so a large cache can't stall other requests.
     let state = state.get_ref().clone();
     let q = TokenQuery::from_params(&query);
     let limit_q = query.limit;
@@ -284,27 +285,37 @@ pub async fn list_tokens(
 
     let built = web::block(move || {
         let now = chrono::Utc::now();
-        let mut tokens: Vec<TokenSummary> = state
-            .token_cache
+
+        // Shared, pre-sorted (newest-first) snapshot of the whole list. Rebuilt at
+        // most once per staleness window across all clients, so a request no longer
+        // clones the entire cache on every poll.
+        let snapshot = state.token_list.get(&state.token_cache, now);
+
+        // Full-fidelity server-side reduction: global filters + search + per-column
+        // filters (mirrors `tokenPassesFilters` and the DataTable). Filter by
+        // reference — non-matching rows are never cloned.
+        let mut matched: Vec<&TokenSummary> = snapshot
+            .rows
             .iter()
-            .map(|entry| TokenSummary::from(entry.value()))
+            .filter(|&t| q.matches(t, now))
             .collect();
 
-        // Full-fidelity server-side reduction: global filters + search + per-
-        // column filters (mirrors `tokenPassesFilters` and the DataTable).
-        tokens.retain(|t| q.matches(t, now));
-
         // `total` is the FILTERED count — that's what the table's pager needs.
-        let total = tokens.len();
+        let total = matched.len();
 
-        // Sort by the requested column (default: newest created_at first), then
-        // page. Sorting precedes paging; the rest of the reduction order is
-        // irrelevant to the resulting set.
-        q.sort(&mut tokens);
+        // The snapshot is already newest-first, so the default view needs no sort;
+        // only an explicit sort column re-orders (sorting precedes paging).
+        q.sort_refs(&mut matched);
 
         let limit = limit_q.max(1).min(50_000) as usize;
         let offset = offset_q.max(0) as usize;
-        let items: Vec<_> = tokens.into_iter().skip(offset).take(limit).collect();
+        // Materialise (clone) only the requested page.
+        let items: Vec<TokenSummary> = matched
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .cloned()
+            .collect();
         TokensListResponse { total, items }
     })
     .await;
@@ -747,16 +758,21 @@ impl TokenQuery {
         true
     }
 
-    fn sort(&self, tokens: &mut [TokenSummary]) {
-        match &self.sort_col {
-            Some(col) => {
-                let desc = self.sort_desc;
-                tokens.sort_by(|a, b| {
-                    cmp_keys(&sort_key(col, a), &sort_key(col, b), desc)
-                });
-            }
-            // Default: newest created_at first (matches prior behavior).
-            None => tokens.sort_by(|a, b| b.created_at.cmp(&a.created_at)),
+    /// Re-order a filtered page of snapshot rows in place. The snapshot is already
+    /// newest-first, so the default (no sort column) view is a no-op; an explicit
+    /// sort uses decorate-sort-undecorate so each row's key is computed ONCE rather
+    /// than on every comparison (the old comparator re-derived it — and re-allocated
+    /// date strings — O(n log n) times).
+    fn sort_refs<'a>(&self, rows: &mut [&'a TokenSummary]) {
+        let Some(col) = &self.sort_col else {
+            return;
+        };
+        let desc = self.sort_desc;
+        let mut keyed: Vec<(SortKey, &'a TokenSummary)> =
+            rows.iter().map(|&t| (sort_key(col, t), t)).collect();
+        keyed.sort_by(|a, b| cmp_keys(&a.0, &b.0, desc));
+        for (slot, (_, t)) in rows.iter_mut().zip(keyed) {
+            *slot = t;
         }
     }
 }

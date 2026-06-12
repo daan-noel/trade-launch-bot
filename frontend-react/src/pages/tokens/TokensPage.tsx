@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { DataTable } from 'components/table/DataTable';
 import { FilterPanel } from 'components/tokens/FilterPanel';
 import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
@@ -16,6 +16,7 @@ import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
 import { StatusButton } from 'components/ui/StatusButton';
 import { POLL_INTERVAL_MS } from 'services/config';
+import { connectTokenCreatedStream } from 'services/sse';
 import type { TokenRecord } from 'types';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import {
@@ -68,6 +69,7 @@ export function TokensPage() {
     data: tokensData,
     isFetching: loading,
     error: tokensError,
+    refetch,
   } = useGetTokensPageQuery(
     {
       page: tableQuery.page,
@@ -78,7 +80,12 @@ export function TokensPage() {
       colFilters: tableQuery.colFilters,
       filters,
     },
-    { pollingInterval: live ? POLL_INTERVAL_MS : 0 },
+    {
+      pollingInterval: live ? POLL_INTERVAL_MS : 0,
+      // Don't keep polling a background tab — the SSE refetch below catches it up
+      // the moment it regains focus, and the timer resumes then.
+      skipPollingIfUnfocused: true,
+    },
   );
   const tokens = tokensData?.items ?? EMPTY_TOKENS;
   const total = tokensData?.total ?? 0;
@@ -109,6 +116,26 @@ export function TokensPage() {
     } catch {
       /* ignore */
     }
+  }, [live]);
+
+  // Push-driven refresh: while live, a `token_created` SSE event refetches the
+  // current page so new tokens surface promptly instead of waiting on the poll
+  // timer. `refetch` is held in a ref so re-subscribing isn't tied to page/sort/
+  // filter changes (which would needlessly reopen the EventSource). A burst of
+  // creations is debounced into one refetch.
+  const refetchRef = useRef(refetch);
+  refetchRef.current = refetch;
+  useEffect(() => {
+    if (!live) return;
+    let timer: number | undefined;
+    const es = connectTokenCreatedStream(() => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => refetchRef.current(), 400);
+    });
+    return () => {
+      window.clearTimeout(timer);
+      es.close();
+    };
   }, [live]);
 
   useEffect(() => {
