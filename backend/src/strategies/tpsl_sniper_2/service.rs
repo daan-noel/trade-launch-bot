@@ -277,11 +277,14 @@ impl Tpsl2StrategyService {
             return;
         }
 
-        for mut position in positions {
+        for position in positions {
             if let Some(rule) = self.runtime.rule_by_id(position.rule_id) {
                 if let Some(exit_reason) =
                     super::exit::should_position_exit_on_trade(&position, &trades, &rule)
                 {
+                    // Deep-clone only now that this position is actually exiting;
+                    // the holding index hands us a shared `Arc<Position>`.
+                    let mut position = (*position).clone();
                     debug!(
                         "Position {} for token {mint} triggered exit: {:?}",
                         position.id, exit_reason
@@ -414,6 +417,9 @@ impl Tpsl2StrategyService {
                 "Time-driven exit triggered: {exit_reason}"
             );
 
+            // This position is exiting — deep-clone out of the shared `Arc` so the
+            // execution paths can take it by value.
+            let position = (*position).clone();
             if rule.trade_mode == "paper" {
                 super::execution::paper::record_time_exit(
                     &self.paper_repo,

@@ -29,9 +29,9 @@ pub struct PaperRunRef {
 /// ids and real rule ids are disjoint, so the shared maps never collide).
 #[derive(Clone)]
 pub struct Tpsl1RuntimeCache {
-    active_rules: Arc<RwLock<Vec<Tpsl1StrategyRule>>>,
+    active_rules: Arc<RwLock<Arc<Vec<Tpsl1StrategyRule>>>>,
     rules_by_id: Arc<RwLock<HashMap<Uuid, Tpsl1StrategyRule>>>,
-    holding_by_mint: Arc<DashMap<String, Vec<Position>>>,
+    holding_by_mint: Arc<DashMap<String, Vec<Arc<Position>>>>,
     holding_count_by_rule: Arc<DashMap<Uuid, i64>>,
     total_count_by_rule: Arc<DashMap<Uuid, i64>>,
     /// Current paper run per paper rule (stamping target + result pointer).
@@ -46,7 +46,7 @@ pub struct Tpsl1RuntimeCache {
 impl Tpsl1RuntimeCache {
     pub fn new() -> Self {
         Self {
-            active_rules: Arc::new(RwLock::new(Vec::new())),
+            active_rules: Arc::new(RwLock::new(Arc::new(Vec::new()))),
             rules_by_id: Arc::new(RwLock::new(HashMap::new())),
             holding_by_mint: Arc::new(DashMap::new()),
             holding_count_by_rule: Arc::new(DashMap::new()),
@@ -131,7 +131,7 @@ impl Tpsl1RuntimeCache {
         let active: Vec<_> = rules.iter().filter(|r| r.is_active).cloned().collect();
         let by_id: HashMap<_, _> = rules.into_iter().map(|r| (r.id, r)).collect();
         if let Ok(mut a) = self.active_rules.write() {
-            *a = active;
+            *a = Arc::new(active);
         }
         if let Ok(mut m) = self.rules_by_id.write() {
             *m = by_id;
@@ -142,12 +142,12 @@ impl Tpsl1RuntimeCache {
         self.holding_by_mint.clear();
         self.holding_count_by_rule.clear();
 
-        let mut by_mint: HashMap<String, Vec<Position>> = HashMap::new();
+        let mut by_mint: HashMap<String, Vec<Arc<Position>>> = HashMap::new();
         let mut holding_by_rule: HashMap<Uuid, i64> = HashMap::new();
 
         for pos in positions {
             *holding_by_rule.entry(pos.rule_id).or_insert(0) += 1;
-            by_mint.entry(pos.mint.clone()).or_default().push(pos);
+            by_mint.entry(pos.mint.clone()).or_default().push(Arc::new(pos));
         }
 
         let live_ids: HashSet<Uuid> = by_mint
@@ -166,7 +166,9 @@ impl Tpsl1RuntimeCache {
             .retain(|id, _| live_ids.contains(id));
     }
 
-    pub fn active_rules(&self) -> Vec<Tpsl1StrategyRule> {
+    /// The active rule set, shared by `Arc` (callers clone the pointer, not the
+    /// rules). A new handler is built per token creation, so this is hot.
+    pub fn active_rules(&self) -> Arc<Vec<Tpsl1StrategyRule>> {
         self.active_rules
             .read()
             .map(|r| r.clone())
@@ -182,7 +184,7 @@ impl Tpsl1RuntimeCache {
             .and_then(|m| m.get(&rule_id).cloned())
     }
 
-    pub fn holding_by_mint(&self, mint: &str) -> Vec<Position> {
+    pub fn holding_by_mint(&self, mint: &str) -> Vec<Arc<Position>> {
         self.holding_by_mint
             .get(mint)
             .map(|e| e.value().clone())
@@ -191,9 +193,10 @@ impl Tpsl1RuntimeCache {
 
     /// Snapshot of every Holding position across all mints. Used by the
     /// time-driven exit sweep, which must scan all open positions on each tick
-    /// (not just those of a mint that just traded). Clones out so no DashMap
-    /// guard is held across the caller's awaits.
-    pub fn all_holding_positions(&self) -> Vec<Position> {
+    /// (not just those of a mint that just traded). Positions are held by `Arc`,
+    /// so the per-tick snapshot is pointer-clones; a caller deep-clones only the
+    /// rare position it actually acts on. No DashMap guard is held across awaits.
+    pub fn all_holding_positions(&self) -> Vec<Arc<Position>> {
         self.holding_by_mint
             .iter()
             .flat_map(|e| e.value().clone())
@@ -423,9 +426,9 @@ impl Tpsl1RuntimeCache {
             .entry(position.mint.clone())
             .or_insert_with(Vec::new);
         if let Some(slot) = entry.iter_mut().find(|p| p.id == position.id) {
-            *slot = position.clone();
+            *slot = Arc::new(position.clone());
         } else {
-            entry.push(position.clone());
+            entry.push(Arc::new(position.clone()));
         }
     }
 

@@ -131,6 +131,7 @@ pub async fn stop_and_close_rule(
         .all_holding_positions()
         .into_iter()
         .filter(|p| p.rule_id == rule_id)
+        .map(|p| (*p).clone())
         .collect();
     let count = positions.len();
     let now = Utc::now();
