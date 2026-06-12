@@ -67,8 +67,17 @@ impl TradeSignals {
         if self.slots.is_empty() {
             return;
         }
-        if let Some(slot) = self.slots.get(&(wallet.to_string(), mint.to_string())) {
-            slot.notify.notify_waiters();
+        // The map only holds this bot's in-flight (wallet, mint) keys — at most a
+        // handful at once — so compare borrowed keys in a short scan instead of
+        // allocating two owned `String`s per committed trade for a `get` that
+        // almost always misses. (`(String, String)` can't be looked up by
+        // `(&str, &str)` without a Borrow impl, hence the scan.)
+        for slot in self.slots.iter() {
+            let key = slot.key();
+            if key.0 == wallet && key.1 == mint {
+                slot.notify.notify_waiters();
+                return;
+            }
         }
     }
 }
