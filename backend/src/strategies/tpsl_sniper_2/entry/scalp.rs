@@ -24,7 +24,7 @@ use super::super::util::{none_if_zero_f64, none_if_zero_u64};
 use super::EntryFill;
 use crate::config::constants::RUGGED_EARLY_SLOT_WINDOW;
 use crate::models::trade::{Trade, TradeType};
-use crate::models::TpslRule;
+use crate::models::Tpsl2Rule;
 
 /// Liveness window for `p_entry_min_alive_sol`: total SOL traded in the trailing
 /// `ALIVE_WINDOW_SECS` ending at the candidate trade. Kept a module constant (not
@@ -36,7 +36,7 @@ const ALIVE_WINDOW_SECS: i64 = 10;
 /// path (the legacy first-slot fill was removed), so when this is false the rule
 /// can never resolve an entry — the backtest rejects it up front and the live
 /// paper poll never fills.
-pub fn rule_configures_any_scalp_gate(rule: &TpslRule) -> bool {
+pub fn rule_configures_any_scalp_gate(rule: &Tpsl2Rule) -> bool {
     none_if_zero_u64(rule.p_entry_min_age_secs).is_some()
         || none_if_zero_f64(rule.p_entry_min_alive_sol).is_some()
         || none_if_zero_f64(rule.p_entry_min_organic_sol).is_some()
@@ -184,7 +184,7 @@ pub fn higher_low_confirmed(prefix: &[Trade], pullback_pct: f64, min_span_secs: 
 /// Returns `None` when the rule configures no scalp gate; callers gate on
 /// [`rule_configures_any_scalp_gate`] (the backtest rejects such a rule up front),
 /// so this is never a silent buy-everything path.
-pub fn find_scalp_entry(trades: &[Trade], rule: &TpslRule) -> Option<EntryFill> {
+pub fn find_scalp_entry(trades: &[Trade], rule: &Tpsl2Rule) -> Option<EntryFill> {
     if !rule_configures_any_scalp_gate(rule) || trades.is_empty() {
         return None;
     }
@@ -285,8 +285,8 @@ mod tests {
     }
 
     /// An inert rule (all scalp gates off) we then set fields on.
-    fn rule() -> TpslRule {
-        TpslRule::new(
+    fn rule() -> Tpsl2Rule {
+        Tpsl2Rule::new(
             "scalp".into(),
             None, None, None,
             serde_json::Value::Array(vec![]),

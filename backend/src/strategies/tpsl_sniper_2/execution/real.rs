@@ -12,7 +12,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::super::Tpsl2RuntimeCache;
-use crate::models::{Position, TpslRule};
+use crate::models::{Position, Tpsl2Rule};
 use crate::state::token_cache::TokenCache;
 use crate::state::trade_signals::TradeSignals;
 use crate::storage::repositories::{tpsl2_position_repo::Tpsl2PositionRepo, trade_repo::TradeRepo};
@@ -116,7 +116,7 @@ pub(crate) struct ScalpWaitCfg {
 impl ScalpWaitCfg {
     /// Window sized to the rule's gates, so a larger min-age / higher-low widens it
     /// automatically — no fixed timeout to keep in sync with the params by hand.
-    pub(crate) fn for_rule(rule: &TpslRule) -> Self {
+    pub(crate) fn for_rule(rule: &Tpsl2Rule) -> Self {
         Self {
             attempts: super::scalp_arming_attempts(rule),
             interval: Duration::from_millis(super::SCALP_ENTRY_WAIT_INTERVAL_MS),
@@ -137,7 +137,7 @@ impl ScalpWaitCfg {
 /// backtest, so all three resolve the same entry moment and live honors `p_entry_*`.
 pub(crate) async fn await_scalp_entry_signal(
     mint: &str,
-    rule: &TpslRule,
+    rule: &Tpsl2Rule,
     trade_repo: &TradeRepo,
     cfg: ScalpWaitCfg,
 ) -> bool {

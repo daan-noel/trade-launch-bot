@@ -21,7 +21,7 @@ use chrono::{DateTime, Duration, Utc};
 
 use crate::config::constants::RUGGED_EARLY_SLOT_WINDOW;
 use crate::models::trade::{Trade, TradeType};
-use crate::models::{Position, PositionStatus, TpslRule};
+use crate::models::{Position, PositionStatus, Tpsl2Rule};
 
 use super::cohort::{cohort_flow, early_cohort_wallets};
 use super::util::{none_if_zero_f64, none_if_zero_u64};
@@ -216,7 +216,7 @@ pub fn find_trade_driven_exit(
     trades: &[Trade],
     entry_time: DateTime<Utc>,
     entry_price: f64,
-    rule: &TpslRule,
+    rule: &Tpsl2Rule,
 ) -> Option<ExitFill> {
     if entry_price <= 0.0 {
         return None;
@@ -350,7 +350,7 @@ pub fn find_trade_driven_exit(
 pub fn find_clock_driven_exit(
     state: &ExitWalkState,
     entry_time: DateTime<Utc>,
-    rule: &TpslRule,
+    rule: &Tpsl2Rule,
     now: DateTime<Utc>,
 ) -> Option<ExitReason> {
     if let Some(secs) = none_if_zero_u64(rule.p_exit_stall_secs) {
@@ -373,7 +373,7 @@ pub fn find_clock_driven_exit(
 pub fn should_position_exit_on_trade(
     position: &Position,
     trades: &[Trade],
-    rule: &TpslRule,
+    rule: &Tpsl2Rule,
 ) -> Option<ExitReason> {
     let entry_time = clock_entry_time(position)?;
     find_trade_driven_exit(trades, entry_time, position.entry_price, rule).map(|fill| fill.reason)
@@ -387,7 +387,7 @@ pub fn should_position_exit_on_trade(
 pub fn should_position_exit_on_clock(
     position: &Position,
     state: &ExitWalkState,
-    rule: &TpslRule,
+    rule: &Tpsl2Rule,
     now: DateTime<Utc>,
 ) -> Option<ExitReason> {
     let entry_time = clock_entry_time(position)?;
@@ -465,8 +465,8 @@ mod tests {
         time_stop_secs: Option<u64>,
         stall_secs: Option<u64>,
         liquidity_drop_pct: Option<f64>,
-    ) -> TpslRule {
-        TpslRule::new(
+    ) -> Tpsl2Rule {
+        Tpsl2Rule::new(
             "test".into(),
             None,
             None,
@@ -680,7 +680,7 @@ mod tests {
     // ── E5 cohort-dump (`p_exit_cohort_ratio`) ───────────────────────────────
 
     /// rule_with + an explicit E5 cohort-exit ratio.
-    fn rule_cohort(cohort_exit_ratio: f64) -> TpslRule {
+    fn rule_cohort(cohort_exit_ratio: f64) -> Tpsl2Rule {
         let mut r = rule_with(1000.0, 99.0, None, None, None, None);
         r.p_exit_cohort_ratio = Some(cohort_exit_ratio);
         r

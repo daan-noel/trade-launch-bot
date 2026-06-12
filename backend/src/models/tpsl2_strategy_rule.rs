@@ -3,14 +3,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-/// Strategy rule shared by both tpsl snipers — the superset shape: the common
-/// token-filter / exit-ladder fields plus the **scalp-continuation gates** (the
-/// trade-stream entry gates and the E5 cohort-dump exit that only tpsl2
-/// evaluates, left `None` for tpsl1 whose table has no such columns). Each
-/// strategy keeps its own `tpslN_strategy_rules` table and per-strategy repo —
-/// only the in-memory model is unified.
+/// Strategy rule for **tpsl_sniper_2** — the scalp-continuation strategy.
+/// Fully independent of tpsl1: it carries the common token-filter / exit-ladder
+/// fields **plus** the scalp-continuation entry gates and the E5 cohort-dump
+/// exit that only tpsl2 evaluates. Persisted in the tpsl2-only
+/// `tpsl2_strategy_rules` table via its own repo; `new()` leaves the scalp
+/// gates `None`, with the tpsl2 API setting them post-construction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TpslRule {
+pub struct Tpsl2Rule {
     pub id: Uuid,
     /// Human-readable name for this rule.
     pub rule_name: String,
@@ -53,7 +53,7 @@ pub struct TpslRule {
     /// `ignore_zero_f64`).
     pub p_exit_liquidity_drop_pct: Option<f64>,
 
-    // ── Scalp-continuation entry gates (tpsl_sniper_2 only) ───────────────────
+    // ── Scalp-continuation entry gates ────────────────────────────────────────
     // Evaluated over a token's trade window — "buy on the first trade where ALL
     // configured gates hold". All inert at `None`/`0`.
     /// Skip the launch spike: the entry trade must be at least this many seconds
@@ -80,7 +80,7 @@ pub struct TpslRule {
     /// the cohort's net SOL deposit). `None`/`0` disables.
     pub p_entry_min_organic_liq: Option<f64>,
 
-    // ── Scalp-continuation exit gate (tpsl_sniper_2 only) ─────────────────────
+    // ── Scalp-continuation exit gate ──────────────────────────────────────────
     /// E5 · Cohort-dump exit: exit once the launch cohort's net holdings collapse
     /// to ≤ this fraction of everything it ever bought (the multi-wallet rug
     /// signature). Top ladder priority. `None`/`0` disables.
@@ -94,7 +94,8 @@ pub struct TpslRule {
     pub updated_at: DateTime<Utc>,
 }
 
-impl TpslRule {
+impl Tpsl2Rule {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         rule_name: String,
         p_token_initial_buy_sol: Option<f64>,
@@ -132,8 +133,7 @@ impl TpslRule {
             p_exit_stall_secs,
             p_exit_liquidity_drop_pct,
             // Scalp-continuation gates default to disabled; the tpsl2 API sets
-            // them post-construction (so `new()`'s signature stays in lockstep
-            // with tpsl1's and its call sites stay unchanged).
+            // them post-construction.
             p_entry_min_age_secs: None,
             p_entry_min_alive_sol: None,
             p_entry_min_organic_sol: None,

@@ -16,7 +16,7 @@ use uuid::Uuid;
 use super::super::util::none_if_zero_u64;
 use super::super::Tpsl1RuntimeCache;
 use crate::models::ingest::SseEvent;
-use crate::models::{Position, PositionStatus, TpslRule};
+use crate::models::{Position, PositionStatus, Tpsl1Rule};
 use crate::storage::repositories::{
     tpsl1_paper_trading_repo::Tpsl1PaperTradingRepo, trade_repo::TradeRepo,
 };
@@ -103,7 +103,7 @@ pub(crate) fn spawn_exit_fill_poll(
     entry_time_db: Option<DateTime<Utc>>,
     // The full rule drives the exit-fill resolver so the recorded paper exit
     // honors the same E1–E4 ladder that triggered the gate.
-    rule: TpslRule,
+    rule: Tpsl1Rule,
     // The price/time the exit condition met; the hypothetical exit if no real
     // fill confirms. `trigger_reason` is recorded on the ExitFailed fallback.
     trigger_price: f64,
@@ -205,7 +205,7 @@ pub(crate) async fn record_time_exit(
     exit_price: f64,
     exit_time: DateTime<Utc>,
     reason: String,
-    rule: &TpslRule,
+    rule: &Tpsl1Rule,
 ) {
     let exit_tx = format!("paper-time-exit-{}", position.id);
     let prev = position.clone();

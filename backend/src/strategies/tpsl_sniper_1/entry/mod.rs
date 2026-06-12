@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use super::util::{none_if_zero_f64, none_if_zero_u64};
 use crate::models::trade::{Trade, TradeType};
-use crate::models::{TpslRule, Token};
+use crate::models::{Tpsl1Rule, Token};
 
 const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 
@@ -34,7 +34,7 @@ enum CriterionOutcome {
 
 /// Every entry criterion, evaluated in order. Adding a filter = add its
 /// `check_*` here; nothing else changes.
-const CRITERIA: &[fn(&Token, &TpslRule) -> CriterionOutcome] = &[
+const CRITERIA: &[fn(&Token, &Tpsl1Rule) -> CriterionOutcome] = &[
     check_initial_buy_sol,
     check_compute_unit_limit,
     check_compute_unit_price,
@@ -46,7 +46,7 @@ const CRITERIA: &[fn(&Token, &TpslRule) -> CriterionOutcome] = &[
 /// Whether a token satisfies a rule's buy criteria. A rule must configure at
 /// least one criterion, and every configured criterion must be satisfied.
 /// Shared by the live entry gate and the backtest.
-pub fn token_matches_buy_rule(token: &Token, rule: &TpslRule) -> bool {
+pub fn token_matches_buy_rule(token: &Token, rule: &Tpsl1Rule) -> bool {
     let mut any_configured = false;
     for check in CRITERIA {
         match check(token, rule) {
@@ -61,7 +61,7 @@ pub fn token_matches_buy_rule(token: &Token, rule: &TpslRule) -> bool {
 /// The first active rule whose criteria the token satisfies, or `None`. A rule
 /// that configures no criterion is skipped with a warning rather than matching
 /// every token.
-pub fn find_first_matching_buy_rule(token: &Token, rules: &[TpslRule]) -> Option<Uuid> {
+pub fn find_first_matching_buy_rule(token: &Token, rules: &[Tpsl1Rule]) -> Option<Uuid> {
     for rule in rules {
         if !rule.is_active {
             continue;
@@ -82,7 +82,7 @@ pub fn find_first_matching_buy_rule(token: &Token, rules: &[TpslRule]) -> Option
 
 /// Whether a rule sets at least one entry criterion (used to skip — and warn
 /// about — a misconfigured, match-everything rule).
-fn rule_configures_any_criterion(rule: &TpslRule) -> bool {
+fn rule_configures_any_criterion(rule: &Tpsl1Rule) -> bool {
     none_if_zero_f64(rule.p_token_initial_buy_sol).is_some()
         || none_if_zero_u64(rule.p_token_cu_limit).is_some()
         || none_if_zero_u64(rule.p_token_cu_price).is_some()
@@ -102,7 +102,7 @@ fn within_tolerance(token_val: f64, rule_val: f64, tolerance_pct: f64, eps: f64)
     (token_val - rule_val).abs() <= tol + eps
 }
 
-fn check_initial_buy_sol(token: &Token, rule: &TpslRule) -> CriterionOutcome {
+fn check_initial_buy_sol(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome {
     let Some(rule_val) = none_if_zero_f64(rule.p_token_initial_buy_sol) else {
         return CriterionOutcome::NotConfigured;
     };
@@ -114,7 +114,7 @@ fn check_initial_buy_sol(token: &Token, rule: &TpslRule) -> CriterionOutcome {
     }
 }
 
-fn check_compute_unit_limit(token: &Token, rule: &TpslRule) -> CriterionOutcome {
+fn check_compute_unit_limit(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome {
     let Some(rule_val) = none_if_zero_u64(rule.p_token_cu_limit) else {
         return CriterionOutcome::NotConfigured;
     };
@@ -126,7 +126,7 @@ fn check_compute_unit_limit(token: &Token, rule: &TpslRule) -> CriterionOutcome 
     }
 }
 
-fn check_compute_unit_price(token: &Token, rule: &TpslRule) -> CriterionOutcome {
+fn check_compute_unit_price(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome {
     let Some(rule_val) = none_if_zero_u64(rule.p_token_cu_price) else {
         return CriterionOutcome::NotConfigured;
     };
@@ -138,7 +138,7 @@ fn check_compute_unit_price(token: &Token, rule: &TpslRule) -> CriterionOutcome 
     }
 }
 
-fn check_max_sol_cost(token: &Token, rule: &TpslRule) -> CriterionOutcome {
+fn check_max_sol_cost(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome {
     let Some(rule_val) = none_if_zero_f64(rule.p_token_max_sol_cost) else {
         return CriterionOutcome::NotConfigured;
     };
@@ -150,7 +150,7 @@ fn check_max_sol_cost(token: &Token, rule: &TpslRule) -> CriterionOutcome {
     }
 }
 
-fn check_spendable_sol_in(token: &Token, rule: &TpslRule) -> CriterionOutcome {
+fn check_spendable_sol_in(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome {
     let Some(rule_val) = none_if_zero_f64(rule.p_token_spendable_sol_in) else {
         return CriterionOutcome::NotConfigured;
     };
@@ -162,7 +162,7 @@ fn check_spendable_sol_in(token: &Token, rule: &TpslRule) -> CriterionOutcome {
     }
 }
 
-fn check_instruction_labels(token: &Token, rule: &TpslRule) -> CriterionOutcome {
+fn check_instruction_labels(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome {
     if !rule.p_token_ix_labels.as_array().map_or(false, |a| !a.is_empty()) {
         return CriterionOutcome::NotConfigured;
     }
@@ -282,8 +282,8 @@ mod tests {
         p_token_max_sol_cost: Option<f64>,
         p_token_spendable_sol_in: Option<f64>,
         tolerance_pct: f64,
-    ) -> TpslRule {
-        let mut r = TpslRule::new(
+    ) -> Tpsl1Rule {
+        let mut r = Tpsl1Rule::new(
             "test".into(),
             p_token_initial_buy_sol,
             p_token_cu_limit,

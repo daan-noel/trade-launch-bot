@@ -17,7 +17,7 @@ use tracing::warn;
 use uuid::Uuid;
 
 use super::util::none_if_zero_u64;
-use crate::models::{Position, TpslRule};
+use crate::models::{Position, Tpsl1Rule};
 use crate::state::app_state::AppState;
 use crate::storage::repositories::{
     tpsl1_paper_trading_repo::Tpsl1PaperTradingRepo, tpsl1_position_repo::Tpsl1PositionRepo,
@@ -45,7 +45,7 @@ pub async fn activate_rule(
     app_state: &Arc<AppState>,
     rule_id: Uuid,
     paper: PaperActivation,
-) -> anyhow::Result<TpslRule> {
+) -> anyhow::Result<Tpsl1Rule> {
     let repo = Tpsl1StrategyRuleRepo::new(app_state.db.clone());
     let mut rule = repo
         .find_by_id(rule_id)
@@ -91,7 +91,7 @@ pub async fn activate_rule(
 pub async fn pause_rule(
     app_state: &Arc<AppState>,
     rule_id: Uuid,
-) -> anyhow::Result<TpslRule> {
+) -> anyhow::Result<Tpsl1Rule> {
     let repo = Tpsl1StrategyRuleRepo::new(app_state.db.clone());
     let mut rule = repo
         .find_by_id(rule_id)
@@ -121,7 +121,7 @@ pub async fn pause_rule(
 pub async fn stop_and_close_rule(
     app_state: &Arc<AppState>,
     rule_id: Uuid,
-) -> anyhow::Result<(TpslRule, usize)> {
+) -> anyhow::Result<(Tpsl1Rule, usize)> {
     let rule = pause_rule(app_state, rule_id).await?;
 
     // Authoritative snapshot of this rule's open positions — the in-memory

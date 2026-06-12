@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use sqlx::{types::Json, PgPool};
 use uuid::Uuid;
 
-use crate::models::TpslRule;
+use crate::models::Tpsl1Rule;
 
 pub struct Tpsl1StrategyRuleRepo {
     pool: PgPool,
@@ -38,7 +38,7 @@ struct Tpsl1StrategyRuleDbRow {
     updated_at: DateTime<Utc>,
 }
 
-impl From<Tpsl1StrategyRuleDbRow> for TpslRule {
+impl From<Tpsl1StrategyRuleDbRow> for Tpsl1Rule {
     fn from(r: Tpsl1StrategyRuleDbRow) -> Self {
         Self {
             id: r.id,
@@ -59,17 +59,6 @@ impl From<Tpsl1StrategyRuleDbRow> for TpslRule {
             p_exit_time_stop_secs: r.p_exit_time_stop_secs.map(|v| v as u64),
             p_exit_stall_secs: r.p_exit_stall_secs.map(|v| v as u64),
             p_exit_liquidity_drop_pct: r.p_exit_liquidity_drop_pct,
-            // tpsl1's table has no scalp-continuation columns; the unified
-            // `TpslRule` carries them only for tpsl2, so they're always `None` here.
-            p_entry_min_age_secs: None,
-            p_entry_min_alive_sol: None,
-            p_entry_min_organic_sol: None,
-            p_entry_pullback_pct: None,
-            p_entry_higher_low_secs: None,
-            p_entry_max_cohort_held: None,
-            p_entry_min_liquidity_sol: None,
-            p_entry_min_organic_liq: None,
-            p_exit_cohort_ratio: None,
             tolerance_pct: r.tolerance_pct,
             is_active: r.is_active,
             created_at: r.created_at,
@@ -88,7 +77,7 @@ impl Tpsl1StrategyRuleRepo {
     }
 
     /// Insert a new TPSL rule.
-    pub async fn insert(&self, rule: &TpslRule) -> anyhow::Result<()> {
+    pub async fn insert(&self, rule: &Tpsl1Rule) -> anyhow::Result<()> {
         sqlx::query(
             r#"
             INSERT INTO tpsl1_strategy_rules
@@ -126,7 +115,7 @@ impl Tpsl1StrategyRuleRepo {
     }
 
     /// Get all TPSL rules (active and inactive).
-    pub async fn find_all(&self) -> anyhow::Result<Vec<TpslRule>> {
+    pub async fn find_all(&self) -> anyhow::Result<Vec<Tpsl1Rule>> {
         let rows = sqlx::query_as::<_, Tpsl1StrategyRuleDbRow>(
             r#"
                  SELECT id, rule_name, p_token_initial_buy_sol, p_token_cu_limit, p_token_cu_price, p_token_max_sol_cost, p_token_spendable_sol_in, p_max_concurrent_tokens, p_max_total_tokens, p_token_ix_labels,
@@ -138,11 +127,11 @@ impl Tpsl1StrategyRuleRepo {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows.into_iter().map(TpslRule::from).collect())
+        Ok(rows.into_iter().map(Tpsl1Rule::from).collect())
     }
 
     /// Get a specific rule by ID.
-    pub async fn find_by_id(&self, rule_id: Uuid) -> anyhow::Result<Option<TpslRule>> {
+    pub async fn find_by_id(&self, rule_id: Uuid) -> anyhow::Result<Option<Tpsl1Rule>> {
         let row = sqlx::query_as::<_, Tpsl1StrategyRuleDbRow>(
             r#"
                  SELECT id, rule_name, p_token_initial_buy_sol, p_token_cu_limit, p_token_cu_price, p_token_max_sol_cost, p_token_spendable_sol_in, p_max_concurrent_tokens, p_max_total_tokens, p_token_ix_labels,
@@ -155,11 +144,11 @@ impl Tpsl1StrategyRuleRepo {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(TpslRule::from))
+        Ok(row.map(Tpsl1Rule::from))
     }
 
     /// Update an existing TPSL rule.
-    pub async fn update(&self, rule: &TpslRule) -> anyhow::Result<()> {
+    pub async fn update(&self, rule: &Tpsl1Rule) -> anyhow::Result<()> {
         sqlx::query(
             r#"
             UPDATE tpsl1_strategy_rules
