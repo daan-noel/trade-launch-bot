@@ -21,7 +21,7 @@ use crate::constants::{
     AMM_CONFIG_LP_FEE_BPS_OFFSET, AMM_CONFIG_MIN_LEN, AMM_CONFIG_PROTOCOL_FEE_BPS_OFFSET,
     AMM_DEFAULT_SLIPPAGE_BPS, AMM_POOL_BASE_VAULT_OFFSET, AMM_POOL_COIN_CREATOR_OFFSET,
     AMM_POOL_IS_CASHBACK_OFFSET, AMM_POOL_MIN_LEN, AMM_POOL_QUOTE_VAULT_OFFSET,
-    CONFIRM_MAX_RETRIES, LAMPORTS_PER_SOL, PUMP_AMM_CASHBACK_GLOBAL, TOKEN_PROGRAM_ID,
+    CONFIRM_MAX_RETRIES, LAMPORTS_PER_SOL, PUMP_AMM_CASHBACK_GLOBAL,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::json;
@@ -63,7 +63,13 @@ impl PumpFunTrader {
     /// `base_token_program_id` is the token's SPL program (legacy or 2022).
     /// `pool_override` lets the caller supply the known pool address; when
     /// `None` the canonical index-0 / WSOL pool is derived. `slippage_bps`
-    /// defaults to [`AMM_DEFAULT_SLIPPAGE_BPS`].
+    /// defaults to [`AMM_DEFAULT_SLIPPAGE_BPS`]. `confirm` mirrors
+    /// `sell_token_once`/`amm_sell`: `true` blocks on the RPC signature poll
+    /// (manual/API callers); `false` returns once the sender accepts and leaves
+    /// confirmation to the caller's own feed — saving the ~4 s `confirm_transaction`
+    /// poll on the latency-critical path. The base ATA is cached regardless, so a
+    /// `confirm=false` caller can still sell.
+    #[allow(clippy::too_many_arguments)]
     pub async fn amm_buy(
         &self,
         token_mint: &str,
@@ -71,6 +77,7 @@ impl PumpFunTrader {
         sol_amount: f64,
         pool_override: Option<&str>,
         slippage_bps: Option<u64>,
+        confirm: bool,
     ) -> Result<bool> {
         let t0 = Instant::now();
         let user = self.config.keypair.pubkey();
@@ -101,17 +108,20 @@ impl PumpFunTrader {
             sol_amount,
             t0.elapsed().as_millis()
         );
-        self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES).await?;
-        // Tokens land in the base ATA — cache it for a later sell.
+        // Tokens land in the base ATA — cache it for a later sell. Done before
+        // the (optional) confirm so a `confirm=false` caller still gets it cached.
         self.user_token_accounts
             .lock()
             .unwrap()
             .insert(token_mint.to_string(), user_base);
-        info!(
-            "✅ AMM buy confirmed — sig: {} | {}ms",
-            sig,
-            t0.elapsed().as_millis()
-        );
+        if confirm {
+            self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES).await?;
+            info!(
+                "✅ AMM buy confirmed — sig: {} | {}ms",
+                sig,
+                t0.elapsed().as_millis()
+            );
+        }
         Ok(true)
     }
 
@@ -136,26 +146,29 @@ impl PumpFunTrader {
     ) -> Result<bool> {
         let t0 = Instant::now();
         let user = self.config.keypair.pubkey();
+
+        let core_ixs = self
+            .build_amm_sell_ixs(
+                token_mint,
+                token_amount,
+                base_token_program_id,
+                pool_override,
+                token_account_override,
+                slippage_bps,
+                &user,
+            )
+            .await?;
+
+        let mut ixs = Vec::with_capacity(core_ixs.len() + self.cu_ixs_amm.len() + 1);
+        ixs.extend_from_slice(&self.cu_ixs_amm);
+        ixs.extend(core_ixs);
+        ixs.push(self.jito_tip_ix(tip_level));
+
+        // Acquire the nonce only after `build_amm_sell_ixs`' pool/config/reserve
+        // reads — don't hold the slot `in_use` across that RPC. The block below
+        // always falls through to `schedule_nonce_refresh`.
         let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
-
         let result: Result<bool> = async {
-            let core_ixs = self
-                .build_amm_sell_ixs(
-                    token_mint,
-                    token_amount,
-                    base_token_program_id,
-                    pool_override,
-                    token_account_override,
-                    slippage_bps,
-                    &user,
-                )
-                .await?;
-
-            let mut ixs = Vec::with_capacity(core_ixs.len() + self.cu_ixs_amm.len() + 1);
-            ixs.extend_from_slice(&self.cu_ixs_amm);
-            ixs.extend(core_ixs);
-            ixs.push(self.jito_tip_ix(tip_level));
-
             let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, &self.config.keypair)?;
             let sig = self.send_transaction(&tx).await?;
             info!(
@@ -196,10 +209,12 @@ impl PumpFunTrader {
         slippage_bps: Option<u64>,
         user: &Pubkey,
     ) -> Result<(Vec<Instruction>, Pubkey)> {
-        let pool = self
-            .amm_pool_info(token_mint, pool_override, base_token_program_id)
-            .await?;
-        let cfg = self.amm_config().await?;
+        // pool-info and global-config are independent reads — run them
+        // concurrently; reserves depend on the resolved pool, so it follows.
+        let (pool, cfg) = tokio::try_join!(
+            self.amm_pool_info(token_mint, pool_override, base_token_program_id),
+            self.amm_config(),
+        )?;
         let (base_res, quote_res) = self.amm_reserves_cached(token_mint, &pool).await?;
 
         let spendable = (sol_amount * LAMPORTS_PER_SOL as f64) as u64;
@@ -214,7 +229,7 @@ impl PumpFunTrader {
         // wrapped `spendable`, which is the spend cap.
         let base_amount_out = (base_out.saturating_mul(BPS_DENOM - slip) / BPS_DENOM) as u64;
 
-        let quote_tp = Pubkey::from_str(TOKEN_PROGRAM_ID)?; // WSOL is legacy SPL
+        let quote_tp = self.token_program; // WSOL is legacy SPL
         let user_base =
             get_associated_token_address_with_program_id(user, &pool.base_mint, &pool.base_token_program);
         let user_quote =
@@ -272,10 +287,12 @@ impl PumpFunTrader {
         slippage_bps: Option<u64>,
         user: &Pubkey,
     ) -> Result<Vec<Instruction>> {
-        let pool = self
-            .amm_pool_info(token_mint, pool_override, base_token_program_id)
-            .await?;
-        let cfg = self.amm_config().await?;
+        // pool-info and global-config are independent reads — run them
+        // concurrently; reserves depend on the resolved pool, so it follows.
+        let (pool, cfg) = tokio::try_join!(
+            self.amm_pool_info(token_mint, pool_override, base_token_program_id),
+            self.amm_config(),
+        )?;
         let (base_res, quote_res) = self.amm_reserves_cached(token_mint, &pool).await?;
 
         let slip = slippage_bps.unwrap_or(AMM_DEFAULT_SLIPPAGE_BPS) as u128;
@@ -285,7 +302,7 @@ impl PumpFunTrader {
         let net = gross.saturating_mul(BPS_DENOM - fee_bps) / BPS_DENOM;
         let min_quote_out = (net.saturating_mul(BPS_DENOM - slip) / BPS_DENOM) as u64;
 
-        let quote_tp = Pubkey::from_str(TOKEN_PROGRAM_ID)?;
+        let quote_tp = self.token_program;
         let user_base = self
             .resolve_user_base_account(token_mint, token_account_override)
             .await?;
@@ -530,22 +547,42 @@ impl PumpFunTrader {
             .rpc_json("getSignaturesForAddress", json!([pool_str, { "limit": 15 }]))
             .await?;
         let program_str = self.pump_swap_program.to_string();
+
+        // The marker is per-coin constant, so *any* successful swap yields it.
+        // Fetch the candidate transactions concurrently and take the first marker
+        // instead of up to 15 sequential `getTransaction` round-trips gating the
+        // (cold) first AMM swap of a coin. Failed txs don't carry the correct
+        // account list, so skip them up front.
+        let mut set = tokio::task::JoinSet::new();
         for s in sigs.as_array().into_iter().flatten() {
-            // Only successful swaps carry the correct accounts — skip failed txs.
             let errored = s.get("err").map(|e| !e.is_null()).unwrap_or(false);
             if errored {
                 continue;
             }
-            let sig = match s.get("signature").and_then(|v| v.as_str()) {
-                Some(x) => x,
-                None => continue,
+            let Some(sig) = s.get("signature").and_then(|v| v.as_str()) else {
+                continue;
             };
-            let tx = self
-                .rpc_json(
+            let http = self.http.clone();
+            let rpc_url = self.config.rpc_url.clone();
+            let sig = sig.to_string();
+            set.spawn(async move {
+                rpc_json_call(
+                    &http,
+                    &rpc_url,
                     "getTransaction",
                     json!([sig, { "encoding": "jsonParsed", "maxSupportedTransactionVersion": 0 }]),
                 )
-                .await?;
+                .await
+            });
+        }
+
+        while let Some(joined) = set.join_next().await {
+            let tx = match joined {
+                Ok(Ok(tx)) => tx,
+                // A single failed lookup (join error or RPC error) shouldn't sink
+                // the whole resolution — another candidate may still yield the marker.
+                _ => continue,
+            };
             if let Some(marker) = extract_swap_marker(&tx, &program_str, &pool_str) {
                 return Ok(Some(Pubkey::from_str(&marker)?));
             }
@@ -556,19 +593,7 @@ impl PumpFunTrader {
     /// Minimal JSON-RPC call against the configured full RPC node, used for the
     /// read-only transaction-history lookups above.
     async fn rpc_json(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
-        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
-        let resp = self
-            .http
-            .post(&self.config.rpc_url)
-            .json(&body)
-            .send()
-            .await
-            .with_context(|| format!("RPC {method} request failed"))?;
-        let v: serde_json::Value = resp.json().await.context("RPC response not JSON")?;
-        if let Some(e) = v.get("error") {
-            bail!("RPC {method} error: {e}");
-        }
-        Ok(v.get("result").cloned().unwrap_or(serde_json::Value::Null))
+        rpc_json_call(&self.http, &self.config.rpc_url, method, params).await
     }
 
     /// Fetch + cache GlobalConfig (fee bps + a protocol fee recipient).
@@ -764,6 +789,29 @@ fn extract_swap_marker(tx: &serde_json::Value, program: &str, pool: &str) -> Opt
         return accounts[accounts.len() - 3].as_str().map(str::to_string);
     }
     None
+}
+
+/// Minimal JSON-RPC POST against a full RPC node. Free function (no `&self`
+/// borrow) so the concurrent fee-share-marker lookups can drive it from detached
+/// `JoinSet` tasks; `PumpFunTrader::rpc_json` is a thin wrapper over it.
+async fn rpc_json_call(
+    http: &reqwest::Client,
+    rpc_url: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
+    let resp = http
+        .post(rpc_url)
+        .json(&body)
+        .send()
+        .await
+        .with_context(|| format!("RPC {method} request failed"))?;
+    let v: serde_json::Value = resp.json().await.context("RPC response not JSON")?;
+    if let Some(e) = v.get("error") {
+        bail!("RPC {method} error: {e}");
+    }
+    Ok(v.get("result").cloned().unwrap_or(serde_json::Value::Null))
 }
 
 /// Constant-product output amount: `reserve_out * amount_in / (reserve_in + amount_in)`.

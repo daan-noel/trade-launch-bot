@@ -105,7 +105,7 @@ pub async fn manual_buy(
         // Mayhem tokens never migrate, so the AMM path needs no mayhem handling.
         app_state
             .trader
-            .amm_buy(&body.mint, &token_program_id, sol_amount, None, Some(slippage_bps))
+            .amm_buy(&body.mint, &token_program_id, sol_amount, None, Some(slippage_bps), true)
             .await
     } else {
         // Still on the bonding curve.
