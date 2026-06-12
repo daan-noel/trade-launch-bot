@@ -4,8 +4,14 @@ use std::time::Duration;
 
 use crate::services::http;
 
-const RPC_TIMEOUT_SECS: u64 = 120;
+/// Per-request timeout. Interactive rather than the old 120 s so a wedged RPC
+/// fails fast instead of hanging an API request or a sync step for two minutes.
+const RPC_TIMEOUT_SECS: u64 = 30;
 const SIG_PAGE_LIMIT: usize = 1000;
+/// Retry/backoff for transient RPC failures (429 / 5xx / network).
+const RPC_MAX_RETRIES: usize = 4;
+const RPC_BASE_BACKOFF_MS: u64 = 250;
+const RPC_MAX_BACKOFF_MS: u64 = 4_000;
 
 /// JSON-RPC client for Helius / Solana HTTP RPC.
 #[derive(Clone)]
@@ -33,29 +39,54 @@ impl HeliusRpc {
             "params": params,
         });
 
-        let resp = self
-            .client
-            .post(&self.url)
-            .json(&body)
-            .send()
-            .await
-            .context("Helius RPC request failed")?;
+        let mut attempt = 0usize;
+        loop {
+            attempt += 1;
 
-        let status = resp.status();
-        let payload: Value = resp.json().await.context("Helius RPC invalid JSON")?;
+            let resp = match self.client.post(&self.url).json(&body).send().await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    // Network error / timeout — retry a few times before giving up.
+                    if attempt <= RPC_MAX_RETRIES {
+                        tokio::time::sleep(backoff_delay(attempt, None)).await;
+                        continue;
+                    }
+                    return Err(anyhow::Error::new(e)
+                        .context(format!("Helius RPC {method} request failed")));
+                }
+            };
 
-        if let Some(err) = payload.get("error") {
-            return Err(anyhow!("Helius RPC {method} error: {err}"));
+            let status = resp.status();
+
+            // Check the HTTP status BEFORE reading the body: a rate-limited (429)
+            // or transient server-error (5xx) response is often a non-JSON page,
+            // which the old "parse first" path misreported as "invalid JSON".
+            // Back off (honoring a 429 `Retry-After`) and retry up to the cap.
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+                if attempt <= RPC_MAX_RETRIES {
+                    let retry_after = retry_after_ms(&resp);
+                    tokio::time::sleep(backoff_delay(attempt, retry_after)).await;
+                    continue;
+                }
+                return Err(anyhow!(
+                    "Helius RPC {method} HTTP {status} after {attempt} attempts"
+                ));
+            }
+
+            // Other non-success (4xx besides 429) is not retryable.
+            if !status.is_success() {
+                return Err(anyhow!("Helius RPC {method} HTTP {status}"));
+            }
+
+            let payload: Value = resp.json().await.context("Helius RPC invalid JSON")?;
+            if let Some(err) = payload.get("error") {
+                return Err(anyhow!("Helius RPC {method} error: {err}"));
+            }
+            return payload
+                .get("result")
+                .cloned()
+                .ok_or_else(|| anyhow!("Helius RPC {method} missing result"));
         }
-
-        if !status.is_success() {
-            return Err(anyhow!("Helius RPC {method} HTTP {status}"));
-        }
-
-        payload
-            .get("result")
-            .cloned()
-            .ok_or_else(|| anyhow!("Helius RPC {method} missing result"))
     }
 
     /// Quick check: at least one successful signature exists for the address.
@@ -369,6 +400,24 @@ impl HeliusRpc {
 
         Ok((data, next))
     }
+}
+
+/// `Retry-After` header (whole seconds) as milliseconds, if present and numeric.
+fn retry_after_ms(resp: &reqwest::Response) -> Option<u64> {
+    resp.headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(|secs| secs.saturating_mul(1000))
+}
+
+/// Exponential backoff for `attempt` (1-based), capped at `RPC_MAX_BACKOFF_MS`.
+/// A 429 `Retry-After` wins when it asks for a longer wait.
+fn backoff_delay(attempt: usize, retry_after_ms: Option<u64>) -> Duration {
+    let shift = attempt.saturating_sub(1).min(5) as u32;
+    let exp = RPC_BASE_BACKOFF_MS.saturating_mul(1u64 << shift);
+    let ms = exp.min(RPC_MAX_BACKOFF_MS).max(retry_after_ms.unwrap_or(0));
+    Duration::from_millis(ms)
 }
 
 #[derive(Debug, Clone)]
