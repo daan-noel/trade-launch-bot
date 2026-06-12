@@ -41,7 +41,8 @@ Frontend (SwingDetectionPage)
         │
         ▼
 Backend handler  →  load trades (in-memory token_cache first, else TradeRepo from DB)
-        │
+        │   (batch: cache-miss DB loads fan out via buffer_unordered(16); the
+        │    detect_swings CPU pass runs on web::block, off the HTTP worker)
         ▼
 detect_swings(trades, params)
    1. sanitize_and_order(trades)   → Vec<Tx>      (filter sol<=0, canonical sort, derive prices)

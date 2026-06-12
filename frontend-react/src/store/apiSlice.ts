@@ -6,6 +6,8 @@ import type { AppSettings } from 'services/api';
 import type { TokenFilters } from 'components/tokens/filters';
 import type { SortDir } from 'components/table/types';
 import type {
+  AnalysisRecord,
+  CreatorRecord,
   MatchedTokenRecord,
   PaperResultResponse,
   SimulatedTokenResult,
@@ -14,6 +16,7 @@ import type {
   TradeRecord,
   WalletHolding,
   WalletPrice,
+  WalletProfile,
 } from 'types';
 
 /** Args for the per-rule strategy result reads (matched / simulate / paper),
@@ -59,9 +62,34 @@ export interface TokensPageArgs {
  */
 export const TOKENS_LIST_LIMIT = 20_000;
 
+/**
+ * Upper bound on the per-token trade history pulled for the price chart. The
+ * backend `get_trades` handler already caps the response at 5000; requesting it
+ * explicitly makes the guardrail visible at the call site (rather than relying
+ * on a silent server default) and keeps the chart's working set bounded.
+ */
+export const TOKEN_TRADES_LIMIT = 5_000;
+
 export interface TokensResponse {
   total: number;
   items: TokenRecord[];
+}
+
+/** Offset-paginated list args shared by the simple `{ total, items }`
+ *  endpoints (creators / analysis) that page server-side via limit+offset. */
+export interface OffsetPageArgs {
+  limit: number;
+  offset: number;
+}
+
+export interface CreatorsResponse {
+  total: number;
+  items: CreatorRecord[];
+}
+
+export interface AnalysisResponse {
+  total: number;
+  items: AnalysisRecord[];
 }
 
 /**
@@ -107,7 +135,7 @@ export const apiSlice = createApi({
   baseQuery: fetchBaseQuery({ baseUrl: API_BASE }),
   keepUnusedDataFor: 300,
   refetchOnMountOrArgChange: false,
-  tagTypes: ['Settings', 'LiveMode', 'WalletHoldings', 'StrategyResult', 'StrategyPaper'],
+  tagTypes: ['Settings', 'LiveMode', 'WalletHoldings', 'StrategyResult', 'StrategyPaper', 'Profiles'],
   endpoints: (builder) => ({
     getTokens: builder.query<TokensResponse, TokensArgs>({
       query: ({ search, limit, offset }) => {
@@ -179,7 +207,34 @@ export const apiSlice = createApi({
       query: (mint) => `/api/tokens/${encodeURIComponent(mint)}`,
     }),
     getTokenTrades: builder.query<TradeRecord[], string>({
-      query: (mint) => `/api/tokens/${encodeURIComponent(mint)}/trades`,
+      // Explicitly bounded (see TOKEN_TRADES_LIMIT) so a high-volume token never
+      // pulls an unbounded list into the chart's memory.
+      query: (mint) =>
+        `/api/tokens/${encodeURIComponent(mint)}/trades?limit=${TOKEN_TRADES_LIMIT}`,
+    }),
+
+    // Creator profiles + analysis results — paged server-side (limit/offset).
+    // On RTK Query (like the Tokens list) so revisiting the Analysis page reuses
+    // the cache instead of re-fetching, and structural sharing keeps unchanged
+    // rows referentially stable across polls (no whole-table re-render on a tick).
+    getCreatorsPage: builder.query<CreatorsResponse, OffsetPageArgs>({
+      query: ({ limit, offset }) => `/api/creators?limit=${limit}&offset=${offset}`,
+      keepUnusedDataFor: 60,
+    }),
+    getAnalysisPage: builder.query<AnalysisResponse, OffsetPageArgs>({
+      query: ({ limit, offset }) => `/api/analysis?limit=${limit}&offset=${offset}`,
+      keepUnusedDataFor: 60,
+    }),
+    // Wallet profiles — read by the chart-marker consumers (Swing detection,
+    // Sync token) to overlay tracked wallets. Folded into the cache so those two
+    // pages dedupe a shared fetch and reuse it across navigation instead of each
+    // re-fetching on mount. The OtherProfiles editor owns the authoritative CRUD
+    // state imperatively; a bounded retention keeps these cosmetic markers from
+    // lagging an edit for long.
+    getProfiles: builder.query<WalletProfile[], void>({
+      query: () => '/api/profiles',
+      providesTags: ['Profiles'],
+      keepUnusedDataFor: 120,
     }),
 
     // Wallet holdings — an expensive read (full wallet RPC scan + Jupiter batch
@@ -274,6 +329,8 @@ export const {
   useGetTokensPageQuery,
   useGetTokenDetailQuery,
   useGetTokenTradesQuery,
+  useGetCreatorsPageQuery,
+  useGetAnalysisPageQuery,
   useGetWalletHoldingsQuery,
   useGetWalletPricesQuery,
   useBuyTokenMutation,
@@ -283,6 +340,7 @@ export const {
   useGetLiveModeQuery,
   useSetLiveModeMutation,
   useGetSettingsQuery,
+  useGetProfilesQuery,
   useUpdateSettingsMutation,
 } = apiSlice;
 

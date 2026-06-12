@@ -57,11 +57,12 @@ import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { Tabs, TabsList, TabsPanel, TabsTrigger } from 'components/ui/Tabs';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
-import { fetchProfiles, fetchTokenSwings, fetchTokenSwingsBatch } from 'services/api';
+import { fetchTokenSwings, fetchTokenSwingsBatch } from 'services/api';
 import {
   apiSlice,
   apiErrorMessage,
   TOKENS_LIST_LIMIT,
+  useGetProfilesQuery,
   useGetTokenDetailQuery,
   useGetTokenTradesQuery,
   useGetTokensPageQuery,
@@ -89,6 +90,7 @@ import type {
 /** Stable empty references so derived memos don't recompute every render. */
 const EMPTY_TOKENS: TokenRecord[] = [];
 const EMPTY_TRADES: TradeRecord[] = [];
+const EMPTY_PROFILES: WalletProfile[] = [];
 
 /** Initial table view-state; pageSize matches the DataTable default (10). */
 const INITIAL_QUERY: TableQuery = {
@@ -120,6 +122,14 @@ const DEFAULT_CHAIN_LATENCY_MS = 60_000;
  * runs them sequentially, merging the results. Keep this ≤ the backend cap.
  */
 const SWING_BATCH_CHUNK_SIZE = 200;
+
+/**
+ * Max swing-detection batch requests in flight at once. The backend serves each
+ * on a shared HTTP worker (only 2) and fans its DB loads out internally, so a
+ * few concurrent chunks overlap the round-trips while leaving a worker free for
+ * the rest of the app. Kept small on purpose — higher just queues on the workers.
+ */
+const SWING_BATCH_REQUEST_CONCURRENCY = 3;
 
 function mergeSwingFilter(partial: Partial<SwingFilterCriteria> | undefined): SwingFilterCriteria {
   if (!partial) return DEFAULT_SWING_FILTER;
@@ -313,11 +323,9 @@ export function SwingDetectionPage() {
   // `loading` flag drives the in-table busy state across page changes.
   const loaded = tokensFetched;
   const error = apiErrorMessage(tokensError, 'Failed to load tokens');
-  const [profiles, setProfiles] = useState<WalletProfile[]>([]);
-
-  useEffect(() => {
-    fetchProfiles().then(setProfiles).catch(() => { });
-  }, []);
+  // Tracked-wallet markers for the chart. Read from the shared RTK cache so this
+  // and the Sync page dedupe one fetch and reuse it across navigation.
+  const { data: profiles = EMPTY_PROFILES } = useGetProfilesQuery();
 
   const profileWallets = useMemo<ProfileWalletInfo[]>(() => {
     const result: ProfileWalletInfo[] = [];
@@ -525,6 +533,18 @@ export function SwingDetectionPage() {
     dispatch,
   ]);
 
+  // Monotonic id identifying the in-flight "Run All". Starting a new run or
+  // unmounting the page bumps it; the running workers check it after every await
+  // and bail before applying stale results — so a re-run or navigating away never
+  // keeps firing batch calls against the old set or dispatches a superseded result.
+  const swingAllRunIdRef = useRef(0);
+  useEffect(
+    () => () => {
+      swingAllRunIdRef.current++;
+    },
+    [],
+  );
+
   // Run detection across all currently-filtered tokens, then keep the raw swings
   // per mint for client-side chain grouping. With server-side paging only the
   // visible page is in memory, so the full filtered mint set is fetched here on
@@ -533,6 +553,8 @@ export function SwingDetectionPage() {
   // backend caps each batch detection request at SWING_BATCH_CHUNK_SIZE mints, so
   // the set is split into chunks run sequentially and their results merged.
   const handleRunAllSwings = useCallback(async () => {
+    const myRun = ++swingAllRunIdRef.current;
+    const isStale = () => swingAllRunIdRef.current !== myRun;
     setSwingAllLoading(true);
     setSwingAllError(null);
     setSwingAllProgress(null);
@@ -552,10 +574,7 @@ export function SwingDetectionPage() {
       } finally {
         sub.unsubscribe();
       }
-      if (mints.length === 0) {
-        setSwingAllLoading(false);
-        return;
-      }
+      if (isStale() || mints.length === 0) return;
       setSwingAllProgress({ done: 0, total: mints.length });
       const params = swingParamsFromForm(swingParams);
       const opts = {
@@ -563,19 +582,42 @@ export function SwingDetectionPage() {
         endMs: curveOnly || windowEndSec === '' ? null : Math.round(windowEndSec * 1000),
         curveOnly,
       };
-      const merged: SwingBatchEntry[] = [];
+      // Split into ≤200-mint chunks and run a bounded number concurrently. The
+      // backend now fans each chunk's DB loads out internally and runs the CPU
+      // scan off the HTTP worker, so a few in-flight chunks overlap their
+      // round-trips without swamping the 2 HTTP workers / connection pool.
+      const chunks: string[][] = [];
       for (let i = 0; i < mints.length; i += SWING_BATCH_CHUNK_SIZE) {
-        const chunk = mints.slice(i, i + SWING_BATCH_CHUNK_SIZE);
-        const resp = await fetchTokenSwingsBatch(chunk, params, opts);
-        merged.push(...resp.results);
-        setSwingAllProgress({ done: i + chunk.length, total: mints.length });
+        chunks.push(mints.slice(i, i + SWING_BATCH_CHUNK_SIZE));
       }
-      dispatch(setSwingAllResults(merged));
+      const chunkResults: SwingBatchEntry[][] = new Array(chunks.length);
+      let nextChunk = 0;
+      let doneMints = 0;
+      const worker = async () => {
+        for (;;) {
+          const idx = nextChunk++;
+          if (idx >= chunks.length) return;
+          const resp = await fetchTokenSwingsBatch(chunks[idx], params, opts);
+          if (isStale()) return; // re-run / unmount superseded this run
+          chunkResults[idx] = resp.results; // indexed write keeps result order
+          doneMints += chunks[idx].length;
+          setSwingAllProgress({ done: doneMints, total: mints.length });
+        }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(SWING_BATCH_REQUEST_CONCURRENCY, chunks.length) }, worker),
+      );
+      if (isStale()) return;
+      dispatch(setSwingAllResults(chunkResults.flat()));
     } catch (e) {
-      setSwingAllError(e instanceof Error ? e.message : 'Swing detection failed');
+      if (!isStale()) setSwingAllError(e instanceof Error ? e.message : 'Swing detection failed');
     } finally {
-      setSwingAllLoading(false);
-      setSwingAllProgress(null);
+      // Only the current run owns the busy state — a superseded run (re-run /
+      // unmount) leaves it for the new owner and avoids a post-unmount setState.
+      if (!isStale()) {
+        setSwingAllLoading(false);
+        setSwingAllProgress(null);
+      }
     }
   }, [queryArgs, swingParams, windowStartSec, windowEndSec, curveOnly, dispatch]);
 

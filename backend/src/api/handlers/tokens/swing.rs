@@ -1,4 +1,5 @@
 use actix_web::{web, HttpResponse, Responder};
+use futures_util::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -169,8 +170,9 @@ pub async fn detect_tokens_swings_batch(
         curve_only,
     } = body.into_inner();
 
-    // Cap the request size: each mint can trigger a DB load + swing scan, all on
-    // one request thread, so an unbounded list could monopolize a worker.
+    // Cap the request size: each mint can trigger a DB load + swing scan, so an
+    // unbounded list could monopolize a connection-pool slice and the blocking
+    // pool at once.
     const MAX_BATCH_MINTS: usize = 200;
     if mints.len() > MAX_BATCH_MINTS {
         return HttpResponse::BadRequest().json(serde_json::json!({
@@ -178,35 +180,76 @@ pub async fn detect_tokens_swings_batch(
         }));
     }
 
-    let repo = TradeRepo::new(state.db.clone());
+    // Max cache-miss DB loads in flight at once. Bounds the connection-pool
+    // pressure a single batch can create while still overlapping the round-trips
+    // instead of awaiting them one at a time.
+    const BATCH_FETCH_CONCURRENCY: usize = 16;
 
-    let mut results = Vec::with_capacity(mints.len());
-    for mint in mints {
-        let trades = if let Some(entry) = state.token_cache.get(&mint) {
-            entry.trades.clone()
-        } else {
-            match repo.find_by_mint_all(&mint).await {
-                Ok(trades) => trades,
-                Err(e) => {
-                    tracing::error!("DB error fetching trades for batch swing analysis {mint}: {e}");
-                    Vec::new()
+    let app = state.get_ref().clone();
+
+    // 1) Resolve each mint's trades concurrently — a cache hit clones in-memory
+    //    (no await), a miss hits the DB. The index is carried so the results can
+    //    be realigned to the requested order after the unordered fan-out.
+    let fetches = mints.into_iter().enumerate().map(|(idx, mint)| {
+        let app = app.clone();
+        async move {
+            let trades = if let Some(entry) = app.token_cache.get(&mint) {
+                entry.trades.clone()
+            } else {
+                let repo = TradeRepo::new(app.db.clone());
+                match repo.find_by_mint_all(&mint).await {
+                    Ok(trades) => trades,
+                    Err(e) => {
+                        tracing::error!(
+                            "DB error fetching trades for batch swing analysis {mint}: {e}"
+                        );
+                        Vec::new()
+                    }
                 }
-            }
-        };
+            };
+            (idx, mint, trades)
+        }
+    });
+    let mut resolved: Vec<(usize, String, Vec<Trade>)> = stream::iter(fetches)
+        .buffer_unordered(BATCH_FETCH_CONCURRENCY)
+        .collect()
+        .await;
 
-        let trades = if curve_only {
-            trades.into_iter().filter(|t| t.venue == "curve").collect()
-        } else {
-            trades
-        };
-        let trades = filter_trades_to_window(trades, window_start_ms, window_end_ms);
-        let swings = detect_swings(&trades, &params);
-        results.push(SwingBatchEntry {
-            mint,
-            count: swings.len(),
-            swings,
-        });
+    // 2) Run the (pure-CPU) window filter + swing scans off the HTTP worker.
+    //    Doing them inline would pin one of the few workers for the whole batch.
+    let resp_params = params.clone();
+    let results = web::block(move || {
+        resolved.sort_by_key(|(idx, _, _)| *idx);
+        resolved
+            .into_iter()
+            .map(|(_, mint, trades)| {
+                let trades = if curve_only {
+                    trades.into_iter().filter(|t| t.venue == "curve").collect()
+                } else {
+                    trades
+                };
+                let trades = filter_trades_to_window(trades, window_start_ms, window_end_ms);
+                let swings = detect_swings(&trades, &params);
+                SwingBatchEntry {
+                    mint,
+                    count: swings.len(),
+                    swings,
+                }
+            })
+            .collect::<Vec<_>>()
+    })
+    .await;
+
+    match results {
+        Ok(results) => HttpResponse::Ok().json(SwingBatchResponse {
+            params: resp_params,
+            results,
+        }),
+        Err(e) => {
+            tracing::error!("swing batch compute task panicked: {e}");
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "swing computation failed"
+            }))
+        }
     }
-
-    HttpResponse::Ok().json(SwingBatchResponse { params, results })
 }

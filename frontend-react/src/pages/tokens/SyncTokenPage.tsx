@@ -14,8 +14,8 @@ import { Checkbox } from 'components/ui/Checkbox';
 import { Textarea } from 'components/ui/Input';
 import { usePriceUnit } from 'context/PriceUnitContext';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
-import { fetchProfiles, syncToken } from 'services/api';
-import { useGetSettingsQuery } from 'store/apiSlice';
+import { syncToken } from 'services/api';
+import { useGetProfilesQuery, useGetSettingsQuery } from 'store/apiSlice';
 import type { SyncProgressEvent, TokenDetailRecord, WalletProfile } from 'types';
 import type { AppDispatch, RootState } from '../../store';
 import {
@@ -61,6 +61,9 @@ function stageLabel(stage: string): string {
       return stage;
   }
 }
+
+/** Stable empty default so the profiles memo doesn't recompute while loading. */
+const EMPTY_PROFILES: WalletProfile[] = [];
 
 function buildProfileWallets(profiles: WalletProfile[]): ProfileWalletInfo[] {
   const result: ProfileWalletInfo[] = [];
@@ -276,11 +279,9 @@ export function SyncTokenPage() {
   // Bumped after every sync run so the input status panel re-reads freshness.
   const [syncNonce, setSyncNonce] = useState(0);
   const syncAbortRef = useRef<AbortController | null>(null);
-  const [profiles, setProfiles] = useState<WalletProfile[]>([]);
-
-  useEffect(() => {
-    fetchProfiles().then(setProfiles).catch(() => { });
-  }, []);
+  // Tracked-wallet markers, from the shared RTK cache (deduped with the Swing
+  // page and reused across navigation instead of re-fetching on every mount).
+  const { data: profiles = EMPTY_PROFILES } = useGetProfilesQuery();
 
   // Default the post-migration checkbox to the global tracking policy, unless
   // the user has already chosen. Overridable per-sync. Settings come from the

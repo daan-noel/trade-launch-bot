@@ -1,108 +1,51 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { DataTable } from 'components/table/DataTable';
 import { Pagination } from 'components/table/Pagination';
 import { InlineAlert } from 'components/ui/Modal';
 import { analysisColumns, creatorColumns } from 'components/analysis/analysisColumns';
 import { Badge } from 'components/ui/Badge';
-import { fetchAnalysis, fetchCreators } from 'services/api';
+import {
+  apiErrorMessage,
+  useGetAnalysisPageQuery,
+  useGetCreatorsPageQuery,
+} from 'store/apiSlice';
 import { POLL_INTERVAL_MS } from 'services/config';
-import type { AnalysisRecord, CreatorRecord } from 'types';
 import { Button } from 'components/ui/Button';
 
 type Tab = 'creators' | 'results';
 
-
 export function AnalysisPage() {
   const [tab, setTab] = useState<Tab>('creators');
 
-  const [creators, setCreators] = useState<CreatorRecord[]>([]);
-  const [creatorTotal, setCreatorTotal] = useState(0);
   const [creatorPage, setCreatorPage] = useState(1);
   const [creatorPs, setCreatorPs] = useState(25);
-  const [creatorLoad, setCreatorLoad] = useState(true);
-  const [creatorErr, setCreatorErr] = useState<string | null>(null);
-
-  const [results, setResults] = useState<AnalysisRecord[]>([]);
-  const [resultTotal, setResultTotal] = useState(0);
   const [resultPage, setResultPage] = useState(1);
   const [resultPs, setResultPs] = useState(25);
-  const [resultLoad, setResultLoad] = useState(true);
-  const [resultErr, setResultErr] = useState<string | null>(null);
 
-  const loadCreators = useCallback(async () => {
-    try {
-      const offset = (creatorPage - 1) * creatorPs;
-      const data = await fetchCreators(creatorPs, offset);
-      setCreators(data.items);
-      setCreatorTotal(data.total);
-      setCreatorErr(null);
-    } catch (e) {
-      setCreatorErr(e instanceof Error ? e.message : 'Failed to load creators');
-    } finally {
-      setCreatorLoad(false);
-    }
-  }, [creatorPage, creatorPs]);
+  // Both tabs subscribe so the header counts populate up front, but only the
+  // ACTIVE tab polls (the inactive one's interval is 0). `skipPollingIfUnfocused`
+  // (wired via setupListeners in store/index.ts) pauses polling while the window
+  // is unfocused. RTK Query caches across navigation and its structural sharing
+  // keeps unchanged rows referentially stable, so a poll that returns identical
+  // data doesn't re-render the table.
+  const creatorsQuery = useGetCreatorsPageQuery(
+    { limit: creatorPs, offset: (creatorPage - 1) * creatorPs },
+    { pollingInterval: tab === 'creators' ? POLL_INTERVAL_MS : 0, skipPollingIfUnfocused: true },
+  );
+  const resultsQuery = useGetAnalysisPageQuery(
+    { limit: resultPs, offset: (resultPage - 1) * resultPs },
+    { pollingInterval: tab === 'results' ? POLL_INTERVAL_MS : 0, skipPollingIfUnfocused: true },
+  );
 
-  const loadResults = useCallback(async () => {
-    try {
-      const offset = (resultPage - 1) * resultPs;
-      const data = await fetchAnalysis(resultPs, offset);
-      setResults(data.items);
-      setResultTotal(data.total);
-      setResultErr(null);
-    } catch (e) {
-      setResultErr(e instanceof Error ? e.message : 'Failed to load results');
-    } finally {
-      setResultLoad(false);
-    }
-  }, [resultPage, resultPs]);
+  const creators = creatorsQuery.data?.items ?? [];
+  const creatorTotal = creatorsQuery.data?.total ?? 0;
+  const creatorErr = apiErrorMessage(creatorsQuery.error, 'Failed to load creators');
+  const creatorLoad = creatorsQuery.isLoading;
 
-  // One-shot initial load of BOTH tabs so the header counts ("X creators · Y
-  // results") are populated up front; after this only the active tab keeps
-  // polling, and the inactive tab is refreshed when it becomes active.
-  const didInit = useRef(false);
-  useEffect(() => {
-    if (didInit.current) return;
-    didInit.current = true;
-    loadCreators();
-    loadResults();
-  }, [loadCreators, loadResults]);
-
-  // Poll only the ACTIVE tab, and pause entirely while the browser tab is
-  // hidden. Previously both lists polled on independent 5s timers regardless of
-  // which tab was shown or whether the page was focused — two background fetches
-  // (each replacing every row object, re-rendering the whole table) forever.
-  useEffect(() => {
-    const load = tab === 'creators' ? loadCreators : loadResults;
-    let id: number | undefined;
-    const stop = () => {
-      if (id !== undefined) {
-        window.clearInterval(id);
-        id = undefined;
-      }
-    };
-    const start = () => {
-      if (id === undefined && !document.hidden) {
-        id = window.setInterval(load, POLL_INTERVAL_MS);
-      }
-    };
-    const onVisibility = () => {
-      if (document.hidden) {
-        stop();
-      } else {
-        load(); // catch up immediately on refocus
-        start();
-      }
-    };
-    // Refresh the tab's data on activation/page change, then start polling.
-    load();
-    start();
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => {
-      stop();
-      document.removeEventListener('visibilitychange', onVisibility);
-    };
-  }, [tab, loadCreators, loadResults]);
+  const results = resultsQuery.data?.items ?? [];
+  const resultTotal = resultsQuery.data?.total ?? 0;
+  const resultErr = apiErrorMessage(resultsQuery.error, 'Failed to load results');
+  const resultLoad = resultsQuery.isLoading;
 
   const creatorTotalPages = Math.max(1, Math.ceil(creatorTotal / creatorPs));
   const resultTotalPages = Math.max(1, Math.ceil(resultTotal / resultPs));
