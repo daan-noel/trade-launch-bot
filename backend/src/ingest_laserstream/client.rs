@@ -34,6 +34,21 @@ use super::proto::geyser::{CommitmentLevel, SubscribeRequest, SubscribeRequestFi
 const REQUEST_QUEUE_CAP: usize = 16;
 /// Cap on a decoded gRPC message; bundled txs can be large.
 const MAX_DECODING_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
+/// Upper bound on the exponential reconnect backoff for a hard-down endpoint.
+const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(30);
+/// Quiet window for coalescing a burst of pool-set changes into one resubscribe.
+const POOL_RESUBSCRIBE_DEBOUNCE: Duration = Duration::from_millis(250);
+
+/// Add 0..50% jitter to a reconnect delay to decorrelate reconnect storms.
+/// Derives the jitter from wall-clock subsecond nanos (no rng dependency).
+fn with_jitter(base: Duration) -> Duration {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0) as u64;
+    let extra_ms = (base.as_millis() as u64).saturating_mul(nanos % 50) / 100;
+    base + Duration::from_millis(extra_ms)
+}
 
 /// Concrete client type once the `x-token` auth interceptor is attached.
 pub type LaserStreamClient = GeyserClient<InterceptedService<Channel, XTokenInterceptor>>;
@@ -128,6 +143,8 @@ pub async fn run(
 ) {
     // Slot to replay from on the next (re)connect; `None` = live subscription.
     let mut from_slot: Option<u64> = None;
+    // Exponential backoff, reset whenever an attempt made progress.
+    let mut backoff = reconnect_interval;
 
     loop {
         while !*live_rx.borrow() {
@@ -138,7 +155,7 @@ pub async fn run(
         }
 
         let last_slot = AtomicU64::new(0);
-        match run_once(
+        let result = run_once(
             &laserstream_url,
             &api_key,
             &pump_program_id,
@@ -149,11 +166,7 @@ pub async fn run(
             from_slot,
             &last_slot,
         )
-        .await
-        {
-            Ok(()) => info!("LaserStream: stream closed gracefully"),
-            Err(e) => error!("LaserStream: stream error — {e}"),
-        }
+        .await;
 
         // Replay the gap next attempt only if we made progress this attempt;
         // otherwise fall back to live so we never get stuck replaying a slot the
@@ -161,8 +174,26 @@ pub async fn run(
         let seen = last_slot.load(Ordering::Relaxed);
         from_slot = if seen > 0 { Some(seen + 1) } else { None };
 
-        info!("LaserStream: reconnecting in {reconnect_interval:?}");
-        tokio::time::sleep(reconnect_interval).await;
+        match &result {
+            Ok(()) => info!("LaserStream: stream closed gracefully"),
+            Err(e) => error!("LaserStream: stream error — {e}"),
+        }
+
+        // A stream that delivered data and then dropped resets the backoff (a
+        // long-lived connection shouldn't inherit a long delay); an attempt that
+        // made no progress grows the backoff exponentially, capped, so a
+        // hard-down endpoint isn't hammered. Jitter decorrelates reconnects.
+        let delay = if seen > 0 {
+            backoff = reconnect_interval;
+            reconnect_interval
+        } else {
+            let d = backoff;
+            backoff = (backoff * 2).min(MAX_RECONNECT_BACKOFF);
+            d
+        };
+        let delay = with_jitter(delay);
+        info!("LaserStream: reconnecting in {delay:?}");
+        tokio::time::sleep(delay).await;
     }
 }
 
@@ -235,6 +266,16 @@ async fn run_once(
             // live subscription without dropping the connection. No `from_slot`:
             // this is a live filter update, not a replay.
             _ = pools_changed.notified() => {
+                // Debounce: a migration wave fires `pools_changed` repeatedly in
+                // quick succession. Coalesce the burst into one resubscribe by
+                // waiting for a brief quiet window (resetting on each new change)
+                // before rebuilding the filter once.
+                loop {
+                    tokio::select! {
+                        _ = pools_changed.notified() => continue,
+                        _ = tokio::time::sleep(POOL_RESUBSCRIBE_DEBOUNCE) => break,
+                    }
+                }
                 let req = build_subscribe_request(
                     account_includes(pump_program_id, pool_index),
                     None,
