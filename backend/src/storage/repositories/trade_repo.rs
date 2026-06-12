@@ -141,6 +141,56 @@ impl TradeRepo {
         Ok(())
     }
 
+    /// Bulk version of [`insert`] — one multi-row statement for the whole slice,
+    /// with the identical upsert. Callers MUST dedup by `(tx_signature,
+    /// leg_index)` first: Postgres rejects an `ON CONFLICT DO UPDATE` that hits
+    /// the same conflict target twice within one statement. Used by the live
+    /// ingest DB-writer to collapse a flush of trades into a single round-trip.
+    pub async fn insert_many(&self, trades: &[Trade]) -> anyhow::Result<()> {
+        if trades.is_empty() {
+            return Ok(());
+        }
+        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+            "INSERT INTO trades \
+             (id, mint_address, wallet_address, trade_type, sol_amount, token_amount, \
+              price_per_token, tx_signature, leg_index, slot, block_time, received_at, \
+              virtual_sol_reserves, virtual_token_reserves, real_sol_reserves, \
+              real_token_reserves, ix_type, ix_labels, venue) ",
+        );
+        qb.push_values(trades, |mut b, t| {
+            b.push_bind(t.id)
+                .push_bind(&t.mint_address)
+                .push_bind(&t.wallet_address)
+                .push_bind(trade_type_str(t.trade_type))
+                .push_bind(t.sol_amount)
+                .push_bind(t.token_amount)
+                .push_bind(t.price_per_token)
+                .push_bind(&t.tx_signature)
+                .push_bind(t.leg_index as i32)
+                .push_bind(t.slot as i64)
+                .push_bind(t.block_time)
+                .push_bind(t.received_at)
+                .push_bind(t.virtual_sol_reserves)
+                .push_bind(t.virtual_token_reserves)
+                .push_bind(t.real_sol_reserves)
+                .push_bind(t.real_token_reserves)
+                .push_bind(&t.instruction_type)
+                .push_bind(sqlx::types::Json(&t.instruction_labels))
+                .push_bind(&t.venue);
+        });
+        qb.push(
+            " ON CONFLICT (tx_signature, leg_index) DO UPDATE SET \
+             price_per_token        = EXCLUDED.price_per_token, \
+             virtual_sol_reserves   = EXCLUDED.virtual_sol_reserves, \
+             virtual_token_reserves = EXCLUDED.virtual_token_reserves, \
+             real_sol_reserves      = EXCLUDED.real_sol_reserves, \
+             real_token_reserves    = EXCLUDED.real_token_reserves",
+        );
+        qb.build().execute(&self.pool).await?;
+
+        Ok(())
+    }
+
     /// Signature of the most recently saved trade for a token on a specific
     /// venue (`"curve"` or `"amm"`), if any. Used as the `until` boundary for
     /// incremental syncs so each venue resumes from its own last saved trade.

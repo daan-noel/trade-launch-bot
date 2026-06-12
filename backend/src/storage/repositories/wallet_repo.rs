@@ -111,4 +111,24 @@ impl WalletRepo {
             .await?;
         Ok(())
     }
+
+    /// Bulk version of [`touch_last_seen`] — stamps `now` on every listed address
+    /// in one `UPDATE … WHERE address = ANY($2)`. The live ingest DB-writer uses
+    /// this to collapse a flush's wallet touches (a hot wallet can appear dozens
+    /// of times) into a single statement.
+    pub async fn touch_last_seen_many(
+        &self,
+        addresses: &[String],
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<()> {
+        if addresses.is_empty() {
+            return Ok(());
+        }
+        sqlx::query("UPDATE wallets SET last_seen_at=$1 WHERE address = ANY($2)")
+            .bind(now)
+            .bind(addresses)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }

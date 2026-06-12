@@ -116,6 +116,12 @@ impl PumpFunTrader {
             } else {
                 let template = self.acquire_buy_template(token_program_id).await?;
                 let account = template.user_token_account;
+                // A template was just consumed — kick the background refill off
+                // here so it rebuilds concurrently with the tx assembly + send +
+                // confirm below, instead of only after the buy returns. The
+                // rebuild gets a head start of the whole send/confirm window, so
+                // the next buy is more likely to hit a warm pool.
+                self.replenish_pool_async(token_program_id);
                 (account, Some(template))
             };
 
@@ -228,7 +234,6 @@ impl PumpFunTrader {
         .await;
 
         self.schedule_nonce_refresh(nonce_pubkey);
-        self.replenish_pool_async(token_program_id);
 
         result
     }

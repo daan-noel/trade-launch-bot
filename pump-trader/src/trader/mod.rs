@@ -63,7 +63,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -177,6 +177,9 @@ pub struct PumpFunTrader {
     nonce_pubkeys: Vec<Pubkey>,
     nonce_cursor: AtomicUsize,
     nonce_slots: Arc<Mutex<HashMap<Pubkey, NonceSlot>>>,
+    /// Signalled each time a nonce slot is refreshed back to free, so a waiting
+    /// `acquire_nonce` wakes immediately instead of polling on a fixed sleep.
+    nonce_available: Arc<Notify>,
 
     // Diagnostic counters
     nonce_wait_events: AtomicUsize,
@@ -283,6 +286,7 @@ impl PumpFunTrader {
             nonce_pubkeys: Vec::new(),
             nonce_cursor: AtomicUsize::new(0),
             nonce_slots: Arc::new(Mutex::new(HashMap::new())),
+            nonce_available: Arc::new(Notify::new()),
             nonce_wait_events: AtomicUsize::new(0),
             nonce_wait_iters_total: AtomicUsize::new(0),
             buy_pool_legacy: Arc::new(Mutex::new(Vec::new())),

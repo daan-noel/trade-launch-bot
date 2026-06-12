@@ -166,3 +166,64 @@ fn build_template_with_seed(
         user_token_account,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::trader::TraderConfig;
+    use solana_sdk::signature::Keypair;
+    use std::time::Duration;
+
+    fn dummy_trader() -> PumpFunTrader {
+        let config = Arc::new(TraderConfig {
+            rpc_url: "http://localhost".into(),
+            helius_sender_urls: vec!["http://localhost".into()],
+            keypair: Keypair::new(),
+            nonce_accounts: vec![Pubkey::new_unique().to_string()],
+        });
+        PumpFunTrader::new(config)
+    }
+
+    /// `replenish_pool_async` rebuilds exactly the slot a buy consumed: from
+    /// `target - 1` (pool state right after `acquire_buy_template` pops one) it
+    /// tops back up to `target`. This is the invariant the buy path leans on now
+    /// that it fires the refill the moment a template is consumed — ahead of the
+    /// send — rather than after the buy returns. It must reach target either way.
+    #[tokio::test]
+    async fn replenish_refills_the_slot_a_buy_consumed() {
+        let t = dummy_trader();
+        let target = BUY_SEED_POOL_SIZE;
+
+        // Seed one short of target — the pool state immediately after a buy pops
+        // a template.
+        {
+            let mut pool = t.pool_for(TOKEN_PROGRAM_ID).lock().await;
+            for _ in 0..target - 1 {
+                pool.push(t.build_template(TOKEN_PROGRAM_ID).unwrap());
+            }
+        }
+
+        t.replenish_pool_async(TOKEN_PROGRAM_ID);
+
+        // The refill runs in a spawned task; poll briefly for it to land.
+        let mut len = 0;
+        for _ in 0..200 {
+            len = t.pool_for(TOKEN_PROGRAM_ID).lock().await.len();
+            if len >= target {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(len, target, "refill should rebuild the consumed slot");
+
+        // Idempotent: a call at target adds nothing (the early `len >= target`
+        // guard), so firing it eagerly never overfills.
+        t.replenish_pool_async(TOKEN_PROGRAM_ID);
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert_eq!(
+            t.pool_for(TOKEN_PROGRAM_ID).lock().await.len(),
+            target,
+            "refill at target must be a no-op"
+        );
+    }
+}

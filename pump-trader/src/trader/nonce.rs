@@ -29,37 +29,54 @@ impl PumpFunTrader {
         let mut waited = 0usize;
 
         for _ in 0..NONCE_MAX_WAIT_ITERS {
-            let mut slots = self.nonce_slots.lock().await;
-            let start =
-                self.nonce_cursor.fetch_add(1, Ordering::Relaxed) % self.nonce_pubkeys.len();
+            // Arm the wakeup BEFORE scanning, so a slot freed between our failed
+            // scan and the await below still wakes us (no lost notification).
+            let freed = self.nonce_available.notified();
 
-            for offset in 0..self.nonce_pubkeys.len() {
-                let pk = self.nonce_pubkeys[(start + offset) % self.nonce_pubkeys.len()];
-                if let Some(slot) = slots.get_mut(&pk) {
-                    if !slot.in_use {
-                        if let Some(hash) = slot.cached_hash {
-                            slot.in_use = true;
-                            if waited > 0 {
-                                let events =
-                                    self.nonce_wait_events.fetch_add(1, Ordering::Relaxed) + 1;
-                                self.nonce_wait_iters_total
-                                    .fetch_add(waited, Ordering::Relaxed);
-                                if events % 50 == 0 {
-                                    let avg = self.nonce_wait_iters_total.load(Ordering::Relaxed)
-                                        as f64
-                                        / events as f64;
-                                    info!("📊 Nonce wait: events={} avg_iters={:.1}", events, avg);
+            {
+                let mut slots = self.nonce_slots.lock().await;
+                let start =
+                    self.nonce_cursor.fetch_add(1, Ordering::Relaxed) % self.nonce_pubkeys.len();
+
+                for offset in 0..self.nonce_pubkeys.len() {
+                    let pk = self.nonce_pubkeys[(start + offset) % self.nonce_pubkeys.len()];
+                    if let Some(slot) = slots.get_mut(&pk) {
+                        if !slot.in_use {
+                            if let Some(hash) = slot.cached_hash {
+                                slot.in_use = true;
+                                if waited > 0 {
+                                    let events =
+                                        self.nonce_wait_events.fetch_add(1, Ordering::Relaxed) + 1;
+                                    self.nonce_wait_iters_total
+                                        .fetch_add(waited, Ordering::Relaxed);
+                                    if events % 50 == 0 {
+                                        let avg = self
+                                            .nonce_wait_iters_total
+                                            .load(Ordering::Relaxed)
+                                            as f64
+                                            / events as f64;
+                                        info!(
+                                            "📊 Nonce wait: events={} avg_iters={:.1}",
+                                            events, avg
+                                        );
+                                    }
                                 }
+                                return Ok((pk, hash));
                             }
-                            return Ok((pk, hash));
                         }
                     }
                 }
             }
 
-            drop(slots);
             waited += 1;
-            tokio::time::sleep(Duration::from_millis(NONCE_WAIT_SLEEP_MS)).await;
+            // Event-driven wait: wake the instant a slot is refreshed free, but
+            // cap each wait so we still re-scan periodically as a safety net (and
+            // to pick up a slot whose hash arrives without a notify race).
+            let _ = tokio::time::timeout(
+                Duration::from_millis(NONCE_WAIT_SLEEP_MS),
+                freed,
+            )
+            .await;
         }
 
         anyhow::bail!("All nonce slots busy after {} iters", NONCE_MAX_WAIT_ITERS)
@@ -69,6 +86,7 @@ impl PumpFunTrader {
     pub(super) fn schedule_nonce_refresh(&self, nonce_pubkey: Pubkey) {
         let rpc = Arc::clone(&self.rpc);
         let slots = Arc::clone(&self.nonce_slots);
+        let available = Arc::clone(&self.nonce_available);
 
         tokio::spawn(async move {
             let result: anyhow::Result<Hash> = async {
@@ -94,6 +112,11 @@ impl PumpFunTrader {
                 }
                 slot.in_use = false;
             }
+            drop(guard);
+            // Wake one waiter now that a slot is free again. On a refresh error
+            // the slot has no hash, but the waiter re-scans and simply waits on
+            // the next free slot — no worse than the old fixed-sleep poll.
+            available.notify_one();
         });
     }
 
