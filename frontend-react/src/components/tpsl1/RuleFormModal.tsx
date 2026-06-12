@@ -10,19 +10,16 @@ import { cn } from 'lib/cn';
 import { EXAMPLE_IX_LABELS, parseIxLabels } from './utils';
 
 /** A field label with the standard uppercase styling plus a ⓘ tooltip that
- *  explains the parameter (copy lives in {@link TPSL_PARAM_HELP}). `align`
- *  flips the popover to the right edge for right-hand grid columns, which the
- *  modal's `overflow-x-hidden` body would otherwise clip. */
+ *  explains the parameter (copy lives in {@link TPSL_PARAM_HELP}). The tooltip
+ *  renders in a viewport-clamped portal, so it never overflows the modal. */
 function FieldLabel({
   help,
   children,
   accent = 'text-text-dim',
-  align,
 }: {
   help: TpslParamKey;
   children: ReactNode;
   accent?: string;
-  align?: 'left' | 'right';
 }) {
   const h = TPSL_PARAM_HELP[help];
   return (
@@ -33,7 +30,7 @@ function FieldLabel({
       )}
     >
       {children}
-      <InfoTooltip title={h.title} body={h.body} align={align} />
+      <InfoTooltip title={h.title} body={h.body} />
     </span>
   );
 }
@@ -217,7 +214,7 @@ export function RuleFormModal({
               onChange={(e) => set({ initialBuy: e.target.value })} className={fieldCls()} />
           </label>
           <label className="flex flex-col gap-1.5">
-            <FieldLabel help="tolerance" align="right">Tolerance %</FieldLabel>
+            <FieldLabel help="tolerance">Tolerance %</FieldLabel>
             <Input type="number" fieldSize="md" step="0.1" value={form.tolerance} readOnly={locked}
               onChange={(e) => set({ tolerance: e.target.value })} className={fieldCls()} />
           </label>
@@ -227,7 +224,7 @@ export function RuleFormModal({
               onChange={(e) => set({ cuLimit: e.target.value })} className={fieldCls()} />
           </label>
           <label className="flex flex-col gap-1.5">
-            <FieldLabel help="cuPrice" align="right">CU Price</FieldLabel>
+            <FieldLabel help="cuPrice">CU Price</FieldLabel>
             <Input type="number" fieldSize="md" value={form.cuPrice} readOnly={locked}
               onChange={(e) => set({ cuPrice: e.target.value })} className={fieldCls()} />
           </label>
@@ -237,7 +234,7 @@ export function RuleFormModal({
               onChange={(e) => set({ maxSolCost: e.target.value })} className={fieldCls()} />
           </label>
           <label className="flex flex-col gap-1.5">
-            <FieldLabel help="spendableSolIn" align="right">Spendable SOL In</FieldLabel>
+            <FieldLabel help="spendableSolIn">Spendable SOL In</FieldLabel>
             <Input type="number" fieldSize="md" step="0.001" value={form.spendableSolIn} readOnly={locked}
               onChange={(e) => set({ spendableSolIn: e.target.value })} className={fieldCls()} />
           </label>
@@ -282,7 +279,7 @@ export function RuleFormModal({
               onChange={(e) => set({ maxConcurrentTokens: e.target.value })} className={fieldCls()} />
           </label>
           <label className="flex flex-col gap-1.5">
-            <FieldLabel help="maxTotalTokens" align="right">Max Total Tokens</FieldLabel>
+            <FieldLabel help="maxTotalTokens">Max Total Tokens</FieldLabel>
             <Input type="number" fieldSize="md" value={form.maxTotalTokens} readOnly={locked}
               onChange={(e) => set({ maxTotalTokens: e.target.value })} className={fieldCls()} />
           </label>
@@ -302,7 +299,7 @@ export function RuleFormModal({
               onChange={(e) => set({ stopLoss: e.target.value })} className={fieldCls('focus:border-red')} />
           </label>
           <label className="flex flex-col gap-1.5">
-            <FieldLabel help="trailingStopPct" accent="text-primary" align="right">Trailing Stop %</FieldLabel>
+            <FieldLabel help="trailingStopPct" accent="text-primary">Trailing Stop %</FieldLabel>
             <Input type="number" fieldSize="md" step="1" value={form.trailingStopPct}
               onChange={(e) => set({ trailingStopPct: e.target.value })}
               className={fieldCls('focus:border-warning')} placeholder="0 = off" />
@@ -320,7 +317,7 @@ export function RuleFormModal({
               className={fieldCls('focus:border-accent')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
-            <FieldLabel help="liquidityDropPct" accent="text-primary" align="right">Liquidity Drop %</FieldLabel>
+            <FieldLabel help="liquidityDropPct" accent="text-primary">Liquidity Drop %</FieldLabel>
             <Input type="number" fieldSize="md" step="1" value={form.liquidityDropPct}
               onChange={(e) => set({ liquidityDropPct: e.target.value })}
               className={fieldCls('focus:border-primary')} placeholder="0 = off" />
