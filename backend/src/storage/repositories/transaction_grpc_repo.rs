@@ -3,7 +3,7 @@ use sqlx::PgPool;
 use crate::models::transaction::RawTransaction;
 
 /// Persists raw LaserStream (gRPC) transactions into `raw_transactions_grpc`,
-/// kept separate from the WS `raw_transactions` table. Write-only (the adapted
+/// kept separate from the RPC-backfill `raw_transactions` table. Write-only (the adapted
 /// JSON is an analysis source; nothing in the live path reads it back).
 pub struct TransactionGrpcRepo {
     pool: PgPool,

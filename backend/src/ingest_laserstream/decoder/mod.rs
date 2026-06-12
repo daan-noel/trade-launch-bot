@@ -47,10 +47,8 @@ pub struct HeliusDecoder {
     pool_index: Option<Arc<DashMap<String, String>>>,
 }
 
-/// Outcome of decoding one raw Helius WebSocket message.
+/// Outcome of decoding one LaserStream transaction update.
 pub enum DecodeOutput {
-    /// Subscription was acknowledged; contains the subscription ID.
-    Subscribed(u64),
     /// A Pump.fun transaction was decoded successfully.
     Transaction {
         raw_tx: RawTransaction,
@@ -76,32 +74,7 @@ impl HeliusDecoder {
         self
     }
 
-    /// Entry point: decode one raw WS text frame.
-    pub fn decode(&self, raw: &str) -> DecodeOutput {
-        let value: Value = match serde_json::from_str(raw) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("Malformed Helius message (not JSON): {e}");
-                return DecodeOutput::Ignored;
-            }
-        };
-
-        // Subscription confirmation: {"jsonrpc":"2.0","result":12345,"id":1}
-        if value.get("method").is_none() {
-            if let Some(id) = value.get("result").and_then(|r| r.as_u64()) {
-                return DecodeOutput::Subscribed(id);
-            }
-            return DecodeOutput::Ignored;
-        }
-
-        if value["method"].as_str() != Some("transactionNotification") {
-            return DecodeOutput::Ignored;
-        }
-
-        self.decode_result(&value["params"]["result"])
-    }
-
-    /// Decode a Helius `params.result` object (WebSocket notification or wrapped RPC `getTransaction`).
+    /// Decode a Helius `params.result` object (LaserStream update or wrapped RPC `getTransaction`).
     pub fn decode_result(&self, result: &Value) -> DecodeOutput {
         let signature = match result["signature"].as_str() {
             Some(s) => s.to_string(),
@@ -403,9 +376,9 @@ impl HeliusDecoder {
         }
     }
 
-    /// Live-ingest decode of a PumpSwap (AMM) transaction delivered by the WS
-    /// subscription. Mirrors [`decode_pump_swap_result`] but, since the WS stream
-    /// gives us no mint up front, resolves each swap's `pool` to a tracked mint
+    /// Live-ingest decode of a PumpSwap (AMM) transaction delivered by the
+    /// LaserStream subscription. Mirrors [`decode_pump_swap_result`] but, since
+    /// the stream gives us no mint up front, resolves each swap's `pool` to a tracked mint
     /// via the shared pool→mint index. Swaps for pools we don't track are
     /// dropped. `logs` is reused from the caller to avoid re-extracting it for
     /// the many AMM transactions that don't concern us.

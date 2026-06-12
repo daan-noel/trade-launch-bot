@@ -1,44 +1,4 @@
 impl Tpsl1PositionRepo {
-    /// Update exit fields for an existing position (exit_tx, exit_price, exit_time, status).
-    pub async fn update_exit(
-        &self,
-        position_id: Uuid,
-        exit_tx: &str,
-        exit_price: f64,
-        exit_time: DateTime<Utc>,
-    ) -> anyhow::Result<()> {
-        sqlx::query(
-            r#"
-            UPDATE tpsl1_real_positions
-            SET exit_tx = $2, exit_price = $3, exit_time = $4, status = 'End', updated_at = $5
-            WHERE id = $1
-            "#,
-        )
-        .bind(position_id)
-        .bind(exit_tx)
-        .bind(exit_price)
-        .bind(exit_time)
-        .bind(Utc::now())
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Revert ExitPending to Holding for a position.
-    pub async fn revert_exit_pending(&self, position_id: Uuid) -> anyhow::Result<()> {
-        sqlx::query(
-            r#"
-            UPDATE tpsl1_real_positions SET status = 'Holding', updated_at = $2 WHERE id = $1
-            "#,
-        )
-        .bind(position_id)
-        .bind(Utc::now())
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
     /// Delete a position by ID.
     pub async fn delete_position(&self, position_id: Uuid) -> anyhow::Result<()> {
         sqlx::query("DELETE FROM tpsl1_real_positions WHERE id = $1")

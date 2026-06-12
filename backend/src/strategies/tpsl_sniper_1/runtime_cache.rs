@@ -1,10 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
+use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use super::exit::{CachedExitState, ExitWalkState};
+use crate::models::trade::Trade;
 use crate::models::{PaperRun, PaperRunStatus, Position, PositionStatus, Tpsl1StrategyRule};
 use crate::storage::repositories::{
     tpsl1_paper_trading_repo::Tpsl1PaperTradingRepo, tpsl1_position_repo::Tpsl1PositionRepo,
@@ -16,7 +19,6 @@ use crate::storage::repositories::{
 #[derive(Clone, Copy)]
 pub struct PaperRunRef {
     pub run_id: Uuid,
-    pub run_seq: i64,
 }
 
 /// In-memory TPSL state for the strategy hot path (rules + open positions + rule counters).
@@ -34,6 +36,11 @@ pub struct Tpsl1RuntimeCache {
     total_count_by_rule: Arc<DashMap<Uuid, i64>>,
     /// Current paper run per paper rule (stamping target + result pointer).
     paper_run_by_rule: Arc<DashMap<Uuid, PaperRunRef>>,
+    /// Memoized clock-driven exit walk state per holding position, keyed by
+    /// position id. Seeded once and advanced as trades print, so the per-second
+    /// time-exit sweep never re-walks a token's full history. Lifecycle is tied
+    /// to the holding index: an entry is dropped when its position leaves Holding.
+    exit_state_by_position: Arc<DashMap<Uuid, CachedExitState>>,
 }
 
 impl Tpsl1RuntimeCache {
@@ -45,6 +52,7 @@ impl Tpsl1RuntimeCache {
             holding_count_by_rule: Arc::new(DashMap::new()),
             total_count_by_rule: Arc::new(DashMap::new()),
             paper_run_by_rule: Arc::new(DashMap::new()),
+            exit_state_by_position: Arc::new(DashMap::new()),
         }
     }
 
@@ -78,7 +86,6 @@ impl Tpsl1RuntimeCache {
                 run.rule_id,
                 PaperRunRef {
                     run_id: run.id,
-                    run_seq: run.run_seq,
                 },
             );
         }
@@ -143,12 +150,20 @@ impl Tpsl1RuntimeCache {
             by_mint.entry(pos.mint.clone()).or_default().push(pos);
         }
 
+        let live_ids: HashSet<Uuid> = by_mint
+            .values()
+            .flat_map(|list| list.iter().map(|p| p.id))
+            .collect();
         for (mint, list) in by_mint {
             self.holding_by_mint.insert(mint, list);
         }
         for (rule_id, count) in holding_by_rule {
             self.holding_count_by_rule.insert(rule_id, count);
         }
+        // Drop memoized exit states for positions no longer holding (e.g. closed
+        // out from under a reload); the survivors keep theirs and skip re-seeding.
+        self.exit_state_by_position
+            .retain(|id, _| live_ids.contains(id));
     }
 
     pub fn active_rules(&self) -> Vec<Tpsl1StrategyRule> {
@@ -183,6 +198,50 @@ impl Tpsl1RuntimeCache {
             .iter()
             .flat_map(|e| e.value().clone())
             .collect()
+    }
+
+    // -----------------------------------------------------------------------
+    // Clock-driven exit memoization (see `exit_state_by_position`)
+    // -----------------------------------------------------------------------
+
+    /// The position's memoized walk state, if it has been seeded. The sweep uses
+    /// this for already-seen positions so it never touches the trade history.
+    pub fn exit_state_get(&self, position_id: Uuid) -> Option<ExitWalkState> {
+        self.exit_state_by_position
+            .get(&position_id)
+            .map(|e| e.value().state)
+    }
+
+    /// Seed a position's walk state from its full post-entry history (one-time)
+    /// and return it. Called by the sweep the first time it sees a position that
+    /// the trade path hasn't already seeded.
+    pub fn exit_state_build(
+        &self,
+        position_id: Uuid,
+        entry_price: f64,
+        entry_time: DateTime<Utc>,
+        trades: &[Trade],
+    ) -> ExitWalkState {
+        let cached = CachedExitState::build(trades, entry_price, entry_time);
+        let state = cached.state;
+        self.exit_state_by_position.insert(position_id, cached);
+        state
+    }
+
+    /// Fold newly-printed trades into a position's walk state (seeding it first
+    /// if unseen). Called by the trade path, which already holds the history, so
+    /// the sweep finds the state current and never re-walks.
+    pub fn exit_state_advance(
+        &self,
+        position_id: Uuid,
+        entry_price: f64,
+        entry_time: DateTime<Utc>,
+        trades: &[Trade],
+    ) {
+        self.exit_state_by_position
+            .entry(position_id)
+            .or_insert_with(|| CachedExitState::build(trades, entry_price, entry_time))
+            .advance(trades);
     }
 
     pub fn holding_count_by_rule(&self, rule_id: Uuid) -> i64 {
@@ -234,7 +293,6 @@ impl Tpsl1RuntimeCache {
             rule_id,
             PaperRunRef {
                 run_id: run.id,
-                run_seq: run.run_seq,
             },
         );
         Ok(run)
@@ -275,7 +333,6 @@ impl Tpsl1RuntimeCache {
             rule_id,
             PaperRunRef {
                 run_id: run.id,
-                run_seq: run.run_seq,
             },
         );
         Ok(Some(run))
@@ -302,14 +359,27 @@ impl Tpsl1RuntimeCache {
     /// deletes the prior run's positions out from under the cache).
     fn purge_rule_from_holding_index(&self, rule_id: Uuid) {
         let mut emptied: Vec<String> = Vec::new();
+        let mut purged_ids: Vec<Uuid> = Vec::new();
         for mut entry in self.holding_by_mint.iter_mut() {
-            entry.value_mut().retain(|p| p.rule_id != rule_id);
+            entry.value_mut().retain(|p| {
+                if p.rule_id == rule_id {
+                    purged_ids.push(p.id);
+                    false
+                } else {
+                    true
+                }
+            });
             if entry.value().is_empty() {
                 emptied.push(entry.key().clone());
             }
         }
         for mint in emptied {
             self.holding_by_mint.remove(&mint);
+        }
+        // The purged positions are gone from the holding index; drop their
+        // memoized exit states too so the map doesn't leak across paper runs.
+        for id in purged_ids {
+            self.exit_state_by_position.remove(&id);
         }
     }
 
@@ -320,6 +390,8 @@ impl Tpsl1RuntimeCache {
                 self.remove_from_holding_index(p);
                 if current.status != PositionStatus::Holding {
                     self.adjust_holding_count(p.rule_id, -1);
+                    // Position is leaving Holding — its memoized exit state is dead.
+                    self.exit_state_by_position.remove(&p.id);
                 }
             }
         }
@@ -341,6 +413,7 @@ impl Tpsl1RuntimeCache {
             self.remove_from_holding_index(position);
             self.adjust_holding_count(position.rule_id, -1);
         }
+        self.exit_state_by_position.remove(&position.id);
         self.adjust_total_count(position.rule_id, -1);
     }
 

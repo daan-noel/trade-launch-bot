@@ -303,6 +303,19 @@ impl Tpsl1StrategyService {
                         )
                         .await;
                     }
+                } else if position.entry_price > 0.0 {
+                    // No exit on this trade — fold the freshly-printed trades into
+                    // the position's memoized clock-exit state while we already
+                    // hold the history, so the wall-clock sweep reads a current
+                    // snapshot and never re-walks the full trade vec itself.
+                    if let Some(entry_time) = position.entry_time {
+                        self.runtime.exit_state_advance(
+                            position.id,
+                            position.entry_price,
+                            entry_time,
+                            &trades,
+                        );
+                    }
                 }
             }
         }
@@ -331,23 +344,44 @@ impl Tpsl1StrategyService {
             {
                 continue;
             }
+            // Skip until the entry fill is indexed (entry_price/entry_time set);
+            // the clock gate would reject it anyway, and we avoid seeding state
+            // for a not-yet-open position.
+            let Some(entry_time) = super::exit::clock_entry_time(&position) else {
+                continue;
+            };
 
-            // Trades drive the Stall derivation; last price is the paper fill mark.
-            // A token absent from the cache (e.g. evicted) can still TimeStop from
-            // entry_time alone — fall back to an empty history and the entry price.
-            let (trades, last_price) = match cache.get(&position.mint) {
+            // The walk state comes from the memoized cache — already kept current
+            // by the trade path — so the sweep never re-walks the trade history.
+            // `last_price` (the paper fill mark) is a cheap `Copy` read; only a
+            // not-yet-seeded position needs the trade vec, and just once to seed.
+            let (state, last_price) = match cache.get(&position.mint) {
                 Some(entry) => {
-                    let state = entry.value();
-                    (
-                        state.trades.clone(),
-                        state.current_price.unwrap_or(position.entry_price),
-                    )
+                    let st = entry.value();
+                    let last_price = st.current_price.unwrap_or(position.entry_price);
+                    let state = self.runtime.exit_state_get(position.id).unwrap_or_else(|| {
+                        self.runtime.exit_state_build(
+                            position.id,
+                            position.entry_price,
+                            entry_time,
+                            &st.trades,
+                        )
+                    });
+                    (state, last_price)
                 }
-                None => (Vec::new(), position.entry_price),
+                // Token absent from the cache (e.g. evicted) can still TimeStop
+                // from entry_time alone — seed from an empty history if needed.
+                None => {
+                    let state = self.runtime.exit_state_get(position.id).unwrap_or_else(|| {
+                        self.runtime
+                            .exit_state_build(position.id, position.entry_price, entry_time, &[])
+                    });
+                    (state, position.entry_price)
+                }
             };
 
             let Some(exit_reason) =
-                super::exit::should_position_exit_on_clock(&position, &trades, &rule, now)
+                super::exit::should_position_exit_on_clock(&position, &state, &rule, now)
             else {
                 continue;
             };

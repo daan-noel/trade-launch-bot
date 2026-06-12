@@ -2,9 +2,8 @@
 //!
 //! Thin wrapper over the generated `GeyserClient`: connect with `x-token` auth
 //! over TLS, open a transaction `Subscribe` stream, adapt each update to the
-//! decoder's `Value` shape, and feed it to the pipeline. Mirrors the role of the
-//! legacy WS `helius_ws::run` producer; same `live_rx` / `pool_index` /
-//! `pools_changed` inputs so the rest of the wiring is unchanged.
+//! decoder's `Value` shape, and feed it to the pipeline. Drives the producer
+//! side via the `live_rx` / `pool_index` / `pools_changed` inputs.
 //!
 //! On reconnect we replay from just after the last slot seen (`from_slot`), so a
 //! brief disconnect doesn't lose data; if an attempt makes no progress (e.g. the

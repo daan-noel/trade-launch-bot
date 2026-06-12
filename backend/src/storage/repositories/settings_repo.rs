@@ -23,7 +23,7 @@ pub struct AppSettings {
     /// buy/sell request doesn't specify its own. `None` = fall back to the
     /// server's built-in default (`DEFAULT_SLIPPAGE_BPS`).
     pub slippage_bps: Option<u64>,
-    /// Live-mode toggle for the Helius WS ingest (live = connect, dead = paused).
+    /// Live-mode toggle for the LaserStream ingest (live = connect, dead = paused).
     /// Persisted here so a restart restores the operator's last on/off choice
     /// instead of always booting paused. Set via `PUT /api/system/live`.
     pub live: bool,

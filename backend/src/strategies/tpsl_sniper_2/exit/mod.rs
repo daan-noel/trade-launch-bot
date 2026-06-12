@@ -118,8 +118,8 @@ impl ExitWalkState {
     }
 
     /// Replay the full post-entry history into a fresh state — the peaks as of
-    /// the last trade. Used by the clock-driven sweep, which then measures the
-    /// time features against wall-clock `now`.
+    /// the last trade. Used to seed [`CachedExitState`] the first time a position
+    /// is swept; afterwards the state is advanced incrementally, never rebuilt.
     pub fn rebuild_from_trades(
         trades: &[Trade],
         entry_price: f64,
@@ -130,6 +130,58 @@ impl ExitWalkState {
             state.update_with_trade(t);
         }
         state
+    }
+}
+
+/// Per-position memoized [`ExitWalkState`] for the clock-driven sweep.
+///
+/// The sweep used to clone a token's full trade history and re-walk it from
+/// entry on every 1s tick, for every holding position — O(holdings × trades)
+/// of cloning + folding per second. Instead we fold each token's history into
+/// this state once (when the position is first seen) and then advance it
+/// incrementally as new trades print, so the sweep only reads a `Copy` snapshot.
+///
+/// `consumed_len` is how many of the token cache's trades have already been
+/// folded. The cache `trades` vec is append-only and chronological, so the
+/// not-yet-folded trades are always the tail past this index. If the vec is ever
+/// shorter than `consumed_len` (a token evicted and re-tracked from empty), we
+/// rebuild from scratch rather than trust a stale index.
+#[derive(Debug, Clone, Copy)]
+pub struct CachedExitState {
+    pub state: ExitWalkState,
+    entry_time: DateTime<Utc>,
+    entry_price: f64,
+    consumed_len: usize,
+}
+
+impl CachedExitState {
+    /// Seed from the full post-entry history (one-time, at first sight of the
+    /// position) and record how many cache trades were folded.
+    pub fn build(trades: &[Trade], entry_price: f64, entry_time: DateTime<Utc>) -> Self {
+        Self {
+            state: ExitWalkState::rebuild_from_trades(trades, entry_price, entry_time),
+            entry_time,
+            entry_price,
+            consumed_len: trades.len(),
+        }
+    }
+
+    /// Fold any trades appended since the last advance into the running peaks.
+    /// A vec shorter than `consumed_len` means the token was re-tracked from
+    /// empty, so rebuild rather than fold a stale tail.
+    pub fn advance(&mut self, trades: &[Trade]) {
+        if trades.len() < self.consumed_len {
+            self.state =
+                ExitWalkState::rebuild_from_trades(trades, self.entry_price, self.entry_time);
+            self.consumed_len = trades.len();
+            return;
+        }
+        for t in &trades[self.consumed_len..] {
+            if t.block_time > self.entry_time {
+                self.state.update_with_trade(t);
+            }
+        }
+        self.consumed_len = trades.len();
     }
 }
 
@@ -313,34 +365,35 @@ pub fn should_position_exit_on_trade(
     trades: &[Trade],
     rule: &Tpsl2StrategyRule,
 ) -> Option<ExitReason> {
-    let entry_time = exit_clock_entry(position)?;
+    let entry_time = clock_entry_time(position)?;
     find_trade_driven_exit(trades, entry_time, position.entry_price, rule).map(|fill| fill.reason)
 }
 
 /// Live **clock-driven** gate: should this Holding position exit on the
-/// wall-clock sweep? Cheap-exits when the rule has no time features, else
-/// rebuilds the walk state from history and checks the deadlines against `now`.
+/// wall-clock sweep? Cheap-exits when the rule has no time features, else checks
+/// the deadlines against `now`. `state` is the position's memoized walk state
+/// ([`CachedExitState`]), kept current by the trade path — the sweep no longer
+/// rebuilds it from history per tick.
 pub fn should_position_exit_on_clock(
     position: &Position,
-    trades: &[Trade],
+    state: &ExitWalkState,
     rule: &Tpsl2StrategyRule,
     now: DateTime<Utc>,
 ) -> Option<ExitReason> {
-    let entry_time = exit_clock_entry(position)?;
+    let entry_time = clock_entry_time(position)?;
     if none_if_zero_u64(rule.p_exit_time_stop_secs).is_none()
         && none_if_zero_u64(rule.p_exit_stall_secs).is_none()
     {
         return None;
     }
-    let state = ExitWalkState::rebuild_from_trades(trades, position.entry_price, entry_time);
-    find_clock_driven_exit(&state, entry_time, rule, now)
+    find_clock_driven_exit(state, entry_time, rule, now)
 }
 
 /// Shared guard for both live gates: a position is evaluable only while Holding
 /// with a recorded entry. A 0 entry price means the fill isn't indexed yet —
 /// evaluating it would divide by ~0 and fire a phantom TakeProfit, flapping the
 /// position ExitPending→Holding. Returns the entry time once those hold.
-fn exit_clock_entry(position: &Position) -> Option<DateTime<Utc>> {
+pub fn clock_entry_time(position: &Position) -> Option<DateTime<Utc>> {
     if position.status != PositionStatus::Holding || position.entry_price <= 0.0 {
         return None;
     }
@@ -697,6 +750,15 @@ mod tests {
 
     // ── Live clock gate (`should_position_exit_on_clock`) ────────────────────
 
+    /// Build the memoized walk state the live sweep would feed the clock gate.
+    fn walk(pos: &Position, trades: &[Trade]) -> ExitWalkState {
+        ExitWalkState::rebuild_from_trades(
+            trades,
+            pos.entry_price,
+            pos.entry_time.unwrap_or_else(base_time),
+        )
+    }
+
     #[test]
     fn clock_gate_fires_time_stop_after_silence() {
         let rule = rule_with(1000.0, 90.0, None, Some(300), None, None);
@@ -704,7 +766,7 @@ mod tests {
         let trades = vec![buy(1.0, 2, 30)]; // one trade then silence
         let now = base_time() + Duration::seconds(600);
         assert_eq!(
-            should_position_exit_on_clock(&pos, &trades, &rule, now),
+            should_position_exit_on_clock(&pos, &walk(&pos, &trades), &rule, now),
             Some(ExitReason::TimeStop)
         );
     }
@@ -716,7 +778,7 @@ mod tests {
         let trades = vec![buy(2.0, 2, 10)]; // new high at +10s, then quiet
         let now = base_time() + Duration::seconds(300);
         assert_eq!(
-            should_position_exit_on_clock(&pos, &trades, &rule, now),
+            should_position_exit_on_clock(&pos, &walk(&pos, &trades), &rule, now),
             Some(ExitReason::Stall)
         );
     }
@@ -728,7 +790,7 @@ mod tests {
         let trades = vec![buy(2.0, 2, 10)];
         let now = base_time() + Duration::seconds(300);
         assert_eq!(
-            should_position_exit_on_clock(&pos, &trades, &rule, now),
+            should_position_exit_on_clock(&pos, &walk(&pos, &trades), &rule, now),
             Some(ExitReason::Stall)
         );
     }
@@ -739,7 +801,10 @@ mod tests {
         let pos = holding(1.0, rule.id);
         let trades = vec![buy(1.0, 2, 30)];
         let now = base_time() + Duration::seconds(100);
-        assert_eq!(should_position_exit_on_clock(&pos, &trades, &rule, now), None);
+        assert_eq!(
+            should_position_exit_on_clock(&pos, &walk(&pos, &trades), &rule, now),
+            None
+        );
     }
 
     #[test]
@@ -748,7 +813,10 @@ mod tests {
         let pos = holding(1.0, rule.id);
         let trades = vec![buy(1.0, 2, 30)];
         let now = base_time() + Duration::seconds(86_400);
-        assert_eq!(should_position_exit_on_clock(&pos, &trades, &rule, now), None);
+        assert_eq!(
+            should_position_exit_on_clock(&pos, &walk(&pos, &trades), &rule, now),
+            None
+        );
     }
 
     #[test]
@@ -757,6 +825,41 @@ mod tests {
         let mut pos = holding(1.0, rule.id);
         pos.entry_time = None;
         let now = base_time() + Duration::seconds(600);
-        assert_eq!(should_position_exit_on_clock(&pos, &[], &rule, now), None);
+        assert_eq!(
+            should_position_exit_on_clock(&pos, &walk(&pos, &[]), &rule, now),
+            None
+        );
+    }
+
+    // ── Incremental memoization (`CachedExitState`) ──────────────────────────
+
+    #[test]
+    fn cached_state_advance_matches_full_rebuild() {
+        let entry = base_time();
+        let all = vec![buy(2.0, 2, 10), buy(3.0, 3, 20), buy(2.5, 4, 30), buy(4.0, 5, 40)];
+
+        // Incremental: seed from the first two trades, then fold the rest in two
+        // steps the way the live trade path would as the cache vec grows.
+        let mut cached = CachedExitState::build(&all[..2], 1.0, entry);
+        cached.advance(&all[..3]);
+        cached.advance(&all);
+
+        let full = ExitWalkState::rebuild_from_trades(&all, 1.0, entry);
+        assert!((cached.state.peak_price - full.peak_price).abs() < 1e-9);
+        assert_eq!(cached.state.last_higher_high_time, full.last_higher_high_time);
+    }
+
+    #[test]
+    fn cached_state_rebuilds_when_history_shrinks() {
+        let entry = base_time();
+        let all = vec![buy(2.0, 2, 10), buy(5.0, 3, 20)];
+        let mut cached = CachedExitState::build(&all, 1.0, entry);
+        assert!((cached.state.peak_price - 5.0).abs() < 1e-9);
+
+        // Token evicted + re-tracked from empty, then a fresh lower trade: the
+        // stale peak must not survive a vec that shrank under the watermark.
+        let reset = vec![buy(2.0, 9, 100)];
+        cached.advance(&reset);
+        assert!((cached.state.peak_price - 2.0).abs() < 1e-9);
     }
 }

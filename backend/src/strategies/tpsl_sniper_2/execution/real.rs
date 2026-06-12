@@ -779,7 +779,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
-    async fn db_happy_path_records_entry_from_ws_fill() {
+    async fn db_happy_path_records_entry_from_onchain_fill() {
         let Some(pool) = test_pool().await else { return };
         let (mint, wallet) = (unique("MINT"), unique("WALLET"));
         let (position, position_repo, trade_repo, runtime) = setup(&pool, &mint, &wallet).await;
@@ -789,7 +789,7 @@ mod tests {
         run_buy(fake.clone(), &mint, &position, &position_repo, &trade_repo, &runtime).await;
 
         let updated = position_repo.find_by_id(position.id).await.unwrap().unwrap();
-        assert!(updated.entry_price > 0.0, "entry recorded from the WS fill");
+        assert!(updated.entry_price > 0.0, "entry recorded from the on-chain fill");
         assert_eq!(fake.send_count(), 1, "exactly one buy sent");
         cleanup(&pool, &mint, position.id).await;
     }

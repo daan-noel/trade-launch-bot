@@ -41,11 +41,11 @@ pub struct IngestPipeline {
     sse_tx: broadcast::Sender<SseEvent>,
     pump_program_id: String,
     /// pool → mint index shared with the decoder (to attribute live PumpSwap
-    /// swaps, which carry the pool but not the base mint) and with the WS task
-    /// (to drive per-pool subscriptions). Holds migrated tokens' pools.
+    /// swaps, which carry the pool but not the base mint) and with the LaserStream
+    /// task (to drive per-pool subscriptions). Holds migrated tokens' pools.
     pool_index: Arc<DashMap<String, String>>,
     /// Pinged whenever a token migrates and a new pool is added to `pool_index`,
-    /// so the WS task subscribes to it without dropping the connection.
+    /// so the LaserStream task subscribes to it without dropping the connection.
     pools_changed: Arc<Notify>,
     /// Live settings (persisted in `app_settings`, mutated via the settings API).
     /// `track_mayhem` gates Mayhem-mode ingestion; `track_post_migration` gates
@@ -191,8 +191,7 @@ impl IngestPipeline {
                                 self.apply_event(event, &raw_tx).await;
                             }
                         }
-                        // `decode_result` never yields `Subscribed`; `Ignored`
-                        // (and any future variants) are no-ops.
+                        // `Ignored` (and any future variants) are no-ops.
                         _ => {}
                     }
                 }

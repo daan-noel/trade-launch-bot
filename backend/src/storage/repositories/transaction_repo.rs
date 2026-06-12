@@ -49,9 +49,9 @@ impl TransactionRepo {
     /// is weekly range-partitioned on `received_at` (migration 0012), and a
     /// unique constraint on a partitioned table must include the partition key
     /// (which isn't stable across reconnect re-delivery), so the old
-    /// `ON CONFLICT (signature)` dedup is gone. The WS pipeline writes each
-    /// signature once per session; rare duplicate rows are tolerated in this
-    /// write-only replay/analysis table.
+    /// `ON CONFLICT (signature)` dedup is gone. The RPC-backfill path (token
+    /// sync) writes each signature once per run; rare duplicate rows are
+    /// tolerated in this write-only replay/analysis table.
     pub async fn insert(&self, tx: &RawTransaction) -> anyhow::Result<()> {
         sqlx::query(
             r#"
