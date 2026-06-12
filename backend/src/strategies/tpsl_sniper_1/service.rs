@@ -257,6 +257,14 @@ impl Tpsl1StrategyService {
 
     pub async fn on_trade_executed(&self, mint: &str, cache: &TokenCache) {
         let mint = mint.to_string();
+        // Cheap holding-index lookup first: the vast majority of trade pings are
+        // for mints we hold no position in, so bail before the (potentially large)
+        // trade-history clone below rather than after it.
+        let positions = self.runtime.holding_by_mint(&mint);
+        if positions.is_empty() {
+            return;
+        }
+
         // Snapshot the latest price and the in-memory trade history once. The
         // exit ladder (fixed TP/SL + E1–E4) walks these post-entry trades per
         // position via `exit::should_position_exit_on_trade`; `current_price` is still
@@ -268,11 +276,6 @@ impl Tpsl1StrategyService {
             }
             None => return,
         };
-
-        let positions = self.runtime.holding_by_mint(&mint);
-        if positions.is_empty() {
-            return;
-        }
 
         for position in positions {
             if let Some(rule) = self.runtime.rule_by_id(position.rule_id) {
