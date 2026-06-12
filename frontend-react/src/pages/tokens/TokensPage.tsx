@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useDispatch } from 'react-redux';
 import { DataTable } from 'components/table/DataTable';
 import { FilterPanel } from 'components/tokens/FilterPanel';
 import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
@@ -15,15 +16,16 @@ import type { TableQuery } from 'components/table/types';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
 import { StatusButton } from 'components/ui/StatusButton';
-import { POLL_INTERVAL_MS } from 'services/config';
-import { connectTokenCreatedStream } from 'services/sse';
-import type { TokenRecord } from 'types';
+import { FALLBACK_POLL_INTERVAL_MS } from 'services/config';
+import { connectTokenCreatedStream, connectTradeStream } from 'services/sse';
+import type { LiveTrade, TokenLiveStats, TokenRecord } from 'types';
 import {
   apiSlice,
   apiErrorMessage,
   useGetTokenDetailQuery,
   useGetTokensPageQuery,
 } from 'store/apiSlice';
+import type { AppDispatch } from '../../store';
 import { cn } from 'lib/cn';
 
 const LS_LIVE_KEY = 'tokens_live';
@@ -54,6 +56,7 @@ function loadLive(): boolean {
 }
 
 export function TokensPage() {
+  const dispatch = useDispatch<AppDispatch>();
   // Built once and held stable: the rate-dependent cells read the unit/USD-rate
   // from context themselves (see priceCells), so a rate tick no longer rebuilds
   // every column def and re-renders the whole grid — only the price cells update.
@@ -92,7 +95,12 @@ export function TokensPage() {
     error: tokensError,
     refetch,
   } = useGetTokensPageQuery(queryArgs, {
-    pollingInterval: live ? POLL_INTERVAL_MS : 0,
+    // SSE drives the live view now: `trade_executed` frames patch each row's
+    // stats in place (see the trade-stream effect below) and `token_created`
+    // pulls in new rows. This poll is just a slow safety-net resync — it heals
+    // dropped/lagged frames and re-applies the server sort that in-place patches
+    // can't. Hence FALLBACK (30s) rather than the old 5s POLL_INTERVAL_MS.
+    pollingInterval: live ? FALLBACK_POLL_INTERVAL_MS : 0,
     // Don't keep polling a background tab — the SSE refetch below catches it up
     // the moment it regains focus, and the timer resumes then.
     skipPollingIfUnfocused: true,
@@ -161,6 +169,59 @@ export function TokensPage() {
   refetchRef.current = refetch;
   const pageRef = useRef(tableQuery.page);
   pageRef.current = tableQuery.page;
+  // Held in a ref so the trade-stream patch below targets the page that's
+  // currently on screen without re-subscribing when args change.
+  const queryArgsRef = useRef(queryArgs);
+  queryArgsRef.current = queryArgs;
+
+  // Push-driven row updates: every `trade_executed` frame carries the mint's
+  // fresh stats (price / volume / market-cap / trade-count / ATH). Patch them
+  // straight into the visible page's cache so the grid ticks in real time — no
+  // poll round-trip. Trades are bursty, so coalesce: stash the latest stats per
+  // mint and flush them in one cache write on a short timer. Mints not on the
+  // current page are skipped; the fallback poll above re-sorts periodically.
+  useEffect(() => {
+    if (!live) return;
+    const pending = new Map<string, TokenLiveStats>();
+    let timer: number | undefined;
+    const flush = () => {
+      timer = undefined;
+      if (pending.size === 0) return;
+      const updates = new Map(pending);
+      pending.clear();
+      dispatch(
+        apiSlice.util.updateQueryData('getTokensPage', queryArgsRef.current, (draft) => {
+          for (const item of draft.items) {
+            const s = updates.get(item.mint_address);
+            if (!s) continue;
+            item.current_price = s.current_price;
+            item.volume_sol_total = s.volume_sol_total;
+            item.market_cap = s.market_cap;
+            item.trade_count = s.trade_count;
+            item.ath_price = s.ath_price;
+            item.ath_timestamp = s.ath_timestamp;
+            item.last_trade_at = s.last_trade_at;
+          }
+        }),
+      );
+    };
+    const es = connectTradeStream((raw) => {
+      try {
+        const t = JSON.parse(raw) as LiveTrade;
+        if (t.live && typeof t.live === 'object') {
+          pending.set(t.mint, t.live);
+          if (timer === undefined) timer = window.setTimeout(flush, 250);
+        }
+      } catch {
+        /* ignore malformed frames */
+      }
+    });
+    return () => {
+      window.clearTimeout(timer);
+      es.close();
+    };
+  }, [live, dispatch]);
+
   useEffect(() => {
     if (!live) return;
     let timer: number | undefined;

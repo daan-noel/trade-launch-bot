@@ -224,6 +224,18 @@ export interface TokenDetailRecord {
   last_synced_at: string | null;
 }
 
+/** Per-token live stats pushed alongside each trade (backend `live_stats`).
+ *  Field names mirror {@link TokenRecord} so they patch straight into a row. */
+export interface TokenLiveStats {
+  current_price: number | null;
+  volume_sol_total: number;
+  market_cap: number | null;
+  trade_count: number;
+  ath_price: number | null;
+  ath_timestamp: string | null;
+  last_trade_at: string | null;
+}
+
 export interface LiveTrade {
   mint: string;
   wallet: string;
@@ -234,6 +246,9 @@ export interface LiveTrade {
   tx_signature: string;
   slot: number;
   timestamp: string;
+  /** Snapshot of the mint's stats after this trade; absent if the token isn't
+   *  in the live cache. Used to patch the token grid without re-polling. */
+  live?: TokenLiveStats | null;
 }
 
 export interface SyncProgressEvent {
