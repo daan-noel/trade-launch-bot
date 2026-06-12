@@ -209,7 +209,7 @@ pub async fn get_position(
 mod tests {
     use super::*;
     use super::super::tpsl1::paper_position_to_sim_result;
-    use crate::models::Tpsl1StrategyRule;
+    use crate::models::TpslRule;
     use sqlx::postgres::PgPoolOptions;
     use std::collections::{HashMap, HashSet};
 
@@ -245,7 +245,7 @@ mod tests {
         };
 
         // A paper rule with an active run (max total = 3).
-        let rule = Tpsl1StrategyRule::new(
+        let rule = TpslRule::new(
             unique("paper-rule-"),
             None,
             None,

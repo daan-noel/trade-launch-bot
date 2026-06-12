@@ -10,7 +10,7 @@ use uuid::Uuid;
 use super::exit::{CachedExitState, ExitWalkState};
 use super::util::none_if_zero_u64;
 use crate::models::trade::Trade;
-use crate::models::{PaperRun, PaperRunStatus, Position, PositionStatus, Tpsl1StrategyRule};
+use crate::models::{PaperRun, PaperRunStatus, Position, PositionStatus, TpslRule};
 use crate::storage::repositories::{
     tpsl1_paper_trading_repo::Tpsl1PaperTradingRepo, tpsl1_position_repo::Tpsl1PositionRepo,
     tpsl1_strategy_rule_repo::Tpsl1StrategyRuleRepo,
@@ -31,8 +31,8 @@ pub struct PaperRunRef {
 /// ids and real rule ids are disjoint, so the shared maps never collide).
 #[derive(Clone)]
 pub struct Tpsl1RuntimeCache {
-    active_rules: Arc<RwLock<Arc<Vec<Tpsl1StrategyRule>>>>,
-    rules_by_id: Arc<RwLock<HashMap<Uuid, Tpsl1StrategyRule>>>,
+    active_rules: Arc<RwLock<Arc<Vec<TpslRule>>>>,
+    rules_by_id: Arc<RwLock<HashMap<Uuid, TpslRule>>>,
     holding_by_mint: Arc<DashMap<String, Vec<Arc<Position>>>>,
     holding_count_by_rule: Arc<DashMap<Uuid, i64>>,
     total_count_by_rule: Arc<DashMap<Uuid, i64>>,
@@ -152,7 +152,7 @@ impl Tpsl1RuntimeCache {
         Ok(())
     }
 
-    fn set_rules(&self, rules: Vec<Tpsl1StrategyRule>) {
+    fn set_rules(&self, rules: Vec<TpslRule>) {
         let active: Vec<_> = rules.iter().filter(|r| r.is_active).cloned().collect();
         let by_id: HashMap<_, _> = rules.into_iter().map(|r| (r.id, r)).collect();
         if let Ok(mut a) = self.active_rules.write() {
@@ -226,7 +226,7 @@ impl Tpsl1RuntimeCache {
 
     /// The active rule set, shared by `Arc` (callers clone the pointer, not the
     /// rules). A new handler is built per token creation, so this is hot.
-    pub fn active_rules(&self) -> Arc<Vec<Tpsl1StrategyRule>> {
+    pub fn active_rules(&self) -> Arc<Vec<TpslRule>> {
         self.active_rules
             .read()
             .map(|r| r.clone())
@@ -235,7 +235,7 @@ impl Tpsl1RuntimeCache {
 
     /// O(1) lookup of a single rule by id (clones just that rule). The hot path
     /// uses this instead of cloning every rule per event.
-    pub fn rule_by_id(&self, rule_id: Uuid) -> Option<Tpsl1StrategyRule> {
+    pub fn rule_by_id(&self, rule_id: Uuid) -> Option<TpslRule> {
         self.rules_by_id
             .read()
             .ok()

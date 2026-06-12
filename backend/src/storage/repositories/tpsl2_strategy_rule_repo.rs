@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use sqlx::{types::Json, PgPool};
 use uuid::Uuid;
 
-use crate::models::Tpsl2StrategyRule;
+use crate::models::TpslRule;
 
 pub struct Tpsl2StrategyRuleRepo {
     pool: PgPool,
@@ -48,7 +48,7 @@ struct Tpsl2StrategyRuleDbRow {
     updated_at: DateTime<Utc>,
 }
 
-impl From<Tpsl2StrategyRuleDbRow> for Tpsl2StrategyRule {
+impl From<Tpsl2StrategyRuleDbRow> for TpslRule {
     fn from(r: Tpsl2StrategyRuleDbRow) -> Self {
         Self {
             id: r.id,
@@ -96,7 +96,7 @@ impl Tpsl2StrategyRuleRepo {
     }
 
     /// Insert a new TPSL rule.
-    pub async fn insert(&self, rule: &Tpsl2StrategyRule) -> anyhow::Result<()> {
+    pub async fn insert(&self, rule: &TpslRule) -> anyhow::Result<()> {
         sqlx::query(
             r#"
             INSERT INTO tpsl2_strategy_rules
@@ -145,7 +145,7 @@ impl Tpsl2StrategyRuleRepo {
     }
 
     /// Get all TPSL rules (active and inactive).
-    pub async fn find_all(&self) -> anyhow::Result<Vec<Tpsl2StrategyRule>> {
+    pub async fn find_all(&self) -> anyhow::Result<Vec<TpslRule>> {
         let rows = sqlx::query_as::<_, Tpsl2StrategyRuleDbRow>(
             r#"
                  SELECT id, rule_name, p_token_initial_buy_sol, p_token_cu_limit, p_token_cu_price, p_token_max_sol_cost, p_token_spendable_sol_in, p_max_concurrent_tokens, p_max_total_tokens, p_token_ix_labels,
@@ -159,11 +159,11 @@ impl Tpsl2StrategyRuleRepo {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows.into_iter().map(Tpsl2StrategyRule::from).collect())
+        Ok(rows.into_iter().map(TpslRule::from).collect())
     }
 
     /// Get a specific rule by ID.
-    pub async fn find_by_id(&self, rule_id: Uuid) -> anyhow::Result<Option<Tpsl2StrategyRule>> {
+    pub async fn find_by_id(&self, rule_id: Uuid) -> anyhow::Result<Option<TpslRule>> {
         let row = sqlx::query_as::<_, Tpsl2StrategyRuleDbRow>(
             r#"
                  SELECT id, rule_name, p_token_initial_buy_sol, p_token_cu_limit, p_token_cu_price, p_token_max_sol_cost, p_token_spendable_sol_in, p_max_concurrent_tokens, p_max_total_tokens, p_token_ix_labels,
@@ -178,11 +178,11 @@ impl Tpsl2StrategyRuleRepo {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(Tpsl2StrategyRule::from))
+        Ok(row.map(TpslRule::from))
     }
 
     /// Update an existing TPSL rule.
-    pub async fn update(&self, rule: &Tpsl2StrategyRule) -> anyhow::Result<()> {
+    pub async fn update(&self, rule: &TpslRule) -> anyhow::Result<()> {
         sqlx::query(
             r#"
             UPDATE tpsl2_strategy_rules

@@ -10,7 +10,7 @@ pub mod paper;
 pub mod real;
 
 use super::util::none_if_zero_u64;
-use crate::models::Tpsl2StrategyRule;
+use crate::models::TpslRule;
 
 // Shared buy/sell retry + poll timing. Referenced by `real` execution and by the
 // paper entry poll, so they live at the module root rather than on the service.
@@ -43,7 +43,7 @@ pub(crate) const SCALP_ARMING_BASE_SECS: u64 = 60;
 /// giving up, **derived from the rule** so a larger `p_entry_min_age_secs` /
 /// `p_entry_higher_low_secs` widens the window automatically — no constant to keep
 /// in sync by hand. A rule with no time gates still gets `SCALP_ARMING_BASE_SECS`.
-pub(crate) fn scalp_arming_attempts(rule: &Tpsl2StrategyRule) -> usize {
+pub(crate) fn scalp_arming_attempts(rule: &TpslRule) -> usize {
     let min_age = none_if_zero_u64(rule.p_entry_min_age_secs).unwrap_or(0);
     let higher_low = none_if_zero_u64(rule.p_entry_higher_low_secs).unwrap_or(0);
     let window_ms = SCALP_ARMING_BASE_SECS

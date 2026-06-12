@@ -6,7 +6,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
-    models::{PaperRunStatus, Position, Tpsl2StrategyRule},
+    models::{PaperRunStatus, Position, TpslRule},
     state::app_state::AppState,
     storage::repositories::{
         tpsl2_paper_trading_repo::Tpsl2PaperTradingRepo, tpsl2_strategy_rule_repo::Tpsl2StrategyRuleRepo,
@@ -68,7 +68,7 @@ pub struct RuleResponse {
 /// only, so an inactive rule with open positions is still *Draining* (its exits
 /// run until they close). Paper rules that reached their cap read *Finished*;
 /// everything else inactive-and-flat is *Idle*.
-fn lifecycle_label(rule: &Tpsl2StrategyRule, open_positions: i64, paper_status: Option<PaperRunStatus>) -> &'static str {
+fn lifecycle_label(rule: &TpslRule, open_positions: i64, paper_status: Option<PaperRunStatus>) -> &'static str {
     if rule.is_active {
         "Active"
     } else if open_positions > 0 {
@@ -84,7 +84,7 @@ impl RuleResponse {
     /// Build the response from a rule plus the live context needed to derive its
     /// lifecycle (`open_positions` from the runtime cache; `paper_status` from the
     /// rule's current run, or `None` for real rules / rules with no run).
-    fn build(r: Tpsl2StrategyRule, open_positions: i64, paper_status: Option<PaperRunStatus>) -> Self {
+    fn build(r: TpslRule, open_positions: i64, paper_status: Option<PaperRunStatus>) -> Self {
         let lifecycle = lifecycle_label(&r, open_positions, paper_status).to_string();
         Self {
             id: r.id,
@@ -126,7 +126,7 @@ impl RuleResponse {
 
 /// Enrich a single rule into a [`RuleResponse`] (one paper-run query for paper
 /// rules). The list endpoint avoids this per-rule query via a bulk run lookup.
-async fn rule_response(app_state: &Arc<AppState>, rule: Tpsl2StrategyRule) -> RuleResponse {
+async fn rule_response(app_state: &Arc<AppState>, rule: TpslRule) -> RuleResponse {
     let open = app_state.tpsl2_cache.holding_count_by_rule(rule.id);
     let paper_status = if rule.trade_mode == "paper" {
         Tpsl2PaperTradingRepo::new(app_state.db.clone())
@@ -290,7 +290,7 @@ pub async fn create_tpsl_rule(
     app_state: web::Data<Arc<AppState>>,
     req: web::Json<CreateRuleRequest>,
 ) -> impl Responder {
-    let mut rule = Tpsl2StrategyRule::new(
+    let mut rule = TpslRule::new(
         req.rule_name.clone(),
         req.p_token_initial_buy_sol,
         req.p_token_cu_limit,

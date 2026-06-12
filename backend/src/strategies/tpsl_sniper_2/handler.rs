@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::models::{Tpsl2StrategyRule, Token};
+use crate::models::{TpslRule, Token};
 use uuid::Uuid;
 
 /// Holds the active TPSL rule set for the live path and answers two questions on
@@ -10,11 +10,11 @@ use uuid::Uuid;
 /// Rules are shared by `Arc`: a new handler is built on every token creation, so
 /// the active set is cloned by pointer (one atomic bump) rather than deep-copied.
 pub struct TPSL2StrategyHandler {
-    rules: Arc<Vec<Tpsl2StrategyRule>>,
+    rules: Arc<Vec<TpslRule>>,
 }
 
 impl TPSL2StrategyHandler {
-    pub fn new(rules: Arc<Vec<Tpsl2StrategyRule>>) -> Self {
+    pub fn new(rules: Arc<Vec<TpslRule>>) -> Self {
         Self { rules }
     }
 
@@ -24,7 +24,7 @@ impl TPSL2StrategyHandler {
     }
 
     /// Get a specific rule by ID.
-    pub fn get_rule(&self, rule_id: Uuid) -> Option<&Tpsl2StrategyRule> {
+    pub fn get_rule(&self, rule_id: Uuid) -> Option<&TpslRule> {
         self.rules.iter().find(|r| r.id == rule_id)
     }
 }
