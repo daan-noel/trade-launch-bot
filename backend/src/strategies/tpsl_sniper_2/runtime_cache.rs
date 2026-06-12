@@ -292,8 +292,9 @@ impl Tpsl2RuntimeCache {
         entry_price: f64,
         entry_time: DateTime<Utc>,
         trades: &[Trade],
+        trades_base: u64,
     ) -> ExitWalkState {
-        let cached = CachedExitState::build(trades, entry_price, entry_time);
+        let cached = CachedExitState::build(trades, trades_base, entry_price, entry_time);
         let state = cached.state;
         self.exit_state_by_position.insert(position_id, cached);
         state
@@ -301,18 +302,20 @@ impl Tpsl2RuntimeCache {
 
     /// Fold newly-printed trades into a position's walk state (seeding it first
     /// if unseen). Called by the trade path, which already holds the history, so
-    /// the sweep finds the state current and never re-walks.
+    /// the sweep finds the state current and never re-walks. `trades_base` is the
+    /// token's trim cursor, so the absolute fold position survives a front-trim.
     pub fn exit_state_advance(
         &self,
         position_id: Uuid,
         entry_price: f64,
         entry_time: DateTime<Utc>,
         trades: &[Trade],
+        trades_base: u64,
     ) {
         self.exit_state_by_position
             .entry(position_id)
-            .or_insert_with(|| CachedExitState::build(trades, entry_price, entry_time))
-            .advance(trades);
+            .or_insert_with(|| CachedExitState::build(trades, trades_base, entry_price, entry_time))
+            .advance(trades, trades_base);
     }
 
     pub fn holding_count_by_rule(&self, rule_id: Uuid) -> i64 {

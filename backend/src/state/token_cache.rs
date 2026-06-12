@@ -6,6 +6,26 @@ use crate::config::constants::{
 };
 use crate::models::{token::Token, trade::Trade};
 
+/// Hard cap on retained in-memory trade history per token. The cache keeps only
+/// the most recent `MAX_TRADES_RETAINED` trades; the oldest are trimmed from the
+/// front once the vec exceeds the cap by `TRADES_TRIM_SLACK` (batched so the
+/// O(n) front-drain amortizes to O(1) per trade).
+///
+/// SAFETY — why a fixed cap doesn't corrupt any trade/exit decision: every
+/// consumer that walks `trades` either needs only the tail (`active_lifetime_secs`,
+/// and the exit re-walk/memo for an open position whose entry is within the
+/// window) or treats it as a display sample (`unique_wallets`, swing analysis,
+/// the trades API). For the sniper use case a position's whole entry→exit span is
+/// a tiny fraction of this window, so the cap never reaches a trade that an open
+/// position still needs. The exit memo folds against an *absolute* count
+/// (`CachedExitState::consumed_abs`) mapped through `trades_base`, so front-trims
+/// can never skip or double-fold a trade. Backtest/paper sims read full history
+/// from the DB, not this cache, so they are unaffected.
+pub const MAX_TRADES_RETAINED: usize = 50_000;
+/// Trim only once the window overruns the cap by this much, so the front-drain
+/// runs at most once per `TRADES_TRIM_SLACK` trades instead of on every push.
+pub const TRADES_TRIM_SLACK: usize = 5_000;
+
 // ---------------------------------------------------------------------------
 // TokenState
 // ---------------------------------------------------------------------------
@@ -16,8 +36,15 @@ use crate::models::{token::Token, trade::Trade};
 pub struct TokenState {
     pub token: Token,
 
-    /// Full trade history in chronological order (oldest first).
+    /// Retained trade history in chronological order (oldest first), capped at
+    /// `MAX_TRADES_RETAINED`. NOT necessarily the full history — see `trades_base`.
     pub trades: Vec<Trade>,
+
+    /// Absolute count of trades trimmed from the front of `trades` over the
+    /// token's lifetime. The logical index of `trades[0]` is `trades_base`, so
+    /// `trades_base + trades.len()` is the total ever seen. The exit memo maps its
+    /// absolute fold cursor through this to stay correct across front-trims.
+    pub trades_base: u64,
 
     /// Cumulative SOL volume across all trades since tracking began.
     pub volume_sol_total: f64,
@@ -62,6 +89,7 @@ impl TokenState {
         Self {
             token,
             trades: Vec::new(),
+            trades_base: 0,
             volume_sol_total: 0.0,
             trade_count: 0,
             last_trade_at: None,
@@ -95,7 +123,23 @@ impl TokenState {
         self.update_reserves(&trade);
         self.update_market_cap(price);
 
+        self.push_trade_capped(trade);
+    }
+
+    /// Append a trade to the retained history, trimming the oldest trades once the
+    /// window overruns the cap by `TRADES_TRIM_SLACK`. Aggregate metrics are NOT
+    /// touched here (callers either updated them already in `add_trade` or seed
+    /// them from the DB), so this is also the path the cache seed uses to bound
+    /// startup memory without recomputing stats. `trades_base` advances by exactly
+    /// the number trimmed so the exit memo's absolute cursor stays valid.
+    pub fn push_trade_capped(&mut self, trade: Trade) {
         self.trades.push(trade);
+        let len = self.trades.len();
+        if len > MAX_TRADES_RETAINED + TRADES_TRIM_SLACK {
+            let overflow = len - MAX_TRADES_RETAINED;
+            self.trades.drain(0..overflow);
+            self.trades_base += overflow as u64;
+        }
     }
 
     fn update_reserves(&mut self, trade: &Trade) {
@@ -117,7 +161,10 @@ impl TokenState {
         self.market_cap = Some(supply * price);
     }
 
-    /// Count unique wallets across the full trade history.
+    /// Count unique wallets across the retained trade history. For a token under
+    /// `MAX_TRADES_RETAINED` this is exact; for one that has overrun the cap it is
+    /// the distinct-wallet count within the retained window (a display metric, so
+    /// the windowed approximation is acceptable).
     pub fn unique_wallets(&self) -> usize {
         let mut seen = std::collections::HashSet::new();
         for t in &self.trades {

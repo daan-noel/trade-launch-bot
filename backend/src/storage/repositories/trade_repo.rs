@@ -300,6 +300,38 @@ impl TradeRepo {
         rows.into_iter().map(Trade::try_from).collect()
     }
 
+    /// Find trades for a token in chronological order, bounded by `limit`/`offset`.
+    /// Same ordering as `find_by_mint_all` but paged so a high-volume token can't
+    /// produce an unbounded response (the API never has to materialise every row).
+    pub async fn find_by_mint_paged(
+        &self,
+        mint: &str,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<Trade>> {
+        let rows = sqlx::query_as::<_, TradeDbRow>(
+            r#"
+            SELECT id, mint_address, wallet_address, trade_type,
+                   sol_amount, token_amount, price_per_token,
+                   tx_signature, leg_index, slot, block_time, received_at,
+                   virtual_sol_reserves, virtual_token_reserves,
+                   real_sol_reserves, real_token_reserves,
+                   ix_type, ix_labels, venue
+            FROM trades
+            WHERE mint_address = $1
+            ORDER BY slot ASC, block_time ASC, tx_signature ASC, leg_index ASC
+            LIMIT $2 OFFSET $3
+            "#,
+        )
+        .bind(mint)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(Trade::try_from).collect()
+    }
+
     /// Count trades by a specific wallet on a specific token.
     #[allow(dead_code)]
     pub async fn count_by_wallet_and_mint(&self, wallet: &str, mint: &str) -> anyhow::Result<i64> {

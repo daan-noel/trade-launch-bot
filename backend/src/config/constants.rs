@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 // Protocol constants shared with the standalone trader are owned by the
 // `pump_trader` crate; re-export them so the backend keeps a single source.
 pub use pump_trader::constants::{

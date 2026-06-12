@@ -134,47 +134,57 @@ impl ExitWalkState {
 /// this state once (when the position is first seen) and then advance it
 /// incrementally as new trades print, so the sweep only reads a `Copy` snapshot.
 ///
-/// `consumed_len` is how many of the token cache's trades have already been
-/// folded. The cache `trades` vec is append-only and chronological, so the
-/// not-yet-folded trades are always the tail past this index. If the vec is ever
-/// shorter than `consumed_len` (a token evicted and re-tracked from empty), we
-/// rebuild from scratch rather than trust a stale index.
+/// `consumed_abs` is the **absolute** count of cache trades already folded —
+/// `trades_base + window_index`, not a raw index into the (capped, front-trimmed)
+/// `trades` vec. The token cache trims the oldest trades once history overruns
+/// `MAX_TRADES_RETAINED` and advances `trades_base` by the number dropped, so the
+/// not-yet-folded trades are always the window slice `[consumed_abs - base ..]`.
+/// Tracking the cursor absolutely is what lets a front-trim slide the window
+/// without ever skipping or double-folding a trade. If the cursor lands past the
+/// window end (a token evicted and re-tracked from empty, or — only under a
+/// pathological cap overrun — unfolded trades trimmed away) we rebuild from
+/// whatever the window holds rather than trust a stale cursor.
 #[derive(Debug, Clone, Copy)]
 pub struct CachedExitState {
     pub state: ExitWalkState,
     entry_time: DateTime<Utc>,
     entry_price: f64,
-    consumed_len: usize,
+    consumed_abs: u64,
 }
 
 impl CachedExitState {
-    /// Seed from the full post-entry history (one-time, at first sight of the
-    /// position) and record how many cache trades were folded.
-    pub fn build(trades: &[Trade], entry_price: f64, entry_time: DateTime<Utc>) -> Self {
+    /// Seed from the retained post-entry history (one-time, at first sight of the
+    /// position) and record the absolute fold cursor. `base` is the token's
+    /// `trades_base` (count already trimmed from the front).
+    pub fn build(trades: &[Trade], base: u64, entry_price: f64, entry_time: DateTime<Utc>) -> Self {
         Self {
             state: ExitWalkState::rebuild_from_trades(trades, entry_price, entry_time),
             entry_time,
             entry_price,
-            consumed_len: trades.len(),
+            consumed_abs: base + trades.len() as u64,
         }
     }
 
     /// Fold any trades appended since the last advance into the running peaks.
-    /// A vec shorter than `consumed_len` means the token was re-tracked from
-    /// empty, so rebuild rather than fold a stale tail.
-    pub fn advance(&mut self, trades: &[Trade]) {
-        if trades.len() < self.consumed_len {
+    /// `base` is the token's current `trades_base`; `consumed_abs - base` is the
+    /// window index of the first unfolded trade. Folds exactly the absolute range
+    /// `[consumed_abs .. base + trades.len())` — the genuinely-new trades —
+    /// regardless of how many were trimmed in between. A cursor past the window
+    /// end means the history was reset/over-trimmed, so rebuild from the window.
+    pub fn advance(&mut self, trades: &[Trade], base: u64) {
+        let start = self.consumed_abs.saturating_sub(base);
+        if start > trades.len() as u64 {
             self.state =
                 ExitWalkState::rebuild_from_trades(trades, self.entry_price, self.entry_time);
-            self.consumed_len = trades.len();
+            self.consumed_abs = base + trades.len() as u64;
             return;
         }
-        for t in &trades[self.consumed_len..] {
+        for t in &trades[start as usize..] {
             if t.block_time > self.entry_time {
                 self.state.update_with_trade(t);
             }
         }
-        self.consumed_len = trades.len();
+        self.consumed_abs = base + trades.len() as u64;
     }
 }
 
@@ -728,12 +738,41 @@ mod tests {
         let all = vec![buy(2.0, 2, 10), buy(3.0, 3, 20), buy(2.5, 4, 30), buy(4.0, 5, 40)];
 
         // Incremental: seed from the first two trades, then fold the rest in two
-        // steps the way the live trade path would as the cache vec grows.
-        let mut cached = CachedExitState::build(&all[..2], 1.0, entry);
-        cached.advance(&all[..3]);
-        cached.advance(&all);
+        // steps the way the live trade path would as the cache vec grows. No
+        // trimming here, so `base` stays 0 throughout.
+        let mut cached = CachedExitState::build(&all[..2], 0, 1.0, entry);
+        cached.advance(&all[..3], 0);
+        cached.advance(&all, 0);
 
         let full = ExitWalkState::rebuild_from_trades(&all, 1.0, entry);
+        assert!((cached.state.peak_price - full.peak_price).abs() < 1e-9);
+        assert_eq!(cached.state.last_higher_high_time, full.last_higher_high_time);
+    }
+
+    #[test]
+    fn cached_state_survives_front_trim() {
+        // The peak (9.0) prints in an EARLY trade that is later trimmed out of the
+        // retained window. Because it was folded before the trim, the memo must
+        // keep it — and no in-between trade may be skipped as the window slides.
+        let entry = base_time();
+        let logical = vec![
+            buy(2.0, 2, 10),
+            buy(9.0, 3, 20), // peak — will be trimmed away below
+            buy(3.0, 4, 30),
+            buy(5.0, 5, 40),
+            buy(4.0, 6, 50),
+            buy(8.0, 7, 60),
+        ];
+
+        // Seed from the first window [0,2); base 0.
+        let mut cached = CachedExitState::build(&logical[0..2], 0, 1.0, entry);
+        // Window slides: 1 trimmed, window is logical[1..4]; folds absolute [2,4).
+        cached.advance(&logical[1..4], 1);
+        // Window slides again: 3 trimmed, window is logical[3..6]; folds [4,6).
+        cached.advance(&logical[3..6], 3);
+
+        let full = ExitWalkState::rebuild_from_trades(&logical, 1.0, entry);
+        assert!((cached.state.peak_price - 9.0).abs() < 1e-9);
         assert!((cached.state.peak_price - full.peak_price).abs() < 1e-9);
         assert_eq!(cached.state.last_higher_high_time, full.last_higher_high_time);
     }
@@ -742,13 +781,14 @@ mod tests {
     fn cached_state_rebuilds_when_history_shrinks() {
         let entry = base_time();
         let all = vec![buy(2.0, 2, 10), buy(5.0, 3, 20)];
-        let mut cached = CachedExitState::build(&all, 1.0, entry);
+        let mut cached = CachedExitState::build(&all, 0, 1.0, entry);
         assert!((cached.state.peak_price - 5.0).abs() < 1e-9);
 
-        // Token evicted + re-tracked from empty, then a fresh lower trade: the
-        // stale peak must not survive a vec that shrank under the watermark.
+        // Token evicted + re-tracked from empty (base back to 0, short vec): the
+        // stale cursor lands past the window end, so the state rebuilds and the
+        // stale peak must not survive.
         let reset = vec![buy(2.0, 9, 100)];
-        cached.advance(&reset);
+        cached.advance(&reset, 0);
         assert!((cached.state.peak_price - 2.0).abs() < 1e-9);
     }
 }

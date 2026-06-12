@@ -292,10 +292,14 @@ impl Tpsl2StrategyService {
         // exit ladder (fixed TP/SL + E1–E4) walks these post-entry trades per
         // position via `exit::should_position_exit_on_trade`; `current_price` is still
         // the reference price for the resulting paper/real fill.
-        let (current_price, trades) = match cache.get(&mint) {
+        let (current_price, trades, trades_base) = match cache.get(&mint) {
             Some(entry) => {
                 let state = entry.value();
-                (state.current_price.unwrap_or(0.0), state.trades.clone())
+                (
+                    state.current_price.unwrap_or(0.0),
+                    state.trades.clone(),
+                    state.trades_base,
+                )
             }
             None => return,
         };
@@ -362,6 +366,7 @@ impl Tpsl2StrategyService {
                             position.entry_price,
                             entry_time,
                             &trades,
+                            trades_base,
                         );
                     }
                 }
@@ -415,6 +420,7 @@ impl Tpsl2StrategyService {
                             position.entry_price,
                             entry_time,
                             &st.trades,
+                            st.trades_base,
                         )
                     });
                     (state, last_price)
@@ -424,7 +430,7 @@ impl Tpsl2StrategyService {
                 None => {
                     let state = self.runtime.exit_state_get(position.id).unwrap_or_else(|| {
                         self.runtime
-                            .exit_state_build(position.id, position.entry_price, entry_time, &[])
+                            .exit_state_build(position.id, position.entry_price, entry_time, &[], 0)
                     });
                     (state, position.entry_price)
                 }

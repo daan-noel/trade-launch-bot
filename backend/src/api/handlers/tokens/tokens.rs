@@ -314,21 +314,47 @@ pub async fn get_token(state: web::Data<Arc<AppState>>, path: web::Path<String>)
     }
 }
 
+/// Query params for `get_trades`. Bounds the response so a high-volume token
+/// can't return an unbounded list (which would block a request thread on the
+/// clone/serialize). Chronological order is preserved; page with `offset`.
+#[derive(Deserialize)]
+pub struct TradesPageParams {
+    #[serde(default = "default_trades_limit")]
+    pub limit: i64,
+    #[serde(default)]
+    pub offset: i64,
+}
+
+fn default_trades_limit() -> i64 {
+    5_000
+}
+
 /// `GET /api/tokens/:mint/trades`
 ///
-/// Returns all trades for a token in chronological order (cache first, else DB).
+/// Returns trades for a token in chronological order (cache first, else DB),
+/// bounded by `limit` (default & cap 5000) and `offset`.
 pub async fn get_trades(
     state: web::Data<Arc<AppState>>,
     path: web::Path<String>,
+    query: web::Query<TradesPageParams>,
 ) -> impl Responder {
     let mint = path.into_inner();
+    let limit = query.limit.clamp(1, 5_000);
+    let offset = query.offset.max(0);
 
     if let Some(entry) = state.token_cache.get(&mint) {
-        return HttpResponse::Ok().json(entry.trades.clone());
+        let page: Vec<_> = entry
+            .trades
+            .iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .cloned()
+            .collect();
+        return HttpResponse::Ok().json(page);
     }
 
     let repo = TradeRepo::new(state.db.clone());
-    match repo.find_by_mint_all(&mint).await {
+    match repo.find_by_mint_paged(&mint, limit, offset).await {
         Ok(trades) => HttpResponse::Ok().json(trades),
         Err(e) => {
             tracing::error!("DB error fetching trades for {mint}: {e}");
