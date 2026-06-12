@@ -174,6 +174,18 @@ export function TokensPage() {
   const queryArgsRef = useRef(queryArgs);
   queryArgsRef.current = queryArgs;
 
+  // Mints currently on screen, held in a ref so the global trade stream can
+  // discard frames for off-page mints WITHOUT re-subscribing. The feed carries
+  // every mint's trades; only this page's rows (≤ pageSize) can be patched, so
+  // buffering the rest is pure waste. Rebuilt whenever the page contents change
+  // — including a pageSize change, since `tokens` reflects the live page size.
+  const visibleMints = useMemo(
+    () => new Set(tokens.map((t) => t.mint_address)),
+    [tokens],
+  );
+  const visibleMintsRef = useRef(visibleMints);
+  visibleMintsRef.current = visibleMints;
+
   // Push-driven row updates: every `trade_executed` frame carries the mint's
   // fresh stats (price / volume / market-cap / trade-count / ATH). Patch them
   // straight into the visible page's cache so the grid ticks in real time — no
@@ -208,7 +220,9 @@ export function TokensPage() {
     const es = connectTradeStream((raw) => {
       try {
         const t = JSON.parse(raw) as LiveTrade;
-        if (t.live && typeof t.live === 'object') {
+        // Skip mints not on the current page: only visible rows can be patched,
+        // so buffering the rest just churns the Map and fires no-op cache writes.
+        if (t.live && typeof t.live === 'object' && visibleMintsRef.current.has(t.mint)) {
           pending.set(t.mint, t.live);
           if (timer === undefined) timer = window.setTimeout(flush, 250);
         }
