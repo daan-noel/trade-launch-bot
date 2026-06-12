@@ -7,12 +7,11 @@ import { tokenColumns } from 'components/tokens/tokenColumns';
 import {
   activeFilterCount,
   defaultFilters,
-  filtersEmpty,
   loadStoredTokenFilters,
   saveStoredTokenFilters,
-  tokenPassesFilters,
   type TokenFilters,
 } from 'components/tokens/filters';
+import type { TableQuery } from 'components/table/types';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
 import { StatusButton } from 'components/ui/StatusButton';
@@ -21,9 +20,8 @@ import type { TokenRecord } from 'types';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import {
   apiErrorMessage,
-  TOKENS_LIST_LIMIT,
   useGetTokenDetailQuery,
-  useGetTokensQuery,
+  useGetTokensPageQuery,
 } from 'store/apiSlice';
 import { cn } from 'lib/cn';
 
@@ -31,6 +29,16 @@ const LS_LIVE_KEY = 'tokens_live';
 
 /** Stable empty reference so derived memos don't recompute every render. */
 const EMPTY_TOKENS: TokenRecord[] = [];
+
+/** Initial table view-state; pageSize matches the DataTable's default (10). */
+const INITIAL_QUERY: TableQuery = {
+  page: 1,
+  pageSize: 10,
+  sortCol: null,
+  sortDir: 'asc',
+  search: '',
+  colFilters: {},
+};
 
 function loadLive(): boolean {
   try {
@@ -48,20 +56,42 @@ export function TokensPage() {
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState<TokenFilters>(loadStoredTokenFilters);
   const [selectedMint, setSelectedMint] = useState<string | null>(null);
+  // View-state emitted by the DataTable (page/sort/search/col-filters). The
+  // backend does the filtering/sorting/paging; we just forward it + the global
+  // `filters` panel as query args.
+  const [tableQuery, setTableQuery] = useState<TableQuery>(INITIAL_QUERY);
 
-  // Shared cache: identical args to SwingDetectionPage, so the 5000-row list is
-  // fetched once and reused across navigation. Live mode polls into the cache.
+  // Server-side page: only one page crosses the wire. Polling re-runs the
+  // current filtered/sorted page. `filters` (the global panel) ride along as
+  // query args; changing them resets the table to page 1 via `resetKey`.
   const {
     data: tokensData,
-    isLoading: loading,
+    isFetching: loading,
     error: tokensError,
-  } = useGetTokensQuery(
-    { search: '', limit: TOKENS_LIST_LIMIT, offset: 0 },
+  } = useGetTokensPageQuery(
+    {
+      page: tableQuery.page,
+      pageSize: tableQuery.pageSize,
+      sortCol: tableQuery.sortCol,
+      sortDir: tableQuery.sortDir,
+      search: tableQuery.search,
+      colFilters: tableQuery.colFilters,
+      filters,
+    },
     { pollingInterval: live ? POLL_INTERVAL_MS : 0 },
   );
   const tokens = tokensData?.items ?? EMPTY_TOKENS;
   const total = tokensData?.total ?? 0;
   const error = apiErrorMessage(tokensError, 'Failed to load tokens');
+
+  // Resets the table to page 1 when the global filter panel changes.
+  const filtersResetKey = useMemo(() => JSON.stringify(filters), [filters]);
+  // Whether any reduction is active — drives the "matched" vs "tracked" badge,
+  // since `total` is now the filtered count.
+  const anyActive =
+    activeFilterCount(filters) > 0 ||
+    !!tableQuery.search ||
+    Object.values(tableQuery.colFilters).some(Boolean);
 
   // Per-mint detail cached by mint, so re-selecting a token is instant.
   const {
@@ -92,11 +122,6 @@ export function TokensPage() {
     return () => clearTimeout(t);
   }, [selectedMint, detail]);
 
-  const displayed = useMemo(() => {
-    if (filtersEmpty(filters)) return tokens;
-    return tokens.filter((t) => tokenPassesFilters(filters, t));
-  }, [tokens, filters]);
-
   const filterCount = activeFilterCount(filters);
 
   return (
@@ -104,7 +129,7 @@ export function TokensPage() {
       <div className="mb-3.5 flex flex-wrap items-center gap-3">
         <h2 className="text-lg font-extrabold text-text">Tokens</h2>
         <Badge variant="primary" className="font-mono">
-          {total} tracked
+          {total} {anyActive ? 'matched' : 'tracked'}
         </Badge>
         <StatusButton
           state={live ? 'live' : 'dead'}
@@ -143,15 +168,19 @@ export function TokensPage() {
         />
       )}
 
-      {loading && <p className="text-text-dim">Loading tokens…</p>}
-      {error && !loading && <p className="text-red">{error}</p>}
-      {!loading && !error && (
+      {error && <p className="text-red">{error}</p>}
+      {!error && (
         <DataTable
           columns={columns}
-          rows={displayed}
+          rows={tokens}
           rowKey={(r) => r.mint_address}
           selectedKey={selectedMint}
           onSelect={setSelectedMint}
+          serverSide
+          serverTotal={total}
+          onQueryChange={setTableQuery}
+          loading={loading}
+          resetKey={filtersResetKey}
           searchable
           colFilters
           colToggle

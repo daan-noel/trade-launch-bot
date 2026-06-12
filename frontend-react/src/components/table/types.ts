@@ -4,6 +4,21 @@ export type SortDir = 'asc' | 'desc';
 
 export type SortValue = number | string | null;
 
+/**
+ * The full view-state a server-side DataTable emits when anything that affects
+ * the result set changes (paging, sort, search, per-column filters). The parent
+ * translates this into API query args. `search`/`colFilters` are already
+ * debounced by the table before emission.
+ */
+export interface TableQuery {
+  page: number;
+  pageSize: number;
+  sortCol: string | null;
+  sortDir: SortDir;
+  search: string;
+  colFilters: Record<string, string>;
+}
+
 export interface ColumnDef<R> {
   key: string;
   label: string;

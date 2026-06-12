@@ -3,6 +3,8 @@ import type { FetchBaseQueryError } from '@reduxjs/toolkit/query';
 import type { SerializedError } from '@reduxjs/toolkit';
 import { API_BASE } from 'services/config';
 import type { AppSettings } from 'services/api';
+import type { TokenFilters } from 'components/tokens/filters';
+import type { SortDir } from 'components/table/types';
 import type {
   TokenDetailRecord,
   TokenRecord,
@@ -15,6 +17,22 @@ export interface TokensArgs {
   search: string;
   limit: number;
   offset: number;
+}
+
+/**
+ * Args for the server-side paginated Tokens view. Unlike `TokensArgs` (which
+ * pulls the whole list for client-side analysis on the Swing page), this asks
+ * the backend to filter/sort/page so only one page crosses the wire. Mirrors
+ * the DataTable view-state plus the global `TokenFilters` panel.
+ */
+export interface TokensPageArgs {
+  page: number; // 1-based
+  pageSize: number;
+  sortCol: string | null;
+  sortDir: SortDir;
+  search: string;
+  colFilters: Record<string, string>;
+  filters: TokenFilters;
 }
 
 /**
@@ -72,6 +90,34 @@ export const apiSlice = createApi({
         if (search) params.set('search', search);
         return `/api/tokens?${params.toString()}`;
       },
+    }),
+    // Server-side paginated/filtered/sorted token list. The backend applies the
+    // full TokenFilters set + search + per-column filters + sort over its
+    // in-memory cache, returning one page plus the filtered `total`. Distinct
+    // from `getTokens` (which Swing uses to pull everything) so the two no
+    // longer share a cache entry. A short retention keeps abandoned
+    // filter/sort/page permutations from accumulating.
+    getTokensPage: builder.query<TokensResponse, TokensPageArgs>({
+      query: (a) => {
+        const p = new URLSearchParams();
+        p.set('limit', String(a.pageSize));
+        p.set('offset', String((a.page - 1) * a.pageSize));
+        if (a.search) p.set('search', a.search);
+        if (a.sortCol) {
+          p.set('sort_col', a.sortCol);
+          p.set('sort_dir', a.sortDir);
+        }
+        const cf = Object.entries(a.colFilters)
+          .filter(([, v]) => v.trim())
+          .map(([k, v]) => `${k}:${v}`)
+          .join(';');
+        if (cf) p.set('cf', cf);
+        for (const [k, v] of Object.entries(a.filters)) {
+          if (v) p.set(`f_${k}`, String(v));
+        }
+        return `/api/tokens?${p.toString()}`;
+      },
+      keepUnusedDataFor: 30,
     }),
     getTokenDetail: builder.query<TokenDetailRecord, string>({
       query: (mint) => `/api/tokens/${encodeURIComponent(mint)}`,
@@ -169,6 +215,7 @@ export const apiSlice = createApi({
 
 export const {
   useGetTokensQuery,
+  useGetTokensPageQuery,
   useGetTokenDetailQuery,
   useGetTokenTradesQuery,
   useGetWalletHoldingsQuery,

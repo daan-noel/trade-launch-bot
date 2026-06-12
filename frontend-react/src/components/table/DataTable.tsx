@@ -1,10 +1,19 @@
-import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { cn } from 'lib/cn';
 import { Checkbox } from 'components/ui/Checkbox';
 import { Input } from 'components/ui/Input';
 import { Pagination, DEFAULT_PAGE_SIZE } from './Pagination';
 import { parseNumericPredicate } from './numericFilter';
-import type { ColumnDef, SortDir, SortValue } from './types';
+import type { ColumnDef, SortDir, SortValue, TableQuery } from './types';
+
+/** Drop empty/whitespace entries so they don't churn the server query. */
+function cleanColFilters(map: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(map)) {
+    if (v.trim()) out[k] = v;
+  }
+  return out;
+}
 
 function loadVisibleCols(storageKey: string, columns: ColumnDef<unknown>[]): Set<string> {
   const defaults = new Set(columns.filter((c) => c.defaultVisible !== false).map((c) => c.key));
@@ -55,6 +64,23 @@ interface DataTableProps<R> {
   emptyMessage?: string;
   selectable?: boolean;
   paginate?: boolean;
+  /**
+   * Server-side mode: the table stops filtering/sorting/slicing locally and
+   * renders `rows` as the current page verbatim. It emits its view-state via
+   * `onQueryChange` (debounced) so the parent can fetch; `serverTotal` drives
+   * the pager. Defaults off — every other table keeps its client-side path.
+   */
+  serverSide?: boolean;
+  serverTotal?: number;
+  onQueryChange?: (q: TableQuery) => void;
+  loading?: boolean;
+  /**
+   * Server mode only: change this whenever an *external* control that affects
+   * the result set changes (e.g. a parent-owned global filter panel). The table
+   * snaps back to page 1 and re-emits, exactly as it does for its own
+   * search/sort/filter changes.
+   */
+  resetKey?: string | number;
 }
 
 export function DataTable<R>({
@@ -75,6 +101,11 @@ export function DataTable<R>({
   emptyMessage = 'No data.',
   selectable = true,
   paginate = true,
+  serverSide = false,
+  serverTotal,
+  onQueryChange,
+  loading = false,
+  resetKey,
 }: DataTableProps<R>) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(defaultPageSize);
@@ -158,6 +189,9 @@ export function DataTable<R>({
   }, [colFiltersMap, columns]);
 
   const processed = useMemo(() => {
+    // Server mode: `rows` already IS the filtered/sorted page — never reduce it
+    // locally (that would hide rows the server legitimately returned).
+    if (serverSide) return rows;
     const searchLower = search.toLowerCase();
     let list = rows.filter((row) => {
       if (searchLower) {
@@ -186,7 +220,7 @@ export function DataTable<R>({
       }
     }
     return list;
-  }, [rows, columns, search, activeColFilters, sortCol, sortDir]);
+  }, [serverSide, rows, columns, search, activeColFilters, sortCol, sortDir]);
 
   // Reset paging when the *view* changes (search/filter/sort/selection), jumping
   // to the selected row's page when one is selected. `processed` and `rowKey` are
@@ -196,7 +230,7 @@ export function DataTable<R>({
   // deps are the genuine view changes, and they read the up-to-date `processed`
   // from the current render.
   useEffect(() => {
-    if (!paginate) return;
+    if (!paginate || serverSide) return;
     if (selectedKey) {
       const index = processed.findIndex((row) => rowKey(row) === selectedKey);
       if (index >= 0) {
@@ -206,15 +240,74 @@ export function DataTable<R>({
     }
     setPage(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, colFiltersMap, sortCol, sortDir, selectedKey, pageSize, paginate]);
+  }, [search, colFiltersMap, sortCol, sortDir, selectedKey, pageSize, paginate, serverSide]);
 
-  const totalFiltered = processed.length;
+  // --- Server-side: debounce the text inputs, then emit the view-state -------
+  const [debouncedSearch, setDebouncedSearch] = useState(search);
+  const [debouncedColFilters, setDebouncedColFilters] =
+    useState<Record<string, string>>(colFiltersMap);
+  useEffect(() => {
+    if (!serverSide) return;
+    const id = setTimeout(() => {
+      setDebouncedSearch(search);
+      setDebouncedColFilters(colFiltersMap);
+    }, 300);
+    return () => clearTimeout(id);
+  }, [serverSide, search, colFiltersMap]);
+
+  // Signature of everything that changes the result set *except* the page. When
+  // it changes we snap back to page 1; otherwise a plain page change emits as-is.
+  // Emitting atomically here (rather than in separate reset + emit effects)
+  // avoids a transient fetch for the old page against the new filters.
+  const cleanedColFilters = useMemo(
+    () => cleanColFilters(debouncedColFilters),
+    [debouncedColFilters],
+  );
+  const viewSig = `${resetKey ?? ''}|${pageSize}|${sortCol ?? ''}|${sortDir}|${debouncedSearch}|${JSON.stringify(
+    cleanedColFilters,
+  )}`;
+  const prevViewSig = useRef(viewSig);
+  useEffect(() => {
+    if (!serverSide) return;
+    let p = page;
+    if (prevViewSig.current !== viewSig) {
+      prevViewSig.current = viewSig;
+      if (page !== 1) {
+        setPage(1);
+        p = 1;
+      }
+    }
+    onQueryChange?.({
+      page: p,
+      pageSize,
+      sortCol,
+      sortDir,
+      search: debouncedSearch,
+      colFilters: cleanedColFilters,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverSide, viewSig, page]);
+
+  // Clamp the page when the filtered total shrinks below the current range.
+  useEffect(() => {
+    if (!serverSide || serverTotal == null) return;
+    const tp = Math.max(1, Math.ceil(serverTotal / pageSize));
+    if (page > tp) setPage(tp);
+  }, [serverSide, serverTotal, pageSize, page]);
+
+  // In server mode `rows` is the page and `serverTotal` is the filtered count;
+  // in client mode we slice the locally-processed list.
+  const totalFiltered = serverSide ? serverTotal ?? rows.length : processed.length;
   const totalPages = paginate
     ? Math.max(1, Math.ceil(totalFiltered / pageSize))
     : 1;
   const pageVal = paginate ? Math.min(page, totalPages) : 1;
   const start = paginate ? (pageVal - 1) * pageSize : 0;
-  const pageRows = paginate ? processed.slice(start, start + pageSize) : processed;
+  const pageRows = serverSide
+    ? rows
+    : paginate
+      ? processed.slice(start, start + pageSize)
+      : processed;
   const colCount = visCols.length + 1 + (rowActions ? 1 : 0);
 
   const activeFilters = Object.values(colFiltersMap).filter(Boolean).length;
@@ -357,7 +450,7 @@ export function DataTable<R>({
               {pageRows.length === 0 ? (
                 <tr>
                   <td colSpan={colCount} className="px-2 py-12 text-center font-sans text-text-dim">
-                    {emptyMessage}
+                    {loading ? 'Loading…' : emptyMessage}
                   </td>
                 </tr>
               ) : (
