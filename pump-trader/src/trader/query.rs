@@ -358,6 +358,31 @@ impl PumpFunTrader {
             if cached.is_migrated {
                 return Ok(cached);
             }
+            // A fresh AMM-venue reserve snapshot in the WS-fed cache is monotonic
+            // proof of migration (curve → AMM is terminal, and an AMM snapshot
+            // only exists post-graduation). The other routing facts (creator,
+            // token program) are immutable, so promote the cached entry to
+            // migrated and serve it with zero RPC — instead of re-reading the
+            // bonding curve on every pre-migration trade just to catch the flip.
+            let has_amm_snapshot = self
+                .reserve_cache
+                .get_fresh(
+                    &key,
+                    std::time::Duration::from_millis(crate::constants::RESERVE_CACHE_MAX_AGE_MS),
+                    true,
+                )
+                .is_some();
+            if has_amm_snapshot {
+                let migrated = CurveRouting {
+                    is_migrated: true,
+                    ..cached
+                };
+                self.curve_routing_cache
+                    .lock()
+                    .unwrap()
+                    .insert(key, migrated);
+                return Ok(migrated);
+            }
         }
 
         let bonding_curve = self.bonding_curve_pda(mint);
