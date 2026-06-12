@@ -10,10 +10,9 @@ import {
   formatCompact,
   formatDecimalTrim,
   formatWithCommas,
-  priceClass,
   ratioClass,
 } from 'utils/format';
-import type { usePriceDisplay } from 'hooks/usePriceDisplay';
+import { AmountCell, CompactCell, CurrentPriceCell, PriceCell } from './priceCells';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { cn } from 'lib/cn';
 
@@ -84,7 +83,7 @@ function IxCountCell({ row }: { row: TokenRecord }) {
   );
 }
 
-export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnDef<TokenRecord>[] {
+export function tokenColumns(): ColumnDef<TokenRecord>[] {
   return [
     {
       key: 'symbol',
@@ -215,7 +214,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       group: 'price',
       width: '88px',
       sortable: true,
-      render: (r) => (r.ath_price != null ? price.displayPrice(r.ath_price) : '-'),
+      render: (r) => <PriceCell sol={r.ath_price} />,
       sortValue: (r) => r.ath_price,
       searchValue: (r) => String(r.ath_price ?? ''),
     },
@@ -266,11 +265,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       group: 'price',
       width: '88px',
       sortable: true,
-      render: (r) => (
-        <span className={priceClass(r.current_price ?? undefined)}>
-          {r.current_price != null ? price.displayPrice(r.current_price) : '-'}
-        </span>
-      ),
+      render: (r) => <CurrentPriceCell sol={r.current_price} />,
       sortValue: (r) => r.current_price,
       searchValue: (r) => String(r.current_price ?? ''),
     },
@@ -311,7 +306,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       group: 'market',
       width: '84px',
       sortable: true,
-      render: (r) => (r.market_cap != null ? price.displayCompact(r.market_cap, 3) : '-'),
+      render: (r) => <CompactCell sol={r.market_cap} digits={3} />,
       sortValue: (r) => r.market_cap,
       searchValue: (r) => String(r.market_cap ?? ''),
       filterNumber: (r) => r.market_cap,
@@ -322,7 +317,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       group: 'market',
       width: '78px',
       sortable: true,
-      render: (r) => price.displayCompact(r.volume_sol_total, 4),
+      render: (r) => <CompactCell sol={r.volume_sol_total} digits={4} />,
       sortValue: (r) => r.volume_sol_total,
       searchValue: (r) => String(r.volume_sol_total),
       filterNumber: (r) => r.volume_sol_total,
@@ -333,7 +328,7 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       group: 'initial',
       width: '78px',
       sortable: true,
-      render: (r) => (r.initial_buy_sol != null ? price.displayAmount(r.initial_buy_sol) : '-'),
+      render: (r) => <AmountCell sol={r.initial_buy_sol} />,
       sortValue: (r) => r.initial_buy_sol,
       searchValue: (r) => String(r.initial_buy_sol ?? ''),
       filterNumber: (r) => r.initial_buy_sol,

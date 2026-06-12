@@ -18,7 +18,6 @@ import { StatusButton } from 'components/ui/StatusButton';
 import { POLL_INTERVAL_MS } from 'services/config';
 import { connectTokenCreatedStream } from 'services/sse';
 import type { TokenRecord } from 'types';
-import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import {
   apiSlice,
   apiErrorMessage,
@@ -55,8 +54,10 @@ function loadLive(): boolean {
 }
 
 export function TokensPage() {
-  const price = usePriceDisplay();
-  const columns = useMemo(() => tokenColumns(price), [price]);
+  // Built once and held stable: the rate-dependent cells read the unit/USD-rate
+  // from context themselves (see priceCells), so a rate tick no longer rebuilds
+  // every column def and re-renders the whole grid — only the price cells update.
+  const columns = useMemo(() => tokenColumns(), []);
 
   const [live, setLive] = useState(loadLive);
   const [showFilters, setShowFilters] = useState(false);

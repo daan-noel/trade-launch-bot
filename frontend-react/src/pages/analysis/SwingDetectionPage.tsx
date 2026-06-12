@@ -414,8 +414,8 @@ export function SwingDetectionPage() {
   }, [swingsByMint, chainLatencyValue]);
 
   const columns = useMemo(
-    () => [...tokenColumns(price), ...swingChainColumns(chainStatsByMint)],
-    [price, chainStatsByMint],
+    () => [...tokenColumns(), ...swingChainColumns(chainStatsByMint)],
+    [chainStatsByMint],
   );
 
   const toggleAnalysis = useCallback((kind: AnalysisKind) => {
