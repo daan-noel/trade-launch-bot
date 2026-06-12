@@ -73,9 +73,7 @@ impl PumpFunTrader {
         let buy_lamports = (sol_amount * LAMPORTS_PER_SOL as f64) as u64;
         let keypair = &self.config.keypair;
 
-        let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
-
-        let result: Result<String> = async {
+        async {
             let global = self.global_account.as_ref().context("Not initialized")?;
 
             let mint = Pubkey::from_str(token_mint)?;
@@ -211,30 +209,38 @@ impl PumpFunTrader {
             // which a bigger tip can't fix), so always the level-0 tip.
             ixs.push(self.jito_tip_ix(0));
 
-            let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, keypair)?;
-            let sig = self.send_transaction(&tx).await?;
-            info!(
-                "📤 Buy sent — sig: {} | SOL: {} | {}ms",
-                sig,
-                sol_amount,
-                t0.elapsed().as_millis()
-            );
-
-            if !skip_confirm {
-                self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES)
-                    .await?;
+            // Acquire the nonce only now — after PDA derivation, the ATA-exists
+            // RPC, template acquisition, and the slippage reserve read above — so
+            // the slot isn't held `in_use` across any of those reads. Only the
+            // build/send/confirm below can fail while holding it, and the inner
+            // block always falls through to `schedule_nonce_refresh`.
+            let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
+            let sent: Result<String> = async {
+                let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, keypair)?;
+                let sig = self.send_transaction(&tx).await?;
                 info!(
-                    "✅ Buy confirmed — sig: {} | {}ms",
+                    "📤 Buy sent — sig: {} | SOL: {} | {}ms",
                     sig,
+                    sol_amount,
                     t0.elapsed().as_millis()
                 );
+
+                if !skip_confirm {
+                    self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES)
+                        .await?;
+                    info!(
+                        "✅ Buy confirmed — sig: {} | {}ms",
+                        sig,
+                        t0.elapsed().as_millis()
+                    );
+                }
+                Ok(sig)
             }
-            Ok(sig)
+            .await;
+
+            self.schedule_nonce_refresh(nonce_pubkey);
+            sent
         }
-        .await;
-
-        self.schedule_nonce_refresh(nonce_pubkey);
-
-        result
+        .await
     }
 }

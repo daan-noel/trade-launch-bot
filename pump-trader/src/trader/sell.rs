@@ -13,7 +13,6 @@ use super::{PumpFunTrader, TokenPDAs};
 use crate::constants::{CONFIRM_MAX_RETRIES, CURVE_FEE_BUFFER_BPS, MAX_SELL_ATTEMPTS};
 use anyhow::{Context, Result};
 use solana_sdk::{
-    hash::Hash,
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
     signature::Signer,
@@ -132,25 +131,18 @@ impl PumpFunTrader {
             anyhow::bail!("No token account found for mint {token_mint}");
         }
 
-        let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
-        info!("🔁 Sell — token: {} nonce: {}", token_mint, nonce_pubkey);
-
-        let res = self
-            .execute_sell(
-                token_mint,
-                token_amount,
-                creator_override,
-                is_cashback,
-                slippage_bps,
-                &nonce_pubkey,
-                nonce_hash,
-                tip_level,
-                confirm,
-            )
-            .await;
-
-        self.schedule_nonce_refresh(nonce_pubkey);
-        res
+        // `execute_sell` acquires the nonce itself, *after* its account/reserve
+        // reads, so the slot isn't held `in_use` across those RPCs.
+        self.execute_sell(
+            token_mint,
+            token_amount,
+            creator_override,
+            is_cashback,
+            slippage_bps,
+            tip_level,
+            confirm,
+        )
+        .await
     }
 
     // -----------------------------------------------------------------------
@@ -165,8 +157,6 @@ impl PumpFunTrader {
         creator_override: Option<&str>,
         is_cashback: bool,
         slippage_bps: Option<u64>,
-        nonce_pubkey: &Pubkey,
-        nonce_hash: Hash,
         tip_level: u8,
         confirm: bool,
     ) -> Result<bool> {
@@ -243,30 +233,44 @@ impl PumpFunTrader {
             tip_level,
         )?;
 
-        // ── Sign & send ─────────────────────────────────────────────────────
-        let tx = self.build_nonce_tx(ixs, nonce_pubkey, nonce_hash, keypair)?;
-        let sig = self.send_transaction(&tx).await?;
+        // ── Acquire nonce + sign & send ─────────────────────────────────────
+        // Acquire the nonce only now — after the cached-PDA / token-account reads
+        // and the slippage `curve_reserves` read above — so the slot isn't held
+        // `in_use` across any RPC. Only the build/send/confirm below runs while
+        // holding it, and we always fall through to `schedule_nonce_refresh`.
+        let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
+        info!("🔁 Sell — token: {} nonce: {}", token_mint, nonce_pubkey);
 
-        info!(
-            "📤 Sell sent — sig: {} | amount: {} | {}ms",
-            sig,
-            token_amount,
-            t0.elapsed().as_millis()
-        );
+        let res: Result<bool> = async {
+            let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, keypair)?;
+            let sig = self.send_transaction(&tx).await?;
 
-        // Feed-confirm path (`confirm == false`): the caller watches the
-        // LaserStream-fed `trades` balance, so blocking on the RPC poll here just
-        // adds 1–4 s of latency before that poll can even start. Manual/API
-        // callers keep the RPC confirm (and its `OnChainRevert` budget signal).
-        if confirm {
-            self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES).await?;
             info!(
-                "✅ Sell confirmed — sig: {} | {}ms",
+                "📤 Sell sent — sig: {} | amount: {} | {}ms",
                 sig,
+                token_amount,
                 t0.elapsed().as_millis()
             );
+
+            // Feed-confirm path (`confirm == false`): the caller watches the
+            // LaserStream-fed `trades` balance, so blocking on the RPC poll here
+            // just adds 1–4 s of latency before that poll can even start.
+            // Manual/API callers keep the RPC confirm (and its `OnChainRevert`
+            // budget signal).
+            if confirm {
+                self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES).await?;
+                info!(
+                    "✅ Sell confirmed — sig: {} | {}ms",
+                    sig,
+                    t0.elapsed().as_millis()
+                );
+            }
+            Ok(true)
         }
-        Ok(true)
+        .await;
+
+        self.schedule_nonce_refresh(nonce_pubkey);
+        res
     }
 
     /// Assemble the curve-sell instruction set (compute budget + `sell` + Jito
