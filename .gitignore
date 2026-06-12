@@ -1,5 +1,6 @@
 # Rust build output
 /target/
+/target-check/
 Cargo.lock
 
 # Frontend - React/Vite

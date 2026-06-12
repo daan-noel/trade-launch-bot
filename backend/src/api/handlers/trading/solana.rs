@@ -129,6 +129,9 @@ pub async fn manual_sell(
                 None,
                 token_account_override,
                 Some(slippage_bps),
+                0,
+                // Manual API sell: block on RPC confirm (no feed loop here).
+                true,
             )
             .await
     } else {

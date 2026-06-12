@@ -8,6 +8,7 @@
 // assembles, signs, sends, and confirms one sell tx.
 // ============================================================
 
+use super::tx::OnChainRevert;
 use super::PumpFunTrader;
 use crate::constants::{CONFIRM_MAX_RETRIES, CURVE_FEE_BUFFER_BPS, MAX_SELL_ATTEMPTS};
 use anyhow::{Context, Result};
@@ -46,6 +47,13 @@ impl PumpFunTrader {
                     is_cashback,
                     token_account_override,
                     slippage_bps,
+                    // Escalate the Jito tip each attempt: a sell that lost the
+                    // auction just didn't land (costs nothing), so bid up to win
+                    // the next block instead of re-sending the same losing tip.
+                    attempt as u8,
+                    // Manual/standalone path: RPC-confirm each attempt so the
+                    // `OnChainRevert` budget guard below can stop re-paying fees.
+                    true,
                 )
                 .await
             {
@@ -57,6 +65,17 @@ impl PumpFunTrader {
                 }
                 Err(e) => {
                     error!("❌ Sell attempt {} failed: {}", attempt + 1, e);
+                    // Budget guard: if the tx LANDED and reverted on the
+                    // min_out=1 path, it failed for a structural reason (already
+                    // sold, empty/wrong token account, token migrated) that a
+                    // blind re-send can't fix — and each landed-revert re-pays
+                    // base + priority fee. Stop now. (With slippage set, a revert
+                    // may be a transient min-out miss that next attempt's
+                    // fresh-reserve recompute clears, so those still retry.)
+                    if slippage_bps.is_none() && e.downcast_ref::<OnChainRevert>().is_some() {
+                        warn!("⛔ Sell reverted on-chain; not retrying (would only re-pay fees)");
+                        return Err(e);
+                    }
                     last_err = Some(e);
                 }
             }
@@ -76,6 +95,14 @@ impl PumpFunTrader {
     /// outer orchestrator (TPSL `sell_with_retries`, which already re-reads the
     /// balance and re-routes on migration each pass) can drive retries without
     /// the redundant inner loop `sell_token` keeps for manual callers.
+    /// `tip_level` escalates the Jito tip on retries (see `jito_tip`).
+    /// `confirm` selects the confirmation source: `true` blocks on the RPC
+    /// signature-status poll (manual/API callers, which also want the
+    /// `OnChainRevert` budget-guard signal); `false` returns as soon as the
+    /// sender accepts the tx and leaves confirmation to the caller's own feed —
+    /// the live TPSL loop already polls the LaserStream-fed `trades` balance, so
+    /// the inner 1s RPC poll is pure redundant latency there.
+    #[allow(clippy::too_many_arguments)]
     pub async fn sell_token_once(
         &self,
         token_mint: &str,
@@ -84,6 +111,8 @@ impl PumpFunTrader {
         is_cashback: bool,
         token_account_override: Option<&str>,
         slippage_bps: Option<u64>,
+        tip_level: u8,
+        confirm: bool,
     ) -> Result<bool> {
         // Ensure PDAs are cached (reads the bonding-curve PDA on a miss).
         if !self.token_pdas.lock().unwrap().contains_key(token_mint) {
@@ -115,6 +144,8 @@ impl PumpFunTrader {
                 slippage_bps,
                 &nonce_pubkey,
                 nonce_hash,
+                tip_level,
+                confirm,
             )
             .await;
 
@@ -126,6 +157,7 @@ impl PumpFunTrader {
     // Sell inner — one attempt
     // -----------------------------------------------------------------------
 
+    #[allow(clippy::too_many_arguments)]
     async fn execute_sell(
         &self,
         token_mint: &str,
@@ -135,6 +167,8 @@ impl PumpFunTrader {
         slippage_bps: Option<u64>,
         nonce_pubkey: &Pubkey,
         nonce_hash: Hash,
+        tip_level: u8,
+        confirm: bool,
     ) -> Result<bool> {
         let t0 = Instant::now();
         let keypair = &self.config.keypair;
@@ -181,7 +215,7 @@ impl PumpFunTrader {
         );
         // ── Assemble instructions ───────────────────────────────────────────
         let mut ixs = Vec::with_capacity(5);
-        ixs.extend_from_slice(&self.compute_budget_ixs);
+        ixs.extend_from_slice(&self.cu_ixs_curve_sell);
 
         // `sell(amount, min_sol_output)`: slippage floor on SOL received. `None`
         // keeps the legacy min_out=1 (snipe path, no extra RPC); `Some` reads the
@@ -242,10 +276,8 @@ impl PumpFunTrader {
             data: sell_data,
         });
 
-        // Jito tip
-        if let Some(tip) = &self.jito_tip_ix {
-            ixs.push(tip.clone());
-        }
+        // Jito tip — escalated by the caller's retry level.
+        ixs.push(self.jito_tip_ix(tip_level));
 
         // ── Sign & send ─────────────────────────────────────────────────────
         let tx = self.build_nonce_tx(ixs, nonce_pubkey, nonce_hash, keypair)?;
@@ -258,14 +290,18 @@ impl PumpFunTrader {
             t0.elapsed().as_millis()
         );
 
-        self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES)
-            .await?;
-
-        info!(
-            "✅ Sell confirmed — sig: {} | {}ms",
-            sig,
-            t0.elapsed().as_millis()
-        );
+        // Feed-confirm path (`confirm == false`): the caller watches the
+        // LaserStream-fed `trades` balance, so blocking on the RPC poll here just
+        // adds 1–4 s of latency before that poll can even start. Manual/API
+        // callers keep the RPC confirm (and its `OnChainRevert` budget signal).
+        if confirm {
+            self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES).await?;
+            info!(
+                "✅ Sell confirmed — sig: {} | {}ms",
+                sig,
+                t0.elapsed().as_millis()
+            );
+        }
         Ok(true)
     }
 }

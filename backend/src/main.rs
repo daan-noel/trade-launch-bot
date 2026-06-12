@@ -56,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
 
     let trader_config = Arc::new(TraderConfig {
         rpc_url: settings.helius_rpc_url.clone(),
-        helius_sender_url: settings.helius_sender_url.clone(),
+        helius_sender_urls: settings.helius_sender_urls.clone(),
         keypair: parse_wallet_keypair(&settings.wallet_private_key)
             .context("Failed to parse trader wallet private key")?,
         nonce_accounts: settings.nonce_accounts.clone(),

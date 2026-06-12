@@ -57,13 +57,82 @@ pub const JITO_TIP_ACCOUNTS: &[&str] = &[
 /// How many buy templates to keep pre-built per token-program pool.
 pub const BUY_SEED_POOL_SIZE: usize = 16;
 
-/// Minimum Jito tip per transaction, in SOL.
+// --- Dynamic Jito tip --------------------------------------------------------
+// The tip is sized per-trade from Jito's live tip-floor feed (see jito_tip.rs),
+// clamped to [MIN_JITO_TIP_SOL, MAX_JITO_TIP_SOL]. A static tip silently loses
+// the auction when the floor spikes during hot launches.
+
+/// Floor for the Jito tip, in SOL — also the fallback when the tip-floor feed is
+/// cold or stale. (Jito's own auction minimum is 0.0001 SOL.)
 pub const MIN_JITO_TIP_SOL: f64 = 0.0002;
 
-/// Compute-unit price in micro-lamports (the priority-fee rate; passed to `set_compute_unit_price` on every trade tx).
-pub const COMPUTE_UNIT_PRICE_MICRO_LAMPORTS: u64 = 1_000_000;
-/// Compute-unit limit set on every trade transaction.
-pub const COMPUTE_UNIT_LIMIT: u32 = 200_000;
+/// Ceiling for the Jito tip, in SOL — a cost guardrail so a spiking feed (or a
+/// bad read) can never tip more than this on a single trade. Tune to taste.
+pub const MAX_JITO_TIP_SOL: f64 = 0.005;
+
+/// Which landed-tip percentile from the feed to target: one of 25 | 50 | 75 | 95
+/// | 99. Higher lands in hotter auctions but costs more; 75 is a sane sniping
+/// default. (Anything else falls back to the 75th percentile.) This is the tip
+/// for the FIRST attempt; successive sell retries climb the ladder (see below).
+pub const JITO_TIP_PERCENTILE: u8 = 75;
+
+/// Per-retry Jito tip escalation. A sell that lost the auction simply didn't
+/// land — and a non-landing tx costs nothing — so each retry bids up to win the
+/// next block instead of re-sending the same losing tip. The ladder climbs the
+/// live auction: level 0 = `JITO_TIP_PERCENTILE`, 1 = p95, 2 = p99; beyond p99
+/// (and, when the tip-floor feed is cold, from the floor) the tip multiplies by
+/// this factor per extra level. Always clamped to [MIN_JITO_TIP_SOL,
+/// MAX_JITO_TIP_SOL], so the ceiling stays the hard per-trade cost guardrail.
+pub const JITO_TIP_ESCALATION_TAIL_MULT: f64 = 1.5;
+
+/// Jito tip-floor REST feed (landed-tip percentiles; values in SOL).
+pub const JITO_TIP_FLOOR_URL: &str = "https://bundles.jito.wtf/api/v1/bundles/tip_floor";
+
+/// How often to re-fetch the tip-floor feed, in milliseconds.
+pub const JITO_TIP_FLOOR_REFRESH_MS: u64 = 3_000;
+
+/// Max age of a cached tip-floor read before the trade path falls back to the
+/// floor, in milliseconds.
+pub const JITO_TIP_FLOOR_MAX_AGE_MS: u64 = 30_000;
+
+/// Compute-unit price in micro-lamports — the priority-fee rate, passed to
+/// `set_compute_unit_price` on every trade tx. Priority fee = this × the CU
+/// limit (below), charged on every included tx. On the Helius Sender path
+/// inclusion is driven mainly by the Jito tip (the Jito leg), not this priority
+/// fee (which only orders the staked-validator/SWQOS leg), so this can run well
+/// below the old 1_000_000 (1 lamport/cu) and lean on the dynamic tip. Lowered
+/// to 200_000 (0.2 lamport/cu) to cut the per-tx fee ~5×; A/B land-rate and
+/// raise if inclusion suffers.
+pub const COMPUTE_UNIT_PRICE_MICRO_LAMPORTS: u64 = 200_000;
+
+// --- Compute-unit limits (priority-fee sizing), set per trade path ----------
+// The priority fee you pay is `COMPUTE_UNIT_PRICE_MICRO_LAMPORTS × <limit>` on
+// *every* included tx — success OR on-chain revert — and it's based on the
+// limit *requested*, not the units actually consumed. So an over-large limit
+// silently overpays on every single trade. These are split by path because a
+// curve buy/sell is far lighter than a ~27-account AMM swap; a single shared
+// limit had to size for the heaviest path and made the common curve trades
+// overpay.
+//
+// Values below are sized from MEASURED on-chain consumption (getTransaction
+// `computeUnitsConsumed` over ~120 recent landed wallet txs, 2026-06-11) at
+// ≈ p95 × 1.2. Each path also has rare heavy outliers (one curve buy at 333k,
+// one curve sell at 247k) that DO exhaust these limits and revert — deliberately
+// not covered, since sizing every trade for a 1-in-15 outlier would inflate the
+// priority fee on every normal trade. Keep real headroom: a CU-exhausted tx
+// still pays the full fee and then reverts (pure waste), so erring high is
+// cheaper than erring low.
+/// Curve buy (may include create-with-seed + initialize_account3 + buy).
+/// Measured landed: p50 112k, p95 124k, normal-max 124k → 124k×1.2 ≈ 150k.
+pub const COMPUTE_UNIT_LIMIT_CURVE_BUY: u32 = 150_000;
+/// Curve sell (sell + tip; no account creation).
+/// Measured landed: p50 78k, p95 87k, normal-max 87k → ~1.15× headroom.
+pub const COMPUTE_UNIT_LIMIT_CURVE_SELL: u32 = 100_000;
+/// PumpSwap AMM swap (heaviest path — many accounts, CPIs, wSOL wrap/unwrap);
+/// shared by AMM buy and sell. Measured landed max: buy 142k, sell 133k →
+/// 142k×1.27 ≈ 180k. (Sample is thin and excludes the heaviest cashback swaps,
+/// so kept a touch above max×1.2.) Tightened from 200k.
+pub const COMPUTE_UNIT_LIMIT_AMM: u32 = 180_000;
 
 
 /// How many times `sell_token` retries before giving up.

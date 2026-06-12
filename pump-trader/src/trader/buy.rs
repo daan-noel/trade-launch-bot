@@ -126,7 +126,7 @@ impl PumpFunTrader {
                 .insert(token_mint.to_string(), user_token_account);
 
             let mut ixs = Vec::with_capacity(6);
-            ixs.extend_from_slice(&self.compute_budget_ixs);
+            ixs.extend_from_slice(&self.cu_ixs_curve_buy);
 
             if let Some(template) = template_opt {
                 // FIX: use the same template we already acquired above
@@ -201,9 +201,9 @@ impl PumpFunTrader {
                 data: buy_data,
             });
 
-            if let Some(tip) = &self.jito_tip_ix {
-                ixs.push(tip.clone());
-            }
+            // Buys are a single shot (the snipe re-send only fires on a revert,
+            // which a bigger tip can't fix), so always the level-0 tip.
+            ixs.push(self.jito_tip_ix(0));
 
             let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, keypair)?;
             let sig = self.send_transaction(&tx).await?;

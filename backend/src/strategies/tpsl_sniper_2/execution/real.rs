@@ -460,6 +460,13 @@ async fn sell_until_balance_cleared(
             Some(e) => (e.token.is_cashback_enabled, e.is_migrated),
             None => (false, false),
         };
+        // Escalate the Jito tip each retry (attempt is 1-based → level 0 on the
+        // first try): a sell that lost the auction just didn't land, so bid up to
+        // win the next block rather than re-send the same losing tip.
+        let tip_level = (attempt - 1) as u8;
+        // confirm = false: this loop already confirms by polling the
+        // LaserStream-fed `trades` balance below, so the trader skips its
+        // redundant inner 1s RPC poll and returns as soon as the tx is accepted.
         let sell_result = if is_migrated {
             trader
                 .amm_sell(
@@ -469,19 +476,27 @@ async fn sell_until_balance_cleared(
                     None,
                     token_account_override.as_deref(),
                     None,
+                    tip_level,
+                    false,
                 )
                 .await
         } else {
             trader
-                .sell_token_once(&mint, amount, None, is_cashback, token_account_override.as_deref(), None)
+                .sell_token_once(&mint, amount, None, is_cashback, token_account_override.as_deref(), None, tip_level, false)
                 .await
         };
         match sell_result {
             Ok(true) => {
-                info!(mint = %mint, attempt, amount, "sell submitted");
-                let mut poll_attempts = 0usize;
-                while poll_attempts < super::SELL_POLL_MAX_ATTEMPTS {
-                    poll_attempts += 1;
+                info!(mint = %mint, attempt, amount, "sell submitted (feed-confirm)");
+                // Confirm via the LaserStream-fed `trades` balance. Poll the FULL
+                // window (poll-then-sleep, so an already-cleared sell returns at
+                // once) before concluding. A feed-confirmed send (confirm=false)
+                // returns before its tx is indexed, so reading the balance once
+                // would show the pre-sell amount and fire a needless duplicate —
+                // the window gives the feed time to catch up.
+                let mut remaining_amount = amount;
+                let mut cleared = false;
+                for poll in 0..super::SELL_POLL_MAX_ATTEMPTS {
                     match trade_repo
                         .net_token_amount_by_wallet_and_mint(&wallet, &mint)
                         .await
@@ -489,27 +504,29 @@ async fn sell_until_balance_cleared(
                         Ok(balance) => {
                             let remaining = balance.max(0.0);
                             if remaining <= super::PARTIAL_FILL_THRESHOLD {
-                                info!(mint = %mint, attempt, amount,
-                                    "sell completed, no remaining balance");
-                                return true;
+                                info!(mint = %mint, attempt, "sell cleared the balance");
+                                cleared = true;
+                                break;
                             }
-                            warn!(mint = %mint, attempt, remaining,
-                                "partial fill detected, retrying remaining amount");
-                            amount = remaining as u64;
-                            break;
+                            remaining_amount = remaining as u64;
                         }
                         Err(err) => warn!("Failed to query net token balance: {err}"),
                     }
-                    sleep(Duration::from_millis(super::SELL_POLL_INTERVAL_MS)).await;
+                    if poll + 1 < super::SELL_POLL_MAX_ATTEMPTS {
+                        sleep(Duration::from_millis(super::SELL_POLL_INTERVAL_MS)).await;
+                    }
                 }
-
-                if poll_attempts >= super::SELL_POLL_MAX_ATTEMPTS {
-                    warn!(
-                        mint = %mint,
-                        "Timed out waiting for sell confirmations; remaining amount: {}", amount
-                    );
-                    return false;
+                if cleared {
+                    return true;
                 }
+                // Not cleared within the window: a partial fill retries the
+                // remainder; an unchanged balance means the tx never landed, so
+                // the next attempt re-sends with an escalated Jito tip (the outer
+                // loop bumps `tip_level`). Bounded by SELL_MAX_ATTEMPTS, after
+                // which the function returns false → position marked ExitFailed.
+                warn!(mint = %mint, attempt, remaining = remaining_amount,
+                    "sell not cleared within poll window; retrying with a higher tip");
+                amount = remaining_amount;
             }
             Ok(false) => warn!(mint = %mint, attempt, amount, "sell returned false (no-op)"),
             Err(err) => warn!(mint = %mint, attempt, amount, "sell error: {err}"),

@@ -32,6 +32,7 @@ mod amm;
 mod blockhash;
 mod buy;
 mod init;
+mod jito_tip;
 mod nonce;
 mod pool;
 mod query;
@@ -40,12 +41,14 @@ mod sell;
 mod tx;
 
 use blockhash::BlockhashCache;
+use jito_tip::JitoTipCache;
 use reserves::ReserveCache;
 
 use crate::constants::{
-    EVENT_AUTHORITY, FEE_PROGRAM_ID, PUMP_FUN_PROGRAM_ID, PUMP_PROGRAM_UPGRADE_FEE_RECIPIENT,
-    PUMP_SWAP_PROGRAM_ID, WSOL_MINT,
+    EVENT_AUTHORITY, FEE_PROGRAM_ID, JITO_TIP_ACCOUNTS, PUMP_FUN_PROGRAM_ID,
+    PUMP_PROGRAM_UPGRADE_FEE_RECIPIENT, PUMP_SWAP_PROGRAM_ID, WSOL_MINT,
 };
+use rand::seq::SliceRandom;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::system_program;
 use solana_sdk::{
@@ -137,7 +140,10 @@ pub(crate) struct AmmGlobalConfig {
 #[derive(Debug)]
 pub struct TraderConfig {
     pub rpc_url: String,
-    pub helius_sender_url: String,
+    /// One or more Helius Sender endpoints. A transaction is fanned out to all of
+    /// them concurrently (same signature → on-chain dedup, Jito tip paid once);
+    /// a single entry is the plain single-endpoint path. Must be non-empty.
+    pub helius_sender_urls: Vec<String>,
     pub keypair: Keypair,
     pub nonce_accounts: Vec<String>,
 }
@@ -153,10 +159,18 @@ pub struct PumpFunTrader {
 
     // Set once in initialize()
     global_account: Option<GlobalAccount>,
-    compute_budget_ixs: Vec<Instruction>,
-    // Built once in `initialize` and never mutated afterwards, so it needs no
-    // interior mutability — read directly on every buy/sell.
-    jito_tip_ix: Option<Instruction>,
+    // Pre-built compute-budget instruction pairs (CU limit + price), built once
+    // at init and cloned per tx. Split by path because the priority fee scales
+    // with the requested CU limit, and curve trades are far lighter than AMM
+    // swaps — see constants::COMPUTE_UNIT_LIMIT_*.
+    cu_ixs_curve_buy: Vec<Instruction>,
+    cu_ixs_curve_sell: Vec<Instruction>,
+    cu_ixs_amm: Vec<Instruction>,
+    // Jito tip: a fixed tip account (chosen once per instance) plus a
+    // background-refreshed tip-floor cache that sizes the tip amount per trade.
+    // See jito_tip.rs.
+    jito_tip_account: Pubkey,
+    jito_tip_cache: Arc<JitoTipCache>,
 
     // Nonce management
     nonce_pubkeys: Vec<Pubkey>,
@@ -248,13 +262,23 @@ impl PumpFunTrader {
         )
         .0;
 
+        // Jito tip account — one chosen at random per trader instance; the tip
+        // *amount* is sized per trade from the live tip-floor cache (jito_tip.rs).
+        let jito_tip_account = JITO_TIP_ACCOUNTS
+            .choose(&mut rand::thread_rng())
+            .and_then(|s| Pubkey::from_str(s).ok())
+            .expect("JITO_TIP_ACCOUNTS must be non-empty and contain valid pubkeys");
+
         Self {
             config,
             http: reqwest::Client::new(),
             rpc,
             global_account: None,
-            compute_budget_ixs: Vec::new(),
-            jito_tip_ix: None,
+            cu_ixs_curve_buy: Vec::new(),
+            cu_ixs_curve_sell: Vec::new(),
+            cu_ixs_amm: Vec::new(),
+            jito_tip_account,
+            jito_tip_cache: Arc::new(JitoTipCache::default()),
             nonce_pubkeys: Vec::new(),
             nonce_cursor: AtomicUsize::new(0),
             nonce_slots: Arc::new(Mutex::new(HashMap::new())),

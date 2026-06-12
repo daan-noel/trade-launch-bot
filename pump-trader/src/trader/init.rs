@@ -6,15 +6,15 @@
 // helpers.
 // ============================================================
 
+use super::jito_tip::refresh_tip_floor;
 use super::{GlobalAccount, NonceSlot, PumpFunTrader};
 use crate::constants::{
-    BLOCKHASH_REFRESH_MS, BUY_SEED_POOL_SIZE, COMPUTE_UNIT_LIMIT,
-    COMPUTE_UNIT_PRICE_MICRO_LAMPORTS, JITO_TIP_ACCOUNTS, LAMPORTS_PER_SOL, MIN_JITO_TIP_SOL,
-    TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID,
+    BLOCKHASH_REFRESH_MS, BUY_SEED_POOL_SIZE, COMPUTE_UNIT_LIMIT_AMM, COMPUTE_UNIT_LIMIT_CURVE_BUY,
+    COMPUTE_UNIT_LIMIT_CURVE_SELL, COMPUTE_UNIT_PRICE_MICRO_LAMPORTS, JITO_TIP_FLOOR_REFRESH_MS,
+    JITO_TIP_PERCENTILE, MAX_JITO_TIP_SOL, MIN_JITO_TIP_SOL, TOKEN_2022_PROGRAM_ID,
+    TOKEN_PROGRAM_ID,
 };
 use anyhow::{Context, Result};
-use rand::seq::SliceRandom;
-use solana_sdk::system_instruction;
 use solana_sdk::{compute_budget::ComputeBudgetInstruction, pubkey::Pubkey, signature::Signer};
 use std::collections::HashSet;
 use std::str::FromStr;
@@ -45,27 +45,54 @@ impl PumpFunTrader {
             .await
             .context("Failed to get rent for token-2022 account")?;
 
-        // 3. Compute budget instructions — built once, cloned per tx
-        self.compute_budget_ixs = vec![
-            ComputeBudgetInstruction::set_compute_unit_limit(COMPUTE_UNIT_LIMIT),
-            ComputeBudgetInstruction::set_compute_unit_price(COMPUTE_UNIT_PRICE_MICRO_LAMPORTS),
+        // 3. Compute budget instructions — built once, cloned per tx. The CU
+        // limit is sized per path (curve trades are far lighter than AMM swaps),
+        // so the priority fee = price × limit isn't inflated by sizing every tx
+        // for the heaviest path. Shared price ix, per-path limit ix.
+        let price_ix =
+            ComputeBudgetInstruction::set_compute_unit_price(COMPUTE_UNIT_PRICE_MICRO_LAMPORTS);
+        self.cu_ixs_curve_buy = vec![
+            ComputeBudgetInstruction::set_compute_unit_limit(COMPUTE_UNIT_LIMIT_CURVE_BUY),
+            price_ix.clone(),
+        ];
+        self.cu_ixs_curve_sell = vec![
+            ComputeBudgetInstruction::set_compute_unit_limit(COMPUTE_UNIT_LIMIT_CURVE_SELL),
+            price_ix.clone(),
+        ];
+        self.cu_ixs_amm = vec![
+            ComputeBudgetInstruction::set_compute_unit_limit(COMPUTE_UNIT_LIMIT_AMM),
+            price_ix,
         ];
         info!(
-            "⚡ Priority fee: {} µlamports/cu",
-            COMPUTE_UNIT_PRICE_MICRO_LAMPORTS
+            "⚡ Priority fee: {} µlamports/cu | CU limit (buy/sell/amm): {}/{}/{}",
+            COMPUTE_UNIT_PRICE_MICRO_LAMPORTS,
+            COMPUTE_UNIT_LIMIT_CURVE_BUY,
+            COMPUTE_UNIT_LIMIT_CURVE_SELL,
+            COMPUTE_UNIT_LIMIT_AMM,
         );
 
-        // 4. Jito tip instruction — built once, reused every tx
-        let jito_lamports = (MIN_JITO_TIP_SOL * LAMPORTS_PER_SOL as f64) as u64;
-        let tip_account = JITO_TIP_ACCOUNTS
-            .choose(&mut rand::thread_rng())
-            .context("No Jito tip accounts")?;
-        self.jito_tip_ix = Some(system_instruction::transfer(
-            &self.config.keypair.pubkey(),
-            &Pubkey::from_str(tip_account)?,
-            jito_lamports,
-        ));
-        info!("💸 Jito tip: {} lamports → {}", jito_lamports, tip_account);
+        // 4. Jito tip — sized per trade from Jito's live tip-floor feed (see
+        // jito_tip.rs). Prime the cache once so the first trade is already warm,
+        // then refresh it in the background like the blockhash cache (step 8).
+        if let Err(e) = refresh_tip_floor(&self.http, &self.jito_tip_cache).await {
+            warn!("Initial Jito tip-floor fetch failed (using floor): {e}");
+        }
+        {
+            let http = self.http.clone();
+            let cache = self.jito_tip_cache.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(JITO_TIP_FLOOR_REFRESH_MS)).await;
+                    if let Err(e) = refresh_tip_floor(&http, &cache).await {
+                        warn!("Jito tip-floor refresh failed: {e}");
+                    }
+                }
+            });
+        }
+        info!(
+            "💸 Jito tip: dynamic — p{} of live tip-floor, clamped {}–{} SOL → {}",
+            JITO_TIP_PERCENTILE, MIN_JITO_TIP_SOL, MAX_JITO_TIP_SOL, self.jito_tip_account
+        );
 
         // 5. Parse & deduplicate nonce accounts
         self.collect_nonce_pubkeys()?;

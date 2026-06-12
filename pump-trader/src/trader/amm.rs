@@ -86,12 +86,10 @@ impl PumpFunTrader {
             )
             .await?;
 
-        let mut ixs = Vec::with_capacity(core_ixs.len() + self.compute_budget_ixs.len() + 1);
-        ixs.extend_from_slice(&self.compute_budget_ixs);
+        let mut ixs = Vec::with_capacity(core_ixs.len() + self.cu_ixs_amm.len() + 1);
+        ixs.extend_from_slice(&self.cu_ixs_amm);
         ixs.extend(core_ixs);
-        if let Some(tip) = &self.jito_tip_ix {
-            ixs.push(tip.clone());
-        }
+        ixs.push(self.jito_tip_ix(0));
 
         // Recent blockhash (not durable nonce): the swap already carries ~27
         // accounts, and a nonce-advance would push the legacy tx over 1232 bytes.
@@ -118,6 +116,13 @@ impl PumpFunTrader {
     }
 
     /// Sell `token_amount` raw base-token units of a migrated token on the AMM.
+    /// `tip_level` escalates the Jito tip on retries (0 = first attempt); a
+    /// caller-driven retry loop passes its attempt index so a sell that lost the
+    /// auction bids up next time (see `jito_tip::JitoTipCache::tip_lamports_for_level`).
+    /// `confirm` mirrors `sell_token_once`: `true` blocks on the RPC poll;
+    /// `false` returns once the sender accepts and leaves confirmation to the
+    /// caller's LaserStream-fed feed (the live TPSL balance poll).
+    #[allow(clippy::too_many_arguments)]
     pub async fn amm_sell(
         &self,
         token_mint: &str,
@@ -126,6 +131,8 @@ impl PumpFunTrader {
         pool_override: Option<&str>,
         token_account_override: Option<&str>,
         slippage_bps: Option<u64>,
+        tip_level: u8,
+        confirm: bool,
     ) -> Result<bool> {
         let t0 = Instant::now();
         let user = self.config.keypair.pubkey();
@@ -144,12 +151,10 @@ impl PumpFunTrader {
                 )
                 .await?;
 
-            let mut ixs = Vec::with_capacity(core_ixs.len() + self.compute_budget_ixs.len() + 1);
-            ixs.extend_from_slice(&self.compute_budget_ixs);
+            let mut ixs = Vec::with_capacity(core_ixs.len() + self.cu_ixs_amm.len() + 1);
+            ixs.extend_from_slice(&self.cu_ixs_amm);
             ixs.extend(core_ixs);
-            if let Some(tip) = &self.jito_tip_ix {
-                ixs.push(tip.clone());
-            }
+            ixs.push(self.jito_tip_ix(tip_level));
 
             let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, &self.config.keypair)?;
             let sig = self.send_transaction(&tx).await?;
@@ -159,12 +164,16 @@ impl PumpFunTrader {
                 token_amount,
                 t0.elapsed().as_millis()
             );
-            self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES).await?;
-            info!(
-                "✅ AMM sell confirmed — sig: {} | {}ms",
-                sig,
-                t0.elapsed().as_millis()
-            );
+            // See `sell_token_once`: skip the redundant RPC poll on the
+            // feed-confirmed path (the caller watches the LaserStream `trades`).
+            if confirm {
+                self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES).await?;
+                info!(
+                    "✅ AMM sell confirmed — sig: {} | {}ms",
+                    sig,
+                    t0.elapsed().as_millis()
+                );
+            }
             Ok(true)
         }
         .await;
@@ -785,7 +794,7 @@ fn read_u64(data: &[u8], off: usize) -> Result<u64> {
 mod tests {
     use super::{read_u64, AmmGlobalConfig, AmmPoolInfo, PumpFunTrader, BUY_DISC, SELL_DISC};
     use crate::constants::{
-        COMPUTE_UNIT_LIMIT, COMPUTE_UNIT_PRICE_MICRO_LAMPORTS, TOKEN_2022_PROGRAM_ID,
+        COMPUTE_UNIT_LIMIT_AMM, COMPUTE_UNIT_PRICE_MICRO_LAMPORTS, TOKEN_2022_PROGRAM_ID,
         TOKEN_PROGRAM_ID, WSOL_MINT,
     };
     use crate::trader::TraderConfig;
@@ -830,7 +839,7 @@ mod tests {
     fn dummy_trader() -> PumpFunTrader {
         let config = Arc::new(TraderConfig {
             rpc_url: "http://localhost".into(),
-            helius_sender_url: "http://localhost".into(),
+            helius_sender_urls: vec!["http://localhost".into()],
             keypair: Keypair::new(),
             nonce_accounts: vec![Pubkey::new_unique().to_string()],
         });
@@ -865,7 +874,7 @@ mod tests {
 
     fn compute_budget_ixs() -> Vec<Instruction> {
         vec![
-            ComputeBudgetInstruction::set_compute_unit_limit(COMPUTE_UNIT_LIMIT),
+            ComputeBudgetInstruction::set_compute_unit_limit(COMPUTE_UNIT_LIMIT_AMM),
             ComputeBudgetInstruction::set_compute_unit_price(COMPUTE_UNIT_PRICE_MICRO_LAMPORTS),
         ]
     }
