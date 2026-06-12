@@ -16,6 +16,16 @@ import type { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { cn } from 'lib/cn';
 
+/**
+ * Token age in seconds, derived client-side from `created_at`. The server no
+ * longer ships a `now`-relative `age` field (it would churn the list body on
+ * every poll and defeat the endpoint's content-hash ETag); deriving it here also
+ * lets the value tick live between fetches.
+ */
+function ageSecondsOf(r: TokenRecord): number {
+  return Math.max(0, (Date.now() - new Date(r.created_at).getTime()) / 1000);
+}
+
 function fep(r: TokenRecord): number | null {
   if (r.initial_buy_sol == null || r.initial_supply_token == null || r.initial_supply_token <= 0) {
     return null;
@@ -128,9 +138,12 @@ export function tokenColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
       group: 'activity',
       width: '72px',
       sortable: true,
-      render: (r) => <span className={ageClass(r.age)}>{formatAge(r.age)}</span>,
-      sortValue: (r) => r.age,
-      searchValue: (r) => formatAge(r.age),
+      render: (r) => {
+        const age = ageSecondsOf(r);
+        return <span className={ageClass(age)}>{formatAge(age)}</span>;
+      },
+      sortValue: (r) => ageSecondsOf(r),
+      searchValue: (r) => formatAge(ageSecondsOf(r)),
     },
     {
       key: 'created',

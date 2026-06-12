@@ -29,7 +29,6 @@ export interface TokenRecord {
   is_migrated: boolean;
   is_mayhem_mode: boolean;
   is_cashback_enabled: boolean;
-  age: number;
   created_at: string;
   create_tx_address: string;
   last_trade_at: string | null;

@@ -1,9 +1,11 @@
-use actix_web::{web, HttpResponse, Responder};
+use actix_web::{http::header, web, HttpRequest, HttpResponse, Responder};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cmp::Ordering;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::{
@@ -46,7 +48,12 @@ pub struct TokenSummary {
     pub ix_labels_count: usize,
     pub instruction_labels: Value,
     pub is_migrated: bool,
-    #[serde(rename = "age")]
+    /// Computed at snapshot-build time, but NOT serialized: the frontend derives
+    /// age from `created_at` so it ticks live, and — more importantly — keeping a
+    /// `now`-derived value out of the response body stops it churning the bytes
+    /// every poll, which would otherwise defeat the list endpoint's ETag (a
+    /// content hash). Still used internally for the `token_age` sort/filter.
+    #[serde(skip)]
     pub age_seconds: i64,
     pub created_at: DateTime<Utc>,
     pub creator_address: String,
@@ -272,6 +279,7 @@ fn default_limit() -> i64 {
 
 /// `GET /api/tokens` — list all currently tracked tokens sorted by trade count.
 pub async fn list_tokens(
+    req: HttpRequest,
     state: web::Data<Arc<AppState>>,
     query: web::Query<PaginationParams>,
 ) -> impl Responder {
@@ -316,18 +324,52 @@ pub async fn list_tokens(
             .take(limit)
             .cloned()
             .collect();
-        TokensListResponse { total, items }
+        let resp = TokensListResponse { total, items };
+
+        // Serialize + fingerprint here, off the async worker pool. The ETag is a
+        // content hash of the page bytes, so a poll that produces a byte-identical
+        // page (no new tokens/trades — `age` is no longer in the body, so it no
+        // longer churns) can revalidate to a bodyless 304 instead of resending.
+        let body = serde_json::to_vec(&resp).unwrap_or_default();
+        let mut hasher = DefaultHasher::new();
+        body.hash(&mut hasher);
+        let etag = format!("\"{:016x}\"", hasher.finish());
+        (body, etag)
     })
     .await;
 
-    match built {
-        Ok(resp) => HttpResponse::Ok().json(resp),
+    let (body, etag) = match built {
+        Ok(v) => v,
         Err(e) => {
             tracing::error!("list_tokens blocking build failed: {e}");
-            HttpResponse::InternalServerError()
-                .json(serde_json::json!({ "error": "failed to build token list" }))
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({ "error": "failed to build token list" }));
         }
+    };
+
+    // Conditional GET: the browser's HTTP cache echoes our last `ETag` back in
+    // `If-None-Match`. `Cache-Control: no-cache` makes it revalidate on every poll
+    // (never serve a stale page without asking), so when the tag still matches we
+    // answer 304 with no body and the browser hands the cached page to the app —
+    // the wire carries only headers. A changed page falls through to a full 200.
+    let if_none_match_hit = req
+        .headers()
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .map(|hdr| hdr.split(',').any(|t| t.trim() == etag))
+        .unwrap_or(false);
+    if if_none_match_hit {
+        return HttpResponse::NotModified()
+            .insert_header((header::ETAG, etag))
+            .insert_header((header::CACHE_CONTROL, "no-cache"))
+            .finish();
     }
+
+    HttpResponse::Ok()
+        .insert_header((header::ETAG, etag))
+        .insert_header((header::CACHE_CONTROL, "no-cache"))
+        .content_type("application/json")
+        .body(body)
 }
 
 /// `GET /api/tokens/:mint` — token detail from in-memory cache; falls back to DB.
