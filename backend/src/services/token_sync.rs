@@ -1379,3 +1379,166 @@ mod amm_verification {
         assert!(compared > 0, "no transactions compared");
     }
 }
+
+#[cfg(test)]
+mod backfill_persistence {
+    //! DB-backed tests for `persist_backfill` — the helper both the curve loop and
+    //! `sync_amm_trades` route their decoded batch through. Validates the Phase-0
+    //! fix that replaced per-row `let _ = insert(...)` (swallowed errors, watermark
+    //! advanced anyway) with a bulk insert whose failure propagates *before* the
+    //! caller stamps the sync watermark.
+    //!
+    //! `#[ignore]`d like the other DB tests; run against a local Postgres:
+    //!   $env:DATABASE_URL = "postgres://postgres:1220@localhost:5432/meme_bot"
+    //!   cargo test -p backend backfill_persistence -- --ignored --nocapture
+    use super::*;
+    use crate::models::trade::TradeType;
+    use sqlx::postgres::PgPoolOptions;
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    async fn test_pool() -> Option<PgPool> {
+        let url = std::env::var("DATABASE_URL").ok()?;
+        PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .ok()
+    }
+
+    fn uniq(prefix: &str) -> String {
+        format!("{prefix}{}", Uuid::new_v4().simple())
+    }
+
+    fn raw_tx(sig: &str, slot: u64) -> Arc<RawTransaction> {
+        Arc::new(RawTransaction::new(
+            sig.to_string(),
+            slot,
+            Utc::now(),
+            serde_json::json!({"signature": sig}),
+        ))
+    }
+
+    fn trade(mint: &str, wallet: &str, sig: &str, slot: u64) -> Trade {
+        Trade::new(
+            mint.to_string(),
+            wallet.to_string(),
+            TradeType::Buy,
+            0.5,
+            1_000.0,
+            sig.to_string(),
+            slot,
+            Utc::now(),
+        )
+    }
+
+    async fn cleanup(pool: &PgPool, mint: &str, sigs: &[String]) {
+        let _ = sqlx::query("DELETE FROM trades WHERE mint_address = $1")
+            .bind(mint)
+            .execute(pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM raw_transactions WHERE signature = ANY($1)")
+            .bind(sigs)
+            .execute(pool)
+            .await;
+    }
+
+    /// Happy path: a decoded batch is fully persisted — every tx and trade lands —
+    /// and the call returns `Ok`, which is what lets the caller stamp the
+    /// watermark. (The wallet touch is exercised too; `touch_last_seen_many` on an
+    /// unknown address is a no-op UPDATE, so it neither errors nor needs the
+    /// `wallet_profiles` FK chain seeded here.)
+    #[tokio::test]
+    #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
+    async fn persist_backfill_writes_whole_batch_and_returns_ok() {
+        let Some(pool) = test_pool().await else { return };
+        let trade_repo = TradeRepo::new(pool.clone());
+        let tx_repo = TransactionRepo::new(pool.clone());
+        let wallet_repo = WalletRepo::new(pool.clone());
+
+        let mint = uniq("MINT-pb-");
+        let wallet = uniq("W-pb-");
+        let sig_a = uniq("sig-a-");
+        let sig_b = uniq("sig-b-");
+
+        let txs = vec![raw_tx(&sig_a, 10), raw_tx(&sig_b, 11)];
+        let trades = vec![
+            trade(&mint, &wallet, &sig_a, 10),
+            trade(&mint, &wallet, &sig_b, 11),
+        ];
+        let mut wallets = vec![wallet.clone(), wallet.clone()]; // dup → deduped inside
+
+        let res = persist_backfill(
+            &trade_repo,
+            &tx_repo,
+            &wallet_repo,
+            "curve",
+            &txs,
+            &trades,
+            &mut wallets,
+        )
+        .await;
+        assert!(res.is_ok(), "happy path must return Ok: {res:?}");
+        assert_eq!(wallets.len(), 1, "wallet list deduped before the bulk touch");
+
+        let saved = trade_repo
+            .find_by_mint_all(&mint)
+            .await
+            .expect("find trades");
+        assert_eq!(saved.len(), 2, "both trades persisted");
+
+        for sig in [&sig_a, &sig_b] {
+            let exists: bool =
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM raw_transactions WHERE signature=$1)")
+                    .bind(sig)
+                    .fetch_one(&pool)
+                    .await
+                    .expect("check raw tx");
+            assert!(exists, "raw tx {sig} persisted");
+        }
+
+        cleanup(&pool, &mint, &[sig_a, sig_b]).await;
+    }
+
+    /// Failure path: a constraint-violating trade (illegal `venue`) makes the bulk
+    /// insert error, and `persist_backfill` returns `Err`. The caller invokes it as
+    /// `persist_backfill(...).await?` *before* `update_sync_watermark`, so this Err
+    /// is exactly what prevents the watermark from advancing past unpersisted rows
+    /// — the core of the Phase-0 fix.
+    #[tokio::test]
+    #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
+    async fn persist_backfill_propagates_insert_failure() {
+        let Some(pool) = test_pool().await else { return };
+        let trade_repo = TradeRepo::new(pool.clone());
+        let tx_repo = TransactionRepo::new(pool.clone());
+        let wallet_repo = WalletRepo::new(pool.clone());
+
+        let mint = uniq("MINT-pbfail-");
+        let sig = uniq("sig-fail-");
+        let mut bad = trade(&mint, &uniq("W-"), &sig, 10);
+        bad.venue = "not-a-real-venue".to_string(); // violates the venue CHECK
+
+        // Empty tx list so nothing is left behind when the trade insert fails.
+        let res = persist_backfill(
+            &trade_repo,
+            &tx_repo,
+            &wallet_repo,
+            "curve",
+            &[],
+            std::slice::from_ref(&bad),
+            &mut Vec::new(),
+        )
+        .await;
+
+        assert!(
+            matches!(res, Err(SyncError::Internal(_))),
+            "a failed bulk insert must surface as Err (so the watermark is not stamped): {res:?}"
+        );
+
+        // Nothing was persisted for this mint.
+        let saved = trade_repo.find_by_mint_all(&mint).await.expect("find");
+        assert!(saved.is_empty(), "no trade rows on the failure path");
+
+        cleanup(&pool, &mint, &[sig]).await;
+    }
+}
