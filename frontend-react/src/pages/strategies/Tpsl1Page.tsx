@@ -21,6 +21,8 @@ import {
 } from 'components/tpsl1/tableColumns';
 import { fmtTime } from 'components/tpsl1/utils';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
+import { usePolledRules } from 'hooks/usePolledRules';
+import { useRulePositions } from 'hooks/useRulePositions';
 import {
   activateTpsl1Rule,
   createTpsl1Rule,
@@ -35,7 +37,6 @@ import {
   updateTpsl1Rule,
 } from 'services/api';
 import { connectPaperTestStream } from 'services/sse';
-import { POLL_INTERVAL_MS } from 'services/config';
 import type {
   PaperResultResponse,
   PaperRunResponse,
@@ -426,14 +427,20 @@ function ReactivateDialog({
 export function Tpsl1Page() {
   const price = usePriceDisplay();
 
-  const [rules, setRules] = useState<RuleRecord[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Rule list: one initial load then a visibility-gated silent poll, deduped
+  // into a shared hook (see usePolledRules). `loadRules` is the silent/forced
+  // refresh used by the paper-test SSE handler below.
+  const { rules, setRules, loading, error, refresh: loadRules } =
+    usePolledRules(fetchTpsl1Rules);
 
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
-  const [positions, setPositions] = useState<RulePositionRecord[]>([]);
-  const [positionsLoading, setPositionsLoading] = useState(false);
-  const [positionsError, setPositionsError] = useState<string | null>(null);
+  // Positions for the selected rule: abortable fetch on select, then a silent
+  // poll that pauses when the tab is hidden and stops once the rule is settled.
+  const {
+    positions,
+    loading: positionsLoading,
+    error: positionsError,
+  } = useRulePositions(selectedRuleId, rules, fetchTpsl1RulePositions);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editRule, setEditRule] = useState<RuleRecord | null>(null);
@@ -474,47 +481,6 @@ export function Tpsl1Page() {
   useEffect(() => {
     openPaperRuleId.current = paperResult?.ruleId ?? null;
   }, [paperResult]);
-
-  const loadRules = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
-    try {
-      const data = await fetchTpsl1Rules();
-      setRules(data);
-      setError(null);
-    } catch (e) {
-      if (!silent) setError(e instanceof Error ? e.message : 'Failed to load rules');
-    } finally {
-      if (!silent) setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadRules();
-    const id = setInterval(() => loadRules(true), POLL_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [loadRules]);
-
-  useEffect(() => {
-    if (!selectedRuleId) {
-      setPositions([]);
-      setPositionsError(null);
-      return;
-    }
-    setPositionsLoading(true);
-    fetchTpsl1RulePositions(selectedRuleId)
-      .then(setPositions)
-      .catch((e) =>
-        setPositionsError(e instanceof Error ? e.message : 'Failed to load positions'),
-      )
-      .finally(() => setPositionsLoading(false));
-
-    const id = setInterval(() => {
-      fetchTpsl1RulePositions(selectedRuleId)
-        .then(setPositions)
-        .catch(() => {});
-    }, POLL_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [selectedRuleId]);
 
   // Live paper-test completion: when a run finishes (cap reached + all exited)
   // the backend auto-deactivates the rule and broadcasts `paper_test_finished`.

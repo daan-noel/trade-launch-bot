@@ -188,8 +188,9 @@ export async function fetchTpsl1PaperResult(
 
 export async function fetchTpsl1RulePositions(
   ruleId: string,
+  signal?: AbortSignal,
 ): Promise<import('types').RulePositionRecord[]> {
-  return request(`${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/positions`);
+  return request(`${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/positions`, { signal });
 }
 
 /**
@@ -306,8 +307,9 @@ export async function fetchTpsl2PaperResult(
 
 export async function fetchTpsl2RulePositions(
   ruleId: string,
+  signal?: AbortSignal,
 ): Promise<import('types').RulePositionRecord[]> {
-  return request(`${API_BASE}/api/strategies/tpsl2/rules/${ruleId}/positions`);
+  return request(`${API_BASE}/api/strategies/tpsl2/rules/${ruleId}/positions`, { signal });
 }
 
 /**
