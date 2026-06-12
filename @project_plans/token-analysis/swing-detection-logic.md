@@ -87,9 +87,13 @@ began, not the opener's own execution price.)
 
 ---
 
-## 4. Parameters (`SwingParams`) — 12 fields
+## 4. Parameters (`SwingParams`) — 21 fields
 
-Sent as JSON. Defaults applied per-field via serde; `{}` ⇒ all defaults.
+Sent as JSON. Defaults applied per-field via serde; `{}` ⇒ all defaults. The fields
+split into four groups: **reversal thresholds**, **leg quality filters**, **per-leg-type
+magnitude bounds**, and the **big-tx threshold**.
+
+### 4a. Reversal thresholds (govern when a leg ends)
 
 | Param                        | Default | Type | Meaning |
 |------------------------------|--------:|------|---------|
@@ -97,7 +101,12 @@ Sent as JSON. Defaults applied per-field via serde; `{}` ⇒ all defaults.
 | `high_to_low_threshold_pct`  | `50.0`  | f64  | Percent (0–100) of the current high's `|net_flow|` to confirm High→Low. `0` = no bound. |
 | `low_to_high_threshold_sol`  | `5.0`   | f64  | Absolute SOL to confirm a Low→High reversal. `0` = no bound. |
 | `low_to_high_threshold_pct`  | `50.0`  | f64  | Percent of the current low's `|net_flow|` to confirm Low→High. `0` = no bound. |
-| `min_leg_trades`             | `2`     | u32  | Quality filter: leg fails if `trade_count <` this. |
+
+### 4b. Leg quality filters (post-detection, magnitude-based — §6)
+
+| Param                        | Default | Type | Meaning |
+|------------------------------|--------:|------|---------|
+| `min_leg_trades`             | `2`     | u32  | Leg fails if `trade_count <` this. |
 | `min_leg_duration_ms`        | `0`     | i64  | Leg fails if `duration_ms <` this. |
 | `min_leg_volume`             | `0.0`   | f64  | Leg fails if `inflow+outflow <` this. |
 | `min_leg_net_flow`           | `0.0`   | f64  | Leg fails if `|net_flow| <` this. |
@@ -105,6 +114,32 @@ Sent as JSON. Defaults applied per-field via serde; `{}` ⇒ all defaults.
 | `max_leg_duration_ms`        | `0`     | i64  | If `>0`: leg fails if `duration_ms >` this. |
 | `max_leg_volume`             | `0.0`   | f64  | If `>0`: leg fails if `inflow+outflow >` this. |
 | `max_leg_net_flow`           | `0.0`   | f64  | If `>0`: leg fails if `|net_flow| >` this. |
+
+### 4c. Per-leg-type magnitude bounds (compared by absolute value — §6)
+
+Swing-low legs have **negative** delta % and net flow, so all bounds are compared by
+**magnitude** (`abs()`) — a swing low uses the same positive threshold as a swing high.
+`0` = no bound on every field.
+
+- **Delta % magnitude** = `|(end_price − start_price) / start_price × 100|`.
+- **Net flow per second** = `|net_flow / (duration_ms/1000)|`; **skipped** for 0-duration legs (rate undefined).
+
+| Param                                | Default | Type | Meaning |
+|--------------------------------------|--------:|------|---------|
+| `swing_high_min_delta_pct`           | `0.0`   | f64  | High fails if delta-% magnitude `<` this. |
+| `swing_high_max_delta_pct`           | `0.0`   | f64  | High fails if delta-% magnitude `>` this (when `>0`). |
+| `swing_high_min_net_flow_per_sec`    | `0.0`   | f64  | High fails if net-flow/s magnitude `<` this. |
+| `swing_high_max_net_flow_per_sec`    | `0.0`   | f64  | High fails if net-flow/s magnitude `>` this (when `>0`). |
+| `swing_low_min_delta_pct`            | `0.0`   | f64  | Low fails if delta-% magnitude `<` this. |
+| `swing_low_max_delta_pct`            | `0.0`   | f64  | Low fails if delta-% magnitude `>` this (when `>0`). |
+| `swing_low_min_net_flow_per_sec`     | `0.0`   | f64  | Low fails if net-flow/s magnitude `<` this. |
+| `swing_low_max_net_flow_per_sec`     | `0.0`   | f64  | Low fails if net-flow/s magnitude `>` this (when `>0`). |
+
+### 4d. Big-transaction threshold
+
+| Param        | Default | Type | Meaning |
+|--------------|--------:|------|---------|
+| `big_tx_sol` | `0.0`   | f64  | `0` = disabled. When `>0`, a single tx with `sol_amount >= big_tx_sol` does two things: **(a)** it confirms a reversal *immediately* on that tx, bypassing the net-flow reversal threshold; and **(b)** it anchors the leg's **terminal pivot** (`pivot_end_*`) to the LAST such same-side big tx — the real pump/dump point — instead of the chronologically last (possibly dust) trade. |
 
 (Frontend default mirror lives in `DEFAULT_SWING_PARAMS`. Empty form fields coerce to `0`.)
 
@@ -150,16 +185,23 @@ side amount, `trade_count = 1`); later same-side txs only extend it.
 **Initialization** — from the first tx: BUY ⇒ seed `current_high`, phase `SwingHigh`.
 SELL ⇒ seed `current_low`, phase `SwingLow`.
 
+**Big-tx override (`is_big`):** a single tx with `sol_amount >= big_tx_sol` (and
+`big_tx_sol > 0`) forces a confirm on its own, OR-ed into every confirm check below
+(`temp.outflow >= threshold || is_big(tx)`). When `big_tx_sol = 0` the override is dead
+and only the accumulated net-flow threshold governs.
+
 ### SwingHigh
-- **BUY** → `apply_buy`: `inflow += sol`, `end_at/end_price = tx`, `trade_count++`.
+- **BUY** → `apply_buy`: `inflow += sol`, `end_at/end_price = tx`, `trade_count++`,
+  `consider_pivot` (advance the leg's max-spot extreme; record this tx if it's a big tx).
 - **SELL** → open `temp_low` seeded from this SELL (`outflow = sol`, counts immediately),
   freeze `high→low` threshold off `current_high.net_flow`, phase → `TempSwingLow`.
-  *Then immediately check:* if `temp.outflow >= threshold`, the reversal confirms on this
-  very SELL (push `current_high` to ledger, `temp` becomes `current_low`, phase → `SwingLow`).
+  *Then immediately check:* if `temp.outflow >= threshold` **or** `is_big(tx)`, the reversal
+  confirms on this very SELL (push `current_high` to ledger, `temp` becomes `current_low`,
+  phase → `SwingLow`).
 
 ### TempSwingLow
-- **SELL** → `temp.outflow += sol`. If `>= threshold` ⇒ **confirm**: push `current_high`,
-  `temp` → `current_low`, phase → `SwingLow`.
+- **SELL** → `temp.outflow += sol`. If `>= threshold` **or** `is_big(tx)` ⇒ **confirm**:
+  push `current_high`, `temp` → `current_low`, phase → `SwingLow`.
 - **BUY** (threshold not reached) → **merge-back**: fold temp's SELLs into the high
   (`high.outflow += temp.outflow`, `high.trade_count += temp.trade_count`; `end_at/end_price`
   untouched — they track the last BUY), phase → `SwingHigh`, then `apply_buy(tx)` once.
@@ -184,6 +226,18 @@ So the raw ledger can end with an unconfirmed/temp leg. Net flow is recomputed a
 `net_flow = inflow - outflow` (positive for highs, negative for lows). `duration_ms =
 end_at - start_at`.
 
+### Terminal pivot (`pivot_end_*`) — charting anchor, never affects stats
+Each `LegAcc` tracks two extra cursors that **do not** touch any stat or filter:
+- `extreme_*` — the leg's price extreme: **max** post-spot for a high, **min** for a low,
+  updated on every same-side tx via `consider_pivot`.
+- `last_big_*` — timestamp/price of the **last** same-side tx with `sol_amount >= big_tx_sol`
+  (only tracked when `big_tx_sol > 0`).
+
+At `finalize`, the **terminal pivot** = `last_big_*` if the leg contained any big tx, else
+`extreme_*`. This is the "real" pump/dump point the chart draws a leg's end at, distinct from
+`end_*` (the full-leg chronological span used by stats and filters). When `big_tx_sol = 0`
+the pivot is always the price extreme.
+
 ---
 
 ## 6. Quality filter (`apply_quality_filter`) — pair-based
@@ -191,9 +245,13 @@ end_at - start_at`.
 Walk the ledger; form **fixed, non-overlapping `(swing_high, swing_low)` pairs** (a high
 immediately followed by a low).
 
-A single leg **fails** if **any** bound is violated:
+A single leg **fails** if **any** bound is violated. The per-leg-type bounds (§4c) pick the
+`swing_high_*` set for highs and the `swing_low_*` set for lows, and compare by **magnitude**:
 
 ```
+let delta_pct_abs   = start_price != 0 ? |(end_price-start_price)/start_price*100| : 0
+let nf_per_sec_abs  = duration_ms > 0  ? |net_flow / (duration_ms/1000)|  : None   // skipped if 0-duration
+
 trade_count < min_leg_trades
 || duration_ms < min_leg_duration_ms
 || |net_flow| < min_leg_net_flow
@@ -202,7 +260,15 @@ trade_count < min_leg_trades
 || (max_leg_duration > 0 && duration_ms   > max_leg_duration_ms)
 || (max_leg_net_flow > 0 && |net_flow|    > max_leg_net_flow)
 || (max_leg_volume   > 0 && inflow+outflow > max_leg_volume)
+|| (min_delta_pct    > 0 && delta_pct_abs  < min_delta_pct)
+|| (max_delta_pct    > 0 && delta_pct_abs  > max_delta_pct)
+|| (min_nf_per_sec   > 0 && nf_per_sec_abs.is_some_and(|r| r < min_nf_per_sec))
+|| (max_nf_per_sec   > 0 && nf_per_sec_abs.is_some_and(|r| r > max_nf_per_sec))
 ```
+
+(`min/max_delta_pct` and `min/max_nf_per_sec` resolve to the leg-type-specific params from §4c.
+A 0-duration leg has `nf_per_sec_abs = None`, so the two net-flow-per-second bounds are simply
+skipped for it rather than dividing by zero.)
 
 **Discard rule:** a pair is kept **only if NEITHER leg fails**; if **either** leg fails, the
 **whole pair is dropped**. An **unpaired** leg (a leading lone `swing_low` or a trailing lone
@@ -222,17 +288,23 @@ Backend `SwingLeg` == frontend `SwingLegRecord`:
 ```ts
 interface SwingLegRecord {
   type: 'swing_high' | 'swing_low';
-  start_at: number;     // ms epoch — first tx of the leg
-  end_at: number;       // ms epoch — last same-side tx
-  duration_ms: number;  // end_at - start_at
-  start_price: number;  // pre-trade curve spot before the leg opened
-  end_price: number;    // post-trade curve spot of the last same-side tx
-  inflow: number;       // total buy SOL
-  outflow: number;      // total sell SOL
-  net_flow: number;     // inflow - outflow  (+ for high, − for low)
+  start_at: number;        // ms epoch — first tx of the leg
+  end_at: number;          // ms epoch — last same-side tx (full-leg span; stats/filters use this)
+  duration_ms: number;     // end_at - start_at
+  start_price: number;     // pre-trade curve spot before the leg opened
+  end_price: number;       // post-trade curve spot of the last same-side tx
+  pivot_end_at: number;    // ms epoch — terminal pivot: last big same-side tx, else price extreme (§5)
+  pivot_end_price: number; // price at the terminal pivot — the chart's leg-end anchor
+  inflow: number;          // total buy SOL
+  outflow: number;         // total sell SOL
+  net_flow: number;        // inflow - outflow  (+ for high, − for low)
   trade_count: number;
 }
 ```
+
+`pivot_end_*` is for **charting only** — it marks the real pump/dump point so a leg's drawn
+endpoint lands on the decisive big tx (or the price extreme) rather than a trailing dust trade.
+All stats, filters, and `duration_ms` use `end_*`, never the pivot.
 
 Single-token response: `{ mint, params, count, swings[] }`.
 Batch response: `{ params, results: [{ mint, count, swings[] }] }` — one entry per requested
@@ -340,9 +412,14 @@ passed as `highlightChain` and drawn as a background band.
    same-side post-spot.
 3. Run the 4-phase machine; freeze threshold = `min(sol_bound, pct_bound)` with `0 ⇒ +∞`,
    basis = active leg's `|net_flow|` snapshotted at temp open; **re-snapshot** each temp.
+   OR every confirm check with `is_big(tx)` (`big_tx_sol > 0 && sol_amount >= big_tx_sol`).
 4. Merge-back sub-threshold pokes (fold opposite flow + trade_count; keep end_* on same side).
-5. Flush keeps the trailing active **and** temp leg.
-6. Quality filter on `(high, low)` pairs: drop the pair if **either** leg fails; keep unpaired
-   legs untouched.
-7. Everything in **SOL**; `net_flow > 0` ⇒ high, `< 0` ⇒ low.
+5. Track the terminal pivot per leg (last big same-side tx, else price extreme) for charting;
+   it never feeds stats/filters.
+6. Flush keeps the trailing active **and** temp leg.
+7. Quality filter on `(high, low)` pairs: drop the pair if **either** leg fails; keep unpaired
+   legs untouched. Bounds compare by **magnitude** (so swing lows reuse positive thresholds);
+   per-leg-type delta-% and net-flow/s bounds pick the matching `swing_high_*`/`swing_low_*` set,
+   and net-flow/s is skipped for 0-duration legs.
+8. Everything in **SOL**; `net_flow > 0` ⇒ high, `< 0` ⇒ low.
 ```
