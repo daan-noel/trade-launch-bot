@@ -6,12 +6,27 @@ import type { AppSettings } from 'services/api';
 import type { TokenFilters } from 'components/tokens/filters';
 import type { SortDir } from 'components/table/types';
 import type {
+  MatchedTokenRecord,
+  PaperResultResponse,
+  SimulatedTokenResult,
   TokenDetailRecord,
   TokenRecord,
   TradeRecord,
   WalletHolding,
   WalletPrice,
 } from 'types';
+
+/** Args for the per-rule strategy result reads (matched / simulate / paper),
+ *  shared by both strategy pages so tpsl1 and tpsl2 keep distinct cache keys. */
+export interface StrategyRuleArg {
+  strategy: 'tpsl1' | 'tpsl2';
+  ruleId: string;
+}
+
+/** Cache tag for a rule's `matched` + `simulate` results — both derive from the
+ *  rule's entry criteria, so editing the rule invalidates the pair. */
+const strategyResultTag = (a: StrategyRuleArg) =>
+  ({ type: 'StrategyResult', id: `${a.strategy}:${a.ruleId}` }) as const;
 
 export interface TokensArgs {
   search: string;
@@ -92,7 +107,7 @@ export const apiSlice = createApi({
   baseQuery: fetchBaseQuery({ baseUrl: API_BASE }),
   keepUnusedDataFor: 300,
   refetchOnMountOrArgChange: false,
-  tagTypes: ['Settings', 'LiveMode', 'WalletHoldings'],
+  tagTypes: ['Settings', 'LiveMode', 'WalletHoldings', 'StrategyResult', 'StrategyPaper'],
   endpoints: (builder) => ({
     getTokens: builder.query<TokensResponse, TokensArgs>({
       query: ({ search, limit, offset }) => {
@@ -133,6 +148,32 @@ export const apiSlice = createApi({
       },
       transformResponse: withCreatedMs,
       keepUnusedDataFor: 30,
+    }),
+    // Per-rule strategy result reads. Driven imperatively from the strategy
+    // pages via `endpoints.X.initiate` (the pages keep their own open/toggle
+    // state), so folding them into RTK Query buys dedupe + structural sharing +
+    // a short retention: re-opening a view or switching rules and back reuses
+    // the cache instead of re-hitting the backend. `matched`/`simulate` are
+    // tagged by rule so a rule edit can invalidate them; `paper-result` is
+    // force-refetched on the paper-finished SSE event.
+    getStrategyMatched: builder.query<MatchedTokenRecord[], StrategyRuleArg>({
+      query: ({ strategy, ruleId }) =>
+        `/api/strategies/${strategy}/rules/${encodeURIComponent(ruleId)}/matched`,
+      providesTags: (_r, _e, a) => [strategyResultTag(a)],
+      keepUnusedDataFor: 60,
+    }),
+    getStrategySimulate: builder.query<SimulatedTokenResult[], StrategyRuleArg>({
+      query: ({ strategy, ruleId }) =>
+        `/api/strategies/${strategy}/rules/${encodeURIComponent(ruleId)}/simulate`,
+      providesTags: (_r, _e, a) => [strategyResultTag(a)],
+      keepUnusedDataFor: 60,
+    }),
+    getStrategyPaperResult: builder.query<PaperResultResponse, StrategyRuleArg>({
+      query: ({ strategy, ruleId }) =>
+        `/api/strategies/${strategy}/rules/${encodeURIComponent(ruleId)}/paper-result`,
+      providesTags: (_r, _e, a) => [
+        { type: 'StrategyPaper', id: `${a.strategy}:${a.ruleId}` },
+      ],
     }),
     getTokenDetail: builder.query<TokenDetailRecord, string>({
       query: (mint) => `/api/tokens/${encodeURIComponent(mint)}`,

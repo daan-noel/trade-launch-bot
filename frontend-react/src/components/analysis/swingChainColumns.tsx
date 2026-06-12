@@ -6,9 +6,15 @@ import type { SwingChainStats } from './swingChains';
  * The three "Chain of Swings" columns appended to the tokens table after a
  * global swing-detection run. `statsByMint` holds per-token results; tokens not
  * yet analysed render a dash and sort last.
+ *
+ * `sortable` defaults to true (client-side tables). Pass `false` when the host
+ * table is server-side paged: these columns are derived in the browser, so the
+ * backend can't order by them — a clickable header would emit a sort the server
+ * silently ignores, leaving a misleading arrow.
  */
 export function swingChainColumns(
   statsByMint: Map<string, SwingChainStats>,
+  sortable = true,
 ): ColumnDef<TokenRecord>[] {
   const stat = (r: TokenRecord) => statsByMint.get(r.mint_address);
 
@@ -21,7 +27,7 @@ export function swingChainColumns(
     key,
     label,
     width,
-    sortable: true,
+    sortable,
     render: (r) => {
       const s = stat(r);
       return s ? pick(s) : '—';

@@ -23,20 +23,27 @@ import { fmtTime } from 'components/tpsl2/utils';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { usePolledRules } from 'hooks/usePolledRules';
 import { useRulePositions } from 'hooks/useRulePositions';
+import { useDispatch } from 'react-redux';
 import {
   activateTpsl2Rule,
   createTpsl2Rule,
   deleteTpsl2Rule,
-  fetchTpsl2MatchedTokens,
   fetchTpsl2PaperResult,
   fetchTpsl2RulePositions,
   fetchTpsl2Rules,
   pauseTpsl2Rule,
-  simulateTpsl2Rule,
   stopTpsl2Rule,
   updateTpsl2Rule,
 } from 'services/api';
 import { connectPaperTestStream } from 'services/sse';
+import { apiErrorMessage } from 'store/apiSlice';
+import {
+  fetchMatchedCached,
+  fetchPaperResultCached,
+  fetchSimulateCached,
+  invalidateStrategyResult,
+} from 'store/strategyResultCache';
+import type { AppDispatch } from '../../store';
 import type {
   PaperResultResponse,
   PaperRunResponse,
@@ -534,6 +541,7 @@ const RuleActionsCell = memo(function RuleActionsCell({
 
 export function Tpsl2Page() {
   const price = usePriceDisplay();
+  const dispatch = useDispatch<AppDispatch>();
 
   // Rule list: one initial load then a visibility-gated silent poll, deduped
   // into a shared hook (see usePolledRules). `loadRules` is the silent/forced
@@ -599,13 +607,15 @@ export function Tpsl2Page() {
       setPaperNotice(ev);
       loadRules(true);
       if (openPaperRuleId.current === ev.rule_id) {
-        fetchTpsl2PaperResult(ev.rule_id)
+        // The run just changed (status → Finished) — force-refetch past any
+        // cached entry so the open view reflects the final state.
+        fetchPaperResultCached(dispatch, { strategy: 'tpsl2', ruleId: ev.rule_id }, true)
           .then((data) => setPaperResult({ ruleId: ev.rule_id, data }))
           .catch(() => {});
       }
     });
     return () => es.close();
-  }, [loadRules]);
+  }, [loadRules, dispatch]);
 
   useEffect(() => {
     if (!paperNotice) return;
@@ -740,6 +750,9 @@ export function Tpsl2Page() {
           buildUpdatePayload(form, allowParams),
         );
         setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
+        // The rule's entry criteria may have changed — drop its cached
+        // matched/simulate results so the next open re-runs.
+        invalidateStrategyResult(dispatch, { strategy: 'tpsl2', ruleId: updated.id });
       } else {
         const created = await createTpsl2Rule(buildCreatePayload(form));
         setRules((prev) => [...prev, created]);
@@ -769,19 +782,22 @@ export function Tpsl2Page() {
     [selectedRuleId, setRules],
   );
 
-  const handleSimulate = useCallback(async (rule: RuleRecord) => {
-    setSimResult(null);
-    setSimError(null);
-    setSimLoading(true);
-    try {
-      const tokens = await simulateTpsl2Rule(rule.id);
-      setSimResult({ ruleName: rule.rule_name, tokens });
-    } catch (e) {
-      setSimError(e instanceof Error ? e.message : 'Simulation failed');
-    } finally {
-      setSimLoading(false);
-    }
-  }, []);
+  const handleSimulate = useCallback(
+    async (rule: RuleRecord) => {
+      setSimResult(null);
+      setSimError(null);
+      setSimLoading(true);
+      try {
+        const tokens = await fetchSimulateCached(dispatch, { strategy: 'tpsl2', ruleId: rule.id });
+        setSimResult({ ruleName: rule.rule_name, tokens });
+      } catch (e) {
+        setSimError(apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0], 'Simulation failed'));
+      } finally {
+        setSimLoading(false);
+      }
+    },
+    [dispatch],
+  );
 
   const handleMatched = useCallback(
     async (rule: RuleRecord) => {
@@ -793,15 +809,17 @@ export function Tpsl2Page() {
       setMatchedError(null);
       setMatchedLoading(true);
       try {
-        const tokens = await fetchTpsl2MatchedTokens(rule.id);
+        const tokens = await fetchMatchedCached(dispatch, { strategy: 'tpsl2', ruleId: rule.id });
         setMatchedResult({ ruleId: rule.id, tokens });
       } catch (e) {
-        setMatchedError(e instanceof Error ? e.message : 'Failed to load matched tokens');
+        setMatchedError(
+          apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0], 'Failed to load matched tokens'),
+        );
       } finally {
         setMatchedLoading(false);
       }
     },
-    [matchedResult],
+    [matchedResult, dispatch],
   );
 
   const handlePaperResult = useCallback(
@@ -816,15 +834,17 @@ export function Tpsl2Page() {
       setPaperError(null);
       setPaperLoading(true);
       try {
-        const data = await fetchTpsl2PaperResult(rule.id);
+        const data = await fetchPaperResultCached(dispatch, { strategy: 'tpsl2', ruleId: rule.id });
         setPaperResult({ ruleId: rule.id, data });
       } catch (e) {
-        setPaperError(e instanceof Error ? e.message : 'Failed to load paper result');
+        setPaperError(
+          apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0], 'Failed to load paper result'),
+        );
       } finally {
         setPaperLoading(false);
       }
     },
-    [paperResult],
+    [paperResult, dispatch],
   );
 
   // Cancel a pending delete confirmation; stable so it doesn't churn the cell.

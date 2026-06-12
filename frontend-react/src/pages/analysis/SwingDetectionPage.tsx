@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { DataTable } from 'components/table/DataTable';
+import type { TableQuery } from 'components/table/types';
 import { tokenTradeColumns } from 'components/transactions/tokenTradeColumns';
 import {
   TokenPriceChart,
@@ -16,10 +17,8 @@ import { FilterPanel } from 'components/tokens/FilterPanel';
 import {
   activeFilterCount,
   defaultFilters,
-  filtersEmpty,
   loadStoredTokenFilters,
   saveStoredTokenFilters,
-  tokenPassesFilters,
   type TokenFilters,
 } from 'components/tokens/filters';
 import { tokenColumns } from 'components/tokens/tokenColumns';
@@ -60,10 +59,12 @@ import { Tabs, TabsList, TabsPanel, TabsTrigger } from 'components/ui/Tabs';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 import { fetchProfiles, fetchTokenSwings, fetchTokenSwingsBatch } from 'services/api';
 import {
+  apiSlice,
   apiErrorMessage,
   TOKENS_LIST_LIMIT,
+  useGetTokenDetailQuery,
   useGetTokenTradesQuery,
-  useGetTokensQuery,
+  useGetTokensPageQuery,
 } from 'store/apiSlice';
 import type { AppDispatch, RootState } from '../../store';
 import {
@@ -89,34 +90,15 @@ import type {
 const EMPTY_TOKENS: TokenRecord[] = [];
 const EMPTY_TRADES: TradeRecord[] = [];
 
-function filterByCreatedRange(
-  tokens: TokenRecord[],
-  from: string,
-  to: string,
-): TokenRecord[] {
-  const fromMs = from ? Date.parse(from) : NaN;
-  const toMs = to ? Date.parse(to) : NaN;
-  return tokens.filter((t) => {
-    const created = Date.parse(t.created_at);
-    if (Number.isNaN(created)) return true;
-    if (!Number.isNaN(fromMs) && created < fromMs) return false;
-    if (!Number.isNaN(toMs) && created > toMs) return false;
-    return true;
-  });
-}
-
-function filterDisplayedTokens(
-  tokens: TokenRecord[],
-  createdFrom: string,
-  createdTo: string,
-  filters: TokenFilters,
-): TokenRecord[] {
-  let rows = filterByCreatedRange(tokens, createdFrom, createdTo);
-  if (!filtersEmpty(filters)) {
-    rows = rows.filter((t) => tokenPassesFilters(filters, t));
-  }
-  return rows;
-}
+/** Initial table view-state; pageSize matches the DataTable default (10). */
+const INITIAL_QUERY: TableQuery = {
+  page: 1,
+  pageSize: 10,
+  sortCol: null,
+  sortDir: 'asc',
+  search: '',
+  colFilters: {},
+};
 
 function SectionDivider() {
   return <div role="separator" className="my-6 border-t border-white/6" />;
@@ -275,21 +257,61 @@ export function SwingDetectionPage() {
     [unit, usdRate],
   );
 
-  // Lazily loaded on the "Fetch" button, but shares TokensPage's cache key —
-  // if that page already loaded the list, flipping `skip` off is instant. The
-  // `tokensFetched` flag lives in Redux so the table re-appears on return.
+  const [showFilters, setShowFilters] = useState(false);
+  const [filters, setFilters] = useState<TokenFilters>(loadStoredTokenFilters);
+
+  // View-state emitted by the DataTable (page/sort/search/col-filters). The
+  // backend does the filtering/sorting/paging now, so only one page crosses the
+  // wire instead of the whole 20k-row list.
+  const [tableQuery, setTableQuery] = useState<TableQuery>(INITIAL_QUERY);
+
+  // The page's dedicated Created from/to controls fold into the same server
+  // filter set as the global panel (the backend parses both as `f_created_*`),
+  // so the date range now reduces the query server-side too.
+  const effectiveFilters = useMemo<TokenFilters>(
+    () => ({
+      ...filters,
+      created_from: createdFrom || filters.created_from,
+      created_to: createdTo || filters.created_to,
+    }),
+    [filters, createdFrom, createdTo],
+  );
+
+  const queryArgs = useMemo(
+    () => ({
+      page: tableQuery.page,
+      pageSize: tableQuery.pageSize,
+      sortCol: tableQuery.sortCol,
+      sortDir: tableQuery.sortDir,
+      search: tableQuery.search,
+      colFilters: tableQuery.colFilters,
+      filters: effectiveFilters,
+    }),
+    [tableQuery, effectiveFilters],
+  );
+  // Resets the table to page 1 whenever the server-side reduction changes.
+  const filtersResetKey = useMemo(() => JSON.stringify(effectiveFilters), [effectiveFilters]);
+
+  // Lazily enabled on the "Fetch" button (the `tokensFetched` flag lives in
+  // Redux so the table re-appears on return). Server-side paged: each
+  // page/sort/filter change fetches just that page.
   const {
     data: tokensData,
     isFetching: loading,
     error: tokensError,
     refetch: refetchTokens,
-  } = useGetTokensQuery(
-    { search: '', limit: TOKENS_LIST_LIMIT, offset: 0 },
-    { skip: !tokensFetched },
-  );
-  const tokens = tokensData?.items ?? EMPTY_TOKENS;
+  } = useGetTokensPageQuery(queryArgs, { skip: !tokensFetched });
+
+  // Keep-previous-data: a page/sort/filter change targets a cache key with no
+  // data yet, so `tokensData` is briefly undefined. Hold the last rendered page
+  // until the new one lands rather than blanking the grid each interaction.
+  const lastItemsRef = useRef<TokenRecord[]>(EMPTY_TOKENS);
+  if (tokensData?.items) lastItemsRef.current = tokensData.items;
+  const pageTokens = tokensData?.items ?? lastItemsRef.current;
   const total = tokensData?.total ?? 0;
-  const loaded = tokensData !== undefined;
+  // Once they've clicked Fetch the analysis UI stays mounted; the query's own
+  // `loading` flag drives the in-table busy state across page changes.
+  const loaded = tokensFetched;
   const error = apiErrorMessage(tokensError, 'Failed to load tokens');
   const [profiles, setProfiles] = useState<WalletProfile[]>([]);
 
@@ -318,8 +340,12 @@ export function SwingDetectionPage() {
     return result;
   }, [profiles]);
 
-  const [showFilters, setShowFilters] = useState(false);
-  const [filters, setFilters] = useState<TokenFilters>(loadStoredTokenFilters);
+  // Selected token's detail (symbol / flags / ATH / created_at for the chart).
+  // Fetched by mint so the chart keeps its metadata even after paging away from
+  // the row in server-side mode, where the selected token may not be on screen.
+  const { data: selectedDetail } = useGetTokenDetailQuery(selectedMint ?? '', {
+    skip: !selectedMint,
+  });
 
   // Per-mint trades cached by mint, so re-selecting a token doesn't re-pull.
   const {
@@ -413,9 +439,14 @@ export function SwingDetectionPage() {
     return map;
   }, [swingsByMint, chainLatencyValue]);
 
+  // Base token columns built once (their price cells read the rate from context);
+  // only the appended chain columns rebuild when a global run updates the stats.
+  // The chain columns are non-sortable here — the table is server-side paged and
+  // the backend can't order by these browser-derived values.
+  const baseTokenColumns = useMemo(() => tokenColumns(), []);
   const columns = useMemo(
-    () => [...tokenColumns(), ...swingChainColumns(chainStatsByMint)],
-    [chainStatsByMint],
+    () => [...baseTokenColumns, ...swingChainColumns(chainStatsByMint, false)],
+    [baseTokenColumns, chainStatsByMint],
   );
 
   const toggleAnalysis = useCallback((kind: AnalysisKind) => {
@@ -494,23 +525,38 @@ export function SwingDetectionPage() {
     dispatch,
   ]);
 
-  const displayed = useMemo(
-    () => filterDisplayedTokens(tokens, createdFrom, createdTo, filters),
-    [tokens, createdFrom, createdTo, filters],
-  );
-
   // Run detection across all currently-filtered tokens, then keep the raw swings
-  // per mint for client-side chain grouping. The backend caps each batch request
-  // at SWING_BATCH_CHUNK_SIZE mints, so the filtered set is split into chunks run
-  // sequentially (one at a time — the backend serves these on few worker threads)
-  // and their results merged.
+  // per mint for client-side chain grouping. With server-side paging only the
+  // visible page is in memory, so the full filtered mint set is fetched here on
+  // demand (one large request, reusing the table's exact filter args) — the heavy
+  // full-list load now happens only on an explicit Run, never on page view. The
+  // backend caps each batch detection request at SWING_BATCH_CHUNK_SIZE mints, so
+  // the set is split into chunks run sequentially and their results merged.
   const handleRunAllSwings = useCallback(async () => {
-    const mints = displayed.map((t) => t.mint_address);
-    if (mints.length === 0) return;
     setSwingAllLoading(true);
     setSwingAllError(null);
-    setSwingAllProgress({ done: 0, total: mints.length });
+    setSwingAllProgress(null);
     try {
+      // Pull every filtered mint (sort doesn't matter for the set; cap at the
+      // shared list limit). Materialised once, then dropped.
+      const sub = dispatch(
+        apiSlice.endpoints.getTokensPage.initiate(
+          { ...queryArgs, page: 1, pageSize: TOKENS_LIST_LIMIT, sortCol: null, sortDir: 'asc' },
+          { forceRefetch: true },
+        ),
+      );
+      let mints: string[];
+      try {
+        const data = await sub.unwrap();
+        mints = data.items.map((t) => t.mint_address);
+      } finally {
+        sub.unsubscribe();
+      }
+      if (mints.length === 0) {
+        setSwingAllLoading(false);
+        return;
+      }
+      setSwingAllProgress({ done: 0, total: mints.length });
       const params = swingParamsFromForm(swingParams);
       const opts = {
         startMs: curveOnly || windowStartSec === '' ? null : Math.round(windowStartSec * 1000),
@@ -531,14 +577,11 @@ export function SwingDetectionPage() {
       setSwingAllLoading(false);
       setSwingAllProgress(null);
     }
-  }, [displayed, swingParams, windowStartSec, windowEndSec, curveOnly, dispatch]);
+  }, [queryArgs, swingParams, windowStartSec, windowEndSec, curveOnly, dispatch]);
 
   const filterCount = activeFilterCount(filters);
 
-  const selectedToken = useMemo(
-    () => displayed.find((t) => t.mint_address === selectedMint) ?? null,
-    [displayed, selectedMint],
-  );
+  const selectedToken = selectedDetail ?? null;
 
   // First click loads the shared token cache; later clicks force a refetch.
   // A selection that scrolls out of the date range is cleared by the effect
@@ -640,16 +683,6 @@ export function SwingDetectionPage() {
     },
     [dispatch],
   );
-
-  // A selection that scrolls out of the date range is cleared — but only once
-  // the list has loaded, so the persisted selection survives the initial fetch
-  // after navigating back (when `displayed` is briefly empty).
-  useEffect(() => {
-    if (!selectedMint || !loaded) return;
-    if (!displayed.some((t) => t.mint_address === selectedMint)) {
-      dispatch(setSelectedMint(null));
-    }
-  }, [displayed, selectedMint, loaded, dispatch]);
 
   const chartSymbol =
     selectedToken?.symbol || selectedToken?.name || selectedMint || '';
@@ -844,7 +877,7 @@ export function SwingDetectionPage() {
     )
   };
   function renderSwingDetectionAllPanel() {
-    const tokenCount = displayed.length;
+    const tokenCount = total;
     const runLabel = swingAllLoading
       ? 'Running…'
       : `Run on ${tokenCount} token${tokenCount === 1 ? '' : 's'}`;
@@ -1075,8 +1108,7 @@ export function SwingDetectionPage() {
         <h2 className="text-lg font-extrabold text-text">Swing detection</h2>
         {loaded && (
           <Badge variant="primary" className="font-mono">
-            {displayed.length}
-            {displayed.length !== total ? ` / ${total}` : ''} tokens
+            {total} tokens
           </Badge>
         )}
       </div>
@@ -1097,10 +1129,15 @@ export function SwingDetectionPage() {
       {loaded && (
         <DataTable
           columns={columns}
-          rows={displayed}
+          rows={pageTokens}
           rowKey={(r) => r.mint_address}
           selectedKey={selectedMint}
           onSelect={handleSelectMint}
+          serverSide
+          serverTotal={total}
+          onQueryChange={setTableQuery}
+          loading={loading}
+          resetKey={filtersResetKey}
           searchable
           colFilters
           colToggle

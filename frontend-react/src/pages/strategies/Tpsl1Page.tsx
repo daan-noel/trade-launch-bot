@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { DataTable } from 'components/table/DataTable';
 import { Badge, type BadgeVariant } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
@@ -23,20 +23,27 @@ import { fmtTime } from 'components/tpsl1/utils';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { usePolledRules } from 'hooks/usePolledRules';
 import { useRulePositions } from 'hooks/useRulePositions';
+import { useDispatch } from 'react-redux';
 import {
   activateTpsl1Rule,
   createTpsl1Rule,
   deleteTpsl1Rule,
-  fetchTpsl1MatchedTokens,
   fetchTpsl1PaperResult,
   fetchTpsl1RulePositions,
   fetchTpsl1Rules,
   pauseTpsl1Rule,
-  simulateTpsl1Rule,
   stopTpsl1Rule,
   updateTpsl1Rule,
 } from 'services/api';
 import { connectPaperTestStream } from 'services/sse';
+import { apiErrorMessage } from 'store/apiSlice';
+import {
+  fetchMatchedCached,
+  fetchPaperResultCached,
+  fetchSimulateCached,
+  invalidateStrategyResult,
+} from 'store/strategyResultCache';
+import type { AppDispatch } from '../../store';
 import type {
   PaperResultResponse,
   PaperRunResponse,
@@ -424,8 +431,117 @@ function ReactivateDialog({
   );
 }
 
+/** The per-row action buttons, split out and memoized so a change to one row's
+ *  state (or a global loading flag) only re-renders the rows whose buttons
+ *  actually change — not every row's button subtree. The handlers are stable
+ *  useCallbacks from the page; the booleans are pre-narrowed per row so an
+ *  unaffected row's props stay shallow-equal and `memo` skips it. */
+const RuleActionsCell = memo(function RuleActionsCell({
+  rule,
+  confirmingDelete,
+  deleteLoading,
+  matchedActive,
+  paperActive,
+  simLoading,
+  matchedLoading,
+  paperLoading,
+  onEdit,
+  onDelete,
+  onRequestDelete,
+  onCancelDelete,
+  onSimulate,
+  onMatched,
+  onPaperResult,
+}: {
+  rule: RuleRecord;
+  confirmingDelete: boolean;
+  deleteLoading: boolean;
+  matchedActive: boolean;
+  paperActive: boolean;
+  simLoading: boolean;
+  matchedLoading: boolean;
+  paperLoading: boolean;
+  onEdit: (rule: RuleRecord) => void;
+  onDelete: (ruleId: string) => void;
+  onRequestDelete: (ruleId: string) => void;
+  onCancelDelete: () => void;
+  onSimulate: (rule: RuleRecord) => void;
+  onMatched: (rule: RuleRecord) => void;
+  onPaperResult: (rule: RuleRecord) => void;
+}) {
+  if (confirmingDelete) {
+    return (
+      <div className="flex items-center justify-center gap-1">
+        <span className="text-[11px] font-semibold text-red">Delete?</span>
+        <Button variant="danger" size="xs" disabled={deleteLoading} onClick={() => onDelete(rule.id)}>
+          Yes
+        </Button>
+        <Button variant="ghost" size="xs" onClick={onCancelDelete}>
+          No
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center justify-center gap-1">
+      <Button
+        variant="ghost"
+        size="xs"
+        disabled={rule.is_active}
+        onClick={() => onEdit(rule)}
+        title={rule.is_active ? 'Cannot edit active rules' : 'Edit'}
+      >
+        Edit
+      </Button>
+      <Button
+        variant="ghost"
+        size="xs"
+        disabled={rule.is_active}
+        onClick={() => onRequestDelete(rule.id)}
+        title={rule.is_active ? 'Cannot delete active rules' : 'Delete'}
+        className="text-red"
+      >
+        Del
+      </Button>
+      <Button
+        variant="ghost"
+        size="xs"
+        disabled={simLoading}
+        onClick={() => onSimulate(rule)}
+        className="text-primary"
+        title="Simulate"
+      >
+        ▶
+      </Button>
+      <Button
+        variant="ghost"
+        size="xs"
+        disabled={matchedLoading}
+        onClick={() => onMatched(rule)}
+        className={cn(matchedActive && 'border-[#9370db]/45 bg-[#9370db]/8 text-[#9370db]')}
+        title="Matched tokens"
+      >
+        ⊞
+      </Button>
+      {rule.trade_mode === 'paper' && (
+        <Button
+          variant="ghost"
+          size="xs"
+          disabled={paperLoading}
+          onClick={() => onPaperResult(rule)}
+          className={cn('text-info', paperActive && 'border-info/45 bg-info/8')}
+          title="Paper test result"
+        >
+          ▦
+        </Button>
+      )}
+    </div>
+  );
+});
+
 export function Tpsl1Page() {
   const price = usePriceDisplay();
+  const dispatch = useDispatch<AppDispatch>();
 
   // Rule list: one initial load then a visibility-gated silent poll, deduped
   // into a shared hook (see usePolledRules). `loadRules` is the silent/forced
@@ -491,13 +607,15 @@ export function Tpsl1Page() {
       setPaperNotice(ev);
       loadRules(true);
       if (openPaperRuleId.current === ev.rule_id) {
-        fetchTpsl1PaperResult(ev.rule_id)
+        // The run just changed (status → Finished) — force-refetch past any
+        // cached entry so the open view reflects the final state.
+        fetchPaperResultCached(dispatch, { strategy: 'tpsl1', ruleId: ev.rule_id }, true)
           .then((data) => setPaperResult({ ruleId: ev.rule_id, data }))
           .catch(() => {});
       }
     });
     return () => es.close();
-  }, [loadRules]);
+  }, [loadRules, dispatch]);
 
   useEffect(() => {
     if (!paperNotice) return;
@@ -600,12 +718,12 @@ export function Tpsl1Page() {
     setModalOpen(true);
   };
 
-  const openEdit = (rule: RuleRecord) => {
+  const openEdit = useCallback((rule: RuleRecord) => {
     setEditRule(rule);
     setForm(formFromRule(rule));
     setFormError(null);
     setModalOpen(true);
-  };
+  }, []);
 
   const handleSave = async (allowParams: boolean) => {
     setFormError(null);
@@ -632,6 +750,9 @@ export function Tpsl1Page() {
           buildUpdatePayload(form, allowParams),
         );
         setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
+        // The rule's entry criteria may have changed — drop its cached
+        // matched/simulate results so the next open re-runs.
+        invalidateStrategyResult(dispatch, { strategy: 'tpsl1', ruleId: updated.id });
       } else {
         const created = await createTpsl1Rule(buildCreatePayload(form));
         setRules((prev) => [...prev, created]);
@@ -644,156 +765,165 @@ export function Tpsl1Page() {
     }
   };
 
-  const handleDelete = async (ruleId: string) => {
-    setDeleteLoading(true);
-    try {
-      await deleteTpsl1Rule(ruleId);
-      setRules((prev) => prev.filter((r) => r.id !== ruleId));
-      if (selectedRuleId === ruleId) setSelectedRuleId(null);
-    } catch {
-      /* ignore */
-    } finally {
-      setConfirmDeleteId(null);
-      setDeleteLoading(false);
-    }
-  };
+  const handleDelete = useCallback(
+    async (ruleId: string) => {
+      setDeleteLoading(true);
+      try {
+        await deleteTpsl1Rule(ruleId);
+        setRules((prev) => prev.filter((r) => r.id !== ruleId));
+        if (selectedRuleId === ruleId) setSelectedRuleId(null);
+      } catch {
+        /* ignore */
+      } finally {
+        setConfirmDeleteId(null);
+        setDeleteLoading(false);
+      }
+    },
+    [selectedRuleId, setRules],
+  );
 
-  const handleSimulate = async (rule: RuleRecord) => {
-    setSimResult(null);
-    setSimError(null);
-    setSimLoading(true);
-    try {
-      const tokens = await simulateTpsl1Rule(rule.id);
-      setSimResult({ ruleName: rule.rule_name, tokens });
-    } catch (e) {
-      setSimError(e instanceof Error ? e.message : 'Simulation failed');
-    } finally {
-      setSimLoading(false);
-    }
-  };
+  const handleSimulate = useCallback(
+    async (rule: RuleRecord) => {
+      setSimResult(null);
+      setSimError(null);
+      setSimLoading(true);
+      try {
+        const tokens = await fetchSimulateCached(dispatch, { strategy: 'tpsl1', ruleId: rule.id });
+        setSimResult({ ruleName: rule.rule_name, tokens });
+      } catch (e) {
+        setSimError(apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0], 'Simulation failed'));
+      } finally {
+        setSimLoading(false);
+      }
+    },
+    [dispatch],
+  );
 
-  const handleMatched = async (rule: RuleRecord) => {
-    if (matchedResult?.ruleId === rule.id) {
+  const handleMatched = useCallback(
+    async (rule: RuleRecord) => {
+      if (matchedResult?.ruleId === rule.id) {
+        setMatchedResult(null);
+        return;
+      }
       setMatchedResult(null);
-      return;
-    }
-    setMatchedResult(null);
-    setMatchedError(null);
-    setMatchedLoading(true);
-    try {
-      const tokens = await fetchTpsl1MatchedTokens(rule.id);
-      setMatchedResult({ ruleId: rule.id, tokens });
-    } catch (e) {
-      setMatchedError(e instanceof Error ? e.message : 'Failed to load matched tokens');
-    } finally {
-      setMatchedLoading(false);
-    }
-  };
+      setMatchedError(null);
+      setMatchedLoading(true);
+      try {
+        const tokens = await fetchMatchedCached(dispatch, { strategy: 'tpsl1', ruleId: rule.id });
+        setMatchedResult({ ruleId: rule.id, tokens });
+      } catch (e) {
+        setMatchedError(
+          apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0], 'Failed to load matched tokens'),
+        );
+      } finally {
+        setMatchedLoading(false);
+      }
+    },
+    [matchedResult, dispatch],
+  );
 
-  const handlePaperResult = async (rule: RuleRecord) => {
-    // Toggle: a second click on the open rule closes the result.
-    if (paperResult?.ruleId === rule.id) {
+  const handlePaperResult = useCallback(
+    async (rule: RuleRecord) => {
+      // Toggle: a second click on the open rule closes the result.
+      if (paperResult?.ruleId === rule.id) {
+        setPaperResult(null);
+        setPaperError(null);
+        return;
+      }
       setPaperResult(null);
       setPaperError(null);
-      return;
-    }
-    setPaperResult(null);
-    setPaperError(null);
-    setPaperLoading(true);
-    try {
-      const data = await fetchTpsl1PaperResult(rule.id);
-      setPaperResult({ ruleId: rule.id, data });
-    } catch (e) {
-      setPaperError(e instanceof Error ? e.message : 'Failed to load paper result');
-    } finally {
-      setPaperLoading(false);
-    }
-  };
+      setPaperLoading(true);
+      try {
+        const data = await fetchPaperResultCached(dispatch, { strategy: 'tpsl1', ruleId: rule.id });
+        setPaperResult({ ruleId: rule.id, data });
+      } catch (e) {
+        setPaperError(
+          apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0], 'Failed to load paper result'),
+        );
+      } finally {
+        setPaperLoading(false);
+      }
+    },
+    [paperResult, dispatch],
+  );
 
-  const ruleActions = (rule: RuleRecord) => {
-    if (confirmDeleteId === rule.id) {
-      return (
-        <div className="flex items-center justify-center gap-1">
-          <span className="text-[11px] font-semibold text-red">Delete?</span>
-          <Button variant="danger" size="xs" disabled={deleteLoading} onClick={() => handleDelete(rule.id)}>
-            Yes
-          </Button>
-          <Button variant="ghost" size="xs" onClick={() => setConfirmDeleteId(null)}>
-            No
-          </Button>
-        </div>
+  // Cancel a pending delete confirmation; stable so it doesn't churn the cell.
+  const cancelDelete = useCallback(() => setConfirmDeleteId(null), []);
+
+  // Row-action cell renders the memoized <RuleActionsCell>: the per-row booleans
+  // are narrowed here so a global toggle (simLoading, the open matched/paper
+  // rule…) only re-renders the rows whose buttons actually change. Selection,
+  // polling and the banner timer never touch these deps, so they don't churn it.
+  const ruleActions = useCallback(
+    (rule: RuleRecord) => (
+      <RuleActionsCell
+        rule={rule}
+        confirmingDelete={confirmDeleteId === rule.id}
+        deleteLoading={deleteLoading}
+        matchedActive={matchedResult?.ruleId === rule.id}
+        paperActive={paperResult?.ruleId === rule.id}
+        simLoading={simLoading}
+        matchedLoading={matchedLoading}
+        paperLoading={paperLoading}
+        onEdit={openEdit}
+        onDelete={handleDelete}
+        onRequestDelete={setConfirmDeleteId}
+        onCancelDelete={cancelDelete}
+        onSimulate={handleSimulate}
+        onMatched={handleMatched}
+        onPaperResult={handlePaperResult}
+      />
+    ),
+    [
+      confirmDeleteId,
+      deleteLoading,
+      matchedResult,
+      simLoading,
+      matchedLoading,
+      paperLoading,
+      paperResult,
+      openEdit,
+      handleDelete,
+      cancelDelete,
+      handleSimulate,
+      handleMatched,
+      handlePaperResult,
+    ],
+  );
+
+  const matchedRuleName = useMemo(
+    () => (matchedResult ? rules.find((r) => r.id === matchedResult.ruleId)?.rule_name : null),
+    [matchedResult, rules],
+  );
+
+  const selectedRuleName = useMemo(
+    () => (selectedRuleId ? rules.find((r) => r.id === selectedRuleId)?.rule_name ?? null : null),
+    [selectedRuleId, rules],
+  );
+
+  // Stable row-select handlers so the result tables' memoized rows survive an
+  // unrelated page render (these closures are passed straight to DataTable).
+  const onSelectPosition = useCallback(
+    (key: string | null) => {
+      const row = key ? positions.find((p) => p.id === key) ?? null : null;
+      setInspect(
+        row ? { table: 'positions', key: row.id, target: inspectFromPosition(row) } : null,
       );
-    }
-    const matchedActive = matchedResult?.ruleId === rule.id;
-    return (
-      <div className="flex items-center justify-center gap-1">
-        <Button
-          variant="ghost"
-          size="xs"
-          disabled={rule.is_active}
-          onClick={() => openEdit(rule)}
-          title={rule.is_active ? 'Cannot edit active rules' : 'Edit'}
-        >
-          Edit
-        </Button>
-        <Button
-          variant="ghost"
-          size="xs"
-          disabled={rule.is_active}
-          onClick={() => setConfirmDeleteId(rule.id)}
-          title={rule.is_active ? 'Cannot delete active rules' : 'Delete'}
-          className="text-red"
-        >
-          Del
-        </Button>
-        <Button
-          variant="ghost"
-          size="xs"
-          disabled={simLoading}
-          onClick={() => handleSimulate(rule)}
-          className="text-primary"
-          title="Simulate"
-        >
-          ▶
-        </Button>
-        <Button
-          variant="ghost"
-          size="xs"
-          disabled={matchedLoading}
-          onClick={() => handleMatched(rule)}
-          className={cn(
-            matchedActive && 'border-[#9370db]/45 bg-[#9370db]/8 text-[#9370db]',
-          )}
-          title="Matched tokens"
-        >
-          ⊞
-        </Button>
-        {rule.trade_mode === 'paper' && (
-          <Button
-            variant="ghost"
-            size="xs"
-            disabled={paperLoading}
-            onClick={() => handlePaperResult(rule)}
-            className={cn(
-              'text-info',
-              paperResult?.ruleId === rule.id && 'border-info/45 bg-info/8',
-            )}
-            title="Paper test result"
-          >
-            ▦
-          </Button>
-        )}
-      </div>
-    );
-  };
+    },
+    [positions],
+  );
 
-  const matchedRuleName =
-    matchedResult &&
-    rules.find((r) => r.id === matchedResult.ruleId)?.rule_name;
+  const onSelectSim = useCallback(
+    (key: string | null) => {
+      const row = key ? simResult?.tokens.find((t) => t.mint === key) ?? null : null;
+      setInspect(row ? { table: 'sim', key: row.mint, target: inspectFromSim(row) } : null);
+    },
+    [simResult],
+  );
 
-  const selectedRuleName = selectedRuleId
-    ? rules.find((r) => r.id === selectedRuleId)?.rule_name ?? null
-    : null;
+  const onSelectPaperToken = useCallback((row: SimulatedTokenResult | null) => {
+    setInspect(row ? { table: 'paper', key: row.mint, target: inspectFromSim(row) } : null);
+  }, []);
 
   return (
     <div>
@@ -871,14 +1001,7 @@ export function Tpsl1Page() {
                 rows={positions}
                 rowKey={(r) => r.id}
                 selectedKey={inspect?.table === 'positions' ? inspect.key : null}
-                onSelect={(key) => {
-                  const row = key ? positions.find((p) => p.id === key) ?? null : null;
-                  setInspect(
-                    row
-                      ? { table: 'positions', key: row.id, target: inspectFromPosition(row) }
-                      : null,
-                  );
-                }}
+                onSelect={onSelectPosition}
                 defaultPageSize={20}
                 pageSizeOptions={[20, 50, 100]}
                 colFilters
@@ -959,12 +1082,7 @@ export function Tpsl1Page() {
                 rows={simResult.tokens}
                 rowKey={(r) => r.mint}
                 selectedKey={inspect?.table === 'sim' ? inspect.key : null}
-                onSelect={(key) => {
-                  const row = key ? simResult.tokens.find((t) => t.mint === key) ?? null : null;
-                  setInspect(
-                    row ? { table: 'sim', key: row.mint, target: inspectFromSim(row) } : null,
-                  );
-                }}
+                onSelect={onSelectSim}
                 defaultPageSize={20}
                 pageSizeOptions={[20, 50, 100]}
                 searchable
@@ -984,11 +1102,7 @@ export function Tpsl1Page() {
           price={price}
           simCols={simCols}
           selectedMint={inspect?.table === 'paper' ? inspect.key : null}
-          onSelectToken={(row) =>
-            setInspect(
-              row ? { table: 'paper', key: row.mint, target: inspectFromSim(row) } : null,
-            )
-          }
+          onSelectToken={onSelectPaperToken}
           onClose={() => {
             setPaperResult(null);
             setPaperError(null);

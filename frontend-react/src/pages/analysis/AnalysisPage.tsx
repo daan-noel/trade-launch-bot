@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { DataTable } from 'components/table/DataTable';
 import { Pagination } from 'components/table/Pagination';
 import { InlineAlert } from 'components/ui/Modal';
@@ -57,17 +57,52 @@ export function AnalysisPage() {
     }
   }, [resultPage, resultPs]);
 
+  // One-shot initial load of BOTH tabs so the header counts ("X creators · Y
+  // results") are populated up front; after this only the active tab keeps
+  // polling, and the inactive tab is refreshed when it becomes active.
+  const didInit = useRef(false);
   useEffect(() => {
+    if (didInit.current) return;
+    didInit.current = true;
     loadCreators();
-    const id = setInterval(loadCreators, POLL_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [loadCreators]);
-
-  useEffect(() => {
     loadResults();
-    const id = setInterval(loadResults, POLL_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [loadResults]);
+  }, [loadCreators, loadResults]);
+
+  // Poll only the ACTIVE tab, and pause entirely while the browser tab is
+  // hidden. Previously both lists polled on independent 5s timers regardless of
+  // which tab was shown or whether the page was focused — two background fetches
+  // (each replacing every row object, re-rendering the whole table) forever.
+  useEffect(() => {
+    const load = tab === 'creators' ? loadCreators : loadResults;
+    let id: number | undefined;
+    const stop = () => {
+      if (id !== undefined) {
+        window.clearInterval(id);
+        id = undefined;
+      }
+    };
+    const start = () => {
+      if (id === undefined && !document.hidden) {
+        id = window.setInterval(load, POLL_INTERVAL_MS);
+      }
+    };
+    const onVisibility = () => {
+      if (document.hidden) {
+        stop();
+      } else {
+        load(); // catch up immediately on refocus
+        start();
+      }
+    };
+    // Refresh the tab's data on activation/page change, then start polling.
+    load();
+    start();
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [tab, loadCreators, loadResults]);
 
   const creatorTotalPages = Math.max(1, Math.ceil(creatorTotal / creatorPs));
   const resultTotalPages = Math.max(1, Math.ceil(resultTotal / resultPs));

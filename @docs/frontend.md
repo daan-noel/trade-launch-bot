@@ -23,7 +23,7 @@ Chart logic explainer: `@project_plans/token-analysis/token-history-chart-functi
 | My wallet | `profiles/MyWalletPage.tsx` | `getWalletHoldings` (cached 5min), `getWalletPrices` poll 20s, buy/sell modals |
 | Other profiles | `profiles/OtherProfilesPage.tsx` | profile/wallet/tag CRUD |
 | Settings | `settings/SettingsPage.tsx` | track_mayhem, track_post_migration, slippage_bps; optimistic update |
-| TPSL1 / TPSL2 | `strategies/Tpsl{1,2}Page.tsx` | `usePolledRules`, `useRulePositions`; rule CRUD + lifecycle, sim, matched, paper results (near-identical) |
+| TPSL1 / TPSL2 | `strategies/Tpsl{1,2}Page.tsx` | `usePolledRules`, `useRulePositions`; rule CRUD + lifecycle; sim/matched/paper reads routed through the RTK cache via `store/strategyResultCache.ts` (toggle state stays local) (near-identical) |
 
 ## Components — `components/`
 - **`ui/`** reusable primitives: `Button`(+`ButtonGroup`), `Badge`, `Modal`(+`InlineAlert`), `Input`/`Textarea`, `Checkbox`, `Switch`, `Select`, `Tabs`, `PriceUnitToggle`, `TimezoneSelect`, `StatusButton`, `AddressDisplay`, `StatCard`, `NavDropdown`, `InfoTooltip`, `VisibilityToggleButton`. All compose via `cn()` (`lib/cn.ts`).
@@ -35,7 +35,7 @@ Chart logic explainer: `@project_plans/token-analysis/token-history-chart-functi
 - **`transactions/`** — `tradeColumns(price)`, `tokenTradeColumns(price)`. **`wallet/`** — `walletColumns(price)`.
 
 ## State, services, hooks
-- **`store/`** — `index.ts` (store; RTK Query 5min cache, `refetchOnMountOrArgChange:false`), `apiSlice.ts` (queries: `getTokens`, `getTokensPage`, `getTokenDetail/Trades`, `getWalletHoldings/Holding/Prices`, `getSolPrice`, `getLiveMode`, `getSettings`; mutations: `buyToken`, `sellToken`, `setLiveMode`, `updateSettings`), `swingDetectionSlice.ts`, `syncTokenSlice.ts`.
+- **`store/`** — `index.ts` (store; RTK Query 5min cache, `refetchOnMountOrArgChange:false`), `apiSlice.ts` (queries: `getTokens`, `getTokensPage`, `getTokenDetail/Trades`, `getWalletHoldings/Holding/Prices`, `getSolPrice`, `getLiveMode`, `getSettings`, `getStrategy{Matched,Simulate,PaperResult}` (per-rule, 60s retention, `StrategyResult`/`StrategyPaper` tags); mutations: `buyToken`, `sellToken`, `setLiveMode`, `updateSettings`), `strategyResultCache.ts` (imperative `fetch{Matched,Simulate,PaperResult}Cached` + `invalidateStrategyResult` — dispatch→unwrap→unsubscribe so the strategy pages route their toggle-driven reads through the RTK cache), `swingDetectionSlice.ts`, `syncTokenSlice.ts`.
 - **`services/`** — `api.ts` (standalone fetch helpers: tpsl{1,2} CRUD/lifecycle/sim/positions, swing detect, profiles/tags, `syncToken` w/ progress), `sse.ts` (single shared `EventSource` to `/api/stream`; `connectTradeStream`, `connectTokenCreatedStream`, `connectPaperTestStream`, `connectTpsl{RulesChanged,PositionsChanged}`), `config.ts` (`API_BASE`, `POLL_INTERVAL_MS`, `FALLBACK_POLL_INTERVAL_MS`).
 - **`context/`** — `AppProviders`, `PriceUnitContext` (`usePriceUnit`: unit + usdRate, localStorage↔backend), `TimezoneContext` (`useTimezone`).
 - **`hooks/`** — `useNow(granularityMs)` (shared clock, one interval/granularity, pauses when hidden), `useVisiblePolling`, `useTradeStream`, `usePolledRules`, `useRulePositions`, `usePriceDisplay` (rate folded out in SOL mode), `useWalletPriceDisplay`.
