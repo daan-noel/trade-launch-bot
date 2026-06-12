@@ -20,6 +20,7 @@ import { connectTokenCreatedStream } from 'services/sse';
 import type { TokenRecord } from 'types';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import {
+  apiSlice,
   apiErrorMessage,
   useGetTokenDetailQuery,
   useGetTokensPageQuery,
@@ -62,6 +63,21 @@ export function TokensPage() {
   // `filters` panel as query args.
   const [tableQuery, setTableQuery] = useState<TableQuery>(INITIAL_QUERY);
 
+  // The query args, shared by the live query and the adjacent-page prefetch
+  // below so both hit identical cache keys.
+  const queryArgs = useMemo(
+    () => ({
+      page: tableQuery.page,
+      pageSize: tableQuery.pageSize,
+      sortCol: tableQuery.sortCol,
+      sortDir: tableQuery.sortDir,
+      search: tableQuery.search,
+      colFilters: tableQuery.colFilters,
+      filters,
+    }),
+    [tableQuery, filters],
+  );
+
   // Server-side page: only one page crosses the wire. Polling re-runs the
   // current filtered/sorted page. `filters` (the global panel) ride along as
   // query args; changing them resets the table to page 1 via `resetKey`.
@@ -70,33 +86,44 @@ export function TokensPage() {
     isFetching: loading,
     error: tokensError,
     refetch,
-  } = useGetTokensPageQuery(
-    {
-      page: tableQuery.page,
-      pageSize: tableQuery.pageSize,
-      sortCol: tableQuery.sortCol,
-      sortDir: tableQuery.sortDir,
-      search: tableQuery.search,
-      colFilters: tableQuery.colFilters,
-      filters,
-    },
-    {
-      pollingInterval: live ? POLL_INTERVAL_MS : 0,
-      // Don't keep polling a background tab — the SSE refetch below catches it up
-      // the moment it regains focus, and the timer resumes then.
-      skipPollingIfUnfocused: true,
-    },
-  );
-  const tokens = tokensData?.items ?? EMPTY_TOKENS;
+  } = useGetTokensPageQuery(queryArgs, {
+    pollingInterval: live ? POLL_INTERVAL_MS : 0,
+    // Don't keep polling a background tab — the SSE refetch below catches it up
+    // the moment it regains focus, and the timer resumes then.
+    skipPollingIfUnfocused: true,
+  });
+
+  // Keep-previous-data: changing page/sort/filter targets a cache key that has
+  // no data yet, so `tokensData` is briefly `undefined`. Rather than blanking
+  // the grid to its empty/loading state on every interaction, hold the last
+  // page we successfully rendered until the new one lands. `loading` still
+  // drives a subtle busy state on the table.
+  const lastItemsRef = useRef<TokenRecord[]>(EMPTY_TOKENS);
+  if (tokensData?.items) lastItemsRef.current = tokensData.items;
+  const tokens = tokensData?.items ?? lastItemsRef.current;
   const total = tokensData?.total ?? 0;
   const error = apiErrorMessage(tokensError, 'Failed to load tokens');
 
+  // Warm the adjacent pages so forward/back paging resolves from cache instead
+  // of a fresh round-trip. The short `keepUnusedDataFor` on `getTokensPage`
+  // keeps these entries alive long enough for the click that follows.
+  const prefetchPage = apiSlice.usePrefetch('getTokensPage');
+  useEffect(() => {
+    if (tableQuery.page * tableQuery.pageSize < total) {
+      prefetchPage({ ...queryArgs, page: tableQuery.page + 1 });
+    }
+    if (tableQuery.page > 1) {
+      prefetchPage({ ...queryArgs, page: tableQuery.page - 1 });
+    }
+  }, [prefetchPage, queryArgs, tableQuery.page, tableQuery.pageSize, total]);
+
   // Resets the table to page 1 when the global filter panel changes.
   const filtersResetKey = useMemo(() => JSON.stringify(filters), [filters]);
+  const filterCount = activeFilterCount(filters);
   // Whether any reduction is active — drives the "matched" vs "tracked" badge,
   // since `total` is now the filtered count.
   const anyActive =
-    activeFilterCount(filters) > 0 ||
+    filterCount > 0 ||
     !!tableQuery.search ||
     Object.values(tableQuery.colFilters).some(Boolean);
 
@@ -120,15 +147,21 @@ export function TokensPage() {
 
   // Push-driven refresh: while live, a `token_created` SSE event refetches the
   // current page so new tokens surface promptly instead of waiting on the poll
-  // timer. `refetch` is held in a ref so re-subscribing isn't tied to page/sort/
-  // filter changes (which would needlessly reopen the EventSource). A burst of
-  // creations is debounced into one refetch.
+  // timer. `refetch` and the current page are held in refs so re-subscribing
+  // isn't tied to page/sort/filter changes (which would needlessly reopen the
+  // EventSource). A burst of creations is debounced into one refetch.
   const refetchRef = useRef(refetch);
   refetchRef.current = refetch;
+  const pageRef = useRef(tableQuery.page);
+  pageRef.current = tableQuery.page;
   useEffect(() => {
     if (!live) return;
     let timer: number | undefined;
     const es = connectTokenCreatedStream(() => {
+      // A freshly created token can only enter the view on the first page; while
+      // the user is paging deeper, skip the refetch (the poll still covers any
+      // in-place updates to rows already on screen).
+      if (pageRef.current !== 1) return;
       window.clearTimeout(timer);
       timer = window.setTimeout(() => refetchRef.current(), 400);
     });
@@ -147,9 +180,7 @@ export function TokensPage() {
       });
     }, 300);
     return () => clearTimeout(t);
-  }, [selectedMint, detail]);
-
-  const filterCount = activeFilterCount(filters);
+  }, [selectedMint]);
 
   return (
     <div>
