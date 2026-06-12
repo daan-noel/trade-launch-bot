@@ -382,11 +382,13 @@ impl Tpsl2StrategyService {
     pub async fn sweep_time_exits(&self, cache: &TokenCache) {
         let now = Utc::now();
 
-        for position in self.runtime.all_holding_positions() {
+        // Iterate only the holdings whose rule carries a time exit (maintained as
+        // a secondary index), not every open position. The per-rule short-circuit
+        // below is kept as a cheap defensive check against index/rule skew.
+        for position in self.runtime.time_exit_holding_positions() {
             let Some(rule) = self.runtime.rule_by_id(position.rule_id) else {
                 continue;
             };
-            // Cheap short-circuit: nothing to do for rules with no time exit.
             if none_if_zero_u64(rule.p_exit_time_stop_secs).is_none()
                 && none_if_zero_u64(rule.p_exit_stall_secs).is_none()
             {

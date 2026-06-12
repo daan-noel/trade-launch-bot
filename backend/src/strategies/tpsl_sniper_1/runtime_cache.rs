@@ -8,6 +8,7 @@ use tokio::sync::Semaphore;
 use uuid::Uuid;
 
 use super::exit::{CachedExitState, ExitWalkState};
+use super::util::none_if_zero_u64;
 use crate::models::trade::Trade;
 use crate::models::{PaperRun, PaperRunStatus, Position, PositionStatus, Tpsl1StrategyRule};
 use crate::storage::repositories::{
@@ -42,6 +43,13 @@ pub struct Tpsl1RuntimeCache {
     /// time-exit sweep never re-walks a token's full history. Lifecycle is tied
     /// to the holding index: an entry is dropped when its position leaves Holding.
     exit_state_by_position: Arc<DashMap<Uuid, CachedExitState>>,
+    /// Secondary index over the holdings: only the Holding positions whose rule
+    /// currently carries a time-based exit (TimeStop / Stall). The per-second
+    /// wall-clock sweep iterates *this* set instead of cloning every holding
+    /// `Arc<Position>` each tick — positions with only price exits never appear
+    /// here. Kept in lockstep with the holding index on every add/remove, and
+    /// rebuilt wholesale on a rule reload (a rule's time-exit config can change).
+    time_exit_holding: Arc<DashMap<Uuid, Arc<Position>>>,
     /// Caps concurrent paper entry/exit fill-poll tasks. Each spawn acquires a
     /// permit before doing DB work, so a burst of fills can't spawn an unbounded
     /// number of feed-polling tasks all hammering the DB at once.
@@ -61,6 +69,7 @@ impl Tpsl1RuntimeCache {
             total_count_by_rule: Arc::new(DashMap::new()),
             paper_run_by_rule: Arc::new(DashMap::new()),
             exit_state_by_position: Arc::new(DashMap::new()),
+            time_exit_holding: Arc::new(DashMap::new()),
             paper_poll_sem: Arc::new(Semaphore::new(PAPER_POLL_CONCURRENCY)),
         }
     }
@@ -150,6 +159,37 @@ impl Tpsl1RuntimeCache {
         if let Ok(mut m) = self.rules_by_id.write() {
             *m = by_id;
         }
+        // A rule's time-exit config may have changed, flipping membership for its
+        // open positions — rebuild the time-exit index against the new rule set.
+        self.rebuild_time_exit_index();
+    }
+
+    /// Whether the rule (by id) currently carries a time-based exit (TimeStop or
+    /// Stall). Matches the gate `sweep_time_exits` applies per position.
+    fn rule_has_time_exit(&self, rule_id: Uuid) -> bool {
+        self.rules_by_id
+            .read()
+            .ok()
+            .and_then(|m| {
+                m.get(&rule_id).map(|r| {
+                    none_if_zero_u64(r.p_exit_time_stop_secs).is_some()
+                        || none_if_zero_u64(r.p_exit_stall_secs).is_some()
+                })
+            })
+            .unwrap_or(false)
+    }
+
+    /// Rebuild the time-exit index from the current holdings + rules. Cheap
+    /// (holdings are small); called on bulk holding loads and rule reloads.
+    fn rebuild_time_exit_index(&self) {
+        self.time_exit_holding.clear();
+        for entry in self.holding_by_mint.iter() {
+            for pos in entry.value() {
+                if self.rule_has_time_exit(pos.rule_id) {
+                    self.time_exit_holding.insert(pos.id, pos.clone());
+                }
+            }
+        }
     }
 
     fn set_holding_positions(&self, positions: Vec<Position>) {
@@ -178,6 +218,8 @@ impl Tpsl1RuntimeCache {
         // out from under a reload); the survivors keep theirs and skip re-seeding.
         self.exit_state_by_position
             .retain(|id, _| live_ids.contains(id));
+        // Rebuild the time-exit index to match the freshly-loaded holdings.
+        self.rebuild_time_exit_index();
     }
 
     /// The active rule set, shared by `Arc` (callers clone the pointer, not the
@@ -214,6 +256,16 @@ impl Tpsl1RuntimeCache {
         self.holding_by_mint
             .iter()
             .flat_map(|e| e.value().clone())
+            .collect()
+    }
+
+    /// Snapshot of only the Holding positions whose rule carries a time-based
+    /// exit. The per-second sweep iterates this (usually far smaller, often
+    /// empty) set instead of every holding. Pointer-clones, no guard held.
+    pub fn time_exit_holding_positions(&self) -> Vec<Arc<Position>> {
+        self.time_exit_holding
+            .iter()
+            .map(|e| e.value().clone())
             .collect()
     }
 
@@ -394,9 +446,11 @@ impl Tpsl1RuntimeCache {
             self.holding_by_mint.remove(&mint);
         }
         // The purged positions are gone from the holding index; drop their
-        // memoized exit states too so the map doesn't leak across paper runs.
+        // memoized exit states and time-exit index entries too so neither map
+        // leaks across paper runs.
         for id in purged_ids {
             self.exit_state_by_position.remove(&id);
+            self.time_exit_holding.remove(&id);
         }
     }
 
@@ -430,23 +484,34 @@ impl Tpsl1RuntimeCache {
             self.remove_from_holding_index(position);
             self.adjust_holding_count(position.rule_id, -1);
         }
+        self.time_exit_holding.remove(&position.id);
         self.exit_state_by_position.remove(&position.id);
         self.adjust_total_count(position.rule_id, -1);
     }
 
     fn upsert_in_holding_index(&self, position: &Position) {
-        let mut entry = self
-            .holding_by_mint
-            .entry(position.mint.clone())
-            .or_insert_with(Vec::new);
-        if let Some(slot) = entry.iter_mut().find(|p| p.id == position.id) {
-            *slot = Arc::new(position.clone());
+        let arc = Arc::new(position.clone());
+        {
+            let mut entry = self
+                .holding_by_mint
+                .entry(position.mint.clone())
+                .or_insert_with(Vec::new);
+            if let Some(slot) = entry.iter_mut().find(|p| p.id == position.id) {
+                *slot = arc.clone();
+            } else {
+                entry.push(arc.clone());
+            }
+        }
+        // Keep the time-exit index in lockstep with the holding entry.
+        if self.rule_has_time_exit(position.rule_id) {
+            self.time_exit_holding.insert(position.id, arc);
         } else {
-            entry.push(Arc::new(position.clone()));
+            self.time_exit_holding.remove(&position.id);
         }
     }
 
     fn remove_from_holding_index(&self, position: &Position) {
+        self.time_exit_holding.remove(&position.id);
         if let Some(mut entry) = self.holding_by_mint.get_mut(&position.mint) {
             entry.retain(|p| p.id != position.id);
             if entry.is_empty() {
