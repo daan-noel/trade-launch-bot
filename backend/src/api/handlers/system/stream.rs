@@ -148,6 +148,17 @@ fn to_sse_frame(event: &SseEvent, mint_filter: Option<&str>, state: &AppState) -
             });
             ("paper_test_finished", data)
         }
+        SseEvent::TpslRulesChanged { strategy } => {
+            // Not mint-scoped: a list-level signal delivered to every subscriber.
+            ("tpsl_rules_changed", json!({ "strategy": strategy }))
+        }
+        SseEvent::TpslPositionsChanged { strategy, rule_id } => {
+            // Not mint-scoped: scoped to the owning rule, not a token.
+            (
+                "tpsl_positions_changed",
+                json!({ "strategy": strategy, "rule_id": rule_id }),
+            )
+        }
     };
 
     let frame = format!(

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
-    models::{PaperRunStatus, Position, Tpsl1Rule},
+    models::{ingest::SseEvent, PaperRunStatus, Position, Tpsl1Rule},
     state::app_state::AppState,
     storage::repositories::{
         tpsl1_paper_trading_repo::Tpsl1PaperTradingRepo, tpsl1_strategy_rule_repo::Tpsl1StrategyRuleRepo,
@@ -107,6 +107,14 @@ impl RuleResponse {
 
 /// Enrich a single rule into a [`RuleResponse`] (one paper-run query for paper
 /// rules). The list endpoint avoids this per-rule query via a bulk run lookup.
+/// Best-effort cold-lane signal that the tpsl1 rule list changed (create / update
+/// / delete), so SSE clients refetch it instead of waiting on the fallback poll.
+fn emit_rules_changed(app_state: &Arc<AppState>) {
+    let _ = app_state.sse_tx.send(SseEvent::TpslRulesChanged {
+        strategy: "tpsl1".to_string(),
+    });
+}
+
 async fn rule_response(app_state: &Arc<AppState>, rule: Tpsl1Rule) -> RuleResponse {
     let open = app_state.tpsl1_cache.holding_count_by_rule(rule.id);
     let paper_status = if rule.trade_mode == "paper" {
@@ -270,6 +278,7 @@ pub async fn create_tpsl_rule(
             if let Err(e) = app_state.tpsl1_cache.reload_rules(&app_state.db).await {
                 tracing::warn!("TPSL rule cache reload after create failed: {e}");
             }
+            emit_rules_changed(&app_state);
             HttpResponse::Created().json(rule_response(&app_state, rule).await)
         }
         Err(e) => {
@@ -363,6 +372,7 @@ pub async fn update_tpsl_rule(
                     if let Err(e) = app_state.tpsl1_cache.reload_rules(&app_state.db).await {
                         tracing::warn!("TPSL rule cache reload after update failed: {e}");
                     }
+                    emit_rules_changed(&app_state);
                     HttpResponse::Ok().json(rule_response(&app_state, rule).await)
                 }
                 Err(e) => {
@@ -394,6 +404,7 @@ pub async fn delete_tpsl_rule(
             if let Err(e) = app_state.tpsl1_cache.reload_rules(&app_state.db).await {
                 tracing::warn!("TPSL rule cache reload after delete failed: {e}");
             }
+            emit_rules_changed(&app_state);
             HttpResponse::NoContent().finish()
         }
         Err(e) => {

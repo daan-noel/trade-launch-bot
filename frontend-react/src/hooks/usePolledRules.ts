@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
-import { POLL_INTERVAL_MS } from 'services/config';
+import { FALLBACK_POLL_INTERVAL_MS } from 'services/config';
+import { connectTpslRulesChanged } from 'services/sse';
 import { useVisiblePolling } from './useVisiblePolling';
 import type { RuleRecord } from 'types';
+
+/** Coalesce a burst of SSE signals (e.g. stop-and-close fires many position
+ *  events at once) into a single refetch. */
+const REFRESH_DEBOUNCE_MS = 200;
 
 /** Surface an error only after this many *consecutive* silent-poll failures, so
  *  a single dropped request doesn't flash an alert but a real outage still shows. */
@@ -18,11 +23,16 @@ export interface PolledRules {
 }
 
 /**
- * Owns the rule list for a strategy page: one non-silent initial load, then a
- * visibility-gated silent poll. Shared by Tpsl1Page and Tpsl2Page — they differ
- * only in which `fetchRules` they pass.
+ * Owns the rule list for a strategy page: one non-silent initial load, then
+ * SSE-driven silent refreshes (the backend pushes `tpsl_rules_changed` /
+ * `tpsl_positions_changed`), with a slow visibility-gated poll as a safety net
+ * for dropped frames. Shared by Tpsl1Page and Tpsl2Page — they differ only in
+ * `strategy` and which `fetchRules` they pass.
  */
-export function usePolledRules(fetchRules: () => Promise<RuleRecord[]>): PolledRules {
+export function usePolledRules(
+  fetchRules: () => Promise<RuleRecord[]>,
+  strategy: 'tpsl1' | 'tpsl2',
+): PolledRules {
   const [rules, setRules] = useState<RuleRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -53,8 +63,26 @@ export function usePolledRules(fetchRules: () => Promise<RuleRecord[]>): PolledR
     void refresh();
   }, [refresh]);
 
-  // Recurring silent refresh — no leading call (the effect above covers mount).
-  useVisiblePolling(() => void refresh(true), POLL_INTERVAL_MS, true, false);
+  // Primary path: refetch (debounced) whenever the backend signals a rule or
+  // position change, so the list updates in real time instead of on a timer.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const handle = connectTpslRulesChanged(strategy, () => {
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        void refresh(true);
+      }, REFRESH_DEBOUNCE_MS);
+    });
+    return () => {
+      if (timer) clearTimeout(timer);
+      handle.close();
+    };
+  }, [strategy, refresh]);
+
+  // Safety net: a slow visibility-gated poll catches anything a dropped/lagged
+  // SSE frame missed. No leading call (the initial-load effect covers mount).
+  useVisiblePolling(() => void refresh(true), FALLBACK_POLL_INTERVAL_MS, true, false);
 
   return { rules, setRules, loading, error, refresh };
 }

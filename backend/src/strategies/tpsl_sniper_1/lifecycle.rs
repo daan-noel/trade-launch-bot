@@ -17,6 +17,7 @@ use tracing::warn;
 use uuid::Uuid;
 
 use super::util::none_if_zero_u64;
+use crate::models::ingest::SseEvent;
 use crate::models::{Position, Tpsl1Rule};
 use crate::state::app_state::AppState;
 use crate::storage::repositories::{
@@ -82,6 +83,7 @@ pub async fn activate_rule(
     }
 
     app_state.tpsl1_cache.reload_rules(&app_state.db).await?;
+    emit_rules_changed(app_state);
     Ok(rule)
 }
 
@@ -109,7 +111,16 @@ pub async fn pause_rule(
             .await?;
     }
     app_state.tpsl1_cache.reload_rules(&app_state.db).await?;
+    emit_rules_changed(app_state);
     Ok(rule)
+}
+
+/// Best-effort cold-lane signal that this strategy's rule list changed, so SSE
+/// clients refetch it. No subscribers => the send is a no-op.
+fn emit_rules_changed(app_state: &Arc<AppState>) {
+    let _ = app_state.sse_tx.send(SseEvent::TpslRulesChanged {
+        strategy: "tpsl1".to_string(),
+    });
 }
 
 /// Stop a rule **and force-close every open position now**. Pauses first (so a

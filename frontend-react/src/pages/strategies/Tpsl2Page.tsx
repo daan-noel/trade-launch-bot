@@ -431,7 +431,7 @@ export function Tpsl2Page() {
   // into a shared hook (see usePolledRules). `loadRules` is the silent/forced
   // refresh used by the paper-test SSE handler below.
   const { rules, setRules, loading, error, refresh: loadRules } =
-    usePolledRules(fetchTpsl2Rules);
+    usePolledRules(fetchTpsl2Rules, 'tpsl2');
 
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
   // Positions for the selected rule: abortable fetch on select, then a silent
@@ -440,7 +440,7 @@ export function Tpsl2Page() {
     positions,
     loading: positionsLoading,
     error: positionsError,
-  } = useRulePositions(selectedRuleId, rules, fetchTpsl2RulePositions);
+  } = useRulePositions(selectedRuleId, rules, fetchTpsl2RulePositions, 'tpsl2');
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editRule, setEditRule] = useState<RuleRecord | null>(null);

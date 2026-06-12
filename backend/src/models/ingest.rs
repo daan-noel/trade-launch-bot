@@ -66,4 +66,13 @@ pub enum SseEvent {
         tokens_traded: i64,
         timestamp: DateTime<Utc>,
     },
+    /// A tpsl rule list changed for `strategy` ("tpsl1" | "tpsl2") — a rule was
+    /// created, updated, deleted, or moved through a lifecycle transition. A bare
+    /// signal (no payload beyond the strategy); the client refetches the list.
+    /// Not mint-scoped — always delivered.
+    TpslRulesChanged { strategy: String },
+    /// A tpsl position opened, closed, or changed status. `rule_id` scopes it to
+    /// the owning rule so a client refetches only that rule's positions (and the
+    /// rule's open-position count). Not mint-scoped — always delivered.
+    TpslPositionsChanged { strategy: String, rule_id: uuid::Uuid },
 }

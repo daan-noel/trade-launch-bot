@@ -757,7 +757,7 @@ mod tests {
     ) -> (Position, Tpsl1PositionRepo, TradeRepo, Arc<Tpsl1RuntimeCache>) {
         let position_repo = Tpsl1PositionRepo::new(pool.clone());
         let trade_repo = TradeRepo::new(pool.clone());
-        let runtime = Arc::new(Tpsl1RuntimeCache::new());
+        let runtime = Arc::new(Tpsl1RuntimeCache::new(tokio::sync::broadcast::channel(8).0));
         let position = Position::new(
             mint.to_string(),
             wallet.to_string(),

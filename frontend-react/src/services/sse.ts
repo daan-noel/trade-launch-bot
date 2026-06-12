@@ -106,3 +106,55 @@ export function connectPaperTestStream(
   });
   return { close: unsub };
 }
+
+type TpslStrategy = 'tpsl1' | 'tpsl2';
+
+/**
+ * Rule-list change signal for `strategy`. Fires when a rule is created / updated
+ * / deleted or moves through a lifecycle transition (`tpsl_rules_changed`), AND
+ * when a position changes (`tpsl_positions_changed`, which shifts the open-count
+ * and lifecycle badge). The payload is a bare signal — the caller refetches the
+ * list. Both event types are filtered to `strategy` client-side.
+ */
+export function connectTpslRulesChanged(
+  strategy: TpslStrategy,
+  onChanged: () => void,
+): StreamHandle {
+  const handle = (e: MessageEvent) => {
+    if (typeof e.data !== 'string') return;
+    try {
+      const p = JSON.parse(e.data) as { strategy?: string };
+      if (p.strategy === strategy) onChanged();
+    } catch {
+      /* ignore malformed frames */
+    }
+  };
+  const unsubRules = subscribe('tpsl_rules_changed', handle);
+  const unsubPos = subscribe('tpsl_positions_changed', handle);
+  return {
+    close: () => {
+      unsubRules();
+      unsubPos();
+    },
+  };
+}
+
+/**
+ * Position change signal for `strategy`. Calls `onChanged` with the affected
+ * `rule_id` so the caller refetches only that rule's positions.
+ */
+export function connectTpslPositionsChanged(
+  strategy: TpslStrategy,
+  onChanged: (ruleId: string) => void,
+): StreamHandle {
+  const unsub = subscribe('tpsl_positions_changed', (e) => {
+    if (typeof e.data !== 'string') return;
+    try {
+      const p = JSON.parse(e.data) as { strategy?: string; rule_id?: string };
+      if (p.strategy === strategy && p.rule_id) onChanged(p.rule_id);
+    } catch {
+      /* ignore malformed frames */
+    }
+  });
+  return { close: unsub };
+}

@@ -4,11 +4,12 @@ use std::sync::{Arc, RwLock};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use sqlx::PgPool;
-use tokio::sync::Semaphore;
+use tokio::sync::{broadcast, Semaphore};
 use uuid::Uuid;
 
 use super::exit::{CachedExitState, ExitWalkState};
 use super::util::none_if_zero_u64;
+use crate::models::ingest::SseEvent;
 use crate::models::trade::Trade;
 use crate::models::{PaperRun, PaperRunStatus, Position, PositionStatus, Tpsl2Rule};
 use crate::storage::repositories::{
@@ -54,13 +55,17 @@ pub struct Tpsl2RuntimeCache {
     /// permit before doing DB work, so a burst of fills can't spawn an unbounded
     /// number of feed-polling tasks all hammering the DB at once.
     paper_poll_sem: Arc<Semaphore>,
+    /// Cold-lane broadcast — every position transition emits a `TpslPositionsChanged`
+    /// signal so SSE clients refetch the affected rule's positions in real time
+    /// instead of polling.
+    sse_tx: broadcast::Sender<SseEvent>,
 }
 
 /// Max concurrent paper fill-poll tasks (entry + exit) for this strategy.
 const PAPER_POLL_CONCURRENCY: usize = 64;
 
 impl Tpsl2RuntimeCache {
-    pub fn new() -> Self {
+    pub fn new(sse_tx: broadcast::Sender<SseEvent>) -> Self {
         Self {
             active_rules: Arc::new(RwLock::new(Arc::new(Vec::new()))),
             rules_by_id: Arc::new(RwLock::new(HashMap::new())),
@@ -71,6 +76,7 @@ impl Tpsl2RuntimeCache {
             exit_state_by_position: Arc::new(DashMap::new()),
             time_exit_holding: Arc::new(DashMap::new()),
             paper_poll_sem: Arc::new(Semaphore::new(PAPER_POLL_CONCURRENCY)),
+            sse_tx,
         }
     }
 
@@ -481,6 +487,13 @@ impl Tpsl2RuntimeCache {
         if prev.is_none() {
             self.adjust_total_count(current.rule_id, 1);
         }
+
+        // Cold-lane signal: the position table + the rule's open-count badge are
+        // now stale for this rule. Best-effort send (no subscribers => ignored).
+        let _ = self.sse_tx.send(SseEvent::TpslPositionsChanged {
+            strategy: "tpsl2".to_string(),
+            rule_id: current.rule_id,
+        });
     }
 
     pub fn remove_position(&self, position: &Position) {

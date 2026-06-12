@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { POLL_INTERVAL_MS } from 'services/config';
+import { FALLBACK_POLL_INTERVAL_MS } from 'services/config';
+import { connectTpslPositionsChanged } from 'services/sse';
 import { useVisiblePolling } from './useVisiblePolling';
 import type { RulePositionRecord, RuleRecord } from 'types';
 
 const MAX_SILENT_FAILURES = 3;
+/** Coalesce a burst of position signals for the same rule into one refetch. */
+const REFRESH_DEBOUNCE_MS = 200;
 
 /** A rule whose positions can no longer change: entries are off (`is_active`
  *  false) AND nothing is still draining. Active rules can open new positions;
@@ -20,14 +23,16 @@ export interface RulePositions {
 
 /**
  * Owns the open-position list for the selected rule. Fetches once on select
- * (with a spinner), then polls silently — but only while the tab is visible and
- * only while the rule can still change. Each fetch is abortable, so switching
- * rules quickly can't let a stale response overwrite a newer one.
+ * (with a spinner), then refetches on the backend's `tpsl_positions_changed`
+ * push, with a slow visibility-gated poll as a safety net. Polling stops once
+ * the rule is settled. Each fetch is abortable, so switching rules quickly can't
+ * let a stale response overwrite a newer one.
  */
 export function useRulePositions(
   selectedRuleId: string | null,
   rules: RuleRecord[],
   fetchPositions: (ruleId: string, signal: AbortSignal) => Promise<RulePositionRecord[]>,
+  strategy: 'tpsl1' | 'tpsl2',
 ): RulePositions {
   const [positions, setPositions] = useState<RulePositionRecord[]>([]);
   const [loading, setLoading] = useState(false);
@@ -78,13 +83,31 @@ export function useRulePositions(
     return () => inflight.current?.abort();
   }, [selectedRuleId, load]);
 
-  // Silent poll — no leading call (the effect above did the first fetch), and
-  // disabled once the rule is settled (nothing left to refresh).
+  // Primary path: refetch (debounced) when the backend signals a position change
+  // for the selected rule. Skipped once the rule is settled (no more changes).
+  useEffect(() => {
+    if (!selectedRuleId || settled) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const handle = connectTpslPositionsChanged(strategy, (ruleId) => {
+      if (ruleId !== selectedRuleId || timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        void load(selectedRuleId, true);
+      }, REFRESH_DEBOUNCE_MS);
+    });
+    return () => {
+      if (timer) clearTimeout(timer);
+      handle.close();
+    };
+  }, [strategy, selectedRuleId, settled, load]);
+
+  // Safety net: a slow visibility-gated poll catches dropped/lagged SSE frames.
+  // No leading call (the select effect did the first fetch); off once settled.
   useVisiblePolling(
     () => {
       if (selectedRuleId) void load(selectedRuleId, true);
     },
-    POLL_INTERVAL_MS,
+    FALLBACK_POLL_INTERVAL_MS,
     !!selectedRuleId && !settled,
     false,
   );
