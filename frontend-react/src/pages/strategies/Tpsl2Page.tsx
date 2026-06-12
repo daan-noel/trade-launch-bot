@@ -597,12 +597,12 @@ export function Tpsl2Page() {
     setModalOpen(true);
   };
 
-  const openEdit = (rule: RuleRecord) => {
+  const openEdit = useCallback((rule: RuleRecord) => {
     setEditRule(rule);
     setForm(formFromRule(rule));
     setFormError(null);
     setModalOpen(true);
-  };
+  }, []);
 
   const handleSave = async (allowParams: boolean) => {
     setFormError(null);
@@ -641,21 +641,24 @@ export function Tpsl2Page() {
     }
   };
 
-  const handleDelete = async (ruleId: string) => {
-    setDeleteLoading(true);
-    try {
-      await deleteTpsl2Rule(ruleId);
-      setRules((prev) => prev.filter((r) => r.id !== ruleId));
-      if (selectedRuleId === ruleId) setSelectedRuleId(null);
-    } catch {
-      /* ignore */
-    } finally {
-      setConfirmDeleteId(null);
-      setDeleteLoading(false);
-    }
-  };
+  const handleDelete = useCallback(
+    async (ruleId: string) => {
+      setDeleteLoading(true);
+      try {
+        await deleteTpsl2Rule(ruleId);
+        setRules((prev) => prev.filter((r) => r.id !== ruleId));
+        if (selectedRuleId === ruleId) setSelectedRuleId(null);
+      } catch {
+        /* ignore */
+      } finally {
+        setConfirmDeleteId(null);
+        setDeleteLoading(false);
+      }
+    },
+    [selectedRuleId, setRules],
+  );
 
-  const handleSimulate = async (rule: RuleRecord) => {
+  const handleSimulate = useCallback(async (rule: RuleRecord) => {
     setSimResult(null);
     setSimError(null);
     setSimLoading(true);
@@ -667,47 +670,56 @@ export function Tpsl2Page() {
     } finally {
       setSimLoading(false);
     }
-  };
+  }, []);
 
-  const handleMatched = async (rule: RuleRecord) => {
-    if (matchedResult?.ruleId === rule.id) {
+  const handleMatched = useCallback(
+    async (rule: RuleRecord) => {
+      if (matchedResult?.ruleId === rule.id) {
+        setMatchedResult(null);
+        return;
+      }
       setMatchedResult(null);
-      return;
-    }
-    setMatchedResult(null);
-    setMatchedError(null);
-    setMatchedLoading(true);
-    try {
-      const tokens = await fetchTpsl2MatchedTokens(rule.id);
-      setMatchedResult({ ruleId: rule.id, tokens });
-    } catch (e) {
-      setMatchedError(e instanceof Error ? e.message : 'Failed to load matched tokens');
-    } finally {
-      setMatchedLoading(false);
-    }
-  };
+      setMatchedError(null);
+      setMatchedLoading(true);
+      try {
+        const tokens = await fetchTpsl2MatchedTokens(rule.id);
+        setMatchedResult({ ruleId: rule.id, tokens });
+      } catch (e) {
+        setMatchedError(e instanceof Error ? e.message : 'Failed to load matched tokens');
+      } finally {
+        setMatchedLoading(false);
+      }
+    },
+    [matchedResult],
+  );
 
-  const handlePaperResult = async (rule: RuleRecord) => {
-    // Toggle: a second click on the open rule closes the result.
-    if (paperResult?.ruleId === rule.id) {
+  const handlePaperResult = useCallback(
+    async (rule: RuleRecord) => {
+      // Toggle: a second click on the open rule closes the result.
+      if (paperResult?.ruleId === rule.id) {
+        setPaperResult(null);
+        setPaperError(null);
+        return;
+      }
       setPaperResult(null);
       setPaperError(null);
-      return;
-    }
-    setPaperResult(null);
-    setPaperError(null);
-    setPaperLoading(true);
-    try {
-      const data = await fetchTpsl2PaperResult(rule.id);
-      setPaperResult({ ruleId: rule.id, data });
-    } catch (e) {
-      setPaperError(e instanceof Error ? e.message : 'Failed to load paper result');
-    } finally {
-      setPaperLoading(false);
-    }
-  };
+      setPaperLoading(true);
+      try {
+        const data = await fetchTpsl2PaperResult(rule.id);
+        setPaperResult({ ruleId: rule.id, data });
+      } catch (e) {
+        setPaperError(e instanceof Error ? e.message : 'Failed to load paper result');
+      } finally {
+        setPaperLoading(false);
+      }
+    },
+    [paperResult],
+  );
 
-  const ruleActions = (rule: RuleRecord) => {
+  // Row-action cell, memoized so the rule table's memoized rows only re-render
+  // when something the actions actually depend on changes — not on every page
+  // render (selection, polling, modals, the paper-finished banner timer…).
+  const ruleActions = useCallback((rule: RuleRecord) => {
     if (confirmDeleteId === rule.id) {
       return (
         <div className="flex items-center justify-center gap-1">
@@ -782,15 +794,54 @@ export function Tpsl2Page() {
         )}
       </div>
     );
-  };
+  }, [
+    confirmDeleteId,
+    deleteLoading,
+    matchedResult,
+    simLoading,
+    matchedLoading,
+    paperLoading,
+    paperResult,
+    openEdit,
+    handleDelete,
+    handleSimulate,
+    handleMatched,
+    handlePaperResult,
+  ]);
 
-  const matchedRuleName =
-    matchedResult &&
-    rules.find((r) => r.id === matchedResult.ruleId)?.rule_name;
+  const matchedRuleName = useMemo(
+    () => (matchedResult ? rules.find((r) => r.id === matchedResult.ruleId)?.rule_name : null),
+    [matchedResult, rules],
+  );
 
-  const selectedRuleName = selectedRuleId
-    ? rules.find((r) => r.id === selectedRuleId)?.rule_name ?? null
-    : null;
+  const selectedRuleName = useMemo(
+    () => (selectedRuleId ? rules.find((r) => r.id === selectedRuleId)?.rule_name ?? null : null),
+    [selectedRuleId, rules],
+  );
+
+  // Stable row-select handlers so the result tables' memoized rows survive an
+  // unrelated page render (these closures are passed straight to DataTable).
+  const onSelectPosition = useCallback(
+    (key: string | null) => {
+      const row = key ? positions.find((p) => p.id === key) ?? null : null;
+      setInspect(
+        row ? { table: 'positions', key: row.id, target: inspectFromPosition(row) } : null,
+      );
+    },
+    [positions],
+  );
+
+  const onSelectSim = useCallback(
+    (key: string | null) => {
+      const row = key ? simResult?.tokens.find((t) => t.mint === key) ?? null : null;
+      setInspect(row ? { table: 'sim', key: row.mint, target: inspectFromSim(row) } : null);
+    },
+    [simResult],
+  );
+
+  const onSelectPaperToken = useCallback((row: SimulatedTokenResult | null) => {
+    setInspect(row ? { table: 'paper', key: row.mint, target: inspectFromSim(row) } : null);
+  }, []);
 
   return (
     <div>
@@ -868,14 +919,7 @@ export function Tpsl2Page() {
                 rows={positions}
                 rowKey={(r) => r.id}
                 selectedKey={inspect?.table === 'positions' ? inspect.key : null}
-                onSelect={(key) => {
-                  const row = key ? positions.find((p) => p.id === key) ?? null : null;
-                  setInspect(
-                    row
-                      ? { table: 'positions', key: row.id, target: inspectFromPosition(row) }
-                      : null,
-                  );
-                }}
+                onSelect={onSelectPosition}
                 defaultPageSize={20}
                 pageSizeOptions={[20, 50, 100]}
                 colFilters
@@ -956,12 +1000,7 @@ export function Tpsl2Page() {
                 rows={simResult.tokens}
                 rowKey={(r) => r.mint}
                 selectedKey={inspect?.table === 'sim' ? inspect.key : null}
-                onSelect={(key) => {
-                  const row = key ? simResult.tokens.find((t) => t.mint === key) ?? null : null;
-                  setInspect(
-                    row ? { table: 'sim', key: row.mint, target: inspectFromSim(row) } : null,
-                  );
-                }}
+                onSelect={onSelectSim}
                 defaultPageSize={20}
                 pageSizeOptions={[20, 50, 100]}
                 searchable
@@ -981,11 +1020,7 @@ export function Tpsl2Page() {
           price={price}
           simCols={simCols}
           selectedMint={inspect?.table === 'paper' ? inspect.key : null}
-          onSelectToken={(row) =>
-            setInspect(
-              row ? { table: 'paper', key: row.mint, target: inspectFromSim(row) } : null,
-            )
-          }
+          onSelectToken={onSelectPaperToken}
           onClose={() => {
             setPaperResult(null);
             setPaperError(null);
