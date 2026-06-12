@@ -100,8 +100,10 @@ impl Tpsl1RuntimeCache {
         }
 
         self.paper_run_by_rule.clear();
+        // One GROUP BY for every run's position count instead of a per-run query.
+        let counts_by_run = paper_repo.count_by_run_all().await?;
         for run in paper_repo.find_all_runs().await? {
-            let count = paper_repo.count_by_run(run.id).await?;
+            let count = counts_by_run.get(&run.id).copied().unwrap_or(0);
             if count > 0 {
                 self.total_count_by_rule.insert(run.rule_id, count);
             }

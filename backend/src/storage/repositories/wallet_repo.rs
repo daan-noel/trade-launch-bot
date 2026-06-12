@@ -102,6 +102,19 @@ impl WalletRepo {
         Ok(rows.into_iter().map(Wallet::from).collect())
     }
 
+    /// Wallets for many profiles in a single query (ordered by profile, then
+    /// creation), so a list view can group them in memory instead of issuing one
+    /// `list_by_profile` per profile (the previous N+1).
+    pub async fn list_by_profiles(&self, profile_ids: &[Uuid]) -> anyhow::Result<Vec<Wallet>> {
+        let rows = sqlx::query_as::<_, WalletRow>(
+            "SELECT * FROM wallets WHERE profile_id = ANY($1) ORDER BY profile_id, created_at ASC",
+        )
+        .bind(profile_ids)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Wallet::from).collect())
+    }
+
     /// Touch last_seen_at for a known address. Silently no-ops if address is not in the table.
     pub async fn touch_last_seen(&self, address: &str, now: DateTime<Utc>) -> anyhow::Result<()> {
         sqlx::query("UPDATE wallets SET last_seen_at=$1 WHERE address=$2")

@@ -148,9 +148,21 @@ impl WalletProfileRepo {
         };
         let all_tags = tag_repo.find_by_ids(&all_tag_ids).await?;
 
+        // All wallets for all profiles in one query, grouped in memory — instead
+        // of one list_by_profile per profile (the previous N+1).
+        let profile_ids: Vec<Uuid> = profiles.iter().map(|p| p.id).collect();
+        let mut wallets_by_profile: std::collections::HashMap<Uuid, Vec<Wallet>> =
+            std::collections::HashMap::new();
+        for wallet in wallet_repo.list_by_profiles(&profile_ids).await? {
+            wallets_by_profile
+                .entry(wallet.profile_id)
+                .or_default()
+                .push(wallet);
+        }
+
         let mut result = Vec::with_capacity(profiles.len());
         for p in profiles {
-            let wallets: Vec<Wallet> = wallet_repo.list_by_profile(p.id).await?;
+            let wallets: Vec<Wallet> = wallets_by_profile.remove(&p.id).unwrap_or_default();
             let tags = all_tags
                 .iter()
                 .filter(|t| p.tag_ids.contains(&t.id))

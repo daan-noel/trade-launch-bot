@@ -443,6 +443,18 @@ impl Tpsl1PaperTradingRepo {
         Ok(n)
     }
 
+    /// Position counts for every run in a single GROUP BY, so the cache load can
+    /// look counts up by run id instead of issuing one `count_by_run` per run
+    /// (the previous N+1). Runs with zero positions are absent from the map.
+    pub async fn count_by_run_all(&self) -> anyhow::Result<std::collections::HashMap<Uuid, i64>> {
+        let rows: Vec<(Uuid, i64)> = sqlx::query_as(
+            "SELECT run_id, COUNT(*) FROM tpsl1_paper_positions GROUP BY run_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().collect())
+    }
+
     /// Terminally fail paper positions stuck in ExitPending past the staleness
     /// window (mirrors the real-position safety net). Such a row was orphaned —
     /// the exit task normally resolves within seconds — so fail it rather than
