@@ -9,7 +9,7 @@
 // ============================================================
 
 use super::tx::OnChainRevert;
-use super::PumpFunTrader;
+use super::{PumpFunTrader, TokenPDAs};
 use crate::constants::{CONFIRM_MAX_RETRIES, CURVE_FEE_BUFFER_BPS, MAX_SELL_ATTEMPTS};
 use anyhow::{Context, Result};
 use solana_sdk::{
@@ -172,7 +172,6 @@ impl PumpFunTrader {
     ) -> Result<bool> {
         let t0 = Instant::now();
         let keypair = &self.config.keypair;
-        let global = self.global_account.as_ref().context("Not initialized")?;
 
         let mint = Pubkey::from_str(token_mint)?;
 
@@ -213,9 +212,6 @@ impl PumpFunTrader {
             user_token_account = user_token_account.to_string(),
             "=== Using cached user token account for sell"
         );
-        // ── Assemble instructions ───────────────────────────────────────────
-        let mut ixs = Vec::with_capacity(5);
-        ixs.extend_from_slice(&self.cu_ixs_curve_sell);
 
         // `sell(amount, min_sol_output)`: slippage floor on SOL received. `None`
         // keeps the legacy min_out=1 (snipe path, no extra RPC); `Some` reads the
@@ -237,6 +233,63 @@ impl PumpFunTrader {
             None => 1,
         };
 
+        let ixs = self.build_curve_sell_ixs(
+            &mint,
+            &pdas,
+            &user_token_account,
+            token_amount,
+            min_sol_output,
+            is_cashback,
+            tip_level,
+        )?;
+
+        // ── Sign & send ─────────────────────────────────────────────────────
+        let tx = self.build_nonce_tx(ixs, nonce_pubkey, nonce_hash, keypair)?;
+        let sig = self.send_transaction(&tx).await?;
+
+        info!(
+            "📤 Sell sent — sig: {} | amount: {} | {}ms",
+            sig,
+            token_amount,
+            t0.elapsed().as_millis()
+        );
+
+        // Feed-confirm path (`confirm == false`): the caller watches the
+        // LaserStream-fed `trades` balance, so blocking on the RPC poll here just
+        // adds 1–4 s of latency before that poll can even start. Manual/API
+        // callers keep the RPC confirm (and its `OnChainRevert` budget signal).
+        if confirm {
+            self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES).await?;
+            info!(
+                "✅ Sell confirmed — sig: {} | {}ms",
+                sig,
+                t0.elapsed().as_millis()
+            );
+        }
+        Ok(true)
+    }
+
+    /// Assemble the curve-sell instruction set (compute budget + `sell` + Jito
+    /// tip) for a known mint/account. Pure tx construction, no RPC or signing —
+    /// extracted from `execute_sell` so the simulate probe builds the *identical*
+    /// instructions the live sell path sends. `tip_level` escalates the tip (see
+    /// `jito_tip`); `min_sol_output` is the slippage floor (1 = no protection).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn build_curve_sell_ixs(
+        &self,
+        mint: &Pubkey,
+        pdas: &TokenPDAs,
+        user_token_account: &Pubkey,
+        token_amount: u64,
+        min_sol_output: u64,
+        is_cashback: bool,
+        tip_level: u8,
+    ) -> Result<Vec<Instruction>> {
+        let global = self.global_account.as_ref().context("Not initialized")?;
+
+        let mut ixs = Vec::with_capacity(5);
+        ixs.extend_from_slice(&self.cu_ixs_curve_sell);
+
         // Sell (Sell exact token in)
         let mut sell_data = vec![0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad];
         sell_data.extend_from_slice(&token_amount.to_le_bytes());
@@ -245,11 +298,11 @@ impl PumpFunTrader {
         let mut accounts = vec![
             AccountMeta::new_readonly(global.global_pda, false),
             AccountMeta::new(global.fee_recipient, false),
-            AccountMeta::new_readonly(mint, false),
+            AccountMeta::new_readonly(*mint, false),
             AccountMeta::new(pdas.bonding_curve, false),
             AccountMeta::new(pdas.associated_bonding_curve, false),
-            AccountMeta::new(user_token_account, false),
-            AccountMeta::new(keypair.pubkey(), true),
+            AccountMeta::new(*user_token_account, false),
+            AccountMeta::new(self.config.keypair.pubkey(), true),
             AccountMeta::new_readonly(self.system_program, false),
             AccountMeta::new(pdas.creator_vault, false),
             AccountMeta::new_readonly(pdas.token_program, false),
@@ -279,29 +332,6 @@ impl PumpFunTrader {
         // Jito tip — escalated by the caller's retry level.
         ixs.push(self.jito_tip_ix(tip_level));
 
-        // ── Sign & send ─────────────────────────────────────────────────────
-        let tx = self.build_nonce_tx(ixs, nonce_pubkey, nonce_hash, keypair)?;
-        let sig = self.send_transaction(&tx).await?;
-
-        info!(
-            "📤 Sell sent — sig: {} | amount: {} | {}ms",
-            sig,
-            token_amount,
-            t0.elapsed().as_millis()
-        );
-
-        // Feed-confirm path (`confirm == false`): the caller watches the
-        // LaserStream-fed `trades` balance, so blocking on the RPC poll here just
-        // adds 1–4 s of latency before that poll can even start. Manual/API
-        // callers keep the RPC confirm (and its `OnChainRevert` budget signal).
-        if confirm {
-            self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES).await?;
-            info!(
-                "✅ Sell confirmed — sig: {} | {}ms",
-                sig,
-                t0.elapsed().as_millis()
-            );
-        }
-        Ok(true)
+        Ok(ixs)
     }
 }

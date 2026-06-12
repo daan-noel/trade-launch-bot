@@ -31,6 +31,110 @@ fn parse_wallet_keypair(base58_key: &str) -> anyhow::Result<Keypair> {
         .context("Failed to construct Keypair from WALLET_PRIVATE_KEY bytes")
 }
 
+/// One-shot, no-/low-SOL probes for the tx-latency changes. Runs after the
+/// trader is initialized (so the tip cache and nonce slots are warm) and exits
+/// before any DB/ingest/HTTP startup. Subcommands:
+///   probe ladder [levels]                      — Jito tip escalation ladder
+///                                                (read-only, zero SOL)
+///   probe fanout [lamports] [--tip] [--confirm] — fan-out self-transfer to all
+///                                                sender endpoints (base fee only)
+///   probe simulate-sell <mint> <amount> [--cashback]
+///                                              — simulate a real curve sell
+///                                                (zero SOL)
+async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<()> {
+    const LPS: f64 = pump_trader::constants::LAMPORTS_PER_SOL as f64;
+    match args.first().map(String::as_str).unwrap_or("") {
+        "ladder" => {
+            let levels: u8 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(5);
+            let ladder = trader.probe_tip_ladder(levels).await?;
+            println!("Jito tip escalation ladder (live tip-floor):");
+            for (lvl, lamports) in ladder {
+                println!(
+                    "  level {lvl}: {lamports:>9} lamports  ({:.6} SOL)",
+                    lamports as f64 / LPS
+                );
+            }
+        }
+        "fanout" => {
+            let lamports: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(1);
+            let include_tip = args.iter().any(|a| a == "--tip");
+            let do_confirm = args.iter().any(|a| a == "--confirm");
+            println!(
+                "Fan-out self-transfer: {lamports} lamports, tip={include_tip}, confirm={do_confirm}"
+            );
+            let report = trader
+                .probe_fanout_self_transfer(lamports, include_tip, do_confirm)
+                .await?;
+            for r in &report.results {
+                match &r.outcome {
+                    Ok(sig) => println!("  ✅ {:>5}ms  {}  -> {sig}", r.elapsed_ms, r.url),
+                    Err(e) => println!("  ❌ {:>5}ms  {}  -> {e}", r.elapsed_ms, r.url),
+                }
+            }
+            match (report.confirm_ms, &report.confirmed) {
+                (Some(ms), Some(Ok(()))) => println!("  confirmed in {ms}ms"),
+                (Some(ms), Some(Err(e))) => println!("  confirm failed in {ms}ms: {e}"),
+                _ => {}
+            }
+        }
+        "holdings" => {
+            let holdings = trader.get_all_token_accounts().await?;
+            if holdings.is_empty() {
+                println!("Wallet holds no token accounts.");
+            } else {
+                println!("Wallet holdings ({}):", holdings.len());
+                for h in holdings {
+                    println!(
+                        "  {}  {} raw ({} UI)  acct={}",
+                        h.mint, h.amount, h.ui_amount, h.token_account
+                    );
+                }
+            }
+        }
+        "simulate-sell" => {
+            let mint = args
+                .get(1)
+                .context("usage: probe simulate-sell <mint> [amount] [--cashback]")?;
+            // Amount (raw base units) is optional: default to the wallet's full
+            // on-chain balance of the mint so the sim mirrors a real full exit.
+            let amount: u64 = match args.get(2).filter(|s| !s.starts_with("--")) {
+                Some(s) => s.parse().context("amount must be a u64 (raw base units)")?,
+                None => {
+                    let bal = trader.get_token_balance(&trader.wallet_pubkey(), mint).await?;
+                    println!(
+                        "No amount given — using on-chain balance: {} raw ({} UI)",
+                        bal.amount, bal.ui_amount
+                    );
+                    if bal.amount == 0 {
+                        anyhow::bail!("wallet holds 0 of {mint} — nothing to simulate");
+                    }
+                    bal.amount
+                }
+            };
+            let is_cashback = args.iter().any(|a| a == "--cashback");
+            let report = trader
+                .probe_simulate_curve_sell(mint, amount, is_cashback, 0)
+                .await?;
+            match &report.err {
+                None => println!(
+                    "✅ simulation passed — CU consumed: {:?}",
+                    report.units_consumed
+                ),
+                Some(e) => println!(
+                    "❌ simulation reverted: {e}\n   CU consumed: {:?}",
+                    report.units_consumed
+                ),
+            }
+            println!("--- logs ---");
+            for line in &report.logs {
+                println!("  {line}");
+            }
+        }
+        other => anyhow::bail!("unknown probe '{other}'. Use: ladder | fanout | simulate-sell"),
+    }
+    Ok(())
+}
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
     // Load .env before anything else
@@ -68,6 +172,13 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("Failed to initialize PumpFunTrader")?;
     let trader = Arc::new(trader);
+
+    // Probe mode: `cargo run -p backend -- probe <subcommand>` runs a one-shot,
+    // no-/low-SOL validation of the latency changes against live infra, then
+    // exits before touching the DB / ingest / HTTP server. See `run_probe`.
+    if std::env::args().nth(1).as_deref() == Some("probe") {
+        return run_probe(&trader, std::env::args().skip(2).collect()).await;
+    }
 
     // Database — connect and run migrations
     let db = storage::postgres::connect(&settings).await?;

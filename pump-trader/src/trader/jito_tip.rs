@@ -76,13 +76,6 @@ impl JitoTipCache {
         })
     }
 
-    /// Tip for the first attempt (level 0) — the configured percentile, clamped
-    /// to [floor, ceiling], or the floor when the feed is empty/stale. The buy
-    /// path and the first sell attempt use this.
-    pub fn tip_lamports(&self) -> u64 {
-        self.tip_lamports_for_level(0)
-    }
-
     /// Tip for retry `level` (0 = first attempt), in lamports. Successive sell
     /// attempts climb the auction so a tx that lost the last block bids up to win
     /// the next: level 0 = the configured percentile, 1 = p95, 2 = p99, and
@@ -193,8 +186,6 @@ mod tests {
     fn cold_cache_level_0_is_the_floor() {
         let c = JitoTipCache::default();
         assert_eq!(c.tip_lamports_for_level(0), lamports(MIN_JITO_TIP_SOL));
-        // tip_lamports() is the level-0 alias used by the buy path.
-        assert_eq!(c.tip_lamports(), c.tip_lamports_for_level(0));
     }
 
     #[test]

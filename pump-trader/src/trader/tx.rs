@@ -13,7 +13,9 @@ use crate::constants::{BLOCKHASH_CACHE_MAX_AGE_MS, CONFIRM_POLL_MS};
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose, Engine as _};
 use serde_json::json;
+use solana_client::rpc_config::RpcSimulateTransactionConfig;
 use solana_sdk::{
+    commitment_config::CommitmentConfig,
     hash::Hash,
     instruction::Instruction,
     message::Message,
@@ -100,10 +102,12 @@ impl PumpFunTrader {
     /// submissions only add landing paths — never cost. Returns as soon as one
     /// endpoint accepts the tx; the rest keep running in the background so a
     /// slow or briefly-down endpoint can't gate the send.
-    pub(super) async fn send_transaction(&self, tx: &Transaction) -> Result<String> {
+    /// Encode a signed tx into the `sendTransaction` JSON-RPC body used by every
+    /// sender endpoint. Extracted so the fan-out and the probe path serialize the
+    /// tx exactly once and submit byte-identical bodies.
+    pub(super) fn encode_send_body(&self, tx: &Transaction) -> Result<serde_json::Value> {
         let encoded = general_purpose::STANDARD.encode(bincode::serialize(tx)?);
-
-        let body = json!({
+        Ok(json!({
             "jsonrpc": "2.0",
             "id": chrono::Utc::now().timestamp_millis().to_string(),
             "method": "sendTransaction",
@@ -111,7 +115,39 @@ impl PumpFunTrader {
                 encoded,
                 { "encoding": "base64", "skipPreflight": true, "maxRetries": 0 }
             ]
-        });
+        }))
+    }
+
+    /// Simulate a tx (no SOL, no land) and return `(units_consumed, err, logs)`.
+    /// `sig_verify: false` + `replace_recent_blockhash: true` so the node swaps in
+    /// a current blockhash — the caller doesn't need a fresh hash or valid
+    /// signatures, only a correctly-built instruction set. Used by the simulate
+    /// probe to validate accounts / data / CU without sending.
+    pub(super) async fn simulate_transaction(
+        &self,
+        tx: &Transaction,
+    ) -> Result<(Option<u64>, Option<String>, Vec<String>)> {
+        let cfg = RpcSimulateTransactionConfig {
+            sig_verify: false,
+            replace_recent_blockhash: true,
+            commitment: Some(CommitmentConfig::processed()),
+            ..Default::default()
+        };
+        let resp = self
+            .rpc
+            .simulate_transaction_with_config(tx, cfg)
+            .await
+            .context("simulateTransaction RPC")?;
+        let v = resp.value;
+        Ok((
+            v.units_consumed,
+            v.err.map(|e| format!("{e:?}")),
+            v.logs.unwrap_or_default(),
+        ))
+    }
+
+    pub(super) async fn send_transaction(&self, tx: &Transaction) -> Result<String> {
+        let body = self.encode_send_body(tx)?;
 
         let urls = &self.config.helius_sender_urls;
 
@@ -188,7 +224,11 @@ impl PumpFunTrader {
 /// POST one signed-tx JSON-RPC body to a single sender endpoint and return the
 /// transaction signature it echoes back. Free function so the fan-out path can
 /// drive it from detached tasks (no `&self` borrow to hold across the spawn).
-async fn post_tx(http: &reqwest::Client, url: &str, body: &serde_json::Value) -> Result<String> {
+pub(super) async fn post_tx(
+    http: &reqwest::Client,
+    url: &str,
+    body: &serde_json::Value,
+) -> Result<String> {
     let resp = http
         .post(url)
         .header("Content-Type", "application/json")

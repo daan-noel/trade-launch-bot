@@ -35,6 +35,7 @@ mod init;
 mod jito_tip;
 mod nonce;
 mod pool;
+pub mod probe;
 mod query;
 mod reserves;
 mod sell;
