@@ -38,6 +38,13 @@ pub struct Settings {
     pub port: u16,
     pub http_enabled: bool,
     pub http_workers: usize,
+    /// CORS allowed origin. `"*"` (default) keeps the permissive behaviour;
+    /// set it to the frontend origin to lock cross-origin access down.
+    pub cors_allowed_origin: String,
+    /// Optional bearer token required on mutating (POST/PUT/DELETE/PATCH) API
+    /// requests. `None` (unset) disables auth entirely (current behaviour); set
+    /// `API_AUTH_TOKEN` to require `Authorization: Bearer <token>`.
+    pub api_auth_token: Option<String>,
 }
 
 impl Settings {
@@ -61,6 +68,8 @@ impl Settings {
             port: env_parse("PORT", 8081)?,
             http_enabled: env_or("HTTP_ENABLED", "true").parse().unwrap_or(true),
             http_workers: env_parse("HTTP_WORKERS", 2)?,
+            cors_allowed_origin: env_or("CORS_ALLOWED_ORIGIN", "*"),
+            api_auth_token: std::env::var("API_AUTH_TOKEN").ok().filter(|s| !s.is_empty()),
         })
     }
 }

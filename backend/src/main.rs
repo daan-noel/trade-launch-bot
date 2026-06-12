@@ -16,12 +16,57 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use actix_cors::Cors;
-use actix_web::{web, App, HttpServer};
+use actix_web::body::{EitherBody, MessageBody};
+use actix_web::dev::{ServiceRequest, ServiceResponse};
+use actix_web::middleware::{from_fn, Next};
+use actix_web::{web, App, HttpResponse, HttpServer};
 use crate::trader::{PumpFunTrader, TraderConfig};
 
-/// CORS allow-origin for the HTTP API. "*" allows any origin; tighten to your
-/// frontend origin for production.
-const CORS_ALLOWED_ORIGIN: &str = "*";
+/// Optional bearer token gating mutating API requests, shared via `app_data`.
+/// `None` disables the check entirely (the default, current behaviour).
+#[derive(Clone)]
+struct ApiAuth {
+    token: Option<String>,
+}
+
+/// Middleware: require `Authorization: Bearer <token>` on mutating requests when
+/// an `API_AUTH_TOKEN` is configured. Preflight (OPTIONS) and safe reads
+/// (GET/HEAD) always pass, and when no token is configured every request passes
+/// — so enabling the env var is the only thing that turns auth on.
+async fn require_bearer_auth(
+    req: ServiceRequest,
+    next: Next<impl MessageBody + 'static>,
+) -> Result<ServiceResponse<EitherBody<impl MessageBody>>, actix_web::Error> {
+    use actix_web::http::{header::AUTHORIZATION, Method};
+
+    let mutating = matches!(
+        *req.method(),
+        Method::POST | Method::PUT | Method::DELETE | Method::PATCH
+    );
+    let configured = req
+        .app_data::<web::Data<ApiAuth>>()
+        .and_then(|a| a.token.clone());
+
+    let authorized = match (mutating, configured) {
+        // Non-mutating, or no token configured → always allowed.
+        (false, _) | (_, None) => true,
+        (true, Some(expected)) => req
+            .headers()
+            .get(AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.strip_prefix("Bearer "))
+            .map(|t| t == expected)
+            .unwrap_or(false),
+    };
+
+    if authorized {
+        Ok(next.call(req).await?.map_into_left_body())
+    } else {
+        let resp = HttpResponse::Unauthorized()
+            .json(serde_json::json!({ "error": "unauthorized" }));
+        Ok(req.into_response(resp).map_into_right_body())
+    }
+}
 
 fn parse_wallet_keypair(base58_key: &str) -> anyhow::Result<Keypair> {
     let bytes = bs58::decode(base58_key)
@@ -341,8 +386,15 @@ async fn main() -> anyhow::Result<()> {
         info!(addr = %bind_addr, workers = settings.http_workers, "Starting HTTP server");
         let http_state = app_state.clone();
         let http_workers = settings.http_workers;
+        let cors_allowed_origin = settings.cors_allowed_origin.clone();
+        let api_auth = ApiAuth {
+            token: settings.api_auth_token.clone(),
+        };
+        if api_auth.token.is_some() {
+            info!("API auth enabled: mutating requests require a bearer token");
+        }
         let http_server = HttpServer::new(move || {
-            let allowed_origin = CORS_ALLOWED_ORIGIN;
+            let allowed_origin = cors_allowed_origin.as_str();
 
             let cors = if allowed_origin == "*" {
                 Cors::default()
@@ -361,8 +413,10 @@ async fn main() -> anyhow::Result<()> {
             };
 
             App::new()
+                .wrap(from_fn(require_bearer_auth))
                 .wrap(cors)
                 .app_data(web::Data::new(http_state.clone()))
+                .app_data(web::Data::new(api_auth.clone()))
                 .configure(api::configure)
         })
         .workers(http_workers)
