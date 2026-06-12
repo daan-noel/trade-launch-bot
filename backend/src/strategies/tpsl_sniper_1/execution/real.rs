@@ -262,20 +262,21 @@ async fn adopt_existing_fill_if_present(
     trade_repo: &TradeRepo,
     runtime: &Arc<Tpsl1RuntimeCache>,
 ) -> bool {
-    let trades = match trade_repo.find_by_mint(mint, 20).await {
-        Ok(trades) => trades,
+    let fill = match trade_repo
+        .find_latest_by_wallet_mint_type(wallet, mint, crate::models::trade::TradeType::Buy)
+        .await
+    {
+        Ok(Some(fill)) => fill,
+        Ok(None) => return false,
         Err(err) => {
             warn!(mint = %mint, "failed to query trades for buy confirmation: {err}");
             return false;
         }
     };
-    let Some(fill) = trades.into_iter().find(|t| {
-        t.wallet_address == wallet && t.trade_type == crate::models::trade::TradeType::Buy
-    }) else {
-        return false;
-    };
     if let Ok(Some(prev)) = position_repo.find_by_id(position_id).await {
-        if let Err(err) = position_repo
+        // `update_entry` RETURNs the updated row, so we sync the cache off it
+        // directly — no follow-up read of the row we just wrote.
+        match position_repo
             .update_entry(
                 position_id,
                 &fill.tx_signature,
@@ -285,10 +286,11 @@ async fn adopt_existing_fill_if_present(
             )
             .await
         {
-            warn!(mint = %mint, "failed to update position entry after buy: {err}");
-        } else if let Ok(Some(current)) = position_repo.find_by_id(position_id).await {
-            runtime.sync_position(Some(&prev), &current);
-            info!(mint = %mint, tx = %fill.tx_signature, "position entry recorded from buy fill");
+            Ok(current) => {
+                runtime.sync_position(Some(&prev), &current);
+                info!(mint = %mint, tx = %fill.tx_signature, "position entry recorded from buy fill");
+            }
+            Err(err) => warn!(mint = %mint, "failed to update position entry after buy: {err}"),
         }
     }
     true
@@ -352,10 +354,11 @@ pub(crate) async fn sell_and_close_position(
         return;
     }
 
-    if let Ok(trades) = trade_repo.find_by_mint(&mint, 20).await {
-        if let Some(last_sell) = trades.into_iter().find(|t| {
-            t.wallet_address == wallet && t.trade_type == crate::models::trade::TradeType::Sell
-        }) {
+    if let Ok(Some(last_sell)) = trade_repo
+        .find_latest_by_wallet_mint_type(&wallet, &mint, crate::models::trade::TradeType::Sell)
+        .await
+    {
+        {
             let remaining = trade_repo
                 .net_token_amount_by_wallet_and_mint(&wallet, &mint)
                 .await

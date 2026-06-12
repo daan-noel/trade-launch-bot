@@ -9,7 +9,7 @@
 // ============================================================
 
 use super::PumpFunTrader;
-use crate::constants::{BLOCKHASH_CACHE_MAX_AGE_MS, CONFIRM_POLL_MS};
+use crate::constants::{BLOCKHASH_CACHE_MAX_AGE_MS, CONFIRM_POLL_MS, CONFIRM_POLL_SCHEDULE_MS};
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose, Engine as _};
 use serde_json::json;
@@ -206,7 +206,10 @@ impl PumpFunTrader {
                 None => {
                     if i + 1 < max_retries {
                         info!("⏳ Confirmation pending ({}/{})", i + 1, max_retries);
-                        tokio::time::sleep(Duration::from_millis(CONFIRM_POLL_MS)).await;
+                        // Ramp the early polls (a confirmed tx usually lands in
+                        // ~1–2 slots); fall back to the steady gap past the ramp.
+                        let gap = CONFIRM_POLL_SCHEDULE_MS.get(i).copied().unwrap_or(CONFIRM_POLL_MS);
+                        tokio::time::sleep(Duration::from_millis(gap)).await;
                     }
                 }
             }

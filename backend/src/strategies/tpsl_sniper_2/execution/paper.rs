@@ -58,7 +58,9 @@ pub(crate) fn spawn_entry_fill_poll(
             };
             if let Some(fill) = super::super::entry::find_scalp_entry(&trades, &rule) {
                 if let Ok(Some(prev)) = paper_repo.find_by_id(position_id).await {
-                    let _ = paper_repo
+                    // `update_entry` RETURNs the updated row — sync off it directly
+                    // instead of reading back the row we just wrote.
+                    if let Ok(current) = paper_repo
                         .update_entry(
                             position_id,
                             &fill.tx_signature,
@@ -66,8 +68,8 @@ pub(crate) fn spawn_entry_fill_poll(
                             fill.price,
                             fill.block_time,
                         )
-                        .await;
-                    if let Ok(Some(current)) = paper_repo.find_by_id(position_id).await {
+                        .await
+                    {
                         runtime.sync_position(Some(&prev), &current);
                     }
                 }

@@ -291,6 +291,9 @@ impl Tpsl2PaperTradingRepo {
     }
 
     /// Update entry fields after a (simulated) fill is recorded.
+    /// Update entry fields and return the updated row in one round-trip, so the
+    /// caller can use the fresh `Position` directly instead of a follow-up
+    /// `find_by_id` to read back what it just wrote.
     pub async fn update_entry(
         &self,
         position_id: Uuid,
@@ -298,23 +301,24 @@ impl Tpsl2PaperTradingRepo {
         entry_amount: f64,
         entry_price: f64,
         entry_time: DateTime<Utc>,
-    ) -> anyhow::Result<()> {
-        sqlx::query(
+    ) -> anyhow::Result<Position> {
+        let row = sqlx::query_as::<_, PaperPositionDbRow>(&format!(
             r#"
             UPDATE tpsl2_paper_positions
             SET entry_tx = $2, entry_amount = $3, entry_price = $4, entry_time = $5, updated_at = $6
             WHERE id = $1
-            "#,
-        )
+            RETURNING {POSITION_COLS}
+            "#
+        ))
         .bind(position_id)
         .bind(entry_tx)
         .bind(entry_amount)
         .bind(entry_price)
         .bind(entry_time)
         .bind(Utc::now())
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
-        Ok(())
+        Position::try_from(row)
     }
 
     /// Close a position with the (simulated) exit fill, recording the exit

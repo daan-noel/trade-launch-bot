@@ -106,6 +106,9 @@ impl Tpsl1PositionRepo {
     }
 
     /// Update entry fields for an existing position (entry_tx, entry_amount, entry_price, entry_time).
+    /// Update entry fields and return the updated row in one round-trip. The
+    /// `RETURNING *` lets the caller use the fresh `Position` directly instead of
+    /// issuing a follow-up `find_by_id` to read back what it just wrote.
     pub async fn update_entry(
         &self,
         position_id: Uuid,
@@ -113,12 +116,15 @@ impl Tpsl1PositionRepo {
         entry_amount: f64,
         entry_price: f64,
         entry_time: DateTime<Utc>,
-    ) -> anyhow::Result<()> {
-        sqlx::query(
+    ) -> anyhow::Result<Position> {
+        let row = sqlx::query_as::<_, PositionDbRow>(
             r#"
             UPDATE tpsl1_real_positions
             SET entry_tx = $2, entry_amount = $3, entry_price = $4, entry_time = $5, updated_at = $6
             WHERE id = $1
+            RETURNING id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
+                      status, strategy, rule_id, entry_amount, exit_amount,
+                      entry_time, exit_time, exit_reason, created_at, updated_at
             "#,
         )
         .bind(position_id)
@@ -127,10 +133,10 @@ impl Tpsl1PositionRepo {
         .bind(entry_price)
         .bind(entry_time)
         .bind(Utc::now())
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
 
-        Ok(())
+        Position::try_from(row)
     }
 
     /// Create a new position.

@@ -139,8 +139,16 @@ pub const COMPUTE_UNIT_LIMIT_AMM: u32 = 180_000;
 pub const MAX_SELL_ATTEMPTS: usize = 5;
 /// How many times we poll for transaction confirmation.
 pub const CONFIRM_MAX_RETRIES: usize = 5;
-/// Milliseconds between confirmation polls.
+/// Fallback / steady-state gap between confirmation polls, in milliseconds —
+/// used once the ramp below is exhausted.
 pub const CONFIRM_POLL_MS: u64 = 1_000;
+/// Ramped gaps between the first confirmation polls, in milliseconds. A
+/// confirmed-commitment tx usually lands in ~1–2 slots (~0.8–1.6 s), so polling
+/// fast early returns a manual buy/sell sooner in the common case; later polls
+/// widen toward `CONFIRM_POLL_MS`. Polls beyond this list fall back to
+/// `CONFIRM_POLL_MS`. Worst-case wait ≈ sum of the first `CONFIRM_MAX_RETRIES-1`
+/// entries, below the old flat `(retries-1) × 1 s`.
+pub const CONFIRM_POLL_SCHEDULE_MS: &[u64] = &[250, 400, 700, 1_000];
 
 
 /// Maximum spin-wait iterations when all nonce slots are in use.

@@ -254,9 +254,23 @@ impl TradeRepo {
         Ok(rows.into_iter().map(|(sig,)| sig).collect())
     }
 
-    /// Most recent trades for a token, newest first.
-    pub async fn find_by_mint(&self, mint: &str, limit: i64) -> anyhow::Result<Vec<Trade>> {
-        let rows = sqlx::query_as::<_, TradeDbRow>(
+    /// Most-recent trade by `wallet` on `mint` of a given side, or `None`.
+    /// Filters in SQL and fetches a single row instead of pulling N rows and
+    /// scanning them in Rust — used by the buy/sell confirmation hot loops, which
+    /// only ever want this one fill. Backed by `idx_trades_wallet_mint`. Unlike a
+    /// bounded `find_by_mint(.., N)` + `.find()`, this can't miss the wallet's
+    /// fill behind N newer trades on a high-volume mint.
+    pub async fn find_latest_by_wallet_mint_type(
+        &self,
+        wallet: &str,
+        mint: &str,
+        trade_type: TradeType,
+    ) -> anyhow::Result<Option<Trade>> {
+        let type_str = match trade_type {
+            TradeType::Buy => "buy",
+            TradeType::Sell => "sell",
+        };
+        let row = sqlx::query_as::<_, TradeDbRow>(
             r#"
             SELECT id, mint_address, wallet_address, trade_type,
                    sol_amount, token_amount, price_per_token,
@@ -265,17 +279,18 @@ impl TradeRepo {
                    real_sol_reserves, real_token_reserves,
                    ix_type, ix_labels, venue
             FROM trades
-            WHERE mint_address = $1
+            WHERE wallet_address = $1 AND mint_address = $2 AND trade_type = $3
             ORDER BY block_time DESC
-            LIMIT $2
+            LIMIT 1
             "#,
         )
+        .bind(wallet)
         .bind(mint)
-        .bind(limit)
-        .fetch_all(&self.pool)
+        .bind(type_str)
+        .fetch_optional(&self.pool)
         .await?;
 
-        rows.into_iter().map(Trade::try_from).collect()
+        row.map(Trade::try_from).transpose()
     }
 
     /// Find all trades for a token in chronological order.
