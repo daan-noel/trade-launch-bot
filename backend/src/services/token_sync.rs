@@ -538,7 +538,7 @@ pub async fn run_token_sync(
     // `recompute_token_state` rebuilds `state.trades` through the 50K retention
     // ring — so the two are not interchangeable for high-volume mints and this
     // copy is genuinely required (L11: not a redundant clone). Cold sync path.
-    state.trades = trades.clone();
+    state.trades = std::sync::Arc::new(trades.clone());
     state.is_migrated = is_migrated;
 
     token_metrics::recompute_token_state(&mut state);

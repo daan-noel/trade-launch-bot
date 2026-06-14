@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use chrono::Utc;
 use tracing::warn;
 
@@ -19,6 +21,9 @@ pub fn recompute_token_state(state: &mut TokenState) {
 
     let mut fresh = TokenState::new(token);
     fresh.is_migrated = is_migrated;
+    // `trades` is the only Arc holder here (taken out of `state`), so unwrap moves
+    // the Vec without copying; fall back to a clone only if somehow shared.
+    let trades = Arc::try_unwrap(trades).unwrap_or_else(|a| (*a).clone());
     for trade in trades {
         fresh.add_trade(trade);
     }

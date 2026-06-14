@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 
@@ -38,7 +40,13 @@ pub struct TokenState {
 
     /// Retained trade history in chronological order (oldest first), capped at
     /// `MAX_TRADES_RETAINED`. NOT necessarily the full history — see `trades_base`.
-    pub trades: Vec<Trade>,
+    ///
+    /// Wrapped in `Arc` so API readers (swing/paper polls) clone a refcount under
+    /// the shard guard instead of deep-copying up to 50K `Trade`s while the ingest
+    /// writer is blocked on `get_mut`. The append hot path mutates in place via
+    /// `Arc::make_mut`, which only copies on the rare tick where a reader is still
+    /// holding a snapshot — and that copy lands on the writer, off the read guard.
+    pub trades: Arc<Vec<Trade>>,
 
     /// Absolute count of trades trimmed from the front of `trades` over the
     /// token's lifetime. The logical index of `trades[0]` is `trades_base`, so
@@ -88,7 +96,7 @@ impl TokenState {
 
         Self {
             token,
-            trades: Vec::new(),
+            trades: Arc::new(Vec::new()),
             trades_base: 0,
             volume_sol_total: 0.0,
             trade_count: 0,
@@ -133,11 +141,15 @@ impl TokenState {
     /// startup memory without recomputing stats. `trades_base` advances by exactly
     /// the number trimmed so the exit memo's absolute cursor stays valid.
     pub fn push_trade_capped(&mut self, trade: Trade) {
-        self.trades.push(trade);
-        let len = self.trades.len();
+        // `make_mut` mutates in place when we hold the only reference (the common
+        // hot-path case); it copies once only if an API reader is still holding a
+        // snapshot Arc from a concurrent request.
+        let trades = Arc::make_mut(&mut self.trades);
+        trades.push(trade);
+        let len = trades.len();
         if len > MAX_TRADES_RETAINED + TRADES_TRIM_SLACK {
             let overflow = len - MAX_TRADES_RETAINED;
-            self.trades.drain(0..overflow);
+            trades.drain(0..overflow);
             self.trades_base += overflow as u64;
         }
     }
@@ -167,7 +179,7 @@ impl TokenState {
     /// the windowed approximation is acceptable).
     pub fn unique_wallets(&self) -> usize {
         let mut seen = std::collections::HashSet::new();
-        for t in &self.trades {
+        for t in self.trades.iter() {
             seen.insert(t.wallet_address.as_str());
         }
         seen.len()
@@ -179,7 +191,7 @@ impl TokenState {
     /// late trade after the token went quiet doesn't inflate the lifetime.
     /// `None` when the token has no trades. Trades are stored oldest-first.
     pub fn active_lifetime_secs(&self) -> Option<i64> {
-        let trades = &self.trades;
+        let trades: &[Trade] = &self.trades;
         let mut end = trades.len();
         if end == 0 {
             return None;

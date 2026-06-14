@@ -28,7 +28,10 @@ use crate::storage::repositories::tpsl2_paper_trading_repo::Tpsl2PaperTradingRep
 /// (H5/H6). The clone is bounded by `MAX_TRADES_RETAINED`; per-trade
 /// `instruction_labels` are not read by any fill resolver, so the cache ring's
 /// stripped labels don't matter here.
-fn cache_trades(token_cache: &TokenCache, mint: &str) -> Option<Vec<Trade>> {
+///
+/// Returns the shared `Arc` so the snapshot is a refcount bump under the shard
+/// guard, not a deep copy of up to `MAX_TRADES_RETAINED` trades.
+fn cache_trades(token_cache: &TokenCache, mint: &str) -> Option<Arc<Vec<Trade>>> {
     token_cache.get(mint).map(|e| e.value().trades.clone())
 }
 

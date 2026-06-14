@@ -130,12 +130,14 @@ pub async fn detect_token_swings(
     } = body.into_inner();
 
     let trades = if let Some(entry) = state.token_cache.get(&mint) {
-        // Clone out of the shard guard and drop it immediately — the heavy
-        // window-filter + swing scan run below off the read lock so the ingest
-        // writer's `get_mut` on the same shard isn't blocked by our work.
+        // Refcount-clone the trade buffer out of the shard guard and drop it
+        // immediately. The Arc clone is O(1) under the lock; the (possible) deep
+        // copy and the heavy window-filter + swing scan all run below, off the
+        // read lock, so the ingest writer's `get_mut` on the same shard isn't
+        // blocked by our work.
         let trades = entry.trades.clone();
         drop(entry);
-        trades
+        Arc::try_unwrap(trades).unwrap_or_else(|a| (*a).clone())
     } else {
         let repo = TradeRepo::new(state.db.clone());
         // Bounded fallback: never materialise an unbounded mint history.
@@ -221,9 +223,11 @@ pub async fn detect_tokens_swings_batch(
         let app = app.clone();
         async move {
             let trades = if let Some(entry) = app.token_cache.get(&mint) {
+                // Refcount-clone under the guard, deep-copy (if still shared) after
+                // dropping it — the heavy copy never blocks the ingest writer.
                 let trades = entry.trades.clone();
                 drop(entry);
-                trades
+                Arc::try_unwrap(trades).unwrap_or_else(|a| (*a).clone())
             } else {
                 let repo = TradeRepo::new(app.db.clone());
                 match repo.find_by_mint_paged(&mint, SWING_DB_TRADE_CAP, 0).await {
