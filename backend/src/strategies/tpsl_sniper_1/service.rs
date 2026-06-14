@@ -308,7 +308,9 @@ impl Tpsl1StrategyService {
             let trades_base = state.trades_base;
 
             for position in positions {
-                let Some(rule) = self.runtime.rule_by_id(position.rule_id) else {
+                // Hot-path gate: pull only the exit-ladder scalars, not a full
+                // rule clone (that happens below, once per *actual* exit).
+                let Some(params) = self.runtime.ladder_params_by_id(position.rule_id) else {
                     continue;
                 };
                 // Holding + recorded entry only; a 0-entry/non-Holding position is
@@ -321,7 +323,6 @@ impl Tpsl1StrategyService {
                 // against only those new trades in one pass — no per-ping full
                 // re-walk of the retained history. The memo doubles as the
                 // clock-sweep's current snapshot, so the sweep still never re-walks.
-                let params = super::exit::LadderParams::from_rule(&rule);
                 if let Some(exit_reason) = self.runtime.exit_state_advance_and_find_exit(
                     position.id,
                     position.entry_price,
@@ -330,12 +331,17 @@ impl Tpsl1StrategyService {
                     trades_base,
                     &params,
                 ) {
-                    to_exit.push((position, rule, exit_reason));
+                    to_exit.push((position, exit_reason));
                 }
             }
         }
 
-        for (position, rule, exit_reason) in to_exit {
+        for (position, exit_reason) in to_exit {
+            // This position is actually exiting (rare) — now it's worth the full
+            // rule clone the execution paths need.
+            let Some(rule) = self.runtime.rule_by_id(position.rule_id) else {
+                continue;
+            };
             // Deep-clone only now that this position is actually exiting; the
             // holding index hands us a shared `Arc<Position>`.
             let mut position = (*position).clone();
@@ -402,12 +408,12 @@ impl Tpsl1StrategyService {
         // a secondary index), not every open position. The per-rule short-circuit
         // below is kept as a cheap defensive check against index/rule skew.
         for position in self.runtime.time_exit_holding_positions() {
-            let Some(rule) = self.runtime.rule_by_id(position.rule_id) else {
+            // Hot-path gate: only the time-exit scalars, not a full rule clone
+            // (deferred to the rare branch where a position actually exits).
+            let Some(params) = self.runtime.ladder_params_by_id(position.rule_id) else {
                 continue;
             };
-            if none_if_zero_u64(rule.p_exit_time_stop_secs).is_none()
-                && none_if_zero_u64(rule.p_exit_stall_secs).is_none()
-            {
+            if params.time_stop_secs().is_none() && params.stall_secs().is_none() {
                 continue;
             }
             // Skip until the entry fill is indexed (entry_price/entry_time set);
@@ -448,7 +454,7 @@ impl Tpsl1StrategyService {
             };
 
             let Some(exit_reason) =
-                super::exit::should_position_exit_on_clock(&position, &state, &rule, now)
+                super::exit::should_position_exit_on_clock(&position, &state, &params, now)
             else {
                 continue;
             };
@@ -458,8 +464,11 @@ impl Tpsl1StrategyService {
                 "Time-driven exit triggered: {exit_reason}"
             );
 
-            // This position is exiting — deep-clone out of the shared `Arc` so the
-            // execution paths can take it by value.
+            // This position is exiting (rare) — now clone the full rule the
+            // execution paths need, and deep-clone out of the shared `Arc`.
+            let Some(rule) = self.runtime.rule_by_id(position.rule_id) else {
+                continue;
+            };
             let position = (*position).clone();
             if rule.trade_mode == "paper" {
                 super::execution::paper::record_time_exit(

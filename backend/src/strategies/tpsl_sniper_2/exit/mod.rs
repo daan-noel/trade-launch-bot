@@ -382,6 +382,16 @@ impl LadderParams {
             cohort_exit_ratio: none_if_zero_f64(rule.p_exit_cohort_ratio),       // E5
         }
     }
+
+    /// E2 TimeStop deadline (seconds since entry), if configured.
+    pub fn time_stop_secs(&self) -> Option<u64> {
+        self.time_stop_secs
+    }
+
+    /// E3 Stall deadline (seconds since last higher-high), if configured.
+    pub fn stall_secs(&self) -> Option<u64> {
+        self.stall_secs
+    }
 }
 
 /// The exit ladder for a single trade `t`, given the running walk `state` (peaks as
@@ -544,15 +554,15 @@ pub fn find_trade_driven_exit(
 pub fn find_clock_driven_exit(
     state: &ExitWalkState,
     entry_time: DateTime<Utc>,
-    rule: &Tpsl2Rule,
+    params: &LadderParams,
     now: DateTime<Utc>,
 ) -> Option<ExitReason> {
-    if let Some(secs) = none_if_zero_u64(rule.p_exit_stall_secs) {
+    if let Some(secs) = params.stall_secs {
         if stall_triggered(state.last_higher_high_time, now, secs) {
             return Some(ExitReason::Stall);
         }
     }
-    if let Some(secs) = none_if_zero_u64(rule.p_exit_time_stop_secs) {
+    if let Some(secs) = params.time_stop_secs {
         if time_stop_triggered(entry_time, now, secs) {
             return Some(ExitReason::TimeStop);
         }
@@ -586,16 +596,14 @@ pub fn should_position_exit_on_trade(
 pub fn should_position_exit_on_clock(
     position: &Position,
     state: &ExitWalkState,
-    rule: &Tpsl2Rule,
+    params: &LadderParams,
     now: DateTime<Utc>,
 ) -> Option<ExitReason> {
     let entry_time = clock_entry_time(position)?;
-    if none_if_zero_u64(rule.p_exit_time_stop_secs).is_none()
-        && none_if_zero_u64(rule.p_exit_stall_secs).is_none()
-    {
+    if params.time_stop_secs.is_none() && params.stall_secs.is_none() {
         return None;
     }
-    find_clock_driven_exit(state, entry_time, rule, now)
+    find_clock_driven_exit(state, entry_time, params, now)
 }
 
 /// Shared guard for both live gates: a position is evaluable only while Holding
@@ -975,7 +983,7 @@ mod tests {
         let trades = vec![buy(1.0, 2, 30)]; // one trade then silence
         let now = base_time() + Duration::seconds(600);
         assert_eq!(
-            should_position_exit_on_clock(&pos, &walk(&pos, &trades), &rule, now),
+            should_position_exit_on_clock(&pos, &walk(&pos, &trades), &LadderParams::from_rule(&rule), now),
             Some(ExitReason::TimeStop)
         );
     }
@@ -987,7 +995,7 @@ mod tests {
         let trades = vec![buy(2.0, 2, 10)]; // new high at +10s, then quiet
         let now = base_time() + Duration::seconds(300);
         assert_eq!(
-            should_position_exit_on_clock(&pos, &walk(&pos, &trades), &rule, now),
+            should_position_exit_on_clock(&pos, &walk(&pos, &trades), &LadderParams::from_rule(&rule), now),
             Some(ExitReason::Stall)
         );
     }
@@ -999,7 +1007,7 @@ mod tests {
         let trades = vec![buy(2.0, 2, 10)];
         let now = base_time() + Duration::seconds(300);
         assert_eq!(
-            should_position_exit_on_clock(&pos, &walk(&pos, &trades), &rule, now),
+            should_position_exit_on_clock(&pos, &walk(&pos, &trades), &LadderParams::from_rule(&rule), now),
             Some(ExitReason::Stall)
         );
     }
@@ -1011,7 +1019,7 @@ mod tests {
         let trades = vec![buy(1.0, 2, 30)];
         let now = base_time() + Duration::seconds(100);
         assert_eq!(
-            should_position_exit_on_clock(&pos, &walk(&pos, &trades), &rule, now),
+            should_position_exit_on_clock(&pos, &walk(&pos, &trades), &LadderParams::from_rule(&rule), now),
             None
         );
     }
@@ -1023,7 +1031,7 @@ mod tests {
         let trades = vec![buy(1.0, 2, 30)];
         let now = base_time() + Duration::seconds(86_400);
         assert_eq!(
-            should_position_exit_on_clock(&pos, &walk(&pos, &trades), &rule, now),
+            should_position_exit_on_clock(&pos, &walk(&pos, &trades), &LadderParams::from_rule(&rule), now),
             None
         );
     }
@@ -1035,7 +1043,7 @@ mod tests {
         pos.entry_time = None;
         let now = base_time() + Duration::seconds(600);
         assert_eq!(
-            should_position_exit_on_clock(&pos, &walk(&pos, &[]), &rule, now),
+            should_position_exit_on_clock(&pos, &walk(&pos, &[]), &LadderParams::from_rule(&rule), now),
             None
         );
     }

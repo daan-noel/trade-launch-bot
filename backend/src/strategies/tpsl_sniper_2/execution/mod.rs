@@ -21,6 +21,15 @@ pub(crate) const SELL_MAX_ATTEMPTS: usize = 6;
 pub(crate) const SELL_POLL_MAX_ATTEMPTS: usize = 10;
 pub(crate) const SELL_POLL_INTERVAL_MS: u64 = 500;
 pub(crate) const PARTIAL_FILL_THRESHOLD: f64 = 0.0001;
+/// Floor on how often the sell-confirm loop may re-run the net-balance SUM
+/// aggregate over the partitioned `trades` table. During an active dump the
+/// feed bumps `seq` (and wakes the confirm loop) once per landed leg, so
+/// notify-driven wakeups can fire many times per poll interval; coalescing the
+/// aggregate to at most once per this window keeps that off the hot path. Kept
+/// below `SELL_POLL_INTERVAL_MS` so the periodic full-window fallback poll is
+/// never suppressed, and the loop force-runs one final aggregate at the
+/// deadline (when `seq` advanced) so no clear is ever missed.
+pub(crate) const SELL_BALANCE_QUERY_MIN_INTERVAL_MS: u64 = 250;
 
 // ── Scalp-entry arming window ────────────────────────────────────────────────
 // The scalp gates take far longer to come true than a buy fill takes to index, so

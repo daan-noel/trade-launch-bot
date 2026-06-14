@@ -28,7 +28,9 @@ Channels: `value_tx` cap 16 (`Value`) · `db_tx` cap 4096 (`DbWriteOp`) · `stra
 ### Pipeline event handlers
 `on_token_created` (Token+Wallet+Metrics+ping+SSE) · `on_trade_executed` (Trade+Wallet+Metrics + feed trader reserves + pre-warm AMM + ping + SSE) · `on_token_migrated` (register pool + Migration op + ping) · `on_creator_activity` (ping) · `on_liquidity` (SSE only).
 
-> `on_trade_executed` strips `Trade.instruction_labels` to `Null` **before** the trade is moved into the capped in-memory ring (the DB copy enqueued just above keeps the full labels for the trades API). Strategy/exit logic reads only Token-level labels, so the per-trade JSON array is never retained per trade per token in the ~50K `TokenState.trades` window.
+> `on_trade_executed` moves `Trade.instruction_labels` **out** of the in-memory Trade (leaving `Null`) and attaches it only to the cloned DB copy — so the per-trade label JSON array is deep-copied zero times (the DB copy keeps the labels for the trades API; the capped in-memory ring and strategy/exit logic read only Token-level labels). The trade is then applied to `TokenState`, the rugged-recompute throttle decided, and the first-AMM-trade pool-prewarm check-and-set resolved — all under a **single** `get_mut` guard (one shard write-lock per trade, not two).
+>
+> **Rugged-recompute throttle:** `recompute_rugged` is flagged at most once per `RUGGED_RECHECK_INTERVAL_SECONDS` (5 min) per mint via `TokenState.last_rugged_check_at`, not on every trade. The DbWriter only runs `compute_is_rugged` (up to 3 whole-history aggregate scans) when the flag is set, so a stale-but-still-trading mint no longer re-scans on every trade — the verdict only moves on the 1h `RUGGED_STALE_SECONDS` scale anyway.
 
 ## Decoder — `decoder/`
 | File | Key items |

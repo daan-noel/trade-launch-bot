@@ -82,6 +82,12 @@ pub struct TokenState {
     /// Wall-clock time of the last successful manual sync, if any. Populated from
     /// `tokens_info.last_synced_at` on seed and refreshed after each sync.
     pub last_synced_at: Option<DateTime<Utc>>,
+    /// Wall-clock time the ingest flow last requested a rugged recompute for this
+    /// mint. Throttles the (expensive, up to 3 whole-history aggregate scans)
+    /// recompute to at most once per `RUGGED_RECHECK_INTERVAL_SECONDS` per mint —
+    /// the verdict only moves on the 1h staleness scale, so per-trade recompute is
+    /// waste. `None` until the first recompute is requested.
+    pub last_rugged_check_at: Option<DateTime<Utc>>,
 }
 
 impl TokenState {
@@ -114,6 +120,7 @@ impl TokenState {
             is_migrated: false,
             amm_pool_prewarmed: false,
             last_synced_at: None,
+            last_rugged_check_at: None,
         }
     }
 

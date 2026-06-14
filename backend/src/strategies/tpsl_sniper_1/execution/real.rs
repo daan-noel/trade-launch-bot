@@ -518,7 +518,14 @@ async fn sell_until_balance_cleared(
                 let mut remaining_amount = amount;
                 let mut cleared = false;
                 let interval = Duration::from_millis(super::SELL_POLL_INTERVAL_MS);
+                let min_query_gap =
+                    Duration::from_millis(super::SELL_BALANCE_QUERY_MIN_INTERVAL_MS);
                 let deadline = Instant::now() + interval * super::SELL_POLL_MAX_ATTEMPTS as u32;
+                // Floor on aggregate frequency: set after each query so a burst of
+                // notify-driven wakeups within `min_query_gap` coalesces into one
+                // SUM. Never blocks the periodic fallback poll (gap < interval) and
+                // is overridden at the deadline so the final confirm always runs.
+                let mut last_query_at: Option<Instant> = None;
                 loop {
                     // Arm the wakeup before the balance read (see the buy path:
                     // `notify_waiters` stores no permit, `enable()` registers up front).
@@ -526,17 +533,31 @@ async fn sell_until_balance_cleared(
                     tokio::pin!(notified);
                     notified.as_mut().enable();
 
+                    let now = Instant::now();
+                    let at_deadline = now >= deadline;
+
                     // Only run the net-balance SQL aggregate when the feed has
                     // persisted a new trade for this (wallet, mint) since our last
                     // read — `seq` is bumped once per such trade. A bare fallback
                     // tick (no new trade) can't have changed the balance, so we
                     // skip the per-tick scan over the large partitioned `trades`
-                    // table entirely. `seq` is sampled *before* the query so a
-                    // trade landing during it is re-checked next tick. SQL stays
-                    // the authoritative confirm (deduped by PK), so feed
-                    // redelivery can't mis-count the balance and over-sell.
+                    // table entirely. On top of that, rate-limit the aggregate to
+                    // at most once per `min_query_gap`: during a dump `seq` advances
+                    // (and wakes us) once per landed leg, which would otherwise fire
+                    // the SUM many times per poll interval. Coalescing is safe — SQL
+                    // stays the authoritative, PK-deduped confirm, so a slightly
+                    // later read only ever sees *more* of the balance gone, never
+                    // less, and can't over-sell. The rate-limit is bypassed at the
+                    // deadline so a clear that landed during a coalesced burst is
+                    // always confirmed before we fall through to a (wasteful, double-
+                    // sell-risking) retry. `seq` is sampled *before* the query so a
+                    // trade landing during it is re-checked next tick.
                     let seq = guard.seq();
-                    if last_seq != Some(seq) {
+                    let seq_advanced = last_seq != Some(seq);
+                    let rate_ok = at_deadline
+                        || last_query_at.map_or(true, |t| now.duration_since(t) >= min_query_gap);
+                    if seq_advanced && rate_ok {
+                        last_query_at = Some(now);
                         match trade_repo
                             .net_token_amount_by_wallet_and_mint(&wallet, &mint)
                             .await
@@ -554,10 +575,10 @@ async fn sell_until_balance_cleared(
                             Err(err) => warn!("Failed to query net token balance: {err}"),
                         }
                     }
-                    let now = Instant::now();
-                    if now >= deadline {
+                    if at_deadline {
                         break;
                     }
+                    let now = Instant::now();
                     let fallback = interval.min(deadline - now);
                     tokio::select! {
                         _ = &mut notified => {}

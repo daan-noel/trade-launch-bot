@@ -248,6 +248,18 @@ impl Tpsl1RuntimeCache {
             .and_then(|m| m.get(&rule_id).cloned())
     }
 
+    /// Hot-path gate accessor: resolve just the exit-ladder scalars for a rule
+    /// under the read lock, without deep-cloning the whole `Tpsl1Rule` (which
+    /// carries large fields incl. a `serde_json::Value`). The per-trade exit gate
+    /// and the time sweep need only these; the full `rule_by_id` clone is reserved
+    /// for the rare branch where a position actually exits.
+    pub fn ladder_params_by_id(&self, rule_id: Uuid) -> Option<super::exit::LadderParams> {
+        self.rules_by_id
+            .read()
+            .ok()
+            .and_then(|m| m.get(&rule_id).map(super::exit::LadderParams::from_rule))
+    }
+
     pub fn holding_by_mint(&self, mint: &str) -> Vec<Arc<Position>> {
         self.holding_by_mint
             .get(mint)

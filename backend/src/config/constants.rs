@@ -164,6 +164,13 @@ pub fn total_supply_for(is_mayhem_mode: bool) -> f64 {
 /// How long a token can go without a price change before being considered rugged.
 pub const RUGGED_STALE_SECONDS: i64 = 3600; // 1 hour
 
+/// Minimum spacing between per-mint rugged recomputes on the ingest hot path. The
+/// rugged verdict only changes on the `RUGGED_STALE_SECONDS` (1h) staleness scale,
+/// so re-running its (up to 3) whole-history aggregate scans on every trade for a
+/// stale-but-still-trading mint is pure waste — the ingest flow flags the
+/// recompute at most once per this interval per mint instead.
+pub const RUGGED_RECHECK_INTERVAL_SECONDS: i64 = 300; // 5 minutes
+
 // ── Rug detection signals ───────────────────────────────────────────────────
 // All signals below are gated behind `RUGGED_STALE_SECONDS`: an actively trading
 // token is never flagged. They are evaluated in order and any one is sufficient.

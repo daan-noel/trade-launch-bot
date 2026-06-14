@@ -10,7 +10,10 @@ use tracing::{debug, info, warn};
 use serde_json::Value;
 
 use crate::{
-    config::constants::{POOL_REFRESH_INTERVAL_SECONDS, POOL_SUBSCRIBE_ACTIVITY_WINDOW_SECONDS},
+    config::constants::{
+        POOL_REFRESH_INTERVAL_SECONDS, POOL_SUBSCRIBE_ACTIVITY_WINDOW_SECONDS,
+        RUGGED_RECHECK_INTERVAL_SECONDS,
+    },
     models::{
         events::{
             CreatorActivityEvent, InternalEvent, LiquidityEvent, TokenCreatedEvent,
@@ -396,20 +399,62 @@ impl IngestPipeline {
         let token_amount = e.trade.token_amount;
         let price_per_token = e.trade.price_per_token;
 
-        self.enqueue_db(DbWriteOp::Trade(e.trade.clone())).await;
+        // Move the label JSON OUT of the in-memory Trade before cloning for the DB
+        // write, then attach it only to the DB copy. The trades API displays the
+        // labels (so the DB copy keeps them); the in-memory ring never reads
+        // per-trade labels (strategy reads Token-level labels only). Doing the
+        // move-then-clone avoids deep-copying the whole `instruction_labels` JSON
+        // array — one full heap copy per trade, on the highest-volume event — only
+        // to null it out immediately afterwards.
+        let labels = std::mem::replace(&mut e.trade.instruction_labels, Value::Null);
+        let mut db_trade = e.trade.clone();
+        db_trade.instruction_labels = labels;
+        self.enqueue_db(DbWriteOp::Trade(db_trade)).await;
         self.enqueue_db(DbWriteOp::Wallet(wallet.clone())).await;
 
-        // The DB copy above keeps the full `instruction_labels` JSON (the trades
-        // API displays them); the in-memory ring never reads per-trade labels
-        // (strategy reads Token-level labels only). Drop the heap JSON array
-        // before the Trade is moved into the 50K-capped retention ring so we don't
-        // permanently retain a JSON array per trade per token.
-        e.trade.instruction_labels = serde_json::Value::Null;
+        // Apply the trade to token state, decide the rugged-recompute throttle, and
+        // resolve the (first-AMM-trade) pool prewarm — all under a SINGLE `get_mut`
+        // guard, so one event takes one write-lock on the shard instead of two,
+        // halving contention against API readers + the strategy runner.
+        let now = Utc::now();
+        let (metrics, to_warm) = match self.token_cache.get_mut(&mint) {
+            Some(mut token_state) => {
+                token_state.add_trade(e.trade);
 
-        let metrics = self.token_cache.get_mut(&mint).map(|mut token_state| {
-            token_state.add_trade(e.trade);
-            metrics_from_state(&mint, &token_state, true)
-        });
+                // Throttle the per-mint rugged recompute: the verdict only moves on
+                // the 1h staleness scale, so flag a recompute at most once per
+                // `RUGGED_RECHECK_INTERVAL_SECONDS` per mint instead of on every
+                // trade — keeping the (up to 3) whole-history aggregate scans out of
+                // the throughput-critical DbWriter flush for stale, still-trading mints.
+                let recompute_rugged = token_state.last_rugged_check_at.is_none_or(|t| {
+                    now.signed_duration_since(t).num_seconds() >= RUGGED_RECHECK_INTERVAL_SECONDS
+                });
+                if recompute_rugged {
+                    token_state.last_rugged_check_at = Some(now);
+                }
+                let metrics = metrics_from_state(&mint, &token_state, recompute_rugged);
+
+                // First AMM trade for this mint: capture the token program (when
+                // known) so the background task can warm its PumpSwap pool caches
+                // off the eventual exit path. Check-and-set the warm flag in the
+                // same guard; an unknown program leaves it false so a later AMM
+                // trade retries — never cache a guessed pool layout.
+                let to_warm = if is_amm && !token_state.amm_pool_prewarmed {
+                    match token_state.token.token_program_id.clone() {
+                        Some(token_program) => {
+                            token_state.amm_pool_prewarmed = true;
+                            Some(token_program)
+                        }
+                        None => None,
+                    }
+                } else {
+                    None
+                };
+
+                (Some(metrics), to_warm)
+            }
+            None => (None, None),
+        };
         if let Some(metrics) = metrics {
             self.enqueue_db(DbWriteOp::Metrics(metrics)).await;
         }
@@ -423,40 +468,22 @@ impl IngestPipeline {
         }
 
         // On a token's first AMM trade, warm its PumpSwap pool caches (pool facts
-        // + fee-share marker + global config) in the background. This swap gives
-        // the marker scan something to read, and moves that cold fetch off the
-        // bot's eventual exit path. Only when the token program is known, so we
-        // never cache a guessed pool layout; spawned once per mint.
-        if is_amm {
-            // Check-and-set the per-token warm flag and read its program in one
-            // guard. Returns the program only when we win the race AND it's known;
-            // an unknown program leaves the flag false so a later AMM trade retries.
-            let to_warm = self.token_cache.get_mut(&mint).and_then(|mut s| {
-                if s.amm_pool_prewarmed {
-                    return None;
-                }
-                match s.token.token_program_id.clone() {
-                    Some(token_program) => {
-                        s.amm_pool_prewarmed = true;
-                        Some(token_program)
+        // + fee-share marker + global config) in the background — moving that cold
+        // fetch off the bot's eventual exit path. The check-and-set ran above under
+        // the shared `get_mut`, so this only spawns the warm task.
+        if let Some(token_program) = to_warm {
+            let trader = self.trader.clone();
+            let token_cache = self.token_cache.clone();
+            let warm_mint = mint.clone();
+            tokio::spawn(async move {
+                if let Err(err) = trader.prewarm_amm_pool(&warm_mint, &token_program).await {
+                    debug!("AMM pool prewarm failed for {warm_mint}: {err}");
+                    // Clear the flag so a later AMM trade retries the warm.
+                    if let Some(mut s) = token_cache.get_mut(&warm_mint) {
+                        s.amm_pool_prewarmed = false;
                     }
-                    None => None,
                 }
             });
-            if let Some(token_program) = to_warm {
-                let trader = self.trader.clone();
-                let token_cache = self.token_cache.clone();
-                let warm_mint = mint.clone();
-                tokio::spawn(async move {
-                    if let Err(err) = trader.prewarm_amm_pool(&warm_mint, &token_program).await {
-                        debug!("AMM pool prewarm failed for {warm_mint}: {err}");
-                        // Clear the flag so a later AMM trade retries the warm.
-                        if let Some(mut s) = token_cache.get_mut(&warm_mint) {
-                            s.amm_pool_prewarmed = false;
-                        }
-                    }
-                });
-            }
         }
 
         self.ping_strategy(mint.clone(), IngestKind::Trade).await;
