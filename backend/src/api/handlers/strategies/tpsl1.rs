@@ -8,10 +8,6 @@ use uuid::Uuid;
 use crate::{
     models::{ingest::SseEvent, PaperRunStatus, Position, Tpsl1Rule},
     state::app_state::AppState,
-    storage::repositories::{
-        tpsl1_paper_trading_repo::Tpsl1PaperTradingRepo, tpsl1_strategy_rule_repo::Tpsl1StrategyRuleRepo,
-        token_repo::TokenRepo,
-    },
     strategies::tpsl_sniper_1::{
         self, backtest::BacktestTokenResult, entry::token_matches_buy_rule, PaperActivation,
     },
@@ -118,7 +114,7 @@ fn emit_rules_changed(app_state: &Arc<AppState>) {
 async fn rule_response(app_state: &Arc<AppState>, rule: Tpsl1Rule) -> RuleResponse {
     let open = app_state.tpsl1_cache.holding_count_by_rule(rule.id);
     let paper_status = if rule.trade_mode == "paper" {
-        Tpsl1PaperTradingRepo::new(app_state.db.clone())
+        app_state.tpsl1_paper_repo()
             .current_run(rule.id)
             .await
             .ok()
@@ -190,13 +186,13 @@ pub struct UpdateRuleRequest {
 
 /// List all TPSL rules
 pub async fn list_tpsl_rules(app_state: web::Data<Arc<AppState>>) -> impl Responder {
-    let repo = Tpsl1StrategyRuleRepo::new(app_state.db.clone());
+    let repo = app_state.tpsl1_rule_repo();
 
     match repo.find_all().await {
         Ok(rules) => {
             // One query for all latest runs → status map, so enriching N rules
             // with their lifecycle stays a single round-trip (no N+1).
-            let paper_repo = Tpsl1PaperTradingRepo::new(app_state.db.clone());
+            let paper_repo = app_state.tpsl1_paper_repo();
             let run_status: HashMap<Uuid, PaperRunStatus> = paper_repo
                 .find_all_runs()
                 .await
@@ -231,7 +227,7 @@ pub async fn get_tpsl_rule(
     app_state: web::Data<Arc<AppState>>,
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
-    let repo = Tpsl1StrategyRuleRepo::new(app_state.db.clone());
+    let repo = app_state.tpsl1_rule_repo();
     let rule_id = rule_id.into_inner();
 
     match repo.find_by_id(rule_id).await {
@@ -271,7 +267,7 @@ pub async fn create_tpsl_rule(
         req.p_exit_liquidity_drop_pct,
     );
 
-    let repo = Tpsl1StrategyRuleRepo::new(app_state.db.clone());
+    let repo = app_state.tpsl1_rule_repo();
 
     match repo.insert(&rule).await {
         Ok(_) => {
@@ -296,7 +292,7 @@ pub async fn update_tpsl_rule(
     req: web::Json<UpdateRuleRequest>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
-    let repo = Tpsl1StrategyRuleRepo::new(app_state.db.clone());
+    let repo = app_state.tpsl1_rule_repo();
 
     match repo.find_by_id(rule_id).await {
         Ok(Some(mut rule)) => {
@@ -397,7 +393,7 @@ pub async fn delete_tpsl_rule(
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
-    let repo = Tpsl1StrategyRuleRepo::new(app_state.db.clone());
+    let repo = app_state.tpsl1_rule_repo();
 
     match repo.delete(rule_id).await {
         Ok(_) => {
@@ -521,7 +517,7 @@ pub async fn get_matched_tokens(
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
-    let rule_repo = Tpsl1StrategyRuleRepo::new(app_state.db.clone());
+    let rule_repo = app_state.tpsl1_rule_repo();
 
     let rule = match rule_repo.find_by_id(rule_id).await {
         Ok(Some(r)) => r,
@@ -635,8 +631,8 @@ pub async fn paper_result_tpsl_rule(
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
-    let rule_repo = Tpsl1StrategyRuleRepo::new(app_state.db.clone());
-    let paper_repo = Tpsl1PaperTradingRepo::new(app_state.db.clone());
+    let rule_repo = app_state.tpsl1_rule_repo();
+    let paper_repo = app_state.tpsl1_paper_repo();
 
     let rule = match rule_repo.find_by_id(rule_id).await {
         Ok(Some(r)) => r,
@@ -679,7 +675,7 @@ pub async fn paper_result_tpsl_rule(
     // Resolve token symbols for display (best-effort; blank if unknown). Only the
     // run's own position mints are looked up — no full-table scan.
     let mints: Vec<String> = positions.iter().map(|p| p.mint.clone()).collect();
-    let symbols = TokenRepo::new(app_state.db.clone())
+    let symbols = app_state.token_repo()
         .find_symbols_for(&mints)
         .await
         .unwrap_or_else(|e| {

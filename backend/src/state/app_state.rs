@@ -7,6 +7,14 @@ use tokio::sync::{broadcast, watch, Notify, OwnedSemaphorePermit, Semaphore};
 use crate::api::handlers::system::SseFrame;
 use crate::models::ingest::SseEvent;
 use crate::storage::repositories::settings_repo::AppSettings;
+use crate::storage::repositories::{
+    analysis_repo::AnalysisRepo, settings_repo::SettingsRepo, token_repo::TokenRepo,
+    trade_repo::TradeRepo, tpsl1_paper_trading_repo::Tpsl1PaperTradingRepo,
+    tpsl1_position_repo::Tpsl1PositionRepo, tpsl1_strategy_rule_repo::Tpsl1StrategyRuleRepo,
+    tpsl2_paper_trading_repo::Tpsl2PaperTradingRepo, tpsl2_position_repo::Tpsl2PositionRepo,
+    tpsl2_strategy_rule_repo::Tpsl2StrategyRuleRepo, wallet_profile_repo::WalletProfileRepo,
+    wallet_profile_tag_repo::WalletProfileTagRepo, wallet_repo::WalletRepo,
+};
 use crate::strategies::tpsl_sniper_1::Tpsl1RuntimeCache;
 use crate::strategies::tpsl_sniper_2::Tpsl2RuntimeCache;
 use crate::trader::PumpFunTrader;
@@ -184,6 +192,63 @@ impl AppState {
 
     pub fn subscribe_sol_price(&self) -> watch::Receiver<Option<f64>> {
         self.sol_price.subscribe()
+    }
+
+    // --- Repository accessors -------------------------------------------------
+    // Each repo is a thin handle over a cloned `PgPool` (itself an Arc-backed,
+    // cheap-to-clone pool handle). These let handlers write `state.token_repo()`
+    // instead of repeating `TokenRepo::new(state.db.clone())` at every call site.
+
+    pub fn token_repo(&self) -> TokenRepo {
+        TokenRepo::new(self.db.clone())
+    }
+
+    pub fn trade_repo(&self) -> TradeRepo {
+        TradeRepo::new(self.db.clone())
+    }
+
+    pub fn settings_repo(&self) -> SettingsRepo {
+        SettingsRepo::new(self.db.clone())
+    }
+
+    pub fn analysis_repo(&self) -> AnalysisRepo {
+        AnalysisRepo::new(self.db.clone())
+    }
+
+    pub fn wallet_repo(&self) -> WalletRepo {
+        WalletRepo::new(self.db.clone())
+    }
+
+    pub fn wallet_profile_repo(&self) -> WalletProfileRepo {
+        WalletProfileRepo::new(self.db.clone())
+    }
+
+    pub fn wallet_tag_repo(&self) -> WalletProfileTagRepo {
+        WalletProfileTagRepo::new(self.db.clone())
+    }
+
+    pub fn tpsl1_rule_repo(&self) -> Tpsl1StrategyRuleRepo {
+        Tpsl1StrategyRuleRepo::new(self.db.clone())
+    }
+
+    pub fn tpsl1_position_repo(&self) -> Tpsl1PositionRepo {
+        Tpsl1PositionRepo::new(self.db.clone())
+    }
+
+    pub fn tpsl1_paper_repo(&self) -> Tpsl1PaperTradingRepo {
+        Tpsl1PaperTradingRepo::new(self.db.clone())
+    }
+
+    pub fn tpsl2_rule_repo(&self) -> Tpsl2StrategyRuleRepo {
+        Tpsl2StrategyRuleRepo::new(self.db.clone())
+    }
+
+    pub fn tpsl2_position_repo(&self) -> Tpsl2PositionRepo {
+        Tpsl2PositionRepo::new(self.db.clone())
+    }
+
+    pub fn tpsl2_paper_repo(&self) -> Tpsl2PaperTradingRepo {
+        Tpsl2PaperTradingRepo::new(self.db.clone())
     }
 }
 

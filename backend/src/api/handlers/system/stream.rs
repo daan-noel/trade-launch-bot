@@ -54,18 +54,22 @@ fn render_sse_frame(event: &SseEvent, state: &AppState) -> SseFrame {
             slot,
             timestamp,
         } => {
-            let token = state.token_cache.get(mint).map(|e| e.value().token.clone());
-            let (name, symbol, creator, bonding_curve) = token
-                .as_ref()
-                .map(|t| {
-                    (
-                        t.name.as_str(),
-                        t.symbol.as_str(),
-                        t.creator_wallet.as_str(),
-                        t.bonding_curve_address.as_deref(),
-                    )
-                })
-                .unwrap_or(("", "", "", None));
+            // Clone only the four fields the frame needs, not the whole `Token`
+            // (which carries the large `instruction_labels` JSON). The shard guard
+            // is dropped before `live_stats` re-reads the cache below.
+            let meta = state.token_cache.get(mint).map(|e| {
+                let t = &e.value().token;
+                (
+                    t.name.clone(),
+                    t.symbol.clone(),
+                    t.creator_wallet.clone(),
+                    t.bonding_curve_address.clone(),
+                )
+            });
+            let (name, symbol, creator, bonding_curve) = match &meta {
+                Some((n, s, c, b)) => (n.as_str(), s.as_str(), c.as_str(), b.as_deref()),
+                None => ("", "", "", None),
+            };
             let data = json!({
                 "mint": mint,
                 "name": name,

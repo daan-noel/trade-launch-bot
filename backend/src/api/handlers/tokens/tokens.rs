@@ -10,7 +10,6 @@ use std::sync::Arc;
 
 use crate::{
     state::{app_state::AppState, token_cache::TokenState},
-    storage::repositories::{token_repo::TokenRepo, trade_repo::TradeRepo},
 };
 
 fn extract_buy_arg_u64(value: &Option<Value>, field: &str) -> Option<u64> {
@@ -382,7 +381,7 @@ pub async fn get_token(state: web::Data<Arc<AppState>>, path: web::Path<String>)
     }
 
     // Slow path: token was created before this server session
-    let repo = TokenRepo::new(state.db.clone());
+    let repo = state.token_repo();
     match repo.find_by_mint(&mint).await {
         Ok(Some(token)) => {
             // Return a minimal detail (no live stats — token isn't tracked)
@@ -470,7 +469,7 @@ pub async fn get_trades(
         return HttpResponse::Ok().json(page);
     }
 
-    let repo = TradeRepo::new(state.db.clone());
+    let repo = state.trade_repo();
     match repo.find_by_mint_paged(&mint, limit, offset).await {
         Ok(trades) => HttpResponse::Ok().json(trades),
         Err(e) => {

@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::sync::Arc;
 
-use crate::{state::app_state::AppState, storage::repositories::analysis_repo::AnalysisRepo};
+use crate::state::app_state::AppState;
 
 // ---------------------------------------------------------------------------
 // Response types
@@ -42,7 +42,7 @@ pub async fn get_token_analysis(
     path: web::Path<String>,
 ) -> impl Responder {
     let mint = path.into_inner();
-    let repo = AnalysisRepo::new(state.db.clone());
+    let repo = state.analysis_repo();
 
     match repo.find_by_mint(&mint).await {
         Ok(results) => {
@@ -72,7 +72,7 @@ pub async fn get_creator(
     path: web::Path<String>,
 ) -> impl Responder {
     let wallet = path.into_inner();
-    let repo = AnalysisRepo::new(state.db.clone());
+    let repo = state.analysis_repo();
 
     match repo.find_creator_profile(&wallet).await {
         Ok(Some(cp)) => HttpResponse::Ok().json(CreatorResponse {
@@ -141,7 +141,7 @@ pub async fn list_analysis_results(
     state: web::Data<Arc<AppState>>,
     query: web::Query<ListParams>,
 ) -> impl Responder {
-    let repo = AnalysisRepo::new(state.db.clone());
+    let repo = state.analysis_repo();
     let limit = query.limit.max(1).min(500);
     let offset = query.offset.max(0);
 
@@ -170,7 +170,7 @@ pub async fn list_creators(
     state: web::Data<Arc<AppState>>,
     query: web::Query<ListParams>,
 ) -> impl Responder {
-    let repo = AnalysisRepo::new(state.db.clone());
+    let repo = state.analysis_repo();
     let limit = query.limit.max(1).min(500);
     let offset = query.offset.max(0);
 

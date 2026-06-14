@@ -259,7 +259,7 @@ export function SwingDetectionPage() {
   const price = usePriceDisplay();
   const { unit, usdRate } = usePriceUnit();
   const { timezone } = useTimezone();
-  const tradeTableColumns = useMemo(() => tokenTradeColumns(price), [price]);
+  const tradeTableColumns = useMemo(() => tokenTradeColumns(price.unitLabel), [price.unitLabel]);
   const swingTableColumns = useMemo(() => swingColumns(price, timezone), [price, timezone]);
 
   const toChartValue = useCallback(

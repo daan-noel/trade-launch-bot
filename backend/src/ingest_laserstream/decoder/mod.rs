@@ -171,7 +171,7 @@ impl HeliusDecoder {
 
         // ── Step 2: build instruction-order labels from message.instructions ───
         let (instruction_labels, cu_limit, cu_price) = build_instruction_labels(&outer_ixs);
-        let labels_json = json!(instruction_labels);
+        let mut labels_json = json!(instruction_labels);
 
         debug!(
             sig = %signature,
@@ -189,6 +189,7 @@ impl HeliusDecoder {
 
         // 3a. For each decoded TradeEvent: emit TradeExecuted.
         //     Covers Buy/Sell even when pump.fun is a nested CPI call.
+        let last_leg = decoded_events.len().saturating_sub(1);
         for (leg_index, ev) in decoded_events.iter().enumerate() {
             if Trade::is_dust(ev.sol_amount) {
                 continue;
@@ -218,7 +219,15 @@ impl HeliusDecoder {
                 TradeType::Buy => "Buy".to_string(),
                 TradeType::Sell => "Sell".to_string(),
             };
-            trade.instruction_labels = labels_json.clone();
+            // The same labels JSON applies to every leg of the tx. Move it into
+            // the final leg instead of cloning again — the common single-leg tx
+            // (most trades) then does zero clones; a multi-leg bundle saves the
+            // last one. `labels_json` is unused after the loop.
+            trade.instruction_labels = if leg_index == last_leg {
+                std::mem::take(&mut labels_json)
+            } else {
+                labels_json.clone()
+            };
             trade.leg_index = leg_index as u32;
             trade.received_at = raw_tx.received_at;
 

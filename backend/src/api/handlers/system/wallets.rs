@@ -11,11 +11,6 @@ use crate::{
         wallet_profile::ProfileType,
     },
     state::app_state::AppState,
-    storage::repositories::{
-        wallet_profile_repo::WalletProfileRepo,
-        wallet_profile_tag_repo::WalletProfileTagRepo,
-        wallet_repo::WalletRepo,
-    },
 };
 
 // ---------------------------------------------------------------------------
@@ -72,7 +67,7 @@ pub struct UpdateTagRequest {
 
 /// `GET /api/profiles` — list all profiles with their wallets.
 pub async fn list_profiles(state: web::Data<Arc<AppState>>) -> impl Responder {
-    let repo = WalletProfileRepo::new(state.db.clone());
+    let repo = state.wallet_profile_repo();
     match repo.list_with_wallets().await {
         Ok(profiles) => HttpResponse::Ok().json(profiles),
         Err(e) => {
@@ -87,7 +82,7 @@ pub async fn get_profile(
     state: web::Data<Arc<AppState>>,
     path: web::Path<Uuid>,
 ) -> impl Responder {
-    let repo = WalletProfileRepo::new(state.db.clone());
+    let repo = state.wallet_profile_repo();
     match repo.find_with_wallets(path.into_inner()).await {
         Ok(Some(p)) => HttpResponse::Ok().json(p),
         Ok(None) => HttpResponse::NotFound().json(json!({ "error": "profile not found" })),
@@ -107,7 +102,7 @@ pub async fn create_profile(
     if body.name.trim().is_empty() {
         return HttpResponse::BadRequest().json(json!({ "error": "name is required" }));
     }
-    let repo = WalletProfileRepo::new(state.db.clone());
+    let repo = state.wallet_profile_repo();
     match repo.insert(&body.name, body.profile_type).await {
         Ok(profile) => HttpResponse::Created().json(profile),
         Err(e) => {
@@ -128,7 +123,7 @@ pub async fn update_profile(
     if body.name.trim().is_empty() {
         return HttpResponse::BadRequest().json(json!({ "error": "name is required" }));
     }
-    let repo = WalletProfileRepo::new(state.db.clone());
+    let repo = state.wallet_profile_repo();
     match repo.update(id, &body.name, body.profile_type).await {
         Ok(_) => HttpResponse::Ok().json(json!({ "updated": true })),
         Err(e) => {
@@ -145,7 +140,7 @@ pub async fn update_profile_tags(
     body: web::Json<UpdateProfileTagsRequest>,
 ) -> impl Responder {
     let id = path.into_inner();
-    let repo = WalletProfileRepo::new(state.db.clone());
+    let repo = state.wallet_profile_repo();
     match repo.update_tag_ids(id, &body.tag_ids).await {
         Ok(_) => HttpResponse::Ok().json(json!({ "updated": true })),
         Err(e) => {
@@ -161,7 +156,7 @@ pub async fn delete_profile(
     path: web::Path<Uuid>,
 ) -> impl Responder {
     let id = path.into_inner();
-    let repo = WalletProfileRepo::new(state.db.clone());
+    let repo = state.wallet_profile_repo();
     match repo.delete(id).await {
         Ok(_) => HttpResponse::Ok().json(json!({ "deleted": true })),
         Err(e) => {
@@ -188,7 +183,7 @@ pub async fn create_wallet(
         return HttpResponse::BadRequest().json(json!({ "error": e }));
     }
 
-    let profile_repo = WalletProfileRepo::new(state.db.clone());
+    let profile_repo = state.wallet_profile_repo();
     match profile_repo.find_by_id(profile_id).await {
         Ok(None) => return HttpResponse::NotFound().json(json!({ "error": "profile not found" })),
         Err(e) => {
@@ -208,7 +203,7 @@ pub async fn create_wallet(
         last_seen_at: None,
     };
 
-    let repo = WalletRepo::new(state.db.clone());
+    let repo = state.wallet_repo();
     match repo.insert(&wallet).await {
         Ok(_) => HttpResponse::Created().json(&wallet),
         Err(e) => {
@@ -229,7 +224,7 @@ pub async fn get_wallet(
     state: web::Data<Arc<AppState>>,
     path: web::Path<Uuid>,
 ) -> impl Responder {
-    let repo = WalletRepo::new(state.db.clone());
+    let repo = state.wallet_repo();
     match repo.find_by_id(path.into_inner()).await {
         Ok(Some(w)) => HttpResponse::Ok().json(w),
         Ok(None) => HttpResponse::NotFound().json(json!({ "error": "wallet not found" })),
@@ -248,7 +243,7 @@ pub async fn update_wallet(
 ) -> impl Responder {
     let id = path.into_inner();
     let body = body.into_inner();
-    let repo = WalletRepo::new(state.db.clone());
+    let repo = state.wallet_repo();
     match repo.update(id, body.is_tracked, body.comment.as_deref()).await {
         Ok(_) => HttpResponse::Ok().json(json!({ "updated": true })),
         Err(e) => {
@@ -264,7 +259,7 @@ pub async fn delete_wallet(
     path: web::Path<Uuid>,
 ) -> impl Responder {
     let id = path.into_inner();
-    let repo = WalletRepo::new(state.db.clone());
+    let repo = state.wallet_repo();
     match repo.delete(id).await {
         Ok(_) => HttpResponse::Ok().json(json!({ "deleted": true })),
         Err(e) => {
@@ -280,7 +275,7 @@ pub async fn delete_wallet(
 
 /// `GET /api/tags` — list all tags.
 pub async fn list_tags(state: web::Data<Arc<AppState>>) -> impl Responder {
-    let repo = WalletProfileTagRepo::new(state.db.clone());
+    let repo = state.wallet_tag_repo();
     match repo.list().await {
         Ok(tags) => HttpResponse::Ok().json(tags),
         Err(e) => {
@@ -302,7 +297,7 @@ pub async fn create_tag(
     if body.color.trim().is_empty() {
         return HttpResponse::BadRequest().json(json!({ "error": "color is required" }));
     }
-    let repo = WalletProfileTagRepo::new(state.db.clone());
+    let repo = state.wallet_tag_repo();
     match repo.insert(&body.name, &body.color, body.comment.as_deref()).await {
         Ok(tag) => HttpResponse::Created().json(tag),
         Err(e) => {
@@ -328,7 +323,7 @@ pub async fn update_tag(
     if body.name.trim().is_empty() {
         return HttpResponse::BadRequest().json(json!({ "error": "name is required" }));
     }
-    let repo = WalletProfileTagRepo::new(state.db.clone());
+    let repo = state.wallet_tag_repo();
     match repo.update(id, &body.name, &body.color, body.comment.as_deref()).await {
         Ok(true) => HttpResponse::Ok().json(json!({ "updated": true })),
         Ok(false) => HttpResponse::NotFound().json(json!({ "error": "tag not found" })),
@@ -345,7 +340,7 @@ pub async fn delete_tag(
     path: web::Path<Uuid>,
 ) -> impl Responder {
     let id = path.into_inner();
-    let repo = WalletProfileTagRepo::new(state.db.clone());
+    let repo = state.wallet_tag_repo();
     match repo.delete(id).await {
         Ok(true) => HttpResponse::Ok().json(json!({ "deleted": true })),
         Ok(false) => HttpResponse::NotFound().json(json!({ "error": "tag not found" })),

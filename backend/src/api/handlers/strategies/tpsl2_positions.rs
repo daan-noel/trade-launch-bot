@@ -163,7 +163,7 @@ pub async fn list_positions(
     app_state: web::Data<Arc<AppState>>,
     query: web::Query<PositionListParams>,
 ) -> impl Responder {
-    let repo = Tpsl2PositionRepo::new(app_state.db.clone());
+    let repo = app_state.tpsl2_position_repo();
     let (limit, offset) = query.bounds();
 
     match repo.find_by_strategy("TPSL2", limit, offset).await {
@@ -187,7 +187,7 @@ pub async fn get_positions_by_mint(
     mint: web::Path<String>,
     query: web::Query<PositionListParams>,
 ) -> impl Responder {
-    let repo = Tpsl2PositionRepo::new(app_state.db.clone());
+    let repo = app_state.tpsl2_position_repo();
     let mint = mint.into_inner();
     let (limit, offset) = query.bounds();
 
@@ -212,7 +212,7 @@ pub async fn get_positions_by_wallet(
     wallet: web::Path<String>,
     query: web::Query<PositionListParams>,
 ) -> impl Responder {
-    let repo = Tpsl2PositionRepo::new(app_state.db.clone());
+    let repo = app_state.tpsl2_position_repo();
     let wallet = wallet.into_inner();
     let (limit, offset) = query.bounds();
 
@@ -236,7 +236,7 @@ pub async fn get_position(
     app_state: web::Data<Arc<AppState>>,
     position_id: web::Path<Uuid>,
 ) -> impl Responder {
-    let repo = Tpsl2PositionRepo::new(app_state.db.clone());
+    let repo = app_state.tpsl2_position_repo();
     let position_id = position_id.into_inner();
 
     match repo.find_by_id(position_id).await {

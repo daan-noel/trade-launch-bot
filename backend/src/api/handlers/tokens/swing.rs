@@ -9,7 +9,6 @@ use crate::{
     models::trade::Trade,
     state::app_state::AppState,
     state::token_cache::MAX_TRADES_RETAINED,
-    storage::repositories::trade_repo::TradeRepo,
 };
 
 /// Bound for the cache-miss DB fallback. Matches the in-memory retention window
@@ -146,7 +145,7 @@ pub async fn detect_token_swings(
         drop(entry);
         trades
     } else {
-        let repo = TradeRepo::new(state.db.clone());
+        let repo = state.trade_repo();
         // Bounded fallback: never materialise an unbounded mint history.
         match repo.find_by_mint_paged(&mint, SWING_DB_TRADE_CAP, 0).await {
             Ok(trades) => Arc::new(trades),
@@ -236,7 +235,7 @@ pub async fn detect_tokens_swings_batch(
                 drop(entry);
                 trades
             } else {
-                let repo = TradeRepo::new(app.db.clone());
+                let repo = app.trade_repo();
                 match repo.find_by_mint_paged(&mint, SWING_DB_TRADE_CAP, 0).await {
                     Ok(trades) => Arc::new(trades),
                     Err(e) => {

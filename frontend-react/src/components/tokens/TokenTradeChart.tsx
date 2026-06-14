@@ -97,7 +97,7 @@ export function TokenTradeChart({ detail, eventMarkers = null }: TokenTradeChart
     setSelectedRange(null);
   }, []);
 
-  const tradeColumns = useMemo(() => tokenTradeColumns(price), [price]);
+  const tradeColumns = useMemo(() => tokenTradeColumns(price.unitLabel), [price.unitLabel]);
 
   const selectionTrades = useMemo(() => {
     if (selectedRange) return tradesInRange(trades, selectedRange);

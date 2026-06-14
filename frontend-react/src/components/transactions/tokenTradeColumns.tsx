@@ -2,15 +2,19 @@ import type { ColumnDef } from 'components/table/types';
 import type { TradeRecord } from 'types';
 import { DateCell } from 'components/table/DateCell';
 import { formatDecimal } from 'utils/format';
-import type { usePriceDisplay } from 'hooks/usePriceDisplay';
+import { AmountCell, PriceCell } from 'components/tokens/priceCells';
 import { cn } from 'lib/cn';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 
-export function tokenTradeColumns(
-  price: ReturnType<typeof usePriceDisplay>,
-): ColumnDef<TradeRecord>[] {
-  const unit = price.unitLabel;
-
+/**
+ * Takes only the unit *label* (not the whole `usePriceDisplay` object) so the
+ * column array stays referentially stable across USD-rate ticks — the rate
+ * changes the price object's identity every tick, which would otherwise rebuild
+ * every column and re-render the entire trades table. The two rate-dependent
+ * value cells use the memoized `AmountCell`/`PriceCell`, which read the rate from
+ * context themselves and re-render in isolation when it changes.
+ */
+export function tokenTradeColumns(unit: string): ColumnDef<TradeRecord>[] {
   return [
     {
       key: 'side',
@@ -49,7 +53,7 @@ export function tokenTradeColumns(
         const isBuy = t.trade_type === 'buy';
         return (
           <span className={cn('font-semibold', isBuy ? 'text-primary' : 'text-red')}>
-            {price.displayAmount(t.sol_amount)}
+            <AmountCell sol={t.sol_amount} />
           </span>
         );
       },
@@ -77,7 +81,7 @@ export function tokenTradeColumns(
         const isBuy = t.trade_type === 'buy';
         return (
           <span className={cn('font-semibold', isBuy ? 'text-primary' : 'text-red')}>
-            {price.displayPrice(t.price_per_token)}
+            <PriceCell sol={t.price_per_token} />
           </span>
         );
       },

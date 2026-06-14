@@ -75,6 +75,10 @@ pub struct TokenState {
     pub ath_timestamp: Option<DateTime<Utc>>,
     /// Whether token has migrated from bonding curve to AMM.
     pub is_migrated: bool,
+    /// Set once this token's PumpSwap AMM pool caches have been warmed (or a warm
+    /// is in flight). Lives on the token's own state so the "warm once per mint"
+    /// guard is bounded by the cache — no separate, never-evicted map.
+    pub amm_pool_prewarmed: bool,
     /// Wall-clock time of the last successful manual sync, if any. Populated from
     /// `tokens_info.last_synced_at` on seed and refreshed after each sync.
     pub last_synced_at: Option<DateTime<Utc>>,
@@ -108,6 +112,7 @@ impl TokenState {
             ath_price: initial_price,
             ath_timestamp,
             is_migrated: false,
+            amm_pool_prewarmed: false,
             last_synced_at: None,
         }
     }

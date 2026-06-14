@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use crate::config::constants::SLIPPAGE_MAX_BPS;
 use crate::state::app_state::AppState;
-use crate::storage::repositories::settings_repo::{keys, SettingsRepo};
+use crate::storage::repositories::settings_repo::keys;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LiveModeResponse {
@@ -44,7 +44,7 @@ pub async fn set_live_mode(
     // the write succeeds, so a failed save never leaves the WS task running
     // against a state the DB won't restore on the next boot. The in-memory
     // settings snapshot is updated too, keeping `state.settings().live` in sync.
-    let repo = SettingsRepo::new(state.db.clone());
+    let repo = state.settings_repo();
     if let Err(e) = repo.set_one(&keys::LIVE, &req.live).await {
         return HttpResponse::InternalServerError().json(ErrorBody {
             error: format!("Failed to persist live mode: {e}"),
@@ -132,7 +132,7 @@ pub async fn update_settings(
     // Persist (one transaction) first; only publish to the watch channel if the
     // write succeeds, so a failed save never leaves the runtime diverged from the
     // stored settings.
-    let repo = SettingsRepo::new(state.db.clone());
+    let repo = state.settings_repo();
     if let Err(e) = repo.set_many(&entries).await {
         return HttpResponse::InternalServerError().json(ErrorBody {
             error: format!("Failed to persist settings: {e}"),

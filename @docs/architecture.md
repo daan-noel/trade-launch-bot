@@ -51,8 +51,8 @@ Subsystem deep-dives: [ingest.md](ingest.md) · [strategies.md](strategies.md) �
 | `handlers/strategies/tpsl2*.rs` | identical surface for TPSL2 |
 
 ## Shared state — `backend/src/state/`
-- `app_state.rs` — `AppState` (db, helius urls, all caches, watch channels, `sse_tx` + `sse_frame_tx`, `pool_index`, `pools_changed`, `trade_signals`, `sync_gate`, `trader`, `pump_program_id`). `SyncGate` bounds `/api/token/sync` (max 4 concurrent, dedup by mint → 409 on collision).
-- `token_cache.rs` — `TokenCache` = `DashMap<mint, TokenState>`; `TokenState` holds Token + capped trade buffer (~50K, `trades_base` survives trims) + metrics + `is_migrated`. Cache-local; ingest never round-trips DB.
+- `app_state.rs` — `AppState` (db, helius urls, all caches, watch channels, `sse_tx` + `sse_frame_tx`, `pool_index`, `pools_changed`, `trade_signals`, `sync_gate`, `trader`, `pump_program_id`). Also exposes repo accessors (`token_repo()`, `trade_repo()`, `settings_repo()`, `tpsl{1,2}_{rule,position,paper}_repo()`, `wallet{,_profile,_tag}_repo()`, `analysis_repo()`) so handlers call `state.x_repo()` instead of `XRepo::new(state.db.clone())`. `SyncGate` bounds `/api/token/sync` (max 4 concurrent, dedup by mint → 409 on collision).
+- `token_cache.rs` — `TokenCache` = `DashMap<mint, TokenState>`; `TokenState` holds Token + capped trade buffer (~50K, `trades_base` survives trims) + metrics + `is_migrated` + `amm_pool_prewarmed` (the "warm AMM pool once per mint" guard — lives on the token's own state, so it's bounded by the cache rather than a separate never-evicted map). Cache-local; ingest never round-trips DB.
 - `token_list_cache.rs` — `TokenListCache`, pre-sorted snapshot served by `/api/tokens` (saves per-request sort+clone).
 - `trade_signals.rs` — `TradeSignals` per-`(wallet,mint)` wakeup hub; `register()`→`WaitGuard`, `notify()` called by DbWriter after a trade row is queryable (also bumps the slot `seq`). `WaitGuard::seq()` lets a waiter tell "new trade landed" from "bare fallback tick" so the sell-confirm loop skips its net-balance SQL when nothing changed. Pattern: **notify over poll**.
 - `token_metrics.rs` — price/market-cap/volume/ATH computation.

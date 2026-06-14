@@ -57,10 +57,6 @@ pub struct IngestPipeline {
     /// and asked to pre-warm a token's AMM pool caches on its first AMM trade, so
     /// the trade path reads cached reserves / a warm pool instead of RPC.
     trader: Arc<PumpFunTrader>,
-    /// Mints whose AMM pool caches have already been pre-warmed (or are warming),
-    /// so we spawn the warm task at most once per token. An entry is removed if
-    /// its warm attempt fails, letting a later AMM trade retry.
-    prewarmed_pools: Arc<DashMap<String, ()>>,
 }
 
 impl IngestPipeline {
@@ -130,7 +126,6 @@ impl IngestPipeline {
             pools_changed: Arc::new(Notify::new()),
             settings_rx,
             trader,
-            prewarmed_pools: Arc::new(DashMap::new()),
         }
     }
 
@@ -432,27 +427,35 @@ impl IngestPipeline {
         // the marker scan something to read, and moves that cold fetch off the
         // bot's eventual exit path. Only when the token program is known, so we
         // never cache a guessed pool layout; spawned once per mint.
-        if is_amm && self.prewarmed_pools.insert(mint.clone(), ()).is_none() {
-            match self
-                .token_cache
-                .get(&mint)
-                .and_then(|s| s.token.token_program_id.clone())
-            {
-                Some(token_program) => {
-                    let trader = self.trader.clone();
-                    let prewarmed = self.prewarmed_pools.clone();
-                    let warm_mint = mint.clone();
-                    tokio::spawn(async move {
-                        if let Err(err) = trader.prewarm_amm_pool(&warm_mint, &token_program).await {
-                            debug!("AMM pool prewarm failed for {warm_mint}: {err}");
-                            prewarmed.remove(&warm_mint); // let a later AMM trade retry
+        if is_amm {
+            // Check-and-set the per-token warm flag and read its program in one
+            // guard. Returns the program only when we win the race AND it's known;
+            // an unknown program leaves the flag false so a later AMM trade retries.
+            let to_warm = self.token_cache.get_mut(&mint).and_then(|mut s| {
+                if s.amm_pool_prewarmed {
+                    return None;
+                }
+                match s.token.token_program_id.clone() {
+                    Some(token_program) => {
+                        s.amm_pool_prewarmed = true;
+                        Some(token_program)
+                    }
+                    None => None,
+                }
+            });
+            if let Some(token_program) = to_warm {
+                let trader = self.trader.clone();
+                let token_cache = self.token_cache.clone();
+                let warm_mint = mint.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = trader.prewarm_amm_pool(&warm_mint, &token_program).await {
+                        debug!("AMM pool prewarm failed for {warm_mint}: {err}");
+                        // Clear the flag so a later AMM trade retries the warm.
+                        if let Some(mut s) = token_cache.get_mut(&warm_mint) {
+                            s.amm_pool_prewarmed = false;
                         }
-                    });
-                }
-                None => {
-                    // Unknown token program — don't warm with a guess; allow retry.
-                    self.prewarmed_pools.remove(&mint);
-                }
+                    }
+                });
             }
         }
 

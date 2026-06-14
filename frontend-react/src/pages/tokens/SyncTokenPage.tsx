@@ -250,7 +250,7 @@ function ProgressBar({
 export function SyncTokenPage() {
   const price = usePriceDisplay();
   const { unit, usdRate } = usePriceUnit();
-  const tradeColumns = useMemo(() => tokenTradeColumns(price), [price]);
+  const tradeColumns = useMemo(() => tokenTradeColumns(price.unitLabel), [price.unitLabel]);
 
   // Synced output lives in Redux so it survives navigation (the route unmounts
   // on leave). The in-flight sync state below stays local — it's tied to a
