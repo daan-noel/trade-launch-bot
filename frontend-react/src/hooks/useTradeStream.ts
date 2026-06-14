@@ -6,6 +6,11 @@ const MAX_EVENTS = 500;
 /** Coalesce bursts of trade frames into one state write per tick. */
 const FLUSH_INTERVAL_MS = 250;
 
+/** Stable row-key accessor for live-trade tables — hoisted so the DataTable
+ *  receives the same reference every render instead of a fresh inline closure
+ *  on each ~4x/sec stream flush. */
+export const tradeRowKey = (ev: LiveTrade) => `${ev.tx_signature}-${ev.slot}`;
+
 export function useTradeStream() {
   const [events, setEvents] = useState<LiveTrade[]>([]);
 

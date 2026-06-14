@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { DataTable } from 'components/table/DataTable';
 import { tradeColumns } from 'components/transactions/tradeColumns';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
-import { useTradeStream } from 'hooks/useTradeStream';
+import { tradeRowKey, useTradeStream } from 'hooks/useTradeStream';
 
 export function DashboardPage() {
   const price = usePriceDisplay();
@@ -27,7 +27,7 @@ export function DashboardPage() {
         <DataTable
           columns={columns}
           rows={events}
-          rowKey={(ev) => `${ev.tx_signature}-${ev.slot}`}
+          rowKey={tradeRowKey}
           searchable={false}
           colFilters={false}
           selectable={false}

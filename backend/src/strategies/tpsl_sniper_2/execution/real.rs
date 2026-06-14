@@ -145,15 +145,25 @@ pub(crate) async fn await_scalp_entry_signal(
     token_cache: &TokenCache,
     cfg: ScalpWaitCfg,
 ) -> Option<EntryFill> {
+    // Skip the O(n) `find_scalp_entry` re-walk on ticks where no new trade landed
+    // for the mint. The arming signal watches all trades on the mint, not a single
+    // wallet, so there's no per-(wallet,mint) `TradeSignals` key to wake on; instead
+    // the bounded timer re-reads the cache but only re-walks when the token's
+    // (monotonic) `trade_count` advanced (`None` forces the first walk).
+    let mut last_count: Option<u64> = None;
     for _ in 0..cfg.attempts {
         // Read the mint's trade window from the in-memory cache (kept current by
         // the WS pipeline for every wallet's trades) instead of an unbounded
-        // `find_by_mint_all` DB scan per tick. The arming signal watches all trades
-        // on the mint, not a single wallet, so there's no per-(wallet,mint)
-        // `TradeSignals` key to wake on; the bounded timer re-reads the cache.
+        // `find_by_mint_all` DB scan per tick.
         if let Some(entry) = token_cache.get(mint) {
-            if let Some(fill) = super::super::entry::find_scalp_entry(&entry.value().trades, rule) {
-                return Some(fill);
+            let trade_count = entry.value().trade_count;
+            if last_count != Some(trade_count) {
+                last_count = Some(trade_count);
+                if let Some(fill) =
+                    super::super::entry::find_scalp_entry(&entry.value().trades, rule)
+                {
+                    return Some(fill);
+                }
             }
         }
         sleep(cfg.interval).await;

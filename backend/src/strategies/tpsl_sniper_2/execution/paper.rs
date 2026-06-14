@@ -30,9 +30,15 @@ use crate::storage::repositories::tpsl2_paper_trading_repo::Tpsl2PaperTradingRep
 /// stripped labels don't matter here.
 ///
 /// Returns the shared `Arc` so the snapshot is a refcount bump under the shard
-/// guard, not a deep copy of up to `MAX_TRADES_RETAINED` trades.
-fn cache_trades(token_cache: &TokenCache, mint: &str) -> Option<Arc<Vec<Trade>>> {
-    token_cache.get(mint).map(|e| e.value().trades.clone())
+/// guard, not a deep copy of up to `MAX_TRADES_RETAINED` trades. Also returns the
+/// token's lifetime `trade_count`, sampled under the same guard, so a poll can
+/// skip its O(n) fill walk on an idle tick where no new trade landed (the count
+/// is monotonic; the resolvers watch ALL wallets on the mint, so there's no
+/// per-(wallet,mint) `TradeSignals` key to wake on instead).
+fn cache_trades(token_cache: &TokenCache, mint: &str) -> Option<(Arc<Vec<Trade>>, u64)> {
+    token_cache
+        .get(mint)
+        .map(|e| (e.value().trades.clone(), e.value().trade_count))
 }
 
 /// Poll the WS-fed trade feed for the token's opening trades and record the
@@ -65,13 +71,20 @@ pub(crate) fn spawn_entry_fill_poll(
         // (min-age, higher-low) always have time to form. A signal needing longer
         // than the window is missed live but still found by the backtest (no cutoff).
         let attempts = super::scalp_arming_attempts(&rule);
+        // Skip the O(n) scalp-entry walk on ticks where no new trade landed for the
+        // mint (count is monotonic; `None` forces the first walk).
+        let mut last_count: Option<u64> = None;
         for _ in 0..attempts {
             sleep(Duration::from_millis(super::SCALP_ENTRY_WAIT_INTERVAL_MS)).await;
             // Read the mint's trade window from the in-memory cache (kept current
             // by the WS pipeline) instead of an unbounded DB scan per tick.
-            let Some(trades) = cache_trades(&token_cache, &mint) else {
+            let Some((trades, trade_count)) = cache_trades(&token_cache, &mint) else {
                 continue;
             };
+            if last_count == Some(trade_count) {
+                continue;
+            }
+            last_count = Some(trade_count);
             if let Some(target_fill) = super::super::entry::find_scalp_entry(&trades, &rule) {
                 // The trigger trade is the *target*; the recorded *entry* is the
                 // worst-case adverse fill in the trigger's block (and the next), so
@@ -166,12 +179,18 @@ pub(crate) fn spawn_exit_fill_poll(
         let rule_id = rule.id;
         let max_total = none_if_zero_u64(rule.p_max_total_tokens);
         let mut found = false;
+        // Skip the O(n) exit-fill walk on ticks where no new trade landed for the
+        // mint (count is monotonic; `None` forces the first walk).
+        let mut last_count: Option<u64> = None;
         let start = std::time::Instant::now();
         while start.elapsed() < Duration::from_secs(10) {
             // Confirm the fill from the in-memory cache window (kept current by the
             // WS pipeline) instead of an unbounded `find_by_mint_all` DB scan per
             // tick. A `None` (token untracked) skips this tick like an empty fetch.
-            if let Some(trades) = cache_trades(&token_cache, &mint) {
+            if let Some((trades, trade_count)) =
+                cache_trades(&token_cache, &mint).filter(|(_, c)| last_count != Some(*c))
+            {
+                last_count = Some(trade_count);
                 // Prefer the entry trade's own block time; fall back to the
                 // entry_time stored on the position (set together with entry_price).
                 // The old `Utc::now()` fallback made every trade look pre-entry

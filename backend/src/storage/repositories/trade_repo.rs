@@ -283,22 +283,34 @@ impl TradeRepo {
     /// `getTransaction` for trades it already has (e.g. ones live ingest
     /// persisted ahead of the sync), so it doesn't re-spend Helius RPC credits
     /// re-downloading them. Returned as a set for O(1) membership tests.
+    ///
+    /// `candidates` is the list of signatures the sync is about to fetch; the
+    /// query intersects against it (`tx_signature = ANY($3)`) so Postgres returns
+    /// only the already-saved sigs among that page instead of streaming every
+    /// saved signature for the mint into the process. An empty `candidates`
+    /// short-circuits to an empty set (nothing to skip).
     pub async fn saved_signatures(
         &self,
         mint: &str,
         venue: &str,
+        candidates: &[String],
     ) -> anyhow::Result<HashSet<String>> {
+        if candidates.is_empty() {
+            return Ok(HashSet::new());
+        }
         // Bound the scan to the venue's sync watermark: an incremental sync only
         // ever lists signatures newer than that slot (`getSignaturesForAddress`
         // `until` the watermark sig), so a saved signature below it can never be
         // re-encountered and doesn't belong in the skip-set. COALESCE to 0 (all
-        // rows, the old behaviour) before the first sync stamps a watermark.
+        // rows, the old behaviour) before the first sync stamps a watermark. The
+        // `= ANY($3)` further narrows the result to the caller's candidate page.
         let rows: Vec<(String,)> = sqlx::query_as(
             r#"
             SELECT DISTINCT t.tx_signature
             FROM trades t
             WHERE t.mint_address = $1
               AND t.venue = $2
+              AND t.tx_signature = ANY($3)
               AND t.slot >= COALESCE(
                   (SELECT CASE WHEN $2 = 'amm'
                                THEN ti.last_synced_amm_slot
@@ -310,6 +322,7 @@ impl TradeRepo {
         )
         .bind(mint)
         .bind(venue)
+        .bind(candidates)
         .fetch_all(&self.pool)
         .await?;
 
@@ -564,11 +577,11 @@ impl TradeRepo {
             )
             SELECT
               COALESCE(SUM(CASE
-                WHEN mt.wallet_address IN (SELECT wallet_address FROM cohort)
+                WHEN c.wallet_address IS NOT NULL
                      AND mt.trade_type = 'buy' THEN mt.token_amount
                 ELSE 0 END), 0.0) AS cohort_bought,
               COALESCE(SUM(CASE
-                WHEN mt.wallet_address IN (SELECT wallet_address FROM cohort) THEN
+                WHEN c.wallet_address IS NOT NULL THEN
                      CASE WHEN mt.trade_type = 'buy' THEN mt.token_amount
                           WHEN mt.trade_type = 'sell' THEN -mt.token_amount
                           ELSE 0 END
@@ -577,6 +590,7 @@ impl TradeRepo {
                 WHEN mt.trade_type = 'buy' THEN mt.token_amount
                 ELSE 0 END), 0.0) AS total_bought
             FROM mint_trades mt
+            LEFT JOIN cohort c ON c.wallet_address = mt.wallet_address
             "#,
         )
         .bind(mint)

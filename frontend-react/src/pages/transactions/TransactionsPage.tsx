@@ -3,7 +3,7 @@ import { DataTable } from 'components/table/DataTable';
 import { Badge } from 'components/ui/Badge';
 import { tradeColumns } from 'components/transactions/tradeColumns';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
-import { useTradeStream } from 'hooks/useTradeStream';
+import { tradeRowKey, useTradeStream } from 'hooks/useTradeStream';
 
 export function TransactionsPage() {
   const price = usePriceDisplay();
@@ -27,7 +27,7 @@ export function TransactionsPage() {
         <DataTable
           columns={columns}
           rows={events}
-          rowKey={(ev) => `${ev.tx_signature}-${ev.slot}`}
+          rowKey={tradeRowKey}
           defaultPageSize={25}
           searchable
           colFilters

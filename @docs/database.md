@@ -11,6 +11,7 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 | `0004_tpsl2_target_columns.sql` | `tpsl2_{real,paper}_positions` += nullable `target_{price,amount,time,tx}` (scalp-entry trigger-trade snapshot; no backfill, `target_tx` not unique) |
 | `0005_tpsl2_positions_column_order.sql` | `tpsl2_{real,paper}_positions` rebuilt (rename→create→copy→drop) to physically order columns `target_*` → `entry_*` → `exit_*`; same columns/constraints/indexes, no data loss. Matches the Rust structs, JSON response, and frontend table |
 | `0006_tpsl2_cohort_percent.sql` | rescale `tpsl2_strategy_rules.{p_entry_max_cohort_held,p_exit_cohort_ratio}` ×100 (raw-fraction `0.30`/`0.05` → whole-percent), unifying the percent convention; `0`/NULL "off" sentinel unaffected. See `percent-params-unify-plan.md` |
+| `0007_tpsl_position_created_at_indexes.sql` | composite `(filter, created_at DESC)` indexes on `tpsl{1,2}_real_positions` for the list views: `(strategy, created_at DESC)`, `(rule_id, created_at DESC)`, `(mint, status, created_at DESC)`, `(wallet, status, created_at DESC)` — filter+order served by one index instead of filter-then-sort |
 
 ## Tables
 **Core trading**
@@ -25,7 +26,7 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 
 **TPSL strategy** (tpsl2 mirrors tpsl1 + extra scalp gate columns)
 - `tpsl1_strategy_rules` — rule_name, entry params `p_token_*`, caps `p_max_{concurrent,total}_tokens`, exit params `p_exit_*` (trailing_stop_pct, time_stop_secs, stall_secs, liquidity_drop_pct, take_profit, stop_loss), buy_amount, tolerance_pct, trade_mode(`paper`/`real`), is_active.
-- `tpsl1_real_positions` — mint, wallet, token_program_id, entry_{price,amount,time,tx}, exit_{price,amount,time,tx}, status(`Holding`/`ExitPending`/`End`/`ExitFailed`), strategy, rule_id (FK→rules, SET NULL), exit_reason. entry_tx/exit_tx UNIQUE. Idx: mint, wallet, status, rule_id, (mint,status), token_program_id.
+- `tpsl1_real_positions` — mint, wallet, token_program_id, entry_{price,amount,time,tx}, exit_{price,amount,time,tx}, status(`Holding`/`ExitPending`/`End`/`ExitFailed`), strategy, rule_id (FK→rules, SET NULL), exit_reason. entry_tx/exit_tx UNIQUE. Idx: mint, wallet, status, rule_id, (mint,status), token_program_id, (strategy,created_at DESC), (rule_id,created_at DESC), (mint,status,created_at DESC), (wallet,status,created_at DESC). (tpsl2 mirrors these — migration 0007.)
 - `tpsl1_paper_test_run` — rule_id (FK CASCADE), run_seq, status(`Running`/`Finished`/`Stopped`), max_total_tokens, started/finished_at. UNIQUE(rule_id, run_seq); one live run per rule.
 - `tpsl1_paper_positions` — run_id (FK CASCADE) + same shape as real positions, no tx UNIQUE (token re-tradable across runs).
 - `tpsl2_*` adds entry gates: `p_entry_{min_age_secs,min_alive_sol,min_organic_sol,pullback_pct,higher_low_secs,max_cohort_held,min_liquidity_sol,min_organic_liq}`, `p_exit_cohort_ratio`.

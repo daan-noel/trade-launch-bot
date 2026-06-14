@@ -343,8 +343,10 @@ pub async fn run_token_sync(
         // rpc path re-fetches everything so decoder fixes propagate via the trades
         // ON CONFLICT DO UPDATE — dedup is intentionally incremental-only.
         let to_fetch = if req.incremental {
+            let candidates: Vec<String> =
+                signatures.iter().map(|e| e.signature.clone()).collect();
             let saved = TradeRepo::new(ctx.db.clone())
-                .saved_signatures(&mint, "curve")
+                .saved_signatures(&mint, "curve", &candidates)
                 .await
                 .map_err(|e| SyncError::Internal(e.to_string()))?;
             let kept: Vec<SignatureEntry> = signatures
@@ -868,8 +870,10 @@ async fn sync_amm_trades(
         // Incremental-only dedup: skip AMM swaps already saved (e.g. by live
         // ingest) so we don't re-fetch them from Helius.
         let to_fetch = if incremental {
+            let candidates: Vec<String> =
+                signatures.iter().map(|e| e.signature.clone()).collect();
             let saved = trade_repo
-                .saved_signatures(mint, "amm")
+                .saved_signatures(mint, "amm", &candidates)
                 .await
                 .map_err(|e| SyncError::Internal(e.to_string()))?;
             signatures

@@ -369,12 +369,10 @@ pub fn find_trade_driven_exit(
 
     let params = LadderParams::from_rule(rule);
 
-    let trades_after_entry: Vec<&Trade> =
-        trades.iter().filter(|t| t.block_time > entry_time).collect();
-
     let mut state = ExitWalkState::starting_at(entry_price, entry_time);
 
-    for t in trades_after_entry.iter() {
+    // Single pass over the post-entry trades — no intermediate `Vec<&Trade>`.
+    for t in trades.iter().filter(|t| t.block_time > entry_time) {
         state.update_with_trade(t);
 
         // First feature that fires on this trade wins (ladder order). Shared with
@@ -384,11 +382,12 @@ pub fn find_trade_driven_exit(
         };
 
         // Exit price: lowest price in the block where the exit condition met.
+        // Re-scan the same post-entry filter for this slot (identical set to the
+        // old `trades_after_entry` re-filter, no allocation).
         let exit_slot = t.slot;
-        let exit_trade = trades_after_entry
+        let exit_trade = trades
             .iter()
-            .copied()
-            .filter(|x| x.slot == exit_slot)
+            .filter(|x| x.block_time > entry_time && x.slot == exit_slot)
             .min_by(|a, b| {
                 a.price_per_token
                     .partial_cmp(&b.price_per_token)
