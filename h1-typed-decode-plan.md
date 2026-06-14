@@ -99,8 +99,13 @@ by a cheap `log_messages` scan with zero allocation. So Value-build CPU scales w
 Therefore — **profile first, then choose:**
 
 1. **Measure** the Value-build + decode cost per relevant tx and the relevant-tx rate
-   on the ingest thread (e.g. a scoped timing span around `update_tx_to_value` +
-   `decode_result`, or a sampling profile of the pipeline task).
+   on the ingest thread. ✅ Instrumentation landed: set `INGEST_PROFILE=1` and read the
+   `target: ingest_profile` log line (emitted every 5000 decoded txs). It reports
+   `value_build_avg_us` / `value_build_max_us` (the adapter's `Value` build cost),
+   `built_ratio` (relevant vs pre-filtered firehose), and `decode_avg_us` /
+   `decode_max_us`. Module: [profile.rs](backend/src/ingest_laserstream/profile.rs);
+   hooks at the `update_tx_to_value` (client task) and `decode_result` (pipeline task)
+   call sites. Zero overhead when the env var is unset.
 2. If the Value build is **not** a measured hot-path cost → do **Tier A** only and
    close H1; the rewrite isn't justified.
 3. If it **is** dominant → commit to **Tier B**: protobuf-native decode on the grpc

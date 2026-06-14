@@ -113,8 +113,6 @@ impl PumpFunTrader {
         tip_level: u8,
         confirm: bool,
     ) -> Result<bool> {
-        // Default (signature-stable) path: never close the token account. The
-        // terminal clearing variant below opts in.
         self.sell_token_once_inner(
             token_mint,
             token_amount,
@@ -124,42 +122,6 @@ impl PumpFunTrader {
             slippage_bps,
             tip_level,
             confirm,
-            false,
-        )
-        .await
-    }
-
-    /// Identical to [`Self::sell_token_once`] but appends an SPL `close_account`
-    /// to the curve-sell tx so the token-account rent (~0.002 SOL) is recovered
-    /// to the wallet. Every buy creates a token account; the plain `sell` empties
-    /// it but leaves the rent stranded, which at snipe volume dwarfs the per-trade
-    /// fees. SAFETY: SPL `close_account` reverts the *whole* tx unless the account
-    /// balance is exactly 0, so the caller MUST only invoke this when it is
-    /// selling 100% of the remaining balance to zero — the terminal clearing sell.
-    /// On a partial-fill / retry loop, use [`Self::sell_token_once`] for the
-    /// non-final attempts and this only for the attempt that takes balance to 0.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn sell_token_once_clearing(
-        &self,
-        token_mint: &str,
-        token_amount: u64,
-        creator_override: Option<&str>,
-        is_cashback: bool,
-        token_account_override: Option<&str>,
-        slippage_bps: Option<u64>,
-        tip_level: u8,
-        confirm: bool,
-    ) -> Result<bool> {
-        self.sell_token_once_inner(
-            token_mint,
-            token_amount,
-            creator_override,
-            is_cashback,
-            token_account_override,
-            slippage_bps,
-            tip_level,
-            confirm,
-            true,
         )
         .await
     }
@@ -175,7 +137,6 @@ impl PumpFunTrader {
         slippage_bps: Option<u64>,
         tip_level: u8,
         confirm: bool,
-        close_token_account: bool,
     ) -> Result<bool> {
         // Ensure PDAs are cached (reads the bonding-curve PDA on a miss). Use the
         // String-free warm helper — this call only populates `token_pdas` and
@@ -206,7 +167,6 @@ impl PumpFunTrader {
             slippage_bps,
             tip_level,
             confirm,
-            close_token_account,
         )
         .await
     }
@@ -303,7 +263,6 @@ impl PumpFunTrader {
         slippage_bps: Option<u64>,
         tip_level: u8,
         confirm: bool,
-        close_token_account: bool,
     ) -> Result<bool> {
         let t0 = Instant::now();
         let keypair = &self.config.keypair;
@@ -372,7 +331,6 @@ impl PumpFunTrader {
             min_sol_output,
             is_cashback,
             tip_level,
-            close_token_account,
         )?;
 
         // ── Acquire nonce + sign & send ─────────────────────────────────────
@@ -420,10 +378,10 @@ impl PumpFunTrader {
     /// construction, no RPC or signing — extracted from `execute_sell` so the
     /// simulate probe builds the *identical* instructions the live sell path
     /// sends. `tip_level` escalates the tip (see `jito_tip`); `min_sol_output` is
-    /// the slippage floor (1 = no protection). `close_token_account` appends an
-    /// SPL `close_account` to recover the token-account rent — only valid when
-    /// this sell empties the account to 0 (the program reverts close otherwise);
-    /// see [`Self::sell_token_once_clearing`].
+    /// the slippage floor (1 = no protection). Token-account rent is recovered
+    /// off this path by a separate post-clear [`Self::close_token_account`] tx,
+    /// not by appending a close here — bundling it would revert the whole sell if
+    /// any dust remained.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn build_curve_sell_ixs(
         &self,
@@ -434,7 +392,6 @@ impl PumpFunTrader {
         min_sol_output: u64,
         is_cashback: bool,
         tip_level: u8,
-        close_token_account: bool,
     ) -> Result<Vec<Instruction>> {
         let global = self.global_account.as_ref().context("Not initialized")?;
 
@@ -479,38 +436,6 @@ impl PumpFunTrader {
             accounts,
             data: sell_data,
         });
-
-        // Terminal clearing sell: recover the token-account rent (~0.002 SOL).
-        // The preceding `sell` empties the account to 0, so `close_account`
-        // succeeds; it reverts the whole tx if any balance remains, which is why
-        // this is gated on the caller proving a full-balance sell (see
-        // `sell_token_once_clearing`). Rent is returned to the wallet (owner).
-        if close_token_account {
-            let owner = self.config.keypair.pubkey();
-            // The token account belongs to either the legacy SPL Token program or
-            // Token-2022; each crate's `close_account` builder hard-checks that
-            // its own program id is passed, so route by the cached token program.
-            // The on-wire instruction (data + account metas) is identical either
-            // way — only the `program_id` differs.
-            let close_ix = if pdas.token_program == spl_token_2022::id() {
-                spl_token_2022::instruction::close_account(
-                    &pdas.token_program,
-                    user_token_account,
-                    &owner,
-                    &owner,
-                    &[],
-                )?
-            } else {
-                spl_token::instruction::close_account(
-                    &pdas.token_program,
-                    user_token_account,
-                    &owner,
-                    &owner,
-                    &[],
-                )?
-            };
-            ixs.push(close_ix);
-        }
 
         // Jito tip — escalated by the caller's retry level.
         ixs.push(self.jito_tip_ix(tip_level));
@@ -572,11 +497,10 @@ mod tests {
         1 + 64 * msg.header.num_required_signatures as usize + msg.serialize().len()
     }
 
-    /// The terminal clearing curve sell (compute budget, `sell`, `close_account`,
-    /// Jito tip), wrapped in a durable-nonce message, must stay under the 1232 B
-    /// wire limit — otherwise the rent-recovery close can't ride the live sell tx.
+    /// The worst-case curve sell (compute budget, `sell`, Jito tip), wrapped in a
+    /// durable-nonce message, must stay under the 1232 B wire limit.
     #[test]
-    fn curve_sell_with_close_and_nonce_fits() {
+    fn curve_sell_with_nonce_fits() {
         let t = dummy_trader();
         let user = t.config.keypair.pubkey();
         let mint = Pubkey::new_unique();
@@ -585,14 +509,14 @@ mod tests {
         let nonce = Pubkey::new_unique();
 
         let ixs = t
-            .build_curve_sell_ixs(&mint, &pdas, &uta, 1_000_000, 1, true, 0, true)
-            .expect("build clearing curve sell");
+            .build_curve_sell_ixs(&mint, &pdas, &uta, 1_000_000, 1, true, 0)
+            .expect("build curve sell");
         let msg = Message::new_with_nonce(ixs, Some(&user), &nonce, &user);
         let size = wire_size(&msg);
-        eprintln!("worst-case curve sell + close + nonce = {size} B (limit {TX_LIMIT})");
+        eprintln!("worst-case curve sell + nonce = {size} B (limit {TX_LIMIT})");
         assert!(
             size <= TX_LIMIT,
-            "curve sell + close_account + nonce = {size} B (limit {TX_LIMIT})"
+            "curve sell + nonce = {size} B (limit {TX_LIMIT})"
         );
     }
 
@@ -616,27 +540,5 @@ mod tests {
         let size = wire_size(&msg);
         eprintln!("standalone close tx = {size} B (limit {TX_LIMIT})");
         assert!(size <= TX_LIMIT, "standalone close = {size} B (limit {TX_LIMIT})");
-    }
-
-    /// The close instruction is appended ONLY when requested — the default sell
-    /// path stays byte-for-byte unchanged (one fewer instruction).
-    #[test]
-    fn close_account_is_opt_in() {
-        let t = dummy_trader();
-        let mint = Pubkey::new_unique();
-        let pdas = worst_case_pdas();
-        let uta = Pubkey::new_unique();
-
-        let without = t
-            .build_curve_sell_ixs(&mint, &pdas, &uta, 1, 1, true, 0, false)
-            .unwrap();
-        let with = t
-            .build_curve_sell_ixs(&mint, &pdas, &uta, 1, 1, true, 0, true)
-            .unwrap();
-        assert_eq!(
-            with.len(),
-            without.len() + 1,
-            "close path adds exactly one instruction"
-        );
     }
 }

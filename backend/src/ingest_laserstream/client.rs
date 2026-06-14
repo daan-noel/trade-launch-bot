@@ -26,6 +26,7 @@ use tonic::{Request, Status};
 use tracing::{error, info};
 
 use super::adapter;
+use super::profile;
 use super::proto::geyser::geyser_client::GeyserClient;
 use super::proto::geyser::subscribe_update::UpdateOneof;
 use super::proto::geyser::{CommitmentLevel, SubscribeRequest, SubscribeRequestFilterTransactions};
@@ -242,7 +243,10 @@ async fn run_once(
                     Ok(Some(update)) => {
                         if let Some(UpdateOneof::Transaction(tx)) = update.update_oneof {
                             last_slot.fetch_max(tx.slot, Ordering::Relaxed);
-                            if let Some(value) = adapter::update_tx_to_value(&tx, pump_program_id) {
+                            let _span = profile::start();
+                            let built = adapter::update_tx_to_value(&tx, pump_program_id);
+                            profile::record_adapter(_span, built.is_some());
+                            if let Some(value) = built {
                                 if value_tx.send(value).await.is_err() {
                                     info!("LaserStream: pipeline receiver dropped — stopping");
                                     return Ok(());

@@ -28,6 +28,7 @@ use crate::{
 // Cloned ingest internals — self-contained copies, not imported from `ingest/`.
 use super::db_writer::{DbWriteOp, TokenMetricsWrite};
 use super::decoder::{DecodeOutput, HeliusDecoder};
+use super::profile;
 
 const DB_QUEUE_CAP: usize = 4096;
 const STRATEGY_QUEUE_CAP: usize = 512;
@@ -171,7 +172,10 @@ impl IngestPipeline {
             tokio::select! {
                 maybe_val = value_rx.recv() => {
                     let Some(value) = maybe_val else { break };
-                    match self.decoder.decode_result(value) {
+                    let _span = profile::start();
+                    let decoded = self.decoder.decode_result(value);
+                    profile::record_decode(_span);
+                    match decoded {
                         DecodeOutput::Transaction { raw_tx, mut events } => {
                             sort_events(&mut events);
                             let (events, save_raw) = filter_events(

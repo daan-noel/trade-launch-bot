@@ -19,6 +19,7 @@ Channels: `value_tx` cap 16 (`Value`) · `db_tx` cap 4096 (`DbWriteOp`) · `stra
 | `pipeline.rs` | `IngestPipeline` (`new`, `pool_index`, `pools_changed`, `channel_pair`, `run`), `run_pool_subscription_refresh()` | Hot path: decode → filter (Mayhem/post-migration policy via `settings_rx`) → update `TokenCache` → fan out to DB/strategy/SSE. Feeds trader live reserves; pre-warms AMM pool on first AMM trade. Registers/evicts pools in `pool_index`. |
 | `db_writer.rs` | `DbWriter` (`new`,`run`,`flush`), `DbWriteOp` enum, `TokenMetricsWrite` | Batches (64 ops / 25ms), dedups, persists; signals `TradeSignals` per `(wallet,mint)` after trades land. Metrics upsert bounded to 8 concurrent. |
 | `maintenance.rs` | `run_partition_maintenance()` | Every 6h: ensure current+2 future weekly `raw_transactions` partitions; drop > ~9 weeks. |
+| `profile.rs` | `start()`, `record_adapter()`, `record_decode()` | Opt-in (`INGEST_PROFILE=1`) cumulative timing of the Value build (`update_tx_to_value`) vs `decode_result`; logs `target: ingest_profile` every 5000 decoded txs. Zero cost when off. |
 | `mod.rs` | re-exports + `proto` | module wiring |
 
 ### `DbWriteOp` variants

@@ -21,3 +21,4 @@ pub mod db_writer;
 pub mod decoder;
 pub mod maintenance;
 pub mod pipeline;
+pub mod profile;
