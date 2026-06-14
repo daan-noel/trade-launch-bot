@@ -1,6 +1,7 @@
 use actix_web::{web, HttpResponse, Responder};
 use futures_util::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use crate::{
@@ -70,13 +71,17 @@ pub struct SwingBatchRequest {
 /// The anchor is the earliest `block_time` among trades that carry SOL — i.e.
 /// what detection treats as the opening trade. With both bounds unset (or no
 /// usable anchor) the trades are returned untouched.
-fn filter_trades_to_window(
-    trades: Vec<Trade>,
+/// Borrows the slice and returns it untouched (`Cow::Borrowed`) when no window
+/// is set, allocating a filtered `Vec` only when a window actually clips it — so
+/// the common no-window swing scan reads the Arc-shared buffer in place with zero
+/// copy.
+fn filter_trades_to_window<'a>(
+    trades: &'a [Trade],
     window_start_ms: Option<i64>,
     window_end_ms: Option<i64>,
-) -> Vec<Trade> {
+) -> Cow<'a, [Trade]> {
     if window_start_ms.is_none() && window_end_ms.is_none() {
-        return trades;
+        return Cow::Borrowed(trades);
     }
     let anchor = trades
         .iter()
@@ -84,17 +89,20 @@ fn filter_trades_to_window(
         .map(|t| t.block_time.timestamp_millis())
         .min();
     let Some(anchor) = anchor else {
-        return trades;
+        return Cow::Borrowed(trades);
     };
     let lo = window_start_ms.map(|s| anchor + s);
     let hi = window_end_ms.map(|e| anchor + e);
-    trades
-        .into_iter()
-        .filter(|t| {
-            let ts = t.block_time.timestamp_millis();
-            lo.map_or(true, |lo| ts >= lo) && hi.map_or(true, |hi| ts <= hi)
-        })
-        .collect()
+    Cow::Owned(
+        trades
+            .iter()
+            .filter(|t| {
+                let ts = t.block_time.timestamp_millis();
+                lo.map_or(true, |lo| ts >= lo) && hi.map_or(true, |hi| ts <= hi)
+            })
+            .cloned()
+            .collect(),
+    )
 }
 
 /// One token's swing ledger inside a batch response.
@@ -129,20 +137,19 @@ pub async fn detect_token_swings(
         curve_only,
     } = body.into_inner();
 
-    let trades = if let Some(entry) = state.token_cache.get(&mint) {
+    let trades: Arc<Vec<Trade>> = if let Some(entry) = state.token_cache.get(&mint) {
         // Refcount-clone the trade buffer out of the shard guard and drop it
-        // immediately. The Arc clone is O(1) under the lock; the (possible) deep
-        // copy and the heavy window-filter + swing scan all run below, off the
-        // read lock, so the ingest writer's `get_mut` on the same shard isn't
-        // blocked by our work.
+        // immediately — an O(1) Arc bump under the lock. We keep it as a shared
+        // Arc (never deep-copy it): the scan below reads it in place and clones
+        // only the trades a curve/window filter actually retains.
         let trades = entry.trades.clone();
         drop(entry);
-        Arc::try_unwrap(trades).unwrap_or_else(|a| (*a).clone())
+        trades
     } else {
         let repo = TradeRepo::new(state.db.clone());
         // Bounded fallback: never materialise an unbounded mint history.
         match repo.find_by_mint_paged(&mint, SWING_DB_TRADE_CAP, 0).await {
-            Ok(trades) => trades,
+            Ok(trades) => Arc::new(trades),
             Err(e) => {
                 tracing::error!("DB error fetching trades for swing analysis {mint}: {e}");
                 return HttpResponse::InternalServerError().json(serde_json::json!({
@@ -156,13 +163,13 @@ pub async fn detect_token_swings(
     // the batch path — doing it inline would pin a worker for the whole scan.
     let resp_params = params.clone();
     let result = web::block(move || {
-        let trades = if curve_only {
-            trades.into_iter().filter(|t| t.venue == "curve").collect()
-        } else {
-            trades
-        };
-        let trades = filter_trades_to_window(trades, window_start_ms, window_end_ms);
-        detect_swings(&trades, &params)
+        // Borrow the shared buffer; the curve filter allocates only the kept
+        // trades, and the window filter borrows when unset — no full-history copy.
+        let curve_filtered: Option<Vec<Trade>> = curve_only
+            .then(|| trades.iter().filter(|t| t.venue == "curve").cloned().collect());
+        let base: &[Trade] = curve_filtered.as_deref().unwrap_or(&trades);
+        let windowed = filter_trades_to_window(base, window_start_ms, window_end_ms);
+        detect_swings(&windowed, &params)
     })
     .await;
 
@@ -222,28 +229,28 @@ pub async fn detect_tokens_swings_batch(
     let fetches = mints.into_iter().enumerate().map(|(idx, mint)| {
         let app = app.clone();
         async move {
-            let trades = if let Some(entry) = app.token_cache.get(&mint) {
-                // Refcount-clone under the guard, deep-copy (if still shared) after
-                // dropping it — the heavy copy never blocks the ingest writer.
+            let trades: Arc<Vec<Trade>> = if let Some(entry) = app.token_cache.get(&mint) {
+                // Refcount-clone under the guard and keep it shared — the scan
+                // below borrows it, so no deep copy ever blocks the ingest writer.
                 let trades = entry.trades.clone();
                 drop(entry);
-                Arc::try_unwrap(trades).unwrap_or_else(|a| (*a).clone())
+                trades
             } else {
                 let repo = TradeRepo::new(app.db.clone());
                 match repo.find_by_mint_paged(&mint, SWING_DB_TRADE_CAP, 0).await {
-                    Ok(trades) => trades,
+                    Ok(trades) => Arc::new(trades),
                     Err(e) => {
                         tracing::error!(
                             "DB error fetching trades for batch swing analysis {mint}: {e}"
                         );
-                        Vec::new()
+                        Arc::new(Vec::new())
                     }
                 }
             };
             (idx, mint, trades)
         }
     });
-    let mut resolved: Vec<(usize, String, Vec<Trade>)> = stream::iter(fetches)
+    let mut resolved: Vec<(usize, String, Arc<Vec<Trade>>)> = stream::iter(fetches)
         .buffer_unordered(BATCH_FETCH_CONCURRENCY)
         .collect()
         .await;
@@ -256,13 +263,12 @@ pub async fn detect_tokens_swings_batch(
         resolved
             .into_iter()
             .map(|(_, mint, trades)| {
-                let trades = if curve_only {
-                    trades.into_iter().filter(|t| t.venue == "curve").collect()
-                } else {
-                    trades
-                };
-                let trades = filter_trades_to_window(trades, window_start_ms, window_end_ms);
-                let swings = detect_swings(&trades, &params);
+                // Borrow the shared buffer; allocate only what a filter retains.
+                let curve_filtered: Option<Vec<Trade>> = curve_only
+                    .then(|| trades.iter().filter(|t| t.venue == "curve").cloned().collect());
+                let base: &[Trade] = curve_filtered.as_deref().unwrap_or(&trades);
+                let windowed = filter_trades_to_window(base, window_start_ms, window_end_ms);
+                let swings = detect_swings(&windowed, &params);
                 SwingBatchEntry {
                     mint,
                     count: swings.len(),

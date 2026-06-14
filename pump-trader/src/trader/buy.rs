@@ -106,25 +106,38 @@ impl PumpFunTrader {
                 mint,
                 &token_program_pk,
             );
-            let ata_exists = if skip_ata_check {
-                false
-            } else {
-                self.rpc.get_account(&ata).await.is_ok()
-            };
-
-            // FIX: acquire template ONCE, use same address for both create ix and buy ix
-            let (user_token_account, template_opt) = if ata_exists {
-                (ata, None)
-            } else {
+            // Resolve the user token account + (if needed) its create template.
+            // The snipe path provably holds no account for this just-created mint,
+            // so it skips the RPC entirely. The manual path must probe — but the
+            // probe's RPC RTT is overlapped with template acquisition (a buy needs
+            // one unless the ATA already exists), so the round-trip hides behind
+            // work we'd do anyway; an unneeded template is handed straight back.
+            let (user_token_account, template_opt) = if skip_ata_check {
                 let template = self.acquire_buy_template(token_program).await?;
                 let account = template.user_token_account;
-                // A template was just consumed — kick the background refill off
-                // here so it rebuilds concurrently with the tx assembly + send +
-                // confirm below, instead of only after the buy returns. The
-                // rebuild gets a head start of the whole send/confirm window, so
-                // the next buy is more likely to hit a warm pool.
                 self.replenish_pool_async(token_program);
                 (account, Some(template))
+            } else {
+                let (ata_exists, template) = tokio::join!(
+                    async { self.rpc.get_account(&ata).await.is_ok() },
+                    self.acquire_buy_template(token_program),
+                );
+                let template = template?;
+                if ata_exists {
+                    // ATA already exists (re-buy): the template is unconsumed and
+                    // holds no on-chain resource, so return it to the pool.
+                    self.return_buy_template(token_program, template).await;
+                    (ata, None)
+                } else {
+                    let account = template.user_token_account;
+                    // A template was just consumed — kick the background refill off
+                    // here so it rebuilds concurrently with the tx assembly + send +
+                    // confirm below, instead of only after the buy returns. The
+                    // rebuild gets a head start of the whole send/confirm window, so
+                    // the next buy is more likely to hit a warm pool.
+                    self.replenish_pool_async(token_program);
+                    (account, Some(template))
+                }
             };
 
             // Cache for sell

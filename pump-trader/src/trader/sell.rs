@@ -35,6 +35,11 @@ impl PumpFunTrader {
         token_account_override: Option<&str>,
         slippage_bps: Option<u64>,
     ) -> Result<bool> {
+        // Brief pause before resending only after a genuine network/transport
+        // fault — never after a lost auction or a transient min-out revert, which
+        // resend immediately (see the retry loop below).
+        const SELL_NETWORK_RETRY_BACKOFF: Duration = Duration::from_millis(250);
+
         let mut last_err: Option<anyhow::Error> = None;
 
         for attempt in 0..MAX_SELL_ATTEMPTS {
@@ -58,6 +63,10 @@ impl PumpFunTrader {
             {
                 Ok(true) => return Ok(true),
                 Ok(false) => {
+                    // Lost the Jito auction / the tx didn't land — it cost nothing,
+                    // so don't sit on a fixed backoff while the token dumps. Loop
+                    // straight into the next attempt, which escalates the tip and
+                    // takes a fresh nonce.
                     let e = anyhow::anyhow!("Sell returned false on attempt {}", attempt + 1);
                     error!("❌ {}", e);
                     last_err = Some(e);
@@ -71,16 +80,20 @@ impl PumpFunTrader {
                     // base + priority fee. Stop now. (With slippage set, a revert
                     // may be a transient min-out miss that next attempt's
                     // fresh-reserve recompute clears, so those still retry.)
-                    if slippage_bps.is_none() && e.downcast_ref::<OnChainRevert>().is_some() {
+                    let landed_revert = e.downcast_ref::<OnChainRevert>().is_some();
+                    if slippage_bps.is_none() && landed_revert {
                         warn!("⛔ Sell reverted on-chain; not retrying (would only re-pay fees)");
                         return Err(e);
                     }
                     last_err = Some(e);
+                    // A landed min-out revert (slippage set) clears on the next
+                    // attempt's fresh-reserve recompute, so resend it immediately.
+                    // Only a genuine network/transport fault warrants a brief backoff
+                    // before resending, so we don't hammer a degraded endpoint.
+                    if !landed_revert && attempt < MAX_SELL_ATTEMPTS - 1 {
+                        tokio::time::sleep(SELL_NETWORK_RETRY_BACKOFF).await;
+                    }
                 }
-            }
-
-            if attempt < MAX_SELL_ATTEMPTS - 1 {
-                tokio::time::sleep(Duration::from_millis(250)).await;
             }
         }
 

@@ -78,6 +78,68 @@ impl TryFrom<TradeDbRow> for Trade {
     }
 }
 
+/// Slim projection for the bulk read paths (swing scan, token-sync seed,
+/// backtests). Identical to [`TradeDbRow`] minus the `ix_labels` JSONB column:
+/// none of those consumers read per-trade instruction labels (the live ingest
+/// ring strips them to `Null` too — see `pipeline.rs`), so omitting the column
+/// skips a per-row JSONB decode across whole-mint histories.
+#[derive(sqlx::FromRow)]
+struct TradeSlimRow {
+    id: Uuid,
+    mint_address: String,
+    wallet_address: String,
+    trade_type: String,
+    sol_amount: f64,
+    token_amount: f64,
+    price_per_token: f64,
+    tx_signature: String,
+    leg_index: i32,
+    slot: i64,
+    block_time: DateTime<Utc>,
+    received_at: DateTime<Utc>,
+    virtual_sol_reserves: Option<f64>,
+    virtual_token_reserves: Option<f64>,
+    real_sol_reserves: Option<f64>,
+    real_token_reserves: Option<f64>,
+    ix_type: String,
+    venue: String,
+}
+
+impl TryFrom<TradeSlimRow> for Trade {
+    type Error = anyhow::Error;
+
+    fn try_from(r: TradeSlimRow) -> Result<Self, Self::Error> {
+        let trade_type = match r.trade_type.as_str() {
+            "buy" => TradeType::Buy,
+            "sell" => TradeType::Sell,
+            other => anyhow::bail!("Unknown trade_type in DB: {other}"),
+        };
+
+        Ok(Self {
+            id: r.id,
+            mint_address: r.mint_address,
+            wallet_address: r.wallet_address,
+            trade_type,
+            sol_amount: r.sol_amount,
+            token_amount: r.token_amount,
+            price_per_token: r.price_per_token,
+            tx_signature: r.tx_signature,
+            leg_index: r.leg_index as u32,
+            slot: r.slot as u64,
+            block_time: r.block_time,
+            received_at: r.received_at,
+            virtual_sol_reserves: r.virtual_sol_reserves,
+            virtual_token_reserves: r.virtual_token_reserves,
+            real_sol_reserves: r.real_sol_reserves,
+            real_token_reserves: r.real_token_reserves,
+            instruction_type: r.ix_type,
+            // Not selected on the bulk paths; matches the ingest ring's stripped value.
+            instruction_labels: serde_json::Value::Null,
+            venue: r.venue,
+        })
+    }
+}
+
 fn trade_type_str(t: TradeType) -> &'static str {
     match t {
         TradeType::Buy => "buy",
@@ -293,16 +355,18 @@ impl TradeRepo {
         row.map(Trade::try_from).transpose()
     }
 
-    /// Find all trades for a token in chronological order.
+    /// Find all trades for a token in chronological order. Slim projection
+    /// (no `ix_labels` JSONB): the seed/metrics/backtest consumers never read
+    /// per-trade instruction labels.
     pub async fn find_by_mint_all(&self, mint: &str) -> anyhow::Result<Vec<Trade>> {
-        let rows = sqlx::query_as::<_, TradeDbRow>(
+        let rows = sqlx::query_as::<_, TradeSlimRow>(
             r#"
             SELECT id, mint_address, wallet_address, trade_type,
                    sol_amount, token_amount, price_per_token,
                    tx_signature, leg_index, slot, block_time, received_at,
                    virtual_sol_reserves, virtual_token_reserves,
                    real_sol_reserves, real_token_reserves,
-                   ix_type, ix_labels, venue
+                   ix_type, venue
             FROM trades
             WHERE mint_address = $1
             ORDER BY slot ASC, block_time ASC, tx_signature ASC, leg_index ASC
@@ -318,20 +382,23 @@ impl TradeRepo {
     /// Find trades for a token in chronological order, bounded by `limit`/`offset`.
     /// Same ordering as `find_by_mint_all` but paged so a high-volume token can't
     /// produce an unbounded response (the API never has to materialise every row).
+    /// Slim projection (no `ix_labels` JSONB): the swing scan ignores per-trade
+    /// labels, and the trades-API DB fallback now matches its cache-served branch,
+    /// which already returns `Null` labels (the ingest ring strips them).
     pub async fn find_by_mint_paged(
         &self,
         mint: &str,
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<Trade>> {
-        let rows = sqlx::query_as::<_, TradeDbRow>(
+        let rows = sqlx::query_as::<_, TradeSlimRow>(
             r#"
             SELECT id, mint_address, wallet_address, trade_type,
                    sol_amount, token_amount, price_per_token,
                    tx_signature, leg_index, slot, block_time, received_at,
                    virtual_sol_reserves, virtual_token_reserves,
                    real_sol_reserves, real_token_reserves,
-                   ix_type, ix_labels, venue
+                   ix_type, venue
             FROM trades
             WHERE mint_address = $1
             ORDER BY slot ASC, block_time ASC, tx_signature ASC, leg_index ASC
