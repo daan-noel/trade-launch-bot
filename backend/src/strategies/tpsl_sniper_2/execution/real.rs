@@ -11,6 +11,7 @@ use tokio::time::{sleep, Instant};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use super::super::entry::EntryFill;
 use super::super::Tpsl2RuntimeCache;
 use crate::models::{Position, Tpsl2Rule};
 use crate::state::token_cache::TokenCache;
@@ -126,21 +127,24 @@ impl ScalpWaitCfg {
 
 /// Wait for the rule's scalp entry signal before any buy is sent: poll the WS-fed
 /// trade feed until [`find_scalp_entry`](super::super::entry::find_scalp_entry)
-/// holds on some trade, arming the snipe buy. Returns `true` once armed, `false`
-/// if the window elapses without a signal (the caller then drops the unentered
-/// position, exactly as a missed buy does).
+/// holds on some trade, arming the snipe buy. Returns the qualifying
+/// [`EntryFill`] (the **trigger trade**) once armed, or `None` if the window
+/// elapses without a signal (the caller then drops the unentered position,
+/// exactly as a missed buy does).
 ///
 /// In real mode the qualifying trade is only the **timing** signal — the actual
 /// entry price comes from the wallet's own on-chain fill, recorded later by
-/// [`adopt_existing_fill_if_present`] — so the returned fill is discarded and only
-/// its presence matters. This shares `find_scalp_entry` with the paper poll and the
-/// backtest, so all three resolve the same entry moment and live honors `p_entry_*`.
+/// [`adopt_existing_fill_if_present`]. The returned fill is the *target*
+/// (trigger-trade) snapshot, persisted via `update_target` before the buy is
+/// sent, so the gap between the targeted point and the real fill can be derived.
+/// This shares `find_scalp_entry` with the paper poll and the backtest, so all
+/// three resolve the same entry moment and live honors `p_entry_*`.
 pub(crate) async fn await_scalp_entry_signal(
     mint: &str,
     rule: &Tpsl2Rule,
     token_cache: &TokenCache,
     cfg: ScalpWaitCfg,
-) -> bool {
+) -> Option<EntryFill> {
     for _ in 0..cfg.attempts {
         // Read the mint's trade window from the in-memory cache (kept current by
         // the WS pipeline for every wallet's trades) instead of an unbounded
@@ -148,13 +152,13 @@ pub(crate) async fn await_scalp_entry_signal(
         // on the mint, not a single wallet, so there's no per-(wallet,mint)
         // `TradeSignals` key to wake on; the bounded timer re-reads the cache.
         if let Some(entry) = token_cache.get(mint) {
-            if super::super::entry::find_scalp_entry(&entry.value().trades, rule).is_some() {
-                return true;
+            if let Some(fill) = super::super::entry::find_scalp_entry(&entry.value().trades, rule) {
+                return Some(fill);
             }
         }
         sleep(cfg.interval).await;
     }
-    false
+    None
 }
 
 /// Snipe-buy `mint` and record the entry fill on first sight in the WS feed,

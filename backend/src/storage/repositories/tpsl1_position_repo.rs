@@ -81,6 +81,11 @@ impl TryFrom<PositionDbRow> for Position {
             entry_time: r.entry_time,
             exit_time: r.exit_time,
             exit_reason: r.exit_reason,
+            // TPSL1 has no target (trigger-trade) columns — TPSL2-only feature.
+            target_price: None,
+            target_amount: None,
+            target_time: None,
+            target_tx: None,
             created_at: r.created_at,
             updated_at: r.updated_at,
         })

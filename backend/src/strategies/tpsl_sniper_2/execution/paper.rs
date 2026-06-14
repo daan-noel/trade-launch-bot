@@ -54,7 +54,6 @@ pub(crate) fn spawn_entry_fill_poll(
     position_id: Uuid,
     rule: Tpsl2Rule,
 ) {
-    let buy_amount = rule.buy_amount;
     let poll_sem = runtime.paper_poll_sem();
     tokio::spawn(async move {
         // Bound concurrent fill-poll tasks; held for the task's lifetime.
@@ -72,17 +71,36 @@ pub(crate) fn spawn_entry_fill_poll(
             let Some(trades) = cache_trades(&token_cache, &mint) else {
                 continue;
             };
-            if let Some(fill) = super::super::entry::find_scalp_entry(&trades, &rule) {
+            if let Some(target_fill) = super::super::entry::find_scalp_entry(&trades, &rule) {
+                // The trigger trade is the *target*; the recorded *entry* is the
+                // worst-case adverse fill in the trigger's block (and the next), so
+                // paper has a real target↔entry gap. They coincide only in the
+                // fallback case where no adverse trade exists.
+                let entry =
+                    super::super::entry::find_worst_case_paper_entry(&trades, &target_fill.tx_signature);
                 if let Ok(Some(prev)) = paper_repo.find_by_id(position_id).await {
-                    // `update_entry` RETURNs the updated row — sync off it directly
-                    // instead of reading back the row we just wrote.
+                    // Persist the trigger as the target, then the worst-case entry.
+                    // Each writer RETURNs the updated row; sync off the latest so the
+                    // cached snapshot carries both target_* and entry_*.
+                    if let Err(err) = paper_repo
+                        .update_target(
+                            position_id,
+                            target_fill.price,
+                            target_fill.amount_sol,
+                            target_fill.block_time,
+                            &target_fill.tx_signature,
+                        )
+                        .await
+                    {
+                        warn!("[PAPER] Failed to record target for position {position_id}: {err}");
+                    }
                     if let Ok(current) = paper_repo
                         .update_entry(
                             position_id,
-                            &fill.tx_signature,
-                            buy_amount,
-                            fill.price,
-                            fill.block_time,
+                            &entry.tx_signature,
+                            entry.amount_sol,
+                            entry.price,
+                            entry.block_time,
                         )
                         .await
                     {
@@ -90,8 +108,8 @@ pub(crate) fn spawn_entry_fill_poll(
                     }
                 }
                 info!(
-                    "[PAPER] Set entry for position {}: {} (tx: {})",
-                    position_id, fill.price, fill.tx_signature
+                    "[PAPER] Set target/entry for position {}: target {} (tx: {}) → entry {} (tx: {})",
+                    position_id, target_fill.price, target_fill.tx_signature, entry.price, entry.tx_signature
                 );
                 recorded = true;
                 break;

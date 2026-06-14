@@ -41,6 +41,17 @@ pub struct Position {
     /// "StopLoss", "TrailingStop", "Stall", "TimeStop", "LiquidityExit"). `None`
     /// while still Holding/ExitPending (or for legacy rows predating this field).
     pub exit_reason: Option<String>,
+    /// Target (trigger-trade) snapshot — the scalp-entry signal trade that armed
+    /// this position, distinct from the actual `entry_*` fill. Set later via
+    /// [`Position::set_target`], not at construction; `None` until armed (and for
+    /// legacy rows / paths that never arm, e.g. backtest). `target_price` is the
+    /// trigger trade's price, `target_amount` its SOL amount, `target_time` its
+    /// block time, `target_tx` its signature. The gap vs. `entry_*` is derived
+    /// later, not stored.
+    pub target_price: Option<f64>,
+    pub target_amount: Option<f64>,
+    pub target_time: Option<DateTime<Utc>>,
+    pub target_tx: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -110,9 +121,35 @@ impl Position {
             entry_time: None,
             exit_time: None,
             exit_reason: None,
+            target_price: None,
+            target_amount: None,
+            target_time: None,
+            target_tx: None,
             created_at: now,
             updated_at: now,
         }
+    }
+
+    /// Record the target (trigger-trade) snapshot — the scalp-entry signal trade
+    /// that armed this position. Set before the entry fill lands; `entry_*` is
+    /// filled independently later, so the two can be compared to derive the gap.
+    ///
+    /// In-memory mutator parallel to the repo's `update_target` (the live arming
+    /// path persists via that, syncing the RETURNed row); kept as the model-level
+    /// setter for callers that mutate a `Position` before a bulk write.
+    #[allow(dead_code)]
+    pub fn set_target(
+        &mut self,
+        price: f64,
+        amount: f64,
+        time: DateTime<Utc>,
+        tx: String,
+    ) {
+        self.target_price = Some(price);
+        self.target_amount = Some(amount);
+        self.target_time = Some(time);
+        self.target_tx = Some(tx);
+        self.updated_at = Utc::now();
     }
 
     /// Mark the position as pending exit while the sell is executing.

@@ -20,7 +20,7 @@ use super::util::{none_if_zero_f64, none_if_zero_u64};
 use crate::models::{Tpsl2Rule, Token};
 
 mod scalp;
-pub use scalp::{find_scalp_entry, rule_configures_any_scalp_gate};
+pub use scalp::{find_scalp_entry, find_worst_case_paper_entry, rule_configures_any_scalp_gate};
 
 const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 
@@ -207,6 +207,9 @@ fn instruction_arg_as_sol(token: &Token, key: &str) -> Option<f64> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EntryFill {
     pub price: f64,
+    /// SOL amount of the resolving trade — carried so the target (trigger-trade)
+    /// snapshot can persist the trade's own size, not just its price/tx/time.
+    pub amount_sol: f64,
     pub tx_signature: String,
     pub block_time: DateTime<Utc>,
 }

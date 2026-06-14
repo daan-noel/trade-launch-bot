@@ -70,6 +70,10 @@ struct PaperPositionDbRow {
     entry_time: Option<DateTime<Utc>>,
     exit_time: Option<DateTime<Utc>>,
     exit_reason: Option<String>,
+    target_price: Option<f64>,
+    target_amount: Option<f64>,
+    target_time: Option<DateTime<Utc>>,
+    target_tx: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -102,6 +106,10 @@ impl TryFrom<PaperPositionDbRow> for Position {
             entry_time: r.entry_time,
             exit_time: r.exit_time,
             exit_reason: r.exit_reason,
+            target_price: r.target_price,
+            target_amount: r.target_amount,
+            target_time: r.target_time,
+            target_tx: r.target_tx,
             created_at: r.created_at,
             updated_at: r.updated_at,
         })
@@ -119,7 +127,7 @@ fn position_status_str(s: PositionStatus) -> &'static str {
 
 const POSITION_COLS: &str = "id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, \
      exit_tx, status, strategy, rule_id, entry_amount, exit_amount, entry_time, exit_time, \
-     exit_reason, created_at, updated_at";
+     exit_reason, target_price, target_amount, target_time, target_tx, created_at, updated_at";
 
 // ---------------------------------------------------------------------------
 // Repo
@@ -262,8 +270,8 @@ impl Tpsl2PaperTradingRepo {
             INSERT INTO tpsl2_paper_positions
                 (id, run_id, mint, wallet, token_program_id, entry_price, exit_price, entry_tx, exit_tx,
                  status, strategy, rule_id, entry_amount, exit_amount,
-                 entry_time, exit_time, exit_reason, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+                 entry_time, exit_time, exit_reason, target_price, target_amount, target_time, target_tx, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
             "#,
         )
         .bind(position.id)
@@ -283,6 +291,10 @@ impl Tpsl2PaperTradingRepo {
         .bind(position.entry_time)
         .bind(position.exit_time)
         .bind(position.exit_reason.as_ref())
+        .bind(position.target_price)
+        .bind(position.target_amount)
+        .bind(position.target_time)
+        .bind(position.target_tx.as_ref())
         .bind(position.created_at)
         .bind(position.updated_at)
         .execute(&self.pool)
@@ -315,6 +327,38 @@ impl Tpsl2PaperTradingRepo {
         .bind(entry_amount)
         .bind(entry_price)
         .bind(entry_time)
+        .bind(Utc::now())
+        .fetch_one(&self.pool)
+        .await?;
+        Position::try_from(row)
+    }
+
+    /// Record the target (trigger-trade) snapshot — the scalp-entry signal trade
+    /// that armed this paper position — and return the updated row. In paper mode
+    /// the target and the recorded `entry_*` come from **different** trades (the
+    /// entry is the worst-case adverse fill), so these columns are written
+    /// independently of `update_entry`.
+    pub async fn update_target(
+        &self,
+        position_id: Uuid,
+        target_price: f64,
+        target_amount: f64,
+        target_time: DateTime<Utc>,
+        target_tx: &str,
+    ) -> anyhow::Result<Position> {
+        let row = sqlx::query_as::<_, PaperPositionDbRow>(&format!(
+            r#"
+            UPDATE tpsl2_paper_positions
+            SET target_price = $2, target_amount = $3, target_time = $4, target_tx = $5, updated_at = $6
+            WHERE id = $1
+            RETURNING {POSITION_COLS}
+            "#
+        ))
+        .bind(position_id)
+        .bind(target_price)
+        .bind(target_amount)
+        .bind(target_time)
+        .bind(target_tx)
         .bind(Utc::now())
         .fetch_one(&self.pool)
         .await?;

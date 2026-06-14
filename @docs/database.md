@@ -8,6 +8,7 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 | `0001_init.sql` | baseline: all tables/indexes, `uuid-ossp`, `raw_transactions` partition fns, seed tags |
 | `0002_perf_indexes.sql` | composite hot-path indexes (wallet+mint balance, slot ordering) |
 | `0003_settings_kv.sql` | `app_settings` single-row JSONB → typed key-value store (dotted keys) |
+| `0004_tpsl2_target_columns.sql` | `tpsl2_{real,paper}_positions` += nullable `target_{price,amount,time,tx}` (scalp-entry trigger-trade snapshot; no backfill, `target_tx` not unique) |
 
 ## Tables
 **Core trading**
@@ -26,6 +27,7 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 - `tpsl1_paper_test_run` — rule_id (FK CASCADE), run_seq, status(`Running`/`Finished`/`Stopped`), max_total_tokens, started/finished_at. UNIQUE(rule_id, run_seq); one live run per rule.
 - `tpsl1_paper_positions` — run_id (FK CASCADE) + same shape as real positions, no tx UNIQUE (token re-tradable across runs).
 - `tpsl2_*` adds entry gates: `p_entry_{min_age_secs,min_alive_sol,min_organic_sol,pullback_pct,higher_low_secs,max_cohort_held,min_liquidity_sol,min_organic_liq}`, `p_exit_cohort_ratio`.
+- `tpsl2_{real,paper}_positions` also carry `target_{price,amount,time,tx}` (nullable): the scalp-entry **trigger trade** that armed the position, distinct from the actual `entry_*` fill. Real: target tx ≠ entry tx (a true slippage/latency gap). Paper: entry is the worst-case adverse fill in the trigger's block/next block, so target ≠ entry except in the fallback case. Gap derived later, not stored.
 
 **Wallets / settings**
 - `wallet_profiles` — name, type(`mine`/`trader`/`whale`/`dev`), tag_ids(UUID[]).
@@ -46,8 +48,8 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 | `wallet_profile_repo.rs` | wallet_profiles (+joins) | insert/update/delete, find_with_wallets, list_with_wallets |
 | `wallet_profile_tag_repo.rs` | wallet_profile_tags | list, find_by_ids, insert/update/delete |
 | `tpsl1_strategy_rule_repo.rs` / `tpsl2_*` | tpsl{1,2}_strategy_rules | insert, find_all, find_by_id, update, delete |
-| `tpsl1_position_repo.rs` / `tpsl2_*` | tpsl{1,2}_real_positions | update_entry(RETURNING), insert, update, find_holding_by_{mint,wallet}(limit,offset), find_by_rule(limit,offset), find_by_strategy(limit,offset) — all HTTP list reads are page-bounded; find_all_holding (unbounded, cache warm-up only), count_all_by_rule, fail_stale_exit_pending, delete_position |
-| `tpsl1_paper_trading_repo.rs` / `tpsl2_*` | tpsl{1,2}_paper_{test_run,positions} | start/current/resume/mark run; position insert/update_entry/update_exit/mark_exit_failed; count_by_run, delete_stale_unentered |
+| `tpsl1_position_repo.rs` / `tpsl2_*` | tpsl{1,2}_real_positions | update_entry(RETURNING), update_target(RETURNING; tpsl2 only — trigger-trade snapshot), insert, update, find_holding_by_{mint,wallet}(limit,offset), find_by_rule(limit,offset), find_by_strategy(limit,offset) — all HTTP list reads are page-bounded; find_all_holding (unbounded, cache warm-up only), count_all_by_rule, fail_stale_exit_pending, delete_position |
+| `tpsl1_paper_trading_repo.rs` / `tpsl2_*` | tpsl{1,2}_paper_{test_run,positions} | start/current/resume/mark run; position insert/update_entry/update_target(tpsl2)/update_exit/mark_exit_failed; count_by_run, delete_stale_unentered |
 
 ## Rules
 - **Always bound queries** — paginate / time-window / stream. Never `SELECT *` full `trades`/`raw_transactions` into memory.

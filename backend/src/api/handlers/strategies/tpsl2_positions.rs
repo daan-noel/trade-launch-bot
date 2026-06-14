@@ -38,6 +38,13 @@ pub struct PositionResponse {
     /// Why the position exited ("TakeProfit", "StopLoss", "TrailingStop",
     /// "Stall", "TimeStop", "LiquidityExit"); `None` while still open.
     pub exit_reason: Option<String>,
+    /// Target (trigger-trade) snapshot — the scalp-entry signal trade that armed
+    /// this position, distinct from the actual entry fill. `None` until armed.
+    /// The gap vs. the `entry_*` columns is derived client-side, not stored.
+    pub target_price: Option<f64>,
+    pub target_amount: Option<f64>,
+    pub target_time: Option<DateTime<Utc>>,
+    pub target_tx: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -63,6 +70,10 @@ impl From<Position> for PositionResponse {
             entry_time: p.entry_time,
             exit_time: p.exit_time,
             exit_reason,
+            target_price: p.target_price,
+            target_amount: p.target_amount,
+            target_time: p.target_time,
+            target_tx: p.target_tx,
             created_at: p.created_at,
             updated_at: p.updated_at,
         }

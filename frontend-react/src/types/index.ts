@@ -106,6 +106,13 @@ export interface RulePositionRecord {
   /** Why the position exited (TakeProfit/StopLoss/TrailingStop/Stall/TimeStop/
    * LiquidityExit/CohortExit); null while still open. */
   exit_reason: string | null;
+  /** Target (trigger-trade) snapshot — the scalp-entry signal trade that armed
+   * this position, distinct from the actual entry fill. null until armed. The
+   * gap vs. the entry_* fields is derived client-side, not stored. */
+  target_price: number | null;
+  target_amount: number | null;
+  target_time: string | null;
+  target_tx: string | null;
   created_at: string;
   updated_at: string;
 }

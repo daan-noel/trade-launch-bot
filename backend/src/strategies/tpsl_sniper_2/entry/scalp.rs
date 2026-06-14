@@ -378,11 +378,78 @@ pub fn find_scalp_entry(trades: &[Trade], rule: &Tpsl2Rule) -> Option<EntryFill>
 
         return Some(EntryFill {
             price: t.price_per_token,
+            amount_sol: t.sol_amount,
             tx_signature: t.tx_signature.clone(),
             block_time: t.block_time,
         });
     }
     None
+}
+
+/// Paper worst-case entry. Given the mint's chronological `trades` and the
+/// trigger trade identified by `target_tx` (the scalp-entry signal), choose the
+/// adverse entry fill that the paper position is recorded at — distinct from the
+/// trigger so the paper target/entry gap is real:
+///   • candidate pool = trades in the trigger's slot S or S+1, strictly after the
+///     trigger by `(slot, leg_index)`, excluding the trigger tx, ANY trade type;
+///   • drop dust ([`Trade::is_dust`]) and `price_per_token <= 0`;
+///   • pick the highest `price_per_token` (worst case); tie → latest by
+///     `(slot, leg_index)`;
+///   • empty pool → fall back to the trigger itself (entry == target).
+///
+/// `amount_sol` of the returned entry is always the TRIGGER trade's `sol_amount`
+/// (the size we would have filled), not the adverse trade's. If `target_tx` is
+/// absent from `trades` (shouldn't happen — it was just resolved from this slice)
+/// the trigger can't be located, so the first usable trade is returned as a safe
+/// degenerate fallback.
+///
+/// Caveat: `leg_index` orders legs *within* a tx, so `(slot, leg_index)` does not
+/// fully order two distinct txs in the same slot; ties are resolved by the
+/// highest-price / latest rule as specified.
+pub fn find_worst_case_paper_entry(trades: &[Trade], target_tx: &str) -> EntryFill {
+    let entry_from = |t: &Trade, amount_sol: f64| EntryFill {
+        price: t.price_per_token,
+        amount_sol,
+        tx_signature: t.tx_signature.clone(),
+        block_time: t.block_time,
+    };
+
+    let Some(target) = trades.iter().find(|t| t.tx_signature == target_tx) else {
+        // The trigger isn't in the slice — degrade to the first usable trade, or
+        // (no trades at all) a zero-priced empty fill keyed to the missing tx.
+        return trades
+            .iter()
+            .find(|t| t.price_per_token > 0.0 && !Trade::is_dust(t.sol_amount))
+            .map(|t| entry_from(t, t.sol_amount))
+            .unwrap_or(EntryFill {
+                price: 0.0,
+                amount_sol: 0.0,
+                tx_signature: target_tx.to_string(),
+                block_time: trades.first().map(|t| t.block_time).unwrap_or_else(Utc::now),
+            });
+    };
+    let trigger_sol = target.sol_amount;
+    let target_key = (target.slot, target.leg_index);
+
+    // Adverse candidates: same slot or the next, strictly after the trigger,
+    // non-dust, priced. The worst case is the highest price; ties break to the
+    // latest by (slot, leg_index).
+    let worst = trades
+        .iter()
+        .filter(|t| t.slot == target.slot || t.slot == target.slot + 1)
+        .filter(|t| (t.slot, t.leg_index) > target_key && t.tx_signature != target_tx)
+        .filter(|t| t.price_per_token > 0.0 && !Trade::is_dust(t.sol_amount))
+        .max_by(|a, b| {
+            a.price_per_token
+                .total_cmp(&b.price_per_token)
+                .then_with(|| (a.slot, a.leg_index).cmp(&(b.slot, b.leg_index)))
+        });
+
+    // Worst-case adverse trade if any, else fall back to the trigger itself.
+    // Either way `amount_sol` is the trigger trade's SOL.
+    worst
+        .map(|t| entry_from(t, trigger_sol))
+        .unwrap_or_else(|| entry_from(target, trigger_sol))
 }
 
 #[cfg(test)]
@@ -538,6 +605,7 @@ mod tests {
             }
             return Some(EntryFill {
                 price: cand.price_per_token,
+                amount_sol: cand.sol_amount,
                 tx_signature: cand.tx_signature.clone(),
                 block_time: cand.block_time,
             });
@@ -637,5 +705,85 @@ mod tests {
         // dip1 @ +2s, dip2 @ +6s → 4s span: a 10s minimum blocks it, 3s allows it.
         assert!(!higher_low_confirmed(&trades, 15.0, 10));
         assert!(higher_low_confirmed(&trades, 15.0, 3));
+    }
+
+    // ── find_worst_case_paper_entry ──────────────────────────────────────────
+
+    /// A priced buy at `slot`/`leg`/`secs` with an explicit `sol` size and a tx
+    /// signature unique across `(slot, leg)` so same-slot legs don't collide.
+    fn leg(sol: f64, tokens: f64, slot: u64, leg: u32, secs: i64) -> Trade {
+        let mut tr = buy("w", sol, tokens, slot, secs);
+        tr.leg_index = leg;
+        tr.tx_signature = format!("sig-{slot}-{leg}");
+        tr
+    }
+
+    #[test]
+    fn worst_case_picks_highest_price_after_trigger_same_block() {
+        // Trigger at slot 100 leg 0 (price 1.0). Two adverse buys later in the
+        // same slot: price 1.2 and 1.5 → the 1.5 is the worst case.
+        let trigger = leg(1.0, 1.0, 100, 0, 0);
+        let trades = vec![
+            trigger.clone(),
+            leg(1.2, 1.0, 100, 1, 0),
+            leg(1.5, 1.0, 100, 2, 0),
+        ];
+        let entry = find_worst_case_paper_entry(&trades, &trigger.tx_signature);
+        assert_eq!(entry.tx_signature, "sig-100-2");
+        assert_eq!(entry.price, 1.5);
+        // amount_sol is the TRIGGER's sol, not the adverse trade's.
+        assert_eq!(entry.amount_sol, trigger.sol_amount);
+    }
+
+    #[test]
+    fn worst_case_spans_trigger_slot_and_next() {
+        let trigger = leg(1.0, 1.0, 100, 0, 0);
+        let trades = vec![
+            trigger.clone(),
+            leg(1.3, 1.0, 100, 1, 0), // same slot
+            leg(1.8, 1.0, 101, 0, 1), // next slot — highest
+            leg(2.0, 1.0, 102, 0, 2), // S+2 — out of window, ignored
+        ];
+        let entry = find_worst_case_paper_entry(&trades, &trigger.tx_signature);
+        assert_eq!(entry.price, 1.8);
+    }
+
+    #[test]
+    fn worst_case_filters_dust_and_zero_price() {
+        let trigger = leg(1.0, 1.0, 100, 0, 0);
+        // Adverse candidates: one dust (sub-MIN_TRADE_SOL), one zero-priced
+        // (token_amount 0 → price 0), one valid at 1.1.
+        let dust_sol = crate::config::constants::MIN_TRADE_SOL / 2.0;
+        let mut dust = leg(dust_sol, 1.0, 100, 1, 0);
+        dust.sol_amount = dust_sol;
+        let mut zero = leg(1.0, 0.0, 100, 2, 0); // tokens 0 → price 0
+        zero.price_per_token = 0.0;
+        let valid = leg(1.1, 1.0, 100, 3, 0);
+        let trades = vec![trigger.clone(), dust, zero, valid];
+        let entry = find_worst_case_paper_entry(&trades, &trigger.tx_signature);
+        assert_eq!(entry.price, 1.1);
+    }
+
+    #[test]
+    fn worst_case_tie_breaks_to_latest() {
+        let trigger = leg(1.0, 1.0, 100, 0, 0);
+        let trades = vec![
+            trigger.clone(),
+            leg(1.5, 1.0, 100, 1, 0),
+            leg(1.5, 1.0, 101, 0, 1), // same price, later key → wins the tie
+        ];
+        let entry = find_worst_case_paper_entry(&trades, &trigger.tx_signature);
+        assert_eq!(entry.block_time, base_time() + chrono::Duration::seconds(1));
+    }
+
+    #[test]
+    fn worst_case_empty_pool_falls_back_to_trigger() {
+        // Trigger is the only candidate (nothing strictly after it in S/S+1).
+        let trigger = leg(1.0, 1.0, 100, 0, 0);
+        let trades = vec![trigger.clone()];
+        let entry = find_worst_case_paper_entry(&trades, &trigger.tx_signature);
+        assert_eq!(entry.tx_signature, trigger.tx_signature);
+        assert_eq!(entry.price, trigger.price_per_token);
+        assert_eq!(entry.amount_sol, trigger.sol_amount);
     }
 }

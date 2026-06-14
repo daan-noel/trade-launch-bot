@@ -263,7 +263,30 @@ impl Tpsl2StrategyService {
                             super::execution::real::ScalpWaitCfg::for_rule(&rule_for_entry),
                         )
                         .await;
-                        if armed {
+                        if let Some(target) = armed {
+                            // Persist the trigger trade as the target point BEFORE
+                            // sending the buy — the real fill (entry_*) lands later
+                            // and independently, so the two can be compared. Sync the
+                            // returned row into the runtime cache so the snapshot
+                            // carries target_*.
+                            if let Ok(Some(prev)) = position_repo.find_by_id(position_id).await {
+                                match position_repo
+                                    .update_target(
+                                        position_id,
+                                        target.price,
+                                        target.amount_sol,
+                                        target.block_time,
+                                        &target.tx_signature,
+                                    )
+                                    .await
+                                {
+                                    Ok(current) => runtime.sync_position(Some(&prev), &current),
+                                    Err(err) => warn!(
+                                        "[REAL] Failed to record target for position {}: {err}",
+                                        position_id
+                                    ),
+                                }
+                            }
                             super::execution::real::buy_until_filled_or_give_up(
                                 trader,
                                 mint_clone,
