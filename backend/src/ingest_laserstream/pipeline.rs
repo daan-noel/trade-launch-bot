@@ -313,6 +313,12 @@ impl IngestPipeline {
     }
 
     fn emit_sse(&self, event: SseEvent) {
+        // No dashboard connected → skip the broadcast ring write entirely (L4).
+        // A cheap atomic load instead of moving the event into the buffer for
+        // nobody to read; the steady state with no UI open does zero SSE work.
+        if self.sse_tx.receiver_count() == 0 {
+            return;
+        }
         let _ = self.sse_tx.send(event);
     }
 

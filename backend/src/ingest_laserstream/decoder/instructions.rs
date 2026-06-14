@@ -48,7 +48,7 @@ pub(super) struct PreparedIx<'a> {
 /// Resolve + base58-decode every outer (`message.instructions`) instruction once.
 pub(super) fn prepare_instructions<'a>(
     message: &'a Value,
-    account_keys: &[String],
+    account_keys: &[&str],
 ) -> Vec<PreparedIx<'a>> {
     message["instructions"]
         .as_array()
@@ -103,7 +103,7 @@ fn classify_pump_ix(program_id: &str, data: Option<&[u8]>) -> Option<Instruction
 pub(super) fn collect_instruction_kinds(
     outer: &[PreparedIx],
     meta: &Value,
-    account_keys: &[String],
+    account_keys: &[&str],
 ) -> Vec<InstructionKind> {
     let mut kinds = Vec::new();
 
@@ -183,15 +183,15 @@ pub(super) fn determine_instruction_type(
     "Unknown".to_string()
 }
 
-pub(super) fn resolve_instruction_program_id(ix: &Value, account_keys: &[String]) -> String {
+pub(super) fn resolve_instruction_program_id(ix: &Value, account_keys: &[&str]) -> String {
     ix["programId"]
         .as_str()
         .map(|s| s.to_owned())
         .or_else(|| {
             ix["programIdIndex"]
                 .as_u64()
-                .and_then(|i| account_keys.get(i as usize))
-                .cloned()
+                .and_then(|i| account_keys.get(i as usize).copied())
+                .map(|s| s.to_owned())
         })
         .unwrap_or_default()
 }

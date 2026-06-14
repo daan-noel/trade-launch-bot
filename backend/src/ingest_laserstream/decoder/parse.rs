@@ -14,26 +14,30 @@ use super::instructions::resolve_instruction_program_id;
 // ---------------------------------------------------------------------------
 
 pub(super) fn extract_logs<'a>(meta: &'a Value) -> Vec<&'a str> {
+    log_lines(meta).collect()
+}
+
+/// Borrowed iterator over `meta.logMessages` string entries. Use this for gate
+/// checks that only need `.any(...)` — it avoids materializing the throwaway
+/// `Vec<&str>` that `extract_logs` allocates (see L1). `extract_logs` itself is
+/// for the paths that iterate the lines repeatedly and so collect once.
+pub(super) fn log_lines<'a>(meta: &'a Value) -> impl Iterator<Item = &'a str> + 'a {
     meta["logMessages"]
         .as_array()
-        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
-        .unwrap_or_default()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
 }
 
 /// With `jsonParsed` encoding, accountKeys is:
 ///   [{pubkey: "...", signer: bool, writable: bool}, ...]
 /// Fall back to plain string array for other encodings.
-pub(super) fn extract_account_keys(message: &Value) -> Vec<String> {
+pub(super) fn extract_account_keys(message: &Value) -> Vec<&str> {
     message["accountKeys"]
         .as_array()
         .map(|arr| {
             arr.iter()
-                .filter_map(|v| {
-                    v["pubkey"]
-                        .as_str()
-                        .or_else(|| v.as_str())
-                        .map(|s| s.to_string())
-                })
+                .filter_map(|v| v["pubkey"].as_str().or_else(|| v.as_str()))
                 .collect()
         })
         .unwrap_or_default()
@@ -48,7 +52,7 @@ pub(super) fn extract_account_keys(message: &Value) -> Vec<String> {
 pub(super) fn find_pump_ixs_anywhere<'a>(
     message: &'a Value,
     meta: &'a Value,
-    account_keys: &[String],
+    account_keys: &[&str],
     program_id: &str,
 ) -> Vec<&'a Value> {
     let mut result = Vec::new();
@@ -98,7 +102,7 @@ pub(super) fn is_pump_create_ix(ix: &Value) -> bool {
 ///   - Resolved pubkey strings: `["pk1", "pk2", ...]`
 ///   - Integer indices into `message.accountKeys`: `[0, 1, 2, ...]`
 /// Both are handled; unresolvable entries are silently skipped.
-pub(super) fn resolve_pump_accounts(ix: &Value, account_keys: &[String]) -> Vec<String> {
+pub(super) fn resolve_pump_accounts(ix: &Value, account_keys: &[&str]) -> Vec<String> {
     ix["accounts"]
         .as_array()
         .map(|arr| {
@@ -106,8 +110,8 @@ pub(super) fn resolve_pump_accounts(ix: &Value, account_keys: &[String]) -> Vec<
                 .filter_map(|v| {
                     v.as_str().map(|s| s.to_string()).or_else(|| {
                         v.as_u64()
-                            .and_then(|i| account_keys.get(i as usize))
-                            .cloned()
+                            .and_then(|i| account_keys.get(i as usize).copied())
+                            .map(|s| s.to_string())
                     })
                 })
                 .collect()
@@ -130,13 +134,13 @@ pub(super) fn extract_balances(balances: &Value) -> Vec<u64> {
 /// using the flat pre/post balance arrays (indexed by accountKeys order).
 pub(super) fn compute_sol_change(
     wallet: &str,
-    account_keys: &[String],
+    account_keys: &[&str],
     pre: &[u64],
     post: &[u64],
 ) -> f64 {
     account_keys
         .iter()
-        .position(|k| k == wallet)
+        .position(|k| *k == wallet)
         .map(|idx| {
             let pre_bal = pre.get(idx).copied().unwrap_or(0);
             let post_bal = post.get(idx).copied().unwrap_or(0);
@@ -157,10 +161,10 @@ pub(super) fn compute_sol_change(
 pub(super) fn compute_token_change(
     user_ata: &str,
     mint: &str,
-    account_keys: &[String],
+    account_keys: &[&str],
     meta: &Value,
 ) -> f64 {
-    let ata_idx = match account_keys.iter().position(|k| k == user_ata) {
+    let ata_idx = match account_keys.iter().position(|k| *k == user_ata) {
         Some(i) => i as u64,
         None => return 0.0,
     };

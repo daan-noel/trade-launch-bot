@@ -41,7 +41,7 @@ impl HeliusDecoder {
         block_time: DateTime<Utc>,
         pump_ix: &Value,
         pump_accounts: &[String],
-        account_keys: &[String],
+        account_keys: &[&str],
         decoded_events: &[DecodedTradeEvent],
         decoded_create_events: &[DecodedCreateEvent],
         instruction_type: &str,
@@ -82,7 +82,7 @@ impl HeliusDecoder {
         let buy_user = create_log
             .map(|e| e.user.clone())
             .or_else(|| pump_user_account(pump_accounts, is_v2))
-            .or_else(|| account_keys.first().cloned())
+            .or_else(|| account_keys.first().copied().map(|s| s.to_string()))
             .unwrap_or_else(|| creator.clone());
 
         let initial_create_event = decoded_events
@@ -408,7 +408,7 @@ fn buy_instruction_data_to_json(data: PumpBuyInstructionData) -> Value {
 fn extract_pump_buy_instruction_data(
     message: &Value,
     meta: &Value,
-    account_keys: &[String],
+    account_keys: &[&str],
 ) -> Option<PumpBuyInstructionData> {
     let ixs = find_pump_ixs_anywhere(message, meta, account_keys, PUMP_FUN_PROGRAM_ID);
     for ix in ixs {
@@ -446,7 +446,7 @@ fn resolve_creator_wallet(
     create_log: Option<&DecodedCreateEvent>,
     pump_accounts: &[String],
     is_v2: bool,
-    account_keys: &[String],
+    account_keys: &[&str],
 ) -> String {
     if let Some(ev) = create_log {
         return ev.creator.clone();
@@ -461,8 +461,9 @@ fn resolve_creator_wallet(
     }
     account_keys
         .first()
+        .copied()
         .filter(|s| !s.is_empty())
-        .cloned()
+        .map(|s| s.to_string())
         .unwrap_or_default()
 }
 

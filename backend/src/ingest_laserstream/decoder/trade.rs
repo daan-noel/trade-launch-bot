@@ -119,7 +119,7 @@ pub(super) fn decode_trade_events_from_logs(logs: &[&str]) -> Vec<DecodedTradeEv
 pub(super) fn decode_trade_events_from_inner_ixs(
     message: &Value,
     meta: &Value,
-    account_keys: &[String],
+    account_keys: &[&str],
     pump_program_id: &str,
 ) -> Vec<DecodedTradeEvent> {
     let mut events = Vec::new();
@@ -364,7 +364,7 @@ impl HeliusDecoder {
         slot: u64,
         block_time: DateTime<Utc>,
         pump_accounts: &[String],
-        account_keys: &[String],
+        account_keys: &[&str],
         pre_balances: &[u64],
         post_balances: &[u64],
         meta: &Value,

@@ -69,6 +69,10 @@ pub struct SyncProgressEvent {
 #[derive(Clone)]
 pub struct SyncOutput {
     pub state: TokenState,
+    /// Full synced history, separate from `state.trades`: the latter is rebuilt
+    /// through the 50K-capped retention ring by `recompute_token_state`, so for
+    /// high-volume mints it is a truncated view. Kept distinct so the sync-complete
+    /// response carries the complete list (L11: the second copy is *not* redundant).
     pub trades: Vec<Trade>,
 }
 
@@ -530,9 +534,10 @@ pub async fn run_token_sync(
         .map_err(|e| SyncError::Internal(e.to_string()))?;
 
     let mut state = TokenState::new(token);
-    // `trades` is also returned in `SyncOutput` below, so the clone here is
-    // unavoidable (two consumers). Cold manual-sync path; folding metrics
-    // incrementally to drop the second copy is left as a follow-up (L11).
+    // `trades` is also returned (uncapped) in `SyncOutput` below, while
+    // `recompute_token_state` rebuilds `state.trades` through the 50K retention
+    // ring — so the two are not interchangeable for high-volume mints and this
+    // copy is genuinely required (L11: not a redundant clone). Cold sync path.
     state.trades = trades.clone();
     state.is_migrated = is_migrated;
 

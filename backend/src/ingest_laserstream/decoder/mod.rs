@@ -28,7 +28,7 @@ use self::instructions::{
 };
 use self::parse::{
     extract_account_keys, extract_balances, extract_logs, find_pump_ixs_anywhere,
-    is_pump_create_ix, resolve_pump_accounts,
+    is_pump_create_ix, log_lines, resolve_pump_accounts,
 };
 use self::trade::{
     build_amm_trade, decode_pump_swap_trades_from_logs, decode_trade_events_from_inner_ixs,
@@ -108,11 +108,11 @@ impl HeliusDecoder {
         // so they're resolved via `pool_index`. The borrow of `result` ends with
         // this block so the Value can then be moved.
         {
-            let logs = extract_logs(&result["transaction"]["meta"]);
-            if !logs.iter().any(|l| l.contains(&self.pump_program_id)) {
-                if self.pool_index.is_some() && logs.iter().any(|l| l.contains(PUMP_SWAP_PROGRAM_ID))
+            let meta = &result["transaction"]["meta"];
+            if !log_lines(meta).any(|l| l.contains(&self.pump_program_id)) {
+                if self.pool_index.is_some()
+                    && log_lines(meta).any(|l| l.contains(PUMP_SWAP_PROGRAM_ID))
                 {
-                    drop(logs);
                     return self.decode_amm_live(result);
                 }
                 return DecodeOutput::Ignored;
