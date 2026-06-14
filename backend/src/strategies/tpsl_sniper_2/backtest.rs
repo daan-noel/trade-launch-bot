@@ -9,18 +9,33 @@ use super::exit;
 use super::util::none_if_zero_u64;
 use crate::models::Token;
 use crate::state::app_state::AppState;
+use crate::strategies::sim_progress::SimProgress;
 use crate::storage::repositories::tpsl2_strategy_rule_repo::Tpsl2StrategyRuleRepo;
 use crate::storage::repositories::trade_repo::TradeRepo;
 
-/// Max concurrent per-candidate trade fetches during a backtest. Bounds load on
-/// the PgPool while still replacing the old sequential per-token round-trip loop.
-const BACKTEST_FETCH_CONCURRENCY: usize = 16;
+/// Candidate mints fetched per batched `trades` query. One round-trip pulls a
+/// whole chunk (`find_by_mints_all`) instead of one query per token.
+const BACKTEST_FETCH_CHUNK: usize = 16;
+
+/// Concurrent chunk queries. Deliberately small: the PgPool (default 20) is
+/// shared with the live ingest pipeline, so a backtest must leave it headroom.
+/// `CHUNK * CONCURRENCY` also bounds how many token histories are resident at
+/// once. Old code held 16 connections at concurrency 16; this holds ~3.
+const BACKTEST_FETCH_CONCURRENCY: usize = 3;
 
 /// Per-token simulation result.
 #[derive(Clone, serde::Serialize)]
 pub struct BacktestTokenResult {
     pub mint: String,
     pub symbol: String,
+    /// Trigger-trade (scalp signal) snapshot — the trade that *armed* the
+    /// position, distinct from the worst-case `entry_*` fill below. The gap
+    /// between the two is the modeled adverse slippage (mirrors live/paper).
+    /// `None` only for legacy paper rows that never recorded a target.
+    pub target_price: Option<f64>,
+    pub target_amount: Option<f64>,
+    pub target_time: Option<DateTime<Utc>>,
+    pub target_tx: Option<String>,
     pub entry_price: f64,
     /// All-time-high price across every one of the token's trades.
     pub ath_price: f64,
@@ -128,31 +143,75 @@ pub async fn run_backtest(
         .map(|e| e.value().token.clone())
         .collect();
 
-    // Fetch each candidate's trades and resolve its entry/exit concurrently
-    // (bounded), replacing the old sequential per-token DB round-trip loop. Each
-    // future owns its data (a cloned-pool repo + an Arc'd rule); collecting the
-    // futures eagerly before the stream runs mirrors the db_writer pattern and
-    // sidesteps the `buffer_unordered` HRTB inference error a lazy `.map()` hits.
+    // Resolve each candidate's entry/exit from its trade history. The history is
+    // fetched in batched chunks — one query per `BACKTEST_FETCH_CHUNK` mints
+    // (`find_by_mints_all`) instead of one query per token — and only a few chunk
+    // queries run concurrently so the backtest leaves the ingest-shared PgPool
+    // headroom (old code held 16 of ~20 connections; this holds ~3). The slow
+    // part is the trade fetch, so one `tick()` per resolved candidate tracks real
+    // progress; chunks tick every candidate (even on fetch error) so the bar
+    // always reaches `total`.
+    let progress = Arc::new(SimProgress::new(
+        app_state.sse_tx.clone(),
+        rule_id,
+        tokens.len(),
+    ));
+    progress.start();
+
     let rule = Arc::new(rule);
-    let per_token: Vec<_> = tokens
+    let chunks: Vec<Vec<Token>> = tokens.chunks(BACKTEST_FETCH_CHUNK).map(<[Token]>::to_vec).collect();
+    let per_chunk: Vec<_> = chunks
         .into_iter()
-        .map(|token| {
+        .map(|chunk| {
             let trade_repo = TradeRepo::new(app_state.db.clone());
             let rule = rule.clone();
+            let progress = progress.clone();
             async move {
-                let trades = match trade_repo.find_by_mint_all(&token.mint_address).await {
-                    Ok(t) => t,
+                let mints: Vec<String> = chunk.iter().map(|t| t.mint_address.clone()).collect();
+                let mut grouped = match trade_repo.find_by_mints_all(&mints).await {
+                    Ok(g) => g,
                     Err(e) => {
-                        tracing::warn!("Skipping {}: trade fetch failed: {e}", token.mint_address);
-                        return None;
+                        tracing::warn!(
+                            "Skipping chunk of {} tokens: trade fetch failed: {e}",
+                            chunk.len()
+                        );
+                        for _ in &chunk {
+                            progress.tick();
+                        }
+                        return Vec::new();
                     }
                 };
 
+                let mut out = Vec::with_capacity(chunk.len());
+                for token in &chunk {
+                    // `remove` hands the mint's history to the resolver without a
+                    // clone; an absent mint means no trades, hence no entry.
+                    let trades = grouped.remove(&token.mint_address).unwrap_or_default();
+                    // Tick once per candidate regardless of outcome (no-entry skip
+                    // / resolved) so the count always reaches `total`.
+                    let resolved = (|| {
                 // Buy on the first trade where every configured scalp gate holds; the
                 // exit then runs through `exit::find_trade_driven_exit`.
-                let entry = entry::find_scalp_entry(&trades, &rule)?;
-                let (entry_price, entry_tx, entry_time) =
-                    (entry.price, entry.tx_signature, entry.block_time);
+                // The scalp signal is the *target* (trigger trade). The recorded
+                // *entry* is the worst-case adverse fill in the trigger's block (and
+                // the next) — the same resolver the live/paper poll uses — so a
+                // backtest reproduces the real target↔entry slippage gap. They
+                // coincide only when no adverse trade exists.
+                let target = entry::find_scalp_entry(&trades, &rule)?;
+                let entry_fill = entry::find_worst_case_paper_entry(&trades, &target.tx_signature);
+                // No usable fill priced in the window → drop the token, mirroring
+                // paper's cleanup (it deletes the un-filled position rather than
+                // trade a 0-priced row).
+                if entry_fill.price <= 0.0 {
+                    return None;
+                }
+                let target_price = target.price;
+                let target_amount = target.amount_sol;
+                let target_time = target.block_time;
+                let target_tx = target.tx_signature;
+                let entry_price = entry_fill.price;
+                let entry_tx = entry_fill.tx_signature;
+                let entry_time = entry_fill.block_time;
 
                 // All-time high across the token's full trade history.
                 let ath_price = trades
@@ -160,6 +219,8 @@ pub async fn run_backtest(
                     .map(|t| t.price_per_token)
                     .fold(entry_price, f64::max);
 
+                // Exit ladder is driven from the recorded entry fill (price + time),
+                // exactly as the live/paper exit poll resolves it.
                 let exit = exit::find_trade_driven_exit(&trades, entry_time, entry_price, &rule);
 
                 let (exit_price, exit_tx, exit_time, exit_reason, holding_secs, pnl_percent, pnl_sol) =
@@ -184,6 +245,10 @@ pub async fn run_backtest(
                 let result = BacktestTokenResult {
                     mint: token.mint_address.clone(),
                     symbol: token.symbol.clone(),
+                    target_price: Some(target_price),
+                    target_amount: Some(target_amount),
+                    target_time: Some(target_time),
+                    target_tx: Some(target_tx),
                     entry_price,
                     ath_price,
                     entry_amount: rule.buy_amount,
@@ -199,15 +264,24 @@ pub async fn run_backtest(
                     total_trades: trades.len(),
                 };
 
-                Some((entry_time, exit_time, result))
+                // Admit by the trigger (target) time — when the position arms — so
+                // concurrency/total caps match the live admission order.
+                Some((target_time, exit_time, result))
+                    })();
+                    progress.tick();
+                    if let Some(r) = resolved {
+                        out.push(r);
+                    }
+                }
+                out
             }
         })
         .collect();
 
     let mut candidates: Vec<(DateTime<Utc>, Option<DateTime<Utc>>, BacktestTokenResult)> =
-        stream::iter(per_token)
+        stream::iter(per_chunk)
             .buffer_unordered(BACKTEST_FETCH_CONCURRENCY)
-            .filter_map(|x| async move { x })
+            .flat_map(stream::iter)
             .collect()
             .await;
 

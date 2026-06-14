@@ -103,6 +103,15 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
       searchValue: (r) => String(r.entry_price),
     },
     {
+      key: 'entry_amount',
+      label: 'Entry Size',
+      group: 'entry',
+      sortable: true,
+      render: (r) => <AmountCell sol={r.entry_amount} />,
+      sortValue: (r) => r.entry_amount,
+      searchValue: (r) => String(r.entry_amount ?? ''),
+    },
+    {
       key: 'entry_time',
       label: 'Entry Time',
       group: 'entry',
@@ -110,6 +119,18 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
       render: (r) => <DateCell iso={r.entry_time} />,
       sortValue: (r) => r.entry_time ?? '',
       searchValue: (r) => r.entry_time ?? '',
+    },
+    {
+      key: 'entry_tx',
+      label: 'Entry Tx',
+      group: 'entry',
+      render: (r) =>
+        r.entry_tx ? (
+          <AddressDisplay address={r.entry_tx} kind="transaction" display={r.entry_tx.slice(0, 6)} />
+        ) : (
+          '—'
+        ),
+      searchValue: (r) => r.entry_tx ?? '',
     },
     {
       key: 'exit_price',
@@ -121,6 +142,15 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
       searchValue: (r) => String(r.exit_price ?? ''),
     },
     {
+      key: 'exit_amount',
+      label: 'Exit Size',
+      group: 'exit',
+      sortable: true,
+      render: (r) => (r.exit_amount != null ? <AmountCell sol={r.exit_amount} /> : '—'),
+      sortValue: (r) => r.exit_amount,
+      searchValue: (r) => String(r.exit_amount ?? ''),
+    },
+    {
       key: 'exit_time',
       label: 'Exit Time',
       group: 'exit',
@@ -128,6 +158,18 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
       render: (r) => <DateCell iso={r.exit_time} />,
       sortValue: (r) => r.exit_time ?? '',
       searchValue: (r) => r.exit_time ?? '',
+    },
+    {
+      key: 'exit_tx',
+      label: 'Exit Tx',
+      group: 'exit',
+      render: (r) =>
+        r.exit_tx ? (
+          <AddressDisplay address={r.exit_tx} kind="transaction" display={r.exit_tx.slice(0, 6)} />
+        ) : (
+          '—'
+        ),
+      searchValue: (r) => r.exit_tx ?? '',
     },
     {
       key: 'holding',
@@ -264,6 +306,50 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
       ),
       sortValue: (r) => r.symbol,
       searchValue: (r) => r.symbol,
+    },
+    {
+      key: 'target_price',
+      label: 'Target Price',
+      tooltip:
+        'Price of the scalp-entry trigger trade that armed this position. The gap vs. Entry Price is the modeled adverse slippage.',
+      group: 'target',
+      sortable: true,
+      render: (r) =>
+        r.target_price != null ? <CurrentPriceCell sol={r.target_price} /> : '—',
+      sortValue: (r) => r.target_price,
+      searchValue: (r) => String(r.target_price ?? ''),
+    },
+    {
+      key: 'target_amount',
+      label: 'Target Size',
+      tooltip: 'SOL size of the trigger trade.',
+      group: 'target',
+      sortable: true,
+      render: (r) => (r.target_amount != null ? <AmountCell sol={r.target_amount} /> : '—'),
+      sortValue: (r) => r.target_amount,
+      searchValue: (r) => String(r.target_amount ?? ''),
+    },
+    {
+      key: 'target_time',
+      label: 'Target Time',
+      tooltip: 'Block time of the trigger trade. The gap vs. Entry Time is the entry latency.',
+      group: 'target',
+      sortable: true,
+      render: (r) => <DateCell iso={r.target_time} />,
+      sortValue: (r) => r.target_time ?? '',
+      searchValue: (r) => r.target_time ?? '',
+    },
+    {
+      key: 'target_tx',
+      label: 'Target Tx',
+      group: 'target',
+      render: (r) =>
+        r.target_tx ? (
+          <AddressDisplay address={r.target_tx} kind="transaction" display={r.target_tx.slice(0, 6)} />
+        ) : (
+          '—'
+        ),
+      searchValue: (r) => r.target_tx ?? '',
     },
     {
       key: 'entry_price',

@@ -829,6 +829,10 @@ pub(crate) fn paper_position_to_sim_result(
         .unwrap_or(p.entry_price);
     BacktestTokenResult {
         symbol: symbols.get(&p.mint).cloned().unwrap_or_default(),
+        target_price: p.target_price,
+        target_amount: p.target_amount,
+        target_time: p.target_time,
+        target_tx: p.target_tx,
         mint: p.mint,
         entry_price: p.entry_price,
         ath_price,

@@ -130,6 +130,13 @@ export interface MatchedTokenRecord {
 export interface SimulatedTokenResult {
   mint: string;
   symbol: string;
+  /** Trigger-trade (scalp signal) snapshot that armed the position, distinct
+   * from the worst-case `entry_*` fill. The gap is the modeled adverse
+   * slippage. null only for legacy paper rows that never recorded a target. */
+  target_price: number | null;
+  target_amount: number | null;
+  target_time: string | null;
+  target_tx: string | null;
   entry_price: number;
   ath_price: number;
   entry_amount: number;
@@ -171,6 +178,14 @@ export interface PaperTestFinishedEvent {
   run_seq: number;
   tokens_traded: number;
   timestamp: string;
+}
+
+/** Payload of the `simulation_progress` SSE event: `processed` of `total`
+ *  candidate tokens resolved for the in-flight backtest of `rule_id`. */
+export interface SimulationProgressEvent {
+  rule_id: string;
+  processed: number;
+  total: number;
 }
 
 export interface WalletHolding {

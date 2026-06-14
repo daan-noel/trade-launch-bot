@@ -36,7 +36,7 @@ import {
   stopTpsl2Rule,
   updateTpsl2Rule,
 } from 'services/api';
-import { connectPaperTestStream } from 'services/sse';
+import { connectPaperTestStream, connectSimulationProgress } from 'services/sse';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
   fetchMatchedCached,
@@ -59,30 +59,40 @@ function SectionDivider() {
   return <div role="separator" className="my-6 border-t border-white/6" />;
 }
 
-/** Indeterminate "trickle" progress bar for a simulation run. The simulate
- *  endpoint returns its result in one shot with no streaming progress, so we
- *  ease toward ~90% while the request is in flight rather than reporting real
- *  percentages; the bar unmounts when the result lands. */
-function SimProgressBar() {
-  const [percent, setPercent] = useState(8);
+/** Determinate progress bar for a simulation run. The backend streams real
+ *  `processed / total` candidate counts over the `simulation_progress` SSE
+ *  event (keyed by rule), so the bar reports actual progress instead of a fake
+ *  trickle. Before the first frame arrives the total is unknown, so it shows an
+ *  indeterminate pulse; the bar unmounts when the result lands. */
+function SimProgressBar({ ruleId }: { ruleId: string }) {
+  const [progress, setProgress] = useState<{ processed: number; total: number } | null>(null);
   useEffect(() => {
-    const id = setInterval(() => {
-      setPercent((p) => (p >= 90 ? p : p + (90 - p) * 0.12));
-    }, 200);
-    return () => clearInterval(id);
-  }, []);
+    setProgress(null);
+    const h = connectSimulationProgress(ruleId, (processed, total) =>
+      setProgress({ processed, total }),
+    );
+    return () => h.close();
+  }, [ruleId]);
+
+  // Determinate once the first frame lands with a non-empty candidate set.
+  const determinate = progress != null && progress.total > 0;
+  const percent = determinate
+    ? Math.min(100, Math.round((progress.processed / progress.total) * 100))
+    : null;
   return (
     <div className="mt-4">
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className="text-[11px] font-bold uppercase tracking-widest text-primary">
           Running Simulation
         </span>
-        <span className="font-mono text-[11px] text-text-dim">{Math.round(percent)}%</span>
+        <span className="font-mono text-[11px] text-text-dim">
+          {determinate ? `${progress.processed} / ${progress.total} · ${percent}%` : 'Starting…'}
+        </span>
       </div>
       <div className="h-2 overflow-hidden rounded-full bg-white/6">
         <div
           className="h-full animate-pulse rounded-full bg-primary transition-[width] duration-300"
-          style={{ width: `${percent}%` }}
+          style={{ width: determinate ? `${percent}%` : '15%' }}
         />
       </div>
     </div>
@@ -232,6 +242,8 @@ function PaperResultSection({
             pageSizeOptions={[20, 50, 100]}
             searchable
             colFilters
+            colToggle
+            storageKey="tpsl2_paper_cols"
           />
         )}
       </section>
@@ -575,6 +587,8 @@ export function Tpsl2Page() {
   } | null>(null);
   const [simError, setSimError] = useState<string | null>(null);
   const [simLoading, setSimLoading] = useState(false);
+  // Rule whose backtest is in flight — keys the progress bar's SSE subscription.
+  const [simRuleId, setSimRuleId] = useState<string | null>(null);
 
   const [matchedResult, setMatchedResult] = useState<{
     ruleId: string;
@@ -788,6 +802,7 @@ export function Tpsl2Page() {
     async (rule: RuleRecord) => {
       setSimResult(null);
       setSimError(null);
+      setSimRuleId(rule.id);
       setSimLoading(true);
       try {
         const tokens = await fetchSimulateCached(dispatch, { strategy: 'tpsl2', ruleId: rule.id });
@@ -1050,6 +1065,8 @@ export function Tpsl2Page() {
               pageSizeOptions={[20, 50, 100]}
               searchable
               colFilters
+              colToggle
+              storageKey="tpsl2_matched_cols"
               selectable={false}
             />
           )}
@@ -1057,7 +1074,7 @@ export function Tpsl2Page() {
       )}
 
       {(simLoading || simError || simResult) && <SectionDivider />}
-      {simLoading && <SimProgressBar />}
+      {simLoading && simRuleId && <SimProgressBar ruleId={simRuleId} />}
       {simError && <InlineAlert variant="error">{simError}</InlineAlert>}
       {simResult && !simLoading && (
         <>
@@ -1089,6 +1106,8 @@ export function Tpsl2Page() {
                 pageSizeOptions={[20, 50, 100]}
                 searchable
                 colFilters
+                colToggle
+                storageKey="tpsl2_sim_cols"
               />
             )}
           </section>
