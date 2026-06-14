@@ -27,6 +27,8 @@ Channels: `value_tx` cap 16 (`Value`) · `db_tx` cap 4096 (`DbWriteOp`) · `stra
 ### Pipeline event handlers
 `on_token_created` (Token+Wallet+Metrics+ping+SSE) · `on_trade_executed` (Trade+Wallet+Metrics + feed trader reserves + pre-warm AMM + ping + SSE) · `on_token_migrated` (register pool + Migration op + ping) · `on_creator_activity` (ping) · `on_liquidity` (SSE only).
 
+> `on_trade_executed` strips `Trade.instruction_labels` to `Null` **before** the trade is moved into the capped in-memory ring (the DB copy enqueued just above keeps the full labels for the trades API). Strategy/exit logic reads only Token-level labels, so the per-trade JSON array is never retained per trade per token in the ~50K `TokenState.trades` window.
+
 ## Decoder — `decoder/`
 | File | Key items |
 |---|---|

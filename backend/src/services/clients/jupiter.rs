@@ -1,8 +1,20 @@
 use std::collections::HashMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::services::http;
+
+/// Raw per-mint entry from Jupiter price v3. Map keyed by mint address.
+#[derive(Debug, Default, Deserialize)]
+struct RawPriceEntry {
+    #[serde(rename = "usdPrice")]
+    usd_price: Option<f64>,
+    liquidity: Option<f64>,
+    #[serde(rename = "priceChange24h")]
+    price_change_24h: Option<f64>,
+    #[serde(rename = "createdAt")]
+    created_at: Option<String>,
+}
 
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct JupiterPriceEntry {
@@ -18,21 +30,22 @@ pub async fn fetch_prices(mints: &[String]) -> anyhow::Result<HashMap<String, Ju
     }
     let ids = mints.join(",");
     let url = format!("https://api.jup.ag/price/v3?ids={ids}");
-    let resp: serde_json::Value = http::client().get(&url).send().await?.json().await?;
+    let data: HashMap<String, RawPriceEntry> =
+        http::client().get(&url).send().await?.json().await?;
 
-    let mut result = HashMap::new();
-    if let Some(data) = resp.as_object() {
-        for (mint, entry) in data {
-            result.insert(
-                mint.clone(),
+    let result = data
+        .into_iter()
+        .map(|(mint, entry)| {
+            (
+                mint,
                 JupiterPriceEntry {
-                    price_usd: entry["usdPrice"].as_f64(),
-                    liquidity: entry["liquidity"].as_f64(),
-                    price_change_24h: entry["priceChange24h"].as_f64(),
-                    token_created_at: entry["createdAt"].as_str().map(str::to_owned),
+                    price_usd: entry.usd_price,
+                    liquidity: entry.liquidity,
+                    price_change_24h: entry.price_change_24h,
+                    token_created_at: entry.created_at,
                 },
-            );
-        }
-    }
+            )
+        })
+        .collect();
     Ok(result)
 }

@@ -521,12 +521,18 @@ pub async fn run_token_sync(
     })?;
 
     // Re-read after the AMM pass so metrics include any newly inserted swaps.
+    // Full history is required here: this rebuilds the token's aggregate metrics
+    // from scratch, so it must NOT be capped (a bounded read would understate
+    // volume/ATH). Cold manual-sync path — not the ingest hot path.
     let trades = trade_repo
         .find_by_mint_all(&mint)
         .await
         .map_err(|e| SyncError::Internal(e.to_string()))?;
 
     let mut state = TokenState::new(token);
+    // `trades` is also returned in `SyncOutput` below, so the clone here is
+    // unavoidable (two consumers). Cold manual-sync path; folding metrics
+    // incrementally to drop the second copy is left as a follow-up (L11).
     state.trades = trades.clone();
     state.is_migrated = is_migrated;
 

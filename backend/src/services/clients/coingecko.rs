@@ -1,9 +1,21 @@
 use reqwest::header::{ACCEPT, USER_AGENT};
+use serde::Deserialize;
 
 use crate::services::http;
 
 const SOL_USD_URL: &str =
     "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd";
+
+/// `{"solana":{"usd":123.45}}`
+#[derive(Deserialize)]
+struct SimplePrice {
+    solana: SolEntry,
+}
+
+#[derive(Deserialize)]
+struct SolEntry {
+    usd: f64,
+}
 
 pub async fn fetch_sol_usd() -> anyhow::Result<f64> {
     let client = http::client();
@@ -15,12 +27,10 @@ pub async fn fetch_sol_usd() -> anyhow::Result<f64> {
         .await?
         .error_for_status()?;
 
-    let body = resp.text().await?;
-    let json: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|e| anyhow::anyhow!("Failed to parse CoinGecko response: {e}: {body}"))?;
+    let price = resp
+        .json::<SimplePrice>()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to parse CoinGecko response: {e}"))?;
 
-    json.get("solana")
-        .and_then(|sol| sol.get("usd"))
-        .and_then(|usd| usd.as_f64())
-        .ok_or_else(|| anyhow::anyhow!("Unexpected CoinGecko response shape: {body}"))
+    Ok(price.solana.usd)
 }

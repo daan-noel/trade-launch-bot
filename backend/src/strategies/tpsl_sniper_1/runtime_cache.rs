@@ -306,22 +306,43 @@ impl Tpsl1RuntimeCache {
         state
     }
 
-    /// Fold newly-printed trades into a position's walk state (seeding it first
-    /// if unseen). Called by the trade path, which already holds the history, so
-    /// the sweep finds the state current and never re-walks. `trades_base` is the
-    /// token's trim cursor, so the absolute fold position survives a front-trim.
-    pub fn exit_state_advance(
+    /// Trade-gate variant: fold newly-printed trades into the memoized walk state
+    /// (seeding it if unseen) **and** evaluate the exit ladder against only those
+    /// new trades, returning the first [`ExitReason`](super::exit::ExitReason) that
+    /// fires. Replaces the per-ping full re-walk in the trade gate with an
+    /// incremental fold that is decision-equivalent (see
+    /// [`CachedExitState::advance_and_find_exit`]). A freshly-seeded position has
+    /// no "new" trades to check (every retained trade is folded at build time and
+    /// already failed to fire, else it wouldn't be Holding), so the seed path
+    /// returns `None` and only subsequent appends are evaluated.
+    pub fn exit_state_advance_and_find_exit(
         &self,
         position_id: Uuid,
         entry_price: f64,
         entry_time: DateTime<Utc>,
         trades: &[Trade],
         trades_base: u64,
-    ) {
-        self.exit_state_by_position
-            .entry(position_id)
-            .or_insert_with(|| CachedExitState::build(trades, trades_base, entry_price, entry_time))
-            .advance(trades, trades_base);
+        params: &super::exit::LadderParams,
+    ) -> Option<super::exit::ExitReason> {
+        use dashmap::mapref::entry::Entry;
+        match self.exit_state_by_position.entry(position_id) {
+            Entry::Occupied(mut e) => e
+                .get_mut()
+                .advance_and_find_exit(trades, trades_base, params),
+            Entry::Vacant(v) => {
+                // First sight: start with an empty (unfolded) state whose cursor
+                // sits at the window front, then fold+evaluate the entire retained
+                // window in one pass. This reproduces the old full re-walk exactly
+                // on the position's first ping (an exit that the very first ping
+                // would have fired is not deferred), while still memoizing the
+                // peaks for every subsequent incremental ping.
+                let mut cached =
+                    CachedExitState::build_unfolded(trades_base, entry_price, entry_time);
+                let reason = cached.advance_and_find_exit(trades, trades_base, params);
+                v.insert(cached);
+                reason
+            }
+        }
     }
 
     pub fn holding_count_by_rule(&self, rule_id: Uuid) -> i64 {

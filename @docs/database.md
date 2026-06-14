@@ -46,7 +46,7 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 | `wallet_profile_repo.rs` | wallet_profiles (+joins) | insert/update/delete, find_with_wallets, list_with_wallets |
 | `wallet_profile_tag_repo.rs` | wallet_profile_tags | list, find_by_ids, insert/update/delete |
 | `tpsl1_strategy_rule_repo.rs` / `tpsl2_*` | tpsl{1,2}_strategy_rules | insert, find_all, find_by_id, update, delete |
-| `tpsl1_position_repo.rs` / `tpsl2_*` | tpsl{1,2}_real_positions | update_entry(RETURNING), insert, update, find_holding_by_{mint,wallet}, find_by_rule, find_all_holding, count_all_by_rule, fail_stale_exit_pending, delete_position |
+| `tpsl1_position_repo.rs` / `tpsl2_*` | tpsl{1,2}_real_positions | update_entry(RETURNING), insert, update, find_holding_by_{mint,wallet}(limit,offset), find_by_rule(limit,offset), find_by_strategy(limit,offset) — all HTTP list reads are page-bounded; find_all_holding (unbounded, cache warm-up only), count_all_by_rule, fail_stale_exit_pending, delete_position |
 | `tpsl1_paper_trading_repo.rs` / `tpsl2_*` | tpsl{1,2}_paper_{test_run,positions} | start/current/resume/mark run; position insert/update_entry/update_exit/mark_exit_failed; count_by_run, delete_stale_unentered |
 
 ## Rules

@@ -363,7 +363,7 @@ impl IngestPipeline {
         });
     }
 
-    async fn on_trade_executed(&self, e: TradeExecutedEvent) {
+    async fn on_trade_executed(&self, mut e: TradeExecutedEvent) {
         let mint = e.trade.mint_address.clone();
         let wallet = e.trade.wallet_address.clone();
 
@@ -393,6 +393,13 @@ impl IngestPipeline {
 
         self.enqueue_db(DbWriteOp::Trade(e.trade.clone())).await;
         self.enqueue_db(DbWriteOp::Wallet(wallet.clone())).await;
+
+        // The DB copy above keeps the full `instruction_labels` JSON (the trades
+        // API displays them); the in-memory ring never reads per-trade labels
+        // (strategy reads Token-level labels only). Drop the heap JSON array
+        // before the Trade is moved into the 50K-capped retention ring so we don't
+        // permanently retain a JSON array per trade per token.
+        e.trade.instruction_labels = serde_json::Value::Null;
 
         let metrics = self.token_cache.get_mut(&mint).map(|mut token_state| {
             token_state.add_trade(e.trade);

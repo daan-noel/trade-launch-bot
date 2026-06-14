@@ -69,6 +69,27 @@ impl From<Position> for PositionResponse {
     }
 }
 
+/// Query params for the position list views. Bounds every list query so a
+/// growing `tpsl2_real_positions` table can't be fetched whole in one request.
+#[derive(serde::Deserialize)]
+pub struct PositionListParams {
+    #[serde(default = "default_positions_limit")]
+    pub limit: i64,
+    #[serde(default)]
+    pub offset: i64,
+}
+
+fn default_positions_limit() -> i64 {
+    200
+}
+
+impl PositionListParams {
+    /// Clamp to a sane window: limit in 1..=1000, offset >= 0.
+    fn bounds(&self) -> (i64, i64) {
+        (self.limit.clamp(1, 1000), self.offset.max(0))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -81,6 +102,8 @@ impl From<Position> for PositionResponse {
 pub(crate) async fn load_rule_positions(
     db: &PgPool,
     rule_id: Uuid,
+    limit: i64,
+    offset: i64,
 ) -> anyhow::Result<Vec<Position>> {
     let is_paper = match Tpsl2StrategyRuleRepo::new(db.clone()).find_by_id(rule_id).await? {
         Some(rule) => rule.trade_mode == "paper",
@@ -94,7 +117,9 @@ pub(crate) async fn load_rule_positions(
             None => Ok(Vec::new()),
         }
     } else {
-        Tpsl2PositionRepo::new(db.clone()).find_by_rule(rule_id).await
+        Tpsl2PositionRepo::new(db.clone())
+            .find_by_rule(rule_id, limit, offset)
+            .await
     }
 }
 
@@ -103,9 +128,11 @@ pub(crate) async fn load_rule_positions(
 pub async fn get_positions_by_rule(
     app_state: web::Data<Arc<AppState>>,
     rule_id: web::Path<Uuid>,
+    query: web::Query<PositionListParams>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
-    match load_rule_positions(&app_state.db, rule_id).await {
+    let (limit, offset) = query.bounds();
+    match load_rule_positions(&app_state.db, rule_id, limit, offset).await {
         Ok(positions) => {
             let responses: Vec<PositionResponse> =
                 positions.into_iter().map(PositionResponse::from).collect();
@@ -121,10 +148,14 @@ pub async fn get_positions_by_rule(
 
 /// List all tpsl2 positions.
 /// GET /api/strategies/tpsl2/positions
-pub async fn list_positions(app_state: web::Data<Arc<AppState>>) -> impl Responder {
+pub async fn list_positions(
+    app_state: web::Data<Arc<AppState>>,
+    query: web::Query<PositionListParams>,
+) -> impl Responder {
     let repo = Tpsl2PositionRepo::new(app_state.db.clone());
+    let (limit, offset) = query.bounds();
 
-    match repo.find_by_strategy("TPSL2").await {
+    match repo.find_by_strategy("TPSL2", limit, offset).await {
         Ok(positions) => {
             let responses: Vec<PositionResponse> =
                 positions.into_iter().map(PositionResponse::from).collect();
@@ -143,11 +174,13 @@ pub async fn list_positions(app_state: web::Data<Arc<AppState>>) -> impl Respond
 pub async fn get_positions_by_mint(
     app_state: web::Data<Arc<AppState>>,
     mint: web::Path<String>,
+    query: web::Query<PositionListParams>,
 ) -> impl Responder {
     let repo = Tpsl2PositionRepo::new(app_state.db.clone());
     let mint = mint.into_inner();
+    let (limit, offset) = query.bounds();
 
-    match repo.find_holding_by_mint(&mint).await {
+    match repo.find_holding_by_mint(&mint, limit, offset).await {
         Ok(positions) => {
             let responses: Vec<PositionResponse> =
                 positions.into_iter().map(PositionResponse::from).collect();
@@ -166,11 +199,13 @@ pub async fn get_positions_by_mint(
 pub async fn get_positions_by_wallet(
     app_state: web::Data<Arc<AppState>>,
     wallet: web::Path<String>,
+    query: web::Query<PositionListParams>,
 ) -> impl Responder {
     let repo = Tpsl2PositionRepo::new(app_state.db.clone());
     let wallet = wallet.into_inner();
+    let (limit, offset) = query.bounds();
 
-    match repo.find_holding_by_wallet(&wallet).await {
+    match repo.find_holding_by_wallet(&wallet, limit, offset).await {
         Ok(positions) => {
             let responses: Vec<PositionResponse> =
                 positions.into_iter().map(PositionResponse::from).collect();

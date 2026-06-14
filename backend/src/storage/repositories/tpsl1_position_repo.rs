@@ -198,8 +198,13 @@ impl Tpsl1PositionRepo {
         Ok(())
     }
 
-    /// Get all holding positions for a specific token.
-    pub async fn find_holding_by_mint(&self, mint: &str) -> anyhow::Result<Vec<Position>> {
+    /// Get holding positions for a specific token (page-bounded, newest first).
+    pub async fn find_holding_by_mint(
+        &self,
+        mint: &str,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<Position>> {
         let rows = sqlx::query_as::<_, PositionDbRow>(
             r#"
                  SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
@@ -208,17 +213,25 @@ impl Tpsl1PositionRepo {
             FROM tpsl1_real_positions
             WHERE mint = $1 AND status = 'Holding'
             ORDER BY created_at DESC
+            LIMIT $2 OFFSET $3
             "#,
         )
         .bind(mint)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
 
         rows.into_iter().map(Position::try_from).collect()
     }
 
-    /// Get all holding positions for a wallet.
-    pub async fn find_holding_by_wallet(&self, wallet: &str) -> anyhow::Result<Vec<Position>> {
+    /// Get holding positions for a wallet (page-bounded, newest first).
+    pub async fn find_holding_by_wallet(
+        &self,
+        wallet: &str,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<Position>> {
         let rows = sqlx::query_as::<_, PositionDbRow>(
             r#"
                  SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
@@ -227,9 +240,12 @@ impl Tpsl1PositionRepo {
             FROM tpsl1_real_positions
             WHERE wallet = $1 AND status = 'Holding'
             ORDER BY created_at DESC
+            LIMIT $2 OFFSET $3
             "#,
         )
         .bind(wallet)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
 
@@ -254,8 +270,13 @@ impl Tpsl1PositionRepo {
         Ok(row.map(Position::try_from).transpose()?)
     }
 
-    /// Get all positions for a specific rule.
-    pub async fn find_by_rule(&self, rule_id: Uuid) -> anyhow::Result<Vec<Position>> {
+    /// Get positions for a specific rule (page-bounded, newest first).
+    pub async fn find_by_rule(
+        &self,
+        rule_id: Uuid,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<Position>> {
         let rows = sqlx::query_as::<_, PositionDbRow>(
                 r#"
                 SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
@@ -264,9 +285,12 @@ impl Tpsl1PositionRepo {
                 FROM tpsl1_real_positions
                 WHERE rule_id = $1
                 ORDER BY created_at DESC
+                LIMIT $2 OFFSET $3
                 "#,
             )
             .bind(rule_id)
+            .bind(limit)
+            .bind(offset)
             .fetch_all(&self.pool)
             .await?;
 
@@ -298,8 +322,14 @@ impl Tpsl1PositionRepo {
         Ok(result.rows_affected())
     }
 
-    /// Get positions by strategy.
-    pub async fn find_by_strategy(&self, strategy: &str) -> anyhow::Result<Vec<Position>> {
+    /// Get positions by strategy (page-bounded, newest first). Grows unbounded
+    /// otherwise — this is the HTTP list view, so always paginate.
+    pub async fn find_by_strategy(
+        &self,
+        strategy: &str,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<Position>> {
         let rows = sqlx::query_as::<_, PositionDbRow>(
             r#"
             SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
@@ -308,9 +338,12 @@ impl Tpsl1PositionRepo {
             FROM tpsl1_real_positions
             WHERE strategy = $1
             ORDER BY created_at DESC
+            LIMIT $2 OFFSET $3
             "#,
         )
         .bind(strategy)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
 

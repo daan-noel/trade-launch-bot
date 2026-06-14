@@ -34,7 +34,10 @@ impl PumpFunTrader {
             let freed = self.nonce_available.notified();
 
             {
-                let mut slots = self.nonce_slots.lock().await;
+                let mut slots = self
+                    .nonce_slots
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
                 let start =
                     self.nonce_cursor.fetch_add(1, Ordering::Relaxed) % self.nonce_pubkeys.len();
 
@@ -101,7 +104,7 @@ impl PumpFunTrader {
             }
             .await;
 
-            let mut guard = slots.lock().await;
+            let mut guard = slots.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(slot) = guard.get_mut(&nonce_pubkey) {
                 match result {
                     Ok(hash) => slot.cached_hash = Some(hash),

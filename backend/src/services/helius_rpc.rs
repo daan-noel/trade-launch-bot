@@ -1,8 +1,25 @@
 use anyhow::{anyhow, Context};
 use serde_json::{json, Value};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::services::http;
+
+/// Shared RPC client/pool reused across every `HeliusRpc::new()`. Distinct from
+/// `http::client()` because the RPC path wants a longer (30 s) timeout.
+static RPC_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn rpc_client() -> reqwest::Client {
+    RPC_CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(RPC_TIMEOUT_SECS))
+                .user_agent(http::USER_AGENT)
+                .build()
+                .expect("failed to build Helius RPC client")
+        })
+        .clone()
+}
 
 /// Per-request timeout. Interactive rather than the old 120 s so a wedged RPC
 /// fails fast instead of hanging an API request or a sync step for two minutes.
@@ -22,13 +39,10 @@ pub struct HeliusRpc {
 
 impl HeliusRpc {
     pub fn new(url: String) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(RPC_TIMEOUT_SECS))
-            .user_agent(http::USER_AGENT)
-            .build()
-            .expect("failed to build Helius RPC client");
-
-        Self { url, client }
+        Self {
+            url,
+            client: rpc_client(),
+        }
     }
 
     async fn call(&self, method: &str, params: Value) -> anyhow::Result<Value> {

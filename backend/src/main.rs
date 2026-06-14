@@ -384,6 +384,12 @@ async fn main() -> anyhow::Result<()> {
     let server_task = if settings.http_enabled {
         let bind_addr = format!("{}:{}", settings.host, settings.port);
         info!(addr = %bind_addr, workers = settings.http_workers, "Starting HTTP server");
+        // Render each SSE event to wire bytes exactly once and fan the shared
+        // frame out to all connections, instead of every subscriber re-rendering
+        // (and re-reading the token cache) per event. Only needed when serving HTTP.
+        tokio::spawn(api::handlers::system::run_sse_render_bridge(
+            app_state.clone(),
+        ));
         let http_state = app_state.clone();
         let http_workers = settings.http_workers;
         let cors_allowed_origin = settings.cors_allowed_origin.clone();

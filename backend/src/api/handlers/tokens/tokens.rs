@@ -1031,24 +1031,52 @@ fn opt_num_str<T: ToString>(o: Option<T>) -> String {
     o.map(|v| v.to_string()).unwrap_or_default()
 }
 
+/// Case-insensitive substring test against a borrowed field. Lowercasing only
+/// the candidate (one short allocation per field, and only until a match) keeps
+/// the common no-match scan allocation-free for the string fields below.
+fn field_contains(field: &str, q_lower: &str) -> bool {
+    field.to_lowercase().contains(q_lower)
+}
+
 fn search_match(t: &TokenSummary, q_lower: &str) -> bool {
-    let fields = [
-        t.symbol.clone(),
-        t.name.clone(),
-        t.mint_address.clone(),
-        t.creator_address.clone(),
-        t.create_tx_address.clone(),
-        t.created_at.to_rfc3339(),
-        opt_num_str(t.last_trade_at.map(|d| d.to_rfc3339())),
-        opt_num_str(t.ath_timestamp.map(|d| d.to_rfc3339())),
-        opt_num_str(t.last_synced_at.map(|d| d.to_rfc3339())),
-        t.trade_count.to_string(),
-        opt_num_str(t.ath_price),
-        opt_num_str(t.current_price),
-        t.volume_sol_total.to_string(),
-        opt_num_str(t.market_cap),
+    // Cheap path: match the borrowed string fields with no upfront cloning.
+    let str_fields = [
+        t.symbol.as_str(),
+        t.name.as_str(),
+        t.mint_address.as_str(),
+        t.creator_address.as_str(),
+        t.create_tx_address.as_str(),
     ];
-    fields.iter().any(|s| s.to_lowercase().contains(q_lower))
+    if str_fields.iter().any(|s| field_contains(s, q_lower)) {
+        return true;
+    }
+
+    // Only allocate/format the timestamp + numeric fields if nothing above hit.
+    let dates = [
+        Some(t.created_at),
+        t.last_trade_at,
+        t.ath_timestamp,
+        t.last_synced_at,
+    ];
+    if dates
+        .into_iter()
+        .flatten()
+        .any(|d| field_contains(&d.to_rfc3339(), q_lower))
+    {
+        return true;
+    }
+
+    if field_contains(&t.trade_count.to_string(), q_lower)
+        || field_contains(&t.volume_sol_total.to_string(), q_lower)
+    {
+        return true;
+    }
+
+    let opt_nums = [t.ath_price, t.current_price, t.market_cap];
+    opt_nums
+        .into_iter()
+        .flatten()
+        .any(|n| field_contains(&n.to_string(), q_lower))
 }
 
 // --- per-column filters (numericFilter.ts grammar) -------------------------

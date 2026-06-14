@@ -177,7 +177,13 @@ pub struct PumpFunTrader {
     // Nonce management
     nonce_pubkeys: Vec<Pubkey>,
     nonce_cursor: AtomicUsize,
-    nonce_slots: Arc<Mutex<HashMap<Pubkey, NonceSlot>>>,
+    // `std::sync::Mutex` (not tokio): every `acquire_nonce` / `schedule_nonce_
+    // refresh` critical section is a synchronous scan/write with no `.await`
+    // held, and this is the one lock every buy AND sell contends on — a sync lock
+    // avoids the async-mutex scheduler overhead for a section that never yields.
+    // The `notified()` wait stays outside the lock (see `acquire_nonce`). Matches
+    // `JitoTipCache`/`BlockhashCache`, which are already `std::sync::Mutex`.
+    nonce_slots: Arc<std::sync::Mutex<HashMap<Pubkey, NonceSlot>>>,
     /// Signalled each time a nonce slot is refreshed back to free, so a waiting
     /// `acquire_nonce` wakes immediately instead of polling on a fixed sleep.
     nonce_available: Arc<Notify>,
@@ -282,9 +288,21 @@ impl PumpFunTrader {
             .and_then(|s| Pubkey::from_str(s).ok())
             .expect("JITO_TIP_ACCOUNTS must be non-empty and contain valid pubkeys");
 
+        // Configured HTTP client (vs `Client::new()`): `tcp_nodelay` removes
+        // Nagle delay on the small JSON-RPC sends, and a generous
+        // `pool_idle_timeout` keeps the keep-alive connections to the senders/RPC
+        // warm between trades so a quiet period doesn't drop the pooled TLS
+        // session and re-pay a handshake on the next send. `initialize()` also
+        // fires a warmup request to seed the pool.
+        let http = reqwest::Client::builder()
+            .tcp_nodelay(true)
+            .pool_idle_timeout(std::time::Duration::from_secs(90))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
         Self {
             config,
-            http: reqwest::Client::new(),
+            http,
             rpc,
             global_account: None,
             cu_ixs_curve_buy: Vec::new(),
@@ -294,7 +312,7 @@ impl PumpFunTrader {
             jito_tip_cache: Arc::new(JitoTipCache::default()),
             nonce_pubkeys: Vec::new(),
             nonce_cursor: AtomicUsize::new(0),
-            nonce_slots: Arc::new(Mutex::new(HashMap::new())),
+            nonce_slots: Arc::new(std::sync::Mutex::new(HashMap::new())),
             nonce_available: Arc::new(Notify::new()),
             nonce_wait_events: AtomicUsize::new(0),
             nonce_wait_iters_total: AtomicUsize::new(0),

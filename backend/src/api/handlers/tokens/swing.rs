@@ -7,8 +7,15 @@ use crate::{
     analyzers::swing_analyzer::{detect_swings, SwingLeg, SwingParams},
     models::trade::Trade,
     state::app_state::AppState,
+    state::token_cache::MAX_TRADES_RETAINED,
     storage::repositories::trade_repo::TradeRepo,
 };
+
+/// Bound for the cache-miss DB fallback. Matches the in-memory retention window
+/// so a high-volume mint can't pull its entire (unbounded, growing) trade
+/// history into a single HTTP response — the same launch→recent window the live
+/// cache would have served, in chronological order.
+const SWING_DB_TRADE_CAP: i64 = MAX_TRADES_RETAINED as i64;
 
 #[derive(Serialize)]
 pub struct SwingResponse {
@@ -123,10 +130,16 @@ pub async fn detect_token_swings(
     } = body.into_inner();
 
     let trades = if let Some(entry) = state.token_cache.get(&mint) {
-        entry.trades.clone()
+        // Clone out of the shard guard and drop it immediately — the heavy
+        // window-filter + swing scan run below off the read lock so the ingest
+        // writer's `get_mut` on the same shard isn't blocked by our work.
+        let trades = entry.trades.clone();
+        drop(entry);
+        trades
     } else {
         let repo = TradeRepo::new(state.db.clone());
-        match repo.find_by_mint_all(&mint).await {
+        // Bounded fallback: never materialise an unbounded mint history.
+        match repo.find_by_mint_paged(&mint, SWING_DB_TRADE_CAP, 0).await {
             Ok(trades) => trades,
             Err(e) => {
                 tracing::error!("DB error fetching trades for swing analysis {mint}: {e}");
@@ -137,20 +150,34 @@ pub async fn detect_token_swings(
         }
     };
 
-    let trades = if curve_only {
-        trades.into_iter().filter(|t| t.venue == "curve").collect()
-    } else {
-        trades
-    };
-    let trades = filter_trades_to_window(trades, window_start_ms, window_end_ms);
-
-    let swings = detect_swings(&trades, &params);
-    HttpResponse::Ok().json(SwingResponse {
-        mint,
-        params,
-        count: swings.len(),
-        swings,
+    // Run the (pure-CPU) window filter + swing scan off the HTTP worker, matching
+    // the batch path — doing it inline would pin a worker for the whole scan.
+    let resp_params = params.clone();
+    let result = web::block(move || {
+        let trades = if curve_only {
+            trades.into_iter().filter(|t| t.venue == "curve").collect()
+        } else {
+            trades
+        };
+        let trades = filter_trades_to_window(trades, window_start_ms, window_end_ms);
+        detect_swings(&trades, &params)
     })
+    .await;
+
+    match result {
+        Ok(swings) => HttpResponse::Ok().json(SwingResponse {
+            mint,
+            params: resp_params,
+            count: swings.len(),
+            swings,
+        }),
+        Err(e) => {
+            tracing::error!("swing compute task panicked for {mint}: {e}");
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "swing computation failed"
+            }))
+        }
+    }
 }
 
 /// `POST /api/tokens/swings/batch` — run swing detection over many tokens in a
@@ -194,10 +221,12 @@ pub async fn detect_tokens_swings_batch(
         let app = app.clone();
         async move {
             let trades = if let Some(entry) = app.token_cache.get(&mint) {
-                entry.trades.clone()
+                let trades = entry.trades.clone();
+                drop(entry);
+                trades
             } else {
                 let repo = TradeRepo::new(app.db.clone());
-                match repo.find_by_mint_all(&mint).await {
+                match repo.find_by_mint_paged(&mint, SWING_DB_TRADE_CAP, 0).await {
                     Ok(trades) => trades,
                     Err(e) => {
                         tracing::error!(

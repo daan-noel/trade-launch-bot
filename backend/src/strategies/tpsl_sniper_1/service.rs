@@ -224,9 +224,9 @@ impl Tpsl1StrategyService {
 
                 if rule.trade_mode == "paper" {
                     super::execution::paper::spawn_entry_fill_poll(
-                        self.trade_repo.clone(),
                         self.paper_repo.clone(),
                         self.runtime.clone(),
+                        self.token_cache.clone(),
                         mint.clone(),
                         position.id,
                         rule.buy_amount,
@@ -311,24 +311,26 @@ impl Tpsl1StrategyService {
                 let Some(rule) = self.runtime.rule_by_id(position.rule_id) else {
                     continue;
                 };
-                if let Some(exit_reason) =
-                    super::exit::should_position_exit_on_trade(&position, trades, &rule)
-                {
+                // Holding + recorded entry only; a 0-entry/non-Holding position is
+                // neither evaluated nor folded (matches the old gate guards).
+                let Some(entry_time) = super::exit::clock_entry_time(&position) else {
+                    continue;
+                };
+                // Incremental trade gate: fold the newly-printed trades into the
+                // position's memoized walk state AND evaluate the exit ladder
+                // against only those new trades in one pass — no per-ping full
+                // re-walk of the retained history. The memo doubles as the
+                // clock-sweep's current snapshot, so the sweep still never re-walks.
+                let params = super::exit::LadderParams::from_rule(&rule);
+                if let Some(exit_reason) = self.runtime.exit_state_advance_and_find_exit(
+                    position.id,
+                    position.entry_price,
+                    entry_time,
+                    trades,
+                    trades_base,
+                    &params,
+                ) {
                     to_exit.push((position, rule, exit_reason));
-                } else if position.entry_price > 0.0 {
-                    // No exit on this trade — fold the freshly-printed trades into
-                    // the position's memoized clock-exit state while we already
-                    // hold the history, so the wall-clock sweep reads a current
-                    // snapshot and never re-walks the full trade vec itself.
-                    if let Some(entry_time) = position.entry_time {
-                        self.runtime.exit_state_advance(
-                            position.id,
-                            position.entry_price,
-                            entry_time,
-                            trades,
-                            trades_base,
-                        );
-                    }
                 }
             }
         }
@@ -356,9 +358,9 @@ impl Tpsl1StrategyService {
                         "[PAPER] Position marked ExitPending");
                 }
                 super::execution::paper::spawn_exit_fill_poll(
-                    self.trade_repo.clone(),
                     self.paper_repo.clone(),
                     self.runtime.clone(),
+                    self.token_cache.clone(),
                     self.pool.clone(),
                     self.sse_tx.clone(),
                     mint.clone(),

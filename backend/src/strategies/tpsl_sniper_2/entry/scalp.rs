@@ -67,6 +67,11 @@ pub struct ScalpFeatures {
 
 /// Compute the trade-window features for a causal prefix. `prefix` must be
 /// non-empty and chronologically sorted; the candidate is the last element.
+///
+/// Retained as the per-prefix feature oracle that pins the linearized
+/// `find_scalp_entry` (see `linearized_scalp_entry_matches_prefix_oracle`); the
+/// live path no longer recomputes features per candidate (was O(n²)).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn scalp_features(prefix: &[Trade]) -> Option<ScalpFeatures> {
     let first = prefix.first()?;
     let cand = prefix.last()?;
@@ -117,6 +122,10 @@ pub fn scalp_features(prefix: &[Trade]) -> Option<ScalpFeatures> {
 /// subsequent swing low merely has to be *higher* than it to confirm (matching
 /// the plan's example, where dip 2 at −12% off the bounce still counts). A
 /// freefall that never turns back up never confirms.
+///
+/// Retained as the per-prefix oracle behind [`higher_low_confirmed_index`] (the
+/// linearized one-pass form the live `find_scalp_entry` gates on).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn higher_low_confirmed(prefix: &[Trade], pullback_pct: f64, min_span_secs: i64) -> bool {
     if pullback_pct <= 0.0 {
         return false;
@@ -176,6 +185,67 @@ pub fn higher_low_confirmed(prefix: &[Trade], pullback_pct: f64, min_span_secs: 
     false
 }
 
+/// The first `trades` index at which [`higher_low_confirmed`] would return true
+/// for the prefix ending there, or `None` if it never confirms over the whole
+/// slice. Runs the identical swing-detection state machine in one forward pass and
+/// records the original trade index of the turn-up that completes the confirming
+/// higher low — so `find_scalp_entry` can gate on `i >= idx` instead of re-walking
+/// the prefix per candidate (the confirmation is monotonic in prefix length).
+fn higher_low_confirmed_index(trades: &[Trade], pullback_pct: f64, min_span_secs: i64) -> Option<usize> {
+    if pullback_pct <= 0.0 {
+        return None;
+    }
+    // (original index, time, price) for price-positive trades — mirrors the
+    // `series` filter in `higher_low_confirmed`.
+    let series: Vec<(usize, DateTime<Utc>, f64)> = trades
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (i, t.block_time, t.price_per_token))
+        .filter(|(_, _, p)| *p > 0.0)
+        .collect();
+    let &(_, _, p0) = series.first()?;
+
+    let mut high = p0;
+    let mut cur_low: Option<(DateTime<Utc>, f64)> = None;
+    let mut prev_low: Option<(DateTime<Utc>, f64)> = None;
+    let mut established = false;
+
+    for &(idx, t, price) in series.iter().skip(1) {
+        match cur_low {
+            None => {
+                if price >= high {
+                    high = price;
+                } else {
+                    cur_low = Some((t, price));
+                }
+            }
+            Some((low_time, low)) => {
+                if price < low {
+                    cur_low = Some((t, price));
+                } else if price > low {
+                    let drop_pct = if high > 0.0 { (high - low) / high * 100.0 } else { 0.0 };
+                    if !established {
+                        if drop_pct >= pullback_pct {
+                            established = true;
+                            prev_low = Some((low_time, low));
+                        }
+                    } else if let Some((prev_time, prev_bottom)) = prev_low {
+                        if low > prev_bottom && (low_time - prev_time).num_seconds() >= min_span_secs
+                        {
+                            // Confirms at this turn-up trade (original index `idx`).
+                            return Some(idx);
+                        }
+                        prev_low = Some((low_time, low));
+                    }
+                    high = price;
+                    cur_low = None;
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Walk a token's trades and return the entry fill at the **first trade where
 /// every configured scalp gate holds**, or `None` if none qualifies. The
 /// candidate must be a buy (we enter by buying, filling at its price). Trades are
@@ -198,56 +268,118 @@ pub fn find_scalp_entry(trades: &[Trade], rule: &Tpsl2Rule) -> Option<EntryFill>
     let min_liq = none_if_zero_f64(rule.p_entry_min_liquidity_sol);
     let min_organic_liq = none_if_zero_f64(rule.p_entry_min_organic_liq);
 
+    // O(n) preamble (M3): the launch cohort is fixed by the slice's first trade
+    // (cutoff = first.slot + RUGGED_EARLY_SLOT_WINDOW), a superset of every prefix
+    // cohort — and identical to it for any real launch series, where a cohort
+    // wallet's first trade IS its in-window buy (a wallet can't sell before it has
+    // bought on the curve). Computing it once, then carrying the cohort/outside
+    // flows, the trailing alive-window sum, and the last-seen real reserves forward
+    // as the walk advances replaces the per-candidate prefix rescans (was O(n²)).
+    let cohort = early_cohort_wallets(trades, RUGGED_EARLY_SLOT_WINDOW);
+
+    // First index (if any) at which the higher-low shape is confirmed; the
+    // confirmation is monotonic in prefix length, so one forward pass suffices.
+    let higher_low_idx = pullback.and_then(|pb| higher_low_confirmed_index(trades, pb, higher_low_secs));
+
+    let first_time = trades[0].block_time;
+    // Running cohort/outside flow accumulators (mirror `cohort_flow` / `outside_net_sol`).
+    let mut cohort_bought = 0.0f64;
+    let mut cohort_net_tokens = 0.0f64;
+    let mut cohort_net_sol = 0.0f64;
+    let mut organic_sol = 0.0f64; // outside (non-cohort) net SOL
+    let mut last_real_reserves = 0.0f64; // most recent real_sol_reserves snapshot
+    // Trailing alive-window: a running sum + a front cursor over `trades`.
+    let mut alive_sol = 0.0f64;
+    let mut alive_lo = 0usize;
+
     for i in 0..trades.len() {
-        let cand = &trades[i];
-        if cand.trade_type != TradeType::Buy || cand.price_per_token <= 0.0 {
+        let t = &trades[i];
+        // Fold this trade into the running flow/liquidity accumulators FIRST so the
+        // features below reflect the prefix `[0..=i]` (the candidate inclusive).
+        let in_cohort = cohort.contains(&t.wallet_address);
+        match t.trade_type {
+            TradeType::Buy => {
+                if in_cohort {
+                    cohort_bought += t.token_amount;
+                    cohort_net_tokens += t.token_amount;
+                    cohort_net_sol += t.sol_amount;
+                } else {
+                    organic_sol += t.sol_amount;
+                }
+            }
+            TradeType::Sell => {
+                if in_cohort {
+                    cohort_net_tokens -= t.token_amount;
+                    cohort_net_sol -= t.sol_amount;
+                } else {
+                    organic_sol -= t.sol_amount;
+                }
+            }
+        }
+        if let Some(r) = t.real_sol_reserves {
+            last_real_reserves = r;
+        }
+        // Slide the alive window to [cand.block_time - ALIVE_WINDOW_SECS, cand].
+        alive_sol += t.sol_amount;
+        let alive_cutoff = t.block_time - chrono::Duration::seconds(ALIVE_WINDOW_SECS);
+        while alive_lo <= i && trades[alive_lo].block_time < alive_cutoff {
+            alive_sol -= trades[alive_lo].sol_amount;
+            alive_lo += 1;
+        }
+
+        if t.trade_type != TradeType::Buy || t.price_per_token <= 0.0 {
             continue;
         }
-        let prefix = &trades[..=i];
-        let Some(f) = scalp_features(prefix) else {
-            continue;
+
+        let age_secs = (t.block_time - first_time).num_seconds();
+        let cohort_held_ratio = if cohort_bought > 0.0 {
+            cohort_net_tokens.max(0.0) / cohort_bought
+        } else {
+            0.0
         };
+        let organic_liq_sol = (last_real_reserves - cohort_net_sol).max(0.0);
 
         if let Some(min) = min_age {
-            if f.age_secs < min {
+            if age_secs < min {
                 continue;
             }
         }
         if let Some(min) = min_alive {
-            if f.alive_sol < min {
+            if alive_sol < min {
                 continue;
             }
         }
         if let Some(min) = min_organic {
-            if f.organic_sol < min {
+            if organic_sol < min {
                 continue;
             }
         }
         if let Some(max) = max_cohort_held {
-            if f.cohort_held_ratio > max {
+            if cohort_held_ratio > max {
                 continue;
             }
         }
         if let Some(min) = min_liq {
-            if f.real_liquidity_sol < min {
+            if last_real_reserves < min {
                 continue;
             }
         }
         if let Some(min) = min_organic_liq {
-            if f.organic_liq_sol < min {
+            if organic_liq_sol < min {
                 continue;
             }
         }
-        if let Some(pb) = pullback {
-            if !higher_low_confirmed(prefix, pb, higher_low_secs) {
-                continue;
+        if pullback.is_some() {
+            match higher_low_idx {
+                Some(idx) if i >= idx => {}
+                _ => continue,
             }
         }
 
         return Some(EntryFill {
-            price: cand.price_per_token,
-            tx_signature: cand.tx_signature.clone(),
-            block_time: cand.block_time,
+            price: t.price_per_token,
+            tx_signature: t.tx_signature.clone(),
+            block_time: t.block_time,
         });
     }
     None
@@ -369,6 +501,99 @@ mod tests {
         // Only the second trade clears 10 SOL real reserves.
         let fill = find_scalp_entry(&vec![low, high], &r).expect("enters once liquid");
         assert_eq!(fill.block_time, base_time() + chrono::Duration::seconds(2));
+    }
+
+    // ── M3: linearized find_scalp_entry matches the per-prefix oracle ─────────
+
+    /// Brute-force reference: the pre-M3 O(n²) behavior — for each candidate buy,
+    /// recompute features over the prefix via `scalp_features` and check every
+    /// gate. The linearized `find_scalp_entry` must agree on every input.
+    fn scalp_entry_oracle(trades: &[Trade], rule: &Tpsl2Rule) -> Option<EntryFill> {
+        if !rule_configures_any_scalp_gate(rule) || trades.is_empty() {
+            return None;
+        }
+        let min_age = none_if_zero_u64(rule.p_entry_min_age_secs).map(|v| v as i64);
+        let min_alive = none_if_zero_f64(rule.p_entry_min_alive_sol);
+        let min_organic = none_if_zero_f64(rule.p_entry_min_organic_sol);
+        let pullback = none_if_zero_f64(rule.p_entry_pullback_pct);
+        let hl_secs = none_if_zero_u64(rule.p_entry_higher_low_secs).map(|v| v as i64).unwrap_or(0);
+        let max_cohort_held = none_if_zero_f64(rule.p_entry_max_cohort_held);
+        let min_liq = none_if_zero_f64(rule.p_entry_min_liquidity_sol);
+        let min_organic_liq = none_if_zero_f64(rule.p_entry_min_organic_liq);
+        for i in 0..trades.len() {
+            let cand = &trades[i];
+            if cand.trade_type != TradeType::Buy || cand.price_per_token <= 0.0 {
+                continue;
+            }
+            let prefix = &trades[..=i];
+            let Some(f) = scalp_features(prefix) else { continue };
+            if min_age.is_some_and(|m| f.age_secs < m) { continue; }
+            if min_alive.is_some_and(|m| f.alive_sol < m) { continue; }
+            if min_organic.is_some_and(|m| f.organic_sol < m) { continue; }
+            if max_cohort_held.is_some_and(|m| f.cohort_held_ratio > m) { continue; }
+            if min_liq.is_some_and(|m| f.real_liquidity_sol < m) { continue; }
+            if min_organic_liq.is_some_and(|m| f.organic_liq_sol < m) { continue; }
+            if let Some(pb) = pullback {
+                if !higher_low_confirmed(prefix, pb, hl_secs) { continue; }
+            }
+            return Some(EntryFill {
+                price: cand.price_per_token,
+                tx_signature: cand.tx_signature.clone(),
+                block_time: cand.block_time,
+            });
+        }
+        None
+    }
+
+    #[test]
+    fn linearized_scalp_entry_matches_prefix_oracle() {
+        // A mixed series exercising every gate: cohort buys, a cohort dump, outside
+        // demand, reserve snapshots, and a higher-low price shape.
+        let mut low = buy("dev", 5.0, 100.0, 1, 0);
+        low.real_sol_reserves = Some(4.0);
+        let trades = vec![
+            low,
+            buy("dev2", 3.0, 60.0, 2, 1),
+            t("dev", TradeType::Sell, 4.0, 90.0, 50, 3),
+            {
+                let mut x = buy("out1", 2.0, 18.0, 500, 6);
+                x.real_sol_reserves = Some(12.0);
+                x
+            },
+            t("out1", TradeType::Sell, 0.5, 4.0, 520, 8),
+            {
+                let mut x = buy("out2", 1.5, 12.0, 540, 11);
+                x.price_per_token = 0.9; // higher-low after the early dip
+                x.real_sol_reserves = Some(13.0);
+                x
+            },
+        ];
+
+        // Sweep several gate combinations; each must agree with the oracle.
+        let combos: &[(Option<u64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>)] = &[
+            (Some(5), None, None, None, None, None),
+            (None, Some(2.0), None, None, None, None),
+            (None, None, Some(1.0), None, None, None),
+            (None, None, None, Some(0.3), None, None),
+            (None, None, None, None, Some(10.0), None),
+            (None, None, None, None, None, Some(5.0)),
+            (Some(5), Some(1.0), Some(1.0), Some(0.5), Some(5.0), Some(1.0)),
+        ];
+        for &(age, alive, organic, cohort_held, liq, organic_liq) in combos {
+            let mut r = rule();
+            r.p_entry_min_age_secs = age;
+            r.p_entry_min_alive_sol = alive;
+            r.p_entry_min_organic_sol = organic;
+            r.p_entry_max_cohort_held = cohort_held;
+            r.p_entry_min_liquidity_sol = liq;
+            r.p_entry_min_organic_liq = organic_liq;
+            assert_eq!(
+                find_scalp_entry(&trades, &r),
+                scalp_entry_oracle(&trades, &r),
+                "linearized find_scalp_entry diverged from the per-prefix oracle for combo {:?}",
+                (age, alive, organic, cohort_held, liq, organic_liq)
+            );
+        }
     }
 
     // ── higher_low_confirmed ─────────────────────────────────────────────────

@@ -16,10 +16,21 @@ use uuid::Uuid;
 use super::super::util::none_if_zero_u64;
 use super::super::Tpsl1RuntimeCache;
 use crate::models::ingest::SseEvent;
+use crate::models::trade::Trade;
 use crate::models::{Position, PositionStatus, Tpsl1Rule};
-use crate::storage::repositories::{
-    tpsl1_paper_trading_repo::Tpsl1PaperTradingRepo, trade_repo::TradeRepo,
-};
+use crate::state::token_cache::TokenCache;
+use crate::storage::repositories::tpsl1_paper_trading_repo::Tpsl1PaperTradingRepo;
+
+/// Snapshot the mint's retained trade window from the in-memory token cache
+/// (oldest-first), or `None` if the token isn't tracked. The WS pipeline keeps
+/// this current for every trade on the mint (any wallet), so the paper fill polls
+/// read it instead of issuing an unbounded `find_by_mint_all` DB scan every tick
+/// (H5/H6). The clone is bounded by `MAX_TRADES_RETAINED`; per-trade
+/// `instruction_labels` are not read by any fill resolver, so the cache ring's
+/// stripped labels don't matter here.
+fn cache_trades(token_cache: &TokenCache, mint: &str) -> Option<Vec<Trade>> {
+    token_cache.get(mint).map(|e| e.value().trades.clone())
+}
 
 /// Poll the WS-fed trade feed for the token's opening trades and record the
 /// paper entry on first sight — exactly as real mode polls for its on-chain
@@ -27,9 +38,9 @@ use crate::storage::repositories::{
 /// never synthesizes a fill from a create-time snapshot. If no fill is indexed
 /// within the window, the unentered position is dropped.
 pub(crate) fn spawn_entry_fill_poll(
-    trade_repo: TradeRepo,
     paper_repo: Tpsl1PaperTradingRepo,
     runtime: Arc<Tpsl1RuntimeCache>,
+    token_cache: Arc<TokenCache>,
     mint: String,
     position_id: Uuid,
     buy_amount: f64,
@@ -41,7 +52,9 @@ pub(crate) fn spawn_entry_fill_poll(
         let mut recorded = false;
         for _ in 0..super::BUY_POLL_MAX_ATTEMPTS {
             sleep(Duration::from_millis(super::BUY_POLL_INTERVAL_MS)).await;
-            let Ok(trades) = trade_repo.find_by_mint_all(&mint).await else {
+            // Read the mint's trade window from the in-memory cache (kept current
+            // by the WS pipeline) instead of an unbounded DB scan per tick.
+            let Some(trades) = cache_trades(&token_cache, &mint) else {
                 continue;
             };
             if let Some(fill) = super::super::entry::find_entry_fill_in_trades(&trades, 5) {
@@ -93,9 +106,9 @@ pub(crate) fn spawn_entry_fill_poll(
 /// revert to Holding). Either terminal outcome may complete the run.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_exit_fill_poll(
-    trade_repo: TradeRepo,
     paper_repo: Tpsl1PaperTradingRepo,
     runtime: Arc<Tpsl1RuntimeCache>,
+    token_cache: Arc<TokenCache>,
     pool: PgPool,
     sse_tx: broadcast::Sender<SseEvent>,
     mint: String,
@@ -121,7 +134,10 @@ pub(crate) fn spawn_exit_fill_poll(
         let mut found = false;
         let start = std::time::Instant::now();
         while start.elapsed() < Duration::from_secs(10) {
-            if let Ok(trades) = trade_repo.find_by_mint_all(&mint).await {
+            // Confirm the fill from the in-memory cache window (kept current by the
+            // WS pipeline) instead of an unbounded `find_by_mint_all` DB scan per
+            // tick. A `None` (token untracked) skips this tick like an empty fetch.
+            if let Some(trades) = cache_trades(&token_cache, &mint) {
                 // Prefer the entry trade's own block time; fall back to the
                 // entry_time stored on the position (set together with entry_price).
                 // The old `Utc::now()` fallback made every trade look pre-entry

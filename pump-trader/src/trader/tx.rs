@@ -155,29 +155,33 @@ impl PumpFunTrader {
 
     pub(super) async fn send_transaction(&self, tx: &Transaction) -> Result<String> {
         let body = self.encode_send_body(tx)?;
+        // Serialize the JSON-RPC envelope to bytes EXACTLY ONCE here, then share
+        // the buffer across every endpoint. The previous `.json(body)` re-walked
+        // and re-serialized the (base64-tx-bearing) Value per endpoint; now each
+        // request just clones an `Arc<Vec<u8>>` pointer and ships the same bytes.
+        let raw = Arc::new(serde_json::to_vec(&body).context("serialize sendTransaction body")?);
 
         let urls = &self.config.helius_sender_urls;
 
         // Single endpoint: await directly — no spawn/channel overhead, identical
         // to the pre-fan-out hot path.
         if urls.len() == 1 {
-            return post_tx(&self.http, &urls[0], &body).await;
+            return post_tx_bytes(&self.http, &urls[0], Arc::clone(&raw)).await;
         }
 
         // Fan out: fire every endpoint concurrently as a detached task and return
         // the first acceptance. Losers keep submitting in the background (their
         // send on the dropped channel just no-ops), so the slowest endpoint never
         // gates us while still adding its landing path. The serialized body is
-        // shared via `Arc` so each task clones a pointer, not the full tx JSON.
-        let body = Arc::new(body);
+        // shared via `Arc` so each task clones a pointer, not the full tx bytes.
         let (done_tx, mut done_rx) = tokio::sync::mpsc::channel::<Result<String>>(urls.len());
         for url in urls {
             let http = self.http.clone();
             let url = url.clone();
-            let body = Arc::clone(&body);
+            let raw = Arc::clone(&raw);
             let done_tx = done_tx.clone();
             tokio::spawn(async move {
-                let _ = done_tx.send(post_tx(&http, &url, &body).await).await;
+                let _ = done_tx.send(post_tx_bytes(&http, &url, raw).await).await;
             });
         }
         drop(done_tx);
@@ -236,15 +240,29 @@ impl PumpFunTrader {
 /// POST one signed-tx JSON-RPC body to a single sender endpoint and return the
 /// transaction signature it echoes back. Free function so the fan-out path can
 /// drive it from detached tasks (no `&self` borrow to hold across the spawn).
+/// Serializes `body` itself — used by callers (the probe) that hold a `Value`
+/// and only hit a single endpoint, so the one-time serialize cost is irrelevant.
 pub(super) async fn post_tx(
     http: &reqwest::Client,
     url: &str,
     body: &serde_json::Value,
 ) -> Result<String> {
+    let raw = Arc::new(serde_json::to_vec(body).context("serialize JSON-RPC body")?);
+    post_tx_bytes(http, url, raw).await
+}
+
+/// As [`post_tx`] but ships a pre-serialized JSON body. The fan-out serializes
+/// the `sendTransaction` envelope once and hands every endpoint an `Arc` clone
+/// of the same bytes, so the costly base64 tx is walked exactly once per send.
+pub(super) async fn post_tx_bytes(
+    http: &reqwest::Client,
+    url: &str,
+    body: Arc<Vec<u8>>,
+) -> Result<String> {
     let resp = http
         .post(url)
         .header("Content-Type", "application/json")
-        .json(body)
+        .body((*body).clone())
         .send()
         .await?;
 

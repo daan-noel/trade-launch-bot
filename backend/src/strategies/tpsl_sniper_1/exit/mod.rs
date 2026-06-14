@@ -165,12 +165,31 @@ impl CachedExitState {
         }
     }
 
+    /// An empty (unfolded) state whose absolute cursor sits at the window front
+    /// (`base`), so a following [`advance`](Self::advance) /
+    /// [`advance_and_find_exit`](Self::advance_and_find_exit) folds the entire
+    /// retained window. Used to seed the trade gate so its first pass reproduces a
+    /// full re-walk while still memoizing for subsequent incremental pings.
+    pub fn build_unfolded(base: u64, entry_price: f64, entry_time: DateTime<Utc>) -> Self {
+        Self {
+            state: ExitWalkState::starting_at(entry_price, entry_time),
+            entry_time,
+            entry_price,
+            consumed_abs: base,
+        }
+    }
+
     /// Fold any trades appended since the last advance into the running peaks.
     /// `base` is the token's current `trades_base`; `consumed_abs - base` is the
     /// window index of the first unfolded trade. Folds exactly the absolute range
     /// `[consumed_abs .. base + trades.len())` — the genuinely-new trades —
     /// regardless of how many were trimmed in between. A cursor past the window
     /// end means the history was reset/over-trimmed, so rebuild from the window.
+    ///
+    /// Peak-only fold retained as the memo correctness oracle (the `cached_state_*`
+    /// tests pin [`advance_and_find_exit`]'s folding against it); the live trade
+    /// gate folds + evaluates in one pass via [`advance_and_find_exit`].
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn advance(&mut self, trades: &[Trade], base: u64) {
         let start = self.consumed_abs.saturating_sub(base);
         if start > trades.len() as u64 {
@@ -186,6 +205,129 @@ impl CachedExitState {
         }
         self.consumed_abs = base + trades.len() as u64;
     }
+
+    /// Incremental trade-gate: fold the genuinely-new trades into the running
+    /// peaks (exactly like [`advance`](Self::advance)) **and**, in the same pass,
+    /// evaluate the exit ladder against each newly-folded post-entry trade,
+    /// returning the first [`ExitReason`] that fires.
+    ///
+    /// Decision-equivalent to a full [`find_trade_driven_exit`] re-walk: peaks are
+    /// accumulated by the identical fold, the ladder runs against the state as of
+    /// each trade via the shared [`ladder_reason`] predicate, and only new trades
+    /// can newly fire — an old trade that fired would already have exited the
+    /// position (it would no longer be Holding, so the gate would never run). The
+    /// rebuild branch (history reset/over-trimmed) re-walks the whole window; old
+    /// trades there are idempotent (same peaks → same non-firing result), so the
+    /// first firing trade is unchanged.
+    pub fn advance_and_find_exit(
+        &mut self,
+        trades: &[Trade],
+        base: u64,
+        params: &LadderParams,
+    ) -> Option<ExitReason> {
+        if self.entry_price <= 0.0 {
+            self.consumed_abs = base + trades.len() as u64;
+            return None;
+        }
+        let start = self.consumed_abs.saturating_sub(base);
+        let rebuild = start > trades.len() as u64;
+        if rebuild {
+            // Lost the cursor: re-fold from the window start. Reset peaks so the
+            // walk below is a clean replay of whatever the window now holds.
+            self.state = ExitWalkState::starting_at(self.entry_price, self.entry_time);
+        }
+        let from = if rebuild { 0 } else { start as usize };
+        self.consumed_abs = base + trades.len() as u64;
+
+        let mut fired = None;
+        for t in &trades[from..] {
+            if t.block_time <= self.entry_time {
+                continue;
+            }
+            self.state.update_with_trade(t);
+            if fired.is_none() {
+                fired = ladder_reason(&self.state, t, self.entry_time, self.entry_price, params);
+            }
+            // Keep folding the rest so the memoized peaks stay current for the
+            // clock sweep even after the gate has already decided to exit.
+        }
+        fired
+    }
+}
+
+/// The exit-ladder rule params, resolved once from a [`Tpsl1Rule`] so the per-trade
+/// predicate ([`ladder_reason`]) is a pure function of state + trade + params. Lets
+/// the full re-walk and the incremental [`CachedExitState::advance_and_find_exit`]
+/// share one ladder definition that can never drift.
+pub struct LadderParams {
+    take_profit_pct: f64,
+    stop_loss_pct: f64,
+    trailing_stop_pct: Option<f64>,
+    time_stop_secs: Option<u64>,
+    stall_secs: Option<u64>,
+    liquidity_drop_pct: Option<f64>,
+}
+
+impl LadderParams {
+    pub fn from_rule(rule: &Tpsl1Rule) -> Self {
+        Self {
+            take_profit_pct: rule.p_exit_take_profit,
+            stop_loss_pct: rule.p_exit_stop_loss,
+            trailing_stop_pct: none_if_zero_f64(rule.p_exit_trailing_stop_pct), // E1
+            time_stop_secs: none_if_zero_u64(rule.p_exit_time_stop_secs),       // E2
+            stall_secs: none_if_zero_u64(rule.p_exit_stall_secs),               // E3
+            liquidity_drop_pct: none_if_zero_f64(rule.p_exit_liquidity_drop_pct), // E4
+        }
+    }
+}
+
+/// The exit ladder for a single trade `t`, given the running walk `state` (peaks as
+/// of `t`, inclusive). First feature that fires wins (ladder order). Shared by
+/// [`find_trade_driven_exit`] and [`CachedExitState::advance_and_find_exit`] so the
+/// two can never drift.
+fn ladder_reason(
+    state: &ExitWalkState,
+    t: &Trade,
+    entry_time: DateTime<Utc>,
+    entry_price: f64,
+    params: &LadderParams,
+) -> Option<ExitReason> {
+    let price = t.price_per_token;
+    let pct = ((price - entry_price) / entry_price) * 100.0;
+    None
+        .or_else(|| {
+            // E4: reserves crash below the peak-since-entry. Highest priority —
+            // a reserve crash leads the price move the others catch later.
+            params.liquidity_drop_pct.and_then(|drop| {
+                t.virtual_sol_reserves.and_then(|reserves| {
+                    (state.peak_reserves > 0.0
+                        && reserves < state.peak_reserves * (1.0 - drop / 100.0))
+                    .then_some(ExitReason::LiquidityExit)
+                })
+            })
+        })
+        .or_else(|| (pct <= -params.stop_loss_pct).then_some(ExitReason::StopLoss))
+        .or_else(|| (pct >= params.take_profit_pct).then_some(ExitReason::TakeProfit))
+        .or_else(|| {
+            // E1: bank the reversal once price falls `trail`% below the peak.
+            params.trailing_stop_pct.and_then(|trail| {
+                (state.peak_price > 0.0 && price <= state.peak_price * (1.0 - trail / 100.0))
+                    .then_some(ExitReason::TrailingStop)
+            })
+        })
+        .or_else(|| {
+            // E3: sell the flatline. Ranks above the time stop, below trailing.
+            params.stall_secs.and_then(|secs| {
+                stall_triggered(state.last_higher_high_time, t.block_time, secs)
+                    .then_some(ExitReason::Stall)
+            })
+        })
+        .or_else(|| {
+            // E2: cut once held past the deadline. Lowest priority.
+            params.time_stop_secs.and_then(|secs| {
+                time_stop_triggered(entry_time, t.block_time, secs).then_some(ExitReason::TimeStop)
+            })
+        })
 }
 
 // ── Shared time-feature predicates ───────────────────────────────────────────
@@ -215,12 +357,7 @@ pub fn find_trade_driven_exit(
         return None;
     }
 
-    let take_profit_pct = rule.p_exit_take_profit;
-    let stop_loss_pct = rule.p_exit_stop_loss;
-    let trailing_stop_pct = none_if_zero_f64(rule.p_exit_trailing_stop_pct); // E1 (None → off)
-    let time_stop_secs = none_if_zero_u64(rule.p_exit_time_stop_secs); // E2 (None → off)
-    let stall_secs = none_if_zero_u64(rule.p_exit_stall_secs); // E3 (None → off)
-    let liquidity_drop_pct = none_if_zero_f64(rule.p_exit_liquidity_drop_pct); // E4 (None → off)
+    let params = LadderParams::from_rule(rule);
 
     let trades_after_entry: Vec<&Trade> =
         trades.iter().filter(|t| t.block_time > entry_time).collect();
@@ -229,47 +366,10 @@ pub fn find_trade_driven_exit(
 
     for t in trades_after_entry.iter() {
         state.update_with_trade(t);
-        let price = t.price_per_token;
-        let pct = ((price - entry_price) / entry_price) * 100.0;
 
-        // First feature that fires on this trade wins (ladder order).
-        let reason: Option<ExitReason> = None
-            .or_else(|| {
-                // E4: reserves crash below the peak-since-entry. Highest priority —
-                // a reserve crash leads the price move the others catch later.
-                liquidity_drop_pct.and_then(|drop| {
-                    t.virtual_sol_reserves.and_then(|reserves| {
-                        (state.peak_reserves > 0.0
-                            && reserves < state.peak_reserves * (1.0 - drop / 100.0))
-                        .then_some(ExitReason::LiquidityExit)
-                    })
-                })
-            })
-            .or_else(|| (pct <= -stop_loss_pct).then_some(ExitReason::StopLoss))
-            .or_else(|| (pct >= take_profit_pct).then_some(ExitReason::TakeProfit))
-            .or_else(|| {
-                // E1: bank the reversal once price falls `trail`% below the peak.
-                trailing_stop_pct.and_then(|trail| {
-                    (state.peak_price > 0.0 && price <= state.peak_price * (1.0 - trail / 100.0))
-                        .then_some(ExitReason::TrailingStop)
-                })
-            })
-            .or_else(|| {
-                // E3: sell the flatline. Ranks above the time stop, below trailing.
-                stall_secs.and_then(|secs| {
-                    stall_triggered(state.last_higher_high_time, t.block_time, secs)
-                        .then_some(ExitReason::Stall)
-                })
-            })
-            .or_else(|| {
-                // E2: cut once held past the deadline. Lowest priority.
-                time_stop_secs.and_then(|secs| {
-                    time_stop_triggered(entry_time, t.block_time, secs)
-                        .then_some(ExitReason::TimeStop)
-                })
-            });
-
-        let Some(reason) = reason else {
+        // First feature that fires on this trade wins (ladder order). Shared with
+        // the incremental gate via `ladder_reason` so they can never drift.
+        let Some(reason) = ladder_reason(&state, t, entry_time, entry_price, &params) else {
             continue;
         };
 
@@ -325,6 +425,11 @@ pub fn find_clock_driven_exit(
 /// latest in-memory trade history? Applies the holding/entry guards, then runs
 /// the full ladder and returns just the reason (the live path resolves the
 /// actual fill separately, against freshly indexed trades).
+///
+/// Retained as a full-walk reference for the gate tests; the live trade gate now
+/// runs incrementally through `runtime_cache::exit_state_advance_and_find_exit`
+/// (decision-equivalent, no per-ping full re-walk).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn should_position_exit_on_trade(
     position: &Position,
     trades: &[Trade],

@@ -3,12 +3,25 @@ use futures_util::stream;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
+use tokio::sync::broadcast;
 
 use crate::{models::ingest::SseEvent, state::app_state::AppState};
 
 #[derive(Deserialize)]
 pub struct StreamQuery {
     pub mint: Option<String>,
+}
+
+/// A single SSE event rendered to wire bytes exactly once. Broadcast as
+/// `Arc<SseFrame>` so every connection clones a ref-counted buffer instead of
+/// re-running `json!` + `to_string` per subscriber (the old O(events × clients)
+/// cost). `mint` carries the per-event scope so the cheap per-subscriber filter
+/// (a string compare) still works without re-rendering:
+///   * `Some(mint)` — deliver only to subscribers with no filter or `mint == filter`.
+///   * `None`       — list-level / not-mint-scoped; deliver to everyone.
+pub struct SseFrame {
+    pub mint: Option<String>,
+    pub bytes: web::Bytes,
 }
 
 fn live_stats(state: &AppState, mint: &str) -> serde_json::Value {
@@ -30,17 +43,17 @@ fn live_stats(state: &AppState, mint: &str) -> serde_json::Value {
         .unwrap_or(serde_json::Value::Null)
 }
 
-fn to_sse_frame(event: &SseEvent, mint_filter: Option<&str>, state: &AppState) -> Option<Vec<u8>> {
-    let (event_type, data) = match event {
+/// Render one event to a shared `SseFrame`. Called ONCE per event by the render
+/// bridge (not once per subscriber): the (single) `live_stats` cache read and
+/// the JSON build happen here, off the per-connection delivery path.
+fn render_sse_frame(event: &SseEvent, state: &AppState) -> SseFrame {
+    let (mint_scope, event_type, data): (Option<String>, &str, serde_json::Value) = match event {
         SseEvent::TokenCreated {
             mint,
             tx_signature,
             slot,
             timestamp,
         } => {
-            if mint_filter.is_some_and(|m| m != mint) {
-                return None;
-            }
             let token = state.token_cache.get(mint).map(|e| e.value().token.clone());
             let (name, symbol, creator, bonding_curve) = token
                 .as_ref()
@@ -64,7 +77,7 @@ fn to_sse_frame(event: &SseEvent, mint_filter: Option<&str>, state: &AppState) -
                 "timestamp": timestamp,
                 "live": live_stats(state, mint),
             });
-            ("token_created", data)
+            (Some(mint.clone()), "token_created", data)
         }
         SseEvent::TradeExecuted {
             mint,
@@ -77,9 +90,6 @@ fn to_sse_frame(event: &SseEvent, mint_filter: Option<&str>, state: &AppState) -
             slot,
             timestamp,
         } => {
-            if mint_filter.is_some_and(|m| m != mint) {
-                return None;
-            }
             let data = json!({
                 "mint": mint,
                 "wallet": wallet,
@@ -92,7 +102,7 @@ fn to_sse_frame(event: &SseEvent, mint_filter: Option<&str>, state: &AppState) -
                 "timestamp": timestamp,
                 "live": live_stats(state, mint),
             });
-            ("trade_executed", data)
+            (Some(mint.clone()), "trade_executed", data)
         }
         SseEvent::LiquidityAdded {
             mint,
@@ -112,9 +122,6 @@ fn to_sse_frame(event: &SseEvent, mint_filter: Option<&str>, state: &AppState) -
             slot,
             timestamp,
         } => {
-            if mint_filter.is_some_and(|m| m != mint) {
-                return None;
-            }
             let event_type = if matches!(event, SseEvent::LiquidityAdded { .. }) {
                 "liquidity_added"
             } else {
@@ -129,7 +136,7 @@ fn to_sse_frame(event: &SseEvent, mint_filter: Option<&str>, state: &AppState) -
                 "slot": slot,
                 "timestamp": timestamp,
             });
-            (event_type, data)
+            (Some(mint.clone()), event_type, data)
         }
         SseEvent::PaperTestFinished {
             rule_id,
@@ -146,15 +153,16 @@ fn to_sse_frame(event: &SseEvent, mint_filter: Option<&str>, state: &AppState) -
                 "tokens_traded": tokens_traded,
                 "timestamp": timestamp,
             });
-            ("paper_test_finished", data)
+            (None, "paper_test_finished", data)
         }
         SseEvent::TpslRulesChanged { strategy } => {
             // Not mint-scoped: a list-level signal delivered to every subscriber.
-            ("tpsl_rules_changed", json!({ "strategy": strategy }))
+            (None, "tpsl_rules_changed", json!({ "strategy": strategy }))
         }
         SseEvent::TpslPositionsChanged { strategy, rule_id } => {
             // Not mint-scoped: scoped to the owning rule, not a token.
             (
+                None,
                 "tpsl_positions_changed",
                 json!({ "strategy": strategy, "rule_id": rule_id }),
             )
@@ -165,7 +173,34 @@ fn to_sse_frame(event: &SseEvent, mint_filter: Option<&str>, state: &AppState) -
         "event: {event_type}\ndata: {data}\n\n",
         data = data.to_string()
     );
-    Some(frame.into_bytes())
+    SseFrame {
+        mint: mint_scope,
+        bytes: web::Bytes::from(frame.into_bytes()),
+    }
+}
+
+/// Long-lived bridge: drains the producer `sse_tx` broadcast, renders each event
+/// to wire bytes exactly once, and re-broadcasts the shared `Arc<SseFrame>` on
+/// `sse_frame_tx` for HTTP subscribers. This collapses the old per-subscriber
+/// re-serialization (and per-subscriber `token_cache` reads that contended with
+/// the ingest writer's `get_mut`) down to one render + one cache read per event.
+/// Exits when the producer channel closes (shutdown).
+pub async fn run_sse_render_bridge(state: Arc<AppState>) {
+    let mut rx = state.sse_tx.subscribe();
+    loop {
+        match rx.recv().await {
+            Ok(event) => {
+                // Skip the render entirely when no HTTP subscriber is connected.
+                if state.sse_frame_tx.receiver_count() == 0 {
+                    continue;
+                }
+                let frame = Arc::new(render_sse_frame(&event, state.as_ref()));
+                let _ = state.sse_frame_tx.send(frame);
+            }
+            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Closed) => return,
+        }
+    }
 }
 
 /// `GET /api/stream[?mint=<address>]`
@@ -173,25 +208,29 @@ pub async fn stream_events(
     state: web::Data<Arc<AppState>>,
     query: web::Query<StreamQuery>,
 ) -> impl Responder {
-    let event_rx = state.sse_tx.subscribe();
+    let frame_rx = state.sse_frame_tx.subscribe();
     let mint_filter = query.into_inner().mint;
 
     let sse_stream = stream::unfold(
-        (event_rx, mint_filter, state.clone()),
-        |(mut rx, mint_filter, state)| async move {
+        (frame_rx, mint_filter),
+        |(mut rx, mint_filter)| async move {
             loop {
                 match rx.recv().await {
-                    Ok(event) => {
-                        if let Some(bytes) =
-                            to_sse_frame(&event, mint_filter.as_deref(), state.as_ref())
-                        {
-                            let chunk =
-                                Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(bytes));
-                            return Some((chunk, (rx, mint_filter, state)));
+                    Ok(frame) => {
+                        // Mint-scoped frame against a mint filter: cheap string
+                        // compare, no re-render. Non-scoped frames (mint == None)
+                        // always pass.
+                        if let (Some(ref scope), Some(ref want)) = (&frame.mint, &mint_filter) {
+                            if scope != want {
+                                continue;
+                            }
                         }
+                        let chunk =
+                            Ok::<_, actix_web::Error>(frame.bytes.clone());
+                        return Some((chunk, (rx, mint_filter)));
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => return None,
                 }
             }
         },

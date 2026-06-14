@@ -44,6 +44,10 @@ impl CohortFlow {
     /// Held ratio: net tokens still held / everything bought. `1.0` = holding the
     /// full bag, `→0` = sold out. `0.0` when the set bought nothing (no overhang
     /// to dump). Matches the rug-detection `cohort_net / cohort_bought` shape.
+    ///
+    /// Used by [`super::entry::scalp::scalp_features`] (the per-prefix feature
+    /// oracle); the linearized `find_scalp_entry` computes the ratio inline.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn held_ratio(&self) -> f64 {
         if self.bought_tokens > 0.0 {
             self.net_tokens.max(0.0) / self.bought_tokens
@@ -74,6 +78,10 @@ pub fn cohort_flow(trades: &[Trade], wallets: &HashSet<String>) -> CohortFlow {
 
 /// Net SOL flow for wallets **outside** the cohort (real demand from later/real
 /// buyers): Σ (buy − sell) sol_amount over non-cohort wallets.
+///
+/// Used by [`super::entry::scalp::scalp_features`] (the per-prefix feature oracle);
+/// the linearized `find_scalp_entry` carries the outside-net SOL running total.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn outside_net_sol(trades: &[Trade], cohort: &HashSet<String>) -> f64 {
     let mut net = 0.0;
     for t in trades.iter().filter(|t| !cohort.contains(&t.wallet_address)) {

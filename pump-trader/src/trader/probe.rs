@@ -169,6 +169,7 @@ impl PumpFunTrader {
             1,
             is_cashback,
             tip_level,
+            false,
         )?;
 
         // Recent-blockhash tx + node-side blockhash replacement: the sell ix set

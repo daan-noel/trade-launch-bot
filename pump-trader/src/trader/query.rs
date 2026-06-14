@@ -498,8 +498,33 @@ impl PumpFunTrader {
         out
     }
 
+    /// Warm the per-mint [`TokenPDAs`] cache (creator vault, bonding curve, token
+    /// program, cashback flag) by reading the bonding-curve PDA — without
+    /// allocating the creator `String`. The sell hot path only needs the PDAs
+    /// cached, not the creator text, so it calls this instead of
+    /// [`Self::get_creator_from_mint_pda`] to skip the wasted `to_string`.
+    pub(super) async fn ensure_token_pdas(&self, mint_address: &str) -> anyhow::Result<()> {
+        let mint = Pubkey::from_str(mint_address)?;
+        let routing = self.read_curve_routing(&mint).await?;
+
+        // Cache the full PDA set for this mint (shared derivation with the buy
+        // path; pure PDA math, no RPC).
+        self.token_pdas.insert(
+            mint_address.to_string(),
+            self.derive_token_pdas(
+                &mint,
+                &routing.creator,
+                &routing.token_program,
+                routing.cashback_enabled,
+            ),
+        );
+        Ok(())
+    }
+
     /// Utility to fetch the creator pubkey for a given mint by reading the bonding curve PDA account.
-    /// Returns the creator as a String.
+    /// Returns the creator as a String. Also warms the [`TokenPDAs`] cache; callers
+    /// that only need the cache warmed (not the creator text) should use the
+    /// String-free [`Self::ensure_token_pdas`] instead.
     pub async fn get_creator_from_mint_pda(&self, mint_address: &str) -> anyhow::Result<String> {
         let mint = Pubkey::from_str(mint_address)?;
         let routing = self.read_curve_routing(&mint).await?;

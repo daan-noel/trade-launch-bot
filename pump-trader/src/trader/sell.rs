@@ -113,9 +113,76 @@ impl PumpFunTrader {
         tip_level: u8,
         confirm: bool,
     ) -> Result<bool> {
-        // Ensure PDAs are cached (reads the bonding-curve PDA on a miss).
+        // Default (signature-stable) path: never close the token account. The
+        // terminal clearing variant below opts in.
+        self.sell_token_once_inner(
+            token_mint,
+            token_amount,
+            creator_override,
+            is_cashback,
+            token_account_override,
+            slippage_bps,
+            tip_level,
+            confirm,
+            false,
+        )
+        .await
+    }
+
+    /// Identical to [`Self::sell_token_once`] but appends an SPL `close_account`
+    /// to the curve-sell tx so the token-account rent (~0.002 SOL) is recovered
+    /// to the wallet. Every buy creates a token account; the plain `sell` empties
+    /// it but leaves the rent stranded, which at snipe volume dwarfs the per-trade
+    /// fees. SAFETY: SPL `close_account` reverts the *whole* tx unless the account
+    /// balance is exactly 0, so the caller MUST only invoke this when it is
+    /// selling 100% of the remaining balance to zero — the terminal clearing sell.
+    /// On a partial-fill / retry loop, use [`Self::sell_token_once`] for the
+    /// non-final attempts and this only for the attempt that takes balance to 0.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn sell_token_once_clearing(
+        &self,
+        token_mint: &str,
+        token_amount: u64,
+        creator_override: Option<&str>,
+        is_cashback: bool,
+        token_account_override: Option<&str>,
+        slippage_bps: Option<u64>,
+        tip_level: u8,
+        confirm: bool,
+    ) -> Result<bool> {
+        self.sell_token_once_inner(
+            token_mint,
+            token_amount,
+            creator_override,
+            is_cashback,
+            token_account_override,
+            slippage_bps,
+            tip_level,
+            confirm,
+            true,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn sell_token_once_inner(
+        &self,
+        token_mint: &str,
+        token_amount: u64,
+        creator_override: Option<&str>,
+        is_cashback: bool,
+        token_account_override: Option<&str>,
+        slippage_bps: Option<u64>,
+        tip_level: u8,
+        confirm: bool,
+        close_token_account: bool,
+    ) -> Result<bool> {
+        // Ensure PDAs are cached (reads the bonding-curve PDA on a miss). Use the
+        // String-free warm helper — this call only populates `token_pdas` and
+        // discards the creator, so `get_creator_from_mint_pda`'s `.to_string()`
+        // would be wasted here.
         if !self.token_pdas.contains_key(token_mint) {
-            self.get_creator_from_mint_pda(token_mint).await?;
+            self.ensure_token_pdas(token_mint).await?;
         }
 
         // Ensure the wallet's token account is known: an explicit override wins;
@@ -139,8 +206,87 @@ impl PumpFunTrader {
             slippage_bps,
             tip_level,
             confirm,
+            close_token_account,
         )
         .await
+    }
+
+    /// Fire-and-forget rent reclaim: close the wallet's (already-emptied) token
+    /// account for `token_mint`, returning its ~0.002 SOL rent to the wallet.
+    /// OFF the exit hot path — uses a RECENT BLOCKHASH (no durable nonce slot),
+    /// NO Jito tip, and does NOT confirm. SPL `close_account` reverts if the
+    /// account still holds any balance, so this is only meaningful after the
+    /// caller has confirmed the balance is cleared; preflight is left ENABLED so a
+    /// still-funded (dust) account fails cheaply in simulation without paying a
+    /// landed-revert fee. Errors are returned for the caller to log and ignore.
+    pub async fn close_token_account(
+        &self,
+        token_mint: &str,
+        token_account_override: Option<&str>,
+    ) -> Result<()> {
+        // Resolve the wallet's token account: explicit override wins (and warms
+        // the cache like `sell_token_once_inner`); otherwise resolve cache-first
+        // (one wallet scan on a miss). No account → nothing to close.
+        let user_token_account = if let Some(token_account) = token_account_override {
+            let pk = Pubkey::from_str(token_account).context("Invalid token_account_override")?;
+            self.user_token_accounts.insert(token_mint.to_string(), pk);
+            pk
+        } else {
+            match self.resolve_cached_token_account(token_mint).await? {
+                Some(pk) => pk,
+                None => anyhow::bail!("No token account found for mint {token_mint}; nothing to close"),
+            }
+        };
+
+        // Determine the token program (legacy SPL vs Token-2022): ensure the
+        // mint's PDAs are cached (one bonding-curve read on a miss), then read the
+        // cached `token_program` to route the close builder.
+        if !self.token_pdas.contains_key(token_mint) {
+            self.ensure_token_pdas(token_mint).await?;
+        }
+        let pdas = self
+            .token_pdas
+            .get(token_mint)
+            .map(|r| *r)
+            .context("Token PDAs not cached after ensure")?;
+
+        // Single `close_account` ix, routed by token program exactly like the
+        // terminal clearing sell does — owner == destination == wallet, returning
+        // the rent to the wallet; empty signer slice (the fee-payer signs).
+        let owner = self.config.keypair.pubkey();
+        let close_ix = if pdas.token_program == spl_token_2022::id() {
+            spl_token_2022::instruction::close_account(
+                &pdas.token_program,
+                &user_token_account,
+                &owner,
+                &owner,
+                &[],
+            )?
+        } else {
+            spl_token::instruction::close_account(
+                &pdas.token_program,
+                &user_token_account,
+                &owner,
+                &owner,
+                &[],
+            )?
+        };
+
+        // RECENT BLOCKHASH, no durable nonce — this runs off the exit hot path so
+        // it never competes for a nonce slot. No Jito tip ix is appended.
+        let tx = self
+            .build_recent_tx(vec![close_ix], &self.config.keypair)
+            .await?;
+
+        // Send via the RPC `sendTransaction` path with PREFLIGHT ENABLED (the
+        // nonblocking client's default: skip_preflight = false) so a still-funded
+        // account is rejected in simulation without paying a landed-revert fee.
+        // NOT the Jito sender fan-out, and we do NOT block on confirmation.
+        self.rpc
+            .send_transaction(&tx)
+            .await
+            .context("close_account sendTransaction")?;
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -157,6 +303,7 @@ impl PumpFunTrader {
         slippage_bps: Option<u64>,
         tip_level: u8,
         confirm: bool,
+        close_token_account: bool,
     ) -> Result<bool> {
         let t0 = Instant::now();
         let keypair = &self.config.keypair;
@@ -225,6 +372,7 @@ impl PumpFunTrader {
             min_sol_output,
             is_cashback,
             tip_level,
+            close_token_account,
         )?;
 
         // ── Acquire nonce + sign & send ─────────────────────────────────────
@@ -267,11 +415,15 @@ impl PumpFunTrader {
         res
     }
 
-    /// Assemble the curve-sell instruction set (compute budget + `sell` + Jito
-    /// tip) for a known mint/account. Pure tx construction, no RPC or signing —
-    /// extracted from `execute_sell` so the simulate probe builds the *identical*
-    /// instructions the live sell path sends. `tip_level` escalates the tip (see
-    /// `jito_tip`); `min_sol_output` is the slippage floor (1 = no protection).
+    /// Assemble the curve-sell instruction set (compute budget + `sell` +
+    /// optional `close_account` + Jito tip) for a known mint/account. Pure tx
+    /// construction, no RPC or signing — extracted from `execute_sell` so the
+    /// simulate probe builds the *identical* instructions the live sell path
+    /// sends. `tip_level` escalates the tip (see `jito_tip`); `min_sol_output` is
+    /// the slippage floor (1 = no protection). `close_token_account` appends an
+    /// SPL `close_account` to recover the token-account rent — only valid when
+    /// this sell empties the account to 0 (the program reverts close otherwise);
+    /// see [`Self::sell_token_once_clearing`].
     #[allow(clippy::too_many_arguments)]
     pub(super) fn build_curve_sell_ixs(
         &self,
@@ -282,10 +434,11 @@ impl PumpFunTrader {
         min_sol_output: u64,
         is_cashback: bool,
         tip_level: u8,
+        close_token_account: bool,
     ) -> Result<Vec<Instruction>> {
         let global = self.global_account.as_ref().context("Not initialized")?;
 
-        let mut ixs = Vec::with_capacity(5);
+        let mut ixs = Vec::with_capacity(6);
         ixs.extend_from_slice(&self.cu_ixs_curve_sell);
 
         // Sell (Sell exact token in)
@@ -327,9 +480,163 @@ impl PumpFunTrader {
             data: sell_data,
         });
 
+        // Terminal clearing sell: recover the token-account rent (~0.002 SOL).
+        // The preceding `sell` empties the account to 0, so `close_account`
+        // succeeds; it reverts the whole tx if any balance remains, which is why
+        // this is gated on the caller proving a full-balance sell (see
+        // `sell_token_once_clearing`). Rent is returned to the wallet (owner).
+        if close_token_account {
+            let owner = self.config.keypair.pubkey();
+            // The token account belongs to either the legacy SPL Token program or
+            // Token-2022; each crate's `close_account` builder hard-checks that
+            // its own program id is passed, so route by the cached token program.
+            // The on-wire instruction (data + account metas) is identical either
+            // way — only the `program_id` differs.
+            let close_ix = if pdas.token_program == spl_token_2022::id() {
+                spl_token_2022::instruction::close_account(
+                    &pdas.token_program,
+                    user_token_account,
+                    &owner,
+                    &owner,
+                    &[],
+                )?
+            } else {
+                spl_token::instruction::close_account(
+                    &pdas.token_program,
+                    user_token_account,
+                    &owner,
+                    &owner,
+                    &[],
+                )?
+            };
+            ixs.push(close_ix);
+        }
+
         // Jito tip — escalated by the caller's retry level.
         ixs.push(self.jito_tip_ix(tip_level));
 
         Ok(ixs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::trader::{GlobalAccount, PumpFunTrader, TokenPDAs, TraderConfig};
+    use solana_sdk::{
+        message::Message, pubkey::Pubkey, signature::Keypair, signature::Signer,
+    };
+    use std::sync::Arc;
+
+    /// Hard Solana transaction wire-size limit (bytes).
+    const TX_LIMIT: usize = 1232;
+
+    fn dummy_trader() -> PumpFunTrader {
+        let mut t = PumpFunTrader::new(Arc::new(TraderConfig {
+            rpc_url: "http://localhost".into(),
+            helius_sender_urls: vec!["http://localhost".into()],
+            keypair: Keypair::new(),
+            nonce_accounts: vec![Pubkey::new_unique().to_string()],
+        }));
+        // `build_curve_sell_ixs` needs the global account + compute-budget ixs
+        // that `initialize()` would populate; set the minimum it reads here.
+        t.global_account = Some(GlobalAccount {
+            global_pda: Pubkey::new_unique(),
+            fee_recipient: Pubkey::new_unique(),
+            global_volume_accumulator: Pubkey::new_unique(),
+            user_volume_accumulator: Pubkey::new_unique(),
+            fee_config: Pubkey::new_unique(),
+        });
+        t.cu_ixs_curve_sell = vec![
+            solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(100_000),
+            solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_price(1),
+        ];
+        t
+    }
+
+    /// Worst-case PDAs for tx size: cashback-enabled (adds the
+    /// user_volume_accumulator account). `token_program` must be a real SPL token
+    /// program id (legacy here) because `close_account` validates it; both program
+    /// ids are 32 bytes, so the wire size is identical either way.
+    fn worst_case_pdas() -> TokenPDAs {
+        TokenPDAs {
+            token_program: spl_token::id(),
+            bonding_curve: Pubkey::new_unique(),
+            bonding_curve_v2: Pubkey::new_unique(),
+            associated_bonding_curve: Pubkey::new_unique(),
+            creator_vault: Pubkey::new_unique(),
+            cashback_enabled: true,
+        }
+    }
+
+    fn wire_size(msg: &Message) -> usize {
+        1 + 64 * msg.header.num_required_signatures as usize + msg.serialize().len()
+    }
+
+    /// The terminal clearing curve sell (compute budget, `sell`, `close_account`,
+    /// Jito tip), wrapped in a durable-nonce message, must stay under the 1232 B
+    /// wire limit — otherwise the rent-recovery close can't ride the live sell tx.
+    #[test]
+    fn curve_sell_with_close_and_nonce_fits() {
+        let t = dummy_trader();
+        let user = t.config.keypair.pubkey();
+        let mint = Pubkey::new_unique();
+        let pdas = worst_case_pdas();
+        let uta = Pubkey::new_unique();
+        let nonce = Pubkey::new_unique();
+
+        let ixs = t
+            .build_curve_sell_ixs(&mint, &pdas, &uta, 1_000_000, 1, true, 0, true)
+            .expect("build clearing curve sell");
+        let msg = Message::new_with_nonce(ixs, Some(&user), &nonce, &user);
+        let size = wire_size(&msg);
+        eprintln!("worst-case curve sell + close + nonce = {size} B (limit {TX_LIMIT})");
+        assert!(
+            size <= TX_LIMIT,
+            "curve sell + close_account + nonce = {size} B (limit {TX_LIMIT})"
+        );
+    }
+
+    /// The standalone rent-reclaim close (single `close_account`, recent
+    /// blockhash, no nonce / no tip) is trivially under the wire limit. Guards
+    /// that the lone-ix close tx builds and stays sane.
+    #[test]
+    fn standalone_close_tx_fits() {
+        let t = dummy_trader();
+        let owner = t.config.keypair.pubkey();
+        let uta = Pubkey::new_unique();
+        let close_ix = spl_token::instruction::close_account(
+            &spl_token::id(),
+            &uta,
+            &owner,
+            &owner,
+            &[],
+        )
+        .expect("build close ix");
+        let msg = Message::new(&[close_ix], Some(&owner));
+        let size = wire_size(&msg);
+        eprintln!("standalone close tx = {size} B (limit {TX_LIMIT})");
+        assert!(size <= TX_LIMIT, "standalone close = {size} B (limit {TX_LIMIT})");
+    }
+
+    /// The close instruction is appended ONLY when requested — the default sell
+    /// path stays byte-for-byte unchanged (one fewer instruction).
+    #[test]
+    fn close_account_is_opt_in() {
+        let t = dummy_trader();
+        let mint = Pubkey::new_unique();
+        let pdas = worst_case_pdas();
+        let uta = Pubkey::new_unique();
+
+        let without = t
+            .build_curve_sell_ixs(&mint, &pdas, &uta, 1, 1, true, 0, false)
+            .unwrap();
+        let with = t
+            .build_curve_sell_ixs(&mint, &pdas, &uta, 1, 1, true, 0, true)
+            .unwrap();
+        assert_eq!(
+            with.len(),
+            without.len() + 1,
+            "close path adds exactly one instruction"
+        );
     }
 }

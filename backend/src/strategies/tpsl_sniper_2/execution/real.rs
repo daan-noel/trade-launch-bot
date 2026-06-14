@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use tokio::time::{sleep, Instant};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::super::Tpsl2RuntimeCache;
@@ -138,17 +138,19 @@ impl ScalpWaitCfg {
 pub(crate) async fn await_scalp_entry_signal(
     mint: &str,
     rule: &Tpsl2Rule,
-    trade_repo: &TradeRepo,
+    token_cache: &TokenCache,
     cfg: ScalpWaitCfg,
 ) -> bool {
     for _ in 0..cfg.attempts {
-        match trade_repo.find_by_mint_all(mint).await {
-            Ok(trades) => {
-                if super::super::entry::find_scalp_entry(&trades, rule).is_some() {
-                    return true;
-                }
+        // Read the mint's trade window from the in-memory cache (kept current by
+        // the WS pipeline for every wallet's trades) instead of an unbounded
+        // `find_by_mint_all` DB scan per tick. The arming signal watches all trades
+        // on the mint, not a single wallet, so there's no per-(wallet,mint)
+        // `TradeSignals` key to wake on; the bounded timer re-reads the cache.
+        if let Some(entry) = token_cache.get(mint) {
+            if super::super::entry::find_scalp_entry(&entry.value().trades, rule).is_some() {
+                return true;
             }
-            Err(err) => warn!(mint = %mint, "scalp-wait trade fetch failed: {err}"),
         }
         sleep(cfg.interval).await;
     }
@@ -409,6 +411,20 @@ pub(crate) async fn sell_and_close_position(
             return;
         }
     };
+
+    // Rent reclaim (off the hot path): the balance is confirmed cleared, so close
+    // the now-empty token account to recover its ~0.002 SOL rent. Fire-and-forget
+    // — a recent-blockhash, preflight-checked close that never blocks the exit and
+    // cheaply no-ops if sub-threshold dust kept the account funded.
+    {
+        let trader = trader.clone();
+        let mint = mint.clone();
+        tokio::spawn(async move {
+            if let Err(err) = trader.close_token_account(&mint, None).await {
+                debug!(mint = %mint, "rent-reclaim close skipped: {err}");
+            }
+        });
+    }
 
     if let Some(last_sell) = last_sell {
         let exit_amount = last_sell.token_amount;

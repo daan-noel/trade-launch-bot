@@ -142,6 +142,68 @@ impl PumpFunTrader {
         tip_level: u8,
         confirm: bool,
     ) -> Result<bool> {
+        // Default (signature-stable) path: never close the base token account.
+        self.amm_sell_inner(
+            token_mint,
+            token_amount,
+            base_token_program_id,
+            pool_override,
+            token_account_override,
+            slippage_bps,
+            tip_level,
+            confirm,
+            false,
+        )
+        .await
+    }
+
+    /// Identical to [`Self::amm_sell`] but appends an SPL `close_account` for the
+    /// base token account so its rent (~0.002 SOL) is recovered to the wallet.
+    /// SAFETY: SPL `close_account` reverts the *whole* tx unless the account
+    /// balance is exactly 0, so the caller MUST only invoke this when it is
+    /// selling 100% of the remaining base balance to zero — the terminal clearing
+    /// sell. On a partial-fill / retry loop, use [`Self::amm_sell`] for the
+    /// non-final attempts and this only for the attempt that takes balance to 0.
+    /// Mirrors the curve path's [`Self::sell_token_once_clearing`].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn amm_sell_clearing(
+        &self,
+        token_mint: &str,
+        token_amount: u64,
+        base_token_program_id: &str,
+        pool_override: Option<&str>,
+        token_account_override: Option<&str>,
+        slippage_bps: Option<u64>,
+        tip_level: u8,
+        confirm: bool,
+    ) -> Result<bool> {
+        self.amm_sell_inner(
+            token_mint,
+            token_amount,
+            base_token_program_id,
+            pool_override,
+            token_account_override,
+            slippage_bps,
+            tip_level,
+            confirm,
+            true,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn amm_sell_inner(
+        &self,
+        token_mint: &str,
+        token_amount: u64,
+        base_token_program_id: &str,
+        pool_override: Option<&str>,
+        token_account_override: Option<&str>,
+        slippage_bps: Option<u64>,
+        tip_level: u8,
+        confirm: bool,
+        close_token_account: bool,
+    ) -> Result<bool> {
         let t0 = Instant::now();
         let user = self.config.keypair.pubkey();
 
@@ -154,6 +216,7 @@ impl PumpFunTrader {
                 token_account_override,
                 slippage_bps,
                 &user,
+                close_token_account,
             )
             .await?;
 
@@ -284,6 +347,7 @@ impl PumpFunTrader {
         token_account_override: Option<&str>,
         slippage_bps: Option<u64>,
         user: &Pubkey,
+        close_token_account: bool,
     ) -> Result<Vec<Instruction>> {
         // pool-info and global-config are independent reads — run them
         // concurrently; reserves depend on the resolved pool, so it follows.
@@ -331,6 +395,38 @@ impl PumpFunTrader {
         ixs.push(spl_token::instruction::close_account(
             &quote_tp, &user_quote, user, user, &[],
         )?);
+
+        // Terminal clearing sell: recover the base token-account rent (~0.002
+        // SOL) too. The `sell` above empties the account to 0, so `close_account`
+        // succeeds; it reverts the whole tx if any balance remains, which is why
+        // this is gated on the caller proving a full-balance sell (see
+        // `amm_sell_clearing`). All three accounts it references (base token
+        // program, user_base, owner) are already in the swap's account list, so
+        // this only adds the compiled instruction itself — ~7 B, well within the
+        // worst-case AMM-sell headroom under the 1232 B limit (see `amm::tests`).
+        if close_token_account {
+            // Route by the base token program: each crate's `close_account`
+            // builder hard-checks its own program id, and the base mint may be
+            // Token-2022. The on-wire instruction is identical either way.
+            let close_base = if pool.base_token_program == spl_token_2022::id() {
+                spl_token_2022::instruction::close_account(
+                    &pool.base_token_program,
+                    &user_base,
+                    user,
+                    user,
+                    &[],
+                )?
+            } else {
+                spl_token::instruction::close_account(
+                    &pool.base_token_program,
+                    &user_base,
+                    user,
+                    user,
+                    &[],
+                )?
+            };
+            ixs.push(close_base);
+        }
 
         Ok(ixs)
     }
@@ -954,6 +1050,10 @@ mod tests {
     }
 
     fn build_sell_ixs(t: &PumpFunTrader, user: &Pubkey) -> Vec<Instruction> {
+        build_sell_ixs_inner(t, user, false)
+    }
+
+    fn build_sell_ixs_inner(t: &PumpFunTrader, user: &Pubkey, close_base: bool) -> Vec<Instruction> {
         let legacy = Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap();
         let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
         let pool = worst_case_pool();
@@ -971,6 +1071,20 @@ mod tests {
             data,
         });
         ixs.push(spl_token::instruction::close_account(&legacy, &user_quote, user, user, &[]).unwrap());
+        if close_base {
+            // Base mint here is Token-2022 (worst_case_pool); use the matching
+            // builder so the program-id check passes.
+            ixs.push(
+                spl_token_2022::instruction::close_account(
+                    &pool.base_token_program,
+                    &user_base,
+                    user,
+                    user,
+                    &[],
+                )
+                .unwrap(),
+            );
+        }
         ixs.push(system_instruction::transfer(user, &Pubkey::new_unique(), 200_000)); // jito tip
         ixs
     }
@@ -989,6 +1103,30 @@ mod tests {
         let size = wire_size(&msg);
         eprintln!("worst-case AMM sell + nonce     = {size} B (limit {TX_LIMIT})");
         assert!(size <= TX_LIMIT, "cashback AMM sell + nonce = {size} B (limit {TX_LIMIT})");
+    }
+
+    #[test]
+    fn cashback_amm_sell_with_close_and_nonce_fits() {
+        // The terminal clearing AMM sell appends a base-account `close_account`
+        // (rent recovery) on top of the worst-case swap. All its referenced
+        // accounts already ride the swap, so it only adds the compiled
+        // instruction — this must still fit under the 1232 B nonce-tx limit, or
+        // the rent close can't ride the live AMM sell.
+        let t = dummy_trader();
+        let user = Pubkey::new_unique();
+        let nonce = Pubkey::new_unique();
+        let msg = Message::new_with_nonce(
+            build_sell_ixs_inner(&t, &user, true),
+            Some(&user),
+            &nonce,
+            &user,
+        );
+        let size = wire_size(&msg);
+        eprintln!("worst-case AMM sell + close + nonce = {size} B (limit {TX_LIMIT})");
+        assert!(
+            size <= TX_LIMIT,
+            "cashback AMM sell + close + nonce = {size} B (limit {TX_LIMIT})"
+        );
     }
 
     #[test]

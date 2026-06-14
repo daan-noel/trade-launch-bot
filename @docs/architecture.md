@@ -16,7 +16,7 @@ Subsystem deep-dives: [ingest.md](ingest.md) · [strategies.md](strategies.md) �
 
 **Long-lived tasks:** ingest gRPC producer → ingest pipeline → DbWriter · StrategyRunner · SOL price poller · pool-subscription refresh · partition maintenance · optional HTTP server.
 
-**Shared state (Arc + channels created here):** `TokenCache`, `Tpsl1RuntimeCache`/`Tpsl2RuntimeCache`, `TokenListCache`, `sol_price` watch, `app_settings` watch, `live_mode` watch, `sse_tx` broadcast, `TradeSignals` (wakeup hub), `pool_index` (DashMap), `pools_changed` (Notify).
+**Shared state (Arc + channels created here):** `TokenCache`, `Tpsl1RuntimeCache`/`Tpsl2RuntimeCache`, `TokenListCache`, `sol_price` watch, `app_settings` watch, `live_mode` watch, `sse_tx` broadcast (producers) + `sse_frame_tx` broadcast (rendered frames to subscribers), `TradeSignals` (wakeup hub), `pool_index` (DashMap), `pools_changed` (Notify). When the HTTP server is enabled, `run_sse_render_bridge` is spawned to render `sse_tx` events to wire bytes once and fan them out on `sse_frame_tx`.
 
 ## Top-level module layout — `backend/src/`
 | Module | Responsibility |
@@ -43,7 +43,7 @@ Subsystem deep-dives: [ingest.md](ingest.md) · [strategies.md](strategies.md) �
 | `handlers/tokens/analysis.rs` | `get_token_analysis`, `list_creators`, `get_creator`, `list_analysis_results` |
 | `handlers/tokens/swing.rs` | `detect_token_swings`, `detect_tokens_swings_batch` |
 | `handlers/trading/solana.rs` | `manual_buy`, `manual_sell`, `get_wallet_tokens`, `get_wallet_token(_balance)`, `get_prices` |
-| `handlers/system/stream.rs` | `stream_events` — SSE broadcast (`/api/stream`) |
+| `handlers/system/stream.rs` | `stream_events` (`/api/stream`) + `SseFrame`/`run_sse_render_bridge` — render each event to wire bytes ONCE (one cache read), fan shared `Arc<SseFrame>` to all subscribers (no per-subscriber re-serialization) |
 | `handlers/system/system.rs` | `get/set_live_mode`, `get_sol_price`, `get/update_settings` |
 | `handlers/system/wallets.rs` | profile/wallet/tag CRUD |
 | `handlers/strategies/tpsl1.rs` | rule CRUD + lifecycle (`activate`/`pause`/`stop`), `matched`, `simulate`, `paper-result` |
@@ -51,7 +51,7 @@ Subsystem deep-dives: [ingest.md](ingest.md) · [strategies.md](strategies.md) �
 | `handlers/strategies/tpsl2*.rs` | identical surface for TPSL2 |
 
 ## Shared state — `backend/src/state/`
-- `app_state.rs` — `AppState` (db, helius urls, all caches, watch channels, `sse_tx`, `pool_index`, `pools_changed`, `trade_signals`, `sync_gate`, `trader`, `pump_program_id`). `SyncGate` bounds `/api/token/sync` (max 4 concurrent, dedup by mint → 409 on collision).
+- `app_state.rs` — `AppState` (db, helius urls, all caches, watch channels, `sse_tx` + `sse_frame_tx`, `pool_index`, `pools_changed`, `trade_signals`, `sync_gate`, `trader`, `pump_program_id`). `SyncGate` bounds `/api/token/sync` (max 4 concurrent, dedup by mint → 409 on collision).
 - `token_cache.rs` — `TokenCache` = `DashMap<mint, TokenState>`; `TokenState` holds Token + capped trade buffer (~50K, `trades_base` survives trims) + metrics + `is_migrated`. Cache-local; ingest never round-trips DB.
 - `token_list_cache.rs` — `TokenListCache`, pre-sorted snapshot served by `/api/tokens` (saves per-request sort+clone).
 - `trade_signals.rs` — `TradeSignals` per-`(wallet,mint)` wakeup hub; `register()`→`WaitGuard`, `notify()` called by DbWriter after a trade row is queryable. Pattern: **notify over poll**.

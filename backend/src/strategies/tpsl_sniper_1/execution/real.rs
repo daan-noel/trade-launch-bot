@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use tokio::time::{sleep, Instant};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::super::Tpsl1RuntimeCache;
@@ -344,6 +344,7 @@ pub(crate) async fn sell_and_close_position(
                 position_id = %position.id, mint = %mint,
                 "Sell execution finished without clearing token balance; marking position ExitFailed"
             );
+            // (no rent reclaim: balance not confirmed cleared)
             let prev = position.clone();
             position.mark_exit_failed(trigger_price, trigger_time);
             position.exit_reason = Some(exit_reason.clone());
@@ -358,6 +359,20 @@ pub(crate) async fn sell_and_close_position(
             return;
         }
     };
+
+    // Rent reclaim (off the hot path): the balance is confirmed cleared, so close
+    // the now-empty token account to recover its ~0.002 SOL rent. Fire-and-forget
+    // — a recent-blockhash, preflight-checked close that never blocks the exit and
+    // cheaply no-ops if sub-threshold dust kept the account funded.
+    {
+        let trader = trader.clone();
+        let mint = mint.clone();
+        tokio::spawn(async move {
+            if let Err(err) = trader.close_token_account(&mint, None).await {
+                debug!(mint = %mint, "rent-reclaim close skipped: {err}");
+            }
+        });
+    }
 
     if let Some(last_sell) = last_sell {
         let exit_amount = last_sell.token_amount;

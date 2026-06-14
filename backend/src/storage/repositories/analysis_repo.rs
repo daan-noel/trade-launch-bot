@@ -21,6 +21,10 @@ struct AnalysisResultDbRow {
     score: f64,
     indicators: sqlx::types::Json<Vec<String>>,
     computed_at: DateTime<Utc>,
+    /// Total row count for the (unpaginated) query, via `COUNT(*) OVER()`.
+    /// Only read on the page-listing path; identical on every row.
+    #[sqlx(default)]
+    total_count: i64,
 }
 
 impl From<AnalysisResultDbRow> for AnalysisResult {
@@ -46,6 +50,10 @@ struct CreatorProfileDbRow {
     wash_trade_score: f64,
     last_analyzed_at: Option<DateTime<Utc>>,
     indicators: sqlx::types::Json<Value>,
+    /// Total row count for the (unpaginated) query, via `COUNT(*) OVER()`.
+    /// Only read on the page-listing path; identical on every row.
+    #[sqlx(default)]
+    total_count: i64,
 }
 
 impl From<CreatorProfileDbRow> for CreatorProfile {
@@ -164,18 +172,18 @@ impl AnalysisRepo {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<(i64, Vec<AnalysisResult>)> {
-        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tokens_analysis")
-            .fetch_one(&self.pool)
-            .await?;
-
+        // One round-trip: the windowed `COUNT(*) OVER()` rides on the page query,
+        // so the total comes from the first row (0 when the page is empty).
         let rows = sqlx::query_as::<_, AnalysisResultDbRow>(
-            "SELECT * FROM tokens_analysis ORDER BY computed_at DESC LIMIT $1 OFFSET $2",
+            "SELECT *, COUNT(*) OVER() AS total_count \
+             FROM tokens_analysis ORDER BY computed_at DESC LIMIT $1 OFFSET $2",
         )
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
         .await?;
 
+        let total = rows.first().map(|r| r.total_count).unwrap_or(0);
         Ok((total, rows.into_iter().map(AnalysisResult::from).collect()))
     }
 
@@ -186,18 +194,18 @@ impl AnalysisRepo {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<(i64, Vec<CreatorProfile>)> {
-        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM creator_profiles")
-            .fetch_one(&self.pool)
-            .await?;
-
+        // One round-trip: the windowed `COUNT(*) OVER()` rides on the page query,
+        // so the total comes from the first row (0 when the page is empty).
         let rows = sqlx::query_as::<_, CreatorProfileDbRow>(
-            "SELECT * FROM creator_profiles ORDER BY suspiciousness_score DESC LIMIT $1 OFFSET $2",
+            "SELECT *, COUNT(*) OVER() AS total_count \
+             FROM creator_profiles ORDER BY suspiciousness_score DESC LIMIT $1 OFFSET $2",
         )
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
         .await?;
 
+        let total = rows.first().map(|r| r.total_count).unwrap_or(0);
         Ok((total, rows.into_iter().map(CreatorProfile::from).collect()))
     }
 }

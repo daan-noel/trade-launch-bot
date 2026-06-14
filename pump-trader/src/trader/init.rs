@@ -29,6 +29,12 @@ impl PumpFunTrader {
     pub async fn initialize(&mut self) -> Result<()> {
         info!("🔧 Initializing PumpFunTrader...");
 
+        // 0. Connection warmup — seed the keep-alive pool so the FIRST trade
+        // doesn't pay a TLS handshake on the latency-critical send. Fire a cheap
+        // `getHealth` at each Sender endpoint and the RPC concurrently and ignore
+        // every failure: warmup is best-effort and must never fail `initialize`.
+        self.warmup_connections().await;
+
         // 1. Global account
         self.global_account = Some(self.fetch_global_account().await?);
         info!("✅ Global account initialized");
@@ -100,9 +106,15 @@ impl PumpFunTrader {
         // 6. Pre-fetch all nonce hashes
         info!("🔧 Pre-fetching nonce hashes...");
         {
-            let mut slots = self.nonce_slots.lock().await;
+            // Fetch each hash first (async), then take the sync lock only for the
+            // inserts — a `std::sync::Mutex` guard must not be held across `.await`.
+            let mut fetched = Vec::with_capacity(self.nonce_pubkeys.len());
             for &pubkey in &self.nonce_pubkeys {
                 let hash = self.fetch_nonce_hash_async(&pubkey).await?;
+                fetched.push((pubkey, hash));
+            }
+            let mut slots = self.nonce_slots.lock().unwrap_or_else(|p| p.into_inner());
+            for (pubkey, hash) in fetched {
                 slots.insert(
                     pubkey,
                     NonceSlot {
@@ -152,6 +164,48 @@ impl PumpFunTrader {
             self.config.keypair.pubkey()
         );
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Connection warmup
+    // -----------------------------------------------------------------------
+
+    /// Best-effort TLS/keep-alive warmup: POST a cheap `getHealth` JSON-RPC to
+    /// each Sender endpoint and the RPC URL concurrently, seeding the shared
+    /// reqwest connection pool so the first real send reuses a warm connection
+    /// instead of paying a fresh handshake. All errors are swallowed — a
+    /// down/slow endpoint at startup must never block or fail `initialize`.
+    async fn warmup_connections(&self) {
+        // Dedup the targets (the RPC URL may also appear among the senders).
+        let mut targets: Vec<&str> = Vec::with_capacity(self.config.helius_sender_urls.len() + 1);
+        for url in &self.config.helius_sender_urls {
+            if !targets.contains(&url.as_str()) {
+                targets.push(url);
+            }
+        }
+        if !targets.contains(&self.config.rpc_url.as_str()) {
+            targets.push(&self.config.rpc_url);
+        }
+
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getHealth",
+        });
+
+        let mut set = tokio::task::JoinSet::new();
+        for url in targets {
+            let http = self.http.clone();
+            let url = url.to_string();
+            let body = body.clone();
+            set.spawn(async move {
+                // Ignore the result entirely — we only want the TCP+TLS session
+                // established and pooled.
+                let _ = http.post(&url).json(&body).send().await;
+            });
+        }
+        while set.join_next().await.is_some() {}
+        info!("🔥 Connection pool warmed");
     }
 
     // -----------------------------------------------------------------------

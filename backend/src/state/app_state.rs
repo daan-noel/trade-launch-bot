@@ -4,6 +4,7 @@ use dashmap::{DashMap, DashSet};
 use sqlx::PgPool;
 use tokio::sync::{broadcast, watch, Notify, OwnedSemaphorePermit, Semaphore};
 
+use crate::api::handlers::system::SseFrame;
 use crate::models::ingest::SseEvent;
 use crate::storage::repositories::settings_repo::AppSettings;
 use crate::strategies::tpsl_sniper_1::Tpsl1RuntimeCache;
@@ -29,8 +30,15 @@ pub struct AppState {
     /// `GET /api/tokens`. Lets every client's poll read one pre-sorted, pre-built
     /// view instead of each request cloning + sorting the whole cache.
     pub token_list: Arc<TokenListCache>,
-    /// Cold lane: SSE subscribers only (fed after cache update in ingest pipeline).
+    /// Cold lane: producers publish typed `SseEvent`s here (ingest pipeline,
+    /// strategy services, tpsl handlers). A single render bridge consumes this.
     pub sse_tx: broadcast::Sender<SseEvent>,
+    /// Pre-rendered SSE frames fanned out to HTTP subscribers. The render bridge
+    /// serializes each event to bytes exactly ONCE (reading live stats from the
+    /// cache once per event) and broadcasts the shared `Arc<SseFrame>`; each
+    /// connection clones the ref-counted frame instead of re-serializing per
+    /// subscriber. See `stream::run_sse_render_bridge`.
+    pub sse_frame_tx: broadcast::Sender<Arc<SseFrame>>,
     pub live_mode: watch::Sender<bool>,
     /// In-memory source of truth for the persisted settings document. The PUT
     /// handler updates this (and the DB); the ingest pipeline subscribes to it.
@@ -123,6 +131,10 @@ impl AppState {
         // Seed the shared list snapshot from the (DB-seeded) cache before the
         // borrow of `token_cache` is moved into the struct below.
         let token_list = Arc::new(TokenListCache::new(&token_cache));
+        // The frame channel is derived here (not a constructor arg) so every
+        // existing call site stays unchanged; the render bridge is spawned with
+        // an `Arc<AppState>` once construction completes.
+        let (sse_frame_tx, _) = broadcast::channel(512);
         Self {
             db,
             helius_rpc_url,
@@ -132,6 +144,7 @@ impl AppState {
             token_cache,
             token_list,
             sse_tx,
+            sse_frame_tx,
             live_mode,
             settings,
             sol_price,

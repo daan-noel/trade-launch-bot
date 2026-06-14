@@ -306,22 +306,47 @@ impl Tpsl2RuntimeCache {
         state
     }
 
-    /// Fold newly-printed trades into a position's walk state (seeding it first
-    /// if unseen). Called by the trade path, which already holds the history, so
-    /// the sweep finds the state current and never re-walks. `trades_base` is the
-    /// token's trim cursor, so the absolute fold position survives a front-trim.
-    pub fn exit_state_advance(
+    /// Trade-gate variant: fold newly-printed trades into the memoized walk state +
+    /// E5 cohort net (seeding both if unseen) **and** evaluate the exit ladder
+    /// against only those new trades, returning the first
+    /// [`ExitReason`](super::exit::ExitReason) that fires. Replaces the per-ping
+    /// full re-walk (H3) and the per-ping cohort rebuild (H4) with one incremental
+    /// pass (see [`CachedExitState::advance_and_find_exit`]).
+    ///
+    /// First sight seeds an unfolded state (cohort memo computed once from the
+    /// retained window when E5 is configured) and folds+evaluates the whole window,
+    /// reproducing the old first-ping full re-walk. If the clock sweep seeded the
+    /// state first (no cohort memo), the cohort memo is lazily attached here so E5
+    /// is never silently dropped.
+    pub fn exit_state_advance_and_find_exit(
         &self,
         position_id: Uuid,
         entry_price: f64,
         entry_time: DateTime<Utc>,
         trades: &[Trade],
         trades_base: u64,
-    ) {
-        self.exit_state_by_position
-            .entry(position_id)
-            .or_insert_with(|| CachedExitState::build(trades, trades_base, entry_price, entry_time))
-            .advance(trades, trades_base);
+        params: &super::exit::LadderParams,
+    ) -> Option<super::exit::ExitReason> {
+        use dashmap::mapref::entry::Entry;
+        match self.exit_state_by_position.entry(position_id) {
+            Entry::Occupied(mut e) => {
+                let cached = e.get_mut();
+                cached.ensure_cohort_seeded(trades, trades_base, params);
+                cached.advance_and_find_exit(trades, trades_base, params)
+            }
+            Entry::Vacant(v) => {
+                let mut cached = CachedExitState::build_unfolded(
+                    trades,
+                    trades_base,
+                    entry_price,
+                    entry_time,
+                    params,
+                );
+                let reason = cached.advance_and_find_exit(trades, trades_base, params);
+                v.insert(cached);
+                reason
+            }
+        }
     }
 
     pub fn holding_count_by_rule(&self, rule_id: Uuid) -> i64 {
