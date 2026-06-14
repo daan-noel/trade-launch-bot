@@ -45,6 +45,6 @@ The single `select!` loop **serializes** all position transitions across both st
 ## Invariants (preserve when editing)
 1. No double-buy — only a confirmed on-chain revert (`classify_silent_send`) re-sends.
 2. No double-sell — `selling` DashSet gates in-flight sells.
-3. Sell-confirm via the `trades` feed, **no new RPC poll**; poll the full window before concluding a retry (see CLAUDE.md "Gotchas" — naively flipping confirm off fires duplicate sells).
+3. Sell-confirm via the `trades` feed, **no new RPC poll**; poll the full window before concluding a retry (see CLAUDE.md "Gotchas" — naively flipping confirm off fires duplicate sells). The confirm loop registers its `TradeSignals` guard once per exit and re-runs the `net_token_amount_by_wallet_and_mint` aggregate **only when the guard's `seq` advanced** (a new trade landed for this wallet+mint); bare fallback ticks skip the scan. SQL stays the authoritative "cleared" gate (deduped by PK) — don't replace it with a pure in-memory balance: feed redelivery would double-count and over-sell.
 4. Time exits fire on silence (1s sweep).
 5. Strategy eval reads `runtime_cache.rs` only — never queries DB per trade event.

@@ -4,15 +4,16 @@ Scope: `pump-trader/` trade path + `tpsl_sniper_*/execution/real.rs` caller. The
 
 ## High impact
 
-### Sell-confirm polls a full SQL aggregation per tick
+### Sell-confirm polls a full SQL aggregation per tick — ✅ DONE
 - **Where:** [real.rs](backend/src/strategies/tpsl_sniper_1/execution/real.rs#L507) → `net_token_amount_by_wallet_and_mint` ([trade_repo.rs:370](backend/src/storage/repositories/trade_repo.rs#L370)).
 - The exit loop confirms the clear by running `SELECT SUM(CASE…) FROM trades WHERE wallet=$1 AND mint=$2` on **every poll tick**, for **every concurrent exit**. That's a repeated aggregate scan over the large partitioned `trades` table on the exit hot path. (The `idx_trades_wallet_mint` composite index makes it an index range scan, not a full-table scan — but it's still a per-tick DB round-trip.)
-- **Fix:** maintain the net balance from the WS reserve/trade feed already flowing through ingest (the loop is already woken by `TradeSignals` for this wallet+mint), and only fall back to the SQL SUM.
+- **Fix (implemented):** `TradeSignals` now carries a per-key `seq`, bumped in `notify()` once per trade the DbWriter persists for that wallet+mint. The confirm loop registers its guard once per exit and re-runs the SQL aggregate **only when `seq` advanced** — bare fallback ticks skip it, so the scan now runs ~once per landed trade instead of once per tick. SQL is kept as the authoritative "cleared" gate (deduped by PK) rather than a pure in-memory balance, because feed redelivery would double-count and over-sell. Applied to both `tpsl_sniper_{1,2}` clones.
 
 ## Low impact (micro / polish)
 
-### `schedule_nonce_refresh` does a `get_account` RPC after every send
-- [nonce.rs](pump-trader/src/trader/nonce.rs#L86): one background RPC per trade to re-read the advanced nonce hash. Off the hot path, but it's an RPC-per-trade that could often be avoided (the new hash is derivable once the advance lands). Low priority; leave unless RPC quota matters.
+### `schedule_nonce_refresh` does a `get_account` RPC after every send — left as-is (by design)
+- [nonce.rs](pump-trader/src/trader/nonce.rs#L86): one background RPC per trade to re-read the advanced nonce hash. Off the hot path, but it's an RPC-per-trade that could often be avoided (the new hash is derivable once the advance lands). Low priority; leave unless RPC quota matters. **Not changed:** deriving the advanced hash client-side is non-trivial and a wrong hash fails every subsequent send — not worth the risk for an off-hot-path background call.
 
-### Per-trade heap allocations on the hot path
-- `mint.to_string()` (several), `buy_data`/`sell_data` via `vec![disc…].extend` ([buy.rs:181](pump-trader/src/trader/buy.rs#L181), [sell.rs:292](pump-trader/src/trader/sell.rs#L292)), two `DashMap` inserts + key clones per buy. Each is microseconds — negligible against network, list only if profiling the CPU side.
+### Per-trade heap allocations on the hot path — partially addressed
+- `buy_data`/`sell_data` ([buy.rs:181](pump-trader/src/trader/buy.rs#L181), [sell.rs:402](pump-trader/src/trader/sell.rs#L402)) now use `Vec::with_capacity(24)` so the two `extend`s don't reallocate. ✅
+- `mint.to_string()` (several) + two `DashMap` inserts + key clones per buy: left untouched — the clones are correctness-load-bearing cache keys and each cost is microseconds, negligible against network. Revisit only if profiling the CPU side.
