@@ -1,11 +1,11 @@
 import type { ColumnDef } from 'components/table/types';
 import type { WalletHolding } from 'types';
-import type { useWalletPriceDisplay } from 'hooks/useWalletPriceDisplay';
 import { cn } from 'lib/cn';
-import { formatCompact, priceClass } from 'utils/format';
+import { formatCompact } from 'utils/format';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Badge } from 'components/ui/Badge';
 import { DateCell } from 'components/table/DateCell';
+import { LiquidityCell, PriceCell, ValueCell } from './walletPriceCells';
 
 export interface WalletActions {
   onBuy: (mint: string, tokenProgramId: string) => void;
@@ -13,10 +13,10 @@ export interface WalletActions {
   sellingMint: string | null;
 }
 
-export function walletColumns(
-  actions: WalletActions,
-  price: ReturnType<typeof useWalletPriceDisplay>,
-): ColumnDef<WalletHolding>[] {
+// `price` is intentionally NOT a parameter: the rate-aware cells read the
+// PriceUnit context themselves, so the column array stays referentially stable
+// across a SOL/USD tick (only the affected cells re-render).
+export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[] {
   return [
     {
       key: 'symbol',
@@ -63,14 +63,7 @@ export function walletColumns(
       group: 'position',
       width: '110px',
       sortable: true,
-      render: (r) =>
-        r.value_usd != null ? (
-          <span className="font-semibold tabular-nums text-text">
-            {price.displayValue(r.value_usd)}
-          </span>
-        ) : (
-          <span className="text-text-dim">—</span>
-        ),
+      render: (r) => <ValueCell usd={r.value_usd} />,
       sortValue: (r) => r.value_usd ?? 0,
       searchValue: (r) => String(r.value_usd ?? ''),
     },
@@ -80,14 +73,7 @@ export function walletColumns(
       group: 'price',
       width: '110px',
       sortable: true,
-      render: (r) =>
-        r.price_usd != null ? (
-          <span className={cn('tabular-nums', priceClass(r.price_usd))}>
-            {price.displayPrice(r.price_usd)}
-          </span>
-        ) : (
-          <span className="text-text-dim">—</span>
-        ),
+      render: (r) => <PriceCell usd={r.price_usd} />,
       sortValue: (r) => r.price_usd ?? 0,
       searchValue: (r) => String(r.price_usd ?? ''),
     },
@@ -121,14 +107,7 @@ export function walletColumns(
       group: 'market',
       width: '110px',
       sortable: true,
-      render: (r) =>
-        r.liquidity != null ? (
-          <span className="tabular-nums text-text-mid">
-            {price.displayLiquidity(r.liquidity)}
-          </span>
-        ) : (
-          <span className="text-text-dim">—</span>
-        ),
+      render: (r) => <LiquidityCell usd={r.liquidity} />,
       sortValue: (r) => r.liquidity ?? 0,
       searchValue: (r) => String(r.liquidity ?? ''),
     },

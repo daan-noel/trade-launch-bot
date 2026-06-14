@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -681,19 +680,18 @@ pub async fn run_pool_subscription_refresh(
         }
 
         let now = Utc::now();
-        // Mints already covered (pool_index values), so we only derive pools for
-        // the newly-active delta.
-        let covered: HashSet<String> = pool_index.iter().map(|e| e.value().clone()).collect();
-
         let mut added = false;
         for entry in token_cache.iter() {
-            if !entry.is_migrated
-                || covered.contains(entry.key())
-                || !pool_is_live(entry.value(), now)
-            {
+            if !entry.is_migrated || !pool_is_live(entry.value(), now) {
                 continue;
             }
             if let Ok(pool) = derive_pump_swap_pool(entry.key(), &pump_program_id) {
+                // Coverage is an O(1) `pool_index` lookup on the derived pool —
+                // no need to rebuild a full mint set every tick. `insert`
+                // returning `None` means the pool was newly added.
+                if pool_index.contains_key(&pool) {
+                    continue;
+                }
                 if pool_index.insert(pool, entry.key().clone()).is_none() {
                     added = true;
                 }

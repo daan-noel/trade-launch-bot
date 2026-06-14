@@ -17,7 +17,6 @@ import {
   useBuyTokenMutation,
   useSellTokenMutation,
 } from 'store/apiSlice';
-import { useWalletPriceDisplay } from 'hooks/useWalletPriceDisplay';
 import type { AppDispatch } from '../../store';
 
 interface BuyDialog {
@@ -32,7 +31,6 @@ interface BuyDialog {
 
 export function MyWalletPage() {
   const dispatch = useDispatch<AppDispatch>();
-  const price = useWalletPriceDisplay();
   // RTK Query owns the fetch, the cache, and StrictMode/dedup. Navigating back
   // to this page reuses the cached holdings (keepUnusedDataFor) instead of
   // re-scanning the chain; a manual trade refreshes a single row (see below).
@@ -225,15 +223,12 @@ export function MyWalletPage() {
 
   const columns = useMemo(
     () =>
-      walletColumns(
-        {
-          onBuy: handleBuyOpen,
-          onSell: handleSell,
-          sellingMint,
-        },
-        price,
-      ),
-    [handleBuyOpen, handleSell, sellingMint, price],
+      walletColumns({
+        onBuy: handleBuyOpen,
+        onSell: handleSell,
+        sellingMint,
+      }),
+    [handleBuyOpen, handleSell, sellingMint],
   );
 
   const buyTitle = buyDialog

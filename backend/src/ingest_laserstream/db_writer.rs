@@ -194,12 +194,12 @@ impl DbWriter {
         // `buffer_unordered` so a flush with hundreds of unique mints can't fire
         // hundreds of (3-query) recomputes at once and exhaust the PgPool.
         // Collect the per-mint write futures eagerly (each owns its data via a
-        // cloned PgPool that builds fresh repos). Collecting first releases the
-        // borrow on `metrics` before the stream runs — a lazy `.map()` fed into
-        // `buffer_unordered` trips an HRTB inference error instead.
-        let metric_writes: Vec<_> = metrics.values().map(|m| {
+        // cloned PgPool that builds fresh repos). `into_values` moves each
+        // `TokenMetricsWrite` straight into its future — no per-metric clone —
+        // and collecting eagerly avoids the HRTB inference error a lazy `.map()`
+        // fed into `buffer_unordered` trips.
+        let metric_writes: Vec<_> = metrics.into_values().map(|m| {
             let pool = self.pool.clone();
-            let m = m.clone();
             async move {
                 let trade_repo = TradeRepo::new(pool.clone());
                 let info_repo = TokenInfoRepo::new(pool);

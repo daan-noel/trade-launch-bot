@@ -206,7 +206,9 @@ pub(crate) fn spawn_exit_fill_poll(
                     super::super::exit::find_trade_driven_exit(&trades, entry_block_time, entry_price, &rule)
                 {
                     if let Ok(Some(prev)) = paper_repo.find_by_id(position_id).await {
-                        let _ = paper_repo
+                        // `update_exit` returns the updated row (RETURNING), so we
+                        // sync runtime state directly without a read-back.
+                        if let Ok(current) = paper_repo
                             .update_exit(
                                 position_id,
                                 &fill.tx_signature,
@@ -214,8 +216,8 @@ pub(crate) fn spawn_exit_fill_poll(
                                 fill.block_time,
                                 fill.reason.as_str(),
                             )
-                            .await;
-                        if let Ok(Some(current)) = paper_repo.find_by_id(position_id).await {
+                            .await
+                        {
                             runtime.sync_position(Some(&prev), &current);
                         }
                     }

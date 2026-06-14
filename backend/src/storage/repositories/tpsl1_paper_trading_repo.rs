@@ -327,7 +327,9 @@ impl Tpsl1PaperTradingRepo {
     }
 
     /// Close a position with the (simulated) exit fill, recording the exit
-    /// reason that fired (`"TakeProfit"`, `"TrailingStop"`, …).
+    /// reason that fired (`"TakeProfit"`, `"TrailingStop"`, …). Returns the
+    /// updated row via `RETURNING` so the caller can sync runtime state without
+    /// a follow-up `find_by_id` read-back.
     pub async fn update_exit(
         &self,
         position_id: Uuid,
@@ -335,24 +337,25 @@ impl Tpsl1PaperTradingRepo {
         exit_price: f64,
         exit_time: DateTime<Utc>,
         exit_reason: &str,
-    ) -> anyhow::Result<()> {
-        sqlx::query(
+    ) -> anyhow::Result<Position> {
+        let row = sqlx::query_as::<_, PaperPositionDbRow>(&format!(
             r#"
             UPDATE tpsl1_paper_positions
             SET exit_tx = $2, exit_price = $3, exit_time = $4, exit_reason = $5,
                 status = 'End', updated_at = $6
             WHERE id = $1
-            "#,
-        )
+            RETURNING {POSITION_COLS}
+            "#
+        ))
         .bind(position_id)
         .bind(exit_tx)
         .bind(exit_price)
         .bind(exit_time)
         .bind(exit_reason)
         .bind(Utc::now())
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
-        Ok(())
+        Position::try_from(row)
     }
 
     /// Persist status/exit fields of an existing position (e.g. mark ExitPending).

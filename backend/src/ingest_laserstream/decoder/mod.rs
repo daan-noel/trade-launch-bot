@@ -305,8 +305,7 @@ impl HeliusDecoder {
                     cu_limit,
                     cu_price,
                     &raw_tx,
-                    message,
-                    meta,
+                    &pump_ixs,
                 ));
             }
         }

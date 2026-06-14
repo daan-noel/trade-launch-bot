@@ -13,8 +13,8 @@ use tracing::{debug, warn};
 use crate::config::constants::{
     BUY_DISCRIMINATOR, BUY_EXACT_QUOTE_IN_DISCRIMINATOR, BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR,
     BUY_EXACT_SOL_IN_DISCRIMINATOR, BUY_V2_DISCRIMINATOR, CREATE_EVENT_DISCRIMINATOR,
-    CREATE_INSTRUCTION_DISCRIMINATOR, CREATE_V2_INSTRUCTION_DISCRIMINATOR, PUMP_FUN_PROGRAM_ID,
-    TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID,
+    CREATE_INSTRUCTION_DISCRIMINATOR, CREATE_V2_INSTRUCTION_DISCRIMINATOR, TOKEN_2022_PROGRAM_ID,
+    TOKEN_PROGRAM_ID,
 };
 use crate::models::{
     events::{CreatorActivityEvent, CreatorActivityKind, InternalEvent, TokenCreatedEvent},
@@ -23,7 +23,6 @@ use crate::models::{
 };
 
 use super::instructions::instruction_data_bytes;
-use super::parse::find_pump_ixs_anywhere;
 use super::trade::DecodedTradeEvent;
 use super::HeliusDecoder;
 
@@ -49,8 +48,7 @@ impl HeliusDecoder {
         cu_limit: Option<u64>,
         cu_price: Option<u64>,
         raw_tx: &Arc<RawTransaction>,
-        message: &Value,
-        meta: &Value,
+        pump_ixs: &[&Value],
     ) -> Vec<InternalEvent> {
         let mint = match pump_accounts.first().filter(|s| !s.is_empty()) {
             Some(m) => m.clone(),
@@ -113,8 +111,7 @@ impl HeliusDecoder {
             .and_then(|e| e.bonding_curve.clone())
             .or_else(|| pump_accounts.get(2).cloned());
         let initial_buy_instruction =
-            extract_pump_buy_instruction_data(message, meta, account_keys)
-                .map(buy_instruction_data_to_json);
+            extract_pump_buy_instruction_data(pump_ixs).map(buy_instruction_data_to_json);
 
         debug!(
             sig = %signature,
@@ -405,13 +402,8 @@ fn buy_instruction_data_to_json(data: PumpBuyInstructionData) -> Value {
     }
 }
 
-fn extract_pump_buy_instruction_data(
-    message: &Value,
-    meta: &Value,
-    account_keys: &[&str],
-) -> Option<PumpBuyInstructionData> {
-    let ixs = find_pump_ixs_anywhere(message, meta, account_keys, PUMP_FUN_PROGRAM_ID);
-    for ix in ixs {
+fn extract_pump_buy_instruction_data(pump_ixs: &[&Value]) -> Option<PumpBuyInstructionData> {
+    for &ix in pump_ixs {
         if let Some(bytes) = instruction_data_bytes(ix).as_deref() {
             if let Some(data) = parse_pump_buy_instruction_data(bytes) {
                 return Some(data);
