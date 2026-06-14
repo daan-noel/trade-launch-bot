@@ -45,6 +45,8 @@ export function fieldClassName({
     sizeClasses[size],
     size === 'page' ? 'border-border bg-bg-card focus:border-primary/40' : variantClasses[variant],
     (type === 'number' || type === 'datetime-local' || type === 'date') && 'font-mono',
+    type === 'number' &&
+      '[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none',
     type === 'datetime-local' && 'scheme-dark',
     className,
   );
@@ -54,13 +56,18 @@ export type FieldProps = { fieldSize?: FieldSize; variant?: FieldVariant };
 
 export const Input = forwardRef<
   HTMLInputElement,
-  InputHTMLAttributes<HTMLInputElement> & FieldProps & { unit?: string }
+  InputHTMLAttributes<HTMLInputElement> & FieldProps & { unit?: string; blankZero?: boolean }
 >(function Input(
-  { className, type = 'text', fieldSize = 'sm', variant = 'default', unit, value, ...props },
+  { className, type = 'text', fieldSize = 'sm', variant = 'default', unit, blankZero, value, ...props },
   ref,
 ) {
   const innerRef = useRef<HTMLInputElement | null>(null);
   useImperativeHandle(ref, () => innerRef.current as HTMLInputElement, []);
+
+  // `blankZero`: render a literal 0 as an empty field (for "0 = off" params, so
+  // an unset gate reads blank). Display-only — the bound value is untouched, so
+  // an unedited 0 still saves as 0.
+  if (blankZero && (value === 0 || value === '0')) value = '';
 
   const fieldCls = fieldClassName({ size: fieldSize, variant, type, className });
 

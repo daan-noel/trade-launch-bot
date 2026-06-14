@@ -359,42 +359,42 @@ export function RuleFormModal({
         <div className="grid grid-cols-3 gap-3">
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="minAgeSecs">Min Age (s)</FieldLabel>
-            <Input type="number" fieldSize="md" step="1" value={form.minAgeSecs} readOnly={!editable('entry')}
+            <Input type="number" blankZero fieldSize="md" step="1" value={form.minAgeSecs} readOnly={!editable('entry')}
               onChange={(e) => set({ minAgeSecs: e.target.value })} className={fieldCls('entry')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="minAliveSol">Min Alive SOL</FieldLabel>
-            <Input type="number" fieldSize="md" step="0.01" unit="◎" value={form.minAliveSol} readOnly={!editable('entry')}
+            <Input type="number" blankZero fieldSize="md" step="0.01" unit="◎" value={form.minAliveSol} readOnly={!editable('entry')}
               onChange={(e) => set({ minAliveSol: e.target.value })} className={fieldCls('entry')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="minOrganicSol">Min Organic SOL</FieldLabel>
-            <Input type="number" fieldSize="md" step="0.01" unit="◎" value={form.minOrganicSol} readOnly={!editable('entry')}
+            <Input type="number" blankZero fieldSize="md" step="0.01" unit="◎" value={form.minOrganicSol} readOnly={!editable('entry')}
               onChange={(e) => set({ minOrganicSol: e.target.value })} className={fieldCls('entry')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="pullbackPct">Pullback %</FieldLabel>
-            <Input type="number" fieldSize="md" step="1" min={0} max={100} unit="%" value={form.pullbackPct} readOnly={!editable('entry')}
+            <Input type="number" blankZero fieldSize="md" step="1" min={0} max={100} unit="%" value={form.pullbackPct} readOnly={!editable('entry')}
               onChange={(e) => set({ pullbackPct: e.target.value })} className={fieldCls('entry')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="higherLowSecs">Higher-Low (s)</FieldLabel>
-            <Input type="number" fieldSize="md" step="1" value={form.higherLowSecs} readOnly={!editable('entry')}
+            <Input type="number" blankZero fieldSize="md" step="1" value={form.higherLowSecs} readOnly={!editable('entry')}
               onChange={(e) => set({ higherLowSecs: e.target.value })} className={fieldCls('entry')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="maxCohortHeld">Max Cohort Held %</FieldLabel>
-            <Input type="number" fieldSize="md" step="1" min={0} max={100} unit="%" value={form.maxCohortHeld} readOnly={!editable('entry')}
+            <Input type="number" blankZero fieldSize="md" step="1" min={0} max={100} unit="%" value={form.maxCohortHeld} readOnly={!editable('entry')}
               onChange={(e) => set({ maxCohortHeld: e.target.value })} className={fieldCls('entry')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="minLiquiditySol">Min Liquidity SOL</FieldLabel>
-            <Input type="number" fieldSize="md" step="0.1" unit="◎" value={form.minLiquiditySol} readOnly={!editable('entry')}
+            <Input type="number" blankZero fieldSize="md" step="0.1" unit="◎" value={form.minLiquiditySol} readOnly={!editable('entry')}
               onChange={(e) => set({ minLiquiditySol: e.target.value })} className={fieldCls('entry')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="minOrganicLiq">Min Organic Liq</FieldLabel>
-            <Input type="number" fieldSize="md" step="0.1" unit="◎" value={form.minOrganicLiq} readOnly={!editable('entry')}
+            <Input type="number" blankZero fieldSize="md" step="0.1" unit="◎" value={form.minOrganicLiq} readOnly={!editable('entry')}
               onChange={(e) => set({ minOrganicLiq: e.target.value })} className={fieldCls('entry')} placeholder="0 = off" />
           </label>
         </div>
@@ -419,31 +419,31 @@ export function RuleFormModal({
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="trailingStopPct" accent="text-primary">Trailing Stop %</FieldLabel>
-            <Input type="number" fieldSize="md" step="1" min={0} max={100} unit="%" value={form.trailingStopPct} readOnly={!editable('exit')}
+            <Input type="number" blankZero fieldSize="md" step="1" min={0} max={100} unit="%" value={form.trailingStopPct} readOnly={!editable('exit')}
               onChange={(e) => set({ trailingStopPct: e.target.value })}
               className={fieldCls('exit', 'focus:border-warning')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="timeStopSecs" accent="text-primary">Time Stop (s)</FieldLabel>
-            <Input type="number" fieldSize="md" step="1" value={form.timeStopSecs} readOnly={!editable('exit')}
+            <Input type="number" blankZero fieldSize="md" step="1" value={form.timeStopSecs} readOnly={!editable('exit')}
               onChange={(e) => set({ timeStopSecs: e.target.value })}
               className={fieldCls('exit', 'focus:border-info')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="stallSecs" accent="text-primary">Stall (s)</FieldLabel>
-            <Input type="number" fieldSize="md" step="1" value={form.stallSecs} readOnly={!editable('exit')}
+            <Input type="number" blankZero fieldSize="md" step="1" value={form.stallSecs} readOnly={!editable('exit')}
               onChange={(e) => set({ stallSecs: e.target.value })}
               className={fieldCls('exit', 'focus:border-accent')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="liquidityDropPct" accent="text-primary">Liquidity Drop %</FieldLabel>
-            <Input type="number" fieldSize="md" step="1" min={0} max={100} unit="%" value={form.liquidityDropPct} readOnly={!editable('exit')}
+            <Input type="number" blankZero fieldSize="md" step="1" min={0} max={100} unit="%" value={form.liquidityDropPct} readOnly={!editable('exit')}
               onChange={(e) => set({ liquidityDropPct: e.target.value })}
               className={fieldCls('exit', 'focus:border-primary')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="cohortExitRatio" accent="text-primary">Cohort Exit Ratio %</FieldLabel>
-            <Input type="number" fieldSize="md" step="1" min={0} max={100} unit="%" value={form.cohortExitRatio} readOnly={!editable('exit')}
+            <Input type="number" blankZero fieldSize="md" step="1" min={0} max={100} unit="%" value={form.cohortExitRatio} readOnly={!editable('exit')}
               onChange={(e) => set({ cohortExitRatio: e.target.value })}
               className={fieldCls('exit', 'focus:border-red')} placeholder="0 = off" />
           </label>

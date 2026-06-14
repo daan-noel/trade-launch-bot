@@ -339,25 +339,25 @@ export function RuleFormModal({
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="trailingStopPct" accent="text-primary">Trailing Stop %</FieldLabel>
-            <Input type="number" fieldSize="md" step="1" min={0} max={100} unit="%" value={form.trailingStopPct} readOnly={!editable('exit')}
+            <Input type="number" blankZero fieldSize="md" step="1" min={0} max={100} unit="%" value={form.trailingStopPct} readOnly={!editable('exit')}
               onChange={(e) => set({ trailingStopPct: e.target.value })}
               className={fieldCls('exit', 'focus:border-warning')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="timeStopSecs" accent="text-primary">Time Stop (s)</FieldLabel>
-            <Input type="number" fieldSize="md" step="1" value={form.timeStopSecs} readOnly={!editable('exit')}
+            <Input type="number" blankZero fieldSize="md" step="1" value={form.timeStopSecs} readOnly={!editable('exit')}
               onChange={(e) => set({ timeStopSecs: e.target.value })}
               className={fieldCls('exit', 'focus:border-info')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="stallSecs" accent="text-primary">Stall (s)</FieldLabel>
-            <Input type="number" fieldSize="md" step="1" value={form.stallSecs} readOnly={!editable('exit')}
+            <Input type="number" blankZero fieldSize="md" step="1" value={form.stallSecs} readOnly={!editable('exit')}
               onChange={(e) => set({ stallSecs: e.target.value })}
               className={fieldCls('exit', 'focus:border-accent')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="liquidityDropPct" accent="text-primary">Liquidity Drop %</FieldLabel>
-            <Input type="number" fieldSize="md" step="1" min={0} max={100} unit="%" value={form.liquidityDropPct} readOnly={!editable('exit')}
+            <Input type="number" blankZero fieldSize="md" step="1" min={0} max={100} unit="%" value={form.liquidityDropPct} readOnly={!editable('exit')}
               onChange={(e) => set({ liquidityDropPct: e.target.value })}
               className={fieldCls('exit', 'focus:border-primary')} placeholder="0 = off" />
           </label>

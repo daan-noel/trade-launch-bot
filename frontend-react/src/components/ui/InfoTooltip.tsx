@@ -92,6 +92,7 @@ export function InfoTooltip({ title, body, side = 'bottom', className }: InfoToo
       <button
         ref={anchorRef}
         type="button"
+        tabIndex={-1}
         aria-label={title ? `Info: ${title}` : 'Info'}
         aria-describedby={coords ? tooltipId : undefined}
         onMouseEnter={show}
