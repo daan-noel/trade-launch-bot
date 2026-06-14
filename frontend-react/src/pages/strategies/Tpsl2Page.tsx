@@ -19,7 +19,8 @@ import {
   positionColumns,
   simColumns,
 } from 'components/tpsl2/tableColumns';
-import { fmtTime } from 'components/tpsl2/utils';
+import { useTimezone } from 'context/TimezoneContext';
+import { formatIso } from 'utils/date';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { usePolledRules } from 'hooks/usePolledRules';
 import { useRulePositions } from 'hooks/useRulePositions';
@@ -152,6 +153,7 @@ function PaperResultSection({
   onSelectToken: (row: SimulatedTokenResult | null) => void;
   onClose: () => void;
 }) {
+  const { timezone } = useTimezone();
   const { run } = data;
 
   if (!run) {
@@ -196,11 +198,11 @@ function PaperResultSection({
           </span>
         </span>
         <span>
-          Started <span className="font-mono text-text">{fmtTime(run.started_at)}</span>
+          Started <span className="font-mono text-text">{formatIso(run.started_at, timezone)}</span>
         </span>
         {run.finished_at && (
           <span>
-            Ended <span className="font-mono text-text">{fmtTime(run.finished_at)}</span>
+            Ended <span className="font-mono text-text">{formatIso(run.finished_at, timezone)}</span>
           </span>
         )}
       </div>

@@ -2,7 +2,7 @@ import type { ColumnDef } from 'components/table/types';
 import type { RulePositionRecord, MatchedTokenRecord, SimulatedTokenResult } from 'types';
 import { ageClass, formatAge, formatDecimalTrim } from 'utils/format';
 import { AmountCell, CurrentPriceCell } from 'components/tokens/priceCells';
-import { fmtTime } from './utils';
+import { DateCell } from 'components/table/DateCell';
 import { cn } from 'lib/cn';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 
@@ -63,7 +63,7 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
       label: 'Entry Time',
       group: 'entry',
       sortable: true,
-      render: (r) => fmtTime(r.entry_time),
+      render: (r) => <DateCell iso={r.entry_time} />,
       sortValue: (r) => r.entry_time ?? '',
       searchValue: (r) => r.entry_time ?? '',
     },
@@ -81,7 +81,7 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
       label: 'Exit Time',
       group: 'exit',
       sortable: true,
-      render: (r) => fmtTime(r.exit_time),
+      render: (r) => <DateCell iso={r.exit_time} />,
       sortValue: (r) => r.exit_time ?? '',
       searchValue: (r) => r.exit_time ?? '',
     },
@@ -176,7 +176,7 @@ export const matchedColumns: ColumnDef<MatchedTokenRecord>[] = [
     label: 'Created',
     group: 'activity',
     sortable: true,
-    render: (r) => fmtTime(r.created_at),
+    render: (r) => <DateCell iso={r.created_at} />,
     sortValue: (r) => r.created_at,
     searchValue: (r) => r.created_at,
   },
@@ -235,7 +235,7 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
       label: 'Entry Time',
       group: 'entry',
       sortable: true,
-      render: (r) => fmtTime(r.entry_time),
+      render: (r) => <DateCell iso={r.entry_time} />,
       sortValue: (r) => r.entry_time,
       searchValue: (r) => r.entry_time,
     },
@@ -263,7 +263,7 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
       label: 'Exit Time',
       group: 'exit',
       sortable: true,
-      render: (r) => fmtTime(r.exit_time),
+      render: (r) => <DateCell iso={r.exit_time} />,
       sortValue: (r) => r.exit_time ?? '',
       searchValue: (r) => r.exit_time ?? '',
     },

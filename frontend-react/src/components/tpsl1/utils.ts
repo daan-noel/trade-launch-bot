@@ -32,10 +32,5 @@ export function parseIxLabels(raw: string): unknown[] {
     .filter(Boolean);
 }
 
-export function fmtTime(iso: string | null | undefined): string {
-  if (!iso) return '—';
-  return iso.slice(0, 16).replace('T', ' ');
-}
-
 export const EXAMPLE_IX_LABELS =
   '["Compute Budget: SetComputeUnitLimit", "Compute Budget: SetComputeUnitPrice", "Pump.Fun: Create_v2", "Associated Token: CreateIdempotent", "Pump.Fun: Buy", "System Program: Transfer"]';

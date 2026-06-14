@@ -19,6 +19,8 @@ import { Button } from 'components/ui/Button';
 import { Input, Textarea } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { InlineAlert, Modal } from 'components/ui/Modal';
+import { useTimezone } from 'context/TimezoneContext';
+import { formatIsoLines } from 'utils/date';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -670,6 +672,7 @@ interface WalletRowProps {
 }
 
 function WalletRow({ wallet, onEdit, onDelete, onToggleTracked, toggling }: WalletRowProps) {
+  const { timezone } = useTimezone();
   return (
     <div className="flex items-center gap-3 rounded-md border border-white/6 bg-white/2 px-3 py-2 text-xs">
       <span
@@ -707,7 +710,7 @@ function WalletRow({ wallet, onEdit, onDelete, onToggleTracked, toggling }: Wall
       </button>
       {wallet.last_seen_at && (
         <span className="hidden md:block text-text-dim whitespace-nowrap">
-          seen {new Date(wallet.last_seen_at).toLocaleDateString()}
+          seen {formatIsoLines(wallet.last_seen_at, timezone).date}
         </span>
       )}
       <div className="flex items-center gap-1 shrink-0">

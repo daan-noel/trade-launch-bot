@@ -5,6 +5,7 @@ import { cn } from 'lib/cn';
 import { formatCompact, priceClass } from 'utils/format';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Badge } from 'components/ui/Badge';
+import { DateCell } from 'components/table/DateCell';
 
 export interface WalletActions {
   onBuy: (mint: string, tokenProgramId: string) => void;
@@ -168,13 +169,7 @@ export function walletColumns(
       width: '110px',
       sortable: true,
       render: (r) =>
-        r.token_created_at ? (
-          <span className="text-text-dim">
-            {r.token_created_at.slice(0, 19).replace('T', ' ')}
-          </span>
-        ) : (
-          '—'
-        ),
+        r.token_created_at ? <DateCell iso={r.token_created_at} /> : '—',
       sortValue: (r) => r.token_created_at ?? '',
       searchValue: (r) => r.token_created_at ?? '',
     },
