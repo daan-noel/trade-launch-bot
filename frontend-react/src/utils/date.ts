@@ -2,23 +2,45 @@ function dtfPart(parts: Intl.DateTimeFormatPart[], type: Intl.DateTimeFormatPart
   return parts.find((p) => p.type === type)?.value ?? '';
 }
 
+/**
+ * `Intl.DateTimeFormat` is an expensive constructor (full locale + timezone
+ * resolution). These formatters are built with a tiny finite set of
+ * (timezone, options) combinations but were previously reconstructed on every
+ * call — i.e. per table cell, per render, ~40-100×/sec on the live-trade tables.
+ * Cache them at module level keyed by a stable string so each combination is
+ * built once and reused. Mirrors `createChartTimeFormatters` in chartTimezone.ts.
+ */
+const dtfCache = new Map<string, Intl.DateTimeFormat>();
+function getDtf(key: string, build: () => Intl.DateTimeFormat): Intl.DateTimeFormat {
+  let f = dtfCache.get(key);
+  if (!f) {
+    f = build();
+    dtfCache.set(key, f);
+  }
+  return f;
+}
+
 function formatInstantParts(
   ms: number,
   timeZone: string,
   withFractionalSeconds: boolean,
 ): { date: string; time: string } | null {
   try {
-    const dtf = new Intl.DateTimeFormat('en-US', {
-      timeZone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      ...(withFractionalSeconds ? { fractionalSecondDigits: 3 as const } : {}),
-      hour12: false,
-    });
+    const dtf = getDtf(
+      `parts|${timeZone}|${withFractionalSeconds}`,
+      () =>
+        new Intl.DateTimeFormat('en-US', {
+          timeZone,
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          ...(withFractionalSeconds ? { fractionalSecondDigits: 3 as const } : {}),
+          hour12: false,
+        }),
+    );
     const parts = dtf.formatToParts(new Date(ms));
     const y = dtfPart(parts, 'year');
     const mo = dtfPart(parts, 'month');
@@ -66,14 +88,18 @@ export function formatIsoCompact(iso: string, timeZone: string): string {
   const ms = Date.parse(iso);
   if (Number.isNaN(ms)) return iso;
   try {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone,
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    }).formatToParts(new Date(ms));
+    const parts = getDtf(
+      `compact|${timeZone}`,
+      () =>
+        new Intl.DateTimeFormat('en-US', {
+          timeZone,
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        }),
+    ).formatToParts(new Date(ms));
     const mo = dtfPart(parts, 'month');
     const da = dtfPart(parts, 'day');
     const h = dtfPart(parts, 'hour');
@@ -99,15 +125,19 @@ export function formatTimestampMs(ms: number, timeZone: string): string {
 export function formatTimestampMsCompact(ms: number, timeZone: string): string {
   if (!Number.isFinite(ms)) return String(ms);
   try {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone,
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-    }).formatToParts(new Date(ms));
+    const parts = getDtf(
+      `tscompact|${timeZone}`,
+      () =>
+        new Intl.DateTimeFormat('en-US', {
+          timeZone,
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: false,
+        }),
+    ).formatToParts(new Date(ms));
     const h = dtfPart(parts, 'hour');
     const mi = dtfPart(parts, 'minute');
     const s = dtfPart(parts, 'second');

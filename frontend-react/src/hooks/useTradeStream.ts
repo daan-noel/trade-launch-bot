@@ -35,13 +35,30 @@ export function useTradeStream() {
     const es = connectTradeStream((raw) => {
       try {
         buffer.push(JSON.parse(raw) as LiveTrade);
-        if (timer === undefined) timer = window.setTimeout(flush, FLUSH_INTERVAL_MS);
+        // Cap the buffer so a backgrounded tab (which doesn't flush — see below)
+        // can't grow it without bound; only the freshest MAX_EVENTS matter.
+        if (buffer.length > MAX_EVENTS) buffer.splice(0, buffer.length - MAX_EVENTS);
+        // While hidden, keep buffering but don't schedule the flush: no state
+        // write, no 500-row rebuild, no re-render. Mirrors useNow /
+        // skipPollingIfUnfocused — the hottest stream shouldn't burn CPU on a
+        // tab nobody is watching. The pending frames flush on re-focus.
+        if (timer === undefined && document.visibilityState !== 'hidden') {
+          timer = window.setTimeout(flush, FLUSH_INTERVAL_MS);
+        }
       } catch {
         /* ignore parse errors */
       }
     });
 
+    // On re-focus, drain whatever buffered while hidden immediately, then let
+    // incoming frames resume normal timer-coalesced flushing.
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible' && timer === undefined) flush();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+
     return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
       window.clearTimeout(timer);
       es.close();
     };

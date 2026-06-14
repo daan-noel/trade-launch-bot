@@ -241,6 +241,10 @@ export function DataTable<R>({
     // Server mode: `rows` already IS the filtered/sorted page — never reduce it
     // locally (that would hide rows the server legitimately returned).
     if (serverSide) return rows;
+    // Fast path: nothing is filtering or sorting (e.g. the live-trade tables,
+    // which hand back a fresh `rows` up to 4×/sec). Skip the full-buffer filter
+    // pass + array allocation and hand `rows` straight through.
+    if (!debouncedSearch && activeColFilters.length === 0 && !sortCol) return rows;
     const searchLower = debouncedSearch.toLowerCase();
     let list = rows.filter((row) => {
       if (searchLower) {

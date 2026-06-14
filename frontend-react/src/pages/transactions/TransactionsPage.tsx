@@ -8,7 +8,9 @@ import { useTradeStream } from 'hooks/useTradeStream';
 export function TransactionsPage() {
   const price = usePriceDisplay();
   const events = useTradeStream();
-  const columns = useMemo(() => tradeColumns(price), [price]);
+  // Key on the unit label only: the rate-dependent cells read the rate from
+  // context, so the column array stays stable across USD-rate ticks.
+  const columns = useMemo(() => tradeColumns(price.unitLabel), [price.unitLabel]);
 
   return (
     <div>

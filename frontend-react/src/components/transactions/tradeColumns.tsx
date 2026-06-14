@@ -2,13 +2,19 @@ import type { ColumnDef } from 'components/table/types';
 import type { LiveTrade } from 'types';
 import { DateCell } from 'components/table/DateCell';
 import { formatDecimal } from 'utils/format';
-import type { usePriceDisplay } from 'hooks/usePriceDisplay';
+import { AmountCell, PriceCell } from 'components/tokens/priceCells';
 import { cn } from 'lib/cn';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 
-export function tradeColumns(price: ReturnType<typeof usePriceDisplay>): ColumnDef<LiveTrade>[] {
-  const unit = price.unitLabel;
-
+/**
+ * Takes only the unit *label* (not the whole `usePriceDisplay` object) so the
+ * column array stays referentially stable across USD-rate ticks — the rate
+ * changes the price object's identity every tick, which would otherwise rebuild
+ * every column and re-render the entire live table. The two rate-dependent value
+ * cells use the memoized `AmountCell`/`PriceCell`, which read the rate from
+ * context themselves and re-render in isolation when it changes.
+ */
+export function tradeColumns(unit: string): ColumnDef<LiveTrade>[] {
   return [
     {
       key: 'mint',
@@ -52,7 +58,7 @@ export function tradeColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
         const isBuy = ev.trade_type === 'buy';
         return (
           <span className={cn('font-semibold', isBuy ? 'text-primary' : 'text-red')}>
-            {price.displayAmount(ev.sol_amount)}
+            <AmountCell sol={ev.sol_amount} />
           </span>
         );
       },
@@ -80,7 +86,7 @@ export function tradeColumns(price: ReturnType<typeof usePriceDisplay>): ColumnD
         const isBuy = ev.trade_type === 'buy';
         return (
           <span className={cn('font-semibold', isBuy ? 'text-primary' : 'text-red')}>
-            {price.displayPrice(ev.price_per_token)}
+            <PriceCell sol={ev.price_per_token} />
           </span>
         );
       },
