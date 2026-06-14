@@ -1,4 +1,4 @@
-import type { MouseEvent } from 'react';
+import { createContext, useContext, type MouseEvent } from 'react';
 import type { ColumnDef } from 'components/table/types';
 import type { RuleRecord } from 'types';
 import { dashF, dashNum, dashPercent } from './utils';
@@ -7,6 +7,27 @@ import { paramTip } from 'lib/tpslParamHelp';
 import { cn } from 'lib/cn';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
+
+/** Run + Analyze handler bags for the per-row controls. The page owns the
+ *  lifecycle/result state; it passes both in through `RuleRowProvider` so the
+ *  control cells can read them via context instead of forcing `ruleColumns` to
+ *  take arguments — every column then declares the same way. */
+export interface RuleRowContextValue {
+  controls: RuleControlHandlers;
+  analysis: RuleAnalysisHandlers;
+}
+
+const RuleRowContext = createContext<RuleRowContextValue | null>(null);
+
+/** Wrap the rules `DataTable` in this so the Run/Analyze cells can reach the
+ *  page's handlers. */
+export const RuleRowProvider = RuleRowContext.Provider;
+
+function useRuleRow(): RuleRowContextValue {
+  const ctx = useContext(RuleRowContext);
+  if (!ctx) throw new Error('Rule control cell rendered outside <RuleRowProvider>');
+  return ctx;
+}
 
 /** Read-only lifecycle badge. The clickable activate/pause/stop controls now
  *  live in the row actions; this column just *names* the state so it reads at a
@@ -59,7 +80,8 @@ export interface RuleControlHandlers {
  *  Activate is visually distinct (green + outline ▷) from the teal filled ▶ Resume so
  *  "start fresh" never reads the same as "continue". Clicks stop propagation so
  *  they don't also select the row. */
-function RunControls({ rule, c }: { rule: RuleRecord; c: RuleControlHandlers }) {
+function RunControls({ rule }: { rule: RuleRecord }) {
+  const { controls: c } = useRuleRow();
   const busy = c.busyId === rule.id;
   const stop = (fn: () => void) => (e: MouseEvent) => {
     e.stopPropagation();
@@ -130,8 +152,72 @@ function RunControls({ rule, c }: { rule: RuleRecord; c: RuleControlHandlers }) 
   );
 }
 
-export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord>[] {
-  return [
+/** Callbacks + per-row state the Analyze column needs. Supplied by the page so
+ *  the column lives here while the result-view handlers stay on the page. The
+ *  `*ActiveId` fields highlight the button whose result panel is currently open;
+ *  the `*Loading` flags disable a tool while its fetch is in flight. */
+export interface RuleAnalysisHandlers {
+  simLoading: boolean;
+  matchedLoading: boolean;
+  paperLoading: boolean;
+  matchedActiveId: string | null;
+  paperActiveId: string | null;
+  onSimulate: (rule: RuleRecord) => void;
+  onMatched: (rule: RuleRecord) => void;
+  onPaperResult: (rule: RuleRecord) => void;
+}
+
+/** Read-only analysis tools, in their own column so they read as a group
+ *  distinct from the rule-management actions (Edit/Del). Icon-only — each
+ *  button's tooltip names the action. Clicks stop propagation so they inspect
+ *  the rule without also selecting the row. */
+function AnalysisControls({ rule }: { rule: RuleRecord }) {
+  const { analysis: a } = useRuleRow();
+  const stop = (fn: () => void) => (e: MouseEvent) => {
+    e.stopPropagation();
+    fn();
+  };
+  const matchedActive = a.matchedActiveId === rule.id;
+  const paperActive = a.paperActiveId === rule.id;
+  return (
+    <div className="flex items-center gap-1 justify-center">
+      <Button
+        variant="ghost"
+        size="xs"
+        disabled={a.simLoading}
+        onClick={stop(() => a.onSimulate(rule))}
+        className="text-primary"
+        title="Simulate — backtest this rule over historical tokens"
+      >
+        🧪
+      </Button>
+      <Button
+        variant="ghost"
+        size="xs"
+        disabled={a.matchedLoading}
+        onClick={stop(() => a.onMatched(rule))}
+        className={cn(matchedActive && 'border-[#9370db]/45 bg-[#9370db]/8 text-[#9370db]')}
+        title="Matched tokens — tokens in the DB that pass this rule's entry filter"
+      >
+        🎯
+      </Button>
+      {rule.trade_mode === 'paper' && (
+        <Button
+          variant="ghost"
+          size="xs"
+          disabled={a.paperLoading}
+          onClick={stop(() => a.onPaperResult(rule))}
+          className={cn('text-info', paperActive && 'border-info/45 bg-info/8')}
+          title="Paper test result — positions from the latest paper run"
+        >
+          📄
+        </Button>
+      )}
+    </div>
+  );
+}
+
+export const ruleColumns: ColumnDef<RuleRecord>[] = [
     {
       key: 'name',
       label: 'Name',
@@ -359,8 +445,16 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
       group: 'run',
       sortable: false,
       width: '180px',
-      render: (r) => <RunControls rule={r} c={controls} />,
+      render: (r) => <RunControls rule={r} />,
       searchValue: () => '',
     },
-  ];
-}
+    {
+      key: 'analyze',
+      label: 'Analyze',
+      group: 'analyze',
+      sortable: false,
+      width: '110px',
+      render: (r) => <AnalysisControls rule={r} />,
+      searchValue: () => '',
+    },
+];

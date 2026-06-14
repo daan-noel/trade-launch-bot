@@ -12,7 +12,7 @@ import {
   type RuleFormData,
   type LockGroupState,
 } from 'components/tpsl1/RuleFormModal';
-import { ruleColumns } from 'components/tpsl1/ruleColumns';
+import { ruleColumns, RuleRowProvider } from 'components/tpsl1/ruleColumns';
 import { SimSummaryCard } from 'components/tpsl1/SimSummaryCard';
 import { TokenInspectModal, type InspectTarget } from 'components/tpsl1/TokenInspectModal';
 import {
@@ -453,34 +453,18 @@ const RuleActionsCell = memo(function RuleActionsCell({
   rule,
   confirmingDelete,
   deleteLoading,
-  matchedActive,
-  paperActive,
-  simLoading,
-  matchedLoading,
-  paperLoading,
   onEdit,
   onDelete,
   onRequestDelete,
   onCancelDelete,
-  onSimulate,
-  onMatched,
-  onPaperResult,
 }: {
   rule: RuleRecord;
   confirmingDelete: boolean;
   deleteLoading: boolean;
-  matchedActive: boolean;
-  paperActive: boolean;
-  simLoading: boolean;
-  matchedLoading: boolean;
-  paperLoading: boolean;
   onEdit: (rule: RuleRecord) => void;
   onDelete: (ruleId: string) => void;
   onRequestDelete: (ruleId: string) => void;
   onCancelDelete: () => void;
-  onSimulate: (rule: RuleRecord) => void;
-  onMatched: (rule: RuleRecord) => void;
-  onPaperResult: (rule: RuleRecord) => void;
 }) {
   if (confirmingDelete) {
     return (
@@ -495,6 +479,9 @@ const RuleActionsCell = memo(function RuleActionsCell({
       </div>
     );
   }
+  // Rule-management actions only (edit / delete). The read-only analysis tools
+  // (simulate / matched / paper) live in their own `Analyze` column so the two
+  // intents read as separate groups. Icon-only — tooltips name each action.
   return (
     <div className="flex items-center justify-center gap-1">
       <Button
@@ -504,10 +491,11 @@ const RuleActionsCell = memo(function RuleActionsCell({
         title={
           rule.is_active || rule.open_positions > 0
             ? 'Live — only sizing (buy amount + concurrency) is editable'
-            : 'Edit'
+            : 'Edit rule'
         }
+        className="text-info"
       >
-        Edit
+        ✎
       </Button>
       <Button
         variant="ghost"
@@ -517,44 +505,12 @@ const RuleActionsCell = memo(function RuleActionsCell({
         title={
           rule.is_active || rule.open_positions > 0
             ? 'Cannot delete a running rule or one with open positions'
-            : 'Delete'
+            : 'Delete rule'
         }
         className="text-red"
       >
-        Del
+        ✕
       </Button>
-      <Button
-        variant="ghost"
-        size="xs"
-        disabled={simLoading}
-        onClick={() => onSimulate(rule)}
-        className="text-primary"
-        title="Simulate"
-      >
-        ▶
-      </Button>
-      <Button
-        variant="ghost"
-        size="xs"
-        disabled={matchedLoading}
-        onClick={() => onMatched(rule)}
-        className={cn(matchedActive && 'border-[#9370db]/45 bg-[#9370db]/8 text-[#9370db]')}
-        title="Matched tokens"
-      >
-        ⊞
-      </Button>
-      {rule.trade_mode === 'paper' && (
-        <Button
-          variant="ghost"
-          size="xs"
-          disabled={paperLoading}
-          onClick={() => onPaperResult(rule)}
-          className={cn('text-info', paperActive && 'border-info/45 bg-info/8')}
-          title="Paper test result"
-        >
-          ▦
-        </Button>
-      )}
     </div>
   );
 });
@@ -726,7 +682,6 @@ export function Tpsl1Page() {
     }),
     [lifecycleBusyId, handlePause, handleActivate, handleActivateClick],
   );
-  const columns = useMemo(() => ruleColumns(ruleControls), [ruleControls]);
   // positionColumns/simColumns are referentially-stable module constants — their
   // price cells read the unit/rate from context, so a USD-rate tick no longer
   // rebuilds the column arrays or re-renders the whole table.
@@ -873,45 +828,55 @@ export function Tpsl1Page() {
   // Cancel a pending delete confirmation; stable so it doesn't churn the cell.
   const cancelDelete = useCallback(() => setConfirmDeleteId(null), []);
 
-  // Row-action cell renders the memoized <RuleActionsCell>: the per-row booleans
-  // are narrowed here so a global toggle (simLoading, the open matched/paper
-  // rule…) only re-renders the rows whose buttons actually change. Selection,
-  // polling and the banner timer never touch these deps, so they don't churn it.
+  // Read-only analysis tools for the `Analyze` column. Defined here (after the
+  // result handlers) and rebuilt when a tool's loading flag flips or the open
+  // result panel changes, so only the affected buttons restyle.
+  const ruleAnalysis = useMemo(
+    () => ({
+      simLoading,
+      matchedLoading,
+      paperLoading,
+      matchedActiveId: matchedResult?.ruleId ?? null,
+      paperActiveId: paperResult?.ruleId ?? null,
+      onSimulate: handleSimulate,
+      onMatched: handleMatched,
+      onPaperResult: handlePaperResult,
+    }),
+    [
+      simLoading,
+      matchedLoading,
+      paperLoading,
+      matchedResult,
+      paperResult,
+      handleSimulate,
+      handleMatched,
+      handlePaperResult,
+    ],
+  );
+  // Single context value for the Run/Analyze cells — `ruleColumns` is now a
+  // static array, so only the cells (not the column defs) re-read these.
+  const rowContext = useMemo(
+    () => ({ controls: ruleControls, analysis: ruleAnalysis }),
+    [ruleControls, ruleAnalysis],
+  );
+
+  // Row-action cell renders the memoized <RuleActionsCell> (edit/delete only):
+  // narrowing the per-row booleans here means a global toggle only re-renders
+  // the rows whose buttons actually change. Selection, polling and the banner
+  // timer never touch these deps, so they don't churn it.
   const ruleActions = useCallback(
     (rule: RuleRecord) => (
       <RuleActionsCell
         rule={rule}
         confirmingDelete={confirmDeleteId === rule.id}
         deleteLoading={deleteLoading}
-        matchedActive={matchedResult?.ruleId === rule.id}
-        paperActive={paperResult?.ruleId === rule.id}
-        simLoading={simLoading}
-        matchedLoading={matchedLoading}
-        paperLoading={paperLoading}
         onEdit={openEdit}
         onDelete={handleDelete}
         onRequestDelete={setConfirmDeleteId}
         onCancelDelete={cancelDelete}
-        onSimulate={handleSimulate}
-        onMatched={handleMatched}
-        onPaperResult={handlePaperResult}
       />
     ),
-    [
-      confirmDeleteId,
-      deleteLoading,
-      matchedResult,
-      simLoading,
-      matchedLoading,
-      paperLoading,
-      paperResult,
-      openEdit,
-      handleDelete,
-      cancelDelete,
-      handleSimulate,
-      handleMatched,
-      handlePaperResult,
-    ],
+    [confirmDeleteId, deleteLoading, openEdit, handleDelete, cancelDelete],
   );
 
   const matchedRuleName = useMemo(
@@ -988,21 +953,23 @@ export function Tpsl1Page() {
       {error && <InlineAlert variant="error">{error}</InlineAlert>}
 
       {!loading && !error && (
-        <DataTable
-          columns={columns}
-          rows={rules}
-          rowKey={(r) => r.id}
-          rowActions={ruleActions}
-          selectedKey={selectedRuleId}
-          onSelect={setSelectedRuleId}
-          defaultPageSize={10}
-          pageSizeOptions={[10, 25, 50]}
-          searchable
-          colFilters
-          colToggle
-          storageKey="tpsl1_rules_cols"
-          emptyMessage="No rules found"
-        />
+        <RuleRowProvider value={rowContext}>
+          <DataTable
+            columns={ruleColumns}
+            rows={rules}
+            rowKey={(r) => r.id}
+            rowActions={ruleActions}
+            selectedKey={selectedRuleId}
+            onSelect={setSelectedRuleId}
+            defaultPageSize={10}
+            pageSizeOptions={[10, 25, 50]}
+            searchable
+            colFilters
+            colToggle
+            storageKey="tpsl1_rules_cols"
+            emptyMessage="No rules found"
+          />
+        </RuleRowProvider>
       )}
 
       {selectedRuleId && (
