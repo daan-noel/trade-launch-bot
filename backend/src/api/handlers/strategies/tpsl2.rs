@@ -228,6 +228,37 @@ pub struct UpdateRuleRequest {
     pub trade_mode: Option<String>,
 }
 
+/// Reject percent params that fall outside their valid range before a rule is
+/// persisted. Every percent field is whole-percent (see percent-params-unify-plan):
+///   • Take Profit is unbounded above (a gain can exceed 100%) — only `> 0`.
+///   • Every other percent is a fraction of a reference it cannot exceed, so it
+///     is clamped to `0–100`. `0` is the disable sentinel and stays legal.
+/// Returns `Err(message)` on the first violation.
+fn validate_percent_ranges(rule: &Tpsl2Rule) -> Result<(), String> {
+    if rule.p_exit_take_profit <= 0.0 {
+        return Err("Take Profit % must be greater than 0".into());
+    }
+    let bounded: [(&str, f64); 6] = [
+        ("Stop Loss %", rule.p_exit_stop_loss),
+        ("Tolerance %", rule.tolerance_pct),
+        ("Trailing Stop %", rule.p_exit_trailing_stop_pct.unwrap_or(0.0)),
+        ("Liquidity Drop %", rule.p_exit_liquidity_drop_pct.unwrap_or(0.0)),
+        ("Pullback %", rule.p_entry_pullback_pct.unwrap_or(0.0)),
+        ("Cohort Exit Ratio %", rule.p_exit_cohort_ratio.unwrap_or(0.0)),
+    ];
+    for (name, v) in bounded {
+        if !(0.0..=100.0).contains(&v) {
+            return Err(format!("{name} must be between 0 and 100"));
+        }
+    }
+    // Max Cohort Held is bounded the same way but lives in its own field.
+    let held = rule.p_entry_max_cohort_held.unwrap_or(0.0);
+    if !(0.0..=100.0).contains(&held) {
+        return Err("Max Cohort Held % must be between 0 and 100".into());
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Rule Handlers
 // ---------------------------------------------------------------------------
@@ -332,6 +363,9 @@ pub async fn create_tpsl_rule(
     if !crate::strategies::tpsl_sniper_2::entry::rule_configures_any_scalp_gate(&rule) {
         return HttpResponse::BadRequest()
             .json(serde_json::json!({"error": "Rule configures no scalp entry gate"}));
+    }
+    if let Err(msg) = validate_percent_ranges(&rule) {
+        return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }));
     }
 
     let repo = app_state.tpsl2_rule_repo();
@@ -463,6 +497,9 @@ pub async fn update_tpsl_rule(
             if !crate::strategies::tpsl_sniper_2::entry::rule_configures_any_scalp_gate(&rule) {
                 return HttpResponse::BadRequest()
                     .json(serde_json::json!({"error": "Rule configures no scalp entry gate"}));
+            }
+            if let Err(msg) = validate_percent_ranges(&rule) {
+                return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }));
             }
 
             match repo.update(&rule).await {

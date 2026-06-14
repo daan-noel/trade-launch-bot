@@ -23,7 +23,7 @@ export const TPSL_PARAM_HELP = {
   tolerance: {
     title: 'Tolerance %',
     body:
-      'How loosely the number filters above match — a plus/minus percent band around each value. Example: Initial Buy 1.0 with 10% tolerance matches tokens whose first buy is between 0.9 and 1.1 SOL. 0% means an exact match. Applies to Initial Buy, CU Limit, CU Price, Max SOL Cost and Spendable SOL In.',
+      'Match band (±%) around each numeric token-fingerprint filter. Whole-percent, 0–100. Example: Initial Buy 1.0 with 10 matches first buys between 0.9 and 1.1 SOL; 0 means an exact match. Applies to Initial Buy, CU Limit, CU Price, Max SOL Cost and Spendable SOL In.',
   },
   cuLimit: {
     title: 'CU Limit',
@@ -87,7 +87,7 @@ export const TPSL_PARAM_HELP = {
   pullbackPct: {
     title: 'Pullback %',
     body:
-      "First half of the 'higher-low' entry. Wait for the price to dip at least this percent below its recent high before considering a buy — this is the size of the pullback you want to see. Needs Higher-Low (s) set too. Blank or 0 turns it off.",
+      "First half of the 'higher-low' entry. Min dip off the recent high for a higher-low to count — the size of the pullback you want to see before buying. Whole-percent, 0–100. Needs Higher-Low (s) set too. Blank or 0 turns it off.",
   },
   higherLowSecs: {
     title: 'Higher-Low (seconds)',
@@ -95,9 +95,9 @@ export const TPSL_PARAM_HELP = {
       "Second half of the 'higher-low' entry. After the first dip (see Pullback %), buy only once the price makes a second dip that bottoms HIGHER than the first — confirming buyers are stepping in. The two bottoms must be at least this many seconds apart, which filters out split-second fakes. Blank or 0 turns it off.",
   },
   maxCohortHeld: {
-    title: 'Max Cohort Held',
+    title: 'Max Cohort Held %',
     body:
-      "Don't buy if the launch group is still holding too much. 'Cohort held' is how much of what the launch wallets originally bought they still hold (1.0 = full bag, 0.05 = they have sold 95%). Require it at or below this so the early insiders have mostly cashed out before you enter, lowering rug risk. Blank or 0 turns it off.",
+      "Only buy if the launch group still holds at or below this percent of all it ever bought (they've mostly dumped). Whole-percent, 0–100: 5 = enter only once insiders have sold down to 5% of their bag, lowering rug risk. Blank or 0 turns it off.",
   },
   minLiquiditySol: {
     title: 'Min Liquidity SOL',
@@ -114,17 +114,17 @@ export const TPSL_PARAM_HELP = {
   takeProfit: {
     title: 'Take Profit %',
     body:
-      'Sell as soon as the price is this percent ABOVE your entry price. Example: 50 means take profit at +50%. This is a required exit.',
+      'Sell when price is this percent ABOVE your entry. Whole-percent and UNBOUNDED (a gain has no cap): 50 = exit at +50%, 250 = exit at +250% (3.5×). Must be greater than 0. Required exit.',
   },
   stopLoss: {
     title: 'Stop Loss %',
     body:
-      'Sell as soon as the price is this percent BELOW your entry price, to cap your loss. Example: 20 means cut the loss at -20%. This is a required exit.',
+      'Sell when price is this percent BELOW your entry, to cap your loss. Whole-percent, 0–100: 20 = cut the loss at −20%. Required exit.',
   },
   trailingStopPct: {
     title: 'Trailing Stop %',
     body:
-      'Locks in gains by following the peak. The bot remembers the highest price reached since you entered and sells if price falls this percent below that peak. Example: 30 with a peak of $10 sells at $7. Blank or 0 turns it off.',
+      'Locks in gains by following the peak: sell if price falls this percent below the highest price reached since entry. Whole-percent, 0–100: 30 with a peak of $10 sells at $7. Blank or 0 turns it off.',
   },
   timeStopSecs: {
     title: 'Time Stop (seconds)',
@@ -139,12 +139,12 @@ export const TPSL_PARAM_HELP = {
   liquidityDropPct: {
     title: 'Liquidity Drop %',
     body:
-      'Sell if the pool\'s REAL SOL liquidity crashes this percent below its highest point since you entered. Catches liquidity being pulled (a rug) that a price-based stop might miss. Example: 50 sells when real liquidity halves from its peak. Blank or 0 turns it off.',
+      "Sell if the pool's REAL SOL reserves crash this percent below their peak since entry. Catches liquidity being pulled (a rug) a price stop might miss. Whole-percent, 0–100: 50 sells when real liquidity halves from its peak. Blank or 0 turns it off.",
   },
   cohortExitRatio: {
-    title: 'Cohort Exit Ratio',
+    title: 'Cohort Exit Ratio %',
     body:
-      'Rug early-warning (TPSL2). Sell when the launch group dumps down to this fraction of everything they ever bought. Example: 0.05 sells once the insiders have offloaded to 5% of their original holdings, front-running a coordinated dump. Blank or 0 turns it off.',
+      "Rug early-warning (TPSL2). Sell when the launch group's net holdings collapse to at or below this percent of all they ever bought. Whole-percent, 0–100: 5 sells once insiders have offloaded to 5% of their bag, front-running a coordinated dump. Blank or 0 turns it off.",
   },
 } satisfies Record<string, ParamHelp>;
 

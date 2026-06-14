@@ -38,7 +38,8 @@ The single `select!` loop **serializes** all position transitions across both st
 ## Exit ladder (priority order)
 `LiquidityExit → StopLoss → TakeProfit → TrailingStop → Stall → TimeStop`.
 - Trade-driven (`find_trade_driven_exit`, each new trade) **and** clock-driven (`find_clock_driven_exit`, 1s sweep, Stall/TimeStop only) share feature predicates so they never drift.
-- Optional features (0/None = off): `p_exit_trailing_stop_pct` (E1), `p_exit_time_stop_secs` (E2), `p_exit_stall_secs` (E3), `p_exit_liquidity_drop_pct` (E4). TakeProfit + StopLoss always on.
+- Optional features (0/None = off): `p_exit_trailing_stop_pct` (E1), `p_exit_time_stop_secs` (E2), `p_exit_stall_secs` (E3), `p_exit_liquidity_drop_pct` (E4), `p_exit_cohort_ratio` (E5, tpsl2). TakeProfit + StopLoss always on.
+- **Percent convention (all `p_*_pct` / ratio params + `tolerance_pct`):** stored whole-percent and divided by 100 at the comparison site. Take Profit is unbounded above (`> 0`); every other percent is clamped `0–100` (server-side `validate_percent_ranges`, also enforced by the form `min/max`). The two cohort params (`p_entry_max_cohort_held`, `p_exit_cohort_ratio`) were once raw fractions (`0.30`/`0.05`) — migration `0006_tpsl2_cohort_percent.sql` rescaled existing rows ×100. So `held_ratio > p_entry_max_cohort_held/100` and `net <= bought * p_exit_cohort_ratio/100`.
 
 ## Real vs paper
 - `rule.trade_mode` selects path; same service, branches at execute. Real counters are all-time; paper counters are scoped to the current run.

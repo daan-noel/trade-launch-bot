@@ -319,7 +319,7 @@ export function ruleColumns(controls: RuleControlHandlers): ColumnDef<RuleRecord
       tooltip: paramTip('maxCohortHeld'),
       group: 'entry',
       sortable: true,
-      render: (r) => dashF(r.p_entry_max_cohort_held ?? 0, 3),
+      render: (r) => dashPercent(r.p_entry_max_cohort_held ?? 0),
       sortValue: (r) => r.p_entry_max_cohort_held ?? 0,
       searchValue: (r) => String(r.p_entry_max_cohort_held ?? ''),
     },

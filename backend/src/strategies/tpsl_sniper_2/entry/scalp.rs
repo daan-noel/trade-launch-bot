@@ -355,7 +355,9 @@ pub fn find_scalp_entry(trades: &[Trade], rule: &Tpsl2Rule) -> Option<EntryFill>
             }
         }
         if let Some(max) = max_cohort_held {
-            if cohort_held_ratio > max {
+            // `max` is whole-percent (0–100); held_ratio is 0–1. Divide to compare,
+            // matching the E1/E4/E5 percent convention.
+            if cohort_held_ratio > max / 100.0 {
                 continue;
             }
         }
@@ -542,11 +544,11 @@ mod tests {
     #[test]
     fn cohort_held_gate_requires_cohort_sold_down() {
         let mut r = rule();
-        r.p_entry_max_cohort_held = Some(0.30);
+        r.p_entry_max_cohort_held = Some(30.0); // percent: ≤ 30% held
         // Cohort holds its full bag (ratio 1.0) → blocked on the outside buy.
         let holding = vec![buy("dev", 5.0, 100.0, 1, 0), buy("out", 1.0, 5.0, 500, 5)];
         assert!(find_scalp_entry(&holding, &r).is_none());
-        // Cohort dumps 90% (ratio 0.1 ≤ 0.3), THEN an outside wallet buys — we
+        // Cohort dumps 90% (ratio 0.1 ≤ 0.30), THEN an outside wallet buys — we
         // enter on that later buy, where the overhang is already gone.
         let dumped = vec![
             buy("dev", 5.0, 100.0, 1, 0),
@@ -597,7 +599,7 @@ mod tests {
             if min_age.is_some_and(|m| f.age_secs < m) { continue; }
             if min_alive.is_some_and(|m| f.alive_sol < m) { continue; }
             if min_organic.is_some_and(|m| f.organic_sol < m) { continue; }
-            if max_cohort_held.is_some_and(|m| f.cohort_held_ratio > m) { continue; }
+            if max_cohort_held.is_some_and(|m| f.cohort_held_ratio > m / 100.0) { continue; }
             if min_liq.is_some_and(|m| f.real_liquidity_sol < m) { continue; }
             if min_organic_liq.is_some_and(|m| f.organic_liq_sol < m) { continue; }
             if let Some(pb) = pullback {
@@ -642,10 +644,10 @@ mod tests {
             (Some(5), None, None, None, None, None),
             (None, Some(2.0), None, None, None, None),
             (None, None, Some(1.0), None, None, None),
-            (None, None, None, Some(0.3), None, None),
+            (None, None, None, Some(30.0), None, None), // cohort-held %: ≤ 30%
             (None, None, None, None, Some(10.0), None),
             (None, None, None, None, None, Some(5.0)),
-            (Some(5), Some(1.0), Some(1.0), Some(0.5), Some(5.0), Some(1.0)),
+            (Some(5), Some(1.0), Some(1.0), Some(50.0), Some(5.0), Some(1.0)),
         ];
         for &(age, alive, organic, cohort_held, liq, organic_liq) in combos {
             let mut r = rule();

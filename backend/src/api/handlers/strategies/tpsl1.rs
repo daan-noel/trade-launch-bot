@@ -241,6 +241,29 @@ pub async fn get_tpsl_rule(
     }
 }
 
+/// Reject percent params that fall outside their valid range before a rule is
+/// persisted. Every percent field is whole-percent (see percent-params-unify-plan):
+/// Take Profit is unbounded above (only `> 0`); every other percent is clamped to
+/// `0–100` (`0` is the disable sentinel and stays legal). Returns `Err(message)`
+/// on the first violation.
+fn validate_percent_ranges(rule: &Tpsl1Rule) -> Result<(), String> {
+    if rule.p_exit_take_profit <= 0.0 {
+        return Err("Take Profit % must be greater than 0".into());
+    }
+    let bounded: [(&str, f64); 4] = [
+        ("Stop Loss %", rule.p_exit_stop_loss),
+        ("Tolerance %", rule.tolerance_pct),
+        ("Trailing Stop %", rule.p_exit_trailing_stop_pct.unwrap_or(0.0)),
+        ("Liquidity Drop %", rule.p_exit_liquidity_drop_pct.unwrap_or(0.0)),
+    ];
+    for (name, v) in bounded {
+        if !(0.0..=100.0).contains(&v) {
+            return Err(format!("{name} must be between 0 and 100"));
+        }
+    }
+    Ok(())
+}
+
 /// Create a new TPSL rule
 pub async fn create_tpsl_rule(
     app_state: web::Data<Arc<AppState>>,
@@ -266,6 +289,10 @@ pub async fn create_tpsl_rule(
         req.p_exit_stall_secs,
         req.p_exit_liquidity_drop_pct,
     );
+
+    if let Err(msg) = validate_percent_ranges(&rule) {
+        return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }));
+    }
 
     let repo = app_state.tpsl1_rule_repo();
 
@@ -361,6 +388,10 @@ pub async fn update_tpsl_rule(
             // edits rule fields.
             if let Some(trade_mode) = &req.trade_mode {
                 rule.trade_mode = trade_mode.clone();
+            }
+
+            if let Err(msg) = validate_percent_ranges(&rule) {
+                return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }));
             }
 
             match repo.update(&rule).await {

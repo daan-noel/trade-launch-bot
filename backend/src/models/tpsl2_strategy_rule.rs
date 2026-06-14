@@ -71,8 +71,9 @@ pub struct Tpsl2Rule {
     /// Higher-low shape gate — minimum seconds the higher-low pattern must form
     /// over (filters sub-second fakes). Only active alongside `p_entry_pullback_pct`.
     pub p_entry_higher_low_secs: Option<u64>,
-    /// Overhang cap: the launch cohort's held ratio (net / bought) must be ≤ this
-    /// (cohort already sold most of its bag). `None`/`0` disables.
+    /// Overhang cap: the launch cohort's held ratio (net / bought, 0–1) must be ≤
+    /// this **percent** `0–100` (cohort already sold most of its bag). Compared as
+    /// `held_ratio > p / 100`. `None`/`0` disables.
     pub p_entry_max_cohort_held: Option<f64>,
     /// Minimum **real** SOL reserves at entry. `None`/`0` disables.
     pub p_entry_min_liquidity_sol: Option<f64>,
@@ -82,8 +83,9 @@ pub struct Tpsl2Rule {
 
     // ── Scalp-continuation exit gate ──────────────────────────────────────────
     /// E5 · Cohort-dump exit: exit once the launch cohort's net holdings collapse
-    /// to ≤ this fraction of everything it ever bought (the multi-wallet rug
-    /// signature). Top ladder priority. `None`/`0` disables.
+    /// to ≤ this **percent** `0–100` of everything it ever bought (the multi-wallet
+    /// rug signature). Compared as `net <= bought * p / 100`. Top ladder priority.
+    /// `None`/`0` disables.
     pub p_exit_cohort_ratio: Option<f64>,
 
     /// Price tolerance percent when matching p_token_initial_buy_sol.

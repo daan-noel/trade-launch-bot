@@ -10,6 +10,7 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 | `0003_settings_kv.sql` | `app_settings` single-row JSONB → typed key-value store (dotted keys) |
 | `0004_tpsl2_target_columns.sql` | `tpsl2_{real,paper}_positions` += nullable `target_{price,amount,time,tx}` (scalp-entry trigger-trade snapshot; no backfill, `target_tx` not unique) |
 | `0005_tpsl2_positions_column_order.sql` | `tpsl2_{real,paper}_positions` rebuilt (rename→create→copy→drop) to physically order columns `target_*` → `entry_*` → `exit_*`; same columns/constraints/indexes, no data loss. Matches the Rust structs, JSON response, and frontend table |
+| `0006_tpsl2_cohort_percent.sql` | rescale `tpsl2_strategy_rules.{p_entry_max_cohort_held,p_exit_cohort_ratio}` ×100 (raw-fraction `0.30`/`0.05` → whole-percent), unifying the percent convention; `0`/NULL "off" sentinel unaffected. See `percent-params-unify-plan.md` |
 
 ## Tables
 **Core trading**

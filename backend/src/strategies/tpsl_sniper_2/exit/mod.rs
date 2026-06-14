@@ -404,7 +404,9 @@ fn ladder_reason(
             // Top priority: the insider cluster bailing is the biggest danger.
             params.cohort_exit_ratio.and_then(|ratio| {
                 cohort.and_then(|(bought, net)| {
-                    (bought > 0.0 && net <= bought * ratio).then_some(ExitReason::CohortExit)
+                    // `ratio` is whole-percent (0–100); net/bought is 0–1.
+                    (bought > 0.0 && net <= bought * (ratio / 100.0))
+                        .then_some(ExitReason::CohortExit)
                 })
             })
         })
@@ -887,13 +889,13 @@ mod tests {
     fn cohort_exit_fires_when_cohort_dumps() {
         // "dev" buys 100 tokens at launch (slot 1, pre-entry). Entry at base_time,
         // price 1.0. After entry an outside wallet trades (price ref), then "dev"
-        // dumps 96 → net 4 / 100 = 0.04 ≤ 0.05 → CohortExit.
+        // dumps 96 → net 4 / 100 = 0.04 ≤ 0.05 (5%) → CohortExit.
         let trades = vec![
             trade_w("dev", TradeType::Buy, 5.0, 100.0, 1, -2),
             trade_w("out", TradeType::Buy, 1.0, 1.0, 500, 1),
             trade_w("dev", TradeType::Sell, 4.5, 96.0, 501, 2),
         ];
-        let rule = rule_cohort(0.05);
+        let rule = rule_cohort(5.0); // percent: exit at ≤ 5% held
         let exit = find_trade_driven_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
         assert_eq!(exit.reason, ExitReason::CohortExit);
         assert_eq!(exit.block_time, base_time() + Duration::seconds(2));
@@ -901,13 +903,13 @@ mod tests {
 
     #[test]
     fn cohort_exit_does_not_fire_while_cohort_holds() {
-        // "dev" keeps its bag (only a tiny trim) → net 95/100 = 0.95 > 0.05.
+        // "dev" keeps its bag (only a tiny trim) → net 95/100 = 0.95 > 0.05 (5%).
         let trades = vec![
             trade_w("dev", TradeType::Buy, 5.0, 100.0, 1, -2),
             trade_w("out", TradeType::Buy, 1.0, 1.0, 500, 1),
             trade_w("dev", TradeType::Sell, 0.2, 5.0, 501, 2),
         ];
-        let rule = rule_cohort(0.05);
+        let rule = rule_cohort(5.0); // percent: exit at ≤ 5% held
         assert!(find_trade_driven_exit(&trades, base_time(), 1.0, &rule).is_none());
     }
 
