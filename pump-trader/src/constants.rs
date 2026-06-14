@@ -23,6 +23,22 @@ pub const PUMP_SWAP_PROGRAM_ID: &str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMf
 /// Wrapped SOL mint — the quote mint for PumpSwap pools.
 pub const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
 
+// ---------------------------------------------------------------------------
+// Cashback claim discriminators (Anchor sha256("global:<name>")[..8]) — read
+// from the pump-fun/pump-public-docs IDLs. Used by the off-hot-path cashback
+// sweep (trader/claim.rs), NEVER on a buy/sell.
+// ---------------------------------------------------------------------------
+
+/// `sync_user_volume_accumulator` — recompute the 30-day rolling window so
+/// `cashback_earned` is current. Prepended before each claim.
+pub const SYNC_UVA_DISC: [u8; 8] = [86, 31, 192, 87, 163, 87, 79, 238];
+/// `claim_cashback` — WSOL variant used by the PumpSwap (AMM) program: 9
+/// accounts, no associated-token-program slot.
+pub const CLAIM_CASHBACK_DISC: [u8; 8] = [37, 58, 35, 126, 190, 53, 228, 197];
+/// `claim_cashback_v2` — WSOL variant on the pump (curve) program: adds the
+/// associated-token-program account vs the AMM layout.
+pub const CLAIM_CASHBACK_V2_DISC: [u8; 8] = [122, 243, 204, 65, 94, 116, 29, 55];
+
 /// Fixed pfee account that cashback-enabled PumpSwap pools append in the
 /// trailing fee block, just before the buyback recipient pair. Constant across
 /// on-chain cashback swaps; has no account data of its own (a program marker).

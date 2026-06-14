@@ -274,6 +274,17 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route(
                 "/solana/wallet/{wallet}/token/{mint}",
                 web::get().to(handlers::trading::get_wallet_token_balance),
+            )
+            // Cashback — read accrued pump.fun cashback and sweep it back to the
+            // wallet. Off the trade hot path (read-only status / recent-blockhash
+            // claim).
+            .route(
+                "/cashback/status",
+                web::get().to(handlers::trading::get_cashback_status),
+            )
+            .route(
+                "/cashback/claim",
+                web::post().to(handlers::trading::claim_cashback),
             ),
     );
 }

@@ -175,7 +175,76 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
                 println!("  {line}");
             }
         }
-        other => anyhow::bail!("unknown probe '{other}'. Use: ladder | fanout | simulate-sell"),
+        "cashback-status" => {
+            let pots = trader.cashback_status().await?;
+            println!("Cashback status (read-only):");
+            let mut total_wsol = 0u64;
+            for p in &pots {
+                let claimable = p.claimable();
+                total_wsol += claimable;
+                println!(
+                    "  [{}] uva={} exists={}",
+                    p.label, p.pda, p.exists
+                );
+                println!(
+                    "      cashback: earned={} claimed={} -> claimable={} lamports ({:.6} SOL)",
+                    p.cashback_earned,
+                    p.total_cashback_claimed,
+                    claimable,
+                    claimable as f64 / LPS
+                );
+                let stable = p.stable_claimable();
+                if p.stable_earned != 0 || stable != 0 {
+                    println!(
+                        "      stable:   earned={} claimed={} -> claimable={} (raw stable-mint units)",
+                        p.stable_earned, p.stable_claimed, stable
+                    );
+                }
+            }
+            println!(
+                "  TOTAL claimable WSOL cashback: {total_wsol} lamports ({:.6} SOL)",
+                total_wsol as f64 / LPS
+            );
+        }
+        "claim-cashback" => {
+            let execute = args.iter().any(|a| a == "--execute");
+            println!(
+                "Cashback claim ({}):",
+                if execute { "EXECUTE — sending" } else { "simulate-only" }
+            );
+            let outcomes = trader.claim_cashback(execute).await?;
+            if outcomes.is_empty() {
+                println!("  Nothing claimable in either pot — nothing to do.");
+            }
+            for o in &outcomes {
+                println!(
+                    "  [{}] claimable={} lamports ({:.6} SOL)",
+                    o.label,
+                    o.claimable,
+                    o.claimable as f64 / LPS
+                );
+                match (&o.err, &o.signature, o.simulated) {
+                    (None, _, true) => println!(
+                        "      ✅ simulation passed — CU consumed: {:?}",
+                        o.units_consumed
+                    ),
+                    (Some(e), _, true) => println!("      ❌ simulation reverted: {e}"),
+                    (None, Some(sig), false) => println!("      ✅ sent — sig: {sig}"),
+                    (Some(e), _, false) => println!("      ❌ send failed: {e}"),
+                    (None, None, false) => println!("      ⚠️  sent but no signature returned"),
+                }
+                if o.simulated && !o.logs.is_empty() {
+                    println!("      --- logs ---");
+                    for line in &o.logs {
+                        println!("        {line}");
+                    }
+                }
+            }
+        }
+        other => anyhow::bail!(
+            "unknown probe '{other}'. Use: ladder | fanout | simulate-sell | holdings | \
+             cashback-status | claim-cashback [--execute]"
+        ),
     }
     Ok(())
 }

@@ -21,7 +21,7 @@ use tracing::info;
 
 /// Emit a cumulative report every N decoded txs (cadence driven off the decode
 /// counter, since that's the per-relevant-tx hot path).
-const REPORT_EVERY: u64 = 500;
+const REPORT_EVERY: u64 = 5000;
 
 // Adapter (`update_tx_to_value`) — split so the per-relevant-tx *build* cost is
 // not diluted by the cheap pre-filter rejections of the irrelevant firehose.

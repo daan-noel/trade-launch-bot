@@ -17,6 +17,8 @@ import type {
   WalletHolding,
   WalletPrice,
   WalletProfile,
+  CashbackStatus,
+  CashbackClaimResult,
 } from 'types';
 
 /** Args for the per-rule strategy result reads (matched / simulate / paper),
@@ -135,7 +137,7 @@ export const apiSlice = createApi({
   baseQuery: fetchBaseQuery({ baseUrl: API_BASE }),
   keepUnusedDataFor: 300,
   refetchOnMountOrArgChange: false,
-  tagTypes: ['Settings', 'LiveMode', 'WalletHoldings', 'StrategyResult', 'StrategyPaper', 'Profiles'],
+  tagTypes: ['Settings', 'LiveMode', 'WalletHoldings', 'StrategyResult', 'StrategyPaper', 'Profiles', 'Cashback'],
   endpoints: (builder) => ({
     getTokens: builder.query<TokensResponse, TokensArgs>({
       query: ({ search, limit, offset }) => {
@@ -266,6 +268,20 @@ export const apiSlice = createApi({
       query: (body) => ({ url: '/api/solana/wallet/sell', method: 'POST', body }),
     }),
 
+    // Accrued pump.fun cashback — a read-only on-chain status (two account
+    // reads). Cached, not polled: cashback accrues slowly, so the wallet card
+    // refreshes on mount / after a claim, never on the live price tick.
+    getCashbackStatus: builder.query<CashbackStatus, void>({
+      query: () => '/api/cashback/status',
+      providesTags: ['Cashback'],
+    }),
+    // Sweep both pots back to the wallet as native SOL. Off the trade hot path;
+    // invalidates the status so the card reflects the drained balance.
+    claimCashback: builder.mutation<CashbackClaimResult, void>({
+      query: () => ({ url: '/api/cashback/claim', method: 'POST' }),
+      invalidatesTags: ['Cashback'],
+    }),
+
     // System reads shared app-wide (header + price toggle). Folding them into
     // RTK Query collapses the StrictMode double-fire and the multiple
     // independent callers into a single deduped request per cache key.
@@ -335,6 +351,8 @@ export const {
   useGetWalletPricesQuery,
   useBuyTokenMutation,
   useSellTokenMutation,
+  useGetCashbackStatusQuery,
+  useClaimCashbackMutation,
   useGetSolPriceQuery,
   useLazyGetSolPriceQuery,
   useGetLiveModeQuery,

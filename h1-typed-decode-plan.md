@@ -60,7 +60,7 @@ unaffected and there's one decoder):
 Expected gain: trims per-event allocation on the hot path; modest but real, zero
 correctness risk, no path fork.
 
-### Tier B — large, risky, forks the decoder  ⚠️ not recommended under these choices
+### Tier B — large, risky, forks the decoder  ✅ JUSTIFIED by profiling (see results below)
 "Decode directly from typed protobuf, build the `Value` only for the blob":
 
 - Requires rewriting the whole `Value`-driven decoder (parse/instructions/trade/
@@ -75,7 +75,47 @@ correctness risk, no path fork.
   attribution-sensitive code.
 - Only justified if profiling shows the base58 encode + `Value` build on the ingest
   thread is a measured bottleneck *and* we accept moving blob construction to the
-  DbWriter. Revisit only if Tier A proves insufficient.
+  DbWriter. Revisit only if Tier A proves insufficient. → **Profiling confirmed it
+  (results below); proceed.**
+
+#### Tier B — old/now-unnecessary code to remove or retire
+
+When the grpc hot path decodes from protobuf and the `Value` is built only for the
+persisted blob (off-thread in the DbWriter), the following becomes dead or relocatable.
+Treat this as the cleanup checklist for the Tier B PR — **do not pre-delete; each item
+is only safe once its replacement is wired and tests are green.**
+
+- **`value_tx`/`value_rx` channel of `serde_json::Value`** ([client.rs](backend/src/ingest_laserstream/client.rs),
+  [pipeline.rs](backend/src/ingest_laserstream/pipeline.rs), `channel_pair`): the hot
+  path no longer ships a `Value` across tasks. Change the channel payload to the typed
+  protobuf (`Arc<SubscribeUpdateTransaction>` or a pre-decoded event batch). Remove the
+  `Value` send in `client.rs` and the `decode_result(value)` call in `pipeline.rs::run`.
+- **`adapter::update_tx_to_value` on the hot path** ([adapter.rs](backend/src/ingest_laserstream/adapter.rs)):
+  retire it from the client task. The protobuf→Helius-JSON synthesis (`compiled_ix`,
+  `inner_ix`, `account_indexes`, `token_balances` + the base58 encodes) **moves** into a
+  DbWriter-side `build_raw_blob(&protobuf)` that runs only for `save_raw` txs. Keep the
+  pre-filter logic but apply it on the typed protobuf, not via Value construction.
+  - Note: `laserstream_replay.rs` also calls `update_tx_to_value` (cold replay path).
+    Either keep a copy for replay or point replay at the relocated blob builder — don't
+    delete the function outright until that caller is migrated.
+- **`HeliusDecoder::decode_result(Value)`** ([decoder/mod.rs](backend/src/ingest_laserstream/decoder/mod.rs)):
+  no longer called by the pipeline. It (and `decode_amm_live`) stay **only** for any
+  remaining `Value` callers — verify whether token_sync still needs them; if token_sync
+  also stops using the Value entry point, `decode_amm_live` (live-only) can be deleted.
+- **The Value-driven extraction layer** ([parse.rs](backend/src/ingest_laserstream/decoder/parse.rs),
+  the `Value` arms of [instructions.rs](backend/src/ingest_laserstream/decoder/instructions.rs)):
+  **retained for token_sync's RPC `Value` path** (the fork). Do *not* remove. The
+  Tier A `&[&str]` threading stays here. If a future change also moves token_sync off
+  `Value`, this whole layer retires — track as a follow-up, not part of Tier B.
+- **The profiler** ([profile.rs](backend/src/ingest_laserstream/profile.rs) + the two
+  call-site hooks + the `@docs/ingest.md` row): once Tier B's win is measured against
+  this baseline, the profiler has served its purpose. It's zero-cost when off, so it can
+  stay for future regressions, but if removing, drop the module, the `pub mod profile;`
+  in [mod.rs](backend/src/ingest_laserstream/mod.rs), and the hooks together.
+- **Dead repo readers** `TransactionRepo::{find_by_signature, exists}`
+  ([transaction_repo.rs](backend/src/storage/repositories/transaction_repo.rs), already
+  `#[allow(dead_code)]`): unrelated to Tier B but adjacent cleanup — delete if still
+  unused after the rewrite, or keep if a replay/lookup feature is planned.
 
 ## Recommendation (goal: cut ingest-thread CPU)
 
@@ -115,6 +155,41 @@ Therefore — **profile first, then choose:**
    careful rewrite of attribution-sensitive code with the decoder tests as the guard.
 
 Do **Tier A regardless** — it's a strict, safe improvement and is cheap.
+
+### Measurement results (2026-06-14, live `fra`, ~45 tx/s quiet window, ~1500 txs)
+
+| Stage | avg | max |
+| --- | --- | --- |
+| Value build (`update_tx_to_value`) | **~2.7 ms** | ~18 ms |
+| decode (`decode_result`) | **~0.83 ms** | ~4.2 ms |
+
+`built_ratio = 1.0`, `prefilter_reject_avg_us = 0.0`.
+
+**Two findings settle the choice:**
+
+1. **The pre-filter saves nothing** (`built_ratio = 1.0`, zero rejects). The
+   LaserStream *subscription* already scopes server-side to the pump program +
+   tracked pools, so the adapter's client-side pre-filter rejects ~nothing — the
+   `Value` is built for **every received tx**. This kills the main counter-argument
+   against Tier B (that the build only happens for a cheap-to-find relevant subset).
+2. **The Value build dominates**: ~2.7 ms vs ~0.83 ms decode — ~3× the decode,
+   ~76% of combined hot-path CPU, and it's exactly what Tier B removes. At ~45 tx/s
+   it's ~16% of one core, but it scales linearly on a *single* task (the client
+   builds Values serially); ~370 tx/s saturates that task → ingest backpressure.
+   pump.fun peaks exceed that.
+
+**Decision: Tier B is justified — proceed.**
+
+### Tier A-prime (allocator) — TESTED, RULED OUT
+
+Hypothesis: the 2.7 ms smelled allocator-bound (serde_json's many tiny allocations on
+Windows' slow default heap), so `mimalloc` as `#[global_allocator]` might cut it cheaply.
+
+**Result (re-profiled 2026-06-14, same live conditions): no measurable change.**
+value_build_avg ~2.9–3.1 ms and decode_avg ~0.86 ms with mimalloc — identical to the
+default allocator (within run-to-run noise). ⇒ the cost is **CPU-bound in the base58
+encoding + `Value` construction**, not heap allocation. mimalloc reverted (no benefit
+for this path; not worth the C-compiled dep). This leaves **Tier B as the only lever.**
 
 ## Validation
 - `cargo check --bin backend`, `cargo clippy` on touched files.

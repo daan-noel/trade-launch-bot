@@ -193,6 +193,33 @@ export interface WalletPrice {
   token_created_at: string | null;
 }
 
+/** Accrued pump.fun cashback for one venue pot ("curve" / "amm"). Lamports are
+ *  raw integers (JS-safe at these magnitudes); render as SOL. */
+export interface CashbackPot {
+  label: string;
+  exists: boolean;
+  claimable_lamports: number;
+  stable_claimable: number;
+}
+
+export interface CashbackStatus {
+  pots: CashbackPot[];
+  total_claimable_lamports: number;
+}
+
+/** One pot's outcome from POST /api/cashback/claim. */
+export interface CashbackClaimOutcome {
+  label: string;
+  claimable_lamports: number;
+  signature: string | null;
+  error: string | null;
+}
+
+export interface CashbackClaimResult {
+  claimed_lamports: number;
+  pots: CashbackClaimOutcome[];
+}
+
 export interface TokenDetailRecord {
   mint_address: string;
   name: string;

@@ -31,6 +31,7 @@
 mod amm;
 mod blockhash;
 mod buy;
+pub mod claim;
 mod init;
 mod jito_tip;
 mod nonce;

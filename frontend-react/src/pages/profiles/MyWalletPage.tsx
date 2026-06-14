@@ -8,6 +8,7 @@ import { Button } from 'components/ui/Button';
 import { Input } from 'components/ui/Input';
 import { InlineAlert, Modal } from 'components/ui/Modal';
 import { walletColumns } from 'components/wallet/walletColumns';
+import { CashbackCard } from 'components/wallet/CashbackCard';
 import {
   apiSlice,
   apiErrorMessage,
@@ -256,6 +257,8 @@ export function MyWalletPage() {
           + Manual Buy
         </Button>
       </div>
+
+      <CashbackCard />
 
       {error && <InlineAlert variant="error">{error}</InlineAlert>}
       {actionError && <InlineAlert variant="error">{actionError}</InlineAlert>}

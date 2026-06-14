@@ -4,7 +4,7 @@ File-level map of `pump-trader/` (crate `pump_trader`; has `lib.rs` + real unit 
 Logic explainer: `@project_plans/trade-execution/slippage-logic-buy-sell.md`.
 
 ## Public surface (`src/lib.rs`)
-`PumpFunTrader`, `TraderConfig`, `WalletHolding`, `BuyRouting`, `TokenBalance`, `TokenProgram{Legacy,Token2022}`; probe types `EndpointResult`, `FanoutReport`, `SimReport`.
+`PumpFunTrader`, `TraderConfig`, `WalletHolding`, `BuyRouting`, `TokenBalance`, `TokenProgram{Legacy,Token2022}`; probe types `EndpointResult`, `FanoutReport`, `SimReport`; cashback types `PotStatus`, `ClaimOutcome`.
 
 `TraderConfig` fields: `rpc_url: String`, `helius_sender_urls: Vec<String>` (fan-out targets), `keypair: Keypair`, `nonce_accounts: Vec<String>` (round-robin).
 
@@ -31,6 +31,7 @@ Logic explainer: `@project_plans/trade-execution/slippage-logic-buy-sell.md`.
 | `query.rs` | `get_all_token_accounts`, `get_token_account_for_mint`, `resolve_cached_token_account`, `get_token_balance`, `resolve_buy_routing`, `resolve_curve_facts_batch`, `get_creator_from_mint_pda` | read-only RPC (not on trade hot path) |
 | `reserves.rs` | `ReserveCache` (`update`, `get_fresh`) | WS-fed reserve snapshots, freshness-bounded, venue-tagged (curve vs AMM). **Unit tests** |
 | `probe.rs` | `probe_tip_ladder`, `probe_fanout_self_transfer`, `probe_simulate_curve_sell` | zero/low-SOL diagnostics backing `probe` subcommands |
+| `claim.rs` | `cashback_status` (read-only), `claim_cashback(execute)`, `build_claim_ixs`/`claim_pots` (private) | off-hot-path cashback sweep. Two per-wallet pots: **curve** (pump_program UVA) + **amm** (pump_swap UVA), different PDAs. Claimable read straight from `UserVolumeAccumulator.cashback_earned − total_cashback_claimed`. Claim = `[create-idempotent(user WSOL ATA), sync_user_volume_accumulator, claim_cashback(_v2 on curve), close(unwrap → native SOL)]` on a **recent blockhash, no nonce, no Jito tip**. Curve uses `claim_cashback_v2` (adds the associated-token-program acct); AMM uses `claim_cashback`. `claim` is permissionless (`user` not a signer; fee-payer signs). **Unit test** (tx-size) |
 
 ## Key behaviors
 - **Helius Sender** already dual-routes (Jito + SWQOS) internally, 0 credits. Client-side multi-endpoint fan-out adds *geographic* redundancy, not extra Jito exposure. Endpoints from `HELIUS_FAST_SENDER_URLS` (CSV) or `HELIUS_FAST_SENDER_URL`.
