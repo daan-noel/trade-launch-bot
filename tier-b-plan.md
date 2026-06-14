@@ -1,7 +1,10 @@
 # Tier B — Protobuf-native ingest decode (build the `Value` blob off-thread)
 
-Supersedes `h1-typed-decode-plan.md` (Tier A landed; this is the scoped Tier B PR).
-Referenced by [BACKEND-PERF-AUDIT.md](BACKEND-PERF-AUDIT.md) H1.
+Supersedes `h1-typed-decode-plan.md` (Tier A landed; this is the scoped Tier B PR) and
+consolidates the former `BACKEND-PERF-AUDIT.md`: that backend perf review (six subsystem
+reviewers, adversarially re-checked) found the buy/sell + sell-confirm paths clean; its only
+remaining open item is **H1 = this plan**, and its other finding (**M5**) is now done — both
+recorded under "Already landed" below.
 
 ## Why (settled by profiling — do not re-litigate)
 
@@ -25,6 +28,25 @@ Live `fra`, ~45 tx/s quiet window, ~1500 txs (`INGEST_PROFILE=1`):
 the `json!` tree) off the ingest hot path. A Value-driven decode needs the Value first, so
 the only way is: decode straight from typed protobuf; build the `Value` **only** for the
 persisted blob, off-thread in the DbWriter.
+
+## Already landed (Tier A + adjacent audit items)
+
+- **Tier A (H1 partial):** upstream pre-filter, decode-once-per-tx of instruction data, and
+  `&[&str]` account-key borrowing (the decoder threads keys from the `Value` instead of
+  cloning every key per tx) — so the *ignored-tx* build, the repeated re-decode, and the
+  per-tx account-key alloc are gone. What remains is the adapter base58-**encoding** data
+  that the decoder then base58-**decodes** — removable only by this plan's protobuf-native
+  decode.
+- **Caveat (still true):** the `Value` is genuinely needed as the persisted `raw_tx` blob,
+  so it can't be removed outright — only relocated off-thread (work item 3).
+- **M5 (done 2026-06-14):** `TokenState.trades` is now `Arc<Vec<Trade>>`, so the swing
+  (single + batch) and paper fill-poll readers refcount-clone under the DashMap shard guard,
+  drop it, then `try_unwrap`-or-clone *off* the lock — the multi-MB deep copy no longer
+  blocks the ingest writer's `get_mut`. The append hot path mutates in place via
+  `Arc::make_mut` (copies only on the rare tick a reader still holds a snapshot, and that
+  copy lands on the writer, not under a read guard). `Arc<Vec<Trade>>`, not `Arc<[Trade]>`:
+  the buffer is appended every ingest tick, and an immutable slice would reallocate all 50K
+  elements per trade.
 
 ## The accepted trade-off: the decoder forks
 
@@ -94,4 +116,4 @@ subtrees:
 ## Out of scope (follow-ups)
 - Moving token_sync off `Value` (would retire the whole Value extraction layer).
 - DB write-cost reduction via blob size/retention (`raw_transactions` retention, dropping
-  `source='rpc'` rows) — flagged in the audit's open question, separate from Tier B.
+  `source='rpc'` rows) — an open question raised in the perf review, separate from Tier B.
