@@ -10,6 +10,7 @@ import {
   formFromRule,
   RuleFormModal,
   type RuleFormData,
+  type LockGroupState,
 } from 'components/tpsl1/RuleFormModal';
 import { ruleColumns } from 'components/tpsl1/ruleColumns';
 import { SimSummaryCard } from 'components/tpsl1/SimSummaryCard';
@@ -499,18 +500,25 @@ const RuleActionsCell = memo(function RuleActionsCell({
       <Button
         variant="ghost"
         size="xs"
-        disabled={rule.is_active}
         onClick={() => onEdit(rule)}
-        title={rule.is_active ? 'Cannot edit active rules' : 'Edit'}
+        title={
+          rule.is_active || rule.open_positions > 0
+            ? 'Live — only sizing (buy amount + concurrency) is editable'
+            : 'Edit'
+        }
       >
         Edit
       </Button>
       <Button
         variant="ghost"
         size="xs"
-        disabled={rule.is_active}
+        disabled={rule.is_active || rule.open_positions > 0}
         onClick={() => onRequestDelete(rule.id)}
-        title={rule.is_active ? 'Cannot delete active rules' : 'Delete'}
+        title={
+          rule.is_active || rule.open_positions > 0
+            ? 'Cannot delete a running rule or one with open positions'
+            : 'Delete'
+        }
         className="text-red"
       >
         Del
@@ -739,7 +747,7 @@ export function Tpsl1Page() {
     setModalOpen(true);
   }, []);
 
-  const handleSave = async (allowParams: boolean) => {
+  const handleSave = async (unlocked: LockGroupState) => {
     setFormError(null);
     if (!form.ruleName.trim()) {
       setFormError('Rule name is required');
@@ -761,7 +769,7 @@ export function Tpsl1Page() {
       if (editRule) {
         const updated = await updateTpsl1Rule(
           editRule.id,
-          buildUpdatePayload(form, allowParams),
+          buildUpdatePayload(form, unlocked),
         );
         setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
         // The rule's entry criteria may have changed — drop its cached

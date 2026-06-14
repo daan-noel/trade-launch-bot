@@ -4,6 +4,7 @@ import {
   useImperativeHandle,
   useLayoutEffect,
   useRef,
+  useState,
   type InputHTMLAttributes,
   type TextareaHTMLAttributes,
 } from 'react';
@@ -53,15 +54,51 @@ export type FieldProps = { fieldSize?: FieldSize; variant?: FieldVariant };
 
 export const Input = forwardRef<
   HTMLInputElement,
-  InputHTMLAttributes<HTMLInputElement> & FieldProps
->(function Input({ className, type = 'text', fieldSize = 'sm', variant = 'default', ...props }, ref) {
+  InputHTMLAttributes<HTMLInputElement> & FieldProps & { unit?: string }
+>(function Input(
+  { className, type = 'text', fieldSize = 'sm', variant = 'default', unit, value, ...props },
+  ref,
+) {
+  const innerRef = useRef<HTMLInputElement | null>(null);
+  useImperativeHandle(ref, () => innerRef.current as HTMLInputElement, []);
+
+  const fieldCls = fieldClassName({ size: fieldSize, variant, type, className });
+
+  // Measures where the typed value ends, so the unit suffix sits right after it
+  // ("5 ◎"). The mirror shares the input's typography + left padding; we zero its
+  // right padding/width so its measured width is paddingLeft + textWidth.
+  const mirrorRef = useRef<HTMLSpanElement | null>(null);
+  const [offset, setOffset] = useState(0);
+  useLayoutEffect(() => {
+    if (unit && mirrorRef.current) setOffset(mirrorRef.current.offsetWidth);
+  }, [unit, value, fieldCls]);
+
+  if (!unit) {
+    return <input ref={innerRef} type={type} value={value} className={fieldCls} {...props} />;
+  }
+
+  const hasValue = value != null && `${value}` !== '';
+
   return (
-    <input
-      ref={ref}
-      type={type}
-      className={fieldClassName({ size: fieldSize, variant, type, className })}
-      {...props}
-    />
+    <span className="relative inline-flex w-full items-center">
+      <input ref={innerRef} type={type} value={value} className={cn(fieldCls, 'w-full')} {...props} />
+      <span
+        ref={mirrorRef}
+        aria-hidden
+        className={cn(fieldCls, 'invisible absolute left-0 top-0 w-auto whitespace-pre border-transparent pr-0')}
+      >
+        {hasValue ? value : ''}
+      </span>
+      {hasValue && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute top-1/2 -translate-y-1/2 text-text-dim"
+          style={{ left: offset + 4 }}
+        >
+          {unit}
+        </span>
+      )}
+    </span>
   );
 });
 

@@ -35,6 +35,14 @@ function FieldLabel({
   );
 }
 
+/** Lock groups, aligned 1:1 with the modal's section dividers. Each group gets
+ *  its own 🔓/🔒 toggle when editing (locked by default, to prevent accidental
+ *  edits). `sizing` is the only group that stays unlockable while the rule is
+ *  live (running or holding positions) — buy amount + concurrency are the "hot"
+ *  knobs safe to retune mid-flight; everything else is frozen until idle. */
+export type LockGroup = 'fingerprint' | 'sizing' | 'exit';
+export type LockGroupState = Record<LockGroup, boolean>;
+
 export interface RuleFormData {
   ruleName: string;
   tradeMode: string;
@@ -113,7 +121,7 @@ interface RuleFormModalProps {
   form: RuleFormData;
   onChange: (form: RuleFormData) => void;
   onClose: () => void;
-  onSave: (allowParams: boolean) => void;
+  onSave: (unlocked: LockGroupState) => void;
 }
 
 /** A labelled divider that groups the form fields by the param's ROLE
@@ -152,13 +160,45 @@ export function RuleFormModal({
   onSave,
 }: RuleFormModalProps) {
   const isEdit = editRule != null;
-  const [allowEditParams, setAllowEditParams] = useState(false);
-  const locked = isEdit && !allowEditParams;
+  // A live rule (running, or still draining open positions) freezes everything
+  // except the `sizing` group, so its match/exit shape can't shift mid-run.
+  const live = isEdit && (editRule.is_active || editRule.open_positions > 0);
+  const [unlocked, setUnlocked] = useState<LockGroupState>({
+    fingerprint: false,
+    sizing: false,
+    exit: false,
+  });
 
   const set = (patch: Partial<RuleFormData>) => onChange({ ...form, ...patch });
 
-  const fieldCls = (extra?: string) =>
-    cn('font-mono', locked && 'cursor-not-allowed opacity-50', extra);
+  // Create mode has no lock concept: every field is freely editable.
+  const editable = (g: LockGroup) => !isEdit || unlocked[g];
+  // Which groups the user is even allowed to unlock right now.
+  const canUnlock = (g: LockGroup) => !live || g === 'sizing';
+
+  const fieldCls = (g: LockGroup, extra?: string) =>
+    cn('font-mono', !editable(g) && 'cursor-not-allowed opacity-50', extra);
+
+  /** Per-section 🔓/🔒 toggle. Only rendered when editing; disabled (with a
+   *  reason) when the group is frozen because the rule is live. */
+  const lockToggle = (g: LockGroup): ReactNode =>
+    isEdit ? (
+      <button
+        type="button"
+        onClick={() => canUnlock(g) && setUnlocked((u) => ({ ...u, [g]: !u[g] }))}
+        disabled={!canUnlock(g)}
+        className="rounded-lg border border-white/12 bg-white/4 px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-40"
+        title={
+          !canUnlock(g)
+            ? 'Locked while the rule is running or holding positions'
+            : unlocked[g]
+              ? 'Lock to prevent edits'
+              : 'Unlock to edit'
+        }
+      >
+        {unlocked[g] ? '🔒' : '🔓'}
+      </button>
+    ) : undefined;
 
   return (
     <Modal title={isEdit ? 'Edit TPSL1 Rule' : 'New TPSL1 Rule'} open={open} onClose={onClose}>
@@ -169,7 +209,7 @@ export function RuleFormModal({
             fieldSize="md"
             value={form.tradeMode}
             onChange={(e) => set({ tradeMode: e.target.value })}
-            className={fieldCls()}
+            className="font-mono"
           >
             <option value="paper">Paper Test</option>
             <option value="real">Real Trading</option>
@@ -184,7 +224,7 @@ export function RuleFormModal({
             value={form.ruleName}
             onChange={(e) => set({ ruleName: e.target.value })}
             placeholder="e.g. Sniper 0.5 SOL"
-            className={fieldCls()}
+            className="font-mono"
           />
         </label>
 
@@ -194,49 +234,38 @@ export function RuleFormModal({
           title="Token Fingerprint"
           hint="which token to match"
           accent="text-info"
-          right={
-            isEdit ? (
-              <button
-                type="button"
-                onClick={() => setAllowEditParams((v) => !v)}
-                className="rounded-lg border border-white/12 bg-white/4 px-2 py-1 text-xs"
-                title={allowEditParams ? 'Lock match criteria' : 'Unlock match criteria'}
-              >
-                {allowEditParams ? '🔒' : '🔓'}
-              </button>
-            ) : undefined
-          }
+          right={lockToggle('fingerprint')}
         />
         <div className="grid grid-cols-2 gap-3">
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="initialBuy">Initial Buy SOL</FieldLabel>
-            <Input type="number" fieldSize="md" step="0.001" value={form.initialBuy} readOnly={locked}
-              onChange={(e) => set({ initialBuy: e.target.value })} className={fieldCls()} />
+            <Input type="number" fieldSize="md" step="0.001" unit="◎" value={form.initialBuy} readOnly={!editable('fingerprint')}
+              onChange={(e) => set({ initialBuy: e.target.value })} className={fieldCls('fingerprint')} />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="tolerance">Tolerance %</FieldLabel>
-            <Input type="number" fieldSize="md" step="0.1" min={0} max={100} value={form.tolerance} readOnly={locked}
-              onChange={(e) => set({ tolerance: e.target.value })} className={fieldCls()} />
+            <Input type="number" fieldSize="md" step="0.1" min={0} max={100} unit="%" value={form.tolerance} readOnly={!editable('fingerprint')}
+              onChange={(e) => set({ tolerance: e.target.value })} className={fieldCls('fingerprint')} />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="cuLimit">CU Limit</FieldLabel>
-            <Input type="number" fieldSize="md" value={form.cuLimit} readOnly={locked}
-              onChange={(e) => set({ cuLimit: e.target.value })} className={fieldCls()} />
+            <Input type="number" fieldSize="md" value={form.cuLimit} readOnly={!editable('fingerprint')}
+              onChange={(e) => set({ cuLimit: e.target.value })} className={fieldCls('fingerprint')} />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="cuPrice">CU Price</FieldLabel>
-            <Input type="number" fieldSize="md" value={form.cuPrice} readOnly={locked}
-              onChange={(e) => set({ cuPrice: e.target.value })} className={fieldCls()} />
+            <Input type="number" fieldSize="md" value={form.cuPrice} readOnly={!editable('fingerprint')}
+              onChange={(e) => set({ cuPrice: e.target.value })} className={fieldCls('fingerprint')} />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="maxSolCost">Max SOL Cost</FieldLabel>
-            <Input type="number" fieldSize="md" step="0.001" value={form.maxSolCost} readOnly={locked}
-              onChange={(e) => set({ maxSolCost: e.target.value })} className={fieldCls()} />
+            <Input type="number" fieldSize="md" step="0.001" unit="◎" value={form.maxSolCost} readOnly={!editable('fingerprint')}
+              onChange={(e) => set({ maxSolCost: e.target.value })} className={fieldCls('fingerprint')} />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="spendableSolIn">Spendable SOL In</FieldLabel>
-            <Input type="number" fieldSize="md" step="0.001" value={form.spendableSolIn} readOnly={locked}
-              onChange={(e) => set({ spendableSolIn: e.target.value })} className={fieldCls()} />
+            <Input type="number" fieldSize="md" step="0.001" unit="◎" value={form.spendableSolIn} readOnly={!editable('fingerprint')}
+              onChange={(e) => set({ spendableSolIn: e.target.value })} className={fieldCls('fingerprint')} />
           </label>
         </div>
 
@@ -258,69 +287,79 @@ export function RuleFormModal({
             fieldSize="md"
             rows={4}
             value={form.ixLabels}
-            readOnly={locked}
+            readOnly={!editable('fingerprint')}
             onChange={(e) => set({ ixLabels: e.target.value })}
-            className={fieldCls()}
+            className={fieldCls('fingerprint')}
             placeholder='["Pump.Fun: Buy"]'
           />
         </div>
 
         {/* ── Sizing & limits: position size + concurrency caps (unprefixed). ── */}
-        <SectionHeader title="Sizing & Limits" hint="position size + concurrency" accent="text-text-dim" />
+        <SectionHeader
+          title="Sizing & Limits"
+          hint="position size + concurrency · editable while live"
+          accent="text-text-dim"
+          right={lockToggle('sizing')}
+        />
         <div className="grid grid-cols-3 gap-3">
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="buyAmount" accent="text-primary">Buy Amount (SOL)</FieldLabel>
-            <Input type="number" fieldSize="md" step="0.001" value={form.buyAmount}
-              onChange={(e) => set({ buyAmount: e.target.value })} className={fieldCls()} />
+            <Input type="number" fieldSize="md" step="0.001" unit="◎" value={form.buyAmount} readOnly={!editable('sizing')}
+              onChange={(e) => set({ buyAmount: e.target.value })} className={fieldCls('sizing')} />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="maxConcurrentTokens">Max Concurrent Tokens</FieldLabel>
-            <Input type="number" fieldSize="md" value={form.maxConcurrentTokens} readOnly={locked}
-              onChange={(e) => set({ maxConcurrentTokens: e.target.value })} className={fieldCls()} />
+            <Input type="number" fieldSize="md" value={form.maxConcurrentTokens} readOnly={!editable('sizing')}
+              onChange={(e) => set({ maxConcurrentTokens: e.target.value })} className={fieldCls('sizing')} />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="maxTotalTokens">Max Total Tokens</FieldLabel>
-            <Input type="number" fieldSize="md" value={form.maxTotalTokens} readOnly={locked}
-              onChange={(e) => set({ maxTotalTokens: e.target.value })} className={fieldCls()} />
+            <Input type="number" fieldSize="md" value={form.maxTotalTokens} readOnly={!editable('sizing')}
+              onChange={(e) => set({ maxTotalTokens: e.target.value })} className={fieldCls('sizing')} />
           </label>
         </div>
 
         {/* ── Exit gates: when to sell (p_exit_*). 0 = off. ── */}
-        <SectionHeader title="Exit Gates" hint="when to sell" accent="text-warning" />
+        <SectionHeader
+          title="Exit Gates"
+          hint="when to sell"
+          accent="text-warning"
+          right={lockToggle('exit')}
+        />
         <div className="grid grid-cols-3 gap-3">
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="takeProfit" accent="text-primary">Take Profit %</FieldLabel>
-            <Input type="number" fieldSize="md" step="1" min={0} value={form.takeProfit}
-              onChange={(e) => set({ takeProfit: e.target.value })} className={fieldCls('focus:border-green')} />
+            <Input type="number" fieldSize="md" step="1" min={0} unit="%" value={form.takeProfit} readOnly={!editable('exit')}
+              onChange={(e) => set({ takeProfit: e.target.value })} className={fieldCls('exit', 'focus:border-green')} />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="stopLoss" accent="text-primary">Stop Loss %</FieldLabel>
-            <Input type="number" fieldSize="md" step="1" min={0} max={100} value={form.stopLoss}
-              onChange={(e) => set({ stopLoss: e.target.value })} className={fieldCls('focus:border-red')} />
+            <Input type="number" fieldSize="md" step="1" min={0} max={100} unit="%" value={form.stopLoss} readOnly={!editable('exit')}
+              onChange={(e) => set({ stopLoss: e.target.value })} className={fieldCls('exit', 'focus:border-red')} />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="trailingStopPct" accent="text-primary">Trailing Stop %</FieldLabel>
-            <Input type="number" fieldSize="md" step="1" min={0} max={100} value={form.trailingStopPct}
+            <Input type="number" fieldSize="md" step="1" min={0} max={100} unit="%" value={form.trailingStopPct} readOnly={!editable('exit')}
               onChange={(e) => set({ trailingStopPct: e.target.value })}
-              className={fieldCls('focus:border-warning')} placeholder="0 = off" />
+              className={fieldCls('exit', 'focus:border-warning')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="timeStopSecs" accent="text-primary">Time Stop (s)</FieldLabel>
-            <Input type="number" fieldSize="md" step="1" value={form.timeStopSecs}
+            <Input type="number" fieldSize="md" step="1" value={form.timeStopSecs} readOnly={!editable('exit')}
               onChange={(e) => set({ timeStopSecs: e.target.value })}
-              className={fieldCls('focus:border-info')} placeholder="0 = off" />
+              className={fieldCls('exit', 'focus:border-info')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="stallSecs" accent="text-primary">Stall (s)</FieldLabel>
-            <Input type="number" fieldSize="md" step="1" value={form.stallSecs}
+            <Input type="number" fieldSize="md" step="1" value={form.stallSecs} readOnly={!editable('exit')}
               onChange={(e) => set({ stallSecs: e.target.value })}
-              className={fieldCls('focus:border-accent')} placeholder="0 = off" />
+              className={fieldCls('exit', 'focus:border-accent')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="liquidityDropPct" accent="text-primary">Liquidity Drop %</FieldLabel>
-            <Input type="number" fieldSize="md" step="1" min={0} max={100} value={form.liquidityDropPct}
+            <Input type="number" fieldSize="md" step="1" min={0} max={100} unit="%" value={form.liquidityDropPct} readOnly={!editable('exit')}
               onChange={(e) => set({ liquidityDropPct: e.target.value })}
-              className={fieldCls('focus:border-primary')} placeholder="0 = off" />
+              className={fieldCls('exit', 'focus:border-primary')} placeholder="0 = off" />
           </label>
         </div>
 
@@ -330,7 +369,7 @@ export function RuleFormModal({
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
-          <Button variant="primary" onClick={() => onSave(allowEditParams)} disabled={loading}>
+          <Button variant="primary" onClick={() => onSave(unlocked)} disabled={loading}>
             {loading ? 'Saving…' : 'Save Rule'}
           </Button>
         </div>
@@ -364,34 +403,47 @@ export function buildCreatePayload(form: RuleFormData) {
   };
 }
 
-export function buildUpdatePayload(form: RuleFormData, allowParams: boolean) {
-  const base: Record<string, unknown> = {
+/** Build the PUT body from only the UNLOCKED groups. A locked group contributes
+ *  no keys, so the backend's Option-based merge leaves those fields untouched —
+ *  a locked param can never be accidentally cleared/zeroed. `rule_name` and
+ *  `trade_mode` are administrative and always sent. */
+export function buildUpdatePayload(form: RuleFormData, unlocked: LockGroupState) {
+  const payload: Record<string, unknown> = {
     rule_name: form.ruleName,
-    buy_amount: parseFloat(form.buyAmount),
-    p_exit_take_profit: parseFloat(form.takeProfit),
-    p_exit_stop_loss: parseFloat(form.stopLoss),
-    // Exit params (always editable): 0 disables, per the ignore_zero convention.
-    p_exit_trailing_stop_pct: form.trailingStopPct.trim() ? parseFloat(form.trailingStopPct) : 0,
-    p_exit_time_stop_secs: form.timeStopSecs.trim() ? parseInt(form.timeStopSecs, 10) : 0,
-    p_exit_stall_secs: form.stallSecs.trim() ? parseInt(form.stallSecs, 10) : 0,
-    p_exit_liquidity_drop_pct: form.liquidityDropPct.trim() ? parseFloat(form.liquidityDropPct) : 0,
     trade_mode: form.tradeMode,
-    tolerance_pct: form.tolerance.trim() ? parseFloat(form.tolerance) : undefined,
   };
-  if (!allowParams) return base;
-  return {
-    ...base,
-    p_token_initial_buy_sol: form.initialBuy.trim() ? parseFloat(form.initialBuy) : 0,
-    p_token_cu_limit: form.cuLimit.trim() ? parseInt(form.cuLimit, 10) : 0,
-    p_token_cu_price: form.cuPrice.trim() ? parseInt(form.cuPrice, 10) : 0,
-    p_token_max_sol_cost: form.maxSolCost.trim() ? parseFloat(form.maxSolCost) : 0,
-    p_token_spendable_sol_in: form.spendableSolIn.trim() ? parseFloat(form.spendableSolIn) : 0,
-    p_max_concurrent_tokens: form.maxConcurrentTokens.trim()
+  if (unlocked.sizing) {
+    payload.buy_amount = parseFloat(form.buyAmount);
+    payload.p_max_concurrent_tokens = form.maxConcurrentTokens.trim()
       ? parseInt(form.maxConcurrentTokens, 10)
-      : 0,
-    p_max_total_tokens: form.maxTotalTokens.trim()
+      : 0;
+    payload.p_max_total_tokens = form.maxTotalTokens.trim()
       ? parseInt(form.maxTotalTokens, 10)
-      : 0,
-    p_token_ix_labels: parseIxLabels(form.ixLabels),
-  };
+      : 0;
+  }
+  if (unlocked.exit) {
+    // 0 disables, per the ignore_zero convention.
+    payload.p_exit_take_profit = parseFloat(form.takeProfit);
+    payload.p_exit_stop_loss = parseFloat(form.stopLoss);
+    payload.p_exit_trailing_stop_pct = form.trailingStopPct.trim()
+      ? parseFloat(form.trailingStopPct)
+      : 0;
+    payload.p_exit_time_stop_secs = form.timeStopSecs.trim() ? parseInt(form.timeStopSecs, 10) : 0;
+    payload.p_exit_stall_secs = form.stallSecs.trim() ? parseInt(form.stallSecs, 10) : 0;
+    payload.p_exit_liquidity_drop_pct = form.liquidityDropPct.trim()
+      ? parseFloat(form.liquidityDropPct)
+      : 0;
+  }
+  if (unlocked.fingerprint) {
+    payload.p_token_initial_buy_sol = form.initialBuy.trim() ? parseFloat(form.initialBuy) : 0;
+    payload.p_token_cu_limit = form.cuLimit.trim() ? parseInt(form.cuLimit, 10) : 0;
+    payload.p_token_cu_price = form.cuPrice.trim() ? parseInt(form.cuPrice, 10) : 0;
+    payload.p_token_max_sol_cost = form.maxSolCost.trim() ? parseFloat(form.maxSolCost) : 0;
+    payload.p_token_spendable_sol_in = form.spendableSolIn.trim()
+      ? parseFloat(form.spendableSolIn)
+      : 0;
+    payload.p_token_ix_labels = parseIxLabels(form.ixLabels);
+    payload.tolerance_pct = form.tolerance.trim() ? parseFloat(form.tolerance) : undefined;
+  }
+  return payload;
 }

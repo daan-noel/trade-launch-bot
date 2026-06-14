@@ -228,6 +228,38 @@ pub struct UpdateRuleRequest {
     pub trade_mode: Option<String>,
 }
 
+impl UpdateRuleRequest {
+    /// True if the request would change any field that is FROZEN while a rule is
+    /// live (running or holding positions) — i.e. anything outside the "hot"
+    /// set the UI keeps editable mid-run (`buy_amount` + concurrency caps, plus
+    /// the administrative `rule_name`/`trade_mode`). Mirrors the per-group lock
+    /// in `RuleFormModal`; defense-in-depth against a non-UI caller.
+    fn touches_frozen_fields(&self) -> bool {
+        self.p_exit_take_profit.is_some()
+            || self.p_exit_stop_loss.is_some()
+            || self.p_exit_trailing_stop_pct.is_some()
+            || self.p_exit_time_stop_secs.is_some()
+            || self.p_exit_stall_secs.is_some()
+            || self.p_exit_liquidity_drop_pct.is_some()
+            || self.p_exit_cohort_ratio.is_some()
+            || self.p_entry_min_age_secs.is_some()
+            || self.p_entry_min_alive_sol.is_some()
+            || self.p_entry_min_organic_sol.is_some()
+            || self.p_entry_pullback_pct.is_some()
+            || self.p_entry_higher_low_secs.is_some()
+            || self.p_entry_max_cohort_held.is_some()
+            || self.p_entry_min_liquidity_sol.is_some()
+            || self.p_entry_min_organic_liq.is_some()
+            || self.p_token_initial_buy_sol.is_some()
+            || self.p_token_cu_limit.is_some()
+            || self.p_token_cu_price.is_some()
+            || self.p_token_ix_labels.is_some()
+            || self.p_token_max_sol_cost.is_some()
+            || self.p_token_spendable_sol_in.is_some()
+            || self.tolerance_pct.is_some()
+    }
+}
+
 /// Reject percent params that fall outside their valid range before a rule is
 /// persisted. Every percent field is whole-percent (see percent-params-unify-plan):
 ///   • Take Profit is unbounded above (a gain can exceed 100%) — only `> 0`.
@@ -401,6 +433,17 @@ pub async fn update_tpsl_rule(
             match serde_json::to_value(&req.0) {
                 Ok(v) => tracing::debug!("UpdateRuleRequest JSON: {}", v),
                 Err(e) => tracing::debug!("Failed to serialize UpdateRuleRequest: {e}"),
+            }
+            // While the rule is live (running, or still draining open positions)
+            // only the "hot" sizing fields may change — match/entry/exit shape is
+            // frozen so the run can't shift under itself. The UI enforces this via
+            // per-group locks; this guards non-UI callers.
+            let live = rule.is_active
+                || app_state.tpsl2_cache.holding_count_by_rule(rule_id) > 0;
+            if live && req.touches_frozen_fields() {
+                return HttpResponse::Conflict().json(serde_json::json!({
+                    "error": "Rule is live: only buy amount and concurrency caps can be edited while running or holding positions",
+                }));
             }
             // Update fields if provided
             if let Some(name) = &req.rule_name {
