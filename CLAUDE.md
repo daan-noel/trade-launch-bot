@@ -11,6 +11,7 @@ Meme-coin trading bot handling **massive token + trade volume**. Performance and
 - **Efficient frontend state.** Fetch via `services/api.ts` (REST) / `services/sse.ts` (SSE); cache via RTK Query / context / localStorage to avoid re-fetch and re-render. Memoize so high-frequency ticks (SOL/USD, live trades) update only affected cells, never whole tables.
 - **Reusable UI.** Build from `components/ui/`, `components/table/DataTable`, shared hooks. Don't reimplement an existing button/modal/table/formatter.
 - **Concise communication.** Short answers. Write non-trivial plans to a `*-plan.md` file, not chat.
+- **Docs stay in sync.** Any change that touches logic/flow MUST update the matching `@docs/*.md` map in the same task — read it before editing, update it after. No logic change ships with a stale map.
 
 ## Architecture
 
@@ -69,6 +70,7 @@ Notes
 - **Backend:** `cargo check --bin backend` clean; `cargo clippy` on touched code; add/adjust a `--bin backend` (or `pump-trader`) test when logic changed.
 - **Frontend:** `npm run build` clean; no extra re-render on the SOL/USD tick or live-trade stream (reuse existing memo/context patterns).
 - **Docs:** any logic change updates its `@docs/` map and every referencing `@project_plans/` / `*-plan.md` file — after the task is finished and validated.
+- **Temp plan files:** when a step in a root `*-plan.md` is done, remove that step from the file; when every step is done, delete the file.
 - Smallest correct diff, stayed in the owning crate, no new warnings, no secrets in code.
 
 ## Gotchas
