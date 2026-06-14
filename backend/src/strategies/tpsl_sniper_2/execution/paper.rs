@@ -54,6 +54,7 @@ pub(crate) fn spawn_entry_fill_poll(
     position_id: Uuid,
     rule: Tpsl2Rule,
 ) {
+    let buy_amount = rule.buy_amount;
     let poll_sem = runtime.paper_poll_sem();
     tokio::spawn(async move {
         // Bound concurrent fill-poll tasks; held for the task's lifetime.
@@ -98,7 +99,7 @@ pub(crate) fn spawn_entry_fill_poll(
                         .update_entry(
                             position_id,
                             &entry.tx_signature,
-                            entry.amount_sol,
+                            buy_amount,
                             entry.price,
                             entry.block_time,
                         )
