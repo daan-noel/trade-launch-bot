@@ -40,12 +40,72 @@ analysis/         # Python: Polars/DuckDB scoring notebook + charts
 
 ## Step 1 — Corpus loader (`corpus.rs` + `bin/sweep` skeleton)
 
-- Add a **batch trade query**: fetch all non-Mayhem tokens' trades in one go
-  (`WHERE mint_address = ANY($1)`), not the current per-token N+1 loop.
+- Add a **batch trade query** (the shared primitive below): fetch all selected
+  tokens' trades in one round-trip (`WHERE mint_address = ANY($1)`), not the
+  current per-token N+1 loop.
 - Build `Vec<TokenTrades { token, trades: Vec<Trade> }>` in memory.
 - Cache to `corpus.parquet`, keyed by a corpus hash → re-runs load instantly, no DB.
 - Reuse the existing Mayhem + token-criteria filters so the corpus matches live policy.
-- _Bonus:_ this alone fixes the N+1 that today's `run_backtest` suffers from.
+- **Scope the population, don't "load everything."** At our scale the full
+  corpus may not fit in RAM, so the loader takes an explicit selection — the
+  Mayhem/criteria filter **plus** a token cap and/or `created` window — and
+  Parquet is the streaming boundary if it overflows (write per-mint as fetched,
+  never hold the whole `trades` table live). Log the population size + which
+  bound clipped it; never silently truncate.
+- _Bonus:_ this fixes the N+1 in today's `run_backtest` **and** gives swing
+  detection's DB fallback a batch path (see below).
+
+### Shared primitive — `trade_repo::find_by_mints_paged`
+
+Both the sweep corpus loader and the swing `/swings/batch` DB fallback want the
+same thing: *given a set of mints, fetch each mint's trades, bounded per mint,
+in one query.* Build it once in [trade_repo.rs](backend/src/storage/repositories/trade_repo.rs)
+and reuse it in both places.
+
+```rust
+/// Trades for many mints in one round-trip, each mint capped to its newest
+/// `per_mint_cap` trades, all returned chronological per mint. Replaces the
+/// per-mint `find_by_mint_paged` loop (N+1) on the batch paths. The per-mint
+/// `ROW_NUMBER` window bounds the response so one high-volume mint in the set
+/// can't blow the result size — same guard `find_by_mint_paged` gives per call.
+pub async fn find_by_mints_paged(
+    &self,
+    mints: &[String],
+    per_mint_cap: i64,
+) -> anyhow::Result<Vec<Trade>>   // caller groups by mint_address
+```
+
+```sql
+WITH ranked AS (
+    SELECT <cols>,
+           ROW_NUMBER() OVER (
+             PARTITION BY mint_address
+             ORDER BY slot DESC, block_time DESC, tx_signature DESC, leg_index DESC
+           ) AS rn
+    FROM trades
+    WHERE mint_address = ANY($1)
+)
+SELECT <cols> FROM ranked
+WHERE rn <= $2
+ORDER BY mint_address, slot ASC, block_time ASC, tx_signature ASC, leg_index ASC
+```
+
+Notes:
+
+- **Per-mint cap, newest-kept, chronological-returned** — mirrors the existing
+  `SWING_DB_TRADE_CAP` / `MAX_TRADES_RETAINED` window so the batch fallback
+  serves the *same* launch→recent slice the live cache would have. Reuse that
+  constant as the cap on the swing side.
+- **Sweep caller** passes its own (larger) cap and groups the flat `Vec<Trade>`
+  by `mint_address` into `TokenTrades`. One `ANY($1)` per corpus chunk; chunk
+  the mint list so a single statement's result stays bounded.
+- **Swing caller** ([swing.rs](backend/src/api/handlers/tokens/swing.rs#L223))
+  collects the batch's cache-*miss* mints, makes **one** call instead of the
+  current `find_by_mint_paged`-per-mint inside `buffer_unordered`, and merges
+  with the cache hits. Kills that N+1 too.
+- This is the offline/DB path only — it does **not** touch the live DashMap.
+  The hot-cache lock-contention fix is separate (M5, `Arc<[Trade]>`); the two
+  are independent and both wanted.
 
 ## Step 2 — Fingerprints (`fingerprint.rs`)
 

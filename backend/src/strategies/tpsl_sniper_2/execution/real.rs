@@ -497,6 +497,14 @@ async fn sell_until_balance_cleared(
         .flatten()
         .map(|pk| pk.to_string());
 
+    // Register interest in this (wallet, mint) once for the whole exit (not per
+    // attempt) so the feed's trade-sequence is observed continuously: the confirm
+    // loop only re-runs the net-balance SQL aggregate when `seq` advanced — i.e.
+    // when the feed actually persisted a new trade for us — and skips it on bare
+    // fallback ticks where the balance cannot have changed.
+    let guard = trade_signals.register(&wallet, &mint);
+    let mut last_seq: Option<u64> = None;
+
     while attempt < max_attempts && amount > 0 {
         attempt += 1;
         // Re-read routing from the WS-fed cache each attempt: `is_cashback` gates
@@ -561,7 +569,6 @@ async fn sell_until_balance_cleared(
                 // the old polling.
                 let mut remaining_amount = amount;
                 let mut cleared = false;
-                let guard = trade_signals.register(&wallet, &mint);
                 let interval = Duration::from_millis(super::SELL_POLL_INTERVAL_MS);
                 let deadline = Instant::now() + interval * super::SELL_POLL_MAX_ATTEMPTS as u32;
                 loop {
@@ -571,20 +578,33 @@ async fn sell_until_balance_cleared(
                     tokio::pin!(notified);
                     notified.as_mut().enable();
 
-                    match trade_repo
-                        .net_token_amount_by_wallet_and_mint(&wallet, &mint)
-                        .await
-                    {
-                        Ok(balance) => {
-                            let remaining = balance.max(0.0);
-                            if remaining <= super::PARTIAL_FILL_THRESHOLD {
-                                info!(mint = %mint, attempt, "sell cleared the balance");
-                                cleared = true;
-                                break;
+                    // Only run the net-balance SQL aggregate when the feed has
+                    // persisted a new trade for this (wallet, mint) since our last
+                    // read — `seq` is bumped once per such trade. A bare fallback
+                    // tick (no new trade) can't have changed the balance, so we
+                    // skip the per-tick scan over the large partitioned `trades`
+                    // table entirely. `seq` is sampled *before* the query so a
+                    // trade landing during it is re-checked next tick. SQL stays
+                    // the authoritative confirm (deduped by PK), so feed
+                    // redelivery can't mis-count the balance and over-sell.
+                    let seq = guard.seq();
+                    if last_seq != Some(seq) {
+                        match trade_repo
+                            .net_token_amount_by_wallet_and_mint(&wallet, &mint)
+                            .await
+                        {
+                            Ok(balance) => {
+                                let remaining = balance.max(0.0);
+                                if remaining <= super::PARTIAL_FILL_THRESHOLD {
+                                    info!(mint = %mint, attempt, "sell cleared the balance");
+                                    cleared = true;
+                                    break;
+                                }
+                                remaining_amount = remaining as u64;
+                                last_seq = Some(seq);
                             }
-                            remaining_amount = remaining as u64;
+                            Err(err) => warn!("Failed to query net token balance: {err}"),
                         }
-                        Err(err) => warn!("Failed to query net token balance: {err}"),
                     }
                     let now = Instant::now();
                     if now >= deadline {

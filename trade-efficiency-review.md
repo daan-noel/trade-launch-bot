@@ -16,10 +16,3 @@ Scope: `pump-trader/` trade path + `tpsl_sniper_*/execution/real.rs` caller. The
 
 ### Per-trade heap allocations on the hot path
 - `mint.to_string()` (several), `buy_data`/`sell_data` via `vec![disc…].extend` ([buy.rs:181](pump-trader/src/trader/buy.rs#L181), [sell.rs:292](pump-trader/src/trader/sell.rs#L292)), two `DashMap` inserts + key clones per buy. Each is microseconds — negligible against network, list only if profiling the CPU side.
-
-## Already good (no action)
-- Snipe buy: zero pre-send RPC (no ATA check, no reserve read, no confirm) — tip + nonce served from cache.
-- Sells use `confirm=false` on the live path (no redundant RPC confirm) and escalate the Jito tip per retry; a non-landing tx costs nothing.
-- Sender fan-out serializes the body once (`Arc`), dedups on-chain (tip paid once).
-- CU limits split per path so priority fee isn't sized for the heaviest path; CU price already cut 5×.
-- Reserve/routing/pool/config all cache-first with freshness bounds + venue tagging.

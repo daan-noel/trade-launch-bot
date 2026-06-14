@@ -399,7 +399,10 @@ impl PumpFunTrader {
         ixs.extend_from_slice(&self.cu_ixs_curve_sell);
 
         // Sell (Sell exact token in)
-        let mut sell_data = vec![0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad];
+        // 8-byte discriminator + two u64 args: size up front so the two extends
+        // below don't reallocate on the sell hot path.
+        let mut sell_data = Vec::with_capacity(24);
+        sell_data.extend_from_slice(&[0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad]);
         sell_data.extend_from_slice(&token_amount.to_le_bytes());
         sell_data.extend_from_slice(&min_sol_output.to_le_bytes()); // min_sol_output (slippage floor)
 

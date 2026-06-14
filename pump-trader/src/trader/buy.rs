@@ -178,7 +178,10 @@ impl PumpFunTrader {
                 None => 1,
             };
 
-            let mut buy_data = vec![0x38, 0xfc, 0x74, 0x08, 0x9e, 0xdf, 0xcd, 0x5f];
+            // 8-byte discriminator + two u64 args: size up front so the two
+            // extends below don't reallocate on the buy hot path.
+            let mut buy_data = Vec::with_capacity(24);
+            buy_data.extend_from_slice(&[0x38, 0xfc, 0x74, 0x08, 0x9e, 0xdf, 0xcd, 0x5f]);
             buy_data.extend_from_slice(&buy_lamports.to_le_bytes());
             buy_data.extend_from_slice(&min_tokens_out.to_le_bytes());
             ixs.push(Instruction {

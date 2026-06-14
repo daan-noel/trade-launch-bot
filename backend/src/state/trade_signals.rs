@@ -27,6 +27,11 @@ struct Slot {
     notify: Arc<Notify>,
     /// Number of live waiters on this key; the slot is removed when it hits 0.
     waiters: usize,
+    /// Bumped on every [`notify`](TradeSignals::notify) for this key — i.e. once
+    /// per trade the feed persists for this `(wallet, mint)`. A waiter samples it
+    /// to tell "a new trade landed" from "a bare fallback tick", so the sell-
+    /// confirm loop can skip its net-balance SQL aggregate when nothing changed.
+    seq: u64,
 }
 
 /// Shared hub mapping an in-flight `(wallet, mint)` to its wakeup primitive.
@@ -49,6 +54,7 @@ impl TradeSignals {
             let mut slot = self.slots.entry(key.clone()).or_insert_with(|| Slot {
                 notify: Arc::new(Notify::new()),
                 waiters: 0,
+                seq: 0,
             });
             slot.waiters += 1;
             slot.notify.clone()
@@ -72,9 +78,11 @@ impl TradeSignals {
         // allocating two owned `String`s per committed trade for a `get` that
         // almost always misses. (`(String, String)` can't be looked up by
         // `(&str, &str)` without a Borrow impl, hence the scan.)
-        for slot in self.slots.iter() {
-            let key = slot.key();
+        for mut entry in self.slots.iter_mut() {
+            let (key, slot) = entry.pair_mut();
             if key.0 == wallet && key.1 == mint {
+                // Mark that a new trade landed for this key, then wake waiters.
+                slot.seq = slot.seq.wrapping_add(1);
                 slot.notify.notify_waiters();
                 return;
             }
@@ -95,6 +103,14 @@ impl WaitGuard {
     /// arriving in the gap isn't lost (tokio `notify_waiters` stores no permit).
     pub fn notified(&self) -> tokio::sync::futures::Notified<'_> {
         self.notify.notified()
+    }
+
+    /// The current trade-sequence for this key — bumped once per persisted trade
+    /// (see [`Slot::seq`]). A waiter that records this value and finds it
+    /// unchanged on a later tick knows no new trade landed, so a re-query of the
+    /// derived state (e.g. the net-balance SQL aggregate) would be wasted.
+    pub fn seq(&self) -> u64 {
+        self.signals.slots.get(&self.key).map(|s| s.seq).unwrap_or(0)
     }
 }
 
