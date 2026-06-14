@@ -13,34 +13,6 @@ pub struct Position {
     pub wallet: String,
     /// Token program id used for this position (SPL legacy or Token-2022).
     pub token_program_id: Option<String>,
-    /// Entry price (SOL per token) when the position was opened.
-    pub entry_price: f64,
-    /// Exit price (SOL per token) when the position was closed.
-    pub exit_price: Option<f64>,
-    /// Transaction signature of the buy transaction.
-    pub entry_tx: String,
-    /// Transaction signature of the sell transaction.
-    pub exit_tx: Option<String>,
-    /// "Holding" — owns tokens, exit not yet triggered | "ExitPending" — exit
-    /// triggered, sell/confirmation in flight | "End" — exited cleanly |
-    /// "ExitFailed" — terminal: the exit attempt ran and failed.
-    pub status: PositionStatus,
-    /// Strategy name (e.g., "TPSL1" or "TPSL2").
-    pub strategy: String,
-    /// Rule ID from the strategy rules table that triggered this position.
-    pub rule_id: Uuid,
-    /// Amount of tokens bought at entry.
-    pub entry_amount: f64,
-    /// Amount of tokens sold at exit.
-    pub exit_amount: Option<f64>,
-    /// On-chain block time of the confirmed buy trade.
-    pub entry_time: Option<DateTime<Utc>>,
-    /// On-chain block time of the confirmed sell trade.
-    pub exit_time: Option<DateTime<Utc>>,
-    /// Why the position exited — one of the exit-ladder reasons ("TakeProfit",
-    /// "StopLoss", "TrailingStop", "Stall", "TimeStop", "LiquidityExit"). `None`
-    /// while still Holding/ExitPending (or for legacy rows predating this field).
-    pub exit_reason: Option<String>,
     /// Target (trigger-trade) snapshot — the scalp-entry signal trade that armed
     /// this position, distinct from the actual `entry_*` fill. Set later via
     /// [`Position::set_target`], not at construction; `None` until armed (and for
@@ -52,6 +24,34 @@ pub struct Position {
     pub target_amount: Option<f64>,
     pub target_time: Option<DateTime<Utc>>,
     pub target_tx: Option<String>,
+    /// Entry price (SOL per token) when the position was opened.
+    pub entry_price: f64,
+    /// Amount of tokens bought at entry.
+    pub entry_amount: f64,
+    /// On-chain block time of the confirmed buy trade.
+    pub entry_time: Option<DateTime<Utc>>,
+    /// Transaction signature of the buy transaction.
+    pub entry_tx: String,
+    /// Exit price (SOL per token) when the position was closed.
+    pub exit_price: Option<f64>,
+    /// Amount of tokens sold at exit.
+    pub exit_amount: Option<f64>,
+    /// On-chain block time of the confirmed sell trade.
+    pub exit_time: Option<DateTime<Utc>>,
+    /// Transaction signature of the sell transaction.
+    pub exit_tx: Option<String>,
+    /// "Holding" — owns tokens, exit not yet triggered | "ExitPending" — exit
+    /// triggered, sell/confirmation in flight | "End" — exited cleanly |
+    /// "ExitFailed" — terminal: the exit attempt ran and failed.
+    pub status: PositionStatus,
+    /// Strategy name (e.g., "TPSL1" or "TPSL2").
+    pub strategy: String,
+    /// Rule ID from the strategy rules table that triggered this position.
+    pub rule_id: Uuid,
+    /// Why the position exited — one of the exit-ladder reasons ("TakeProfit",
+    /// "StopLoss", "TrailingStop", "Stall", "TimeStop", "LiquidityExit"). `None`
+    /// while still Holding/ExitPending (or for legacy rows predating this field).
+    pub exit_reason: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -109,22 +109,22 @@ impl Position {
             mint,
             wallet,
             token_program_id: None,
-            entry_price,
-            exit_price: None,
-            entry_tx,
-            exit_tx: None,
-            status: PositionStatus::Holding,
-            strategy,
-            rule_id,
-            entry_amount,
-            exit_amount: None,
-            entry_time: None,
-            exit_time: None,
-            exit_reason: None,
             target_price: None,
             target_amount: None,
             target_time: None,
             target_tx: None,
+            entry_price,
+            entry_amount,
+            entry_time: None,
+            entry_tx,
+            exit_price: None,
+            exit_amount: None,
+            exit_time: None,
+            exit_tx: None,
+            status: PositionStatus::Holding,
+            strategy,
+            rule_id,
+            exit_reason: None,
             created_at: now,
             updated_at: now,
         }

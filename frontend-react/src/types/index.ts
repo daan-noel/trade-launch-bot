@@ -91,21 +91,6 @@ export interface RulePositionRecord {
   id: string;
   mint: string;
   wallet: string;
-  entry_price: number;
-  exit_price: number | null;
-  entry_tx: string;
-  exit_tx: string | null;
-  status: string;
-  strategy: string;
-  rule_id: string;
-  entry_amount: number;
-  exit_amount: number | null;
-  pnl_percent: number | null;
-  entry_time: string | null;
-  exit_time: string | null;
-  /** Why the position exited (TakeProfit/StopLoss/TrailingStop/Stall/TimeStop/
-   * LiquidityExit/CohortExit); null while still open. */
-  exit_reason: string | null;
   /** Target (trigger-trade) snapshot — the scalp-entry signal trade that armed
    * this position, distinct from the actual entry fill. null until armed. The
    * gap vs. the entry_* fields is derived client-side, not stored. */
@@ -113,6 +98,21 @@ export interface RulePositionRecord {
   target_amount: number | null;
   target_time: string | null;
   target_tx: string | null;
+  entry_price: number;
+  entry_amount: number;
+  entry_time: string | null;
+  entry_tx: string;
+  exit_price: number | null;
+  exit_amount: number | null;
+  exit_time: string | null;
+  exit_tx: string | null;
+  pnl_percent: number | null;
+  status: string;
+  strategy: string;
+  rule_id: string;
+  /** Why the position exited (TakeProfit/StopLoss/TrailingStop/Stall/TimeStop/
+   * LiquidityExit/CohortExit); null while still open. */
+  exit_reason: string | null;
   created_at: string;
   updated_at: string;
 }

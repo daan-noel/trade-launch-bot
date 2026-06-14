@@ -57,23 +57,23 @@ struct PaperPositionDbRow {
     id: Uuid,
     mint: String,
     wallet: String,
-    entry_price: f64,
-    exit_price: Option<f64>,
     token_program_id: Option<String>,
-    entry_tx: String,
-    exit_tx: Option<String>,
-    status: String,
-    strategy: String,
-    rule_id: Uuid,
-    entry_amount: f64,
-    exit_amount: Option<f64>,
-    entry_time: Option<DateTime<Utc>>,
-    exit_time: Option<DateTime<Utc>>,
-    exit_reason: Option<String>,
     target_price: Option<f64>,
     target_amount: Option<f64>,
     target_time: Option<DateTime<Utc>>,
     target_tx: Option<String>,
+    entry_price: f64,
+    entry_amount: f64,
+    entry_time: Option<DateTime<Utc>>,
+    entry_tx: String,
+    exit_price: Option<f64>,
+    exit_amount: Option<f64>,
+    exit_time: Option<DateTime<Utc>>,
+    exit_tx: Option<String>,
+    status: String,
+    strategy: String,
+    rule_id: Uuid,
+    exit_reason: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -93,23 +93,23 @@ impl TryFrom<PaperPositionDbRow> for Position {
             id: r.id,
             mint: r.mint,
             wallet: r.wallet,
-            entry_price: r.entry_price,
-            exit_price: r.exit_price,
             token_program_id: r.token_program_id,
-            entry_tx: r.entry_tx,
-            exit_tx: r.exit_tx,
-            status,
-            strategy: r.strategy,
-            rule_id: r.rule_id,
-            entry_amount: r.entry_amount,
-            exit_amount: r.exit_amount,
-            entry_time: r.entry_time,
-            exit_time: r.exit_time,
-            exit_reason: r.exit_reason,
             target_price: r.target_price,
             target_amount: r.target_amount,
             target_time: r.target_time,
             target_tx: r.target_tx,
+            entry_price: r.entry_price,
+            entry_amount: r.entry_amount,
+            entry_time: r.entry_time,
+            entry_tx: r.entry_tx,
+            exit_price: r.exit_price,
+            exit_amount: r.exit_amount,
+            exit_time: r.exit_time,
+            exit_tx: r.exit_tx,
+            status,
+            strategy: r.strategy,
+            rule_id: r.rule_id,
+            exit_reason: r.exit_reason,
             created_at: r.created_at,
             updated_at: r.updated_at,
         })
@@ -125,9 +125,11 @@ fn position_status_str(s: PositionStatus) -> &'static str {
     }
 }
 
-const POSITION_COLS: &str = "id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, \
-     exit_tx, status, strategy, rule_id, entry_amount, exit_amount, entry_time, exit_time, \
-     exit_reason, target_price, target_amount, target_time, target_tx, created_at, updated_at";
+const POSITION_COLS: &str = "id, mint, wallet, token_program_id, \
+     target_price, target_amount, target_time, target_tx, \
+     entry_price, entry_amount, entry_time, entry_tx, \
+     exit_price, exit_amount, exit_time, exit_tx, \
+     status, strategy, rule_id, exit_reason, created_at, updated_at";
 
 // ---------------------------------------------------------------------------
 // Repo
@@ -268,9 +270,11 @@ impl Tpsl2PaperTradingRepo {
         sqlx::query(
             r#"
             INSERT INTO tpsl2_paper_positions
-                (id, run_id, mint, wallet, token_program_id, entry_price, exit_price, entry_tx, exit_tx,
-                 status, strategy, rule_id, entry_amount, exit_amount,
-                 entry_time, exit_time, exit_reason, target_price, target_amount, target_time, target_tx, created_at, updated_at)
+                (id, run_id, mint, wallet, token_program_id,
+                 target_price, target_amount, target_time, target_tx,
+                 entry_price, entry_amount, entry_time, entry_tx,
+                 exit_price, exit_amount, exit_time, exit_tx,
+                 status, strategy, rule_id, exit_reason, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
             "#,
         )
@@ -279,22 +283,22 @@ impl Tpsl2PaperTradingRepo {
         .bind(&position.mint)
         .bind(&position.wallet)
         .bind(position.token_program_id.as_ref())
-        .bind(position.entry_price)
-        .bind(position.exit_price)
-        .bind(&position.entry_tx)
-        .bind(&position.exit_tx)
-        .bind(position_status_str(position.status))
-        .bind(&position.strategy)
-        .bind(position.rule_id)
-        .bind(position.entry_amount)
-        .bind(position.exit_amount)
-        .bind(position.entry_time)
-        .bind(position.exit_time)
-        .bind(position.exit_reason.as_ref())
         .bind(position.target_price)
         .bind(position.target_amount)
         .bind(position.target_time)
         .bind(position.target_tx.as_ref())
+        .bind(position.entry_price)
+        .bind(position.entry_amount)
+        .bind(position.entry_time)
+        .bind(&position.entry_tx)
+        .bind(position.exit_price)
+        .bind(position.exit_amount)
+        .bind(position.exit_time)
+        .bind(&position.exit_tx)
+        .bind(position_status_str(position.status))
+        .bind(&position.strategy)
+        .bind(position.rule_id)
+        .bind(position.exit_reason.as_ref())
         .bind(position.created_at)
         .bind(position.updated_at)
         .execute(&self.pool)

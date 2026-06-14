@@ -35,23 +35,23 @@ struct PositionDbRow {
     id: Uuid,
     mint: String,
     wallet: String,
-    entry_price: f64,
-    exit_price: Option<f64>,
     token_program_id: Option<String>,
-    entry_tx: String,
-    exit_tx: Option<String>,
-    status: String,
-    strategy: String,
-    rule_id: Uuid,
-    entry_amount: f64,
-    exit_amount: Option<f64>,
-    entry_time: Option<DateTime<Utc>>,
-    exit_time: Option<DateTime<Utc>>,
-    exit_reason: Option<String>,
     target_price: Option<f64>,
     target_amount: Option<f64>,
     target_time: Option<DateTime<Utc>>,
     target_tx: Option<String>,
+    entry_price: f64,
+    entry_amount: f64,
+    entry_time: Option<DateTime<Utc>>,
+    entry_tx: String,
+    exit_price: Option<f64>,
+    exit_amount: Option<f64>,
+    exit_time: Option<DateTime<Utc>>,
+    exit_tx: Option<String>,
+    status: String,
+    strategy: String,
+    rule_id: Uuid,
+    exit_reason: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -72,23 +72,23 @@ impl TryFrom<PositionDbRow> for Position {
             id: r.id,
             mint: r.mint,
             wallet: r.wallet,
-            entry_price: r.entry_price,
-            exit_price: r.exit_price,
             token_program_id: r.token_program_id,
-            entry_tx: r.entry_tx,
-            exit_tx: r.exit_tx,
-            status,
-            strategy: r.strategy,
-            rule_id: r.rule_id,
-            entry_amount: r.entry_amount,
-            exit_amount: r.exit_amount,
-            entry_time: r.entry_time,
-            exit_time: r.exit_time,
-            exit_reason: r.exit_reason,
             target_price: r.target_price,
             target_amount: r.target_amount,
             target_time: r.target_time,
             target_tx: r.target_tx,
+            entry_price: r.entry_price,
+            entry_amount: r.entry_amount,
+            entry_time: r.entry_time,
+            entry_tx: r.entry_tx,
+            exit_price: r.exit_price,
+            exit_amount: r.exit_amount,
+            exit_time: r.exit_time,
+            exit_tx: r.exit_tx,
+            status,
+            strategy: r.strategy,
+            rule_id: r.rule_id,
+            exit_reason: r.exit_reason,
             created_at: r.created_at,
             updated_at: r.updated_at,
         })
@@ -103,6 +103,15 @@ fn position_status_str(s: PositionStatus) -> &'static str {
         PositionStatus::ExitFailed => "ExitFailed",
     }
 }
+
+/// Canonical column order for `tpsl2_real_positions`, shared by every
+/// SELECT/RETURNING so the row layout stays in one place: identity →
+/// target_* → entry_* → exit_* → state. Mirrors the table's physical order.
+const POSITION_COLS: &str = "id, mint, wallet, token_program_id, \
+     target_price, target_amount, target_time, target_tx, \
+     entry_price, entry_amount, entry_time, entry_tx, \
+     exit_price, exit_amount, exit_time, exit_tx, \
+     status, strategy, rule_id, exit_reason, created_at, updated_at";
 
 // ---------------------------------------------------------------------------
 // Repo
@@ -125,16 +134,14 @@ impl Tpsl2PositionRepo {
         entry_price: f64,
         entry_time: DateTime<Utc>,
     ) -> anyhow::Result<Position> {
-        let row = sqlx::query_as::<_, PositionDbRow>(
+        let row = sqlx::query_as::<_, PositionDbRow>(&format!(
             r#"
             UPDATE tpsl2_real_positions
             SET entry_tx = $2, entry_amount = $3, entry_price = $4, entry_time = $5, updated_at = $6
             WHERE id = $1
-            RETURNING id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
-                      status, strategy, rule_id, entry_amount, exit_amount,
-                      entry_time, exit_time, exit_reason, target_price, target_amount, target_time, target_tx, created_at, updated_at
-            "#,
-        )
+            RETURNING {POSITION_COLS}
+            "#
+        ))
         .bind(position_id)
         .bind(entry_tx)
         .bind(entry_amount)
@@ -160,16 +167,14 @@ impl Tpsl2PositionRepo {
         target_time: DateTime<Utc>,
         target_tx: &str,
     ) -> anyhow::Result<Position> {
-        let row = sqlx::query_as::<_, PositionDbRow>(
+        let row = sqlx::query_as::<_, PositionDbRow>(&format!(
             r#"
             UPDATE tpsl2_real_positions
             SET target_price = $2, target_amount = $3, target_time = $4, target_tx = $5, updated_at = $6
             WHERE id = $1
-            RETURNING id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
-                      status, strategy, rule_id, entry_amount, exit_amount,
-                      entry_time, exit_time, exit_reason, target_price, target_amount, target_time, target_tx, created_at, updated_at
-            "#,
-        )
+            RETURNING {POSITION_COLS}
+            "#
+        ))
         .bind(position_id)
         .bind(target_price)
         .bind(target_amount)
@@ -187,9 +192,11 @@ impl Tpsl2PositionRepo {
         sqlx::query(
             r#"
             INSERT INTO tpsl2_real_positions
-                (id, mint, wallet, token_program_id, entry_price, exit_price, entry_tx, exit_tx,
-                 status, strategy, rule_id, entry_amount, exit_amount,
-                 entry_time, exit_time, exit_reason, target_price, target_amount, target_time, target_tx, created_at, updated_at)
+                (id, mint, wallet, token_program_id,
+                 target_price, target_amount, target_time, target_tx,
+                 entry_price, entry_amount, entry_time, entry_tx,
+                 exit_price, exit_amount, exit_time, exit_tx,
+                 status, strategy, rule_id, exit_reason, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
             "#,
         )
@@ -197,22 +204,22 @@ impl Tpsl2PositionRepo {
         .bind(&position.mint)
         .bind(&position.wallet)
         .bind(position.token_program_id.as_ref())
-        .bind(position.entry_price)
-        .bind(position.exit_price)
-        .bind(&position.entry_tx)
-        .bind(&position.exit_tx)
-        .bind(position_status_str(position.status))
-        .bind(&position.strategy)
-        .bind(position.rule_id)
-        .bind(position.entry_amount)
-        .bind(position.exit_amount)
-        .bind(position.entry_time)
-        .bind(position.exit_time)
-        .bind(position.exit_reason.as_ref())
         .bind(position.target_price)
         .bind(position.target_amount)
         .bind(position.target_time)
         .bind(position.target_tx.as_ref())
+        .bind(position.entry_price)
+        .bind(position.entry_amount)
+        .bind(position.entry_time)
+        .bind(&position.entry_tx)
+        .bind(position.exit_price)
+        .bind(position.exit_amount)
+        .bind(position.exit_time)
+        .bind(&position.exit_tx)
+        .bind(position_status_str(position.status))
+        .bind(&position.strategy)
+        .bind(position.rule_id)
+        .bind(position.exit_reason.as_ref())
         .bind(position.created_at)
         .bind(position.updated_at)
         .execute(&self.pool)
@@ -252,17 +259,15 @@ impl Tpsl2PositionRepo {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<Position>> {
-        let rows = sqlx::query_as::<_, PositionDbRow>(
+        let rows = sqlx::query_as::<_, PositionDbRow>(&format!(
             r#"
-                 SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
-                   status, strategy, rule_id, entry_amount, exit_amount,
-                   entry_time, exit_time, exit_reason, target_price, target_amount, target_time, target_tx, created_at, updated_at
+            SELECT {POSITION_COLS}
             FROM tpsl2_real_positions
             WHERE mint = $1 AND status = 'Holding'
             ORDER BY created_at DESC
             LIMIT $2 OFFSET $3
-            "#,
-        )
+            "#
+        ))
         .bind(mint)
         .bind(limit)
         .bind(offset)
@@ -279,17 +284,15 @@ impl Tpsl2PositionRepo {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<Position>> {
-        let rows = sqlx::query_as::<_, PositionDbRow>(
+        let rows = sqlx::query_as::<_, PositionDbRow>(&format!(
             r#"
-                 SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
-                   status, strategy, rule_id, entry_amount, exit_amount,
-                   entry_time, exit_time, exit_reason, target_price, target_amount, target_time, target_tx, created_at, updated_at
+            SELECT {POSITION_COLS}
             FROM tpsl2_real_positions
             WHERE wallet = $1 AND status = 'Holding'
             ORDER BY created_at DESC
             LIMIT $2 OFFSET $3
-            "#,
-        )
+            "#
+        ))
         .bind(wallet)
         .bind(limit)
         .bind(offset)
@@ -301,15 +304,13 @@ impl Tpsl2PositionRepo {
 
     /// Get a specific position by ID.
     pub async fn find_by_id(&self, position_id: Uuid) -> anyhow::Result<Option<Position>> {
-        let row = sqlx::query_as::<_, PositionDbRow>(
+        let row = sqlx::query_as::<_, PositionDbRow>(&format!(
             r#"
-            SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
-                   status, strategy, rule_id, entry_amount, exit_amount,
-                   entry_time, exit_time, exit_reason, target_price, target_amount, target_time, target_tx, created_at, updated_at
+            SELECT {POSITION_COLS}
             FROM tpsl2_real_positions
             WHERE id = $1
-            "#,
-        )
+            "#
+        ))
         .bind(position_id)
         .fetch_optional(&self.pool)
         .await?;
@@ -324,17 +325,15 @@ impl Tpsl2PositionRepo {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<Position>> {
-        let rows = sqlx::query_as::<_, PositionDbRow>(
+        let rows = sqlx::query_as::<_, PositionDbRow>(&format!(
                 r#"
-                SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
-                        status, strategy, rule_id, entry_amount, exit_amount,
-                   entry_time, exit_time, exit_reason, target_price, target_amount, target_time, target_tx, created_at, updated_at
+                SELECT {POSITION_COLS}
                 FROM tpsl2_real_positions
                 WHERE rule_id = $1
                 ORDER BY created_at DESC
                 LIMIT $2 OFFSET $3
-                "#,
-            )
+                "#
+            ))
             .bind(rule_id)
             .bind(limit)
             .bind(offset)
@@ -377,17 +376,15 @@ impl Tpsl2PositionRepo {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<Position>> {
-        let rows = sqlx::query_as::<_, PositionDbRow>(
+        let rows = sqlx::query_as::<_, PositionDbRow>(&format!(
             r#"
-            SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
-                   status, strategy, rule_id, entry_amount, exit_amount,
-                   entry_time, exit_time, exit_reason, target_price, target_amount, target_time, target_tx, created_at, updated_at
+            SELECT {POSITION_COLS}
             FROM tpsl2_real_positions
             WHERE strategy = $1
             ORDER BY created_at DESC
             LIMIT $2 OFFSET $3
-            "#,
-        )
+            "#
+        ))
         .bind(strategy)
         .bind(limit)
         .bind(offset)
@@ -399,16 +396,14 @@ impl Tpsl2PositionRepo {
 
     /// All positions with status Holding (for TPSL runtime cache warm-up).
     pub async fn find_all_holding(&self) -> anyhow::Result<Vec<Position>> {
-        let rows = sqlx::query_as::<_, PositionDbRow>(
+        let rows = sqlx::query_as::<_, PositionDbRow>(&format!(
             r#"
-            SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
-                   status, strategy, rule_id, entry_amount, exit_amount,
-                   entry_time, exit_time, exit_reason, target_price, target_amount, target_time, target_tx, created_at, updated_at
+            SELECT {POSITION_COLS}
             FROM tpsl2_real_positions
             WHERE status = 'Holding'
             ORDER BY created_at DESC
-            "#,
-        )
+            "#
+        ))
         .fetch_all(&self.pool)
         .await?;
 

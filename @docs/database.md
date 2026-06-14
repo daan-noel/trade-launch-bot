@@ -9,6 +9,7 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 | `0002_perf_indexes.sql` | composite hot-path indexes (wallet+mint balance, slot ordering) |
 | `0003_settings_kv.sql` | `app_settings` single-row JSONB → typed key-value store (dotted keys) |
 | `0004_tpsl2_target_columns.sql` | `tpsl2_{real,paper}_positions` += nullable `target_{price,amount,time,tx}` (scalp-entry trigger-trade snapshot; no backfill, `target_tx` not unique) |
+| `0005_tpsl2_positions_column_order.sql` | `tpsl2_{real,paper}_positions` rebuilt (rename→create→copy→drop) to physically order columns `target_*` → `entry_*` → `exit_*`; same columns/constraints/indexes, no data loss. Matches the Rust structs, JSON response, and frontend table |
 
 ## Tables
 **Core trading**
@@ -27,7 +28,7 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 - `tpsl1_paper_test_run` — rule_id (FK CASCADE), run_seq, status(`Running`/`Finished`/`Stopped`), max_total_tokens, started/finished_at. UNIQUE(rule_id, run_seq); one live run per rule.
 - `tpsl1_paper_positions` — run_id (FK CASCADE) + same shape as real positions, no tx UNIQUE (token re-tradable across runs).
 - `tpsl2_*` adds entry gates: `p_entry_{min_age_secs,min_alive_sol,min_organic_sol,pullback_pct,higher_low_secs,max_cohort_held,min_liquidity_sol,min_organic_liq}`, `p_exit_cohort_ratio`.
-- `tpsl2_{real,paper}_positions` also carry `target_{price,amount,time,tx}` (nullable): the scalp-entry **trigger trade** that armed the position, distinct from the actual `entry_*` fill. Real: target tx ≠ entry tx (a true slippage/latency gap). Paper: entry is the worst-case adverse fill in the trigger's block/next block, so target ≠ entry except in the fallback case. Gap derived later, not stored.
+- `tpsl2_{real,paper}_positions` also carry `target_{price,amount,time,tx}` (nullable): the scalp-entry **trigger trade** that armed the position, distinct from the actual `entry_*` fill. Physical column order is `target_*` → `entry_*` → `exit_*` (migration 0005), mirrored by the Rust row struct, `PositionResponse`, and the frontend table. Real: target tx ≠ entry tx (a true slippage/latency gap). Paper: entry is the worst-case adverse fill in the trigger's block/next block, so target ≠ entry except in the fallback case. Gap derived later, not stored.
 
 **Wallets / settings**
 - `wallet_profiles` — name, type(`mine`/`trader`/`whale`/`dev`), tag_ids(UUID[]).

@@ -50,24 +50,6 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
       searchValue: (r) => r.mint,
     },
     {
-      key: 'entry_price',
-      label: 'Entry Price',
-      group: 'entry',
-      sortable: true,
-      render: (r) => <CurrentPriceCell sol={r.entry_price} />,
-      sortValue: (r) => r.entry_price,
-      searchValue: (r) => String(r.entry_price),
-    },
-    {
-      key: 'entry_time',
-      label: 'Entry Time',
-      group: 'entry',
-      sortable: true,
-      render: (r) => <DateCell iso={r.entry_time} />,
-      sortValue: (r) => r.entry_time ?? '',
-      searchValue: (r) => r.entry_time ?? '',
-    },
-    {
       key: 'target_price',
       label: 'Target Price',
       tooltip:
@@ -110,6 +92,24 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
           '—'
         ),
       searchValue: (r) => r.target_tx ?? '',
+    },
+    {
+      key: 'entry_price',
+      label: 'Entry Price',
+      group: 'entry',
+      sortable: true,
+      render: (r) => <CurrentPriceCell sol={r.entry_price} />,
+      sortValue: (r) => r.entry_price,
+      searchValue: (r) => String(r.entry_price),
+    },
+    {
+      key: 'entry_time',
+      label: 'Entry Time',
+      group: 'entry',
+      sortable: true,
+      render: (r) => <DateCell iso={r.entry_time} />,
+      sortValue: (r) => r.entry_time ?? '',
+      searchValue: (r) => r.entry_time ?? '',
     },
     {
       key: 'exit_price',
