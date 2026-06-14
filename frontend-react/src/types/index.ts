@@ -210,13 +210,18 @@ export interface CashbackStatus {
 /** One pot's outcome from POST /api/cashback/claim. */
 export interface CashbackClaimOutcome {
   label: string;
+  /** SOL pots: claimed lamports. Stable pot (`is_stable`): raw stable-mint units. */
   claimable_lamports: number;
+  /** True for the curve stable pot — claim lands as an SPL token balance, not SOL. */
+  is_stable: boolean;
   signature: string | null;
   error: string | null;
 }
 
 export interface CashbackClaimResult {
   claimed_lamports: number;
+  /** Raw stable-mint units swept from the curve stable pot (separate token). */
+  claimed_stable: number;
   pots: CashbackClaimOutcome[];
 }
 

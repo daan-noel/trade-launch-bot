@@ -470,6 +470,7 @@ mod tests {
             global_volume_accumulator: Pubkey::new_unique(),
             user_volume_accumulator: Pubkey::new_unique(),
             fee_config: Pubkey::new_unique(),
+            stable_quote_mint: None,
         });
         t.cu_ixs_curve_sell = vec![
             solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(100_000),

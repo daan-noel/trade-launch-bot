@@ -62,7 +62,11 @@ pub async fn get_cashback_status(app_state: web::Data<Arc<AppState>>) -> impl Re
 #[derive(Serialize)]
 struct ClaimOutcomeJson {
     label: &'static str,
+    /// For SOL pots: claimed lamports. For the stable pot (`is_stable`): raw
+    /// stable-mint units (not lamports).
     claimable_lamports: u64,
+    /// True for the curve stable pot — claim lands as an SPL balance, not SOL.
+    is_stable: bool,
     /// Sent signature on success; `None` if the send failed.
     signature: Option<String>,
     /// Error string when the pot's claim failed; `None` on success.
@@ -95,9 +99,16 @@ pub async fn claim_cashback(app_state: web::Data<Arc<AppState>>) -> impl Respond
 
     match result {
         Ok(outcomes) => {
+            // SOL pots sum into lamports; the stable pot is a separate token
+            // amount (raw units), so it's totalled on its own.
             let claimed_lamports: u64 = outcomes
                 .iter()
-                .filter(|o| o.err.is_none())
+                .filter(|o| o.err.is_none() && !o.is_stable)
+                .map(|o| o.claimable)
+                .sum();
+            let claimed_stable: u64 = outcomes
+                .iter()
+                .filter(|o| o.err.is_none() && o.is_stable)
                 .map(|o| o.claimable)
                 .sum();
             let pots: Vec<ClaimOutcomeJson> = outcomes
@@ -105,12 +116,14 @@ pub async fn claim_cashback(app_state: web::Data<Arc<AppState>>) -> impl Respond
                 .map(|o| ClaimOutcomeJson {
                     label: o.label,
                     claimable_lamports: o.claimable,
+                    is_stable: o.is_stable,
                     signature: o.signature.clone(),
                     error: o.err.clone(),
                 })
                 .collect();
             HttpResponse::Ok().json(serde_json::json!({
                 "claimed_lamports": claimed_lamports,
+                "claimed_stable": claimed_stable,
                 "pots": pots,
             }))
         }

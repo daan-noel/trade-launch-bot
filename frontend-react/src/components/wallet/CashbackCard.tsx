@@ -36,8 +36,13 @@ export function CashbackCard() {
     try {
       const res = await claim().unwrap();
       const failed = res.pots.filter((p) => p.error);
-      if (res.claimed_lamports > 0) {
-        setSuccess(`Reclaimed ${fmtSol(res.claimed_lamports)} SOL to your wallet.`);
+      const parts: string[] = [];
+      if (res.claimed_lamports > 0) parts.push(`${fmtSol(res.claimed_lamports)} SOL`);
+      // Stable cashback is a separate SPL token (raw units, not lamports) and
+      // lands as a token balance rather than native SOL.
+      if (res.claimed_stable > 0) parts.push(`${res.claimed_stable} stable units`);
+      if (parts.length > 0) {
+        setSuccess(`Reclaimed ${parts.join(' + ')} to your wallet.`);
       } else if (failed.length === 0) {
         setSuccess('Nothing to reclaim right now.');
       }

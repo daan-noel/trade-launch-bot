@@ -216,17 +216,30 @@ impl PumpFunTrader {
         let pump = self.pump_program;
         let (global_pda, _) = Pubkey::find_program_address(&[b"global"], &pump);
 
-        // Fetch fee_recipient from chain (offset 41 in account data)
-        let fee_recipient = {
+        // Fetch fee_recipient (offset 41) + the stable quote mint from chain in
+        // one read. Layout (after the 8-byte discriminator): the
+        // `whitelisted_quote_mints[0]` pubkey sits at byte 1013 — see the `Global`
+        // struct in the pump IDL. Parsed best-effort: a shorter/older account or a
+        // default (all-zero) slot just yields no stable mint (claim path skipped).
+        const OFF_FEE_RECIPIENT: usize = 41;
+        const OFF_STABLE_QUOTE_MINT: usize = 1013;
+        let (fee_recipient, stable_quote_mint) = {
             let account = self
                 .rpc
                 .get_account(&global_pda)
                 .await
                 .context("Failed to fetch pump global account")?;
-            if account.data.len() < 73 {
+            if account.data.len() < OFF_FEE_RECIPIENT + 32 {
                 anyhow::bail!("Global account data too short");
             }
-            Pubkey::try_from(&account.data[41..73]).context("Failed to parse fee_recipient")?
+            let fee_recipient = Pubkey::try_from(&account.data[OFF_FEE_RECIPIENT..OFF_FEE_RECIPIENT + 32])
+                .context("Failed to parse fee_recipient")?;
+            let stable_quote_mint = account
+                .data
+                .get(OFF_STABLE_QUOTE_MINT..OFF_STABLE_QUOTE_MINT + 32)
+                .and_then(|s| Pubkey::try_from(s).ok())
+                .filter(|pk| *pk != Pubkey::default());
+            (fee_recipient, stable_quote_mint)
         };
 
         let (global_volume_accumulator, _) =
@@ -246,6 +259,7 @@ impl PumpFunTrader {
             global_volume_accumulator,
             user_volume_accumulator,
             fee_config,
+            stable_quote_mint,
         })
     }
 

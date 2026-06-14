@@ -128,6 +128,7 @@ impl PumpFunTrader {
 }
 
 /// Static per-pot facts needed to build one pot's claim transaction.
+#[derive(Clone)]
 struct PotClaim {
     label: &'static str,
     /// Owning program (pump for curve, pump_swap for AMM).
@@ -141,6 +142,19 @@ struct PotClaim {
     /// True for the pump `claim_cashback_v2` layout (adds the
     /// associated-token-program account that the AMM `claim_cashback` omits).
     include_atoken_program: bool,
+    /// Quote the claim pays out: WSOL for the two SOL pots, the stable mint for
+    /// the curve stable pot. `claim_cashback_v2` selects which on-chain pot
+    /// (`cashback_earned` vs `stable_cashback_earned`) to drain from this mint.
+    quote_mint: Pubkey,
+    /// Token program owning `quote_mint` (classic SPL for WSOL; read on-chain for
+    /// the stable mint, which may be SPL or Token-2022).
+    quote_token_program: Pubkey,
+    /// True only for WSOL: append a `close_account` so the claimed WSOL unwraps
+    /// to native SOL. The stable mint is a real token — left as an SPL balance.
+    unwrap: bool,
+    /// True for the stable pot (its claimable is `stable_*`, in raw mint units,
+    /// not lamports) so callers can report it apart from the SOL pots.
+    is_stable: bool,
 }
 
 /// Outcome of one pot's claim — simulation result or, with `execute`, the sent
@@ -149,6 +163,9 @@ struct PotClaim {
 pub struct ClaimOutcome {
     pub label: &'static str,
     pub claimable: u64,
+    /// True for the stable pot — `claimable` is then raw stable-mint units, not
+    /// lamports, and the claim lands as an SPL balance (no unwrap to SOL).
+    pub is_stable: bool,
     /// True if this was simulate-only (no tx sent).
     pub simulated: bool,
     pub units_consumed: Option<u64>,
@@ -170,21 +187,21 @@ impl PumpFunTrader {
     /// bytes a real claim sends.
     fn build_claim_ixs(&self, p: &PotClaim) -> Result<Vec<Instruction>> {
         let user = self.config.keypair.pubkey();
-        let token_prog = self.token_program; // WSOL is a legacy-SPL token
-        let wsol = self.wsol_mint;
+        let token_prog = p.quote_token_program; // WSOL = legacy SPL; stable = read on-chain
+        let mint = p.quote_mint;
         let atoken_program = Pubkey::from_str(crate::constants::ASSOCIATED_TOKEN_PROGRAM_ID)
             .expect("valid ASSOCIATED_TOKEN_PROGRAM_ID");
 
-        // Both layouts move WSOL from ATA(uva) -> ATA(user).
-        let uva_wsol_ata =
-            get_associated_token_address_with_program_id(&p.user_volume_accumulator, &wsol, &token_prog);
-        let user_wsol_ata = get_associated_token_address_with_program_id(&user, &wsol, &token_prog);
+        // Both layouts move the quote from ATA(uva) -> ATA(user).
+        let uva_quote_ata =
+            get_associated_token_address_with_program_id(&p.user_volume_accumulator, &mint, &token_prog);
+        let user_quote_ata = get_associated_token_address_with_program_id(&user, &mint, &token_prog);
 
         let mut ixs = Vec::with_capacity(4);
 
-        // 1. Ensure the user's WSOL ATA exists (idempotent — no-op if present).
+        // 1. Ensure the user's quote ATA exists (idempotent — no-op if present).
         ixs.push(create_associated_token_account_idempotent(
-            &user, &user, &wsol, &token_prog,
+            &user, &user, &mint, &token_prog,
         ));
 
         // 2. sync_user_volume_accumulator — recompute the rolling window.
@@ -206,14 +223,14 @@ impl PumpFunTrader {
         let mut claim_accounts = vec![
             AccountMeta::new(user, false),
             AccountMeta::new(p.user_volume_accumulator, false),
-            AccountMeta::new_readonly(wsol, false),
+            AccountMeta::new_readonly(mint, false),
             AccountMeta::new_readonly(token_prog, false),
         ];
         if p.include_atoken_program {
             claim_accounts.push(AccountMeta::new_readonly(atoken_program, false));
         }
-        claim_accounts.push(AccountMeta::new(uva_wsol_ata, false));
-        claim_accounts.push(AccountMeta::new(user_wsol_ata, false));
+        claim_accounts.push(AccountMeta::new(uva_quote_ata, false));
+        claim_accounts.push(AccountMeta::new(user_quote_ata, false));
         claim_accounts.push(AccountMeta::new_readonly(self.system_program, false));
         claim_accounts.push(AccountMeta::new_readonly(p.event_authority, false));
         claim_accounts.push(AccountMeta::new_readonly(p.program, false));
@@ -223,20 +240,23 @@ impl PumpFunTrader {
             data: p.claim_disc.to_vec(),
         });
 
-        // 4. Unwrap: close the user's WSOL ATA, returning WSOL (now native) + the
-        // ATA rent to the wallet.
-        ixs.push(spl_token::instruction::close_account(
-            &token_prog,
-            &user_wsol_ata,
-            &user,
-            &user,
-            &[],
-        )?);
+        // 4. WSOL only: close the user's WSOL ATA, returning WSOL (now native) +
+        // the ATA rent to the wallet. The stable mint is a real token — its claim
+        // stays as an SPL balance in the user's ATA, so no close here.
+        if p.unwrap {
+            ixs.push(spl_token::instruction::close_account(
+                &token_prog,
+                &user_quote_ata,
+                &user,
+                &user,
+                &[],
+            )?);
+        }
 
         Ok(ixs)
     }
 
-    /// The two pots, with their per-program PDAs and claim variant.
+    /// The two WSOL pots, with their per-program PDAs and claim variant.
     fn claim_pots(&self) -> Result<[PotClaim; 2]> {
         let global = self
             .global_account
@@ -252,6 +272,10 @@ impl PumpFunTrader {
                 // pump (curve) uses the v2 WSOL layout.
                 claim_disc: CLAIM_CASHBACK_V2_DISC,
                 include_atoken_program: true,
+                quote_mint: self.wsol_mint,
+                quote_token_program: self.token_program,
+                unwrap: true,
+                is_stable: false,
             },
             PotClaim {
                 label: "amm",
@@ -261,8 +285,43 @@ impl PumpFunTrader {
                 event_authority: self.amm_event_authority,
                 claim_disc: CLAIM_CASHBACK_DISC,
                 include_atoken_program: false,
+                quote_mint: self.wsol_mint,
+                quote_token_program: self.token_program,
+                unwrap: true,
+                is_stable: false,
             },
         ])
+    }
+
+    /// The curve-side stable cashback pot, if the program has a stable quote mint
+    /// configured. Curve-only (the AMM UVA carries no stable pot) and built off
+    /// the hot path — reads the stable mint's owning token program on-chain
+    /// (`getAccount`), since a stable quote may be classic SPL or Token-2022.
+    /// `Ok(None)` when no stable mint is configured or the read fails (the claim
+    /// is then simply skipped, never an error).
+    async fn stable_claim_pot(&self) -> Result<Option<PotClaim>> {
+        let global = self.global_account.as_ref().context("Not initialized")?;
+        let Some(stable_mint) = global.stable_quote_mint else {
+            return Ok(None);
+        };
+        let Ok(mint_account) = self.rpc.get_account(&stable_mint).await else {
+            return Ok(None);
+        };
+        Ok(Some(PotClaim {
+            label: "curve-stable",
+            program: self.pump_program,
+            user_volume_accumulator: global.user_volume_accumulator,
+            global_volume_accumulator: global.global_volume_accumulator,
+            event_authority: self.event_authority,
+            // Same v2 instruction as the curve WSOL claim — the quote_mint selects
+            // the stable pot on-chain.
+            claim_disc: CLAIM_CASHBACK_V2_DISC,
+            include_atoken_program: true,
+            quote_mint: stable_mint,
+            quote_token_program: mint_account.owner,
+            unwrap: false,
+            is_stable: true,
+        }))
     }
 
     /// Sweep accrued cashback from both pots back to the wallet as native SOL.
@@ -273,17 +332,32 @@ impl PumpFunTrader {
     /// on) so a bad claim is rejected in simulation, not paid as a landed revert.
     pub async fn claim_cashback(&self, execute: bool) -> Result<Vec<ClaimOutcome>> {
         let status = self.cashback_status().await?;
-        let pots = self.claim_pots()?;
+
+        // Two WSOL pots (curve + amm), plus the curve stable pot when configured.
+        let mut pots: Vec<PotClaim> = self.claim_pots()?.to_vec();
+        if let Some(stable) = self.stable_claim_pot().await? {
+            pots.push(stable);
+        }
 
         let mut outcomes = Vec::new();
         for pot in &pots {
-            let claimable = status
-                .iter()
-                .find(|s| s.label == pot.label)
-                .map(|s| s.claimable())
-                .unwrap_or(0);
+            // WSOL pots match their venue status by label; the stable pot draws
+            // from the curve UVA's separate `stable_*` counters.
+            let claimable = if pot.is_stable {
+                status
+                    .iter()
+                    .find(|s| s.label == "curve")
+                    .map(|s| s.stable_claimable())
+                    .unwrap_or(0)
+            } else {
+                status
+                    .iter()
+                    .find(|s| s.label == pot.label)
+                    .map(|s| s.claimable())
+                    .unwrap_or(0)
+            };
             if claimable == 0 {
-                continue; // nothing to sweep on this venue
+                continue; // nothing to sweep on this pot
             }
 
             let ixs = self.build_claim_ixs(pot)?;
@@ -294,6 +368,7 @@ impl PumpFunTrader {
                     Ok(sig) => ClaimOutcome {
                         label: pot.label,
                         claimable,
+                        is_stable: pot.is_stable,
                         simulated: false,
                         units_consumed: None,
                         err: None,
@@ -303,6 +378,7 @@ impl PumpFunTrader {
                     Err(e) => ClaimOutcome {
                         label: pot.label,
                         claimable,
+                        is_stable: pot.is_stable,
                         simulated: false,
                         units_consumed: None,
                         err: Some(e.to_string()),
@@ -315,6 +391,7 @@ impl PumpFunTrader {
                 ClaimOutcome {
                     label: pot.label,
                     claimable,
+                    is_stable: pot.is_stable,
                     simulated: true,
                     units_consumed,
                     err,
@@ -349,6 +426,7 @@ mod tests {
             global_volume_accumulator: Pubkey::new_unique(),
             user_volume_accumulator: Pubkey::new_unique(),
             fee_config: Pubkey::new_unique(),
+            stable_quote_mint: Some(Pubkey::new_unique()),
         });
         t
     }
@@ -357,13 +435,31 @@ mod tests {
         1 + 64 * msg.header.num_required_signatures as usize + msg.serialize().len()
     }
 
-    /// Both claim variants (curve v2 = largest account list; AMM) build and, on a
-    /// recent-blockhash message, stay under the 1232 B wire limit.
+    /// All claim variants — curve v2 (largest account list), AMM, and the curve
+    /// stable pot (v2 layout, no unwrap) — build and, on a recent-blockhash
+    /// message, stay under the 1232 B wire limit.
     #[test]
     fn claim_txs_fit() {
         let t = dummy_trader();
         let payer = t.config.keypair.pubkey();
-        for pot in t.claim_pots().expect("claim pots") {
+        // The two WSOL pots plus a synthetic stable pot (mirrors what
+        // `stable_claim_pot` builds, minus the on-chain token-program read).
+        let global = t.global_account.as_ref().expect("global");
+        let mut pots: Vec<super::PotClaim> = t.claim_pots().expect("claim pots").to_vec();
+        pots.push(super::PotClaim {
+            label: "curve-stable",
+            program: t.pump_program,
+            user_volume_accumulator: global.user_volume_accumulator,
+            global_volume_accumulator: global.global_volume_accumulator,
+            event_authority: t.event_authority,
+            claim_disc: crate::constants::CLAIM_CASHBACK_V2_DISC,
+            include_atoken_program: true,
+            quote_mint: global.stable_quote_mint.expect("stable mint set in dummy"),
+            quote_token_program: t.token_program,
+            unwrap: false,
+            is_stable: true,
+        });
+        for pot in pots {
             let ixs = t.build_claim_ixs(&pot).expect("build claim ixs");
             let msg = Message::new(&ixs, Some(&payer));
             let size = wire_size(&msg);

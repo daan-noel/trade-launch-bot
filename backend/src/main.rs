@@ -217,12 +217,19 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
                 println!("  Nothing claimable in either pot — nothing to do.");
             }
             for o in &outcomes {
-                println!(
-                    "  [{}] claimable={} lamports ({:.6} SOL)",
-                    o.label,
-                    o.claimable,
-                    o.claimable as f64 / LPS
-                );
+                if o.is_stable {
+                    println!(
+                        "  [{}] claimable={} raw stable-mint units (claimed as an SPL balance)",
+                        o.label, o.claimable
+                    );
+                } else {
+                    println!(
+                        "  [{}] claimable={} lamports ({:.6} SOL)",
+                        o.label,
+                        o.claimable,
+                        o.claimable as f64 / LPS
+                    );
+                }
                 match (&o.err, &o.signature, o.simulated) {
                     (None, _, true) => println!(
                         "      ✅ simulation passed — CU consumed: {:?}",

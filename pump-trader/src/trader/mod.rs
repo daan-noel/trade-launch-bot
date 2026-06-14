@@ -104,6 +104,11 @@ pub struct GlobalAccount {
     pub global_volume_accumulator: Pubkey,
     pub user_volume_accumulator: Pubkey,
     pub fee_config: Pubkey,
+    /// `whitelisted_quote_mints[0]` from the on-chain `Global` account — the
+    /// non-WSOL quote enabled for cashback (the "stable" mint). `None` if the
+    /// account is older/shorter than that field or the slot is unset. Used only
+    /// off the hot path by the stable cashback claim.
+    pub stable_quote_mint: Option<Pubkey>,
 }
 
 /// Cached PumpSwap pool facts for a migrated token, read once from the on-chain
