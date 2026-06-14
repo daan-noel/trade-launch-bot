@@ -7,14 +7,22 @@ use uuid::Uuid;
 use super::entry;
 use super::exit;
 use super::util::none_if_zero_u64;
+use crate::models::trade::Trade;
 use crate::models::Token;
 use crate::state::app_state::AppState;
+use crate::strategies::sim_progress::SimProgress;
 use crate::storage::repositories::tpsl1_strategy_rule_repo::Tpsl1StrategyRuleRepo;
 use crate::storage::repositories::trade_repo::TradeRepo;
 
-/// Max concurrent per-candidate trade fetches during a backtest. Bounds load on
-/// the PgPool while still replacing the old sequential per-token round-trip loop.
-const BACKTEST_FETCH_CONCURRENCY: usize = 16;
+/// Candidate mints fetched per batched `trades` query. One round-trip pulls a
+/// whole chunk (`find_by_mints_all`) instead of one query per token.
+const BACKTEST_FETCH_CHUNK: usize = 16;
+
+/// Concurrent chunk queries. Deliberately small: the PgPool (default 20) is
+/// shared with the live ingest pipeline, so a backtest must leave it headroom.
+/// `CHUNK * CONCURRENCY` also bounds how many token histories are resident at
+/// once. Old code held 16 connections at concurrency 16; this holds ~3.
+const BACKTEST_FETCH_CONCURRENCY: usize = 3;
 
 /// Per-token simulation result.
 #[derive(Clone, serde::Serialize)]
@@ -116,26 +124,91 @@ pub async fn run_backtest(
         .map(|e| e.value().token.clone())
         .collect();
 
-    // Fetch each candidate's trades and resolve its entry/exit concurrently
-    // (bounded), replacing the old sequential per-token DB round-trip loop. Each
-    // future owns its data (a cloned-pool repo + an Arc'd rule); collecting the
-    // futures eagerly before the stream runs mirrors the db_writer pattern and
-    // sidesteps the `buffer_unordered` HRTB inference error a lazy `.map()` hits.
+    // Resolve each candidate's entry/exit from its trade history. The history is
+    // fetched in batched chunks — one query per `BACKTEST_FETCH_CHUNK` mints
+    // (`find_by_mints_all`) instead of one query per token — and only a few chunk
+    // queries run concurrently so the backtest leaves the ingest-shared PgPool
+    // headroom (old code held 16 of ~20 connections; this holds ~3). The slow
+    // part is the trade fetch, so one `tick()` per resolved candidate tracks real
+    // progress; chunks tick every candidate (even on fetch error) so the bar
+    // always reaches `total`.
+    let progress = Arc::new(SimProgress::new(
+        app_state.sse_tx.clone(),
+        rule_id,
+        tokens.len(),
+    ));
+    progress.start();
+
     let rule = Arc::new(rule);
-    let per_token: Vec<_> = tokens
+    let chunks: Vec<Vec<Token>> = tokens.chunks(BACKTEST_FETCH_CHUNK).map(<[Token]>::to_vec).collect();
+    let per_chunk: Vec<_> = chunks
         .into_iter()
-        .map(|token| {
+        .map(|chunk| {
             let trade_repo = TradeRepo::new(app_state.db.clone());
             let rule = rule.clone();
+            let progress = progress.clone();
+            let token_cache = app_state.token_cache.clone();
+            let cache = app_state.backtest_trade_cache.clone();
             async move {
-                let trades = match trade_repo.find_by_mint_all(&token.mint_address).await {
-                    Ok(t) => t,
-                    Err(e) => {
-                        tracing::warn!("Skipping {}: trade fetch failed: {e}", token.mint_address);
-                        return None;
+                // Freshness key per mint: the in-memory `trade_count` (0 if the
+                // token isn't tracked — then the cache simply never hits for it).
+                let counts: Vec<u64> = chunk
+                    .iter()
+                    .map(|t| {
+                        token_cache
+                            .get(&t.mint_address)
+                            .map(|s| s.trade_count)
+                            .unwrap_or(0)
+                    })
+                    .collect();
+
+                // Reuse fresh cached histories; fetch only the misses, batched.
+                let mut histories: Vec<Option<Arc<Vec<Trade>>>> = Vec::with_capacity(chunk.len());
+                let mut to_fetch: Vec<String> = Vec::new();
+                for (token, &count) in chunk.iter().zip(&counts) {
+                    match cache.get(&token.mint_address, count) {
+                        Some(h) => histories.push(Some(h)),
+                        None => {
+                            histories.push(None);
+                            to_fetch.push(token.mint_address.clone());
+                        }
+                    }
+                }
+
+                let mut grouped = if to_fetch.is_empty() {
+                    std::collections::HashMap::new()
+                } else {
+                    match trade_repo.find_by_mints_all(&to_fetch).await {
+                        Ok(g) => g,
+                        Err(e) => {
+                            tracing::warn!(
+                                "Skipping {} of {} tokens: trade fetch failed: {e}",
+                                to_fetch.len(),
+                                chunk.len()
+                            );
+                            for _ in &chunk {
+                                progress.tick();
+                            }
+                            return Vec::new();
+                        }
                     }
                 };
 
+                let mut out = Vec::with_capacity(chunk.len());
+                for (i, token) in chunk.iter().enumerate() {
+                    // Cache hit, or a freshly fetched history we memoize for the
+                    // next run (an absent mint = no trades = no entry).
+                    let trades: Arc<Vec<Trade>> = match histories[i].take() {
+                        Some(h) => h,
+                        None => {
+                            let h = Arc::new(grouped.remove(&token.mint_address).unwrap_or_default());
+                            cache.insert(token.mint_address.clone(), h.clone(), counts[i]);
+                            h
+                        }
+                    };
+                    // Tick once per candidate regardless of outcome (no-entry skip
+                    // / resolved) so the count always reaches `total`.
+                    let resolved = (|| {
                 let entry = entry::find_entry_fill_in_trades(&trades, 1)?;
                 let (entry_price, entry_tx, entry_time) =
                     (entry.price, entry.tx_signature, entry.block_time);
@@ -186,14 +259,21 @@ pub async fn run_backtest(
                 };
 
                 Some((entry_time, exit_time, result))
+                    })();
+                    progress.tick();
+                    if let Some(r) = resolved {
+                        out.push(r);
+                    }
+                }
+                out
             }
         })
         .collect();
 
     let mut candidates: Vec<(DateTime<Utc>, Option<DateTime<Utc>>, BacktestTokenResult)> =
-        stream::iter(per_token)
+        stream::iter(per_chunk)
             .buffer_unordered(BACKTEST_FETCH_CONCURRENCY)
-            .filter_map(|x| async move { x })
+            .flat_map(stream::iter)
             .collect()
             .await;
 

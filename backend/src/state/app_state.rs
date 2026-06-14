@@ -19,6 +19,7 @@ use crate::strategies::tpsl_sniper_1::Tpsl1RuntimeCache;
 use crate::strategies::tpsl_sniper_2::Tpsl2RuntimeCache;
 use crate::trader::PumpFunTrader;
 
+use super::backtest_trade_cache::BacktestTradeCache;
 use super::token_cache::TokenCache;
 use super::token_list_cache::TokenListCache;
 use super::trade_signals::TradeSignals;
@@ -65,6 +66,11 @@ pub struct AppState {
     pub trade_signals: Arc<TradeSignals>,
     /// Concurrency + per-mint dedup gate for `POST /api/token/sync` backfills.
     pub sync_gate: Arc<SyncGate>,
+    /// Cross-run cache of per-mint trade history for backtests. Reuses immutable
+    /// history across simulation runs (keyed on `TokenState::trade_count` for
+    /// exact, free freshness) so re-tuning a rule re-fetches nothing. Constructed
+    /// empty; only the backtest reads/writes it.
+    pub backtest_trade_cache: Arc<BacktestTradeCache>,
 }
 
 /// Max concurrent token-sync backfills (each is RPC- and DB-heavy).
@@ -163,6 +169,7 @@ impl AppState {
             pools_changed,
             trade_signals,
             sync_gate: Arc::new(SyncGate::new(MAX_CONCURRENT_SYNCS)),
+            backtest_trade_cache: Arc::new(BacktestTradeCache::new()),
         }
     }
 

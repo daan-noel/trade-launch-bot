@@ -40,7 +40,7 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 | File | Table(s) | Notable fns |
 |---|---|---|
 | `token_repo.rs` | tokens | insert, upsert, find_by_mint, exists, find_all, find_symbols_for (mint=ANY, bounded) |
-| `trade_repo.rs` | trades (+tokens_info) | insert(_many), latest_signature, find_by_mint_paged, net_token_amount_by_wallet_and_mint, real_sol_reserve_extremes, early_buyer_cohort_net, load_all_aggregates, for_each_chronological |
+| `trade_repo.rs` | trades (+tokens_info) | insert(_many), latest_signature, find_by_mint_all, find_by_mints_all (batched per-mint groups for the backtest — fewer round-trips/conns), find_by_mint_paged, net_token_amount_by_wallet_and_mint, real_sol_reserve_extremes, early_buyer_cohort_net, load_all_aggregates, for_each_chronological |
 | `transaction_repo.rs` | raw_transactions | insert(_many), find_by_signature, exists |
 | `token_info_repo.rs` | tokens_info | upsert_metrics, update_migration_status, get/update_sync_watermark, list_all |
 | `analysis_repo.rs` | tokens_analysis, creator_profiles | upsert_result, list_results, upsert/find/list_creator_profile |

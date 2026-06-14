@@ -379,6 +379,51 @@ impl TradeRepo {
         rows.into_iter().map(Trade::try_from).collect()
     }
 
+    /// Find all trades for a *batch* of tokens in one round-trip, grouped per
+    /// mint and each group in the same chronological order as
+    /// [`find_by_mint_all`]. The backtest uses this to fetch a chunk of candidate
+    /// mints with a single query instead of one query per token: same total rows,
+    /// but ~`mints.len()`× fewer round-trips and PgPool connections held — so a
+    /// running simulation stops starving the live ingest pipeline's shared pool.
+    ///
+    /// Bounded by the caller's chunk size (never the full `trades` table). Mints
+    /// with no trades are simply absent from the returned map.
+    pub async fn find_by_mints_all(
+        &self,
+        mints: &[String],
+    ) -> anyhow::Result<std::collections::HashMap<String, Vec<Trade>>> {
+        // `mint_address` leads the ORDER BY so each mint's rows arrive as one
+        // contiguous run already in chronological order; grouping is then a single
+        // linear pass with no per-mint sort.
+        let rows = sqlx::query_as::<_, TradeSlimRow>(
+            r#"
+            SELECT id, mint_address, wallet_address, trade_type,
+                   sol_amount, token_amount, price_per_token,
+                   tx_signature, leg_index, slot, block_time, received_at,
+                   virtual_sol_reserves, virtual_token_reserves,
+                   real_sol_reserves, real_token_reserves,
+                   ix_type, venue
+            FROM trades
+            WHERE mint_address = ANY($1)
+            ORDER BY mint_address ASC, slot ASC, block_time ASC, tx_signature ASC, leg_index ASC
+            "#,
+        )
+        .bind(mints)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut grouped: std::collections::HashMap<String, Vec<Trade>> =
+            std::collections::HashMap::with_capacity(mints.len());
+        for row in rows {
+            let trade = Trade::try_from(row)?;
+            grouped
+                .entry(trade.mint_address.clone())
+                .or_default()
+                .push(trade);
+        }
+        Ok(grouped)
+    }
+
     /// Find trades for a token in chronological order, bounded by `limit`/`offset`.
     /// Same ordering as `find_by_mint_all` but paged so a high-volume token can't
     /// produce an unbounded response (the API never has to materialise every row).

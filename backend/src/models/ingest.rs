@@ -75,4 +75,13 @@ pub enum SseEvent {
     /// the owning rule so a client refetches only that rule's positions (and the
     /// rule's open-position count). Not mint-scoped — always delivered.
     TpslPositionsChanged { strategy: String, rule_id: uuid::Uuid },
+    /// Progress of an in-flight simulation (backtest) for `rule_id`: `processed`
+    /// of `total` candidate tokens resolved. Lets the dashboard show real
+    /// percentages instead of a fake trickle bar. Throttled to ~100 frames per
+    /// run plus a final `processed == total`. Not mint-scoped — always delivered.
+    SimulationProgress {
+        rule_id: uuid::Uuid,
+        processed: u64,
+        total: u64,
+    },
 }

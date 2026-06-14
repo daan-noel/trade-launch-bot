@@ -171,6 +171,18 @@ fn render_sse_frame(event: &SseEvent, state: &AppState) -> SseFrame {
                 json!({ "strategy": strategy, "rule_id": rule_id }),
             )
         }
+        SseEvent::SimulationProgress {
+            rule_id,
+            processed,
+            total,
+        } => {
+            // Not mint-scoped: scoped to the owning rule's in-flight backtest.
+            (
+                None,
+                "simulation_progress",
+                json!({ "rule_id": rule_id, "processed": processed, "total": total }),
+            )
+        }
     };
 
     let frame = format!(

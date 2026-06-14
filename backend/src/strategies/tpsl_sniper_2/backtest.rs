@@ -7,6 +7,7 @@ use uuid::Uuid;
 use super::entry;
 use super::exit;
 use super::util::none_if_zero_u64;
+use crate::models::trade::Trade;
 use crate::models::Token;
 use crate::state::app_state::AppState;
 use crate::strategies::sim_progress::SimProgress;
@@ -166,27 +167,65 @@ pub async fn run_backtest(
             let trade_repo = TradeRepo::new(app_state.db.clone());
             let rule = rule.clone();
             let progress = progress.clone();
+            let token_cache = app_state.token_cache.clone();
+            let cache = app_state.backtest_trade_cache.clone();
             async move {
-                let mints: Vec<String> = chunk.iter().map(|t| t.mint_address.clone()).collect();
-                let mut grouped = match trade_repo.find_by_mints_all(&mints).await {
-                    Ok(g) => g,
-                    Err(e) => {
-                        tracing::warn!(
-                            "Skipping chunk of {} tokens: trade fetch failed: {e}",
-                            chunk.len()
-                        );
-                        for _ in &chunk {
-                            progress.tick();
+                // Freshness key per mint: the in-memory `trade_count` (0 if the
+                // token isn't tracked — then the cache simply never hits for it).
+                let counts: Vec<u64> = chunk
+                    .iter()
+                    .map(|t| {
+                        token_cache
+                            .get(&t.mint_address)
+                            .map(|s| s.trade_count)
+                            .unwrap_or(0)
+                    })
+                    .collect();
+
+                // Reuse fresh cached histories; fetch only the misses, batched.
+                let mut histories: Vec<Option<Arc<Vec<Trade>>>> = Vec::with_capacity(chunk.len());
+                let mut to_fetch: Vec<String> = Vec::new();
+                for (token, &count) in chunk.iter().zip(&counts) {
+                    match cache.get(&token.mint_address, count) {
+                        Some(h) => histories.push(Some(h)),
+                        None => {
+                            histories.push(None);
+                            to_fetch.push(token.mint_address.clone());
                         }
-                        return Vec::new();
+                    }
+                }
+
+                let mut grouped = if to_fetch.is_empty() {
+                    std::collections::HashMap::new()
+                } else {
+                    match trade_repo.find_by_mints_all(&to_fetch).await {
+                        Ok(g) => g,
+                        Err(e) => {
+                            tracing::warn!(
+                                "Skipping {} of {} tokens: trade fetch failed: {e}",
+                                to_fetch.len(),
+                                chunk.len()
+                            );
+                            for _ in &chunk {
+                                progress.tick();
+                            }
+                            return Vec::new();
+                        }
                     }
                 };
 
                 let mut out = Vec::with_capacity(chunk.len());
-                for token in &chunk {
-                    // `remove` hands the mint's history to the resolver without a
-                    // clone; an absent mint means no trades, hence no entry.
-                    let trades = grouped.remove(&token.mint_address).unwrap_or_default();
+                for (i, token) in chunk.iter().enumerate() {
+                    // Cache hit, or a freshly fetched history we memoize for the
+                    // next run (an absent mint = no trades = no entry).
+                    let trades: Arc<Vec<Trade>> = match histories[i].take() {
+                        Some(h) => h,
+                        None => {
+                            let h = Arc::new(grouped.remove(&token.mint_address).unwrap_or_default());
+                            cache.insert(token.mint_address.clone(), h.clone(), counts[i]);
+                            h
+                        }
+                    };
                     // Tick once per candidate regardless of outcome (no-entry skip
                     // / resolved) so the count always reaches `total`.
                     let resolved = (|| {

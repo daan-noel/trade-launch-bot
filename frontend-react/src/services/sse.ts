@@ -140,6 +140,29 @@ export function connectTpslRulesChanged(
 }
 
 /**
+ * Real backtest progress for a single rule's in-flight simulation. Filters the
+ * `simulation_progress` stream to `ruleId` and reports `processed`/`total`
+ * candidate tokens so the caller can render a determinate progress bar instead
+ * of a fake trickle. The backend throttles to ~100 frames per run plus a final
+ * `processed === total`.
+ */
+export function connectSimulationProgress(
+  ruleId: string,
+  onProgress: (processed: number, total: number) => void,
+): StreamHandle {
+  const unsub = subscribe('simulation_progress', (e) => {
+    if (typeof e.data !== 'string') return;
+    try {
+      const p = JSON.parse(e.data) as import('types').SimulationProgressEvent;
+      if (p.rule_id === ruleId) onProgress(p.processed, p.total);
+    } catch {
+      /* ignore malformed frames */
+    }
+  });
+  return { close: unsub };
+}
+
+/**
  * Position change signal for `strategy`. Calls `onChanged` with the affected
  * `rule_id` so the caller refetches only that rule's positions.
  */

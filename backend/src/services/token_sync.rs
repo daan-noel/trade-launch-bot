@@ -1553,4 +1553,51 @@ mod backfill_persistence {
 
         cleanup(&pool, &mint, &[sig]).await;
     }
+
+    /// The batched backtest fetch groups each mint's rows separately, in the same
+    /// chronological order as the per-mint `find_by_mint_all`, and omits a mint
+    /// with no trades — the contract the chunked backtest relies on.
+    #[tokio::test]
+    #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
+    async fn find_by_mints_all_groups_per_mint_in_order() {
+        let Some(pool) = test_pool().await else { return };
+        let trade_repo = TradeRepo::new(pool.clone());
+
+        let mint_a = uniq("MINT-batchA-");
+        let mint_b = uniq("MINT-batchB-");
+        let mint_empty = uniq("MINT-batchE-");
+
+        // Insert out of slot order so the query's ORDER BY is what sorts them.
+        let sigs: Vec<String> = (0..5).map(|i| uniq(&format!("sig-batch-{i}-"))).collect();
+        let rows = vec![
+            trade(&mint_a, "W1", &sigs[0], 30),
+            trade(&mint_a, "W1", &sigs[1], 10),
+            trade(&mint_a, "W1", &sigs[2], 20),
+            trade(&mint_b, "W2", &sigs[3], 15),
+            trade(&mint_b, "W2", &sigs[4], 5),
+        ];
+        trade_repo.insert_many(&rows).await.expect("insert");
+
+        let grouped = trade_repo
+            .find_by_mints_all(&[mint_a.clone(), mint_b.clone(), mint_empty.clone()])
+            .await
+            .expect("batched fetch");
+
+        // A mint with no trades is simply absent.
+        assert!(!grouped.contains_key(&mint_empty), "empty mint omitted");
+
+        // Each group matches the per-mint fetch exactly (same rows, same order).
+        for mint in [&mint_a, &mint_b] {
+            let single = trade_repo.find_by_mint_all(mint).await.expect("single");
+            let batched = grouped.get(mint).expect("group present");
+            assert_eq!(
+                batched.iter().map(|t| &t.tx_signature).collect::<Vec<_>>(),
+                single.iter().map(|t| &t.tx_signature).collect::<Vec<_>>(),
+                "batched group equals find_by_mint_all for {mint}"
+            );
+        }
+
+        cleanup(&pool, &mint_a, &sigs).await;
+        cleanup(&pool, &mint_b, &[]).await;
+    }
 }
