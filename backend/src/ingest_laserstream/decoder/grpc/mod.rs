@@ -154,6 +154,13 @@ impl HeliusDecoder {
         // ── Step 3: build InternalEvents ───────────────────────────────────────
         let mut events = Vec::new();
 
+        // A create tx (almost always bundled with the dev's initial buy) reads
+        // `labels_json` *after* the trade loop to stamp the token's labels, so the
+        // loop must not consume it via `mem::take` in that case — otherwise the
+        // token's `instruction_labels` end up Null. Computed before the loop so the
+        // last-leg branch can decide whether the take is safe.
+        let has_create = kinds.iter().any(|k| matches!(k, InstructionKind::Create));
+
         // 3a. One TradeExecuted per decoded TradeEvent (covers nested-CPI buys/sells).
         let last_leg = decoded_events.len().saturating_sub(1);
         for (leg_index, ev) in decoded_events.iter().enumerate() {
@@ -185,10 +192,10 @@ impl HeliusDecoder {
                 TradeType::Buy => "Buy".to_string(),
                 TradeType::Sell => "Sell".to_string(),
             };
-            // Move the labels into the final leg (single-leg = zero clones);
-            // `labels_json` is Null afterwards, so any later create/balance use
-            // sees an empty labels value.
-            trade.instruction_labels = if leg_index == last_leg {
+            // Move the labels into the final leg (single-leg = zero clones), but
+            // only when no Create follows — the Create path reads `labels_json`
+            // afterwards to stamp the token's labels, and a `take` would null it.
+            trade.instruction_labels = if leg_index == last_leg && !has_create {
                 std::mem::take(&mut labels_json)
             } else {
                 labels_json.clone()
@@ -207,7 +214,7 @@ impl HeliusDecoder {
 
         // Resolve the pump-instruction walk at most once, only for the paths that
         // need it (balance fallback, Create, Migrate) — never the pure-trade tx.
-        let has_create = kinds.iter().any(|k| matches!(k, InstructionKind::Create));
+        // `has_create` was computed before the trade loop (it gates the label take).
         let has_migrate = kinds.iter().any(|k| matches!(k, InstructionKind::Migrate));
         let needs_pump_ixs = (decoded_events.is_empty()
             && kinds
@@ -546,7 +553,9 @@ mod tests {
     use super::super::{DecodeOutput, HeliusDecoder};
     use crate::config::constants::{
         ANCHOR_EVENT_CPI_DISCRIMINATOR, BUY_DISCRIMINATOR, COMPUTE_BUDGET_PROGRAM_ID,
-        MIGRATE_INSTRUCTION_DISCRIMINATOR, PUMP_FUN_PROGRAM_ID, TRADE_EVENT_DISCRIMINATOR,
+        CREATE_EVENT_DISCRIMINATOR, CREATE_INSTRUCTION_DISCRIMINATOR,
+        MIGRATE_INSTRUCTION_DISCRIMINATOR, PUMP_FUN_PROGRAM_ID, TOKEN_PROGRAM_ID,
+        TRADE_EVENT_DISCRIMINATOR,
     };
     use crate::models::events::InternalEvent;
 
@@ -754,6 +763,135 @@ mod tests {
         let fps = decode_fps(&update, &decoder);
         assert_eq!(fps.len(), 1, "expected exactly one trade from the inner CPI");
         assert!(fps[0].starts_with("trade|"));
+    }
+
+    /// Borsh layout of pump.fun's on-chain CreateEvent (serialize side), mirroring
+    /// `create::RawCreateEvent`.
+    #[derive(BorshSerialize)]
+    struct TestCreateEvent {
+        name: String,
+        symbol: String,
+        uri: String,
+        mint: [u8; 32],
+        bonding_curve: [u8; 32],
+        user: [u8; 32],
+        creator: [u8; 32],
+        timestamp: i64,
+        virtual_token_reserves: u64,
+        virtual_sol_reserves: u64,
+        real_token_reserves: u64,
+        token_total_supply: u64,
+        token_program: [u8; 32],
+        is_mayhem_mode: bool,
+        is_cashback_enabled: bool,
+        quote_mint: [u8; 32],
+        virtual_quote_reserves: u64,
+    }
+
+    fn arr32(s: &str) -> [u8; 32] {
+        id_bytes(s).try_into().unwrap()
+    }
+
+    /// "Program data: <base64>" CreateEvent log line (emit! path).
+    fn create_event_log(mint: [u8; 32], user: [u8; 32], creator: [u8; 32]) -> String {
+        let ev = TestCreateEvent {
+            name: "Test".into(),
+            symbol: "TST".into(),
+            uri: "ipfs://x".into(),
+            mint,
+            bonding_curve: pk(3),
+            user,
+            creator,
+            timestamp: 0,
+            virtual_token_reserves: 1_000_000_000_000,
+            virtual_sol_reserves: 30_000_000_000,
+            real_token_reserves: 800_000_000_000,
+            token_total_supply: 1_000_000_000_000,
+            token_program: arr32(TOKEN_PROGRAM_ID),
+            is_mayhem_mode: false,
+            is_cashback_enabled: false,
+            quote_mint: pk(0),
+            virtual_quote_reserves: 0,
+        };
+        let mut bytes = CREATE_EVENT_DISCRIMINATOR.to_vec();
+        bytes.extend(borsh::to_vec(&ev).unwrap());
+        format!("Program data: {}", STANDARD.encode(bytes))
+    }
+
+    /// Regression: a Create tx bundled with the dev's initial buy must still stamp
+    /// the **token's** `instruction_labels`. The trade-leg loop moves labels into
+    /// the final leg via `mem::take`; if it does so when a Create follows, the
+    /// Create path reads a nulled `labels_json` and the token loses its labels
+    /// (the live + Fetch-New bug this guards). Both the trade and the token must
+    /// carry the labels here.
+    #[test]
+    fn create_with_dev_buy_preserves_token_labels() {
+        let pump = id_bytes(PUMP_FUN_PROGRAM_ID);
+        let mint = pk(9);
+        let user = pk(8);
+        // keys: 0=fee payer/creator/user, 1=pump program, 2=mint, 3=bonding curve
+        let account_keys = vec![user.to_vec(), pump, mint.to_vec(), pk(3).to_vec()];
+
+        // outer Create ix: accounts[0] -> keys[2] = mint (decode_create reads it).
+        let create_ix = scb::CompiledInstruction {
+            program_id_index: 1,
+            accounts: vec![2, 3, 0],
+            data: CREATE_INSTRUCTION_DISCRIMINATOR.to_vec(),
+        };
+        // outer Buy ix (the dev buy), so `kinds` sees both Create and Buy.
+        let buy_ix = scb::CompiledInstruction {
+            program_id_index: 1,
+            accounts: vec![0],
+            data: {
+                let mut d = BUY_DISCRIMINATOR.to_vec();
+                d.extend([0u8; 16]);
+                d
+            },
+        };
+        let logs = vec![
+            format!("Program {PUMP_FUN_PROGRAM_ID} invoke [1]"),
+            create_event_log(mint, user, user),
+            trade_event_log(mint, user, true),
+            format!("Program {PUMP_FUN_PROGRAM_ID} success"),
+        ];
+
+        let update = build_update(account_keys, vec![create_ix, buy_ix], vec![], logs);
+        let decoder = HeliusDecoder::new(PUMP_FUN_PROGRAM_ID.to_string());
+        let out = decoder.decode_protobuf(&update, Utc::now());
+
+        let DecodeOutput::Transaction { events, .. } = out else {
+            panic!("expected a decoded transaction");
+        };
+
+        let token = events
+            .iter()
+            .find_map(|e| match e {
+                InternalEvent::TokenCreated(e) => Some(&e.token),
+                _ => None,
+            })
+            .expect("expected a TokenCreated event");
+        assert!(
+            token.instruction_labels.is_array(),
+            "token labels must survive the dev-buy leg's mem::take, got {:?}",
+            token.instruction_labels
+        );
+        let labels = token.instruction_labels.to_string();
+        assert!(labels.contains("Pump.Fun: Create"), "labels: {labels}");
+        assert!(labels.contains("Pump.Fun: Buy"), "labels: {labels}");
+
+        // The trade leg must also still carry the labels (it clones, not takes).
+        let trade = events
+            .iter()
+            .find_map(|e| match e {
+                InternalEvent::TradeExecuted(e) => Some(&e.trade),
+                _ => None,
+            })
+            .expect("expected a TradeExecuted event");
+        assert!(
+            trade.instruction_labels.is_array(),
+            "trade labels: {:?}",
+            trade.instruction_labels
+        );
     }
 
     /// A migrate: `decode_migrate` reads the mint from the pump ix accounts[2].
