@@ -13,8 +13,9 @@ impl TransactionRepo {
         Self { pool }
     }
 
-    /// Persist a raw transaction result, tagged by `source` ('grpc' = live
-    /// LaserStream pipeline, 'rpc' = token_sync backfill). Plain insert —
+    /// Persist a raw transaction result, tagged by `source` ('live' = real-time
+    /// LaserStream ingest pipeline, 'sync' = token_sync backfill — both fetch
+    /// methods). Plain insert —
     /// `raw_transactions` is weekly range-partitioned on `received_at`, and a
     /// unique constraint on a partitioned table must include the partition key
     /// (which isn't stable across reconnect re-delivery), so there's no

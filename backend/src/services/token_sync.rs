@@ -959,7 +959,9 @@ async fn sync_amm_trades(
 /// "never silently drop, never advance the watermark past a failed write" policy
 /// shared by the curve loop in `run_token_sync` and `sync_amm_trades`. `wallets`
 /// is sorted/deduped in place before the single bulk touch. Raw txs are tagged
-/// `source='rpc'` (backfill); the live gRPC pipeline tags its own `source='grpc'`.
+/// `source='sync'` (token_sync backfill — both "Fetch All" via gTFA and "Fetch
+/// New" via LaserStream replay); the live ingest pipeline tags its own
+/// `source='live'`.
 async fn persist_backfill(
     trade_repo: &TradeRepo,
     tx_repo: &TransactionRepo,
@@ -970,7 +972,7 @@ async fn persist_backfill(
     wallets: &mut Vec<String>,
 ) -> Result<(), SyncError> {
     tx_repo
-        .insert_many(txs, "rpc")
+        .insert_many(txs, "sync")
         .await
         .map_err(|e| SyncError::Internal(format!("{venue} tx bulk insert failed: {e}")))?;
     trade_repo

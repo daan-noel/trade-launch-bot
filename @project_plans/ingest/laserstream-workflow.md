@@ -11,7 +11,7 @@ Code lives in [backend/src/ingest_laserstream/](../../backend/src/ingest_laserst
 | File | Purpose |
 |------|---------|
 | [client.rs](../../backend/src/ingest_laserstream/client.rs) | gRPC connect, TLS + `x-token` auth, subscription, reconnect backoff, pool resubscribe; forwards the typed `Arc<SubscribeUpdateTransaction>` (no `Value` build) |
-| [adapter.rs](../../backend/src/ingest_laserstream/adapter.rs) | Protobuf `SubscribeUpdateTransaction` → Helius-shaped JSON `Value` (`build_raw_blob` = persisted blob; off-thread in DbWriter for live `source='grpc'`, inline in token_sync for backfill `source='rpc'`) |
+| [adapter.rs](../../backend/src/ingest_laserstream/adapter.rs) | Protobuf `SubscribeUpdateTransaction` → Helius-shaped JSON `Value` (`build_raw_blob` = persisted blob; off-thread in DbWriter for real-time `source='live'`, inline in token_sync for backfill `source='sync'`) |
 | [adapter_rpc.rs](../../backend/src/ingest_laserstream/adapter_rpc.rs) | **Inverse**: base64 RPC result → `SubscribeUpdateTransaction` (`rpc_to_protobuf`), so token_sync runs `decode_protobuf` like the live path |
 | [pipeline.rs](../../backend/src/ingest_laserstream/pipeline.rs) | Main event loop: decode dispatch, cache updates, strategy pings, pool refresh |
 | [db_writer.rs](../../backend/src/ingest_laserstream/db_writer.rs) | Batch queue, partition-by-type, dedup-keep-last, bulk inserts, signal notify; synthesises the raw blob via `build_raw_blob` off the hot path |

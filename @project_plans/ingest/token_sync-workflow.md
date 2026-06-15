@@ -91,7 +91,7 @@ POST /api/token/sync ─▶ preflight (validate mint, bonding-curve check)
   the token's `{pool → mint}` up front, so post-migration AMM swaps resolve through the same
   `decode_protobuf` call (no separate explicit-pool entry point). The persisted blob is synthesised
   via `adapter::build_raw_blob` (inline, since token_sync has no DbWriter), identical to the live
-  path — backfill rows land in `raw_transactions` as `source='rpc'` for later analysis.
+  path — backfill rows land in `raw_transactions` as `source='sync'` for later analysis.
 - **`TokenMetricsWrite`** — token_sync builds it via `metrics_from_state` and writes through the same
   `TokenInfoRepo::upsert_metrics` the DbWriter uses, so metrics are computed identically. This is the
   shared surface noted in [[laserstream-ingest-migration]].

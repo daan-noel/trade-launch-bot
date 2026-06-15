@@ -185,10 +185,10 @@ impl DbWriter {
                 })
             })
             .collect();
-        if let Err(e) = tx_repo.insert_many(&raw_txs, "grpc").await {
+        if let Err(e) = tx_repo.insert_many(&raw_txs, "live").await {
             warn!("DbWriter: raw bulk insert failed ({e}); retrying per-row");
             for tx in &raw_txs {
-                if let Err(e) = tx_repo.insert(tx, "grpc").await {
+                if let Err(e) = tx_repo.insert(tx, "live").await {
                     error!("DbWriter: raw tx {}: {e}", tx.signature);
                 }
             }
