@@ -84,7 +84,7 @@ impl TryFrom<TradeDbRow> for Trade {
 /// ring strips them to `Null` too — see `pipeline.rs`), so omitting the column
 /// skips a per-row JSONB decode across whole-mint histories.
 #[derive(sqlx::FromRow)]
-struct TradeSlimRow {
+pub(crate) struct TradeSlimRow {
     id: Uuid,
     mint_address: String,
     wallet_address: String,
@@ -424,69 +424,6 @@ impl TradeRepo {
             "#,
         )
         .bind(mints)
-        .fetch_all(&self.pool)
-        .await?;
-
-        let mut grouped: std::collections::HashMap<String, Vec<Trade>> =
-            std::collections::HashMap::with_capacity(mints.len());
-        for row in rows {
-            let trade = Trade::try_from(row)?;
-            grouped
-                .entry(trade.mint_address.clone())
-                .or_default()
-                .push(trade);
-        }
-        Ok(grouped)
-    }
-
-    /// Trades for many mints in one round-trip, each mint capped to its newest
-    /// `per_mint_cap` trades, returned chronological per mint. The per-mint
-    /// `ROW_NUMBER` window stops one high-volume mint from blowing the result
-    /// size — unlike [`find_by_mints_all`] (uncapped per mint), this bounds the
-    /// statement's worst case to `mints.len() * per_mint_cap` rows.
-    ///
-    /// Shared by the sweep corpus loader (large cap, chunked mint list) and the
-    /// swing `/swings/batch` DB fallback (cache-miss mints, `SWING_DB_TRADE_CAP`),
-    /// replacing the per-mint N+1 fan-out in both. Returned flat, grouped per mint
-    /// by the same `mint_address`-led ordering as `find_by_mints_all`; the caller
-    /// groups in one linear pass. Mints with no trades are simply absent.
-    pub async fn find_by_mints_paged(
-        &self,
-        mints: &[String],
-        per_mint_cap: i64,
-    ) -> anyhow::Result<std::collections::HashMap<String, Vec<Trade>>> {
-        // The newest `per_mint_cap` trades per mint are selected by the DESC
-        // window, then re-sorted ASC so each mint's run arrives chronological —
-        // the same launch→recent window the live cache holds.
-        let rows = sqlx::query_as::<_, TradeSlimRow>(
-            r#"
-            WITH ranked AS (
-                SELECT id, mint_address, wallet_address, trade_type,
-                       sol_amount, token_amount, price_per_token,
-                       tx_signature, leg_index, slot, block_time, received_at,
-                       virtual_sol_reserves, virtual_token_reserves,
-                       real_sol_reserves, real_token_reserves,
-                       ix_type, venue,
-                       ROW_NUMBER() OVER (
-                         PARTITION BY mint_address
-                         ORDER BY slot DESC, block_time DESC, tx_signature DESC, leg_index DESC
-                       ) AS rn
-                FROM trades
-                WHERE mint_address = ANY($1)
-            )
-            SELECT id, mint_address, wallet_address, trade_type,
-                   sol_amount, token_amount, price_per_token,
-                   tx_signature, leg_index, slot, block_time, received_at,
-                   virtual_sol_reserves, virtual_token_reserves,
-                   real_sol_reserves, real_token_reserves,
-                   ix_type, venue
-            FROM ranked
-            WHERE rn <= $2
-            ORDER BY mint_address ASC, slot ASC, block_time ASC, tx_signature ASC, leg_index ASC
-            "#,
-        )
-        .bind(mints)
-        .bind(per_mint_cap)
         .fetch_all(&self.pool)
         .await?;
 

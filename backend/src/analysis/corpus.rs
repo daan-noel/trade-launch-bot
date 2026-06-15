@@ -5,9 +5,9 @@
 //! Two `CorpusSource` impls behind one trait:
 //!   - [`CacheSource`] — the hot/recent window from the live `TokenCache`,
 //!     refcount-cloned (`Arc`), no DB.
-//!   - [`DbSource`]    — the historical / cache-miss tail via the shared
-//!     [`TradeRepo::find_by_mints_paged`] batch primitive (one round-trip per
-//!     mint chunk, per-mint capped), replacing any per-token N+1 loop.
+//!   - [`DbSource`]    — the historical / cache-miss tail via a chunked batch
+//!     query (one round-trip per mint chunk, per-mint capped via a `ROW_NUMBER`
+//!     window), replacing any per-token N+1 loop.
 //!
 //! The loaded corpus is cached to a compact columnar Parquet file keyed by a
 //! corpus hash, so a re-run with the same selection loads instantly off disk
@@ -35,7 +35,7 @@ use sqlx::PgPool;
 
 use crate::models::trade::{Trade, TradeType};
 use crate::state::token_cache::TokenCache;
-use crate::storage::repositories::trade_repo::TradeRepo;
+use crate::storage::repositories::trade_repo::TradeSlimRow;
 
 /// One token's trade history, ready for `simulate`. `trades` is shared (`Arc`)
 /// so the cache source clones a refcount rather than deep-copying up to the
@@ -75,7 +75,7 @@ pub struct Selection {
     pub token_cap: usize,
     /// Only tokens created at/after this instant (DB source).
     pub created_after: Option<DateTime<Utc>>,
-    /// Per-mint trade cap passed to `find_by_mints_paged` (newest N per mint).
+    /// Per-mint trade cap for the DB batch query (newest N per mint).
     pub per_mint_cap: i64,
     /// Drop AMM (post-migration) legs, keeping only bonding-curve trades.
     pub curve_only: bool,
@@ -203,8 +203,8 @@ impl CorpusSource for CacheSource {
 // DB source
 // ---------------------------------------------------------------------------
 
-/// Loads the historical / cache-miss tail via the batched `find_by_mints_paged`
-/// primitive — one round-trip per mint chunk, never the per-token N+1 loop.
+/// Loads the historical / cache-miss tail via a chunked batch query — one
+/// round-trip per mint chunk, never the per-token N+1 loop.
 pub struct DbSource {
     pool: PgPool,
     /// Mints per `ANY($1)` so a single statement's result stays bounded.
@@ -214,6 +214,62 @@ pub struct DbSource {
 impl DbSource {
     pub fn new(pool: PgPool) -> Self {
         Self { pool, chunk: 200 }
+    }
+
+    /// Trades for a chunk of mints in one round-trip, each mint capped to its
+    /// newest `per_mint_cap` trades (a per-mint `ROW_NUMBER` window bounds the
+    /// worst case to `mints.len() * per_mint_cap` rows), grouped chronological
+    /// per mint. Mints with no trades are simply absent. Slim projection (no
+    /// `ix_labels` JSONB) — the sweep never reads per-trade labels.
+    async fn fetch_chunk(
+        &self,
+        mints: &[String],
+        per_mint_cap: i64,
+    ) -> Result<HashMap<String, Vec<Trade>>> {
+        // Newest `per_mint_cap` per mint via the DESC window, then re-sorted ASC
+        // so each mint's run arrives chronological — the launch→recent window the
+        // live cache holds.
+        let rows = sqlx::query_as::<_, TradeSlimRow>(
+            r#"
+            WITH ranked AS (
+                SELECT id, mint_address, wallet_address, trade_type,
+                       sol_amount, token_amount, price_per_token,
+                       tx_signature, leg_index, slot, block_time, received_at,
+                       virtual_sol_reserves, virtual_token_reserves,
+                       real_sol_reserves, real_token_reserves,
+                       ix_type, venue,
+                       ROW_NUMBER() OVER (
+                         PARTITION BY mint_address
+                         ORDER BY slot DESC, block_time DESC, tx_signature DESC, leg_index DESC
+                       ) AS rn
+                FROM trades
+                WHERE mint_address = ANY($1)
+            )
+            SELECT id, mint_address, wallet_address, trade_type,
+                   sol_amount, token_amount, price_per_token,
+                   tx_signature, leg_index, slot, block_time, received_at,
+                   virtual_sol_reserves, virtual_token_reserves,
+                   real_sol_reserves, real_token_reserves,
+                   ix_type, venue
+            FROM ranked
+            WHERE rn <= $2
+            ORDER BY mint_address ASC, slot ASC, block_time ASC, tx_signature ASC, leg_index ASC
+            "#,
+        )
+        .bind(mints)
+        .bind(per_mint_cap)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut grouped: HashMap<String, Vec<Trade>> = HashMap::with_capacity(mints.len());
+        for row in rows {
+            let trade = Trade::try_from(row)?;
+            grouped
+                .entry(trade.mint_address.clone())
+                .or_default()
+                .push(trade);
+        }
+        Ok(grouped)
     }
 
     /// Resolve `(mint, symbol)` candidates: the explicit list (symbols looked up)
@@ -256,11 +312,10 @@ impl CorpusSource for DbSource {
         let symbols: HashMap<String, String> = candidates.iter().cloned().collect();
         let mints: Vec<String> = candidates.into_iter().map(|(m, _)| m).collect();
 
-        let repo = TradeRepo::new(self.pool.clone());
         let mut tokens: Vec<TokenTrades> = Vec::with_capacity(mints.len());
         for chunk in mints.chunks(self.chunk) {
-            let grouped = repo
-                .find_by_mints_paged(chunk, sel.per_mint_cap)
+            let grouped = self
+                .fetch_chunk(chunk, sel.per_mint_cap)
                 .await
                 .context("batched trade fetch for corpus chunk")?;
             for mint in chunk {

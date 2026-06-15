@@ -2,8 +2,8 @@
 
 File-level map of `backend/src/analysis/`. Reference this instead of re-reading
 source. Related: [strategies.md](strategies.md) (the tpsl pure fns the sweep
-reuses), [database.md](database.md) (`find_by_mints_paged`, `sweep_runs`/
-`sweep_results`), [frontend.md](frontend.md) (the per-strategy sweep page).
+reuses), [database.md](database.md) (`sweep_runs`/`sweep_results`),
+[frontend.md](frontend.md) (the per-strategy sweep page).
 
 ## Core idea
 A backtest is a pure fn `simulate(trades, params) -> TokenOutcome`. A sweep loads
@@ -29,7 +29,7 @@ corpus (cache|DB, once) ─► sweep (pure simulate) ─► fold to per-combo me
 |---|---|
 | `mod.rs` | Module map + the parity note. |
 | `strategy.rs` | `Strategy` + `ParamSpace` traits (the entire new-strategy surface); `TokenOutcome` (`Copy`, no String — mint recovered at fold), `ExitCode`, `SweepMethod` (Grid/Random/LHS), and the frictionless `round_trip` helper. |
-| `corpus.rs` | `CorpusSource` trait + `CacheSource` (live `TokenCache`, zero-copy) and `DbSource` (`find_by_mints_paged`, chunked). Compact columnar Parquet corpus cache keyed by corpus hash; `Selection` (cap + window + curve_only). |
+| `corpus.rs` | `CorpusSource` trait + `CacheSource` (live `TokenCache`, zero-copy) and `DbSource` (own chunked, per-mint-capped batch query — reuses `trade_repo::TradeSlimRow`). Compact columnar Parquet corpus cache keyed by corpus hash; `Selection` (cap + window + curve_only). |
 | `tpsl2.rs` | First `Strategy` impl. `Tpsl2Params`/`Tpsl2Axes`/`Tpsl2Strategy` overlays params onto a base `Tpsl2Rule` and calls `entry::find_scalp_entry` + `find_worst_case_paper_entry` + `exit::find_trade_driven_exit`. |
 | `tpsl1.rs` | Peer `Strategy` impl (clone-parity). Entry via `entry::find_entry_fill_in_trades` (no scalp gates), same `exit::find_trade_driven_exit`. |
 | `sweep.rs` | `run_sweep` — `rayon` over tokens (combos inner, slice stays cache-hot); a single fold thread folds outcomes into one `ComboAgg` per combo. Returns `SweepStats` + `Vec<ComboMetrics>`. |
