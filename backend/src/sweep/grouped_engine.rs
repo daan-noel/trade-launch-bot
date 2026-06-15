@@ -13,12 +13,13 @@
 use std::cmp::Ordering::Equal;
 use std::collections::HashMap;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 
 use crate::sweep::aggregate::ComboMetrics;
 use crate::sweep::corpus::Corpus;
 use crate::sweep::engine::run_sweep;
 use crate::sweep::grouping::{group_key, GroupField, GroupKey};
+use crate::sweep::progress::SweepObserver;
 use crate::sweep::strategy::Strategy;
 
 /// One group's full sweep: its key, how many tokens fell into it, the per-combo
@@ -44,12 +45,17 @@ pub fn partition(corpus: &Corpus, fields: &[GroupField]) -> HashMap<GroupKey, Ve
 /// Group the corpus, drop groups below `min_tokens`, and sweep each surviving
 /// group. Returns groups in a deterministic order (largest first, then by key)
 /// so re-runs assign the same `group_index`.
+///
+/// `observer` is told the total surviving-token count up front (so the progress
+/// bar is determinate from the first frame) and polled for cancellation between
+/// groups; a cancel bails with an `Err` the caller maps to a cancelled response.
 pub fn run_grouped_sweep<S: Strategy>(
     strategy: &S,
     params: &[S::Params],
     corpus: &Corpus,
     fields: &[GroupField],
     min_tokens: usize,
+    observer: &dyn SweepObserver,
 ) -> Result<Vec<GroupResult>> {
     let floor = min_tokens.max(1);
     let mut surviving: Vec<(GroupKey, Vec<usize>)> = partition(corpus, fields)
@@ -63,6 +69,11 @@ pub fn run_grouped_sweep<S: Strategy>(
             .then_with(|| a.0.to_json().to_string().cmp(&b.0.to_json().to_string()))
     });
 
+    // Total work unit = tokens across all surviving groups; lets the bar show a
+    // real percentage that climbs smoothly through every group's per-token fold.
+    let total_tokens: usize = surviving.iter().map(|(_, idx)| idx.len()).sum();
+    observer.set_total(total_tokens);
+
     tracing::info!(
         groups = surviving.len(),
         n_fields = fields.len(),
@@ -73,13 +84,20 @@ pub fn run_grouped_sweep<S: Strategy>(
 
     let mut out = Vec::with_capacity(surviving.len());
     for (key, idx) in surviving {
+        if observer.cancelled() {
+            bail!("sweep cancelled");
+        }
         // Sub-corpus: refcount-clone each token (Arc trades — no buffer copy).
         let sub = Corpus {
             tokens: idx.iter().map(|&i| corpus.tokens[i].clone()).collect(),
             hash: corpus.hash.clone(),
         };
         let token_count = sub.token_count();
-        let (_stats, metrics) = run_sweep(strategy, params, &sub)?;
+        let (_stats, metrics) = run_sweep(strategy, params, &sub, observer)?;
+        // A cancel mid-group leaves the just-swept metrics partial — discard.
+        if observer.cancelled() {
+            bail!("sweep cancelled");
+        }
         let (best_combo_id, best_expectancy_sol) = best_combo(&metrics);
         out.push(GroupResult {
             key,
@@ -183,8 +201,15 @@ mod tests {
     fn groups_by_exact_creator_and_picks_best_combo() {
         use crate::sweep::grouping::GroupField;
         let params = Mock.sample(SweepMethod::Grid);
-        let groups = run_grouped_sweep(&Mock, &params, &corpus(), &[GroupField::CreatorWallet], 1)
-            .unwrap();
+        let groups = run_grouped_sweep(
+            &Mock,
+            &params,
+            &corpus(),
+            &[GroupField::CreatorWallet],
+            1,
+            &crate::sweep::progress::NoopObserver,
+        )
+        .unwrap();
 
         assert_eq!(groups.len(), 2, "devA + devB");
         // Largest group (devA, 2 tokens) sorts first.
@@ -199,8 +224,15 @@ mod tests {
     fn min_tokens_drops_small_groups_before_sweeping() {
         use crate::sweep::grouping::GroupField;
         let params = Mock.sample(SweepMethod::Grid);
-        let groups =
-            run_grouped_sweep(&Mock, &params, &corpus(), &[GroupField::CreatorWallet], 2).unwrap();
+        let groups = run_grouped_sweep(
+            &Mock,
+            &params,
+            &corpus(),
+            &[GroupField::CreatorWallet],
+            2,
+            &crate::sweep::progress::NoopObserver,
+        )
+        .unwrap();
         assert_eq!(groups.len(), 1, "only devA (2 tokens) clears min_tokens=2");
         assert_eq!(groups[0].token_count, 2);
     }
@@ -208,7 +240,9 @@ mod tests {
     #[test]
     fn empty_fields_is_single_all_group() {
         let params = Mock.sample(SweepMethod::Grid);
-        let groups = run_grouped_sweep(&Mock, &params, &corpus(), &[], 1).unwrap();
+        let groups =
+            run_grouped_sweep(&Mock, &params, &corpus(), &[], 1, &crate::sweep::progress::NoopObserver)
+                .unwrap();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].token_count, 3);
     }

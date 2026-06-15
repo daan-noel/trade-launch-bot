@@ -22,6 +22,8 @@ The single `select!` loop **serializes** all position transitions across both st
 ## Shared — `sim_progress.rs`
 `SimProgress` (`new`, `start`, `tick`) — per-backtest progress reporter shared by both snipers' `backtest.rs`. Counts completed candidate futures atomically and broadcasts throttled `SseEvent::SimulationProgress { rule_id, processed, total }` (~100 frames/run + a final `processed == total`). The dashboard's `SimProgressBar` subscribes via `simulation_progress` SSE for a determinate bar.
 
+**Cancellation:** `run_backtest` takes a `cancel: Arc<AtomicBool>` it polls per fetch chunk (skips the chunk + ticks its candidates so the bar still completes) and once after the collect (bails with `"simulation cancelled"`). The simulate handler registers the flag in `AppState.sim_cancels` (keyed by `rule_id`, removed via RAII guard on every exit path); `POST /strategies/tpsl{1,2}/rules/{id}/simulate/cancel` flips it. A cancel surfaces to the client as `{cancelled:true}` (HTTP 200), not an error.
+
 ## Per-strategy module map (`tpsl_sniper_1/`, mirrored in `tpsl_sniper_2/`)
 | File | Key items | Responsibility |
 |---|---|---|

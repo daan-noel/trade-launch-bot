@@ -9,6 +9,7 @@ use rayon::prelude::*;
 
 use crate::sweep::aggregate::{ComboAgg, ComboMetrics};
 use crate::sweep::corpus::Corpus;
+use crate::sweep::progress::SweepObserver;
 use crate::sweep::strategy::{Strategy, TokenOutcome};
 
 /// Headline counts for a completed sweep.
@@ -24,10 +25,17 @@ pub struct SweepStats {
 /// into one ranked [`ComboMetrics`] row per combo. Parallel over tokens; the
 /// inner loop runs all combos for one token before moving on. The writer thread
 /// owns the accumulators so the hot loop never locks.
+///
+/// `observer` reports one `token_done` per folded token (for the progress bar)
+/// and is polled for cancellation: once `cancelled()` is set, the per-token
+/// producers skip their (combo × simulate) work and short-circuit so the run
+/// drains fast — the caller checks `cancelled()` after and discards the partial
+/// result.
 pub fn run_sweep<S: Strategy>(
     strategy: &S,
     params: &[S::Params],
     corpus: &Corpus,
+    observer: &dyn SweepObserver,
 ) -> Result<(SweepStats, Vec<ComboMetrics>)> {
     let projected = corpus.token_count() as u64 * params.len() as u64;
     tracing::info!(
@@ -54,6 +62,9 @@ pub fn run_sweep<S: Strategy>(
                         fired += 1;
                     }
                 }
+                // One folded token = one progress unit. The folder is single-
+                // threaded, so this is uncontended (no lock on the hot path).
+                observer.token_done();
             }
             (rows, fired, aggs)
         });
@@ -63,10 +74,17 @@ pub fn run_sweep<S: Strategy>(
             .tokens
             .par_iter()
             .for_each_with(tx.clone(), |tx, tt| {
-                let outs: Vec<TokenOutcome> = params
-                    .iter()
-                    .map(|p| strategy.simulate(&tt.trades, p))
-                    .collect();
+                // Cooperative cancel: skip the (combo × simulate) work and send an
+                // empty outcome set. The folder still counts the token (progress
+                // stays consistent); the caller discards the partial aggregates.
+                let outs: Vec<TokenOutcome> = if observer.cancelled() {
+                    Vec::new()
+                } else {
+                    params
+                        .iter()
+                        .map(|p| strategy.simulate(&tt.trades, p))
+                        .collect()
+                };
                 // Folder never drops early; ignore only on shutdown races.
                 let _ = tx.send(outs);
             });
@@ -158,7 +176,8 @@ mod tests {
             hash: "h".into(),
         };
         let params = Mock.sample(SweepMethod::Grid);
-        let (stats, metrics) = run_sweep(&Mock, &params, &corpus).unwrap();
+        let (stats, metrics) =
+            run_sweep(&Mock, &params, &corpus, &crate::sweep::progress::NoopObserver).unwrap();
 
         assert_eq!(stats.tokens, 2);
         assert_eq!(stats.combos, 3);

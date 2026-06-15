@@ -171,6 +171,14 @@ export async function simulateTpsl1Rule(
   return request(`${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/simulate`);
 }
 
+/** Request cancellation of an in-flight tpsl1 simulation for a rule (cooperative
+ *  — the backtest polls the flag and bails). No-op if none is running. */
+export async function cancelSimulateTpsl1Rule(ruleId: string): Promise<void> {
+  await request(`${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/simulate/cancel`, {
+    method: 'POST',
+  });
+}
+
 export async function fetchTpsl1MatchedTokens(
   ruleId: string,
 ): Promise<import('types').MatchedTokenRecord[]> {
@@ -301,6 +309,13 @@ export async function simulateTpsl2Rule(
   ruleId: string,
 ): Promise<import('types').SimulatedTokenResult[]> {
   return request(`${API_BASE}/api/strategies/tpsl2/rules/${ruleId}/simulate`);
+}
+
+/** Request cancellation of an in-flight tpsl2 simulation for a rule (see tpsl1 twin). */
+export async function cancelSimulateTpsl2Rule(ruleId: string): Promise<void> {
+  await request(`${API_BASE}/api/strategies/tpsl2/rules/${ruleId}/simulate/cancel`, {
+    method: 'POST',
+  });
 }
 
 export async function fetchTpsl2MatchedTokens(
@@ -478,6 +493,12 @@ export async function updateProfileTags(profileId: string, tagIds: string[]): Pr
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tag_ids: tagIds }),
   });
+}
+
+/** Request cancellation of the in-flight grouped sweep (cooperative — the engine
+ *  polls the flag between groups and bails). No-op if none is running. */
+export async function cancelGroupedSweep(): Promise<void> {
+  await request(`${API_BASE}/api/strategies/sweeps/cancel`, { method: 'POST' });
 }
 
 export function sseUrl(): string {

@@ -30,6 +30,7 @@ pub mod corpus;
 pub mod engine;
 pub mod grouped_engine;
 pub mod grouping;
+pub mod progress;
 pub mod registry;
 pub mod strategies;
 pub mod strategy;

@@ -8,6 +8,8 @@
 //! The CPU-heavy sweep runs in a bounded rayon pool inside `spawn_blocking` so it
 //! can never starve the live trading hot path (ingest / sell-confirm).
 
+use std::sync::Arc;
+
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 use sqlx::PgPool;
@@ -19,6 +21,7 @@ use crate::storage::repositories::tpsl2_strategy_rule_repo::Tpsl2StrategyRuleRep
 use crate::sweep::corpus::Corpus;
 use crate::sweep::grouped_engine::{run_grouped_sweep, GroupResult};
 use crate::sweep::grouping::GroupField;
+use crate::sweep::progress::SweepObserver;
 use crate::sweep::strategies::tpsl2::{AxesSpec, Tpsl2Axes, Tpsl2Strategy};
 use crate::sweep::strategy::{ParamSpace, Strategy, SweepMethod};
 
@@ -91,9 +94,12 @@ pub async fn run_grouped(
     corpus: Corpus,
     fields: Vec<GroupField>,
     min_tokens: usize,
+    observer: Arc<dyn SweepObserver + Send>,
 ) -> Result<GroupedSweepOutput> {
     match strategy_id {
-        "tpsl2" => sweep_tpsl2(pool, rule_id, axes_json, method, corpus, fields, min_tokens).await,
+        "tpsl2" => {
+            sweep_tpsl2(pool, rule_id, axes_json, method, corpus, fields, min_tokens, observer).await
+        }
         other => bail!(
             "strategy '{other}' has no grouped-sweep implementation yet (supported: {:?})",
             strategy_ids()
@@ -113,6 +119,7 @@ fn bounded_threads() -> usize {
 // TPSL2 strategy entry point
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 async fn sweep_tpsl2(
     pool: PgPool,
     rule_id: Option<Uuid>,
@@ -121,6 +128,7 @@ async fn sweep_tpsl2(
     corpus: Corpus,
     fields: Vec<GroupField>,
     min_tokens: usize,
+    observer: Arc<dyn SweepObserver + Send>,
 ) -> Result<GroupedSweepOutput> {
     // Resolve the page-supplied axes (omitted/empty axes fall back to defaults).
     let spec: AxesSpec = serde_json::from_value(axes_json).context("invalid TPSL2 axes spec")?;
@@ -165,7 +173,9 @@ async fn sweep_tpsl2(
             .thread_name(|i| format!("grouped-sweep-{i}"))
             .build()
             .map_err(|e| anyhow!("rayon pool build failed: {e}"))?;
-        pool.install(|| run_grouped_sweep(&strategy, &params, &corpus, &fields, min_tokens))
+        pool.install(|| {
+            run_grouped_sweep(&strategy, &params, &corpus, &fields, min_tokens, observer.as_ref())
+        })
     })
     .await??;
 

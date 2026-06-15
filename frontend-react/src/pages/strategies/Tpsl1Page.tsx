@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode
 import { DataTable } from 'components/table/DataTable';
 import { Badge, type BadgeVariant } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
+import { ProgressBar } from 'components/ui/ProgressBar';
 import { InlineAlert, Modal } from 'components/ui/Modal';
 import {
   buildCreatePayload,
@@ -37,6 +38,7 @@ import {
   pauseTpsl1Rule,
   stopTpsl1Rule,
   updateTpsl1Rule,
+  cancelSimulateTpsl1Rule,
 } from 'services/api';
 import { connectPaperTestStream, connectSimulationProgress } from 'services/sse';
 import { apiErrorMessage } from 'store/apiSlice';
@@ -66,39 +68,31 @@ function SectionDivider() {
  *  `processed / total` candidate counts over the `simulation_progress` SSE
  *  event (keyed by rule), so the bar reports actual progress instead of a fake
  *  trickle. Before the first frame arrives the total is unknown, so it shows an
- *  indeterminate pulse; the bar unmounts when the result lands. */
-function SimProgressBar({ ruleId }: { ruleId: string }) {
+ *  indeterminate pulse; the bar unmounts when the result lands. Cancel requests a
+ *  cooperative abort (the backtest bails on its next chunk). */
+function SimProgressBar({ ruleId, onCancel }: { ruleId: string; onCancel: () => void }) {
   const [progress, setProgress] = useState<{ processed: number; total: number } | null>(null);
+  const [cancelling, setCancelling] = useState(false);
   useEffect(() => {
     setProgress(null);
+    setCancelling(false);
     const h = connectSimulationProgress(ruleId, (processed, total) =>
       setProgress({ processed, total }),
     );
     return () => h.close();
   }, [ruleId]);
 
-  // Determinate once the first frame lands with a non-empty candidate set.
-  const determinate = progress != null && progress.total > 0;
-  const percent = determinate
-    ? Math.min(100, Math.round((progress.processed / progress.total) * 100))
-    : null;
   return (
-    <div className="mt-4">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <span className="text-[11px] font-bold uppercase tracking-widest text-primary">
-          Running Simulation
-        </span>
-        <span className="font-mono text-[11px] text-text-dim">
-          {determinate ? `${progress.processed} / ${progress.total} · ${percent}%` : 'Starting…'}
-        </span>
-      </div>
-      <div className="h-2 overflow-hidden rounded-full bg-white/6">
-        <div
-          className="h-full animate-pulse rounded-full bg-primary transition-[width] duration-300"
-          style={{ width: determinate ? `${percent}%` : '15%' }}
-        />
-      </div>
-    </div>
+    <ProgressBar
+      label="Running Simulation"
+      processed={progress?.processed ?? null}
+      total={progress?.total ?? null}
+      cancelling={cancelling}
+      onCancel={() => {
+        setCancelling(true);
+        onCancel();
+      }}
+    />
   );
 }
 
@@ -831,6 +825,11 @@ export function Tpsl1Page() {
       setSimLoading(true);
       try {
         const tokens = await fetchSimulateCached(dispatch, { strategy: 'tpsl1', ruleId: rule.id });
+        if ('cancelled' in tokens) {
+          // User cancelled — drop the cached cancel marker so a re-run refetches.
+          invalidateStrategyResult(dispatch, { strategy: 'tpsl1', ruleId: rule.id });
+          return;
+        }
         setSimResult({ ruleName: rule.rule_name, tokens });
       } catch (e) {
         setSimError(apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0], 'Simulation failed'));
@@ -1138,7 +1137,9 @@ export function Tpsl1Page() {
       )}
 
       {(simLoading || simError || simResult) && <SectionDivider />}
-      {simLoading && simRuleId && <SimProgressBar ruleId={simRuleId} />}
+      {simLoading && simRuleId && (
+        <SimProgressBar ruleId={simRuleId} onCancel={() => cancelSimulateTpsl1Rule(simRuleId)} />
+      )}
       {simError && <InlineAlert variant="error">{simError}</InlineAlert>}
       {simResult && !simLoading && (
         <>

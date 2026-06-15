@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use dashmap::{DashMap, DashSet};
 use sqlx::PgPool;
+use uuid::Uuid;
 use tokio::sync::{broadcast, watch, Notify, OwnedSemaphorePermit, Semaphore};
 
 use crate::api::handlers::system::SseFrame;
@@ -77,6 +78,15 @@ pub struct AppState {
     /// 409, so a sweep can never pile more rayon work onto the live trading
     /// process while one is already in flight.
     pub sweep_running: Arc<AtomicBool>,
+    /// Cooperative cancel flag for the in-flight grouped sweep. The cancel
+    /// endpoint sets it; the sweep engine polls it between groups / in the
+    /// per-token loop and bails. Reset to `false` when a sweep starts. One flag
+    /// suffices because the sweep is single-flight (see `sweep_running`).
+    pub sweep_cancel: Arc<AtomicBool>,
+    /// Per-rule cooperative cancel flags for in-flight simulations (backtests).
+    /// The simulate handler inserts a flag when a run starts and removes it when
+    /// it ends; the cancel endpoint flips it; `run_backtest` polls it per chunk.
+    pub sim_cancels: Arc<DashMap<Uuid, Arc<AtomicBool>>>,
 }
 
 /// Max concurrent token-sync backfills (each is RPC- and DB-heavy).
@@ -177,6 +187,8 @@ impl AppState {
             sync_gate: Arc::new(SyncGate::new(MAX_CONCURRENT_SYNCS)),
             backtest_trade_cache: Arc::new(BacktestTradeCache::new()),
             sweep_running: Arc::new(AtomicBool::new(false)),
+            sweep_cancel: Arc::new(AtomicBool::new(false)),
+            sim_cancels: Arc::new(DashMap::new()),
         }
     }
 

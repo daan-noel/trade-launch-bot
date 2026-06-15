@@ -146,6 +146,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 web::get().to(handlers::strategies::tpsl1::simulate_tpsl_rule),
             )
             .route(
+                "/strategies/tpsl1/rules/{rule_id}/simulate/cancel",
+                web::post().to(handlers::strategies::tpsl1::cancel_simulate_tpsl_rule),
+            )
+            .route(
                 "/strategies/tpsl1/rules/{rule_id}/paper-result",
                 web::get().to(handlers::strategies::tpsl1::paper_result_tpsl_rule),
             )
@@ -217,6 +221,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 web::get().to(handlers::strategies::tpsl2::simulate_tpsl_rule),
             )
             .route(
+                "/strategies/tpsl2/rules/{rule_id}/simulate/cancel",
+                web::post().to(handlers::strategies::tpsl2::cancel_simulate_tpsl_rule),
+            )
+            .route(
                 "/strategies/tpsl2/rules/{rule_id}/paper-result",
                 web::get().to(handlers::strategies::tpsl2::paper_result_tpsl_rule),
             )
@@ -267,6 +275,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route(
                 "/strategies/sweeps",
                 web::post().to(handlers::strategies::grouped_sweep::start_grouped_sweep),
+            )
+            .route(
+                "/strategies/sweeps/cancel",
+                web::post().to(handlers::strategies::grouped_sweep::cancel_grouped_sweep),
             )
             .route(
                 "/strategies/sweeps/{run_id}/groups",

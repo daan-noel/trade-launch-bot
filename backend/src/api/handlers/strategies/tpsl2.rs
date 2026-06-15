@@ -774,11 +774,26 @@ pub async fn simulate_tpsl_rule(
 ) -> impl Responder {
     // delegate to the tpsl_sniper_2 simulation module (E1+ exit-walk engine)
     let rid = rule_id.into_inner();
-    match crate::strategies::tpsl_sniper_2::run_backtest(app_state.clone(), rid).await {
+    // Register a cooperative cancel flag for this run so `cancel_simulate_tpsl_rule`
+    // can abort it; remove it on every exit path (RAII guard).
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    app_state.sim_cancels.insert(rid, cancel.clone());
+    struct CancelGuard<'a>(&'a Arc<AppState>, Uuid);
+    impl Drop for CancelGuard<'_> {
+        fn drop(&mut self) {
+            self.0.sim_cancels.remove(&self.1);
+        }
+    }
+    let _guard = CancelGuard(&app_state, rid);
+
+    match crate::strategies::tpsl_sniper_2::run_backtest(app_state.clone(), rid, cancel).await {
         Ok(summary) => HttpResponse::Ok().json(summary),
         Err(e) => {
             let msg = e.to_string();
-            if msg.contains("Rule not found") {
+            if msg.contains("cancelled") {
+                // User-requested abort — benign, not a failure.
+                HttpResponse::Ok().json(serde_json::json!({"cancelled": true}))
+            } else if msg.contains("Rule not found") {
                 HttpResponse::NotFound().json(serde_json::json!({"error": msg}))
             } else if msg.contains("no scalp entry gate") {
                 HttpResponse::BadRequest().json(serde_json::json!({"error": msg}))
@@ -788,6 +803,23 @@ pub async fn simulate_tpsl_rule(
             }
         }
     }
+}
+
+/// `POST /api/strategies/tpsl2/rules/{rule_id}/simulate/cancel` — request
+/// cancellation of an in-flight simulation for this rule (see the tpsl1 twin).
+pub async fn cancel_simulate_tpsl_rule(
+    app_state: web::Data<Arc<AppState>>,
+    rule_id: web::Path<Uuid>,
+) -> impl Responder {
+    let rid = rule_id.into_inner();
+    let cancelling = match app_state.sim_cancels.get(&rid) {
+        Some(flag) => {
+            flag.store(true, std::sync::atomic::Ordering::Release);
+            true
+        }
+        None => false,
+    };
+    HttpResponse::Ok().json(serde_json::json!({ "cancelling": cancelling }))
 }
 
 // ---------------------------------------------------------------------------

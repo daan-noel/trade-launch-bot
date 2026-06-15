@@ -43,7 +43,7 @@ export function fetchSimulateCached(
   dispatch: AppDispatch,
   arg: StrategyRuleArg,
   force = false,
-): Promise<SimulatedTokenResult[]> {
+): Promise<SimulatedTokenResult[] | { cancelled: true }> {
   return run(dispatch(apiSlice.endpoints.getStrategySimulate.initiate(arg, opts(force))));
 }
 

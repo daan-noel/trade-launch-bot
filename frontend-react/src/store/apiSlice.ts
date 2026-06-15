@@ -201,7 +201,12 @@ export const apiSlice = createApi({
       providesTags: (_r, _e, a) => [strategyResultTag(a)],
       keepUnusedDataFor: 60,
     }),
-    getStrategySimulate: builder.query<SimulatedTokenResult[], StrategyRuleArg>({
+    // A user-cancelled run resolves to `{ cancelled: true }` instead of the token
+    // array (HTTP 200, no result persisted); callers type-guard on the shape.
+    getStrategySimulate: builder.query<
+      SimulatedTokenResult[] | { cancelled: true },
+      StrategyRuleArg
+    >({
       query: ({ strategy, ruleId }) =>
         `/api/strategies/${strategy}/rules/${encodeURIComponent(ruleId)}/simulate`,
       providesTags: (_r, _e, a) => [strategyResultTag(a)],
@@ -246,7 +251,11 @@ export const apiSlice = createApi({
     }),
     // Trigger a grouped DB-range sweep (single-flight on the backend — a 409 means
     // a sweep is already running). Invalidating `GroupedSweep` refetches the runs.
-    startGroupedSweep: builder.mutation<GroupedSweepRunRecord, GroupedSweepStartArgs>({
+    // A user-cancelled sweep resolves to `{ cancelled: true }` (no run persisted).
+    startGroupedSweep: builder.mutation<
+      GroupedSweepRunRecord | { cancelled: true },
+      GroupedSweepStartArgs
+    >({
       query: (body) => ({
         url: '/api/strategies/sweeps',
         method: 'POST',

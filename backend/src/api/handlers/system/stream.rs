@@ -183,6 +183,18 @@ fn render_sse_frame(event: &SseEvent, state: &AppState) -> SseFrame {
                 json!({ "rule_id": rule_id, "processed": processed, "total": total }),
             )
         }
+        SseEvent::SweepProgress {
+            strategy_id,
+            processed,
+            total,
+        } => {
+            // Not mint-scoped: the single-flight grouped sweep's overall progress.
+            (
+                None,
+                "sweep_progress",
+                json!({ "strategy_id": strategy_id, "processed": processed, "total": total }),
+            )
+        }
     };
 
     let frame = format!(

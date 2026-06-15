@@ -102,6 +102,7 @@ fn select_simulated_tokens(
 pub async fn run_backtest(
     app_state: actix_web::web::Data<Arc<AppState>>,
     rule_id: Uuid,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<Vec<BacktestTokenResult>> {
     let rule_repo = Tpsl2StrategyRuleRepo::new(app_state.db.clone());
 
@@ -169,7 +170,16 @@ pub async fn run_backtest(
             let progress = progress.clone();
             let token_cache = app_state.token_cache.clone();
             let cache = app_state.backtest_trade_cache.clone();
+            let cancel = cancel.clone();
             async move {
+                // Cooperative cancel: skip this chunk's fetch + resolve entirely,
+                // ticking each candidate so the bar still reaches `total`.
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    for _ in &chunk {
+                        progress.tick();
+                    }
+                    return Vec::new();
+                }
                 // Freshness key per mint: the in-memory `trade_count` (0 if the
                 // token isn't tracked — then the cache simply never hits for it).
                 let counts: Vec<u64> = chunk
@@ -323,6 +333,12 @@ pub async fn run_backtest(
             .flat_map(stream::iter)
             .collect()
             .await;
+
+    // If a cancel landed mid-run, discard the partial result so the caller can
+    // report a clean cancellation instead of an incomplete simulation.
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        anyhow::bail!("simulation cancelled");
+    }
 
     candidates.sort_by_key(|(entry_time, _, _)| *entry_time);
 

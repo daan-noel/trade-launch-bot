@@ -84,4 +84,14 @@ pub enum SseEvent {
         processed: u64,
         total: u64,
     },
+    /// Progress of an in-flight grouped param-sweep for `strategy_id`: `processed`
+    /// of `total` candidate tokens folded across all surviving groups. The sweep
+    /// is single-flight, so `strategy_id` is purely for the client to label/filter
+    /// the bar. Throttled to ~100 frames per run plus a final `processed == total`
+    /// (or the count where it was cancelled). Not mint-scoped — always delivered.
+    SweepProgress {
+        strategy_id: String,
+        processed: u64,
+        total: u64,
+    },
 }

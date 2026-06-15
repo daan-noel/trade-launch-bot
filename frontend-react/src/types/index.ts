@@ -188,6 +188,14 @@ export interface SimulationProgressEvent {
   total: number;
 }
 
+/** Payload of the `sweep_progress` SSE event: `processed` of `total` tokens
+ *  folded across all surviving groups of the in-flight grouped sweep. */
+export interface SweepProgressEvent {
+  strategy_id: string;
+  processed: number;
+  total: number;
+}
+
 export interface WalletHolding {
   mint: string;
   amount: number;

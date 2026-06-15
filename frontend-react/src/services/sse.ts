@@ -163,6 +163,29 @@ export function connectSimulationProgress(
 }
 
 /**
+ * Real progress for the in-flight grouped param-sweep. Filters the
+ * `sweep_progress` stream to `strategyId` and reports `processed`/`total` tokens
+ * folded across all surviving groups so the caller can render a determinate
+ * progress bar. The backend throttles to ~100 frames per run plus a final frame
+ * (`processed === total`, or the count where it was cancelled).
+ */
+export function connectSweepProgress(
+  strategyId: string,
+  onProgress: (processed: number, total: number) => void,
+): StreamHandle {
+  const unsub = subscribe('sweep_progress', (e) => {
+    if (typeof e.data !== 'string') return;
+    try {
+      const p = JSON.parse(e.data) as import('types').SweepProgressEvent;
+      if (p.strategy_id === strategyId) onProgress(p.processed, p.total);
+    } catch {
+      /* ignore malformed frames */
+    }
+  });
+  return { close: unsub };
+}
+
+/**
  * Position change signal for `strategy`. Calls `onChanged` with the affected
  * `rule_id` so the caller refetches only that rule's positions.
  */

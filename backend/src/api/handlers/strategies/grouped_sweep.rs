@@ -135,6 +135,9 @@ pub async fn start_grouped_sweep(
     }
     let _gate = Gate(state.sweep_running.clone());
 
+    // Clear any stale cancel request from a prior run before this one starts.
+    state.sweep_cancel.store(false, Ordering::Release);
+
     let token_cap = b.token_cap.clamp(1, 100_000);
     let min_tokens = b.min_tokens.max(1);
     let method = b.method.as_deref().map(SweepMethod::parse).unwrap_or(SweepMethod::Grid);
@@ -173,6 +176,15 @@ pub async fn start_grouped_sweep(
     let token_count = corpus.token_count() as i32;
     let grouping_spec = serde_json::to_value(&b.group_by).unwrap_or_else(|_| serde_json::json!([]));
 
+    // Streams real `processed / total` token frames over SSE and carries the
+    // shared cancel flag into the engine's hot loop.
+    let observer: Arc<dyn crate::sweep::progress::SweepObserver + Send> =
+        Arc::new(crate::sweep::progress::SweepProgress::new(
+            state.sse_tx.clone(),
+            b.strategy_id.clone(),
+            state.sweep_cancel.clone(),
+        ));
+
     let output = match registry::run_grouped(
         state.db.clone(),
         &b.strategy_id,
@@ -182,11 +194,18 @@ pub async fn start_grouped_sweep(
         corpus,
         b.group_by.clone(),
         min_tokens,
+        observer,
     )
     .await
     {
         Ok(o) => o,
         Err(e) => {
+            // A cooperative cancel surfaces as an engine error; report it as a
+            // benign cancellation (no run persisted) rather than a failure.
+            if state.sweep_cancel.load(Ordering::Acquire) {
+                tracing::info!("grouped sweep: cancelled by user");
+                return HttpResponse::Ok().json(serde_json::json!({"cancelled": true}));
+            }
             tracing::error!("grouped sweep failed: {e}");
             // Config errors (bad axes / over-cap grid / no rule) are client-fixable.
             return HttpResponse::BadRequest().json(serde_json::json!({"error": e.to_string()}));
@@ -373,6 +392,19 @@ pub async fn list_results(
             HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}))
         }
     }
+}
+
+/// `POST /api/strategies/sweeps/cancel` — request cancellation of the in-flight
+/// grouped sweep. Cooperative: flips the shared cancel flag, which the engine
+/// polls between groups / in the per-token loop and bails on (the in-flight
+/// `start_grouped_sweep` request then returns `{cancelled: true}`). A no-op when
+/// no sweep is running.
+pub async fn cancel_grouped_sweep(state: web::Data<Arc<AppState>>) -> impl Responder {
+    let running = state.sweep_running.load(Ordering::Acquire);
+    if running {
+        state.sweep_cancel.store(true, Ordering::Release);
+    }
+    HttpResponse::Ok().json(serde_json::json!({ "cancelling": running }))
 }
 
 fn bad_strategy(strategy_id: &str) -> HttpResponse {
