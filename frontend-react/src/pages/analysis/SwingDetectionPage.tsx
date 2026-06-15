@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
+import { STORAGE_KEYS, getString, setString } from 'lib/storage';
 import { DataTable } from 'components/table/DataTable';
 import type { TableQuery } from 'components/table/types';
 import { tokenTradeColumns } from 'components/transactions/tokenTradeColumns';
@@ -110,7 +111,7 @@ type AnalysisKind = 'swing';
 type SwingPanelTab = 'analysis' | 'chain' | 'timerange' | 'thresholds' | 'filter';
 type SwingAllTab = 'analysis' | 'chain' | 'timerange' | 'thresholds';
 
-const LS_SWING_DETECTION_KEY = 'swing_detection_criteria';
+const LS_SWING_DETECTION_KEY = STORAGE_KEYS.swingCriteria;
 
 /** Default max idle gap (ms) for two swings to count as the same chain. */
 const DEFAULT_CHAIN_LATENCY_MS = 60_000;
@@ -186,7 +187,7 @@ const DEFAULT_SWING_CRITERIA: StoredSwingCriteria = {
 
 function loadStoredSwingCriteria(): StoredSwingCriteria {
   try {
-    const raw = localStorage.getItem(LS_SWING_DETECTION_KEY);
+    const raw = getString(LS_SWING_DETECTION_KEY);
     if (!raw) return DEFAULT_SWING_CRITERIA;
     const parsed = JSON.parse(raw) as {
       params?: Partial<SwingParams>;
@@ -234,11 +235,7 @@ function loadStoredSwingCriteria(): StoredSwingCriteria {
 }
 
 function saveStoredSwingCriteria(criteria: StoredSwingCriteria): void {
-  try {
-    localStorage.setItem(LS_SWING_DETECTION_KEY, JSON.stringify(criteria));
-  } catch {
-    /* ignore */
-  }
+  setString(LS_SWING_DETECTION_KEY, JSON.stringify(criteria));
 }
 
 export function SwingDetectionPage() {
@@ -1184,7 +1181,7 @@ export function SwingDetectionPage() {
           colFilters
           colToggle
           hoverable
-          storageKey="swing_detection_visible_cols_v2"
+          tableId="swing"
           emptyMessage="No tokens in this date range."
         />
       )}

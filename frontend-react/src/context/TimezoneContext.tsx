@@ -13,19 +13,16 @@ import {
   isValidTimezone,
 } from 'components/token-price-chart/chartTimezone';
 import { LS_CHART_PREFS_KEY } from 'components/token-price-chart/constants';
+import { STORAGE_KEYS, getString, setString } from 'lib/storage';
 import { useGetSettingsQuery, useUpdateSettingsMutation } from 'store/apiSlice';
 
-export const LS_TIMEZONE_KEY = 'app_timezone';
+export const LS_TIMEZONE_KEY = STORAGE_KEYS.timezone;
 
 function loadTimezone(): string {
+  const saved = getString(LS_TIMEZONE_KEY);
+  if (saved && isValidTimezone(saved)) return saved;
   try {
-    const saved = localStorage.getItem(LS_TIMEZONE_KEY);
-    if (saved && isValidTimezone(saved)) return saved;
-  } catch {
-    /* ignore */
-  }
-  try {
-    const raw = localStorage.getItem(LS_CHART_PREFS_KEY);
+    const raw = getString(LS_CHART_PREFS_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as { chartTimezone?: string };
       const tz = parsed.chartTimezone;
@@ -38,11 +35,7 @@ function loadTimezone(): string {
 }
 
 function saveTimezone(timezone: string) {
-  try {
-    localStorage.setItem(LS_TIMEZONE_KEY, timezone);
-  } catch {
-    /* ignore */
-  }
+  setString(LS_TIMEZONE_KEY, timezone);
 }
 
 interface TimezoneContextValue {

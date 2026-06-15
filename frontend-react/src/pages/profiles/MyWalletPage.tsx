@@ -336,7 +336,7 @@ export function MyWalletPage() {
           colFilters
           colToggle
           hoverable
-          storageKey="wallet_visible_cols"
+          tableId="wallet"
           emptyMessage="No token holdings found in wallet."
           selectable={false}
         />

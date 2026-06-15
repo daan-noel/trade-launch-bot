@@ -1,4 +1,5 @@
 import type { TokenRecord } from 'types';
+import { STORAGE_KEYS, getString, setString, remove } from 'lib/storage';
 
 export type TriState = '' | 'yes' | 'no';
 
@@ -61,7 +62,7 @@ export interface TokenFilters {
   cashback: TriState;
 }
 
-export const LS_TOKEN_FILTERS_KEY = 'tokens_global_filters';
+export const LS_TOKEN_FILTERS_KEY = STORAGE_KEYS.tokenFilters;
 
 const TRI_VALUES = new Set<TriState>(['', 'yes', 'no']);
 
@@ -83,7 +84,7 @@ function mergeTokenFilters(partial?: Partial<TokenFilters>): TokenFilters {
 
 export function loadStoredTokenFilters(): TokenFilters {
   try {
-    const raw = localStorage.getItem(LS_TOKEN_FILTERS_KEY);
+    const raw = getString(LS_TOKEN_FILTERS_KEY);
     if (!raw) return defaultFilters();
     return mergeTokenFilters(JSON.parse(raw) as Partial<TokenFilters>);
   } catch {
@@ -92,14 +93,10 @@ export function loadStoredTokenFilters(): TokenFilters {
 }
 
 export function saveStoredTokenFilters(f: TokenFilters): void {
-  try {
-    if (filtersEmpty(f)) {
-      localStorage.removeItem(LS_TOKEN_FILTERS_KEY);
-    } else {
-      localStorage.setItem(LS_TOKEN_FILTERS_KEY, JSON.stringify(f));
-    }
-  } catch {
-    /* ignore */
+  if (filtersEmpty(f)) {
+    remove(LS_TOKEN_FILTERS_KEY);
+  } else {
+    setString(LS_TOKEN_FILTERS_KEY, JSON.stringify(f));
   }
 }
 

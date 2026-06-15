@@ -1058,7 +1058,7 @@ export function Tpsl1Page() {
             searchable
             colFilters
             colToggle
-            storageKey="tpsl1_rules_cols"
+            tableId="tpsl1_rules"
             emptyMessage="No rules found"
           />
         </RuleRowProvider>

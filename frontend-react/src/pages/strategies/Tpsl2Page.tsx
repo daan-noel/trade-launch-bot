@@ -280,7 +280,7 @@ function PaperResultSection({
             searchable
             colFilters
             colToggle
-            storageKey="tpsl2_paper_cols"
+            tableId="tpsl2_paper"
           />
         )}
       </section>
@@ -1060,7 +1060,7 @@ export function Tpsl2Page() {
             searchable
             colFilters
             colToggle
-            storageKey="tpsl2_rules_cols"
+            tableId="tpsl2_rules"
             emptyMessage="No rules found"
           />
         </RuleRowProvider>
@@ -1133,7 +1133,7 @@ export function Tpsl2Page() {
               searchable
               colFilters
               colToggle
-              storageKey="tpsl2_matched_cols"
+              tableId="tpsl2_matched"
               selectable={false}
             />
           )}
@@ -1176,7 +1176,7 @@ export function Tpsl2Page() {
                 searchable
                 colFilters
                 colToggle
-                storageKey="tpsl2_sim_cols"
+                tableId="tpsl2_sim"
               />
             )}
           </section>

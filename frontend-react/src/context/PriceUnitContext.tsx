@@ -9,30 +9,21 @@ import {
   type ReactNode,
 } from 'react';
 import type { PriceUnit, PriceUnitState } from 'types';
+import { STORAGE_KEYS, getJSON, setJSON } from 'lib/storage';
 import { useGetSettingsQuery, useUpdateSettingsMutation } from 'store/apiSlice';
 
-const LS_PRICE_UNIT_KEY = 'price_unit';
+const LS_PRICE_UNIT_KEY = STORAGE_KEYS.priceUnit;
 
 type PriceUnitAction =
   | { type: 'SET_UNIT'; unit: PriceUnit }
   | { type: 'SET_USD_RATE'; rate: number | null };
 
 function loadPriceUnit(): PriceUnitState {
-  try {
-    const raw = localStorage.getItem(LS_PRICE_UNIT_KEY);
-    if (raw) return JSON.parse(raw) as PriceUnitState;
-  } catch {
-    /* ignore */
-  }
-  return { unit: 'SOL', usdRate: null };
+  return getJSON<PriceUnitState>(LS_PRICE_UNIT_KEY, { unit: 'SOL', usdRate: null });
 }
 
 function savePriceUnit(state: PriceUnitState) {
-  try {
-    localStorage.setItem(LS_PRICE_UNIT_KEY, JSON.stringify(state));
-  } catch {
-    /* ignore */
-  }
+  setJSON(LS_PRICE_UNIT_KEY, state);
 }
 
 function reducer(state: PriceUnitState, action: PriceUnitAction): PriceUnitState {

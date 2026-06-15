@@ -1,5 +1,7 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import { cn } from 'lib/cn';
+import { useLocalStorage } from 'hooks/useLocalStorage';
+import { STORAGE_KEYS } from 'lib/storage';
 import { Button } from 'components/ui/Button';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
@@ -46,10 +48,81 @@ function Field({
   );
 }
 
+/** One labelled param-grid subsection (Entry / Exit), so the sweep grid groups
+ *  the same way the TPSL2 rule modal does. */
+function AxisGroup({
+  title,
+  hint,
+  accent,
+  axes,
+  axesText,
+  setAxesText,
+  className,
+}: {
+  title: string;
+  hint: string;
+  accent: string;
+  axes: AxisDef[];
+  axesText: Record<string, string>;
+  setAxesText: (fn: (prev: Record<string, string>) => Record<string, string>) => void;
+  className?: string;
+}) {
+  return (
+    <div className={className}>
+      <span className="mb-1.5 flex items-baseline gap-1.5">
+        <span className={cn('text-[10px] font-bold uppercase tracking-wider', accent)}>{title}</span>
+        <span className="text-[9px] lowercase text-text-dim/50">{hint}</span>
+      </span>
+      <div className="grid grid-cols-2 gap-2">
+        {axes.map((a) => (
+          <Field key={a.key} label={a.label}>
+            <Input
+              value={axesText[a.key] ?? ''}
+              onChange={(e) => setAxesText((prev) => ({ ...prev, [a.key]: e.target.value }))}
+              placeholder={a.nullable ? 'off, 20, 35' : '50, 100, 200'}
+            />
+          </Field>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /** Render an axis default to its editable comma string (`null` → "off"). */
 function axisToText(values: (number | null)[]): string {
   return values.map((v) => (v == null ? 'off' : String(v))).join(', ');
 }
+
+/** Default param-grid text per axis, computed once (static `TPSL2_AXES`). */
+const DEFAULT_AXES_TEXT: Record<string, string> = Object.fromEntries(
+  TPSL2_AXES.map((a) => [a.key, axisToText(a.default)]),
+);
+
+/** The full sweep-form state — persisted as one object under `mt:sweep.config`
+ *  (replacing the former flat `sweep_cfg_*` keys). */
+interface SweepConfig {
+  createdAfter: string;
+  createdBefore: string;
+  groupBy: GroupField[];
+  axesText: Record<string, string>;
+  methodKind: 'grid' | 'random';
+  randomN: number;
+  minTokens: number;
+  tokenCap: number;
+  curveOnly: boolean;
+}
+
+const DEFAULT_SWEEP_CONFIG: SweepConfig = {
+  createdAfter: '',
+  createdBefore: '',
+  groupBy: ['cu_price'],
+  axesText: DEFAULT_AXES_TEXT,
+  methodKind: 'grid',
+  randomN: 500,
+  minTokens: 10,
+  tokenCap: 10000,
+  curveOnly: false,
+};
 
 /** Parse an axis text box → candidate values. For nullable axes, `off/null/none/-`
  *  (or an empty token) becomes `null`; non-nullable axes drop those. NaN dropped. */
@@ -76,17 +149,32 @@ function axisLen(text: string, def: AxisDef): number {
 }
 
 export function SweepConfigForm({ strategyId, running, onRun }: SweepConfigFormProps) {
-  const [createdAfter, setCreatedAfter] = useState('');
-  const [createdBefore, setCreatedBefore] = useState('');
-  const [groupBy, setGroupBy] = useState<GroupField[]>(['cu_price']);
-  const [axesText, setAxesText] = useState<Record<string, string>>(() =>
-    Object.fromEntries(TPSL2_AXES.map((a) => [a.key, axisToText(a.default)])),
+  // Whole form persisted as one object; merge over defaults so a future-added
+  // field is never `undefined` when reading an older stored shape.
+  const [stored, setConfig] = useLocalStorage<SweepConfig>(
+    STORAGE_KEYS.sweepConfig,
+    DEFAULT_SWEEP_CONFIG,
   );
-  const [methodKind, setMethodKind] = useState<'grid' | 'random'>('grid');
-  const [randomN, setRandomN] = useState(500);
-  const [minTokens, setMinTokens] = useState(10);
-  const [tokenCap, setTokenCap] = useState(10000);
-  const [curveOnly, setCurveOnly] = useState(false);
+  const config = { ...DEFAULT_SWEEP_CONFIG, ...stored };
+  const { createdAfter, createdBefore, groupBy, axesText, methodKind, randomN, minTokens, tokenCap, curveOnly } =
+    config;
+
+  /** Patch one config field (always writes back a complete object). */
+  function setField<K extends keyof SweepConfig>(key: K, value: SweepConfig[K]) {
+    setConfig((prev) => ({ ...DEFAULT_SWEEP_CONFIG, ...prev, [key]: value }));
+  }
+  const setCreatedAfter = (v: string) => setField('createdAfter', v);
+  const setCreatedBefore = (v: string) => setField('createdBefore', v);
+  const setMethodKind = (v: 'grid' | 'random') => setField('methodKind', v);
+  const setRandomN = (v: number) => setField('randomN', v);
+  const setMinTokens = (v: number) => setField('minTokens', v);
+  const setTokenCap = (v: number) => setField('tokenCap', v);
+  const setCurveOnly = (v: boolean) => setField('curveOnly', v);
+  const setAxesText = (fn: (prev: Record<string, string>) => Record<string, string>) =>
+    setConfig((prev) => {
+      const base = { ...DEFAULT_SWEEP_CONFIG, ...prev };
+      return { ...base, axesText: fn(base.axesText) };
+    });
 
   // Projected combos: grid = product of axis lengths; random = N (both capped).
   const projected = useMemo(() => {
@@ -97,7 +185,7 @@ export function SweepConfigForm({ strategyId, running, onRun }: SweepConfigFormP
   const overCap = projected > MAX_COMBOS;
 
   function toggleGroupField(f: GroupField) {
-    setGroupBy((prev) => (prev.includes(f) ? prev.filter((x) => x !== f) : [...prev, f]));
+    setField('groupBy', groupBy.includes(f) ? groupBy.filter((x) => x !== f) : [...groupBy, f]);
   }
 
   function buildAxes(): Tpsl2AxesSpec {
@@ -224,21 +312,31 @@ export function SweepConfigForm({ strategyId, running, onRun }: SweepConfigFormP
         )}
       </div>
 
-      {/* Editable param grid */}
+      {/* Editable param grid — split into entry/exit groups, ordered to match
+          the TPSL2 rule modal so the two screens read the same. */}
       <div className="mt-3 border-t border-white/10 pt-3">
-        <span className="mb-1.5 block text-[9px] font-bold uppercase tracking-wider text-text-dim/80">
+        <span className="mb-2 block text-[9px] font-bold uppercase tracking-wider text-text-dim/80">
           Param grid · comma-separated · “off” disables a nullable knob
         </span>
-        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-          {TPSL2_AXES.map((a) => (
-            <Field key={a.key} label={a.label}>
-              <Input
-                value={axesText[a.key] ?? ''}
-                onChange={(e) => setAxesText((prev) => ({ ...prev, [a.key]: e.target.value }))}
-                placeholder={a.nullable ? 'off, 20, 35' : '50, 100, 200'}
-              />
-            </Field>
-          ))}
+        <div className="flex flex-col gap-3 md:flex-row md:gap-4">
+          <AxisGroup
+            title="Entry gates · scalp"
+            hint="when to buy"
+            accent="text-accent"
+            axes={TPSL2_AXES.filter((a) => a.group === 'entry')}
+            axesText={axesText}
+            setAxesText={setAxesText}
+            className="md:flex-1"
+          />
+          <AxisGroup
+            title="Exit gates"
+            hint="when to sell"
+            accent="text-warning"
+            axes={TPSL2_AXES.filter((a) => a.group === 'exit')}
+            axesText={axesText}
+            setAxesText={setAxesText}
+            className="border-t border-white/10 pt-3 md:flex-1 md:border-l md:border-t-0 md:pl-4 md:pt-0"
+          />
         </div>
       </div>
     </div>

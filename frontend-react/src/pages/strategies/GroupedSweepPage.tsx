@@ -258,7 +258,7 @@ export function GroupedSweepPage() {
             onSelect={setActiveGroupId}
             defaultPageSize={5}
             pageSizeOptions={[5, 10, 25]}
-            storageKey="grouped_sweep_group_cols_v3"
+            tableId="sweep_groups"
             resetKey={activeRunId ?? ''}
             loading={groupsQuery.isFetching}
             emptyMessage="No groups cleared the min-tokens threshold for this run."
@@ -300,7 +300,7 @@ export function GroupedSweepPage() {
                 selectable={false}
                 defaultPageSize={25}
                 pageSizeOptions={[25, 50, 100]}
-                storageKey="grouped_sweep_combo_cols"
+                tableId="sweep_combos"
                 resetKey={activeGroupId}
                 loading={resultsQuery.isFetching}
                 emptyMessage="No combo results for this group."

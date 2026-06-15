@@ -27,8 +27,9 @@ import {
 } from 'store/apiSlice';
 import type { AppDispatch } from '../../store';
 import { cn } from 'lib/cn';
+import { STORAGE_KEYS, getJSON, setJSON } from 'lib/storage';
 
-const LS_LIVE_KEY = 'tokens_live';
+const LS_LIVE_KEY = STORAGE_KEYS.tokensLive;
 
 /** Stable empty reference so derived memos don't recompute every render. */
 const EMPTY_TOKENS: TokenRecord[] = [];
@@ -48,11 +49,7 @@ const INITIAL_QUERY: TableQuery = {
 };
 
 function loadLive(): boolean {
-  try {
-    return localStorage.getItem(LS_LIVE_KEY) === 'true';
-  } catch {
-    return false;
-  }
+  return getJSON<boolean>(LS_LIVE_KEY, false);
 }
 
 export function TokensPage() {
@@ -153,11 +150,7 @@ export function TokensPage() {
     : null;
 
   useEffect(() => {
-    try {
-      localStorage.setItem(LS_LIVE_KEY, live ? 'true' : 'false');
-    } catch {
-      /* ignore */
-    }
+    setJSON(LS_LIVE_KEY, live);
   }, [live]);
 
   // Push-driven refresh: while live, a `token_created` SSE event refetches the
@@ -325,7 +318,7 @@ export function TokensPage() {
           colFilters
           colToggle
           hoverable
-          storageKey="tokens_visible_cols"
+          tableId="tokens"
           emptyMessage="No tokens found"
         />
       )}

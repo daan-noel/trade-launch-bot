@@ -60,36 +60,43 @@ export interface Tpsl2AxesSpec {
   entry_min_organic_liq?: (number | null)[];
 }
 
-/** One editable axis: its key, label, whether `null` (disabled) is a valid
- *  option, and the default candidate list (mirrors `Tpsl2Axes::default` on the
- *  backend, so the projected combo count is accurate and the grid is prefilled). */
+/** One editable axis: its key, label, the param role it belongs to (drives the
+ *  entry/exit grouping in the sweep param grid), whether `null` (disabled) is a
+ *  valid option, and the default candidate list (mirrors `Tpsl2Axes::default` on
+ *  the backend, so the projected combo count is accurate and the grid is
+ *  prefilled). */
 export interface AxisDef {
   key: keyof Tpsl2AxesSpec;
   label: string;
+  group: 'entry' | 'exit';
   nullable: boolean;
   default: (number | null)[];
 }
 
-// Order mirrors the TPSL2 rule modal. The five high-leverage knobs ship a real
-// candidate grid; every other knob defaults to `[null]` ("off"/unbounded) so it
-// doesn't expand the grid until you type values for it — matching the backend
-// `Tpsl2Axes::default`. A blank box → that knob stays unbounded (disabled).
+// Order + grouping mirror the TPSL2 rule modal field-by-field (Entry Gates ·
+// Scalp, then Exit Gates), so the sweep param grid reads the same as the modal.
+// The high-leverage knobs ship a real candidate grid; every other knob defaults
+// to `[null]` ("off"/unbounded) so it doesn't expand the grid until you type
+// values for it — matching the backend `Tpsl2Axes::default`. A blank box → that
+// knob stays unbounded (disabled).
 export const TPSL2_AXES: AxisDef[] = [
-  { key: 'take_profit', label: 'Take profit %', nullable: false, default: [50, 100, 200] },
-  { key: 'stop_loss', label: 'Stop loss %', nullable: false, default: [30, 50] },
-  { key: 'trailing_stop_pct', label: 'Trailing stop %', nullable: true, default: [null, 20, 35] },
-  { key: 'time_stop_secs', label: 'Time stop (s)', nullable: true, default: [null, 120, 300] },
-  { key: 'stall_secs', label: 'Stall (s)', nullable: true, default: [null, 30, 60] },
-  { key: 'entry_min_age_secs', label: 'Entry min age (s)', nullable: true, default: [10, 30] },
-  { key: 'entry_pullback_pct', label: 'Entry pullback %', nullable: true, default: [null, 10] },
-  { key: 'entry_min_liquidity_sol', label: 'Entry min liq (SOL)', nullable: true, default: [null, 5] },
-  { key: 'liquidity_drop_pct', label: 'Liq-drop exit %', nullable: true, default: [null] },
-  { key: 'cohort_ratio', label: 'Cohort-dump exit %', nullable: true, default: [null] },
-  { key: 'entry_min_alive_sol', label: 'Entry min alive (SOL)', nullable: true, default: [null] },
-  { key: 'entry_min_organic_sol', label: 'Entry min organic (SOL)', nullable: true, default: [null] },
-  { key: 'entry_higher_low_secs', label: 'Entry higher-low (s)', nullable: true, default: [null] },
-  { key: 'entry_max_cohort_held', label: 'Entry max cohort held %', nullable: true, default: [null] },
-  { key: 'entry_min_organic_liq', label: 'Entry min organic liq (SOL)', nullable: true, default: [null] },
+  // Entry gates · scalp — when to buy (matches the modal's Entry section order).
+  { key: 'entry_min_age_secs', label: 'Entry min age (s)', group: 'entry', nullable: true, default: [10, 30] },
+  { key: 'entry_min_alive_sol', label: 'Entry min alive (SOL)', group: 'entry', nullable: true, default: [null] },
+  { key: 'entry_min_organic_sol', label: 'Entry min organic (SOL)', group: 'entry', nullable: true, default: [null] },
+  { key: 'entry_min_organic_liq', label: 'Entry min organic liq (SOL)', group: 'entry', nullable: true, default: [null] },
+  { key: 'entry_max_cohort_held', label: 'Entry max cohort held %', group: 'entry', nullable: true, default: [null] },
+  { key: 'entry_min_liquidity_sol', label: 'Entry min liq (SOL)', group: 'entry', nullable: true, default: [null, 5] },
+  { key: 'entry_pullback_pct', label: 'Entry pullback %', group: 'entry', nullable: true, default: [null, 10] },
+  { key: 'entry_higher_low_secs', label: 'Entry higher-low (s)', group: 'entry', nullable: true, default: [null] },
+  // Exit gates — when to sell (matches the modal's Exit section order).
+  { key: 'take_profit', label: 'Take profit %', group: 'exit', nullable: false, default: [50, 100, 200] },
+  { key: 'stop_loss', label: 'Stop loss %', group: 'exit', nullable: false, default: [30, 50] },
+  { key: 'trailing_stop_pct', label: 'Trailing stop %', group: 'exit', nullable: true, default: [null, 20, 35] },
+  { key: 'time_stop_secs', label: 'Time stop (s)', group: 'exit', nullable: true, default: [null, 120, 300] },
+  { key: 'stall_secs', label: 'Stall (s)', group: 'exit', nullable: true, default: [null, 30, 60] },
+  { key: 'liquidity_drop_pct', label: 'Liq-drop exit %', group: 'exit', nullable: true, default: [null] },
+  { key: 'cohort_ratio', label: 'Cohort-dump exit %', group: 'exit', nullable: true, default: [null] },
 ];
 
 // --- run / group / result records -------------------------------------------

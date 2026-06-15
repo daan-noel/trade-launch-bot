@@ -8,6 +8,7 @@ import {
   type DeepPartial,
   type LineSeriesOptions,
 } from 'lightweight-charts';
+import { STORAGE_KEYS } from 'lib/storage';
 import { formatPrice } from 'utils/format';
 import type { PriceUnit } from 'types';
 import { createChartTimeFormatters } from './chartTimezone';
@@ -138,7 +139,7 @@ export const PUMP_MIGRATION_SPOT_PRICE_SOL = (() => {
   return finalVirtualSol / finalVirtualToken;
 })();
 
-export const LS_CHART_PREFS_KEY = 'token_price_chart_prefs';
+export const LS_CHART_PREFS_KEY = STORAGE_KEYS.chartPrefs;
 
 /** Distinct colors cycled across tracked profile wallets. */
 export const WALLET_MARKER_COLORS = [

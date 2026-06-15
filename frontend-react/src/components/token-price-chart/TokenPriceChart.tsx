@@ -52,6 +52,7 @@ import {
   SWING_HIGH_OVERLAY_SERIES_OPTIONS,
   TOKEN_TOTAL_SUPPLY,
 } from './constants';
+import { getString, setString } from 'lib/storage';
 import { BarCrosshairTooltip } from './BarCrosshairTooltip';
 import { SwingCrosshairTooltip } from './SwingCrosshairTooltip';
 import { ChainHighlightTooltip, type ChainTradeCounts } from './ChainHighlightTooltip';
@@ -102,7 +103,7 @@ function loadPrefs(): {
   trimEmptyBars: boolean;
 } {
   try {
-    const raw = localStorage.getItem(LS_CHART_PREFS_KEY);
+    const raw = getString(LS_CHART_PREFS_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as {
         groupMode?: ChartGroupMode;
@@ -139,22 +140,18 @@ function savePrefs(
   showMigrationLine: boolean,
   trimEmptyBars: boolean,
 ) {
-  try {
-    localStorage.setItem(
-      LS_CHART_PREFS_KEY,
-      JSON.stringify({
-        groupMode,
-        interval,
-        style,
-        showTradeMarkers,
-        showAthLine,
-        showMigrationLine,
-        trimEmptyBars,
-      }),
-    );
-  } catch {
-    /* ignore */
-  }
+  setString(
+    LS_CHART_PREFS_KEY,
+    JSON.stringify({
+      groupMode,
+      interval,
+      style,
+      showTradeMarkers,
+      showAthLine,
+      showMigrationLine,
+      trimEmptyBars,
+    }),
+  );
 }
 
 function buildTradeMarkers(

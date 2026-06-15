@@ -103,7 +103,9 @@ then one column **per swept param** read from `best_params`, `group`-tagged
 high-leverage knobs `defaultVisible` and the rest behind the Columns toggle. The
 page passes `groupLabels={{metrics,entry,exit}}` so `DataTable` renders a spanning
 banner row over each block. Config form: created-at range, group-by field picker,
-editable param grid (prefilled with the backend defaults), method (grid/random:N),
+editable param grid (prefilled with the backend defaults) split into **Entry gates ·
+scalp** / **Exit gates** subsections (axes carry a `group` tag in `TPSL2_AXES`,
+ordered field-for-field to match the TPSL2 rule modal), method (grid/random:N),
 min-tokens, curve-only, projected combo-count badge (blocks Run over the cap). The
 Run-picker row also carries **Delete run** (current run) + **Clear runs before
 `<date>`** (prune) controls — `useDeleteGroupedSweepRunMutation` /

@@ -4,6 +4,7 @@ import { Checkbox } from 'components/ui/Checkbox';
 import { Input } from 'components/ui/Input';
 import { Pagination, DEFAULT_PAGE_SIZE } from './Pagination';
 import { parseNumericPredicate } from './numericFilter';
+import { getTableCols, setTableCols } from 'lib/storage';
 import type { ColumnDef, SortDir, SortValue, TableQuery } from './types';
 
 /**
@@ -45,25 +46,16 @@ function cleanColFilters(map: Record<string, string>): Record<string, string> {
   return out;
 }
 
-function loadVisibleCols(storageKey: string, columns: ColumnDef<unknown>[]): Set<string> {
+function loadVisibleCols(tableId: string, columns: ColumnDef<unknown>[]): Set<string> {
   const defaults = new Set(columns.filter((c) => c.defaultVisible !== false).map((c) => c.key));
-  try {
-    const raw = localStorage.getItem(storageKey);
-    if (!raw) return defaults;
-    const parsed = JSON.parse(raw) as string[];
-    const set = new Set(parsed.filter((k) => columns.some((c) => c.key === k)));
-    return set.size ? set : defaults;
-  } catch {
-    return defaults;
-  }
+  const stored = getTableCols(tableId);
+  if (!stored) return defaults;
+  const set = new Set(stored.filter((k) => columns.some((c) => c.key === k)));
+  return set.size ? set : defaults;
 }
 
-function saveVisibleCols(storageKey: string, cols: Set<string>) {
-  try {
-    localStorage.setItem(storageKey, JSON.stringify([...cols]));
-  } catch {
-    /* ignore */
-  }
+function saveVisibleCols(tableId: string, cols: Set<string>) {
+  setTableCols(tableId, [...cols]);
 }
 
 function compareSort(a: SortValue, b: SortValue, dir: SortDir): number {
@@ -90,7 +82,9 @@ interface DataTableProps<R> {
   colFilters?: boolean;
   colToggle?: boolean;
   hoverable?: boolean;
-  storageKey?: string;
+  /** Stable id for persisting this table's column visibility (folded into the
+   *  shared `mt:table.cols` map). Omit to not persist column toggles. */
+  tableId?: string;
   emptyMessage?: string;
   selectable?: boolean;
   paginate?: boolean;
@@ -140,7 +134,7 @@ export function DataTable<R>({
   colFilters = false,
   colToggle = false,
   hoverable = true,
-  storageKey,
+  tableId,
   emptyMessage = 'No data.',
   selectable = true,
   paginate = true,
@@ -159,7 +153,7 @@ export function DataTable<R>({
   const [search, setSearch] = useState('');
   const [colFiltersMap, setColFiltersMap] = useState<Record<string, string>>({});
   const [visibleCols, setVisibleCols] = useState<Set<string>>(() =>
-    storageKey ? loadVisibleCols(storageKey, columns as ColumnDef<unknown>[]) : new Set(columns.filter((c) => c.defaultVisible !== false).map((c) => c.key)),
+    tableId ? loadVisibleCols(tableId, columns as ColumnDef<unknown>[]) : new Set(columns.filter((c) => c.defaultVisible !== false).map((c) => c.key)),
   );
   const [internalSelected, setInternalSelected] = useState<string | null>(null);
   const [showColPanel, setShowColPanel] = useState(false);
@@ -179,8 +173,8 @@ export function DataTable<R>({
     externalSelected !== undefined ? externalSelected : internalSelected;
 
   useEffect(() => {
-    if (storageKey) saveVisibleCols(storageKey, visibleCols);
-  }, [visibleCols, storageKey]);
+    if (tableId) saveVisibleCols(tableId, visibleCols);
+  }, [visibleCols, tableId]);
 
   const visCols = useMemo(
     () => columns.filter((c) => visibleCols.has(c.key)),
