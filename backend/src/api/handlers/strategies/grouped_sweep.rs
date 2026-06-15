@@ -322,14 +322,14 @@ fn metrics_to_result(m: &ComboMetrics, params: serde_json::Value) -> GroupedSwee
         expectancy_sol: m.expectancy_sol,
         avg_holding_secs: m.avg_holding_secs,
         median_holding_secs: m.median_holding_secs,
-        exit_take_profit: m.exit_take_profit as i32,
-        exit_stop_loss: m.exit_stop_loss as i32,
-        exit_trailing: m.exit_trailing as i32,
-        exit_stall: m.exit_stall as i32,
-        exit_time: m.exit_time as i32,
-        exit_liquidity: m.exit_liquidity as i32,
-        exit_cohort: m.exit_cohort as i32,
-        exit_open: m.exit_open as i32,
+        n_exit_take_profit: m.n_exit_take_profit as i32,
+        n_exit_stop_loss: m.n_exit_stop_loss as i32,
+        n_exit_trailing: m.n_exit_trailing as i32,
+        n_exit_stall: m.n_exit_stall as i32,
+        n_exit_time: m.n_exit_time as i32,
+        n_exit_liquidity: m.n_exit_liquidity as i32,
+        n_exit_cohort: m.n_exit_cohort as i32,
+        n_exit_open: m.n_exit_open as i32,
     }
 }
 

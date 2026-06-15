@@ -130,14 +130,14 @@ struct ResultDbRow {
     expectancy_sol: f64,
     avg_holding_secs: f64,
     median_holding_secs: f64,
-    exit_take_profit: i32,
-    exit_stop_loss: i32,
-    exit_trailing: i32,
-    exit_stall: i32,
-    exit_time: i32,
-    exit_liquidity: i32,
-    exit_cohort: i32,
-    exit_open: i32,
+    n_exit_take_profit: i32,
+    n_exit_stop_loss: i32,
+    n_exit_trailing: i32,
+    n_exit_stall: i32,
+    n_exit_time: i32,
+    n_exit_liquidity: i32,
+    n_exit_cohort: i32,
+    n_exit_open: i32,
 }
 
 impl From<ResultDbRow> for GroupedSweepResult {
@@ -161,14 +161,14 @@ impl From<ResultDbRow> for GroupedSweepResult {
             expectancy_sol: r.expectancy_sol,
             avg_holding_secs: r.avg_holding_secs,
             median_holding_secs: r.median_holding_secs,
-            exit_take_profit: r.exit_take_profit,
-            exit_stop_loss: r.exit_stop_loss,
-            exit_trailing: r.exit_trailing,
-            exit_stall: r.exit_stall,
-            exit_time: r.exit_time,
-            exit_liquidity: r.exit_liquidity,
-            exit_cohort: r.exit_cohort,
-            exit_open: r.exit_open,
+            n_exit_take_profit: r.n_exit_take_profit,
+            n_exit_stop_loss: r.n_exit_stop_loss,
+            n_exit_trailing: r.n_exit_trailing,
+            n_exit_stall: r.n_exit_stall,
+            n_exit_time: r.n_exit_time,
+            n_exit_liquidity: r.n_exit_liquidity,
+            n_exit_cohort: r.n_exit_cohort,
+            n_exit_open: r.n_exit_open,
         }
     }
 }
@@ -250,8 +250,8 @@ impl GroupedSweepRepo {
                      (run_id, group_id, combo_id, params, n_fired, n_open, n_closed, win_rate, \
                       total_pnl_sol, mean_pnl_pct, median_pnl_pct, p90_pnl_pct, best_pnl_pct, \
                       worst_pnl_pct, std_pnl_pct, profit_factor, score, expectancy_sol, \
-                      avg_holding_secs, median_holding_secs, exit_take_profit, exit_stop_loss, \
-                      exit_trailing, exit_stall, exit_time, exit_liquidity, exit_cohort, exit_open) ",
+                      avg_holding_secs, median_holding_secs, n_exit_take_profit, n_exit_stop_loss, \
+                      n_exit_trailing, n_exit_stall, n_exit_time, n_exit_liquidity, n_exit_cohort, n_exit_open) ",
                     t.results
                 ));
                 qb.push_values(chunk, |mut b, r| {
@@ -275,14 +275,14 @@ impl GroupedSweepRepo {
                         .push_bind(r.expectancy_sol)
                         .push_bind(r.avg_holding_secs)
                         .push_bind(r.median_holding_secs)
-                        .push_bind(r.exit_take_profit)
-                        .push_bind(r.exit_stop_loss)
-                        .push_bind(r.exit_trailing)
-                        .push_bind(r.exit_stall)
-                        .push_bind(r.exit_time)
-                        .push_bind(r.exit_liquidity)
-                        .push_bind(r.exit_cohort)
-                        .push_bind(r.exit_open);
+                        .push_bind(r.n_exit_take_profit)
+                        .push_bind(r.n_exit_stop_loss)
+                        .push_bind(r.n_exit_trailing)
+                        .push_bind(r.n_exit_stall)
+                        .push_bind(r.n_exit_time)
+                        .push_bind(r.n_exit_liquidity)
+                        .push_bind(r.n_exit_cohort)
+                        .push_bind(r.n_exit_open);
                 });
                 qb.build().execute(&mut tx).await?;
             }
@@ -354,8 +354,8 @@ impl GroupedSweepRepo {
             "SELECT combo_id, params, n_fired, n_open, n_closed, win_rate, total_pnl_sol, \
                     mean_pnl_pct, median_pnl_pct, p90_pnl_pct, best_pnl_pct, worst_pnl_pct, \
                     std_pnl_pct, profit_factor, score, expectancy_sol, avg_holding_secs, \
-                    median_holding_secs, exit_take_profit, exit_stop_loss, exit_trailing, \
-                    exit_stall, exit_time, exit_liquidity, exit_cohort, exit_open \
+                    median_holding_secs, n_exit_take_profit, n_exit_stop_loss, n_exit_trailing, \
+                    n_exit_stall, n_exit_time, n_exit_liquidity, n_exit_cohort, n_exit_open \
              FROM {} WHERE run_id = $1 AND group_id = $2 ORDER BY combo_id",
             self.tables.results
         );

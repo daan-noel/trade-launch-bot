@@ -11,7 +11,7 @@ interface ModalProps {
 }
 
 const MODAL_WIDTH: Record<NonNullable<ModalProps['size']>, string> = {
-  md: 'max-w-[600px]',
+  md: 'max-w-[700px]',
   xl: 'max-w-[1200px]',
 };
 

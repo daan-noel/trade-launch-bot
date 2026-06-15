@@ -101,14 +101,14 @@ impl ComboAgg {
             expectancy_sol: if self.fired == 0 { 0.0 } else { self.pnl_sol_sum / n },
             avg_holding_secs,
             median_holding_secs,
-            exit_take_profit: self.exit_counts[0],
-            exit_stop_loss: self.exit_counts[1],
-            exit_trailing: self.exit_counts[2],
-            exit_stall: self.exit_counts[3],
-            exit_time: self.exit_counts[4],
-            exit_liquidity: self.exit_counts[5],
-            exit_cohort: self.exit_counts[6],
-            exit_open: self.exit_counts[7],
+            n_exit_take_profit: self.exit_counts[0],
+            n_exit_stop_loss: self.exit_counts[1],
+            n_exit_trailing: self.exit_counts[2],
+            n_exit_stall: self.exit_counts[3],
+            n_exit_time: self.exit_counts[4],
+            n_exit_liquidity: self.exit_counts[5],
+            n_exit_cohort: self.exit_counts[6],
+            n_exit_open: self.exit_counts[7],
         }
     }
 }
@@ -138,14 +138,16 @@ pub struct ComboMetrics {
     pub expectancy_sol: f64,
     pub avg_holding_secs: f64,
     pub median_holding_secs: f64,
-    pub exit_take_profit: u32,
-    pub exit_stop_loss: u32,
-    pub exit_trailing: u32,
-    pub exit_stall: u32,
-    pub exit_time: u32,
-    pub exit_liquidity: u32,
-    pub exit_cohort: u32,
-    pub exit_open: u32,
+    /// Per-exit-reason trade counts (how each combo's closed trades terminated),
+    /// not param values. `n_` marks them as counts like `n_fired`/`n_closed`.
+    pub n_exit_take_profit: u32,
+    pub n_exit_stop_loss: u32,
+    pub n_exit_trailing: u32,
+    pub n_exit_stall: u32,
+    pub n_exit_time: u32,
+    pub n_exit_liquidity: u32,
+    pub n_exit_cohort: u32,
+    pub n_exit_open: u32,
 }
 
 /// One-sided lower-confidence bound on realized per-trade return:
@@ -233,8 +235,8 @@ mod tests {
         assert!((m.win_rate - 0.5).abs() < 1e-9);
         assert!((m.total_pnl_sol - 1.0).abs() < 1e-9);
         assert_eq!(m.profit_factor, Some(2.0)); // 2.0 win / 1.0 loss
-        assert_eq!(m.exit_take_profit, 1);
-        assert_eq!(m.exit_stop_loss, 1);
+        assert_eq!(m.n_exit_take_profit, 1);
+        assert_eq!(m.n_exit_stop_loss, 1);
     }
 
     #[test]
@@ -299,6 +301,6 @@ mod tests {
         assert_eq!(m.n_open, 1);
         assert_eq!(m.n_closed, 0);
         assert_eq!(m.avg_holding_secs, 0.0);
-        assert_eq!(m.exit_open, 1);
+        assert_eq!(m.n_exit_open, 1);
     }
 }

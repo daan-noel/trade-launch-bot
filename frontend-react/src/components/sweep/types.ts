@@ -27,12 +27,15 @@ export interface SweepResultRecord {
   expectancy_sol: number;
   avg_holding_secs: number;
   median_holding_secs: number;
-  exit_take_profit: number;
-  exit_stop_loss: number;
-  exit_trailing: number;
-  exit_stall: number;
-  exit_time: number;
-  exit_liquidity: number;
-  exit_cohort: number;
-  exit_open: number;
+  /** Per-exit-reason trade counts — how many of this combo's closed trades
+   *  terminated on each reason. Counts, **not** params: distinct from the
+   *  `exit_take_profit`/`exit_stop_loss` *threshold* knobs inside `params`. */
+  n_exit_take_profit: number;
+  n_exit_stop_loss: number;
+  n_exit_trailing: number;
+  n_exit_stall: number;
+  n_exit_time: number;
+  n_exit_liquidity: number;
+  n_exit_cohort: number;
+  n_exit_open: number;
 }

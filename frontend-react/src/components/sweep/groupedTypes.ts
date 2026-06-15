@@ -17,11 +17,11 @@ import type { SweepResultRecord } from './types';
 export const GROUP_FIELDS = [
   'cu_limit',
   'cu_price',
-  'is_cashback_enabled',
   'max_sol_cost',
   'spendable_sol_in',
   'initial_buy_sol',
   'ix_labels',
+  'is_cashback_enabled',
 ] as const;
 
 export type GroupField = (typeof GROUP_FIELDS)[number];
@@ -30,11 +30,11 @@ export type GroupField = (typeof GROUP_FIELDS)[number];
 export const GROUP_FIELD_LABELS: Record<GroupField, string> = {
   cu_limit: 'CU limit',
   cu_price: 'CU price',
-  is_cashback_enabled: 'Cashback on',
   max_sol_cost: 'Max SOL cost',
   spendable_sol_in: 'Spendable SOL in',
   initial_buy_sol: 'Initial buy SOL',
   ix_labels: 'Instruction labels',
+  is_cashback_enabled: 'Cashback on',
 };
 
 // --- TPSL2 editable axes ----------------------------------------------------

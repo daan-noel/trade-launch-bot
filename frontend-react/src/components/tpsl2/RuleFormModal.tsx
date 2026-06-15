@@ -239,32 +239,34 @@ export function RuleFormModal({
   return (
     <Modal title={isEdit ? 'Edit TPSL2 Rule' : 'New TPSL2 Rule'} open={open} onClose={onClose}>
       <div className="flex flex-col gap-4">
-        <label className="flex flex-col gap-1.5">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Mode</span>
-          <Select
-            fieldSize="md"
-            value={form.tradeMode}
-            onChange={(e) => set({ tradeMode: e.target.value })}
-            disabled={live}
-            title={live ? 'Mode is frozen while the rule is running or holding positions' : undefined}
-            className={cn('font-mono', live && 'cursor-not-allowed opacity-50')}
-          >
-            <option value="paper">Paper Test</option>
-            <option value="real">Real Trading</option>
-          </Select>
-        </label>
+        <div className="grid grid-cols-2 gap-3">
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Mode</span>
+            <Select
+              fieldSize="md"
+              value={form.tradeMode}
+              onChange={(e) => set({ tradeMode: e.target.value })}
+              disabled={live}
+              title={live ? 'Mode is frozen while the rule is running or holding positions' : undefined}
+              className={cn('font-mono', live && 'cursor-not-allowed opacity-50')}
+            >
+              <option value="paper">Paper Test</option>
+              <option value="real">Real Trading</option>
+            </Select>
+          </label>
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Rule Name</span>
-          <Input
-            type="text"
-            fieldSize="md"
-            value={form.ruleName}
-            onChange={(e) => set({ ruleName: e.target.value })}
-            placeholder="e.g. Sniper 0.5 SOL"
-            className="font-mono"
-          />
-        </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Rule Name</span>
+            <Input
+              type="text"
+              fieldSize="md"
+              value={form.ruleName}
+              onChange={(e) => set({ ruleName: e.target.value })}
+              placeholder="e.g. Sniper 0.5 SOL"
+              className="font-mono"
+            />
+          </label>
+        </div>
 
         {/* ── Token fingerprint: which token this rule matches at creation
             (p_token_*). Locked behind the 🔓 toggle when editing. ── */}
@@ -274,7 +276,7 @@ export function RuleFormModal({
           accent="text-info"
           right={lockToggle('fingerprint')}
         />
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-6 gap-3 items-end">
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="initialBuy">Initial Buy SOL</FieldLabel>
             <Input type="number" fieldSize="md" step="0.001" unit="◎" value={form.initialBuy} readOnly={!editable('fingerprint')} blankZero
@@ -365,7 +367,7 @@ export function RuleFormModal({
           accent="text-accent"
           right={lockToggle('entry')}
         />
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-4 gap-3">
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="minAgeSecs">Min Age (s)</FieldLabel>
             <Input type="number" blankZero fieldSize="md" step="1" value={form.minAgeSecs} readOnly={!editable('entry')}
@@ -382,14 +384,9 @@ export function RuleFormModal({
               onChange={(e) => set({ minOrganicSol: e.target.value })} className={fieldCls('entry')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
-            <FieldLabel help="pullbackPct">Pullback %</FieldLabel>
-            <Input type="number" blankZero fieldSize="md" step="1" min={0} max={100} unit="%" value={form.pullbackPct} readOnly={!editable('entry')}
-              onChange={(e) => set({ pullbackPct: e.target.value })} className={fieldCls('entry')} placeholder="0 = off" />
-          </label>
-          <label className="flex flex-col gap-1.5">
-            <FieldLabel help="higherLowSecs">Higher-Low (s)</FieldLabel>
-            <Input type="number" blankZero fieldSize="md" step="1" value={form.higherLowSecs} readOnly={!editable('entry')}
-              onChange={(e) => set({ higherLowSecs: e.target.value })} className={fieldCls('entry')} placeholder="0 = off" />
+            <FieldLabel help="minOrganicLiq">Min Organic Liq</FieldLabel>
+            <Input type="number" blankZero fieldSize="md" step="0.1" unit="◎" value={form.minOrganicLiq} readOnly={!editable('entry')}
+              onChange={(e) => set({ minOrganicLiq: e.target.value })} className={fieldCls('entry')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="maxCohortHeld">Max Cohort Held %</FieldLabel>
@@ -402,9 +399,14 @@ export function RuleFormModal({
               onChange={(e) => set({ minLiquiditySol: e.target.value })} className={fieldCls('entry')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
-            <FieldLabel help="minOrganicLiq">Min Organic Liq</FieldLabel>
-            <Input type="number" blankZero fieldSize="md" step="0.1" unit="◎" value={form.minOrganicLiq} readOnly={!editable('entry')}
-              onChange={(e) => set({ minOrganicLiq: e.target.value })} className={fieldCls('entry')} placeholder="0 = off" />
+            <FieldLabel help="pullbackPct">Pullback %</FieldLabel>
+            <Input type="number" blankZero fieldSize="md" step="1" min={0} max={100} unit="%" value={form.pullbackPct} readOnly={!editable('entry')}
+              onChange={(e) => set({ pullbackPct: e.target.value })} className={fieldCls('entry')} placeholder="0 = off" />
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <FieldLabel help="higherLowSecs">Higher-Low (s)</FieldLabel>
+            <Input type="number" blankZero fieldSize="md" step="1" value={form.higherLowSecs} readOnly={!editable('entry')}
+              onChange={(e) => set({ higherLowSecs: e.target.value })} className={fieldCls('entry')} placeholder="0 = off" />
           </label>
         </div>
 
@@ -415,7 +417,7 @@ export function RuleFormModal({
           accent="text-warning"
           right={lockToggle('exit')}
         />
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-4 gap-3">
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="takeProfit" accent="text-primary">Take Profit %</FieldLabel>
             <Input type="number" fieldSize="md" step="1" min={0} unit="%" value={form.takeProfit} readOnly={!editable('exit')}

@@ -659,15 +659,17 @@ CREATE TABLE IF NOT EXISTS tpsl2_grouped_sweep_results (
     avg_holding_secs    DOUBLE PRECISION NOT NULL,
     median_holding_secs DOUBLE PRECISION NOT NULL,
 
-    -- exit-reason mix
-    exit_take_profit    INTEGER     NOT NULL,
-    exit_stop_loss      INTEGER     NOT NULL,
-    exit_trailing       INTEGER     NOT NULL,
-    exit_stall          INTEGER     NOT NULL,
-    exit_time           INTEGER     NOT NULL,
-    exit_liquidity      INTEGER     NOT NULL,
-    exit_cohort         INTEGER     NOT NULL,
-    exit_open           INTEGER     NOT NULL
+    -- exit-reason mix: per-reason trade counts (how closed trades terminated),
+    -- NOT param values. `n_` marks them as counts, distinct from the
+    -- exit_take_profit / exit_stop_loss *threshold* knobs carried in `params`.
+    n_exit_take_profit  INTEGER     NOT NULL,
+    n_exit_stop_loss    INTEGER     NOT NULL,
+    n_exit_trailing     INTEGER     NOT NULL,
+    n_exit_stall        INTEGER     NOT NULL,
+    n_exit_time         INTEGER     NOT NULL,
+    n_exit_liquidity    INTEGER     NOT NULL,
+    n_exit_cohort       INTEGER     NOT NULL,
+    n_exit_open         INTEGER     NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_tpsl2_grouped_sweep_results_group

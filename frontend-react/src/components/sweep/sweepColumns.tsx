@@ -210,18 +210,20 @@ export function buildSweepColumns(paramKeys: string[]): ColumnDef<SweepResultRec
       { defaultVisible: false },
     ),
 
-    // Exits: TP/SL carry good/bad meaning (green/red); the rest are neutral.
-    count('exit_take_profit', 'TP', 'exits', 'text-green', (r) => r.exit_take_profit, {
+    // Exit-reason counts (how closed trades terminated): TP/SL carry good/bad
+    // meaning (green/red); the rest are neutral. These are counts, not the
+    // exit_take_profit/exit_stop_loss *threshold* knobs rendered in the params.
+    count('n_exit_take_profit', 'TP', 'exits', 'text-green', (r) => r.n_exit_take_profit, {
       tooltip: 'Exited on take-profit',
     }),
-    count('exit_stop_loss', 'SL', 'exits', 'text-red', (r) => r.exit_stop_loss, { tooltip: 'Exited on stop-loss' }),
-    count('exit_trailing', 'Trail', 'exits', 'text-text-mid', (r) => r.exit_trailing, {
+    count('n_exit_stop_loss', 'SL', 'exits', 'text-red', (r) => r.n_exit_stop_loss, { tooltip: 'Exited on stop-loss' }),
+    count('n_exit_trailing', 'Trail', 'exits', 'text-text-mid', (r) => r.n_exit_trailing, {
       tooltip: 'Exited on trailing stop',
     }),
-    count('exit_stall', 'Stall', 'exits', 'text-text-mid', (r) => r.exit_stall, { tooltip: 'Exited on stall' }),
-    count('exit_time', 'Time', 'exits', 'text-text-mid', (r) => r.exit_time, { tooltip: 'Exited on time stop' }),
-    count('exit_liquidity', 'Liq', 'exits', 'text-text-mid', (r) => r.exit_liquidity, { defaultVisible: false }),
-    count('exit_cohort', 'Cohort', 'exits', 'text-text-mid', (r) => r.exit_cohort, { defaultVisible: false }),
-    count('exit_open', 'Still open', 'exits', 'text-text-dim', (r) => r.exit_open, { defaultVisible: false }),
+    count('n_exit_stall', 'Stall', 'exits', 'text-text-mid', (r) => r.n_exit_stall, { tooltip: 'Exited on stall' }),
+    count('n_exit_time', 'Time', 'exits', 'text-text-mid', (r) => r.n_exit_time, { tooltip: 'Exited on time stop' }),
+    count('n_exit_liquidity', 'Liq', 'exits', 'text-text-mid', (r) => r.n_exit_liquidity, { defaultVisible: false }),
+    count('n_exit_cohort', 'Cohort', 'exits', 'text-text-mid', (r) => r.n_exit_cohort, { defaultVisible: false }),
+    count('n_exit_open', 'Still open', 'exits', 'text-text-dim', (r) => r.n_exit_open, { defaultVisible: false }),
   ];
 }

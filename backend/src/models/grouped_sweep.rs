@@ -77,14 +77,17 @@ pub struct GroupedSweepResult {
     pub expectancy_sol: f64,
     pub avg_holding_secs: f64,
     pub median_holding_secs: f64,
-    pub exit_take_profit: i32,
-    pub exit_stop_loss: i32,
-    pub exit_trailing: i32,
-    pub exit_stall: i32,
-    pub exit_time: i32,
-    pub exit_liquidity: i32,
-    pub exit_cohort: i32,
-    pub exit_open: i32,
+    /// Per-exit-reason trade counts — how many of this combo's closed trades
+    /// terminated on each reason. Counts, **not** params: distinct from the
+    /// `exit_take_profit`/`exit_stop_loss` *threshold* knobs inside `params`.
+    pub n_exit_take_profit: i32,
+    pub n_exit_stop_loss: i32,
+    pub n_exit_trailing: i32,
+    pub n_exit_stall: i32,
+    pub n_exit_time: i32,
+    pub n_exit_liquidity: i32,
+    pub n_exit_cohort: i32,
+    pub n_exit_open: i32,
 }
 
 /// A group plus its ranked combo rows, handed to the repo's `save_run` as the
