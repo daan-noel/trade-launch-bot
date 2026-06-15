@@ -1,10 +1,10 @@
-//! `backend -- sweep …` entrypoint.
+//! `backend -- tpsl2-sweep …` entrypoint.
 //!
 //! Implemented as a backend subcommand (like `probe`) rather than a separate
 //! `bin/` target because the crate has no library target — a `src/bin/*.rs`
-//! could not import `crate::analysis`. Load corpus → sample params → sweep →
-//! aggregate per combo → Parquet. `--strategy tpsl1|tpsl2` selects the plug-in;
-//! everything below the `Strategy` trait is strategy-agnostic.
+//! could not import `crate::tpsl2_sweep`. Load corpus → sample params → sweep →
+//! aggregate per combo → persist. TPSL2-specific; other strategies get their own
+//! separate sweep subcommand.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,27 +14,20 @@ use chrono::Utc;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::analysis::corpus::{load_or_build, CacheSource, Corpus, DbSource, Selection};
-use crate::analysis::strategy::{ParamSpace, Strategy, SweepMethod};
-use crate::analysis::sweep::run_sweep;
-use crate::analysis::tpsl1::{Tpsl1Axes, Tpsl1Strategy};
-use crate::analysis::tpsl2::{Tpsl2Axes, Tpsl2Strategy};
-use crate::models::sweep::{SweepResult, SweepRun};
-use crate::models::{Tpsl1Rule, Tpsl2Rule};
+use crate::tpsl2_sweep::corpus::{
+    load_or_build, CacheSource, Corpus, CorpusSource, DbSource, Selection,
+};
+use crate::tpsl2_sweep::strategy::{ParamSpace, Strategy, SweepMethod};
+use crate::tpsl2_sweep::engine::run_sweep;
+use crate::tpsl2_sweep::tpsl2_strategy::{Tpsl2Axes, Tpsl2Strategy};
+use crate::models::tpsl2_sweep::{Tpsl2SweepResult, Tpsl2SweepRun};
+use crate::models::Tpsl2Rule;
 use crate::state::token_cache::{TokenCache, MAX_TRADES_RETAINED};
-use crate::storage::repositories::sweep_repo::SweepRepo;
-use crate::storage::repositories::tpsl1_strategy_rule_repo::Tpsl1StrategyRuleRepo;
+use crate::storage::repositories::tpsl2_sweep_repo::Tpsl2SweepRepo;
 use crate::storage::repositories::tpsl2_strategy_rule_repo::Tpsl2StrategyRuleRepo;
 
-/// Which strategy plug-in to sweep.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum StrategyKind {
-    Tpsl1,
-    Tpsl2,
-}
-
-/// Entry point dispatched from `main` when argv[1] == "sweep". `args` is argv
-/// after the `sweep` token.
+/// Entry point dispatched from `main` when argv[1] == "tpsl2-sweep". `args` is
+/// argv after the `tpsl2-sweep` token.
 pub async fn run(pool: PgPool, token_cache: Option<Arc<TokenCache>>, args: Vec<String>) -> Result<()> {
     let opts = Opts::parse(&args);
     run_sweep_cmd(pool, token_cache, &opts).await
@@ -45,7 +38,6 @@ pub async fn run(pool: PgPool, token_cache: Option<Arc<TokenCache>>, args: Vec<S
 // ---------------------------------------------------------------------------
 
 struct Opts {
-    strategy: StrategyKind,
     source_cache: bool,
     rule: Option<Uuid>,
     tokens: usize,
@@ -57,13 +49,12 @@ struct Opts {
 impl Opts {
     fn parse(args: &[String]) -> Self {
         let mut o = Opts {
-            strategy: StrategyKind::Tpsl2,
             source_cache: false,
             rule: None,
             tokens: 5_000,
             method: SweepMethod::Grid,
             curve_only: false,
-            out: PathBuf::from("sweep-out"),
+            out: PathBuf::from("tpsl2-sweep-out"),
         };
         let mut i = 0;
         while i < args.len() {
@@ -74,12 +65,6 @@ impl Opts {
             };
             match a {
                 "--curve-only" => o.curve_only = true,
-                "--strategy" => {
-                    o.strategy = match next().as_deref() {
-                        Some("tpsl1") => StrategyKind::Tpsl1,
-                        _ => StrategyKind::Tpsl2,
-                    };
-                }
                 "--source" => {
                     o.source_cache = next().as_deref() == Some("cache");
                 }
@@ -104,7 +89,7 @@ impl Opts {
 }
 
 /// `grid` | `random:N` | `lhs:N`.
-fn parse_method(s: &str) -> SweepMethod {
+pub fn parse_method(s: &str) -> SweepMethod {
     if let Some(n) = s.strip_prefix("random:") {
         SweepMethod::Random { n: n.parse().unwrap_or(500), seed: 42 }
     } else if let Some(n) = s.strip_prefix("lhs:") {
@@ -128,19 +113,6 @@ async fn resolve_tpsl2_rule(pool: &PgPool, rule: Option<Uuid>) -> Result<Tpsl2Ru
             .into_iter()
             .next()
             .ok_or_else(|| anyhow!("no tpsl2 rules in DB — pass --rule <uuid> with a template rule")),
-    }
-}
-
-async fn resolve_tpsl1_rule(pool: &PgPool, rule: Option<Uuid>) -> Result<Tpsl1Rule> {
-    let repo = Tpsl1StrategyRuleRepo::new(pool.clone());
-    match rule {
-        Some(id) => repo.find_by_id(id).await?.ok_or_else(|| anyhow!("no tpsl1 rule with id {id}")),
-        None => repo
-            .find_all()
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("no tpsl1 rules in DB — pass --rule <uuid> with a template rule")),
     }
 }
 
@@ -176,50 +148,103 @@ async fn run_sweep_cmd(pool: PgPool, token_cache: Option<Arc<TokenCache>>, o: &O
         tokens = corpus.token_count(),
         trades = corpus.trade_count(),
         hash = %corpus.hash,
-        "sweep: corpus loaded"
+        "tpsl2-sweep: corpus loaded"
     );
     if corpus.tokens.is_empty() {
         return Err(anyhow!("corpus is empty — widen the selection"));
     }
 
     let source = if o.source_cache { "cache" } else { "db" };
-    match o.strategy {
-        StrategyKind::Tpsl1 => {
-            let base = resolve_tpsl1_rule(&pool, o.rule).await?;
-            let strategy = Tpsl1Strategy::new(base, Tpsl1Axes::default());
-            let params = strategy.sample(o.method);
-            sweep_engine(pool, strategy, params, corpus, o.method, o.rule, source).await
-        }
-        StrategyKind::Tpsl2 => {
-            let base = resolve_tpsl2_rule(&pool, o.rule).await?;
-            let strategy = Tpsl2Strategy::new(base, Tpsl2Axes::default());
-            let params = strategy.sample(o.method);
-            sweep_engine(pool, strategy, params, corpus, o.method, o.rule, source).await
-        }
-    }
+    let base = resolve_tpsl2_rule(&pool, o.rule).await?;
+    let strategy = Tpsl2Strategy::new(base, Tpsl2Axes::default());
+    let params = strategy.sample(o.method);
+    // CLI is an isolated/offline process — let the sweep use the full rayon pool.
+    let run = sweep_engine(pool, strategy, params, corpus, o.method, o.rule, source, None).await?;
+    println!(
+        "tpsl2-sweep done: run {} — {} tokens × {} combos saved.",
+        run.id, run.token_count, run.combo_count
+    );
+    Ok(())
 }
 
-/// Strategy-generic sweep driver: run the CPU-bound sweep off the async runtime,
-/// then persist the run + its ranked per-combo rows. Monomorphised per strategy.
-async fn sweep_engine<S>(
+/// Config for an in-process, cache-sourced sweep triggered over HTTP.
+pub struct CacheSweepConfig {
+    pub rule_id: Option<Uuid>,
+    pub tokens: usize,
+    pub method: SweepMethod,
+    pub curve_only: bool,
+}
+
+/// Run a sweep **in-process against the live `TokenCache`** (zero DB reads for
+/// the corpus), persist it, and return the run. Used by the HTTP trigger so a
+/// sweep optimizes on exactly the hot window the live strategy sees. The rayon
+/// pool is bounded (see [`bounded_sweep_threads`]) so the CPU-heavy sweep can't
+/// starve the live trading hot path. No Parquet disk cache — the live cache is
+/// already the fast source.
+pub async fn run_cache_sweep(
     pool: PgPool,
-    strategy: S,
-    params: Vec<S::Params>,
+    token_cache: Arc<TokenCache>,
+    cfg: CacheSweepConfig,
+) -> Result<Tpsl2SweepRun> {
+    let sel = Selection {
+        mints: None,
+        token_cap: cfg.tokens,
+        created_after: None,
+        per_mint_cap: MAX_TRADES_RETAINED as i64,
+        curve_only: cfg.curve_only,
+    };
+    let corpus = CacheSource::new(token_cache).load(&sel).await?;
+    tracing::info!(
+        tokens = corpus.token_count(),
+        trades = corpus.trade_count(),
+        "tpsl2-sweep: corpus loaded from live cache"
+    );
+    if corpus.tokens.is_empty() {
+        return Err(anyhow!("live cache holds no eligible tokens — nothing to sweep"));
+    }
+    let base = resolve_tpsl2_rule(&pool, cfg.rule_id).await?;
+    let strategy = Tpsl2Strategy::new(base, Tpsl2Axes::default());
+    let params = strategy.sample(cfg.method);
+    sweep_engine(
+        pool,
+        strategy,
+        params,
+        corpus,
+        cfg.method,
+        cfg.rule_id,
+        "cache",
+        Some(bounded_sweep_threads()),
+    )
+    .await
+}
+
+/// Rayon threads for the in-process sweep: leave ≥2 cores for the live trading
+/// hot path (ingest / sell-confirm), at least 1.
+fn bounded_sweep_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get().saturating_sub(2).max(1))
+        .unwrap_or(2)
+}
+
+/// Run the CPU-bound sweep off the async runtime, then persist the run + its
+/// ranked per-combo rows. Returns the persisted run. `max_threads` bounds the
+/// rayon pool (`Some` for the in-process HTTP path); `None` uses the global pool
+/// (CLI / isolated process).
+async fn sweep_engine(
+    pool: PgPool,
+    strategy: Tpsl2Strategy,
+    params: Vec<<Tpsl2Strategy as ParamSpace>::Params>,
     corpus: Corpus,
     method: SweepMethod,
     rule_id: Option<Uuid>,
     source: &str,
-) -> Result<()>
-where
-    S: Strategy + Send + 'static,
-    S::Params: Send + 'static,
-{
+    max_threads: Option<usize>,
+) -> Result<Tpsl2SweepRun> {
     if params.is_empty() {
         return Err(anyhow!("param space is empty"));
     }
 
     // Capture what we need after the corpus/strategy move into the blocking task.
-    let strategy_id = strategy.id().to_string();
     let corpus_hash = corpus.hash.clone();
     let token_count = corpus.token_count() as i32;
     let combo_count = params.len() as i32;
@@ -227,14 +252,26 @@ where
         params.iter().map(|p| strategy.params_json(p)).collect();
 
     let (stats, metrics) = tokio::task::spawn_blocking(move || -> Result<_> {
-        run_sweep(&strategy, &params, &corpus)
+        match max_threads {
+            // Bound the pool so the sweep can't saturate every core in the live
+            // process. `install` makes the inner `par_iter` use this pool.
+            Some(n) => {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(n)
+                    .thread_name(|i| format!("tpsl2-sweep-{i}"))
+                    .build()
+                    .map_err(|e| anyhow!("rayon pool build failed: {e}"))?;
+                pool.install(|| run_sweep(&strategy, &params, &corpus))
+            }
+            None => run_sweep(&strategy, &params, &corpus),
+        }
     })
     .await??;
 
     // Fold the metrics + their param JSON into persistable rows.
-    let results: Vec<SweepResult> = metrics
+    let results: Vec<Tpsl2SweepResult> = metrics
         .iter()
-        .map(|m| SweepResult {
+        .map(|m| Tpsl2SweepResult {
             combo_id: m.combo_id as i32,
             params: combo_params[m.combo_id as usize].clone(),
             n_fired: m.n_fired as i64,
@@ -262,9 +299,8 @@ where
         })
         .collect();
 
-    let run = SweepRun {
+    let run = Tpsl2SweepRun {
         id: Uuid::new_v4(),
-        strategy: strategy_id,
         rule_id,
         source: source.to_string(),
         method: method.tag().to_string(),
@@ -273,7 +309,7 @@ where
         corpus_hash: Some(corpus_hash),
         created_at: Utc::now(),
     };
-    SweepRepo::new(pool).save_run(&run, &results).await?;
+    Tpsl2SweepRepo::new(pool).save_run(&run, &results).await?;
 
     tracing::info!(
         run_id = %run.id,
@@ -281,11 +317,8 @@ where
         combos = stats.combos,
         evals = stats.rows,
         fired = stats.fired,
-        "sweep: done"
+        rows = results.len(),
+        "tpsl2-sweep: done"
     );
-    println!(
-        "sweep done: run {} — {} tokens × {} combos ({} fired). {} ranked rows saved.",
-        run.id, stats.tokens, stats.combos, stats.fired, results.len()
-    );
-    Ok(())
+    Ok(run)
 }

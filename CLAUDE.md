@@ -27,7 +27,7 @@ Rust `backend` (ingest + strategies + HTTP API) + `pump-trader` crate (trade exe
 | [@docs/trade-execution.md](@docs/trade-execution.md) | `pump-trader/`: buy/sell/amm, durable-nonce + Jito tip escalation, Sender fan-out, caches/probes |
 | [@docs/database.md](@docs/database.md) | Postgres schema, migrations, partitioning, every repository → table → fns |
 | [@docs/frontend.md](@docs/frontend.md) | `frontend-react/src/`: pages, `components/ui` + DataTable, hooks, RTK Query/SSE services, perf patterns |
-| [@docs/analysis.md](@docs/analysis.md) | `analysis/`: strategy param-sweep engine — corpus → sweep → per-combo metrics → `sweep_results` (DB) → per-strategy sweep page; `sweep` CLI |
+| [@docs/tpsl2_sweep.md](@docs/tpsl2_sweep.md) | `tpsl2_sweep/`: TPSL2 param-sweep engine — corpus → sweep → per-combo metrics → `tpsl2_sweep_results` (DB) → TPSL2 sweep page; `tpsl2-sweep` CLI. Other strategies get their own separate sweep stack |
 
 ## Commands
 
@@ -40,7 +40,7 @@ cargo test --bin backend -- --ignored  # integration; needs DATABASE_URL + HELIU
 cargo test -p pump-trader              # trader crate has a lib + real unit tests
 cargo run  -p backend                  # loads .env; needs Postgres; RUST_LOG=backend=info,sqlx=error
 cargo run  -p backend -- probe <ladder|fanout|simulate-sell|holdings> [args]  # live trade-path probes; see run_probe in main.rs
-cargo run  -p backend -- sweep --strategy tpsl1|tpsl2 [--source db|cache] [--rule <uuid>] [--tokens N] [--method grid|random:N] [--curve-only]  # param sweep → sweep_results (DB)
+cargo run  -p backend -- tpsl2-sweep [--source db|cache] [--rule <uuid>] [--tokens N] [--method grid|random:N] [--curve-only]  # TPSL2 param sweep → tpsl2_sweep_results (DB)
 cd frontend-react; npm run dev         # dev server :5173, proxies /api -> :8081
 npm run build                          # tsc && vite build
 ```

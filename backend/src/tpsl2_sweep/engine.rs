@@ -7,9 +7,9 @@
 use anyhow::Result;
 use rayon::prelude::*;
 
-use crate::analysis::aggregate::{ComboAgg, ComboMetrics};
-use crate::analysis::corpus::Corpus;
-use crate::analysis::strategy::{Strategy, TokenOutcome};
+use crate::tpsl2_sweep::aggregate::{ComboAgg, ComboMetrics};
+use crate::tpsl2_sweep::corpus::Corpus;
+use crate::tpsl2_sweep::strategy::{Strategy, TokenOutcome};
 
 /// Headline counts for a completed sweep.
 #[derive(Clone, Copy, Debug)]
@@ -95,8 +95,8 @@ pub fn run_sweep<S: Strategy>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::corpus::TokenTrades;
-    use crate::analysis::strategy::{ExitCode, ParamSpace, SweepMethod, TokenOutcome};
+    use crate::tpsl2_sweep::corpus::TokenTrades;
+    use crate::tpsl2_sweep::strategy::{ExitCode, ParamSpace, SweepMethod, TokenOutcome};
     use crate::models::trade::{Trade, TradeType};
     use chrono::Utc;
     use std::sync::Arc;

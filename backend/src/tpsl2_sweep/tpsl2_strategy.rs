@@ -1,16 +1,16 @@
-//! First [`Strategy`] impl: TPSL2. It wraps the **same** pure entry/exit fns the
+//! The TPSL2 [`Strategy`] impl. It wraps the **same** pure entry/exit fns the
 //! live and DB-backtest paths use — `find_scalp_entry`,
 //! `find_worst_case_paper_entry`, `find_trade_driven_exit` — so the sweep
 //! resolves byte-identical entry/exit *decisions* to live trading. PnL is the
 //! frictionless `round_trip` of the decision prices.
 //!
-//! Adding a different strategy means a new file like this (a `ParamSpace` + a
-//! `Strategy`) — nothing in corpus / sweep / aggregate changes.
+//! This module is TPSL2-specific; other strategies get their own separate sweep
+//! module (clone-and-tweak), not another impl plugged in here.
 
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
-use crate::analysis::strategy::{
+use crate::tpsl2_sweep::strategy::{
     round_trip, ExitCode, ParamSpace, Strategy, SweepMethod, TokenOutcome,
 };
 use crate::models::trade::Trade;
@@ -201,11 +201,11 @@ impl Strategy for Tpsl2Strategy {
 
     fn params_json(&self, p: &Tpsl2Params) -> serde_json::Value {
         serde_json::json!({
-            "take_profit": p.take_profit,
-            "stop_loss": p.stop_loss,
-            "trailing_stop_pct": p.trailing_stop_pct,
-            "time_stop_secs": p.time_stop_secs,
-            "stall_secs": p.stall_secs,
+            "exit_take_profit": p.take_profit,
+            "exit_stop_loss": p.stop_loss,
+            "exit_trailing_stop_pct": p.trailing_stop_pct,
+            "exit_time_stop_secs": p.time_stop_secs,
+            "exit_stall_secs": p.stall_secs,
             "entry_min_age_secs": p.entry_min_age_secs,
             "entry_pullback_pct": p.entry_pullback_pct,
             "entry_min_liquidity_sol": p.entry_min_liquidity_sol,

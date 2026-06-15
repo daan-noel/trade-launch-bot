@@ -1,18 +1,17 @@
-//! Param-sweep persistence models — `sweep_runs` / `sweep_results`. Produced by
-//! the `sweep` CLI, read by the per-strategy sweep page. Serialize-only (the API
-//! never deserializes them from the client); field names are the JSON the
-//! frontend table binds to.
+//! TPSL2 param-sweep persistence models — `tpsl2_sweep_runs` /
+//! `tpsl2_sweep_results`. Produced by the `tpsl2-sweep` CLI, read by the TPSL2
+//! sweep page. Serialize-only (the API never deserializes them from the client);
+//! field names are the JSON the frontend table binds to.
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::Value;
 use uuid::Uuid;
 
-/// One sweep invocation: which strategy/rule over what corpus.
+/// One TPSL2 sweep invocation: which rule over what corpus.
 #[derive(Debug, Clone, Serialize)]
-pub struct SweepRun {
+pub struct Tpsl2SweepRun {
     pub id: Uuid,
-    pub strategy: String,
     pub rule_id: Option<Uuid>,
     pub source: String,
     pub method: String,
@@ -23,10 +22,10 @@ pub struct SweepRun {
 }
 
 /// One ranked param-pair row within a run — the aggregated outcome across all
-/// swept tokens. `params` carries the strategy's swept knob values as JSON so the
-/// table can show/sort any knob without a per-strategy schema.
+/// swept tokens. `params` carries TPSL2's swept knob values as JSON so the table
+/// can show/sort any knob without a fixed schema.
 #[derive(Debug, Clone, Serialize)]
-pub struct SweepResult {
+pub struct Tpsl2SweepResult {
     pub combo_id: i32,
     pub params: Value,
     pub n_fired: i64,

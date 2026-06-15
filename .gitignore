@@ -14,6 +14,7 @@ frontend/.vite/
 
 # Strategy sweep output (corpus parquet cache + run artifacts)
 sweep-out/
+tpsl2-sweep-out/
 venv
 
 # Environment secrets

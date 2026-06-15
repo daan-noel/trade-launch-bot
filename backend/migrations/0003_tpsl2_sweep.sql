@@ -1,17 +1,16 @@
 -- ============================================================================
--- Strategy param-sweep results.
+-- TPSL2 strategy param-sweep results.
 --
--- A `sweep` CLI run (`backend -- sweep --strategy …`) backtests a grid of param
+-- A `tpsl2-sweep` CLI run (`backend -- tpsl2-sweep …`) backtests a grid of param
 -- pairs over the token/trade corpus and folds the per-(combo, token) outcomes
--- into one ranked row per param pair. `sweep_runs` is one row per run;
--- `sweep_results` is one row per param-pair combo in that run (bounded —
--- hundreds to low thousands), read whole by the dashboard's per-strategy sweep
--- page for client-side sort/filter.
+-- into one ranked row per param pair. `tpsl2_sweep_runs` is one row per run;
+-- `tpsl2_sweep_results` is one row per param-pair combo in that run (bounded —
+-- hundreds to low thousands), read whole by the dashboard's TPSL2 sweep page for
+-- client-side sort/filter. Other strategies get their own separate sweep tables.
 -- ============================================================================
 
-CREATE TABLE IF NOT EXISTS sweep_runs (
+CREATE TABLE IF NOT EXISTS tpsl2_sweep_runs (
     id              UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
-    strategy        TEXT        NOT NULL,          -- 'tpsl1' | 'tpsl2'
     rule_id         UUID,                          -- base rule the params overlay
     source          TEXT        NOT NULL,          -- 'cache' | 'db'
     method          TEXT        NOT NULL,          -- 'grid' | 'random' | 'lhs'
@@ -21,12 +20,12 @@ CREATE TABLE IF NOT EXISTS sweep_runs (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_sweep_runs_strategy_created
-    ON sweep_runs(strategy, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tpsl2_sweep_runs_created
+    ON tpsl2_sweep_runs(created_at DESC);
 
-CREATE TABLE IF NOT EXISTS sweep_results (
+CREATE TABLE IF NOT EXISTS tpsl2_sweep_results (
     id                  UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
-    run_id              UUID        NOT NULL REFERENCES sweep_runs(id) ON DELETE CASCADE,
+    run_id              UUID        NOT NULL REFERENCES tpsl2_sweep_runs(id) ON DELETE CASCADE,
     combo_id            INTEGER     NOT NULL,
     params              JSONB       NOT NULL,      -- the swept knob values
 
@@ -59,4 +58,4 @@ CREATE TABLE IF NOT EXISTS sweep_results (
     exit_open           INTEGER     NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_sweep_results_run ON sweep_results(run_id);
+CREATE INDEX IF NOT EXISTS idx_tpsl2_sweep_results_run ON tpsl2_sweep_results(run_id);

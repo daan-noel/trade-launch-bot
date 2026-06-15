@@ -1,10 +1,9 @@
-// Records returned by the param-sweep endpoints
-// (`/api/strategies/{strategy}/sweeps[...]`). Mirror the backend `SweepRun` /
-// `SweepResult` serde structs.
+// Records returned by the TPSL2 param-sweep endpoints
+// (`/api/strategies/tpsl2/sweeps[...]`). Mirror the backend `Tpsl2SweepRun` /
+// `Tpsl2SweepResult` serde structs.
 
 export interface SweepRunRecord {
   id: string;
-  strategy: string;
   rule_id: string | null;
   source: string;
   method: string;

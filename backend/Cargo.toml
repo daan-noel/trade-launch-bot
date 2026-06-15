@@ -86,7 +86,7 @@ tokio-stream = "0.1"
 # Standalone Pump.fun trader, extracted for reuse across projects.
 pump-trader = { path = "../pump-trader" }
 
-# Param-sweep / backtest analysis engine (src/analysis): data-parallel sweep over
+# Param-sweep / backtest engine (src/sweep): data-parallel sweep over
 # tokens, columnar Parquet corpus + result emit for the Python scoring layer.
 rayon = "1"
 arrow = "53"

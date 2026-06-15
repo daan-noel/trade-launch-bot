@@ -6,6 +6,15 @@ import type { AppSettings } from 'services/api';
 import type { TokenFilters } from 'components/tokens/filters';
 import type { SortDir } from 'components/table/types';
 import type { SweepRunRecord, SweepResultRecord } from 'components/sweep/types';
+
+/** Body for `POST /api/strategies/tpsl2/sweeps` — run a sweep on the live cache. */
+export interface Tpsl2SweepStartArgs {
+  rule_id?: string;
+  tokens?: number;
+  /** `grid` | `random:N` | `lhs:N`. */
+  method?: string;
+  curve_only?: boolean;
+}
 import type {
   AnalysisRecord,
   CreatorRecord,
@@ -138,7 +147,7 @@ export const apiSlice = createApi({
   baseQuery: fetchBaseQuery({ baseUrl: API_BASE }),
   keepUnusedDataFor: 300,
   refetchOnMountOrArgChange: false,
-  tagTypes: ['Settings', 'LiveMode', 'WalletHoldings', 'StrategyResult', 'StrategyPaper', 'Profiles', 'Cashback'],
+  tagTypes: ['Settings', 'LiveMode', 'WalletHoldings', 'StrategyResult', 'StrategyPaper', 'Profiles', 'Cashback', 'Tpsl2Sweep'],
   endpoints: (builder) => ({
     getTokens: builder.query<TokensResponse, TokensArgs>({
       query: ({ search, limit, offset }) => {
@@ -206,19 +215,31 @@ export const apiSlice = createApi({
         { type: 'StrategyPaper', id: `${a.strategy}:${a.ruleId}` },
       ],
     }),
-    // Param-sweep results (strategy-agnostic). Runs are produced offline by the
-    // `sweep` CLI; a run's result set is bounded by combo count, so the page
-    // pulls it whole and the table sorts/filters client-side. Cached so flipping
-    // between runs / revisiting the page reuses the data.
-    getSweepRuns: builder.query<SweepRunRecord[], { strategy: string; limit?: number }>({
-      query: ({ strategy, limit = 50 }) =>
-        `/api/strategies/${strategy}/sweeps?limit=${limit}`,
+    // TPSL2 param-sweep results (TPSL2-specific; other strategies get their own
+    // separate endpoints). Runs are produced offline by the `tpsl2-sweep` CLI; a
+    // run's result set is bounded by combo count, so the page pulls it whole and
+    // the table sorts/filters client-side. Cached so flipping between runs /
+    // revisiting the page reuses the data.
+    getTpsl2SweepRuns: builder.query<SweepRunRecord[], { limit?: number } | void>({
+      query: (arg) => `/api/strategies/tpsl2/sweeps?limit=${arg?.limit ?? 50}`,
+      providesTags: ['Tpsl2Sweep'],
       keepUnusedDataFor: 120,
     }),
-    getSweepResults: builder.query<SweepResultRecord[], { strategy: string; runId: string }>({
-      query: ({ strategy, runId }) =>
-        `/api/strategies/${strategy}/sweeps/${encodeURIComponent(runId)}/results`,
+    getTpsl2SweepResults: builder.query<SweepResultRecord[], { runId: string }>({
+      query: ({ runId }) =>
+        `/api/strategies/tpsl2/sweeps/${encodeURIComponent(runId)}/results`,
       keepUnusedDataFor: 120,
+    }),
+    // Trigger a sweep against the LIVE token cache (in-process, single-flight on
+    // the backend — a 409 means one is already running). On success the new run
+    // is returned; invalidating `Tpsl2Sweep` refetches the runs list so it shows.
+    startTpsl2Sweep: builder.mutation<SweepRunRecord, Tpsl2SweepStartArgs>({
+      query: (body) => ({
+        url: '/api/strategies/tpsl2/sweeps',
+        method: 'POST',
+        body,
+      }),
+      invalidatesTags: ['Tpsl2Sweep'],
     }),
     getTokenDetail: builder.query<TokenDetailRecord, string>({
       query: (mint) => `/api/tokens/${encodeURIComponent(mint)}`,
@@ -362,8 +383,9 @@ export const {
   useGetTokenTradesQuery,
   useGetCreatorsPageQuery,
   useGetAnalysisPageQuery,
-  useGetSweepRunsQuery,
-  useGetSweepResultsQuery,
+  useGetTpsl2SweepRunsQuery,
+  useGetTpsl2SweepResultsQuery,
+  useStartTpsl2SweepMutation,
   useGetWalletHoldingsQuery,
   useGetWalletPricesQuery,
   useBuyTokenMutation,

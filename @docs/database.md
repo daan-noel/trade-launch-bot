@@ -7,7 +7,7 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 |---|---|
 | `0001_init.sql` | **single squashed migration = the full final schema.** All tables/indexes (incl. perf + composite `(filter, created_at DESC)` position indexes), `uuid-ossp`, partitioned `raw_transactions` + partition fns (`source` = `live`/`sync`), `tpsl2_{real,paper}_positions` with `target_*` columns in `target_*`/`entry_*`/`exit_*` order, the `app_settings` key-value store, and seed tags. Prior incremental migrations were folded in; data-only steps (percent rescale, source relabel) leave no schema trace and were dropped. **Squash applies to fresh DBs only — an existing DB that already ran the old chain fails the sqlx checksum check (drop & recreate to re-init).** |
 | `0002_partition_trades.sql` | **Copy-migration: partition `trades` by `block_time` (weekly RANGE, ~5wk retention) preserving existing rows.** Renames `trades`→`trades_old`, builds the partitioned parent (PK `(block_time,id)`, unique `(tx_signature,leg_index,block_time)`, all other indexes unchanged), adds `ensure_trades_partition`/`drop_trades_partition`, pre-creates weekly partitions over the data's full range, copies all rows across, drops `trades_old`. |
-| `0003_sweep_results.sql` | Param-sweep output. `sweep_runs` (one row per `sweep` CLI run) + `sweep_results` (one ranked row per param-pair combo, FK→runs ON DELETE CASCADE). Idx: `sweep_runs(strategy, created_at DESC)`, `sweep_results(run_id)`. |
+| `0003_tpsl2_sweep.sql` | TPSL2 param-sweep output. `tpsl2_sweep_runs` (one row per `tpsl2-sweep` CLI run) + `tpsl2_sweep_results` (one ranked row per param-pair combo, FK→runs ON DELETE CASCADE). Idx: `tpsl2_sweep_runs(created_at DESC)`, `tpsl2_sweep_results(run_id)`. Other strategies get their own separate sweep tables. |
 
 ## Tables
 **Core trading**
@@ -28,9 +28,9 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 - `tpsl2_*` adds entry gates: `p_entry_{min_age_secs,min_alive_sol,min_organic_sol,pullback_pct,higher_low_secs,max_cohort_held,min_liquidity_sol,min_organic_liq}`, `p_exit_cohort_ratio`.
 - `tpsl2_{real,paper}_positions` also carry `target_{price,amount,time,tx}` (nullable): the scalp-entry **trigger trade** that armed the position, distinct from the actual `entry_*` fill. Physical column order is `target_*` → `entry_*` → `exit_*` (migration 0005), mirrored by the Rust row struct, `PositionResponse`, and the frontend table. Real: target tx ≠ entry tx (a true slippage/latency gap). Paper: entry is the worst-case adverse fill in the trigger's block/next block, so target ≠ entry except in the fallback case. Gap derived later, not stored.
 
-**Strategy param-sweep** (offline backtest output; see [analysis.md](analysis.md))
-- `sweep_runs` — strategy(`tpsl1`/`tpsl2`), rule_id (base rule the params overlay), source(`cache`/`db`), method(`grid`/`random`/`lhs`), token_count, combo_count, corpus_hash, created_at. Idx: (strategy, created_at DESC).
-- `sweep_results` — run_id (FK CASCADE), combo_id, params(JSONB swept knobs), counts (n_fired/open/closed), profitability (win_rate, total_pnl_sol, expectancy_sol, profit_factor, mean/median/p90/best/worst pnl%), holding (avg/median secs), exit-reason mix. Bounded by combo count → served whole, sorted/filtered client-side. Idx: (run_id).
+**TPSL2 param-sweep** (offline backtest output; see [tpsl2_sweep.md](tpsl2_sweep.md); other strategies get their own separate sweep tables)
+- `tpsl2_sweep_runs` — rule_id (base rule the params overlay), source(`cache`/`db`), method(`grid`/`random`/`lhs`), token_count, combo_count, corpus_hash, created_at. Idx: (created_at DESC).
+- `tpsl2_sweep_results` — run_id (FK CASCADE), combo_id, params(JSONB swept knobs), counts (n_fired/open/closed), profitability (win_rate, total_pnl_sol, expectancy_sol, profit_factor, mean/median/p90/best/worst pnl%), holding (avg/median secs), exit-reason mix. Bounded by combo count → served whole, sorted/filtered client-side. Idx: (run_id).
 
 **Wallets / settings**
 - `wallet_profiles` — name, type(`mine`/`trader`/`whale`/`dev`), tag_ids(UUID[]).
@@ -47,7 +47,7 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 | `token_info_repo.rs` | tokens_info | upsert_metrics, update_migration_status, get/update_sync_watermark, list_all |
 | `analysis_repo.rs` | tokens_analysis, creator_profiles | upsert_result, list_results, upsert/find/list_creator_profile |
 | `settings_repo.rs` | app_settings | load_all, get_one, set_one, set_many |
-| `sweep_repo.rs` | sweep_runs, sweep_results | save_run (run + bulk rows, one txn), list_runs(strategy, limit), list_results(run_id) |
+| `tpsl2_sweep_repo.rs` | tpsl2_sweep_runs, tpsl2_sweep_results | save_run (run + bulk rows, one txn), list_runs(limit), list_results(run_id) |
 | `wallet_repo.rs` | wallets | insert/update/delete, find_by_address, list_by_profile(s), touch_last_seen(_many) |
 | `wallet_profile_repo.rs` | wallet_profiles (+joins) | insert/update/delete, find_with_wallets, list_with_wallets |
 | `wallet_profile_tag_repo.rs` | wallet_profile_tags | list, find_by_ids, insert/update/delete |

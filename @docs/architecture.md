@@ -21,7 +21,7 @@ Subsystem deep-dives: [ingest.md](ingest.md) · [strategies.md](strategies.md) �
 ## Top-level module layout — `backend/src/`
 | Module | Responsibility |
 |---|---|
-| `analysis/` | Strategy param-sweep & backtest engine (corpus → sweep → Parquet → Python scoring). See [analysis.md](analysis.md) |
+| `sweep/` | Strategy param-sweep & backtest engine (corpus → sweep → Parquet → Python scoring). See [sweep.md](sweep.md) |
 | `api/` | HTTP route registration + handlers (tokens, trading, strategies, system) |
 | `analyzers/` | `swing_analyzer.rs` — price-reversal (swing) detection over in-memory trades |
 | `config/` | `settings.rs` (env load) + `constants.rs` (pump.fun/Raydium program IDs, curve params) |
