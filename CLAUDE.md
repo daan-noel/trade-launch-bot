@@ -7,7 +7,7 @@ Guidance for Claude Code (claude.ai/code) working in this repo.
 Meme-coin trading bot handling **massive token + trade volume**. Performance and low latency outrank everything. On every change:
 
 - **Backend latency first.** Hot paths (ingest pipeline, strategy eval, sell-confirm loop) are throughput-critical. Avoid blocking the tokio runtime, redundant RPC/DB round-trips, per-event allocations, lock contention. Notify over poll. Flag any latency-for-convenience trade.
-- **Modular & extensible.** New strategies/endpoints/pages drop in without touching unrelated code. Layering: backend = handler → service → repo; frontend = page (thin) → component + hook. One responsibility per module; smallest correct diff.
+- **Modular & extensible.** New strategies/endpoints/pages drop in without touching unrelated code. Layering: backend = handler → service → repo; frontend = page (thin) → component + hook. One responsibility per module.
 - **Efficient frontend state.** Fetch via `services/api.ts` (REST) / `services/sse.ts` (SSE); cache via RTK Query / context / localStorage to avoid re-fetch and re-render. Memoize so high-frequency ticks (SOL/USD, live trades) update only affected cells, never whole tables.
 - **Reusable UI.** Build from `components/ui/`, `components/table/DataTable`, shared hooks. Don't reimplement an existing button/modal/table/formatter.
 - **Concise communication.** Short answers. Write non-trivial plans to a `*-plan.md` file, not chat.
@@ -71,7 +71,7 @@ Notes
 - **Frontend:** `npm run build` clean; no extra re-render on the SOL/USD tick or live-trade stream (reuse existing memo/context patterns).
 - **Docs:** any logic change updates its `@docs/` map and every referencing `@project_plans/` / `*-plan.md` file — after the task is finished and validated.
 - **Temp plan files:** when a step in a root `*-plan.md` is done, remove that step from the file; when every step is done, delete the file.
-- Smallest correct diff, stayed in the owning crate, no new warnings, no secrets in code.
+- Stayed in the owning crate, no new warnings, no secrets in code.
 
 ## Gotchas
 
