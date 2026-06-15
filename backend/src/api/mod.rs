@@ -276,9 +276,19 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 "/strategies/sweeps",
                 web::post().to(handlers::strategies::grouped_sweep::start_grouped_sweep),
             )
+            // Prune all runs older than `before` (groups + results cascade).
+            .route(
+                "/strategies/sweeps",
+                web::delete().to(handlers::strategies::grouped_sweep::prune_runs),
+            )
             .route(
                 "/strategies/sweeps/cancel",
                 web::post().to(handlers::strategies::grouped_sweep::cancel_grouped_sweep),
+            )
+            // Delete one run by id.
+            .route(
+                "/strategies/sweeps/{run_id}",
+                web::delete().to(handlers::strategies::grouped_sweep::delete_run),
             )
             .route(
                 "/strategies/sweeps/{run_id}/groups",

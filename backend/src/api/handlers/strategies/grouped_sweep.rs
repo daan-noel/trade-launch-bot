@@ -93,6 +93,13 @@ pub struct StrategyQuery {
     pub strategy_id: String,
 }
 
+#[derive(serde::Deserialize)]
+pub struct PruneQuery {
+    pub strategy_id: String,
+    /// Required cutoff — runs created strictly before this are deleted.
+    pub before: DateTime<Utc>,
+}
+
 // ---------------------------------------------------------------------------
 // POST /api/strategies/sweeps — start a grouped DB-range sweep
 // ---------------------------------------------------------------------------
@@ -405,6 +412,51 @@ pub async fn cancel_grouped_sweep(state: web::Data<Arc<AppState>>) -> impl Respo
         state.sweep_cancel.store(true, Ordering::Release);
     }
     HttpResponse::Ok().json(serde_json::json!({ "cancelling": running }))
+}
+
+/// `DELETE /api/strategies/sweeps/{run_id}?strategy_id=tpsl2` — drop one run.
+/// Groups + results cascade. 404 if the id isn't found.
+pub async fn delete_run(
+    state: web::Data<Arc<AppState>>,
+    path: web::Path<Uuid>,
+    query: web::Query<StrategyQuery>,
+) -> impl Responder {
+    let tables = match registry::tables_for(&query.strategy_id) {
+        Some(t) => t,
+        None => return bad_strategy(&query.strategy_id),
+    };
+    let run_id = path.into_inner();
+    match GroupedSweepRepo::new(state.db.clone(), tables).delete_run(run_id).await {
+        Ok(0) => HttpResponse::NotFound().json(serde_json::json!({"error": "run not found"})),
+        Ok(n) => HttpResponse::Ok().json(serde_json::json!({"deleted": n})),
+        Err(e) => {
+            tracing::error!("DB error deleting grouped sweep run: {e}");
+            HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}))
+        }
+    }
+}
+
+/// `DELETE /api/strategies/sweeps?strategy_id=tpsl2&before=<rfc3339>` — prune all
+/// runs created strictly before `before` (groups + results cascade). `before` is
+/// required so this can't accidentally wipe everything.
+pub async fn prune_runs(
+    state: web::Data<Arc<AppState>>,
+    query: web::Query<PruneQuery>,
+) -> impl Responder {
+    let tables = match registry::tables_for(&query.strategy_id) {
+        Some(t) => t,
+        None => return bad_strategy(&query.strategy_id),
+    };
+    match GroupedSweepRepo::new(state.db.clone(), tables)
+        .delete_runs_before(query.before)
+        .await
+    {
+        Ok(n) => HttpResponse::Ok().json(serde_json::json!({"deleted": n})),
+        Err(e) => {
+            tracing::error!("DB error pruning grouped sweep runs: {e}");
+            HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}))
+        }
+    }
 }
 
 fn bad_strategy(strategy_id: &str) -> HttpResponse {

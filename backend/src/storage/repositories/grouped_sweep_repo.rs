@@ -308,6 +308,22 @@ impl GroupedSweepRepo {
         Ok(rows.into_iter().map(GroupedSweepRun::from).collect())
     }
 
+    /// Delete one run (groups + results cascade via FK `ON DELETE CASCADE`).
+    /// Returns the number of run rows removed (0 = unknown id).
+    pub async fn delete_run(&self, run_id: Uuid) -> anyhow::Result<u64> {
+        let sql = format!("DELETE FROM {} WHERE id = $1", self.tables.runs);
+        let res = sqlx::query(&sql).bind(run_id).execute(&self.pool).await?;
+        Ok(res.rows_affected())
+    }
+
+    /// Prune runs created strictly before `cutoff` (groups + results cascade).
+    /// Returns the number of run rows removed.
+    pub async fn delete_runs_before(&self, cutoff: DateTime<Utc>) -> anyhow::Result<u64> {
+        let sql = format!("DELETE FROM {} WHERE created_at < $1", self.tables.runs);
+        let res = sqlx::query(&sql).bind(cutoff).execute(&self.pool).await?;
+        Ok(res.rows_affected())
+    }
+
     /// Group summaries for a run, best opportunity first (highest expectancy).
     pub async fn list_groups(
         &self,

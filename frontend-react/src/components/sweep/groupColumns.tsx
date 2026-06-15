@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { Fragment, type ReactNode } from 'react';
 import type { ColumnDef } from 'components/table/types';
 import { cn } from 'lib/cn';
 import { formatDecimalTrim } from 'utils/format';
@@ -15,7 +15,7 @@ function fmtSecs(v: number): string {
 
 /** Format a swept param by the unit its key implies (mirrors sweepColumns). */
 function fmtParam(key: string, v: number | null): string {
-  if (v == null) return 'off';
+  if (v == null) return '—';
   if (key.endsWith('_secs')) return fmtSecs(v);
   if (key.endsWith('_sol')) return `◎${formatDecimalTrim(v, 4)}`;
   if (key.endsWith('_pct') || key === 'exit_take_profit' || key === 'exit_stop_loss') {
@@ -26,6 +26,11 @@ function fmtParam(key: string, v: number | null): string {
 
 function solText(v: number) {
   return `◎${v >= 0 ? '+' : ''}${formatDecimalTrim(v, 4)}`;
+}
+
+/** Wrap cell text in a colored span (mirrors sweepColumns `tone`). */
+function tone(text: ReactNode, cls: string): ReactNode {
+  return <span className={cn('font-medium', cls)}>{text}</span>;
 }
 
 const goodBad = (v: number, pivot = 0) => (v >= pivot ? 'text-green' : 'text-red');
@@ -51,55 +56,130 @@ function keyParts(group: GroupedSweepGroupRecord): { label: string; value: strin
   }));
 }
 
-/** Short best-combo summary: the headline TP/SL plus any other knobs, compact. */
-function bestComboParts(params: Record<string, number | null>): string[] {
-  const order = [
-    'exit_take_profit',
-    'exit_stop_loss',
-    'exit_trailing_stop_pct',
-    'exit_time_stop_secs',
-    'exit_stall_secs',
-    'entry_min_age_secs',
-    'entry_pullback_pct',
-    'entry_min_liquidity_sol',
-  ];
-  const keys = Object.keys(params).sort(
-    (a, b) =>
-      (order.indexOf(a) === -1 ? Infinity : order.indexOf(a)) -
-      (order.indexOf(b) === -1 ? Infinity : order.indexOf(b)),
-  );
-  return keys.map((k) => `${k.replace(/^(exit|entry)_/, '').replace(/_/g, ' ')} ${fmtParam(k, params[k])}`);
+// --- param columns ----------------------------------------------------------
+
+/**
+ * Master left-to-right order for the param columns: entry gates first (mirroring
+ * the TPSL2 rule modal), then the exit knobs (TP/SL lead as the headline pair).
+ * The `entry`/`exit` column `group` then draws the divider + tint between the two
+ * blocks; the spanning group-header banner labels them. Keys not listed fall in
+ * after, keeping build order.
+ */
+const PARAM_ORDER = [
+  'entry_min_age_secs',
+  'entry_min_alive_sol',
+  'entry_min_organic_sol',
+  'entry_pullback_pct',
+  'entry_higher_low_secs',
+  'entry_max_cohort_held',
+  'entry_min_liquidity_sol',
+  'entry_min_organic_liq',
+  'exit_take_profit',
+  'exit_stop_loss',
+  'exit_trailing_stop_pct',
+  'exit_time_stop_secs',
+  'exit_stall_secs',
+  'exit_liquidity_drop_pct',
+  'exit_cohort_ratio',
+];
+
+/** High-leverage knobs shown by default; the rest hide behind the Columns toggle
+ *  so the table stays scannable until you opt a knob in. Mirrors the knobs that
+ *  ship a real candidate grid in `TPSL2_AXES` (the rest default to off). */
+const DEFAULT_VISIBLE_PARAMS = new Set([
+  'exit_take_profit',
+  'exit_stop_loss',
+  'exit_trailing_stop_pct',
+  'exit_time_stop_secs',
+  'exit_stall_secs',
+  'entry_min_age_secs',
+  'entry_pullback_pct',
+  'entry_min_liquidity_sol',
+]);
+
+/** One sortable + numerically-filterable column for a single swept param,
+ *  reading the winning combo's value from `best_params`. */
+function paramColumn(k: string): ColumnDef<GroupedSweepGroupRecord> {
+  const side = k.startsWith('entry_') ? 'entry' : 'exit';
+  // TP/SL echo their good/bad colors; off → dim; everything else the param accent.
+  const cls =
+    k === 'exit_take_profit'
+      ? 'text-green'
+      : k === 'exit_stop_loss'
+        ? 'text-red'
+        : 'text-secondary';
+  return {
+    key: `p_${k}`,
+    label: k.replace(/^(exit|entry)_/, '').replace(/_/g, ' '),
+    group: side,
+    sortable: true,
+    defaultVisible: DEFAULT_VISIBLE_PARAMS.has(k),
+    render: (g) => {
+      const v = g.best_params[k];
+      return tone(fmtParam(k, v), v == null ? 'text-text-dim' : cls);
+    },
+    sortValue: (g) => g.best_params[k],
+    filterNumber: (g) => g.best_params[k],
+    searchValue: () => '',
+  };
+}
+
+/** Reorder param columns by `PARAM_ORDER` (stable for unlisted keys). */
+function orderParams(keys: string[]): string[] {
+  return [...keys].sort((a, b) => {
+    const ia = PARAM_ORDER.indexOf(a);
+    const ib = PARAM_ORDER.indexOf(b);
+    return (ia === -1 ? Infinity : ia) - (ib === -1 ? Infinity : ib);
+  });
 }
 
 /**
  * Columns for the group-summary table (group list → drill into combos). The
- * fingerprint key renders as labeled chips; the headline metric is the winning
- * combo's expectancy per trade, with its sample size (`fired_count`) beside it so
- * a "best" combo riding a handful of lucky tokens is obvious at a glance.
+ * fingerprint key renders as labeled chips; the per-group metrics and the winning
+ * combo's params are each their own sortable + numerically-filterable column,
+ * with the params grouped into Entry / Exit blocks (divider + tint + spanning
+ * banner). `paramKeys` is the run's swept knobs — the same list the drill-in
+ * `buildSweepColumns` receives, so the two tables stay consistent.
  */
-export function buildGroupColumns(): ColumnDef<GroupedSweepGroupRecord>[] {
+export function buildGroupColumns(paramKeys: string[]): ColumnDef<GroupedSweepGroupRecord>[] {
   return [
     {
       key: 'group_key',
       label: 'Group (fingerprint)',
       group: 'group',
       sortable: false,
-      width: '320px',
+      width: '280px',
       render: (g) => {
         const parts = keyParts(g);
         if (parts.length === 0) return chip('ALL tokens', 'text-text-dim');
+        // Label/value grid: field labels in the left lane, values in the right.
+        // For `ix_labels` (a `" | "`-joined list) each child instruction stacks as
+        // its own value row in the right lane so they're scannable at a glance.
         return (
-          <div className="flex flex-wrap gap-1">
-            {parts.map((p) => (
-              <span key={p.label} title={`${p.label}: ${p.value}`}>
-                {chip(
-                  <>
-                    <span className="text-text-dim">{p.label}:</span>{' '}
-                    <span className="text-secondary">{p.value}</span>
-                  </>,
-                )}
-              </span>
-            ))}
+          <div className="grid grid-cols-[auto_1fr] items-start gap-x-3 gap-y-1 text-left">
+            {parts.map((p) => {
+              const isIxLabels = p.label === GROUP_FIELD_LABELS.ix_labels;
+              const ixParts = isIxLabels ? p.value.split(' | ') : null;
+              return (
+                <Fragment key={p.label}>
+                  <span
+                    className="text-[11px] leading-tight text-text-dim"
+                    title={`${p.label}: ${p.value}`}
+                  >
+                    {p.label}:
+                  </span>
+                  {ixParts ? (
+                    <div className="flex flex-col items-start gap-0.5">
+                      {ixParts.map((ix, i) => (
+                        <span key={i}>{chip(ix, 'text-secondary')}</span>
+                      ))}
+                    </div>
+                  ) : (
+                    <span>{chip(p.value, 'text-secondary')}</span>
+                  )}
+                </Fragment>
+              );
+            })}
           </div>
         );
       },
@@ -108,57 +188,41 @@ export function buildGroupColumns(): ColumnDef<GroupedSweepGroupRecord>[] {
           .map((p) => `${p.label} ${p.value}`)
           .join(' '),
     },
+
     {
       key: 'token_count',
       label: 'Tokens',
-      group: 'counts',
+      group: 'metrics',
+      tooltip: 'Tokens in this fingerprint group',
       sortable: true,
-      render: (g) => <span className="font-medium text-info">{g.token_count}</span>,
+      render: (g) => tone(String(g.token_count), 'text-info'),
       sortValue: (g) => g.token_count,
       filterNumber: (g) => g.token_count,
       searchValue: () => '',
-      tooltip: 'Tokens in this fingerprint group',
     },
     {
       key: 'fired_count',
       label: 'Fired',
-      group: 'counts',
+      group: 'metrics',
+      tooltip: "The best combo's fired count — the sample size behind its expectancy",
       sortable: true,
-      render: (g) => <span className="font-medium text-info">{g.fired_count}</span>,
+      render: (g) => tone(String(g.fired_count), 'text-info'),
       sortValue: (g) => g.fired_count,
       filterNumber: (g) => g.fired_count,
       searchValue: () => '',
-      tooltip: "The best combo's fired count — the sample size behind its expectancy",
     },
     {
       key: 'best_expectancy_sol',
-      label: 'Best expectancy',
-      group: 'pnl',
+      label: 'Best exp.',
+      group: 'metrics',
+      tooltip: 'Mean net PnL per trade (SOL) of this group’s best combo — the ranking metric',
       sortable: true,
-      render: (g) => (
-        <span className={cn('font-medium', goodBad(g.best_expectancy_sol))}>
-          {solText(g.best_expectancy_sol)}
-        </span>
-      ),
+      render: (g) => tone(solText(g.best_expectancy_sol), goodBad(g.best_expectancy_sol)),
       sortValue: (g) => g.best_expectancy_sol,
       filterNumber: (g) => g.best_expectancy_sol,
       searchValue: () => '',
-      tooltip: 'Mean net PnL per trade (SOL) of this group’s best combo — the ranking metric',
     },
-    {
-      key: 'best_params',
-      label: 'Best combo',
-      group: 'params',
-      sortable: false,
-      width: '360px',
-      render: (g) => (
-        <div className="flex flex-wrap gap-1">
-          {bestComboParts(g.best_params).map((p, i) => (
-            <span key={i}>{chip(p, 'text-text-mid')}</span>
-          ))}
-        </div>
-      ),
-      searchValue: (g) => bestComboParts(g.best_params).join(' '),
-    },
+
+    ...orderParams(paramKeys).map(paramColumn),
   ];
 }

@@ -19,12 +19,31 @@ export interface TableQuery {
   colFilters: Record<string, string>;
 }
 
+/**
+ * Live sort state + the toggle action, handed to a column's `renderHeader` so a
+ * custom header can drive the table's sort (e.g. a merged "metrics" cell whose
+ * header offers one sort toggle per underlying field). `toggleSort(key)` cycles
+ * asc/desc on that key exactly like a header click — and `key` may be any column
+ * in the table, including a hidden (`defaultVisible:false`) sort-only column.
+ */
+export interface SortCtx {
+  sortCol: string | null;
+  sortDir: SortDir;
+  toggleSort: (key: string) => void;
+}
+
 export interface ColumnDef<R> {
   key: string;
   label: string;
   /** Optional hover tooltip for the column header (native title). */
   tooltip?: string;
   render: (row: R) => ReactNode;
+  /**
+   * Custom header content. When set, replaces the default label + sort-arrow and
+   * the header's click-to-sort (the column is expected to be non-sortable on its
+   * own key). Receives the table's sort state so it can render its own controls.
+   */
+  renderHeader?: (ctx: SortCtx) => ReactNode;
   sortValue?: (row: R) => SortValue;
   /** Text used by the global search box. Numeric columns may return '' to opt out. */
   searchValue: (row: R) => string;

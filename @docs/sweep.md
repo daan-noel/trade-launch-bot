@@ -45,7 +45,7 @@ corpus (DB-range, once) ─► attach_fingerprints ─► partition by GroupKey
 | `mod.rs` | Module map + parity note. |
 | `strategy.rs` | `Strategy` + `ParamSpace` traits; `TokenOutcome` (`Copy`, no String), `ExitCode`, `SweepMethod` (Grid/Random/LHS), frictionless `round_trip`. |
 | `corpus.rs` | `CorpusSource` trait + `CacheSource` (live `TokenCache`, zero-copy) / `DbSource` (chunked, per-mint-capped batch query). `TokenTrades` carries `fp: TokenFingerprint` (grouping only — `simulate` never reads it). `Selection` = cap + `created_after`/`created_before` window + curve_only. Compact **trade-only** Parquet corpus cache (fingerprint-free). `attach_fingerprints(pool, &mut Corpus)` — a cheap separate chunked `tokens` lookup (incl. JSONB `max_sol_cost`/`spendable_sol_in` → bigint) that fills each token's `fp`. |
-| `engine.rs` | `run_sweep` — `rayon` over tokens (combos inner, slice stays cache-hot); single fold thread → one `ComboAgg` per combo. Returns `SweepStats` + `Vec<ComboMetrics>`. **Reused verbatim per group.** Takes a `&dyn SweepObserver`: the fold thread calls `token_done()` per folded token (uncontended progress), and producers skip their `simulate` work + short-circuit once `cancelled()` is set. |
+| `engine.rs` | `run_sweep` — `rayon` over tokens (combos inner, slice stays cache-hot); single fold thread → one `ComboAgg` per combo. Returns `SweepStats` + `Vec<ComboMetrics>`. **Reused verbatim per group.** Takes a `&dyn SweepObserver`: the fold thread calls `token_done()` per folded token (uncontended progress), and producers run via `try_for_each_with` so a cancel makes rayon stop scheduling tokens at once (only ≤pool-size in-flight finish, not the whole remaining corpus) — near-immediate abort; the caller discards the partial result. |
 | `progress.rs` | `SweepObserver` trait (`set_total`, `token_done`, `cancelled`) — keeps the engine transport-agnostic. `SweepProgress` impl broadcasts throttled `SseEvent::SweepProgress { strategy_id, processed, total }` (~100 frames/run + final) where `total` = surviving tokens across all groups, and surfaces the shared `AppState.sweep_cancel` flag to the hot loop. `NoopObserver` for tests. |
 | `aggregate.rs` | `ComboAgg` (streaming accumulator) → `ComboMetrics` (one ranked row): win rate, total/expectancy/median/mean/p90/best/worst PnL, `std_pnl_pct`, profit factor, robust `score` (`μ−Z·σ/√n` on closed trades), holding stats, exit-reason mix. |
 | `grouping.rs` | Strategy-blind grouping. `TokenFingerprint` (creator, token program, CU limit/price, cashback, max_sol_cost, spendable_sol_in, initial_buy_sol, ix_labels), `from_token`, `extract_lamports`, `normalize_labels`. `GroupField` enum (serde snake_case — matches the API + UI; the `creator_wallet`/`token_program_id` variants stay for legacy runs but the UI no longer offers them — singleton/constant ⇒ useless groups). `GroupKey(Vec<(GroupField,String)>)` + `to_json`. `group_key(fp, fields)` / `render_field` (exact-value; `∅` sentinel for missing; empty fields = single "ALL" group). **Binning is a future extension living entirely in `render_field`.** |
@@ -65,7 +65,9 @@ see [database.md](database.md), migration `0004`). The repo is generic and
 - `storage/repositories/grouped_sweep_repo.rs` — `GroupedSweepTables { runs,
   groups, results }` + `GroupedSweepRepo::{save_run (run + groups + each group's
   combo rows, one txn, results in `chunks(2000)`), list_runs(limit),
-  list_groups(run_id), list_results(run_id, group_id)}`. Table names come only
+  list_groups(run_id), list_results(run_id, group_id), delete_run(run_id),
+  delete_runs_before(cutoff)}` (deletes rely on the `_groups`/`_results` FK
+  `ON DELETE CASCADE`). Table names come only
   from fixed registry consts → SQL interpolation is injection-safe.
 - `api/handlers/strategies/grouped_sweep.rs` — generic handler set:
   - `POST /api/strategies/sweeps` (`start_grouped_sweep`; body
@@ -79,6 +81,11 @@ see [database.md](database.md), migration `0004`). The repo is generic and
     (no run persisted) instead of erroring.
   - `POST /api/strategies/sweeps/cancel` (`cancel_grouped_sweep`) — flips
     `AppState.sweep_cancel`; the engine polls it and bails. No-op if idle.
+  - `DELETE /api/strategies/sweeps/{run_id}?strategy_id=` (`delete_run`) — drop one
+    run (groups + results cascade via FK); 404 on unknown id.
+  - `DELETE /api/strategies/sweeps?strategy_id=&before=<rfc3339>` (`prune_runs`) —
+    delete all runs created strictly before `before` (`before` required so it can't
+    wipe everything). Both deletes invalidate the page's `GroupedSweep` cache tag.
   - `GET …/sweeps?strategy_id=&limit=` (runs), `GET …/sweeps/{run_id}/groups`
     (group summaries, best expectancy first), `GET
     …/sweeps/{run_id}/groups/{group_id}/results` (a group's ranked combo rows).
@@ -88,9 +95,20 @@ see [database.md](database.md), migration `0004`). The repo is generic and
 See [frontend.md](frontend.md). `pages/strategies/GroupedSweepPage.tsx` +
 `components/sweep/{SweepConfigForm,groupColumns,groupedTypes}` + RTK `GroupedSweep`
 hooks. Group-summary `DataTable` → click a group → drill-in combo `DataTable`
-(reuses `buildSweepColumns`). Config form: created-at range, group-by field picker,
+(reuses `buildSweepColumns`). `buildGroupColumns(paramKeys)` (same key list the
+drill-in receives): Group (fingerprint chips), the **Metrics** columns
+(Tokens/Fired/Best-expectancy — each a real sortable + numeric-filterable column),
+then one column **per swept param** read from `best_params`, `group`-tagged
+`entry`/`exit` so `DataTable` draws the block divider + tint, with the
+high-leverage knobs `defaultVisible` and the rest behind the Columns toggle. The
+page passes `groupLabels={{metrics,entry,exit}}` so `DataTable` renders a spanning
+banner row over each block. Config form: created-at range, group-by field picker,
 editable param grid (prefilled with the backend defaults), method (grid/random:N),
-min-tokens, curve-only, projected combo-count badge (blocks Run over the cap).
+min-tokens, curve-only, projected combo-count badge (blocks Run over the cap). The
+Run-picker row also carries **Delete run** (current run) + **Clear runs before
+`<date>`** (prune) controls — `useDeleteGroupedSweepRunMutation` /
+`usePruneGroupedSweepsMutation`, both confirm via `window.confirm` and invalidate
+`GroupedSweep` so the list refetches.
 
 ## Invariants
 - The hot loop is strategy-blind and allocation-free; grouping is an O(tokens)

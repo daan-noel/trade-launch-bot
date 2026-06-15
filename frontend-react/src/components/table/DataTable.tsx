@@ -20,10 +20,13 @@ import type { ColumnDef, SortDir, SortValue, TableQuery } from './types';
  */
 const HOVER_STYLE_ID = 'dt-colhover-style';
 if (typeof document !== 'undefined' && !document.getElementById(HOVER_STYLE_ID)) {
+  // `:not(.dt-nohover)` excludes the spanning group-header banner row, whose
+  // `colSpan` cells make `nth-child(n)` point at the wrong visual column — without
+  // this, hovering a column highlights a misaligned banner cell.
   const sels: string[] = [];
   for (let n = 2; n <= 48; n++) {
     sels.push(
-      `.dt-colhover:has(:is(td,th):nth-child(${n}):hover) :is(td,th):nth-child(${n})`,
+      `.dt-colhover:has(:is(td,th):not(.dt-nohover):nth-child(${n}):hover) :is(td,th):not(.dt-nohover):nth-child(${n})`,
     );
   }
   const el = document.createElement('style');
@@ -92,6 +95,13 @@ interface DataTableProps<R> {
   selectable?: boolean;
   paginate?: boolean;
   /**
+   * Opt-in spanning group-header row: a banner above the column headers labeling
+   * each `group` run (e.g. `{ entry: 'Entry', exit: 'Exit' }`). Maps a column's
+   * `group` key → its banner text; a group absent from the map (or mapped to '')
+   * renders a blank banner. Omit the prop entirely to skip the row (default).
+   */
+  groupLabels?: Record<string, string>;
+  /**
    * Initial sort column + direction (client-side mode). Sets the table's starting
    * order without locking it — the user can still re-sort by clicking headers.
    * Omit to start unsorted (rows render in the order passed).
@@ -134,6 +144,7 @@ export function DataTable<R>({
   emptyMessage = 'No data.',
   selectable = true,
   paginate = true,
+  groupLabels,
   defaultSort,
   serverSide = false,
   serverTotal,
@@ -193,6 +204,28 @@ export function DataTable<R>({
     });
     return { colGroups: groups, actionsTinted: (groupIdx + 1) % 2 === 1 };
   }, [visCols]);
+
+  // Consecutive same-`group` runs of visible columns, for the optional spanning
+  // banner row. Each run carries its colSpan and the resolved banner label (only
+  // computed when `groupLabels` is set — otherwise the row isn't rendered).
+  const groupRuns = useMemo(() => {
+    if (!groupLabels) return [];
+    const runs: { key: string; span: number; label: string; tinted: boolean }[] = [];
+    visCols.forEach((col, ci) => {
+      const last = runs[runs.length - 1];
+      if (last && !colGroups[ci]?.isStart) {
+        last.span += 1;
+      } else {
+        runs.push({
+          key: col.group ?? `__${ci}`,
+          span: 1,
+          label: groupLabels[col.group ?? ''] ?? '',
+          tinted: colGroups[ci]?.tinted ?? false,
+        });
+      }
+    });
+    return runs;
+  }, [groupLabels, visCols, colGroups]);
 
   // Boundary divider on a group's first column + faint tint on odd groups.
   const groupCellCls = (ci: number) =>
@@ -459,6 +492,28 @@ export function DataTable<R>({
         <div className="overflow-x-auto border border-primary rounded-lg">
           <table className={cn('w-full border-collapse font-mono text-xs', hoverable && 'dt-colhover')}>
             <thead>
+              {groupRuns.length > 0 && (
+                // Not sticky (unlike the sort-header row below): on scroll it
+                // slides up and the functional header pins at top-0 — two sticky
+                // rows at top-0 would overlap.
+                <tr>
+                  <th className="dt-nohover bg-bg-panel" />
+                  {groupRuns.map((run, ri) => (
+                    <th
+                      key={`g-${run.key}-${ri}`}
+                      colSpan={run.span}
+                      className={cn(
+                        'dt-nohover bg-bg-panel px-2 pt-2 pb-1 text-center text-[10px] font-bold uppercase tracking-wider text-secondary',
+                        ri > 0 && 'border-l border-white/10',
+                        run.tinted && 'shadow-[inset_0_0_0_1000px_rgba(255,255,255,0.02)]',
+                      )}
+                    >
+                      {run.label}
+                    </th>
+                  ))}
+                  {rowActions && <th className="dt-nohover bg-bg-panel" />}
+                </tr>
+              )}
               <tr>
                 <th className="sticky top-0 w-10 bg-bg-panel px-2 py-2.5 text-center text-[11px] font-semibold uppercase tracking-wider text-primary">
                   #
@@ -470,15 +525,25 @@ export function DataTable<R>({
                     title={col.tooltip}
                     className={cn(
                       'sticky top-0 bg-bg-panel px-2 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-primary',
-                      col.sortable !== false && 'cursor-pointer hover:text-accent',
+                      col.sortable !== false && !col.renderHeader && 'cursor-pointer hover:text-accent',
                       col.tooltip && 'decoration-dotted underline-offset-4 hover:underline',
                       groupCellCls(ci),
                     )}
-                    onClick={col.sortable !== false ? () => toggleSort(col.key) : undefined}
+                    onClick={
+                      col.sortable !== false && !col.renderHeader
+                        ? () => toggleSort(col.key)
+                        : undefined
+                    }
                   >
-                    {col.label}
-                    {sortCol === col.key && (
-                      <span className="ml-1 text-[10px]">{sortDir === 'asc' ? '↑' : '↓'}</span>
+                    {col.renderHeader ? (
+                      col.renderHeader({ sortCol, sortDir, toggleSort })
+                    ) : (
+                      <>
+                        {col.label}
+                        {sortCol === col.key && (
+                          <span className="ml-1 text-[10px]">{sortDir === 'asc' ? '↑' : '↓'}</span>
+                        )}
+                      </>
                     )}
                   </th>
                 ))}

@@ -263,6 +263,29 @@ export const apiSlice = createApi({
       }),
       invalidatesTags: ['GroupedSweep'],
     }),
+    // Delete one run by id; refetches the (now shorter) runs list.
+    deleteGroupedSweepRun: builder.mutation<
+      { deleted: number },
+      { strategyId: string; runId: string }
+    >({
+      query: ({ strategyId, runId }) => ({
+        url: `/api/strategies/sweeps/${encodeURIComponent(runId)}?strategy_id=${encodeURIComponent(strategyId)}`,
+        method: 'DELETE',
+      }),
+      invalidatesTags: ['GroupedSweep'],
+    }),
+    // Prune all runs created strictly before `before` (ISO timestamp). `before`
+    // is required server-side so this can't wipe the whole history by accident.
+    pruneGroupedSweeps: builder.mutation<
+      { deleted: number },
+      { strategyId: string; before: string }
+    >({
+      query: ({ strategyId, before }) => ({
+        url: `/api/strategies/sweeps?strategy_id=${encodeURIComponent(strategyId)}&before=${encodeURIComponent(before)}`,
+        method: 'DELETE',
+      }),
+      invalidatesTags: ['GroupedSweep'],
+    }),
     getTokenDetail: builder.query<TokenDetailRecord, string>({
       query: (mint) => `/api/tokens/${encodeURIComponent(mint)}`,
     }),
@@ -409,6 +432,8 @@ export const {
   useGetGroupedSweepGroupsQuery,
   useGetGroupedSweepResultsQuery,
   useStartGroupedSweepMutation,
+  useDeleteGroupedSweepRunMutation,
+  usePruneGroupedSweepsMutation,
   useGetWalletHoldingsQuery,
   useGetWalletPricesQuery,
   useBuyTokenMutation,

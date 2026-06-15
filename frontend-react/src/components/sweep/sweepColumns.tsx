@@ -107,88 +107,28 @@ function count(
 }
 
 /**
- * Master display order for every column — param knobs and result metrics alike.
- * Keys listed here render left-to-right in this order; any column whose key is
- * not listed falls in after them, keeping its build order. Param column keys are
- * prefixed `p_` (e.g. `p_take_profit`); only params the run actually swept get a
- * column, so unswept keys here are harmless (they just never match). This is the
- * single place to reorder the whole table — edit this list.
- */
-const COLUMN_ORDER = [
-  // params (knobs) — ordered to match the TPSL2 rule modal: entry gates above
-  // the trailing/time/stall exit knobs (TP/SL stay leading as the headline pair).
-  'p_exit_take_profit',
-  'p_exit_stop_loss',
-  'p_entry_min_age_secs',
-  'p_entry_min_alive_sol',
-  'p_entry_min_organic_sol',
-  'p_entry_pullback_pct',
-  'p_entry_higher_low_secs',
-  'p_entry_max_cohort_held',
-  'p_entry_min_liquidity_sol',
-  'p_entry_min_organic_liq',
-  'p_exit_trailing_stop_pct',
-  'p_exit_time_stop_secs',
-  'p_exit_stall_secs',
-  'p_exit_liquidity_drop_pct',
-  'p_exit_cohort_ratio',
-  // counts
-  'n_fired',
-  'n_closed',
-  'n_open',
-  // pnl
-  'score',
-  'win_rate',
-  'total_pnl_sol',
-  'expectancy_sol',
-  'profit_factor',
-  'median_pnl_pct',
-  'mean_pnl_pct',
-  'p90_pnl_pct',
-  'best_pnl_pct',
-  'worst_pnl_pct',
-  'std_pnl_pct',
-  // holding
-  'avg_holding_secs',
-  'median_holding_secs',
-  // exits
-  'exit_take_profit',
-  'exit_stop_loss',
-  'exit_trailing',
-  'exit_stall',
-  'exit_time',
-  'exit_liquidity',
-  'exit_cohort',
-  'exit_open',
-];
-
-/** Reorder built columns by `COLUMN_ORDER` (stable for unlisted keys). */
-function orderColumns(cols: ColumnDef<SweepResultRecord>[]): ColumnDef<SweepResultRecord>[] {
-  return [...cols].sort((a, b) => {
-    const ia = COLUMN_ORDER.indexOf(a.key);
-    const ib = COLUMN_ORDER.indexOf(b.key);
-    return (ia === -1 ? Infinity : ia) - (ib === -1 ? Infinity : ib);
-  });
-}
-
-/**
- * Build the sweep results table columns. Param columns are derived from the
- * run's swept param keys, so a different strategy's knobs render without
- * changing this file; the full set (params + metrics) is then ordered by
- * `COLUMN_ORDER`. Cell text is colored by group (params/counts/holding/exits)
- * and, on the PnL metrics, by meaning (green = good, red = bad).
+ * Build the sweep results table columns. Like `tokenColumns`, this is just a
+ * plain ordered array: column order = array order, grouping = each column's
+ * `group` field. To reorder/regroup, move entries (metrics here, params in the
+ * page's `*_PARAM_KEYS` list) or change a `group` — no separate order list.
+ *
+ * Param columns are derived from the run's swept param keys (so a different
+ * strategy's knobs render without changing this file) and keep `paramKeys`
+ * order; cell text is colored by group (entry/exit knobs, counts, pnl, holding,
+ * exits) and, on the PnL metrics, by meaning (green = good, red = bad).
  */
 export function buildSweepColumns(paramKeys: string[]): ColumnDef<SweepResultRecord>[] {
-  // Params are inputs, not results — a yellow accent sets the knob block apart
-  // from the colored result metrics to its right.
+  // One column per swept knob, in `paramKeys` order (the page owns that order).
   const paramCols: ColumnDef<SweepResultRecord>[] = paramKeys.map((k) => {
     // The TP/SL knobs echo their exit-column colors (green/red) so the ladder
     // reads at a glance; the rest of the knobs stay the neutral param accent.
     const cls = k === 'exit_take_profit' ? 'text-green' : k === 'exit_stop_loss' ? 'text-red' : 'text-secondary';
+    // Group by trade side so entry gates and exit knobs tint as separate bands.
+    const group = k.startsWith('entry_') ? 'entry' : 'exit';
     return {
       key: `p_${k}`,
       label: k.replace(/_/g, ' '),
-      group: 'params',
+      group,
       sortable: true,
       render: (r) => tone(fmtParam(k, r.params[k]), cls),
       sortValue: (r) => r.params[k],
@@ -197,7 +137,7 @@ export function buildSweepColumns(paramKeys: string[]): ColumnDef<SweepResultRec
     };
   });
 
-  return orderColumns([
+  return [
     ...paramCols,
 
     count('n_fired', 'Fired', 'counts', 'text-info', (r) => r.n_fired, {
@@ -283,5 +223,5 @@ export function buildSweepColumns(paramKeys: string[]): ColumnDef<SweepResultRec
     count('exit_liquidity', 'Liq', 'exits', 'text-text-mid', (r) => r.exit_liquidity, { defaultVisible: false }),
     count('exit_cohort', 'Cohort', 'exits', 'text-text-mid', (r) => r.exit_cohort, { defaultVisible: false }),
     count('exit_open', 'Still open', 'exits', 'text-text-dim', (r) => r.exit_open, { defaultVisible: false }),
-  ]);
+  ];
 }

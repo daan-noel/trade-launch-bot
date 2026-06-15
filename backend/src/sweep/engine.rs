@@ -28,9 +28,10 @@ pub struct SweepStats {
 ///
 /// `observer` reports one `token_done` per folded token (for the progress bar)
 /// and is polled for cancellation: once `cancelled()` is set, the per-token
-/// producers skip their (combo × simulate) work and short-circuit so the run
-/// drains fast — the caller checks `cancelled()` after and discards the partial
-/// result.
+/// producers stop scheduling new tokens via `try_for_each_with` so the run
+/// aborts near-immediately (only the ≤pool-size in-flight tokens finish, not the
+/// whole remaining corpus) — the caller checks `cancelled()` after and discards
+/// the partial result.
 pub fn run_sweep<S: Strategy>(
     strategy: &S,
     params: &[S::Params],
@@ -70,23 +71,24 @@ pub fn run_sweep<S: Strategy>(
         });
 
         // Producers: one token at a time, all combos inner (slice stays hot).
-        corpus
+        // Cooperative cancel: `try_for_each_with` lets us return `Err` to make
+        // rayon stop scheduling further tokens at once, so a cancel aborts the
+        // run promptly instead of draining the whole remaining corpus. The
+        // caller discards the partial aggregates, so the early exit is safe.
+        let _ = corpus
             .tokens
             .par_iter()
-            .for_each_with(tx.clone(), |tx, tt| {
-                // Cooperative cancel: skip the (combo × simulate) work and send an
-                // empty outcome set. The folder still counts the token (progress
-                // stays consistent); the caller discards the partial aggregates.
-                let outs: Vec<TokenOutcome> = if observer.cancelled() {
-                    Vec::new()
-                } else {
-                    params
-                        .iter()
-                        .map(|p| strategy.simulate(&tt.trades, p))
-                        .collect()
-                };
+            .try_for_each_with(tx.clone(), |tx, tt| {
+                if observer.cancelled() {
+                    return Err(());
+                }
+                let outs: Vec<TokenOutcome> = params
+                    .iter()
+                    .map(|p| strategy.simulate(&tt.trades, p))
+                    .collect();
                 // Folder never drops early; ignore only on shutdown races.
                 let _ = tx.send(outs);
+                Ok(())
             });
         drop(tx);
 

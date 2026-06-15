@@ -46,7 +46,7 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 | `token_info_repo.rs` | tokens_info | upsert_metrics, update_migration_status, get/update_sync_watermark, list_all |
 | `analysis_repo.rs` | tokens_analysis, creator_profiles | upsert_result, list_results, upsert/find/list_creator_profile |
 | `settings_repo.rs` | app_settings | load_all, get_one, set_one, set_many |
-| `grouped_sweep_repo.rs` | `<strategy>_grouped_sweep_{runs,groups,results}` (table names injected via `GroupedSweepTables`, resolved by `sweep/registry.rs`) | generic + table-name-driven: save_run (run + groups + each group's combo rows, one txn, results in chunks(2000)), list_runs(limit), list_groups(run_id), list_results(run_id, group_id) |
+| `grouped_sweep_repo.rs` | `<strategy>_grouped_sweep_{runs,groups,results}` (table names injected via `GroupedSweepTables`, resolved by `sweep/registry.rs`) | generic + table-name-driven: save_run (run + groups + each group's combo rows, one txn, results in chunks(2000)), list_runs(limit), list_groups(run_id), list_results(run_id, group_id), delete_run(run_id), delete_runs_before(cutoff) — deletes cascade to groups/results via FK |
 | `wallet_repo.rs` | wallets | insert/update/delete, find_by_address, list_by_profile(s), touch_last_seen(_many) |
 | `wallet_profile_repo.rs` | wallet_profiles (+joins) | insert/update/delete, find_with_wallets, list_with_wallets |
 | `wallet_profile_tag_repo.rs` | wallet_profile_tags | list, find_by_ids, insert/update/delete |
