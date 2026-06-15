@@ -64,3 +64,13 @@ export function invalidateStrategyResult(dispatch: AppDispatch, arg: StrategyRul
     ]),
   );
 }
+
+/** Drop the cached paper-result for a rule (after clearing its run history) so
+ *  the next open re-fetches the now-empty result instead of stale rows. */
+export function invalidatePaperResult(dispatch: AppDispatch, arg: StrategyRuleArg): void {
+  dispatch(
+    apiSlice.util.invalidateTags([
+      { type: 'StrategyPaper', id: `${arg.strategy}:${arg.ruleId}` },
+    ]),
+  );
+}

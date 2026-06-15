@@ -21,7 +21,7 @@ Subsystem deep-dives: [ingest.md](ingest.md) · [strategies.md](strategies.md) �
 ## Top-level module layout — `backend/src/`
 | Module | Responsibility |
 |---|---|
-| `sweep/` | Strategy param-sweep & backtest engine (corpus → sweep → Parquet → Python scoring). See [sweep.md](sweep.md) |
+| `sweep/` | Strategy-agnostic param-sweep & backtest engine: corpus → (group →) sweep → folded per-combo metrics → per-strategy DB tables. Grouping + registry + grouped engine. See [sweep.md](sweep.md) |
 | `api/` | HTTP route registration + handlers (tokens, trading, strategies, system) |
 | `analyzers/` | `swing_analyzer.rs` — price-reversal (swing) detection over in-memory trades |
 | `config/` | `settings.rs` (env load) + `constants.rs` (pump.fun/Raydium program IDs, curve params) |
@@ -34,7 +34,7 @@ Subsystem deep-dives: [ingest.md](ingest.md) · [strategies.md](strategies.md) �
 | `trader/` | Re-export shim for `pump-trader` |
 
 ## HTTP API — `backend/src/api/`
-- `api/mod.rs` — `configure()` registers all `/api/*` routes. Scopes: `/api/token(s)/*`, `/api/stream`, `/api/system/*`, `/api/strategies/tpsl{1,2}/*`, `/api/solana/*`, `/api/profiles|wallets|tags`, `/api/creators`, `/api/analysis`.
+- `api/mod.rs` — `configure()` registers all `/api/*` routes. Scopes: `/api/token(s)/*`, `/api/stream`, `/api/system/*`, `/api/strategies/tpsl{1,2}/*`, `/api/strategies/sweeps/*` (generic grouped sweeps), `/api/solana/*`, `/api/profiles|wallets|tags`, `/api/creators`, `/api/analysis`.
 - Handlers are thin: take `web::Data<Arc<AppState>>`, delegate to services/repos.
 
 | Handler file | Owns |
@@ -47,7 +47,7 @@ Subsystem deep-dives: [ingest.md](ingest.md) · [strategies.md](strategies.md) �
 | `handlers/system/stream.rs` | `stream_events` (`/api/stream`) + `SseFrame`/`run_sse_render_bridge` — render each event to wire bytes ONCE (one cache read), fan shared `Arc<SseFrame>` to all subscribers (no per-subscriber re-serialization) |
 | `handlers/system/system.rs` | `get/set_live_mode`, `get_sol_price`, `get/update_settings` |
 | `handlers/system/wallets.rs` | profile/wallet/tag CRUD |
-| `handlers/strategies/tpsl1.rs` | rule CRUD + lifecycle (`activate`/`pause`/`stop`), `matched`, `simulate`, `paper-result` |
+| `handlers/strategies/tpsl1.rs` | rule CRUD + lifecycle (`activate`/`pause`/`stop`), `matched`, `simulate`, `paper-result` (GET = view, DELETE = "Clear results", paper + idle only) |
 | `handlers/strategies/tpsl1_positions.rs` | position queries (by id/mint/wallet/rule, list) |
 | `handlers/strategies/tpsl2*.rs` | identical surface for TPSL2 |
 

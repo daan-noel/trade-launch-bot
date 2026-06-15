@@ -4,13 +4,15 @@
 //! resolves byte-identical entry/exit *decisions* to live trading. PnL is the
 //! frictionless `round_trip` of the decision prices.
 //!
-//! This module is TPSL2-specific; other strategies get their own separate sweep
-//! module (clone-and-tweak), not another impl plugged in here.
+//! This module is the TPSL2 `Strategy` impl registered in
+//! [`registry`](crate::sweep::registry). A new strategy adds a sibling module
+//! here with its own params/axes/`simulate` — the generic sweep layers are reused.
 
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use serde::{Deserialize, Serialize};
 
-use crate::tpsl2_sweep::strategy::{
+use crate::sweep::strategy::{
     round_trip, ExitCode, ParamSpace, Strategy, SweepMethod, TokenOutcome,
 };
 use crate::models::trade::Trade;
@@ -39,7 +41,9 @@ pub struct Tpsl2Strategy {
 }
 
 /// Grid axes for the coarse pass. Each `Vec` is one knob's candidate values.
-#[derive(Clone)]
+/// `Serialize` so the resolved axes (after [`Tpsl2Axes::from_spec`]) are stored
+/// verbatim on the sweep run for the UI to echo back / re-run.
+#[derive(Clone, Serialize)]
 pub struct Tpsl2Axes {
     pub take_profit: Vec<f64>,
     pub stop_loss: Vec<f64>,
@@ -63,6 +67,76 @@ impl Default for Tpsl2Axes {
             entry_pullback_pct: vec![None, Some(10.0)],
             entry_min_liquidity_sol: vec![None, Some(5.0)],
         }
+    }
+}
+
+/// The page-editable grid: one optional candidate list per swept knob. An
+/// omitted **or empty** axis falls back to that axis's hardcoded
+/// [`Tpsl2Axes::default`] value, so a partial grid is valid. `null` inside a
+/// nullable axis is the "disabled" option for that knob.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct AxesSpec {
+    #[serde(default)]
+    pub take_profit: Option<Vec<f64>>,
+    #[serde(default)]
+    pub stop_loss: Option<Vec<f64>>,
+    #[serde(default)]
+    pub trailing_stop_pct: Option<Vec<Option<f64>>>,
+    #[serde(default)]
+    pub time_stop_secs: Option<Vec<Option<u64>>>,
+    #[serde(default)]
+    pub stall_secs: Option<Vec<Option<u64>>>,
+    #[serde(default)]
+    pub entry_min_age_secs: Option<Vec<Option<u64>>>,
+    #[serde(default)]
+    pub entry_pullback_pct: Option<Vec<Option<f64>>>,
+    #[serde(default)]
+    pub entry_min_liquidity_sol: Option<Vec<Option<f64>>>,
+}
+
+impl Tpsl2Axes {
+    /// Build axes from a page-supplied [`AxesSpec`], falling back to the default
+    /// for any omitted/empty axis. Dedups each axis (the grid product shouldn't
+    /// double-count a repeated value the UI may submit).
+    pub fn from_spec(spec: &AxesSpec) -> Self {
+        fn axis<T: Clone + PartialEq>(supplied: &Option<Vec<T>>, default: Vec<T>) -> Vec<T> {
+            match supplied {
+                Some(v) if !v.is_empty() => {
+                    let mut out: Vec<T> = Vec::with_capacity(v.len());
+                    for x in v {
+                        if !out.contains(x) {
+                            out.push(x.clone());
+                        }
+                    }
+                    out
+                }
+                _ => default,
+            }
+        }
+        let d = Tpsl2Axes::default();
+        Self {
+            take_profit: axis(&spec.take_profit, d.take_profit),
+            stop_loss: axis(&spec.stop_loss, d.stop_loss),
+            trailing_stop_pct: axis(&spec.trailing_stop_pct, d.trailing_stop_pct),
+            time_stop_secs: axis(&spec.time_stop_secs, d.time_stop_secs),
+            stall_secs: axis(&spec.stall_secs, d.stall_secs),
+            entry_min_age_secs: axis(&spec.entry_min_age_secs, d.entry_min_age_secs),
+            entry_pullback_pct: axis(&spec.entry_pullback_pct, d.entry_pullback_pct),
+            entry_min_liquidity_sol: axis(&spec.entry_min_liquidity_sol, d.entry_min_liquidity_sol),
+        }
+    }
+
+    /// Number of combos a full grid over these axes yields (product of lengths).
+    /// The handler rejects a spec whose product exceeds the combo cap.
+    pub fn combo_count(&self) -> usize {
+        self.take_profit.len()
+            * self.stop_loss.len()
+            * self.trailing_stop_pct.len()
+            * self.time_stop_secs.len()
+            * self.stall_secs.len()
+            * self.entry_min_age_secs.len()
+            * self.entry_pullback_pct.len()
+            * self.entry_min_liquidity_sol.len()
     }
 }
 

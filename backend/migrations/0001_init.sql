@@ -1,14 +1,20 @@
 -- ============================================================================
--- Initial schema (squashed).
+-- Initial schema (fully squashed — single init).
 --
--- This single migration is the full, FINAL schema — every prior migration has
--- been folded in directly: tpsl1_*/tpsl2_* table prefixes, p_token_/p_entry_/
--- p_exit_ param prefixes, partitioned raw_transactions, the perf/composite
--- indexes, the app_settings key-value store, the tpsl2 positions `target_*`
--- columns (in target_*/entry_*/exit_* order), and the raw_transactions
--- `source` = 'live'/'sync' vocabulary. Data-only migrations (percent rescales,
--- source relabels) leave no schema trace and are intentionally omitted.
--- Tables are ordered so foreign-key targets are created before their referrers.
+-- Every prior migration has been folded in directly:
+--   * tpsl1_*/tpsl2_* table prefixes, p_token_/p_entry_/p_exit_ param prefixes,
+--     the perf/composite indexes, the app_settings key-value store, the tpsl2
+--     positions `target_*` columns (target_*/entry_*/exit_* order), and the
+--     raw_transactions `source` = 'live'/'sync' vocabulary.
+--   * `trades` is created **partitioned from the start** (weekly RANGE on
+--     block_time, 5-week retention) — the old copy-migration dance (rename aside,
+--     recreate, copy rows, drop) is unnecessary on a fresh DB.
+--   * The legacy *flat* tpsl2 sweep tables (tpsl2_sweep_runs/results) are omitted
+--     entirely: they were created then dropped in favor of the strategy-agnostic
+--     *grouped* sweep tables, which are the only sweep tables created here.
+-- Data-only migrations (percent rescales, source relabels) leave no schema trace
+-- and are intentionally omitted. Tables are ordered so foreign-key targets are
+-- created before their referrers.
 -- ============================================================================
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -43,14 +49,25 @@ CREATE INDEX IF NOT EXISTS idx_tokens_token_program_id   ON tokens(token_program
 CREATE INDEX IF NOT EXISTS idx_tokens_is_cashback_enabled ON tokens(is_cashback_enabled);
 
 -- -------------------------------------------------------------------------
--- trades
+-- trades  (weekly RANGE-partitioned on block_time, 5-week retention)
 --   leg_index            — multiple pump trades in the same tx (multi-leg).
 --   received_at          — ingest-time precision (Utc::now) for UI ordering;
 --                          block_time stays chain seconds.
 --   venue                — bonding-curve vs post-migration PumpSwap (AMM).
+--
+--   Partition-key constraints (Postgres): the partition column must be part of
+--   any PRIMARY KEY / UNIQUE index on a partitioned table. So:
+--     * PK is (block_time, id).
+--     * The dedup unique key is (tx_signature, leg_index, block_time). block_time
+--       is deterministic per tx (chain-assigned), so adding it changes nothing
+--       about dedup exactness — re-delivery of the same (tx, leg) still collides.
+--   All other indexes are non-unique and live on the parent (they cascade to
+--   every partition, present and future). Retention is enforced by the app's
+--   partition-maintenance task (KEEP_WEEKS = 5, shared with raw_transactions)
+--   via ensure_trades_partition / drop_trades_partition.
 -- -------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS trades (
-    id                      UUID                PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id                      UUID                NOT NULL DEFAULT uuid_generate_v4(),
     mint_address            TEXT                NOT NULL,
     wallet_address          TEXT                NOT NULL,
     trade_type              TEXT                NOT NULL CHECK (trade_type IN ('buy', 'sell')),
@@ -69,14 +86,19 @@ CREATE TABLE IF NOT EXISTS trades (
     leg_index               INTEGER             NOT NULL DEFAULT 0,
     received_at             TIMESTAMPTZ         NOT NULL,
     venue                   TEXT                NOT NULL DEFAULT 'curve'
-                                CHECK (venue IN ('curve', 'amm'))
-);
+                                CHECK (venue IN ('curve', 'amm')),
+    PRIMARY KEY (block_time, id)
+) PARTITION BY RANGE (block_time);
 
+-- Dedup unique key (partition col included; deterministic per tx ⇒ still exact).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_tx_leg
+    ON trades (tx_signature, leg_index, block_time);
+
+-- Non-unique indexes on the parent cascade to all (incl. future) partitions.
 CREATE INDEX IF NOT EXISTS idx_trades_mint          ON trades(mint_address);
 CREATE INDEX IF NOT EXISTS idx_trades_wallet        ON trades(wallet_address);
 CREATE INDEX IF NOT EXISTS idx_trades_block_time    ON trades(block_time DESC);
 CREATE INDEX IF NOT EXISTS idx_trades_mint_time     ON trades(mint_address, block_time DESC);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_tx_leg ON trades(tx_signature, leg_index);
 -- Supports the incremental "Fetch new" boundary lookup: latest signature per
 -- (mint, venue) so each source resumes from its own last saved trade.
 CREATE INDEX IF NOT EXISTS idx_trades_mint_venue_slot ON trades(mint_address, venue, slot DESC);
@@ -87,6 +109,42 @@ CREATE INDEX IF NOT EXISTS idx_trades_wallet_mint   ON trades(wallet_address, mi
 -- Chronological-by-slot ordering within a single mint (multi-leg aware), without
 -- needing a venue predicate (which idx_trades_mint_venue_slot would require).
 CREATE INDEX IF NOT EXISTS idx_trades_mint_slot_leg ON trades(mint_address, slot, leg_index);
+
+-- Weekly partition helpers (Mon–Mon), analogous to the raw_transactions fns.
+CREATE OR REPLACE FUNCTION ensure_trades_partition(p_anchor date)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+    v_start date := date_trunc('week', p_anchor::timestamp)::date;
+    v_end   date := v_start + 7;
+    v_name  text := format('trades_%s', to_char(v_start, 'YYYY_MM_DD'));
+BEGIN
+    EXECUTE format(
+        'CREATE TABLE IF NOT EXISTS %I PARTITION OF trades FOR VALUES FROM (%L) TO (%L)',
+        v_name, v_start::timestamptz, v_end::timestamptz
+    );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION drop_trades_partition(p_anchor date)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+    v_start date := date_trunc('week', p_anchor::timestamp)::date;
+    v_name  text := format('trades_%s', to_char(v_start, 'YYYY_MM_DD'));
+BEGIN
+    EXECUTE format('DROP TABLE IF EXISTS %I', v_name);
+END;
+$$;
+
+-- Pre-create the retained window (now-5w .. now+2w) so the first inserts always
+-- have a target partition before the maintenance task first runs.
+DO $$
+DECLARE w date := date_trunc('week', (now() - interval '5 weeks'))::date;
+BEGIN
+    WHILE w <= date_trunc('week', (now() + interval '2 weeks'))::date LOOP
+        PERFORM ensure_trades_partition(w);
+        w := w + 7;
+    END LOOP;
+END $$;
 
 -- -------------------------------------------------------------------------
 -- raw_transactions  (unified raw tx result — never mutated, replay/analysis source)
@@ -517,6 +575,103 @@ CREATE TABLE IF NOT EXISTS tpsl2_paper_positions (
 CREATE INDEX IF NOT EXISTS idx_tpsl2_paper_positions_run         ON tpsl2_paper_positions(run_id);
 CREATE INDEX IF NOT EXISTS idx_tpsl2_paper_positions_mint_status ON tpsl2_paper_positions(mint, status);
 CREATE INDEX IF NOT EXISTS idx_tpsl2_paper_positions_rule        ON tpsl2_paper_positions(rule_id);
+
+-- =========================================================================
+-- Grouped strategy param-sweeps (per-strategy tables).
+--
+-- The grouped sweep (`POST /api/strategies/sweeps`) selects tokens by a
+-- `created_at` range, partitions them by an exact-value fingerprint key
+-- (creator, CU settings, max_sol_cost, …), and runs the full combo sweep PER
+-- group so the UI can answer "for tokens with THIS fingerprint, which param
+-- combo is best?". One run → many groups → each group's ranked combo rows.
+--
+-- Tables are **separate per strategy**: the generic repo is table-name-driven
+-- and the registry maps `strategy_id` → this triple. A new strategy (e.g. swing)
+-- adds its own `swing_grouped_sweep_*` tables — no shared/generic table reused.
+--
+-- TPSL2's triple:
+--   tpsl2_grouped_sweep_runs    — one row per sweep invocation
+--   tpsl2_grouped_sweep_groups  — one row per surviving fingerprint group
+--   tpsl2_grouped_sweep_results — one row per (group, param-combo)
+-- =========================================================================
+
+CREATE TABLE IF NOT EXISTS tpsl2_grouped_sweep_runs (
+    id              UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    strategy_id     TEXT        NOT NULL,          -- 'tpsl2' (traceability)
+    rule_id         UUID,                          -- base rule the params overlay
+    source          TEXT        NOT NULL,          -- 'db' (DB-range corpus)
+    method          TEXT        NOT NULL,          -- 'grid' | 'random' | 'lhs'
+    created_after   TIMESTAMPTZ,                   -- selection lower bound (incl.)
+    created_before  TIMESTAMPTZ,                   -- selection upper bound (excl.)
+    curve_only      BOOLEAN     NOT NULL DEFAULT FALSE,
+    grouping_spec   JSONB       NOT NULL,          -- ["creator_wallet", …]
+    axes_spec       JSONB       NOT NULL,          -- resolved param axes
+    min_tokens      INTEGER     NOT NULL,          -- groups below this are dropped
+    token_count     INTEGER     NOT NULL,          -- corpus size after selection
+    group_count     INTEGER     NOT NULL,          -- surviving groups swept
+    combo_count     INTEGER     NOT NULL,          -- combos per group
+    corpus_hash     TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tpsl2_grouped_sweep_runs_created
+    ON tpsl2_grouped_sweep_runs(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS tpsl2_grouped_sweep_groups (
+    id                  UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    run_id              UUID        NOT NULL REFERENCES tpsl2_grouped_sweep_runs(id) ON DELETE CASCADE,
+    group_index         INTEGER     NOT NULL,      -- deterministic order (largest first)
+    group_key           JSONB       NOT NULL,      -- {"creator_wallet":"…", …}; {} = ALL
+    token_count         INTEGER     NOT NULL,
+    fired_count         BIGINT      NOT NULL,       -- best combo's n_fired (sample size)
+    best_combo_id       INTEGER     NOT NULL,
+    best_expectancy_sol DOUBLE PRECISION NOT NULL,
+    best_params         JSONB       NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tpsl2_grouped_sweep_groups_run
+    ON tpsl2_grouped_sweep_groups(run_id, group_index);
+
+CREATE TABLE IF NOT EXISTS tpsl2_grouped_sweep_results (
+    id                  UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    run_id              UUID        NOT NULL REFERENCES tpsl2_grouped_sweep_runs(id) ON DELETE CASCADE,
+    group_id            UUID        NOT NULL REFERENCES tpsl2_grouped_sweep_groups(id) ON DELETE CASCADE,
+    combo_id            INTEGER     NOT NULL,
+    params              JSONB       NOT NULL,       -- the swept knob values
+
+    -- counts
+    n_fired             BIGINT      NOT NULL,
+    n_open              BIGINT      NOT NULL,
+    n_closed            BIGINT      NOT NULL,
+
+    -- profitability / success
+    win_rate            DOUBLE PRECISION NOT NULL,
+    total_pnl_sol       DOUBLE PRECISION NOT NULL,
+    mean_pnl_pct        DOUBLE PRECISION NOT NULL,
+    median_pnl_pct      DOUBLE PRECISION NOT NULL,
+    p90_pnl_pct         DOUBLE PRECISION NOT NULL,
+    best_pnl_pct        DOUBLE PRECISION NOT NULL,
+    worst_pnl_pct       DOUBLE PRECISION NOT NULL,
+    std_pnl_pct         DOUBLE PRECISION NOT NULL DEFAULT 0,  -- stddev of realized pnl%
+    profit_factor       DOUBLE PRECISION,           -- NULL = no losing trades (∞)
+    score               DOUBLE PRECISION,           -- robust rank μ−z·σ/√n; NULL = n_closed<2
+    expectancy_sol      DOUBLE PRECISION NOT NULL,
+    avg_holding_secs    DOUBLE PRECISION NOT NULL,
+    median_holding_secs DOUBLE PRECISION NOT NULL,
+
+    -- exit-reason mix
+    exit_take_profit    INTEGER     NOT NULL,
+    exit_stop_loss      INTEGER     NOT NULL,
+    exit_trailing       INTEGER     NOT NULL,
+    exit_stall          INTEGER     NOT NULL,
+    exit_time           INTEGER     NOT NULL,
+    exit_liquidity      INTEGER     NOT NULL,
+    exit_cohort         INTEGER     NOT NULL,
+    exit_open           INTEGER     NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tpsl2_grouped_sweep_results_group
+    ON tpsl2_grouped_sweep_results(group_id, combo_id);
 
 -- =========================================================================
 -- Wallet directory + global settings

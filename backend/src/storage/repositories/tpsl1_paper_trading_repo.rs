@@ -258,6 +258,18 @@ impl Tpsl1PaperTradingRepo {
         Ok(())
     }
 
+    /// Delete every paper run for a rule (and, via CASCADE, all their recorded
+    /// positions) — the "Clear results" action. The caller gates this to idle
+    /// paper rules, so no in-flight run is wiped under itself. Returns runs
+    /// deleted.
+    pub async fn clear_runs(&self, rule_id: Uuid) -> anyhow::Result<u64> {
+        let result = sqlx::query("DELETE FROM tpsl1_paper_test_run WHERE rule_id = $1")
+            .bind(rule_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
     // ---- positions --------------------------------------------------------
 
     /// Create a paper position bound to a run.

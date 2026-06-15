@@ -8,7 +8,7 @@
 //! central return (`mean`/`median_pnl_pct`), tails (`best`/`worst`/`p90`),
 //! holding time, and the exit-reason mix.
 
-use crate::tpsl2_sweep::strategy::{ExitCode, TokenOutcome};
+use crate::sweep::strategy::{ExitCode, TokenOutcome};
 
 /// Confidence multiplier for the robust score's one-sided lower bound (~95%, the
 /// standard-normal z). A tunable knob: raise it to penalise uncertainty harder,

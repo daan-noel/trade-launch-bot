@@ -150,6 +150,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 web::get().to(handlers::strategies::tpsl1::paper_result_tpsl_rule),
             )
             .route(
+                "/strategies/tpsl1/rules/{rule_id}/paper-result",
+                web::delete().to(handlers::strategies::tpsl1::clear_paper_result_tpsl_rule),
+            )
+            .route(
                 "/strategies/tpsl1/rules/{rule_id}/matched",
                 web::get().to(handlers::strategies::tpsl1::get_matched_tokens),
             )
@@ -217,6 +221,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 web::get().to(handlers::strategies::tpsl2::paper_result_tpsl_rule),
             )
             .route(
+                "/strategies/tpsl2/rules/{rule_id}/paper-result",
+                web::delete().to(handlers::strategies::tpsl2::clear_paper_result_tpsl_rule),
+            )
+            .route(
                 "/strategies/tpsl2/rules/{rule_id}/matched",
                 web::get().to(handlers::strategies::tpsl2::get_matched_tokens),
             )
@@ -250,19 +258,23 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 "/strategies/tpsl2/positions/{position_id}",
                 web::get().to(handlers::strategies::tpsl2_positions::get_position),
             )
-            // TPSL2 param-sweep results (TPSL2-specific; other strategies get
-            // their own separate sweep endpoints).
+            // Grouped strategy param-sweeps (generic across strategies; the
+            // `strategy_id` body/query field resolves the per-strategy tables).
             .route(
-                "/strategies/tpsl2/sweeps",
-                web::get().to(handlers::strategies::tpsl2_sweep::list_runs),
+                "/strategies/sweeps",
+                web::get().to(handlers::strategies::grouped_sweep::list_runs),
             )
             .route(
-                "/strategies/tpsl2/sweeps",
-                web::post().to(handlers::strategies::tpsl2_sweep::start_sweep),
+                "/strategies/sweeps",
+                web::post().to(handlers::strategies::grouped_sweep::start_grouped_sweep),
             )
             .route(
-                "/strategies/tpsl2/sweeps/{run_id}/results",
-                web::get().to(handlers::strategies::tpsl2_sweep::list_results),
+                "/strategies/sweeps/{run_id}/groups",
+                web::get().to(handlers::strategies::grouped_sweep::list_groups),
+            )
+            .route(
+                "/strategies/sweeps/{run_id}/groups/{group_id}/results",
+                web::get().to(handlers::strategies::grouped_sweep::list_results),
             )
             // On-chain Solana queries — bypass local DB entirely
             .route(

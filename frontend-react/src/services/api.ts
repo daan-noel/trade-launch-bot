@@ -188,6 +188,14 @@ export async function fetchTpsl1PaperResult(
   return request(`${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/paper-result`);
 }
 
+/** Clear a paper rule's recorded run history (runs + positions). Paper-only and
+ *  only valid while the rule is idle; the backend rejects live rules. */
+export async function clearTpsl1PaperResult(ruleId: string): Promise<void> {
+  await request(`${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/paper-result`, {
+    method: 'DELETE',
+  });
+}
+
 export async function fetchTpsl1RulePositions(
   ruleId: string,
   signal?: AbortSignal,
@@ -305,6 +313,14 @@ export async function fetchTpsl2PaperResult(
   ruleId: string,
 ): Promise<import('types').PaperResultResponse> {
   return request(`${API_BASE}/api/strategies/tpsl2/rules/${ruleId}/paper-result`);
+}
+
+/** Clear a paper rule's recorded run history (runs + positions). Paper-only and
+ *  only valid while the rule is idle; the backend rejects live rules. */
+export async function clearTpsl2PaperResult(ruleId: string): Promise<void> {
+  await request(`${API_BASE}/api/strategies/tpsl2/rules/${ruleId}/paper-result`, {
+    method: 'DELETE',
+  });
 }
 
 export async function fetchTpsl2RulePositions(

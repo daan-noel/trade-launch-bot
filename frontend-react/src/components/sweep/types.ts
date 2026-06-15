@@ -1,17 +1,5 @@
-// Records returned by the TPSL2 param-sweep endpoints
-// (`/api/strategies/tpsl2/sweeps[...]`). Mirror the backend `Tpsl2SweepRun` /
-// `Tpsl2SweepResult` serde structs.
-
-export interface SweepRunRecord {
-  id: string;
-  rule_id: string | null;
-  source: string;
-  method: string;
-  token_count: number;
-  combo_count: number;
-  corpus_hash: string | null;
-  created_at: string;
-}
+// Shared sweep-result row shape, reused by the grouped-sweep page and
+// `buildSweepColumns`. Mirrors the backend per-combo metrics serde struct.
 
 /** One ranked param-pair row: the combo's aggregated outcome across all swept
  *  tokens. `params` carries the strategy's swept knob values (keys vary by

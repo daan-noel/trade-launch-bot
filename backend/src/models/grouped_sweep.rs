@@ -1,0 +1,101 @@
+//! Grouped param-sweep persistence models — strategy-agnostic.
+//!
+//! One sweep run partitions its corpus into fingerprint groups and ranks param
+//! combos within each group. These map the per-strategy tables
+//! (`<strategy>_grouped_sweep_runs` / `_groups` / `_results`) the registry
+//! resolves; the generic repo is table-name-driven, so a new strategy reuses
+//! these models verbatim. Serialize-only — the API never deserializes them from
+//! the client; field names are the JSON the frontend tables bind to.
+
+use chrono::{DateTime, Utc};
+use serde::Serialize;
+use serde_json::Value;
+use uuid::Uuid;
+
+/// One grouped-sweep invocation header: which strategy/rule over what selection,
+/// the grouping fields, the resolved axes, and the realised population counts.
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupedSweepRun {
+    pub id: Uuid,
+    pub strategy_id: String,
+    pub rule_id: Option<Uuid>,
+    pub source: String,
+    pub method: String,
+    pub created_after: Option<DateTime<Utc>>,
+    pub created_before: Option<DateTime<Utc>>,
+    pub curve_only: bool,
+    /// The grouping fields, e.g. `["creator_wallet","max_sol_cost"]`.
+    pub grouping_spec: Value,
+    /// The resolved param axes (post-defaults/dedup) for echo / re-run.
+    pub axes_spec: Value,
+    pub min_tokens: i32,
+    pub token_count: i32,
+    pub group_count: i32,
+    pub combo_count: i32,
+    pub corpus_hash: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One group's summary row (the group-list table): its fingerprint key, sample
+/// size, and the winning combo by expectancy. `fired_count` is the **best
+/// combo's** `n_fired` — the sample size behind `best_expectancy_sol`.
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupedSweepGroupSummary {
+    pub id: Uuid,
+    pub group_index: i32,
+    pub group_key: Value,
+    pub token_count: i32,
+    pub fired_count: i64,
+    pub best_combo_id: i32,
+    pub best_expectancy_sol: f64,
+    pub best_params: Value,
+}
+
+/// One ranked param-combo row within a group (the drill-in table). Metric set
+/// matches the flat per-combo `ComboMetrics` so the frontend reuses
+/// `buildSweepColumns`.
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupedSweepResult {
+    pub combo_id: i32,
+    pub params: Value,
+    pub n_fired: i64,
+    pub n_open: i64,
+    pub n_closed: i64,
+    pub win_rate: f64,
+    pub total_pnl_sol: f64,
+    pub mean_pnl_pct: f64,
+    pub median_pnl_pct: f64,
+    pub p90_pnl_pct: f64,
+    pub best_pnl_pct: f64,
+    pub worst_pnl_pct: f64,
+    /// Stddev of realized per-trade pnl% — the dispersion term in `score`.
+    pub std_pnl_pct: f64,
+    /// `None` = no losing trades (infinite profit factor); UI shows ∞.
+    pub profit_factor: Option<f64>,
+    /// Robust rank `μ − z·σ/√n` over closed trades; `None` when n_closed < 2.
+    pub score: Option<f64>,
+    pub expectancy_sol: f64,
+    pub avg_holding_secs: f64,
+    pub median_holding_secs: f64,
+    pub exit_take_profit: i32,
+    pub exit_stop_loss: i32,
+    pub exit_trailing: i32,
+    pub exit_stall: i32,
+    pub exit_time: i32,
+    pub exit_liquidity: i32,
+    pub exit_cohort: i32,
+    pub exit_open: i32,
+}
+
+/// A group plus its ranked combo rows, handed to the repo's `save_run` as the
+/// write unit (the repo links them via a freshly-minted group id).
+pub struct GroupedSweepGroupWrite {
+    pub group_index: i32,
+    pub group_key: Value,
+    pub token_count: i32,
+    pub fired_count: i64,
+    pub best_combo_id: i32,
+    pub best_expectancy_sol: f64,
+    pub best_params: Value,
+    pub results: Vec<GroupedSweepResult>,
+}

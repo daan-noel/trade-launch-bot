@@ -1,4 +1,5 @@
 pub mod analysis_repo;
+pub mod grouped_sweep_repo;
 pub mod settings_repo;
 pub mod token_info_repo;
 pub mod token_repo;
@@ -10,7 +11,6 @@ pub mod tpsl1_strategy_rule_repo;
 pub mod tpsl2_paper_trading_repo;
 pub mod tpsl2_position_repo;
 pub mod tpsl2_strategy_rule_repo;
-pub mod tpsl2_sweep_repo;
 pub mod wallet_profile_repo;
 pub mod wallet_profile_tag_repo;
 pub mod wallet_repo;

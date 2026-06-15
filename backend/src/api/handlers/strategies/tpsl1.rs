@@ -775,6 +775,54 @@ pub async fn paper_result_tpsl_rule(
     })
 }
 
+/// Clear a paper rule's recorded run history (runs + positions). Paper-only, and
+/// only while the rule is idle (not active, no open positions) — an in-flight run
+/// must not be wiped under itself. After clearing, the rule reads `Idle` and its
+/// paper-result view is empty.
+///
+/// DELETE /api/strategies/tpsl1/rules/{rule_id}/paper-result
+pub async fn clear_paper_result_tpsl_rule(
+    app_state: web::Data<Arc<AppState>>,
+    rule_id: web::Path<Uuid>,
+) -> impl Responder {
+    let rule_id = rule_id.into_inner();
+    let rule = match app_state.tpsl1_rule_repo().find_by_id(rule_id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return HttpResponse::NotFound().json(serde_json::json!({"error": "Rule not found"}));
+        }
+        Err(e) => {
+            tracing::error!("Failed to get rule {rule_id}: {e}");
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "Failed to get rule"}));
+        }
+    };
+
+    if rule.trade_mode != "paper" {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({"error": "Only paper rules have results to clear"}));
+    }
+    let live = rule.is_active || app_state.tpsl1_cache.holding_count_by_rule(rule_id) > 0;
+    if live {
+        return HttpResponse::Conflict().json(serde_json::json!({
+            "error": "Rule is live: stop it before clearing its results",
+        }));
+    }
+
+    match app_state.tpsl1_paper_repo().clear_runs(rule_id).await {
+        Ok(n) => {
+            tracing::info!("Cleared {n} paper run(s) for rule {rule_id}");
+            emit_rules_changed(&app_state);
+            HttpResponse::NoContent().finish()
+        }
+        Err(e) => {
+            tracing::error!("Failed to clear paper results for {rule_id}: {e}");
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "Failed to clear paper results"}))
+        }
+    }
+}
+
 /// Map one recorded paper position into the simulation-shaped result the shared
 /// frontend card/table renders. Pure (no DB) so it stays unit-testable and so
 /// the positions endpoint and this endpoint provably enumerate the same rows.

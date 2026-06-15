@@ -30,6 +30,17 @@ impl SweepMethod {
             SweepMethod::LatinHypercube { .. } => "lhs",
         }
     }
+
+    /// Parse the wire form: `grid` | `random:N` | `lhs:N` (default `grid`).
+    pub fn parse(s: &str) -> SweepMethod {
+        if let Some(n) = s.strip_prefix("random:") {
+            SweepMethod::Random { n: n.parse().unwrap_or(500), seed: 42 }
+        } else if let Some(n) = s.strip_prefix("lhs:") {
+            SweepMethod::LatinHypercube { n: n.parse().unwrap_or(500), seed: 42 }
+        } else {
+            SweepMethod::Grid
+        }
+    }
 }
 
 /// Compact, `Copy` per-(combo, token) result. Holds no `String` so the hot loop

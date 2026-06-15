@@ -1,0 +1,35 @@
+//! Strategy-agnostic param-sweep & backtest engine.
+//!
+//! A backtest is a pure function `simulate(trades, params) -> TokenOutcome`; a
+//! sweep loads the corpus **once** and calls `simulate` over combos × tokens in
+//! memory (never touching the DB in the loop), then folds the outcomes to one
+//! ranked metrics row per param-pair combo.
+//!
+//! This module owns everything that is **not** strategy-specific, so a new
+//! strategy (e.g. Swing Detection) only adds a [`strategy::Strategy`] +
+//! [`strategy::ParamSpace`] impl under [`strategies`] — the corpus, grouping,
+//! engine, aggregate, and persistence layers are reused verbatim. Module layout,
+//! one responsibility each:
+//! - [`corpus`] — `CorpusSource` (cache | DB) → compact `TokenTrades` (carrying a
+//!   grouping [`grouping::TokenFingerprint`]), cached to Parquet by corpus hash.
+//! - [`strategy`] — `Strategy` + `ParamSpace` traits + `TokenOutcome` and the
+//!   frictionless `round_trip`.
+//! - [`engine`] — `rayon` over tokens (combos inner) → folded `ComboAgg`s.
+//! - [`aggregate`] — `ComboAgg`/`ComboMetrics`: outcomes → one ranked row per combo.
+//! - [`grouping`] — token fingerprint → exact-value `GroupKey` (strategy-agnostic).
+//! - [`grouped_engine`] — partition the corpus by group key, run [`engine`] per group.
+//! - [`registry`] — `strategy_id` → builds the concrete `Strategy` + axes.
+//! - [`strategies`] — the per-strategy `Strategy` impls (tpsl2, …).
+//!
+//! Decision parity: `simulate` calls the *same* pure fns the live path uses, so
+//! backtest and real trading resolve identical entry/exit decisions. PnL is
+//! frictionless for now (pure price ratio — see [`strategy::round_trip`]).
+
+pub mod aggregate;
+pub mod corpus;
+pub mod engine;
+pub mod grouped_engine;
+pub mod grouping;
+pub mod registry;
+pub mod strategies;
+pub mod strategy;

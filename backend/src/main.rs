@@ -1,4 +1,4 @@
-mod tpsl2_sweep;
+mod sweep;
 mod api;
 mod config;
 pub use config::constants as constants;
@@ -279,24 +279,6 @@ async fn main() -> anyhow::Result<()> {
         pump_program = constants::PUMP_FUN_PROGRAM_ID,
         "Configuration loaded"
     );
-
-    // TPSL2 sweep mode: `cargo run -p backend -- tpsl2-sweep …` runs the TPSL2
-    // param sweep / backtest engine, then exits. It needs only the DB (and, for
-    // `--source cache`, a seeded token cache) — no trader/RPC, so it
-    // short-circuits before trader init. See `tpsl2_sweep::cli`.
-    if std::env::args().nth(1).as_deref() == Some("tpsl2-sweep") {
-        let db = storage::postgres::connect(&settings).await?;
-        let args: Vec<String> = std::env::args().skip(2).collect();
-        let want_cache = args.windows(2).any(|w| w[0] == "--source" && w[1] == "cache");
-        let token_cache = if want_cache {
-            let tc = Arc::new(state::token_cache::TokenCache::new());
-            storage::seed::seed_token_cache(&db, tc.clone()).await?;
-            Some(tc)
-        } else {
-            None
-        };
-        return tpsl2_sweep::cli::run(db, token_cache, args).await;
-    }
 
     let trader_config = Arc::new(TraderConfig {
         rpc_url: settings.helius_rpc_url.clone(),

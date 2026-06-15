@@ -72,11 +72,11 @@ pub struct AppState {
     /// exact, free freshness) so re-tuning a rule re-fetches nothing. Constructed
     /// empty; only the backtest reads/writes it.
     pub backtest_trade_cache: Arc<BacktestTradeCache>,
-    /// Single-flight gate for the in-process TPSL2 cache sweep
-    /// (`POST /api/strategies/tpsl2/sweeps`). The sweep is CPU-heavy; this stops
-    /// a second request piling more rayon work onto the live trading process
-    /// while one is already running (the handler returns 409 instead).
-    pub tpsl2_sweep_running: Arc<AtomicBool>,
+    /// Single-flight gate for the CPU-heavy grouped sweep
+    /// (`POST /api/strategies/sweeps`): while one is running the handler returns
+    /// 409, so a sweep can never pile more rayon work onto the live trading
+    /// process while one is already in flight.
+    pub sweep_running: Arc<AtomicBool>,
 }
 
 /// Max concurrent token-sync backfills (each is RPC- and DB-heavy).
@@ -176,7 +176,7 @@ impl AppState {
             trade_signals,
             sync_gate: Arc::new(SyncGate::new(MAX_CONCURRENT_SYNCS)),
             backtest_trade_cache: Arc::new(BacktestTradeCache::new()),
-            tpsl2_sweep_running: Arc::new(AtomicBool::new(false)),
+            sweep_running: Arc::new(AtomicBool::new(false)),
         }
     }
 

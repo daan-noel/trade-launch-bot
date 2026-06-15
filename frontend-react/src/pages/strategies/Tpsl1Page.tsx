@@ -28,6 +28,7 @@ import { useRulePositions } from 'hooks/useRulePositions';
 import { useDispatch } from 'react-redux';
 import {
   activateTpsl1Rule,
+  clearTpsl1PaperResult,
   createTpsl1Rule,
   deleteTpsl1Rule,
   fetchTpsl1PaperResult,
@@ -43,6 +44,7 @@ import {
   fetchMatchedCached,
   fetchPaperResultCached,
   fetchSimulateCached,
+  invalidatePaperResult,
   invalidateStrategyResult,
 } from 'store/strategyResultCache';
 import type { AppDispatch } from '../../store';
@@ -156,6 +158,9 @@ function PaperResultSection({
   selectedMint,
   onSelectToken,
   onClose,
+  onClear,
+  clearing,
+  canClear,
 }: {
   data: PaperResultResponse;
   price: ReturnType<typeof usePriceDisplay>;
@@ -163,9 +168,14 @@ function PaperResultSection({
   selectedMint: string | null;
   onSelectToken: (row: SimulatedTokenResult | null) => void;
   onClose: () => void;
+  onClear: () => void;
+  clearing: boolean;
+  canClear: boolean;
 }) {
   const { timezone } = useTimezone();
   const { run } = data;
+  // Inline confirm for the destructive Clear (mirrors the row-delete pattern).
+  const [confirmClear, setConfirmClear] = useState(false);
 
   if (!run) {
     return (
@@ -215,6 +225,38 @@ function PaperResultSection({
           <span>
             Ended <span className="font-mono text-text">{formatIso(run.finished_at, timezone)}</span>
           </span>
+        )}
+        <span className="flex-1" />
+        {confirmClear ? (
+          <span className="flex items-center gap-1">
+            <span className="font-semibold text-red">Clear results?</span>
+            <Button variant="danger" size="xs" disabled={clearing} onClick={onClear}>
+              {clearing ? 'Clearing…' : 'Yes'}
+            </Button>
+            <Button
+              variant="ghost"
+              size="xs"
+              disabled={clearing}
+              onClick={() => setConfirmClear(false)}
+            >
+              No
+            </Button>
+          </span>
+        ) : (
+          <Button
+            variant="ghost"
+            size="xs"
+            disabled={!canClear}
+            onClick={() => setConfirmClear(true)}
+            title={
+              canClear
+                ? 'Clear results — delete this rule’s paper run history'
+                : 'Stop the rule before clearing its results'
+            }
+            className="text-red"
+          >
+            🗑 Clear results
+          </Button>
         )}
       </div>
 
@@ -454,6 +496,7 @@ const RuleActionsCell = memo(function RuleActionsCell({
   confirmingDelete,
   deleteLoading,
   onEdit,
+  onDuplicate,
   onDelete,
   onRequestDelete,
   onCancelDelete,
@@ -462,6 +505,7 @@ const RuleActionsCell = memo(function RuleActionsCell({
   confirmingDelete: boolean;
   deleteLoading: boolean;
   onEdit: (rule: RuleRecord) => void;
+  onDuplicate: (rule: RuleRecord) => void;
   onDelete: (ruleId: string) => void;
   onRequestDelete: (ruleId: string) => void;
   onCancelDelete: () => void;
@@ -496,6 +540,15 @@ const RuleActionsCell = memo(function RuleActionsCell({
         className="text-info"
       >
         ✎
+      </Button>
+      <Button
+        variant="ghost"
+        size="xs"
+        onClick={() => onDuplicate(rule)}
+        title="Duplicate — open a new rule pre-filled from this one"
+        className="text-text-dim hover:text-text"
+      >
+        ⧉
       </Button>
       <Button
         variant="ghost"
@@ -565,6 +618,7 @@ export function Tpsl1Page() {
   } | null>(null);
   const [paperError, setPaperError] = useState<string | null>(null);
   const [paperLoading, setPaperLoading] = useState(false);
+  const [paperClearing, setPaperClearing] = useState(false);
   // Token selected (in any result table) to inspect in the detail/chart modal.
   const [inspect, setInspect] = useState<InspectState | null>(null);
   // Transient banner shown when a paper test finishes (cap reached + all exited).
@@ -702,6 +756,16 @@ export function Tpsl1Page() {
     setModalOpen(true);
   }, []);
 
+  // Duplicate: open the form in CREATE mode (no editRule → every field editable,
+  // no locks) pre-filled from the source rule, with a distinct name so the copy
+  // saves as a brand-new rule via the create path.
+  const openDuplicate = useCallback((rule: RuleRecord) => {
+    setEditRule(null);
+    setForm({ ...formFromRule(rule), ruleName: `${rule.rule_name} (copy)` });
+    setFormError(null);
+    setModalOpen(true);
+  }, []);
+
   const handleSave = async (unlocked: LockGroupState) => {
     setFormError(null);
     if (!form.ruleName.trim()) {
@@ -825,6 +889,27 @@ export function Tpsl1Page() {
     [paperResult, dispatch],
   );
 
+  // Clear the open paper rule's recorded run history. Backend rejects live rules
+  // (the Clear button is disabled for them too), so this only fires when idle.
+  // On success: close the panel, drop the cached paper result, and refresh the
+  // rule list so its lifecycle flips back to Idle.
+  const handleClearPaperResult = useCallback(async () => {
+    if (!paperResult) return;
+    const ruleId = paperResult.ruleId;
+    setPaperClearing(true);
+    setPaperError(null);
+    try {
+      await clearTpsl1PaperResult(ruleId);
+      invalidatePaperResult(dispatch, { strategy: 'tpsl1', ruleId });
+      setPaperResult(null);
+      loadRules(true);
+    } catch (e) {
+      setPaperError(e instanceof Error ? e.message : 'Failed to clear results');
+    } finally {
+      setPaperClearing(false);
+    }
+  }, [paperResult, dispatch, loadRules]);
+
   // Cancel a pending delete confirmation; stable so it doesn't churn the cell.
   const cancelDelete = useCallback(() => setConfirmDeleteId(null), []);
 
@@ -871,13 +956,21 @@ export function Tpsl1Page() {
         confirmingDelete={confirmDeleteId === rule.id}
         deleteLoading={deleteLoading}
         onEdit={openEdit}
+        onDuplicate={openDuplicate}
         onDelete={handleDelete}
         onRequestDelete={setConfirmDeleteId}
         onCancelDelete={cancelDelete}
       />
     ),
-    [confirmDeleteId, deleteLoading, openEdit, handleDelete, cancelDelete],
+    [confirmDeleteId, deleteLoading, openEdit, openDuplicate, handleDelete, cancelDelete],
   );
+
+  // The rule whose paper result is open — used to gate "Clear results" (idle only).
+  const paperCanClear = useMemo(() => {
+    if (!paperResult) return false;
+    const r = rules.find((x) => x.id === paperResult.ruleId);
+    return !!r && !r.is_active && r.open_positions === 0;
+  }, [paperResult, rules]);
 
   const matchedRuleName = useMemo(
     () => (matchedResult ? rules.find((r) => r.id === matchedResult.ruleId)?.rule_name : null),
@@ -1097,6 +1190,9 @@ export function Tpsl1Page() {
             setPaperResult(null);
             setPaperError(null);
           }}
+          onClear={handleClearPaperResult}
+          clearing={paperClearing}
+          canClear={paperCanClear}
         />
       )}
 

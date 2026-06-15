@@ -36,15 +36,22 @@ use sqlx::PgPool;
 use crate::models::trade::{Trade, TradeType};
 use crate::state::token_cache::TokenCache;
 use crate::storage::repositories::trade_repo::TradeSlimRow;
+use crate::sweep::grouping::{extract_lamports, normalize_labels, TokenFingerprint};
 
 /// One token's trade history, ready for `simulate`. `trades` is shared (`Arc`)
 /// so the cache source clones a refcount rather than deep-copying up to the
 /// retention window of `Trade`s while the ingest writer runs.
+///
+/// `fp` carries the token-creation fingerprint used only by the grouping layer
+/// (never by `simulate`). The cache source fills it from the live token; the DB
+/// source leaves it default until [`attach_fingerprints`] runs (so it works
+/// whether trades came fresh from the DB or off the Parquet trade cache).
 #[derive(Clone)]
 pub struct TokenTrades {
     pub mint: String,
     pub symbol: String,
     pub trades: Arc<Vec<Trade>>,
+    pub fp: TokenFingerprint,
 }
 
 /// The whole loaded population plus the hash that keys its Parquet cache.
@@ -75,6 +82,9 @@ pub struct Selection {
     pub token_cap: usize,
     /// Only tokens created at/after this instant (DB source).
     pub created_after: Option<DateTime<Utc>>,
+    /// Only tokens created strictly before this instant (DB source) — the upper
+    /// bound of a date/time range. `None` ⇒ no upper bound.
+    pub created_before: Option<DateTime<Utc>>,
     /// Per-mint trade cap for the DB batch query (newest N per mint).
     pub per_mint_cap: i64,
     /// Drop AMM (post-migration) legs, keeping only bonding-curve trades.
@@ -87,6 +97,7 @@ impl Default for Selection {
             mints: None,
             token_cap: 5_000,
             created_after: None,
+            created_before: None,
             per_mint_cap: crate::state::token_cache::MAX_TRADES_RETAINED as i64,
             curve_only: false,
         }
@@ -107,6 +118,7 @@ fn finalize_token(mint: String, symbol: String, mut trades: Vec<Trade>, sel: &Se
     TokenTrades {
         mint,
         symbol,
+        fp: TokenFingerprint::default(),
         trades: Arc::new(trades),
     }
 }
@@ -160,11 +172,19 @@ impl CorpusSource for CacheSource {
                     continue;
                 }
             }
+            if let Some(before) = sel.created_before {
+                if st.token.created_at >= before {
+                    continue;
+                }
+            }
             if let Some(allow) = &allow {
                 if !allow.contains(&st.token.mint_address) {
                     continue;
                 }
             }
+            // The cache holds the decoded token, so fill the grouping fingerprint
+            // here for free (the DB source defers it to `attach_fingerprints`).
+            let fp = TokenFingerprint::from_token(&st.token);
             // Refcount-clone the shared buffer under the shard guard; if curve_only
             // filtering is requested we materialise a filtered copy, else reuse the
             // Arc directly (zero copy).
@@ -174,12 +194,14 @@ impl CorpusSource for CacheSource {
                 TokenTrades {
                     mint: st.token.mint_address.clone(),
                     symbol: st.token.symbol.clone(),
+                    fp,
                     trades: Arc::new(filtered),
                 }
             } else {
                 TokenTrades {
                     mint: st.token.mint_address.clone(),
                     symbol: st.token.symbol.clone(),
+                    fp,
                     trades: st.trades.clone(),
                 }
             };
@@ -292,10 +314,13 @@ impl DbSource {
         } else {
             let rows: Vec<(String, String)> = sqlx::query_as(
                 "SELECT mint_address, symbol FROM tokens \
-                 WHERE is_mayhem_mode = FALSE AND ($1::timestamptz IS NULL OR created_at >= $1) \
-                 ORDER BY created_at DESC LIMIT $2",
+                 WHERE is_mayhem_mode = FALSE \
+                   AND ($1::timestamptz IS NULL OR created_at >= $1) \
+                   AND ($2::timestamptz IS NULL OR created_at < $2) \
+                 ORDER BY created_at DESC LIMIT $3",
             )
             .bind(sel.created_after)
+            .bind(sel.created_before)
             .bind(sel.token_cap as i64)
             .fetch_all(&self.pool)
             .await
@@ -303,6 +328,87 @@ impl DbSource {
             Ok(rows)
         }
     }
+}
+
+/// A token's grouping fingerprint columns, projected straight from `tokens`. The
+/// JSONB-nested `max_sol_cost` / `spendable_sol_in` are extracted in SQL as
+/// bigint lamports (mirroring the live entry path's reader).
+#[derive(sqlx::FromRow)]
+struct FingerprintRow {
+    mint_address: String,
+    creator_wallet: String,
+    token_program_id: Option<String>,
+    initial_buy_sol: Option<f64>,
+    cu_limit: Option<i64>,
+    cu_price: Option<i64>,
+    is_cashback_enabled: bool,
+    /// Raw creation-instruction args; lamports are read in Rust via
+    /// [`extract_lamports`] (wrapping `u64 as i64`), mirroring the cache-source
+    /// `from_token` path. Reading them with a SQL `::bigint` cast instead would
+    /// error on the rare malformed `u64 > i64::MAX` value and fail the whole sweep.
+    initial_buy_instruction: Option<serde_json::Value>,
+    instruction_labels: serde_json::Value,
+}
+
+/// Attach the grouping [`TokenFingerprint`] to every token in `corpus` via one
+/// chunked `tokens` lookup keyed by mint. Kept independent of the (heavy) trade
+/// load so it works whether the trades came fresh from the DB or off the Parquet
+/// trade cache — option (a): the trade Parquet stays fingerprint-free, the
+/// fingerprint is a cheap separate query. Tokens absent from `tokens` keep the
+/// default (all-missing) fingerprint.
+pub async fn attach_fingerprints(pool: &PgPool, corpus: &mut Corpus) -> Result<()> {
+    const CHUNK: usize = 500;
+    let mints: Vec<String> = corpus.tokens.iter().map(|t| t.mint.clone()).collect();
+    let mut by_mint: HashMap<String, TokenFingerprint> = HashMap::with_capacity(mints.len());
+
+    for chunk in mints.chunks(CHUNK) {
+        let rows = sqlx::query_as::<_, FingerprintRow>(
+            r#"
+            SELECT mint_address, creator_wallet, token_program_id, initial_buy_sol,
+                   cu_limit, cu_price, is_cashback_enabled,
+                   initial_buy_instruction,
+                   ix_labels AS instruction_labels
+            FROM tokens
+            WHERE mint_address = ANY($1)
+            "#,
+        )
+        .bind(chunk)
+        .fetch_all(pool)
+        .await
+        .context("loading token fingerprints for grouped sweep")?;
+
+        for r in rows {
+            by_mint.insert(
+                r.mint_address.clone(),
+                TokenFingerprint {
+                    creator_wallet: r.creator_wallet,
+                    token_program_id: r.token_program_id,
+                    initial_buy_sol: r.initial_buy_sol,
+                    cu_limit: r.cu_limit,
+                    cu_price: r.cu_price,
+                    is_cashback_enabled: r.is_cashback_enabled,
+                    max_sol_cost: extract_lamports(r.initial_buy_instruction.as_ref(), "max_sol_cost"),
+                    spendable_sol_in: extract_lamports(
+                        r.initial_buy_instruction.as_ref(),
+                        "spendable_sol_in",
+                    ),
+                    ix_labels: normalize_labels(&r.instruction_labels),
+                },
+            );
+        }
+    }
+
+    let mut missing = 0u64;
+    for tt in corpus.tokens.iter_mut() {
+        match by_mint.get(&tt.mint) {
+            Some(fp) => tt.fp = fp.clone(),
+            None => missing += 1,
+        }
+    }
+    if missing > 0 {
+        tracing::warn!(missing, "attach_fingerprints: some corpus tokens had no tokens row");
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -532,6 +638,7 @@ pub fn read_corpus_parquet(path: &Path) -> Result<Corpus> {
                     tokens.push(TokenTrades {
                         mint: prev,
                         symbol: std::mem::take(&mut cur_symbol),
+                        fp: TokenFingerprint::default(),
                         trades: Arc::new(std::mem::take(&mut cur_trades)),
                     });
                 }
@@ -566,6 +673,7 @@ pub fn read_corpus_parquet(path: &Path) -> Result<Corpus> {
         tokens.push(TokenTrades {
             mint: prev,
             symbol: cur_symbol,
+            fp: TokenFingerprint::default(),
             trades: Arc::new(cur_trades),
         });
     }
@@ -617,11 +725,13 @@ mod tests {
             TokenTrades {
                 mint: "m1".into(),
                 symbol: "S1".into(),
+                fp: TokenFingerprint::default(),
                 trades: Arc::new(vec![trade("m1", 1.0, true), trade("m1", 2.0, false)]),
             },
             TokenTrades {
                 mint: "m2".into(),
                 symbol: "S2".into(),
+                fp: TokenFingerprint::default(),
                 trades: Arc::new(vec![trade("m2", 3.0, true)]),
             },
         ];

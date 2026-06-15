@@ -5,16 +5,13 @@ import { API_BASE } from 'services/config';
 import type { AppSettings } from 'services/api';
 import type { TokenFilters } from 'components/tokens/filters';
 import type { SortDir } from 'components/table/types';
-import type { SweepRunRecord, SweepResultRecord } from 'components/sweep/types';
+import type {
+  GroupedSweepRunRecord,
+  GroupedSweepGroupRecord,
+  GroupedSweepResultRecord,
+  GroupedSweepStartArgs,
+} from 'components/sweep/groupedTypes';
 
-/** Body for `POST /api/strategies/tpsl2/sweeps` — run a sweep on the live cache. */
-export interface Tpsl2SweepStartArgs {
-  rule_id?: string;
-  tokens?: number;
-  /** `grid` | `random:N` | `lhs:N`. */
-  method?: string;
-  curve_only?: boolean;
-}
 import type {
   AnalysisRecord,
   CreatorRecord,
@@ -149,7 +146,7 @@ export const apiSlice = createApi({
   baseQuery: fetchBaseQuery({ baseUrl: API_BASE }),
   keepUnusedDataFor: 300,
   refetchOnMountOrArgChange: false,
-  tagTypes: ['Settings', 'LiveMode', 'WalletHoldings', 'StrategyResult', 'StrategyPaper', 'Profiles', 'Cashback', 'Tpsl2Sweep'],
+  tagTypes: ['Settings', 'LiveMode', 'WalletHoldings', 'StrategyResult', 'StrategyPaper', 'Profiles', 'Cashback', 'GroupedSweep'],
   endpoints: (builder) => ({
     getTokens: builder.query<TokensResponse, TokensArgs>({
       query: ({ search, limit, offset }) => {
@@ -217,31 +214,45 @@ export const apiSlice = createApi({
         { type: 'StrategyPaper', id: `${a.strategy}:${a.ruleId}` },
       ],
     }),
-    // TPSL2 param-sweep results (TPSL2-specific; other strategies get their own
-    // separate endpoints). Runs are produced offline by the `tpsl2-sweep` CLI; a
-    // run's result set is bounded by combo count, so the page pulls it whole and
-    // the table sorts/filters client-side. Cached so flipping between runs /
-    // revisiting the page reuses the data.
-    getTpsl2SweepRuns: builder.query<SweepRunRecord[], { limit?: number } | void>({
-      query: (arg) => `/api/strategies/tpsl2/sweeps?limit=${arg?.limit ?? 50}`,
-      providesTags: ['Tpsl2Sweep'],
+    // Grouped param-sweeps (generic across strategies; `strategy_id` resolves the
+    // per-strategy tables). A run partitions its corpus by a fingerprint key and
+    // ranks combos PER group. Runs/groups are bounded, so the page pulls them
+    // whole; a group's combo rows are fetched lazily on drill-in. Cached so
+    // flipping between runs/groups reuses the data.
+    getGroupedSweepRuns: builder.query<
+      GroupedSweepRunRecord[],
+      { strategyId: string; limit?: number }
+    >({
+      query: ({ strategyId, limit }) =>
+        `/api/strategies/sweeps?strategy_id=${encodeURIComponent(strategyId)}&limit=${limit ?? 50}`,
+      providesTags: ['GroupedSweep'],
       keepUnusedDataFor: 120,
     }),
-    getTpsl2SweepResults: builder.query<SweepResultRecord[], { runId: string }>({
-      query: ({ runId }) =>
-        `/api/strategies/tpsl2/sweeps/${encodeURIComponent(runId)}/results`,
+    getGroupedSweepGroups: builder.query<
+      GroupedSweepGroupRecord[],
+      { strategyId: string; runId: string }
+    >({
+      query: ({ strategyId, runId }) =>
+        `/api/strategies/sweeps/${encodeURIComponent(runId)}/groups?strategy_id=${encodeURIComponent(strategyId)}`,
       keepUnusedDataFor: 120,
     }),
-    // Trigger a sweep against the LIVE token cache (in-process, single-flight on
-    // the backend — a 409 means one is already running). On success the new run
-    // is returned; invalidating `Tpsl2Sweep` refetches the runs list so it shows.
-    startTpsl2Sweep: builder.mutation<SweepRunRecord, Tpsl2SweepStartArgs>({
+    getGroupedSweepResults: builder.query<
+      GroupedSweepResultRecord[],
+      { strategyId: string; runId: string; groupId: string }
+    >({
+      query: ({ strategyId, runId, groupId }) =>
+        `/api/strategies/sweeps/${encodeURIComponent(runId)}/groups/${encodeURIComponent(groupId)}/results?strategy_id=${encodeURIComponent(strategyId)}`,
+      keepUnusedDataFor: 120,
+    }),
+    // Trigger a grouped DB-range sweep (single-flight on the backend — a 409 means
+    // a sweep is already running). Invalidating `GroupedSweep` refetches the runs.
+    startGroupedSweep: builder.mutation<GroupedSweepRunRecord, GroupedSweepStartArgs>({
       query: (body) => ({
-        url: '/api/strategies/tpsl2/sweeps',
+        url: '/api/strategies/sweeps',
         method: 'POST',
         body,
       }),
-      invalidatesTags: ['Tpsl2Sweep'],
+      invalidatesTags: ['GroupedSweep'],
     }),
     getTokenDetail: builder.query<TokenDetailRecord, string>({
       query: (mint) => `/api/tokens/${encodeURIComponent(mint)}`,
@@ -385,9 +396,10 @@ export const {
   useGetTokenTradesQuery,
   useGetCreatorsPageQuery,
   useGetAnalysisPageQuery,
-  useGetTpsl2SweepRunsQuery,
-  useGetTpsl2SweepResultsQuery,
-  useStartTpsl2SweepMutation,
+  useGetGroupedSweepRunsQuery,
+  useGetGroupedSweepGroupsQuery,
+  useGetGroupedSweepResultsQuery,
+  useStartGroupedSweepMutation,
   useGetWalletHoldingsQuery,
   useGetWalletPricesQuery,
   useBuyTokenMutation,
