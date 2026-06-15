@@ -10,9 +10,11 @@ import type { SweepResultRecord } from './types';
 
 /** The selectable fingerprint fields, matching the backend `GroupField` serde
  *  tags (snake_case). Selection order is the compound-key order. */
+// Note: `creator_wallet` (near-unique per token → singleton groups) and
+// `token_program_id` (effectively constant on pump.fun → one group) are poor
+// grouping keys, so they're deliberately not offered here. The backend
+// `GroupField` enum still accepts them for any legacy run that stored them.
 export const GROUP_FIELDS = [
-  'creator_wallet',
-  'token_program_id',
   'cu_limit',
   'cu_price',
   'is_cashback_enabled',
@@ -26,8 +28,6 @@ export type GroupField = (typeof GROUP_FIELDS)[number];
 
 /** Human labels for the group-by picker + group-key chips. */
 export const GROUP_FIELD_LABELS: Record<GroupField, string> = {
-  creator_wallet: 'Creator wallet',
-  token_program_id: 'Token program',
   cu_limit: 'CU limit',
   cu_price: 'CU price',
   is_cashback_enabled: 'Cashback on',
@@ -48,9 +48,16 @@ export interface Tpsl2AxesSpec {
   trailing_stop_pct?: (number | null)[];
   time_stop_secs?: (number | null)[];
   stall_secs?: (number | null)[];
+  liquidity_drop_pct?: (number | null)[];
+  cohort_ratio?: (number | null)[];
   entry_min_age_secs?: (number | null)[];
+  entry_min_alive_sol?: (number | null)[];
+  entry_min_organic_sol?: (number | null)[];
   entry_pullback_pct?: (number | null)[];
+  entry_higher_low_secs?: (number | null)[];
+  entry_max_cohort_held?: (number | null)[];
   entry_min_liquidity_sol?: (number | null)[];
+  entry_min_organic_liq?: (number | null)[];
 }
 
 /** One editable axis: its key, label, whether `null` (disabled) is a valid
@@ -63,6 +70,10 @@ export interface AxisDef {
   default: (number | null)[];
 }
 
+// Order mirrors the TPSL2 rule modal. The five high-leverage knobs ship a real
+// candidate grid; every other knob defaults to `[null]` ("off"/unbounded) so it
+// doesn't expand the grid until you type values for it — matching the backend
+// `Tpsl2Axes::default`. A blank box → that knob stays unbounded (disabled).
 export const TPSL2_AXES: AxisDef[] = [
   { key: 'take_profit', label: 'Take profit %', nullable: false, default: [50, 100, 200] },
   { key: 'stop_loss', label: 'Stop loss %', nullable: false, default: [30, 50] },
@@ -72,6 +83,13 @@ export const TPSL2_AXES: AxisDef[] = [
   { key: 'entry_min_age_secs', label: 'Entry min age (s)', nullable: true, default: [10, 30] },
   { key: 'entry_pullback_pct', label: 'Entry pullback %', nullable: true, default: [null, 10] },
   { key: 'entry_min_liquidity_sol', label: 'Entry min liq (SOL)', nullable: true, default: [null, 5] },
+  { key: 'liquidity_drop_pct', label: 'Liq-drop exit %', nullable: true, default: [null] },
+  { key: 'cohort_ratio', label: 'Cohort-dump exit %', nullable: true, default: [null] },
+  { key: 'entry_min_alive_sol', label: 'Entry min alive (SOL)', nullable: true, default: [null] },
+  { key: 'entry_min_organic_sol', label: 'Entry min organic (SOL)', nullable: true, default: [null] },
+  { key: 'entry_higher_low_secs', label: 'Entry higher-low (s)', nullable: true, default: [null] },
+  { key: 'entry_max_cohort_held', label: 'Entry max cohort held %', nullable: true, default: [null] },
+  { key: 'entry_min_organic_liq', label: 'Entry min organic liq (SOL)', nullable: true, default: [null] },
 ];
 
 // --- run / group / result records -------------------------------------------

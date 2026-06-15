@@ -78,7 +78,7 @@ function axisLen(text: string, def: AxisDef): number {
 export function SweepConfigForm({ strategyId, running, onRun }: SweepConfigFormProps) {
   const [createdAfter, setCreatedAfter] = useState('');
   const [createdBefore, setCreatedBefore] = useState('');
-  const [groupBy, setGroupBy] = useState<GroupField[]>(['creator_wallet']);
+  const [groupBy, setGroupBy] = useState<GroupField[]>(['cu_price']);
   const [axesText, setAxesText] = useState<Record<string, string>>(() =>
     Object.fromEntries(TPSL2_AXES.map((a) => [a.key, axisToText(a.default)])),
   );
