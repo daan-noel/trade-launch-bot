@@ -25,11 +25,23 @@ use crate::sweep::progress::SweepObserver;
 use crate::sweep::strategies::tpsl2::{AxesSpec, Tpsl2Axes, Tpsl2Strategy};
 use crate::sweep::strategy::{ParamSpace, Strategy, SweepMethod};
 
-/// Hard cap on the param combos a single grouped sweep evaluates **per group**.
+/// Default cap on the param combos a single grouped sweep evaluates **per group**.
 /// Bounds the `groups × combos × tokens` work; the handler rejects a full grid
 /// whose product exceeds this before any sweep runs, and random/LHS draws are
-/// clamped to it.
+/// clamped to it. A run may raise this per-request (up to [`HARD_MAX_COMBOS`]).
 pub const MAX_COMBOS: usize = 5_000;
+
+/// Absolute backstop on the per-request combo cap. A run can opt into more than
+/// [`MAX_COMBOS`] (sweeps are infrequent and the caller accepts the wait), but
+/// never past this — so a fat-fingered override still can't run away with the
+/// `groups × combos × tokens` work or monopolise the bounded rayon pool.
+pub const HARD_MAX_COMBOS: usize = 500_000;
+
+/// Resolve the effective per-group combo cap for a run: the request override if
+/// given, else the default, clamped to the hard backstop (and ≥ 1).
+fn effective_cap(max_combos: Option<usize>) -> usize {
+    max_combos.unwrap_or(MAX_COMBOS).clamp(1, HARD_MAX_COMBOS)
+}
 
 // ---------------------------------------------------------------------------
 // Per-strategy wiring (the table set + the supported-id list)
@@ -94,11 +106,15 @@ pub async fn run_grouped(
     corpus: Corpus,
     fields: Vec<GroupField>,
     min_tokens: usize,
+    max_combos: Option<usize>,
     observer: Arc<dyn SweepObserver + Send>,
 ) -> Result<GroupedSweepOutput> {
     match strategy_id {
         "tpsl2" => {
-            sweep_tpsl2(pool, rule_id, axes_json, method, corpus, fields, min_tokens, observer).await
+            sweep_tpsl2(
+                pool, rule_id, axes_json, method, corpus, fields, min_tokens, max_combos, observer,
+            )
+            .await
         }
         other => bail!(
             "strategy '{other}' has no grouped-sweep implementation yet (supported: {:?})",
@@ -128,8 +144,11 @@ async fn sweep_tpsl2(
     corpus: Corpus,
     fields: Vec<GroupField>,
     min_tokens: usize,
+    max_combos: Option<usize>,
     observer: Arc<dyn SweepObserver + Send>,
 ) -> Result<GroupedSweepOutput> {
+    let cap = effective_cap(max_combos);
+
     // Resolve the page-supplied axes (omitted/empty axes fall back to defaults).
     let spec: AxesSpec = serde_json::from_value(axes_json).context("invalid TPSL2 axes spec")?;
     let axes = Tpsl2Axes::from_spec(&spec);
@@ -137,8 +156,8 @@ async fn sweep_tpsl2(
     // Grid guard: reject an explosive full grid before doing any sweep work.
     if matches!(method, SweepMethod::Grid) {
         let n = axes.combo_count();
-        if n > MAX_COMBOS {
-            bail!("grid has {n} combos, over the {MAX_COMBOS} cap — narrow the axes or use random:N");
+        if n > cap {
+            bail!("grid has {n} combos, over the {cap} cap — narrow the axes, raise max_combos, or use random:N");
         }
     }
     // Store the resolved axes (post-defaults/dedup) so the run is reproducible.
@@ -151,13 +170,13 @@ async fn sweep_tpsl2(
         bail!("param space is empty");
     }
     // Random/LHS draws can request any `n`; clamp to the cap (grid is pre-checked).
-    if params.len() > MAX_COMBOS {
+    if params.len() > cap {
         tracing::warn!(
             combos = params.len(),
-            cap = MAX_COMBOS,
+            cap,
             "grouped sweep: clamping sampled combos to cap"
         );
-        params.truncate(MAX_COMBOS);
+        params.truncate(cap);
     }
 
     // Capture the param JSON before `strategy` moves into the blocking task.

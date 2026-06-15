@@ -17,8 +17,12 @@ import {
   type Tpsl2AxesSpec,
 } from './groupedTypes';
 
-/** Mirror of the backend `MAX_COMBOS` cap — the form blocks Run above it. */
-const MAX_COMBOS = 5000;
+/** Mirror of the backend `MAX_COMBOS` default — the per-group cap a run uses
+ *  unless overridden in the form below. */
+const DEFAULT_MAX_COMBOS = 5000;
+/** Mirror of the backend `HARD_MAX_COMBOS` backstop — the form won't let the
+ *  override exceed it (the backend clamps too). */
+const HARD_MAX_COMBOS = 500000;
 
 interface SweepConfigFormProps {
   strategyId: string;
@@ -109,6 +113,7 @@ interface SweepConfig {
   randomN: number;
   minTokens: number;
   tokenCap: number;
+  maxCombos: number;
   curveOnly: boolean;
 }
 
@@ -121,6 +126,7 @@ const DEFAULT_SWEEP_CONFIG: SweepConfig = {
   randomN: 500,
   minTokens: 10,
   tokenCap: 10000,
+  maxCombos: DEFAULT_MAX_COMBOS,
   curveOnly: false,
 };
 
@@ -156,8 +162,18 @@ export function SweepConfigForm({ strategyId, running, onRun }: SweepConfigFormP
     DEFAULT_SWEEP_CONFIG,
   );
   const config = { ...DEFAULT_SWEEP_CONFIG, ...stored };
-  const { createdAfter, createdBefore, groupBy, axesText, methodKind, randomN, minTokens, tokenCap, curveOnly } =
-    config;
+  const {
+    createdAfter,
+    createdBefore,
+    groupBy,
+    axesText,
+    methodKind,
+    randomN,
+    minTokens,
+    tokenCap,
+    maxCombos,
+    curveOnly,
+  } = config;
 
   /** Patch one config field (always writes back a complete object). */
   function setField<K extends keyof SweepConfig>(key: K, value: SweepConfig[K]) {
@@ -169,6 +185,7 @@ export function SweepConfigForm({ strategyId, running, onRun }: SweepConfigFormP
   const setRandomN = (v: number) => setField('randomN', v);
   const setMinTokens = (v: number) => setField('minTokens', v);
   const setTokenCap = (v: number) => setField('tokenCap', v);
+  const setMaxCombos = (v: number) => setField('maxCombos', v);
   const setCurveOnly = (v: boolean) => setField('curveOnly', v);
   const setAxesText = (fn: (prev: Record<string, string>) => Record<string, string>) =>
     setConfig((prev) => {
@@ -182,7 +199,9 @@ export function SweepConfigForm({ strategyId, running, onRun }: SweepConfigFormP
     return TPSL2_AXES.reduce((acc, a) => acc * axisLen(axesText[a.key] ?? '', a), 1);
   }, [methodKind, randomN, axesText]);
 
-  const overCap = projected > MAX_COMBOS;
+  // Effective per-group cap: what's typed, clamped to the backend's hard backstop.
+  const effectiveCap = Math.min(Math.max(1, maxCombos || DEFAULT_MAX_COMBOS), HARD_MAX_COMBOS);
+  const overCap = projected > effectiveCap;
 
   function toggleGroupField(f: GroupField) {
     setField('groupBy', groupBy.includes(f) ? groupBy.filter((x) => x !== f) : [...groupBy, f]);
@@ -211,6 +230,9 @@ export function SweepConfigForm({ strategyId, running, onRun }: SweepConfigFormP
       method: methodKind === 'random' ? `random:${Math.max(1, randomN)}` : 'grid',
       axes: buildAxes(),
       token_cap: tokenCap,
+      // Only send an override when it differs from the default, so the backend
+      // default stays authoritative otherwise.
+      max_combos: effectiveCap !== DEFAULT_MAX_COMBOS ? effectiveCap : undefined,
     });
   }
 
@@ -270,6 +292,18 @@ export function SweepConfigForm({ strategyId, running, onRun }: SweepConfigFormP
           />
         </Field>
 
+        <Field label="Max combos / group" hint={`≤ ${HARD_MAX_COMBOS.toLocaleString()}`} className="w-[140px]">
+          <Input
+            type="number"
+            min={1}
+            max={HARD_MAX_COMBOS}
+            value={maxCombos}
+            onChange={(e) =>
+              setMaxCombos(Math.min(HARD_MAX_COMBOS, Math.max(1, Number(e.target.value) || 1)))
+            }
+          />
+        </Field>
+
         <Field label="Curve only" className="w-fit">
           <label className="flex h-[34px] items-center gap-1.5 text-sm text-text-mid">
             <Checkbox checked={curveOnly} onChange={(e) => setCurveOnly(e.target.checked)} />
@@ -285,7 +319,7 @@ export function SweepConfigForm({ strategyId, running, onRun }: SweepConfigFormP
             variant="primary"
             onClick={handleRun}
             disabled={running || overCap}
-            title={overCap ? `Over the ${MAX_COMBOS} combo cap — narrow the grid or use Random N` : 'Run the grouped sweep'}
+            title={overCap ? `Over the ${effectiveCap.toLocaleString()} combo cap — narrow the grid, raise Max combos, or use Random N` : 'Run the grouped sweep'}
           >
             {running ? 'Sweeping…' : 'Run grouped sweep'}
           </Button>

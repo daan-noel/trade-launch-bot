@@ -72,7 +72,8 @@ see [database.md](database.md), migration `0004`). The repo is generic and
 - `api/handlers/strategies/grouped_sweep.rs` — generic handler set:
   - `POST /api/strategies/sweeps` (`start_grouped_sweep`; body
     `{strategy_id, rule_id?, created_after?, created_before?, curve_only?,
-    group_by: GroupField[], min_tokens?, method?, axes?, token_cap?}`) — resolves
+    group_by: GroupField[], min_tokens?, method?, axes?, token_cap?, max_combos?}`)
+    — resolves
     tables, claims the **single-flight** gate (`AppState.sweep_running`; one
     CPU-heavy sweep at a time, 409 if busy), loads the corpus fresh from
     `DbSource` + `attach_fingerprints`, runs via `registry::run_grouped` with a
@@ -117,7 +118,9 @@ Run-picker row also carries **Delete run** (current run) + **Clear runs before
   partition + O(groups) Arc-clones bolted on top — `engine.rs`/`aggregate.rs` are
   reused **unchanged** per group.
 - Bound every load: `Selection` caps tokens + per-mint trades; `min_tokens` drops
-  weak groups **before** any sweep work; `MAX_COMBOS` caps combos/group.
+  weak groups **before** any sweep work; `MAX_COMBOS` (default 5000) caps
+  combos/group — a run may raise it via `max_combos`, server-clamped to
+  `HARD_MAX_COMBOS` (500k).
 - Bounded rayon pool + the shared single-flight gate keep a sweep from starving
   the live trading hot path.
 - **Adding a strategy** = `strategies/<x>.rs` (`Strategy`+`ParamSpace`+`AxesSpec`)

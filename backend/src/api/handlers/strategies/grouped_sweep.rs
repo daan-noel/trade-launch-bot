@@ -65,6 +65,10 @@ pub struct StartGroupedSweepBody {
     /// Hard cap on tokens loaded for the corpus (server-clamped).
     #[serde(default = "default_token_cap")]
     pub token_cap: usize,
+    /// Per-group combo cap override. Omitted ⇒ the default `MAX_COMBOS`; clamped
+    /// server-side to `HARD_MAX_COMBOS` so a typo can't run away.
+    #[serde(default)]
+    pub max_combos: Option<usize>,
 }
 
 fn default_min_tokens() -> usize {
@@ -201,6 +205,7 @@ pub async fn start_grouped_sweep(
         corpus,
         b.group_by.clone(),
         min_tokens,
+        b.max_combos,
         observer,
     )
     .await

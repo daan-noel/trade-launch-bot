@@ -156,4 +156,7 @@ export interface GroupedSweepStartArgs {
   /** Strategy-specific axes (TPSL2 today). */
   axes?: Tpsl2AxesSpec;
   token_cap?: number;
+  /** Per-group combo cap override. Omitted ⇒ backend default (5000); the backend
+   *  clamps to its hard backstop. */
+  max_combos?: number;
 }
