@@ -135,6 +135,7 @@ export function Tpsl2SweepPage() {
             columns={columns}
             rows={results}
             rowKey={(r) => String(r.combo_id)}
+            defaultSort={{ col: 'score', dir: 'desc' }}
             searchable={false}
             colFilters
             colToggle

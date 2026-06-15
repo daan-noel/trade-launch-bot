@@ -19,6 +19,13 @@ dashboard's TPSL2 sweep page reads them and sorts/filters client-side.
 
 - **Goal:** find the most profitable / successful TPSL2 param pairs. One global
   ranked table (no cohort grouping).
+- **Ranking:** each combo gets a `score` = `μ − 1.64·σ/√n` — the one-sided
+  lower-confidence bound on **realized** (closed-trade) per-trade pnl%. It rewards
+  a high mean while the `σ` term penalises dispersion and `√n` shrinks small
+  samples, so a lucky few-token combo can't out-rank a steady edge. `score` is
+  `NULL` when `n_closed < 2` (no evidence) and is the TPSL2 sweep page's default
+  sort (desc; nulls sink). `std_pnl_pct` (the σ) is persisted alongside so `z`
+  can be retuned client-side without re-sweeping.
 - **Decision parity:** `Tpsl2Strategy::simulate` calls the *same* pure fns the
   live path uses, so backtest and live resolve identical entry/exit decisions.
 - **PnL:** frictionless (pure price-to-price `round_trip`). A fees/slippage
@@ -43,7 +50,7 @@ on a bounded rayon pool so it can't starve the trading hot path.
 | `strategy.rs` | `Strategy` + `ParamSpace` traits; `TokenOutcome` (`Copy`, no String — mint recovered at fold), `ExitCode`, `SweepMethod` (Grid/Random/LHS), and the frictionless `round_trip` helper. |
 | `corpus.rs` | `CorpusSource` trait + `CacheSource` (live `TokenCache`, zero-copy) and `DbSource` (own chunked, per-mint-capped batch query — reuses `trade_repo::TradeSlimRow`). Compact columnar Parquet corpus cache keyed by corpus hash; `Selection` (cap + window + curve_only). |
 | `engine.rs` | `run_sweep` — `rayon` over tokens (combos inner, slice stays cache-hot); a single fold thread folds outcomes into one `ComboAgg` per combo. Returns `SweepStats` + `Vec<ComboMetrics>`. |
-| `aggregate.rs` | `ComboAgg` (streaming accumulator) → `ComboMetrics` (one ranked row): win rate, total/expectancy/median/mean/p90/best/worst PnL, profit factor, holding stats, exit-reason mix. |
+| `aggregate.rs` | `ComboAgg` (streaming accumulator) → `ComboMetrics` (one ranked row): win rate, total/expectancy/median/mean/p90/best/worst PnL, `std_pnl_pct`, profit factor, the robust `score` (`robust_score`: `μ−Z·σ/√n` on closed trades, `Z=SCORE_Z`), holding stats, exit-reason mix. |
 | `tpsl2_strategy.rs` | The TPSL2 `Strategy` impl. `Tpsl2Params`/`Tpsl2Axes`/`Tpsl2Strategy` overlays params onto a base `Tpsl2Rule` and calls `entry::find_scalp_entry` + `find_worst_case_paper_entry` + `exit::find_trade_driven_exit`. |
 | `cli.rs` | `run(pool, token_cache, args)` — the `tpsl2-sweep` subcommand. Also `run_cache_sweep(pool, token_cache, CacheSweepConfig)` — the **in-process, live-cache** sweep the HTTP trigger calls (loads corpus straight from the live `TokenCache`, bounded rayon pool, returns the persisted run). Shared `sweep_engine` (spawn_blocking → persist via `Tpsl2SweepRepo`) backs both; `max_threads: Some(n)` bounds the pool for the in-process path, `None` = full pool for the CLI. |
 

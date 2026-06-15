@@ -131,6 +131,7 @@ const COLUMN_ORDER = [
   'n_closed',
   'n_open',
   // pnl
+  'score',
   'win_rate',
   'total_pnl_sol',
   'expectancy_sol',
@@ -140,6 +141,7 @@ const COLUMN_ORDER = [
   'p90_pnl_pct',
   'best_pnl_pct',
   'worst_pnl_pct',
+  'std_pnl_pct',
   // holding
   'avg_holding_secs',
   'median_holding_secs',
@@ -198,6 +200,22 @@ export function buildSweepColumns(paramKeys: string[]): ColumnDef<SweepResultRec
     count('n_closed', 'Closed', 'counts', 'text-info', (r) => r.n_closed, { defaultVisible: false }),
     count('n_open', 'Open', 'counts', 'text-info', (r) => r.n_open, { defaultVisible: false }),
 
+    // Headline rank: robust per-trade edge (μ − z·σ/√n over closed trades). Null
+    // (fewer than 2 closed trades) renders '—' and sinks to the bottom of the
+    // default desc sort. Scored in pnl% units, so green/red like the other %s.
+    metric(
+      'score',
+      'Score',
+      'pnl',
+      (r) => r.score ?? Number.NEGATIVE_INFINITY,
+      (r) => (r.score == null ? tone('—', 'text-text-dim') : tone(pctText(r.score), goodBad(r.score))),
+      {
+        tooltip:
+          'Robust rank: mean − 1.64·σ/√n over closed trades (lower-confidence edge). ' +
+          'Rewards a high, consistent per-trade return; penalizes variance and small samples. ' +
+          'Blank when fewer than 2 closed trades.',
+      },
+    ),
     metric(
       'win_rate',
       'Win %',
@@ -225,6 +243,14 @@ export function buildSweepColumns(paramKeys: string[]): ColumnDef<SweepResultRec
     pct('p90_pnl_pct', 'P90 %', (r) => r.p90_pnl_pct, { defaultVisible: false }),
     pct('best_pnl_pct', 'Best %', (r) => r.best_pnl_pct, { defaultVisible: false }),
     pct('worst_pnl_pct', 'Worst %', (r) => r.worst_pnl_pct, { defaultVisible: false }),
+    metric(
+      'std_pnl_pct',
+      'Std %',
+      'pnl',
+      (r) => r.std_pnl_pct,
+      (r) => tone(`${formatDecimalTrim(r.std_pnl_pct, 1)}%`, 'text-text-mid'),
+      { tooltip: 'Stddev of realized per-trade return — the dispersion/risk term in Score', defaultVisible: false },
+    ),
 
     metric('avg_holding_secs', 'Avg hold', 'holding', (r) => r.avg_holding_secs, (r) =>
       tone(fmtSecs(r.avg_holding_secs), 'text-accent'),

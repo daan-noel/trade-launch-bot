@@ -38,8 +38,13 @@ pub struct Tpsl2SweepResult {
     pub p90_pnl_pct: f64,
     pub best_pnl_pct: f64,
     pub worst_pnl_pct: f64,
+    /// Stddev of realized per-trade pnl% — the dispersion term in `score`.
+    pub std_pnl_pct: f64,
     /// `None` = no losing trades (infinite profit factor); UI shows ∞.
     pub profit_factor: Option<f64>,
+    /// Robust rank `μ − z·σ/√n` over closed trades. `None` (→ null) when fewer
+    /// than 2 closed trades; the UI sorts on this by default and blanks nulls.
+    pub score: Option<f64>,
     pub expectancy_sol: f64,
     pub avg_holding_secs: f64,
     pub median_holding_secs: f64,

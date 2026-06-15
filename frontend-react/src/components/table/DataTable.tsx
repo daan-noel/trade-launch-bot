@@ -92,6 +92,12 @@ interface DataTableProps<R> {
   selectable?: boolean;
   paginate?: boolean;
   /**
+   * Initial sort column + direction (client-side mode). Sets the table's starting
+   * order without locking it — the user can still re-sort by clicking headers.
+   * Omit to start unsorted (rows render in the order passed).
+   */
+  defaultSort?: { col: string; dir?: SortDir };
+  /**
    * Server-side mode: the table stops filtering/sorting/slicing locally and
    * renders `rows` as the current page verbatim. It emits its view-state via
    * `onQueryChange` (debounced) so the parent can fetch; `serverTotal` drives
@@ -128,6 +134,7 @@ export function DataTable<R>({
   emptyMessage = 'No data.',
   selectable = true,
   paginate = true,
+  defaultSort,
   serverSide = false,
   serverTotal,
   onQueryChange,
@@ -136,8 +143,8 @@ export function DataTable<R>({
 }: DataTableProps<R>) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(defaultPageSize);
-  const [sortCol, setSortCol] = useState<string | null>(null);
-  const [sortDir, setSortDir] = useState<SortDir>('asc');
+  const [sortCol, setSortCol] = useState<string | null>(defaultSort?.col ?? null);
+  const [sortDir, setSortDir] = useState<SortDir>(defaultSort?.dir ?? 'asc');
   const [search, setSearch] = useState('');
   const [colFiltersMap, setColFiltersMap] = useState<Record<string, string>>({});
   const [visibleCols, setVisibleCols] = useState<Set<string>>(() =>

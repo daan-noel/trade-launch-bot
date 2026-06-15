@@ -30,7 +30,7 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 
 **TPSL2 param-sweep** (offline backtest output; see [tpsl2_sweep.md](tpsl2_sweep.md); other strategies get their own separate sweep tables)
 - `tpsl2_sweep_runs` — rule_id (base rule the params overlay), source(`cache`/`db`), method(`grid`/`random`/`lhs`), token_count, combo_count, corpus_hash, created_at. Idx: (created_at DESC).
-- `tpsl2_sweep_results` — run_id (FK CASCADE), combo_id, params(JSONB swept knobs), counts (n_fired/open/closed), profitability (win_rate, total_pnl_sol, expectancy_sol, profit_factor, mean/median/p90/best/worst pnl%), holding (avg/median secs), exit-reason mix. Bounded by combo count → served whole, sorted/filtered client-side. Idx: (run_id).
+- `tpsl2_sweep_results` — run_id (FK CASCADE), combo_id, params(JSONB swept knobs), counts (n_fired/open/closed), profitability (win_rate, total_pnl_sol, expectancy_sol, profit_factor, mean/median/p90/best/worst pnl%, std_pnl_pct), `score` (robust rank μ−z·σ/√n over closed trades, NULL when n_closed<2 — the page's default sort), holding (avg/median secs), exit-reason mix. Bounded by combo count → served whole, sorted/filtered client-side. Idx: (run_id).
 
 **Wallets / settings**
 - `wallet_profiles` — name, type(`mine`/`trader`/`whale`/`dev`), tag_ids(UUID[]).

@@ -42,7 +42,9 @@ CREATE TABLE IF NOT EXISTS tpsl2_sweep_results (
     p90_pnl_pct         DOUBLE PRECISION NOT NULL,
     best_pnl_pct        DOUBLE PRECISION NOT NULL,
     worst_pnl_pct       DOUBLE PRECISION NOT NULL,
+    std_pnl_pct         DOUBLE PRECISION NOT NULL DEFAULT 0,  -- stddev of realized pnl%
     profit_factor       DOUBLE PRECISION,          -- NULL = no losing trades (∞)
+    score               DOUBLE PRECISION,          -- robust rank μ−z·σ/√n; NULL = n_closed<2
     expectancy_sol      DOUBLE PRECISION NOT NULL,
     avg_holding_secs    DOUBLE PRECISION NOT NULL,
     median_holding_secs DOUBLE PRECISION NOT NULL,

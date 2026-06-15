@@ -10,9 +10,15 @@
 
 use crate::tpsl2_sweep::strategy::{ExitCode, TokenOutcome};
 
+/// Confidence multiplier for the robust score's one-sided lower bound (~95%, the
+/// standard-normal z). A tunable knob: raise it to penalise uncertainty harder,
+/// lower it toward the raw realized mean. See [`robust_score`].
+const SCORE_Z: f64 = 1.64;
+
 /// Streaming accumulator for one combo across every token it fired on. PnL stats
 /// mark open positions to their last price (so a still-running token still
-/// counts); holding-time stats use closed positions only.
+/// counts); holding-time stats and the robust [`score`](ComboMetrics::score) use
+/// closed positions only.
 #[derive(Default, Clone)]
 pub struct ComboAgg {
     fired: u64,
@@ -23,6 +29,10 @@ pub struct ComboAgg {
     gross_loss_sol: f64,
     /// pnl% of every fired token (mark-to-market for open) — for quantiles.
     pnl_pct: Vec<f32>,
+    /// Σ and Σ² of *closed* pnl% — the realized mean/stddev the score ranks on
+    /// (open positions excluded: their pnl% is unrealized mark-to-market).
+    closed_pct_sum: f64,
+    closed_pct_sum_sq: f64,
     /// holding seconds of closed positions only.
     holding: Vec<i32>,
     /// counts indexed by [`exit_index`].
@@ -48,6 +58,9 @@ impl ComboAgg {
             self.open += 1;
         } else {
             self.holding.push(o.holding_secs as i32);
+            let p = o.pnl_percent as f64;
+            self.closed_pct_sum += p;
+            self.closed_pct_sum_sq += p * p;
         }
         self.exit_counts[exit_index(o.exit)] += 1;
     }
@@ -67,11 +80,14 @@ impl ComboAgg {
         } else {
             None // no losing trades → undefined (shown as ∞)
         };
+        let n_closed = self.fired - self.open;
+        let (std_pnl_pct, score) =
+            robust_score(n_closed, self.closed_pct_sum, self.closed_pct_sum_sq);
         ComboMetrics {
             combo_id,
             n_fired: self.fired,
             n_open: self.open,
-            n_closed: self.fired - self.open,
+            n_closed,
             win_rate: if self.fired == 0 { 0.0 } else { self.wins as f64 / n },
             total_pnl_sol: self.pnl_sol_sum,
             mean_pnl_pct,
@@ -79,7 +95,9 @@ impl ComboAgg {
             p90_pnl_pct,
             best_pnl_pct,
             worst_pnl_pct,
+            std_pnl_pct,
             profit_factor,
+            score,
             expectancy_sol: if self.fired == 0 { 0.0 } else { self.pnl_sol_sum / n },
             avg_holding_secs,
             median_holding_secs,
@@ -109,8 +127,14 @@ pub struct ComboMetrics {
     pub p90_pnl_pct: f64,
     pub best_pnl_pct: f64,
     pub worst_pnl_pct: f64,
+    /// Stddev of realized (closed) per-trade pnl% — the dispersion/risk term the
+    /// `score` penalises. `0` when fewer than 2 closed trades.
+    pub std_pnl_pct: f64,
     /// gross wins ÷ gross losses; `None` = no losing trades (infinite).
     pub profit_factor: Option<f64>,
+    /// Robust rank: `μ − Z·σ/√n` over closed trades — the table's default sort.
+    /// `None` when n_closed < 2 (no evidence of a repeatable edge → sorts last).
+    pub score: Option<f64>,
     pub expectancy_sol: f64,
     pub avg_holding_secs: f64,
     pub median_holding_secs: f64,
@@ -122,6 +146,26 @@ pub struct ComboMetrics {
     pub exit_liquidity: u32,
     pub exit_cohort: u32,
     pub exit_open: u32,
+}
+
+/// One-sided lower-confidence bound on realized per-trade return:
+/// `score = μ − Z·σ/√n` over *closed* positions — the sweep's ranking objective.
+/// The `μ` term rewards a high mean return, `σ` penalises dispersion (a combo
+/// that won big on a couple tokens and bled on the rest), and `√n` shrinks small
+/// samples toward zero, so an edge proven over hundreds of tokens out-ranks a
+/// lucky handful. Returns `(stddev, Some(score))`, or `(0, None)` when n < 2 —
+/// one closed trade is no evidence of a repeatable edge, and `None` sorts last.
+fn robust_score(n_closed: u64, sum: f64, sum_sq: f64) -> (f64, Option<f64>) {
+    if n_closed < 2 {
+        return (0.0, None);
+    }
+    let n = n_closed as f64;
+    let mean = sum / n;
+    // Sample variance (n−1 denominator); clamp tiny negatives from float
+    // cancellation when every closed return is (near-)identical.
+    let var = ((sum_sq - n * mean * mean) / (n - 1.0)).max(0.0);
+    let std = var.sqrt();
+    (std, Some(mean - SCORE_Z * std / n.sqrt()))
 }
 
 fn exit_index(e: ExitCode) -> usize {
@@ -198,6 +242,53 @@ mod tests {
         let mut a = ComboAgg::default();
         a.record(&outcome(1.0, 10.0, ExitCode::TakeProfit, 5));
         assert_eq!(a.finalize(0).profit_factor, None);
+    }
+
+    #[test]
+    fn score_none_under_two_closed_trades() {
+        // One closed trade: a great return but no evidence it repeats → no score.
+        let mut a = ComboAgg::default();
+        a.record(&outcome(2.0, 200.0, ExitCode::TakeProfit, 10));
+        let m = a.finalize(0);
+        assert_eq!(m.n_closed, 1);
+        assert_eq!(m.score, None);
+        assert_eq!(m.std_pnl_pct, 0.0);
+    }
+
+    #[test]
+    fn score_equals_mean_when_returns_are_identical() {
+        // σ = 0 → the shrink term vanishes → score == realized mean.
+        let mut a = ComboAgg::default();
+        for _ in 0..3 {
+            a.record(&outcome(0.1, 10.0, ExitCode::TakeProfit, 5));
+        }
+        let m = a.finalize(0);
+        assert!(m.std_pnl_pct.abs() < 1e-9);
+        assert_eq!(m.score, Some(10.0));
+    }
+
+    #[test]
+    fn score_penalises_dispersion_below_the_mean() {
+        // Same realized mean (0%), but a wide spread → σ>0 → score < mean.
+        let mut a = ComboAgg::default();
+        a.record(&outcome(1.0, 100.0, ExitCode::TakeProfit, 5));
+        a.record(&outcome(-1.0, -100.0, ExitCode::StopLoss, 5));
+        let m = a.finalize(0);
+        assert!(m.std_pnl_pct > 0.0);
+        assert!(m.score.unwrap() < 0.0, "dispersion pulls the lower bound under the mean");
+    }
+
+    #[test]
+    fn open_positions_excluded_from_score() {
+        // An open (unrealized) winner must not feed the realized mean/stddev.
+        let mut a = ComboAgg::default();
+        a.record(&outcome(0.1, 10.0, ExitCode::TakeProfit, 5));
+        a.record(&outcome(0.1, 10.0, ExitCode::TakeProfit, 5));
+        a.record(&outcome(5.0, 999.0, ExitCode::Open, 0)); // ignored by the score
+        let m = a.finalize(0);
+        assert_eq!(m.n_closed, 2);
+        assert!(m.std_pnl_pct.abs() < 1e-9, "two identical closed returns → σ=0");
+        assert_eq!(m.score, Some(10.0));
     }
 
     #[test]

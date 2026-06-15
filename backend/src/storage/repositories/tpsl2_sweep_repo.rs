@@ -62,7 +62,9 @@ struct Tpsl2SweepResultDbRow {
     p90_pnl_pct: f64,
     best_pnl_pct: f64,
     worst_pnl_pct: f64,
+    std_pnl_pct: f64,
     profit_factor: Option<f64>,
+    score: Option<f64>,
     expectancy_sol: f64,
     avg_holding_secs: f64,
     median_holding_secs: f64,
@@ -91,7 +93,9 @@ impl From<Tpsl2SweepResultDbRow> for Tpsl2SweepResult {
             p90_pnl_pct: r.p90_pnl_pct,
             best_pnl_pct: r.best_pnl_pct,
             worst_pnl_pct: r.worst_pnl_pct,
+            std_pnl_pct: r.std_pnl_pct,
             profit_factor: r.profit_factor,
+            score: r.score,
             expectancy_sol: r.expectancy_sol,
             avg_holding_secs: r.avg_holding_secs,
             median_holding_secs: r.median_holding_secs,
@@ -141,15 +145,15 @@ impl Tpsl2SweepRepo {
         .execute(&mut tx)
         .await?;
 
-        // 24 binds/row → chunk well under the 65535 param ceiling.
+        // 26 binds/row → chunk well under the 65535 param ceiling.
         for chunk in results.chunks(2000) {
             let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
                 "INSERT INTO tpsl2_sweep_results \
                  (run_id, combo_id, params, n_fired, n_open, n_closed, win_rate, \
                   total_pnl_sol, mean_pnl_pct, median_pnl_pct, p90_pnl_pct, best_pnl_pct, \
-                  worst_pnl_pct, profit_factor, expectancy_sol, avg_holding_secs, \
-                  median_holding_secs, exit_take_profit, exit_stop_loss, exit_trailing, \
-                  exit_stall, exit_time, exit_liquidity, exit_cohort, exit_open) ",
+                  worst_pnl_pct, std_pnl_pct, profit_factor, score, expectancy_sol, \
+                  avg_holding_secs, median_holding_secs, exit_take_profit, exit_stop_loss, \
+                  exit_trailing, exit_stall, exit_time, exit_liquidity, exit_cohort, exit_open) ",
             );
             qb.push_values(chunk, |mut b, r| {
                 b.push_bind(run.id)
@@ -165,7 +169,9 @@ impl Tpsl2SweepRepo {
                     .push_bind(r.p90_pnl_pct)
                     .push_bind(r.best_pnl_pct)
                     .push_bind(r.worst_pnl_pct)
+                    .push_bind(r.std_pnl_pct)
                     .push_bind(r.profit_factor)
+                    .push_bind(r.score)
                     .push_bind(r.expectancy_sol)
                     .push_bind(r.avg_holding_secs)
                     .push_bind(r.median_holding_secs)
@@ -204,9 +210,9 @@ impl Tpsl2SweepRepo {
         let rows = sqlx::query_as::<_, Tpsl2SweepResultDbRow>(
             "SELECT combo_id, params, n_fired, n_open, n_closed, win_rate, total_pnl_sol, \
                     mean_pnl_pct, median_pnl_pct, p90_pnl_pct, best_pnl_pct, worst_pnl_pct, \
-                    profit_factor, expectancy_sol, avg_holding_secs, median_holding_secs, \
-                    exit_take_profit, exit_stop_loss, exit_trailing, exit_stall, exit_time, \
-                    exit_liquidity, exit_cohort, exit_open \
+                    std_pnl_pct, profit_factor, score, expectancy_sol, avg_holding_secs, \
+                    median_holding_secs, exit_take_profit, exit_stop_loss, exit_trailing, \
+                    exit_stall, exit_time, exit_liquidity, exit_cohort, exit_open \
              FROM tpsl2_sweep_results WHERE run_id = $1 ORDER BY combo_id",
         )
         .bind(run_id)
