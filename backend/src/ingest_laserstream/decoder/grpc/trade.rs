@@ -1,9 +1,7 @@
 //! Protobuf-native trade helpers: the inner-instruction `TradeEvent` self-CPI
 //! decoder and the balance-delta fallback, reading the typed Yellowstone structs
-//! ([`PbIx`], [`scb::TokenBalance`]) instead of the Helius `Value` JSON. Siblings
-//! of the `Value` versions in [`super::super::json::trade`]; the Borsh leaves
-//! ([`RawTradeEvent`]) and `compute_sol_change` are shared from
-//! [`super::super::trade`].
+//! ([`PbIx`], [`scb::TokenBalance`]). The Borsh leaves ([`RawTradeEvent`]) and
+//! `compute_sol_change` are shared from [`super::super::trade`].
 
 use std::sync::Arc;
 
@@ -25,11 +23,10 @@ use super::super::trade::{compute_sol_change, DecodedTradeEvent, RawTradeEvent};
 use super::super::HeliusDecoder;
 use super::PbIx;
 
-/// Protobuf-native sibling of [`super::super::json::trade::decode_trade_events_from_inner_ixs`]:
-/// the pump instructions are already resolved into [`PbIx`] (program id + raw
-/// `data` bytes), so this skips the per-ix base58 decode the `Value` path pays.
-/// Same truncation-proof source (the `emit_cpi!` TradeEvent self-CPI) and same
-/// Borsh layout — only the byte source differs.
+/// Decode `TradeEvent`s from pump.fun's `emit_cpi!` inner instructions — the
+/// truncation-proof source used when the "Program data:" logs were dropped. The
+/// pump instructions arrive already resolved into [`PbIx`] (program id + raw
+/// `data` bytes), so this reads the Borsh layout directly with no base58 decode.
 pub(super) fn decode_trade_events_from_inner_pb(pump_ixs: &[PbIx]) -> Vec<DecodedTradeEvent> {
     let mut events = Vec::new();
 
@@ -58,10 +55,9 @@ pub(super) fn decode_trade_events_from_inner_pb(pump_ixs: &[PbIx]) -> Vec<Decode
     events
 }
 
-/// Protobuf-native token-amount delta for `user_ata`, mirroring
-/// [`super::super::json::parse::compute_token_change`] but reading the typed
-/// `TokenBalance` lists instead of the Helius `meta` JSON. Returns RAW base units
-/// (no decimal scaling), to match the authoritative log-event path.
+/// Token-amount delta for `user_ata`, read from the typed `TokenBalance` lists.
+/// Returns RAW base units (no decimal scaling), to match the authoritative
+/// log-event path.
 fn compute_token_change_pb(
     user_ata: &str,
     mint: &str,
@@ -87,10 +83,8 @@ fn compute_token_change_pb(
 }
 
 impl HeliusDecoder {
-    /// Protobuf-native sibling of [`super::super::json::trade`]'s
-    /// `decode_trade_from_balances`: same rare balance-delta fallback (no
-    /// decodable `TradeEvent`), reading the typed balance/token-balance lists
-    /// instead of the Helius `meta` JSON.
+    /// Balance-delta fallback for the rare tx with no decodable `TradeEvent`,
+    /// reading the typed balance/token-balance lists from the protobuf `meta`.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn decode_trade_from_balances_pb(
         &self,

@@ -7,15 +7,21 @@ use std::{
 };
 
 use anyhow::Context;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use serde::Serialize;
+use serde_json::Value;
 use solana_sdk::pubkey::Pubkey;
 use tokio::sync::{mpsc, Notify};
 
 use crate::{
     config::constants::{PUMP_SWAP_PROGRAM_ID, WSOL_MINT},
-    ingest_laserstream::decoder::{DecodeOutput, HeliusDecoder},
+    ingest_laserstream::{
+        adapter::build_raw_blob,
+        adapter_rpc::rpc_to_protobuf,
+        decoder::{DecodeOutput, HeliusDecoder},
+        proto::geyser::SubscribeUpdateTransaction,
+    },
     models::{
         events::InternalEvent,
         token::Token,
@@ -251,7 +257,15 @@ pub async fn run_token_sync(
     )
     .await?;
 
-    let decoder = HeliusDecoder::new(ctx.pump_program_id.clone());
+    // Seed a {pool → mint} index so post-migration PumpSwap (AMM) swaps — which
+    // carry the pool, not the base mint — resolve back to this mint, letting both
+    // the curve and AMM loops share the single `decode_protobuf` path (AMM frames
+    // route to `decode_amm_live_pb` via this index). Harmless for curve txs.
+    let pool_index = Arc::new(DashMap::new());
+    if let Ok(pool) = derive_pump_swap_pool(&mint, &ctx.pump_program_id) {
+        pool_index.insert(pool, mint.clone());
+    }
+    let decoder = HeliusDecoder::new(ctx.pump_program_id.clone()).with_pool_index(pool_index);
 
     let info_repo = TokenInfoRepo::new(ctx.db.clone());
 
@@ -419,42 +433,42 @@ pub async fn run_token_sync(
         let skip_trades = !req.include_post_migrate
             && migrate_slot.is_some_and(|ms| slot > ms);
 
-        match decoder.decode_result(entry.result.clone()) {
-            DecodeOutput::Transaction { raw_tx, mut events } => {
-                sort_sync_events(&mut events);
+        if let DecodeOutput::Transaction { raw_tx, mut events } =
+            decoder.decode_protobuf(&entry.update, entry.block_time)
+        {
+            sort_sync_events(&mut events);
 
-                curve_txs.push(raw_tx);
+            curve_txs.push(persist_tx(&entry.update, &raw_tx));
 
-                for event in events {
-                    match event {
-                        InternalEvent::TokenCreated(e) if e.token.mint_address == mint => {
-                            token_repo
-                                .upsert(&e.token)
-                                .await
-                                .map_err(|e| SyncError::Internal(e.to_string()))?;
-                            curve_wallets.push(e.token.creator_wallet.clone());
-                            token_record = Some(e.token);
-                        }
-                        InternalEvent::TradeExecuted(e) if e.trade.mint_address == mint => {
-                            if skip_trades {
-                                continue;
-                            }
-                            curve_wallets.push(e.trade.wallet_address.clone());
-                            curve_trades.push(e.trade);
-                        }
-                        InternalEvent::TokenMigrated(e) if e.mint_address == mint => {
-                            migrate_slot = Some(e.slot);
-                            if let Err(err) = info_repo.update_migration_status(&mint, true).await {
-                                tracing::warn!(
-                                    "token_sync: update_migration_status failed for {mint}: {err}"
-                                );
-                            }
-                        }
-                        _ => {}
+            for event in events {
+                match event {
+                    InternalEvent::TokenCreated(e) if e.token.mint_address == mint => {
+                        token_repo
+                            .upsert(&e.token)
+                            .await
+                            .map_err(|e| SyncError::Internal(e.to_string()))?;
+                        curve_wallets.push(e.token.creator_wallet.clone());
+                        token_record = Some(e.token);
                     }
+                    InternalEvent::TradeExecuted(mut e) if e.trade.mint_address == mint => {
+                        if skip_trades {
+                            continue;
+                        }
+                        e.trade.received_at = Utc::now();
+                        curve_wallets.push(e.trade.wallet_address.clone());
+                        curve_trades.push(e.trade);
+                    }
+                    InternalEvent::TokenMigrated(e) if e.mint_address == mint => {
+                        migrate_slot = Some(e.slot);
+                        if let Err(err) = info_repo.update_migration_status(&mint, true).await {
+                            tracing::warn!(
+                                "token_sync: update_migration_status failed for {mint}: {err}"
+                            );
+                        }
+                    }
+                    _ => {}
                 }
             }
-            _ => {}
         }
     }
 
@@ -749,22 +763,23 @@ async fn try_replay(
         }
     };
 
-    // Newest signature + slot among the replayed txs (slot-ascending).
+    // Newest signature + slot among the replayed txs (slot-ascending). Replay
+    // frames carry no on-chain blockTime (exactly as the live path), so their
+    // backfilled trades use `now()` as block_time — unchanged from the prior
+    // `Value` replay path, which fell back to `now()` too.
+    let now = Utc::now();
     let mut newest_sig: Option<String> = None;
     let mut newest_slot: Option<u64> = None;
     let mut txs: Vec<FetchedTx> = Vec::with_capacity(replayed.len());
     for r in replayed {
         if newest_slot.map_or(true, |s| r.slot >= s) {
             newest_slot = Some(r.slot);
-            newest_sig = r
-                .result
-                .get("signature")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            newest_sig = update_signature(&r.update);
         }
         txs.push(FetchedTx {
             slot: r.slot,
-            result: r.result,
+            block_time: now,
+            update: r.update,
         });
     }
 
@@ -903,15 +918,24 @@ async fn sync_amm_trades(
     // those swaps. Here a bulk-insert failure is propagated, and the caller only
     // stamps the AMM watermark on `Ok`, so the next incremental sync re-pulls
     // whatever didn't persist.
+    // `decode_amm_protobuf` resolves each PumpSwap swap's pool to `mint` via the
+    // decoder's seeded {pool → mint} index, dropping swaps for any other pool. It
+    // has no curve-priority gate (unlike `decode_protobuf`), so an aggregator tx
+    // that also touches the curve program still yields our pool's AMM trade.
     let mut amm_txs: Vec<Arc<RawTransaction>> = Vec::new();
     let mut amm_trades: Vec<Trade> = Vec::new();
     let mut amm_wallets: Vec<String> = Vec::new();
     for entry in &fetched {
-        if let Some((raw_tx, trades)) = decoder.decode_pump_swap_result(&entry.result, mint, &pool) {
-            amm_txs.push(Arc::new(raw_tx));
-            for trade in trades {
-                amm_wallets.push(trade.wallet_address.clone());
-                amm_trades.push(trade);
+        if let DecodeOutput::Transaction { raw_tx, events } =
+            decoder.decode_amm_protobuf(&entry.update, entry.block_time)
+        {
+            amm_txs.push(persist_tx(&entry.update, &raw_tx));
+            for event in events {
+                if let InternalEvent::TradeExecuted(mut e) = event {
+                    e.trade.received_at = Utc::now();
+                    amm_wallets.push(e.trade.wallet_address.clone());
+                    amm_trades.push(e.trade);
+                }
             }
         }
     }
@@ -934,7 +958,8 @@ async fn sync_amm_trades(
 /// one venue and **propagate** any write failure to the caller. Centralizes the
 /// "never silently drop, never advance the watermark past a failed write" policy
 /// shared by the curve loop in `run_token_sync` and `sync_amm_trades`. `wallets`
-/// is sorted/deduped in place before the single bulk touch.
+/// is sorted/deduped in place before the single bulk touch. Raw txs are tagged
+/// `source='rpc'` (backfill); the live gRPC pipeline tags its own `source='grpc'`.
 async fn persist_backfill(
     trade_repo: &TradeRepo,
     tx_repo: &TransactionRepo,
@@ -961,9 +986,57 @@ async fn persist_backfill(
     Ok(())
 }
 
+/// A fetched transaction lowered to the protobuf frame both decode paths share.
+/// Every source — gTFA, per-sig `getTransaction` (both `encoding="base64"`), and
+/// LaserStream replay (native protobuf) — produces this, so the decode loops run
+/// the single `decode_protobuf` path. `block_time` is the real on-chain time
+/// (RPC `blockTime`, or `now()` for replay frames which carry none).
 struct FetchedTx {
     slot: u64,
-    result: serde_json::Value,
+    block_time: DateTime<Utc>,
+    update: SubscribeUpdateTransaction,
+}
+
+/// Lower one wrapped RPC result (`wrap_transaction_result` shape, `base64`
+/// encoding) to a [`FetchedTx`]. Returns `None` if the base64/bincode decode fails
+/// — treated like the decoder ignoring it.
+fn fetched_from_rpc(slot: u64, wrapped: &Value) -> Option<FetchedTx> {
+    let block_time = wrapped
+        .get("blockTime")
+        .and_then(Value::as_i64)
+        .and_then(|ts| DateTime::from_timestamp(ts, 0))
+        .unwrap_or_else(Utc::now);
+    Some(FetchedTx {
+        slot,
+        block_time,
+        update: rpc_to_protobuf(wrapped)?,
+    })
+}
+
+/// Base58 signature of a lowered frame (for the sync watermark).
+fn update_signature(update: &SubscribeUpdateTransaction) -> Option<String> {
+    update
+        .transaction
+        .as_ref()
+        .map(|i| bs58::encode(&i.signature).into_string())
+}
+
+/// Build the persisted [`RawTransaction`] for a decoded backfill tx.
+///
+/// `decode_protobuf` returns a carrier with `raw_data: Null` (the live path
+/// synthesises the blob off-thread in the DbWriter); token_sync has no DbWriter,
+/// so synthesise it here via the shared [`build_raw_blob`] — the same
+/// Helius-shaped blob the live gRPC path persists, keeping `raw_transactions`
+/// byte-consistent across sources for later analysis. `RawTransaction::new` stamps
+/// `received_at` to now, while `block_time` stays the real on-chain time from the
+/// carrier.
+fn persist_tx(update: &SubscribeUpdateTransaction, raw_tx: &RawTransaction) -> Arc<RawTransaction> {
+    Arc::new(RawTransaction::new(
+        raw_tx.signature.clone(),
+        raw_tx.slot,
+        raw_tx.block_time,
+        build_raw_blob(update).unwrap_or(Value::Null),
+    ))
 }
 
 /// Acquire an address's full transaction history via the archival
@@ -989,30 +1062,34 @@ async fn acquire_full_via_gtfa(
     loop {
         page += 1;
         // Oldest-first so the accumulated order is roughly chronological (still
-        // sorted by slot at the end as a guarantee).
+        // sorted by slot at the end as a guarantee). `base64` encoding so each
+        // item lowers to protobuf via `rpc_to_protobuf` (see `fetched_from_rpc`).
         let (data, next) = rpc
-            .get_transactions_for_address_full_page(address, "asc", GTFA_PAGE_LIMIT, token.as_deref())
+            .get_transactions_for_address_full_page_enc(
+                address,
+                "asc",
+                GTFA_PAGE_LIMIT,
+                token.as_deref(),
+                "base64",
+            )
             .await
             .map_err(|e| SyncError::Internal(e.to_string()))?;
 
         for item in &data {
-            let Some(sig) = item
-                .get("transaction")
-                .and_then(|t| t.get("signatures"))
-                .and_then(|s| s.get(0))
-                .and_then(|s| s.as_str())
-            else {
+            let slot = item.get("slot").and_then(|v| v.as_u64()).unwrap_or(0);
+            // base64 items expose no `transaction.signatures`; pass "" and let the
+            // adapter recover the signature from the bincode tx, then read it back
+            // off the lowered frame for the watermark.
+            let Some(ft) = fetched_from_rpc(slot, &wrap_transaction_result("", item)) else {
                 continue;
             };
-            let slot = item.get("slot").and_then(|v| v.as_u64()).unwrap_or(0);
             if slot >= newest_slot {
-                newest_slot = slot;
-                newest_sig = Some(sig.to_string());
+                if let Some(sig) = update_signature(&ft.update) {
+                    newest_slot = slot;
+                    newest_sig = Some(sig);
+                }
             }
-            out.push(FetchedTx {
-                slot,
-                result: wrap_transaction_result(sig, item),
-            });
+            out.push(ft);
         }
 
         let line = serde_json::to_string(&SyncProgressEvent {
@@ -1078,10 +1155,11 @@ async fn fetch_transactions(
                 let mut out = Vec::with_capacity(batch.len());
                 for (entry, tx) in batch.iter().zip(txs.into_iter()) {
                     if let Some(tx) = tx {
-                        out.push(FetchedTx {
-                            slot: entry.slot,
-                            result: wrap_transaction_result(&entry.signature, &tx),
-                        });
+                        if let Some(ft) =
+                            fetched_from_rpc(entry.slot, &wrap_transaction_result(&entry.signature, &tx))
+                        {
+                            out.push(ft);
+                        }
                     }
                 }
 
@@ -1197,7 +1275,6 @@ mod amm_verification {
     async fn amm_pool_derivation_and_event_decode() {
         let url = std::env::var("HELIUS_RPC_URL").expect("set HELIUS_RPC_URL");
         let client = reqwest::Client::new();
-        let decoder = HeliusDecoder::new(PUMP_FUN_PROGRAM_ID.to_string());
 
         // 1. Grab recent PumpSwap program transactions (bounded).
         let sigs = rpc(
@@ -1270,11 +1347,36 @@ mod amm_verification {
             }
             canonical += 1;
 
-            // 3. Production decode must succeed and produce sane values.
-            let wrapped = wrap_transaction_result(sig, &tx);
-            let (_raw, trades) = decoder
-                .decode_pump_swap_result(&wrapped, &base_mint, &derived)
-                .expect("canonical swap must decode");
+            // 3. Production decode (the live protobuf path) must succeed and
+            //    produce sane values: fetch base64, lower to protobuf, and decode
+            //    with a {pool → mint} index so it routes through decode_amm_live_pb
+            //    — exactly how token_sync's AMM loop decodes.
+            let tx_b64 = rpc(
+                &client,
+                &url,
+                "getTransaction",
+                json!([sig, {"encoding":"base64","commitment":"confirmed","maxSupportedTransactionVersion":0}]),
+            )
+            .await;
+            let idx = std::sync::Arc::new(dashmap::DashMap::new());
+            idx.insert(derived.clone(), base_mint.clone());
+            let amm_decoder =
+                HeliusDecoder::new(PUMP_FUN_PROGRAM_ID.to_string()).with_pool_index(idx);
+            let update = crate::ingest_laserstream::adapter_rpc::rpc_to_protobuf(
+                &wrap_transaction_result(sig, &tx_b64),
+            )
+            .expect("canonical swap must lower to protobuf");
+            let trades: Vec<_> = match amm_decoder.decode_amm_protobuf(&update, Utc::now()) {
+                DecodeOutput::Transaction { events, .. } => events
+                    .into_iter()
+                    .filter_map(|e| match e {
+                        InternalEvent::TradeExecuted(t) => Some(t.trade),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            assert!(!trades.is_empty(), "canonical swap must decode");
             let t = &trades[0];
             assert_eq!(t.venue, "amm");
             assert!(t.sol_amount > 0.0 && t.token_amount > 0.0);
@@ -1330,69 +1432,74 @@ mod amm_verification {
         None
     }
 
-    /// Proves the gTFA backfill path decodes identically to the per-sig
-    /// getTransaction path: for each tx in one gTFA page of the pump program,
-    /// decode the gTFA item AND the getTransaction of the same signature, and
-    /// assert the decoded trade legs match. Run with:
-    ///   HELIUS_RPC_URL="<url>" cargo test -p backend gtfa_matches_rpc -- --ignored --nocapture
+    /// Live smoke test of token_sync's production decode path: pull one gTFA page
+    /// in `encoding="base64"` (confirming the archival endpoint honors base64 +
+    /// returns `meta.loadedAddresses` for versioned txs), lower each item via
+    /// `rpc_to_protobuf`, decode with `decode_protobuf`, and assert it yields sane
+    /// trades over the page. Run with:
+    ///   HELIUS_RPC_URL="<url>" cargo test -p backend gtfa_base64_decodes_via_protobuf -- --ignored --nocapture
     #[tokio::test]
     #[ignore = "requires HELIUS_RPC_URL with the archival API + network"]
-    async fn gtfa_matches_rpc_decode() {
+    async fn gtfa_base64_decodes_via_protobuf() {
+        use crate::ingest_laserstream::adapter_rpc::rpc_to_protobuf;
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        use solana_sdk::{message::VersionedMessage, transaction::VersionedTransaction};
+
         let url = std::env::var("HELIUS_RPC_URL").expect("set HELIUS_RPC_URL");
-        let rpc = HeliusRpc::new(url);
+        let helius = HeliusRpc::new(url);
         let decoder = HeliusDecoder::new(PUMP_FUN_PROGRAM_ID.to_string());
 
-        // One gTFA page (full mode) of recent pump-program transactions.
-        let (data, token) = rpc
-            .get_transactions_for_address_full_page(PUMP_FUN_PROGRAM_ID, "desc", 25, None)
+        let (data, _token) = helius
+            .get_transactions_for_address_full_page_enc(PUMP_FUN_PROGRAM_ID, "desc", 25, None, "base64")
             .await
-            .expect("gTFA call failed");
-        assert!(!data.is_empty(), "gTFA returned no transactions");
-        println!("gTFA page: {} txs, next paginationToken={:?}", data.len(), token);
+            .expect("gTFA base64 call failed — endpoint may not honor encoding=base64");
+        assert!(!data.is_empty(), "gTFA base64 returned no transactions");
 
-        // Decoded trade legs for one DecodeOutput, in a comparable form.
-        fn legs(out: &DecodeOutput) -> Vec<(String, String, f64, f64)> {
-            match out {
-                DecodeOutput::Transaction { events, .. } => events
-                    .iter()
-                    .filter_map(|e| match e {
-                        InternalEvent::TradeExecuted(t) => Some((
-                            t.trade.wallet_address.clone(),
-                            format!("{:?}", t.trade.trade_type),
-                            t.trade.sol_amount,
-                            t.trade.token_amount,
-                        )),
-                        _ => None,
-                    })
-                    .collect(),
-                _ => Vec::new(),
+        let (mut decoded, mut versioned_with_lut, mut trade_legs) = (0usize, 0usize, 0usize);
+        for item in &data {
+            let Some(tx_b64) = item["transaction"][0].as_str() else {
+                continue;
+            };
+            let vtx: VersionedTransaction = bincode::deserialize(
+                &STANDARD.decode(tx_b64).expect("gTFA base64 tx not decodable"),
+            )
+            .expect("gTFA base64 tx not bincode VersionedTransaction");
+
+            // Confirm versioned txs carry loadedAddresses (the field the protobuf
+            // decoder needs for correct account attribution).
+            if matches!(vtx.message, VersionedMessage::V0(_)) {
+                let lut = |k: &str| item["meta"]["loadedAddresses"][k].as_array().is_some_and(|a| !a.is_empty());
+                if lut("writable") || lut("readonly") {
+                    versioned_with_lut += 1;
+                }
+            }
+
+            let Some(update) = rpc_to_protobuf(&wrap_transaction_result("", item)) else {
+                continue;
+            };
+            if let DecodeOutput::Transaction { events, .. } =
+                decoder.decode_protobuf(&update, Utc::now())
+            {
+                decoded += 1;
+                for e in &events {
+                    if let InternalEvent::TradeExecuted(t) = e {
+                        assert!(
+                            t.trade.sol_amount > 0.0 && t.trade.token_amount > 0.0,
+                            "decoded trade has non-positive amounts: {:?}",
+                            t.trade
+                        );
+                        trade_legs += 1;
+                    }
+                }
             }
         }
 
-        let (mut compared, mut trade_legs) = (0usize, 0usize);
-        for item in &data {
-            let sig = item["transaction"]["signatures"][0]
-                .as_str()
-                .expect("gTFA item missing signature")
-                .to_string();
-
-            // gTFA path: wrap the archival item and decode.
-            let gtfa_out = decoder.decode_result(wrap_transaction_result(&sig, item));
-
-            // rpc path: fetch the same signature via getTransaction and decode.
-            let Some(rpc_tx) = rpc.get_transaction(&sig).await.expect("getTransaction failed") else {
-                continue;
-            };
-            let rpc_out = decoder.decode_result(wrap_transaction_result(&sig, &rpc_tx));
-
-            let (g, r) = (legs(&gtfa_out), legs(&rpc_out));
-            assert_eq!(g, r, "decode mismatch for {sig}\n  gtfa={g:?}\n  rpc={r:?}");
-            trade_legs += g.len();
-            compared += 1;
-        }
-
-        println!("compared {compared} txs, {trade_legs} trade legs — gTFA decode == rpc decode ✓");
-        assert!(compared > 0, "no transactions compared");
+        println!(
+            "decoded {decoded}/{} gTFA base64 txs ({versioned_with_lut} versioned w/ loadedAddresses), \
+             {trade_legs} trade legs via decode_protobuf ✓",
+            data.len()
+        );
+        assert!(trade_legs > 0, "no trades decoded from the gTFA page");
     }
 }
 

@@ -26,7 +26,6 @@ use tracing::{error, info};
 
 use crate::config::constants::PUMP_SWAP_PROGRAM_ID;
 
-use super::profile;
 use super::proto::geyser::geyser_client::GeyserClient;
 use super::proto::geyser::subscribe_update::UpdateOneof;
 use super::proto::geyser::{
@@ -268,11 +267,8 @@ async fn run_once(
                             last_slot.fetch_max(tx.slot, Ordering::Relaxed);
                             // Cheap protobuf-log pre-filter: forward only txs the
                             // decoder would keep (curve or AMM program in the logs).
-                            // No Value build here anymore — the profiler's "build"
-                            // stage now times just this scan (Tier B: ~0 µs).
-                            let _span = profile::start();
+                            // No Value build here anymore (Tier B).
                             let relevant = tx_is_relevant(&tx, pump_program_id);
-                            profile::record_adapter(_span, relevant);
                             if relevant && update_tx.send(Arc::new(tx)).await.is_err() {
                                 info!("LaserStream: pipeline receiver dropped — stopping");
                                 return Ok(());

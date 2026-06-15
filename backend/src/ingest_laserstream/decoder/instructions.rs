@@ -1,10 +1,9 @@
-//! Shared instruction classification and labeling leaves (used by both paths).
+//! Shared instruction classification and labeling leaves.
 //!
 //! Classifies pump.fun instructions into [`InstructionKind`] by Anchor
 //! discriminator, derives the primary instruction type, extracts compute-budget
 //! values, and renders one human-readable label per instruction — all from plain
-//! byte slices, so the grpc and json paths share them. The `Value`-shaped
-//! adapters live in [`super::json::instructions`]; the protobuf ones in
+//! byte slices. The protobuf-shaped instruction adapters that feed these live in
 //! [`super::grpc`].
 
 use borsh::BorshDeserialize;

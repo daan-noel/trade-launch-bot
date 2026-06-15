@@ -1,6 +1,6 @@
 # Rust build output
 /target/
-/target-check/
+target-check
 # NOTE: Cargo.lock is intentionally COMMITTED. This is a binary/app, not a
 # library, so the lockfile must be tracked — it keeps the dependency graph
 # deterministic across machines and lets cargo-chef's Docker layer cache hit

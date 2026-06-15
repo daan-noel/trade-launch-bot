@@ -11,12 +11,12 @@ Code lives in [backend/src/ingest_laserstream/](../../backend/src/ingest_laserst
 | File | Purpose |
 |------|---------|
 | [client.rs](../../backend/src/ingest_laserstream/client.rs) | gRPC connect, TLS + `x-token` auth, subscription, reconnect backoff, pool resubscribe; forwards the typed `Arc<SubscribeUpdateTransaction>` (no `Value` build) |
-| [adapter.rs](../../backend/src/ingest_laserstream/adapter.rs) | Protobuf `SubscribeUpdateTransaction` → Helius-shaped JSON `Value` (`build_raw_blob` = persisted blob, off-thread in DbWriter; `update_tx_to_value` = that + pre-filter, for cold replay) |
+| [adapter.rs](../../backend/src/ingest_laserstream/adapter.rs) | Protobuf `SubscribeUpdateTransaction` → Helius-shaped JSON `Value` (`build_raw_blob` = persisted blob; off-thread in DbWriter for live `source='grpc'`, inline in token_sync for backfill `source='rpc'`) |
+| [adapter_rpc.rs](../../backend/src/ingest_laserstream/adapter_rpc.rs) | **Inverse**: base64 RPC result → `SubscribeUpdateTransaction` (`rpc_to_protobuf`), so token_sync runs `decode_protobuf` like the live path |
 | [pipeline.rs](../../backend/src/ingest_laserstream/pipeline.rs) | Main event loop: decode dispatch, cache updates, strategy pings, pool refresh |
 | [db_writer.rs](../../backend/src/ingest_laserstream/db_writer.rs) | Batch queue, partition-by-type, dedup-keep-last, bulk inserts, signal notify; synthesises the raw blob via `build_raw_blob` off the hot path |
-| [decoder/mod.rs](../../backend/src/ingest_laserstream/decoder/mod.rs) | `HeliusDecoder` API + `DecodeOutput`, `decode_migrate`; module wiring for the two forked paths |
-| [decoder/grpc/](../../backend/src/ingest_laserstream/decoder/grpc/) | **Live hot path** — protobuf-native `decode_protobuf` (+ `grpc/trade.rs`), reads the Yellowstone structs directly, no `Value` |
-| [decoder/json/](../../backend/src/ingest_laserstream/decoder/json/) | **token_sync (RPC + replay)** — `Value` path: `decode_result`/`decode_pump_swap_result`/`decode_amm_live`, plus `json/parse.rs` (account-key/balance/log/IX-walk extraction) + `json/instructions.rs` (Value ix adapters) + `json/trade.rs` |
+| [decoder/mod.rs](../../backend/src/ingest_laserstream/decoder/mod.rs) | `HeliusDecoder` API + `DecodeOutput`, `decode_migrate`; module wiring |
+| [decoder/grpc/](../../backend/src/ingest_laserstream/decoder/grpc/) | **The decoder** — protobuf-native `decode_protobuf` (+ `grpc/trade.rs`), reads the Yellowstone structs directly, no `Value`. Serves both live ingest and token_sync |
 | [decoder/trade.rs](../../backend/src/ingest_laserstream/decoder/trade.rs) | Shared: bonding-curve `TradeEvent` + PumpSwap `BuyEvent`/`SellEvent` Borsh decode, `build_amm_trade`, `compute_sol_change` |
 | [decoder/create.rs](../../backend/src/ingest_laserstream/decoder/create.rs) | Shared: `Create`/`Create_v2` instruction + creator resolution (byte-source-agnostic) |
 | [decoder/instructions.rs](../../backend/src/ingest_laserstream/decoder/instructions.rs) | Shared: instruction kinds/labels + compute-unit extraction (plain byte slices) |
@@ -57,10 +57,10 @@ LaserStream gRPC  ──Arc<protobuf>──▶  IngestPipeline  ──┬─DbWr
 ### 2. Decode (`HeliusDecoder`)
 
 `HeliusDecoder { pump_program_id, pool_index: Option<Arc<DashMap<pool, mint>>> }`.
-Live gRPC path: `decode_protobuf(&SubscribeUpdateTransaction, received_at) -> DecodeOutput`
-(`decoder/grpc/`) — protobuf-native, no `Value`. token_sync (RPC + replay) still uses
-`decode_result(Value)`; both share the same byte-level leaves, so the decode semantics below
-are identical for either entry point (Tier B fork — see `@docs/ingest.md`).
+Both live gRPC **and** token_sync use the single `decode_protobuf(&SubscribeUpdateTransaction,
+received_at) -> DecodeOutput` (`decoder/grpc/`) — protobuf-native, no `Value`; token_sync
+lowers its base64 RPC results via `adapter_rpc::rpc_to_protobuf` first. The old `Value`
+`decode_result` path has been removed (see `@docs/ingest.md`).
 
 - **Bonding-curve trades** — preferred source is `Program data:` logs → base64 → Borsh
   `RawTradeEvent` (matched on `TRADE_EVENT_DISCRIMINATOR`). Fallback when logs are truncated:

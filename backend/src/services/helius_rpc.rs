@@ -254,7 +254,12 @@ impl HeliusRpc {
         Ok((count, false))
     }
 
-    /// Fetch a confirmed parsed transaction; returns `None` if missing or failed on-chain.
+    /// Fetch a confirmed transaction (`encoding="base64"`); returns `None` if
+    /// missing or failed on-chain. Base64 (not `jsonParsed`) so token_sync can
+    /// lower it to protobuf via
+    /// [`crate::ingest_laserstream::adapter_rpc::rpc_to_protobuf`] without losing
+    /// the raw instruction `data` jsonParsed pre-parses away. `meta` stays JSON
+    /// regardless of encoding, so the on-chain-error check below is unaffected.
     pub async fn get_transaction(&self, signature: &str) -> anyhow::Result<Option<Value>> {
         let result = self
             .call(
@@ -262,7 +267,7 @@ impl HeliusRpc {
                 json!([
                     signature,
                     {
-                        "encoding": "jsonParsed",
+                        "encoding": "base64",
                         "commitment": "confirmed",
                         "maxSupportedTransactionVersion": 0
                     }
@@ -310,7 +315,7 @@ impl HeliusRpc {
                     "params": [
                         sig,
                         {
-                            "encoding": "jsonParsed",
+                            "encoding": "base64",
                             "commitment": "confirmed",
                             "maxSupportedTransactionVersion": 0
                         }
@@ -370,24 +375,31 @@ impl HeliusRpc {
     }
 
     /// One page of Helius `getTransactionsForAddress` (gTFA) in FULL mode,
-    /// `jsonParsed` encoding, succeeded-only. Returns the raw `data` items — each
-    /// already shaped like a `getTransaction` result (`slot`/`blockTime`/
+    /// succeeded-only, with an explicit `encoding`. Returns the raw `data` items —
+    /// each already shaped like a `getTransaction` result (`slot`/`blockTime`/
     /// `transaction`/`meta`) — and the next `paginationToken` (`None` at the end).
     ///
     /// This is the archival path for full backfills: ~0.1 credit/tx at limit 1000
     /// (10 credits per 100 returned), vs 1 credit/tx for per-sig `getTransaction`,
     /// AND it collapses the getSignaturesForAddress + N×getTransaction loop into
     /// one cursor-paginated call. `params` is positional: `[address, {options}]`.
-    pub async fn get_transactions_for_address_full_page(
+    ///
+    /// token_sync passes `encoding="base64"` so each item lowers to protobuf via
+    /// [`crate::ingest_laserstream::adapter_rpc::rpc_to_protobuf`] without losing
+    /// the raw instruction `data` jsonParsed pre-parses away. That the endpoint
+    /// honors base64 (incl. `meta.loadedAddresses` for versioned txs) is confirmed
+    /// by the `--ignored` `gtfa_base64_matches_jsonparsed_decode` harness.
+    pub async fn get_transactions_for_address_full_page_enc(
         &self,
         address: &str,
         sort_order: &str,
         limit: usize,
         pagination_token: Option<&str>,
+        encoding: &str,
     ) -> anyhow::Result<(Vec<Value>, Option<String>)> {
         let mut options = json!({
             "transactionDetails": "full",
-            "encoding": "jsonParsed",
+            "encoding": encoding,
             "commitment": "confirmed",
             "maxSupportedTransactionVersion": 0,
             "sortOrder": sort_order,

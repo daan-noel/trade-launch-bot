@@ -30,7 +30,6 @@ use crate::{
 // Cloned ingest internals — self-contained copies, not imported from `ingest/`.
 use super::db_writer::{DbWriteOp, RawBlobJob, TokenMetricsWrite};
 use super::decoder::{DecodeOutput, HeliusDecoder};
-use super::profile;
 use super::proto::geyser::SubscribeUpdateTransaction;
 
 const DB_QUEUE_CAP: usize = 4096;
@@ -174,9 +173,7 @@ impl IngestPipeline {
                     // null-data raw-tx carrier, and the persisted blob (so it keeps
                     // the real receive time, not the DbWriter flush time).
                     let received_at = Utc::now();
-                    let _span = profile::start();
                     let decoded = self.decoder.decode_protobuf(&update, received_at);
-                    profile::record_decode(_span);
                     match decoded {
                         DecodeOutput::Transaction { raw_tx, mut events } => {
                             sort_events(&mut events);

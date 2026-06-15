@@ -1,20 +1,14 @@
-//! Protobuf-native decode of live LaserStream transaction updates (Tier B).
+//! Protobuf-native decode of LaserStream transaction updates (`decode_protobuf`).
 //!
-//! Forks [`HeliusDecoder::decode_result`] (the `Value` path): reads the
-//! Yellowstone protobuf structs directly so the live ingest hot path never
-//! builds the heap-heavy Helius `Value` (base58 of the signature + every
-//! account key + every instruction `data`, plus the `json!` tree). That
-//! synthesis now happens **off-thread** in the DbWriter, only for the persisted
-//! raw blob (see [`super::super::adapter::build_raw_blob`]). The `Value` path
-//! stays for token_sync (RPC + replay).
-//!
-//! This is an intentional clone of the `decode_result` orchestration — same
-//! steps, same order — so a fix here usually belongs in `decode_result` too
-//! (mirroring the `tpsl_sniper_{1,2}` convention). Borrowed/byte-level leaves
-//! (Borsh event decoders, `classify_pump_ix`, `label_instruction`,
-//! `determine_instruction_type`, `build_amm_trade`, `decode_create`) are shared,
-//! so only the **source of the bytes** differs. The decoder unit tests +
-//! `parity` tests guard that the two paths produce identical events.
+//! The single decode path for both live ingest and token_sync (which lowers its
+//! base64 RPC results to the same `SubscribeUpdateTransaction` via
+//! [`super::super::adapter_rpc::rpc_to_protobuf`]). Reads the Yellowstone protobuf
+//! structs directly, so the hot path never builds a heap-heavy `Value`; the
+//! persisted raw blob is synthesised off-thread in the DbWriter (see
+//! [`super::super::adapter::build_raw_blob`]). Borrowed/byte-level leaves (Borsh
+//! event decoders, `classify_pump_ix`, `label_instruction`,
+//! `determine_instruction_type`, `build_amm_trade`, `decode_create`) are shared
+//! with the root decoder module.
 
 use std::sync::Arc;
 
@@ -53,9 +47,8 @@ use trade::decode_trade_events_from_inner_pb;
 /// One pump.fun instruction in borrowed protobuf form: its program id resolved
 /// to a `&str` (out of the base58-encoded account keys) and its raw `data` /
 /// `accounts` index bytes borrowed straight from the protobuf — no base58
-/// round-trip, no `Value`. The protobuf-native analogue of the `Value` decode's
-/// `&Value` instruction handles. Private to the `grpc` subtree — `grpc::trade`
-/// reads it as a descendant module.
+/// round-trip, no `Value`. Private to the `grpc` subtree — `grpc::trade` reads it
+/// as a descendant module.
 struct PbIx<'a> {
     program_id: &'a str,
     accounts: &'a [u8],
@@ -92,7 +85,7 @@ impl HeliusDecoder {
         let slot = update.slot;
         let block_time = received_at;
 
-        // Gate on logs (mirrors `decode_result`): a bonding-curve tx mentions the
+        // Gate on logs: a bonding-curve tx mentions the
         // pump.fun program; otherwise it may be a post-migration PumpSwap (AMM)
         // swap for a pool we track, resolved via `pool_index`.
         let has_pump = meta
@@ -192,9 +185,9 @@ impl HeliusDecoder {
                 TradeType::Buy => "Buy".to_string(),
                 TradeType::Sell => "Sell".to_string(),
             };
-            // Move the labels into the final leg (single-leg = zero clones), as
-            // `decode_result` does — `labels_json` is Null afterwards, matching
-            // the `Value` path's behaviour for any later create/balance use.
+            // Move the labels into the final leg (single-leg = zero clones);
+            // `labels_json` is Null afterwards, so any later create/balance use
+            // sees an empty labels value.
             trade.instruction_labels = if leg_index == last_leg {
                 std::mem::take(&mut labels_json)
             } else {
@@ -295,7 +288,35 @@ impl HeliusDecoder {
         DecodeOutput::Transaction { raw_tx, events }
     }
 
-    /// Protobuf-native sibling of `decode_amm_live`: resolve each PumpSwap swap's
+    /// AMM-only decode for an explicit-pool backfill (token_sync's AMM loop):
+    /// decode PumpSwap swaps for a tracked pool **regardless** of whether the tx
+    /// also touches the bonding-curve program. The protobuf analogue of the
+    /// removed `decode_pump_swap_result` — unlike [`Self::decode_protobuf`], there
+    /// is no curve-priority gate, so an aggregator tx that trades another token on
+    /// the curve *and* swaps our pool still yields our AMM trade. Requires a seeded
+    /// `pool_index`; returns `Ignored` without one or when the tx has no swap for a
+    /// tracked pool.
+    pub fn decode_amm_protobuf(
+        &self,
+        update: &SubscribeUpdateTransaction,
+        received_at: DateTime<Utc>,
+    ) -> DecodeOutput {
+        let Some(info) = update.transaction.as_ref() else {
+            return DecodeOutput::Ignored;
+        };
+        let Some(tx) = info.transaction.as_ref() else {
+            return DecodeOutput::Ignored;
+        };
+        let Some(message) = tx.message.as_ref() else {
+            return DecodeOutput::Ignored;
+        };
+        let Some(meta) = info.meta.as_ref() else {
+            return DecodeOutput::Ignored;
+        };
+        self.decode_amm_live_pb(info, message, meta, update.slot, received_at, received_at)
+    }
+
+    /// Decode a PumpSwap (AMM) tx: resolve each swap's
     /// pool to a tracked mint via the shared index, dropping swaps for pools we
     /// don't track. Reached only when the tx touches the AMM program but not the
     /// curve program.
@@ -507,22 +528,17 @@ fn is_migrate_pb(ix: &PbIx) -> bool {
 
 #[cfg(test)]
 mod tests {
-    //! Protobuf-vs-`Value` decode parity. Each test builds one synthetic
-    //! protobuf tx, decodes it BOTH ways — `decode_protobuf` and the trusted
-    //! `update_tx_to_value` → `decode_result` `Value` path — and asserts the
-    //! decoded events are identical. The `Value` path is the oracle here (it is
-    //! the pre-Tier-B production decoder, unchanged), so equality proves the
-    //! protobuf fork attributes trades/migrations the same way. (Create parity is
-    //! additionally covered by the shared, source-agnostic `decode_create`.) The
-    //! live-traffic counterpart is the opt-in `--ignored` soak in
-    //! [`super::super::live_parity`], which ran clean (zero mismatches over
-    //! thousands of live curve txs) before the in-hot-path `parity.rs` was retired.
+    //! `decode_protobuf` unit tests. Each builds one synthetic protobuf tx and
+    //! asserts the decoded events (trades/migrations) match the expected
+    //! attribution — covering the cases that historically differed between the
+    //! protobuf and `Value` paths (log-emitted vs inner-CPI trade events, account
+    //! ordering). Create decode is additionally covered by the shared,
+    //! source-agnostic `decode_create`.
 
     use base64::{engine::general_purpose::STANDARD, Engine};
     use borsh::BorshSerialize;
     use chrono::Utc;
 
-    use super::super::super::adapter::update_tx_to_value;
     use super::super::super::proto::geyser::{
         SubscribeUpdateTransaction, SubscribeUpdateTransactionInfo,
     };
@@ -651,18 +667,8 @@ mod tests {
         }
     }
 
-    fn assert_parity(update: &SubscribeUpdateTransaction, decoder: &HeliusDecoder) -> Vec<String> {
-        let pb = decoder.decode_protobuf(update, Utc::now());
-        let value = update_tx_to_value(update, PUMP_FUN_PROGRAM_ID)
-            .map(|v| decoder.decode_result(v))
-            .unwrap_or(DecodeOutput::Ignored);
-        let pb_fps = fps(&pb);
-        assert_eq!(
-            pb_fps,
-            fps(&value),
-            "protobuf decode diverged from Value decode"
-        );
-        pb_fps
+    fn decode_fps(update: &SubscribeUpdateTransaction, decoder: &HeliusDecoder) -> Vec<String> {
+        fps(&decoder.decode_protobuf(update, Utc::now()))
     }
 
     /// A bonding-curve buy whose TradeEvent comes from a "Program data:" log.
@@ -700,7 +706,7 @@ mod tests {
 
         let update = build_update(account_keys, vec![cb_ix, buy_ix], vec![], logs);
         let decoder = HeliusDecoder::new(PUMP_FUN_PROGRAM_ID.to_string());
-        let fps = assert_parity(&update, &decoder);
+        let fps = decode_fps(&update, &decoder);
         assert_eq!(fps.len(), 1, "expected exactly one trade");
         assert!(fps[0].contains("Pump.Fun: Buy"), "labels should carry the buy");
         assert!(
@@ -745,7 +751,7 @@ mod tests {
 
         let update = build_update(account_keys, vec![sell_ix], inner, logs);
         let decoder = HeliusDecoder::new(PUMP_FUN_PROGRAM_ID.to_string());
-        let fps = assert_parity(&update, &decoder);
+        let fps = decode_fps(&update, &decoder);
         assert_eq!(fps.len(), 1, "expected exactly one trade from the inner CPI");
         assert!(fps[0].starts_with("trade|"));
     }
@@ -767,7 +773,7 @@ mod tests {
 
         let update = build_update(account_keys, vec![migrate_ix], vec![], logs);
         let decoder = HeliusDecoder::new(PUMP_FUN_PROGRAM_ID.to_string());
-        let fps = assert_parity(&update, &decoder);
+        let fps = decode_fps(&update, &decoder);
         assert_eq!(
             fps,
             vec![format!("migrate|{}", bs58::encode(mint).into_string())]

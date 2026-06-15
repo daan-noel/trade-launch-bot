@@ -85,9 +85,13 @@ POST /api/token/sync ─▶ preflight (validate mint, bonding-curve check)
 
 ## Shared with live ingest
 
-- **Decoder** — same `HeliusDecoder::decode_result`. Token_sync constructs the decoder without a
-  `pool_index` and calls the AMM decode path explicitly (it already knows the mint + pool for the
-  migrated venue).
+- **Decoder** — same `HeliusDecoder::decode_protobuf` as the live hot path. Token_sync lowers each
+  RPC result (`encoding=base64`) to a `SubscribeUpdateTransaction` via `adapter_rpc::rpc_to_protobuf`
+  (replay supplies the protobuf natively), then decodes it. It seeds the decoder's `pool_index` with
+  the token's `{pool → mint}` up front, so post-migration AMM swaps resolve through the same
+  `decode_protobuf` call (no separate explicit-pool entry point). The persisted blob is synthesised
+  via `adapter::build_raw_blob` (inline, since token_sync has no DbWriter), identical to the live
+  path — backfill rows land in `raw_transactions` as `source='rpc'` for later analysis.
 - **`TokenMetricsWrite`** — token_sync builds it via `metrics_from_state` and writes through the same
   `TokenInfoRepo::upsert_metrics` the DbWriter uses, so metrics are computed identically. This is the
   shared surface noted in [[laserstream-ingest-migration]].

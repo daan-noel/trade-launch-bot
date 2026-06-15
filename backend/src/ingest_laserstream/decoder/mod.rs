@@ -1,15 +1,11 @@
 //! Pump.fun transaction decoder.
 //!
-//! Two decode paths, one per byte source, kept as parity-tested siblings:
-//! - [`grpc`] — protobuf-native decode of the live LaserStream feed (the hot path);
-//! - [`json`] — the Helius `jsonParsed` `Value` decode (RPC token_sync / replay,
-//!   and the off-thread persisted-blob synthesis).
-//!
-//! Everything source-agnostic lives at this root and is shared by both paths:
-//! the [`HeliusDecoder`] struct + [`DecodeOutput`], `decode_migrate`, and the
-//! byte/log leaves in [`create`], [`trade`], and [`instructions`]. A fix to a
-//! shared leaf lands once; a fix to a path-specific step usually belongs in both
-//! `grpc` and `json` (the parity tests in `grpc` guard the two stay identical).
+//! One protobuf-native decode path, [`grpc`]'s `decode_protobuf`,
+//! shared by both the live LaserStream feed and token_sync (which lowers its RPC
+//! results to the same `SubscribeUpdateTransaction` via
+//! [`super::adapter_rpc::rpc_to_protobuf`]). Source-agnostic pieces live at this
+//! root: the [`HeliusDecoder`] struct + [`DecodeOutput`], `decode_migrate`, and
+//! the byte/log leaves in [`create`], [`trade`], and [`instructions`].
 
 use std::sync::Arc;
 
@@ -24,7 +20,6 @@ use crate::models::{
 mod create;
 mod grpc;
 mod instructions;
-mod json;
 mod trade;
 
 // ---------------------------------------------------------------------------

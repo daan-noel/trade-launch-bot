@@ -260,10 +260,9 @@ pub(super) fn decode_pump_swap_trades_from_logs(logs: &[&str]) -> Vec<DecodedAmm
     out
 }
 
-/// Build a `Trade` from a decoded PumpSwap (AMM) swap for `mint`. Shared by the
-/// sync path ([`super::HeliusDecoder::decode_pump_swap_result`], explicit pool)
-/// and the live paths ([`super::json`] / [`super::grpc`], pool resolved via the
-/// index).
+/// Build a `Trade` from a decoded PumpSwap (AMM) swap for `mint`. Shared by all
+/// callers of [`super::grpc`]'s `decode_amm_live_pb` (live ingest + token_sync),
+/// which resolve the swap's pool to `mint` via the pool→mint index.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_amm_trade(
     ev: &DecodedAmmTrade,

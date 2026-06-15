@@ -1,57 +1,24 @@
 //! Adapter: Yellowstone `SubscribeUpdateTransaction` (protobuf) -> the Helius
-//! `params.result` JSON shape consumed by the cloned decoder's `decode_result`.
+//! `params.result` JSON shape persisted as the raw-tx blob (`raw_data`).
 //!
-//! This lets the decoder be reused essentially unchanged: it reads `logMessages`,
+//! `build_raw_blob` synthesises that blob from the protobuf — `logMessages`,
 //! base58 instruction `data`, string `accountKeys`, and index-based
-//! `accounts`/`programIdIndex` — all synthesized here from the protobuf. The same
-//! `Value` is also persisted verbatim as the gRPC raw-tx blob.
+//! `accounts`/`programIdIndex`. Used by the DbWriter (live, off the hot path) and
+//! by token_sync (backfill), so persisted blobs are byte-consistent across both.
 
 use serde_json::{json, Value};
-
-use crate::config::constants::PUMP_SWAP_PROGRAM_ID;
 
 use super::proto::geyser::SubscribeUpdateTransaction;
 use super::proto::solana::storage::confirmed_block as scb;
 
-/// Convert a transaction update into the decoder's expected `result` object.
+/// Synthesise the Helius-shaped `params.result` blob from the protobuf — the
+/// persisted gRPC raw-tx blob (`raw_transactions.raw_data`).
 ///
-/// Returns `None` if the update lacks the transaction / message / meta we need
-/// (e.g. a non-transaction update, or a malformed frame), or if a cheap log-based
-/// pre-filter shows the decoder would ignore it anyway — so the heap-heavy `Value`
-/// is never built for the many txs the subscription delivers that touch neither
-/// the pump.fun curve program nor a PumpSwap (AMM) pool. `pump_program_id` is the
-/// same curve program id the decoder gates on, so this never drops a decodable tx.
-pub fn update_tx_to_value(
-    update: &SubscribeUpdateTransaction,
-    pump_program_id: &str,
-) -> Option<Value> {
-    let meta = update.transaction.as_ref()?.meta.as_ref()?;
-
-    // Pre-filter: the decoder keeps only bonding-curve txs (curve program in the
-    // logs) and PumpSwap AMM swaps (AMM program in the logs); everything else is
-    // dropped one call later. Mirror that gate here on the raw `log_messages` and
-    // skip the whole `Value` build for the rest — the biggest per-event win.
-    if !meta
-        .log_messages
-        .iter()
-        .any(|l| l.contains(pump_program_id) || l.contains(PUMP_SWAP_PROGRAM_ID))
-    {
-        return None;
-    }
-
-    build_raw_blob(update)
-}
-
-/// Synthesise the Helius-shaped `params.result` blob from the protobuf, **without**
-/// the pre-filter — the persisted gRPC raw-tx blob (`raw_transactions.raw_data`).
-///
-/// Tier B runs this off the ingest hot path, inside the DbWriter flush, only for
-/// txs we actually persist: the heap-heavy `Value` synthesis (base58 of the
-/// signature + every account key + every instruction `data`, plus the `json!`
-/// tree) no longer blocks the serial ingest task. The bytes are identical to the
-/// old inline build, so historical blobs and replay stay byte-for-byte consistent.
-/// `update_tx_to_value` = this, gated by the cheap log pre-filter (used by the
-/// cold replay path, which needs a decodable `Value`).
+/// Runs off the ingest hot path, inside the DbWriter flush, only for txs we
+/// actually persist: the heap-heavy `Value` synthesis (base58 of the signature +
+/// every account key + every instruction `data`, plus the `json!` tree) never
+/// blocks the serial ingest task. token_sync reuses it for backfilled txs so
+/// historical and live blobs share one byte-for-byte shape.
 pub fn build_raw_blob(update: &SubscribeUpdateTransaction) -> Option<Value> {
     let info = update.transaction.as_ref()?;
     let tx = info.transaction.as_ref()?;
@@ -158,13 +125,13 @@ mod tests {
 
     use super::super::proto::geyser::{SubscribeUpdateTransaction, SubscribeUpdateTransactionInfo};
     use super::super::proto::solana::storage::confirmed_block as scb;
-    use super::update_tx_to_value;
+    use super::build_raw_blob;
 
     fn pk(b: u8) -> Vec<u8> {
         vec![b; 32]
     }
 
-    /// A pump.fun curve program id used to satisfy the log pre-filter in tests.
+    /// A pump.fun curve program id, present in the logs to mirror a real tx.
     const TEST_PUMP_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 
     #[test]
@@ -210,8 +177,7 @@ mod tests {
             slot: 42,
         };
 
-        let v = update_tx_to_value(&update, TEST_PUMP_PROGRAM_ID)
-            .expect("adapter should produce a value");
+        let v = build_raw_blob(&update).expect("adapter should produce a value");
 
         // accountKeys order: static (0,1) -> loaded writable (2) -> loaded readonly (3)
         let keys = v["transaction"]["transaction"]["message"]["accountKeys"]

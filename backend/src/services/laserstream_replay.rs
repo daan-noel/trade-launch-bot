@@ -4,9 +4,9 @@
 //! this is its short-lived sibling: open a fresh `Subscribe` stream filtered to a
 //! single account (a token's bonding curve or its PumpSwap pool), replay from the
 //! sync watermark's slot, drain the replayed transactions, and disconnect. Each
-//! transaction is adapted to the same decoder-ready `Value` the RPC path produces
-//! (`result.transaction.meta` + `result.transaction.transaction.message`), so the
-//! caller decodes it with the unchanged `HeliusDecoder`.
+//! transaction is returned as its native `SubscribeUpdateTransaction` protobuf —
+//! the exact frame the live ingest decodes — so the caller runs the same
+//! `decode_protobuf` hot path (no `Value` synthesis on either side).
 //!
 //! Why this saves credits: replay is part of the streaming subscription, billed
 //! per connection, not per `getTransaction`. For a token synced within the
@@ -22,15 +22,14 @@
 use std::time::Duration;
 
 use anyhow::Context;
-use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::info;
 
-use crate::ingest_laserstream::adapter;
+use crate::config::constants::PUMP_SWAP_PROGRAM_ID;
 use crate::ingest_laserstream::client::{build_subscribe_request, connect};
 use crate::ingest_laserstream::proto::geyser::subscribe_update::UpdateOneof;
-use crate::ingest_laserstream::proto::geyser::SubscribeRequest;
+use crate::ingest_laserstream::proto::geyser::{SubscribeRequest, SubscribeUpdateTransaction};
 
 /// Outbound request queue depth (just the single initial subscribe).
 const REQUEST_QUEUE_CAP: usize = 4;
@@ -45,11 +44,11 @@ const IDLE_TIMEOUT: Duration = Duration::from_millis(2000);
 /// Absolute cap so a sync can never hang on a slow/stuck stream.
 const HARD_DEADLINE: Duration = Duration::from_secs(90);
 
-/// A replayed transaction in the decoder's expected shape.
+/// A replayed transaction as its native protobuf frame, fed straight to
+/// `decode_protobuf` (no `Value` synthesis).
 pub struct ReplayedTx {
     pub slot: u64,
-    /// Decoder-ready `result` value (same shape as `wrap_transaction_result`).
-    pub result: Value,
+    pub update: SubscribeUpdateTransaction,
 }
 
 /// Replay transactions referencing `account` from `from_slot` (inclusive) up to
@@ -109,10 +108,8 @@ pub async fn replay_account_from_slot(
                     Ok(Some(update)) => {
                         if let Some(UpdateOneof::Transaction(tx)) = update.update_oneof {
                             got_any = true;
-                            if tx.slot >= from_slot {
-                                if let Some(result) = adapter::update_tx_to_value(&tx, pump_program_id) {
-                                    out.push(ReplayedTx { slot: tx.slot, result });
-                                }
+                            if tx.slot >= from_slot && replay_is_relevant(&tx, pump_program_id) {
+                                out.push(ReplayedTx { slot: tx.slot, update: tx });
                             }
                         }
                         // Non-transaction updates (ping/slot/etc.) ignored.
@@ -128,4 +125,19 @@ pub async fn replay_account_from_slot(
 
     out.sort_by_key(|t| t.slot);
     Ok(out)
+}
+
+/// Cheap log pre-filter mirroring the decoder's gate: keep only frames the decoder
+/// can decode (bonding-curve or PumpSwap), so we don't carry unrelated txs that
+/// merely touched the account. `decode_protobuf` would drop them anyway.
+fn replay_is_relevant(tx: &SubscribeUpdateTransaction, pump_program_id: &str) -> bool {
+    tx.transaction
+        .as_ref()
+        .and_then(|i| i.meta.as_ref())
+        .map(|m| {
+            m.log_messages
+                .iter()
+                .any(|l| l.contains(pump_program_id) || l.contains(PUMP_SWAP_PROGRAM_ID))
+        })
+        .unwrap_or(false)
 }
