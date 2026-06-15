@@ -5,14 +5,7 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 ## Migrations
 | File | Content |
 |---|---|
-| `0001_init.sql` | baseline: all tables/indexes, `uuid-ossp`, `raw_transactions` partition fns, seed tags |
-| `0002_perf_indexes.sql` | composite hot-path indexes (wallet+mint balance, slot ordering) |
-| `0003_settings_kv.sql` | `app_settings` single-row JSONB → typed key-value store (dotted keys) |
-| `0004_tpsl2_target_columns.sql` | `tpsl2_{real,paper}_positions` += nullable `target_{price,amount,time,tx}` (scalp-entry trigger-trade snapshot; no backfill, `target_tx` not unique) |
-| `0005_tpsl2_positions_column_order.sql` | `tpsl2_{real,paper}_positions` rebuilt (rename→create→copy→drop) to physically order columns `target_*` → `entry_*` → `exit_*`; same columns/constraints/indexes, no data loss. Matches the Rust structs, JSON response, and frontend table |
-| `0006_tpsl2_cohort_percent.sql` | rescale `tpsl2_strategy_rules.{p_entry_max_cohort_held,p_exit_cohort_ratio}` ×100 (raw-fraction `0.30`/`0.05` → whole-percent), unifying the percent convention; `0`/NULL "off" sentinel unaffected. See `percent-params-unify-plan.md` |
-| `0007_tpsl_position_created_at_indexes.sql` | composite `(filter, created_at DESC)` indexes on `tpsl{1,2}_real_positions` for the list views: `(strategy, created_at DESC)`, `(rule_id, created_at DESC)`, `(mint, status, created_at DESC)`, `(wallet, status, created_at DESC)` — filter+order served by one index instead of filter-then-sort |
-| `0008_raw_tx_source_rename.sql` | relabel `raw_transactions.source` to name provenance not transport: `grpc`→`live` (real-time ingest), `rpc`→`sync` (token_sync backfill, both fetch methods); updates existing rows + the column default |
+| `0001_init.sql` | **single squashed migration = the full final schema.** All tables/indexes (incl. perf + composite `(filter, created_at DESC)` position indexes), `uuid-ossp`, partitioned `raw_transactions` + partition fns (`source` = `live`/`sync`), `tpsl2_{real,paper}_positions` with `target_*` columns in `target_*`/`entry_*`/`exit_*` order, the `app_settings` key-value store, and seed tags. Prior incremental migrations were folded in; data-only steps (percent rescale, source relabel) leave no schema trace and were dropped. **Squash applies to fresh DBs only — an existing DB that already ran the old chain fails the sqlx checksum check (drop & recreate to re-init).** |
 
 ## Tables
 **Core trading**

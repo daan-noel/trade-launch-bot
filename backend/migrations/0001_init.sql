@@ -1,12 +1,14 @@
 -- ============================================================================
 -- Initial schema (squashed).
 --
--- This single migration is the full schema after the original 0001–0013
--- migrations were merged. It reflects the FINAL state: table/column renames
--- (tpsl1_*/tpsl2_* prefixes, p_token_/p_entry_/p_exit_ param prefixes),
--- partitioned raw_transactions / raw_transactions_grpc, and all added columns
--- are baked in directly. Tables are ordered so foreign-key targets are created
--- before their referrers.
+-- This single migration is the full, FINAL schema — every prior migration has
+-- been folded in directly: tpsl1_*/tpsl2_* table prefixes, p_token_/p_entry_/
+-- p_exit_ param prefixes, partitioned raw_transactions, the perf/composite
+-- indexes, the app_settings key-value store, the tpsl2 positions `target_*`
+-- columns (in target_*/entry_*/exit_* order), and the raw_transactions
+-- `source` = 'live'/'sync' vocabulary. Data-only migrations (percent rescales,
+-- source relabels) leave no schema trace and are intentionally omitted.
+-- Tables are ordered so foreign-key targets are created before their referrers.
 -- ============================================================================
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -78,12 +80,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_tx_leg ON trades(tx_signature, leg_
 -- Supports the incremental "Fetch new" boundary lookup: latest signature per
 -- (mint, venue) so each source resumes from its own last saved trade.
 CREATE INDEX IF NOT EXISTS idx_trades_mint_venue_slot ON trades(mint_address, venue, slot DESC);
+-- Wallet+mint net-amount / balance checks (compute_is_rugged's creator-dump and
+-- cohort-net queries, manual balance lookups) — composite avoids re-filtering
+-- every wallet row by mint.
+CREATE INDEX IF NOT EXISTS idx_trades_wallet_mint   ON trades(wallet_address, mint_address);
+-- Chronological-by-slot ordering within a single mint (multi-leg aware), without
+-- needing a venue predicate (which idx_trades_mint_venue_slot would require).
+CREATE INDEX IF NOT EXISTS idx_trades_mint_slot_leg ON trades(mint_address, slot, leg_index);
 
 -- -------------------------------------------------------------------------
 -- raw_transactions  (unified raw tx result — never mutated, replay/analysis source)
 --   Single write-only table for both ingest provenances, tagged by `source`:
---     'grpc' — live LaserStream (Yellowstone) pipeline
---     'rpc'  — token_sync archival/replay backfill
+--     'live' — real-time LaserStream (Yellowstone) ingest pipeline
+--     'sync' — token_sync backfill (both "Fetch All" via gTFA AND "Fetch New"
+--              via LaserStream replay)
 --   WEEKLY range partitions on received_at with ~2-month retention (managed by
 --   the app's partition-maintenance task; KEEP_WEEKS must match
 --   ingest::maintenance::KEEP_WEEKS = 9). No UNIQUE(signature): a unique
@@ -98,7 +108,7 @@ CREATE TABLE IF NOT EXISTS raw_transactions (
     block_time  TIMESTAMPTZ NOT NULL,
     raw_data    JSONB       NOT NULL,
     received_at TIMESTAMPTZ NOT NULL,
-    source      TEXT        NOT NULL DEFAULT 'grpc',
+    source      TEXT        NOT NULL DEFAULT 'live',
     PRIMARY KEY (received_at, id)
 ) PARTITION BY RANGE (received_at);
 
@@ -190,6 +200,8 @@ CREATE TABLE IF NOT EXISTS tokens_analysis (
 );
 
 CREATE INDEX IF NOT EXISTS idx_analysis_mint ON tokens_analysis(mint_address);
+-- Analysis-freshness scans (newest-first by computed_at).
+CREATE INDEX IF NOT EXISTS idx_analysis_computed_at ON tokens_analysis(computed_at DESC);
 
 -- -------------------------------------------------------------------------
 -- creator_profiles
@@ -206,6 +218,9 @@ CREATE TABLE IF NOT EXISTS creator_profiles (
 );
 
 CREATE INDEX IF NOT EXISTS idx_creator_profiles_wallet ON creator_profiles(wallet_address);
+-- Creator suspiciousness ranking / threshold filtering.
+CREATE INDEX IF NOT EXISTS idx_creator_profiles_suspiciousness
+    ON creator_profiles(suspiciousness_score DESC);
 
 -- =========================================================================
 -- tpsl_sniper_1 storage (live strategy)
@@ -286,6 +301,11 @@ CREATE INDEX IF NOT EXISTS idx_tpsl1_real_positions_strategy          ON tpsl1_r
 CREATE INDEX IF NOT EXISTS idx_tpsl1_real_positions_rule_id           ON tpsl1_real_positions(rule_id);
 CREATE INDEX IF NOT EXISTS idx_tpsl1_real_positions_mint_status       ON tpsl1_real_positions(mint, status);
 CREATE INDEX IF NOT EXISTS idx_tpsl1_real_positions_token_program_id  ON tpsl1_real_positions(token_program_id);
+-- Composite (filter, created_at DESC) for the list views (filter+order in one index).
+CREATE INDEX IF NOT EXISTS idx_tpsl1_positions_strategy_created     ON tpsl1_real_positions(strategy, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tpsl1_positions_rule_created         ON tpsl1_real_positions(rule_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tpsl1_positions_mint_status_created  ON tpsl1_real_positions(mint, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tpsl1_positions_wallet_status_created ON tpsl1_real_positions(wallet, status, created_at DESC);
 
 -- -------------------------------------------------------------------------
 -- tpsl1_paper_test_run
@@ -401,13 +421,22 @@ CREATE TABLE IF NOT EXISTS tpsl2_strategy_rules (
 CREATE INDEX IF NOT EXISTS idx_tpsl2_strategy_rules_active ON tpsl2_strategy_rules(is_active);
 
 -- -------------------------------------------------------------------------
--- tpsl2_real_positions  (clone of tpsl1_real_positions)
+-- tpsl2_real_positions  (clone of tpsl1_real_positions + scalp-entry target_*)
+--   target_* records the scalp-entry *trigger* trade (someone else's trade that
+--   armed the entry), distinct from the actual entry fill in entry_*. All
+--   nullable; target_tx is intentionally NOT unique (the trigger can repeat
+--   across positions). Physical column order is target_*/entry_*/exit_* to match
+--   the Rust struct, JSON response, and frontend table.
 -- -------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tpsl2_real_positions (
     id                  UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
     mint                TEXT        NOT NULL,
     wallet              TEXT        NOT NULL,
     token_program_id    TEXT,
+    target_price        DOUBLE PRECISION,
+    target_amount       DOUBLE PRECISION,
+    target_time         TIMESTAMPTZ,
+    target_tx           TEXT,
     entry_price         DOUBLE PRECISION NOT NULL,
     entry_amount        DOUBLE PRECISION NOT NULL,
     entry_time          TIMESTAMPTZ,
@@ -433,6 +462,11 @@ CREATE INDEX IF NOT EXISTS idx_tpsl2_real_positions_strategy          ON tpsl2_r
 CREATE INDEX IF NOT EXISTS idx_tpsl2_real_positions_rule_id           ON tpsl2_real_positions(rule_id);
 CREATE INDEX IF NOT EXISTS idx_tpsl2_real_positions_mint_status       ON tpsl2_real_positions(mint, status);
 CREATE INDEX IF NOT EXISTS idx_tpsl2_real_positions_token_program_id  ON tpsl2_real_positions(token_program_id);
+-- Composite (filter, created_at DESC) for the list views (filter+order in one index).
+CREATE INDEX IF NOT EXISTS idx_tpsl2_positions_strategy_created     ON tpsl2_real_positions(strategy, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tpsl2_positions_rule_created         ON tpsl2_real_positions(rule_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tpsl2_positions_mint_status_created  ON tpsl2_real_positions(mint, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tpsl2_positions_wallet_status_created ON tpsl2_real_positions(wallet, status, created_at DESC);
 
 -- -------------------------------------------------------------------------
 -- tpsl2_paper_test_run  (clone of tpsl1_paper_test_run)
@@ -451,7 +485,8 @@ CREATE TABLE IF NOT EXISTS tpsl2_paper_test_run (
 CREATE INDEX IF NOT EXISTS idx_tpsl2_paper_test_run_rule ON tpsl2_paper_test_run(rule_id);
 
 -- -------------------------------------------------------------------------
--- tpsl2_paper_positions  (clone of tpsl1_paper_positions)
+-- tpsl2_paper_positions  (clone of tpsl1_paper_positions + scalp-entry target_*)
+--   See tpsl2_real_positions for the target_* semantics and column ordering.
 -- -------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tpsl2_paper_positions (
     id                  UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -459,6 +494,10 @@ CREATE TABLE IF NOT EXISTS tpsl2_paper_positions (
     mint                TEXT        NOT NULL,
     wallet              TEXT        NOT NULL,
     token_program_id    TEXT,
+    target_price        DOUBLE PRECISION,
+    target_amount       DOUBLE PRECISION,
+    target_time         TIMESTAMPTZ,
+    target_tx           TEXT,
     entry_price         DOUBLE PRECISION NOT NULL,
     entry_amount        DOUBLE PRECISION NOT NULL,
     entry_time          TIMESTAMPTZ,
@@ -559,17 +598,16 @@ INSERT INTO wallet_profile_tags (name, color, comment) VALUES
 ON CONFLICT (name) DO NOTHING;
 
 -- -------------------------------------------------------------------------
--- app_settings
--- Global, server-wide settings store. A single-row table (enforced by the `id`
--- + CHECK) holding ALL app settings as one JSONB document. The document's shape
--- is owned by the application's `AppSettings` struct, not by this schema:
--- adding a setting is a struct field with a default, never a migration.
+-- app_settings  (typed key-value store)
+-- Global, server-wide settings: one row per setting (dotted, namespaced key →
+-- JSONB value), giving per-key atomic upserts (no whole-document read-modify-
+-- write) and per-key audit via updated_at. The key set + defaults are owned by
+-- the application's `AppSettings` struct (settings_repo.rs `keys`); absent keys
+-- fall back to per-setting defaults at load time, so adding a setting is a struct
+-- field, never a migration.
 -- -------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS app_settings (
-    id         INTEGER PRIMARY KEY DEFAULT 1,
-    data       JSONB NOT NULL DEFAULT '{}'::jsonb,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT app_settings_singleton CHECK (id = 1)
+    key        TEXT PRIMARY KEY,
+    value      JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
-INSERT INTO app_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
