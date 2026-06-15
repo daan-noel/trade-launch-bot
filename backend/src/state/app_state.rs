@@ -22,6 +22,7 @@ use crate::strategies::tpsl_sniper_2::Tpsl2RuntimeCache;
 use crate::trader::PumpFunTrader;
 
 use super::backtest_trade_cache::BacktestTradeCache;
+use super::swing_run_cache::SwingRunCache;
 use super::token_cache::TokenCache;
 use super::token_list_cache::TokenListCache;
 use super::trade_signals::TradeSignals;
@@ -87,6 +88,10 @@ pub struct AppState {
     /// The simulate handler inserts a flag when a run starts and removes it when
     /// it ends; the cancel endpoint flips it; `run_backtest` polls it per chunk.
     pub sim_cancels: Arc<DashMap<Uuid, Arc<AtomicBool>>>,
+    /// Raw swings from recent "Swing Detection All" runs, keyed by client run id.
+    /// Lets the server-side-paged tokens list sort by the chain columns and
+    /// re-group on chain-latency changes without re-running detection.
+    pub swing_runs: Arc<SwingRunCache>,
 }
 
 /// Max concurrent token-sync backfills (each is RPC- and DB-heavy).
@@ -189,6 +194,8 @@ impl AppState {
             sweep_running: Arc::new(AtomicBool::new(false)),
             sweep_cancel: Arc::new(AtomicBool::new(false)),
             sim_cancels: Arc::new(DashMap::new()),
+            // Keep a few recent runs so re-runs / multiple tabs don't accumulate.
+            swing_runs: Arc::new(SwingRunCache::new(3)),
         }
     }
 

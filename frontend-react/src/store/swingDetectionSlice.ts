@@ -35,6 +35,12 @@ interface SwingDetectionState {
    * overlay survive navigation away from the page.
    */
   swingAllResults: SwingBatchEntry[] | null;
+  /**
+   * Id of the last "Swing Detection All" run, shared by all its batch chunks. The
+   * backend stashes that run's raw legs under it; the tokens-list query sends it
+   * so the chain columns can be sorted server-side. Null until a run completes.
+   */
+  swingRunId: string | null;
 }
 
 const initialState: SwingDetectionState = {
@@ -45,6 +51,7 @@ const initialState: SwingDetectionState = {
   swingResult: null,
   selectedSwingKey: null,
   swingAllResults: null,
+  swingRunId: null,
 };
 
 const swingDetectionSlice = createSlice({
@@ -82,6 +89,10 @@ const swingDetectionSlice = createSlice({
     setSwingAllResults(state, action: PayloadAction<SwingBatchEntry[] | null>) {
       state.swingAllResults = action.payload;
     },
+    /** Id of the run backing the server-side chain-column sort. */
+    setSwingRunId(state, action: PayloadAction<string | null>) {
+      state.swingRunId = action.payload;
+    },
   },
 });
 
@@ -94,6 +105,7 @@ export const {
   setSwingResult,
   setSelectedSwingKey,
   setSwingAllResults,
+  setSwingRunId,
 } = swingDetectionSlice.actions;
 
 export default swingDetectionSlice.reducer;

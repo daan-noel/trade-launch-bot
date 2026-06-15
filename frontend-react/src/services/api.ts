@@ -89,11 +89,20 @@ export async function fetchTokenSwings(
  * milliseconds relative to each token's first trade; a `null` bound is left
  * open. `opts.curveOnly` restricts detection to bonding-curve trades (the
  * token-creation → migration phase). Omit `opts` to run over full history.
+ *
+ * `opts.runId` tags every chunk of one "Swing Detection All" run with a shared
+ * id; the backend stashes the raw legs under it so the server-side-paged tokens
+ * list can sort by the chain columns. Omit for a one-off batch.
  */
 export async function fetchTokenSwingsBatch(
   mints: string[],
   params: import('types').SwingParams,
-  opts?: { startMs: number | null; endMs: number | null; curveOnly?: boolean },
+  opts?: {
+    startMs: number | null;
+    endMs: number | null;
+    curveOnly?: boolean;
+    runId?: string;
+  },
 ): Promise<import('types').SwingBatchResponse> {
   return request(`${API_BASE}/api/tokens/swings/batch`, {
     method: 'POST',
@@ -104,6 +113,7 @@ export async function fetchTokenSwingsBatch(
       window_start_ms: opts?.startMs ?? null,
       window_end_ms: opts?.endMs ?? null,
       curve_only: opts?.curveOnly ?? false,
+      run_id: opts?.runId ?? null,
     }),
   });
 }

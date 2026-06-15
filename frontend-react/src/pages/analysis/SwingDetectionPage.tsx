@@ -77,6 +77,7 @@ import {
   setSelectedSwingKey,
   setSwingAllResults,
   setSwingResult,
+  setSwingRunId,
   setTokensFetched,
 } from 'store/swingDetectionSlice';
 import type {
@@ -92,6 +93,13 @@ import type {
 const EMPTY_TOKENS: TokenRecord[] = [];
 const EMPTY_TRADES: TradeRecord[] = [];
 const EMPTY_PROFILES: WalletProfile[] = [];
+
+/**
+ * Column keys of the browser-derived "Chain of Swings" columns (see
+ * `swingChainColumns`). Sorting by one of these routes through the backend's
+ * swing-run sort path; any other column sorts on a real `TokenSummary` field.
+ */
+const SWING_CHAIN_SORT_COLS = new Set(['swing_pairs', 'max_seq_pairs', 'chain_count']);
 
 /** Initial table view-state; pageSize matches the DataTable default (10). */
 const INITIAL_QUERY: TableQuery = {
@@ -252,6 +260,7 @@ export function SwingDetectionPage() {
   const swingResult = useSelector((s: RootState) => s.swingDetection.swingResult);
   const selectedSwingKey = useSelector((s: RootState) => s.swingDetection.selectedSwingKey);
   const swingAllResults = useSelector((s: RootState) => s.swingDetection.swingAllResults);
+  const swingRunId = useSelector((s: RootState) => s.swingDetection.swingRunId);
 
   const price = usePriceDisplay();
   const { unit, usdRate } = usePriceUnit();
@@ -284,6 +293,20 @@ export function SwingDetectionPage() {
     [filters, createdFrom, createdTo],
   );
 
+  // Chain-of-swings latency budget (ms) for the global "All" run. Declared here
+  // (above queryArgs) so the tokens-page query can send it when sorting a chain
+  // column — the backend re-groups the run's raw legs at this latency.
+  const [chainLatencyMs, setChainLatencyMs] = useState<number | ''>(
+    storedSwingCriteria.chainLatencyMs,
+  );
+  const chainLatencyValue = typeof chainLatencyMs === 'number' ? chainLatencyMs : 0;
+
+  // Whether the table is currently ordered by a browser-derived chain column.
+  // Only then are the run id + latency sent (and folded into the cache key), so
+  // tweaking latency while sorting a normal column doesn't trigger a refetch.
+  const swingSortActive =
+    tableQuery.sortCol != null && SWING_CHAIN_SORT_COLS.has(tableQuery.sortCol);
+
   const queryArgs = useMemo(
     () => ({
       page: tableQuery.page,
@@ -293,8 +316,10 @@ export function SwingDetectionPage() {
       search: tableQuery.search,
       colFilters: tableQuery.colFilters,
       filters: effectiveFilters,
+      swingRunId: swingSortActive ? swingRunId : undefined,
+      swingChainLatencyMs: swingSortActive ? chainLatencyValue : undefined,
     }),
-    [tableQuery, effectiveFilters],
+    [tableQuery, effectiveFilters, swingSortActive, swingRunId, chainLatencyValue],
   );
   // Resets the table to page 1 whenever the server-side reduction changes.
   const filtersResetKey = useMemo(() => JSON.stringify(effectiveFilters), [effectiveFilters]);
@@ -399,9 +424,6 @@ export function SwingDetectionPage() {
   // without re-fetching.
   const [showSwingAll, setShowSwingAll] = useState(false);
   const [swingAllTab, setSwingAllTab] = useState<SwingAllTab>('analysis');
-  const [chainLatencyMs, setChainLatencyMs] = useState<number | ''>(
-    storedSwingCriteria.chainLatencyMs,
-  );
   // Launch-relative detection window (seconds from each token's first trade);
   // '' = open on that side. Applied to every "Swing Detection All" run.
   const [windowStartSec, setWindowStartSec] = useState<number | ''>(
@@ -432,7 +454,6 @@ export function SwingDetectionPage() {
   }, [swingAllResults]);
   const swingAllRanCount = swingAllResults ? swingAllResults.length : null;
 
-  const chainLatencyValue = typeof chainLatencyMs === 'number' ? chainLatencyMs : 0;
   const singleChainLatencyValue =
     typeof singleChainLatencyMs === 'number' ? singleChainLatencyMs : 0;
 
@@ -446,11 +467,12 @@ export function SwingDetectionPage() {
 
   // Base token columns built once (their price cells read the rate from context);
   // only the appended chain columns rebuild when a global run updates the stats.
-  // The chain columns are non-sortable here — the table is server-side paged and
-  // the backend can't order by these browser-derived values.
+  // The chain columns ARE sortable: a header click sorts server-side from the
+  // run's raw legs (see `swingRunId` + the backend's swing-sort path), so the
+  // ordering spans the whole filtered set under pagination, not just this page.
   const baseTokenColumns = useMemo(() => tokenColumns(), []);
   const columns = useMemo(
-    () => [...baseTokenColumns, ...swingChainColumns(chainStatsByMint, false)],
+    () => [...baseTokenColumns, ...swingChainColumns(chainStatsByMint, true)],
     [baseTokenColumns, chainStatsByMint],
   );
 
@@ -574,10 +596,14 @@ export function SwingDetectionPage() {
       if (isStale() || mints.length === 0) return;
       setSwingAllProgress({ done: 0, total: mints.length });
       const params = swingParamsFromForm(swingParams);
+      // One id shared by every chunk of this run; the backend stashes the raw
+      // legs under it so the tokens list can sort the chain columns from them.
+      const runId = crypto.randomUUID();
       const opts = {
         startMs: curveOnly || windowStartSec === '' ? null : Math.round(windowStartSec * 1000),
         endMs: curveOnly || windowEndSec === '' ? null : Math.round(windowEndSec * 1000),
         curveOnly,
+        runId,
       };
       // Split into ≤200-mint chunks and run a bounded number concurrently. The
       // backend now fans each chunk's DB loads out internally and runs the CPU
@@ -606,6 +632,9 @@ export function SwingDetectionPage() {
       );
       if (isStale()) return;
       dispatch(setSwingAllResults(chunkResults.flat()));
+      // Publish the run id only after every chunk landed, so a chain-column sort
+      // reads a fully-populated server-side run.
+      dispatch(setSwingRunId(runId));
     } catch (e) {
       if (!isStale()) setSwingAllError(e instanceof Error ? e.message : 'Swing detection failed');
     } finally {

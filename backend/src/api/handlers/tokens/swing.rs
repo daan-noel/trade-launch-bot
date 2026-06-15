@@ -64,6 +64,12 @@ pub struct SwingBatchRequest {
     /// i.e. the token-creation → migration phase. Applied before the window.
     #[serde(default)]
     pub curve_only: bool,
+    /// Optional client-generated id for the "Swing Detection All" run this chunk
+    /// belongs to. When set, the raw legs are stashed in `state.swing_runs` under
+    /// this id so the tokens list can sort by the chain columns. The frontend
+    /// sends one fresh id per run across all its chunks; omit for a one-off batch.
+    #[serde(default)]
+    pub run_id: Option<String>,
 }
 
 /// Restrict a token's trades to a window measured relative to its first trade.
@@ -203,6 +209,7 @@ pub async fn detect_tokens_swings_batch(
         window_start_ms,
         window_end_ms,
         curve_only,
+        run_id,
     } = body.into_inner();
 
     // Cap the request size: each mint can trigger a DB load + swing scan, so an
@@ -221,6 +228,13 @@ pub async fn detect_tokens_swings_batch(
     const BATCH_FETCH_CONCURRENCY: usize = 16;
 
     let app = state.get_ref().clone();
+
+    // Resolve (creating if needed) the run this chunk feeds, so the swing scan
+    // below can stash its raw legs for the tokens-list chain sort. Concurrent
+    // chunks of the same run share one `SwingRun` (atomic get-or-create).
+    let run = run_id
+        .as_deref()
+        .map(|id| app.swing_runs.get_or_create(id));
 
     // 1) Resolve each mint's trades concurrently — a cache hit clones in-memory
     //    (no await), a miss hits the DB. The index is carried so the results can
@@ -268,6 +282,11 @@ pub async fn detect_tokens_swings_batch(
                 let base: &[Trade] = curve_filtered.as_deref().unwrap_or(&trades);
                 let windowed = filter_trades_to_window(base, window_start_ms, window_end_ms);
                 let swings = detect_swings(&windowed, &params);
+                // Stash the raw legs for this run so the tokens list can sort by
+                // (and re-group at any latency) the chain columns.
+                if let Some(run) = &run {
+                    run.mints.insert(mint.clone(), swings.clone());
+                }
                 SwingBatchEntry {
                     mint,
                     count: swings.len(),

@@ -60,6 +60,14 @@ export interface TokensPageArgs {
   search: string;
   colFilters: Record<string, string>;
   filters: TokenFilters;
+  /**
+   * Swing Detection page only: the last "Swing Detection All" run id and its
+   * chain-latency budget. Sent so the backend can sort the chain columns
+   * (`swing_pairs` / `max_seq_pairs` / `chain_count`) from that run's raw legs,
+   * re-grouping at the latency without re-running detection. Omitted elsewhere.
+   */
+  swingRunId?: string | null;
+  swingChainLatencyMs?: number;
 }
 
 /**
@@ -182,6 +190,15 @@ export const apiSlice = createApi({
         if (cf) p.set('cf', cf);
         for (const [k, v] of Object.entries(a.filters)) {
           if (v) p.set(`f_${k}`, String(v));
+        }
+        // Chain-column sort inputs (Swing Detection page). The backend only reads
+        // them when `sort_col` is a chain column, but sending them always keeps
+        // the cache key in sync with the active run + latency.
+        if (a.swingRunId) {
+          p.set('swing_run_id', a.swingRunId);
+          if (a.swingChainLatencyMs != null) {
+            p.set('swing_chain_latency_ms', String(a.swingChainLatencyMs));
+          }
         }
         return `/api/tokens?${p.toString()}`;
       },

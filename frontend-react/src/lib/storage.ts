@@ -4,17 +4,17 @@
  * Every persisted UI preference lives here: one namespaced key registry
  * ({@link STORAGE_KEYS}), one set of JSON/string accessors (so the
  * read-parse-fallback / write-stringify try/catch boilerplate isn't copied into
- * every page), and a one-time migration that folds the old flat keys into this
- * structure. All app keys share the `mt:` prefix, so the whole set is
- * greppable, enumerable, and collision-proof against third-party libs.
+ * every page), and a one-time cleanup ({@link cleanupLegacyStorage}) that purges
+ * the old flat keys this structure replaced. All app keys share the `mt:`
+ * prefix, so the whole set is greppable, enumerable, and collision-proof against
+ * third-party libs.
  *
  * Forward-compat for shape changes follows the codebase's existing pattern:
  * read into a merge-with-defaults function (see swing/chart/filters loaders),
- * not version-suffixed keys. When a key must be *renamed*, add a migration
- * below instead of leaving an orphaned `_v2` key behind.
+ * not version-suffixed keys.
  */
 
-export const PREFIX = 'mt:';
+const PREFIX = 'mt:';
 
 /** The complete set of app localStorage keys (already prefixed). */
 export const STORAGE_KEYS = {
@@ -95,108 +95,61 @@ export function setTableCols(tableId: string, cols: string[]): void {
   setJSON(STORAGE_KEYS.tableCols, map);
 }
 
-// ── one-time migration of pre-namespace keys ────────────────────────────────
+// ── one-time cleanup of pre-namespace keys ──────────────────────────────────
+// Everything the app persists now lives under the `mt:` prefix and the
+// consolidated objects above (table.cols, sweep.config, swing.criteria, …).
+// Earlier builds wrote ~25 flat keys: per-table `*_cols`, per-field
+// `sweep_cfg_*`, and a handful of singletons. None are read anymore, so they're
+// dead weight in localStorage — purge them once so the store only ever holds the
+// `mt:` set. Pattern-matched (not an exact list) so renamed/versioned variants
+// (`*_v2`/`*_v3`, peak_trough→swing, the pre-split `tpsl_rules_cols`, …) are all
+// caught without per-key bookkeeping, while non-`mt:` third-party keys are left
+// untouched.
 
-/** Old flat key → new namespaced key (value format unchanged, raw move). */
-const RENAMES: [string, string][] = [
-  ['app_timezone', STORAGE_KEYS.timezone],
-  ['price_unit', STORAGE_KEYS.priceUnit],
-  ['token_price_chart_prefs', STORAGE_KEYS.chartPrefs],
-  ['tokens_global_filters', STORAGE_KEYS.tokenFilters],
-  ['tokens_live', STORAGE_KEYS.tokensLive],
-  ['swing_detection_criteria', STORAGE_KEYS.swingCriteria],
+/** Pre-namespace singleton keys (no shared suffix to pattern-match on). */
+const LEGACY_SINGLETON_KEYS = [
+  'app_timezone',
+  'price_unit',
+  'token_price_chart_prefs',
+  'tokens_global_filters',
+  'tokens_live',
+  'swing_detection_criteria',
 ];
 
-/** Old per-table `*_cols` key → logical tableId (folded into the cols map). */
-const TABLE_COL_RENAMES: [string, string][] = [
-  ['tokens_visible_cols', 'tokens'],
-  ['wallet_visible_cols', 'wallet'],
-  ['swing_detection_visible_cols_v2', 'swing'],
-  ['tpsl1_rules_cols', 'tpsl1_rules'],
-  ['tpsl2_rules_cols', 'tpsl2_rules'],
-  ['tpsl2_paper_cols', 'tpsl2_paper'],
-  ['tpsl2_matched_cols', 'tpsl2_matched'],
-  ['tpsl2_sim_cols', 'tpsl2_sim'],
-  ['grouped_sweep_group_cols_v3', 'sweep_groups'],
-  ['grouped_sweep_combo_cols', 'sweep_combos'],
-];
+/** True for any flat legacy app key — a `*_cols` toggle, a `sweep_cfg_*` field,
+ *  or a known singleton. `mt:`-prefixed keys are current and never match. */
+function isLegacyStorageKey(key: string): boolean {
+  if (key.startsWith(PREFIX)) return false;
+  return (
+    key.endsWith('_cols') ||
+    key.startsWith('sweep_cfg_') ||
+    LEGACY_SINGLETON_KEYS.includes(key)
+  );
+}
 
-/** Old flat `sweep_cfg_*` key → field in the consolidated sweep.config object. */
-const SWEEP_CFG_RENAMES: [string, string][] = [
-  ['sweep_cfg_created_after', 'createdAfter'],
-  ['sweep_cfg_created_before', 'createdBefore'],
-  ['sweep_cfg_group_by', 'groupBy'],
-  ['sweep_cfg_axes_text', 'axesText'],
-  ['sweep_cfg_method', 'methodKind'],
-  ['sweep_cfg_random_n', 'randomN'],
-  ['sweep_cfg_min_tokens', 'minTokens'],
-  ['sweep_cfg_token_cap', 'tokenCap'],
-  ['sweep_cfg_curve_only', 'curveOnly'],
-];
-
-let migrated = false;
+let cleaned = false;
 
 /**
- * Fold the pre-namespace localStorage keys into the structure above. Idempotent
- * and gated on "old exists, new absent", so it never clobbers a fresh value and
- * is a no-op on every load after the first. Runs once on module import.
+ * Remove every pre-namespace app key from localStorage. Idempotent (a no-op once
+ * the flat keys are gone) and wrapped so a storage failure never breaks boot.
+ * Runs once on module import, before any consumer reads.
  */
-export function runStorageMigrations(): void {
-  if (migrated) return;
-  migrated = true;
+export function cleanupLegacyStorage(): void {
+  if (cleaned) return;
+  cleaned = true;
   try {
     if (typeof localStorage === 'undefined') return;
-
-    for (const [oldKey, newKey] of RENAMES) {
-      const val = localStorage.getItem(oldKey);
-      if (val != null && localStorage.getItem(newKey) == null) {
-        localStorage.setItem(newKey, val);
-      }
-      if (val != null) localStorage.removeItem(oldKey);
+    // Snapshot keys first — removing while iterating by index skips entries.
+    const stale: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && isLegacyStorageKey(key)) stale.push(key);
     }
-
-    // Column visibility → single map (only seed ids not already present).
-    const colsMap = getJSON<TableColsMap>(STORAGE_KEYS.tableCols, {});
-    let colsDirty = false;
-    for (const [oldKey, tableId] of TABLE_COL_RENAMES) {
-      const raw = localStorage.getItem(oldKey);
-      if (raw == null) continue;
-      if (!(tableId in colsMap)) {
-        try {
-          const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed)) {
-            colsMap[tableId] = parsed as string[];
-            colsDirty = true;
-          }
-        } catch {
-          /* drop unparseable legacy value */
-        }
-      }
-      localStorage.removeItem(oldKey);
-    }
-    if (colsDirty) setJSON(STORAGE_KEYS.tableCols, colsMap);
-
-    // Sweep form → single config object.
-    const cfg = getJSON<Record<string, unknown>>(STORAGE_KEYS.sweepConfig, {});
-    let cfgDirty = false;
-    for (const [oldKey, field] of SWEEP_CFG_RENAMES) {
-      const raw = localStorage.getItem(oldKey);
-      if (raw == null) continue;
-      if (!(field in cfg)) {
-        try {
-          cfg[field] = JSON.parse(raw);
-          cfgDirty = true;
-        } catch {
-          /* drop unparseable legacy value */
-        }
-      }
-      localStorage.removeItem(oldKey);
-    }
-    if (cfgDirty) setJSON(STORAGE_KEYS.sweepConfig, cfg);
+    for (const key of stale) localStorage.removeItem(key);
   } catch {
-    /* never let a storage migration break app boot */
+    /* never let a storage cleanup break app boot */
   }
 }
 
 // Run before any consumer reads (every persister imports this module).
-runStorageMigrations();
+cleanupLegacyStorage();

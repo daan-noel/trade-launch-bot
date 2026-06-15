@@ -605,6 +605,74 @@ fn apply_quality_filter(ledger: Vec<LegAcc>, params: &SwingParams) -> Vec<SwingL
     out
 }
 
+// ---------------------------------------------------------------------------
+// Chain-of-swings stats
+// ---------------------------------------------------------------------------
+
+/// The three sortable "Chain of Swings" counts for a single token. Faithful
+/// (counts-only) port of `swingChains.ts::computeChainStats` — the frontend keeps
+/// the richer `longestChain` summary for charting; sorting needs only these.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ChainStats {
+    /// Number of high→low swing pairs (complete up-then-down cycles).
+    pub swing_pairs: u32,
+    /// Pair count of the largest chain (≥ 2 linked pairs); 0 if none link.
+    pub max_seq_pairs: u32,
+    /// Number of chains (runs of ≥ 2 pairs linked within the latency budget).
+    pub chain_count: u32,
+}
+
+/// Reduce a token's alternating legs to high→low pairs and group them into
+/// chains, mirroring the frontend exactly: legs are walked in `start_at` order; a
+/// *pair* is a `SwingHigh` immediately followed by a `SwingLow` (unpaired legs are
+/// skipped); two consecutive pairs *link* when the idle gap
+/// (`next.start_at − current.end_at`) is within `chain_latency_ms`; a *chain* is a
+/// maximal run of ≥ 2 linked pairs.
+pub fn compute_chain_stats(swings: &[SwingLeg], chain_latency_ms: i64) -> ChainStats {
+    // (high start_at, low end_at) per pair, in time order.
+    let mut sorted: Vec<&SwingLeg> = swings.iter().collect();
+    sorted.sort_by_key(|s| s.start_at);
+    let mut pairs: Vec<(i64, i64)> = Vec::new();
+    let mut i = 0;
+    while i < sorted.len() {
+        let high = sorted[i];
+        if high.leg_type == SwingType::SwingHigh
+            && matches!(sorted.get(i + 1), Some(low) if low.leg_type == SwingType::SwingLow)
+        {
+            pairs.push((high.start_at, sorted[i + 1].end_at));
+            i += 2; // consume the pair
+        } else {
+            i += 1; // unpaired leg — skip
+        }
+    }
+
+    let mut max_run: u32 = 0;
+    let mut cur_run: u32 = 0; // 0 = no chain currently open
+    let mut chain_count: u32 = 0;
+    for k in 0..pairs.len().saturating_sub(1) {
+        let gap = pairs[k + 1].0 - pairs[k].1;
+        if gap <= chain_latency_ms {
+            if cur_run == 0 {
+                cur_run = 2; // this link joins pairs k and k+1 — a new chain opens
+                chain_count += 1;
+            } else {
+                cur_run += 1; // extend the chain by one more pair
+            }
+            if cur_run > max_run {
+                max_run = cur_run;
+            }
+        } else {
+            cur_run = 0; // gap too large — chain breaks here
+        }
+    }
+
+    ChainStats {
+        swing_pairs: pairs.len() as u32,
+        max_seq_pairs: max_run,
+        chain_count,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -689,5 +757,71 @@ mod tests {
         assert!((high.start_price - prev.price_per_token).abs() < 1e-15);
         assert!((high.start_price - opener.execution_price()).abs() > 1e-15);
         assert!((high.end_price - opener.price_per_token).abs() < 1e-15);
+    }
+
+    fn leg(leg_type: SwingType, start_at: i64, end_at: i64) -> SwingLeg {
+        SwingLeg {
+            leg_type,
+            start_at,
+            end_at,
+            duration_ms: end_at - start_at,
+            start_price: 0.0,
+            end_price: 0.0,
+            pivot_end_at: end_at,
+            pivot_end_price: 0.0,
+            inflow: 0.0,
+            outflow: 0.0,
+            net_flow: 0.0,
+            trade_count: 1,
+        }
+    }
+
+    #[test]
+    fn chain_stats_link_pairs_within_latency() {
+        use SwingType::{SwingHigh, SwingLow};
+        // Three high→low pairs. Pair0 ends @200, pair1 starts @300 (gap 100);
+        // pair1 ends @500, pair2 starts @560 (gap 60). With latency 100 all three
+        // link into ONE chain of 3 pairs.
+        let swings = vec![
+            leg(SwingHigh, 100, 150),
+            leg(SwingLow, 160, 200),
+            leg(SwingHigh, 300, 350),
+            leg(SwingLow, 360, 500),
+            leg(SwingHigh, 560, 600),
+            leg(SwingLow, 610, 700),
+        ];
+        let s = compute_chain_stats(&swings, 100);
+        assert_eq!(s.swing_pairs, 3);
+        assert_eq!(s.max_seq_pairs, 3);
+        assert_eq!(s.chain_count, 1);
+
+        // Tighten the latency so only the second gap (60) links → one chain of 2,
+        // the first pair left isolated.
+        let s = compute_chain_stats(&swings, 60);
+        assert_eq!(s.swing_pairs, 3);
+        assert_eq!(s.max_seq_pairs, 2);
+        assert_eq!(s.chain_count, 1);
+
+        // No gap links → no chains.
+        let s = compute_chain_stats(&swings, 0);
+        assert_eq!(s.swing_pairs, 3);
+        assert_eq!(s.max_seq_pairs, 0);
+        assert_eq!(s.chain_count, 0);
+    }
+
+    #[test]
+    fn chain_stats_skip_unpaired_legs() {
+        use SwingType::{SwingHigh, SwingLow};
+        // Leading lone low + trailing lone high are not part of any pair.
+        let swings = vec![
+            leg(SwingLow, 50, 80),
+            leg(SwingHigh, 100, 150),
+            leg(SwingLow, 160, 200),
+            leg(SwingHigh, 900, 950),
+        ];
+        let s = compute_chain_stats(&swings, 1_000);
+        assert_eq!(s.swing_pairs, 1);
+        assert_eq!(s.max_seq_pairs, 0);
+        assert_eq!(s.chain_count, 0);
     }
 }

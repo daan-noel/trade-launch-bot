@@ -9,6 +9,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::{
+    analyzers::swing_analyzer::compute_chain_stats,
     state::{app_state::AppState, token_cache::TokenState},
 };
 
@@ -216,6 +217,14 @@ pub struct PaginationParams {
     /// Per-column filters, `;`-joined `colKey:rawExpr` entries.
     pub cf: Option<String>,
 
+    // Swing chain sort: when `sort_col` is one of the chain columns
+    // (`swing_pairs` / `max_seq_pairs` / `chain_count`), the order key is computed
+    // from the raw legs stashed under `swing_run_id` (the last "Swing Detection
+    // All" run), grouped at `swing_chain_latency_ms`. Absent ⇒ those columns sort
+    // every row last (no run to read), leaving the default order.
+    pub swing_run_id: Option<String>,
+    pub swing_chain_latency_ms: Option<i64>,
+
     // --- Flat TokenFilters mirror (names == TS keys) ---
     pub f_symbol: Option<String>,
     pub f_name: Option<String>,
@@ -310,9 +319,32 @@ pub async fn list_tokens(
         // `total` is the FILTERED count — that's what the table's pager needs.
         let total = matched.len();
 
+        // Sorting a chain column? Compute each matched mint's key from the raw
+        // legs stashed under the run, grouped at the requested latency. Cheap
+        // (a handful of legs per mint) and only over the filtered set. Mints the
+        // run never analysed are simply absent → they sort last.
+        let swing_keys: Option<HashMap<String, f64>> = match &q.sort_col {
+            Some(col) if is_swing_sort_col(col) => q
+                .swing_run_id
+                .as_deref()
+                .and_then(|id| state.swing_runs.get(id))
+                .map(|run| {
+                    let mut keys = HashMap::with_capacity(matched.len());
+                    for &t in &matched {
+                        if let Some(swings) = run.mints.get(&t.mint_address) {
+                            let stats =
+                                compute_chain_stats(swings.value(), q.swing_chain_latency_ms);
+                            keys.insert(t.mint_address.clone(), swing_sort_value(col, &stats));
+                        }
+                    }
+                    keys
+                }),
+            _ => None,
+        };
+
         // The snapshot is already newest-first, so the default view needs no sort;
         // only an explicit sort column re-orders (sorting precedes paging).
-        q.sort_refs(&mut matched);
+        q.sort_refs(&mut matched, swing_keys.as_ref());
 
         let limit = limit_q.max(1).min(50_000) as usize;
         let offset = offset_q.max(0) as usize;
@@ -550,7 +582,32 @@ const SORTABLE_COLS: &[&str] = &[
     "migrated",
     "mayhem_mode",
     "cashback",
+    // Browser-derived "Swing Detection All" chain columns. Sorted from the raw
+    // legs in `state.swing_runs` (see `swing_sort_value`), not a `TokenSummary`
+    // field — handled specially in `list_tokens` / `sort_refs`.
+    "swing_pairs",
+    "max_seq_pairs",
+    "chain_count",
 ];
+
+/// The chain columns whose sort key comes from a swing run rather than a
+/// `TokenSummary` field. Default chain latency when the client omits it.
+const SWING_SORT_COLS: &[&str] = &["swing_pairs", "max_seq_pairs", "chain_count"];
+const DEFAULT_CHAIN_LATENCY_MS: i64 = 60_000;
+
+fn is_swing_sort_col(col: &str) -> bool {
+    SWING_SORT_COLS.contains(&col)
+}
+
+/// Pick a chain stat as the numeric sort key for a swing column.
+fn swing_sort_value(col: &str, s: &crate::analyzers::swing_analyzer::ChainStats) -> f64 {
+    match col {
+        "swing_pairs" => s.swing_pairs as f64,
+        "max_seq_pairs" => s.max_seq_pairs as f64,
+        "chain_count" => s.chain_count as f64,
+        _ => 0.0,
+    }
+}
 
 /// Parsed query: global filters + search + per-column filters + sort.
 struct TokenQuery {
@@ -561,6 +618,10 @@ struct TokenQuery {
     col_filters: Vec<(String, String)>,
     /// global filter values keyed by TokenFilters field name (non-empty only)
     f: HashMap<&'static str, String>,
+    /// Swing run to read chain stats from when sorting a chain column.
+    swing_run_id: Option<String>,
+    /// Chain-latency budget (ms) used to group those stats.
+    swing_chain_latency_ms: i64,
 }
 
 fn put(f: &mut HashMap<&'static str, String>, k: &'static str, v: &Option<String>) {
@@ -638,6 +699,8 @@ impl TokenQuery {
             sort_desc: q.sort_dir.as_deref() == Some("desc"),
             col_filters: q.cf.as_deref().map(parse_col_filters).unwrap_or_default(),
             f,
+            swing_run_id: q.swing_run_id.clone().filter(|s| !s.is_empty()),
+            swing_chain_latency_ms: q.swing_chain_latency_ms.unwrap_or(DEFAULT_CHAIN_LATENCY_MS),
         }
     }
 
@@ -804,13 +867,27 @@ impl TokenQuery {
     /// sort uses decorate-sort-undecorate so each row's key is computed ONCE rather
     /// than on every comparison (the old comparator re-derived it — and re-allocated
     /// date strings — O(n log n) times).
-    fn sort_refs<'a>(&self, rows: &mut [&'a TokenSummary]) {
+    ///
+    /// `swing_keys` (when sorting a chain column) supplies each mint's precomputed
+    /// numeric key; mints absent from it sort last (matching the dash the frontend
+    /// renders for un-analysed tokens). For normal columns it's `None` and the key
+    /// comes from the `TokenSummary` field via `sort_key`.
+    fn sort_refs<'a>(
+        &self,
+        rows: &mut [&'a TokenSummary],
+        swing_keys: Option<&HashMap<String, f64>>,
+    ) {
         let Some(col) = &self.sort_col else {
             return;
         };
         let desc = self.sort_desc;
-        let mut keyed: Vec<(SortKey, &'a TokenSummary)> =
-            rows.iter().map(|&t| (sort_key(col, t), t)).collect();
+        let mut keyed: Vec<(SortKey, &'a TokenSummary)> = match swing_keys {
+            Some(keys) => rows
+                .iter()
+                .map(|&t| (SortKey::Num(keys.get(&t.mint_address).copied()), t))
+                .collect(),
+            None => rows.iter().map(|&t| (sort_key(col, t), t)).collect(),
+        };
         keyed.sort_by(|a, b| cmp_keys(&a.0, &b.0, desc));
         for (slot, (_, t)) in rows.iter_mut().zip(keyed) {
             *slot = t;
