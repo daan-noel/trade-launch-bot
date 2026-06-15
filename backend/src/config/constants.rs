@@ -219,6 +219,15 @@ pub const POOL_SUBSCRIBE_ACTIVITY_WINDOW_SECONDS: i64 = 6 * 3600; // 6 hours
 /// subscribes the pools of migrated tokens that have become active since.
 pub const POOL_REFRESH_INTERVAL_SECONDS: u64 = 120; // 2 minutes
 
+/// Upper bound on how many tokens the startup cache seed pulls from the
+/// (continuously growing) `tokens` table. The seed loads the most-recent
+/// `SEED_TOKEN_LIMIT` tokens (newest first) instead of the whole table, so
+/// startup time + memory stay bounded as `tokens` grows without limit. Old,
+/// long-dead memecoins beyond this window simply aren't tracked live until they
+/// trade again (the live path ignores trades for untracked mints, exactly as it
+/// does for any cache miss); raise it to keep more history warm at startup.
+pub const SEED_TOKEN_LIMIT: i64 = 100_000;
+
 
 
 

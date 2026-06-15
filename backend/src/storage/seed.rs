@@ -14,15 +14,17 @@ use crate::{
 /// trade stats are immediately available after a server restart.
 ///
 /// Strategy (3 queries total — no N+1):
-///   1. Load all tokens.
+///   1. Load the most-recent `SEED_TOKEN_LIMIT` tokens (bounded, not the whole table).
 ///   2. Load per-token aggregates (count, volume, last_trade_at) in one GROUP BY.
 ///   3. Load full trade history per token (oldest-first) in one query.
 pub async fn seed_token_cache(pool: &PgPool, token_cache: Arc<TokenCache>) -> anyhow::Result<()> {
     let token_repo = TokenRepo::new(pool.clone());
     let trade_repo = TradeRepo::new(pool.clone());
 
-    // 1. All tokens
-    let tokens = token_repo.find_all().await?;
+    // 1. Most-recent tokens (bounded — never SELECT * the whole growing table).
+    let tokens = token_repo
+        .find_recent(crate::config::constants::SEED_TOKEN_LIMIT)
+        .await?;
     let total = tokens.len();
 
     if total == 0 {

@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 use crate::models::token_info::TokenInfo;
 
+#[derive(Clone)]
 pub struct TokenInfoRepo {
     pool: PgPool,
 }

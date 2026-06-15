@@ -171,11 +171,17 @@ impl TokenRepo {
         Ok(count > 0)
     }
 
-    /// Load every token from the database (used for cache seeding on startup).
-    pub async fn find_all(&self) -> anyhow::Result<Vec<Token>> {
-        let rows = sqlx::query_as::<_, TokenDbRow>("SELECT * FROM tokens ORDER BY created_at ASC")
-            .fetch_all(&self.pool)
-            .await?;
+    /// Load the most-recent `limit` tokens for cache seeding on startup. Bounded
+    /// (newest first) rather than an unbounded `SELECT *` over the continuously
+    /// growing `tokens` table, so startup cost stays flat as the table grows — see
+    /// [`crate::config::constants::SEED_TOKEN_LIMIT`].
+    pub async fn find_recent(&self, limit: i64) -> anyhow::Result<Vec<Token>> {
+        let rows = sqlx::query_as::<_, TokenDbRow>(
+            "SELECT * FROM tokens ORDER BY created_at DESC LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
 
         Ok(rows.into_iter().map(Token::from).collect())
     }

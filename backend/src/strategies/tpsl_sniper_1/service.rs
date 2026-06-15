@@ -280,14 +280,15 @@ impl Tpsl1StrategyService {
     }
 
     pub async fn on_trade_executed(&self, mint: &str, cache: &TokenCache) {
-        let mint = mint.to_string();
         // Cheap holding-index lookup first: the vast majority of trade pings are
-        // for mints we hold no position in, so bail before the (potentially large)
-        // trade-history clone below rather than after it.
-        let positions = self.runtime.holding_by_mint(&mint);
+        // for mints we hold no position in, so probe the index on the borrowed
+        // `&str` and bail before allocating an owned mint (or touching the
+        // potentially large trade history below).
+        let positions = self.runtime.holding_by_mint(mint);
         if positions.is_empty() {
             return;
         }
+        let mint = mint.to_string();
 
         // Evaluate every position's exit decision while holding the cache read
         // guard. The exit ladder (fixed TP/SL + E1–E4) and the clock-state fold are

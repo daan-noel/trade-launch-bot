@@ -67,7 +67,14 @@ pub struct TokenMetricsWrite {
 }
 
 pub struct DbWriter {
-    pool: PgPool,
+    /// Stateless repo handles built once at construction — each is just a cloned
+    /// `PgPool` (an `Arc` bump). Built here rather than per-`flush` so the hot
+    /// flush loop (up to ~40×/s) doesn't reconstruct all five every tick.
+    token_repo: TokenRepo,
+    trade_repo: TradeRepo,
+    wallet_repo: WalletRepo,
+    tx_repo: TransactionRepo,
+    info_repo: TokenInfoRepo,
     /// Wakes live buy/sell confirm loops the instant a trade they're waiting on is
     /// persisted (see [`TradeSignals`]). Signalled only after the row is committed,
     /// so a woken waiter that reads the DB is guaranteed to see it.
@@ -77,7 +84,11 @@ pub struct DbWriter {
 impl DbWriter {
     pub fn new(pool: PgPool, trade_signals: Arc<TradeSignals>) -> Self {
         Self {
-            pool,
+            token_repo: TokenRepo::new(pool.clone()),
+            trade_repo: TradeRepo::new(pool.clone()),
+            wallet_repo: WalletRepo::new(pool.clone()),
+            tx_repo: TransactionRepo::new(pool.clone()),
+            info_repo: TokenInfoRepo::new(pool),
             trade_signals,
         }
     }
@@ -117,11 +128,13 @@ impl DbWriter {
         use std::collections::{HashMap, HashSet};
 
         let ops: Vec<DbWriteOp> = batch.drain(..).collect();
-        let token_repo = TokenRepo::new(self.pool.clone());
-        let trade_repo = TradeRepo::new(self.pool.clone());
-        let wallet_repo = WalletRepo::new(self.pool.clone());
-        let tx_repo = TransactionRepo::new(self.pool.clone());
-        let info_repo = TokenInfoRepo::new(self.pool.clone());
+        // Repos are long-lived fields now — borrow them instead of rebuilding
+        // five `PgPool` clones on every flush.
+        let token_repo = &self.token_repo;
+        let trade_repo = &self.trade_repo;
+        let wallet_repo = &self.wallet_repo;
+        let tx_repo = &self.tx_repo;
+        let info_repo = &self.info_repo;
 
         // Partition the batch by type, collapsing redundant writes so a hot
         // token/wallet doesn't turn one flush into dozens of round-trips:
@@ -234,10 +247,11 @@ impl DbWriter {
         // and collecting eagerly avoids the HRTB inference error a lazy `.map()`
         // fed into `buffer_unordered` trips.
         let metric_writes: Vec<_> = metrics.into_values().map(|m| {
-            let pool = self.pool.clone();
+            // Clone the long-lived repos (each an `Arc<PgPool>` bump) into the
+            // owned future instead of reconstructing them from a pool clone.
+            let trade_repo = self.trade_repo.clone();
+            let info_repo = self.info_repo.clone();
             async move {
-                let trade_repo = TradeRepo::new(pool.clone());
-                let info_repo = TokenInfoRepo::new(pool);
                 let is_rugged = if m.recompute_rugged {
                     compute_is_rugged(&trade_repo, &m.mint, &m.creator_wallet, m.last_trade_at).await
                 } else {
