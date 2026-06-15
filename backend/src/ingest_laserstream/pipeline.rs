@@ -28,9 +28,10 @@ use crate::{
 };
 
 // Cloned ingest internals — self-contained copies, not imported from `ingest/`.
-use super::db_writer::{DbWriteOp, TokenMetricsWrite};
+use super::db_writer::{DbWriteOp, RawBlobJob, TokenMetricsWrite};
 use super::decoder::{DecodeOutput, HeliusDecoder};
 use super::profile;
+use super::proto::geyser::SubscribeUpdateTransaction;
 
 const DB_QUEUE_CAP: usize = 4096;
 const STRATEGY_QUEUE_CAP: usize = 512;
@@ -152,7 +153,7 @@ impl IngestPipeline {
         (db_tx, db_rx, strategy_tx, strategy_rx)
     }
 
-    pub async fn run(self, mut value_rx: mpsc::Receiver<Value>) {
+    pub async fn run(self, mut update_rx: mpsc::Receiver<Arc<SubscribeUpdateTransaction>>) {
         info!("LaserStream pipeline: starting");
 
         // Independent receiver for change notifications, so the hot path's
@@ -167,10 +168,14 @@ impl IngestPipeline {
 
         loop {
             tokio::select! {
-                maybe_val = value_rx.recv() => {
-                    let Some(value) = maybe_val else { break };
+                maybe_update = update_rx.recv() => {
+                    let Some(update) = maybe_update else { break };
+                    // Single ingest clock for this tx — used for the trades, the
+                    // null-data raw-tx carrier, and the persisted blob (so it keeps
+                    // the real receive time, not the DbWriter flush time).
+                    let received_at = Utc::now();
                     let _span = profile::start();
-                    let decoded = self.decoder.decode_result(value);
+                    let decoded = self.decoder.decode_protobuf(&update, received_at);
                     profile::record_decode(_span);
                     match decoded {
                         DecodeOutput::Transaction { raw_tx, mut events } => {
@@ -184,8 +189,18 @@ impl IngestPipeline {
                                 continue;
                             }
 
+                            // Hand the DbWriter the typed protobuf (shared Arc) +
+                            // ingest scalars; it synthesises the Helius blob off
+                            // this hot path. `raw_tx` here is the null-data carrier.
                             if save_raw {
-                                self.enqueue_db(DbWriteOp::Raw(raw_tx.clone())).await;
+                                self.enqueue_db(DbWriteOp::Raw(RawBlobJob {
+                                    update: update.clone(),
+                                    signature: raw_tx.signature.clone(),
+                                    slot: raw_tx.slot,
+                                    block_time: raw_tx.block_time,
+                                    received_at: raw_tx.received_at,
+                                }))
+                                .await;
                             }
 
                             for event in events {

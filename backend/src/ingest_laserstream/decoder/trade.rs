@@ -1,8 +1,13 @@
-//! Trade decoding: bonding-curve `TradeEvent`s (from logs and inner CPI),
-//! PumpSwap (AMM) `BuyEvent`/`SellEvent`s, the shared AMM `Trade` builder, and
-//! the balance-delta fallback for buys/sells with no decodable event.
-
-use std::sync::Arc;
+//! Shared trade leaves used by BOTH decode paths (grpc + json):
+//! - the bonding-curve `TradeEvent` log decode plus the Borsh
+//!   `RawTradeEvent`/`DecodedTradeEvent` machinery the path-specific
+//!   inner-instruction decoders reuse,
+//! - PumpSwap (AMM) `BuyEvent`/`SellEvent` log decode and the `DecodedAmmTrade`,
+//! - the AMM `Trade` builder, and
+//! - the `compute_sol_change` balance helper (used by both balance-delta fallbacks).
+//!
+//! Source-agnostic: everything here works on log strings / plain byte slices, so
+//! the grpc and json paths share one implementation (the parity tests guard it).
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use borsh::BorshDeserialize;
@@ -11,18 +16,10 @@ use serde_json::Value;
 use tracing::warn;
 
 use crate::config::constants::{
-    ANCHOR_EVENT_CPI_DISCRIMINATOR, LAMPORTS_PER_SOL, PUMP_SWAP_BUY_EVENT_DISCRIMINATOR,
-    PUMP_SWAP_SELL_EVENT_DISCRIMINATOR, TRADE_EVENT_DISCRIMINATOR,
+    LAMPORTS_PER_SOL, PUMP_SWAP_BUY_EVENT_DISCRIMINATOR, PUMP_SWAP_SELL_EVENT_DISCRIMINATOR,
+    TRADE_EVENT_DISCRIMINATOR,
 };
-use crate::models::{
-    events::{InternalEvent, TradeExecutedEvent},
-    trade::{Trade, TradeType},
-    transaction::RawTransaction,
-};
-
-use super::instructions::InstructionKind;
-use super::parse::{compute_sol_change, compute_token_change, find_pump_ixs_anywhere};
-use super::HeliusDecoder;
+use crate::models::trade::{Trade, TradeType};
 
 // ---------------------------------------------------------------------------
 // Step 1a — decode TradeEvent from "Program data:" log lines (base64 + Borsh)
@@ -30,8 +27,11 @@ use super::HeliusDecoder;
 
 /// Borsh layout of the pump.fun on-chain TradeEvent (emitted via `emit!`).
 /// Discriminator (8 bytes) is stripped before passing to `deserialize`.
+///
+/// `pub(super)` so the per-path inner-instruction decoders
+/// (`grpc::trade`, `json::trade`) can re-decode the same self-CPI payload.
 #[derive(BorshDeserialize)]
-struct RawTradeEvent {
+pub(super) struct RawTradeEvent {
     mint: [u8; 32],
     sol_amount: u64,
     token_amount: u64,
@@ -61,7 +61,7 @@ impl DecodedTradeEvent {
     /// Convert a Borsh-decoded `RawTradeEvent` into the decoder's normalized
     /// form: lamport amounts are scaled to SOL; token amounts stay in raw base
     /// units. Shared by the log-line and inner-instruction decode paths.
-    fn from_raw(raw: RawTradeEvent) -> Self {
+    pub(super) fn from_raw(raw: RawTradeEvent) -> Self {
         Self {
             mint: bs58::encode(raw.mint).into_string(),
             sol_amount: raw.sol_amount as f64 / 1_000_000_000.0,
@@ -100,52 +100,6 @@ pub(super) fn decode_trade_events_from_logs(logs: &[&str]) -> Vec<DecodedTradeEv
             Ok(r) => r,
             Err(e) => {
                 warn!("Failed to Borsh-decode TradeEvent: {e}");
-                continue;
-            }
-        };
-
-        events.push(DecodedTradeEvent::from_raw(raw));
-    }
-
-    events
-}
-
-/// Scan inner instructions for pump.fun's `emit_cpi!` TradeEvent self-CPI and
-/// decode each one. The instruction data is the 8-byte Anchor event-CPI tag,
-/// followed by the 8-byte TradeEvent discriminator, followed by the same
-/// Borsh-encoded `RawTradeEvent` carried in the "Program data:" log. This is the
-/// truncation-proof source used when [`decode_trade_events_from_logs`] finds
-/// nothing because Solana truncated the transaction's logs.
-pub(super) fn decode_trade_events_from_inner_ixs(
-    message: &Value,
-    meta: &Value,
-    account_keys: &[&str],
-    pump_program_id: &str,
-) -> Vec<DecodedTradeEvent> {
-    let mut events = Vec::new();
-
-    for ix in find_pump_ixs_anywhere(message, meta, account_keys, pump_program_id) {
-        let Some(data_b58) = ix["data"].as_str() else {
-            continue;
-        };
-        let bytes = match bs58::decode(data_b58).into_vec() {
-            Ok(b) => b,
-            Err(_) => continue,
-        };
-
-        // [8: Anchor event-CPI tag][8: TradeEvent discriminator][Borsh payload]
-        if bytes.len() < 16
-            || bytes[..8] != ANCHOR_EVENT_CPI_DISCRIMINATOR
-            || bytes[8..16] != TRADE_EVENT_DISCRIMINATOR
-        {
-            continue;
-        }
-
-        let mut buf: &[u8] = &bytes[16..];
-        let raw = match RawTradeEvent::deserialize(&mut buf) {
-            Ok(r) => r,
-            Err(e) => {
-                warn!("Failed to Borsh-decode TradeEvent from inner ix: {e}");
                 continue;
             }
         };
@@ -307,8 +261,9 @@ pub(super) fn decode_pump_swap_trades_from_logs(logs: &[&str]) -> Vec<DecodedAmm
 }
 
 /// Build a `Trade` from a decoded PumpSwap (AMM) swap for `mint`. Shared by the
-/// sync path ([`HeliusDecoder::decode_pump_swap_result`], explicit pool) and the
-/// live path ([`HeliusDecoder::decode_amm_live`], pool resolved via the index).
+/// sync path ([`super::HeliusDecoder::decode_pump_swap_result`], explicit pool)
+/// and the live paths ([`super::json`] / [`super::grpc`], pool resolved via the
+/// index).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_amm_trade(
     ev: &DecodedAmmTrade,
@@ -354,69 +309,27 @@ pub(super) fn build_amm_trade(
     trade
 }
 
-impl HeliusDecoder {
-    /// Balance-delta fallback for Buy/Sell when no "Program data:" TradeEvent
-    /// was found (unusual, but guards against edge cases).
-    pub(super) fn decode_trade_from_balances(
-        &self,
-        kind: InstructionKind,
-        signature: &str,
-        slot: u64,
-        block_time: DateTime<Utc>,
-        pump_accounts: &[String],
-        account_keys: &[&str],
-        pre_balances: &[u64],
-        post_balances: &[u64],
-        meta: &Value,
-        labels_json: &Value,
-        raw_tx: &Arc<RawTransaction>,
-    ) -> Option<Vec<InternalEvent>> {
-        let mint = pump_accounts.get(2)?.to_string();
-        if mint.is_empty() {
-            return None;
-        }
-        let user = pump_accounts.get(6)?.to_string();
-        if user.is_empty() {
-            return None;
-        }
-        let user_ata = pump_accounts.get(5).cloned().unwrap_or_default();
+// ---------------------------------------------------------------------------
+// Shared balance helper
+// ---------------------------------------------------------------------------
 
-        let trade_type = match kind {
-            InstructionKind::Buy => TradeType::Buy,
-            InstructionKind::Sell => TradeType::Sell,
-            _ => return None,
-        };
-
-        let sol_amount = compute_sol_change(&user, account_keys, pre_balances, post_balances);
-        let token_amount = compute_token_change(&user_ata, &mint, account_keys, meta);
-
-        if Trade::is_dust(sol_amount) {
-            return None;
-        }
-
-        let mut trade = Trade::new(
-            mint,
-            user,
-            trade_type,
-            sol_amount,
-            token_amount,
-            signature.to_string(),
-            slot,
-            block_time,
-        );
-        trade.instruction_type = match trade.trade_type {
-            TradeType::Buy => "Buy".to_string(),
-            TradeType::Sell => "Sell".to_string(),
-        };
-        trade.instruction_labels = labels_json.clone();
-        trade.received_at = raw_tx.received_at;
-
-        Some(vec![InternalEvent::TradeExecuted(TradeExecutedEvent {
-            trade,
-            tx_signature: signature.to_string(),
-            slot,
-            timestamp: raw_tx.received_at,
-            raw_tx: raw_tx.clone(),
-        })])
-    }
+/// Compute the absolute SOL change (in SOL, not lamports) for `wallet`
+/// using the flat pre/post balance arrays (indexed by accountKeys order).
+/// Source-agnostic (plain `&[u64]` lamport arrays), so it backs both the json
+/// and grpc balance-delta fallbacks.
+pub(super) fn compute_sol_change(
+    wallet: &str,
+    account_keys: &[&str],
+    pre: &[u64],
+    post: &[u64],
+) -> f64 {
+    account_keys
+        .iter()
+        .position(|k| *k == wallet)
+        .map(|idx| {
+            let pre_bal = pre.get(idx).copied().unwrap_or(0);
+            let post_bal = post.get(idx).copied().unwrap_or(0);
+            (pre_bal as f64 - post_bal as f64).abs() / 1_000_000_000.0
+        })
+        .unwrap_or(0.0)
 }

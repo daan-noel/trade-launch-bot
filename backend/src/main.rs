@@ -357,7 +357,12 @@ async fn main() -> anyhow::Result<()> {
         info!("Ingest transport: LaserStream (gRPC)");
         let (db_tx, db_rx, strategy_tx, strategy_rx) =
             ingest_laserstream::pipeline::IngestPipeline::channel_pair();
-        let (value_tx, value_rx) = tokio::sync::mpsc::channel::<serde_json::Value>(1024);
+        // Tier B: the pipeline channel carries the typed protobuf update (shared
+        // via Arc), not a pre-built Helius `Value` — the blob synthesis moved
+        // off the ingest hot path into the DbWriter.
+        let (update_tx, update_rx) = tokio::sync::mpsc::channel::<
+            std::sync::Arc<ingest_laserstream::proto::geyser::SubscribeUpdateTransaction>,
+        >(1024);
 
         let pipeline = ingest_laserstream::pipeline::IngestPipeline::new(
             constants::PUMP_FUN_PROGRAM_ID.to_string(),
@@ -375,7 +380,7 @@ async fn main() -> anyhow::Result<()> {
             settings.helius_laserstream_url.clone(),
             settings.helius_api_key.clone(),
             constants::PUMP_FUN_PROGRAM_ID.to_string(),
-            value_tx,
+            update_tx,
             live_rx,
             pool_index.clone(),
             pools_changed.clone(),
@@ -395,7 +400,7 @@ async fn main() -> anyhow::Result<()> {
             db.clone(),
         ));
 
-        let pipeline_task = tokio::spawn(pipeline.run(value_rx));
+        let pipeline_task = tokio::spawn(pipeline.run(update_rx));
         let db_writer =
             ingest_laserstream::db_writer::DbWriter::new(db.clone(), trade_signals.clone());
         let db_writer_task = tokio::spawn(db_writer.run(db_rx));

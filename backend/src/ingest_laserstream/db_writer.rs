@@ -1,12 +1,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use futures_util::stream::{self, StreamExt};
 use sqlx::PgPool;
 use tokio::sync::mpsc;
 use tracing::{error, warn};
+use uuid::Uuid;
 
+use super::adapter::build_raw_blob;
+use super::proto::geyser::SubscribeUpdateTransaction;
 use crate::{
     models::{token::Token, trade::Trade, transaction::RawTransaction},
     state::{token_metrics::compute_is_rugged, trade_signals::TradeSignals},
@@ -25,12 +28,26 @@ const METRIC_WRITE_CONCURRENCY: usize = 8;
 /// Async persistence queue — never blocks the ingest hot path.
 #[derive(Debug)]
 pub enum DbWriteOp {
-    Raw(Arc<RawTransaction>),
+    Raw(RawBlobJob),
     Token(Token),
     Wallet(String),
     Trade(Trade),
     Metrics(TokenMetricsWrite),
     Migration { mint: String },
+}
+
+/// A persist-the-raw-blob job: the typed protobuf update plus the ingest-time
+/// scalars. The heap-heavy Helius-shaped `Value` blob is synthesised from
+/// `update` **here in the DbWriter** (off the ingest hot path) via
+/// [`build_raw_blob`]; `received_at` is the ingest clock captured at decode, not
+/// flush time, so the persisted row keeps the real receive timestamp.
+#[derive(Debug)]
+pub struct RawBlobJob {
+    pub update: Arc<SubscribeUpdateTransaction>,
+    pub signature: String,
+    pub slot: u64,
+    pub block_time: DateTime<Utc>,
+    pub received_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
@@ -115,7 +132,7 @@ impl DbWriter {
         //  • migrations → unique mints (idempotent OR-true)
         // Keeping the *last* op is exactly equivalent to applying them in order.
         let mut tokens: Vec<Token> = Vec::new();
-        let mut raws: Vec<Arc<RawTransaction>> = Vec::new();
+        let mut raws: Vec<RawBlobJob> = Vec::new();
         let mut wallets: HashSet<String> = HashSet::new();
         let mut trades: HashMap<(String, i32), Trade> = HashMap::new();
         let mut metrics: HashMap<String, TokenMetricsWrite> = HashMap::new();
@@ -148,11 +165,29 @@ impl DbWriter {
             }
         }
 
-        // Raw transactions — one multi-row insert, falling back to per-row on
-        // error so a single bad row doesn't drop the whole batch.
-        if let Err(e) = tx_repo.insert_many(&raws, "grpc").await {
+        // Raw transactions — synthesise the Helius-shaped blob from the protobuf
+        // HERE (off the ingest hot path; the whole point of Tier B), then one
+        // multi-row insert with a per-row fallback so one bad row can't drop the
+        // batch. A job whose protobuf lacks the tx/message/meta we need yields no
+        // blob and is skipped (it would have produced none on the hot path either).
+        let raw_txs: Vec<Arc<RawTransaction>> = raws
+            .iter()
+            .filter_map(|job| {
+                build_raw_blob(&job.update).map(|raw_data| {
+                    Arc::new(RawTransaction {
+                        id: Uuid::new_v4(),
+                        signature: job.signature.clone(),
+                        slot: job.slot,
+                        block_time: job.block_time,
+                        raw_data,
+                        received_at: job.received_at,
+                    })
+                })
+            })
+            .collect();
+        if let Err(e) = tx_repo.insert_many(&raw_txs, "grpc").await {
             warn!("DbWriter: raw bulk insert failed ({e}); retrying per-row");
-            for tx in &raws {
+            for tx in &raw_txs {
                 if let Err(e) = tx_repo.insert(tx, "grpc").await {
                     error!("DbWriter: raw tx {}: {e}", tx.signature);
                 }

@@ -1,12 +1,13 @@
-//! Instruction classification and human-readable labeling.
+//! Shared instruction classification and labeling leaves (used by both paths).
 //!
-//! Resolves program IDs from raw instructions, classifies pump.fun
-//! instructions into [`InstructionKind`] by Anchor discriminator, and builds
-//! the per-instruction labels (plus compute-budget extraction) attached to
-//! every decoded trade/token.
+//! Classifies pump.fun instructions into [`InstructionKind`] by Anchor
+//! discriminator, derives the primary instruction type, extracts compute-budget
+//! values, and renders one human-readable label per instruction — all from plain
+//! byte slices, so the grpc and json paths share them. The `Value`-shaped
+//! adapters live in [`super::json::instructions`]; the protobuf ones in
+//! [`super::grpc`].
 
 use borsh::BorshDeserialize;
-use serde_json::Value;
 
 use crate::config::constants::{
     program_friendly_name, ASSOCIATED_TOKEN_PROGRAM_ID, BUY_DISCRIMINATOR,
@@ -19,15 +20,11 @@ use crate::config::constants::{
 
 use super::trade::DecodedTradeEvent;
 
-// ---------------------------------------------------------------------------
-// Step 1b — identify instruction kinds from log lines
-// ---------------------------------------------------------------------------
-
 /// Simplified instruction classifier.
 /// `create` (SPL Token) and `create_v2` (Token-2022) are distinct instructions
 /// with different account layouts; both map to `InstructionKind::Create`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InstructionKind {
+pub(super) enum InstructionKind {
     Create,
     Buy,
     Sell,
@@ -35,40 +32,11 @@ pub enum InstructionKind {
     Unknown,
 }
 
-/// One outer instruction with its program id resolved and its base58 `data`
-/// decoded **exactly once**. The per-tx hot path classifies instruction kinds and
-/// builds labels from the same prepared slice, so the same bytes are no longer
-/// base58-decoded twice (once per pass) for every outer instruction.
-pub(super) struct PreparedIx<'a> {
-    pub(super) program_id: String,
-    pub(super) data: Option<Vec<u8>>,
-    pub(super) ix: &'a Value,
-}
-
-/// Resolve + base58-decode every outer (`message.instructions`) instruction once.
-pub(super) fn prepare_instructions<'a>(
-    message: &'a Value,
-    account_keys: &[&str],
-) -> Vec<PreparedIx<'a>> {
-    message["instructions"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .map(|ix| PreparedIx {
-                    program_id: resolve_instruction_program_id(ix, account_keys),
-                    data: instruction_data_bytes(ix),
-                    ix,
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// Classify one already-decoded pump.fun instruction by its 8-byte Anchor
 /// discriminator. Returns `None` for non-pump ixs or data shorter than 8 bytes.
 /// All buy/sell variants (BuyExactSolIn, BuyExactQuoteInV2, …) collapse into
 /// Buy / Sell.
-fn classify_pump_ix(program_id: &str, data: Option<&[u8]>) -> Option<InstructionKind> {
+pub(super) fn classify_pump_ix(program_id: &str, data: Option<&[u8]>) -> Option<InstructionKind> {
     if program_id != PUMP_FUN_PROGRAM_ID {
         return None;
     }
@@ -97,49 +65,12 @@ fn classify_pump_ix(program_id: &str, data: Option<&[u8]>) -> Option<Instruction
     Some(kind)
 }
 
-/// Map every pump.fun instruction (outer + inner) to a big-class
-/// [`InstructionKind`]. Outer ixs come pre-decoded; inner ixs resolve their
-/// program id first and skip the base58 decode unless they belong to pump.fun.
-pub(super) fn collect_instruction_kinds(
-    outer: &[PreparedIx],
-    meta: &Value,
-    account_keys: &[&str],
-) -> Vec<InstructionKind> {
-    let mut kinds = Vec::new();
-
-    for p in outer {
-        if let Some(kind) = classify_pump_ix(&p.program_id, p.data.as_deref()) {
-            kinds.push(kind);
-        }
-    }
-
-    if let Some(groups) = meta["innerInstructions"].as_array() {
-        for group in groups {
-            if let Some(instructions) = group["instructions"].as_array() {
-                for ix in instructions {
-                    // Skip non-pump inner ixs before paying for the data decode.
-                    let program_id = resolve_instruction_program_id(ix, account_keys);
-                    if program_id != PUMP_FUN_PROGRAM_ID {
-                        continue;
-                    }
-                    let data = instruction_data_bytes(ix);
-                    if let Some(kind) = classify_pump_ix(&program_id, data.as_deref()) {
-                        kinds.push(kind);
-                    }
-                }
-            }
-        }
-    }
-
-    kinds
-}
-
 pub(super) fn determine_instruction_type(
     kinds: &[InstructionKind],
     decoded_events: &[DecodedTradeEvent],
 ) -> String {
-    let has_buy = kinds.iter().any(|k| *k == InstructionKind::Buy);
-    let has_sell = kinds.iter().any(|k| *k == InstructionKind::Sell);
+    let has_buy = kinds.contains(&InstructionKind::Buy);
+    let has_sell = kinds.contains(&InstructionKind::Sell);
 
     if has_buy && has_sell {
         let (buy_sol, sell_sol) = decoded_events.iter().fold((0.0, 0.0), |(buy, sell), ev| {
@@ -173,37 +104,18 @@ pub(super) fn determine_instruction_type(
     if has_sell {
         return "Sell".to_string();
     }
-    if kinds.iter().any(|k| *k == InstructionKind::Create) {
+    if kinds.contains(&InstructionKind::Create) {
         return "Create".to_string();
     }
-    if kinds.iter().any(|k| *k == InstructionKind::Migrate) {
+    if kinds.contains(&InstructionKind::Migrate) {
         return "Migrate".to_string();
     }
 
     "Unknown".to_string()
 }
 
-pub(super) fn resolve_instruction_program_id(ix: &Value, account_keys: &[&str]) -> String {
-    ix["programId"]
-        .as_str()
-        .map(|s| s.to_owned())
-        .or_else(|| {
-            ix["programIdIndex"]
-                .as_u64()
-                .and_then(|i| account_keys.get(i as usize).copied())
-                .map(|s| s.to_owned())
-        })
-        .unwrap_or_default()
-}
-
-pub(super) fn instruction_data_bytes(ix: &Value) -> Option<Vec<u8>> {
-    ix["data"]
-        .as_str()
-        .and_then(|s| bs58::decode(s).into_vec().ok())
-}
-
 // ---------------------------------------------------------------------------
-// Step 2 — build instruction-order labels from message.instructions
+// Step 2 — per-instruction labels + compute-budget extraction (shared leaves)
 // ---------------------------------------------------------------------------
 
 /// Borsh-deserialised Compute Budget instruction used to extract cu_limit /
@@ -218,48 +130,40 @@ enum ComputeBudgetIx {
     SetLoadedAccountsDataSizeLimit(u32), // 4
 }
 
-/// Iterate the pre-decoded top-level instructions and build a human-readable
-/// label for each entry. Also extracts `cu_limit` and `cu_price` in the same
-/// pass, reusing the already-decoded `data` bytes (no re-decode).
-
-/// Returns `(labels, cu_limit_opt, cu_price_opt)`.
-pub(super) fn build_instruction_labels(
-    instructions: &[PreparedIx],
-) -> (Vec<String>, Option<u64>, Option<u64>) {
-    let mut cu_limit: Option<u64> = None;
-    let mut cu_price: Option<u64> = None;
-
-    let labels = instructions
-        .iter()
-        .map(|p| {
-            let program_id = p.program_id.as_str();
-            let data_bytes = p.data.as_deref();
-
-            // Extract compute-budget values while labelling.
-            if program_id == COMPUTE_BUDGET_PROGRAM_ID {
-                if let Some(b) = data_bytes {
-                    let mut buf: &[u8] = b;
-                    match ComputeBudgetIx::deserialize(&mut buf) {
-                        Ok(ComputeBudgetIx::SetComputeUnitLimit(units)) => {
-                            cu_limit = Some(units as u64);
-                        }
-                        Ok(ComputeBudgetIx::SetComputeUnitPrice(price)) => {
-                            cu_price = Some(price);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-
-            label_instruction(program_id, p.ix, data_bytes)
-        })
-        .collect();
-
-    (labels, cu_limit, cu_price)
+/// Extract `cu_limit` / `cu_price` from a Compute Budget instruction's bytes,
+/// updating the caller's accumulators. No-op for any other program. Shared by
+/// the `Value` label pass and the protobuf-native decode path.
+pub(super) fn extract_compute_budget(
+    program_id: &str,
+    data: Option<&[u8]>,
+    cu_limit: &mut Option<u64>,
+    cu_price: &mut Option<u64>,
+) {
+    if program_id != COMPUTE_BUDGET_PROGRAM_ID {
+        return;
+    }
+    if let Some(b) = data {
+        let mut buf: &[u8] = b;
+        match ComputeBudgetIx::deserialize(&mut buf) {
+            Ok(ComputeBudgetIx::SetComputeUnitLimit(units)) => *cu_limit = Some(units as u64),
+            Ok(ComputeBudgetIx::SetComputeUnitPrice(price)) => *cu_price = Some(price),
+            _ => {}
+        }
+    }
 }
 
 /// Produce a single human-readable label for one instruction.
-fn label_instruction(program_id: &str, ix: &Value, data_bytes: Option<&[u8]>) -> String {
+///
+/// `parsed_type` is the Helius `jsonParsed` instruction type (`parsed.type`)
+/// when available — present only on the RPC/`Value` path. The protobuf-native
+/// live path has no such field and passes `None`, so System/Token/ATA
+/// instructions there fall through to `"<friendly>: Unknown"` (matching the
+/// live adapter's output before Tier B, where `parsed` was never synthesized).
+pub(super) fn label_instruction(
+    program_id: &str,
+    parsed_type: Option<&str>,
+    data_bytes: Option<&[u8]>,
+) -> String {
     // ── Compute Budget ────────────────────────────────────────────────────────
     if program_id == COMPUTE_BUDGET_PROGRAM_ID {
         if let Some(bytes) = data_bytes {
@@ -271,7 +175,7 @@ fn label_instruction(program_id: &str, ix: &Value, data_bytes: Option<&[u8]>) ->
                 _ => {}
             }
         }
-        if let Some(t) = ix.pointer("/parsed/type").and_then(Value::as_str) {
+        if let Some(t) = parsed_type {
             return format!("Compute Budget: {}", capitalize_first(t));
         }
         return "Compute Budget: Unknown".to_owned();
@@ -323,7 +227,7 @@ fn label_instruction(program_id: &str, ix: &Value, data_bytes: Option<&[u8]>) ->
     ];
     if use_parsed.contains(&program_id) {
         let friendly = program_friendly_name(program_id).unwrap_or("Unknown Program");
-        if let Some(t) = ix.pointer("/parsed/type").and_then(Value::as_str) {
+        if let Some(t) = parsed_type {
             return format!("{}: {}", friendly, capitalize_first(t));
         }
         return format!("{}: Unknown", friendly);

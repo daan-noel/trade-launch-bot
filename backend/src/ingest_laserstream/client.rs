@@ -15,7 +15,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dashmap::DashMap;
-use serde_json::Value;
 use tokio::sync::{mpsc, watch, Notify};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::metadata::{Ascii, MetadataValue};
@@ -25,11 +24,15 @@ use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 use tonic::{Request, Status};
 use tracing::{error, info};
 
-use super::adapter;
+use crate::config::constants::PUMP_SWAP_PROGRAM_ID;
+
 use super::profile;
 use super::proto::geyser::geyser_client::GeyserClient;
 use super::proto::geyser::subscribe_update::UpdateOneof;
-use super::proto::geyser::{CommitmentLevel, SubscribeRequest, SubscribeRequestFilterTransactions};
+use super::proto::geyser::{
+    CommitmentLevel, SubscribeRequest, SubscribeRequestFilterTransactions,
+    SubscribeUpdateTransaction,
+};
 
 /// Outbound `SubscribeRequest` queue depth (initial subscribe + pool updates).
 const REQUEST_QUEUE_CAP: usize = 16;
@@ -119,6 +122,24 @@ pub fn build_subscribe_request(
     }
 }
 
+/// Cheap pre-filter mirroring the decoder's log gate: keep only txs whose logs
+/// mention the pump.fun curve program or the PumpSwap (AMM) program — the rest
+/// of the subscription firehose is dropped before it reaches the pipeline. This
+/// is the only per-tx work the client task does now; the `Value` blob build it
+/// used to run moved off-thread into the DbWriter (Tier B).
+fn tx_is_relevant(update: &SubscribeUpdateTransaction, pump_program_id: &str) -> bool {
+    update
+        .transaction
+        .as_ref()
+        .and_then(|info| info.meta.as_ref())
+        .map(|meta| {
+            meta.log_messages
+                .iter()
+                .any(|l| l.contains(pump_program_id) || l.contains(PUMP_SWAP_PROGRAM_ID))
+        })
+        .unwrap_or(false)
+}
+
 /// Combined `account_include`: the pump.fun curve program plus every currently
 /// tracked PumpSwap pool account (the `pool_index` keys).
 fn account_includes(pump_program_id: &str, pool_index: &DashMap<String, String>) -> Vec<String> {
@@ -129,14 +150,16 @@ fn account_includes(pump_program_id: &str, pool_index: &DashMap<String, String>)
 }
 
 /// Spawn-ready entry point. Loops forever: (wait for live) → connect → subscribe
-/// → stream → reconnect. Adapted transaction `Value`s are forwarded to `value_tx`
-/// for the pipeline to decode.
+/// → stream → reconnect. Pump/AMM-relevant transaction updates (typed protobuf,
+/// shared via `Arc`) are forwarded to `update_tx` for the pipeline to decode; the
+/// heap-heavy Helius `Value` blob is no longer built here (Tier B — it's
+/// synthesised off-thread in the DbWriter for persisted txs only).
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     laserstream_url: String,
     api_key: String,
     pump_program_id: String,
-    value_tx: mpsc::Sender<Value>,
+    update_tx: mpsc::Sender<Arc<SubscribeUpdateTransaction>>,
     mut live_rx: watch::Receiver<bool>,
     pool_index: Arc<DashMap<String, String>>,
     pools_changed: Arc<Notify>,
@@ -160,7 +183,7 @@ pub async fn run(
             &laserstream_url,
             &api_key,
             &pump_program_id,
-            &value_tx,
+            &update_tx,
             &mut live_rx,
             &pool_index,
             &pools_changed,
@@ -207,7 +230,7 @@ async fn run_once(
     laserstream_url: &str,
     api_key: &str,
     pump_program_id: &str,
-    value_tx: &mpsc::Sender<Value>,
+    update_tx: &mpsc::Sender<Arc<SubscribeUpdateTransaction>>,
     live_rx: &mut watch::Receiver<bool>,
     pool_index: &DashMap<String, String>,
     pools_changed: &Notify,
@@ -243,14 +266,16 @@ async fn run_once(
                     Ok(Some(update)) => {
                         if let Some(UpdateOneof::Transaction(tx)) = update.update_oneof {
                             last_slot.fetch_max(tx.slot, Ordering::Relaxed);
+                            // Cheap protobuf-log pre-filter: forward only txs the
+                            // decoder would keep (curve or AMM program in the logs).
+                            // No Value build here anymore — the profiler's "build"
+                            // stage now times just this scan (Tier B: ~0 µs).
                             let _span = profile::start();
-                            let built = adapter::update_tx_to_value(&tx, pump_program_id);
-                            profile::record_adapter(_span, built.is_some());
-                            if let Some(value) = built {
-                                if value_tx.send(value).await.is_err() {
-                                    info!("LaserStream: pipeline receiver dropped — stopping");
-                                    return Ok(());
-                                }
+                            let relevant = tx_is_relevant(&tx, pump_program_id);
+                            profile::record_adapter(_span, relevant);
+                            if relevant && update_tx.send(Arc::new(tx)).await.is_err() {
+                                info!("LaserStream: pipeline receiver dropped — stopping");
+                                return Ok(());
                             }
                         }
                         // Ping/Pong/other updates: ignored (HTTP/2 keepalive

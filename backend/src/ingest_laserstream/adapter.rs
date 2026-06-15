@@ -25,10 +25,7 @@ pub fn update_tx_to_value(
     update: &SubscribeUpdateTransaction,
     pump_program_id: &str,
 ) -> Option<Value> {
-    let info = update.transaction.as_ref()?;
-    let tx = info.transaction.as_ref()?;
-    let message = tx.message.as_ref()?;
-    let meta = info.meta.as_ref()?;
+    let meta = update.transaction.as_ref()?.meta.as_ref()?;
 
     // Pre-filter: the decoder keeps only bonding-curve txs (curve program in the
     // logs) and PumpSwap AMM swaps (AMM program in the logs); everything else is
@@ -41,6 +38,25 @@ pub fn update_tx_to_value(
     {
         return None;
     }
+
+    build_raw_blob(update)
+}
+
+/// Synthesise the Helius-shaped `params.result` blob from the protobuf, **without**
+/// the pre-filter — the persisted gRPC raw-tx blob (`raw_transactions.raw_data`).
+///
+/// Tier B runs this off the ingest hot path, inside the DbWriter flush, only for
+/// txs we actually persist: the heap-heavy `Value` synthesis (base58 of the
+/// signature + every account key + every instruction `data`, plus the `json!`
+/// tree) no longer blocks the serial ingest task. The bytes are identical to the
+/// old inline build, so historical blobs and replay stay byte-for-byte consistent.
+/// `update_tx_to_value` = this, gated by the cheap log pre-filter (used by the
+/// cold replay path, which needs a decodable `Value`).
+pub fn build_raw_blob(update: &SubscribeUpdateTransaction) -> Option<Value> {
+    let info = update.transaction.as_ref()?;
+    let tx = info.transaction.as_ref()?;
+    let message = tx.message.as_ref()?;
+    let meta = info.meta.as_ref()?;
 
     let signature = bs58::encode(&info.signature).into_string();
 

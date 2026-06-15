@@ -22,7 +22,6 @@ use crate::models::{
     transaction::RawTransaction,
 };
 
-use super::instructions::instruction_data_bytes;
 use super::trade::DecodedTradeEvent;
 use super::HeliusDecoder;
 
@@ -32,13 +31,19 @@ impl HeliusDecoder {
     ///
     /// Creator wallet prefers on-chain `CreateEvent.creator`, then the instruction
     /// arg pubkey, then the user signer account (`create`: idx 7, `create_v2`: idx 5).
+    ///
+    /// `create_data` is the Create instruction's raw data bytes (discriminator +
+    /// Anchor args); `pump_ix_datas` are the raw data bytes of every pump.fun
+    /// instruction in the tx (used to find the initial-buy args). Both paths
+    /// (Value RPC/sync and protobuf live) feed these as plain bytes, so the
+    /// creator/name/symbol resolution below is source-agnostic.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn decode_create(
         &self,
         signature: &str,
         slot: u64,
         block_time: DateTime<Utc>,
-        pump_ix: &Value,
+        create_data: &[u8],
         pump_accounts: &[String],
         account_keys: &[&str],
         decoded_events: &[DecodedTradeEvent],
@@ -48,7 +53,7 @@ impl HeliusDecoder {
         cu_limit: Option<u64>,
         cu_price: Option<u64>,
         raw_tx: &Arc<RawTransaction>,
-        pump_ixs: &[&Value],
+        pump_ix_datas: &[&[u8]],
     ) -> Vec<InternalEvent> {
         let mint = match pump_accounts.first().filter(|s| !s.is_empty()) {
             Some(m) => m.clone(),
@@ -58,7 +63,7 @@ impl HeliusDecoder {
             }
         };
 
-        let ix_info = decode_create_info(pump_ix);
+        let ix_info = decode_create_info(create_data);
         let create_log = decoded_create_events.iter().find(|e| e.mint == mint);
         let is_v2 = ix_info.as_ref().map(|i| i.is_v2).unwrap_or(false)
             || create_log
@@ -111,7 +116,7 @@ impl HeliusDecoder {
             .and_then(|e| e.bonding_curve.clone())
             .or_else(|| pump_accounts.get(2).cloned());
         let initial_buy_instruction =
-            extract_pump_buy_instruction_data(pump_ixs).map(buy_instruction_data_to_json);
+            extract_pump_buy_instruction_data(pump_ix_datas).map(buy_instruction_data_to_json);
 
         debug!(
             sig = %signature,
@@ -402,12 +407,10 @@ fn buy_instruction_data_to_json(data: PumpBuyInstructionData) -> Value {
     }
 }
 
-fn extract_pump_buy_instruction_data(pump_ixs: &[&Value]) -> Option<PumpBuyInstructionData> {
-    for &ix in pump_ixs {
-        if let Some(bytes) = instruction_data_bytes(ix).as_deref() {
-            if let Some(data) = parse_pump_buy_instruction_data(bytes) {
-                return Some(data);
-            }
+fn extract_pump_buy_instruction_data(pump_ix_datas: &[&[u8]]) -> Option<PumpBuyInstructionData> {
+    for &bytes in pump_ix_datas {
+        if let Some(data) = parse_pump_buy_instruction_data(bytes) {
+            return Some(data);
         }
     }
     None
@@ -459,8 +462,8 @@ fn resolve_creator_wallet(
         .unwrap_or_default()
 }
 
-/// Attempt to decode create instruction args from base58-encoded data.
-
+/// Attempt to decode create instruction args from the raw instruction-data bytes.
+///
 /// Anchor / Borsh layout (after the 8-byte discriminator):
 ///   name:                  u32 LE length + UTF-8 bytes
 ///   symbol:                u32 LE length + UTF-8 bytes
@@ -468,10 +471,7 @@ fn resolve_creator_wallet(
 ///   creator:               32-byte pubkey (both create and create_v2)
 ///   is_mayhem_mode:        bool (create_v2 only)
 ///   is_cashback_enabled:   OptionBool = 1 byte bool (create_v2 only)
-fn decode_create_info(pump_ix: &Value) -> Option<CreateInstructionInfo> {
-    let data_b58 = pump_ix["data"].as_str()?;
-    let data = bs58::decode(data_b58).into_vec().ok()?;
-
+fn decode_create_info(data: &[u8]) -> Option<CreateInstructionInfo> {
     // Must have at least discriminator (8) + two minimal strings (4 bytes each)
     if data.len() < 16 {
         return None;
@@ -484,11 +484,11 @@ fn decode_create_info(pump_ix: &Value) -> Option<CreateInstructionInfo> {
     }
 
     let mut offset = 8; // skip discriminator
-    let name = read_anchor_string(&data, &mut offset)?;
-    let symbol = read_anchor_string(&data, &mut offset)?;
-    let _ = read_anchor_string(&data, &mut offset);
+    let name = read_anchor_string(data, &mut offset)?;
+    let symbol = read_anchor_string(data, &mut offset)?;
+    let _ = read_anchor_string(data, &mut offset);
 
-    let creator = read_pubkey(&data, &mut offset)
+    let creator = read_pubkey(data, &mut offset)
         .map(|pk| bs58::encode(pk).into_string())?;
 
     let (is_mayhem_mode, is_cashback_enabled) = if is_create_v2 {

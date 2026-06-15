@@ -1,7 +1,10 @@
-//! JSON extraction and amount-computation helpers shared across the decoder.
+//! `Value`-path JSON extraction and token-amount helpers.
 //!
 //! These operate directly on the raw Helius `transaction`/`meta` JSON and have
 //! no knowledge of pump.fun semantics beyond locating instructions and balances.
+//! The protobuf path reads the typed Yellowstone structs in [`super::super::grpc`]
+//! instead; the source-agnostic `compute_sol_change` lives in
+//! [`super::super::trade`].
 
 use serde_json::Value;
 
@@ -13,7 +16,7 @@ use super::instructions::resolve_instruction_program_id;
 // JSON extraction helpers
 // ---------------------------------------------------------------------------
 
-pub(super) fn extract_logs<'a>(meta: &'a Value) -> Vec<&'a str> {
+pub(super) fn extract_logs(meta: &Value) -> Vec<&str> {
     log_lines(meta).collect()
 }
 
@@ -46,7 +49,7 @@ pub(super) fn extract_account_keys(message: &Value) -> Vec<&str> {
 /// Find ALL instructions that belong to `program_id`, searching both the
 /// top-level `message.instructions` list and every entry in
 /// `meta.innerInstructions[*].instructions`.
-
+///
 /// This is needed because trading bots (Terminal, Axiom, …) wrap pump.fun
 /// calls as CPI — the pump.fun instruction appears only as an inner call.
 pub(super) fn find_pump_ixs_anywhere<'a>(
@@ -97,11 +100,11 @@ pub(super) fn is_pump_create_ix(ix: &Value) -> bool {
 }
 
 /// Resolve account pubkeys from a pump instruction.
-
-/// Helius with `jsonParsed` encoding may return accounts as either:
-///   - Resolved pubkey strings: `["pk1", "pk2", ...]`
-///   - Integer indices into `message.accountKeys`: `[0, 1, 2, ...]`
-/// Both are handled; unresolvable entries are silently skipped.
+///
+/// Helius with `jsonParsed` encoding may return accounts as either resolved
+/// pubkey strings (`["pk1", "pk2", ...]`) or integer indices into
+/// `message.accountKeys` (`[0, 1, 2, ...]`). Both are handled; unresolvable
+/// entries are silently skipped.
 pub(super) fn resolve_pump_accounts(ix: &Value, account_keys: &[&str]) -> Vec<String> {
     ix["accounts"]
         .as_array()
@@ -129,25 +132,6 @@ pub(super) fn extract_balances(balances: &Value) -> Vec<u64> {
 // ---------------------------------------------------------------------------
 // Amount computation
 // ---------------------------------------------------------------------------
-
-/// Compute the absolute SOL change (in SOL, not lamports) for `wallet`
-/// using the flat pre/post balance arrays (indexed by accountKeys order).
-pub(super) fn compute_sol_change(
-    wallet: &str,
-    account_keys: &[&str],
-    pre: &[u64],
-    post: &[u64],
-) -> f64 {
-    account_keys
-        .iter()
-        .position(|k| *k == wallet)
-        .map(|idx| {
-            let pre_bal = pre.get(idx).copied().unwrap_or(0);
-            let post_bal = post.get(idx).copied().unwrap_or(0);
-            (pre_bal as f64 - post_bal as f64).abs() / 1_000_000_000.0
-        })
-        .unwrap_or(0.0)
-}
 
 /// Compute the absolute token amount change for `user_ata` (the trader's
 /// Associated Token Account) using pre/post token balance entries.

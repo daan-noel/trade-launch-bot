@@ -10,21 +10,24 @@ Code lives in [backend/src/ingest_laserstream/](../../backend/src/ingest_laserst
 
 | File | Purpose |
 |------|---------|
-| [client.rs](../../backend/src/ingest_laserstream/client.rs) | gRPC connect, TLS + `x-token` auth, subscription, reconnect backoff, pool resubscribe |
-| [adapter.rs](../../backend/src/ingest_laserstream/adapter.rs) | Protobuf `SubscribeUpdateTransaction` → Helius-shaped JSON `Value` |
+| [client.rs](../../backend/src/ingest_laserstream/client.rs) | gRPC connect, TLS + `x-token` auth, subscription, reconnect backoff, pool resubscribe; forwards the typed `Arc<SubscribeUpdateTransaction>` (no `Value` build) |
+| [adapter.rs](../../backend/src/ingest_laserstream/adapter.rs) | Protobuf `SubscribeUpdateTransaction` → Helius-shaped JSON `Value` (`build_raw_blob` = persisted blob, off-thread in DbWriter; `update_tx_to_value` = that + pre-filter, for cold replay) |
 | [pipeline.rs](../../backend/src/ingest_laserstream/pipeline.rs) | Main event loop: decode dispatch, cache updates, strategy pings, pool refresh |
-| [db_writer.rs](../../backend/src/ingest_laserstream/db_writer.rs) | Batch queue, partition-by-type, dedup-keep-last, bulk inserts, signal notify |
-| [decoder/mod.rs](../../backend/src/ingest_laserstream/decoder/mod.rs) | `HeliusDecoder` API, event assembly, filtering |
-| [decoder/trade.rs](../../backend/src/ingest_laserstream/decoder/trade.rs) | Bonding-curve `TradeEvent` + PumpSwap `BuyEvent`/`SellEvent` Borsh decode |
-| [decoder/create.rs](../../backend/src/ingest_laserstream/decoder/create.rs) | `Create`/`Create_v2` instruction + creator resolution |
-| [decoder/instructions.rs](../../backend/src/ingest_laserstream/decoder/instructions.rs) | Instruction labels + compute-unit extraction |
-| [decoder/parse.rs](../../backend/src/ingest_laserstream/decoder/parse.rs) | Account-key extraction, balance deltas, log lines, Pump IX walks |
+| [db_writer.rs](../../backend/src/ingest_laserstream/db_writer.rs) | Batch queue, partition-by-type, dedup-keep-last, bulk inserts, signal notify; synthesises the raw blob via `build_raw_blob` off the hot path |
+| [decoder/mod.rs](../../backend/src/ingest_laserstream/decoder/mod.rs) | `HeliusDecoder` API + `DecodeOutput`, `decode_migrate`; module wiring for the two forked paths |
+| [decoder/grpc/](../../backend/src/ingest_laserstream/decoder/grpc/) | **Live hot path** — protobuf-native `decode_protobuf` (+ `grpc/trade.rs`), reads the Yellowstone structs directly, no `Value` |
+| [decoder/json/](../../backend/src/ingest_laserstream/decoder/json/) | **token_sync (RPC + replay)** — `Value` path: `decode_result`/`decode_pump_swap_result`/`decode_amm_live`, plus `json/parse.rs` (account-key/balance/log/IX-walk extraction) + `json/instructions.rs` (Value ix adapters) + `json/trade.rs` |
+| [decoder/trade.rs](../../backend/src/ingest_laserstream/decoder/trade.rs) | Shared: bonding-curve `TradeEvent` + PumpSwap `BuyEvent`/`SellEvent` Borsh decode, `build_amm_trade`, `compute_sol_change` |
+| [decoder/create.rs](../../backend/src/ingest_laserstream/decoder/create.rs) | Shared: `Create`/`Create_v2` instruction + creator resolution (byte-source-agnostic) |
+| [decoder/instructions.rs](../../backend/src/ingest_laserstream/decoder/instructions.rs) | Shared: instruction kinds/labels + compute-unit extraction (plain byte slices) |
+
+The two decode paths are parity-tested siblings (a fix to a path-specific step usually belongs in both `grpc` and `json`); only the **byte source** differs — see [@docs/ingest.md](../../@docs/ingest.md) for the fork rationale.
 
 ## End-to-end data flow
 
 ```
-LaserStream gRPC  ──Value──▶  IngestPipeline  ──┬─DbWriteOp──▶  DbWriter ──▶ Postgres
-(client+adapter)              (decode + cache)  ├─StrategyPing─▶ Strategy runner
+LaserStream gRPC  ──Arc<protobuf>──▶  IngestPipeline  ──┬─DbWriteOp──▶  DbWriter ──▶ Postgres
+(client, pre-filter)  (decode_protobuf + cache)         ├─StrategyPing─▶ Strategy runner
                                                 └─SseEvent────▶ SSE /events (cold lane)
                                                                     │
                                           after commit: TradeSignals.notify(wallet,mint)
@@ -39,8 +42,11 @@ LaserStream gRPC  ──Value──▶  IngestPipeline  ──┬─DbWriteOp─
 - `build_subscribe_request(account_include, from_slot)` — subscribes to the **Pump.fun program**
   plus currently-tracked **PumpSwap pool accounts**. Commitment = `processed`. On reconnect it
   replays from `from_slot` when recent enough, else falls back to a live subscription.
-- `run(...)` main loop: `stream.message()` → `SubscribeUpdateTransaction` →
-  `adapter::update_tx_to_value(&tx)` → send on `value_tx` (mpsc) to the pipeline.
+- `run(...)` main loop: `stream.message()` → `SubscribeUpdateTransaction` → cheap
+  `tx_is_relevant(&tx)` log pre-filter → send the typed `Arc<SubscribeUpdateTransaction>` on
+  `value_tx` (mpsc) to the pipeline. (Tier B: the heap-heavy Helius `Value` blob is no longer
+  built here — `decode_protobuf` reads the protobuf directly and the persisted blob is built
+  off-thread in the DbWriter via `adapter::build_raw_blob`.)
   - Highest slot tracked in an `AtomicU64`.
   - `pools_changed` notification coalesces pool-set changes (≈250 ms debounce) and re-subscribes
     **without** a full reconnect.
@@ -51,7 +57,10 @@ LaserStream gRPC  ──Value──▶  IngestPipeline  ──┬─DbWriteOp─
 ### 2. Decode (`HeliusDecoder`)
 
 `HeliusDecoder { pump_program_id, pool_index: Option<Arc<DashMap<pool, mint>>> }`.
-`decode_result(&Value) -> DecodeOutput` (`Transaction { raw_tx, events }` or `Ignored`).
+Live gRPC path: `decode_protobuf(&SubscribeUpdateTransaction, received_at) -> DecodeOutput`
+(`decoder/grpc/`) — protobuf-native, no `Value`. token_sync (RPC + replay) still uses
+`decode_result(Value)`; both share the same byte-level leaves, so the decode semantics below
+are identical for either entry point (Tier B fork — see `@docs/ingest.md`).
 
 - **Bonding-curve trades** — preferred source is `Program data:` logs → base64 → Borsh
   `RawTradeEvent` (matched on `TRADE_EVENT_DISCRIMINATOR`). Fallback when logs are truncated:
@@ -70,8 +79,9 @@ LaserStream gRPC  ──Value──▶  IngestPipeline  ──┬─DbWriteOp─
 
 ### 3. Pipeline (cache + dispatch)
 
-`IngestPipeline::run(value_rx)` processes one `Value` at a time (backpressure from the DB queue
-intentionally stalls gRPC reads to bound memory on hot tokens). For each decoded `InternalEvent`:
+`IngestPipeline::run(value_rx)` processes one `Arc<SubscribeUpdateTransaction>` at a time, calling
+`decode_protobuf` (backpressure from the DB queue intentionally stalls gRPC reads to bound memory on
+hot tokens). For each decoded `InternalEvent`:
 
 - **TokenCreated** → enqueue `Token` + `Wallet` + `Metrics`; ping strategy; emit SSE.
 - **TradeExecuted** → enqueue `Trade` + `Wallet` + `Metrics`; update live-reserves trader cache;
@@ -119,7 +129,7 @@ decrements waiters and removes empty slots (no leak).
 
 ## Key invariants
 
-- **Single hot-path owner** — one `Value` at a time; DB backpressure throttles the stream by design.
+- **Single hot-path owner** — one tx at a time; DB backpressure throttles the stream by design.
 - **Dedup-keep-last is replay-safe** — multiple trades for one `(tx_signature, leg_index)` in a flush
   coalesce deterministically.
 - **`pool_index` is shared** (Arc<DashMap>) across decoder (resolve AMM swaps), pipeline (register

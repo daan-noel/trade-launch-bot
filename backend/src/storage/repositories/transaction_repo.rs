@@ -1,46 +1,12 @@
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
-use serde_json::Value;
 use sqlx::PgPool;
-use uuid::Uuid;
 
 use crate::models::transaction::RawTransaction;
 
 pub struct TransactionRepo {
     pool: PgPool,
 }
-
-// ---------------------------------------------------------------------------
-// DB row — wraps JSONB in sqlx::types::Json for FromRow compatibility
-// ---------------------------------------------------------------------------
-
-#[derive(sqlx::FromRow)]
-struct RawTransactionDbRow {
-    id: Uuid,
-    signature: String,
-    slot: i64,
-    block_time: DateTime<Utc>,
-    raw_data: sqlx::types::Json<Value>,
-    received_at: DateTime<Utc>,
-}
-
-impl From<RawTransactionDbRow> for RawTransaction {
-    fn from(r: RawTransactionDbRow) -> Self {
-        Self {
-            id: r.id,
-            signature: r.signature,
-            slot: r.slot as u64,
-            block_time: r.block_time,
-            raw_data: r.raw_data.0,
-            received_at: r.received_at,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Repo
-// ---------------------------------------------------------------------------
 
 impl TransactionRepo {
     pub fn new(pool: PgPool) -> Self {
@@ -100,28 +66,5 @@ impl TransactionRepo {
         qb.build().execute(&self.pool).await?;
 
         Ok(())
-    }
-
-    #[allow(dead_code)]
-    pub async fn find_by_signature(&self, sig: &str) -> anyhow::Result<Option<RawTransaction>> {
-        let row = sqlx::query_as::<_, RawTransactionDbRow>(
-            "SELECT * FROM raw_transactions WHERE signature = $1",
-        )
-        .bind(sig)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        Ok(row.map(RawTransaction::from))
-    }
-
-    #[allow(dead_code)]
-    pub async fn exists(&self, sig: &str) -> anyhow::Result<bool> {
-        let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(1) FROM raw_transactions WHERE signature = $1")
-                .bind(sig)
-                .fetch_one(&self.pool)
-                .await?;
-
-        Ok(count > 0)
     }
 }

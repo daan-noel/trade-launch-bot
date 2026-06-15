@@ -1,17 +1,16 @@
-//! Opt-in timing for the ingest decode hot path (H1 profiling).
+//! Opt-in timing for the ingest decode hot path.
 //!
-//! Answers the open question in `h1-typed-decode-plan.md`: is building the
-//! `serde_json::Value` (base58 of signature + every account key + every
-//! instruction `data`, plus the `json!` tree) in [`super::adapter::update_tx_to_value`]
-//! actually a measured ingest-thread cost, or is it dwarfed by the fact that the
-//! pre-filter only builds it for relevant pump/PumpSwap txs?
+//! Post-Tier-B regression check: confirms the heap-heavy `Value` build left the
+//! ingest thread. The two timed stages now run on different tasks — the
+//! `tx_is_relevant` log pre-filter on the gRPC client task (the old "adapter"
+//! stage; `value_build_avg` should read ~0 now the `Value` synthesis moved
+//! off-thread into the DbWriter), and `decode_protobuf` on the pipeline task.
 //!
 //! Enabled by `INGEST_PROFILE=1` (or `true`). When disabled every hook is a
 //! single relaxed atomic load and **no** `Instant::now()` is taken, so the
-//! default ingest path pays nothing. The two stages run on different tasks —
-//! the adapter (Value build) on the gRPC client task, `decode_result` on the
-//! pipeline task — so they're timed at their call sites and aggregated here via
-//! process-global atomics (relaxed; diagnostic, not a correctness signal).
+//! default ingest path pays nothing. Stages are timed at their call sites and
+//! aggregated here via process-global atomics (relaxed; diagnostic, not a
+//! correctness signal).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
@@ -23,15 +22,17 @@ use tracing::info;
 /// counter, since that's the per-relevant-tx hot path).
 const REPORT_EVERY: u64 = 5000;
 
-// Adapter (`update_tx_to_value`) — split so the per-relevant-tx *build* cost is
-// not diluted by the cheap pre-filter rejections of the irrelevant firehose.
+// Client pre-filter (`tx_is_relevant`) — the old "adapter/Value build" stage.
+// Post-Tier-B the client no longer builds a `Value`, so the "built" bucket
+// (relevant txs) should time ~the cheap log scan, not the heap-heavy synthesis
+// that moved off-thread; "filtered" is the irrelevant-firehose rejections.
 static ADAPTER_BUILT_COUNT: AtomicU64 = AtomicU64::new(0);
 static ADAPTER_BUILT_NANOS: AtomicU64 = AtomicU64::new(0);
 static ADAPTER_BUILT_MAX: AtomicU64 = AtomicU64::new(0);
 static ADAPTER_FILTERED_COUNT: AtomicU64 = AtomicU64::new(0);
 static ADAPTER_FILTERED_NANOS: AtomicU64 = AtomicU64::new(0);
 
-// Decode (`decode_result`) — runs once per Value the adapter built.
+// Decode (`decode_protobuf`) — runs once per relevant tx the client forwarded.
 static DECODE_COUNT: AtomicU64 = AtomicU64::new(0);
 static DECODE_NANOS: AtomicU64 = AtomicU64::new(0);
 static DECODE_MAX: AtomicU64 = AtomicU64::new(0);
@@ -63,8 +64,8 @@ pub fn start() -> Option<Instant> {
     }
 }
 
-/// Record one `update_tx_to_value` call. `built` is whether it produced a `Value`
-/// (passed the pump/PumpSwap pre-filter) vs. cheaply rejected the tx.
+/// Record one client pre-filter (`tx_is_relevant`) call. `built` is whether the
+/// tx was relevant (pump/PumpSwap — forwarded to the pipeline) vs. cheaply rejected.
 #[inline]
 pub fn record_adapter(start: Option<Instant>, built: bool) {
     let Some(start) = start else { return };
@@ -79,7 +80,7 @@ pub fn record_adapter(start: Option<Instant>, built: bool) {
     }
 }
 
-/// Record one `decode_result` call, and emit a report every `REPORT_EVERY` calls.
+/// Record one `decode_protobuf` call, and emit a report every `REPORT_EVERY` calls.
 #[inline]
 pub fn record_decode(start: Option<Instant>) {
     let Some(start) = start else { return };
