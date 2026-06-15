@@ -1,9 +1,10 @@
-//! Weekly partition maintenance for `raw_transactions`.
+//! Weekly partition maintenance for `raw_transactions` and `trades`.
 //!
 //! Rolls the weekly partitions forward (so inserts always have a target) and
 //! drops partitions past the retention window. The partition naming/bounds live
-//! in SQL functions (`ensure_raw_partition` / `drop_raw_partition`, migration
-//! 0001); this task just passes anchor dates.
+//! in SQL functions (`ensure_raw_partition`/`drop_raw_partition` in migration
+//! 0001; `ensure_trades_partition`/`drop_trades_partition` in migration 0002);
+//! this task just passes anchor dates.
 
 use std::time::Duration;
 
@@ -11,43 +12,51 @@ use chrono::{Duration as ChronoDuration, Utc};
 use sqlx::PgPool;
 use tracing::{info, warn};
 
-/// Retention: keep roughly two months of weekly partitions.
-const KEEP_WEEKS: i64 = 9;
+/// Retention: keep five weeks of weekly partitions. Shared by `raw_transactions`
+/// (partitioned on `received_at`) and `trades` (partitioned on `block_time`).
+/// Must match the pre-created window in migrations 0001/0002.
+const KEEP_WEEKS: i64 = 5;
 /// How often to roll partitions forward / drop expired ones.
 const MAINT_INTERVAL_SECS: u64 = 6 * 3600;
 
 /// Spawn-ready loop. First tick fires immediately so partitions are ensured at
-/// startup (the migration also pre-creates them); then every 6h.
+/// startup (the migrations also pre-create them); then every 6h.
 pub async fn run_partition_maintenance(pool: PgPool) {
     let mut tick = tokio::time::interval(Duration::from_secs(MAINT_INTERVAL_SECS));
     loop {
         tick.tick().await;
         let today = Utc::now().date_naive();
 
-        // Ensure the current week plus the next two exist (ahead of ingest).
-        for k in 0i64..3 {
-            let anchor = today + ChronoDuration::weeks(k);
-            if let Err(e) = sqlx::query("SELECT ensure_raw_partition($1)")
-                .bind(anchor)
-                .execute(&pool)
-                .await
-            {
-                warn!("raw_tx partition ensure {anchor}: {e}");
+        // Ensure the current week plus the next two exist (ahead of ingest), and
+        // drop a small window of weeks past the retention cutoff — for both the
+        // raw-blob table and the trades table (same weekly cadence).
+        for (table, ensure_fn, drop_fn) in [
+            ("raw_tx", "ensure_raw_partition", "drop_raw_partition"),
+            ("trades", "ensure_trades_partition", "drop_trades_partition"),
+        ] {
+            for k in 0i64..3 {
+                let anchor = today + ChronoDuration::weeks(k);
+                if let Err(e) = sqlx::query(&format!("SELECT {ensure_fn}($1)"))
+                    .bind(anchor)
+                    .execute(&pool)
+                    .await
+                {
+                    warn!("{table} partition ensure {anchor}: {e}");
+                }
+            }
+
+            for k in 0i64..4 {
+                let anchor = today - ChronoDuration::weeks(KEEP_WEEKS + k);
+                if let Err(e) = sqlx::query(&format!("SELECT {drop_fn}($1)"))
+                    .bind(anchor)
+                    .execute(&pool)
+                    .await
+                {
+                    warn!("{table} partition drop {anchor}: {e}");
+                }
             }
         }
 
-        // Drop a small window of weeks past the retention cutoff.
-        for k in 0i64..4 {
-            let anchor = today - ChronoDuration::weeks(KEEP_WEEKS + k);
-            if let Err(e) = sqlx::query("SELECT drop_raw_partition($1)")
-                .bind(anchor)
-                .execute(&pool)
-                .await
-            {
-                warn!("raw_tx partition drop {anchor}: {e}");
-            }
-        }
-
-        info!("raw_transactions: weekly partitions maintained (retain ~{KEEP_WEEKS} weeks)");
+        info!("raw_transactions + trades: weekly partitions maintained (retain ~{KEEP_WEEKS} weeks)");
     }
 }

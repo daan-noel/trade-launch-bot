@@ -27,6 +27,8 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 export interface AppSettings {
   track_mayhem: boolean;
   track_post_migration: boolean;
+  /** Persist raw transaction blobs to `raw_transactions`. Off curbs DB growth. */
+  persist_raw: boolean;
   timezone: string | null;
   price_unit: 'SOL' | 'USD' | null;
   /** Default trade slippage in basis points (100 = 1%); null = use server default. */

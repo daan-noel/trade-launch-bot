@@ -39,6 +39,7 @@ pub mod keys {
     pub const PRICE_UNIT: Setting<Option<String>> = Setting::new("ui.price_unit", || None);
     pub const SLIPPAGE_BPS: Setting<Option<u64>> = Setting::new("trade.slippage_bps", || None);
     pub const LIVE: Setting<bool> = Setting::new("ingest.live", || false);
+    pub const PERSIST_RAW: Setting<bool> = Setting::new("ingest.persist_raw", || true);
 }
 
 /// Global, server-wide settings — the assembled, strongly-typed view of the
@@ -66,6 +67,10 @@ pub struct AppSettings {
     /// Persisted so a restart restores the operator's last on/off choice instead
     /// of always booting paused. Set via `PUT /api/system/live`.
     pub live: bool,
+    /// Persist raw transaction blobs to `raw_transactions`. When off, the ingest
+    /// pipeline skips the raw-blob enqueue (trades/metrics are still recorded) to
+    /// curb DB growth. Default on.
+    pub persist_raw: bool,
 }
 
 impl Default for AppSettings {
@@ -87,6 +92,7 @@ impl AppSettings {
             price_unit: pick(map, &keys::PRICE_UNIT),
             slippage_bps: pick(map, &keys::SLIPPAGE_BPS),
             live: pick(map, &keys::LIVE),
+            persist_raw: pick(map, &keys::PERSIST_RAW),
         }
     }
 }
@@ -181,6 +187,7 @@ mod tests {
         assert!(settings.track_mayhem);
         assert!(settings.track_post_migration);
         assert!(!settings.live);
+        assert!(settings.persist_raw);
         assert_eq!(settings.timezone, None);
         assert_eq!(settings.price_unit, None);
         assert_eq!(settings.slippage_bps, None);
@@ -191,12 +198,14 @@ mod tests {
         let mut map = HashMap::new();
         map.insert("ingest.track_mayhem".to_string(), json!(false));
         map.insert("ingest.live".to_string(), json!(true));
+        map.insert("ingest.persist_raw".to_string(), json!(false));
         map.insert("ui.price_unit".to_string(), json!("USD"));
         map.insert("trade.slippage_bps".to_string(), json!(250));
 
         let settings = AppSettings::from_map(&map);
         assert!(!settings.track_mayhem); // overridden
         assert!(settings.live); // overridden
+        assert!(!settings.persist_raw); // overridden
         assert!(settings.track_post_migration); // still default
         assert_eq!(settings.price_unit.as_deref(), Some("USD"));
         assert_eq!(settings.slippage_bps, Some(250));

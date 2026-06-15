@@ -75,6 +75,8 @@ pub struct UpdateSettingsRequest {
     /// Default trade slippage in basis points (100 = 1%); clamped to
     /// [`SLIPPAGE_MAX_BPS`]. Present = set the global default.
     pub slippage_bps: Option<u64>,
+    /// Persist raw transaction blobs. Present = flip the ingest raw-persist toggle.
+    pub persist_raw: Option<bool>,
 }
 
 pub async fn get_settings(state: web::Data<Arc<AppState>>) -> impl Responder {
@@ -91,6 +93,7 @@ pub async fn update_settings(
         timezone,
         price_unit,
         slippage_bps,
+        persist_raw,
     } = req.into_inner();
 
     if let Some(pu) = &price_unit {
@@ -127,6 +130,10 @@ pub async fn update_settings(
         let clamped = v.min(SLIPPAGE_MAX_BPS);
         next.slippage_bps = Some(clamped);
         entries.push((keys::SLIPPAGE_BPS.key, json!(clamped)));
+    }
+    if let Some(v) = persist_raw {
+        next.persist_raw = v;
+        entries.push((keys::PERSIST_RAW.key, json!(v)));
     }
 
     // Persist (one transaction) first; only publish to the watch channel if the

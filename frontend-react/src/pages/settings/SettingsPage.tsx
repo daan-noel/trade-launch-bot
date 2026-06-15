@@ -96,6 +96,13 @@ export function SettingsPage() {
               disabled={saving}
               onChange={(track_post_migration) => update({ track_post_migration })}
             />
+            <ToggleRow
+              title="Persist raw transactions"
+              description="When off, raw transaction blobs are no longer written to the database (curbs DB growth). Decoded trades and metrics are still recorded."
+              checked={settings.persist_raw}
+              disabled={saving}
+              onChange={(persist_raw) => update({ persist_raw })}
+            />
           </div>
         ) : null}
 

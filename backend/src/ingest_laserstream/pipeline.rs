@@ -189,7 +189,7 @@ impl IngestPipeline {
                             // Hand the DbWriter the typed protobuf (shared Arc) +
                             // ingest scalars; it synthesises the Helius blob off
                             // this hot path. `raw_tx` here is the null-data carrier.
-                            if save_raw {
+                            if save_raw && self.settings_rx.borrow().persist_raw {
                                 self.enqueue_db(DbWriteOp::Raw(RawBlobJob {
                                     update: update.clone(),
                                     signature: raw_tx.signature.clone(),

@@ -170,7 +170,7 @@ impl TradeRepo {
                  real_sol_reserves, real_token_reserves,
                  ix_type, ix_labels, venue)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
-            ON CONFLICT (tx_signature, leg_index) DO UPDATE SET
+            ON CONFLICT (tx_signature, leg_index, block_time) DO UPDATE SET
                 price_per_token        = EXCLUDED.price_per_token,
                 virtual_sol_reserves   = EXCLUDED.virtual_sol_reserves,
                 virtual_token_reserves = EXCLUDED.virtual_token_reserves,
@@ -206,7 +206,9 @@ impl TradeRepo {
     /// Bulk version of [`insert`] — one multi-row statement for the whole slice,
     /// with the identical upsert. Callers MUST dedup by `(tx_signature,
     /// leg_index)` first: Postgres rejects an `ON CONFLICT DO UPDATE` that hits
-    /// the same conflict target twice within one statement. Used by the live
+    /// the same conflict target twice within one statement. (`block_time` is
+    /// deterministic per tx, so it's part of the conflict target — see migration
+    /// 0002 — but adds nothing to the dedup key.) Used by the live
     /// ingest DB-writer to collapse a flush of trades into a single round-trip.
     pub async fn insert_many(&self, trades: &[Trade]) -> anyhow::Result<()> {
         if trades.is_empty() {
@@ -241,7 +243,7 @@ impl TradeRepo {
                 .push_bind(&t.venue);
         });
         qb.push(
-            " ON CONFLICT (tx_signature, leg_index) DO UPDATE SET \
+            " ON CONFLICT (tx_signature, leg_index, block_time) DO UPDATE SET \
              price_per_token        = EXCLUDED.price_per_token, \
              virtual_sol_reserves   = EXCLUDED.virtual_sol_reserves, \
              virtual_token_reserves = EXCLUDED.virtual_token_reserves, \
