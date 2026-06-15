@@ -1,5 +1,4 @@
 use actix_web::{web, HttpResponse, Responder};
-use futures_util::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -215,44 +214,46 @@ pub async fn detect_tokens_swings_batch(
         }));
     }
 
-    // Max cache-miss DB loads in flight at once. Bounds the connection-pool
-    // pressure a single batch can create while still overlapping the round-trips
-    // instead of awaiting them one at a time.
-    const BATCH_FETCH_CONCURRENCY: usize = 16;
-
     let app = state.get_ref().clone();
 
-    // 1) Resolve each mint's trades concurrently — a cache hit clones in-memory
-    //    (no await), a miss hits the DB. The index is carried so the results can
-    //    be realigned to the requested order after the unordered fan-out.
-    let fetches = mints.into_iter().enumerate().map(|(idx, mint)| {
-        let app = app.clone();
-        async move {
-            let trades: Arc<Vec<Trade>> = if let Some(entry) = app.token_cache.get(&mint) {
-                // Refcount-clone under the guard and keep it shared — the scan
-                // below borrows it, so no deep copy ever blocks the ingest writer.
-                let trades = entry.trades.clone();
-                drop(entry);
-                trades
-            } else {
-                let repo = app.trade_repo();
-                match repo.find_by_mint_paged(&mint, SWING_DB_TRADE_CAP, 0).await {
-                    Ok(trades) => Arc::new(trades),
-                    Err(e) => {
-                        tracing::error!(
-                            "DB error fetching trades for batch swing analysis {mint}: {e}"
-                        );
-                        Arc::new(Vec::new())
-                    }
-                }
-            };
-            (idx, mint, trades)
+    // 1) Resolve each mint's trades. Cache hits clone in-memory (no await); the
+    //    cache-miss mints are fetched in ONE batched round-trip via
+    //    `find_by_mints_paged` (per-mint capped) instead of the old
+    //    `find_by_mint_paged`-per-mint fan-out — same window, one query, no
+    //    connection-pool fan-out against the live ingest pool. The index is
+    //    carried so results realign to the requested order.
+    let mut resolved: Vec<(usize, String, Arc<Vec<Trade>>)> = Vec::with_capacity(mints.len());
+    let mut miss_mints: Vec<String> = Vec::new();
+    let mut miss_idx: Vec<(usize, String)> = Vec::new();
+    for (idx, mint) in mints.into_iter().enumerate() {
+        if let Some(entry) = app.token_cache.get(&mint) {
+            // Refcount-clone under the guard and keep it shared — the scan below
+            // borrows it, so no deep copy ever blocks the ingest writer.
+            let trades = entry.trades.clone();
+            drop(entry);
+            resolved.push((idx, mint, trades));
+        } else {
+            miss_mints.push(mint.clone());
+            miss_idx.push((idx, mint));
         }
-    });
-    let mut resolved: Vec<(usize, String, Arc<Vec<Trade>>)> = stream::iter(fetches)
-        .buffer_unordered(BATCH_FETCH_CONCURRENCY)
-        .collect()
-        .await;
+    }
+    if !miss_mints.is_empty() {
+        let mut grouped = match app
+            .trade_repo()
+            .find_by_mints_paged(&miss_mints, SWING_DB_TRADE_CAP)
+            .await
+        {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::error!("DB error fetching trades for batch swing analysis: {e}");
+                Default::default()
+            }
+        };
+        for (idx, mint) in miss_idx {
+            let trades = grouped.remove(&mint).unwrap_or_default();
+            resolved.push((idx, mint, Arc::new(trades)));
+        }
+    }
 
     // 2) Run the (pure-CPU) window filter + swing scans off the HTTP worker.
     //    Doing them inline would pin one of the few workers for the whole batch.

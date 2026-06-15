@@ -3,6 +3,7 @@ pub mod events;
 pub mod ingest;
 pub mod paper_run;
 pub mod position;
+pub mod sweep;
 pub mod token;
 pub mod token_info;
 pub mod tpsl1_strategy_rule;

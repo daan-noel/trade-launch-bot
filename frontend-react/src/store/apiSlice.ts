@@ -5,6 +5,7 @@ import { API_BASE } from 'services/config';
 import type { AppSettings } from 'services/api';
 import type { TokenFilters } from 'components/tokens/filters';
 import type { SortDir } from 'components/table/types';
+import type { SweepRunRecord, SweepResultRecord } from 'components/sweep/types';
 import type {
   AnalysisRecord,
   CreatorRecord,
@@ -205,6 +206,20 @@ export const apiSlice = createApi({
         { type: 'StrategyPaper', id: `${a.strategy}:${a.ruleId}` },
       ],
     }),
+    // Param-sweep results (strategy-agnostic). Runs are produced offline by the
+    // `sweep` CLI; a run's result set is bounded by combo count, so the page
+    // pulls it whole and the table sorts/filters client-side. Cached so flipping
+    // between runs / revisiting the page reuses the data.
+    getSweepRuns: builder.query<SweepRunRecord[], { strategy: string; limit?: number }>({
+      query: ({ strategy, limit = 50 }) =>
+        `/api/strategies/${strategy}/sweeps?limit=${limit}`,
+      keepUnusedDataFor: 120,
+    }),
+    getSweepResults: builder.query<SweepResultRecord[], { strategy: string; runId: string }>({
+      query: ({ strategy, runId }) =>
+        `/api/strategies/${strategy}/sweeps/${encodeURIComponent(runId)}/results`,
+      keepUnusedDataFor: 120,
+    }),
     getTokenDetail: builder.query<TokenDetailRecord, string>({
       query: (mint) => `/api/tokens/${encodeURIComponent(mint)}`,
     }),
@@ -347,6 +362,8 @@ export const {
   useGetTokenTradesQuery,
   useGetCreatorsPageQuery,
   useGetAnalysisPageQuery,
+  useGetSweepRunsQuery,
+  useGetSweepResultsQuery,
   useGetWalletHoldingsQuery,
   useGetWalletPricesQuery,
   useBuyTokenMutation,

@@ -250,6 +250,15 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 "/strategies/tpsl2/positions/{position_id}",
                 web::get().to(handlers::strategies::tpsl2_positions::get_position),
             )
+            // Param-sweep results (strategy-agnostic; {strategy} = tpsl1|tpsl2)
+            .route(
+                "/strategies/{strategy}/sweeps",
+                web::get().to(handlers::strategies::sweep::list_runs),
+            )
+            .route(
+                "/strategies/{strategy}/sweeps/{run_id}/results",
+                web::get().to(handlers::strategies::sweep::list_results),
+            )
             // On-chain Solana queries — bypass local DB entirely
             .route(
                 "/solana/wallet/tokens",

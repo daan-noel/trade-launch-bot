@@ -1,3 +1,4 @@
+mod analysis;
 mod api;
 mod config;
 pub use config::constants as constants;
@@ -278,6 +279,24 @@ async fn main() -> anyhow::Result<()> {
         pump_program = constants::PUMP_FUN_PROGRAM_ID,
         "Configuration loaded"
     );
+
+    // Sweep mode: `cargo run -p backend -- sweep [--calibrate] …` runs the param
+    // sweep / backtest engine or the calibration parity harness, then exits. It
+    // needs only the DB (and, for `--source cache`, a seeded token cache) — no
+    // trader/RPC, so it short-circuits before trader init. See `analysis::cli`.
+    if std::env::args().nth(1).as_deref() == Some("sweep") {
+        let db = storage::postgres::connect(&settings).await?;
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        let want_cache = args.windows(2).any(|w| w[0] == "--source" && w[1] == "cache");
+        let token_cache = if want_cache {
+            let tc = Arc::new(state::token_cache::TokenCache::new());
+            storage::seed::seed_token_cache(&db, tc.clone()).await?;
+            Some(tc)
+        } else {
+            None
+        };
+        return analysis::cli::run(db, token_cache, args).await;
+    }
 
     let trader_config = Arc::new(TraderConfig {
         rpc_url: settings.helius_rpc_url.clone(),

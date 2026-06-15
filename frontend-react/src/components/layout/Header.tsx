@@ -111,6 +111,7 @@ export function Header() {
             items={[
               { to: '/strategies/tpsl1', label: 'TP / SL Sniper 1' },
               { to: '/strategies/tpsl2', label: 'TP / SL Sniper 2' },
+              { to: '/strategies/tpsl2/sweep', label: 'TPSL2 Param Sweep' },
             ]}
           />
           <NavItem to="/settings">Settings</NavItem>

@@ -1,0 +1,214 @@
+//! First [`Strategy`] impl: TPSL2. It wraps the **same** pure entry/exit fns the
+//! live and DB-backtest paths use — `find_scalp_entry`,
+//! `find_worst_case_paper_entry`, `find_trade_driven_exit` — so the sweep
+//! resolves byte-identical entry/exit *decisions* to live trading. PnL is the
+//! frictionless `round_trip` of the decision prices.
+//!
+//! Adding a different strategy means a new file like this (a `ParamSpace` + a
+//! `Strategy`) — nothing in corpus / sweep / aggregate changes.
+
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
+
+use crate::analysis::strategy::{
+    round_trip, ExitCode, ParamSpace, Strategy, SweepMethod, TokenOutcome,
+};
+use crate::models::trade::Trade;
+use crate::models::Tpsl2Rule;
+use crate::strategies::tpsl_sniper_2::{entry, exit};
+
+/// The swept subset of a TPSL2 rule. The high-leverage exit ladder knobs plus a
+/// few entry gates; everything else (cohort gates, liquidity-drop exit, buy size)
+/// is inherited unchanged from the strategy's base rule template.
+#[derive(Clone, Copy, Debug)]
+pub struct Tpsl2Params {
+    pub take_profit: f64,
+    pub stop_loss: f64,
+    pub trailing_stop_pct: Option<f64>,
+    pub time_stop_secs: Option<u64>,
+    pub stall_secs: Option<u64>,
+    pub entry_min_age_secs: Option<u64>,
+    pub entry_pullback_pct: Option<f64>,
+    pub entry_min_liquidity_sol: Option<f64>,
+}
+
+/// Declares the param axes and carries the base rule the swept params overlay.
+pub struct Tpsl2Strategy {
+    base: Tpsl2Rule,
+    axes: Tpsl2Axes,
+}
+
+/// Grid axes for the coarse pass. Each `Vec` is one knob's candidate values.
+#[derive(Clone)]
+pub struct Tpsl2Axes {
+    pub take_profit: Vec<f64>,
+    pub stop_loss: Vec<f64>,
+    pub trailing_stop_pct: Vec<Option<f64>>,
+    pub time_stop_secs: Vec<Option<u64>>,
+    pub stall_secs: Vec<Option<u64>>,
+    pub entry_min_age_secs: Vec<Option<u64>>,
+    pub entry_pullback_pct: Vec<Option<f64>>,
+    pub entry_min_liquidity_sol: Vec<Option<f64>>,
+}
+
+impl Default for Tpsl2Axes {
+    fn default() -> Self {
+        Self {
+            take_profit: vec![50.0, 100.0, 200.0],
+            stop_loss: vec![30.0, 50.0],
+            trailing_stop_pct: vec![None, Some(20.0), Some(35.0)],
+            time_stop_secs: vec![None, Some(120), Some(300)],
+            stall_secs: vec![None, Some(30), Some(60)],
+            entry_min_age_secs: vec![Some(10), Some(30)],
+            entry_pullback_pct: vec![None, Some(10.0)],
+            entry_min_liquidity_sol: vec![None, Some(5.0)],
+        }
+    }
+}
+
+impl Tpsl2Strategy {
+    pub fn new(base: Tpsl2Rule, axes: Tpsl2Axes) -> Self {
+        Self { base, axes }
+    }
+
+    /// Overlay one param set onto the base rule, producing the exact `Tpsl2Rule`
+    /// the live pure fns expect.
+    fn rule_from(&self, p: &Tpsl2Params) -> Tpsl2Rule {
+        let mut r = self.base.clone();
+        r.p_exit_take_profit = p.take_profit;
+        r.p_exit_stop_loss = p.stop_loss;
+        r.p_exit_trailing_stop_pct = p.trailing_stop_pct;
+        r.p_exit_time_stop_secs = p.time_stop_secs;
+        r.p_exit_stall_secs = p.stall_secs;
+        r.p_entry_min_age_secs = p.entry_min_age_secs;
+        r.p_entry_pullback_pct = p.entry_pullback_pct;
+        r.p_entry_min_liquidity_sol = p.entry_min_liquidity_sol;
+        r
+    }
+}
+
+impl ParamSpace for Tpsl2Strategy {
+    type Params = Tpsl2Params;
+
+    fn sample(&self, method: SweepMethod) -> Vec<Tpsl2Params> {
+        let a = &self.axes;
+        match method {
+            SweepMethod::Grid => {
+                let mut out = Vec::new();
+                for &tp in &a.take_profit {
+                    for &sl in &a.stop_loss {
+                        for &tr in &a.trailing_stop_pct {
+                            for &ts in &a.time_stop_secs {
+                                for &st in &a.stall_secs {
+                                    for &age in &a.entry_min_age_secs {
+                                        for &pb in &a.entry_pullback_pct {
+                                            for &liq in &a.entry_min_liquidity_sol {
+                                                out.push(Tpsl2Params {
+                                                    take_profit: tp,
+                                                    stop_loss: sl,
+                                                    trailing_stop_pct: tr,
+                                                    time_stop_secs: ts,
+                                                    stall_secs: st,
+                                                    entry_min_age_secs: age,
+                                                    entry_pullback_pct: pb,
+                                                    entry_min_liquidity_sol: liq,
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                out
+            }
+            SweepMethod::Random { n, seed } | SweepMethod::LatinHypercube { n, seed } => {
+                // Random draw from each axis's candidate set. (LHS degrades to a
+                // seeded random draw here; the axes are discrete so the coverage
+                // gain is marginal — kept as a distinct tag for the analysis layer.)
+                let mut rng = StdRng::seed_from_u64(seed);
+                (0..n)
+                    .map(|_| Tpsl2Params {
+                        take_profit: pick(&mut rng, &a.take_profit),
+                        stop_loss: pick(&mut rng, &a.stop_loss),
+                        trailing_stop_pct: pick(&mut rng, &a.trailing_stop_pct),
+                        time_stop_secs: pick(&mut rng, &a.time_stop_secs),
+                        stall_secs: pick(&mut rng, &a.stall_secs),
+                        entry_min_age_secs: pick(&mut rng, &a.entry_min_age_secs),
+                        entry_pullback_pct: pick(&mut rng, &a.entry_pullback_pct),
+                        entry_min_liquidity_sol: pick(&mut rng, &a.entry_min_liquidity_sol),
+                    })
+                    .collect()
+            }
+        }
+    }
+}
+
+fn pick<T: Copy>(rng: &mut StdRng, xs: &[T]) -> T {
+    xs[rng.gen_range(0..xs.len())]
+}
+
+impl Strategy for Tpsl2Strategy {
+    fn id(&self) -> &'static str {
+        "tpsl2"
+    }
+
+    fn simulate(&self, trades: &[Trade], params: &Tpsl2Params) -> TokenOutcome {
+        let rule = self.rule_from(params);
+
+        // (1) Decision: the scalp-entry trigger — the live gate logic, unchanged.
+        let target = match entry::find_scalp_entry(trades, &rule) {
+            Some(t) => t,
+            None => return TokenOutcome::no_entry(),
+        };
+        // (2) Worst-case entry fill (adverse same-/next-slot tick).
+        let entry_fill = entry::find_worst_case_paper_entry(trades, &target.tx_signature);
+        if entry_fill.price <= 0.0 {
+            return TokenOutcome::no_entry();
+        }
+        let entry_price = entry_fill.price;
+        let entry_time = entry_fill.block_time;
+        let notional = rule.buy_amount;
+
+        // (3) Exit decision via the shared ladder.
+        match exit::find_trade_driven_exit(trades, entry_time, entry_price, &rule) {
+            Some(f) => {
+                let econ = round_trip(entry_price, f.price, notional);
+                TokenOutcome {
+                    fired: true,
+                    holding_secs: (f.block_time - entry_time).num_seconds(),
+                    pnl_percent: econ.pnl_percent as f32,
+                    pnl_sol: econ.pnl_sol as f32,
+                    exit: ExitCode::from_reason(f.reason.as_str()),
+                }
+            }
+            None => {
+                // Still open at end of history — mark unrealized PnL at last price,
+                // so the scoring layer can separate open from closed outcomes.
+                let last_price = trades.last().map(|t| t.price_per_token).unwrap_or(entry_price);
+                let econ = round_trip(entry_price, last_price, notional);
+                TokenOutcome {
+                    fired: true,
+                    holding_secs: 0,
+                    pnl_percent: econ.pnl_percent as f32,
+                    pnl_sol: econ.pnl_sol as f32,
+                    exit: ExitCode::Open,
+                }
+            }
+        }
+    }
+
+    fn params_json(&self, p: &Tpsl2Params) -> serde_json::Value {
+        serde_json::json!({
+            "take_profit": p.take_profit,
+            "stop_loss": p.stop_loss,
+            "trailing_stop_pct": p.trailing_stop_pct,
+            "time_stop_secs": p.time_stop_secs,
+            "stall_secs": p.stall_secs,
+            "entry_min_age_secs": p.entry_min_age_secs,
+            "entry_pullback_pct": p.entry_pullback_pct,
+            "entry_min_liquidity_sol": p.entry_min_liquidity_sol,
+        })
+    }
+}

@@ -543,21 +543,21 @@ export const ruleColumns: ColumnDef<RuleRecord>[] = [
       searchValue: (r) => r.lifecycle,
     },
     {
-      key: 'analyze',
-      label: 'Analyze',
-      group: 'analyze',
-      sortable: false,
-      width: '110px',
-      render: (r) => <AnalysisControls rule={r} />,
-      searchValue: () => '',
-    },
-    {
       key: 'controls',
       label: 'Run',
       group: 'run',
       sortable: false,
       width: '180px',
       render: (r) => <RunControls rule={r} />,
+      searchValue: () => '',
+    },
+    {
+      key: 'analyze',
+      label: 'Analyze',
+      group: 'analyze',
+      sortable: false,
+      width: '110px',
+      render: (r) => <AnalysisControls rule={r} />,
       searchValue: () => '',
     }
 ];

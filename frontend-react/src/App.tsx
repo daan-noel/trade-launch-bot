@@ -12,6 +12,7 @@ import { MyWalletPage } from 'pages/profiles/MyWalletPage';
 import { OtherProfilesPage } from 'pages/profiles/OtherProfilesPage';
 import { Tpsl1Page } from 'pages/strategies/Tpsl1Page';
 import { Tpsl2Page } from 'pages/strategies/Tpsl2Page';
+import { SweepPage } from 'pages/strategies/SweepPage';
 import { SettingsPage } from 'pages/settings/SettingsPage';
 import { NotFoundPage } from 'pages/not-found/NotFoundPage';
 
@@ -34,6 +35,10 @@ export default function App() {
             <Route path="profiles/other" element={<OtherProfilesPage />} />
             <Route path="strategies/tpsl1" element={<Tpsl1Page />} />
             <Route path="strategies/tpsl2" element={<Tpsl2Page />} />
+            <Route
+              path="strategies/tpsl2/sweep"
+              element={<SweepPage strategy="tpsl2" title="TPSL2 Param Sweep" />}
+            />
             <Route path="strategies" element={<Navigate to="/strategies/tpsl1" replace />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="*" element={<NotFoundPage />} />
