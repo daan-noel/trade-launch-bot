@@ -3,6 +3,14 @@
 File-level map of `backend/src/strategies/`. Two **intentional clones**: `tpsl_sniper_1` (canonical/live) and `tpsl_sniper_2` (clone + cohort scalp gates). A fix in one usually belongs in both.
 Logic explainers: `@project_plans/tpsl-strategy/*`.
 
+**Backtesting / param sweeps are strategy-agnostic.** The sweep engine, grouping,
+aggregate, persistence, API, and page in `backend/src/sweep/` only see a
+`Strategy`/`ParamSpace` impl returning a `TokenOutcome` — they never know which
+strategy ran. TPSL2's impl (`sweep/strategies/tpsl2.rs`) reuses the *same* live
+`entry`/`exit` pure fns below, so backtest and live resolve identical decisions. A
+new strategy adds only its `Strategy`+`ParamSpace`+`AxesSpec` impl, a `registry.rs`
+arm (its DB table triple + dispatch), and a migration — see [sweep.md](sweep.md).
+
 ## Dispatch — `runner.rs`
 `StrategyRunner` (`new`, `run`) consumes `strategy_rx` in a `select!` loop and routes to both strategy services:
 - `on_token_created(mint)` → entry gating → spawn buy.
@@ -54,4 +62,4 @@ The single `select!` loop **serializes** all position transitions across both st
 3. Sell-confirm via the `trades` feed, **no new RPC poll**; poll the full window before concluding a retry (see CLAUDE.md "Gotchas" — naively flipping confirm off fires duplicate sells). The confirm loop registers its `TradeSignals` guard once per exit and re-runs the `net_token_amount_by_wallet_and_mint` aggregate **only when the guard's `seq` advanced** (a new trade landed for this wallet+mint); bare fallback ticks skip the scan. The aggregate is additionally **rate-limited to once per `SELL_BALANCE_QUERY_MIN_INTERVAL_MS`** (250 ms, below the 500 ms poll interval) so a dump that bumps `seq` per landed leg coalesces many notify-driven wakeups into one SUM — and that floor is **bypassed at the poll deadline**, so a clear that landed during a coalesced burst is always confirmed before any (wasteful, double-sell-risking) retry. SQL stays the authoritative "cleared" gate (deduped by PK) — don't replace it with a pure in-memory balance: feed redelivery would double-count and over-sell.
 4. Time exits fire on silence (1s sweep).
 5. Strategy eval reads `runtime_cache.rs` only — never queries DB per trade event.
-6. Live-rule edit guard — `update_tpsl_rule` (api/handlers/strategies/tpsl{1,2}.rs) rejects (`409`) any change to frozen fields (match/entry/exit + tolerance) while a rule is *live* (`is_active || holding_count_by_rule > 0`); only the hot sizing fields (`buy_amount`, `p_max_concurrent_tokens`, `p_max_total_tokens`) plus `rule_name`/`trade_mode` may change mid-run. Mirrors the per-group lock in `RuleFormModal`; the PUT still `reload_rules` so hot edits propagate to the runtime cache.
+6. Live-rule edit guard — `update_tpsl_rule` (api/handlers/strategies/tpsl{1,2}.rs) rejects (`409`) any change to frozen fields while a rule is *live* (`is_active || holding_count_by_rule > 0`): the match/entry/exit criteria + tolerance (`touches_frozen_fields`) **and** `trade_mode` (checked by value, since the PUT always carries it). Only `rule_name` + the hot sizing fields (`buy_amount`, `p_max_concurrent_tokens`, `p_max_total_tokens`) may change mid-run — everything else redefines the rule. Mirrors the per-group lock in `RuleFormModal` (which also disables the Mode select while live and resets every group lock to *locked* on each open, so an unlock never carries across edits); the PUT still `reload_rules` so hot edits propagate to the runtime cache.

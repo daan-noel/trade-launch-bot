@@ -182,10 +182,13 @@ pub struct UpdateRuleRequest {
 
 impl UpdateRuleRequest {
     /// True if the request would change any field that is FROZEN while a rule is
-    /// live (running or holding positions) — i.e. anything outside the "hot"
-    /// set the UI keeps editable mid-run (`buy_amount` + concurrency caps, plus
-    /// the administrative `rule_name`/`trade_mode`). Mirrors the per-group lock
-    /// in `RuleFormModal`; defense-in-depth against a non-UI caller.
+    /// live (running or holding positions) — the token fingerprint, exit ladder,
+    /// and matching tolerance, i.e. anything that redefines which tokens the rule
+    /// takes or when it exits. The only fields editable mid-run are the "hot" set:
+    /// `buy_amount` + concurrency caps + the administrative `rule_name`. Note
+    /// `trade_mode` is also frozen while live, but is always present in the PUT
+    /// body, so it's checked separately (by value) rather than here. Mirrors the
+    /// per-group lock in `RuleFormModal`; defense-in-depth against a non-UI caller.
     fn touches_frozen_fields(&self) -> bool {
         self.p_exit_take_profit.is_some()
             || self.p_exit_stop_loss.is_some()
@@ -352,14 +355,20 @@ pub async fn update_tpsl_rule(
                 Err(e) => tracing::debug!("Failed to serialize UpdateRuleRequest: {e}"),
             }
             // While the rule is live (running, or still draining open positions)
-            // only the "hot" sizing fields may change — match/exit shape is frozen
-            // so the run can't shift under itself. The UI enforces this via
-            // per-group locks; this guards non-UI callers.
+            // only the "hot" fields may change — Rule Name, Buy Amount, and the
+            // concurrency caps. Everything else (match/exit criteria, and the
+            // paper/real mode) redefines the rule, so it's frozen and the run
+            // can't shift under itself. The UI enforces this via per-group locks;
+            // this guards non-UI callers.
             let live = rule.is_active
                 || app_state.tpsl1_cache.holding_count_by_rule(rule_id) > 0;
-            if live && req.touches_frozen_fields() {
+            let changes_mode = req
+                .trade_mode
+                .as_deref()
+                .is_some_and(|m| m != rule.trade_mode);
+            if live && (req.touches_frozen_fields() || changes_mode) {
                 return HttpResponse::Conflict().json(serde_json::json!({
-                    "error": "Rule is live: only buy amount and concurrency caps can be edited while running or holding positions",
+                    "error": "Rule is live: only Rule Name, Buy Amount, and concurrency caps can be edited while running or holding positions",
                 }));
             }
             // Update fields if provided

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import type { RuleRecord } from 'types';
 import { Button } from 'components/ui/Button';
 import { Input, Textarea } from 'components/ui/Input';
@@ -169,6 +169,13 @@ export function RuleFormModal({
     exit: false,
   });
 
+  // Every group starts LOCKED on each (re)open — an unlock from a prior edit (or
+  // a just-saved rule) never carries over. Keyed on `open` so saving (which
+  // closes the modal) resets the locks before the next open.
+  useEffect(() => {
+    if (open) setUnlocked({ fingerprint: false, sizing: false, exit: false });
+  }, [open]);
+
   const set = (patch: Partial<RuleFormData>) => onChange({ ...form, ...patch });
 
   // Create mode has no lock concept: every field is freely editable.
@@ -209,7 +216,9 @@ export function RuleFormModal({
             fieldSize="md"
             value={form.tradeMode}
             onChange={(e) => set({ tradeMode: e.target.value })}
-            className="font-mono"
+            disabled={live}
+            title={live ? 'Mode is frozen while the rule is running or holding positions' : undefined}
+            className={cn('font-mono', live && 'cursor-not-allowed opacity-50')}
           >
             <option value="paper">Paper Test</option>
             <option value="real">Real Trading</option>
@@ -239,32 +248,32 @@ export function RuleFormModal({
         <div className="grid grid-cols-2 gap-3">
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="initialBuy">Initial Buy SOL</FieldLabel>
-            <Input type="number" fieldSize="md" step="0.001" unit="◎" value={form.initialBuy} readOnly={!editable('fingerprint')}
+            <Input type="number" fieldSize="md" step="0.001" unit="◎" value={form.initialBuy} readOnly={!editable('fingerprint')} blankZero
               onChange={(e) => set({ initialBuy: e.target.value })} className={fieldCls('fingerprint')} />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="tolerance">Tolerance %</FieldLabel>
-            <Input type="number" fieldSize="md" step="0.1" min={0} max={100} unit="%" value={form.tolerance} readOnly={!editable('fingerprint')}
+            <Input type="number" fieldSize="md" step="0.1" min={0} max={100} unit="%" value={form.tolerance} readOnly={!editable('fingerprint')} blankZero
               onChange={(e) => set({ tolerance: e.target.value })} className={fieldCls('fingerprint')} />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="cuLimit">CU Limit</FieldLabel>
-            <Input type="number" fieldSize="md" value={form.cuLimit} readOnly={!editable('fingerprint')}
+            <Input type="number" fieldSize="md" value={form.cuLimit} readOnly={!editable('fingerprint')} blankZero
               onChange={(e) => set({ cuLimit: e.target.value })} className={fieldCls('fingerprint')} />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="cuPrice">CU Price</FieldLabel>
-            <Input type="number" fieldSize="md" value={form.cuPrice} readOnly={!editable('fingerprint')}
+            <Input type="number" fieldSize="md" value={form.cuPrice} readOnly={!editable('fingerprint')} blankZero
               onChange={(e) => set({ cuPrice: e.target.value })} className={fieldCls('fingerprint')} />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="maxSolCost">Max SOL Cost</FieldLabel>
-            <Input type="number" fieldSize="md" step="0.001" unit="◎" value={form.maxSolCost} readOnly={!editable('fingerprint')}
+            <Input type="number" fieldSize="md" step="0.001" unit="◎" value={form.maxSolCost} readOnly={!editable('fingerprint')} blankZero
               onChange={(e) => set({ maxSolCost: e.target.value })} className={fieldCls('fingerprint')} />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="spendableSolIn">Spendable SOL In</FieldLabel>
-            <Input type="number" fieldSize="md" step="0.001" unit="◎" value={form.spendableSolIn} readOnly={!editable('fingerprint')}
+            <Input type="number" fieldSize="md" step="0.001" unit="◎" value={form.spendableSolIn} readOnly={!editable('fingerprint')} blankZero
               onChange={(e) => set({ spendableSolIn: e.target.value })} className={fieldCls('fingerprint')} />
           </label>
         </div>
