@@ -128,8 +128,10 @@ export interface BuyTokenArgs {
 
 export interface SellTokenArgs {
   mint: string;
-  token_amount: number;
-  token_account: string;
+  /// Optional token-account hint (row "Sell All" supplies it to skip a wallet
+  /// scan; a manual sell by mint omits it). The backend always sells the full
+  /// live balance, so no amount is sent.
+  token_account?: string;
   slippage_bps?: number;
 }
 

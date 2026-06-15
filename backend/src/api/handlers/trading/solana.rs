@@ -23,7 +23,11 @@ pub struct BuyRequest {
 #[derive(Deserialize)]
 pub struct SellRequest {
     pub mint: String,
-    pub token_amount: u64,
+    /// Optional hint of the wallet's token account for `mint`. Supplied by a
+    /// row-triggered "Sell All" to skip a wallet scan; omitted by a manual sell
+    /// (entered by mint), where the backend resolves it cache-first. The amount
+    /// is NOT taken from the client — `manual_sell` reads the live on-chain
+    /// balance and sells all of it.
     pub token_account: Option<String>,
     /// Optional per-trade slippage tolerance in basis points (100 = 1%). See
     /// [`BuyRequest::slippage_bps`].
@@ -39,41 +43,13 @@ fn resolve_slippage(app_state: &AppState, request: Option<u64>) -> u64 {
         .min(SLIPPAGE_MAX_BPS)
 }
 
-/// 90% of a raw token balance, rounded down (we sell 90% to leave dust headroom).
-/// Widens to `u128` first: the naive `amount * 90 / 100` overflows for any
-/// `amount > u64::MAX / 90` — a client-supplied raw amount can reach there — and
-/// would panic in debug or silently wrap in release, selling the wrong size.
-fn sell_ninety_percent(amount: u64) -> u64 {
-    ((amount as u128 * 90) / 100) as u64
-}
-
-#[cfg(test)]
-mod tests {
-    use super::sell_ninety_percent;
-
-    #[test]
-    fn computes_ninety_percent_for_normal_values() {
-        assert_eq!(sell_ninety_percent(0), 0);
-        assert_eq!(sell_ninety_percent(100), 90);
-        assert_eq!(sell_ninety_percent(1_000_000_000), 900_000_000);
-        // Rounds down.
-        assert_eq!(sell_ninety_percent(9), 8);
-    }
-
-    #[test]
-    fn does_not_overflow_near_u64_max() {
-        // The old `amount * 90` would panic (debug) / wrap (release) for any
-        // amount above this threshold; the u128 widening keeps it exact.
-        let threshold = u64::MAX / 90;
-        assert_eq!(sell_ninety_percent(threshold), (threshold as u128 * 90 / 100) as u64);
-
-        // u64::MAX itself must not panic and stays below the input.
-        let got = sell_ninety_percent(u64::MAX);
-        let expected = (u64::MAX as u128 * 90 / 100) as u64;
-        assert_eq!(got, expected);
-        assert!(got < u64::MAX);
-    }
-}
+/// Max passes the "Sell All" clear loop makes before giving up: each pass reads
+/// the live balance and sells all of it, so one pass normally clears the account
+/// (the inner sell already confirms + retries). Extra passes only catch a partial
+/// fill; once unsellable sub-threshold dust is all that remains, retrying just
+/// re-pays fees on a sell that can't clear it, so the loop stops and the close
+/// no-ops on the leftover dust.
+const SELL_ALL_MAX_PASSES: usize = 3;
 
 /// POST /api/solana/wallet/buy
 pub async fn manual_buy(
@@ -129,13 +105,22 @@ pub async fn manual_buy(
     }
 }
 
-/// POST /api/solana/wallet/sell
+/// POST /api/solana/wallet/sell — "Sell All": clear the wallet's entire balance
+/// of `mint`, then reclaim rent by closing the now-empty token account.
+///
+/// Off the strategy hot path (which feed-confirms via the LaserStream `trades`
+/// balance), so this reads the live on-chain balance over RPC to drive the clear:
+/// each pass sells 100% of the *freshly read* amount. Reading fresh is what makes
+/// selling the full balance safe — the old single-shot path sold 90% only to
+/// absorb a stale client-supplied amount, and the 10% it left behind kept the
+/// account funded so it could never be closed. After the balance reads empty a
+/// fire-and-forget `close_token_account` returns the ~0.002 SOL rent; it cheaply
+/// no-ops if unsellable sub-threshold dust kept the account funded.
 pub async fn manual_sell(
     app_state: web::Data<Arc<AppState>>,
     body: web::Json<SellRequest>,
 ) -> impl Responder {
     let token_account_override = body.token_account.as_deref();
-    let sell_amount = sell_ninety_percent(body.token_amount);
 
     // Resolve routing live on-chain — same as manual_buy. The in-memory
     // token_cache can be stale or empty for a freshly-migrated token, and a
@@ -160,42 +145,91 @@ pub async fn manual_sell(
         .unwrap_or(false);
 
     let slippage_bps = resolve_slippage(&app_state, body.slippage_bps);
+    let wallet = app_state.trader.wallet_pubkey();
 
-    let sell_result = if routing.is_migrated {
-        app_state
-            .trader
-            .amm_sell(
-                &body.mint,
-                sell_amount,
-                &routing.token_program_id,
-                None,
-                token_account_override,
-                Some(slippage_bps),
-                0,
-                // Manual API sell: block on RPC confirm (no feed loop here).
-                true,
-            )
-            .await
-    } else {
-        app_state
-            .trader
-            .sell_token(
-                &body.mint,
-                sell_amount,
-                Some(&routing.creator),
-                is_cashback,
-                token_account_override,
-                Some(slippage_bps),
-            )
-            .await
-    };
-    match sell_result {
-        Ok(success) => HttpResponse::Ok().json(serde_json::json!({ "success": success })),
-        Err(e) => {
-            tracing::warn!("manual_sell failed mint={}: {e}", body.mint);
-            HttpResponse::InternalServerError().json(serde_json::json!({ "error": e.to_string() }))
+    // Clear loop: read the live balance and sell all of it, bounded by
+    // SELL_ALL_MAX_PASSES. One pass normally clears (the inner sell confirms and
+    // retries); extra passes only mop up a partial fill. `sold_any` lets a sell
+    // that succeeded-but-left-dust still report success, while a hard error
+    // before any sell landed surfaces as a 500 like the old path.
+    let mut cleared = false;
+    let mut sold_any = false;
+    let mut last_err: Option<String> = None;
+    for pass in 0..SELL_ALL_MAX_PASSES {
+        let amount = match app_state.trader.get_token_balance(&wallet, &body.mint).await {
+            Ok(b) => b.amount,
+            Err(e) => {
+                last_err = Some(e.to_string());
+                break;
+            }
+        };
+        if amount == 0 {
+            cleared = true;
+            break;
+        }
+        let sell_result = if routing.is_migrated {
+            app_state
+                .trader
+                .amm_sell(
+                    &body.mint,
+                    amount,
+                    &routing.token_program_id,
+                    None,
+                    token_account_override,
+                    Some(slippage_bps),
+                    // Escalate the Jito tip per pass: a sell that lost the auction
+                    // didn't land (cost nothing), so bid up rather than re-send it.
+                    pass as u8,
+                    // Manual API sell: block on RPC confirm (no feed loop here).
+                    true,
+                )
+                .await
+        } else {
+            app_state
+                .trader
+                .sell_token(
+                    &body.mint,
+                    amount,
+                    Some(&routing.creator),
+                    is_cashback,
+                    token_account_override,
+                    Some(slippage_bps),
+                )
+                .await
+        };
+        match sell_result {
+            Ok(_) => sold_any = true,
+            Err(e) => {
+                tracing::warn!("manual_sell failed mint={} pass={pass}: {e}", body.mint);
+                last_err = Some(e.to_string());
+                break;
+            }
         }
     }
+
+    if !cleared && !sold_any {
+        return HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": last_err.unwrap_or_else(|| "Sell failed".to_string()),
+        }));
+    }
+
+    // Rent reclaim (off the hot path): close the now-empty token account to
+    // recover its ~0.002 SOL rent. Fire-and-forget — recent-blockhash, preflight
+    // on, no Jito tip — so it never blocks the response and cheaply no-ops if
+    // sub-threshold dust kept the account funded. Mirrors the strategy exit's
+    // close step (see tpsl_sniper_* `sell_and_close_position`).
+    {
+        let trader = app_state.trader.clone();
+        let mint = body.mint.clone();
+        let token_account = body.token_account.clone();
+        tokio::spawn(async move {
+            if let Err(err) = trader.close_token_account(&mint, token_account.as_deref()).await {
+                tracing::debug!(mint = %mint, "rent-reclaim close skipped: {err}");
+            }
+        });
+    }
+
+    HttpResponse::Ok().json(serde_json::json!({ "success": true }))
 }
 
 /// GET /api/solana/wallet/tokens

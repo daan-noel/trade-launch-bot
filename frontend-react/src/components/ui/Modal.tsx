@@ -53,20 +53,19 @@ export function Modal({ title, open, onClose, children, size = 'md' }: ModalProp
 }
 
 interface AlertProps {
-  variant: 'error' | 'success';
+  variant: 'error' | 'success' | 'warning';
   children: ReactNode;
 }
 
+const alertVariants: Record<AlertProps['variant'], string> = {
+  error: 'border-red/25 bg-red/8 text-red',
+  success: 'border-[rgba(39,174,96,0.25)] bg-[rgba(39,174,96,0.08)] text-[#27ae60]',
+  warning: 'border-[rgba(241,196,15,0.25)] bg-[rgba(241,196,15,0.08)] text-[#f1c40f]',
+};
+
 export function InlineAlert({ variant, children }: AlertProps) {
   return (
-    <div
-      className={cn(
-        'my-2.5 rounded-md border px-3.5 py-2.5 text-xs',
-        variant === 'error'
-          ? 'border-red/25 bg-red/8 text-red'
-          : 'border-[rgba(39,174,96,0.25)] bg-[rgba(39,174,96,0.08)] text-[#27ae60]',
-      )}
-    >
+    <div className={cn('my-2.5 rounded-md border px-3.5 py-2.5 text-xs', alertVariants[variant])}>
       {children}
     </div>
   );

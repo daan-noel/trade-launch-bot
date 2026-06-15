@@ -20,7 +20,7 @@ Chart logic explainer: `@project_plans/token-analysis/token-history-chart-functi
 | Sync token | `tokens/SyncTokenPage.tsx` | single-mint sync w/ progress, `syncTokenSlice`, chart + trades table |
 | Analysis | `analysis/AnalysisPage.tsx` | creators + results tables (`/api/analysis`, `/api/creators`) |
 | Swing detection | `analysis/SwingDetectionPage.tsx` | server-paged tokens (`getTokensPage`), per-token + batch swing detect (chunks run ≤3 concurrent), `getProfiles` markers, chart overlay, `swingDetectionSlice` |
-| My wallet | `profiles/MyWalletPage.tsx` | `getWalletHoldings` (cached 5min), `getWalletPrices` poll 20s, buy/sell modals |
+| My wallet | `profiles/MyWalletPage.tsx` | `getWalletHoldings` (cached 5min), `getWalletPrices` poll 20s, header **Manual Buy** + **Manual Sell** modals (`parseSlippageBps` shared), row Buy / **Sell All**. Sell sends no amount (backend clears the full balance + closes the account); `confirmTrade` polls the single traded mint until its raw amount moves, then patches/removes that one row |
 | Other profiles | `profiles/OtherProfilesPage.tsx` | profile/wallet/tag CRUD |
 | Settings | `settings/SettingsPage.tsx` | track_mayhem, track_post_migration, persist_raw, slippage_bps; optimistic update |
 | TPSL1 / TPSL2 | `strategies/Tpsl{1,2}Page.tsx` | `usePolledRules`, `useRulePositions`; rule CRUD + lifecycle; sim/matched/paper reads routed through the RTK cache via `store/strategyResultCache.ts` (toggle state stays local); `SimProgressBar` shows determinate backtest progress from the `simulation_progress` SSE (real `processed/total`, not a trickle) (near-identical) |

@@ -29,6 +29,26 @@ interface BuyDialog {
   manual: boolean;
 }
 
+interface SellDialog {
+  /// Mint to sell; entered by the user (manual sell sells the full balance).
+  mint: string;
+  /// Slippage tolerance as a percent string; blank = use the global default.
+  slippageInput: string;
+}
+
+/// Parse a slippage percent string into basis points (1% = 100 bps), shared by
+/// the buy and sell dialogs. Blank → `{}` (let the backend use its default);
+/// out-of-range/non-numeric → `{ error }` for the caller to surface.
+function parseSlippageBps(raw: string): { bps?: number; error?: string } {
+  const trimmed = raw.trim();
+  if (!trimmed) return {};
+  const pct = parseFloat(trimmed);
+  if (!Number.isFinite(pct) || pct < 0 || pct > 50) {
+    return { error: 'Enter a valid slippage % between 0 and 50' };
+  }
+  return { bps: Math.round(pct * 100) };
+}
+
 export function MyWalletPage() {
   const dispatch = useDispatch<AppDispatch>();
   // RTK Query owns the fetch, the cache, and StrictMode/dedup. Navigating back
@@ -79,6 +99,7 @@ export function MyWalletPage() {
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
   const [sellingMint, setSellingMint] = useState<string | null>(null);
   const [buyDialog, setBuyDialog] = useState<BuyDialog | null>(null);
+  const [sellDialog, setSellDialog] = useState<SellDialog | null>(null);
 
   const error = apiErrorMessage(holdingsError);
 
@@ -129,14 +150,14 @@ export function MyWalletPage() {
     [dispatch],
   );
 
-  const handleSell = useCallback(
-    async (mint: string, tokenAmount: number) => {
-      const holding = holdings.find((h) => h.mint === mint);
-      if (!holding) {
-        setActionError('Token account not found for mint');
-        return;
-      }
-
+  // Shared "sell all" submit for both the row button and the manual dialog. The
+  // backend always sells the full live balance, so no amount is sent; the token
+  // account is passed only as a hint when known (row sells) to skip a wallet
+  // scan. Snapshots the pre-sell balance so confirmTrade can detect the drop
+  // (and the row's removal once the account is closed).
+  const runSell = useCallback(
+    async (mint: string, tokenAccount?: string, slippageBps?: number) => {
+      const prevAmount = holdings.find((h) => h.mint === mint)?.amount;
       setSellingMint(mint);
       setActionError(null);
       setActionSuccess(null);
@@ -144,11 +165,11 @@ export function MyWalletPage() {
       try {
         await sellToken({
           mint,
-          token_amount: tokenAmount,
-          token_account: holding.token_account,
+          ...(tokenAccount ? { token_account: tokenAccount } : {}),
+          ...(slippageBps !== undefined ? { slippage_bps: slippageBps } : {}),
         }).unwrap();
         setActionSuccess('Sell submitted — confirming on-chain…');
-        void confirmTrade(mint, holding.amount, 'Sell');
+        void confirmTrade(mint, prevAmount, 'Sell');
       } catch (e) {
         setActionError(
           `Sell failed: ${apiErrorMessage(e as FetchBaseQueryError | SerializedError) ?? 'unknown error'}`,
@@ -159,6 +180,51 @@ export function MyWalletPage() {
     },
     [holdings, sellToken, confirmTrade],
   );
+
+  const handleSell = useCallback(
+    (mint: string) => {
+      const holding = holdings.find((h) => h.mint === mint);
+      if (!holding) {
+        setActionError('Token account not found for mint');
+        return;
+      }
+      void runSell(mint, holding.token_account);
+    },
+    [holdings, runSell],
+  );
+
+  const handleManualSellOpen = useCallback(() => {
+    setSellDialog({ mint: '', slippageInput: '' });
+  }, []);
+
+  const handleSellSubmit = useCallback(async () => {
+    if (!sellDialog) return;
+    const mint = sellDialog.mint.trim();
+    if (!mint) {
+      setActionError('Enter a mint address');
+      return;
+    }
+    // Validate held-status against the loaded holdings before submitting: a sell
+    // of a mint the wallet holds none of would only no-op (or revert) on-chain
+    // after paying for a wasted resolve. The holdings list already enumerates
+    // every non-zero token account, so a miss here means no balance to sell.
+    const holding = holdings.find((h) => h.mint === mint);
+    if (!holding) {
+      setActionError('Wallet holds no balance of this mint');
+      return;
+    }
+    const { bps: slippageBps, error: slipError } = parseSlippageBps(sellDialog.slippageInput);
+    if (slipError) {
+      setActionError(slipError);
+      return;
+    }
+
+    setActionError(null);
+    setActionSuccess(null);
+    setSellDialog(null);
+    // Pass the known token account as a hint so the backend skips a wallet scan.
+    await runSell(mint, holding.token_account, slippageBps);
+  }, [sellDialog, holdings, runSell]);
 
   const handleBuyOpen = useCallback((mint: string, tokenProgramId: string) => {
     setBuyDialog({ mint, tokenProgramId, solInput: '0.001', slippageInput: '', manual: false });
@@ -183,15 +249,10 @@ export function MyWalletPage() {
 
     // Slippage is entered as a percent; blank = let the backend use the global
     // default. Convert to basis points (1% = 100 bps).
-    let slippageBps: number | undefined;
-    const slipRaw = buyDialog.slippageInput.trim();
-    if (slipRaw) {
-      const slipPct = parseFloat(slipRaw);
-      if (!Number.isFinite(slipPct) || slipPct < 0 || slipPct > 50) {
-        setActionError('Enter a valid slippage % between 0 and 50');
-        return;
-      }
-      slippageBps = Math.round(slipPct * 100);
+    const { bps: slippageBps, error: slipError } = parseSlippageBps(buyDialog.slippageInput);
+    if (slipError) {
+      setActionError(slipError);
+      return;
     }
 
     // Snapshot the pre-buy balance (undefined for a token we don't hold yet) so
@@ -250,6 +311,9 @@ export function MyWalletPage() {
         <div className='flex-grow' />
         <Button variant="primary" size="md" onClick={handleManualBuyOpen}>
           + Manual Buy
+        </Button>
+        <Button variant="danger" size="md" onClick={handleManualSellOpen}>
+          − Manual Sell
         </Button>
       </div>
 
@@ -344,6 +408,62 @@ export function MyWalletPage() {
               </Button>
               <Button variant="primary" onClick={handleBuySubmit}>
                 Confirm Buy
+              </Button>
+            </div>
+          </>
+        )}
+      </Modal>
+
+      <Modal
+        title="Manual Sell"
+        open={sellDialog != null}
+        onClose={() => setSellDialog(null)}
+      >
+        {sellDialog && (
+          <>
+            <InlineAlert variant="warning">
+              Sells the wallet's entire balance of this mint and closes the token
+              account to reclaim rent.
+            </InlineAlert>
+            <label className="mb-4 mt-4 flex flex-col gap-1.5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
+                Mint Address
+              </span>
+              <Input
+                type="text"
+                fieldSize="md"
+                placeholder="Token mint address"
+                value={sellDialog.mint}
+                onChange={(e) =>
+                  setSellDialog((d) => (d ? { ...d, mint: e.target.value } : d))
+                }
+                className="font-mono focus:shadow-[0_0_0_2px_rgba(19,206,175,0.15)]"
+              />
+            </label>
+            <label className="mb-4 flex flex-col gap-1.5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
+                Slippage % (optional)
+              </span>
+              <Input
+                type="number"
+                fieldSize="md"
+                min={0}
+                max={50}
+                step={0.1}
+                placeholder="Default"
+                value={sellDialog.slippageInput}
+                onChange={(e) =>
+                  setSellDialog((d) => (d ? { ...d, slippageInput: e.target.value } : d))
+                }
+                className="focus:shadow-[0_0_0_2px_rgba(19,206,175,0.15)]"
+              />
+            </label>
+            <div className="flex items-center justify-end gap-2.5">
+              <Button variant="ghost" onClick={() => setSellDialog(null)}>
+                Cancel
+              </Button>
+              <Button variant="danger" onClick={handleSellSubmit}>
+                Sell All
               </Button>
             </div>
           </>

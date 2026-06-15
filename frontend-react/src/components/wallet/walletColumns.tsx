@@ -9,7 +9,7 @@ import { LiquidityCell, PriceCell, ValueCell } from './walletPriceCells';
 
 export interface WalletActions {
   onBuy: (mint: string, tokenProgramId: string) => void;
-  onSell: (mint: string, tokenAmount: number) => void;
+  onSell: (mint: string) => void;
   sellingMint: string | null;
 }
 
@@ -224,7 +224,7 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
             <button
               type="button"
               disabled={isSelling}
-              onClick={() => actions.onSell(r.mint, r.amount)}
+              onClick={() => actions.onSell(r.mint)}
               className="rounded border border-red/50 bg-red/12 px-2 py-0.5 text-[11px] font-semibold text-red hover:bg-red/22 disabled:opacity-45"
             >
               {isSelling ? 'Selling…' : 'Sell All'}
