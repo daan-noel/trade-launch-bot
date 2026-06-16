@@ -7,7 +7,13 @@ import { useBackgroundJobActions, useBackgroundJobsState } from 'context/Backgro
 import { buildSweepColumns } from 'components/sweep/sweepColumns';
 import { buildGroupColumns } from 'components/sweep/groupColumns';
 import { SweepConfigForm } from 'components/sweep/SweepConfigForm';
-import type { GroupedSweepStartArgs } from 'components/sweep/groupedTypes';
+import {
+  TPSL1_AXES,
+  TPSL2_AXES,
+  type AxisDef,
+  type GroupedSweepStartArgs,
+} from 'components/sweep/groupedTypes';
+import { STORAGE_KEYS } from 'lib/storage';
 import {
   apiErrorMessage,
   useGetGroupedSweepRunsQuery,
@@ -18,15 +24,15 @@ import {
   usePruneGroupedSweepsMutation,
 } from 'store/apiSlice';
 
-/** This page is wired for TPSL2 today; a future strategy passes its own id (and
- *  its own param-key list) — the backend tables/engine are already generic. */
-const STRATEGY_ID = 'tpsl2';
+/** The grouped-sweep page is strategy-agnostic — the API/data layer and column
+ *  builders are all driven by `strategyId` + a swept-param-key list. Each
+ *  strategy supplies its own keys + axes via a thin wrapper at the bottom. */
 
 /** TPSL2 swept knobs — this array IS the param column order in the combo table
- *  (`buildSweepColumns` renders them in this order). Reorder freely; kept stable
- *  (not data-derived) so the columns exist on first render (colToggle
- *  persistence). Ordered to match the rule modal: TP/SL lead, entry gates next,
- *  then the trailing/time/stall exit knobs. */
+ *  (`buildSweepColumns` renders them in this order). Kept stable (not
+ *  data-derived) so the columns exist on first render (colToggle persistence).
+ *  Ordered to match the rule modal: TP/SL lead, entry gates next, then the
+ *  trailing/time/stall exit knobs. MUST match the backend `params_json` keys. */
 const TPSL2_PARAM_KEYS = [
   'exit_take_profit',
   'exit_stop_loss',
@@ -45,18 +51,42 @@ const TPSL2_PARAM_KEYS = [
   'exit_cohort_ratio',
 ];
 
-/**
- * Grouped param-sweep: select tokens by a created-at range, partition them by a
- * fingerprint key, sweep each group, and rank combos by expectancy per trade.
- * Flow: configure + Run → pick a run → group-summary table → click a group →
- * drill into its full ranked combo table (reuses the TPSL2 sweep columns).
- */
+/** TPSL1 swept knobs — the exit ladder only (no scalp entry gates, no cohort
+ *  exit). MUST match the backend tpsl1 `params_json` keys. */
+const TPSL1_PARAM_KEYS = [
+  'exit_take_profit',
+  'exit_stop_loss',
+  'exit_trailing_stop_pct',
+  'exit_time_stop_secs',
+  'exit_stall_secs',
+  'exit_liquidity_drop_pct',
+];
+
 function SectionDivider() {
   return <div role="separator" className="my-6 border-t border-white/6" />;
 }
 
-export function GroupedSweepPage() {
-  const runsQuery = useGetGroupedSweepRunsQuery({ strategyId: STRATEGY_ID });
+interface GroupedSweepViewProps {
+  /** Resolves the per-strategy backend tables + sweep entry point. */
+  strategyId: string;
+  /** Swept-param keys, in column order (matches the backend `params_json`). */
+  paramKeys: string[];
+  /** This strategy's editable param axes for the config form. */
+  axes: AxisDef[];
+  /** localStorage key for this strategy's persisted form config. */
+  storageKey: string;
+  /** Page heading. */
+  title: string;
+}
+
+/**
+ * Grouped param-sweep view: select tokens by a created-at range, partition them
+ * by a fingerprint key, sweep each group, and rank combos by expectancy per
+ * trade. Flow: configure + Run → pick a run → group-summary table → click a
+ * group → drill into its full ranked combo table.
+ */
+function GroupedSweepView({ strategyId, paramKeys, axes, storageKey, title }: GroupedSweepViewProps) {
+  const runsQuery = useGetGroupedSweepRunsQuery({ strategyId });
   const runs = runsQuery.data ?? [];
 
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
@@ -91,7 +121,7 @@ export function GroupedSweepPage() {
     if (!activeRunId) return;
     if (!window.confirm('Delete this sweep run and all its groups/results?')) return;
     try {
-      await deleteRun({ strategyId: STRATEGY_ID, runId: activeRunId }).unwrap();
+      await deleteRun({ strategyId, runId: activeRunId }).unwrap();
       setSelectedRunId(null); // fall back to the newest remaining run
     } catch {
       // Surfaced via deleteErr.
@@ -103,7 +133,7 @@ export function GroupedSweepPage() {
     const beforeIso = new Date(pruneBefore).toISOString();
     if (!window.confirm(`Delete all sweep runs created before ${pruneBefore}?`)) return;
     try {
-      await pruneRuns({ strategyId: STRATEGY_ID, before: beforeIso }).unwrap();
+      await pruneRuns({ strategyId, before: beforeIso }).unwrap();
       setSelectedRunId(null);
     } catch {
       // Surfaced via deleteErr.
@@ -124,20 +154,20 @@ export function GroupedSweepPage() {
   }
 
   const groupsQuery = useGetGroupedSweepGroupsQuery(
-    { strategyId: STRATEGY_ID, runId: activeRunId ?? '' },
+    { strategyId, runId: activeRunId ?? '' },
     { skip: !activeRunId },
   );
   const groups = groupsQuery.data ?? [];
   const activeGroup = groups.find((g) => g.id === activeGroupId) ?? null;
 
   const resultsQuery = useGetGroupedSweepResultsQuery(
-    { strategyId: STRATEGY_ID, runId: activeRunId ?? '', groupId: activeGroupId ?? '' },
+    { strategyId, runId: activeRunId ?? '', groupId: activeGroupId ?? '' },
     { skip: !activeRunId || !activeGroupId },
   );
   const results = resultsQuery.data ?? [];
 
-  const groupColumns = useMemo(() => buildGroupColumns(TPSL2_PARAM_KEYS), []);
-  const comboColumns = useMemo(() => buildSweepColumns(TPSL2_PARAM_KEYS), []);
+  const groupColumns = useMemo(() => buildGroupColumns(paramKeys), [paramKeys]);
+  const comboColumns = useMemo(() => buildSweepColumns(paramKeys), [paramKeys]);
 
   const runsErr = apiErrorMessage(runsQuery.error, 'Failed to load sweep runs');
   const groupsErr = apiErrorMessage(groupsQuery.error, 'Failed to load groups');
@@ -146,13 +176,19 @@ export function GroupedSweepPage() {
   return (
     <div>
       <div className="mb-3.5 flex flex-wrap items-center gap-2.5">
-        <h2 className="text-base font-bold text-primary">Grouped Param Sweep</h2>
+        <h2 className="text-base font-bold text-primary">{title}</h2>
         <Badge variant="primary" className="font-mono">
           {runs.length} runs · {groups.length} groups
         </Badge>
       </div>
 
-      <SweepConfigForm strategyId={STRATEGY_ID} running={sweepRunning} onRun={run} />
+      <SweepConfigForm
+        strategyId={strategyId}
+        axes={axes}
+        storageKey={storageKey}
+        running={sweepRunning}
+        onRun={run}
+      />
 
       {startErr && <InlineAlert variant="error">{startErr}</InlineAlert>}
       {runsQuery.isLoading && <p className="text-text-dim">Loading sweep runs…</p>}
@@ -235,7 +271,7 @@ export function GroupedSweepPage() {
             onSelect={setActiveGroupId}
             defaultPageSize={5}
             pageSizeOptions={[5, 10, 25]}
-            tableId="sweep_groups"
+            tableId={`${strategyId}_sweep_groups`}
             resetKey={activeRunId ?? ''}
             loading={groupsQuery.isFetching}
             emptyMessage="No groups cleared the min-tokens threshold for this run."
@@ -277,7 +313,7 @@ export function GroupedSweepPage() {
                 selectable={false}
                 defaultPageSize={25}
                 pageSizeOptions={[25, 50, 100]}
-                tableId="sweep_combos"
+                tableId={`${strategyId}_sweep_combos`}
                 resetKey={activeGroupId}
                 loading={resultsQuery.isFetching}
                 emptyMessage="No combo results for this group."
@@ -287,5 +323,32 @@ export function GroupedSweepPage() {
         </>
       )}
     </div>
+  );
+}
+
+/** TPSL2 grouped sweep — the full entry-gate + exit-ladder param space. */
+export function GroupedSweepPage() {
+  return (
+    <GroupedSweepView
+      strategyId="tpsl2"
+      paramKeys={TPSL2_PARAM_KEYS}
+      axes={TPSL2_AXES}
+      storageKey={STORAGE_KEYS.sweepConfig}
+      title="Grouped Param Sweep · TPSL2"
+    />
+  );
+}
+
+/** TPSL1 grouped sweep — the exit-ladder-only param space (no scalp entry gates,
+ *  no cohort exit). Reuses the same generic view, API layer, and columns. */
+export function Tpsl1GroupedSweepPage() {
+  return (
+    <GroupedSweepView
+      strategyId="tpsl1"
+      paramKeys={TPSL1_PARAM_KEYS}
+      axes={TPSL1_AXES}
+      storageKey={`${STORAGE_KEYS.sweepConfig}.tpsl1`}
+      title="Grouped Param Sweep · TPSL1"
+    />
   );
 }

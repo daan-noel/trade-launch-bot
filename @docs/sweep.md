@@ -2,9 +2,10 @@
 
 File-level map of `backend/src/sweep/` — the **generic** param-sweep & backtest
 stack. Reference this instead of re-reading source. Related:
-[strategies.md](strategies.md) (the tpsl2 pure fns the sweep reuses),
+[strategies.md](strategies.md) (the tpsl1/tpsl2 pure fns the sweep reuses),
 [database.md](database.md) (sweep tables), [frontend.md](frontend.md) (the sweep
-page). The TPSL2 `Strategy` impl is `sweep/strategies/tpsl2.rs` (below).
+page). The `Strategy` impls are `sweep/strategies/tpsl2.rs` and
+`sweep/strategies/tpsl1.rs` (below) — both wired through the same generic stack.
 
 ## Core idea
 A backtest is a pure fn `simulate(trades, params) -> TokenOutcome`. A sweep loads
@@ -50,14 +51,18 @@ corpus (DB-range, once) ─► attach_fingerprints ─► partition by GroupKey
 | `aggregate.rs` | `ComboAgg` (streaming accumulator) → `ComboMetrics` (one ranked row): win rate, total/expectancy/median/mean/p90/best/worst PnL, `std_pnl_pct`, profit factor, robust `score` (`μ−Z·σ/√n` on closed trades), holding stats, exit-reason mix. |
 | `grouping.rs` | Strategy-blind grouping. `TokenFingerprint` (creator, token program, CU limit/price, cashback, max_sol_cost, spendable_sol_in, initial_buy_sol, ix_labels), `from_token`, `extract_lamports`, `normalize_labels`. `GroupField` enum (serde snake_case — matches the API + UI; the `creator_wallet`/`token_program_id` variants stay for legacy runs but the UI no longer offers them — singleton/constant ⇒ useless groups). `GroupKey(Vec<(GroupField,String)>)` + `to_json`. `group_key(fp, fields)` / `render_field` (exact-value; `∅` sentinel for missing; empty fields = single "ALL" group). **Binning is a future extension living entirely in `render_field`.** |
 | `grouped_engine.rs` | `run_grouped_sweep` — partition-then-reuse: `partition` builds `HashMap<GroupKey, Vec<usize>>` (O(tokens)), drop groups `< min_tokens`, build a sub-`Corpus` per group (Arc refcount-clone of `TokenTrades`, no trade buffer copy), call `run_sweep` per group (**sequential** loop; inner `par_iter` uses the one bounded pool — no nested pools). `GroupResult` (key, token_count, stats, metrics, best_combo_id, best_expectancy_sol); `best_combo` picks max expectancy among combos that fired. Takes a `&dyn SweepObserver`: `set_total(surviving tokens)` up front, polls `cancelled()` between groups + after each `run_sweep` (bails `"sweep cancelled"`). |
-| `registry.rs` | The **one** place a strategy is wired in. `MAX_COMBOS` cap; `tables_for(strategy_id) -> Option<GroupedSweepTables>` (per-strategy table triple) + `strategy_ids()`; `run_grouped(..., observer: Arc<dyn SweepObserver + Send>)` dispatch → `sweep_tpsl2` (resolves axes via `AxesSpec`, grid combo-count pre-check vs cap, resolves base `Tpsl2Rule`, samples + clamps combos, runs `run_grouped_sweep` (observer threaded in) on a **bounded** rayon pool inside `spawn_blocking`). `GroupedSweepOutput` (combo_count, combo_params indexed by combo_id, resolved axes_json, groups). |
-| `strategies/mod.rs` | `pub mod tpsl2;` (a new strategy adds a sibling module here). |
+| `registry.rs` | The **one** place a strategy is wired in. `MAX_COMBOS` cap; `tables_for(strategy_id) -> Option<GroupedSweepTables>` (per-strategy table triple; arms for `"tpsl1"`/`"tpsl2"`) + `strategy_ids()`; `run_grouped(..., observer: Arc<dyn SweepObserver + Send>)` dispatch → `sweep_tpsl2` / `sweep_tpsl1` (each resolves axes via its `AxesSpec`, grid combo-count pre-check vs cap, resolves its base rule, samples + clamps combos, runs `run_grouped_sweep` (observer threaded in) on a **bounded** rayon pool inside `spawn_blocking`). `GroupedSweepOutput` (combo_count, combo_params indexed by combo_id, resolved axes_json, groups). |
+| `strategies/mod.rs` | `pub mod tpsl1;` + `pub mod tpsl2;` (a new strategy adds a sibling module here). |
 | `strategies/tpsl2.rs` | TPSL2 `Strategy`/`ParamSpace`. `Tpsl2Params`/`Tpsl2Axes` (+ `Serialize`) sweep **all 15** rule knobs — TP/SL always-on, every other knob `Option` where `None` = unbounded/disabled (the default axis for the 10 lower-leverage knobs is a single `[None]`, so they don't expand the grid until the page supplies values). `AxesSpec` (page-editable grid; omitted/empty axis → default), `Tpsl2Axes::from_spec`/`combo_count`; `sample` builds the grid by mixed-radix decode over the axis lengths. Overlays params onto a base `Tpsl2Rule` and calls `entry::find_scalp_entry` + `find_worst_case_paper_entry` + `exit::find_trade_driven_exit` — see [strategies.md](strategies.md). |
+| `strategies/tpsl1.rs` | TPSL1 `Strategy`/`ParamSpace`. TPSL1 is the token-creation-filter strategy, so it has **no per-trade entry gates** and **no cohort exit** — its swept set is the **exit ladder only** (6 knobs: TP/SL + the optional trailing/time/stall/liquidity exits). `Tpsl1Params`/`Tpsl1Axes`/`AxesSpec` mirror tpsl2's shape over that smaller set. `simulate` resolves entry via `tpsl_sniper_1::entry::find_entry_fill_in_trades(trades, 1)` (cap 1, matching `run_backtest`; the token-creation filter ran upstream during corpus selection), then `exit::find_trade_driven_exit` — see [strategies.md](strategies.md). `params_json` emits the `exit_*` keys (a subset of tpsl2's). |
 
 ## Persistence (per-strategy tables) + API
 Tables are **separate per strategy** (`<strategy>_grouped_sweep_{runs,groups,results}`,
-see [database.md](database.md), migration `0004`). The repo is generic and
-**table-name-driven**; the registry maps `strategy_id` → the table triple.
+see [database.md](database.md)). TPSL2's triple lives in `0001_init`; TPSL1's
+identical-shape triple in migration `0004_tpsl1_grouped_sweep` (its
+`n_exit_cohort` column stays 0 — kept for schema parity with the generic repo's
+INSERT). The repo is generic and **table-name-driven**; the registry maps
+`strategy_id` → the table triple.
 
 - `models/grouped_sweep.rs` — `GroupedSweepRun` / `GroupedSweepGroupSummary` /
   `GroupedSweepResult` (serialize-only API models) + `GroupedSweepGroupWrite` (the
@@ -102,7 +107,16 @@ see [database.md](database.md), migration `0004`). The repo is generic and
 ## Frontend
 See [frontend.md](frontend.md). `pages/strategies/GroupedSweepPage.tsx` +
 `components/sweep/{SweepConfigForm,groupColumns,groupedTypes}` + RTK `GroupedSweep`
-hooks. Group-summary `DataTable` → click a group → drill-in combo `DataTable`
+hooks. The page is a generic `GroupedSweepView` parameterized by
+`{strategyId, paramKeys, axes, storageKey, title}`, with two thin wrappers
+exported: `GroupedSweepPage` (TPSL2, `/strategies/grouped-sweep`) and
+`Tpsl1GroupedSweepPage` (TPSL1, `/strategies/grouped-sweep-tpsl1`). Each passes its
+own `*_PARAM_KEYS` (matching the backend `params_json`), its `*_AXES`, a
+per-strategy localStorage key, and namespaces the `DataTable` `tableId` by
+`strategyId` so column toggles don't collide. `SweepConfigForm` takes `axes` +
+`storageKey` props (no longer hardcoded to TPSL2) and hides the **Entry gates**
+subsection when a strategy has no entry axes (TPSL1). Group-summary `DataTable` →
+click a group → drill-in combo `DataTable`
 (reuses `buildSweepColumns`). `buildGroupColumns(paramKeys)` (same key list the
 drill-in receives): Group (fingerprint chips), the **Metrics** columns
 (Tokens/Fired/Best-expectancy — each a real sortable + numeric-filterable column),

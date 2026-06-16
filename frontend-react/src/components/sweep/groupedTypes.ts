@@ -60,13 +60,25 @@ export interface Tpsl2AxesSpec {
   entry_min_organic_liq?: (number | null)[];
 }
 
+/** The page-editable param grid for TPSL1 — the exit ladder only (no scalp
+ *  entry gates, no cohort-dump exit). Mirrors the backend tpsl1 `AxesSpec`. */
+export interface Tpsl1AxesSpec {
+  take_profit?: number[];
+  stop_loss?: number[];
+  trailing_stop_pct?: (number | null)[];
+  time_stop_secs?: (number | null)[];
+  stall_secs?: (number | null)[];
+  liquidity_drop_pct?: (number | null)[];
+}
+
 /** One editable axis: its key, label, the param role it belongs to (drives the
  *  entry/exit grouping in the sweep param grid), whether `null` (disabled) is a
- *  valid option, and the default candidate list (mirrors `Tpsl2Axes::default` on
- *  the backend, so the projected combo count is accurate and the grid is
- *  prefilled). */
+ *  valid option, and the default candidate list (mirrors the strategy's
+ *  `Axes::default` on the backend, so the projected combo count is accurate and
+ *  the grid is prefilled). `key` is a plain string so one `AxisDef[]` shape
+ *  serves any strategy's axes ([`TPSL2_AXES`], [`TPSL1_AXES`]). */
 export interface AxisDef {
-  key: keyof Tpsl2AxesSpec;
+  key: string;
   label: string;
   group: 'entry' | 'exit';
   nullable: boolean;
@@ -97,6 +109,21 @@ export const TPSL2_AXES: AxisDef[] = [
   { key: 'stall_secs', label: 'Stall (s)', group: 'exit', nullable: true, default: [null, 30, 60] },
   { key: 'liquidity_drop_pct', label: 'Liq-drop exit %', group: 'exit', nullable: true, default: [null] },
   { key: 'cohort_ratio', label: 'Cohort-dump exit %', group: 'exit', nullable: true, default: [null] },
+];
+
+// --- TPSL1 editable axes ----------------------------------------------------
+
+// TPSL1 is the token-creation-filter strategy: its only per-trade swept knobs
+// are the exit ladder (TP/SL lead, then the optional trailing/time/stall/liquidity
+// exits). It has NO scalp entry gates and NO cohort-dump exit, so this list is the
+// TPSL2 exit block minus cohort. Mirrors the backend `tpsl1::Tpsl1Axes::default`.
+export const TPSL1_AXES: AxisDef[] = [
+  { key: 'take_profit', label: 'Take profit %', group: 'exit', nullable: false, default: [50, 100, 200] },
+  { key: 'stop_loss', label: 'Stop loss %', group: 'exit', nullable: false, default: [30, 50] },
+  { key: 'trailing_stop_pct', label: 'Trailing stop %', group: 'exit', nullable: true, default: [null, 20, 35] },
+  { key: 'time_stop_secs', label: 'Time stop (s)', group: 'exit', nullable: true, default: [null, 120, 300] },
+  { key: 'stall_secs', label: 'Stall (s)', group: 'exit', nullable: true, default: [null, 30, 60] },
+  { key: 'liquidity_drop_pct', label: 'Liq-drop exit %', group: 'exit', nullable: true, default: [null] },
 ];
 
 // --- run / group / result records -------------------------------------------
@@ -153,8 +180,9 @@ export interface GroupedSweepStartArgs {
   min_tokens?: number;
   /** `grid` | `random:N` | `lhs:N`. */
   method?: string;
-  /** Strategy-specific axes (TPSL2 today). */
-  axes?: Tpsl2AxesSpec;
+  /** Strategy-specific axes — TPSL2's full grid or TPSL1's exit-ladder-only grid.
+   *  Resolved by `strategy_id` on the backend. */
+  axes?: Tpsl2AxesSpec | Tpsl1AxesSpec;
   token_cap?: number;
   /** Per-group combo cap override. Omitted ⇒ backend default (5000); the backend
    *  clamps to its hard backstop. */

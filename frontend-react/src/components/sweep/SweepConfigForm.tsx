@@ -1,7 +1,6 @@
 import { useMemo, type ReactNode } from 'react';
 import { cn } from 'lib/cn';
 import { useLocalStorage } from 'hooks/useLocalStorage';
-import { STORAGE_KEYS } from 'lib/storage';
 import { Button } from 'components/ui/Button';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
@@ -10,11 +9,9 @@ import { Badge } from 'components/ui/Badge';
 import {
   GROUP_FIELDS,
   GROUP_FIELD_LABELS,
-  TPSL2_AXES,
   type AxisDef,
   type GroupField,
   type GroupedSweepStartArgs,
-  type Tpsl2AxesSpec,
 } from './groupedTypes';
 
 /** Mirror of the backend `MAX_COMBOS` default — the per-group cap a run uses
@@ -26,6 +23,12 @@ const HARD_MAX_COMBOS = 500000;
 
 interface SweepConfigFormProps {
   strategyId: string;
+  /** This strategy's editable param axes (e.g. `TPSL2_AXES` / `TPSL1_AXES`).
+   *  Drives the param grid, the projected-combo math, and `buildAxes`. */
+  axes: AxisDef[];
+  /** localStorage key for this strategy's persisted form config, so each
+   *  strategy's sweep page keeps its own grid/selection independently. */
+  storageKey: string;
   running: boolean;
   onRun: (args: GroupedSweepStartArgs) => void;
 }
@@ -97,12 +100,12 @@ function axisToText(values: (number | null)[]): string {
   return values.map((v) => (v == null ? 'off' : String(v))).join(', ');
 }
 
-/** Default param-grid text per axis, computed once (static `TPSL2_AXES`). */
-const DEFAULT_AXES_TEXT: Record<string, string> = Object.fromEntries(
-  TPSL2_AXES.map((a) => [a.key, axisToText(a.default)]),
-);
+/** Default param-grid text for a strategy's axes (`null` → "off"). */
+function defaultAxesText(axes: AxisDef[]): Record<string, string> {
+  return Object.fromEntries(axes.map((a) => [a.key, axisToText(a.default)]));
+}
 
-/** The full sweep-form state — persisted as one object under `mt:sweep.config`
+/** The full sweep-form state — persisted per strategy under `mt:sweep.config[.id]`
  *  (replacing the former flat `sweep_cfg_*` keys). */
 interface SweepConfig {
   createdAfter: string;
@@ -117,18 +120,22 @@ interface SweepConfig {
   curveOnly: boolean;
 }
 
-const DEFAULT_SWEEP_CONFIG: SweepConfig = {
-  createdAfter: '',
-  createdBefore: '',
-  groupBy: ['cu_price'],
-  axesText: DEFAULT_AXES_TEXT,
-  methodKind: 'grid',
-  randomN: 500,
-  minTokens: 10,
-  tokenCap: 10000,
-  maxCombos: DEFAULT_MAX_COMBOS,
-  curveOnly: false,
-};
+/** Default form state for a strategy — its `axesText` is prefilled from that
+ *  strategy's axis defaults so the grid reads the same as its rule modal. */
+function defaultSweepConfig(axes: AxisDef[]): SweepConfig {
+  return {
+    createdAfter: '',
+    createdBefore: '',
+    groupBy: ['cu_price'],
+    axesText: defaultAxesText(axes),
+    methodKind: 'grid',
+    randomN: 500,
+    minTokens: 10,
+    tokenCap: 10000,
+    maxCombos: DEFAULT_MAX_COMBOS,
+    curveOnly: false,
+  };
+}
 
 /** Parse an axis text box → candidate values. For nullable axes, `off/null/none/-`
  *  (or an empty token) becomes `null`; non-nullable axes drop those. NaN dropped. */
@@ -154,13 +161,12 @@ function axisLen(text: string, def: AxisDef): number {
   return n > 0 ? n : def.default.length;
 }
 
-export function SweepConfigForm({ strategyId, running, onRun }: SweepConfigFormProps) {
+export function SweepConfigForm({ strategyId, axes, storageKey, running, onRun }: SweepConfigFormProps) {
+  // Defaults depend on this strategy's axes, so memoize per axis list.
+  const DEFAULT_SWEEP_CONFIG = useMemo(() => defaultSweepConfig(axes), [axes]);
   // Whole form persisted as one object; merge over defaults so a future-added
   // field is never `undefined` when reading an older stored shape.
-  const [stored, setConfig] = useLocalStorage<SweepConfig>(
-    STORAGE_KEYS.sweepConfig,
-    DEFAULT_SWEEP_CONFIG,
-  );
+  const [stored, setConfig] = useLocalStorage<SweepConfig>(storageKey, DEFAULT_SWEEP_CONFIG);
   const config = { ...DEFAULT_SWEEP_CONFIG, ...stored };
   const {
     createdAfter,
@@ -193,11 +199,14 @@ export function SweepConfigForm({ strategyId, running, onRun }: SweepConfigFormP
       return { ...base, axesText: fn(base.axesText) };
     });
 
+  const entryAxes = useMemo(() => axes.filter((a) => a.group === 'entry'), [axes]);
+  const exitAxes = useMemo(() => axes.filter((a) => a.group === 'exit'), [axes]);
+
   // Projected combos: grid = product of axis lengths; random = N (both capped).
   const projected = useMemo(() => {
     if (methodKind === 'random') return Math.max(1, randomN);
-    return TPSL2_AXES.reduce((acc, a) => acc * axisLen(axesText[a.key] ?? '', a), 1);
-  }, [methodKind, randomN, axesText]);
+    return axes.reduce((acc, a) => acc * axisLen(axesText[a.key] ?? '', a), 1);
+  }, [methodKind, randomN, axesText, axes]);
 
   // Effective per-group cap: what's typed, clamped to the backend's hard backstop.
   const effectiveCap = Math.min(Math.max(1, maxCombos || DEFAULT_MAX_COMBOS), HARD_MAX_COMBOS);
@@ -207,15 +216,15 @@ export function SweepConfigForm({ strategyId, running, onRun }: SweepConfigFormP
     setField('groupBy', groupBy.includes(f) ? groupBy.filter((x) => x !== f) : [...groupBy, f]);
   }
 
-  function buildAxes(): Tpsl2AxesSpec {
-    const spec: Tpsl2AxesSpec = {};
-    for (const a of TPSL2_AXES) {
+  function buildAxes(): GroupedSweepStartArgs['axes'] {
+    const spec: Record<string, (number | null)[]> = {};
+    for (const a of axes) {
       // Backend types: take_profit/stop_loss are number[]; the rest (number|null)[].
       const vals = parseAxis(axesText[a.key] ?? '', a.nullable);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (spec as any)[a.key] = a.nullable ? vals : vals.filter((v): v is number => v !== null);
     }
-    return spec;
+    return spec as GroupedSweepStartArgs['axes'];
   }
 
   function handleRun() {
@@ -353,23 +362,30 @@ export function SweepConfigForm({ strategyId, running, onRun }: SweepConfigFormP
           Param grid · comma-separated · “off” disables a nullable knob
         </span>
         <div className="flex flex-col gap-3 md:flex-row md:gap-4">
-          <AxisGroup
-            title="Entry gates · scalp"
-            hint="when to buy"
-            accent="text-accent"
-            axes={TPSL2_AXES.filter((a) => a.group === 'entry')}
-            axesText={axesText}
-            setAxesText={setAxesText}
-            className="md:flex-1"
-          />
+          {/* Entry block only when this strategy has entry gates (TPSL1 has none). */}
+          {entryAxes.length > 0 && (
+            <AxisGroup
+              title="Entry gates · scalp"
+              hint="when to buy"
+              accent="text-accent"
+              axes={entryAxes}
+              axesText={axesText}
+              setAxesText={setAxesText}
+              className="md:flex-1"
+            />
+          )}
           <AxisGroup
             title="Exit gates"
             hint="when to sell"
             accent="text-warning"
-            axes={TPSL2_AXES.filter((a) => a.group === 'exit')}
+            axes={exitAxes}
             axesText={axesText}
             setAxesText={setAxesText}
-            className="border-t border-white/10 pt-3 md:flex-1 md:border-l md:border-t-0 md:pl-4 md:pt-0"
+            className={
+              entryAxes.length > 0
+                ? 'border-t border-white/10 pt-3 md:flex-1 md:border-l md:border-t-0 md:pl-4 md:pt-0'
+                : 'md:flex-1'
+            }
           />
         </div>
       </div>

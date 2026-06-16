@@ -15,13 +15,17 @@ use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::models::Tpsl2Rule;
+use crate::models::{Tpsl1Rule, Tpsl2Rule};
 use crate::storage::repositories::grouped_sweep_repo::GroupedSweepTables;
+use crate::storage::repositories::tpsl1_strategy_rule_repo::Tpsl1StrategyRuleRepo;
 use crate::storage::repositories::tpsl2_strategy_rule_repo::Tpsl2StrategyRuleRepo;
 use crate::sweep::corpus::Corpus;
 use crate::sweep::grouped_engine::{run_grouped_sweep, GroupResult};
 use crate::sweep::grouping::GroupField;
 use crate::sweep::progress::SweepObserver;
+use crate::sweep::strategies::tpsl1::{
+    AxesSpec as Tpsl1AxesSpec, Tpsl1Axes, Tpsl1Strategy,
+};
 use crate::sweep::strategies::tpsl2::{AxesSpec, Tpsl2Axes, Tpsl2Strategy};
 use crate::sweep::strategy::{ParamSpace, Strategy, SweepMethod};
 
@@ -55,10 +59,19 @@ const TPSL2_TABLES: GroupedSweepTables = GroupedSweepTables {
     results: "tpsl2_grouped_sweep_results",
 };
 
+/// TPSL1's own grouped-sweep tables (same shape as TPSL2's, separate per the
+/// per-strategy-tables design). Mirror these names in the `0004` migration.
+const TPSL1_TABLES: GroupedSweepTables = GroupedSweepTables {
+    runs: "tpsl1_grouped_sweep_runs",
+    groups: "tpsl1_grouped_sweep_groups",
+    results: "tpsl1_grouped_sweep_results",
+};
+
 /// The DB table triple for a strategy's grouped sweeps, or `None` for an unknown
 /// / not-yet-wired strategy.
 pub fn tables_for(strategy_id: &str) -> Option<GroupedSweepTables> {
     match strategy_id {
+        "tpsl1" => Some(TPSL1_TABLES),
         "tpsl2" => Some(TPSL2_TABLES),
         _ => None,
     }
@@ -66,7 +79,7 @@ pub fn tables_for(strategy_id: &str) -> Option<GroupedSweepTables> {
 
 /// Strategy ids with a grouped-sweep implementation (for error messages / UI).
 pub fn strategy_ids() -> &'static [&'static str] {
-    &["tpsl2"]
+    &["tpsl1", "tpsl2"]
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +123,12 @@ pub async fn run_grouped(
     observer: Arc<dyn SweepObserver + Send>,
 ) -> Result<GroupedSweepOutput> {
     match strategy_id {
+        "tpsl1" => {
+            sweep_tpsl1(
+                pool, rule_id, axes_json, method, corpus, fields, min_tokens, max_combos, observer,
+            )
+            .await
+        }
         "tpsl2" => {
             sweep_tpsl2(
                 pool, rule_id, axes_json, method, corpus, fields, min_tokens, max_combos, observer,
@@ -221,5 +240,97 @@ async fn resolve_tpsl2_rule(pool: &PgPool, rule_id: Option<Uuid>) -> Result<Tpsl
             .into_iter()
             .next()
             .ok_or_else(|| anyhow!("no tpsl2 rules in DB — create one to use as the base template")),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TPSL1 strategy entry point
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+async fn sweep_tpsl1(
+    pool: PgPool,
+    rule_id: Option<Uuid>,
+    axes_json: Value,
+    method: SweepMethod,
+    corpus: Corpus,
+    fields: Vec<GroupField>,
+    min_tokens: usize,
+    max_combos: Option<usize>,
+    observer: Arc<dyn SweepObserver + Send>,
+) -> Result<GroupedSweepOutput> {
+    let cap = effective_cap(max_combos);
+
+    // Resolve the page-supplied axes (omitted/empty axes fall back to defaults).
+    let spec: Tpsl1AxesSpec =
+        serde_json::from_value(axes_json).context("invalid TPSL1 axes spec")?;
+    let axes = Tpsl1Axes::from_spec(&spec);
+
+    // Grid guard: reject an explosive full grid before doing any sweep work.
+    if matches!(method, SweepMethod::Grid) {
+        let n = axes.combo_count();
+        if n > cap {
+            bail!("grid has {n} combos, over the {cap} cap — narrow the axes, raise max_combos, or use random:N");
+        }
+    }
+    // Store the resolved axes (post-defaults/dedup) so the run is reproducible.
+    let axes_json = serde_json::to_value(&axes).context("serializing resolved TPSL1 axes")?;
+
+    let base = resolve_tpsl1_rule(&pool, rule_id).await?;
+    let strategy = Tpsl1Strategy::new(base, axes);
+    let mut params = strategy.sample(method);
+    if params.is_empty() {
+        bail!("param space is empty");
+    }
+    // Random/LHS draws can request any `n`; clamp to the cap (grid is pre-checked).
+    if params.len() > cap {
+        tracing::warn!(
+            combos = params.len(),
+            cap,
+            "grouped sweep: clamping sampled combos to cap"
+        );
+        params.truncate(cap);
+    }
+
+    // Capture the param JSON before `strategy` moves into the blocking task.
+    let combo_params: Vec<Value> = params.iter().map(|p| strategy.params_json(p)).collect();
+    let combo_count = params.len();
+    let threads = bounded_threads();
+
+    let groups = tokio::task::spawn_blocking(move || -> Result<Vec<GroupResult>> {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .thread_name(|i| format!("grouped-sweep-{i}"))
+            .build()
+            .map_err(|e| anyhow!("rayon pool build failed: {e}"))?;
+        pool.install(|| {
+            run_grouped_sweep(&strategy, &params, &corpus, &fields, min_tokens, observer.as_ref())
+        })
+    })
+    .await??;
+
+    Ok(GroupedSweepOutput {
+        combo_count,
+        combo_params,
+        axes_json,
+        groups,
+    })
+}
+
+/// Resolve the base TPSL1 rule the swept params overlay: the given id, else the
+/// first rule in the DB (a template to overlay).
+async fn resolve_tpsl1_rule(pool: &PgPool, rule_id: Option<Uuid>) -> Result<Tpsl1Rule> {
+    let repo = Tpsl1StrategyRuleRepo::new(pool.clone());
+    match rule_id {
+        Some(id) => repo
+            .find_by_id(id)
+            .await?
+            .ok_or_else(|| anyhow!("no tpsl1 rule with id {id}")),
+        None => repo
+            .find_all()
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("no tpsl1 rules in DB — create one to use as the base template")),
     }
 }
