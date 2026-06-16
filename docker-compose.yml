@@ -51,6 +51,13 @@ services:
         VITE_API_BASE: ""
         VITE_POLL_INTERVAL_MS: ${VITE_POLL_INTERVAL_MS:-5000}
     restart: unless-stopped
+    environment:
+      # nginx injects this as the upstream `Authorization: Bearer` header so the
+      # backend's fail-closed auth accepts proxied /api calls. envsubst (the nginx
+      # image entrypoint) substitutes it into default.conf.template at start;
+      # the filter keeps it from clobbering nginx's own $-variables.
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:?API_AUTH_TOKEN is required (see .env.example)}
+      NGINX_ENVSUBST_FILTER: API_AUTH_TOKEN
     ports:
       - "80:80"      # redirects to HTTPS
       - "443:443"    # TLS (self-signed for local/testing; see nginx/tls/)

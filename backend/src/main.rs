@@ -30,10 +30,12 @@ struct ApiAuth {
     token: Option<String>,
 }
 
-/// Middleware: require `Authorization: Bearer <token>` on mutating requests when
-/// an `API_AUTH_TOKEN` is configured. Preflight (OPTIONS) and safe reads
-/// (GET/HEAD) always pass, and when no token is configured every request passes
-/// — so enabling the env var is the only thing that turns auth on.
+/// Middleware: require `Authorization: Bearer <token>` on mutating requests.
+/// Preflight (OPTIONS) and safe reads (GET/HEAD) always pass. The check is
+/// **fail-closed**: a mutating request is rejected when `API_AUTH_TOKEN` is not
+/// configured, so a forgotten env var blocks real-SOL trades rather than
+/// exposing them. `API_AUTH_TOKEN` is required at startup (see `Settings`), so
+/// the `None` arm is only reachable if the server is somehow started without it.
 async fn require_bearer_auth(
     req: ServiceRequest,
     next: Next<impl MessageBody + 'static>,
@@ -49,8 +51,9 @@ async fn require_bearer_auth(
         .and_then(|a| a.token.clone());
 
     let authorized = match (mutating, configured) {
-        // Non-mutating, or no token configured → always allowed.
-        (false, _) | (_, None) => true,
+        // Safe reads + preflight always pass.
+        (false, _) => true,
+        // Mutating + token configured → must match exactly.
         (true, Some(expected)) => req
             .headers()
             .get(AUTHORIZATION)
@@ -58,6 +61,8 @@ async fn require_bearer_auth(
             .and_then(|s| s.strip_prefix("Bearer "))
             .map(|t| t == expected)
             .unwrap_or(false),
+        // Mutating + NO token configured → deny (fail closed).
+        (true, None) => false,
     };
 
     if authorized {
@@ -508,9 +513,9 @@ async fn main() -> anyhow::Result<()> {
         let api_auth = ApiAuth {
             token: settings.api_auth_token.clone(),
         };
-        if api_auth.token.is_some() {
-            info!("API auth enabled: mutating requests require a bearer token");
-        }
+        // `API_AUTH_TOKEN` is required by `Settings::from_env`, so this is always
+        // `Some` here; the middleware is fail-closed regardless.
+        info!("API auth enabled (fail-closed): mutating requests require a bearer token");
         let http_server = HttpServer::new(move || {
             let allowed_origin = cors_allowed_origin.as_str();
 

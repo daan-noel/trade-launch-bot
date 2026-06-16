@@ -29,7 +29,13 @@ RUN npm run build
 
 # --- Serve -----------------------------------------------------------------
 FROM nginx:1.27-alpine AS runtime
-COPY nginx/default.conf /etc/nginx/conf.d/default.conf
+# Config is a template: the nginx image entrypoint runs envsubst over
+# /etc/nginx/templates/*.template at startup, writing the result to
+# /etc/nginx/conf.d/default.conf. This injects ${API_AUTH_TOKEN} (passed as an
+# env var by docker-compose) into the /api proxy's bearer header without baking
+# the secret into the image. NGINX_ENVSUBST_FILTER (set in compose) limits
+# substitution to API_AUTH_TOKEN so nginx's own $-variables survive.
+COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY nginx/.htpasswd /etc/nginx/.htpasswd
 # Self-signed TLS cert+key for local/testing. The .pem files are gitignored —
 # you must generate them before building (see nginx/tls/README.md).

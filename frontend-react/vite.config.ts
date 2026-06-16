@@ -20,6 +20,12 @@ export default defineConfig(({ mode }) => {
         '/api': {
           target: env.VITE_DEV_PROXY_TARGET || 'http://127.0.0.1:8081',
           changeOrigin: true,
+          // Backend auth is fail-closed: mutating routes require a bearer token.
+          // Inject it on the dev proxy (runs in Node, server-side) so the token
+          // never reaches the browser bundle. In prod, nginx does the same.
+          headers: env.API_AUTH_TOKEN
+            ? { Authorization: `Bearer ${env.API_AUTH_TOKEN}` }
+            : undefined,
         },
       },
     },

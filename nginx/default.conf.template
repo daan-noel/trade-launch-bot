@@ -40,6 +40,14 @@ server {
         proxy_set_header X-Real-IP         $remote_addr;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        # Bridge the browser's Basic-Auth login to the backend's fail-closed
+        # bearer auth: replace the inbound `Authorization: Basic ...` with the
+        # backend's bearer token so mutating (real-SOL) routes are accepted.
+        # ${API_AUTH_TOKEN} is substituted at container start by the nginx image's
+        # envsubst entrypoint (NGINX_ENVSUBST_FILTER restricts it to this var, so
+        # the `$host`/`$remote_addr` runtime vars above are left untouched). The
+        # token stays server-side — it is never sent to the browser.
+        proxy_set_header Authorization     "Bearer ${API_AUTH_TOKEN}";
         proxy_read_timeout 300s;
     }
 

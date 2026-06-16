@@ -41,9 +41,11 @@ pub struct Settings {
     /// CORS allowed origin. `"*"` (default) keeps the permissive behaviour;
     /// set it to the frontend origin to lock cross-origin access down.
     pub cors_allowed_origin: String,
-    /// Optional bearer token required on mutating (POST/PUT/DELETE/PATCH) API
-    /// requests. `None` (unset) disables auth entirely (current behaviour); set
-    /// `API_AUTH_TOKEN` to require `Authorization: Bearer <token>`.
+    /// Bearer token required on mutating (POST/PUT/DELETE/PATCH) API requests.
+    /// **Required** at startup: the auth middleware is fail-closed, so without a
+    /// token every mutating (real-SOL) route would be unreachable. Modelled as
+    /// `Option` only so the middleware's `None` arm stays explicit; `from_env`
+    /// rejects a missing/empty `API_AUTH_TOKEN`.
     pub api_auth_token: Option<String>,
 }
 
@@ -69,7 +71,7 @@ impl Settings {
             http_enabled: env_or("HTTP_ENABLED", "true").parse().unwrap_or(true),
             http_workers: env_parse("HTTP_WORKERS", 2)?,
             cors_allowed_origin: env_or("CORS_ALLOWED_ORIGIN", "*"),
-            api_auth_token: std::env::var("API_AUTH_TOKEN").ok().filter(|s| !s.is_empty()),
+            api_auth_token: Some(required_non_empty("API_AUTH_TOKEN")?),
         })
     }
 }
@@ -113,6 +115,18 @@ fn parse_required_list(key: &str) -> anyhow::Result<Vec<String>> {
 
 fn required(key: &str) -> anyhow::Result<String> {
     std::env::var(key).map_err(|_| anyhow::anyhow!("Missing required env var: {key}"))
+}
+
+/// Like `required`, but also rejects an empty/whitespace value. Used for secrets
+/// where a blank string is as dangerous as a missing one (e.g. `API_AUTH_TOKEN`,
+/// where an empty token would make the fail-closed auth middleware accept an
+/// empty bearer).
+fn required_non_empty(key: &str) -> anyhow::Result<String> {
+    let val = required(key)?;
+    if val.trim().is_empty() {
+        anyhow::bail!("Required env var {key} must not be empty");
+    }
+    Ok(val)
 }
 
 fn env_or(key: &str, default: &str) -> String {
