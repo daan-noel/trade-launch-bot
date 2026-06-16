@@ -145,6 +145,13 @@ pub(super) async fn refresh_tip_floor(http: &reqwest::Client, cache: &JitoTipCac
 }
 
 fn sol_to_lamports(sol: f64) -> u64 {
+    // Guard the cast: a NaN/±inf or negative percentile from a malformed feed
+    // row would otherwise saturate to 0 or u64::MAX. Returning 0 lets the
+    // [MIN_JITO_TIP_SOL, MAX_JITO_TIP_SOL] clamp in `tip_lamports_for_level`
+    // pull it back to the floor instead of seeding the cache with garbage.
+    if !sol.is_finite() || sol <= 0.0 {
+        return 0;
+    }
     (sol * LAMPORTS_PER_SOL as f64) as u64
 }
 

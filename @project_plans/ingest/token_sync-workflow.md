@@ -76,7 +76,7 @@ POST /api/token/sync ─▶ preflight (validate mint, bonding-curve check)
         migrated? ─▶ sync_amm_trades  (separate watermark: last_synced_amm_*)
                        ▼
         recompute metrics → TokenMetricsWrite → TokenInfoRepo::upsert_metrics
-        (ATH, volume, market_cap, trade_count, current_price, is_rugged)
+        (ATH, volume, market_cap, trade_count, current_price, is_dead)
                        ▼
         update watermarks (last_synced_at / *_sig / *_slot)  ← only AFTER persist succeeds
                        ▼

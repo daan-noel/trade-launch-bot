@@ -136,14 +136,25 @@ fn default_list_limit() -> i64 {
     50
 }
 
+/// Largest `OFFSET` accepted on the analysis/creator list endpoints. `tokens_analysis`
+/// and `creator_profiles` grow continuously, and a plain `LIMIT/OFFSET` scan discards
+/// every row before the offset — so an unbounded offset lets a buggy/hostile client
+/// force an O(offset) sequential scan. The UI never pages this deep (100 pages at the
+/// 500-row max), so the cap is invisible in practice while bounding the worst case.
+const MAX_LIST_OFFSET: i64 = 50_000;
+
+/// Clamp a client-supplied page window to `[1, 500]` rows at `[0, MAX_LIST_OFFSET]`.
+fn clamp_page(limit: i64, offset: i64) -> (i64, i64) {
+    (limit.clamp(1, 500), offset.clamp(0, MAX_LIST_OFFSET))
+}
+
 /// `GET /api/analysis?limit=&offset=` — all analysis results, newest first.
 pub async fn list_analysis_results(
     state: web::Data<Arc<AppState>>,
     query: web::Query<ListParams>,
 ) -> impl Responder {
     let repo = state.analysis_repo();
-    let limit = query.limit.max(1).min(500);
-    let offset = query.offset.max(0);
+    let (limit, offset) = clamp_page(query.limit, query.offset);
 
     match repo.list_results(limit, offset).await {
         Ok((total, results)) => {
@@ -171,8 +182,7 @@ pub async fn list_creators(
     query: web::Query<ListParams>,
 ) -> impl Responder {
     let repo = state.analysis_repo();
-    let limit = query.limit.max(1).min(500);
-    let offset = query.offset.max(0);
+    let (limit, offset) = clamp_page(query.limit, query.offset);
 
     match repo.list_creator_profiles(limit, offset).await {
         Ok((total, profiles)) => {

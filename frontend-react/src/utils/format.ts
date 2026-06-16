@@ -57,6 +57,27 @@ export function formatAge(seconds: number): string {
   return h === 0 ? `${d}d` : `${d}d ${h}h`;
 }
 
+/**
+ * Full age breakdown down to the second, e.g. `30s`, `12m 30s`, `3h 12m 30s`,
+ * `1D 3h 12m 30s`. Unlike {@link formatAge} no unit is collapsed — every unit
+ * from the largest non-zero one down through seconds is shown. The day unit is
+ * uppercase (`D`); hour/minute/second stay lowercase.
+ */
+export function formatAgePrecise(seconds: number): string {
+  if (seconds < 0) return '?';
+  const s = Math.floor(seconds);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const parts: string[] = [];
+  if (d > 0) parts.push(`${d}D`);
+  if (d > 0 || h > 0) parts.push(`${h}h`);
+  if (d > 0 || h > 0 || m > 0) parts.push(`${m}m`);
+  parts.push(`${sec}s`);
+  return parts.join(' ');
+}
+
 export function formatWithCommas(n: number): string {
   return n.toLocaleString('en-US', { maximumFractionDigits: 0 });
 }

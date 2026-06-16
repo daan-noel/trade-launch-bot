@@ -13,6 +13,18 @@ use crate::{
     state::app_state::AppState,
 };
 
+/// True when `e` is a Postgres unique-violation (SQLSTATE `23505`). The repos
+/// propagate the raw `sqlx::Error` via `?`, so we downcast and read the
+/// SQLSTATE code rather than substring-matching the display string (which is
+/// locale/driver-dependent and matches unrelated text containing "unique").
+fn is_unique_violation(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<sqlx::Error>()
+        .and_then(|e| e.as_database_error())
+        .and_then(|db| db.code())
+        .as_deref()
+        == Some("23505")
+}
+
 // ---------------------------------------------------------------------------
 // Request types
 // ---------------------------------------------------------------------------
@@ -207,8 +219,7 @@ pub async fn create_wallet(
     match repo.insert(&wallet).await {
         Ok(_) => HttpResponse::Created().json(&wallet),
         Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("unique") || msg.contains("duplicate") {
+            if is_unique_violation(&e) {
                 HttpResponse::Conflict()
                     .json(json!({ "error": "address already exists in another profile" }))
             } else {
@@ -301,8 +312,7 @@ pub async fn create_tag(
     match repo.insert(&body.name, &body.color, body.comment.as_deref()).await {
         Ok(tag) => HttpResponse::Created().json(tag),
         Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("unique") || msg.contains("duplicate") {
+            if is_unique_violation(&e) {
                 HttpResponse::Conflict().json(json!({ "error": "tag name already exists" }))
             } else {
                 tracing::error!("create_tag: {e}");

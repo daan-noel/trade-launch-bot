@@ -79,23 +79,42 @@ struct ClaimOutcomeJson {
 /// rather than paid for.
 static CLAIM_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
+/// RAII claim lock. `try_acquire` wins the flag with a CAS; `Drop` always
+/// releases it — so a panic mid-claim (handler task aborted across `.await`)
+/// can't leave the flag wedged `true`, which would 409 every future claim
+/// until the process restarts.
+struct ClaimGuard;
+
+impl ClaimGuard {
+    fn try_acquire() -> Option<Self> {
+        CLAIM_IN_FLIGHT
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| ClaimGuard)
+    }
+}
+
+impl Drop for ClaimGuard {
+    fn drop(&mut self) {
+        CLAIM_IN_FLIGHT.store(false, Ordering::Release);
+    }
+}
+
 /// POST /api/cashback/claim
 ///
 /// Sweep accrued cashback from both pots back to the wallet as native SOL.
 /// Off the trade hot path (recent blockhash, no nonce, no Jito tip); pots with
 /// zero claimable are skipped on-trader so no empty/reverting tx is sent.
 pub async fn claim_cashback(app_state: web::Data<Arc<AppState>>) -> impl Responder {
-    // Reject a second in-flight claim instead of double-sending.
-    if CLAIM_IN_FLIGHT
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
+    // Reject a second in-flight claim instead of double-sending. The guard
+    // releases the flag on drop (incl. a panic across the `.await`), so a
+    // failed claim can't wedge a permanent 409.
+    let Some(_guard) = ClaimGuard::try_acquire() else {
         return HttpResponse::Conflict()
             .json(serde_json::json!({ "error": "A cashback claim is already in progress" }));
-    }
+    };
 
     let result = app_state.trader.claim_cashback(true).await;
-    CLAIM_IN_FLIGHT.store(false, Ordering::Release);
 
     match result {
         Ok(outcomes) => {

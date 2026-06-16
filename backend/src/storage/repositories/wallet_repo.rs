@@ -33,6 +33,12 @@ impl From<WalletRow> for Wallet {
     }
 }
 
+/// Columns selected for `WalletRow`, in struct order. Explicit (not `SELECT *`)
+/// so a future column added to `wallets` isn't pulled into every read, and the
+/// query's wire contract is decoupled from the physical table layout.
+const WALLET_COLS: &str =
+    "id, profile_id, address, is_tracked, comment, created_at, last_seen_at";
+
 impl WalletRepo {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
@@ -77,7 +83,9 @@ impl WalletRepo {
     }
 
     pub async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<Wallet>> {
-        let row = sqlx::query_as::<_, WalletRow>("SELECT * FROM wallets WHERE id=$1")
+        let row = sqlx::query_as::<_, WalletRow>(&format!(
+            "SELECT {WALLET_COLS} FROM wallets WHERE id=$1"
+        ))
             .bind(id)
             .fetch_optional(&self.pool)
             .await?;
@@ -85,7 +93,9 @@ impl WalletRepo {
     }
 
     pub async fn find_by_address(&self, address: &str) -> anyhow::Result<Option<Wallet>> {
-        let row = sqlx::query_as::<_, WalletRow>("SELECT * FROM wallets WHERE address=$1")
+        let row = sqlx::query_as::<_, WalletRow>(&format!(
+            "SELECT {WALLET_COLS} FROM wallets WHERE address=$1"
+        ))
             .bind(address)
             .fetch_optional(&self.pool)
             .await?;
@@ -93,9 +103,9 @@ impl WalletRepo {
     }
 
     pub async fn list_by_profile(&self, profile_id: Uuid) -> anyhow::Result<Vec<Wallet>> {
-        let rows = sqlx::query_as::<_, WalletRow>(
-            "SELECT * FROM wallets WHERE profile_id=$1 ORDER BY created_at ASC",
-        )
+        let rows = sqlx::query_as::<_, WalletRow>(&format!(
+            "SELECT {WALLET_COLS} FROM wallets WHERE profile_id=$1 ORDER BY created_at ASC"
+        ))
         .bind(profile_id)
         .fetch_all(&self.pool)
         .await?;
@@ -106,9 +116,10 @@ impl WalletRepo {
     /// creation), so a list view can group them in memory instead of issuing one
     /// `list_by_profile` per profile (the previous N+1).
     pub async fn list_by_profiles(&self, profile_ids: &[Uuid]) -> anyhow::Result<Vec<Wallet>> {
-        let rows = sqlx::query_as::<_, WalletRow>(
-            "SELECT * FROM wallets WHERE profile_id = ANY($1) ORDER BY profile_id, created_at ASC",
-        )
+        let rows = sqlx::query_as::<_, WalletRow>(&format!(
+            "SELECT {WALLET_COLS} FROM wallets WHERE profile_id = ANY($1) \
+             ORDER BY profile_id, created_at ASC"
+        ))
         .bind(profile_ids)
         .fetch_all(&self.pool)
         .await?;

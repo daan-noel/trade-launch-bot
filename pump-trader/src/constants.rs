@@ -73,6 +73,19 @@ pub const JITO_TIP_ACCOUNTS: &[&str] = &[
 /// How many buy templates to keep pre-built per token-program pool.
 pub const BUY_SEED_POOL_SIZE: usize = 16;
 
+/// SPL token account data size (bytes) — the fixed `spl_token::state::Account`
+/// length, used to size its rent-exemption lookup in `initialize`.
+pub const TOKEN_ACCOUNT_SPACE: u64 = 165;
+/// Token-2022 token account data size (bytes): the 165-byte base account plus
+/// the account-type tag + immutable-owner extension a pump.fun ATA carries.
+pub const TOKEN_2022_ACCOUNT_SPACE: u64 = 182;
+/// Placeholder rent (lamports, ~0.002 SOL) for the token-account fields before
+/// `initialize` overwrites them with the on-chain
+/// `getMinimumBalanceForRentExemption`. Only a value, never used to fund a real
+/// buy: every buy path bails at the `global_account` "Not initialized" guard
+/// before it reads rent, so a pre-`initialize` buy can't under-fund an account.
+pub const TOKEN_ACCOUNT_RENT_PLACEHOLDER: u64 = 2_000_000;
+
 /// Hard per-trade sanity ceiling on a buy, in SOL. The public buy entry points
 /// take an `f64` straight from a caller (e.g. an API request), so this is the
 /// crate's own last-line guard that an absurd value — a fat-finger, a hostile

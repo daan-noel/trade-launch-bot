@@ -43,6 +43,11 @@ const FIRST_MSG_TIMEOUT: Duration = Duration::from_secs(8);
 const IDLE_TIMEOUT: Duration = Duration::from_millis(2000);
 /// Absolute cap so a sync can never hang on a slow/stuck stream.
 const HARD_DEADLINE: Duration = Duration::from_secs(90);
+/// Count cap alongside the time cap: a Fetch-New replay covers the small gap
+/// since the last sync, so a burst this large means the watermark is far older
+/// than the replay window is meant for — stop and let the caller fall back to the
+/// RPC path rather than buffering an unbounded `Vec` on the live process.
+const MAX_REPLAY_TXS: usize = 50_000;
 
 /// A replayed transaction as its native protobuf frame, fed straight to
 /// `decode_protobuf` (no `Value` synthesis).
@@ -110,6 +115,14 @@ pub async fn replay_account_from_slot(
                             got_any = true;
                             if tx.slot >= from_slot && replay_is_relevant(&tx, pump_program_id) {
                                 out.push(ReplayedTx { slot: tx.slot, update: tx });
+                                if out.len() >= MAX_REPLAY_TXS {
+                                    info!(
+                                        "laserstream replay: hit {MAX_REPLAY_TXS}-tx cap, \
+                                         returning partial (watermark advances to max slot \
+                                         seen; next sync resumes from there)"
+                                    );
+                                    break;
+                                }
                             }
                         }
                         // Non-transaction updates (ping/slot/etc.) ignored.

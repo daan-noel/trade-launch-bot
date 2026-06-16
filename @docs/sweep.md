@@ -156,7 +156,10 @@ Run-picker row also carries **Delete run** (current run) + **Clear runs before
   combos/group — a run may raise it via `max_combos`, server-clamped to
   `HARD_MAX_COMBOS` (500k).
 - Bounded rayon pool + the shared single-flight gate keep a sweep from starving
-  the live trading hot path.
+  the live trading hot path. `bounded_threads()` sizes the pool against the whole
+  thread budget — `cores − tokio worker_threads − HTTP_WORKERS`, floored at 1 —
+  so on a small box the sweep can't pin the cores ingest / sell-confirm run on;
+  override with `SWEEP_RAYON_THREADS`.
 - **Adding a strategy** = `strategies/<x>.rs` (`Strategy`+`ParamSpace`+`AxesSpec`)
   + a `registry.rs` arm (table triple + dispatch) + a `<x>_grouped_sweep_*`
   migration + (frontend) a param-key list / axes defs. Engine, grouping, repo,

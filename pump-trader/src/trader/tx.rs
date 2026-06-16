@@ -27,7 +27,15 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::info;
+use tracing::{debug, info};
+
+/// Upper bound on a single detached fan-out submission. The fast path returns on
+/// the FIRST endpoint that accepts the tx; the losers keep running in the
+/// background, so without a cap a black-holed endpoint would leak its task for
+/// the process lifetime. 10s comfortably exceeds a healthy sender RTT while still
+/// reaping a wedged connection. (The single-endpoint path is awaited directly and
+/// isn't bounded here — its caller already wraps the send in a timeout.)
+const FANOUT_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Monotonic JSON-RPC request id. A simple atomic counter replaces a
 /// `timestamp_millis` syscall on every `sendTransaction` (the id only needs to
@@ -181,7 +189,26 @@ impl PumpFunTrader {
             let raw = Arc::clone(&raw);
             let done_tx = done_tx.clone();
             tokio::spawn(async move {
-                let _ = done_tx.send(post_tx_bytes(&http, &url, raw).await).await;
+                // Bound each detached submission so a hung/black-holed endpoint
+                // can't leak a background task, and surface the failure at debug
+                // (was a fully-swallowed `let _ =`) so a degraded endpoint is
+                // diagnosable. A timeout is reported as a normal send error so the
+                // receiver only ever returns on a real acceptance.
+                let result = match tokio::time::timeout(
+                    FANOUT_SEND_TIMEOUT,
+                    post_tx_bytes(&http, &url, raw),
+                )
+                .await
+                {
+                    Ok(res) => res,
+                    Err(_) => Err(anyhow::anyhow!(
+                        "sender {url} timed out after {FANOUT_SEND_TIMEOUT:?}"
+                    )),
+                };
+                if let Err(ref e) = result {
+                    debug!("sender fan-out endpoint {url} failed: {e}");
+                }
+                let _ = done_tx.send(result).await;
             });
         }
         drop(done_tx);

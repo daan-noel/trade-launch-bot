@@ -12,7 +12,7 @@ use super::adapter::build_raw_blob;
 use super::proto::geyser::SubscribeUpdateTransaction;
 use crate::{
     models::{token::Token, trade::Trade, transaction::RawTransaction},
-    state::{token_metrics::compute_is_rugged, trade_signals::TradeSignals},
+    state::trade_signals::TradeSignals,
     storage::repositories::{
         token_info_repo::TokenInfoRepo, token_repo::TokenRepo, trade_repo::TradeRepo,
         transaction_repo::TransactionRepo, wallet_repo::WalletRepo,
@@ -62,8 +62,9 @@ pub struct TokenMetricsWrite {
     pub last_trade_at: Option<chrono::DateTime<Utc>>,
     pub current_price: Option<f64>,
     pub is_migrated: bool,
-    pub creator_wallet: String,
-    pub recompute_rugged: bool,
+    /// Cheap in-memory dead-token verdict computed at metrics time (see
+    /// [`crate::state::token_cache::TokenState::is_dead`]); persisted as-is.
+    pub is_dead: bool,
 }
 
 pub struct DbWriter {
@@ -235,28 +236,17 @@ impl DbWriter {
                 .notify(&t.wallet_address, &t.mint_address);
         }
 
-        // Metrics — the (expensive) rugged recompute now runs once per unique
-        // mint instead of once per trade. Trades above are already persisted, so
-        // the rugged reads see this batch's trades. Each mint's recompute+upsert
-        // is independent, so run them concurrently — but bounded by
-        // `buffer_unordered` so a flush with hundreds of unique mints can't fire
-        // hundreds of (3-query) recomputes at once and exhaust the PgPool.
-        // Collect the per-mint write futures eagerly (each owns its data via a
-        // cloned PgPool that builds fresh repos). `into_values` moves each
-        // `TokenMetricsWrite` straight into its future — no per-metric clone —
-        // and collecting eagerly avoids the HRTB inference error a lazy `.map()`
-        // fed into `buffer_unordered` trips.
+        // Metrics — the dead-token verdict (`m.is_dead`) was computed in-memory at
+        // metrics time (no DB scan), so the flush is now a plain upsert per unique
+        // mint. Each upsert is independent, so run them concurrently — bounded by
+        // `buffer_unordered` so a flush with hundreds of unique mints can't exhaust
+        // the PgPool. `into_values` moves each `TokenMetricsWrite` straight into its
+        // future — no per-metric clone — and collecting eagerly avoids the HRTB
+        // inference error a lazy `.map()` fed into `buffer_unordered` trips.
         let metric_writes: Vec<_> = metrics.into_values().map(|m| {
-            // Clone the long-lived repos (each an `Arc<PgPool>` bump) into the
-            // owned future instead of reconstructing them from a pool clone.
-            let trade_repo = self.trade_repo.clone();
+            // Clone the long-lived repo (an `Arc<PgPool>` bump) into the owned future.
             let info_repo = self.info_repo.clone();
             async move {
-                let is_rugged = if m.recompute_rugged {
-                    compute_is_rugged(&trade_repo, &m.mint, &m.creator_wallet, m.last_trade_at).await
-                } else {
-                    false
-                };
                 if let Err(e) = info_repo
                     .upsert_metrics(
                         &m.mint,
@@ -268,7 +258,7 @@ impl DbWriter {
                         m.trade_count,
                         m.last_trade_at,
                         m.current_price,
-                        is_rugged,
+                        m.is_dead,
                         m.is_migrated,
                     )
                     .await

@@ -16,6 +16,7 @@
 //   quote_lamports — lamports          (curve: virtual_sol;   AMM: pool quote/WSOL)
 // ============================================================
 
+use crate::constants::LAMPORTS_PER_SOL;
 use dashmap::DashMap;
 use std::time::{Duration, Instant};
 
@@ -52,7 +53,7 @@ impl ReserveCache {
             return;
         }
         let token = token_reserves as u128;
-        let quote_lamports = (sol_reserves * 1_000_000_000.0) as u128;
+        let quote_lamports = (sol_reserves * LAMPORTS_PER_SOL as f64) as u128;
         if token == 0 || quote_lamports == 0 {
             return;
         }

@@ -62,6 +62,14 @@ impl From<TokenDbRow> for Token {
 // Repo
 // ---------------------------------------------------------------------------
 
+/// Columns selected for `TokenDbRow`, in struct order. Explicit (not `SELECT *`)
+/// so a future column added to `tokens` isn't pulled into every read, and the
+/// query's wire contract is decoupled from the physical table layout.
+const TOKEN_COLS: &str = "id, mint_address, creator_wallet, name, symbol, token_program_id, \
+    bonding_curve_address, initial_supply_token, initial_buy_sol, initial_buy_instruction, \
+    cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels, creation_tx_signature, \
+    created_at";
+
 impl TokenRepo {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
@@ -153,7 +161,9 @@ impl TokenRepo {
     }
 
     pub async fn find_by_mint(&self, mint: &str) -> anyhow::Result<Option<Token>> {
-        let row = sqlx::query_as::<_, TokenDbRow>("SELECT * FROM tokens WHERE mint_address = $1")
+        let row = sqlx::query_as::<_, TokenDbRow>(&format!(
+            "SELECT {TOKEN_COLS} FROM tokens WHERE mint_address = $1"
+        ))
             .bind(mint)
             .fetch_optional(&self.pool)
             .await?;
@@ -173,7 +183,7 @@ impl TokenRepo {
 
     /// Load the most-recent tokens created since `since` for cache seeding on
     /// startup, capped at `limit`. Bounded on *both* axes — recency window and row
-    /// cap — rather than an unbounded `SELECT *` over the continuously growing
+    /// cap — rather than an unbounded full-table scan over the continuously growing
     /// `tokens` table, so cold start scales with recent activity, not total history.
     /// See [`crate::config::constants::SEED_TOKEN_LIMIT`] /
     /// [`crate::config::constants::SEED_ACTIVITY_WINDOW_DAYS`]. The `created_at >=`
@@ -184,9 +194,9 @@ impl TokenRepo {
         limit: i64,
         since: DateTime<Utc>,
     ) -> anyhow::Result<Vec<Token>> {
-        let rows = sqlx::query_as::<_, TokenDbRow>(
-            "SELECT * FROM tokens WHERE created_at >= $1 ORDER BY created_at DESC LIMIT $2",
-        )
+        let rows = sqlx::query_as::<_, TokenDbRow>(&format!(
+            "SELECT {TOKEN_COLS} FROM tokens WHERE created_at >= $1 ORDER BY created_at DESC LIMIT $2"
+        ))
         .bind(since)
         .bind(limit)
         .fetch_all(&self.pool)
@@ -207,9 +217,9 @@ impl TokenRepo {
         }
         let mut out = Vec::with_capacity(mints.len());
         for chunk in mints.chunks(MINT_CHUNK) {
-            let rows = sqlx::query_as::<_, TokenDbRow>(
-                "SELECT * FROM tokens WHERE mint_address = ANY($1)",
-            )
+            let rows = sqlx::query_as::<_, TokenDbRow>(&format!(
+                "SELECT {TOKEN_COLS} FROM tokens WHERE mint_address = ANY($1)"
+            ))
             .bind(chunk)
             .fetch_all(&self.pool)
             .await?;

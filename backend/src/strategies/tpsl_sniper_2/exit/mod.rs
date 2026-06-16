@@ -19,7 +19,7 @@
 
 use chrono::{DateTime, Duration, Utc};
 
-use crate::config::constants::RUGGED_EARLY_SLOT_WINDOW;
+use crate::config::constants::EARLY_COHORT_SLOT_WINDOW;
 use crate::models::trade::{Trade, TradeRow};
 use crate::models::{Position, PositionStatus, Tpsl2Rule};
 
@@ -209,7 +209,7 @@ impl CachedExitState {
         let cohort = params.cohort_exit_ratio.map(|_| {
             // Fixed cohort + bag, computed once (H4). `net` seeds to the cohort's
             // net holdings as of entry; the post-entry walk evolves it from there.
-            let wallets = early_cohort_wallets(trades, RUGGED_EARLY_SLOT_WINDOW);
+            let wallets = early_cohort_wallets(trades, EARLY_COHORT_SLOT_WINDOW);
             let bought = cohort_flow(trades, &wallets).bought_tokens;
             let net: f64 = trades
                 .iter()
@@ -238,7 +238,7 @@ impl CachedExitState {
         }
         // Window index of the fold cursor; clamp in case of an over-trim/reset.
         let cursor = self.consumed_abs.saturating_sub(base).min(trades.len() as u64) as usize;
-        let wallets = early_cohort_wallets(trades, RUGGED_EARLY_SLOT_WINDOW);
+        let wallets = early_cohort_wallets(trades, EARLY_COHORT_SLOT_WINDOW);
         let bought = cohort_flow(trades, &wallets).bought_tokens;
         let net: f64 = trades[..cursor]
             .iter()
@@ -491,7 +491,7 @@ pub fn find_trade_driven_exit<T: TradeRow>(
     // walk replays each post-entry cohort trade. Skipped entirely when E5 is off.
     let (cohort, cohort_bought, mut cohort_net) = match params.cohort_exit_ratio {
         Some(_) => {
-            let cohort = early_cohort_wallets(trades, RUGGED_EARLY_SLOT_WINDOW);
+            let cohort = early_cohort_wallets(trades, EARLY_COHORT_SLOT_WINDOW);
             let bought = cohort_flow(trades, &cohort).bought_tokens;
             let net_at_entry: f64 = trades
                 .iter()

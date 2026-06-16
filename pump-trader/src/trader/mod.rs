@@ -49,7 +49,8 @@ use reserves::ReserveCache;
 
 use crate::constants::{
     EVENT_AUTHORITY, FEE_PROGRAM_ID, JITO_TIP_ACCOUNTS, PUMP_FUN_PROGRAM_ID,
-    PUMP_PROGRAM_UPGRADE_FEE_RECIPIENT, PUMP_SWAP_PROGRAM_ID, TOKEN_PROGRAM_ID, WSOL_MINT,
+    PUMP_PROGRAM_UPGRADE_FEE_RECIPIENT, PUMP_SWAP_PROGRAM_ID, TOKEN_2022_ACCOUNT_SPACE,
+    TOKEN_ACCOUNT_RENT_PLACEHOLDER, TOKEN_ACCOUNT_SPACE, TOKEN_PROGRAM_ID, WSOL_MINT,
 };
 use rand::seq::SliceRandom;
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -360,10 +361,10 @@ impl PumpFunTrader {
             buy_pool_misses_legacy: AtomicUsize::new(0),
             buy_pool_misses_2022: AtomicUsize::new(0),
             seed_counter: AtomicUsize::new(0),
-            token_account_space: 165,
-            token_account_rent: 2_000_000,
-            token_2022_account_space: 182,
-            token_2022_account_rent: 2_000_000,
+            token_account_space: TOKEN_ACCOUNT_SPACE,
+            token_account_rent: TOKEN_ACCOUNT_RENT_PLACEHOLDER,
+            token_2022_account_space: TOKEN_2022_ACCOUNT_SPACE,
+            token_2022_account_rent: TOKEN_ACCOUNT_RENT_PLACEHOLDER,
             pump_program: Pubkey::from_str(PUMP_FUN_PROGRAM_ID).unwrap(),
             token_program: Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap(),
             system_program: system_program::id(),

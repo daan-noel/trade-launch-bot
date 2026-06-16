@@ -33,7 +33,7 @@ impl TokenInfoRepo {
         trade_count: i64,
         last_trade_at: Option<DateTime<Utc>>,
         current_price: Option<f64>,
-        is_rugged: bool,
+        is_dead: bool,
         is_migrated: bool,
     ) -> anyhow::Result<()> {
         let now = Utc::now();
@@ -41,7 +41,7 @@ impl TokenInfoRepo {
         sqlx::query(
             r#"
             INSERT INTO tokens_info
-                (mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_rugged, is_migrated, created_at, updated_at)
+                (mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_dead, is_migrated, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             ON CONFLICT (mint_address) DO UPDATE
                 SET ath_price = COALESCE(EXCLUDED.ath_price, tokens_info.ath_price),
@@ -58,7 +58,7 @@ impl TokenInfoRepo {
                         ELSE tokens_info.last_trade_at
                     END,
                     current_price = EXCLUDED.current_price,
-                    is_rugged = EXCLUDED.is_rugged,
+                    is_dead = EXCLUDED.is_dead,
                     is_migrated = tokens_info.is_migrated OR EXCLUDED.is_migrated,
                     updated_at = EXCLUDED.updated_at
             "#,
@@ -72,7 +72,7 @@ impl TokenInfoRepo {
         .bind(trade_count)
         .bind(last_trade_at)
         .bind(current_price)
-        .bind(is_rugged)
+        .bind(is_dead)
         .bind(is_migrated)
         .bind(now)
         .bind(now)
@@ -110,7 +110,7 @@ impl TokenInfoRepo {
     #[allow(dead_code)]
     pub async fn find_by_mint(&self, mint: &str) -> anyhow::Result<Option<TokenInfo>> {
         let row = sqlx::query_as::<_, (Uuid, String, Option<f64>, Option<DateTime<Utc>>, Option<i64>, f64, Option<f64>, i64, Option<DateTime<Utc>>, Option<f64>, bool, bool, DateTime<Utc>, DateTime<Utc>, Option<DateTime<Utc>>)>(
-            "SELECT id, mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_rugged, is_migrated, created_at, updated_at, last_synced_at FROM tokens_info WHERE mint_address = $1",
+            "SELECT id, mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_dead, is_migrated, created_at, updated_at, last_synced_at FROM tokens_info WHERE mint_address = $1",
         )
         .bind(mint)
         .fetch_optional(&self.pool)
@@ -128,7 +128,7 @@ impl TokenInfoRepo {
                 trade_count,
                 last_trade_at,
                 current_price,
-                is_rugged,
+                is_dead,
                 is_migrated,
                 created_at,
                 updated_at,
@@ -144,7 +144,7 @@ impl TokenInfoRepo {
                 trade_count,
                 last_trade_at,
                 current_price,
-                is_rugged,
+                is_dead,
                 is_migrated,
                 created_at,
                 updated_at,
@@ -166,7 +166,7 @@ impl TokenInfoRepo {
         let mut rows = Vec::with_capacity(mints.len());
         for chunk in mints.chunks(INFO_CHUNK) {
             let batch = sqlx::query_as::<_, (Uuid, String, Option<f64>, Option<DateTime<Utc>>, Option<i64>, f64, Option<f64>, i64, Option<DateTime<Utc>>, Option<f64>, bool, bool, DateTime<Utc>, DateTime<Utc>, Option<DateTime<Utc>>)>(
-                "SELECT id, mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_rugged, is_migrated, created_at, updated_at, last_synced_at FROM tokens_info WHERE mint_address = ANY($1)",
+                "SELECT id, mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_dead, is_migrated, created_at, updated_at, last_synced_at FROM tokens_info WHERE mint_address = ANY($1)",
             )
             .bind(chunk)
             .fetch_all(&self.pool)
@@ -188,7 +188,7 @@ impl TokenInfoRepo {
                     trade_count,
                     last_trade_at,
                     current_price,
-                    is_rugged,
+                    is_dead,
                     is_migrated,
                     created_at,
                     updated_at,
@@ -204,7 +204,7 @@ impl TokenInfoRepo {
                     trade_count,
                     last_trade_at,
                     current_price,
-                    is_rugged,
+                    is_dead,
                     is_migrated,
                     created_at,
                     updated_at,

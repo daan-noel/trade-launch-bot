@@ -512,6 +512,37 @@ enum SellOutcome {
     Failed,
 }
 
+/// After a feed-confirm sell's poll window elapses without the balance clearing,
+/// one `signature_state` check decides whether re-sending is worth the fee.
+/// A landed-and-reverted sell (the TPSL path drives min_out=1, so a revert is
+/// structural — already-sold / empty-or-wrong token account / migrated) can never
+/// clear on the SAME venue and re-pays base+priority fee on every retry — the
+/// feed-path analogue of `sell_token`'s `OnChainRevert` budget guard. The one
+/// exception: the token migrated mid-exit, so the next attempt re-routes to the
+/// other venue (curve↔AMM), which can still succeed — keep going. Anything else
+/// (didn't land / status unknown) costs nothing to re-send, so retry. Pure so the
+/// fee-guard decision is unit-tested without a live chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SellRetryDecision {
+    /// Re-send the remainder (escalated tip) — the prior send cost nothing, or the
+    /// route will change on the next attempt.
+    Retry,
+    /// Stop: the send landed-and-reverted on a venue the next attempt would reuse,
+    /// so a blind re-send only re-pays fees. Caller marks the position ExitFailed.
+    StopFeeBurn,
+}
+
+fn classify_sell_revert<E>(
+    state: &Result<Option<bool>, E>,
+    used_migrated: bool,
+    now_migrated: bool,
+) -> SellRetryDecision {
+    match state {
+        Ok(Some(false)) if used_migrated == now_migrated => SellRetryDecision::StopFeeBurn,
+        _ => SellRetryDecision::Retry,
+    }
+}
+
 async fn sell_until_balance_cleared(
     trader: Arc<PumpFunTrader>,
     mint: String,
@@ -601,7 +632,9 @@ async fn sell_until_balance_cleared(
             )),
         };
         match sell_result {
-            Ok(true) => {
+            // `Some(sig)` carries the submitted tx so a non-clearing window can be
+            // classified for a landed-revert before re-paying fees (see below).
+            Ok(Some(sig)) => {
                 info!(mint = %mint, attempt, amount, "sell submitted (feed-confirm)");
                 // Confirm via the LaserStream-fed `trades` balance, waking on the
                 // DbWriter's persist signal for this (wallet, mint) instead of
@@ -697,16 +730,40 @@ async fn sell_until_balance_cleared(
                         .flatten();
                     return SellOutcome::Cleared(last_sell);
                 }
-                // Not cleared within the window: a partial fill retries the
-                // remainder; an unchanged balance means the tx never landed, so
-                // the next attempt re-sends with an escalated Jito tip (the outer
-                // loop bumps `tip_level`). Bounded by SELL_MAX_ATTEMPTS, after
-                // which the function returns false → position marked ExitFailed.
-                warn!(mint = %mint, attempt, remaining = remaining_amount,
-                    "sell not cleared within poll window; retrying with a higher tip");
-                amount = remaining_amount;
+                // Not cleared within the window. A partial fill (balance dropped)
+                // just leaves a smaller remainder to chase. But an *unchanged*
+                // balance means this send cleared nothing, and a blind retry
+                // re-pays base+priority fee. Before retrying, classify the sent tx:
+                // a landed-and-reverted sell (TPSL drives min_out=1 → a revert is
+                // structural: already-sold / empty account / migrated) can never
+                // clear on the same venue, so stop. This is the feed-path analogue
+                // of `sell_token`'s `OnChainRevert` budget guard — ONE off-path
+                // signature-state RPC, fired only after a failed poll window (never
+                // a hot-path poll) and only when no progress was made.
+                if remaining_amount < amount {
+                    warn!(mint = %mint, attempt, remaining = remaining_amount,
+                        "sell partially filled; retrying the remainder with a higher tip");
+                    amount = remaining_amount;
+                } else {
+                    // Re-read the venue: a mid-exit migration flips `is_migrated`,
+                    // re-routing the next attempt (curve↔AMM) to a venue that can
+                    // still succeed — so only stop when the route wouldn't change.
+                    let now_migrated =
+                        cache.get(&mint).map(|e| e.is_migrated).unwrap_or(is_migrated);
+                    let state = trader.signature_state(&sig).await;
+                    if classify_sell_revert(&state, is_migrated, now_migrated)
+                        == SellRetryDecision::StopFeeBurn
+                    {
+                        warn!(mint = %mint, attempt, sig = %sig,
+                            "sell reverted on-chain on a route the retry would reuse; \
+                             stopping (a blind re-send would only re-pay fees)");
+                        return SellOutcome::Failed;
+                    }
+                    warn!(mint = %mint, attempt, remaining = remaining_amount,
+                        "sell not cleared within poll window; retrying with a higher tip");
+                }
             }
-            Ok(false) => warn!(mint = %mint, attempt, amount, "sell returned false (no-op)"),
+            Ok(None) => warn!(mint = %mint, attempt, amount, "sell returned no signature (no-op)"),
             Err(err) => warn!(mint = %mint, attempt, amount, "sell error: {err}"),
         }
 
@@ -761,6 +818,43 @@ mod tests {
         for status in [Ok(Some(true)), Ok(None), Err("x")] {
             assert_ne!(outcome(status), SilentSendOutcome::Resend);
         }
+    }
+
+    // --- Sell-side fee guard (classify_sell_revert) ---------------------------
+
+    fn revert(used_migrated: bool, now_migrated: bool) -> SellRetryDecision {
+        classify_sell_revert(&Ok::<_, &'static str>(Some(false)), used_migrated, now_migrated)
+    }
+
+    #[test]
+    fn landed_revert_same_route_stops_fee_burn() {
+        // Reverted on the venue the retry would reuse → stop re-paying fees.
+        assert_eq!(revert(false, false), SellRetryDecision::StopFeeBurn);
+        assert_eq!(revert(true, true), SellRetryDecision::StopFeeBurn);
+    }
+
+    #[test]
+    fn landed_revert_after_migration_retries_new_route() {
+        // Sold on the curve but the token migrated mid-exit (now AMM), or vice
+        // versa → the next attempt re-routes, so don't stop.
+        assert_eq!(revert(false, true), SellRetryDecision::Retry);
+        assert_eq!(revert(true, false), SellRetryDecision::Retry);
+    }
+
+    #[test]
+    fn unlanded_or_unknown_sell_retries() {
+        // A sell that didn't land (or whose status we can't read) cost nothing —
+        // re-send with an escalated tip.
+        let states: [Result<Option<bool>, &'static str>; 2] = [Ok(None), Err("rpc down")];
+        for state in states {
+            assert_eq!(classify_sell_revert(&state, false, false), SellRetryDecision::Retry);
+        }
+    }
+
+    #[test]
+    fn landed_successful_sell_retries_to_chase_remainder() {
+        let state: Result<Option<bool>, &'static str> = Ok(Some(true));
+        assert_eq!(classify_sell_revert(&state, false, false), SellRetryDecision::Retry);
     }
 
     // -------------------------------------------------------------------------

@@ -22,7 +22,7 @@ use chrono::{DateTime, Utc};
 use super::super::cohort::{cohort_flow, early_cohort_wallets, outside_net_sol};
 use super::super::util::{none_if_zero_f64, none_if_zero_u64};
 use super::EntryFill;
-use crate::config::constants::RUGGED_EARLY_SLOT_WINDOW;
+use crate::config::constants::EARLY_COHORT_SLOT_WINDOW;
 use crate::models::trade::{Trade, TradeRow};
 use crate::models::Tpsl2Rule;
 
@@ -85,7 +85,7 @@ pub fn scalp_features(prefix: &[Trade]) -> Option<ScalpFeatures> {
         .map(|t| t.sol_amount)
         .sum();
 
-    let cohort = early_cohort_wallets(prefix, RUGGED_EARLY_SLOT_WINDOW);
+    let cohort = early_cohort_wallets(prefix, EARLY_COHORT_SLOT_WINDOW);
     let flow = cohort_flow(prefix, &cohort);
     let organic_sol = outside_net_sol(prefix, &cohort);
 
@@ -273,13 +273,13 @@ pub fn find_scalp_entry<T: TradeRow>(trades: &[T], rule: &Tpsl2Rule) -> Option<E
     let min_organic_liq = none_if_zero_f64(rule.p_entry_min_organic_liq);
 
     // O(n) preamble (M3): the launch cohort is fixed by the slice's first trade
-    // (cutoff = first.slot + RUGGED_EARLY_SLOT_WINDOW), a superset of every prefix
+    // (cutoff = first.slot + EARLY_COHORT_SLOT_WINDOW), a superset of every prefix
     // cohort — and identical to it for any real launch series, where a cohort
     // wallet's first trade IS its in-window buy (a wallet can't sell before it has
     // bought on the curve). Computing it once, then carrying the cohort/outside
     // flows, the trailing alive-window sum, and the last-seen real reserves forward
     // as the walk advances replaces the per-candidate prefix rescans (was O(n²)).
-    let cohort = early_cohort_wallets(trades, RUGGED_EARLY_SLOT_WINDOW);
+    let cohort = early_cohort_wallets(trades, EARLY_COHORT_SLOT_WINDOW);
 
     // First index (if any) at which the higher-low shape is confirmed; the
     // confirmation is monotonic in prefix length, so one forward pass suffices.

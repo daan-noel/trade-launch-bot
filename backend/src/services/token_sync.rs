@@ -55,6 +55,13 @@ const TX_BATCH_CONCURRENCY: usize = 5;
 /// full 1000-tx page is 0.1 credit/tx).
 const GTFA_PAGE_LIMIT: usize = 1000;
 
+/// Decoded backfill rows (raw txs + trades) buffered before a `persist_backfill`
+/// flush during a streamed full ("Fetch All") backfill. Bounds the heavy raw-tx
+/// frames held in memory: without it a full backfill of a high-volume migrated
+/// mint accumulated its entire history at once, and several concurrent backfills
+/// spiked the live process's RAM. Each flush drops the frames it persisted.
+const FLUSH_BACKFILL_ROWS: usize = 5_000;
+
 /// Max watermark age for which a Fetch-New sync trusts the LaserStream replay
 /// window over the RPC path. The server's replay window is ~24h; we stay
 /// conservatively inside it so we never replay a slot the server has aged out
@@ -292,15 +299,98 @@ pub async fn run_token_sync(
         None
     };
 
+    // Repos + decode accumulators shared by the full (streamed) and incremental
+    // decode paths. Declared up front so the full path can decode + flush per gTFA
+    // page below; the incremental path decodes its (dedup-bounded) batch later.
+    let token_repo = TokenRepo::new(ctx.db.clone());
+    let trade_repo = TradeRepo::new(ctx.db.clone());
+    let tx_repo = TransactionRepo::new(ctx.db.clone());
+    let wallet_repo = WalletRepo::new(ctx.db.clone());
+
+    let mut migrate_slot: Option<u64> = None;
+    let mut token_record: Option<Token> = token_repo
+        .find_by_mint(&mint)
+        .await
+        .map_err(|e| SyncError::Internal(e.to_string()))?;
+
+    let mut curve_txs: Vec<Arc<RawTransaction>> = Vec::new();
+    let mut curve_trades: Vec<Trade> = Vec::new();
+    let mut curve_wallets: Vec<String> = Vec::new();
+    let mut processed: usize = 0;
+
     // Full ("Fetch All") backfills use the archival getTransactionsForAddress
     // (one cursor-paginated call returning full txs, ~0.1 credit/tx). Incremental
     // ("Fetch New") uses the signatures + dedup + batched-getTransaction path: it
     // only downloads the few genuinely-new txs, cheaper than paying gTFA's per-tx
     // rate over a whole range that live ingest mostly already saved.
-    let (fetched, newest_curve_sig, newest_curve_slot) = if !req.incremental {
-        let (txs, newest) = acquire_full_via_gtfa(&rpc, &bonding_curve, &progress_tx).await?;
-        let newest_slot = txs.last().map(|t| t.slot as i64).or(prev_curve_slot);
-        (txs, newest.or_else(|| prev_curve_sig.clone()), newest_slot)
+    let (fetched, newest_curve_sig, newest_curve_slot): (Vec<FetchedTx>, _, _) = if !req
+        .incremental
+    {
+        // Stream gTFA pages: decode + flush every `FLUSH_BACKFILL_ROWS` so the
+        // heavy raw-tx frames never accumulate over the whole (possibly huge)
+        // history. gTFA returns slot-ascending pages, so the migrate-slot gate
+        // still sees a migration before any later-slot trade. Returns an empty
+        // `fetched` — the work is already decoded + (mostly) persisted here; the
+        // shared final flush below writes the remainder.
+        send_progress(
+            &progress_tx,
+            "processing",
+            0,
+            0,
+            "Decoding and saving transactions",
+        )
+        .await?;
+        let mut cursor: Option<String> = None;
+        let mut newest_sig: Option<String> = None;
+        let mut newest_slot: Option<i64> = None;
+        loop {
+            let (page, next) = gtfa_fetch_page(&rpc, &bonding_curve, cursor.as_deref()).await?;
+            if let Some((sig, slot)) = page_watermark(&page) {
+                newest_sig = Some(sig);
+                newest_slot = Some(slot as i64);
+            }
+            decode_curve_batch(
+                &decoder,
+                &page,
+                &mint,
+                &req,
+                &token_repo,
+                &info_repo,
+                &mut migrate_slot,
+                &mut token_record,
+                &mut curve_txs,
+                &mut curve_trades,
+                &mut curve_wallets,
+                &progress_tx,
+                &mut processed,
+                0,
+            )
+            .await?;
+            if curve_txs.len() + curve_trades.len() >= FLUSH_BACKFILL_ROWS {
+                persist_backfill(
+                    &trade_repo,
+                    &tx_repo,
+                    &wallet_repo,
+                    "curve",
+                    &curve_txs,
+                    &curve_trades,
+                    &mut curve_wallets,
+                )
+                .await?;
+                curve_txs.clear();
+                curve_trades.clear();
+                curve_wallets.clear();
+            }
+            match next {
+                Some(t) => cursor = Some(t),
+                None => break,
+            }
+        }
+        (
+            Vec::new(),
+            newest_sig.or_else(|| prev_curve_sig.clone()),
+            newest_slot.or(prev_curve_slot),
+        )
     } else if let Some((txs, sig, slot)) = try_replay(
         &ctx,
         &bonding_curve,
@@ -387,91 +477,40 @@ pub async fn run_token_sync(
         (fetched, newest, newest_slot)
     };
 
-    send_progress(
-        &progress_tx,
-        "processing",
-        0,
-        fetched.len() as u64,
-        "Decoding and saving transactions",
-    )
-    .await?;
-
-    let token_repo = TokenRepo::new(ctx.db.clone());
-    let trade_repo = TradeRepo::new(ctx.db.clone());
-    let tx_repo = TransactionRepo::new(ctx.db.clone());
-    let wallet_repo = WalletRepo::new(ctx.db.clone());
-
-    let mut migrate_slot: Option<u64> = None;
-    let mut token_record: Option<Token> = token_repo
-        .find_by_mint(&mint)
-        .await
-        .map_err(|e| SyncError::Internal(e.to_string()))?;
-
-    // Decode the batch into accumulators, then bulk-persist once via
-    // `persist_backfill`. Replaces the old per-row `let _ = insert(...)` loop that
-    // swallowed every write error while the watermark (stamped below) advanced
-    // regardless — silently and permanently skipping any row that failed to save.
-    // Token-creation upsert and the migrate-slot discovery stay inline because the
-    // loop's `skip_trades` gate depends on a migration seen earlier in slot order.
-    let mut curve_txs: Vec<Arc<RawTransaction>> = Vec::new();
-    let mut curve_trades: Vec<Trade> = Vec::new();
-    let mut curve_wallets: Vec<String> = Vec::new();
-
-    for (idx, entry) in fetched.iter().enumerate() {
-        if idx > 0 && idx % 25 == 0 {
-            send_progress(
-                &progress_tx,
-                "processing",
-                idx as u64,
-                fetched.len() as u64,
-                &format!("Processed {idx} / {}", fetched.len()),
-            )
-            .await?;
-        }
-
-        let slot = entry.slot;
-        let skip_trades = !req.include_post_migrate
-            && migrate_slot.is_some_and(|ms| slot > ms);
-
-        if let DecodeOutput::Transaction { raw_tx, mut events } =
-            decoder.decode_protobuf(&entry.update, entry.block_time)
-        {
-            sort_sync_events(&mut events);
-
-            curve_txs.push(persist_tx(&entry.update, &raw_tx));
-
-            for event in events {
-                match event {
-                    InternalEvent::TokenCreated(e) if e.token.mint_address == mint => {
-                        token_repo
-                            .upsert(&e.token)
-                            .await
-                            .map_err(|e| SyncError::Internal(e.to_string()))?;
-                        curve_wallets.push(e.token.creator_wallet.clone());
-                        token_record = Some(e.token);
-                    }
-                    InternalEvent::TradeExecuted(mut e) if e.trade.mint_address == mint => {
-                        if skip_trades {
-                            continue;
-                        }
-                        e.trade.received_at = Utc::now();
-                        curve_wallets.push(e.trade.wallet_address.clone());
-                        curve_trades.push(e.trade);
-                    }
-                    InternalEvent::TokenMigrated(e) if e.mint_address == mint => {
-                        migrate_slot = Some(e.slot);
-                        if let Err(err) = info_repo.update_migration_status(&mint, true).await {
-                            tracing::warn!(
-                                "token_sync: update_migration_status failed for {mint}: {err}"
-                            );
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
+    // Incremental batch: dedup-bounded, so decode it in one shot. (Empty for the
+    // full path, which already streamed + flushed per page above.)
+    if !fetched.is_empty() {
+        send_progress(
+            &progress_tx,
+            "processing",
+            0,
+            fetched.len() as u64,
+            "Decoding and saving transactions",
+        )
+        .await?;
+        decode_curve_batch(
+            &decoder,
+            &fetched,
+            &mint,
+            &req,
+            &token_repo,
+            &info_repo,
+            &mut migrate_slot,
+            &mut token_record,
+            &mut curve_txs,
+            &mut curve_trades,
+            &mut curve_wallets,
+            &progress_tx,
+            &mut processed,
+            fetched.len() as u64,
+        )
+        .await?;
     }
 
+    // Final flush: the full path's leftover (< FLUSH_BACKFILL_ROWS) remainder, or
+    // the whole incremental batch. `persist_backfill` propagates any write failure
+    // and the sync watermark is stamped only on overall success (below), so a
+    // mid-stream flush failure never advances the boundary past unsaved rows.
     persist_backfill(
         &trade_repo,
         &tx_repo,
@@ -559,15 +598,9 @@ pub async fn run_token_sync(
 
     token_metrics::recompute_token_state(&mut state);
 
+    // `metrics_from_state` folds in the cheap in-memory dead-token verdict.
     let metrics = metrics_from_state(&mint, &state);
-    let rugged = token_metrics::compute_is_rugged(
-        &trade_repo,
-        &metrics.mint,
-        &metrics.creator_wallet,
-        metrics.last_trade_at,
-    )
-    .await;
-    write_metrics(&info_repo, &metrics, rugged).await?;
+    write_metrics(&info_repo, &metrics).await?;
 
     // Stamp the sync watermark so the next "Fetch new" resumes from here, and
     // mirror it onto the cached state for immediate display.
@@ -850,74 +883,10 @@ async fn sync_amm_trades(
 
     send_progress(progress_tx, "fetching_signatures", 0, 0, "Fetching AMM pool signatures").await?;
 
-    // Full backfill via archival gTFA (cheaper + faster); incremental tries the
-    // LaserStream replay window first, then falls back to the signatures + dedup
-    // path. Mirrors the curve path in run_token_sync.
-    let (fetched, newest_amm_sig, newest_amm_slot) = if !incremental {
-        let (txs, newest) = acquire_full_via_gtfa(rpc, &pool, progress_tx).await?;
-        let newest_slot = txs.last().map(|t| t.slot as i64);
-        (txs, newest, newest_slot)
-    } else if let Some((txs, sig, slot)) =
-        try_replay(ctx, &pool, prev_amm_slot, last_synced_at, "amm", progress_tx).await
-    {
-        // LaserStream replay served the new AMM txs for zero Helius credits.
-        (txs, sig, slot.map(|s| s as i64))
-    } else {
-        let signatures = rpc
-            .get_all_signatures(&pool, until.as_deref(), |page, total| {
-                let line = serde_json::to_string(&SyncProgressEvent {
-                    event_type: "progress",
-                    stage: "fetching_signatures".into(),
-                    current: page as u64,
-                    total: 0,
-                    message: format!("Fetched {total} AMM signatures (page {page})"),
-                })
-                .unwrap_or_default()
-                    + "\n";
-                let _ = progress_tx.try_send(line);
-            })
-            .await
-            .map_err(|e| SyncError::Internal(e.to_string()))?;
-
-        let newest = signatures.last().map(|e| e.signature.clone());
-        let newest_slot = signatures.last().map(|e| e.slot as i64);
-
-        // Incremental-only dedup: skip AMM swaps already saved (e.g. by live
-        // ingest) so we don't re-fetch them from Helius.
-        let to_fetch = if incremental {
-            let candidates: Vec<String> =
-                signatures.iter().map(|e| e.signature.clone()).collect();
-            let saved = trade_repo
-                .saved_signatures(mint, "amm", &candidates)
-                .await
-                .map_err(|e| SyncError::Internal(e.to_string()))?;
-            signatures
-                .into_iter()
-                .filter(|e| !saved.contains(&e.signature))
-                .collect::<Vec<SignatureEntry>>()
-        } else {
-            signatures
-        };
-
-        let fetched = fetch_transactions(rpc, &to_fetch, progress_tx).await?;
-        (fetched, newest, newest_slot)
-    };
-
-    send_progress(
-        progress_tx,
-        "processing",
-        0,
-        fetched.len() as u64,
-        "Decoding AMM trades",
-    )
-    .await?;
-
-    // Decode the whole batch first, then persist in bulk. The old per-row
-    // `let _ = insert(...)` swallowed every write error yet the caller still
-    // advanced the AMM watermark — so a transient DB failure permanently lost
-    // those swaps. Here a bulk-insert failure is propagated, and the caller only
-    // stamps the AMM watermark on `Ok`, so the next incremental sync re-pulls
-    // whatever didn't persist.
+    // Decoded AMM rows persist via `persist_backfill`, which propagates any write
+    // failure; the caller stamps the AMM watermark only on `Ok`, so a failed write
+    // (or a mid-stream flush failure on the full path) can't advance the boundary
+    // past unsaved swaps — the next incremental sync re-pulls them.
     // `decode_amm_protobuf` resolves each PumpSwap swap's pool to `mint` via the
     // decoder's seeded {pool → mint} index, dropping swaps for any other pool. It
     // has no curve-priority gate (unlike `decode_protobuf`), so an aggregator tx
@@ -925,21 +894,96 @@ async fn sync_amm_trades(
     let mut amm_txs: Vec<Arc<RawTransaction>> = Vec::new();
     let mut amm_trades: Vec<Trade> = Vec::new();
     let mut amm_wallets: Vec<String> = Vec::new();
-    for entry in &fetched {
-        if let DecodeOutput::Transaction { raw_tx, events } =
-            decoder.decode_amm_protobuf(&entry.update, entry.block_time)
-        {
-            amm_txs.push(persist_tx(&entry.update, &raw_tx));
-            for event in events {
-                if let InternalEvent::TradeExecuted(mut e) = event {
-                    e.trade.received_at = Utc::now();
-                    amm_wallets.push(e.trade.wallet_address.clone());
-                    amm_trades.push(e.trade);
-                }
+
+    // Full backfill streams archival gTFA pages, decoding + flushing every
+    // `FLUSH_BACKFILL_ROWS` so the raw-tx frames don't accumulate over the whole
+    // pool history (the curve path's streaming, applied to the AMM venue).
+    let (newest_amm_sig, newest_amm_slot) = if !incremental {
+        send_progress(progress_tx, "processing", 0, 0, "Decoding AMM trades").await?;
+        let mut cursor: Option<String> = None;
+        let mut newest_sig: Option<String> = None;
+        let mut newest_slot: Option<i64> = None;
+        loop {
+            let (page, next) = gtfa_fetch_page(rpc, &pool, cursor.as_deref()).await?;
+            if let Some((sig, slot)) = page_watermark(&page) {
+                newest_sig = Some(sig);
+                newest_slot = Some(slot as i64);
+            }
+            decode_amm_batch(decoder, &page, &mut amm_txs, &mut amm_trades, &mut amm_wallets);
+            if amm_txs.len() + amm_trades.len() >= FLUSH_BACKFILL_ROWS {
+                persist_backfill(
+                    trade_repo, tx_repo, wallet_repo, "amm", &amm_txs, &amm_trades,
+                    &mut amm_wallets,
+                )
+                .await?;
+                amm_txs.clear();
+                amm_trades.clear();
+                amm_wallets.clear();
+            }
+            match next {
+                Some(t) => cursor = Some(t),
+                None => break,
             }
         }
-    }
+        (newest_sig, newest_slot)
+    } else {
+        // Incremental tries the LaserStream replay window first, then falls back to
+        // the signatures + dedup path. Both are dedup-bounded, so decode in one shot.
+        let (fetched, newest_amm_sig, newest_amm_slot) = if let Some((txs, sig, slot)) =
+            try_replay(ctx, &pool, prev_amm_slot, last_synced_at, "amm", progress_tx).await
+        {
+            // LaserStream replay served the new AMM txs for zero Helius credits.
+            (txs, sig, slot.map(|s| s as i64))
+        } else {
+            let signatures = rpc
+                .get_all_signatures(&pool, until.as_deref(), |page, total| {
+                    let line = serde_json::to_string(&SyncProgressEvent {
+                        event_type: "progress",
+                        stage: "fetching_signatures".into(),
+                        current: page as u64,
+                        total: 0,
+                        message: format!("Fetched {total} AMM signatures (page {page})"),
+                    })
+                    .unwrap_or_default()
+                        + "\n";
+                    let _ = progress_tx.try_send(line);
+                })
+                .await
+                .map_err(|e| SyncError::Internal(e.to_string()))?;
 
+            let newest = signatures.last().map(|e| e.signature.clone());
+            let newest_slot = signatures.last().map(|e| e.slot as i64);
+
+            // Skip AMM swaps already saved (e.g. by live ingest) so we don't
+            // re-fetch them from Helius.
+            let candidates: Vec<String> =
+                signatures.iter().map(|e| e.signature.clone()).collect();
+            let saved = trade_repo
+                .saved_signatures(mint, "amm", &candidates)
+                .await
+                .map_err(|e| SyncError::Internal(e.to_string()))?;
+            let to_fetch = signatures
+                .into_iter()
+                .filter(|e| !saved.contains(&e.signature))
+                .collect::<Vec<SignatureEntry>>();
+
+            let fetched = fetch_transactions(rpc, &to_fetch, progress_tx).await?;
+            (fetched, newest, newest_slot)
+        };
+
+        send_progress(
+            progress_tx,
+            "processing",
+            0,
+            fetched.len() as u64,
+            "Decoding AMM trades",
+        )
+        .await?;
+        decode_amm_batch(decoder, &fetched, &mut amm_txs, &mut amm_trades, &mut amm_wallets);
+        (newest_amm_sig, newest_amm_slot)
+    };
+
+    // Final flush: full path's remainder, or the whole incremental batch.
     persist_backfill(
         trade_repo,
         tx_repo,
@@ -1041,78 +1085,157 @@ fn persist_tx(update: &SubscribeUpdateTransaction, raw_tx: &RawTransaction) -> A
     ))
 }
 
-/// Acquire an address's full transaction history via the archival
-/// `getTransactionsForAddress` (gTFA), cursor-paginated. Each returned item is
-/// already shaped like a `getTransaction` result, so we wrap it into the decoder
-/// shape directly — no second round-trip per signature. Returns the txs
-/// (slot-ascending) plus the newest signature seen (for the sync watermark).
+/// Fetch ONE archival `getTransactionsForAddress` (gTFA) page for `address`,
+/// cursor-paginated. Each item is already shaped like a `getTransaction` result,
+/// so we lower it to the decoder frame directly — no second round-trip per
+/// signature. Returns the page (slot-ascending) plus the next cursor (`None` ⇒
+/// end of history).
 ///
-/// Used for full ("Fetch All") backfills only: ~0.1 credit/tx at a 1000-tx page
-/// vs 1 credit/tx for per-sig `getTransaction`. Like the rpc "Fetch All" path it
-/// returns every tx, so decoder fixes still propagate via the trades upsert.
-async fn acquire_full_via_gtfa(
+/// The full ("Fetch All") backfill streams these pages, decoding + flushing each
+/// so the whole history never materializes at once. ~0.1 credit/tx at a 1000-tx
+/// page vs 1 credit/tx for per-sig `getTransaction`. Like the rpc "Fetch All"
+/// path it returns every tx, so decoder fixes propagate via the trades upsert.
+async fn gtfa_fetch_page(
     rpc: &HeliusRpc,
     address: &str,
-    progress_tx: &mpsc::Sender<String>,
+    cursor: Option<&str>,
 ) -> Result<(Vec<FetchedTx>, Option<String>), SyncError> {
-    let mut out: Vec<FetchedTx> = Vec::new();
-    let mut newest_sig: Option<String> = None;
-    let mut newest_slot: u64 = 0;
-    let mut token: Option<String> = None;
-    let mut page = 0usize;
+    // Oldest-first so pages are slot-ascending across the whole history (the
+    // migrate-slot gate relies on it). `base64` so each item lowers to protobuf
+    // via `rpc_to_protobuf` (see `fetched_from_rpc`).
+    let (data, next) = rpc
+        .get_transactions_for_address_full_page_enc(address, "asc", GTFA_PAGE_LIMIT, cursor, "base64")
+        .await
+        .map_err(|e| SyncError::Internal(e.to_string()))?;
 
-    loop {
-        page += 1;
-        // Oldest-first so the accumulated order is roughly chronological (still
-        // sorted by slot at the end as a guarantee). `base64` encoding so each
-        // item lowers to protobuf via `rpc_to_protobuf` (see `fetched_from_rpc`).
-        let (data, next) = rpc
-            .get_transactions_for_address_full_page_enc(
-                address,
-                "asc",
-                GTFA_PAGE_LIMIT,
-                token.as_deref(),
-                "base64",
-            )
-            .await
-            .map_err(|e| SyncError::Internal(e.to_string()))?;
-
-        for item in &data {
-            let slot = item.get("slot").and_then(|v| v.as_u64()).unwrap_or(0);
-            // base64 items expose no `transaction.signatures`; pass "" and let the
-            // adapter recover the signature from the bincode tx, then read it back
-            // off the lowered frame for the watermark.
-            let Some(ft) = fetched_from_rpc(slot, &wrap_transaction_result("", item)) else {
-                continue;
-            };
-            if slot >= newest_slot {
-                if let Some(sig) = update_signature(&ft.update) {
-                    newest_slot = slot;
-                    newest_sig = Some(sig);
-                }
-            }
-            out.push(ft);
-        }
-
-        let line = serde_json::to_string(&SyncProgressEvent {
-            event_type: "progress",
-            stage: "fetching_transactions".into(),
-            current: out.len() as u64,
-            total: out.len() as u64,
-            message: format!("Downloaded {} transactions (page {page})", out.len()),
-        })
-        .unwrap_or_default()
-            + "\n";
-        let _ = progress_tx.try_send(line);
-
-        match next {
-            Some(t) => token = Some(t),
-            None => break,
+    let mut page: Vec<FetchedTx> = Vec::with_capacity(data.len());
+    for item in &data {
+        let slot = item.get("slot").and_then(|v| v.as_u64()).unwrap_or(0);
+        // base64 items expose no `transaction.signatures`; pass "" and let the
+        // adapter recover the signature from the bincode tx.
+        if let Some(ft) = fetched_from_rpc(slot, &wrap_transaction_result("", item)) {
+            page.push(ft);
         }
     }
+    // Guarantee in-page slot order (the gate + cross-page watermark assume it).
+    page.sort_by_key(|t| t.slot);
+    Ok((page, next))
+}
 
-    out.sort_by_key(|t| t.slot);
-    Ok((out, newest_sig))
+/// Newest `(signature, slot)` in a slot-ascending page — the highest-slot frame
+/// that carries a signature. Used to advance the sync watermark per page during a
+/// streamed backfill (a later non-empty page always has ≥ slots, so overwriting
+/// is correct; an empty/sig-less page leaves the prior watermark untouched).
+fn page_watermark(page: &[FetchedTx]) -> Option<(String, u64)> {
+    page.iter()
+        .rev()
+        .find_map(|ft| update_signature(&ft.update).map(|sig| (sig, ft.slot)))
+}
+
+/// Decode + accumulate one curve batch (a gTFA page or the incremental batch)
+/// into the shared backfill buffers. Mutating in place lets the full path flush
+/// the buffers between pages while keeping the migrate-slot gate (which needs a
+/// migration seen earlier in slot order) and the token-creation upsert inline.
+/// `processed`/`total_hint` drive the "Processed N" progress (`total_hint` is 0
+/// for the streamed full path, where the total is unknown until the last page).
+#[allow(clippy::too_many_arguments)]
+async fn decode_curve_batch(
+    decoder: &HeliusDecoder,
+    batch: &[FetchedTx],
+    mint: &str,
+    req: &TokenSyncRequest,
+    token_repo: &TokenRepo,
+    info_repo: &TokenInfoRepo,
+    migrate_slot: &mut Option<u64>,
+    token_record: &mut Option<Token>,
+    txs: &mut Vec<Arc<RawTransaction>>,
+    trades: &mut Vec<Trade>,
+    wallets: &mut Vec<String>,
+    progress_tx: &mpsc::Sender<String>,
+    processed: &mut usize,
+    total_hint: u64,
+) -> Result<(), SyncError> {
+    for entry in batch {
+        *processed += 1;
+        if processed.is_multiple_of(25) {
+            send_progress(
+                progress_tx,
+                "processing",
+                *processed as u64,
+                total_hint,
+                &format!("Processed {processed}"),
+            )
+            .await?;
+        }
+
+        let slot = entry.slot;
+        let skip_trades = !req.include_post_migrate && migrate_slot.is_some_and(|ms| slot > ms);
+
+        if let DecodeOutput::Transaction { raw_tx, mut events } =
+            decoder.decode_protobuf(&entry.update, entry.block_time)
+        {
+            sort_sync_events(&mut events);
+
+            txs.push(persist_tx(&entry.update, &raw_tx));
+
+            for event in events {
+                match event {
+                    InternalEvent::TokenCreated(e) if e.token.mint_address == mint => {
+                        token_repo
+                            .upsert(&e.token)
+                            .await
+                            .map_err(|e| SyncError::Internal(e.to_string()))?;
+                        wallets.push(e.token.creator_wallet.clone());
+                        *token_record = Some(e.token);
+                    }
+                    InternalEvent::TradeExecuted(mut e) if e.trade.mint_address == mint => {
+                        if skip_trades {
+                            continue;
+                        }
+                        e.trade.received_at = Utc::now();
+                        wallets.push(e.trade.wallet_address.clone());
+                        trades.push(e.trade);
+                    }
+                    InternalEvent::TokenMigrated(e) if e.mint_address == mint => {
+                        *migrate_slot = Some(e.slot);
+                        if let Err(err) = info_repo.update_migration_status(mint, true).await {
+                            tracing::warn!(
+                                "token_sync: update_migration_status failed for {mint}: {err}"
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Decode + accumulate one AMM batch (a gTFA page or the incremental batch) into
+/// the shared backfill buffers. No migrate gate / token upsert (unlike the curve
+/// path), so it's synchronous.
+fn decode_amm_batch(
+    decoder: &HeliusDecoder,
+    batch: &[FetchedTx],
+    txs: &mut Vec<Arc<RawTransaction>>,
+    trades: &mut Vec<Trade>,
+    wallets: &mut Vec<String>,
+) {
+    for entry in batch {
+        if let DecodeOutput::Transaction { raw_tx, events } =
+            decoder.decode_amm_protobuf(&entry.update, entry.block_time)
+        {
+            txs.push(persist_tx(&entry.update, &raw_tx));
+            for event in events {
+                if let InternalEvent::TradeExecuted(mut e) = event {
+                    e.trade.received_at = Utc::now();
+                    wallets.push(e.trade.wallet_address.clone());
+                    trades.push(e.trade);
+                }
+            }
+        }
+    }
 }
 
 async fn fetch_transactions(
@@ -1226,7 +1349,6 @@ fn sort_sync_events(events: &mut [InternalEvent]) {
 async fn write_metrics(
     info_repo: &TokenInfoRepo,
     m: &crate::ingest_laserstream::db_writer::TokenMetricsWrite,
-    is_rugged: bool,
 ) -> Result<(), SyncError> {
     info_repo
         .upsert_metrics(
@@ -1239,7 +1361,7 @@ async fn write_metrics(
             m.trade_count,
             m.last_trade_at,
             m.current_price,
-            is_rugged,
+            m.is_dead,
             m.is_migrated,
         )
         .await

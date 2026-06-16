@@ -78,6 +78,11 @@ pub const DEFAULT_SLIPPAGE_BPS: u64 = 500;
 /// Hard ceiling applied to any client-supplied slippage, to guard against a
 /// fat-finger or hostile value. 5000 bps = 50%.
 pub const SLIPPAGE_MAX_BPS: u64 = 5_000;
+/// Hard floor applied to any client-supplied slippage. A `0` (or near-zero)
+/// tolerance means the trade reverts on any price movement at all — on a
+/// volatile meme coin that is a guaranteed revert + wasted base/priority fee,
+/// so an explicit sub-floor value is raised to this minimum. 10 bps = 0.1%.
+pub const SLIPPAGE_MIN_BPS: u64 = 10;
 
 /// Per-trade SOL ceiling enforced on the manual buy API (`POST /api/solana/wallet/buy`).
 /// The request body carries `sol_amount` as a raw `f64` that becomes a real spend,
@@ -169,46 +174,42 @@ pub fn total_supply_for(is_mayhem_mode: bool) -> f64 {
     }
 }
 
-/// How long a token can go without a price change before being considered rugged.
-pub const RUGGED_STALE_SECONDS: i64 = 3600; // 1 hour
+/// Early-buyer cohort window. Wallets that bought within this many slots of a
+/// token's first trade are treated as the launch sniper / bundler cluster (Solana
+/// slots are ≈400 ms, so ~150 ≈ the first minute). One window defines the cluster
+/// across the tpsl2 entry gates and the cohort-dump exit — see `cohort.rs`.
+pub const EARLY_COHORT_SLOT_WINDOW: i64 = 150;
 
-/// Minimum spacing between per-mint rugged recomputes on the ingest hot path. The
-/// rugged verdict only changes on the `RUGGED_STALE_SECONDS` (1h) staleness scale,
-/// so re-running its (up to 3) whole-history aggregate scans on every trade for a
-/// stale-but-still-trading mint is pure waste — the ingest flow flags the
-/// recompute at most once per this interval per mint instead.
-pub const RUGGED_RECHECK_INTERVAL_SECONDS: i64 = 300; // 5 minutes
+// ── Dead-token detection ─────────────────────────────────────────────────────
+// A token is "dead" — nobody cares, momentum gone — when ALL of the signals below
+// hold at once. AND-ed (not OR-ed) on purpose: each alone has false positives on a
+// brand-new launch, so it's the combination that means dead. All are read from the
+// in-memory `TokenState` (latest reserves, current price, trailing volume) — no DB
+// scans — so the verdict is cheap to recompute on the ingest hot path. Distinct
+// from a *rug*: a dead token simply fizzled, nobody pulled liquidity.
 
-// ── Rug detection signals ───────────────────────────────────────────────────
-// All signals below are gated behind `RUGGED_STALE_SECONDS`: an actively trading
-// token is never flagged. They are evaluated in order and any one is sufficient.
+/// Don't evaluate deadness until a token is at least this old. A fresh launch can
+/// momentarily satisfy every signal (no liquidity yet, price still ≈ init, no
+/// volume) before it has had a chance to trade — this gate stops that misfire.
+pub const DEAD_MIN_AGE_SECONDS: i64 = 300; // 5 minutes
 
-/// Signal 1 — liquidity collapse. A stale token is rugged when its most recent
-/// `real_sol_reserves` has fallen to this fraction of its all-time peak. Real
-/// SOL reserves cannot be inflated by wash trading across many wallets (a buy
-/// adds SOL, the matching wash-sell removes it, net ≈ 0), so this is the single
-/// most spoof-proof signal and covers both curve and post-migration AMM rugs.
-pub const RUGGED_RESERVE_DRAWDOWN_RATIO: f64 = 0.10;
+/// Signal 1 — liquidity is gone. The latest `real_sol_reserves` is below this many
+/// SOL. Real SOL reserves can't be inflated by wash trading (a buy adds SOL, the
+/// matching wash-sell removes it, net ≈ 0), so this is the spoof-proof anchor.
+pub const DEAD_MAX_LIQUIDITY_SOL: f64 = 1.0;
 
-/// Minimum peak `real_sol_reserves` (SOL) a token must have reached before the
-/// liquidity-collapse signal applies. Tokens that never attracted real SOL are
-/// "dead", not "rugged", and are left to the other signals.
-pub const RUGGED_MIN_PEAK_SOL: f64 = 2.0;
+/// Signal 2 — price round-tripped to launch. Current price is at or below the
+/// token's initial price scaled by `(1 + this)`, i.e. all the launch momentum is
+/// gone. A token that never moved off its init price never found demand.
+pub const DEAD_PRICE_PROXIMITY_RATIO: f64 = 0.10;
 
-/// Signal 2 — early-buyer cohort exit. Wallets that bought within this many slots
-/// of a token's first trade are treated as the launch sniper / bundler cohort
-/// (Solana slots are ≈400 ms, so ~150 ≈ the first minute).
-pub const RUGGED_EARLY_SLOT_WINDOW: i64 = 150;
+/// Signal 3 — only dust trades (or none) in the trailing `DEAD_DUST_WINDOW_SECONDS`.
+/// Catches a token that is technically "active" — staleness/eviction wouldn't fire —
+/// but whose remaining flow is negligible. Total traded SOL in the window ≤ this.
+pub const DEAD_DUST_VOLUME_SOL: f64 = 0.05;
 
-/// The early-buyer cohort signal only fires when that cohort controlled the
-/// launch, i.e. its share of total buy volume is at least this fraction. Stops a
-/// handful of tiny early buyers exiting from flagging an otherwise healthy token.
-pub const RUGGED_COHORT_MIN_SHARE: f64 = 0.30;
-
-/// The early-buyer cohort counts as having exited when its net holdings fall to
-/// this fraction of everything it ever bought. Generalises the single-creator
-/// dump check to the whole insider cluster, defeating multi-wallet spoofing.
-pub const RUGGED_COHORT_EXIT_RATIO: f64 = 0.05;
+/// Trailing window over which Signal 3's dust volume is summed.
+pub const DEAD_DUST_WINDOW_SECONDS: i64 = 600; // 10 minutes
 
 /// A silence longer than this between consecutive trades marks the token going
 /// quiet. Trailing trades after such a gap are stripped when computing a token's

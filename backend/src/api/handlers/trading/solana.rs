@@ -3,7 +3,9 @@ use std::sync::Arc;
 use actix_web::{web, HttpResponse, Responder};
 use serde::Deserialize;
 
-use crate::config::constants::{DEFAULT_SLIPPAGE_BPS, MAX_MANUAL_BUY_SOL, SLIPPAGE_MAX_BPS};
+use crate::config::constants::{
+    DEFAULT_SLIPPAGE_BPS, MAX_MANUAL_BUY_SOL, SLIPPAGE_MAX_BPS, SLIPPAGE_MIN_BPS,
+};
 use crate::models::wallet::validate_solana_address;
 use crate::services::clients::jupiter;
 use crate::services::wallet_tokens;
@@ -41,12 +43,14 @@ pub struct SellRequest {
 }
 
 /// Resolve the effective slippage (bps) for a trade: per-request override →
-/// persisted global default → built-in constant, clamped to the hard ceiling.
+/// persisted global default → built-in constant, clamped to the hard
+/// `[SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS]` range (a `0` floor would guarantee a
+/// revert).
 fn resolve_slippage(app_state: &AppState, request: Option<u64>) -> u64 {
     request
         .or_else(|| app_state.settings().slippage_bps)
         .unwrap_or(DEFAULT_SLIPPAGE_BPS)
-        .min(SLIPPAGE_MAX_BPS)
+        .clamp(SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS)
 }
 
 /// Max passes the "Sell All" clear loop makes before giving up: each pass reads
@@ -218,6 +222,10 @@ pub async fn manual_sell(
                     true,
                 )
                 .await
+                // `amm_sell` now returns the submitted signature for the feed path;
+                // this manual handler only needs "did it submit", so collapse to bool
+                // to match the `sell_token` branch.
+                .map(|sig| sig.is_some())
         } else {
             app_state
                 .trader

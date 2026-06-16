@@ -1,8 +1,8 @@
 //! Shared launch-cohort primitive for the tpsl_sniper_2 scalp gates.
 //!
 //! The **cohort** is the launch sniper / bundler cluster: every wallet that
-//! bought within `RUGGED_EARLY_SLOT_WINDOW` slots of a token's first trade.
-//! Reusing the rug-detection window keeps **one cluster definition** across rug
+//! bought within `EARLY_COHORT_SLOT_WINDOW` slots of a token's first trade.
+//! Reusing the one window keeps **one cluster definition** across rug
 //! detection, the entry gates (cohort-held / organic demand / organic liquidity)
 //! and the E5 cohort-dump exit — so they can never drift apart.
 //!
@@ -15,7 +15,7 @@ use crate::models::trade::TradeRow;
 
 /// Wallets that bought within `slot_window` slots of the token's first trade —
 /// the launch cohort. Empty when `trades` is empty. `slot_window` mirrors
-/// [`crate::config::constants::RUGGED_EARLY_SLOT_WINDOW`].
+/// [`crate::config::constants::EARLY_COHORT_SLOT_WINDOW`].
 ///
 /// Generic over [`TradeRow`] so the live path (`T = Trade`, `Wallet = String`)
 /// and the sweep (`Wallet = u32`) share one cohort definition; the returned set

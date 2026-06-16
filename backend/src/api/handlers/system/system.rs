@@ -3,7 +3,7 @@ use std::sync::Arc;
 use actix_web::{web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use crate::config::constants::SLIPPAGE_MAX_BPS;
+use crate::config::constants::{SLIPPAGE_MAX_BPS, SLIPPAGE_MIN_BPS};
 use crate::state::app_state::AppState;
 use crate::storage::repositories::settings_repo::keys;
 
@@ -50,9 +50,7 @@ pub async fn set_live_mode(
             error: format!("Failed to persist live mode: {e}"),
         });
     }
-    let mut next = state.settings();
-    next.live = req.live;
-    state.set_settings(next);
+    state.modify_settings(|s| s.live = req.live);
 
     state.set_live(req.live);
     HttpResponse::Ok().json(LiveModeResponse {
@@ -73,7 +71,7 @@ pub struct UpdateSettingsRequest {
     pub timezone: Option<String>,
     pub price_unit: Option<String>,
     /// Default trade slippage in basis points (100 = 1%); clamped to
-    /// [`SLIPPAGE_MAX_BPS`]. Present = set the global default.
+    /// `[SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS]`. Present = set the global default.
     pub slippage_bps: Option<u64>,
     /// Persist raw transaction blobs. Present = flip the ingest raw-persist toggle.
     pub persist_raw: Option<bool>,
@@ -104,35 +102,28 @@ pub async fn update_settings(
         }
     }
 
-    // Build the set of per-key upserts for the fields the request actually sent,
-    // and mirror them onto an in-memory snapshot. Each setting is its own row, so
-    // this only touches the mentioned keys — concurrent updates of different
-    // fields (e.g. the settings page and the header) can't clobber each other.
+    // Clamp before both the DB row and the in-memory view see the value.
+    let slippage_clamped = slippage_bps.map(|v| v.clamp(SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS));
+
+    // Build the per-key upserts for the fields the request actually sent. Each
+    // setting is its own row, so this only touches the mentioned keys.
     let mut entries: Vec<(&str, Value)> = Vec::new();
-    let mut next = state.settings();
     if let Some(v) = track_mayhem {
-        next.track_mayhem = v;
         entries.push((keys::TRACK_MAYHEM.key, json!(v)));
     }
     if let Some(v) = track_post_migration {
-        next.track_post_migration = v;
         entries.push((keys::TRACK_POST_MIGRATION.key, json!(v)));
     }
-    if let Some(v) = timezone {
+    if let Some(v) = &timezone {
         entries.push((keys::TIMEZONE.key, json!(v)));
-        next.timezone = Some(v);
     }
-    if let Some(v) = price_unit {
+    if let Some(v) = &price_unit {
         entries.push((keys::PRICE_UNIT.key, json!(v)));
-        next.price_unit = Some(v);
     }
-    if let Some(v) = slippage_bps {
-        let clamped = v.min(SLIPPAGE_MAX_BPS);
-        next.slippage_bps = Some(clamped);
-        entries.push((keys::SLIPPAGE_BPS.key, json!(clamped)));
+    if let Some(v) = slippage_clamped {
+        entries.push((keys::SLIPPAGE_BPS.key, json!(v)));
     }
     if let Some(v) = persist_raw {
-        next.persist_raw = v;
         entries.push((keys::PERSIST_RAW.key, json!(v)));
     }
 
@@ -146,7 +137,33 @@ pub async fn update_settings(
         });
     }
 
-    state.set_settings(next.clone());
+    // Apply only the mentioned fields, atomically under the watch lock, so a
+    // concurrent update of *different* fields (the settings page and the header)
+    // can't clobber each other on the in-memory view as a whole-struct overwrite
+    // would. Snapshot the result inside the closure for the response.
+    let mut updated = None;
+    state.modify_settings(|s| {
+        if let Some(v) = track_mayhem {
+            s.track_mayhem = v;
+        }
+        if let Some(v) = track_post_migration {
+            s.track_post_migration = v;
+        }
+        if let Some(v) = timezone {
+            s.timezone = Some(v);
+        }
+        if let Some(v) = price_unit {
+            s.price_unit = Some(v);
+        }
+        if let Some(v) = slippage_clamped {
+            s.slippage_bps = Some(v);
+        }
+        if let Some(v) = persist_raw {
+            s.persist_raw = v;
+        }
+        updated = Some(s.clone());
+    });
 
-    HttpResponse::Ok().json(next)
+    // `send_modify` runs the closure synchronously, so `updated` is always set.
+    HttpResponse::Ok().json(updated.expect("modify_settings closure runs synchronously"))
 }

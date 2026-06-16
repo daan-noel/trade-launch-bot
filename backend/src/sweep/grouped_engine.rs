@@ -58,16 +58,17 @@ pub fn run_grouped_sweep<S: Strategy>(
     observer: &dyn SweepObserver,
 ) -> Result<Vec<GroupResult>> {
     let floor = min_tokens.max(1);
-    let mut surviving: Vec<(GroupKey, Vec<usize>)> = partition(corpus, fields)
+    // Decorate with the tie-break key once (JSON-serializing inside the comparator
+    // re-ran it O(n log n) times); sort, then drop the decoration.
+    let mut surviving: Vec<(String, GroupKey, Vec<usize>)> = partition(corpus, fields)
         .into_iter()
         .filter(|(_, idx)| idx.len() >= floor)
+        .map(|(key, idx)| (key.to_json().to_string(), key, idx))
         .collect();
     // Deterministic group order: most-populated first, ties broken by key JSON.
-    surviving.sort_by(|a, b| {
-        b.1.len()
-            .cmp(&a.1.len())
-            .then_with(|| a.0.to_json().to_string().cmp(&b.0.to_json().to_string()))
-    });
+    surviving.sort_by(|a, b| b.2.len().cmp(&a.2.len()).then_with(|| a.0.cmp(&b.0)));
+    let surviving: Vec<(GroupKey, Vec<usize>)> =
+        surviving.into_iter().map(|(_, key, idx)| (key, idx)).collect();
 
     // Total work unit = tokens across all surviving groups; lets the bar show a
     // real percentage that climbs smoothly through every group's per-token fold.

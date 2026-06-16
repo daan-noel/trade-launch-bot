@@ -25,7 +25,7 @@ The scalp model is **built and live in `tpsl_sniper_2`** (it is **tpsl2-only**;
   each inert at `None/0`. The backtest **requires** ≥1 scalp gate be set for a
   tpsl2 rule.
 - **Cohort** — DONE: `tpsl_sniper_2/cohort.rs` (cohort window
-  `RUGGED_EARLY_SLOT_WINDOW = 150`, `held_ratio`, outside-net-SOL).
+  `EARLY_COHORT_SLOT_WINDOW = 150`, `held_ratio`, outside-net-SOL).
 - **Exit ladder** — DONE: all 7 in `tpsl_sniper_2/exit/mod.rs` in priority order
   Cohort(E5) → Liquidity(E4) → StopLoss → TakeProfit → Trailing(E1) → Stall(E3) →
   TimeStop(E2). **E4 reads REAL reserves** in tpsl2 (the "virtual→real switch" is
@@ -108,7 +108,7 @@ cohort_held_ratio = Σ_C max(net_tokens,0) / Σ_C bought_tokens   (1 = holding, 
 liquidity         = REAL sol reserves   (NEVER virtual — wash can't fake real)
 ```
 
-Reuses the rug-detection cohort window (`RUGGED_EARLY_SLOT_WINDOW = 150`) so there's one cluster definition.
+Reuses the rug-detection cohort window (`EARLY_COHORT_SLOT_WINDOW = 150`) so there's one cluster definition.
 
 ---
 
@@ -149,7 +149,7 @@ Reuses the rug-detection cohort window (`RUGGED_EARLY_SLOT_WINDOW = 150`) so the
 
 - **Old N1–N10 launch-sniper list** — superseded; we gate by **shape + flow**, not block-0 fingerprints.
 - **"New-high" entry gate** — too rigid / fakeable on multi-swing charts; replaced by higher-low.
-- **N1 exclude-rugged** — paper must equal real; can't see `is_rugged` live and we trade rug-prone tokens anyway.
+- **N1 exclude-rugged/dead** — paper must equal real; the `is_dead` verdict is a *post-mortem* (liquidity already gone) and we trade rug-prone tokens anyway, so it's no entry gate.
 - **N7 migration-bait reject** — bait with a real continuation IS the trade; filter by *shape*, not labels.
 - **Distinct-buyer-count / raw volume** — bundlers fake both (40-wallet splits, 24/7 wash); use organic outside-buying + real reserves instead.
 

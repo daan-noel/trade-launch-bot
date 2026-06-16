@@ -1,5 +1,5 @@
 import { CHART_COLORS } from './constants';
-import { formatAge } from 'utils/format';
+import { formatAgePrecise } from 'utils/format';
 import { BarFlowFields } from './BarFlowFields';
 import type { ChartBarTooltipState } from './types';
 
@@ -31,7 +31,7 @@ export function BarCrosshairTooltip({
       >
         {formatTime(barTime)}
         {ageSec != null && (
-          <span style={{ color: CHART_COLORS.panelText }}> · +{formatAge(ageSec)}</span>
+          <span style={{ color: CHART_COLORS.panelText }}> · +{formatAgePrecise(ageSec)}</span>
         )}
       </div>
       <BarFlowFields crosshair={tooltip} formatVol={formatVol} layout="grid" />

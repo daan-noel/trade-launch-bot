@@ -97,3 +97,10 @@ on the two venues.** On the curve it disables protection (min_out = 1) for
 snipe latency; on the AMM it falls back to a 5% default. So a caller that wants
 "no slippage limit" on the curve gets a hard 5% floor if the same token has
 migrated to the AMM.
+
+Note the **API layer floors the value before it reaches the trader**: the
+manual buy/sell endpoints (`resolve_slippage` in `api/handlers/trading/solana.rs`)
+and the settings write both `clamp(SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS)` (10 bps
+.. 5000 bps), so an explicit `Some(0)` — which would compute a `min_out` ≈
+`expected` and revert on any movement at all — can't be supplied through the
+HTTP API. `None` (no protection) is still distinct from `Some(0)` and unaffected.

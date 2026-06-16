@@ -27,7 +27,7 @@ Subsystem deep-dives: [ingest.md](ingest.md) · [strategies.md](strategies.md) �
 | `config/` | `settings.rs` (env load) + `constants.rs` (pump.fun/Raydium program IDs, curve params) |
 | `ingest_laserstream/` | Yellowstone gRPC live transport → pipeline → db_writer. See [ingest.md](ingest.md) |
 | `models/` | Domain types (Token, Trade, Position, PaperRun, SseEvent, Tpsl{1,2}Rule, Wallet*) |
-| `services/` | `sol_price.rs` (60s poller; **CoinGecko primary with bounded retry + `Retry-After`/exponential backoff, falls back to Jupiter** so one source being down/rate-limited doesn't stall the SOL/USD feed), `token_sync.rs` (RPC backfill), `helius_rpc.rs`, `laserstream_replay.rs`, `wallet_tokens.rs`, `clients/` (`coingecko.rs`, `jupiter.rs` — both now `error_for_status` + backoff), `http.rs` |
+| `services/` | `sol_price.rs` (60s poller; **CoinGecko primary with bounded retry + `Retry-After`/exponential backoff, falls back to Jupiter** so one source being down/rate-limited doesn't stall the SOL/USD feed), `token_sync.rs` (RPC backfill; full "Fetch All" backfills **stream gTFA pages, decoding + flushing every `FLUSH_BACKFILL_ROWS`** so a high-volume mint's whole history of heavy raw-tx frames never materializes at once), `helius_rpc.rs`, `laserstream_replay.rs` (replay capped at `MAX_REPLAY_TXS` alongside the time cap), `wallet_tokens.rs`, `clients/` (`coingecko.rs`, `jupiter.rs` — both now `error_for_status` + backoff), `http.rs` |
 | `state/` | In-memory shared state (below) |
 | `storage/` | Postgres + repositories. See [database.md](database.md) |
 | `strategies/` | StrategyRunner + tpsl_sniper_{1,2}. See [strategies.md](strategies.md) |

@@ -1,12 +1,23 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use tokio::time::sleep;
+use tracing::warn;
 
 use crate::services::http;
 
 /// Wrapped-SOL mint — used to read a SOL/USD price from Jupiter as a fallback
 /// when the primary (CoinGecko) source is down or rate-limited.
 pub const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
+
+/// Bounded retry on transient failures (network error, 5xx, 429): a single
+/// transient blip shouldn't drop a price refresh on the floor. Mirrors the
+/// CoinGecko client's backoff; 4xx (other than 429) is not retried.
+const MAX_ATTEMPTS: usize = 3;
+const INITIAL_BACKOFF: Duration = Duration::from_millis(300);
+const MAX_BACKOFF: Duration = Duration::from_secs(4);
 
 /// Raw per-mint entry from Jupiter price v3. Map keyed by mint address.
 #[derive(Debug, Default, Deserialize)]
@@ -34,15 +45,40 @@ pub async fn fetch_prices(mints: &[String]) -> anyhow::Result<HashMap<String, Ju
     }
     let ids = mints.join(",");
     let url = format!("https://api.jup.ag/price/v3?ids={ids}");
-    // `error_for_status` first so a 4xx/5xx (which can return an HTML body) fails
-    // with the status instead of a confusing JSON-parse error.
-    let data: HashMap<String, RawPriceEntry> = http::client()
-        .get(&url)
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+
+    let mut backoff = INITIAL_BACKOFF;
+    let mut last_err: Option<anyhow::Error> = None;
+    let mut fetched: Option<HashMap<String, RawPriceEntry>> = None;
+    for attempt in 0..MAX_ATTEMPTS {
+        match http::client().get(&url).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                // 429 / 5xx are transient: back off and retry.
+                if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+                    warn!("Jupiter {status} (attempt {attempt}); backing off {backoff:?}");
+                    last_err = Some(anyhow::anyhow!("Jupiter transient status {status}"));
+                    sleep(backoff).await;
+                    backoff = (backoff * 2).min(MAX_BACKOFF);
+                    continue;
+                }
+                // `error_for_status` so a non-2xx (which can return an HTML body)
+                // fails with the status, not a confusing JSON-parse error.
+                fetched = Some(resp.error_for_status()?.json().await?);
+                break;
+            }
+            Err(e) => {
+                // Network/timeout: back off and retry.
+                warn!("Jupiter request failed (attempt {attempt}): {e}");
+                last_err = Some(anyhow::anyhow!("Jupiter request: {e}"));
+                sleep(backoff).await;
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+            }
+        }
+    }
+    let data = match fetched {
+        Some(d) => d,
+        None => return Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Jupiter: exhausted retries"))),
+    };
 
     let result = data
         .into_iter()

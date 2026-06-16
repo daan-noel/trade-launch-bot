@@ -58,6 +58,7 @@ export interface TokenFilters {
   ix_label: string;
   // Flags
   migrated: TriState;
+  dead: TriState;
   mayhem: TriState;
   cashback: TriState;
 }
@@ -73,7 +74,7 @@ function mergeTokenFilters(partial?: Partial<TokenFilters>): TokenFilters {
   for (const key of Object.keys(base) as (keyof TokenFilters)[]) {
     const v = partial[key];
     if (v === undefined) continue;
-    if (key === 'migrated' || key === 'mayhem' || key === 'cashback') {
+    if (key === 'migrated' || key === 'dead' || key === 'mayhem' || key === 'cashback') {
       if (TRI_VALUES.has(v as TriState)) merged[key] = v as TriState;
     } else if (typeof v === 'string') {
       merged[key] = v;
@@ -148,6 +149,7 @@ export const defaultFilters = (): TokenFilters => ({
   ix_count_max: '',
   ix_label: '',
   migrated: '',
+  dead: '',
   mayhem: '',
   cashback: '',
 });
@@ -191,8 +193,9 @@ function dateInRange(iso: string | null | undefined, from: string, to: string): 
 }
 
 /**
- * Inactivity window after which a token is treated as dead, so its lifetime is "final".
- * Mirrors the backend's RUGGED_STALE_SECONDS = 3600 (constants.rs).
+ * Inactivity window after which a token's lifetime is treated as "final" for the
+ * short-lived (life_min/life_max) filter. Distinct from the `is_dead` flag, which
+ * is the backend's richer liquidity/price/volume verdict.
  */
 const LIFETIME_STALE_MS = 60 * 60 * 1000;
 
@@ -321,6 +324,7 @@ export function activeFilterCount(f: TokenFilters): number {
     f.ix_count_min || f.ix_count_max,
     f.ix_label.trim(),
     f.migrated,
+    f.dead,
     f.mayhem,
     f.cashback,
   ];
@@ -386,6 +390,7 @@ export function tokenPassesFilters(f: TokenFilters, t: TokenRecord): boolean {
 
   // Flags
   if (!triMatch(t.is_migrated, f.migrated)) return false;
+  if (!triMatch(t.is_dead, f.dead)) return false;
   if (!triMatch(t.is_mayhem_mode, f.mayhem)) return false;
   if (!triMatch(t.is_cashback_enabled, f.cashback)) return false;
 

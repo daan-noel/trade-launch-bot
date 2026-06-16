@@ -11,6 +11,7 @@
 use super::tx::OnChainRevert;
 use super::{PumpFunTrader, TokenPDAs};
 use crate::constants::{CONFIRM_MAX_RETRIES, CURVE_FEE_BUFFER_BPS, MAX_SELL_ATTEMPTS};
+use crate::types::TokenProgram;
 use anyhow::{Context, Result};
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
@@ -61,8 +62,9 @@ impl PumpFunTrader {
                 )
                 .await
             {
-                Ok(true) => return Ok(true),
-                Ok(false) => {
+                // `Some(sig)` == submitted; the manual path only needs the bool.
+                Ok(Some(_)) => return Ok(true),
+                Ok(None) => {
                     // Lost the Jito auction / the tx didn't land — it cost nothing,
                     // so don't sit on a fixed backoff while the token dumps. Loop
                     // straight into the next attempt, which escalates the tip and
@@ -114,6 +116,12 @@ impl PumpFunTrader {
     /// sender accepts the tx and leaves confirmation to the caller's own feed —
     /// the live TPSL loop already polls the LaserStream-fed `trades` balance, so
     /// the inner 1s RPC poll is pure redundant latency there.
+    ///
+    /// Returns the submitted transaction signature (`Some(sig)`) so a feed-confirm
+    /// caller can run an off-path `signature_state` classification after its own
+    /// poll window — a landed-and-reverted sell (min_out=1 ⇒ structural) never
+    /// clears and re-pays fees on every blind retry, so the caller needs the sig
+    /// to detect it. `None` is the (currently unreachable) not-submitted case.
     #[allow(clippy::too_many_arguments)]
     pub async fn sell_token_once(
         &self,
@@ -125,7 +133,7 @@ impl PumpFunTrader {
         slippage_bps: Option<u64>,
         tip_level: u8,
         confirm: bool,
-    ) -> Result<bool> {
+    ) -> Result<Option<String>> {
         self.sell_token_once_inner(
             token_mint,
             token_amount,
@@ -150,7 +158,7 @@ impl PumpFunTrader {
         slippage_bps: Option<u64>,
         tip_level: u8,
         confirm: bool,
-    ) -> Result<bool> {
+    ) -> Result<Option<String>> {
         // Ensure PDAs are cached (reads the bonding-curve PDA on a miss). Use the
         // String-free warm helper — this call only populates `token_pdas` and
         // discards the creator, so `get_creator_from_mint_pda`'s `.to_string()`
@@ -223,26 +231,27 @@ impl PumpFunTrader {
             .map(|r| *r)
             .context("Token PDAs not cached after ensure")?;
 
-        // Single `close_account` ix, routed by token program exactly like the
-        // terminal clearing sell does — owner == destination == wallet, returning
-        // the rent to the wallet; empty signer slice (the fee-payer signs).
+        // Single `close_account` ix, routed by token program through the shared
+        // `TokenProgram` classifier so this path uses the *same* legacy-vs-2022
+        // convention (`!= TOKEN_PROGRAM_ID ⇒ 2022`) as `from_id`/`from_pubkey`
+        // everywhere else — owner == destination == wallet, returning the rent to
+        // the wallet; empty signer slice (the fee-payer signs).
         let owner = self.config.keypair.pubkey();
-        let close_ix = if pdas.token_program == spl_token_2022::id() {
-            spl_token_2022::instruction::close_account(
+        let close_ix = match TokenProgram::from_pubkey(&pdas.token_program) {
+            TokenProgram::Token2022 => spl_token_2022::instruction::close_account(
                 &pdas.token_program,
                 &user_token_account,
                 &owner,
                 &owner,
                 &[],
-            )?
-        } else {
-            spl_token::instruction::close_account(
+            )?,
+            TokenProgram::Legacy => spl_token::instruction::close_account(
                 &pdas.token_program,
                 &user_token_account,
                 &owner,
                 &owner,
                 &[],
-            )?
+            )?,
         };
 
         // RECENT BLOCKHASH, no durable nonce — this runs off the exit hot path so
@@ -276,7 +285,7 @@ impl PumpFunTrader {
         slippage_bps: Option<u64>,
         tip_level: u8,
         confirm: bool,
-    ) -> Result<bool> {
+    ) -> Result<Option<String>> {
         let t0 = Instant::now();
         let keypair = &self.config.keypair;
 
@@ -364,7 +373,7 @@ impl PumpFunTrader {
         let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
         info!("🔁 Sell — token: {} nonce: {}", token_mint, nonce_pubkey);
 
-        let res: Result<bool> = async {
+        let res: Result<Option<String>> = async {
             let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, keypair)?;
             let sig = self.send_transaction(&tx).await?;
 
@@ -388,7 +397,9 @@ impl PumpFunTrader {
                     t0.elapsed().as_millis()
                 );
             }
-            Ok(true)
+            // Hand the signature back so a feed-confirm caller can classify a
+            // landed-revert off its own poll window (see `sell_token_once`).
+            Ok(Some(sig))
         }
         .await;
 

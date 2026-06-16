@@ -6,8 +6,9 @@ use dashmap::DashMap;
 use tracing::info;
 
 use crate::config::constants::{
-    total_supply_for, INITIAL_VIRTUAL_TOKEN_RESERVES, LIFETIME_GAP_SECONDS,
-    TOKEN_CACHE_EVICT_IDLE_SECONDS, TOKEN_CACHE_EVICT_INTERVAL_SECONDS,
+    total_supply_for, DEAD_DUST_VOLUME_SOL, DEAD_DUST_WINDOW_SECONDS, DEAD_MAX_LIQUIDITY_SOL,
+    DEAD_MIN_AGE_SECONDS, DEAD_PRICE_PROXIMITY_RATIO, INITIAL_VIRTUAL_TOKEN_RESERVES,
+    LIFETIME_GAP_SECONDS, TOKEN_CACHE_EVICT_IDLE_SECONDS, TOKEN_CACHE_EVICT_INTERVAL_SECONDS,
 };
 use crate::models::{token::Token, trade::Trade};
 
@@ -85,12 +86,6 @@ pub struct TokenState {
     /// Wall-clock time of the last successful manual sync, if any. Populated from
     /// `tokens_info.last_synced_at` on seed and refreshed after each sync.
     pub last_synced_at: Option<DateTime<Utc>>,
-    /// Wall-clock time the ingest flow last requested a rugged recompute for this
-    /// mint. Throttles the (expensive, up to 3 whole-history aggregate scans)
-    /// recompute to at most once per `RUGGED_RECHECK_INTERVAL_SECONDS` per mint —
-    /// the verdict only moves on the 1h staleness scale, so per-trade recompute is
-    /// waste. `None` until the first recompute is requested.
-    pub last_rugged_check_at: Option<DateTime<Utc>>,
 }
 
 impl TokenState {
@@ -123,8 +118,60 @@ impl TokenState {
             is_migrated: false,
             amm_pool_prewarmed: false,
             last_synced_at: None,
-            last_rugged_check_at: None,
         }
+    }
+
+    /// The token's launch price (initial buy SOL ÷ initial supply), if both are
+    /// known. This is the baseline the dead-token price signal compares against.
+    pub fn initial_price(&self) -> Option<f64> {
+        self.token
+            .initial_buy_sol
+            .zip(self.token.initial_supply_token)
+            .and_then(|(buy, supply)| (supply > 0).then(|| buy / supply as f64))
+    }
+
+    /// Whether this token looks **dead** at `now`: nobody cares anymore. True only
+    /// when ALL signals hold — liquidity gone, price round-tripped to launch, and
+    /// only dust trades in the trailing window — and the token is past
+    /// `DEAD_MIN_AGE_SECONDS` so a fresh launch isn't misflagged. Pure + read from
+    /// in-memory state (no DB), so it's cheap enough to recompute per flush. See
+    /// the `DEAD_*` constants for the rationale on AND-ing the signals.
+    pub fn is_dead(&self, now: DateTime<Utc>) -> bool {
+        // Age gate — a brand-new mint can transiently satisfy every signal.
+        if now.signed_duration_since(self.token.created_at).num_seconds() < DEAD_MIN_AGE_SECONDS {
+            return false;
+        }
+
+        // Signal 1 — liquidity gone. Latest real SOL reserves below the floor.
+        // No reserve snapshot yet → can't confirm death, treat as alive.
+        let latest_liquidity = self.trades.last().and_then(|t| t.real_sol_reserves);
+        let liquidity_gone = matches!(latest_liquidity, Some(sol) if sol < DEAD_MAX_LIQUIDITY_SOL);
+        if !liquidity_gone {
+            return false;
+        }
+
+        // Signal 2 — price round-tripped to (or below) launch price.
+        let price_at_launch = match (self.current_price, self.initial_price()) {
+            (Some(price), Some(init)) if init > 0.0 => {
+                price <= init * (1.0 + DEAD_PRICE_PROXIMITY_RATIO)
+            }
+            _ => false,
+        };
+        if !price_at_launch {
+            return false;
+        }
+
+        // Signal 3 — only dust (or nothing) traded in the trailing window. Trades
+        // are oldest-first, so walk from the back and stop once outside the window.
+        let cutoff = now - chrono::Duration::seconds(DEAD_DUST_WINDOW_SECONDS);
+        let recent_volume: f64 = self
+            .trades
+            .iter()
+            .rev()
+            .take_while(|t| t.block_time >= cutoff)
+            .map(|t| t.sol_amount)
+            .sum();
+        recent_volume <= DEAD_DUST_VOLUME_SOL
     }
 
     /// Append a trade and update aggregate metrics.
@@ -378,5 +425,92 @@ mod tests {
         let mut state = TokenState::new(token_created_at(now - ChronoDuration::days(30)));
         state.last_trade_at = Some(now - ChronoDuration::days(10));
         assert!(!token_is_evictable(&state, now, IDLE, true));
+    }
+
+    // ── is_dead ─────────────────────────────────────────────────────────────
+
+    use crate::models::trade::{Trade, TradeType};
+
+    /// Token with a known launch price (initial_buy_sol ÷ initial_supply_token).
+    fn token_with_launch(created_at: DateTime<Utc>, buy_sol: f64, supply: u64) -> Token {
+        Token::new(
+            "MINT-dead".into(),
+            "creator".into(),
+            "Dead Test".into(),
+            "DEAD".into(),
+            None,
+            None,
+            Some(supply),
+            Some(buy_sol),
+            None,
+            None,
+            None,
+            false,
+            false,
+            serde_json::Value::Array(vec![]),
+            "create-sig".into(),
+            created_at,
+        )
+    }
+
+    fn trade_at(at: DateTime<Utc>, sol: f64, tokens: f64, real_sol_reserves: f64) -> Trade {
+        let mut t = Trade::new(
+            "MINT-dead".into(),
+            "buyer".into(),
+            TradeType::Buy,
+            sol,
+            tokens,
+            "sig".into(),
+            1,
+            at,
+        );
+        t.real_sol_reserves = Some(real_sol_reserves);
+        t
+    }
+
+    #[test]
+    fn dead_when_all_signals_hold() {
+        // launch price = 1.0 / 1000 = 0.001; a dust trade at ≈that price, with
+        // liquidity drained below the floor, on a token old enough to evaluate.
+        let now = Utc::now();
+        let mut state = TokenState::new(token_with_launch(now - ChronoDuration::hours(2), 1.0, 1000));
+        state.add_trade(trade_at(now - ChronoDuration::seconds(30), 0.001, 1.0, 0.5));
+        assert!(state.is_dead(now));
+    }
+
+    #[test]
+    fn alive_when_liquidity_present() {
+        // Same dust + price, but reserves still healthy → not dead.
+        let now = Utc::now();
+        let mut state = TokenState::new(token_with_launch(now - ChronoDuration::hours(2), 1.0, 1000));
+        state.add_trade(trade_at(now - ChronoDuration::seconds(30), 0.001, 1.0, 5.0));
+        assert!(!state.is_dead(now));
+    }
+
+    #[test]
+    fn alive_when_price_well_above_launch() {
+        // Liquidity low + dust, but price is 5× launch (0.005 vs 0.001) → still alive.
+        let now = Utc::now();
+        let mut state = TokenState::new(token_with_launch(now - ChronoDuration::hours(2), 1.0, 1000));
+        state.add_trade(trade_at(now - ChronoDuration::seconds(30), 0.005, 1.0, 0.5));
+        assert!(!state.is_dead(now));
+    }
+
+    #[test]
+    fn alive_when_recent_volume_above_dust() {
+        // Liquidity low + price at launch, but a non-dust trade in the window.
+        let now = Utc::now();
+        let mut state = TokenState::new(token_with_launch(now - ChronoDuration::hours(2), 1.0, 1000));
+        state.add_trade(trade_at(now - ChronoDuration::seconds(30), 1.0, 1000.0, 0.5));
+        assert!(!state.is_dead(now));
+    }
+
+    #[test]
+    fn fresh_token_never_dead() {
+        // Every signal holds, but the token is younger than DEAD_MIN_AGE_SECONDS.
+        let now = Utc::now();
+        let mut state = TokenState::new(token_with_launch(now - ChronoDuration::seconds(30), 1.0, 1000));
+        state.add_trade(trade_at(now - ChronoDuration::seconds(10), 0.001, 1.0, 0.5));
+        assert!(!state.is_dead(now));
     }
 }

@@ -228,6 +228,15 @@ impl AppState {
         let _ = self.settings.send(settings);
     }
 
+    /// Atomically apply `f` to the in-memory settings snapshot. Uses the watch
+    /// channel's `send_modify` so the read-modify-write happens under the
+    /// channel lock — a concurrent settings POST (or one racing `set_live`)
+    /// can't clobber the other's fields, unlike the clone → mutate → overwrite
+    /// pattern which is last-writer-wins on the whole struct.
+    pub fn modify_settings(&self, f: impl FnOnce(&mut AppSettings)) {
+        self.settings.send_modify(f);
+    }
+
     pub fn set_sol_price(&self, price: Option<f64>) {
         let _ = self.sol_price.send(price);
     }

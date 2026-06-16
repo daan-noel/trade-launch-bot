@@ -145,7 +145,7 @@ impl PumpFunTrader {
         slippage_bps: Option<u64>,
         tip_level: u8,
         confirm: bool,
-    ) -> Result<bool> {
+    ) -> Result<Option<String>> {
         self.amm_sell_inner(
             token_mint,
             token_amount,
@@ -170,7 +170,7 @@ impl PumpFunTrader {
         slippage_bps: Option<u64>,
         tip_level: u8,
         confirm: bool,
-    ) -> Result<bool> {
+    ) -> Result<Option<String>> {
         let t0 = Instant::now();
         let user = self.config.keypair.pubkey();
 
@@ -195,7 +195,7 @@ impl PumpFunTrader {
         // reads — don't hold the slot `in_use` across that RPC. The block below
         // always falls through to `schedule_nonce_refresh`.
         let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
-        let result: Result<bool> = async {
+        let result: Result<Option<String>> = async {
             let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, &self.config.keypair)?;
             let sig = self.send_transaction(&tx).await?;
             info!(
@@ -214,7 +214,9 @@ impl PumpFunTrader {
                     t0.elapsed().as_millis()
                 );
             }
-            Ok(true)
+            // Hand the signature back so a feed-confirm caller can classify a
+            // landed-revert off its own poll window (see `sell_token_once`).
+            Ok(Some(sig))
         }
         .await;
 

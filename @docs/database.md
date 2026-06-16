@@ -14,7 +14,7 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 - `raw_transactions` *(PARTITIONED)* — id, signature, slot, block_time, raw_data(JSONB), received_at, source(`live`/`sync`). PK (received_at,id). RANGE-by-day on received_at, ~1mo retention +2d forward; fns `ensure_raw_partition`/`drop_raw_partition`. No UNIQUE (dupes tolerated). `source='live'` = real-time LaserStream ingest; `source='sync'` = token_sync backfill (both "Fetch All" via gTFA and "Fetch New" via LaserStream replay). Both persist the full Helius blob — kept for later analysis/replay.
 
 **Token analysis**
-- `tokens_info` — `mint_address` UNIQUE, ath_price/ts, age, volume, market_cap, trade_count, last_trade_at, current_price, is_rugged, is_migrated, per-venue sync watermarks (`last_synced_{curve,amm}_{sig,slot}`), created/updated_at.
+- `tokens_info` — `mint_address` UNIQUE, ath_price/ts, age, volume, market_cap, trade_count, last_trade_at, current_price, is_dead (cheap in-memory verdict — liquidity gone + price≈launch + dust-only volume; see `TokenState::is_dead`), is_migrated, per-venue sync watermarks (`last_synced_{curve,amm}_{sig,slot}`), created/updated_at. *(0002 renamed `is_rugged`→`is_dead`.)*
 - `tokens_analysis` — mint_address, analyzer_name, score, indicators(JSONB), computed_at. UNIQUE(mint_address, analyzer_name).
 - `creator_profiles` — wallet_address UNIQUE, tokens_created, total_volume_sol, suspiciousness_score, wash_trade_score, indicators(JSONB), last_analyzed_at.
 
@@ -42,7 +42,7 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 | File | Table(s) | Notable fns |
 |---|---|---|
 | `token_repo.rs` | tokens | insert, upsert, find_by_mint, exists, find_all, find_symbols_for (mint=ANY, bounded), find_recent_active(limit, since) (activity-windowed + capped cold-start seed), find_by_mints (mint=ANY, chunked — seeds unsettled-position mints outside the window) |
-| `trade_repo.rs` | trades (+tokens_info) | insert(_many), latest_signature, find_by_mint_all, find_by_mints_all (batched per-mint groups for the backtest — fewer round-trips/conns), find_by_mint_paged, net_token_amount_by_wallet_and_mint, real_sol_reserve_extremes, early_buyer_cohort_net, for_each_seed_mint(mints, cap, f) — cold-start cache seed in ONE windowed scan (`mint=ANY`, chunked): newest `cap` trades/mint + lifetime count/volume & newest price/reserves carried as window aggregates (`SeedAgg`), grouped per mint while streaming |
+| `trade_repo.rs` | trades (+tokens_info) | insert(_many), latest_signature, find_by_mint_all, find_by_mints_all (batched per-mint groups for the backtest — fewer round-trips/conns), find_by_mint_paged, net_token_amount_by_wallet_and_mint, for_each_seed_mint(mints, cap, f) — cold-start cache seed in ONE windowed scan (`mint=ANY`, chunked): newest `cap` trades/mint + lifetime count/volume & newest price/reserves carried as window aggregates (`SeedAgg`), grouped per mint while streaming |
 | `transaction_repo.rs` | raw_transactions | insert(_many), find_by_signature, exists |
 | `token_info_repo.rs` | tokens_info | upsert_metrics, update_migration_status, get/update_sync_watermark, find_for(mints) (mint=ANY, chunked — bounded cold-start seed) |
 | `analysis_repo.rs` | tokens_analysis, creator_profiles | upsert_result, list_results, upsert/find/list_creator_profile |

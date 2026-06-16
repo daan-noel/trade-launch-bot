@@ -457,6 +457,16 @@ export function tokenColumns(): ColumnDef<TokenRecord>[] {
       searchValue: (r) => String(r.is_migrated),
     },
     {
+      key: 'dead',
+      label: 'Dead',
+      group: 'flags',
+      width: '66px',
+      sortable: true,
+      render: (r) => (r.is_dead ? '💀' : ''),
+      sortValue: (r) => (r.is_dead ? 1 : 0),
+      searchValue: (r) => String(r.is_dead),
+    },
+    {
       key: 'mayhem_mode',
       label: 'Mayhem',
       group: 'flags',

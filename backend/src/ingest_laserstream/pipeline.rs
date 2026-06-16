@@ -9,10 +9,7 @@ use tracing::{debug, info, warn};
 use serde_json::Value;
 
 use crate::{
-    config::constants::{
-        POOL_REFRESH_INTERVAL_SECONDS, POOL_SUBSCRIBE_ACTIVITY_WINDOW_SECONDS,
-        RUGGED_RECHECK_INTERVAL_SECONDS,
-    },
+    config::constants::{POOL_REFRESH_INTERVAL_SECONDS, POOL_SUBSCRIBE_ACTIVITY_WINDOW_SECONDS},
     models::{
         events::{
             CreatorActivityEvent, InternalEvent, LiquidityEvent, TokenCreatedEvent,
@@ -23,13 +20,14 @@ use crate::{
     },
     services::token_sync::derive_pump_swap_pool,
     state::token_cache::{TokenCache, TokenState},
+    state::token_metrics::metrics_from_state,
     state::trade_signals::TradeSignals,
     storage::repositories::settings_repo::AppSettings,
     trader::PumpFunTrader,
 };
 
 // Cloned ingest internals — self-contained copies, not imported from `ingest/`.
-use super::db_writer::{DbWriteOp, RawBlobJob, TokenMetricsWrite};
+use super::db_writer::{DbWriteOp, RawBlobJob};
 use super::decoder::{DecodeOutput, HeliusDecoder, TxRelevance};
 use super::proto::geyser::SubscribeUpdateTransaction;
 
@@ -384,7 +382,7 @@ impl IngestPipeline {
         self.enqueue_db(DbWriteOp::Wallet(creator)).await;
 
         let token_state = TokenState::new(e.token);
-        let metrics = metrics_from_state(&mint, &token_state, false);
+        let metrics = metrics_from_state(&mint, &token_state);
         self.token_cache.insert(mint.clone(), token_state);
         self.enqueue_db(DbWriteOp::Metrics(metrics)).await;
 
@@ -438,27 +436,16 @@ impl IngestPipeline {
         self.enqueue_db(DbWriteOp::Trade(db_trade)).await;
         self.enqueue_db(DbWriteOp::Wallet(wallet.clone())).await;
 
-        // Apply the trade to token state, decide the rugged-recompute throttle, and
-        // resolve the (first-AMM-trade) pool prewarm — all under a SINGLE `get_mut`
-        // guard, so one event takes one write-lock on the shard instead of two,
-        // halving contention against API readers + the strategy runner.
-        let now = Utc::now();
+        // Apply the trade to token state and resolve the (first-AMM-trade) pool
+        // prewarm — both under a SINGLE `get_mut` guard, so one event takes one
+        // write-lock on the shard instead of two, halving contention against API
+        // readers + the strategy runner. The dead-token verdict is folded into the
+        // metrics below as a cheap in-memory read (no DB scan, no throttle needed).
         let (metrics, to_warm) = match self.token_cache.get_mut(&mint) {
             Some(mut token_state) => {
                 token_state.add_trade(e.trade);
 
-                // Throttle the per-mint rugged recompute: the verdict only moves on
-                // the 1h staleness scale, so flag a recompute at most once per
-                // `RUGGED_RECHECK_INTERVAL_SECONDS` per mint instead of on every
-                // trade — keeping the (up to 3) whole-history aggregate scans out of
-                // the throughput-critical DbWriter flush for stale, still-trading mints.
-                let recompute_rugged = token_state.last_rugged_check_at.is_none_or(|t| {
-                    now.signed_duration_since(t).num_seconds() >= RUGGED_RECHECK_INTERVAL_SECONDS
-                });
-                if recompute_rugged {
-                    token_state.last_rugged_check_at = Some(now);
-                }
-                let metrics = metrics_from_state(&mint, &token_state, recompute_rugged);
+                let metrics = metrics_from_state(&mint, &token_state);
 
                 // First AMM trade for this mint: capture the token program (when
                 // known) so the background task can warm its PumpSwap pool caches
@@ -549,7 +536,7 @@ impl IngestPipeline {
 
         let metrics = self.token_cache.get_mut(&mint).map(|mut token_state| {
             token_state.is_migrated = true;
-            metrics_from_state(&mint, &token_state, false)
+            metrics_from_state(&mint, &token_state)
         });
         if let Some(metrics) = metrics {
             self.enqueue_db(DbWriteOp::Metrics(metrics)).await;
@@ -661,30 +648,14 @@ fn filter_events(
     (out, save_raw)
 }
 
-fn metrics_from_state(mint: &str, state: &TokenState, recompute_rugged: bool) -> TokenMetricsWrite {
-    let age_seconds = Utc::now()
-        .signed_duration_since(state.token.created_at)
-        .num_seconds();
-    TokenMetricsWrite {
-        mint: mint.to_string(),
-        ath_price: state.ath_price,
-        ath_timestamp: state.ath_timestamp,
-        age_seconds: Some(age_seconds as i64),
-        volume: state.volume_sol_total,
-        market_cap: state.market_cap,
-        trade_count: state.trade_count as i64,
-        last_trade_at: state.last_trade_at,
-        current_price: state.current_price,
-        is_migrated: state.is_migrated,
-        creator_wallet: state.token.creator_wallet.clone(),
-        recompute_rugged,
-    }
-}
-
 /// True when a migrated token traded recently enough to keep its PumpSwap pool
-/// in the live subscription set. A token with no recorded trades, or quiet
-/// beyond the window, is treated as not live (and pruned from the subscription).
+/// in the live subscription set. A token with no recorded trades, quiet beyond the
+/// window, or flagged dead (dust-trading but gone — which the activity window alone
+/// would miss) is treated as not live and pruned from the subscription.
 fn pool_is_live(state: &TokenState, now: DateTime<Utc>) -> bool {
+    if state.is_dead(now) {
+        return false;
+    }
     state
         .last_trade_at
         .map(|t| {

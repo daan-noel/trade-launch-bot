@@ -320,6 +320,7 @@ export function FilterPanel({ filters, onApply, onClear }: FilterPanelProps) {
 
         <Section title="Flags">
           <TriToggle label="Migrated" field="migrated" value={draft.migrated} set={set} />
+          <TriToggle label="Dead" field="dead" value={draft.dead} set={set} />
           <TriToggle label="Mayhem Mode" field="mayhem" value={draft.mayhem} set={set} />
           <TriToggle label="Cashback" field="cashback" value={draft.cashback} set={set} />
         </Section>

@@ -48,6 +48,11 @@ pub struct TokenSummary {
     pub ix_labels_count: usize,
     pub instruction_labels: Value,
     pub is_migrated: bool,
+    /// Dead-token verdict (liquidity gone + price back at launch + only dust
+    /// trading; see `TokenState::is_dead`). Serialized — unlike `age_seconds` it is
+    /// a near-stable boolean (a dead token stays dead), so it only churns the ETag
+    /// when deadness actually flips, which is exactly when the UI should refresh.
+    pub is_dead: bool,
     /// Computed at snapshot-build time, but NOT serialized: the frontend derives
     /// age from `created_at` so it ticks live, and — more importantly — keeping a
     /// `now`-derived value out of the response body stops it churning the bytes
@@ -101,6 +106,7 @@ impl From<&TokenState> for TokenSummary {
             ix_labels_count,
             instruction_labels: s.token.instruction_labels.clone(),
             is_migrated: s.is_migrated,
+            is_dead: s.is_dead(chrono::Utc::now()),
             age_seconds,
             created_at: s.token.created_at,
             creator_address: s.token.creator_wallet.clone(),
@@ -273,6 +279,7 @@ pub struct PaginationParams {
     pub f_ix_count_max: Option<String>,
     pub f_ix_label: Option<String>,
     pub f_migrated: Option<String>,
+    pub f_dead: Option<String>,
     pub f_mayhem: Option<String>,
     pub f_cashback: Option<String>,
 }
@@ -536,8 +543,9 @@ pub async fn get_trades(
 // grammar, otherwise we fall back to the raw stringified value.
 // ===========================================================================
 
-/// Inactivity window after which a token is treated as dead (mirrors filters.ts
-/// `LIFETIME_STALE_MS` and the backend's RUGGED_STALE_SECONDS = 3600).
+/// Inactivity window after which a token's lifetime is treated as final for the
+/// short-lived filter (mirrors filters.ts `LIFETIME_STALE_MS`). Distinct from the
+/// `is_dead` flag, which is a richer liquidity/price/volume verdict.
 const LIFETIME_STALE_MS: i64 = 60 * 60 * 1000;
 
 /// Columns whose per-column filter understands the numeric grammar (they declare
@@ -588,6 +596,7 @@ const SORTABLE_COLS: &[&str] = &[
     "cu_price",
     "ix_count",
     "migrated",
+    "dead",
     "mayhem_mode",
     "cashback",
     // Browser-derived "Swing Detection All" chain columns. Sorted from the raw
@@ -695,6 +704,7 @@ impl TokenQuery {
         put(&mut f, "ix_count_max", &q.f_ix_count_max);
         put(&mut f, "ix_label", &q.f_ix_label);
         put(&mut f, "migrated", &q.f_migrated);
+        put(&mut f, "dead", &q.f_dead);
         put(&mut f, "mayhem", &q.f_mayhem);
         put(&mut f, "cashback", &q.f_cashback);
 
@@ -846,6 +856,9 @@ impl TokenQuery {
 
         // Flags
         if !tri_match(t.is_migrated, g(f, "migrated")) {
+            return false;
+        }
+        if !tri_match(t.is_dead, g(f, "dead")) {
             return false;
         }
         if !tri_match(t.is_mayhem_mode, g(f, "mayhem")) {
@@ -1283,6 +1296,7 @@ fn col_filter_text(key: &str, t: &TokenSummary) -> String {
         "ix_count" => t.ix_labels_count.to_string(),
         "ix_labels" => ix_label_list(&t.instruction_labels).join(", "),
         "migrated" => t.is_migrated.to_string(),
+        "dead" => t.is_dead.to_string(),
         "mayhem_mode" => t.is_mayhem_mode.to_string(),
         "cashback" => t.is_cashback_enabled.to_string(),
         _ => String::new(),
@@ -1344,6 +1358,7 @@ fn sort_key(col: &str, t: &TokenSummary) -> SortKey {
         "cu_price" => SortKey::Num(t.cu_price.map(|v| v as f64)),
         "ix_count" => SortKey::Num(Some(t.ix_labels_count as f64)),
         "migrated" => SortKey::Num(Some(if t.is_migrated { 1.0 } else { 0.0 })),
+        "dead" => SortKey::Num(Some(if t.is_dead { 1.0 } else { 0.0 })),
         "mayhem_mode" => SortKey::Num(Some(if t.is_mayhem_mode { 1.0 } else { 0.0 })),
         "cashback" => SortKey::Num(Some(if t.is_cashback_enabled { 1.0 } else { 0.0 })),
         _ => SortKey::Str(None),

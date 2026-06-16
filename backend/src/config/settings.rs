@@ -63,13 +63,15 @@ impl Settings {
             nonce_accounts: parse_required_list("NONCE_ACCOUNTS")?,
             reconnect_interval: Duration::from_millis(env_parse("RECONNECT_INTERVAL", 10_000)?),
             database_url: required("DATABASE_URL")?,
-            db_max_connections: env_parse("DB_MAX_CONNECTIONS", 20u32)?,
+            db_max_connections: env_parse_min("DB_MAX_CONNECTIONS", 20u32, 1)?,
             db_min_connections: env_parse("DB_MIN_CONNECTIONS", 2u32)?,
             db_acquire_timeout: Duration::from_secs(env_parse("DB_ACQUIRE_TIMEOUT_SECS", 10u64)?),
             host: env_or("HOST", "127.0.0.1"),
             port: env_parse("PORT", 8081)?,
-            http_enabled: env_or("HTTP_ENABLED", "true").parse().unwrap_or(true),
-            http_workers: env_parse("HTTP_WORKERS", 2)?,
+            // Route through the erroring parse: a typo (e.g. `HTTP_ENABLED=ture`)
+            // must fail loudly, not silently fall back to `true` and expose the API.
+            http_enabled: env_parse("HTTP_ENABLED", true)?,
+            http_workers: env_parse_min("HTTP_WORKERS", 2usize, 1)?,
             cors_allowed_origin: env_or("CORS_ALLOWED_ORIGIN", "*"),
             api_auth_token: Some(required_non_empty("API_AUTH_TOKEN")?),
         })
@@ -144,4 +146,19 @@ where
             .map_err(|e| anyhow::anyhow!("Invalid value for {key}={val:?}: {e}")),
         Err(_) => Ok(default),
     }
+}
+
+/// Like [`env_parse`] but rejects a parsed value below `min`. Used for sizing
+/// knobs where a `0` is a silent footgun — `db_max_connections: 0` or
+/// `http_workers: 0` wedges the pool / refuses every request rather than erroring.
+fn env_parse_min<T>(key: &str, default: T, min: T) -> anyhow::Result<T>
+where
+    T: std::str::FromStr + Copy + PartialOrd + std::fmt::Display,
+    T::Err: std::fmt::Display,
+{
+    let val = env_parse(key, default)?;
+    if val < min {
+        anyhow::bail!("{key} must be >= {min}, got {val}");
+    }
+    Ok(val)
 }

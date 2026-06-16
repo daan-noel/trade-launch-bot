@@ -27,6 +27,9 @@ export interface TokenRecord {
   ix_labels_count: number;
   instruction_labels: unknown;
   is_migrated: boolean;
+  /** Dead-token verdict: liquidity gone + price back at launch + only dust trading
+   *  (backend `TokenState::is_dead`). A near-stable flag once true. */
+  is_dead: boolean;
   is_mayhem_mode: boolean;
   is_cashback_enabled: boolean;
   created_at: string;

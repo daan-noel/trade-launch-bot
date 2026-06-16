@@ -1,0 +1,11 @@
+-- Replace the unused `is_rugged` flag with `is_dead`.
+--
+-- `is_rugged` was computed via up-to-3 whole-history aggregate scans on the ingest
+-- hot path but read by nothing. It is superseded by `is_dead` — a cheap in-memory
+-- verdict (liquidity gone + price back at launch + only dust trading; see
+-- `TokenState::is_dead`) that drives subscription pruning and cache eviction.
+--
+-- A plain column rename preserves the existing BOOLEAN NOT NULL DEFAULT FALSE; old
+-- `is_rugged` values are stale by definition (recomputed live on the next trade or
+-- sync), so no value translation is needed.
+ALTER TABLE tokens_info RENAME COLUMN is_rugged TO is_dead;
