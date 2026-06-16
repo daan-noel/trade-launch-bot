@@ -7,7 +7,7 @@
 --     positions `target_*` columns (target_*/entry_*/exit_* order), and the
 --     raw_transactions `source` = 'live'/'sync' vocabulary.
 --   * `trades` is created **partitioned from the start** (weekly RANGE on
---     block_time, 5-week retention) — the old copy-migration dance (rename aside,
+--     block_time, 1-month retention) — the old copy-migration dance (rename aside,
 --     recreate, copy rows, drop) is unnecessary on a fresh DB.
 --   * The legacy *flat* tpsl2 sweep tables (tpsl2_sweep_runs/results) are omitted
 --     entirely: they were created then dropped in favor of the strategy-agnostic
@@ -49,7 +49,7 @@ CREATE INDEX IF NOT EXISTS idx_tokens_token_program_id   ON tokens(token_program
 CREATE INDEX IF NOT EXISTS idx_tokens_is_cashback_enabled ON tokens(is_cashback_enabled);
 
 -- -------------------------------------------------------------------------
--- trades  (weekly RANGE-partitioned on block_time, 5-week retention)
+-- trades  (weekly RANGE-partitioned on block_time, 1-month retention)
 --   leg_index            — multiple pump trades in the same tx (multi-leg).
 --   received_at          — ingest-time precision (Utc::now) for UI ordering;
 --                          block_time stays chain seconds.
@@ -110,12 +110,13 @@ CREATE INDEX IF NOT EXISTS idx_trades_wallet_mint   ON trades(wallet_address, mi
 -- needing a venue predicate (which idx_trades_mint_venue_slot would require).
 CREATE INDEX IF NOT EXISTS idx_trades_mint_slot_leg ON trades(mint_address, slot, leg_index);
 
--- Weekly partition helpers (Mon–Mon), analogous to the raw_transactions fns.
+-- Daily partition helpers (one calendar day each), analogous to the
+-- raw_transactions fns.
 CREATE OR REPLACE FUNCTION ensure_trades_partition(p_anchor date)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
-    v_start date := date_trunc('week', p_anchor::timestamp)::date;
-    v_end   date := v_start + 7;
+    v_start date := p_anchor;
+    v_end   date := v_start + 1;
     v_name  text := format('trades_%s', to_char(v_start, 'YYYY_MM_DD'));
 BEGIN
     EXECUTE format(
@@ -128,21 +129,21 @@ $$;
 CREATE OR REPLACE FUNCTION drop_trades_partition(p_anchor date)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
-    v_start date := date_trunc('week', p_anchor::timestamp)::date;
+    v_start date := p_anchor;
     v_name  text := format('trades_%s', to_char(v_start, 'YYYY_MM_DD'));
 BEGIN
     EXECUTE format('DROP TABLE IF EXISTS %I', v_name);
 END;
 $$;
 
--- Pre-create the retained window (now-5w .. now+2w) so the first inserts always
+-- Pre-create the retained window (now-1mo .. now+2d) so the first inserts always
 -- have a target partition before the maintenance task first runs.
 DO $$
-DECLARE w date := date_trunc('week', (now() - interval '5 weeks'))::date;
+DECLARE d date := (now() - interval '1 month')::date;
 BEGIN
-    WHILE w <= date_trunc('week', (now() + interval '2 weeks'))::date LOOP
-        PERFORM ensure_trades_partition(w);
-        w := w + 7;
+    WHILE d <= (now() + interval '2 days')::date LOOP
+        PERFORM ensure_trades_partition(d);
+        d := d + 1;
     END LOOP;
 END $$;
 
@@ -152,9 +153,9 @@ END $$;
 --     'live' — real-time LaserStream (Yellowstone) ingest pipeline
 --     'sync' — token_sync backfill (both "Fetch All" via gTFA AND "Fetch New"
 --              via LaserStream replay)
---   WEEKLY range partitions on received_at with ~2-month retention (managed by
---   the app's partition-maintenance task; KEEP_WEEKS must match
---   ingest::maintenance::KEEP_WEEKS = 9). No UNIQUE(signature): a unique
+--   DAILY range partitions on received_at with 1-month retention (managed by
+--   the app's partition-maintenance task; the retained window must match
+--   ingest::maintenance::KEEP_DAYS = 30). No UNIQUE(signature): a unique
 --   constraint on a partitioned table must include the partition key, and
 --   received_at isn't stable across reconnect re-delivery — duplicates are
 --   tolerated in this write-only analysis table.
@@ -174,12 +175,12 @@ CREATE TABLE IF NOT EXISTS raw_transactions (
 CREATE INDEX IF NOT EXISTS idx_raw_tx_signature ON raw_transactions (signature);
 CREATE INDEX IF NOT EXISTS idx_raw_tx_slot      ON raw_transactions (slot DESC);
 
--- Idempotently create the weekly partition (Mon–Mon) containing p_anchor.
+-- Idempotently create the daily partition (one calendar day) containing p_anchor.
 CREATE OR REPLACE FUNCTION ensure_raw_partition(p_anchor date)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
-    v_start date := date_trunc('week', p_anchor::timestamp)::date;
-    v_end   date := v_start + 7;
+    v_start date := p_anchor;
+    v_end   date := v_start + 1;
     v_name  text := format('raw_transactions_%s', to_char(v_start, 'YYYY_MM_DD'));
 BEGIN
     EXECUTE format(
@@ -189,25 +190,25 @@ BEGIN
 END;
 $$;
 
--- Drop the weekly partition containing p_anchor, if it exists (retention).
+-- Drop the daily partition containing p_anchor, if it exists (retention).
 CREATE OR REPLACE FUNCTION drop_raw_partition(p_anchor date)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
-    v_start date := date_trunc('week', p_anchor::timestamp)::date;
+    v_start date := p_anchor;
     v_name  text := format('raw_transactions_%s', to_char(v_start, 'YYYY_MM_DD'));
 BEGIN
     EXECUTE format('DROP TABLE IF EXISTS %I', v_name);
 END;
 $$;
 
--- Pre-create the retained window (now-9w .. now+2w) so the first inserts always
+-- Pre-create the retained window (now-1mo .. now+2d) so the first inserts always
 -- have a target partition before the maintenance task first runs.
 DO $$
-DECLARE w date := date_trunc('week', (now() - interval '9 weeks'))::date;
+DECLARE d date := (now() - interval '1 month')::date;
 BEGIN
-    WHILE w <= date_trunc('week', (now() + interval '2 weeks'))::date LOOP
-        PERFORM ensure_raw_partition(w);
-        w := w + 7;
+    WHILE d <= (now() + interval '2 days')::date LOOP
+        PERFORM ensure_raw_partition(d);
+        d := d + 1;
     END LOOP;
 END $$;
 
