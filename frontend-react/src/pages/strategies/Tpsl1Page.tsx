@@ -2,7 +2,6 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode
 import { DataTable } from 'components/table/DataTable';
 import { Badge, type BadgeVariant } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
-import { ProgressBar } from 'components/ui/ProgressBar';
 import { InlineAlert, Modal } from 'components/ui/Modal';
 import {
   buildCreatePayload,
@@ -38,9 +37,9 @@ import {
   pauseTpsl1Rule,
   stopTpsl1Rule,
   updateTpsl1Rule,
-  cancelSimulateTpsl1Rule,
 } from 'services/api';
-import { connectPaperTestStream, connectSimulationProgress } from 'services/sse';
+import { connectPaperTestStream } from 'services/sse';
+import { useBackgroundJobs } from 'context/BackgroundJobsContext';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
   fetchMatchedCached,
@@ -62,38 +61,6 @@ import { cn } from 'lib/cn';
 
 function SectionDivider() {
   return <div role="separator" className="my-6 border-t border-white/6" />;
-}
-
-/** Determinate progress bar for a simulation run. The backend streams real
- *  `processed / total` candidate counts over the `simulation_progress` SSE
- *  event (keyed by rule), so the bar reports actual progress instead of a fake
- *  trickle. Before the first frame arrives the total is unknown, so it shows an
- *  indeterminate pulse; the bar unmounts when the result lands. Cancel requests a
- *  cooperative abort (the backtest bails on its next chunk). */
-function SimProgressBar({ ruleId, onCancel }: { ruleId: string; onCancel: () => void }) {
-  const [progress, setProgress] = useState<{ processed: number; total: number } | null>(null);
-  const [cancelling, setCancelling] = useState(false);
-  useEffect(() => {
-    setProgress(null);
-    setCancelling(false);
-    const h = connectSimulationProgress(ruleId, (processed, total) =>
-      setProgress({ processed, total }),
-    );
-    return () => h.close();
-  }, [ruleId]);
-
-  return (
-    <ProgressBar
-      label="Running Simulation"
-      processed={progress?.processed ?? null}
-      total={progress?.total ?? null}
-      cancelling={cancelling}
-      onCancel={() => {
-        setCancelling(true);
-        onCancel();
-      }}
-    />
-  );
 }
 
 /** Heading for a section: a colored marker bar + title + optional count badge,
@@ -565,6 +532,10 @@ const RuleActionsCell = memo(function RuleActionsCell({
 export function Tpsl1Page() {
   const price = usePriceDisplay();
   const dispatch = useDispatch<AppDispatch>();
+  // Simulation progress/running is tracked app-wide so it survives navigation
+  // (the backtest runs on the backend regardless); the global indicator renders
+  // its progress bar + cancel.
+  const { markStarting } = useBackgroundJobs();
 
   // Rule list: one initial load then a visibility-gated silent poll, deduped
   // into a shared hook (see usePolledRules). `loadRules` is the silent/forced
@@ -596,8 +567,6 @@ export function Tpsl1Page() {
   } | null>(null);
   const [simError, setSimError] = useState<string | null>(null);
   const [simLoading, setSimLoading] = useState(false);
-  // Rule whose backtest is in flight — keys the progress bar's SSE subscription.
-  const [simRuleId, setSimRuleId] = useState<string | null>(null);
 
   const [matchedResult, setMatchedResult] = useState<{
     ruleId: string;
@@ -821,7 +790,7 @@ export function Tpsl1Page() {
     async (rule: RuleRecord) => {
       setSimResult(null);
       setSimError(null);
-      setSimRuleId(rule.id);
+      markStarting('simulation', rule.id, `Sim: ${rule.rule_name}`);
       setSimLoading(true);
       try {
         const tokens = await fetchSimulateCached(dispatch, { strategy: 'tpsl1', ruleId: rule.id });
@@ -837,7 +806,7 @@ export function Tpsl1Page() {
         setSimLoading(false);
       }
     },
-    [dispatch],
+    [dispatch, markStarting],
   );
 
   const handleMatched = useCallback(
@@ -1136,10 +1105,7 @@ export function Tpsl1Page() {
         </section>
       )}
 
-      {(simLoading || simError || simResult) && <SectionDivider />}
-      {simLoading && simRuleId && (
-        <SimProgressBar ruleId={simRuleId} onCancel={() => cancelSimulateTpsl1Rule(simRuleId)} />
-      )}
+      {(simError || simResult) && <SectionDivider />}
       {simError && <InlineAlert variant="error">{simError}</InlineAlert>}
       {simResult && !simLoading && (
         <>

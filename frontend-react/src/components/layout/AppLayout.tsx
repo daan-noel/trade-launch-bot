@@ -1,5 +1,6 @@
 import { Outlet } from 'react-router-dom';
 import { Header } from './Header';
+import { BackgroundJobsIndicator } from './BackgroundJobsIndicator';
 
 export function AppLayout() {
   return (
@@ -8,6 +9,7 @@ export function AppLayout() {
       <main className="flex-1 px-6 py-5 animate-[fade-in-up_0.25s_ease_both]">
         <Outlet />
       </main>
+      <BackgroundJobsIndicator />
     </div>
   );
 }

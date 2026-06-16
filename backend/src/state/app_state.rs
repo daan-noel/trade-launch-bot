@@ -22,6 +22,7 @@ use crate::strategies::tpsl_sniper_2::Tpsl2RuntimeCache;
 use crate::trader::PumpFunTrader;
 
 use super::backtest_trade_cache::BacktestTradeCache;
+use super::job_progress::ProgressCell;
 use super::swing_run_cache::SwingRunCache;
 use super::token_cache::TokenCache;
 use super::token_list_cache::TokenListCache;
@@ -88,6 +89,16 @@ pub struct AppState {
     /// The simulate handler inserts a flag when a run starts and removes it when
     /// it ends; the cancel endpoint flips it; `run_backtest` polls it per chunk.
     pub sim_cancels: Arc<DashMap<Uuid, Arc<AtomicBool>>>,
+    /// Live `processed / total` snapshot of the in-flight grouped sweep, written
+    /// by `SweepProgress` alongside its SSE frames and read by `/api/jobs/status`
+    /// so a dashboard that mounts mid-run (or after a refresh) can recover the
+    /// bar. Reset to `0 / 0` when the sweep ends.
+    pub sweep_progress: Arc<ProgressCell>,
+    /// Per-rule `processed / total` snapshots of in-flight simulations, the
+    /// per-rule analogue of `sweep_progress`. The simulate handler inserts an
+    /// entry when a run starts and removes it when it ends (keyed like
+    /// `sim_cancels`); `/api/jobs/status` reads them for recovery.
+    pub sim_progress: Arc<DashMap<Uuid, Arc<ProgressCell>>>,
     /// Raw swings from recent "Swing Detection All" runs, keyed by client run id.
     /// Lets the server-side-paged tokens list sort by the chain columns and
     /// re-group on chain-latency changes without re-running detection.
@@ -194,6 +205,8 @@ impl AppState {
             sweep_running: Arc::new(AtomicBool::new(false)),
             sweep_cancel: Arc::new(AtomicBool::new(false)),
             sim_cancels: Arc::new(DashMap::new()),
+            sweep_progress: Arc::new(ProgressCell::default()),
+            sim_progress: Arc::new(DashMap::new()),
             // Keep a few recent runs so re-runs / multiple tabs don't accumulate.
             swing_runs: Arc::new(SwingRunCache::new(3)),
         }

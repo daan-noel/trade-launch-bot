@@ -20,6 +20,15 @@ let shared: EventSource | null = null;
 const listeners = new Map<string, Set<SseListener>>();
 const attached = new Set<string>();
 
+/**
+ * Low-level: subscribe to a raw SSE event type on the shared connection,
+ * returning an unsubscribe fn. The `connect*` helpers below wrap this with
+ * payload parsing + id filtering; the background-jobs registry uses it directly
+ * to receive ALL frames of a type (no id filter). */
+export function sseSubscribe(type: string, cb: SseListener): () => void {
+  return subscribe(type, cb);
+}
+
 function subscribe(type: string, cb: SseListener): () => void {
   let set = listeners.get(type);
   if (!set) {
@@ -178,6 +187,45 @@ export function connectSweepProgress(
     try {
       const p = JSON.parse(e.data) as import('types').SweepProgressEvent;
       if (p.strategy_id === strategyId) onProgress(p.processed, p.total);
+    } catch {
+      /* ignore malformed frames */
+    }
+  });
+  return { close: unsub };
+}
+
+/**
+ * Terminal signal for the in-flight grouped param-sweep — the single-flight run
+ * ended (normal finish, error, or user cancel). Lets a global progress indicator
+ * clear itself without polling. The payload is delivered for every strategy_id;
+ * the single-flight sweep means the consumer needn't filter.
+ */
+export function connectSweepFinished(
+  onFinished: (ev: import('types').SweepFinishedEvent) => void,
+): StreamHandle {
+  const unsub = subscribe('sweep_finished', (e) => {
+    if (typeof e.data !== 'string') return;
+    try {
+      onFinished(JSON.parse(e.data) as import('types').SweepFinishedEvent);
+    } catch {
+      /* ignore malformed frames */
+    }
+  });
+  return { close: unsub };
+}
+
+/**
+ * Terminal signal for an in-flight rule simulation (backtest) — the run for some
+ * `rule_id` ended. The per-rule analogue of {@link connectSweepFinished}; the
+ * consumer keys off `rule_id`.
+ */
+export function connectSimulationFinished(
+  onFinished: (ev: import('types').SimulationFinishedEvent) => void,
+): StreamHandle {
+  const unsub = subscribe('simulation_finished', (e) => {
+    if (typeof e.data !== 'string') return;
+    try {
+      onFinished(JSON.parse(e.data) as import('types').SimulationFinishedEvent);
     } catch {
       /* ignore malformed frames */
     }

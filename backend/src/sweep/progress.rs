@@ -22,6 +22,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 
 use crate::models::ingest::SseEvent;
+use crate::state::job_progress::ProgressCell;
 
 /// Target number of progress frames over a full run; the per-tick throttle is
 /// derived from this so a tiny corpus reports often and a huge one reports ~1%.
@@ -50,6 +51,10 @@ pub struct SweepProgress {
     done: AtomicUsize,
     /// Cooperative cancel flag, shared with the cancel endpoint via app state.
     cancel: Arc<AtomicBool>,
+    /// Shared readable snapshot for `/api/jobs/status` (refresh recovery). Written
+    /// on every tick (cheap atomic store) even when an SSE frame is throttled, so
+    /// a mid-run status read is always accurate.
+    cell: Arc<ProgressCell>,
 }
 
 impl SweepProgress {
@@ -57,6 +62,7 @@ impl SweepProgress {
         sse_tx: broadcast::Sender<SseEvent>,
         strategy_id: impl Into<String>,
         cancel: Arc<AtomicBool>,
+        cell: Arc<ProgressCell>,
     ) -> Self {
         Self {
             sse_tx,
@@ -64,6 +70,7 @@ impl SweepProgress {
             total: AtomicUsize::new(0),
             done: AtomicUsize::new(0),
             cancel,
+            cell,
         }
     }
 
@@ -79,6 +86,7 @@ impl SweepProgress {
 impl SweepObserver for SweepProgress {
     fn set_total(&self, total: usize) {
         self.total.store(total, Ordering::Relaxed);
+        self.cell.set_total(total as u64);
         // Emit the initial `0 / total` frame so a subscriber can switch from
         // indeterminate to determinate before the first token folds.
         self.send(0);
@@ -87,6 +95,7 @@ impl SweepObserver for SweepProgress {
     fn token_done(&self) {
         let n = self.done.fetch_add(1, Ordering::Relaxed) + 1;
         let total = self.total.load(Ordering::Relaxed);
+        self.cell.set_processed(n as u64);
         // Throttle to ~STEPS frames/run; always emit the final token.
         let step = (total / STEPS).max(1);
         if n == total || n.is_multiple_of(step) {

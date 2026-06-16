@@ -511,6 +511,20 @@ export async function cancelGroupedSweep(): Promise<void> {
   await request(`${API_BASE}/api/strategies/sweeps/cancel`, { method: 'POST' });
 }
 
+/** Strategy-agnostic cancel for a rule's in-flight simulation (the backend keys
+ *  the cancel flag by rule_id across both tpsl snipers). No-op if none running. */
+export async function cancelSimulation(ruleId: string): Promise<void> {
+  await request(`${API_BASE}/api/jobs/simulations/${encodeURIComponent(ruleId)}/cancel`, {
+    method: 'POST',
+  });
+}
+
+/** Snapshot of every running background job (sweep + simulations) for recovering
+ *  the progress UI after a page load — SSE only delivers future frames. */
+export async function getJobsStatus(): Promise<import('types').JobsStatus> {
+  return request(`${API_BASE}/api/jobs/status`);
+}
+
 export function sseUrl(): string {
   return `${API_BASE}/api/stream`;
 }

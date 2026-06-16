@@ -3,9 +3,7 @@ import { DataTable } from 'components/table/DataTable';
 import { InlineAlert } from 'components/ui/Modal';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
-import { ProgressBar } from 'components/ui/ProgressBar';
-import { connectSweepProgress } from 'services/sse';
-import { cancelGroupedSweep } from 'services/api';
+import { useBackgroundJobs } from 'context/BackgroundJobsContext';
 import { buildSweepColumns } from 'components/sweep/sweepColumns';
 import { buildGroupColumns } from 'components/sweep/groupColumns';
 import { SweepConfigForm } from 'components/sweep/SweepConfigForm';
@@ -53,35 +51,6 @@ const TPSL2_PARAM_KEYS = [
  * Flow: configure + Run → pick a run → group-summary table → click a group →
  * drill into its full ranked combo table (reuses the TPSL2 sweep columns).
  */
-/** Honest progress bar for the in-flight grouped sweep. Subscribes to the
- *  `sweep_progress` SSE stream (real `processed / total` tokens folded across
- *  groups) and offers a Cancel button — the backend cancel is cooperative, so
- *  the bar stays mounted (showing "Cancelling…") until the run actually ends. */
-function SweepProgressBar({ strategyId }: { strategyId: string }) {
-  const [progress, setProgress] = useState<{ processed: number; total: number } | null>(null);
-  const [cancelling, setCancelling] = useState(false);
-  useEffect(() => {
-    setProgress(null);
-    setCancelling(false);
-    const h = connectSweepProgress(strategyId, (processed, total) =>
-      setProgress({ processed, total }),
-    );
-    return () => h.close();
-  }, [strategyId]);
-  return (
-    <ProgressBar
-      label="Running Grouped Sweep"
-      processed={progress?.processed ?? null}
-      total={progress?.total ?? null}
-      cancelling={cancelling}
-      onCancel={() => {
-        setCancelling(true);
-        cancelGroupedSweep().catch(() => setCancelling(false));
-      }}
-    />
-  );
-}
-
 function SectionDivider() {
   return <div role="separator" className="my-6 border-t border-white/6" />;
 }
@@ -101,6 +70,12 @@ export function GroupedSweepPage() {
 
   const [startSweep, startState] = useStartGroupedSweepMutation();
   const startErr = apiErrorMessage(startState.error, 'Failed to start sweep');
+  // The sweep's running/progress state lives in the app-wide jobs registry so it
+  // survives navigation (the run continues on the backend regardless); the global
+  // indicator renders the progress bar + cancel. The page only needs "is it
+  // running" to gate the form.
+  const { markStarting, isRunning } = useBackgroundJobs();
+  const sweepRunning = isRunning('sweep', 'sweep') || startState.isLoading;
 
   const [deleteRun, deleteState] = useDeleteGroupedSweepRunMutation();
   const [pruneRuns, pruneState] = usePruneGroupedSweepsMutation();
@@ -135,6 +110,9 @@ export function GroupedSweepPage() {
   }
 
   async function run(args: GroupedSweepStartArgs) {
+    // Register the job immediately so the global indicator shows before the first
+    // SSE frame (which only arrives once the backend finishes corpus selection).
+    markStarting('sweep', 'sweep', 'Grouped sweep');
     try {
       const created = await startSweep(args).unwrap();
       if ('cancelled' in created) return; // user cancelled — no run persisted
@@ -173,9 +151,7 @@ export function GroupedSweepPage() {
         </Badge>
       </div>
 
-      <SweepConfigForm strategyId={STRATEGY_ID} running={startState.isLoading} onRun={run} />
-
-      {startState.isLoading && <SweepProgressBar strategyId={STRATEGY_ID} />}
+      <SweepConfigForm strategyId={STRATEGY_ID} running={sweepRunning} onRun={run} />
 
       {startErr && <InlineAlert variant="error">{startErr}</InlineAlert>}
       {runsQuery.isLoading && <p className="text-text-dim">Loading sweep runs…</p>}

@@ -656,19 +656,37 @@ pub async fn simulate_tpsl_rule(
 ) -> impl Responder {
     // delegate to the tpsl_sniper_1 simulation module (E1+ exit-walk engine)
     let rid = rule_id.into_inner();
-    // Register a cooperative cancel flag for this run so `cancel_simulate_tpsl_rule`
-    // can abort it; remove it on every exit path (RAII guard).
+    // Register a cooperative cancel flag + a readable progress snapshot for this
+    // run so the global jobs endpoints (`/api/jobs/status`, the generic sim-cancel)
+    // can observe and abort it. Both are removed on every exit path (RAII guard),
+    // which also broadcasts the terminal `SimulationFinished` so a global progress
+    // indicator clears itself without polling.
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cell = std::sync::Arc::new(crate::state::job_progress::ProgressCell::default());
     app_state.sim_cancels.insert(rid, cancel.clone());
-    struct CancelGuard<'a>(&'a Arc<AppState>, Uuid);
-    impl Drop for CancelGuard<'_> {
+    app_state.sim_progress.insert(rid, cell.clone());
+    struct SimGuard<'a> {
+        state: &'a Arc<AppState>,
+        rule_id: Uuid,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl Drop for SimGuard<'_> {
         fn drop(&mut self) {
-            self.0.sim_cancels.remove(&self.1);
+            self.state.sim_cancels.remove(&self.rule_id);
+            self.state.sim_progress.remove(&self.rule_id);
+            let _ = self.state.sse_tx.send(SseEvent::SimulationFinished {
+                rule_id: self.rule_id,
+                cancelled: self.cancel.load(std::sync::atomic::Ordering::Acquire),
+            });
         }
     }
-    let _guard = CancelGuard(&app_state, rid);
+    let _guard = SimGuard {
+        state: &app_state,
+        rule_id: rid,
+        cancel: cancel.clone(),
+    };
 
-    match crate::strategies::tpsl_sniper_1::run_backtest(app_state.clone(), rid, cancel).await {
+    match crate::strategies::tpsl_sniper_1::run_backtest(app_state.clone(), rid, cancel, cell).await {
         Ok(summary) => HttpResponse::Ok().json(summary),
         Err(e) => {
             let msg = e.to_string();

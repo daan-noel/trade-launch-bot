@@ -138,16 +138,39 @@ pub async fn start_grouped_sweep(
         return HttpResponse::Conflict()
             .json(serde_json::json!({"error": "a sweep is already running"}));
     }
-    struct Gate(Arc<std::sync::atomic::AtomicBool>);
+    // Releases the single-flight gate, resets the progress snapshot, and
+    // broadcasts the terminal `SweepFinished` frame on EVERY exit path (done /
+    // cancel / config-error / db-error) — putting the emit in Drop means no
+    // early-return can forget it, so a global progress indicator always clears.
+    struct Gate {
+        running: Arc<std::sync::atomic::AtomicBool>,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+        progress: Arc<crate::state::job_progress::ProgressCell>,
+        sse_tx: tokio::sync::broadcast::Sender<crate::models::ingest::SseEvent>,
+        strategy_id: String,
+    }
     impl Drop for Gate {
         fn drop(&mut self) {
-            self.0.store(false, Ordering::Release);
+            self.progress.reset();
+            self.running.store(false, Ordering::Release);
+            let _ = self.sse_tx.send(crate::models::ingest::SseEvent::SweepFinished {
+                strategy_id: self.strategy_id.clone(),
+                cancelled: self.cancel.load(Ordering::Acquire),
+            });
         }
     }
-    let _gate = Gate(state.sweep_running.clone());
+    let _gate = Gate {
+        running: state.sweep_running.clone(),
+        cancel: state.sweep_cancel.clone(),
+        progress: state.sweep_progress.clone(),
+        sse_tx: state.sse_tx.clone(),
+        strategy_id: b.strategy_id.clone(),
+    };
 
-    // Clear any stale cancel request from a prior run before this one starts.
+    // Clear any stale cancel request + progress snapshot from a prior run before
+    // this one starts.
     state.sweep_cancel.store(false, Ordering::Release);
+    state.sweep_progress.reset();
 
     let token_cap = b.token_cap.clamp(1, 100_000);
     let min_tokens = b.min_tokens.max(1);
@@ -194,6 +217,7 @@ pub async fn start_grouped_sweep(
             state.sse_tx.clone(),
             b.strategy_id.clone(),
             state.sweep_cancel.clone(),
+            state.sweep_progress.clone(),
         ));
 
     let output = match registry::run_grouped(

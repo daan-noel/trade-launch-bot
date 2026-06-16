@@ -195,6 +195,25 @@ fn render_sse_frame(event: &SseEvent, state: &AppState) -> SseFrame {
                 json!({ "strategy_id": strategy_id, "processed": processed, "total": total }),
             )
         }
+        SseEvent::SweepFinished {
+            strategy_id,
+            cancelled,
+        } => {
+            // Not mint-scoped: terminal signal for the single-flight sweep.
+            (
+                None,
+                "sweep_finished",
+                json!({ "strategy_id": strategy_id, "cancelled": cancelled }),
+            )
+        }
+        SseEvent::SimulationFinished { rule_id, cancelled } => {
+            // Not mint-scoped: terminal signal for the rule's backtest.
+            (
+                None,
+                "simulation_finished",
+                json!({ "rule_id": rule_id, "cancelled": cancelled }),
+            )
+        }
     };
 
     let frame = format!(

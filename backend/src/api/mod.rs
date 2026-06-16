@@ -46,6 +46,13 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             )
             // Real-time SSE stream
             .route("/stream", web::get().to(handlers::system::stream_events))
+            // Background-job status + control (sweep / simulation). Lets a
+            // freshly-loaded dashboard recover in-flight progress SSE can't replay.
+            .route("/jobs/status", web::get().to(handlers::system::job_status))
+            .route(
+                "/jobs/simulations/{rule_id}/cancel",
+                web::post().to(handlers::system::cancel_simulation),
+            )
             // System endpoints
             .route(
                 "/system/live",

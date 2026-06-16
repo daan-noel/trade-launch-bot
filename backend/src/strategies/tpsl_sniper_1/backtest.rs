@@ -95,6 +95,7 @@ pub async fn run_backtest(
     app_state: actix_web::web::Data<Arc<AppState>>,
     rule_id: Uuid,
     cancel: Arc<std::sync::atomic::AtomicBool>,
+    progress_cell: Arc<crate::state::job_progress::ProgressCell>,
 ) -> Result<Vec<BacktestTokenResult>> {
     let rule_repo = Tpsl1StrategyRuleRepo::new(app_state.db.clone());
 
@@ -137,6 +138,7 @@ pub async fn run_backtest(
         app_state.sse_tx.clone(),
         rule_id,
         tokens.len(),
+        progress_cell,
     ));
     progress.start();
 

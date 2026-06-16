@@ -94,4 +94,19 @@ pub enum SseEvent {
         processed: u64,
         total: u64,
     },
+    /// Terminal frame for the grouped sweep: the single-flight run for
+    /// `strategy_id` has ended (`cancelled` distinguishes a user abort from a
+    /// normal finish/error). Lets a global progress indicator clear itself
+    /// without polling. Not mint-scoped — always delivered.
+    SweepFinished {
+        strategy_id: String,
+        cancelled: bool,
+    },
+    /// Terminal frame for a rule simulation (backtest): the run for `rule_id` has
+    /// ended. The per-rule analogue of [`SseEvent::SweepFinished`]. Not
+    /// mint-scoped — always delivered.
+    SimulationFinished {
+        rule_id: uuid::Uuid,
+        cancelled: bool,
+    },
 }

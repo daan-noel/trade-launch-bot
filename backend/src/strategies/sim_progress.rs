@@ -12,7 +12,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
+use std::sync::Arc;
+
 use crate::models::ingest::SseEvent;
+use crate::state::job_progress::ProgressCell;
 
 /// Target number of progress frames over a full run; the per-tick throttle is
 /// derived from this so a 5-token run reports every token and a 50k-token run
@@ -29,16 +32,26 @@ pub struct SimProgress {
     done: AtomicUsize,
     /// Emit only when `processed` is a multiple of this (or equals `total`).
     step: usize,
+    /// Shared readable snapshot for `/api/jobs/status` (refresh recovery), written
+    /// on every tick even when the SSE frame is throttled.
+    cell: Arc<ProgressCell>,
 }
 
 impl SimProgress {
-    pub fn new(sse_tx: broadcast::Sender<SseEvent>, rule_id: Uuid, total: usize) -> Self {
+    pub fn new(
+        sse_tx: broadcast::Sender<SseEvent>,
+        rule_id: Uuid,
+        total: usize,
+        cell: Arc<ProgressCell>,
+    ) -> Self {
+        cell.set_total(total as u64);
         Self {
             sse_tx,
             rule_id,
             total,
             done: AtomicUsize::new(0),
             step: (total / STEPS).max(1),
+            cell,
         }
     }
 
@@ -51,6 +64,7 @@ impl SimProgress {
     /// Mark one candidate done; broadcast a throttled progress frame.
     pub fn tick(&self) {
         let n = self.done.fetch_add(1, Ordering::Relaxed) + 1;
+        self.cell.set_processed(n as u64);
         if n == self.total || n.is_multiple_of(self.step) {
             self.send(n);
         }

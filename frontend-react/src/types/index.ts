@@ -196,6 +196,28 @@ export interface SweepProgressEvent {
   total: number;
 }
 
+/** Payload of the `sweep_finished` SSE event: the single-flight grouped sweep
+ *  for `strategy_id` ended (`cancelled` = user abort vs normal finish/error). */
+export interface SweepFinishedEvent {
+  strategy_id: string;
+  cancelled: boolean;
+}
+
+/** Payload of the `simulation_finished` SSE event: the backtest for `rule_id`
+ *  ended (`cancelled` = user abort vs normal finish/error). */
+export interface SimulationFinishedEvent {
+  rule_id: string;
+  cancelled: boolean;
+}
+
+/** Response of `GET /api/jobs/status` — a snapshot of every running background
+ *  job, used to recover the progress UI after a page load/refresh (SSE only
+ *  delivers future frames). `sweep` is present iff the single-flight sweep runs. */
+export interface JobsStatus {
+  sweep: { processed: number; total: number } | null;
+  simulations: { rule_id: string; processed: number; total: number }[];
+}
+
 export interface WalletHolding {
   mint: string;
   amount: number;
