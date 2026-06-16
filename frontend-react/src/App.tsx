@@ -12,7 +12,7 @@ import { MyWalletPage } from 'pages/profiles/MyWalletPage';
 import { OtherProfilesPage } from 'pages/profiles/OtherProfilesPage';
 import { Tpsl1Page } from 'pages/strategies/Tpsl1Page';
 import { Tpsl2Page } from 'pages/strategies/Tpsl2Page';
-import { GroupedSweepPage, Tpsl1GroupedSweepPage } from 'pages/strategies/GroupedSweepPage';
+import { Tpsl1GroupedSweepPage, Tpsl2GroupedSweepPage } from 'pages/strategies/sweep';
 import { SettingsPage } from 'pages/settings/SettingsPage';
 import { NotFoundPage } from 'pages/not-found/NotFoundPage';
 
@@ -35,9 +35,9 @@ export default function App() {
             <Route path="profiles/other" element={<OtherProfilesPage />} />
             <Route path="strategies/tpsl1" element={<Tpsl1Page />} />
             <Route path="strategies/tpsl2" element={<Tpsl2Page />} />
-            <Route path="strategies/grouped-sweep" element={<GroupedSweepPage />} />
             <Route path="strategies/grouped-sweep-tpsl1" element={<Tpsl1GroupedSweepPage />} />
-            <Route path="strategies" element={<Navigate to="/strategies/tpsl1" replace />} />
+            <Route path="strategies/grouped-sweep-tpsl2" element={<Tpsl2GroupedSweepPage />} />
+            <Route path="strategies" element={<Navigate to="/strategies/tpsl2" replace />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Route>

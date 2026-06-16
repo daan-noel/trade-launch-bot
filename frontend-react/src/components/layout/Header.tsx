@@ -111,8 +111,8 @@ export function Header() {
             items={[
               { to: '/strategies/tpsl1', label: 'TP / SL Sniper 1' },
               { to: '/strategies/tpsl2', label: 'TP / SL Sniper 2' },
-              { to: '/strategies/grouped-sweep', label: 'Grouped Sweep · TPSL2' },
               { to: '/strategies/grouped-sweep-tpsl1', label: 'Grouped Sweep · TPSL1' },
+              { to: '/strategies/grouped-sweep-tpsl2', label: 'Grouped Sweep · TPSL2' },
             ]}
           />
           <NavItem to="/settings">Settings</NavItem>

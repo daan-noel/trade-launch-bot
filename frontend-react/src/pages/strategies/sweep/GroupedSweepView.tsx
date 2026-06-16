@@ -7,13 +7,7 @@ import { useBackgroundJobActions, useBackgroundJobsState } from 'context/Backgro
 import { buildSweepColumns } from 'components/sweep/sweepColumns';
 import { buildGroupColumns } from 'components/sweep/groupColumns';
 import { SweepConfigForm } from 'components/sweep/SweepConfigForm';
-import {
-  TPSL1_AXES,
-  TPSL2_AXES,
-  type AxisDef,
-  type GroupedSweepStartArgs,
-} from 'components/sweep/groupedTypes';
-import { STORAGE_KEYS } from 'lib/storage';
+import { type AxisDef, type GroupedSweepStartArgs } from 'components/sweep/groupedTypes';
 import {
   apiErrorMessage,
   useGetGroupedSweepRunsQuery,
@@ -24,49 +18,16 @@ import {
   usePruneGroupedSweepsMutation,
 } from 'store/apiSlice';
 
-/** The grouped-sweep page is strategy-agnostic — the API/data layer and column
+/** The grouped-sweep view is strategy-agnostic — the API/data layer and column
  *  builders are all driven by `strategyId` + a swept-param-key list. Each
- *  strategy supplies its own keys + axes via a thin wrapper at the bottom. */
-
-/** TPSL2 swept knobs — this array IS the param column order in the combo table
- *  (`buildSweepColumns` renders them in this order). Kept stable (not
- *  data-derived) so the columns exist on first render (colToggle persistence).
- *  Ordered to match the rule modal: TP/SL lead, entry gates next, then the
- *  trailing/time/stall exit knobs. MUST match the backend `params_json` keys. */
-const TPSL2_PARAM_KEYS = [
-  'exit_take_profit',
-  'exit_stop_loss',
-  'entry_min_age_secs',
-  'entry_min_alive_sol',
-  'entry_min_organic_sol',
-  'entry_pullback_pct',
-  'entry_higher_low_secs',
-  'entry_max_cohort_held',
-  'entry_min_liquidity_sol',
-  'entry_min_organic_liq',
-  'exit_trailing_stop_pct',
-  'exit_time_stop_secs',
-  'exit_stall_secs',
-  'exit_liquidity_drop_pct',
-  'exit_cohort_ratio',
-];
-
-/** TPSL1 swept knobs — the exit ladder only (no scalp entry gates, no cohort
- *  exit). MUST match the backend tpsl1 `params_json` keys. */
-const TPSL1_PARAM_KEYS = [
-  'exit_take_profit',
-  'exit_stop_loss',
-  'exit_trailing_stop_pct',
-  'exit_time_stop_secs',
-  'exit_stall_secs',
-  'exit_liquidity_drop_pct',
-];
+ *  strategy supplies its own keys + axes via a thin child page (see this
+ *  folder's `Tpsl1GroupedSweepPage` / `Tpsl2GroupedSweepPage`). */
 
 function SectionDivider() {
   return <div role="separator" className="my-6 border-t border-white/6" />;
 }
 
-interface GroupedSweepViewProps {
+export interface GroupedSweepViewProps {
   /** Resolves the per-strategy backend tables + sweep entry point. */
   strategyId: string;
   /** Swept-param keys, in column order (matches the backend `params_json`). */
@@ -85,7 +46,13 @@ interface GroupedSweepViewProps {
  * trade. Flow: configure + Run → pick a run → group-summary table → click a
  * group → drill into its full ranked combo table.
  */
-function GroupedSweepView({ strategyId, paramKeys, axes, storageKey, title }: GroupedSweepViewProps) {
+export function GroupedSweepView({
+  strategyId,
+  paramKeys,
+  axes,
+  storageKey,
+  title,
+}: GroupedSweepViewProps) {
   const runsQuery = useGetGroupedSweepRunsQuery({ strategyId });
   const runs = runsQuery.data ?? [];
 
@@ -323,32 +290,5 @@ function GroupedSweepView({ strategyId, paramKeys, axes, storageKey, title }: Gr
         </>
       )}
     </div>
-  );
-}
-
-/** TPSL2 grouped sweep — the full entry-gate + exit-ladder param space. */
-export function GroupedSweepPage() {
-  return (
-    <GroupedSweepView
-      strategyId="tpsl2"
-      paramKeys={TPSL2_PARAM_KEYS}
-      axes={TPSL2_AXES}
-      storageKey={STORAGE_KEYS.sweepConfig}
-      title="Grouped Param Sweep · TPSL2"
-    />
-  );
-}
-
-/** TPSL1 grouped sweep — the exit-ladder-only param space (no scalp entry gates,
- *  no cohort exit). Reuses the same generic view, API layer, and columns. */
-export function Tpsl1GroupedSweepPage() {
-  return (
-    <GroupedSweepView
-      strategyId="tpsl1"
-      paramKeys={TPSL1_PARAM_KEYS}
-      axes={TPSL1_AXES}
-      storageKey={`${STORAGE_KEYS.sweepConfig}.tpsl1`}
-      title="Grouped Param Sweep · TPSL1"
-    />
   );
 }
