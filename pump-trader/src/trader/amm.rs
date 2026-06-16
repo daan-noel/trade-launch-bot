@@ -21,7 +21,7 @@ use crate::constants::{
     AMM_CONFIG_LP_FEE_BPS_OFFSET, AMM_CONFIG_MIN_LEN, AMM_CONFIG_PROTOCOL_FEE_BPS_OFFSET,
     AMM_DEFAULT_SLIPPAGE_BPS, AMM_POOL_BASE_VAULT_OFFSET, AMM_POOL_COIN_CREATOR_OFFSET,
     AMM_POOL_IS_CASHBACK_OFFSET, AMM_POOL_MIN_LEN, AMM_POOL_QUOTE_VAULT_OFFSET,
-    CONFIRM_MAX_RETRIES, LAMPORTS_PER_SOL, PUMP_AMM_CASHBACK_GLOBAL,
+    CONFIRM_MAX_RETRIES, PUMP_AMM_CASHBACK_GLOBAL,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::json;
@@ -240,7 +240,9 @@ impl PumpFunTrader {
         )?;
         let (base_res, quote_res) = self.amm_reserves_cached(token_mint, &pool).await?;
 
-        let spendable = (sol_amount * LAMPORTS_PER_SOL as f64) as u64;
+        // Guard the real spend (NaN/∞, non-positive, oversized, or rounds-to-zero)
+        // before building the swap — the AMM public entry, mirroring the curve path.
+        let spendable = super::buy_lamports_checked(sol_amount)?;
         let slip = slippage_bps.unwrap_or(AMM_DEFAULT_SLIPPAGE_BPS) as u128;
         let fee_bps = (cfg.lp_fee_bps + cfg.protocol_fee_bps + cfg.coin_creator_fee_bps) as u128;
 

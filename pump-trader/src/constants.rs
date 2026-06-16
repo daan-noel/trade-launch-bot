@@ -73,6 +73,15 @@ pub const JITO_TIP_ACCOUNTS: &[&str] = &[
 /// How many buy templates to keep pre-built per token-program pool.
 pub const BUY_SEED_POOL_SIZE: usize = 16;
 
+/// Hard per-trade sanity ceiling on a buy, in SOL. The public buy entry points
+/// take an `f64` straight from a caller (e.g. an API request), so this is the
+/// crate's own last-line guard that an absurd value — a fat-finger, a hostile
+/// request, or a garbage read — can never reach the on-chain spend, no matter
+/// what the caller does (a huge `f64` otherwise saturates the lamports cast
+/// toward `u64::MAX`). The *business* per-trade limit is enforced separately by
+/// the API layer; this is deliberately generous, a backstop and not policy.
+pub const MAX_BUY_SOL: f64 = 5.0;
+
 // --- Dynamic Jito tip --------------------------------------------------------
 // The tip is sized per-trade from Jito's live tip-floor feed (see jito_tip.rs),
 // clamped to [MIN_JITO_TIP_SOL, MAX_JITO_TIP_SOL]. A static tip silently loses

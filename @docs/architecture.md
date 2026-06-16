@@ -43,7 +43,7 @@ Subsystem deep-dives: [ingest.md](ingest.md) · [strategies.md](strategies.md) �
 | `handlers/tokens/sync.rs` | `sync_token`, `preview_sync` (RPC backfill, gated by `SyncGate`) |
 | `handlers/tokens/analysis.rs` | `get_token_analysis`, `list_creators`, `get_creator`, `list_analysis_results` |
 | `handlers/tokens/swing.rs` | `detect_token_swings`, `detect_tokens_swings_batch` |
-| `handlers/trading/solana.rs` | `manual_buy`, `manual_sell` (**Sell All**: live-balance clear loop selling 100% each pass ≤ `SELL_ALL_MAX_PASSES`, then fire-and-forget `close_token_account` for rent), `get_wallet_tokens`, `get_wallet_token(_balance)`, `get_prices` |
+| `handlers/trading/solana.rs` | `manual_buy` (validates `sol_amount`: finite, >0, ≤`MAX_MANUAL_BUY_SOL` → 400 before any on-chain work), `manual_sell` (**Sell All**: live-balance clear loop selling 100% each pass ≤ `SELL_ALL_MAX_PASSES`, then fire-and-forget `close_token_account` for rent), `get_wallet_tokens`, `get_wallet_token(_balance)`, `get_prices` |
 | `handlers/system/stream.rs` | `stream_events` (`/api/stream`) + `SseFrame`/`run_sse_render_bridge` — render each event to wire bytes ONCE (one cache read), fan shared `Arc<SseFrame>` to all subscribers (no per-subscriber re-serialization) |
 | `handlers/system/system.rs` | `get/set_live_mode`, `get_sol_price`, `get/update_settings` |
 | `handlers/system/wallets.rs` | profile/wallet/tag CRUD |

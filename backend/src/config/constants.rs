@@ -79,6 +79,14 @@ pub const DEFAULT_SLIPPAGE_BPS: u64 = 500;
 /// fat-finger or hostile value. 5000 bps = 50%.
 pub const SLIPPAGE_MAX_BPS: u64 = 5_000;
 
+/// Per-trade SOL ceiling enforced on the manual buy API (`POST /api/solana/wallet/buy`).
+/// The request body carries `sol_amount` as a raw `f64` that becomes a real spend,
+/// so a fat-finger ("buy 1000 SOL") or hostile value is rejected with a 400 before
+/// any on-chain work. This is the operator-facing business limit — tune it to the
+/// trading wallet's size; the `pump_trader` crate enforces its own (more generous)
+/// `MAX_BUY_SOL` backstop one layer down regardless.
+pub const MAX_MANUAL_BUY_SOL: f64 = 5.0;
+
 // ---------------------------------------------------------------------------
 // On-chain event discriminators (emitted via `emit!` in "Program data:" logs)
 // ---------------------------------------------------------------------------

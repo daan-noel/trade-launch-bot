@@ -8,7 +8,7 @@
 // ============================================================
 
 use super::PumpFunTrader;
-use crate::constants::{CONFIRM_MAX_RETRIES, CURVE_FEE_BUFFER_BPS, LAMPORTS_PER_SOL};
+use crate::constants::{CONFIRM_MAX_RETRIES, CURVE_FEE_BUFFER_BPS};
 use crate::types::TokenProgram;
 use anyhow::{Context, Result};
 use solana_sdk::{
@@ -77,7 +77,12 @@ impl PumpFunTrader {
         skip_confirm: bool,
     ) -> Result<String> {
         let t0 = Instant::now();
-        let buy_lamports = (sol_amount * LAMPORTS_PER_SOL as f64) as u64;
+        // Guard the real spend before any work: both curve public entries
+        // (`buy_token`, `buy_token_snipe`) funnel through here, so this single
+        // check rejects a NaN/∞, non-positive, oversized, or rounds-to-zero
+        // `sol_amount` for both. API callers are also validated up front; this
+        // is the crate's own backstop.
+        let buy_lamports = super::buy_lamports_checked(sol_amount)?;
         let keypair = &self.config.keypair;
 
         async {

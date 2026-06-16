@@ -67,6 +67,35 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
 
+use crate::constants::{LAMPORTS_PER_SOL, MAX_BUY_SOL};
+
+/// Validate a caller-supplied buy size in SOL and convert it to lamports for the
+/// on-chain spend. The public buy entry points (`buy_token`, `buy_token_snipe`,
+/// `amm_buy`) take an `f64` straight from the caller, so every value that would
+/// corrupt the real spend is rejected here — the crate's last-line guard,
+/// independent of any API-layer check:
+///
+/// - non-finite (`NaN`/`±∞`) → would cast to `0` or garbage lamports,
+/// - non-positive → wastes the tip + fee on a 0-lamport buy,
+/// - above [`MAX_BUY_SOL`] → a huge `f64` saturates the cast toward `u64::MAX`,
+/// - rounds to `0` lamports → sub-dust amount that can't actually buy anything.
+///
+/// The configurable *business* ceiling lives in the API layer; [`MAX_BUY_SOL`]
+/// is only a fat-finger / hostile-input backstop.
+fn buy_lamports_checked(sol_amount: f64) -> anyhow::Result<u64> {
+    if !sol_amount.is_finite() || sol_amount <= 0.0 {
+        anyhow::bail!("invalid buy amount {sol_amount} SOL: must be finite and > 0");
+    }
+    if sol_amount > MAX_BUY_SOL {
+        anyhow::bail!("buy amount {sol_amount} SOL exceeds the {MAX_BUY_SOL} SOL sanity ceiling");
+    }
+    let lamports = (sol_amount * LAMPORTS_PER_SOL as f64) as u64;
+    if lamports == 0 {
+        anyhow::bail!("buy amount {sol_amount} SOL rounds to 0 lamports");
+    }
+    Ok(lamports)
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -378,5 +407,37 @@ impl PumpFunTrader {
     /// Expose the RPC URL for callers that need to make their own RPC requests.
     pub fn rpc_url(&self) -> &str {
         &self.config.rpc_url
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{buy_lamports_checked, LAMPORTS_PER_SOL, MAX_BUY_SOL};
+
+    #[test]
+    fn rejects_non_finite_and_non_positive() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -1.0] {
+            assert!(buy_lamports_checked(bad).is_err(), "{bad} should be rejected");
+        }
+    }
+
+    #[test]
+    fn rejects_above_ceiling() {
+        assert!(buy_lamports_checked(MAX_BUY_SOL + 1.0).is_err());
+        // A huge value that would otherwise saturate the lamports cast.
+        assert!(buy_lamports_checked(1e30).is_err());
+    }
+
+    #[test]
+    fn rejects_sub_dust_rounding_to_zero() {
+        // Positive but far below one lamport → casts to 0 lamports.
+        assert!(buy_lamports_checked(1e-12).is_err());
+    }
+
+    #[test]
+    fn accepts_valid_amounts() {
+        assert_eq!(buy_lamports_checked(1.0).unwrap(), LAMPORTS_PER_SOL);
+        assert_eq!(buy_lamports_checked(0.5).unwrap(), LAMPORTS_PER_SOL / 2);
+        assert_eq!(buy_lamports_checked(MAX_BUY_SOL).unwrap(), MAX_BUY_SOL as u64 * LAMPORTS_PER_SOL);
     }
 }

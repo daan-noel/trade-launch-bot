@@ -3,7 +3,7 @@ use std::sync::Arc;
 use actix_web::{web, HttpResponse, Responder};
 use serde::Deserialize;
 
-use crate::config::constants::{DEFAULT_SLIPPAGE_BPS, SLIPPAGE_MAX_BPS};
+use crate::config::constants::{DEFAULT_SLIPPAGE_BPS, MAX_MANUAL_BUY_SOL, SLIPPAGE_MAX_BPS};
 use crate::services::clients::jupiter;
 use crate::services::wallet_tokens;
 use crate::state::app_state::AppState;
@@ -56,6 +56,24 @@ pub async fn manual_buy(
     app_state: web::Data<Arc<AppState>>,
     body: web::Json<BuyRequest>,
 ) -> impl Responder {
+    // Validate the client-supplied spend BEFORE any on-chain work — this is real
+    // SOL. Reject non-finite / non-positive (a NaN/∞ would cast to garbage
+    // lamports; <= 0 wastes the tip+fee on a 0-lamport buy) and cap at the
+    // per-trade ceiling so a fat-finger or hostile request can't drain the
+    // wallet. The pump-trader layer guards again as a backstop.
+    let sol_amount = body.sol_amount;
+    if !sol_amount.is_finite() || sol_amount <= 0.0 {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({ "error": "sol_amount must be a finite, positive number" }));
+    }
+    if sol_amount > MAX_MANUAL_BUY_SOL {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": format!(
+                "sol_amount {sol_amount} exceeds the per-trade limit of {MAX_MANUAL_BUY_SOL} SOL"
+            )
+        }));
+    }
+
     // Resolve routing facts (creator, token program, migration status) from
     // chain — the source of truth, so a typed-in mint the cache has never seen,
     // a just-migrated token, or a Token-2022 mint all route correctly.
@@ -73,7 +91,6 @@ pub async fn manual_buy(
         .token_program_id
         .clone()
         .unwrap_or_else(|| routing.token_program_id.clone());
-    let sol_amount = body.sol_amount;
     let slippage_bps = resolve_slippage(&app_state, body.slippage_bps);
 
     let buy_result = if routing.is_migrated {
