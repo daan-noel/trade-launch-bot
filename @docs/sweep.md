@@ -75,11 +75,18 @@ see [database.md](database.md), migration `0004`). The repo is generic and
     group_by: GroupField[], min_tokens?, method?, axes?, token_cap?, max_combos?}`)
     — resolves
     tables, claims the **single-flight** gate (`AppState.sweep_running`; one
-    CPU-heavy sweep at a time, 409 if busy), loads the corpus fresh from
+    CPU-heavy sweep at a time, 409 if busy), then **detaches the run via
+    `actix_web::rt::spawn`** (`run_grouped_sweep_job`) and awaits it for the
+    response. Detaching is essential: a browser refresh / SPA nav aborts the POST,
+    so if the run lived in the request future Actix would drop it mid-sweep — the
+    `Gate` would fire (`sweep_running`→false, progress reset) and `/api/jobs/status`
+    recovery would find nothing. The spawned job loads the corpus fresh from
     `DbSource` + `attach_fingerprints`, runs via `registry::run_grouped` with a
     `SweepProgress` observer (clears `sweep_cancel` first; streams `sweep_progress`
-    SSE), persists, returns the run. A cooperative cancel returns `{cancelled:true}`
-    (no run persisted) instead of erroring.
+    SSE), persists, and on every exit path its `Gate` releases the single-flight
+    gate, resets `sweep_progress`, and emits the terminal `SweepFinished`. A
+    cooperative cancel returns `{cancelled:true}` (no run persisted) instead of
+    erroring.
   - `POST /api/strategies/sweeps/cancel` (`cancel_grouped_sweep`) — flips
     `AppState.sweep_cancel`; the engine polls it and bails. No-op if idle.
   - `DELETE /api/strategies/sweeps/{run_id}?strategy_id=` (`delete_run`) — drop one

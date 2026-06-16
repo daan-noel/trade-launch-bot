@@ -778,49 +778,66 @@ pub async fn simulate_tpsl_rule(
     // run so the global jobs endpoints (`/api/jobs/status`, the generic sim-cancel)
     // can observe and abort it. Both are removed on every exit path (RAII guard),
     // which also broadcasts the terminal `SimulationFinished` so a global progress
-    // indicator clears itself without polling.
+    // indicator clears itself without polling. Registered synchronously here so an
+    // immediate cancel finds the entry before the task is scheduled.
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cell = std::sync::Arc::new(crate::state::job_progress::ProgressCell::default());
     app_state.sim_cancels.insert(rid, cancel.clone());
     app_state.sim_progress.insert(rid, cell.clone());
-    struct SimGuard<'a> {
-        state: &'a Arc<AppState>,
-        rule_id: Uuid,
-        cancel: Arc<std::sync::atomic::AtomicBool>,
-    }
-    impl Drop for SimGuard<'_> {
-        fn drop(&mut self) {
-            self.state.sim_cancels.remove(&self.rule_id);
-            self.state.sim_progress.remove(&self.rule_id);
-            let _ = self.state.sse_tx.send(SseEvent::SimulationFinished {
-                rule_id: self.rule_id,
-                cancelled: self.cancel.load(std::sync::atomic::Ordering::Acquire),
-            });
-        }
-    }
-    let _guard = SimGuard {
-        state: &app_state,
-        rule_id: rid,
-        cancel: cancel.clone(),
-    };
 
-    match crate::strategies::tpsl_sniper_2::run_backtest(app_state.clone(), rid, cancel, cell).await {
-        Ok(summary) => HttpResponse::Ok().json(summary),
-        Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("cancelled") {
-                // User-requested abort — benign, not a failure.
-                HttpResponse::Ok().json(serde_json::json!({"cancelled": true}))
-            } else if msg.contains("Rule not found") {
-                HttpResponse::NotFound().json(serde_json::json!({"error": msg}))
-            } else if msg.contains("no scalp entry gate") {
-                HttpResponse::BadRequest().json(serde_json::json!({"error": msg}))
-            } else {
-                tracing::error!("Simulation failed: {e}");
-                HttpResponse::InternalServerError().json(serde_json::json!({"error": msg}))
+    // Detach the backtest so a client disconnect (browser refresh / SPA nav)
+    // can't drop the request future mid-run and tear down `sim_progress` — the run
+    // must outlive the HTTP request so `GET /api/jobs/status` can recover its bar
+    // after a reload. `rt::spawn` keeps it on the worker (no `Send` bound);
+    // awaiting the handle returns the same response while the client is connected,
+    // and dropping it on disconnect never cancels the task.
+    actix_web::rt::spawn(async move {
+        struct SimGuard {
+            state: web::Data<Arc<AppState>>,
+            rule_id: Uuid,
+            cancel: Arc<std::sync::atomic::AtomicBool>,
+        }
+        impl Drop for SimGuard {
+            fn drop(&mut self) {
+                self.state.sim_cancels.remove(&self.rule_id);
+                self.state.sim_progress.remove(&self.rule_id);
+                let _ = self.state.sse_tx.send(SseEvent::SimulationFinished {
+                    rule_id: self.rule_id,
+                    cancelled: self.cancel.load(std::sync::atomic::Ordering::Acquire),
+                });
             }
         }
-    }
+        let _guard = SimGuard {
+            state: app_state.clone(),
+            rule_id: rid,
+            cancel: cancel.clone(),
+        };
+
+        match crate::strategies::tpsl_sniper_2::run_backtest(app_state.clone(), rid, cancel, cell)
+            .await
+        {
+            Ok(summary) => HttpResponse::Ok().json(summary),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("cancelled") {
+                    // User-requested abort — benign, not a failure.
+                    HttpResponse::Ok().json(serde_json::json!({"cancelled": true}))
+                } else if msg.contains("Rule not found") {
+                    HttpResponse::NotFound().json(serde_json::json!({"error": msg}))
+                } else if msg.contains("no scalp entry gate") {
+                    HttpResponse::BadRequest().json(serde_json::json!({"error": msg}))
+                } else {
+                    tracing::error!("Simulation failed: {e}");
+                    HttpResponse::InternalServerError().json(serde_json::json!({"error": msg}))
+                }
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        HttpResponse::InternalServerError()
+            .json(serde_json::json!({"error": "simulation task ended unexpectedly"}))
+    })
 }
 
 /// `POST /api/strategies/tpsl2/rules/{rule_id}/simulate/cancel` — request

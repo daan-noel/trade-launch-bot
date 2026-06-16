@@ -228,6 +228,21 @@ pub const POOL_REFRESH_INTERVAL_SECONDS: u64 = 120; // 2 minutes
 /// does for any cache miss); raise it to keep more history warm at startup.
 pub const SEED_TOKEN_LIMIT: i64 = 100_000;
 
+/// Only tokens created within this window are pulled into the startup cache seed
+/// (on top of the `SEED_TOKEN_LIMIT` cap). The seed's dominant cost is scanning
+/// those mints' trade history, so excluding the long tail of long-dead memecoins
+/// — which won't trade live again — keeps cold start proportional to *recent*
+/// activity instead of total history. Tokens older than this simply aren't tracked
+/// live until they trade again (the live path ignores untracked mints), EXCEPT any
+/// mint with an unsettled position, which is always seeded regardless of age so an
+/// open exit never strands. Raise it to keep more history warm at higher cold-start
+/// cost.
+pub const SEED_ACTIVITY_WINDOW_DAYS: i64 = 7;
+
+/// Per-mint cap on trade history pulled into the cache at seed time. Matches the
+/// live retained-history cap (`MAX_TRADES_RETAINED`), so a high-volume token reads
+/// only its newest window at startup instead of its full (unbounded) history.
+pub const SEED_TRADES_PER_MINT: i64 = crate::state::token_cache::MAX_TRADES_RETAINED as i64;
 
 
 

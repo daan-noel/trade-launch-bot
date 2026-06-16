@@ -22,7 +22,7 @@ use uuid::Uuid;
 use crate::models::grouped_sweep::{GroupedSweepGroupWrite, GroupedSweepResult, GroupedSweepRun};
 use crate::state::app_state::AppState;
 use crate::state::token_cache::MAX_TRADES_RETAINED;
-use crate::storage::repositories::grouped_sweep_repo::GroupedSweepRepo;
+use crate::storage::repositories::grouped_sweep_repo::{GroupedSweepRepo, GroupedSweepTables};
 use crate::sweep::aggregate::ComboMetrics;
 use crate::sweep::corpus::{attach_fingerprints, CorpusSource, DbSource, Selection};
 use crate::sweep::grouping::GroupField;
@@ -128,8 +128,9 @@ pub async fn start_grouped_sweep(
         }
     };
 
-    // Single-flight: claim the shared sweep gate or reject. The guard resets it
-    // on every exit path so a failed sweep can't wedge it.
+    // Single-flight: claim the shared sweep gate or reject. Claimed synchronously
+    // here so a concurrent request gets its 409 immediately; the spawned job owns
+    // the matching release (`run_grouped_sweep_job`'s `Gate`).
     if state
         .sweep_running
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -138,6 +139,35 @@ pub async fn start_grouped_sweep(
         return HttpResponse::Conflict()
             .json(serde_json::json!({"error": "a sweep is already running"}));
     }
+
+    // Detach the run so a client disconnect (browser refresh / SPA navigation)
+    // can't drop the request future mid-sweep. The job — its `sweep_running` +
+    // progress snapshot and the persist step — must outlive the HTTP request so
+    // `GET /api/jobs/status` can recover the in-flight bar after a reload (the
+    // whole point of the global progress indicator). `rt::spawn` keeps it on the
+    // worker (no `Send` bound, unlike `tokio::spawn`); awaiting the handle returns
+    // the same response when the client stays connected, and dropping it on
+    // disconnect never cancels the task.
+    let state = state.get_ref().clone();
+    actix_web::rt::spawn(run_grouped_sweep_job(state, b, tables))
+        .await
+        .unwrap_or_else(|_| {
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "sweep task ended unexpectedly"}))
+        })
+}
+
+/// The detached body of a grouped sweep, spawned by [`start_grouped_sweep`] so
+/// the work survives a client disconnect (the recovery contract behind
+/// `/api/jobs/status`). Owns the single-flight release + progress reset + terminal
+/// `SweepFinished` (via `Gate`), loads the corpus, runs the engine, and persists
+/// run → groups → results. Assumes `sweep_running` was already claimed by the
+/// caller.
+async fn run_grouped_sweep_job(
+    state: Arc<AppState>,
+    b: StartGroupedSweepBody,
+    tables: GroupedSweepTables,
+) -> HttpResponse {
     // Releases the single-flight gate, resets the progress snapshot, and
     // broadcasts the terminal `SweepFinished` frame on EVERY exit path (done /
     // cancel / config-error / db-error) — putting the emit in Drop means no

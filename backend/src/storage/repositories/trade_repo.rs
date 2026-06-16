@@ -4,7 +4,6 @@ use chrono::{DateTime, Utc};
 use sqlx::{types::Json, PgPool};
 use uuid::Uuid;
 
-use crate::config::constants::total_supply_for;
 use crate::models::trade::{Trade, TradeType};
 
 /// Mints per round-trip for the startup cache-seed scans. Bounds each `= ANY($1)`
@@ -608,130 +607,125 @@ impl TradeRepo {
         Ok((row.cohort_bought, row.cohort_net, row.total_bought))
     }
 
-    /// Aggregate stats (count, volume, last_trade_at) for the given mints, batched
-    /// in chunks of `SEED_MINT_CHUNK`. Scoped to the seeded set (`mint = ANY($1)`)
-    /// so cold start touches only the tokens the cache keeps, not the whole growing
-    /// `trades` table. Returns rows as (mint_address, trade_count, volume_sol_total,
-    /// last_trade_at, market_cap, current_virtual_token_reserves).
-    pub async fn load_aggregates_for(
+    /// Stream the cache-seed trade history for the given mints, grouped per mint,
+    /// invoking `f(mint, trades, agg)` once per mint as its run completes. A single
+    /// scan does the work the old two-pass seed needed (full aggregate scan +
+    /// full chronological stream):
+    ///
+    /// - **Capped** — only the newest `per_mint_cap` trades per mint land in
+    ///   `trades` (a per-mint `ROW_NUMBER` window), so a high-volume token reads its
+    ///   recent window instead of its full unbounded history.
+    /// - **Single pass** — lifetime `count`/`volume` and the newest trade's
+    ///   `block_time`/`price`/`reserves` ride along as window aggregates computed
+    ///   over the *full* partition in the same scan (`SeedAgg`), so the caller never
+    ///   needs a second aggregate query.
+    ///
+    /// `trades` arrives oldest-first per mint (ready for `push_trade_capped`). Scoped
+    /// to the seeded set (`mint = ANY($1)`, chunked) so the scan rides the per-mint
+    /// index, and grouped while streaming so peak memory is one mint's capped run.
+    pub async fn for_each_seed_mint<F>(
         &self,
         mints: &[String],
-    ) -> anyhow::Result<
-        Vec<(
-            String,
-            u64,
-            f64,
-            Option<DateTime<Utc>>,
-            Option<f64>,
-            Option<f64>,
-        )>,
-    > {
-        #[derive(sqlx::FromRow)]
-        struct AggRow {
-            mint_address: String,
-            trade_count: i64,
-            volume_sol_total: f64,
-            last_trade_at: Option<DateTime<Utc>>,
-            last_price: Option<f64>,
-            current_virtual_token_reserves: Option<f64>,
-            is_mayhem_mode: bool,
-        }
-        if mints.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut out = Vec::with_capacity(mints.len());
-        for chunk in mints.chunks(SEED_MINT_CHUNK) {
-            let rows = sqlx::query_as::<_, AggRow>(
-                r#"
-                WITH agg AS (
-                    SELECT
-                        mint_address,
-                        COUNT(*) AS trade_count,
-                        COALESCE(SUM(sol_amount), 0.0) AS volume_sol_total,
-                        MAX(block_time) AS last_trade_at
-                    FROM trades
-                    WHERE mint_address = ANY($1)
-                    GROUP BY mint_address
-                ),
-                last_trade AS (
-                    SELECT DISTINCT ON (mint_address)
-                        mint_address,
-                        price_per_token AS last_price,
-                        virtual_token_reserves AS current_virtual_token_reserves
-                    FROM trades
-                    WHERE mint_address = ANY($1)
-                    ORDER BY mint_address, block_time DESC
-                )
-                SELECT
-                    a.mint_address,
-                    a.trade_count,
-                    a.volume_sol_total,
-                    a.last_trade_at,
-                    l.last_price,
-                    l.current_virtual_token_reserves,
-                    COALESCE(t.is_mayhem_mode, FALSE) AS is_mayhem_mode
-                FROM agg a
-                LEFT JOIN last_trade l ON l.mint_address = a.mint_address
-                LEFT JOIN tokens t ON t.mint_address = a.mint_address
-                "#,
-            )
-            .bind(chunk)
-            .fetch_all(&self.pool)
-            .await?;
-
-            out.extend(rows.into_iter().map(|r| {
-                let market_cap = r
-                    .last_price
-                    .map(|price| total_supply_for(r.is_mayhem_mode) * price);
-
-                (
-                    r.mint_address,
-                    r.trade_count as u64,
-                    r.volume_sol_total,
-                    r.last_trade_at,
-                    market_cap,
-                    r.current_virtual_token_reserves,
-                )
-            }));
-        }
-        Ok(out)
-    }
-
-    /// Stream every trade for the given mints, oldest-first per mint, invoking `f`
-    /// for each one as it arrives. Used by the cache seed: scoped to the seeded set
-    /// (`mint = ANY($1)`, chunked) so the scan rides the per-mint index instead of
-    /// full-scanning + externally sorting the whole `trades` table, and streamed
-    /// row-by-row so peak memory stays a single row rather than a full in-memory
-    /// copy of those trades on top of what then lands in the cache.
-    pub async fn for_each_chronological<F>(&self, mints: &[String], mut f: F) -> anyhow::Result<()>
+        per_mint_cap: i64,
+        mut f: F,
+    ) -> anyhow::Result<()>
     where
-        F: FnMut(Trade),
+        F: FnMut(String, Vec<Trade>, SeedAgg),
     {
         use futures_util::TryStreamExt;
+
+        /// One seed row: the trade columns plus the per-mint (partition-constant)
+        /// aggregates carried by the window functions.
+        #[derive(sqlx::FromRow)]
+        struct SeedTradeRow {
+            #[sqlx(flatten)]
+            trade: TradeDbRow,
+            lifetime_count: i64,
+            lifetime_volume: f64,
+            newest_block_time: DateTime<Utc>,
+            newest_price: Option<f64>,
+            newest_reserves: Option<f64>,
+        }
+
         if mints.is_empty() {
             return Ok(());
         }
         for chunk in mints.chunks(SEED_MINT_CHUNK) {
-            let mut stream = sqlx::query_as::<_, TradeDbRow>(
+            let mut stream = sqlx::query_as::<_, SeedTradeRow>(
                 r#"
+                WITH ranked AS (
+                    SELECT id, mint_address, wallet_address, trade_type,
+                           sol_amount, token_amount, price_per_token,
+                           tx_signature, leg_index, slot, block_time, received_at,
+                           virtual_sol_reserves, virtual_token_reserves,
+                           real_sol_reserves, real_token_reserves,
+                           ix_type, ix_labels, venue,
+                           ROW_NUMBER()                       OVER w  AS rn,
+                           COUNT(*)                           OVER wp AS lifetime_count,
+                           COALESCE(SUM(sol_amount) OVER wp, 0.0)     AS lifetime_volume,
+                           FIRST_VALUE(block_time)            OVER w  AS newest_block_time,
+                           FIRST_VALUE(price_per_token)       OVER w  AS newest_price,
+                           FIRST_VALUE(virtual_token_reserves) OVER w AS newest_reserves
+                    FROM trades
+                    WHERE mint_address = ANY($1)
+                    WINDOW
+                        w  AS (PARTITION BY mint_address
+                               ORDER BY slot DESC, block_time DESC, tx_signature DESC, leg_index DESC),
+                        wp AS (PARTITION BY mint_address)
+                )
                 SELECT id, mint_address, wallet_address, trade_type,
                        sol_amount, token_amount, price_per_token,
                        tx_signature, leg_index, slot, block_time, received_at,
                        virtual_sol_reserves, virtual_token_reserves,
                        real_sol_reserves, real_token_reserves,
-                       ix_type, ix_labels, venue
-                FROM trades
-                WHERE mint_address = ANY($1)
-                ORDER BY mint_address, slot ASC, block_time ASC, tx_signature ASC, leg_index ASC
+                       ix_type, ix_labels, venue,
+                       lifetime_count, lifetime_volume, newest_block_time, newest_price, newest_reserves
+                FROM ranked
+                WHERE rn <= $2
+                ORDER BY mint_address ASC, slot ASC, block_time ASC, tx_signature ASC, leg_index ASC
                 "#,
             )
             .bind(chunk)
+            .bind(per_mint_cap)
             .fetch(&self.pool);
 
+            // Rows are mint-contiguous (ORDER BY mint_address) and each mint lives
+            // entirely within this chunk, so group on the mint boundary and flush.
+            let mut cur_mint: Option<String> = None;
+            let mut buf: Vec<Trade> = Vec::new();
+            let mut agg: Option<SeedAgg> = None;
             while let Some(row) = stream.try_next().await? {
-                f(Trade::try_from(row)?);
+                if cur_mint.as_deref() != Some(row.trade.mint_address.as_str()) {
+                    if let (Some(m), Some(a)) = (cur_mint.take(), agg.take()) {
+                        f(m, std::mem::take(&mut buf), a);
+                    }
+                    cur_mint = Some(row.trade.mint_address.clone());
+                    agg = Some(SeedAgg {
+                        lifetime_count: row.lifetime_count.max(0) as u64,
+                        lifetime_volume: row.lifetime_volume,
+                        last_trade_at: row.newest_block_time,
+                        current_reserves: row.newest_reserves,
+                        newest_price: row.newest_price,
+                    });
+                }
+                buf.push(Trade::try_from(row.trade)?);
+            }
+            if let (Some(m), Some(a)) = (cur_mint.take(), agg.take()) {
+                f(m, std::mem::take(&mut buf), a);
             }
         }
         Ok(())
     }
+}
+
+/// Per-mint, lifetime-scoped aggregates the cache seed needs alongside a mint's
+/// (capped) recent trade run — computed in the same single scan as the trades
+/// (see [`TradeRepo::for_each_seed_mint`]). `lifetime_count`/`lifetime_volume`
+/// cover the *full* history; the `newest_*` fields are the most recent trade's.
+pub struct SeedAgg {
+    pub lifetime_count: u64,
+    pub lifetime_volume: f64,
+    pub last_trade_at: DateTime<Utc>,
+    pub current_reserves: Option<f64>,
+    pub newest_price: Option<f64>,
 }

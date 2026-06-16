@@ -171,19 +171,51 @@ impl TokenRepo {
         Ok(count > 0)
     }
 
-    /// Load the most-recent `limit` tokens for cache seeding on startup. Bounded
-    /// (newest first) rather than an unbounded `SELECT *` over the continuously
-    /// growing `tokens` table, so startup cost stays flat as the table grows — see
-    /// [`crate::config::constants::SEED_TOKEN_LIMIT`].
-    pub async fn find_recent(&self, limit: i64) -> anyhow::Result<Vec<Token>> {
+    /// Load the most-recent tokens created since `since` for cache seeding on
+    /// startup, capped at `limit`. Bounded on *both* axes — recency window and row
+    /// cap — rather than an unbounded `SELECT *` over the continuously growing
+    /// `tokens` table, so cold start scales with recent activity, not total history.
+    /// See [`crate::config::constants::SEED_TOKEN_LIMIT`] /
+    /// [`crate::config::constants::SEED_ACTIVITY_WINDOW_DAYS`]. The `created_at >=`
+    /// predicate rides `idx_tokens_created_at`; unsettled-position mints older than
+    /// the window are seeded separately (see `find_by_mints`).
+    pub async fn find_recent_active(
+        &self,
+        limit: i64,
+        since: DateTime<Utc>,
+    ) -> anyhow::Result<Vec<Token>> {
         let rows = sqlx::query_as::<_, TokenDbRow>(
-            "SELECT * FROM tokens ORDER BY created_at DESC LIMIT $1",
+            "SELECT * FROM tokens WHERE created_at >= $1 ORDER BY created_at DESC LIMIT $2",
         )
+        .bind(since)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
 
         Ok(rows.into_iter().map(Token::from).collect())
+    }
+
+    /// Load the full `Token` rows for an explicit set of mints (`mint = ANY($1)`,
+    /// chunked). Used by the cache seed to pull in mints that fall outside the
+    /// recency window but must still be tracked (e.g. an unsettled position older
+    /// than `SEED_ACTIVITY_WINDOW_DAYS`). Mints with no row are simply absent.
+    pub async fn find_by_mints(&self, mints: &[String]) -> anyhow::Result<Vec<Token>> {
+        /// Mints per round-trip; keeps each `= ANY($1)` array index-friendly.
+        const MINT_CHUNK: usize = 1000;
+        if mints.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::with_capacity(mints.len());
+        for chunk in mints.chunks(MINT_CHUNK) {
+            let rows = sqlx::query_as::<_, TokenDbRow>(
+                "SELECT * FROM tokens WHERE mint_address = ANY($1)",
+            )
+            .bind(chunk)
+            .fetch_all(&self.pool)
+            .await?;
+            out.extend(rows.into_iter().map(Token::from));
+        }
+        Ok(out)
     }
 
     /// Resolve display symbols for a specific set of mints (`mint = ANY($1)`), so a

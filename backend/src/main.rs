@@ -308,7 +308,21 @@ async fn main() -> anyhow::Result<()> {
     // In-memory caches (shared between services and future API handlers)
     let token_cache = Arc::new(state::token_cache::TokenCache::new());
 
-    storage::seed::seed_token_cache(&db, token_cache.clone()).await?;
+    // Seed the cache off the boot critical path: ingest/HTTP start immediately and
+    // the cache hydrates in the background (build-then-insert keeps it race-safe vs
+    // the live pipeline). A failure is logged, not fatal — the system still runs and
+    // the cache fills from live events. See `storage::seed`.
+    {
+        let db = db.clone();
+        let token_cache = token_cache.clone();
+        tokio::spawn(async move {
+            let started = std::time::Instant::now();
+            match storage::seed::seed_token_cache(&db, token_cache).await {
+                Ok(()) => info!("Cache seed task finished in {:?}", started.elapsed()),
+                Err(e) => error!("Cache seed task failed (cache will fill from live events): {e}"),
+            }
+        });
+    }
 
     let (sse_tx, _) = tokio::sync::broadcast::channel::<models::ingest::SseEvent>(512);
 

@@ -410,6 +410,19 @@ impl Tpsl2PositionRepo {
         rows.into_iter().map(Position::try_from).collect()
     }
 
+    /// Distinct mints with an unsettled (non-`End`) real position. The cache seed
+    /// always tracks these regardless of the recency window — the live path can't
+    /// re-track an existing mint (a trade for an untracked mint is dropped), so an
+    /// open exit would otherwise strand once its token aged out of the seed set.
+    pub async fn distinct_unsettled_mints(&self) -> anyhow::Result<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT DISTINCT mint FROM tpsl2_real_positions WHERE status <> 'End'",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(m,)| m).collect())
+    }
+
     /// Total position count per rule (all statuses).
     pub async fn count_all_by_rule(&self) -> anyhow::Result<Vec<(Uuid, i64)>> {
         let rows: Vec<(Uuid, i64)> = sqlx::query_as(

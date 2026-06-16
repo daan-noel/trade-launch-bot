@@ -9,7 +9,7 @@ Subsystem deep-dives: [ingest.md](ingest.md) · [strategies.md](strategies.md) �
 - `backend/src/trader/mod.rs` re-exports `pump_trader::{PumpFunTrader, TraderConfig, WalletHolding}`.
 
 ## Composition root — `backend/src/main.rs`
-`main` builds config → trader → DB → shared state → long-lived tokio tasks joined in one `tokio::select!` (any exit ⇒ log + stop).
+`main` builds config → trader → DB → shared state → long-lived tokio tasks joined in one `tokio::select!` (any exit ⇒ log + stop). The `TokenCache` seed (`storage::seed`) runs in a spawned background task, *not* on the boot path — ingest/HTTP start immediately and the cache hydrates concurrently (build-then-insert keeps it race-safe vs the live pipeline; a seed failure is logged, not fatal).
 - `require_bearer_auth()` — Actix middleware; mutating verbs need bearer **only if** `API_AUTH_TOKEN` set, GET/OPTIONS always pass.
 - `parse_wallet_keypair()` — base58 → `Keypair`.
 - `run_probe()` — one-shot `probe` subcommands (ladder/fanout/simulate-sell/holdings), run before DB/ingest, then exit.

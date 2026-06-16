@@ -40,8 +40,8 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 ## Repositories (`storage/repositories/`)
 | File | Table(s) | Notable fns |
 |---|---|---|
-| `token_repo.rs` | tokens | insert, upsert, find_by_mint, exists, find_all, find_symbols_for (mint=ANY, bounded) |
-| `trade_repo.rs` | trades (+tokens_info) | insert(_many), latest_signature, find_by_mint_all, find_by_mints_all (batched per-mint groups for the backtest — fewer round-trips/conns), find_by_mint_paged, net_token_amount_by_wallet_and_mint, real_sol_reserve_extremes, early_buyer_cohort_net, load_aggregates_for(mints) / for_each_chronological(mints, f) — both scoped to the seeded mint set (`mint=ANY`, chunked) for the cold-start cache seed |
+| `token_repo.rs` | tokens | insert, upsert, find_by_mint, exists, find_all, find_symbols_for (mint=ANY, bounded), find_recent_active(limit, since) (activity-windowed + capped cold-start seed), find_by_mints (mint=ANY, chunked — seeds unsettled-position mints outside the window) |
+| `trade_repo.rs` | trades (+tokens_info) | insert(_many), latest_signature, find_by_mint_all, find_by_mints_all (batched per-mint groups for the backtest — fewer round-trips/conns), find_by_mint_paged, net_token_amount_by_wallet_and_mint, real_sol_reserve_extremes, early_buyer_cohort_net, for_each_seed_mint(mints, cap, f) — cold-start cache seed in ONE windowed scan (`mint=ANY`, chunked): newest `cap` trades/mint + lifetime count/volume & newest price/reserves carried as window aggregates (`SeedAgg`), grouped per mint while streaming |
 | `transaction_repo.rs` | raw_transactions | insert(_many), find_by_signature, exists |
 | `token_info_repo.rs` | tokens_info | upsert_metrics, update_migration_status, get/update_sync_watermark, find_for(mints) (mint=ANY, chunked — bounded cold-start seed) |
 | `analysis_repo.rs` | tokens_analysis, creator_profiles | upsert_result, list_results, upsert/find/list_creator_profile |
@@ -51,7 +51,7 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 | `wallet_profile_repo.rs` | wallet_profiles (+joins) | insert/update/delete, find_with_wallets, list_with_wallets |
 | `wallet_profile_tag_repo.rs` | wallet_profile_tags | list, find_by_ids, insert/update/delete |
 | `tpsl1_strategy_rule_repo.rs` / `tpsl2_*` | tpsl{1,2}_strategy_rules | insert, find_all, find_by_id, update, delete |
-| `tpsl1_position_repo.rs` / `tpsl2_*` | tpsl{1,2}_real_positions | update_entry(RETURNING), update_target(RETURNING; tpsl2 only — trigger-trade snapshot), insert, update, find_holding_by_{mint,wallet}(limit,offset), find_by_rule(limit,offset), find_by_strategy(limit,offset) — all HTTP list reads are page-bounded; find_all_holding (unbounded, cache warm-up only), count_all_by_rule, fail_stale_exit_pending, delete_position |
+| `tpsl1_position_repo.rs` / `tpsl2_*` | tpsl{1,2}_real_positions | update_entry(RETURNING), update_target(RETURNING; tpsl2 only — trigger-trade snapshot), insert, update, find_holding_by_{mint,wallet}(limit,offset), find_by_rule(limit,offset), find_by_strategy(limit,offset) — all HTTP list reads are page-bounded; find_all_holding (unbounded, cache warm-up only), distinct_unsettled_mints (status≠End — cache seed always tracks open-position mints), count_all_by_rule, fail_stale_exit_pending, delete_position |
 | `tpsl1_paper_trading_repo.rs` / `tpsl2_*` | tpsl{1,2}_paper_{test_run,positions} | start/current/resume/mark run; `clear_runs` (delete all runs for a rule → CASCADE positions; backs "Clear results"); position insert/update_entry/update_target(tpsl2)/update_exit/mark_exit_failed; count_by_run, delete_stale_unentered |
 
 ## Rules
