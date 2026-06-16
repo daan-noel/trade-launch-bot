@@ -44,7 +44,6 @@ pub struct GroupedSweepRepo {
 struct RunDbRow {
     id: Uuid,
     strategy_id: String,
-    rule_id: Option<Uuid>,
     source: String,
     method: String,
     created_after: Option<DateTime<Utc>>,
@@ -65,7 +64,6 @@ impl From<RunDbRow> for GroupedSweepRun {
         Self {
             id: r.id,
             strategy_id: r.strategy_id,
-            rule_id: r.rule_id,
             source: r.source,
             method: r.method,
             created_after: r.created_after,
@@ -197,16 +195,15 @@ impl GroupedSweepRepo {
 
         let run_sql = format!(
             "INSERT INTO {} \
-             (id, strategy_id, rule_id, source, method, created_after, created_before, \
+             (id, strategy_id, source, method, created_after, created_before, \
               curve_only, grouping_spec, axes_spec, min_tokens, token_count, group_count, \
               combo_count, corpus_hash, created_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)",
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
             t.runs
         );
         sqlx::query(&run_sql)
             .bind(run.id)
             .bind(&run.strategy_id)
-            .bind(run.rule_id)
             .bind(&run.source)
             .bind(&run.method)
             .bind(run.created_after)
@@ -298,7 +295,7 @@ impl GroupedSweepRepo {
     /// Runs newest first, bounded by `limit`. (The table is already per-strategy.)
     pub async fn list_runs(&self, limit: i64) -> anyhow::Result<Vec<GroupedSweepRun>> {
         let sql = format!(
-            "SELECT id, strategy_id, rule_id, source, method, created_after, created_before, \
+            "SELECT id, strategy_id, source, method, created_after, created_before, \
                     curve_only, grouping_spec, axes_spec, min_tokens, token_count, group_count, \
                     combo_count, corpus_hash, created_at \
              FROM {} ORDER BY created_at DESC LIMIT $1",

@@ -12,13 +12,9 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
-use sqlx::PgPool;
-use uuid::Uuid;
 
 use crate::models::{Tpsl1Rule, Tpsl2Rule};
 use crate::storage::repositories::grouped_sweep_repo::GroupedSweepTables;
-use crate::storage::repositories::tpsl1_strategy_rule_repo::Tpsl1StrategyRuleRepo;
-use crate::storage::repositories::tpsl2_strategy_rule_repo::Tpsl2StrategyRuleRepo;
 use crate::sweep::corpus::Corpus;
 use crate::sweep::grouped_engine::{run_grouped_with_refine, CoverageFloor, GroupResult};
 use crate::sweep::grouping::GroupField;
@@ -105,15 +101,14 @@ pub struct GroupedSweepOutput {
 // ---------------------------------------------------------------------------
 
 /// Run the grouped sweep for `strategy_id` over an already-loaded, already-
-/// fingerprinted `corpus`. Async because resolving the base rule hits the DB; the
-/// CPU sweep itself runs on a bounded blocking pool.
+/// fingerprinted `corpus`. The sweep needs no DB rule — the base rule is
+/// synthesized in-process (see `sweep_base_rule_*`); the CPU sweep runs on a
+/// bounded blocking pool, which is the only reason this is async.
 // One thin dispatch fn called once from the handler — bundling these into a
 // struct would only add an indirection for a single call site.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_grouped(
-    pool: PgPool,
     strategy_id: &str,
-    rule_id: Option<Uuid>,
     axes_json: Value,
     method: SweepMethod,
     refine: Option<RefineSpec>,
@@ -127,15 +122,15 @@ pub async fn run_grouped(
     match strategy_id {
         "tpsl1" => {
             sweep_tpsl1(
-                pool, rule_id, axes_json, method, refine, corpus, fields, min_tokens, floor,
-                max_combos, observer,
+                axes_json, method, refine, corpus, fields, min_tokens, floor, max_combos,
+                observer,
             )
             .await
         }
         "tpsl2" => {
             sweep_tpsl2(
-                pool, rule_id, axes_json, method, refine, corpus, fields, min_tokens, floor,
-                max_combos, observer,
+                axes_json, method, refine, corpus, fields, min_tokens, floor, max_combos,
+                observer,
             )
             .await
         }
@@ -183,8 +178,6 @@ fn bounded_threads() -> usize {
 
 #[allow(clippy::too_many_arguments)]
 async fn sweep_tpsl2(
-    pool: PgPool,
-    rule_id: Option<Uuid>,
     axes_json: Value,
     method: SweepMethod,
     refine: Option<RefineSpec>,
@@ -211,8 +204,7 @@ async fn sweep_tpsl2(
     // Store the resolved axes (post-defaults/dedup) so the run is reproducible.
     let axes_json = serde_json::to_value(&axes).context("serializing resolved TPSL2 axes")?;
 
-    let base = resolve_tpsl2_rule(&pool, rule_id).await?;
-    let strategy = Tpsl2Strategy::new(base, axes);
+    let strategy = Tpsl2Strategy::new(sweep_base_rule_tpsl2(), axes);
     let mut params = strategy.sample(method);
     if params.is_empty() {
         bail!("param space is empty");
@@ -269,22 +261,44 @@ async fn sweep_tpsl2(
     })
 }
 
-/// Resolve the base TPSL2 rule the swept params overlay: the given id, else the
-/// first rule in the DB (a template to overlay).
-async fn resolve_tpsl2_rule(pool: &PgPool, rule_id: Option<Uuid>) -> Result<Tpsl2Rule> {
-    let repo = Tpsl2StrategyRuleRepo::new(pool.clone());
-    match rule_id {
-        Some(id) => repo
-            .find_by_id(id)
-            .await?
-            .ok_or_else(|| anyhow!("no tpsl2 rule with id {id}")),
-        None => repo
-            .find_all()
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("no tpsl2 rules in DB — create one to use as the base template")),
-    }
+/// Notional (in SOL) every simulated round-trip is priced at — the **only**
+/// base-rule field either sweep actually consumes. Every entry/exit knob is
+/// overwritten by the swept axes, and the token-creation filters/limits are never
+/// read in the grouped sweep, so the sweep needs no DB rule at all — the base rule
+/// is synthesized in-process by `sweep_base_rule_tpsl{1,2}`.
+///
+/// Set this to the per-trade size you actually intend to trade live: the
+/// `CostModel`'s fixed costs (Jito tip + priority fee) are a *fixed* SOL amount
+/// per leg, so a larger notional makes friction look smaller (and a smaller one
+/// larger) — which shifts the per-combo expectancy ranking. `1.0` is a neutral
+/// placeholder, not a recommendation.
+const SWEEP_BASE_BUY_AMOUNT_SOL: f64 = 1.0;
+
+/// Synthetic TPSL2 base rule the swept params overlay. Only `buy_amount` is
+/// meaningful (see [`SWEEP_BASE_BUY_AMOUNT_SOL`]); every other field is either
+/// overwritten by the swept axes or unused in the grouped sweep, so we build it
+/// in-memory instead of requiring a DB template rule.
+fn sweep_base_rule_tpsl2() -> Tpsl2Rule {
+    Tpsl2Rule::new(
+        "sweep-synthetic-base".into(),
+        None,                  // p_token_initial_buy_sol — unused in sweep
+        None,                  // p_token_cu_limit        — unused in sweep
+        None,                  // p_token_cu_price        — unused in sweep
+        serde_json::json!([]), // p_token_ix_labels       — unused in sweep
+        "paper".into(),        // trade_mode              — unused in sweep
+        SWEEP_BASE_BUY_AMOUNT_SOL,
+        0.0,                   // p_exit_take_profit      — overlaid per combo
+        0.0,                   // p_exit_stop_loss        — overlaid per combo
+        None,                  // p_token_max_sol_cost    — unused in sweep
+        None,                  // p_token_spendable_sol_in — unused in sweep
+        None,                  // p_max_concurrent_tokens — unused in grouped sweep
+        None,                  // p_max_total_tokens      — unused in grouped sweep
+        None,                  // tolerance_pct           — unused in sweep
+        None,                  // p_exit_trailing_stop_pct — overlaid per combo
+        None,                  // p_exit_time_stop_secs    — overlaid per combo
+        None,                  // p_exit_stall_secs        — overlaid per combo
+        None,                  // p_exit_liquidity_drop_pct — overlaid per combo
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -293,8 +307,6 @@ async fn resolve_tpsl2_rule(pool: &PgPool, rule_id: Option<Uuid>) -> Result<Tpsl
 
 #[allow(clippy::too_many_arguments)]
 async fn sweep_tpsl1(
-    pool: PgPool,
-    rule_id: Option<Uuid>,
     axes_json: Value,
     method: SweepMethod,
     refine: Option<RefineSpec>,
@@ -322,8 +334,7 @@ async fn sweep_tpsl1(
     // Store the resolved axes (post-defaults/dedup) so the run is reproducible.
     let axes_json = serde_json::to_value(&axes).context("serializing resolved TPSL1 axes")?;
 
-    let base = resolve_tpsl1_rule(&pool, rule_id).await?;
-    let strategy = Tpsl1Strategy::new(base, axes);
+    let strategy = Tpsl1Strategy::new(sweep_base_rule_tpsl1(), axes);
     let mut params = strategy.sample(method);
     if params.is_empty() {
         bail!("param space is empty");
@@ -377,20 +388,28 @@ async fn sweep_tpsl1(
     })
 }
 
-/// Resolve the base TPSL1 rule the swept params overlay: the given id, else the
-/// first rule in the DB (a template to overlay).
-async fn resolve_tpsl1_rule(pool: &PgPool, rule_id: Option<Uuid>) -> Result<Tpsl1Rule> {
-    let repo = Tpsl1StrategyRuleRepo::new(pool.clone());
-    match rule_id {
-        Some(id) => repo
-            .find_by_id(id)
-            .await?
-            .ok_or_else(|| anyhow!("no tpsl1 rule with id {id}")),
-        None => repo
-            .find_all()
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("no tpsl1 rules in DB — create one to use as the base template")),
-    }
+/// Synthetic TPSL1 base rule the swept params overlay. As with TPSL2, only
+/// `buy_amount` is meaningful (see [`SWEEP_BASE_BUY_AMOUNT_SOL`]) — every other
+/// field is overwritten by the swept exit ladder or unused in the grouped sweep.
+fn sweep_base_rule_tpsl1() -> Tpsl1Rule {
+    Tpsl1Rule::new(
+        "sweep-synthetic-base".into(),
+        None,                  // p_token_initial_buy_sol — unused in sweep
+        None,                  // p_token_cu_limit        — unused in sweep
+        None,                  // p_token_cu_price        — unused in sweep
+        serde_json::json!([]), // p_token_ix_labels       — unused in sweep
+        "paper".into(),        // trade_mode              — unused in sweep
+        SWEEP_BASE_BUY_AMOUNT_SOL,
+        0.0,                   // p_exit_take_profit      — overlaid per combo
+        0.0,                   // p_exit_stop_loss        — overlaid per combo
+        None,                  // p_token_max_sol_cost    — unused in sweep
+        None,                  // p_token_spendable_sol_in — unused in sweep
+        None,                  // p_max_concurrent_tokens — unused in grouped sweep
+        None,                  // p_max_total_tokens      — unused in grouped sweep
+        None,                  // tolerance_pct           — unused in sweep
+        None,                  // p_exit_trailing_stop_pct — overlaid per combo
+        None,                  // p_exit_time_stop_secs    — overlaid per combo
+        None,                  // p_exit_stall_secs        — overlaid per combo
+        None,                  // p_exit_liquidity_drop_pct — overlaid per combo
+    )
 }

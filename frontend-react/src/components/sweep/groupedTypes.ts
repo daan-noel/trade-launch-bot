@@ -131,7 +131,6 @@ export const TPSL1_AXES: AxisDef[] = [
 export interface GroupedSweepRunRecord {
   id: string;
   strategy_id: string;
-  rule_id: string | null;
   source: string;
   method: string;
   created_after: string | null;
@@ -173,7 +172,6 @@ export type GroupedSweepResultRecord = SweepResultRecord;
 
 export interface GroupedSweepStartArgs {
   strategy_id: string;
-  rule_id?: string;
   /** RFC3339 UTC; selection lower bound (inclusive). */
   created_after?: string;
   /** RFC3339 UTC; selection upper bound (exclusive). */

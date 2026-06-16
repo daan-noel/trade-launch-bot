@@ -38,9 +38,6 @@ use crate::sweep::strategy::parse_method;
 pub struct StartGroupedSweepBody {
     /// Which strategy to sweep (`"tpsl2"`). Resolves the table set + entry point.
     pub strategy_id: String,
-    /// Base rule the swept params overlay. Omitted ⇒ the first rule of that kind.
-    #[serde(default)]
-    pub rule_id: Option<Uuid>,
     /// Selection lower bound (inclusive). Omitted ⇒ no lower bound.
     #[serde(default)]
     pub created_after: Option<DateTime<Utc>>,
@@ -292,9 +289,7 @@ async fn run_grouped_sweep_job(
         ));
 
     let output = match registry::run_grouped(
-        state.db.clone(),
         &b.strategy_id,
-        b.rule_id,
         b.axes.clone(),
         method,
         refine,
@@ -316,7 +311,7 @@ async fn run_grouped_sweep_job(
                 return HttpResponse::Ok().json(serde_json::json!({"cancelled": true}));
             }
             tracing::error!("grouped sweep failed: {e}");
-            // Config errors (bad axes / over-cap grid / no rule) are client-fixable.
+            // Config errors (bad axes / over-cap grid) are client-fixable.
             return HttpResponse::BadRequest().json(serde_json::json!({"error": e.to_string()}));
         }
     };
@@ -324,7 +319,6 @@ async fn run_grouped_sweep_job(
     let run = GroupedSweepRun {
         id: Uuid::new_v4(),
         strategy_id: b.strategy_id.clone(),
-        rule_id: b.rule_id,
         source: "db".to_string(),
         method: method_tag,
         created_after: b.created_after,

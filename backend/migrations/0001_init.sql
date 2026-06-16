@@ -605,7 +605,6 @@ CREATE INDEX IF NOT EXISTS idx_tpsl2_paper_positions_rule        ON tpsl2_paper_
 CREATE TABLE IF NOT EXISTS tpsl2_grouped_sweep_runs (
     id              UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
     strategy_id     TEXT        NOT NULL,          -- 'tpsl2' (traceability)
-    rule_id         UUID,                          -- base rule the params overlay
     source          TEXT        NOT NULL,          -- 'db' (DB-range corpus)
     method          TEXT        NOT NULL,          -- 'grid' | 'random' | 'lhs'
     created_after   TIMESTAMPTZ,                   -- selection lower bound (incl.)
@@ -706,7 +705,6 @@ CREATE INDEX IF NOT EXISTS idx_tpsl2_grouped_sweep_results_group
 CREATE TABLE IF NOT EXISTS tpsl1_grouped_sweep_runs (
     id              UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
     strategy_id     TEXT        NOT NULL,          -- 'tpsl1' (traceability)
-    rule_id         UUID,                          -- base rule the params overlay
     source          TEXT        NOT NULL,          -- 'db' (DB-range corpus)
     method          TEXT        NOT NULL,          -- 'grid' | 'random' | 'lhs'
     created_after   TIMESTAMPTZ,                   -- selection lower bound (incl.)

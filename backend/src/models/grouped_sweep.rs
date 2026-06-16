@@ -12,13 +12,12 @@ use serde::Serialize;
 use serde_json::Value;
 use uuid::Uuid;
 
-/// One grouped-sweep invocation header: which strategy/rule over what selection,
-/// the grouping fields, the resolved axes, and the realised population counts.
+/// One grouped-sweep invocation header: which strategy over what selection, the
+/// grouping fields, the resolved axes, and the realised population counts.
 #[derive(Debug, Clone, Serialize)]
 pub struct GroupedSweepRun {
     pub id: Uuid,
     pub strategy_id: String,
-    pub rule_id: Option<Uuid>,
     pub source: String,
     pub method: String,
     pub created_after: Option<DateTime<Utc>>,
