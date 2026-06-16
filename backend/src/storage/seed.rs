@@ -13,10 +13,12 @@ use crate::{
 /// Populate `token_cache` from the database so that historical tokens and their
 /// trade stats are immediately available after a server restart.
 ///
-/// Strategy (3 queries total — no N+1):
+/// Strategy (every scan scoped to the seeded mint set — `mint = ANY(...)`, chunked —
+/// so cold start scales with the cache window, not total historical volume):
 ///   1. Load the most-recent `SEED_TOKEN_LIMIT` tokens (bounded, not the whole table).
-///   2. Load per-token aggregates (count, volume, last_trade_at) in one GROUP BY.
-///   3. Load full trade history per token (oldest-first) in one query.
+///   2. Load those mints' persisted `tokens_info` metrics.
+///   3. Load those mints' trade aggregates (count, volume, last_trade_at, reserves).
+///   4. Stream those mints' trade history (oldest-first) row-by-row into the cache.
 pub async fn seed_token_cache(pool: &PgPool, token_cache: Arc<TokenCache>) -> anyhow::Result<()> {
     let token_repo = TokenRepo::new(pool.clone());
     let trade_repo = TradeRepo::new(pool.clone());
@@ -32,16 +34,23 @@ pub async fn seed_token_cache(pool: &PgPool, token_cache: Arc<TokenCache>) -> an
         return Ok(());
     }
 
+    // The exact mint set we keep in cache. The follow-up scans below are scoped to
+    // it (`mint = ANY(...)`, chunked) so cold start touches only these rows, not the
+    // whole growing `trades`/`tokens_info` tables — rows for other mints were always
+    // dropped here anyway (`get_mut` misses), so the cache result is unchanged.
+    let mut seeded_mints = Vec::with_capacity(total);
+
     // Seed a TokenState for every token (zero stats for now)
     for token in tokens {
         let mint = token.mint_address.clone();
+        seeded_mints.push(mint.clone());
         token_cache.insert(mint, TokenState::new(token));
     }
 
     // Prefer values persisted in `tokens_info` to avoid recomputing market cap
-    // where unnecessary. Load all stored metrics and populate cache fields.
+    // where unnecessary. Load the seeded mints' stored metrics and populate cache.
     let token_info_repo = TokenInfoRepo::new(pool.clone());
-    let infos = token_info_repo.list_all().await?;
+    let infos = token_info_repo.find_for(&seeded_mints).await?;
     for info in infos {
         if let Some(mut state) = token_cache.get_mut(&info.mint_address) {
             if let Some(ath_price) = info.ath_price {
@@ -59,7 +68,7 @@ pub async fn seed_token_cache(pool: &PgPool, token_cache: Arc<TokenCache>) -> an
     }
 
     // 2. Trade aggregates — update counts/volumes, reserve baselines, and market cap in cache
-    let aggregates = trade_repo.load_all_aggregates().await?;
+    let aggregates = trade_repo.load_aggregates_for(&seeded_mints).await?;
     for (
         mint,
         trade_count,
@@ -94,7 +103,7 @@ pub async fn seed_token_cache(pool: &PgPool, token_cache: Arc<TokenCache>) -> an
     // through the capped path so a high-volume token's history is bounded the same
     // way at startup as it is live (oldest trades trimmed, `trades_base` tracked).
     trade_repo
-        .for_each_chronological(|trade| {
+        .for_each_chronological(&seeded_mints, |trade| {
             if let Some(mut state) = token_cache.get_mut(&trade.mint_address) {
                 state.push_trade_capped(trade);
             }

@@ -62,6 +62,25 @@ export function formatWithCommas(n: number): string {
 }
 
 /**
+ * Compact duration for live countdowns/elapsed (e.g. `45s`, `2m 15s`, `1h 3m`).
+ * Unlike {@link formatAge} this keeps the second-level unit under an hour, so a
+ * progress ETA visibly ticks down. Sub-second / negative inputs clamp to `0s`.
+ */
+export function formatDurationShort(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  if (s < 86400) {
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return `${h}h ${m}m`;
+  }
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  return `${d}d ${h}h`;
+}
+
+/**
  * Format a USD value: engineering-notation cents for sub-$0.01 prices,
  * comma-grouped dollars-and-cents otherwise.
  */

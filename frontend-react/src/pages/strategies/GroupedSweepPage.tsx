@@ -3,7 +3,7 @@ import { DataTable } from 'components/table/DataTable';
 import { InlineAlert } from 'components/ui/Modal';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
-import { useBackgroundJobs } from 'context/BackgroundJobsContext';
+import { useBackgroundJobActions, useBackgroundJobsState } from 'context/BackgroundJobsContext';
 import { buildSweepColumns } from 'components/sweep/sweepColumns';
 import { buildGroupColumns } from 'components/sweep/groupColumns';
 import { SweepConfigForm } from 'components/sweep/SweepConfigForm';
@@ -74,7 +74,8 @@ export function GroupedSweepPage() {
   // survives navigation (the run continues on the backend regardless); the global
   // indicator renders the progress bar + cancel. The page only needs "is it
   // running" to gate the form.
-  const { markStarting, isRunning } = useBackgroundJobs();
+  const { markStarting } = useBackgroundJobActions();
+  const { isRunning } = useBackgroundJobsState();
   const sweepRunning = isRunning('sweep', 'sweep') || startState.isLoading;
 
   const [deleteRun, deleteState] = useDeleteGroupedSweepRunMutation();

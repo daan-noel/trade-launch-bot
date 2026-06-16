@@ -104,13 +104,16 @@ impl BuyRetryCfg {
     }
 }
 
-/// Poll/timeout timing for the scalp-entry arming wait ([`await_scalp_entry_signal`]).
-/// Separate from [`BuyRetryCfg`] because the entry signal can take far longer to
-/// form than a buy fill takes to index. `for_rule` sizes the window to the rule's
-/// own time gates (see `scalp_arming_attempts`); tests construct it directly.
+/// Window + fallback-tick timing for the scalp-entry arming wait
+/// ([`await_scalp_entry_signal`]). Separate from [`BuyRetryCfg`] because the entry
+/// signal can take far longer to form than a buy fill takes to index. `for_rule`
+/// sizes the window to the rule's own time gates (see `scalp_arming_attempts`);
+/// tests construct it directly. Total window = `attempts × interval`.
 #[derive(Clone, Copy)]
 pub(crate) struct ScalpWaitCfg {
+    /// Number of `interval`-long units in the arming window (total = attempts × interval).
     attempts: usize,
+    /// Bounded fallback tick between cache checks when no notify arrives.
     interval: Duration,
 }
 
@@ -125,8 +128,9 @@ impl ScalpWaitCfg {
     }
 }
 
-/// Wait for the rule's scalp entry signal before any buy is sent: poll the WS-fed
-/// trade feed until [`find_scalp_entry`](super::super::entry::find_scalp_entry)
+/// Wait for the rule's scalp entry signal before any buy is sent: watch the WS-fed
+/// trade feed (waking on the `TradeSignals` mint lane) until
+/// [`find_scalp_entry`](super::super::entry::find_scalp_entry)
 /// holds on some trade, arming the snipe buy. Returns the qualifying
 /// [`EntryFill`] (the **trigger trade**) once armed, or `None` if the window
 /// elapses without a signal (the caller then drops the unentered position,
@@ -143,18 +147,35 @@ pub(crate) async fn await_scalp_entry_signal(
     mint: &str,
     rule: &Tpsl2Rule,
     token_cache: &TokenCache,
+    trade_signals: &Arc<TradeSignals>,
     cfg: ScalpWaitCfg,
 ) -> Option<EntryFill> {
-    // Skip the O(n) `find_scalp_entry` re-walk on ticks where no new trade landed
-    // for the mint. The arming signal watches all trades on the mint, not a single
-    // wallet, so there's no per-(wallet,mint) `TradeSignals` key to wake on; instead
-    // the bounded timer re-reads the cache but only re-walks when the token's
-    // (monotonic) `trade_count` advanced (`None` forces the first walk).
+    // Wake the instant a trade lands for this mint instead of re-reading the cache
+    // on a fixed timer: the ingest pipeline pings the mint lane (`notify_mint`)
+    // right after it appends the trade to the cache. The arming signal watches all
+    // trades on the mint, not a single wallet, so it uses the mint-only lane (any
+    // wallet wakes it). A bounded fallback tick keeps the wait honest — capped at
+    // the window — if a notify is ever missed.
+    let guard = trade_signals.register_mint(mint);
+
+    // Same total window as the old poll loop (attempts × interval), so a larger
+    // min-age / higher-low still widens it automatically — no fixed timeout to keep
+    // in sync with the params by hand.
+    let deadline = Instant::now() + cfg.interval * cfg.attempts as u32;
+
+    // Re-walk the O(n) `find_scalp_entry` only when the token's (monotonic)
+    // `trade_count` advanced; `None` forces the first walk.
     let mut last_count: Option<u64> = None;
-    for _ in 0..cfg.attempts {
+    loop {
+        // Arm the wakeup BEFORE reading the cache so a trade landing in the gap
+        // isn't lost (`notify_waiters` stores no permit).
+        let notified = guard.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+
         // Read the mint's trade window from the in-memory cache (kept current by
         // the WS pipeline for every wallet's trades) instead of an unbounded
-        // `find_by_mint_all` DB scan per tick.
+        // `find_by_mint_all` DB scan.
         if let Some(entry) = token_cache.get(mint) {
             let trade_count = entry.value().trade_count;
             if last_count != Some(trade_count) {
@@ -166,9 +187,19 @@ pub(crate) async fn await_scalp_entry_signal(
                 }
             }
         }
-        sleep(cfg.interval).await;
+
+        let now = Instant::now();
+        if now >= deadline {
+            return None;
+        }
+        // Wake on the next trade for this mint, or a bounded fallback tick (≤ the
+        // poll interval, never past the deadline).
+        let tick = (deadline - now).min(cfg.interval);
+        tokio::select! {
+            _ = notified.as_mut() => {}
+            _ = sleep(tick) => {}
+        }
     }
-    None
 }
 
 /// Snipe-buy `mint` and record the entry fill on first sight in the WS feed,

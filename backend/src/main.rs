@@ -373,6 +373,7 @@ async fn main() -> anyhow::Result<()> {
             sse_tx.clone(),
             settings_tx.subscribe(),
             trader.clone(),
+            trade_signals.clone(),
         );
         let pool_index = pipeline.pool_index();
         let pools_changed = pipeline.pools_changed();

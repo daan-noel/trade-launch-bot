@@ -590,3 +590,67 @@ impl Tpsl1RuntimeCache {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cache() -> Tpsl1RuntimeCache {
+        let (tx, _rx) = broadcast::channel(8);
+        Tpsl1RuntimeCache::new(tx)
+    }
+
+    fn holding_position(rule_id: Uuid) -> Position {
+        Position::new(
+            "MintAAA".to_string(),
+            "WalletBBB".to_string(),
+            0.0, // 0-entry: the just-claimed, not-yet-filled entry state
+            "creation_tx".to_string(),
+            "TPSL1".to_string(),
+            rule_id,
+            1.0,
+        )
+    }
+
+    /// `on_token_created` now claims the cap slot + holding-index entry inline via
+    /// `sync_position(None, &pos)` and only spawns the DB insert; on insert failure
+    /// the spawned task rolls the claim back with `remove_position`. This asserts
+    /// that rollback is the exact inverse — counts and the holding index return to
+    /// zero — so a failed insert can never leak a phantom cap slot.
+    #[test]
+    fn inline_claim_then_rollback_is_balanced() {
+        let cache = cache();
+        let rule_id = Uuid::new_v4();
+        let pos = holding_position(rule_id);
+
+        // Inline claim (runs on the runner's select task, before the spawn).
+        cache.sync_position(None, &pos);
+        assert_eq!(cache.holding_count_by_rule(rule_id), 1);
+        assert_eq!(cache.total_count_by_rule(rule_id), 1);
+        assert_eq!(cache.holding_by_mint(&pos.mint).len(), 1);
+
+        // Rollback path taken when the spawned insert fails.
+        cache.remove_position(&pos);
+        assert_eq!(cache.holding_count_by_rule(rule_id), 0);
+        assert_eq!(cache.total_count_by_rule(rule_id), 0);
+        assert!(cache.holding_by_mint(&pos.mint).is_empty());
+    }
+
+    /// During a launch wave the count bump must be visible synchronously: a second
+    /// claim for the same rule sees the first against the cap even though neither
+    /// insert has run yet. Two inline claims => holding count of 2.
+    #[test]
+    fn inline_claims_accumulate_for_cap_visibility() {
+        let cache = cache();
+        let rule_id = Uuid::new_v4();
+        let mut a = holding_position(rule_id);
+        a.mint = "MintA".to_string();
+        let mut b = holding_position(rule_id);
+        b.mint = "MintB".to_string();
+
+        cache.sync_position(None, &a);
+        cache.sync_position(None, &b);
+        assert_eq!(cache.holding_count_by_rule(rule_id), 2);
+        assert_eq!(cache.total_count_by_rule(rule_id), 2);
+    }
+}

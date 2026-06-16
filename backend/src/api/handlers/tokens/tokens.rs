@@ -477,6 +477,14 @@ fn default_trades_limit() -> i64 {
     5_000
 }
 
+/// Hard cap on `offset` for the DB-fallback path. `find_by_mint_paged` uses
+/// `LIMIT/OFFSET`, so a large offset makes Postgres scan-and-discard `offset`
+/// rows of a high-volume `trades` partition on every request. The cache branch
+/// (the common case) pages an in-memory `Vec` and is unaffected; real clients
+/// only ever request `offset = 0`, so this just bounds abusive deep paging.
+/// Deep history should move to keyset/seek paging if it's ever needed.
+const MAX_TRADES_OFFSET: i64 = 50_000;
+
 /// `GET /api/tokens/:mint/trades`
 ///
 /// Returns trades for a token in chronological order (cache first, else DB),
@@ -488,7 +496,7 @@ pub async fn get_trades(
 ) -> impl Responder {
     let mint = path.into_inner();
     let limit = query.limit.clamp(1, 5_000);
-    let offset = query.offset.max(0);
+    let offset = query.offset.clamp(0, MAX_TRADES_OFFSET);
 
     if let Some(entry) = state.token_cache.get(&mint) {
         let page: Vec<_> = entry

@@ -207,48 +207,48 @@ impl Tpsl2StrategyService {
                 );
                 position.token_program_id = token.token_program_id.clone();
 
-                let insert_res = match paper_run_id {
-                    Some(run_id) => self.paper_repo.insert(&position, run_id).await,
-                    None => self.position_repo.insert(&position).await,
-                };
-                if let Err(err) = insert_res {
-                    warn!("Failed to create position for token {mint}: {err}");
-                    return;
-                }
+                // Claim the cap slot + holding-index entry INLINE on the runner's
+                // select task, then spawn the slow DB insert + buy/fill off it — the
+                // same discipline `trigger_real_exit` uses for the sell side. The
+                // count bump is done inline (not in the spawn) so the next ping in a
+                // launch wave sees this token against the cap *before* its insert's DB
+                // RTT completes; otherwise a matched entry would head-of-line-block the
+                // next ping (possibly a TP/SL exit) for a round-trip. A 0-entry position
+                // is gated out of every exit path (`clock_entry_time` => None), so it
+                // can sit in the holding index until its entry fill lands without being
+                // mis-exited.
                 self.runtime.sync_position(None, &position);
 
-                info!(
-                    "Created position {} for token {mint} under rule {rule_id}",
-                    position.id
-                );
+                let is_real = rule.trade_mode == "real";
+                let buy_amount = rule.buy_amount;
+                let creator = token.creator_wallet.clone();
+                let position_id = position.id;
+                let token_program_id = position
+                    .token_program_id
+                    .clone()
+                    .unwrap_or_else(|| crate::config::constants::TOKEN_PROGRAM_ID.to_string());
+                let rule_owned = rule.clone();
+                let paper_repo = self.paper_repo.clone();
+                let position_repo = self.position_repo.clone();
+                let trade_repo = self.trade_repo.clone();
+                let runtime = self.runtime.clone();
+                let token_cache = self.token_cache.clone();
+                let trader = self.trader.clone();
+                let trade_signals = self.trade_signals.clone();
+                tokio::spawn(async move {
+                    let insert_res = match paper_run_id {
+                        Some(run_id) => paper_repo.insert(&position, run_id).await,
+                        None => position_repo.insert(&position).await,
+                    };
+                    if let Err(err) = insert_res {
+                        warn!("Failed to create position for token {mint}: {err}");
+                        // Roll back the inline cap/holding-index claim.
+                        runtime.remove_position(&position);
+                        return;
+                    }
+                    info!("Created position {position_id} for token {mint} under rule {rule_id}");
 
-                if rule.trade_mode == "paper" {
-                    super::execution::paper::spawn_entry_fill_poll(
-                        self.paper_repo.clone(),
-                        self.runtime.clone(),
-                        self.token_cache.clone(),
-                        mint.clone(),
-                        position.id,
-                        rule.clone(),
-                    );
-                } else if rule.trade_mode == "real" {
-                    let trader = self.trader.clone();
-                    let mint_clone = mint.clone();
-                    let creator = token.creator_wallet.clone();
-                    let buy_amount = rule.buy_amount;
-                    let position_id = position.id;
-                    let position_repo = self.position_repo.clone();
-                    let trade_repo = self.trade_repo.clone();
-                    let runtime = self.runtime.clone();
-                    let trade_signals = self.trade_signals.clone();
-                    let rule_for_entry = rule.clone();
-                    let token_cache = self.token_cache.clone();
-                    let token_program_id = position
-                        .token_program_id
-                        .clone()
-                        .unwrap_or_else(|| crate::config::constants::TOKEN_PROGRAM_ID.to_string());
-                    tokio::spawn(async move {
-                        let mint_for_log = mint_clone.clone();
+                    if is_real {
                         // Arm on the scalp entry signal before sending any buy: real
                         // mode waits for the first trade where every configured gate
                         // holds (shared `find_scalp_entry`), so live entries honor
@@ -257,10 +257,11 @@ impl Tpsl2StrategyService {
                         // wallet's own on-chain buy. No signal in the window → fall
                         // through and drop the unentered position, as a missed buy does.
                         let armed = super::execution::real::await_scalp_entry_signal(
-                            &mint_clone,
-                            &rule_for_entry,
+                            &mint,
+                            &rule_owned,
                             &token_cache,
-                            super::execution::real::ScalpWaitCfg::for_rule(&rule_for_entry),
+                            &trade_signals,
+                            super::execution::real::ScalpWaitCfg::for_rule(&rule_owned),
                         )
                         .await;
                         if let Some(target) = armed {
@@ -289,7 +290,7 @@ impl Tpsl2StrategyService {
                             }
                             super::execution::real::buy_until_filled_or_give_up(
                                 trader,
-                                mint_clone,
+                                mint.clone(),
                                 creator,
                                 token_program_id,
                                 buy_amount,
@@ -305,7 +306,7 @@ impl Tpsl2StrategyService {
                             info!(
                                 "[REAL] Scalp entry signal never fired for mint {} within the \
                                  arming window; dropping unentered position {}",
-                                mint_for_log, position_id
+                                mint, position_id
                             );
                         }
                         if let Ok(Some(pos)) = position_repo.find_by_id(position_id).await {
@@ -314,12 +315,21 @@ impl Tpsl2StrategyService {
                                 runtime.remove_position(&pos);
                                 info!(
                                     "[REAL] Removed position {} for mint {}: no entry recorded",
-                                    position_id, mint_for_log
+                                    position_id, mint
                                 );
                             }
                         }
-                    });
-                }
+                    } else if is_paper {
+                        super::execution::paper::spawn_entry_fill_poll(
+                            paper_repo,
+                            runtime,
+                            token_cache,
+                            mint,
+                            position_id,
+                            rule_owned,
+                        );
+                    }
+                });
             }
         } else {
             debug!("Token {mint} does not match any TPSL buy entry rule");

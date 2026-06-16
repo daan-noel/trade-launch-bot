@@ -221,17 +221,17 @@ export function DataTable<R>({
     return runs;
   }, [groupLabels, visCols, colGroups]);
 
-  // Boundary divider on a group's first column + faint tint on odd groups.
-  const groupCellCls = (ci: number) =>
-    cn(
-      colGroups[ci]?.isStart && ci > 0 && 'border-l border-white/10',
-      colGroups[ci]?.tinted && 'shadow-[inset_0_0_0_1000px_rgba(255,255,255,0.02)]',
-    );
-
   // Actions is always a new trailing group → always gets the boundary divider.
-  const actionsCellCls = cn(
-    'border-l border-white/10',
-    actionsTinted && 'shadow-[inset_0_0_0_1000px_rgba(255,255,255,0.02)]',
+  // Memoized so its string identity is stable across renders — it's passed to
+  // every memoized TableRow, so an inline `cn(...)` here would defeat their
+  // React.memo on every parent re-render (worst on ~4×/sec live-trade tables).
+  const actionsCellCls = useMemo(
+    () =>
+      cn(
+        'border-l border-white/10',
+        actionsTinted && 'shadow-[inset_0_0_0_1000px_rgba(255,255,255,0.02)]',
+      ),
+    [actionsTinted],
   );
 
   // Per-visible-column group class (boundary divider + tint), precomputed once
@@ -521,7 +521,7 @@ export function DataTable<R>({
                       'sticky top-0 bg-bg-panel px-2 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-primary',
                       col.sortable !== false && !col.renderHeader && 'cursor-pointer hover:text-accent',
                       col.tooltip && 'decoration-dotted underline-offset-4 hover:underline',
-                      groupCellCls(ci),
+                      groupClasses[ci],
                     )}
                     onClick={
                       col.sortable !== false && !col.renderHeader
@@ -551,7 +551,7 @@ export function DataTable<R>({
                 <tr>
                   <th className="bg-bg-panel px-1 py-1" />
                   {visCols.map((col, ci) => (
-                    <th key={`f-${col.key}`} className={cn('bg-bg-panel px-1 py-1', groupCellCls(ci))}>
+                    <th key={`f-${col.key}`} className={cn('bg-bg-panel px-1 py-1', groupClasses[ci])}>
                       <Input
                         type="text"
                         fieldSize="table"

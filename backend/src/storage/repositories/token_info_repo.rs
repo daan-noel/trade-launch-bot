@@ -153,13 +153,26 @@ impl TokenInfoRepo {
         ))
     }
 
-    /// List all token metrics rows.
-    pub async fn list_all(&self) -> anyhow::Result<Vec<TokenInfo>> {
-        let rows = sqlx::query_as::<_, (Uuid, String, Option<f64>, Option<DateTime<Utc>>, Option<i64>, f64, Option<f64>, i64, Option<DateTime<Utc>>, Option<f64>, bool, bool, DateTime<Utc>, DateTime<Utc>, Option<DateTime<Utc>>)>(
-            "SELECT id, mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_rugged, is_migrated, created_at, updated_at, last_synced_at FROM tokens_info",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+    /// Token metrics rows for the given mints, batched in chunks of `INFO_CHUNK`.
+    /// Scoped to the seeded set (`mint = ANY($1)`) so cold start never `SELECT`s the
+    /// whole, retention-free `tokens_info` table — it grows forever and the cache
+    /// only keeps the recent `SEED_TOKEN_LIMIT` mints. Mints with no row are absent.
+    pub async fn find_for(&self, mints: &[String]) -> anyhow::Result<Vec<TokenInfo>> {
+        /// Mints per round-trip; keeps each `= ANY($1)` array index-friendly.
+        const INFO_CHUNK: usize = 1000;
+        if mints.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut rows = Vec::with_capacity(mints.len());
+        for chunk in mints.chunks(INFO_CHUNK) {
+            let batch = sqlx::query_as::<_, (Uuid, String, Option<f64>, Option<DateTime<Utc>>, Option<i64>, f64, Option<f64>, i64, Option<DateTime<Utc>>, Option<f64>, bool, bool, DateTime<Utc>, DateTime<Utc>, Option<DateTime<Utc>>)>(
+                "SELECT id, mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_rugged, is_migrated, created_at, updated_at, last_synced_at FROM tokens_info WHERE mint_address = ANY($1)",
+            )
+            .bind(chunk)
+            .fetch_all(&self.pool)
+            .await?;
+            rows.extend(batch);
+        }
 
         Ok(rows
             .into_iter()

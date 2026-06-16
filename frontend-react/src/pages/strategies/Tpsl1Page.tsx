@@ -39,7 +39,7 @@ import {
   updateTpsl1Rule,
 } from 'services/api';
 import { connectPaperTestStream } from 'services/sse';
-import { useBackgroundJobs } from 'context/BackgroundJobsContext';
+import { useBackgroundJobActions } from 'context/BackgroundJobsContext';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
   fetchMatchedCached,
@@ -535,7 +535,7 @@ export function Tpsl1Page() {
   // Simulation progress/running is tracked app-wide so it survives navigation
   // (the backtest runs on the backend regardless); the global indicator renders
   // its progress bar + cancel.
-  const { markStarting } = useBackgroundJobs();
+  const { markStarting } = useBackgroundJobActions();
 
   // Rule list: one initial load then a visibility-gated silent poll, deduped
   // into a shared hook (see usePolledRules). `loadRules` is the silent/forced

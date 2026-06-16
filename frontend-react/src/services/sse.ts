@@ -149,52 +149,6 @@ export function connectTpslRulesChanged(
 }
 
 /**
- * Real backtest progress for a single rule's in-flight simulation. Filters the
- * `simulation_progress` stream to `ruleId` and reports `processed`/`total`
- * candidate tokens so the caller can render a determinate progress bar instead
- * of a fake trickle. The backend throttles to ~100 frames per run plus a final
- * `processed === total`.
- */
-export function connectSimulationProgress(
-  ruleId: string,
-  onProgress: (processed: number, total: number) => void,
-): StreamHandle {
-  const unsub = subscribe('simulation_progress', (e) => {
-    if (typeof e.data !== 'string') return;
-    try {
-      const p = JSON.parse(e.data) as import('types').SimulationProgressEvent;
-      if (p.rule_id === ruleId) onProgress(p.processed, p.total);
-    } catch {
-      /* ignore malformed frames */
-    }
-  });
-  return { close: unsub };
-}
-
-/**
- * Real progress for the in-flight grouped param-sweep. Filters the
- * `sweep_progress` stream to `strategyId` and reports `processed`/`total` tokens
- * folded across all surviving groups so the caller can render a determinate
- * progress bar. The backend throttles to ~100 frames per run plus a final frame
- * (`processed === total`, or the count where it was cancelled).
- */
-export function connectSweepProgress(
-  strategyId: string,
-  onProgress: (processed: number, total: number) => void,
-): StreamHandle {
-  const unsub = subscribe('sweep_progress', (e) => {
-    if (typeof e.data !== 'string') return;
-    try {
-      const p = JSON.parse(e.data) as import('types').SweepProgressEvent;
-      if (p.strategy_id === strategyId) onProgress(p.processed, p.total);
-    } catch {
-      /* ignore malformed frames */
-    }
-  });
-  return { close: unsub };
-}
-
-/**
  * Terminal signal for the in-flight grouped param-sweep — the single-flight run
  * ended (normal finish, error, or user cancel). Lets a global progress indicator
  * clear itself without polling. The payload is delivered for every strategy_id;

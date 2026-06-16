@@ -10,7 +10,8 @@
 //! `determine_instruction_type`, `build_amm_trade`, `decode_create`) are shared
 //! with the root decoder module.
 
-use std::sync::Arc;
+use std::cell::OnceCell;
+use std::sync::{Arc, OnceLock};
 
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
@@ -44,15 +45,65 @@ use super::{DecodeOutput, HeliusDecoder};
 mod trade;
 use trade::decode_trade_events_from_inner_pb;
 
-/// One pump.fun instruction in borrowed protobuf form: its program id resolved
-/// to a `&str` (out of the base58-encoded account keys) and its raw `data` /
-/// `accounts` index bytes borrowed straight from the protobuf — no base58
-/// round-trip, no `Value`. Private to the `grpc` subtree — `grpc::trade` reads it
-/// as a descendant module.
+/// One pump.fun instruction in borrowed protobuf form: the index of its program
+/// id in the account-key list plus its raw `data` / `accounts` index bytes,
+/// borrowed straight from the protobuf — no base58 round-trip, no `Value`. The
+/// program id stays an index (not a resolved `&str`) so the hot path can compare
+/// it on raw bytes via [`LazyKeys`] and only base58-encode the few keys it
+/// actually emits. Private to the `grpc` subtree — `grpc::trade` reads it as a
+/// descendant module (and only touches `data`).
 struct PbIx<'a> {
-    program_id: &'a str,
+    program_id_index: u32,
     accounts: &'a [u8],
     data: &'a [u8],
+}
+
+/// The transaction's account-key list (`static ++ loaded writable ++ loaded
+/// readonly` — the canonical order, a wrong shuffle of which misattributes
+/// wallets/mints) kept as borrowed raw 32-byte slices, base58-encoded **lazily**
+/// and memoized per index. The decode hot path (a log-derived trade) reads the
+/// mint/user from the event payload, never the account keys — only program-id
+/// *comparisons* (done on raw bytes here) and the rare create/migrate/balance
+/// paths dereference them — so eagerly encoding every key was pure waste.
+struct LazyKeys<'a> {
+    raw: Vec<&'a [u8]>,
+    encoded: Vec<OnceCell<String>>,
+}
+
+impl<'a> LazyKeys<'a> {
+    fn new(message: &'a scb::Message, meta: &'a scb::TransactionStatusMeta) -> Self {
+        let raw: Vec<&[u8]> = message
+            .account_keys
+            .iter()
+            .chain(meta.loaded_writable_addresses.iter())
+            .chain(meta.loaded_readonly_addresses.iter())
+            .map(|k| k.as_slice())
+            .collect();
+        let encoded = raw.iter().map(|_| OnceCell::new()).collect();
+        Self { raw, encoded }
+    }
+
+    /// Raw 32-byte key at `i`, for byte-level program-id comparison (no encode).
+    fn raw(&self, i: usize) -> Option<&'a [u8]> {
+        self.raw.get(i).copied()
+    }
+
+    /// Base58 of the key at `i` (memoized); `""` if the index is out of range —
+    /// matching the old `keys.get(i).copied().unwrap_or("")`.
+    fn get(&self, i: usize) -> &str {
+        match self.raw.get(i) {
+            Some(bytes) => self.encoded[i]
+                .get_or_init(|| bs58::encode(bytes).into_string())
+                .as_str(),
+            None => "",
+        }
+    }
+
+    /// Force-encode every key into an owned `&[&str]` view, for the rare paths
+    /// (create, balance-delta fallback) that resolve accounts by string search.
+    fn all(&self) -> Vec<&str> {
+        (0..self.raw.len()).map(|i| self.get(i)).collect()
+    }
 }
 
 impl HeliusDecoder {
@@ -108,14 +159,8 @@ impl HeliusDecoder {
 
         // accountKeys = static ++ loaded writable ++ loaded readonly, same order
         // the adapter/`Value` path used (a wrong order misattributes wallets/mints).
-        let account_keys: Vec<String> = message
-            .account_keys
-            .iter()
-            .chain(meta.loaded_writable_addresses.iter())
-            .chain(meta.loaded_readonly_addresses.iter())
-            .map(|k| bs58::encode(k).into_string())
-            .collect();
-        let keys: Vec<&str> = account_keys.iter().map(String::as_str).collect();
+        // Encoded lazily — the common log-derived trade never dereferences them.
+        let keys = LazyKeys::new(message, meta);
 
         // Null-data raw-tx carrier: events embed an `Arc<RawTransaction>` but
         // never read it — the persisted blob is built off-thread in the DbWriter.
@@ -130,14 +175,14 @@ impl HeliusDecoder {
         let outer_ixs: Vec<PbIx> = message
             .instructions
             .iter()
-            .map(|ix| pb_ix(ix.program_id_index, &ix.accounts, &ix.data, &keys))
+            .map(|ix| pb_ix(ix.program_id_index, &ix.accounts, &ix.data))
             .collect();
 
         // ── Step 1a: TradeEvents from "Program data:" logs, with the inner-ix
         // self-CPI fallback when logs were truncated. ───────────────────────────
         let mut decoded_events = decode_trade_events_from_logs(&logs);
         if decoded_events.is_empty() {
-            let pump_ixs = find_pump_pb_ixs(message, meta, &keys, &self.pump_program_id);
+            let pump_ixs = find_pump_pb_ixs(message, meta, &keys, &self.pump_program_id_bytes);
             decoded_events = decode_trade_events_from_inner_pb(&pump_ixs);
         }
 
@@ -148,7 +193,7 @@ impl HeliusDecoder {
         let instruction_type = determine_instruction_type(&kinds, &decoded_events);
 
         // ── Step 2: instruction-order labels (+ compute budget) ─────────────────
-        let (instruction_labels, cu_limit, cu_price) = build_labels_pb(&outer_ixs);
+        let (instruction_labels, cu_limit, cu_price) = build_labels_pb(&outer_ixs, &keys);
         let mut labels_json = json!(instruction_labels);
 
         // ── Step 3: build InternalEvents ───────────────────────────────────────
@@ -223,13 +268,16 @@ impl HeliusDecoder {
             || has_create
             || has_migrate;
         let pump_ixs = if needs_pump_ixs {
-            find_pump_pb_ixs(message, meta, &keys, &self.pump_program_id)
+            find_pump_pb_ixs(message, meta, &keys, &self.pump_program_id_bytes)
         } else {
             Vec::new()
         };
 
-        // 3b. Balance-delta fallback (rare: no decodable TradeEvent).
+        // 3b. Balance-delta fallback (rare: no decodable TradeEvent). Resolving the
+        // trader from per-account balance deltas needs the full key view, so this
+        // rare path is the one place every key gets encoded.
         if decoded_events.is_empty() {
+            let all_keys = keys.all();
             for kind in kinds
                 .iter()
                 .filter(|k| matches!(k, InstructionKind::Buy | InstructionKind::Sell))
@@ -242,7 +290,7 @@ impl HeliusDecoder {
                         slot,
                         block_time,
                         &ix_accounts,
-                        &keys,
+                        &all_keys,
                         pre_balances,
                         post_balances,
                         &meta.pre_token_balances,
@@ -260,6 +308,7 @@ impl HeliusDecoder {
         if has_create {
             if let Some(create_ix) = pump_ixs.iter().find(|ix| is_create_pb(ix)) {
                 let ix_accounts = resolve_pump_accounts_pb(create_ix, &keys);
+                let all_keys = keys.all();
                 let pump_ix_datas: Vec<&[u8]> = pump_ixs.iter().map(|ix| ix.data).collect();
                 events.extend(self.decode_create(
                     &signature,
@@ -267,7 +316,7 @@ impl HeliusDecoder {
                     block_time,
                     create_ix.data,
                     &ix_accounts,
-                    &keys,
+                    &all_keys,
                     &decoded_events,
                     &decoded_create_events,
                     &instruction_type,
@@ -353,23 +402,16 @@ impl HeliusDecoder {
         }
 
         let signature = bs58::encode(&info.signature).into_string();
-        let account_keys: Vec<String> = message
-            .account_keys
-            .iter()
-            .chain(meta.loaded_writable_addresses.iter())
-            .chain(meta.loaded_readonly_addresses.iter())
-            .map(|k| bs58::encode(k).into_string())
-            .collect();
-        let keys: Vec<&str> = account_keys.iter().map(String::as_str).collect();
+        let keys = LazyKeys::new(message, meta);
 
         let raw_tx = Arc::new(raw_tx_carrier(signature.clone(), slot, block_time, received_at));
 
         let outer_ixs: Vec<PbIx> = message
             .instructions
             .iter()
-            .map(|ix| pb_ix(ix.program_id_index, &ix.accounts, &ix.data, &keys))
+            .map(|ix| pb_ix(ix.program_id_index, &ix.accounts, &ix.data))
             .collect();
-        let (labels, _, _) = build_labels_pb(&outer_ixs);
+        let (labels, _, _) = build_labels_pb(&outer_ixs, &keys);
         let labels_json = json!(labels);
 
         let mut events = Vec::with_capacity(resolved.len());
@@ -415,31 +457,38 @@ fn raw_tx_carrier(
     }
 }
 
-/// Resolve one compiled instruction's program id (via the account-key list) and
-/// borrow its `accounts`/`data` bytes into a [`PbIx`].
-fn pb_ix<'a>(program_id_index: u32, accounts: &'a [u8], data: &'a [u8], keys: &[&'a str]) -> PbIx<'a> {
+/// Borrow one compiled instruction's `accounts`/`data` bytes into a [`PbIx`],
+/// keeping the program id as an index (resolved lazily via [`LazyKeys`]).
+fn pb_ix<'a>(program_id_index: u32, accounts: &'a [u8], data: &'a [u8]) -> PbIx<'a> {
     PbIx {
-        program_id: keys.get(program_id_index as usize).copied().unwrap_or(""),
+        program_id_index,
         accounts,
         data,
     }
 }
 
+/// Raw 32-byte form of the canonical pump.fun program id, base58-decoded once.
+fn pump_fun_id_bytes() -> &'static [u8] {
+    static BYTES: OnceLock<Vec<u8>> = OnceLock::new();
+    BYTES.get_or_init(|| bs58::decode(PUMP_FUN_PROGRAM_ID).into_vec().unwrap_or_default())
+}
+
 /// Pump.fun instructions (outer + inner), borrowed straight from the protobuf.
-/// Protobuf-native analogue of `parse::find_pump_ixs_anywhere`.
+/// Protobuf-native analogue of `parse::find_pump_ixs_anywhere`. Matches the
+/// program id on raw 32-byte bytes so no key is base58-encoded.
 fn find_pump_pb_ixs<'a>(
     message: &'a scb::Message,
     meta: &'a scb::TransactionStatusMeta,
-    keys: &[&'a str],
-    program_id: &str,
+    keys: &LazyKeys,
+    program_id_bytes: &[u8],
 ) -> Vec<PbIx<'a>> {
     let mut out = Vec::new();
+    let is_pump = |idx: u32| keys.raw(idx as usize) == Some(program_id_bytes);
 
     for ix in &message.instructions {
-        let pid = keys.get(ix.program_id_index as usize).copied().unwrap_or("");
-        if pid == program_id {
+        if is_pump(ix.program_id_index) {
             out.push(PbIx {
-                program_id: pid,
+                program_id_index: ix.program_id_index,
                 accounts: &ix.accounts,
                 data: &ix.data,
             });
@@ -448,10 +497,9 @@ fn find_pump_pb_ixs<'a>(
 
     for group in &meta.inner_instructions {
         for ix in &group.instructions {
-            let pid = keys.get(ix.program_id_index as usize).copied().unwrap_or("");
-            if pid == program_id {
+            if is_pump(ix.program_id_index) {
                 out.push(PbIx {
-                    program_id: pid,
+                    program_id_index: ix.program_id_index,
                     accounts: &ix.accounts,
                     data: &ix.data,
                 });
@@ -467,23 +515,25 @@ fn find_pump_pb_ixs<'a>(
 fn collect_kinds_pb(
     outer: &[PbIx],
     meta: &scb::TransactionStatusMeta,
-    keys: &[&str],
+    keys: &LazyKeys,
 ) -> Vec<InstructionKind> {
     let mut kinds = Vec::new();
 
     for p in outer {
-        if let Some(kind) = classify_pump_ix(p.program_id, Some(p.data)) {
+        if let Some(kind) = classify_pump_ix(keys.get(p.program_id_index as usize), Some(p.data)) {
             kinds.push(kind);
         }
     }
 
     for group in &meta.inner_instructions {
         for ix in &group.instructions {
-            let pid = keys.get(ix.program_id_index as usize).copied().unwrap_or("");
-            if pid != PUMP_FUN_PROGRAM_ID {
+            // Raw-byte match against the canonical pump program; only on a hit do
+            // we hand `classify_pump_ix` the known `&str` constant — no per-inner
+            // -ix base58 encode of the program id.
+            if keys.raw(ix.program_id_index as usize) != Some(pump_fun_id_bytes()) {
                 continue;
             }
-            if let Some(kind) = classify_pump_ix(pid, Some(&ix.data)) {
+            if let Some(kind) = classify_pump_ix(PUMP_FUN_PROGRAM_ID, Some(&ix.data)) {
                 kinds.push(kind);
             }
         }
@@ -495,15 +545,18 @@ fn collect_kinds_pb(
 /// Build the per-instruction labels and extract compute-budget values, reusing
 /// the shared `label_instruction` (with no `parsed.type`, matching the live
 /// adapter's pre-Tier-B output). Mirrors `instructions::build_instruction_labels`.
-fn build_labels_pb(outer: &[PbIx]) -> (Vec<String>, Option<u64>, Option<u64>) {
+/// Resolves each outer ix's program id via [`LazyKeys`] (memoized — duplicate
+/// program ids encode once).
+fn build_labels_pb(outer: &[PbIx], keys: &LazyKeys) -> (Vec<String>, Option<u64>, Option<u64>) {
     let mut cu_limit: Option<u64> = None;
     let mut cu_price: Option<u64> = None;
 
     let labels = outer
         .iter()
         .map(|p| {
-            extract_compute_budget(p.program_id, Some(p.data), &mut cu_limit, &mut cu_price);
-            label_instruction(p.program_id, None, Some(p.data))
+            let pid = keys.get(p.program_id_index as usize);
+            extract_compute_budget(pid, Some(p.data), &mut cu_limit, &mut cu_price);
+            label_instruction(pid, None, Some(p.data))
         })
         .collect();
 
@@ -514,10 +567,10 @@ fn build_labels_pb(outer: &[PbIx]) -> (Vec<String>, Option<u64>, Option<u64>) {
 /// instructions always carry numeric indices (never resolved strings), so this
 /// is a straight index into the account-key list. Mirrors
 /// `parse::resolve_pump_accounts`.
-fn resolve_pump_accounts_pb(ix: &PbIx, keys: &[&str]) -> Vec<String> {
+fn resolve_pump_accounts_pb(ix: &PbIx, keys: &LazyKeys) -> Vec<String> {
     ix.accounts
         .iter()
-        .filter_map(|&i| keys.get(i as usize).map(|s| s.to_string()))
+        .filter_map(|&i| keys.raw(i as usize).map(|_| keys.get(i as usize).to_string()))
         .collect()
 }
 
@@ -910,6 +963,53 @@ mod tests {
         let logs = vec![format!("Program {PUMP_FUN_PROGRAM_ID} invoke [1]")];
 
         let update = build_update(account_keys, vec![migrate_ix], vec![], logs);
+        let decoder = HeliusDecoder::new(PUMP_FUN_PROGRAM_ID.to_string());
+        let fps = decode_fps(&update, &decoder);
+        assert_eq!(
+            fps,
+            vec![format!("migrate|{}", bs58::encode(mint).into_string())]
+        );
+    }
+
+    /// `LazyKeys` must preserve the canonical `static ++ loaded writable ++ loaded
+    /// readonly` order so an account that lives in an address-lookup-table region
+    /// still resolves to the right pubkey. Here the migrate mint sits in
+    /// `loaded_readonly_addresses`, past the static keys — a regression guard for
+    /// the lazy-encode refactor (a wrong concat order would misattribute the mint,
+    /// the bug the eager-encode comments warned about).
+    #[test]
+    fn lazy_keys_resolve_loaded_readonly_address() {
+        let pump = id_bytes(PUMP_FUN_PROGRAM_ID);
+        let mint = pk(5);
+        // static keys: 0=signer, 1=pump program, 2=bonding curve. The mint is
+        // loaded from an address table → combined index 3.
+        let message = scb::Message {
+            account_keys: vec![pk(1).to_vec(), pump, pk(2).to_vec()],
+            instructions: vec![scb::CompiledInstruction {
+                program_id_index: 1,
+                accounts: vec![0, 2, 3], // accounts[2] -> combined keys[3] = mint
+                data: MIGRATE_INSTRUCTION_DISCRIMINATOR.to_vec(),
+            }],
+            versioned: true,
+            ..Default::default()
+        };
+        let meta = scb::TransactionStatusMeta {
+            loaded_readonly_addresses: vec![mint.to_vec()],
+            log_messages: vec![format!("Program {PUMP_FUN_PROGRAM_ID} invoke [1]")],
+            ..Default::default()
+        };
+        let update = SubscribeUpdateTransaction {
+            transaction: Some(SubscribeUpdateTransactionInfo {
+                signature: vec![7u8; 64],
+                transaction: Some(scb::Transaction {
+                    signatures: vec![],
+                    message: Some(message),
+                }),
+                meta: Some(meta),
+                ..Default::default()
+            }),
+            slot: 100,
+        };
         let decoder = HeliusDecoder::new(PUMP_FUN_PROGRAM_ID.to_string());
         let fps = decode_fps(&update, &decoder);
         assert_eq!(

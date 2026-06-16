@@ -39,6 +39,14 @@ import type { SimulationProgressEvent, SweepProgressEvent } from 'types';
  * per-rule → keyed by `rule_id`. The map is only touched on sweep/sim SSE frames
  * (never on the SOL/USD or live-trade streams), so consumers don't re-render on
  * the high-frequency ticks.
+ *
+ * Split into two contexts so a progress tick re-renders only what reads the
+ * live job *state*: the **actions** context ({@link useBackgroundJobActions})
+ * exposes the stable `markStarting`/`cancel` callbacks (identity never changes →
+ * the heavy strategy pages that only *start* jobs never re-render on a tick);
+ * the **state** context ({@link useBackgroundJobsState}) carries the changing
+ * `jobs`/`isRunning` and is consumed by the global indicator (and the sweep
+ * page's run-state check) alone.
  */
 export type JobKind = 'sweep' | 'simulation';
 
@@ -53,23 +61,39 @@ export interface BackgroundJob {
   total: number | null;
   /** A cancel has been requested but the cooperative abort hasn't landed yet. */
   cancelling: boolean;
+  /** Epoch-ms of our first observation of this job (markStarting / seed / first
+   *  frame). Baseline `t0` for the average-throughput ETA. */
+  firstSeenAt: number;
+  /** `processed` at {@link firstSeenAt} (0 for a fresh start, the seeded count
+   *  for a job recovered mid-run from `/api/jobs/status`). Baseline so the rate
+   *  measures work done *since we started watching*, keeping ETA honest for
+   *  recovered jobs. */
+  firstSeenProcessed: number;
 }
 
 /** Singleton key for the single-flight grouped sweep. */
 const SWEEP_KEY = 'sweep';
 
-interface BackgroundJobsValue {
-  jobs: BackgroundJob[];
+/** Stable job actions — the value identity never changes across progress ticks,
+ *  so consumers that only fire jobs (the strategy pages) don't re-render. */
+interface BackgroundJobActions {
   /** Optimistically register a job the moment its request is fired, so the
    *  indicator shows before the first SSE frame (which only arrives once the
    *  backend finishes selecting/partitioning candidates). */
   markStarting: (kind: JobKind, id: string, label: string) => void;
-  /** Whether a job of this kind/id is currently tracked (running). */
-  isRunning: (kind: JobKind, id: string) => boolean;
   cancel: (job: BackgroundJob) => void;
 }
 
-const BackgroundJobsContext = createContext<BackgroundJobsValue | null>(null);
+/** Live job state — changes on every `*_progress` frame; consumed only by the
+ *  global indicator and the sweep page's run-state check. */
+interface BackgroundJobsState {
+  jobs: BackgroundJob[];
+  /** Whether a job of this kind/id is currently tracked (running). */
+  isRunning: (kind: JobKind, id: string) => boolean;
+}
+
+const BackgroundJobActionsContext = createContext<BackgroundJobActions | null>(null);
+const BackgroundJobsStateContext = createContext<BackgroundJobsState | null>(null);
 
 const keyOf = (kind: JobKind, id: string) => (kind === 'sweep' ? SWEEP_KEY : id);
 
@@ -82,15 +106,21 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
     setJobs((prev) => {
       const key = keyOf(kind, id);
       const existing = prev.get(key);
+      const processed =
+        patch.processed !== undefined ? patch.processed : existing?.processed ?? null;
       const next = new Map(prev);
       next.set(key, {
         kind,
         id,
         label:
           patch.label ?? existing?.label ?? (kind === 'sweep' ? 'Grouped sweep' : 'Simulation'),
-        processed: patch.processed !== undefined ? patch.processed : existing?.processed ?? null,
+        processed,
         total: patch.total !== undefined ? patch.total : existing?.total ?? null,
         cancelling: patch.cancelling ?? existing?.cancelling ?? false,
+        // Stamp the ETA baseline once, on first observation; afterwards carry it
+        // forward so the average rate measures from when we started watching.
+        firstSeenAt: existing?.firstSeenAt ?? Date.now(),
+        firstSeenProcessed: existing?.firstSeenProcessed ?? processed ?? 0,
       });
       return next;
     });
@@ -180,18 +210,37 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
     [upsert],
   );
 
-  const value = useMemo<BackgroundJobsValue>(
-    () => ({ jobs: Array.from(jobs.values()), markStarting, isRunning, cancel }),
-    [jobs, markStarting, isRunning, cancel],
+  // `markStarting`/`cancel` depend only on the stable `upsert`, so this value is
+  // referentially stable — action-only consumers skip the progress-tick renders.
+  const actions = useMemo<BackgroundJobActions>(
+    () => ({ markStarting, cancel }),
+    [markStarting, cancel],
+  );
+
+  const state = useMemo<BackgroundJobsState>(
+    () => ({ jobs: Array.from(jobs.values()), isRunning }),
+    [jobs, isRunning],
   );
 
   return (
-    <BackgroundJobsContext.Provider value={value}>{children}</BackgroundJobsContext.Provider>
+    <BackgroundJobActionsContext.Provider value={actions}>
+      <BackgroundJobsStateContext.Provider value={state}>
+        {children}
+      </BackgroundJobsStateContext.Provider>
+    </BackgroundJobActionsContext.Provider>
   );
 }
 
-export function useBackgroundJobs() {
-  const ctx = useContext(BackgroundJobsContext);
-  if (!ctx) throw new Error('useBackgroundJobs must be used within BackgroundJobsProvider');
+/** Stable job actions (`markStarting`, `cancel`) — does not re-render on ticks. */
+export function useBackgroundJobActions() {
+  const ctx = useContext(BackgroundJobActionsContext);
+  if (!ctx) throw new Error('useBackgroundJobActions must be used within BackgroundJobsProvider');
+  return ctx;
+}
+
+/** Live job state (`jobs`, `isRunning`) — re-renders on each progress frame. */
+export function useBackgroundJobsState() {
+  const ctx = useContext(BackgroundJobsStateContext);
+  if (!ctx) throw new Error('useBackgroundJobsState must be used within BackgroundJobsProvider');
   return ctx;
 }

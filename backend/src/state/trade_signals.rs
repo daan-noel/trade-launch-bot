@@ -40,9 +40,17 @@ struct Slot {
 /// Shared hub mapping an in-flight `(wallet, mint)` to its wakeup primitive.
 /// Two-level so the publish-side lookup is `wallet -> mint -> Slot` (two direct
 /// `get`s), not a scan: `notify` runs once per committed trade and must stay O(1).
+///
+/// A second, mint-only lane (`mints`) wakes watchers that follow the *whole mint*
+/// rather than one wallet — the TPSL2 scalp-entry arming, which reads the in-
+/// memory token cache for the first trade where its gates hold. It's published by
+/// the ingest pipeline ([`notify_mint`](TradeSignals::notify_mint)) the instant a
+/// trade is appended to the cache, so a woken waiter sees it. Same `is_empty`
+/// short-circuit, so a trade for an un-watched mint is a single cheap check.
 #[derive(Default)]
 pub struct TradeSignals {
     wallets: DashMap<String, DashMap<String, Slot>>,
+    mints: DashMap<String, Slot>,
 }
 
 impl TradeSignals {
@@ -91,6 +99,38 @@ impl TradeSignals {
                 slot.seq = slot.seq.wrapping_add(1);
                 slot.notify.notify_waiters();
             }
+        }
+    }
+
+    /// Register interest in *any* trade for `mint` (the mint-only lane). Hold the
+    /// returned guard for the wait and await [`MintWaitGuard::notified`].
+    pub fn register_mint(self: &Arc<Self>, mint: &str) -> MintWaitGuard {
+        let notify = {
+            let mut slot = self.mints.entry(mint.to_string()).or_insert_with(|| Slot {
+                notify: Arc::new(Notify::new()),
+                waiters: 0,
+                seq: 0,
+            });
+            slot.waiters += 1;
+            slot.notify.clone()
+        };
+        MintWaitGuard {
+            signals: self.clone(),
+            mint: mint.to_string(),
+            notify,
+        }
+    }
+
+    /// Wake every waiter following `mint` (any wallet), if any. A no-op (one
+    /// `is_empty` check) for un-watched mints — i.e. for virtually every trade
+    /// flowing through ingest. The mint-lane waiter detects new trades via the
+    /// token cache's `trade_count`, so there's no `seq` to bump here.
+    pub fn notify_mint(&self, mint: &str) {
+        if self.mints.is_empty() {
+            return;
+        }
+        if let Some(slot) = self.mints.get(mint) {
+            slot.notify.notify_waiters();
         }
     }
 }
@@ -143,5 +183,76 @@ impl Drop for WaitGuard {
         if mints.is_empty() {
             wallet_entry.remove();
         }
+    }
+}
+
+/// RAII handle for one mint-lane wait (wakes on any wallet's trade for the mint).
+/// Drop releases the slot, pruning it when no waiter remains.
+pub struct MintWaitGuard {
+    signals: Arc<TradeSignals>,
+    mint: String,
+    notify: Arc<Notify>,
+}
+
+impl MintWaitGuard {
+    /// A future that resolves on the next trade for this mint. Create it and call
+    /// [`tokio::sync::futures::Notified::enable`] *before* the cache check so a
+    /// notify arriving in the gap isn't lost (`notify_waiters` stores no permit).
+    pub fn notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.notify.notified()
+    }
+}
+
+impl Drop for MintWaitGuard {
+    fn drop(&mut self) {
+        use dashmap::mapref::entry::Entry;
+        if let Entry::Occupied(mut slot_entry) = self.signals.mints.entry(self.mint.clone()) {
+            slot_entry.get_mut().waiters -= 1;
+            if slot_entry.get().waiters == 0 {
+                slot_entry.remove();
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// A waiter armed (enabled) before the publish wakes on `notify_mint`, and the
+    /// slot is pruned once the only guard drops — the exact pattern the TPSL2
+    /// scalp-entry arming relies on (enable → check cache → publish wakes it).
+    #[tokio::test]
+    async fn mint_lane_wakes_waiter_and_prunes_on_drop() {
+        let signals = Arc::new(TradeSignals::new());
+        let guard = signals.register_mint("MINT");
+
+        {
+            let notified = guard.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            // Publish for the same mint (any wallet) — the enabled waiter wakes.
+            signals.notify_mint("MINT");
+            tokio::time::timeout(Duration::from_secs(1), notified.as_mut())
+                .await
+                .expect("mint waiter should wake on notify_mint");
+        }
+
+        // Dropping the only waiter prunes the slot, so the map tracks live waiters.
+        drop(guard);
+        assert!(
+            signals.mints.is_empty(),
+            "slot should be pruned when no waiter remains"
+        );
+    }
+
+    /// Publishing for a mint nobody is watching is a no-op (the `is_empty`
+    /// short-circuit that keeps it cheap on the per-trade hot path).
+    #[tokio::test]
+    async fn notify_mint_for_unwatched_mint_is_noop() {
+        let signals = Arc::new(TradeSignals::new());
+        signals.notify_mint("NOBODY");
+        assert!(signals.mints.is_empty());
     }
 }

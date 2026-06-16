@@ -23,6 +23,7 @@ use crate::{
     },
     services::token_sync::derive_pump_swap_pool,
     state::token_cache::{TokenCache, TokenState},
+    state::trade_signals::TradeSignals,
     storage::repositories::settings_repo::AppSettings,
     trader::PumpFunTrader,
 };
@@ -59,6 +60,10 @@ pub struct IngestPipeline {
     /// and asked to pre-warm a token's AMM pool caches on its first AMM trade, so
     /// the trade path reads cached reserves / a warm pool instead of RPC.
     trader: Arc<PumpFunTrader>,
+    /// Shared wakeup hub. The mint lane is pinged from `on_trade_executed` right
+    /// after the trade is appended to the token cache, so the TPSL2 scalp-entry
+    /// arming wakes on the trade instead of re-reading the cache on a fixed timer.
+    trade_signals: Arc<TradeSignals>,
 }
 
 impl IngestPipeline {
@@ -70,6 +75,7 @@ impl IngestPipeline {
         sse_tx: broadcast::Sender<SseEvent>,
         settings_rx: watch::Receiver<AppSettings>,
         trader: Arc<PumpFunTrader>,
+        trade_signals: Arc<TradeSignals>,
     ) -> Self {
         let (track_mayhem, track_post_migration) = {
             let s = settings_rx.borrow();
@@ -128,6 +134,7 @@ impl IngestPipeline {
             pools_changed: Arc::new(Notify::new()),
             settings_rx,
             trader,
+            trade_signals,
         }
     }
 
@@ -466,6 +473,13 @@ impl IngestPipeline {
             }
             None => (None, None),
         };
+
+        // Wake the TPSL2 scalp-entry arming the instant the cache reflects this
+        // trade (the `get_mut` guard above is dropped, so the shard lock is free).
+        // No-op (one `is_empty` check) unless a position is currently arming on
+        // this mint — i.e. for virtually every trade.
+        self.trade_signals.notify_mint(&mint);
+
         if let Some(metrics) = metrics {
             self.enqueue_db(DbWriteOp::Metrics(metrics)).await;
         }

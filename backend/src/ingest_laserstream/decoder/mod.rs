@@ -28,6 +28,10 @@ mod trade;
 
 pub struct HeliusDecoder {
     pump_program_id: String,
+    /// Raw 32-byte form of `pump_program_id`, decoded once. Lets the protobuf
+    /// decode path match instruction program-ids on bytes instead of base58-
+    /// encoding the whole account-key list per transaction.
+    pump_program_id_bytes: Vec<u8>,
     /// Shared pool→mint index for resolving live PumpSwap (AMM) swaps, whose
     /// events carry the pool but not the base mint. `None` in contexts that
     /// decode AMM trades with an explicit pool already in hand (token sync).
@@ -48,8 +52,10 @@ pub enum DecodeOutput {
 
 impl HeliusDecoder {
     pub fn new(pump_program_id: String) -> Self {
+        let pump_program_id_bytes = bs58::decode(&pump_program_id).into_vec().unwrap_or_default();
         Self {
             pump_program_id,
+            pump_program_id_bytes,
             pool_index: None,
         }
     }
