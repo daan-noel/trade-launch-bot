@@ -116,8 +116,10 @@ impl Tpsl2StrategyService {
     }
 
     pub async fn on_token_created(&self, mint: &str, cache: &TokenCache) {
-        let mint = mint.to_string();
-        let token = match cache.get(&mint) {
+        // Probe on the borrowed `&str`; only allocate an owned mint once a rule
+        // actually matches (most created tokens match nothing). Mirrors the
+        // `on_trade_executed` early-bail discipline.
+        let token = match cache.get(mint) {
             Some(entry) => entry.value().token.clone(),
             None => {
                 debug!("Token {mint} not in cache — skipping TPSL create");
@@ -187,6 +189,9 @@ impl Tpsl2StrategyService {
                     }
                 }
 
+                // A match: now it's worth owning the mint (moved into the spawned
+                // insert + buy/fill task below).
+                let mint = mint.to_string();
                 let mut position = Position::new(
                     mint.clone(),
                     self.trader.wallet_pubkey(),
@@ -260,24 +265,24 @@ impl Tpsl2StrategyService {
                             // sending the buy — the real fill (entry_*) lands later
                             // and independently, so the two can be compared. Sync the
                             // returned row into the runtime cache so the snapshot
-                            // carries target_*.
-                            if let Ok(Some(prev)) = position_repo.find_by_id(position_id).await {
-                                match position_repo
-                                    .update_target(
-                                        position_id,
-                                        target.price,
-                                        target.amount_sol,
-                                        target.block_time,
-                                        &target.tx_signature,
-                                    )
-                                    .await
-                                {
-                                    Ok(current) => runtime.sync_position(Some(&prev), &current),
-                                    Err(err) => warn!(
-                                        "[REAL] Failed to record target for position {}: {err}",
-                                        position_id
-                                    ),
-                                }
+                            // carries target_*. The just-inserted in-memory `position`
+                            // is the current DB state (nothing has mutated it since
+                            // the insert), so use it as `prev` instead of a read-back.
+                            match position_repo
+                                .update_target(
+                                    position_id,
+                                    target.price,
+                                    target.amount_sol,
+                                    target.block_time,
+                                    &target.tx_signature,
+                                )
+                                .await
+                            {
+                                Ok(current) => runtime.sync_position(Some(&position), &current),
+                                Err(err) => warn!(
+                                    "[REAL] Failed to record target for position {}: {err}",
+                                    position_id
+                                ),
                             }
                             super::execution::real::buy_until_filled_or_give_up(
                                 trader,
@@ -352,7 +357,10 @@ impl Tpsl2StrategyService {
                 return;
             };
             let state = entry.value();
-            current_price = state.current_price.unwrap_or(0.0);
+            // Keep the Option: a missing price falls back per-position to the
+            // position's own entry_price (below), so a failed exit records a 0%
+            // move instead of a bogus −100% (matches the `sweep_time_exits` path).
+            current_price = state.current_price;
             let trades = &state.trades;
             let trades_base = state.trades_base;
 
@@ -394,6 +402,9 @@ impl Tpsl2StrategyService {
             // Deep-clone only now that this position is actually exiting; the
             // holding index hands us a shared `Arc<Position>`.
             let mut position = (*position).clone();
+            // Reference price for the fill; fall back to this position's entry
+            // price when the cache has no current price (a 0% move, not −100%).
+            let exit_price = current_price.unwrap_or(position.entry_price);
             debug!(
                 "Position {} for token {mint} triggered exit: {:?}",
                 position.id, exit_reason
@@ -434,14 +445,14 @@ impl Tpsl2StrategyService {
                     position.entry_price,
                     position.entry_time,
                     rule.clone(),
-                    current_price,
+                    exit_price,
                     Utc::now(),
                     exit_reason.to_string(),
                 );
             } else if rule.trade_mode == "real" {
                 self.trigger_real_exit(
                     position,
-                    current_price,
+                    exit_price,
                     Utc::now(),
                     exit_reason.to_string(),
                 )

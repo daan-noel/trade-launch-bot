@@ -40,7 +40,7 @@ use super::trade::{
     build_amm_trade, decode_pump_swap_trades_from_logs, decode_trade_events_from_logs,
     DecodedAmmTrade,
 };
-use super::{DecodeOutput, HeliusDecoder};
+use super::{DecodeOutput, HeliusDecoder, TxRelevance};
 
 mod trade;
 use trade::decode_trade_events_from_inner_pb;
@@ -120,6 +120,49 @@ impl HeliusDecoder {
         update: &SubscribeUpdateTransaction,
         received_at: DateTime<Utc>,
     ) -> DecodeOutput {
+        // Self-contained entry (token_sync's RPC backfill, replay, tests): classify
+        // the tx by scanning its logs, then dispatch. The live pipeline instead
+        // forwards the client's already-computed verdict via `decode_relevant_pb`,
+        // so the per-tx log scan isn't run twice on the hot path.
+        let Some(meta) = update
+            .transaction
+            .as_ref()
+            .and_then(|info| info.meta.as_ref())
+        else {
+            return DecodeOutput::Ignored;
+        };
+        match self.classify_logs(&meta.log_messages) {
+            Some(relevance) => self.decode_relevant_pb(update, relevance, received_at),
+            None => DecodeOutput::Ignored,
+        }
+    }
+
+    /// Classify a tx by its log messages, mirroring the LaserStream client's
+    /// pre-filter: a bonding-curve tx mentions the pump.fun program (curve takes
+    /// priority); otherwise a post-migration PumpSwap (AMM) swap, but only when a
+    /// `pool_index` is attached to resolve it. `None` = not relevant, drop it.
+    pub(crate) fn classify_logs(&self, logs: &[String]) -> Option<TxRelevance> {
+        if logs.iter().any(|l| l.contains(&self.pump_program_id)) {
+            Some(TxRelevance::Curve)
+        } else if self.pool_index.is_some()
+            && logs.iter().any(|l| l.contains(PUMP_SWAP_PROGRAM_ID))
+        {
+            Some(TxRelevance::Amm)
+        } else {
+            None
+        }
+    }
+
+    /// Decode a tx whose relevance the caller already determined — the live
+    /// pipeline forwards the LaserStream client's log-gate verdict, so the curve-
+    /// vs-AMM log scan `decode_protobuf` performs is not repeated here. See
+    /// [`Self::decode_protobuf`] for the `received_at` ingest-clock contract.
+    pub fn decode_relevant_pb(
+        &self,
+        update: &SubscribeUpdateTransaction,
+        relevance: TxRelevance,
+        received_at: DateTime<Utc>,
+    ) -> DecodeOutput {
         let Some(info) = update.transaction.as_ref() else {
             return DecodeOutput::Ignored;
         };
@@ -136,25 +179,27 @@ impl HeliusDecoder {
         let slot = update.slot;
         let block_time = received_at;
 
-        // Gate on logs: a bonding-curve tx mentions the
-        // pump.fun program; otherwise it may be a post-migration PumpSwap (AMM)
-        // swap for a pool we track, resolved via `pool_index`.
-        let has_pump = meta
-            .log_messages
-            .iter()
-            .any(|l| l.contains(&self.pump_program_id));
-        if !has_pump {
-            if self.pool_index.is_some()
-                && meta
-                    .log_messages
-                    .iter()
-                    .any(|l| l.contains(PUMP_SWAP_PROGRAM_ID))
-            {
-                return self.decode_amm_live_pb(info, message, meta, slot, block_time, received_at);
+        match relevance {
+            TxRelevance::Curve => {
+                self.decode_curve_pb(info, message, meta, slot, block_time, received_at)
             }
-            return DecodeOutput::Ignored;
+            TxRelevance::Amm => {
+                self.decode_amm_live_pb(info, message, meta, slot, block_time, received_at)
+            }
         }
+    }
 
+    /// Decode a bonding-curve (pump.fun program) tx into its trade / create /
+    /// migrate events. Reached once the tx is known to touch the curve program.
+    fn decode_curve_pb(
+        &self,
+        info: &SubscribeUpdateTransactionInfo,
+        message: &scb::Message,
+        meta: &scb::TransactionStatusMeta,
+        slot: u64,
+        block_time: DateTime<Utc>,
+        received_at: DateTime<Utc>,
+    ) -> DecodeOutput {
         let signature = bs58::encode(&info.signature).into_string();
 
         // accountKeys = static ++ loaded writable ++ loaded readonly, same order

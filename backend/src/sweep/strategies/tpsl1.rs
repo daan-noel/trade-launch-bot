@@ -12,6 +12,7 @@
 //! params `simulate` can sweep — they're the grouping fingerprint instead. What
 //! remains sweepable is the exit ladder: TP/SL plus the four optional exits.
 
+use chrono::{DateTime, Utc};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
@@ -42,6 +43,26 @@ pub struct Tpsl1Params {
 pub struct Tpsl1Strategy {
     base: Tpsl1Rule,
     axes: Tpsl1Axes,
+}
+
+/// One evaluated combo: the `Copy` scalar params paired with the `Tpsl1Rule` they
+/// overlay onto the base, **resolved once at sample time** (Rec 2) — so the hot
+/// loop hands the exit fn `&combo.rule` instead of cloning `base` per
+/// `(combo × token)`. See `tpsl2::Tpsl2Combo` for the rationale.
+#[derive(Clone)]
+pub struct Tpsl1Combo {
+    pub raw: Tpsl1Params,
+    pub rule: Tpsl1Rule,
+}
+
+/// The resolved entry for a token: either no entry, or the fill price + time.
+/// TPSL1 has no per-trade entry gate (the token-creation filter ran upstream), so
+/// the entry is **param-free** — the engine resolves it once per token (see
+/// `Strategy::EntryKey = ()`) and reuses it across every exit combo.
+#[derive(Clone, Copy)]
+pub enum Tpsl1Entry {
+    None,
+    Entered { price: f64, time: DateTime<Utc> },
 }
 
 /// Grid axes for the coarse pass. Each `Vec` is one knob's candidate values.
@@ -140,6 +161,12 @@ impl Tpsl1Strategy {
         Self { base, axes }
     }
 
+    /// Pair a scalar param set with its resolved `Tpsl1Rule` (built once here, not
+    /// per token in the hot loop — see [`Tpsl1Combo`]).
+    fn combo(&self, raw: Tpsl1Params) -> Tpsl1Combo {
+        Tpsl1Combo { rule: self.rule_from(&raw), raw }
+    }
+
     /// Overlay one param set onto the base rule, producing the exact `Tpsl1Rule`
     /// the live pure fns expect.
     fn rule_from(&self, p: &Tpsl1Params) -> Tpsl1Rule {
@@ -155,9 +182,9 @@ impl Tpsl1Strategy {
 }
 
 impl ParamSpace for Tpsl1Strategy {
-    type Params = Tpsl1Params;
+    type Params = Tpsl1Combo;
 
-    fn sample(&self, method: SweepMethod) -> Vec<Tpsl1Params> {
+    fn sample(&self, method: SweepMethod) -> Vec<Tpsl1Combo> {
         let a = &self.axes;
         match method {
             SweepMethod::Grid => {
@@ -177,14 +204,14 @@ impl ParamSpace for Tpsl1Strategy {
                             v
                         }};
                     }
-                    out.push(Tpsl1Params {
+                    out.push(self.combo(Tpsl1Params {
                         take_profit: take!(a.take_profit),
                         stop_loss: take!(a.stop_loss),
                         trailing_stop_pct: take!(a.trailing_stop_pct),
                         time_stop_secs: take!(a.time_stop_secs),
                         stall_secs: take!(a.stall_secs),
                         liquidity_drop_pct: take!(a.liquidity_drop_pct),
-                    });
+                    }));
                 }
                 out
             }
@@ -194,13 +221,15 @@ impl ParamSpace for Tpsl1Strategy {
                 // gain is marginal — kept as a distinct tag for the analysis layer.)
                 let mut rng = StdRng::seed_from_u64(seed);
                 (0..n)
-                    .map(|_| Tpsl1Params {
-                        take_profit: pick(&mut rng, &a.take_profit),
-                        stop_loss: pick(&mut rng, &a.stop_loss),
-                        trailing_stop_pct: pick(&mut rng, &a.trailing_stop_pct),
-                        time_stop_secs: pick(&mut rng, &a.time_stop_secs),
-                        stall_secs: pick(&mut rng, &a.stall_secs),
-                        liquidity_drop_pct: pick(&mut rng, &a.liquidity_drop_pct),
+                    .map(|_| {
+                        self.combo(Tpsl1Params {
+                            take_profit: pick(&mut rng, &a.take_profit),
+                            stop_loss: pick(&mut rng, &a.stop_loss),
+                            trailing_stop_pct: pick(&mut rng, &a.trailing_stop_pct),
+                            time_stop_secs: pick(&mut rng, &a.time_stop_secs),
+                            stall_secs: pick(&mut rng, &a.stall_secs),
+                            liquidity_drop_pct: pick(&mut rng, &a.liquidity_drop_pct),
+                        })
                     })
                     .collect()
             }
@@ -213,29 +242,44 @@ fn pick<T: Copy>(rng: &mut StdRng, xs: &[T]) -> T {
 }
 
 impl Strategy for Tpsl1Strategy {
+    type Entry = Tpsl1Entry;
+    // Entry is param-free (no per-trade gate), so every combo shares one key and
+    // the engine resolves the entry once per token.
+    type EntryKey = ();
+
     fn id(&self) -> &'static str {
         "tpsl1"
     }
 
-    fn simulate(&self, trades: &[SweepTrade], params: &Tpsl1Params) -> TokenOutcome {
-        let rule = self.rule_from(params);
+    fn entry_key(&self, _params: &Tpsl1Combo) {}
 
+    fn resolve_entry(&self, trades: &[SweepTrade], _params: &Tpsl1Combo) -> Tpsl1Entry {
         // (1) Entry fill — the live/backtest fill resolution (cap 1, matching
         // `run_backtest`). TPSL1 has no per-trade entry gate; the token-creation
         // filter ran upstream when the corpus was selected.
-        let entry_fill = match entry::find_entry_fill_in_trades(trades, 1) {
-            Some(e) => e,
-            None => return TokenOutcome::no_entry(),
+        let Some(entry_fill) = entry::find_entry_fill_in_trades(trades, 1) else {
+            return Tpsl1Entry::None;
         };
         if entry_fill.price <= 0.0 {
-            return TokenOutcome::no_entry();
+            return Tpsl1Entry::None;
         }
-        let entry_price = entry_fill.price;
-        let entry_time = entry_fill.block_time;
+        Tpsl1Entry::Entered { price: entry_fill.price, time: entry_fill.block_time }
+    }
+
+    fn resolve_exit(
+        &self,
+        trades: &[SweepTrade],
+        entry: &Tpsl1Entry,
+        params: &Tpsl1Combo,
+    ) -> TokenOutcome {
+        let Tpsl1Entry::Entered { price: entry_price, time: entry_time } = *entry else {
+            return TokenOutcome::no_entry();
+        };
+        let rule = &params.rule;
         let notional = rule.buy_amount;
 
         // (2) Exit decision via the shared ladder.
-        match exit::find_trade_driven_exit(trades, entry_time, entry_price, &rule) {
+        match exit::find_trade_driven_exit(trades, entry_time, entry_price, rule) {
             Some(f) => {
                 let econ = round_trip(entry_price, f.price, notional);
                 TokenOutcome {
@@ -262,7 +306,8 @@ impl Strategy for Tpsl1Strategy {
         }
     }
 
-    fn params_json(&self, p: &Tpsl1Params) -> serde_json::Value {
+    fn params_json(&self, params: &Tpsl1Combo) -> serde_json::Value {
+        let p = &params.raw;
         serde_json::json!({
             "exit_take_profit": p.take_profit,
             "exit_stop_loss": p.stop_loss,
@@ -338,8 +383,8 @@ mod tests {
     #[test]
     fn params_json_emits_exactly_the_frontend_contract_keys() {
         let s = strategy();
-        let p = s.sample(SweepMethod::Grid)[0];
-        let json = s.params_json(&p);
+        let combos = s.sample(SweepMethod::Grid);
+        let json = s.params_json(&combos[0]);
         let obj = json.as_object().expect("params_json is an object");
         let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
         keys.sort_unstable();

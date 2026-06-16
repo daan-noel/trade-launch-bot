@@ -486,7 +486,10 @@ fn decode_create_info(data: &[u8]) -> Option<CreateInstructionInfo> {
     let mut offset = 8; // skip discriminator
     let name = read_anchor_string(data, &mut offset)?;
     let symbol = read_anchor_string(data, &mut offset)?;
-    let _ = read_anchor_string(data, &mut offset);
+    // uri value is unused, but it must be consumed with `?` (not discarded): a
+    // truncated uri leaves `offset` advanced past the length prefix only, so
+    // skipping the error would read `creator` from the wrong offset.
+    read_anchor_string(data, &mut offset)?;
 
     let creator = read_pubkey(data, &mut offset)
         .map(|pk| bs58::encode(pk).into_string())?;

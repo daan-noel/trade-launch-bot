@@ -67,3 +67,5 @@ coverage/
 .cache/
 dist/
 build/
+# MCP config (contains DB credentials)
+.mcp.json

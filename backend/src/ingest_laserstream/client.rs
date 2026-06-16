@@ -26,6 +26,7 @@ use tracing::{error, info};
 
 use crate::config::constants::PUMP_SWAP_PROGRAM_ID;
 
+use super::decoder::TxRelevance;
 use super::proto::geyser::geyser_client::GeyserClient;
 use super::proto::geyser::subscribe_update::UpdateOneof;
 use super::proto::geyser::{
@@ -121,22 +122,30 @@ pub fn build_subscribe_request(
     }
 }
 
-/// Cheap pre-filter mirroring the decoder's log gate: keep only txs whose logs
-/// mention the pump.fun curve program or the PumpSwap (AMM) program — the rest
-/// of the subscription firehose is dropped before it reaches the pipeline. This
-/// is the only per-tx work the client task does now; the `Value` blob build it
-/// used to run moved off-thread into the DbWriter (Tier B).
-fn tx_is_relevant(update: &SubscribeUpdateTransaction, pump_program_id: &str) -> bool {
-    update
-        .transaction
-        .as_ref()
-        .and_then(|info| info.meta.as_ref())
-        .map(|meta| {
-            meta.log_messages
-                .iter()
-                .any(|l| l.contains(pump_program_id) || l.contains(PUMP_SWAP_PROGRAM_ID))
-        })
-        .unwrap_or(false)
+/// Cheap pre-filter mirroring the decoder's log gate: classify each tx by its
+/// logs (curve takes priority over AMM, exactly as the decoder does) and drop the
+/// rest of the subscription firehose before it reaches the pipeline. The verdict
+/// is forwarded alongside the tx so the decoder reuses it instead of re-scanning
+/// the logs ([`HeliusDecoder::decode_relevant_pb`]). This is the only per-tx work
+/// the client task does now; the `Value` blob build it used to run moved
+/// off-thread into the DbWriter (Tier B).
+fn classify_tx(update: &SubscribeUpdateTransaction, pump_program_id: &str) -> Option<TxRelevance> {
+    let meta = update.transaction.as_ref()?.meta.as_ref()?;
+    if meta
+        .log_messages
+        .iter()
+        .any(|l| l.contains(pump_program_id))
+    {
+        Some(TxRelevance::Curve)
+    } else if meta
+        .log_messages
+        .iter()
+        .any(|l| l.contains(PUMP_SWAP_PROGRAM_ID))
+    {
+        Some(TxRelevance::Amm)
+    } else {
+        None
+    }
 }
 
 /// Combined `account_include`: the pump.fun curve program plus every currently
@@ -158,7 +167,7 @@ pub async fn run(
     laserstream_url: String,
     api_key: String,
     pump_program_id: String,
-    update_tx: mpsc::Sender<Arc<SubscribeUpdateTransaction>>,
+    update_tx: mpsc::Sender<(Arc<SubscribeUpdateTransaction>, TxRelevance)>,
     mut live_rx: watch::Receiver<bool>,
     pool_index: Arc<DashMap<String, String>>,
     pools_changed: Arc<Notify>,
@@ -229,7 +238,7 @@ async fn run_once(
     laserstream_url: &str,
     api_key: &str,
     pump_program_id: &str,
-    update_tx: &mpsc::Sender<Arc<SubscribeUpdateTransaction>>,
+    update_tx: &mpsc::Sender<(Arc<SubscribeUpdateTransaction>, TxRelevance)>,
     live_rx: &mut watch::Receiver<bool>,
     pool_index: &DashMap<String, String>,
     pools_changed: &Notify,
@@ -266,12 +275,14 @@ async fn run_once(
                         if let Some(UpdateOneof::Transaction(tx)) = update.update_oneof {
                             last_slot.fetch_max(tx.slot, Ordering::Relaxed);
                             // Cheap protobuf-log pre-filter: forward only txs the
-                            // decoder would keep (curve or AMM program in the logs).
+                            // decoder would keep (curve or AMM program in the logs),
+                            // tagged with the verdict so the decoder skips re-scanning.
                             // No Value build here anymore (Tier B).
-                            let relevant = tx_is_relevant(&tx, pump_program_id);
-                            if relevant && update_tx.send(Arc::new(tx)).await.is_err() {
-                                info!("LaserStream: pipeline receiver dropped — stopping");
-                                return Ok(());
+                            if let Some(relevance) = classify_tx(&tx, pump_program_id) {
+                                if update_tx.send((Arc::new(tx), relevance)).await.is_err() {
+                                    info!("LaserStream: pipeline receiver dropped — stopping");
+                                    return Ok(());
+                                }
                             }
                         }
                         // Ping/Pong/other updates: ignored (HTTP/2 keepalive

@@ -471,6 +471,77 @@ pub fn corpus_cache_path(dir: &Path, hash: &str) -> PathBuf {
     dir.join(format!("corpus_{hash}.parquet"))
 }
 
+/// Where corpus Parquet caches live: `$SWEEP_CORPUS_CACHE_DIR` if set, else a
+/// stable subdir of the OS temp dir. The cache is a pure performance optimisation
+/// (a miss just reloads from the DB), so a temp default is fine and needs no config.
+pub fn corpus_cache_dir() -> PathBuf {
+    std::env::var_os("SWEEP_CORPUS_CACHE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("pumpfun-sweep-corpus"))
+}
+
+/// Stable cache key for a corpus *selection* — the inputs that determine the
+/// realised population, **not** the population itself (which only exists after a
+/// load). Two runs that differ only in grouping / axes / `min_tokens` / `method`
+/// over the same window hash equal here, so they share one cached trade Parquet.
+pub fn selection_cache_key(sel: &Selection) -> String {
+    let mut h = DefaultHasher::new();
+    sel.token_cap.hash(&mut h);
+    sel.per_mint_cap.hash(&mut h);
+    sel.curve_only.hash(&mut h);
+    sel.created_after.map(|t| t.timestamp_millis()).hash(&mut h);
+    sel.created_before.map(|t| t.timestamp_millis()).hash(&mut h);
+    if let Some(mints) = &sel.mints {
+        let mut ms: Vec<&str> = mints.iter().map(String::as_str).collect();
+        ms.sort_unstable();
+        for m in ms {
+            m.hash(&mut h);
+        }
+    }
+    format!("{:016x}", h.finish())
+}
+
+/// In-window tokens keep receiving trades for a while after creation, so a
+/// selection is only stable enough to cache once its upper bound is at least this
+/// many hours in the past. An open-ended or recent window still mutates → reload.
+const CORPUS_CACHE_SETTLE_HOURS: i64 = 2;
+
+/// Whether a selection's window is closed and settled enough that its trade set
+/// won't keep changing — the precondition for serving it from the Parquet cache.
+pub fn selection_is_cacheable(sel: &Selection, now: DateTime<Utc>) -> bool {
+    sel.created_before
+        .map(|before| before <= now - chrono::Duration::hours(CORPUS_CACHE_SETTLE_HOURS))
+        .unwrap_or(false)
+}
+
+/// Load a grouped-sweep corpus, reusing a selection-keyed Parquet cache when the
+/// window is closed/settled (Rec 3). For the "run many sweeps over the same window
+/// for hours" workflow this turns every repeat run's DB load (select candidates +
+/// chunked trade fetch + deserialize up to `token_cap` tokens) into a local-disk
+/// read. An open/recent window is never cached (its trades still mutate); `fresh`
+/// forces a rebuild + cache rewrite even for a cacheable window.
+///
+/// Fingerprints are **not** cached here — the caller runs the cheap separate
+/// [`attach_fingerprints`] lookup after loading (the trade Parquet is
+/// fingerprint-free), so this works on both the cache-hit and DB paths.
+pub async fn load_grouped_corpus(
+    db: PgPool,
+    sel: &Selection,
+    cache_dir: &Path,
+    fresh: bool,
+) -> Result<Corpus> {
+    let source = DbSource::new(db);
+    if !selection_is_cacheable(sel, Utc::now()) {
+        return source.load(sel).await;
+    }
+    let key = selection_cache_key(sel);
+    if fresh {
+        // Drop any stale cache so `load_or_build` re-loads from the DB and rewrites.
+        std::fs::remove_file(corpus_cache_path(cache_dir, &key)).ok();
+    }
+    load_or_build(&source, sel, cache_dir, &key).await
+}
+
 /// Load a corpus, preferring an existing Parquet cache for the *DB selection*'s
 /// hash. Because the hash depends on the realised population (mints + counts),
 /// the first call must compute it from a live load; we therefore key the cache

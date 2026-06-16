@@ -8,6 +8,7 @@
 //! [`registry`](crate::sweep::registry). A new strategy adds a sibling module
 //! here with its own params/axes/`simulate` — the generic sweep layers are reused.
 
+use chrono::{DateTime, Utc};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
@@ -41,6 +42,45 @@ pub struct Tpsl2Params {
     pub entry_max_cohort_held: Option<f64>,
     pub entry_min_liquidity_sol: Option<f64>,
     pub entry_min_organic_liq: Option<f64>,
+}
+
+/// One evaluated combo: the `Copy` scalar params (for `entry_key`/`params_json`)
+/// paired with the `Tpsl2Rule` they overlay onto the base, **resolved once at
+/// sample time** (Rec 2). The old hot loop cloned `base` into a fresh `Tpsl2Rule`
+/// on *every* `(combo × token)` `simulate` call — millions of heap allocations
+/// (`rule_name`/`trade_mode` Strings + the `p_token_ix_labels` JSON array).
+/// Building it per combo here (≤ `combos`, not `combos × tokens`) and handing the
+/// entry/exit fns `&combo.rule` keeps their `&Tpsl2Rule` signatures — so the live
+/// path is untouched and decision parity is exact.
+#[derive(Clone)]
+pub struct Tpsl2Combo {
+    pub raw: Tpsl2Params,
+    pub rule: Tpsl2Rule,
+}
+
+/// The entry-param identity of a combo: the 8 scalp-gate knobs `find_scalp_entry`
+/// reads (and nothing else). Two combos with equal keys resolve the same entry on
+/// any token, so the engine resolves the entry once per distinct key (Rec 1). The
+/// exit knobs are deliberately absent — the entry never depends on them.
+#[derive(Clone, Copy, PartialEq)]
+pub struct Tpsl2EntryKey {
+    min_age_secs: Option<u64>,
+    min_alive_sol: Option<f64>,
+    min_organic_sol: Option<f64>,
+    pullback_pct: Option<f64>,
+    higher_low_secs: Option<u64>,
+    max_cohort_held: Option<f64>,
+    min_liquidity_sol: Option<f64>,
+    min_organic_liq: Option<f64>,
+}
+
+/// The resolved entry for a token under one entry-param tuple: either no entry, or
+/// the worst-case paper fill price + time. Cached by the engine and reused across
+/// the tuple's whole exit sub-grid.
+#[derive(Clone, Copy)]
+pub enum Tpsl2Entry {
+    None,
+    Entered { price: f64, time: DateTime<Utc> },
 }
 
 /// Declares the param axes and carries the base rule the swept params overlay.
@@ -199,6 +239,12 @@ impl Tpsl2Strategy {
         Self { base, axes }
     }
 
+    /// Pair a scalar param set with its resolved `Tpsl2Rule` (built once here, not
+    /// per token in the hot loop — see [`Tpsl2Combo`]).
+    fn combo(&self, raw: Tpsl2Params) -> Tpsl2Combo {
+        Tpsl2Combo { rule: self.rule_from(&raw), raw }
+    }
+
     /// Overlay one param set onto the base rule, producing the exact `Tpsl2Rule`
     /// the live pure fns expect.
     fn rule_from(&self, p: &Tpsl2Params) -> Tpsl2Rule {
@@ -223,9 +269,9 @@ impl Tpsl2Strategy {
 }
 
 impl ParamSpace for Tpsl2Strategy {
-    type Params = Tpsl2Params;
+    type Params = Tpsl2Combo;
 
-    fn sample(&self, method: SweepMethod) -> Vec<Tpsl2Params> {
+    fn sample(&self, method: SweepMethod) -> Vec<Tpsl2Combo> {
         let a = &self.axes;
         match method {
             SweepMethod::Grid => {
@@ -245,7 +291,7 @@ impl ParamSpace for Tpsl2Strategy {
                             v
                         }};
                     }
-                    out.push(Tpsl2Params {
+                    out.push(self.combo(Tpsl2Params {
                         take_profit: take!(a.take_profit),
                         stop_loss: take!(a.stop_loss),
                         trailing_stop_pct: take!(a.trailing_stop_pct),
@@ -261,7 +307,7 @@ impl ParamSpace for Tpsl2Strategy {
                         entry_max_cohort_held: take!(a.entry_max_cohort_held),
                         entry_min_liquidity_sol: take!(a.entry_min_liquidity_sol),
                         entry_min_organic_liq: take!(a.entry_min_organic_liq),
-                    });
+                    }));
                 }
                 out
             }
@@ -271,22 +317,24 @@ impl ParamSpace for Tpsl2Strategy {
                 // gain is marginal — kept as a distinct tag for the analysis layer.)
                 let mut rng = StdRng::seed_from_u64(seed);
                 (0..n)
-                    .map(|_| Tpsl2Params {
-                        take_profit: pick(&mut rng, &a.take_profit),
-                        stop_loss: pick(&mut rng, &a.stop_loss),
-                        trailing_stop_pct: pick(&mut rng, &a.trailing_stop_pct),
-                        time_stop_secs: pick(&mut rng, &a.time_stop_secs),
-                        stall_secs: pick(&mut rng, &a.stall_secs),
-                        liquidity_drop_pct: pick(&mut rng, &a.liquidity_drop_pct),
-                        cohort_ratio: pick(&mut rng, &a.cohort_ratio),
-                        entry_min_age_secs: pick(&mut rng, &a.entry_min_age_secs),
-                        entry_min_alive_sol: pick(&mut rng, &a.entry_min_alive_sol),
-                        entry_min_organic_sol: pick(&mut rng, &a.entry_min_organic_sol),
-                        entry_pullback_pct: pick(&mut rng, &a.entry_pullback_pct),
-                        entry_higher_low_secs: pick(&mut rng, &a.entry_higher_low_secs),
-                        entry_max_cohort_held: pick(&mut rng, &a.entry_max_cohort_held),
-                        entry_min_liquidity_sol: pick(&mut rng, &a.entry_min_liquidity_sol),
-                        entry_min_organic_liq: pick(&mut rng, &a.entry_min_organic_liq),
+                    .map(|_| {
+                        self.combo(Tpsl2Params {
+                            take_profit: pick(&mut rng, &a.take_profit),
+                            stop_loss: pick(&mut rng, &a.stop_loss),
+                            trailing_stop_pct: pick(&mut rng, &a.trailing_stop_pct),
+                            time_stop_secs: pick(&mut rng, &a.time_stop_secs),
+                            stall_secs: pick(&mut rng, &a.stall_secs),
+                            liquidity_drop_pct: pick(&mut rng, &a.liquidity_drop_pct),
+                            cohort_ratio: pick(&mut rng, &a.cohort_ratio),
+                            entry_min_age_secs: pick(&mut rng, &a.entry_min_age_secs),
+                            entry_min_alive_sol: pick(&mut rng, &a.entry_min_alive_sol),
+                            entry_min_organic_sol: pick(&mut rng, &a.entry_min_organic_sol),
+                            entry_pullback_pct: pick(&mut rng, &a.entry_pullback_pct),
+                            entry_higher_low_secs: pick(&mut rng, &a.entry_higher_low_secs),
+                            entry_max_cohort_held: pick(&mut rng, &a.entry_max_cohort_held),
+                            entry_min_liquidity_sol: pick(&mut rng, &a.entry_min_liquidity_sol),
+                            entry_min_organic_liq: pick(&mut rng, &a.entry_min_organic_liq),
+                        })
                     })
                     .collect()
             }
@@ -299,29 +347,55 @@ fn pick<T: Copy>(rng: &mut StdRng, xs: &[T]) -> T {
 }
 
 impl Strategy for Tpsl2Strategy {
+    type Entry = Tpsl2Entry;
+    type EntryKey = Tpsl2EntryKey;
+
     fn id(&self) -> &'static str {
         "tpsl2"
     }
 
-    fn simulate(&self, trades: &[SweepTrade], params: &Tpsl2Params) -> TokenOutcome {
-        let rule = self.rule_from(params);
+    fn entry_key(&self, params: &Tpsl2Combo) -> Tpsl2EntryKey {
+        let p = &params.raw;
+        Tpsl2EntryKey {
+            min_age_secs: p.entry_min_age_secs,
+            min_alive_sol: p.entry_min_alive_sol,
+            min_organic_sol: p.entry_min_organic_sol,
+            pullback_pct: p.entry_pullback_pct,
+            higher_low_secs: p.entry_higher_low_secs,
+            max_cohort_held: p.entry_max_cohort_held,
+            min_liquidity_sol: p.entry_min_liquidity_sol,
+            min_organic_liq: p.entry_min_organic_liq,
+        }
+    }
 
+    fn resolve_entry(&self, trades: &[SweepTrade], params: &Tpsl2Combo) -> Tpsl2Entry {
+        let rule = &params.rule;
         // (1) Decision: the scalp-entry trigger — the live gate logic, unchanged.
-        let target = match entry::find_scalp_entry(trades, &rule) {
-            Some(t) => t,
-            None => return TokenOutcome::no_entry(),
+        let Some(target) = entry::find_scalp_entry(trades, rule) else {
+            return Tpsl2Entry::None;
         };
         // (2) Worst-case entry fill (adverse same-/next-slot tick).
         let entry_fill = entry::find_worst_case_paper_entry(trades, &target.tx_signature);
         if entry_fill.price <= 0.0 {
-            return TokenOutcome::no_entry();
+            return Tpsl2Entry::None;
         }
-        let entry_price = entry_fill.price;
-        let entry_time = entry_fill.block_time;
+        Tpsl2Entry::Entered { price: entry_fill.price, time: entry_fill.block_time }
+    }
+
+    fn resolve_exit(
+        &self,
+        trades: &[SweepTrade],
+        entry: &Tpsl2Entry,
+        params: &Tpsl2Combo,
+    ) -> TokenOutcome {
+        let Tpsl2Entry::Entered { price: entry_price, time: entry_time } = *entry else {
+            return TokenOutcome::no_entry();
+        };
+        let rule = &params.rule;
         let notional = rule.buy_amount;
 
         // (3) Exit decision via the shared ladder.
-        match exit::find_trade_driven_exit(trades, entry_time, entry_price, &rule) {
+        match exit::find_trade_driven_exit(trades, entry_time, entry_price, rule) {
             Some(f) => {
                 let econ = round_trip(entry_price, f.price, notional);
                 TokenOutcome {
@@ -348,7 +422,8 @@ impl Strategy for Tpsl2Strategy {
         }
     }
 
-    fn params_json(&self, p: &Tpsl2Params) -> serde_json::Value {
+    fn params_json(&self, params: &Tpsl2Combo) -> serde_json::Value {
+        let p = &params.raw;
         serde_json::json!({
             "exit_take_profit": p.take_profit,
             "exit_stop_loss": p.stop_loss,

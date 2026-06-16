@@ -116,8 +116,10 @@ impl Tpsl1StrategyService {
     }
 
     pub async fn on_token_created(&self, mint: &str, cache: &TokenCache) {
-        let mint = mint.to_string();
-        let token = match cache.get(&mint) {
+        // Probe on the borrowed `&str`; only allocate an owned mint once a rule
+        // actually matches (most created tokens match nothing). Mirrors the
+        // `on_trade_executed` early-bail discipline.
+        let token = match cache.get(mint) {
             Some(entry) => entry.value().token.clone(),
             None => {
                 debug!("Token {mint} not in cache — skipping TPSL create");
@@ -187,6 +189,9 @@ impl Tpsl1StrategyService {
                     }
                 }
 
+                // A match: now it's worth owning the mint (moved into the spawned
+                // insert + buy/fill task below).
+                let mint = mint.to_string();
                 let mut position = Position::new(
                     mint.clone(),
                     self.trader.wallet_pubkey(),
@@ -305,7 +310,10 @@ impl Tpsl1StrategyService {
                 return;
             };
             let state = entry.value();
-            current_price = state.current_price.unwrap_or(0.0);
+            // Keep the Option: a missing price falls back per-position to the
+            // position's own entry_price (below), so a failed exit records a 0%
+            // move instead of a bogus −100% (matches the `sweep_time_exits` path).
+            current_price = state.current_price;
             let trades = &state.trades;
             let trades_base = state.trades_base;
 
@@ -347,6 +355,9 @@ impl Tpsl1StrategyService {
             // Deep-clone only now that this position is actually exiting; the
             // holding index hands us a shared `Arc<Position>`.
             let mut position = (*position).clone();
+            // Reference price for the fill; fall back to this position's entry
+            // price when the cache has no current price (a 0% move, not −100%).
+            let exit_price = current_price.unwrap_or(position.entry_price);
             debug!(
                 "Position {} for token {mint} triggered exit: {:?}",
                 position.id, exit_reason
@@ -387,14 +398,14 @@ impl Tpsl1StrategyService {
                     position.entry_price,
                     position.entry_time,
                     rule.clone(),
-                    current_price,
+                    exit_price,
                     Utc::now(),
                     exit_reason.to_string(),
                 );
             } else if rule.trade_mode == "real" {
                 self.trigger_real_exit(
                     position,
-                    current_price,
+                    exit_price,
                     Utc::now(),
                     exit_reason.to_string(),
                 )

@@ -1,6 +1,7 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AppProviders } from 'context/AppProviders';
 import { AppLayout } from 'components/layout/AppLayout';
+import { RouteErrorBoundary } from 'components/ui/ErrorBoundary';
 import { HomePage } from 'pages/home/HomePage';
 import { DashboardPage } from 'pages/dashboard/DashboardPage';
 import { TokensPage } from 'pages/tokens/TokensPage';
@@ -20,7 +21,10 @@ export default function App() {
   return (
     <BrowserRouter>
       <AppProviders>
-        <Routes>
+        {/* Top-level net: catches anything the per-page boundary can't (Header,
+            layout, providers-level render). Resets on route change. */}
+        <RouteErrorBoundary variant="root">
+          <Routes>
           <Route element={<AppLayout />}>
             <Route index element={<HomePage />} />
             <Route path="dashboard" element={<DashboardPage />} />
@@ -41,7 +45,8 @@ export default function App() {
             <Route path="settings" element={<SettingsPage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Route>
-        </Routes>
+          </Routes>
+        </RouteErrorBoundary>
       </AppProviders>
     </BrowserRouter>
   );

@@ -379,10 +379,12 @@ async fn main() -> anyhow::Result<()> {
             ingest_laserstream::pipeline::IngestPipeline::channel_pair();
         // Tier B: the pipeline channel carries the typed protobuf update (shared
         // via Arc), not a pre-built Helius `Value` — the blob synthesis moved
-        // off the ingest hot path into the DbWriter.
-        let (update_tx, update_rx) = tokio::sync::mpsc::channel::<
+        // off the ingest hot path into the DbWriter. The client's curve-vs-AMM
+        // relevance verdict rides along so the decoder doesn't re-scan the logs.
+        let (update_tx, update_rx) = tokio::sync::mpsc::channel::<(
             std::sync::Arc<ingest_laserstream::proto::geyser::SubscribeUpdateTransaction>,
-        >(1024);
+            ingest_laserstream::decoder::TxRelevance,
+        )>(1024);
 
         let pipeline = ingest_laserstream::pipeline::IngestPipeline::new(
             constants::PUMP_FUN_PROGRAM_ID.to_string(),

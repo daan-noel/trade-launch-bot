@@ -18,6 +18,11 @@ pub(crate) const SELL_MAX_ATTEMPTS: usize = 6;
 pub(crate) const SELL_POLL_MAX_ATTEMPTS: usize = 10;
 pub(crate) const SELL_POLL_INTERVAL_MS: u64 = 500;
 pub(crate) const PARTIAL_FILL_THRESHOLD: f64 = 0.0001;
+/// Wall-clock window the paper exit-fill poll watches the feed for a confirming
+/// exit trade before giving up and marking the position ExitFailed.
+pub(crate) const PAPER_EXIT_POLL_WINDOW_SECS: u64 = 10;
+/// Delay between paper exit-fill poll ticks within that window.
+pub(crate) const PAPER_EXIT_POLL_INTERVAL_MS: u64 = 500;
 /// Floor on how often the sell-confirm loop may re-run the net-balance SUM
 /// aggregate over the partitioned `trades` table. During an active dump the
 /// feed bumps `seq` (and wakes the confirm loop) once per landed leg, so

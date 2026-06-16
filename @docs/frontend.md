@@ -9,7 +9,11 @@ Chart logic explainer: `@project_plans/token-analysis/token-history-chart-functi
 - `App.tsx` — `BrowserRouter`; all pages nested under `<AppLayout>`. Routes: `/`, `/dashboard`, `/tokens`, `/token/sync`, `/transactions`, `/analysis/{general,swing-detection}`, `/profiles/{mine,other}`, `/strategies/{tpsl1,tpsl2}`, `/strategies/grouped-sweep-tpsl1`, `/strategies/grouped-sweep-tpsl2`, `/settings`, `*`.
 
 ## Layout — `components/layout/`
-`AppLayout.tsx` (Header + `<Outlet>`), `Header.tsx` (nav, live-mode toggle, SOL/USD fetch→PriceUnitContext, PriceUnitToggle, TimezoneSelect), `PageShell.tsx`.
+`AppLayout.tsx` (Header + `<Outlet>`, the Outlet wrapped in a page-level `RouteErrorBoundary` so a page throw degrades to a fallback card while the nav stays live), `Header.tsx` (nav, live-mode toggle, SOL/USD fetch→PriceUnitContext, PriceUnitToggle, TimezoneSelect), `PageShell.tsx`.
+
+## Error boundaries — `components/ui/ErrorBoundary.tsx`
+
+`ErrorBoundary` (class) catches descendant render throws (e.g. a null in a live trade tick) instead of unmounting the tree; resets on `resetKeys` change (auto) or the fallback's "Try again" (manual). `RouteErrorBoundary` wraps it with `useLocation` so the path is the reset key → navigating away from a broken page recovers without a reload. Two instances: `App.tsx` wraps `<Routes>` (`variant="root"`, full-screen catch-all for Header/layout/provider crashes); `AppLayout` wraps `<Outlet>` (`variant="page"`, contained card under the live nav).
 
 ## Pages — `pages/`
 | Page | File | Notes |

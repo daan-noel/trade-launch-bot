@@ -141,20 +141,52 @@ pub trait ParamSpace {
     fn sample(&self, method: SweepMethod) -> Vec<Self::Params>;
 }
 
-/// The pure black-box backtest. The *entire* second half of the surface a new
-/// strategy adds — it owns its own entry/exit logic and just returns a
-/// [`TokenOutcome`]; the engine never inspects how.
+/// The pure black-box backtest, **factored into entry then exit** so the engine
+/// can resolve the (expensive) entry **once per distinct entry-param tuple per
+/// token** and reuse it across that tuple's whole exit sub-grid — see
+/// [`crate::sweep::engine::run_sweep`]. A new strategy owns its own entry/exit
+/// logic and just returns a [`TokenOutcome`]; the engine never inspects how.
+///
+/// The split is sound because the resolved entry depends **only** on the entry
+/// params (the scalp gates), never on the exit ladder — so two combos with the
+/// same [`Strategy::entry_key`] resolve byte-identical entries on a given token.
+/// A strategy whose entry can't be separated (or is param-free) sets `EntryKey`
+/// to a unit-like constant so the entry resolves once per token regardless.
 pub trait Strategy: ParamSpace + Send + Sync {
+    /// The resolved per-token entry under one entry-param tuple (price/time, or a
+    /// "no entry" variant). Cached by the engine and passed into every
+    /// [`Strategy::resolve_exit`] sharing the same [`Strategy::entry_key`].
+    type Entry;
+
+    /// The entry-param identity of a combo. Two combos with equal `EntryKey`
+    /// resolve the same entry on any token, so the engine resolves the entry once
+    /// per distinct key. `PartialEq` is all the engine needs (it keeps the last
+    /// resolved `(key, entry)` and recomputes only when the key changes — which,
+    /// on a grid, is once per contiguous exit-block).
+    type EntryKey: PartialEq;
+
     /// Stable id stored alongside every combo (e.g. `"tpsl2"`).
     fn id(&self) -> &'static str;
 
-    /// Simulate this strategy on one token's full trade history under one param
-    /// set. The history is the slim, wallet-interned [`SweepTrade`] projection the
-    /// corpus built once at load (not the heavy `Trade`); the shared entry/exit
-    /// fns run over it via the `TradeRow` abstraction. Pure: no IO, no shared
-    /// mutation, returns a `Copy` value — safe to call from many `rayon` threads.
+    /// The entry-param signature of a combo. Combos sharing it share an entry.
+    fn entry_key(&self, params: &Self::Params) -> Self::EntryKey;
+
+    /// Resolve the entry on one token's full trade history under a combo's **entry**
+    /// params. The expensive half (the scalp/cohort walk); called once per distinct
+    /// [`Strategy::entry_key`] per token. The history is the slim, wallet-interned
+    /// [`SweepTrade`] projection (not the heavy `Trade`); the shared entry fns run
+    /// over it via the `TradeRow` abstraction. Pure — safe from many `rayon` threads.
+    fn resolve_entry(&self, trades: &[SweepTrade], params: &Self::Params) -> Self::Entry;
+
+    /// Resolve the exit + economics given a pre-resolved `entry`, under a combo's
+    /// **exit** params. Called once per combo. Returns a `Copy` [`TokenOutcome`];
     /// PnL is frictionless (see [`round_trip`]).
-    fn simulate(&self, trades: &[SweepTrade], params: &Self::Params) -> TokenOutcome;
+    fn resolve_exit(
+        &self,
+        trades: &[SweepTrade],
+        entry: &Self::Entry,
+        params: &Self::Params,
+    ) -> TokenOutcome;
 
     /// Flatten one param set to a JSON object stored with the combo's result row,
     /// so the UI can show/sort by any knob without a per-strategy schema.

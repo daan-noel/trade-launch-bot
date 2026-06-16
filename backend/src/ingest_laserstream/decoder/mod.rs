@@ -38,6 +38,18 @@ pub struct HeliusDecoder {
     pool_index: Option<Arc<DashMap<String, String>>>,
 }
 
+/// Which program family a tx's logs matched. The LaserStream client computes
+/// this once in its pre-filter and forwards it to the decoder so the per-tx log
+/// scan that classifies curve-vs-AMM isn't repeated on the hot path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TxRelevance {
+    /// Bonding-curve (pump.fun program) tx — curve takes priority over AMM.
+    Curve,
+    /// Post-migration PumpSwap (AMM) swap, resolved to a tracked mint via the
+    /// shared pool index.
+    Amm,
+}
+
 /// Outcome of decoding one LaserStream transaction update.
 pub enum DecodeOutput {
     /// A Pump.fun transaction was decoded successfully.
@@ -52,7 +64,12 @@ pub enum DecodeOutput {
 
 impl HeliusDecoder {
     pub fn new(pump_program_id: String) -> Self {
-        let pump_program_id_bytes = bs58::decode(&pump_program_id).into_vec().unwrap_or_default();
+        // A startup invariant, not a valid operating state: an undecodable program
+        // id would leave the raw-byte key matches silently failing for every tx.
+        // Fail loudly at construction instead of degrading the hot path forever.
+        let pump_program_id_bytes = bs58::decode(&pump_program_id)
+            .into_vec()
+            .expect("pump_program_id must be valid base58");
         Self {
             pump_program_id,
             pump_program_id_bytes,

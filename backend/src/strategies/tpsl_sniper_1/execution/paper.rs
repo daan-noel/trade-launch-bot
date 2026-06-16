@@ -152,7 +152,7 @@ pub(crate) fn spawn_exit_fill_poll(
         // mint (count is monotonic; `None` forces the first walk).
         let mut last_count: Option<u64> = None;
         let start = std::time::Instant::now();
-        while start.elapsed() < Duration::from_secs(10) {
+        while start.elapsed() < Duration::from_secs(super::PAPER_EXIT_POLL_WINDOW_SECS) {
             // Confirm the fill from the in-memory cache window (kept current by the
             // WS pipeline) instead of an unbounded `find_by_mint_all` DB scan per
             // tick. A `None` (token untracked) skips this tick like an empty fetch.
@@ -198,7 +198,7 @@ pub(crate) fn spawn_exit_fill_poll(
                     break;
                 }
             }
-            sleep(Duration::from_millis(500)).await;
+            sleep(Duration::from_millis(super::PAPER_EXIT_POLL_INTERVAL_MS)).await;
         }
         if !found {
             // No confirming exit trade was indexed within the poll window. Per the

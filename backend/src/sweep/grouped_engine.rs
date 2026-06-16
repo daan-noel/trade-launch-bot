@@ -147,12 +147,18 @@ mod tests {
         }
     }
     impl Strategy for Mock {
+        type Entry = bool;
+        type EntryKey = ();
         fn id(&self) -> &'static str {
             "mock"
         }
-        fn simulate(&self, trades: &[SweepTrade], p: &f64) -> TokenOutcome {
+        fn entry_key(&self, _p: &f64) {}
+        fn resolve_entry(&self, trades: &[SweepTrade], _p: &f64) -> bool {
+            !trades.is_empty()
+        }
+        fn resolve_exit(&self, _trades: &[SweepTrade], entry: &bool, p: &f64) -> TokenOutcome {
             TokenOutcome {
-                fired: !trades.is_empty(),
+                fired: *entry,
                 holding_secs: 1,
                 pnl_percent: *p as f32,
                 pnl_sol: *p as f32,

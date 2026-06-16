@@ -98,11 +98,31 @@ pub fn run_sweep<S: Strategy>(
                 // sent (the folder indexes by combo_id); the caller discards the
                 // run's aggregates once it sees `cancelled()`.
                 let mut outs: Vec<TokenOutcome> = Vec::with_capacity(params.len());
+                // Resolve the entry once per distinct entry-param tuple and reuse it
+                // across that tuple's whole exit sub-grid (Rec 1). The grid lays the
+                // exit axes as the low-order digits, so a token's combos arrive as
+                // contiguous same-entry blocks: keeping just the last resolved
+                // `(key, entry)` recomputes the expensive entry exactly once per
+                // block (E times/token, not E·X). A scattered (random:N) order still
+                // resolves correctly — only the reuse rate falls to the old level.
+                let mut entry_cache: Option<(S::EntryKey, S::Entry)> = None;
                 for chunk in params.chunks(CANCEL_CHECK_STRIDE) {
                     if observer.cancelled() {
                         return Err(());
                     }
-                    outs.extend(chunk.iter().map(|p| strategy.simulate(&tt.trades, p)));
+                    for p in chunk {
+                        let key = strategy.entry_key(p);
+                        let stale = match &entry_cache {
+                            Some((k, _)) => k != &key,
+                            None => true,
+                        };
+                        if stale {
+                            let entry = strategy.resolve_entry(&tt.trades, p);
+                            entry_cache = Some((key, entry));
+                        }
+                        let entry = &entry_cache.as_ref().unwrap().1;
+                        outs.push(strategy.resolve_exit(&tt.trades, entry, p));
+                    }
                 }
                 // Folder never drops early; ignore only on shutdown races.
                 let _ = tx.send(outs);
@@ -149,12 +169,20 @@ mod tests {
         }
     }
     impl Strategy for Mock {
+        // Entry = "did the token have any trades" — param-free, so EntryKey is unit
+        // and the engine resolves it once per token (exercises the entry cache).
+        type Entry = bool;
+        type EntryKey = ();
         fn id(&self) -> &'static str {
             "mock"
         }
-        fn simulate(&self, trades: &[SweepTrade], p: &f64) -> TokenOutcome {
+        fn entry_key(&self, _p: &f64) {}
+        fn resolve_entry(&self, trades: &[SweepTrade], _p: &f64) -> bool {
+            !trades.is_empty()
+        }
+        fn resolve_exit(&self, _trades: &[SweepTrade], entry: &bool, p: &f64) -> TokenOutcome {
             TokenOutcome {
-                fired: !trades.is_empty(),
+                fired: *entry,
                 holding_secs: 1,
                 pnl_percent: *p as f32,
                 pnl_sol: *p as f32,
@@ -218,6 +246,67 @@ mod tests {
         // discards them on cancel.
         assert_eq!(metrics.len(), params.len());
         assert!(metrics.iter().all(|m| m.n_fired == 0));
+    }
+
+    /// A strategy whose entry depends on the param's `entry_key`, used to prove
+    /// the engine's per-token entry cache hands each combo **its own** entry even
+    /// when the key changes mid-token. `resolve_exit` echoes the entry it was given
+    /// into `pnl_sol`, so a stale-cache bug (a combo getting a neighbour's entry)
+    /// surfaces as a combo whose folded PnL ≠ its declared entry key.
+    struct EntryMock;
+    impl ParamSpace for EntryMock {
+        type Params = (i64, f64);
+        fn sample(&self, _m: SweepMethod) -> Vec<(i64, f64)> {
+            vec![]
+        }
+    }
+    impl Strategy for EntryMock {
+        type Entry = i64;
+        type EntryKey = i64;
+        fn id(&self) -> &'static str {
+            "entry-mock"
+        }
+        fn entry_key(&self, p: &(i64, f64)) -> i64 {
+            p.0
+        }
+        fn resolve_entry(&self, _trades: &[SweepTrade], p: &(i64, f64)) -> i64 {
+            p.0
+        }
+        fn resolve_exit(&self, _trades: &[SweepTrade], entry: &i64, _p: &(i64, f64)) -> TokenOutcome {
+            TokenOutcome {
+                fired: true,
+                holding_secs: 0,
+                pnl_percent: 0.0,
+                pnl_sol: *entry as f32,
+                exit: ExitCode::TakeProfit,
+            }
+        }
+        fn params_json(&self, _p: &(i64, f64)) -> serde_json::Value {
+            serde_json::json!({})
+        }
+    }
+
+    #[test]
+    fn entry_cache_gives_each_combo_its_own_entry() {
+        // Keys ordered as contiguous blocks AND returning to an earlier key (0 →
+        // 1 → 0): every transition must recompute, never serve a stale entry.
+        let params: Vec<(i64, f64)> =
+            vec![(0, 0.0), (0, 0.0), (1, 0.0), (1, 0.0), (1, 0.0), (0, 0.0)];
+        let corpus = Corpus {
+            tokens: vec![token("a", 1)],
+            hash: "h".into(),
+        };
+        let (_stats, metrics) =
+            run_sweep(&EntryMock, &params, &corpus, &crate::sweep::progress::NoopObserver).unwrap();
+        // One token fires once per combo, so each combo's total PnL == the entry it
+        // was handed, which must equal that combo's own entry key.
+        for (i, m) in metrics.iter().enumerate() {
+            assert_eq!(
+                m.total_pnl_sol, params[i].0 as f64,
+                "combo {i} (key {}) received the wrong cached entry",
+                params[i].0
+            );
+        }
     }
 
     #[test]

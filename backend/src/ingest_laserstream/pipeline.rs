@@ -30,7 +30,7 @@ use crate::{
 
 // Cloned ingest internals — self-contained copies, not imported from `ingest/`.
 use super::db_writer::{DbWriteOp, RawBlobJob, TokenMetricsWrite};
-use super::decoder::{DecodeOutput, HeliusDecoder};
+use super::decoder::{DecodeOutput, HeliusDecoder, TxRelevance};
 use super::proto::geyser::SubscribeUpdateTransaction;
 
 const DB_QUEUE_CAP: usize = 4096;
@@ -159,7 +159,10 @@ impl IngestPipeline {
         (db_tx, db_rx, strategy_tx, strategy_rx)
     }
 
-    pub async fn run(self, mut update_rx: mpsc::Receiver<Arc<SubscribeUpdateTransaction>>) {
+    pub async fn run(
+        self,
+        mut update_rx: mpsc::Receiver<(Arc<SubscribeUpdateTransaction>, TxRelevance)>,
+    ) {
         info!("LaserStream pipeline: starting");
 
         // Independent receiver for change notifications, so the hot path's
@@ -175,20 +178,25 @@ impl IngestPipeline {
         loop {
             tokio::select! {
                 maybe_update = update_rx.recv() => {
-                    let Some(update) = maybe_update else { break };
+                    let Some((update, relevance)) = maybe_update else { break };
                     // Single ingest clock for this tx — used for the trades, the
                     // null-data raw-tx carrier, and the persisted blob (so it keeps
                     // the real receive time, not the DbWriter flush time).
                     let received_at = Utc::now();
-                    let decoded = self.decoder.decode_protobuf(&update, received_at);
+                    // The client already classified this tx (curve vs AMM); forward
+                    // that verdict so the decoder doesn't re-scan the logs.
+                    let decoded = self.decoder.decode_relevant_pb(&update, relevance, received_at);
                     match decoded {
                         DecodeOutput::Transaction { raw_tx, mut events } => {
                             sort_events(&mut events);
-                            let (events, save_raw) = filter_events(
-                                events,
-                                &self.token_cache,
-                                self.settings_rx.borrow().track_mayhem,
-                            );
+                            // Read both flags this tx needs under ONE watch
+                            // read-guard instead of borrowing twice per persisted tx.
+                            let (track_mayhem, persist_raw) = {
+                                let s = self.settings_rx.borrow();
+                                (s.track_mayhem, s.persist_raw)
+                            };
+                            let (events, save_raw) =
+                                filter_events(events, &self.token_cache, track_mayhem);
                             if events.is_empty() {
                                 continue;
                             }
@@ -196,7 +204,7 @@ impl IngestPipeline {
                             // Hand the DbWriter the typed protobuf (shared Arc) +
                             // ingest scalars; it synthesises the Helius blob off
                             // this hot path. `raw_tx` here is the null-data carrier.
-                            if save_raw && self.settings_rx.borrow().persist_raw {
+                            if save_raw && persist_raw {
                                 self.enqueue_db(DbWriteOp::Raw(RawBlobJob {
                                     update: update.clone(),
                                     signature: raw_tx.signature.clone(),
@@ -590,6 +598,10 @@ impl IngestPipeline {
 }
 
 fn sort_events(events: &mut [InternalEvent]) {
+    // Most txs decode to a single event; skip the sort setup entirely for them.
+    if events.len() < 2 {
+        return;
+    }
     events.sort_by_key(|e| match e {
         InternalEvent::TokenCreated(_) => 0,
         InternalEvent::TokenMigrated(_) => 1,

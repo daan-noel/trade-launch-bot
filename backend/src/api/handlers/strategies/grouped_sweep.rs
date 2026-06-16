@@ -24,7 +24,7 @@ use crate::state::app_state::AppState;
 use crate::state::token_cache::MAX_TRADES_RETAINED;
 use crate::storage::repositories::grouped_sweep_repo::{GroupedSweepRepo, GroupedSweepTables};
 use crate::sweep::aggregate::ComboMetrics;
-use crate::sweep::corpus::{attach_fingerprints, CorpusSource, DbSource, Selection};
+use crate::sweep::corpus::{attach_fingerprints, corpus_cache_dir, load_grouped_corpus, Selection};
 use crate::sweep::grouping::GroupField;
 use crate::sweep::registry::{self, GroupedSweepOutput};
 use crate::sweep::strategy::SweepMethod;
@@ -69,6 +69,11 @@ pub struct StartGroupedSweepBody {
     /// server-side to `HARD_MAX_COMBOS` so a typo can't run away.
     #[serde(default)]
     pub max_combos: Option<usize>,
+    /// Bypass the corpus Parquet cache: force a fresh DB load (and rewrite the
+    /// cache) even for a cacheable closed/settled window. Open/recent windows are
+    /// never cached regardless. Default `false`.
+    #[serde(default)]
+    pub fresh: bool,
 }
 
 fn default_min_tokens() -> usize {
@@ -215,10 +220,14 @@ async fn run_grouped_sweep_job(
         curve_only: b.curve_only,
     };
 
-    // Load the corpus fresh from the DB (no Parquet cache — the grouping
-    // fingerprint must be attached, and a date-range run is one-shot anyway),
-    // then attach each token's fingerprint via the cheap separate lookup.
-    let mut corpus = match DbSource::new(state.db.clone()).load(&sel).await {
+    // Load the corpus, reusing the selection-keyed Parquet cache for a closed/
+    // settled window (Rec 3) so repeated sweeps over the same window skip the DB
+    // load; an open/recent window always loads fresh. Fingerprints are attached
+    // separately below (the trade cache is fingerprint-free) so caching trades
+    // doesn't complicate grouping.
+    let mut corpus = match load_grouped_corpus(state.db.clone(), &sel, &corpus_cache_dir(), b.fresh)
+        .await
+    {
         Ok(c) => c,
         Err(e) => {
             tracing::error!("grouped sweep: corpus load failed: {e}");

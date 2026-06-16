@@ -88,6 +88,10 @@ impl StrategyRunner {
                                 .on_trade_executed(&ping.mint, self.token_cache.as_ref())
                                 .await;
                         }
+                        // Not entry/exit triggers: a migration's routing change is
+                        // re-read from the WS cache on every sell attempt inside the
+                        // real sell loop, and creator activity has no strategy
+                        // action — neither needs a runner ping handler here.
                         IngestKind::Migrated | IngestKind::CreatorActivity => {}
                     }
                 }
