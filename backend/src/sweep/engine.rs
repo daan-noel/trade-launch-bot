@@ -134,10 +134,10 @@ pub fn run_sweep<S: Strategy>(
 mod tests {
     use super::*;
     use crate::sweep::corpus::TokenTrades;
+    use crate::sweep::projection::SweepTrade;
     use crate::sweep::strategy::{ExitCode, ParamSpace, SweepMethod, TokenOutcome};
     use crate::models::trade::{Trade, TradeType};
     use chrono::Utc;
-    use std::sync::Arc;
 
     /// Minimal Strategy that exercises the engine without constructing a real
     /// `Tpsl2Rule` — proves the sweep/aggregate plumbing independent of strategy.
@@ -152,7 +152,7 @@ mod tests {
         fn id(&self) -> &'static str {
             "mock"
         }
-        fn simulate(&self, trades: &[Trade], p: &f64) -> TokenOutcome {
+        fn simulate(&self, trades: &[SweepTrade], p: &f64) -> TokenOutcome {
             TokenOutcome {
                 fired: !trades.is_empty(),
                 holding_secs: 1,
@@ -181,12 +181,12 @@ mod tests {
                 )
             })
             .collect();
-        TokenTrades {
-            mint: mint.into(),
-            symbol: mint.into(),
-            fp: crate::sweep::grouping::TokenFingerprint::default(),
-            trades: Arc::new(trades),
-        }
+        TokenTrades::from_trades(
+            mint.into(),
+            mint.into(),
+            crate::sweep::grouping::TokenFingerprint::default(),
+            &trades,
+        )
     }
 
     /// Observer that reports cancelled from the first poll — proves the producer

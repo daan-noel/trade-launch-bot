@@ -3,7 +3,7 @@
 //! (b) its concrete sweep entry point. The handler and repo are otherwise fully
 //! generic (table-name- and data-driven), so adding "swing" later means: write a
 //! `strategies/swing.rs` (`Strategy` + `ParamSpace` + `AxesSpec`), add its tables
-//! + a match arm here, and a `0005_*` migration — nothing else changes.
+//! + a match arm here, and a `0002_*` migration — nothing else changes.
 //!
 //! The CPU-heavy sweep runs in a bounded rayon pool inside `spawn_blocking` so it
 //! can never starve the live trading hot path (ingest / sell-confirm).

@@ -17,7 +17,7 @@ use tracing::warn;
 use uuid::Uuid;
 
 use super::util::{none_if_zero_f64, none_if_zero_u64};
-use crate::models::trade::{Trade, TradeType};
+use crate::models::trade::TradeRow;
 use crate::models::{Tpsl1Rule, Token};
 
 const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
@@ -197,24 +197,27 @@ pub struct EntryFill {
 /// Resolve the entry fill from a token's trade history: the highest-priced buy
 /// in the first slot block plus the first `second_block_cap` buys of the second
 /// block. Shared by the backtest (cap 1) and the live paper entry poll (cap 5).
-pub fn find_entry_fill_in_trades(trades: &[Trade], second_block_cap: usize) -> Option<EntryFill> {
+pub fn find_entry_fill_in_trades<T: TradeRow>(
+    trades: &[T],
+    second_block_cap: usize,
+) -> Option<EntryFill> {
     if trades.is_empty() {
         return None;
     }
 
-    let first_slot = trades[0].slot;
-    let second_slot = trades.iter().find(|t| t.slot > first_slot).map(|t| t.slot);
+    let first_slot = trades[0].slot();
+    let second_slot = trades.iter().find(|t| t.slot() > first_slot).map(|t| t.slot());
 
-    let mut candidates: Vec<&Trade> = Vec::new();
+    let mut candidates: Vec<&T> = Vec::new();
     for t in trades.iter() {
-        if t.trade_type != TradeType::Buy {
+        if !t.is_buy() {
             continue;
         }
-        if t.slot == first_slot {
+        if t.slot() == first_slot {
             candidates.push(t);
         } else if let Some(second_slot) = second_slot {
-            if t.slot == second_slot {
-                let already = candidates.iter().filter(|c| c.slot == second_slot).count();
+            if t.slot() == second_slot {
+                let already = candidates.iter().filter(|c| c.slot() == second_slot).count();
                 if already < second_block_cap {
                     candidates.push(t);
                 }
@@ -225,21 +228,21 @@ pub fn find_entry_fill_in_trades(trades: &[Trade], second_block_cap: usize) -> O
     candidates
         .into_iter()
         .max_by(|a, b| {
-            a.price_per_token
-                .partial_cmp(&b.price_per_token)
+            a.price_per_token()
+                .partial_cmp(&b.price_per_token())
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
         .map(|t| EntryFill {
-            price: t.price_per_token,
-            tx_signature: t.tx_signature.clone(),
-            block_time: t.block_time,
+            price: t.price_per_token(),
+            tx_signature: t.tx_signature().to_string(),
+            block_time: t.block_time(),
         })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::trade::TradeType;
+    use crate::models::trade::{Trade, TradeType};
     use serde_json::{json, Value};
 
     fn base_time() -> DateTime<Utc> {

@@ -139,6 +139,76 @@ impl Trade {
     }
 }
 
+/// The read-only fields the shared entry/exit/cohort fns consume, abstracted over
+/// the concrete row type so those fns can run against either the live `Trade`
+/// (decision parity with real trading) **or** the sweep's slim, wallet-interned
+/// [`SweepTrade`](crate::sweep::projection::SweepTrade) projection without
+/// duplicating any decision logic.
+///
+/// `Trade` impls this trivially (below); the sweep impls it over a ~3× smaller
+/// row whose `Wallet` is an interned `u32` (so cohort-set hashing/membership in
+/// the hot loop is integer-keyed, not 44-char-base58-String-keyed). Because the
+/// fns monomorphize, the live path (`T = Trade`) compiles to byte-identical code
+/// — there is no runtime cost or behavior change for live trading.
+pub trait TradeRow {
+    /// Cheap, hashable wallet identity for cohort-set membership. `String` for the
+    /// live `Trade` (unchanged hashing); an interned `u32` for the sweep row.
+    type Wallet: Eq + std::hash::Hash + Clone;
+
+    fn is_buy(&self) -> bool;
+    fn sol_amount(&self) -> f64;
+    fn token_amount(&self) -> f64;
+    fn price_per_token(&self) -> f64;
+    fn slot(&self) -> u64;
+    fn leg_index(&self) -> u32;
+    fn block_time(&self) -> DateTime<Utc>;
+    /// Virtual bonding-curve SOL reserves (tpsl1's E4 liquidity exit reads this).
+    fn virtual_sol_reserves(&self) -> Option<f64>;
+    /// Real (non-virtual) SOL reserves (tpsl2's E4 + scalp liquidity gates read this).
+    fn real_sol_reserves(&self) -> Option<f64>;
+    /// Borrowed wallet identity — borrowed so cohort membership never clones.
+    fn wallet(&self) -> &Self::Wallet;
+    fn tx_signature(&self) -> &str;
+}
+
+impl TradeRow for Trade {
+    type Wallet = String;
+
+    fn is_buy(&self) -> bool {
+        matches!(self.trade_type, TradeType::Buy)
+    }
+    fn sol_amount(&self) -> f64 {
+        self.sol_amount
+    }
+    fn token_amount(&self) -> f64 {
+        self.token_amount
+    }
+    fn price_per_token(&self) -> f64 {
+        self.price_per_token
+    }
+    fn slot(&self) -> u64 {
+        self.slot
+    }
+    fn leg_index(&self) -> u32 {
+        self.leg_index
+    }
+    fn block_time(&self) -> DateTime<Utc> {
+        self.block_time
+    }
+    fn virtual_sol_reserves(&self) -> Option<f64> {
+        self.virtual_sol_reserves
+    }
+    fn real_sol_reserves(&self) -> Option<f64> {
+        self.real_sol_reserves
+    }
+    fn wallet(&self) -> &String {
+        &self.wallet_address
+    }
+    fn tx_signature(&self) -> &str {
+        &self.tx_signature
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -16,9 +16,9 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 
-use crate::models::trade::Trade;
 use crate::models::Tpsl1Rule;
 use crate::strategies::tpsl_sniper_1::{entry, exit};
+use crate::sweep::projection::SweepTrade;
 use crate::sweep::strategy::{
     round_trip, ExitCode, ParamSpace, Strategy, SweepMethod, TokenOutcome,
 };
@@ -217,7 +217,7 @@ impl Strategy for Tpsl1Strategy {
         "tpsl1"
     }
 
-    fn simulate(&self, trades: &[Trade], params: &Tpsl1Params) -> TokenOutcome {
+    fn simulate(&self, trades: &[SweepTrade], params: &Tpsl1Params) -> TokenOutcome {
         let rule = self.rule_from(params);
 
         // (1) Entry fill — the live/backtest fill resolution (cap 1, matching

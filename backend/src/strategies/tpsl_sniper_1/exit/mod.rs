@@ -19,7 +19,7 @@
 
 use chrono::{DateTime, Duration, Utc};
 
-use crate::models::trade::Trade;
+use crate::models::trade::{Trade, TradeRow};
 use crate::models::{Position, PositionStatus, Tpsl1Rule};
 
 use super::util::{none_if_zero_f64, none_if_zero_u64};
@@ -98,12 +98,13 @@ impl ExitWalkState {
     }
 
     /// Fold one post-entry trade into the running peaks.
-    pub fn update_with_trade(&mut self, trade: &Trade) {
-        if trade.price_per_token > self.peak_price {
-            self.peak_price = trade.price_per_token;
-            self.last_higher_high_time = trade.block_time;
+    pub fn update_with_trade<T: TradeRow>(&mut self, trade: &T) {
+        let price = trade.price_per_token();
+        if price > self.peak_price {
+            self.peak_price = price;
+            self.last_higher_high_time = trade.block_time();
         }
-        if let Some(reserves) = trade.virtual_sol_reserves {
+        if let Some(reserves) = trade.virtual_sol_reserves() {
             if reserves > self.peak_reserves {
                 self.peak_reserves = reserves;
             }
@@ -113,13 +114,13 @@ impl ExitWalkState {
     /// Replay the full post-entry history into a fresh state — the peaks as of
     /// the last trade. Used to seed [`CachedExitState`] the first time a position
     /// is swept; afterwards the state is advanced incrementally, never rebuilt.
-    pub fn rebuild_from_trades(
-        trades: &[Trade],
+    pub fn rebuild_from_trades<T: TradeRow>(
+        trades: &[T],
         entry_price: f64,
         entry_time: DateTime<Utc>,
     ) -> Self {
         let mut state = Self::starting_at(entry_price, entry_time);
-        for t in trades.iter().filter(|t| t.block_time > entry_time) {
+        for t in trades.iter().filter(|t| t.block_time() > entry_time) {
             state.update_with_trade(t);
         }
         state
@@ -295,21 +296,22 @@ impl LadderParams {
 /// of `t`, inclusive). First feature that fires wins (ladder order). Shared by
 /// [`find_trade_driven_exit`] and [`CachedExitState::advance_and_find_exit`] so the
 /// two can never drift.
-fn ladder_reason(
+fn ladder_reason<T: TradeRow>(
     state: &ExitWalkState,
-    t: &Trade,
+    t: &T,
     entry_time: DateTime<Utc>,
     entry_price: f64,
     params: &LadderParams,
 ) -> Option<ExitReason> {
-    let price = t.price_per_token;
+    let price = t.price_per_token();
+    let block_time = t.block_time();
     let pct = ((price - entry_price) / entry_price) * 100.0;
     None
         .or_else(|| {
             // E4: reserves crash below the peak-since-entry. Highest priority —
             // a reserve crash leads the price move the others catch later.
             params.liquidity_drop_pct.and_then(|drop| {
-                t.virtual_sol_reserves.and_then(|reserves| {
+                t.virtual_sol_reserves().and_then(|reserves| {
                     (state.peak_reserves > 0.0
                         && reserves < state.peak_reserves * (1.0 - drop / 100.0))
                     .then_some(ExitReason::LiquidityExit)
@@ -328,14 +330,14 @@ fn ladder_reason(
         .or_else(|| {
             // E3: sell the flatline. Ranks above the time stop, below trailing.
             params.stall_secs.and_then(|secs| {
-                stall_triggered(state.last_higher_high_time, t.block_time, secs)
+                stall_triggered(state.last_higher_high_time, block_time, secs)
                     .then_some(ExitReason::Stall)
             })
         })
         .or_else(|| {
             // E2: cut once held past the deadline. Lowest priority.
             params.time_stop_secs.and_then(|secs| {
-                time_stop_triggered(entry_time, t.block_time, secs).then_some(ExitReason::TimeStop)
+                time_stop_triggered(entry_time, block_time, secs).then_some(ExitReason::TimeStop)
             })
         })
 }
@@ -357,8 +359,8 @@ fn time_stop_triggered(entry_time: DateTime<Utc>, at: DateTime<Utc>, time_stop_s
 /// Walk a position's post-entry trades chronologically and return the first exit
 /// the ladder fires, or `None` if the position is still open. Trades are assumed
 /// slot/time-sorted upstream.
-pub fn find_trade_driven_exit(
-    trades: &[Trade],
+pub fn find_trade_driven_exit<T: TradeRow>(
+    trades: &[T],
     entry_time: DateTime<Utc>,
     entry_price: f64,
     rule: &Tpsl1Rule,
@@ -372,7 +374,7 @@ pub fn find_trade_driven_exit(
     let mut state = ExitWalkState::starting_at(entry_price, entry_time);
 
     // Single pass over the post-entry trades — no intermediate `Vec<&Trade>`.
-    for t in trades.iter().filter(|t| t.block_time > entry_time) {
+    for t in trades.iter().filter(|t| t.block_time() > entry_time) {
         state.update_with_trade(t);
 
         // First feature that fires on this trade wins (ladder order). Shared with
@@ -384,21 +386,21 @@ pub fn find_trade_driven_exit(
         // Exit price: lowest price in the block where the exit condition met.
         // Re-scan the same post-entry filter for this slot (identical set to the
         // old `trades_after_entry` re-filter, no allocation).
-        let exit_slot = t.slot;
+        let exit_slot = t.slot();
         let exit_trade = trades
             .iter()
-            .filter(|x| x.block_time > entry_time && x.slot == exit_slot)
+            .filter(|x| x.block_time() > entry_time && x.slot() == exit_slot)
             .min_by(|a, b| {
-                a.price_per_token
-                    .partial_cmp(&b.price_per_token)
+                a.price_per_token()
+                    .partial_cmp(&b.price_per_token())
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
 
         if let Some(et) = exit_trade {
             return Some(ExitFill {
-                price: et.price_per_token,
-                tx_signature: et.tx_signature.clone(),
-                block_time: et.block_time,
+                price: et.price_per_token(),
+                tx_signature: et.tx_signature().to_string(),
+                block_time: et.block_time(),
                 reason,
             });
         }

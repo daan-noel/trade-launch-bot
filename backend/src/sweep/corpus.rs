@@ -11,8 +11,10 @@
 //!
 //! The loaded corpus is cached to a compact columnar Parquet file keyed by a
 //! corpus hash, so a re-run with the same selection loads instantly off disk
-//! instead of re-hitting the DB. The full `Trade` never enters the sweep loop —
-//! only the fields entry/exit/cohort/fingerprint read are projected.
+//! instead of re-hitting the DB. The full `Trade` never enters the sweep loop:
+//! each token is projected **once at load** into a slim, wallet-interned
+//! [`SweepTrade`] buffer (see [`crate::sweep::projection`]) — the hot loop walks
+//! that, not the ~250 B `Trade`.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -33,14 +35,18 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
 use sqlx::PgPool;
 
-use crate::models::trade::{Trade, TradeType};
+use crate::models::trade::Trade;
 use crate::state::token_cache::TokenCache;
 use crate::storage::repositories::trade_repo::TradeSlimRow;
 use crate::sweep::grouping::{extract_lamports, normalize_labels, TokenFingerprint};
+use crate::sweep::projection::{project_trades, SweepTrade, WalletInterner};
 
-/// One token's trade history, ready for `simulate`. `trades` is shared (`Arc`)
-/// so the cache source clones a refcount rather than deep-copying up to the
-/// retention window of `Trade`s while the ingest writer runs.
+/// One token's trade history, ready for `simulate`. `trades` is the slim
+/// [`SweepTrade`] projection (wallet-interned, ~3× smaller than `Trade`), shared
+/// (`Arc`) so building a sub-corpus per group is a refcount clone, not a copy.
+/// `wallets` is the token-local `u32 → address` table the projection interns
+/// against; the hot loop never reads it (cohort membership is pure `u32`) — it
+/// exists only to write addresses back to the Parquet cache.
 ///
 /// `fp` carries the token-creation fingerprint used only by the grouping layer
 /// (never by `simulate`). The cache source fills it from the live token; the DB
@@ -50,8 +56,31 @@ use crate::sweep::grouping::{extract_lamports, normalize_labels, TokenFingerprin
 pub struct TokenTrades {
     pub mint: String,
     pub symbol: String,
-    pub trades: Arc<Vec<Trade>>,
+    pub trades: Arc<Vec<SweepTrade>>,
+    /// `u32 → wallet address` for this token (interned by [`project_trades`]).
+    pub wallets: Arc<Vec<Box<str>>>,
     pub fp: TokenFingerprint,
+}
+
+impl TokenTrades {
+    /// Project a token's chronological `Trade` slice into the slim sweep buffer
+    /// once, at load. Apply any corpus-wide trade filter (e.g. `curve_only`)
+    /// **before** calling this — `SweepTrade` drops `venue`.
+    pub fn from_trades(
+        mint: String,
+        symbol: String,
+        fp: TokenFingerprint,
+        trades: &[Trade],
+    ) -> Self {
+        let (rows, wallets) = project_trades(trades);
+        Self {
+            mint,
+            symbol,
+            fp,
+            trades: Arc::new(rows),
+            wallets: Arc::new(wallets),
+        }
+    }
 }
 
 /// The whole loaded population plus the hash that keys its Parquet cache.
@@ -110,17 +139,13 @@ pub trait CorpusSource {
     async fn load(&self, sel: &Selection) -> Result<Corpus>;
 }
 
-/// Apply the shared corpus-wide filters (curve-only) to a freshly built token.
+/// Apply the shared corpus-wide filters (curve-only) to a freshly built token,
+/// then project to the slim [`SweepTrade`] buffer.
 fn finalize_token(mint: String, symbol: String, mut trades: Vec<Trade>, sel: &Selection) -> TokenTrades {
     if sel.curve_only {
         trades.retain(|t| t.venue == "curve");
     }
-    TokenTrades {
-        mint,
-        symbol,
-        fp: TokenFingerprint::default(),
-        trades: Arc::new(trades),
-    }
+    TokenTrades::from_trades(mint, symbol, TokenFingerprint::default(), &trades)
 }
 
 /// Stable hash of a selection's realised population — sorted mints plus each
@@ -185,25 +210,18 @@ impl CorpusSource for CacheSource {
             // The cache holds the decoded token, so fill the grouping fingerprint
             // here for free (the DB source defers it to `attach_fingerprints`).
             let fp = TokenFingerprint::from_token(&st.token);
-            // Refcount-clone the shared buffer under the shard guard; if curve_only
-            // filtering is requested we materialise a filtered copy, else reuse the
-            // Arc directly (zero copy).
+            let mint = st.token.mint_address.clone();
+            let symbol = st.token.symbol.clone();
+            // Project to the slim sweep buffer under the shard guard. (We no longer
+            // refcount-clone the live `Arc<Vec<Trade>>`: the sweep walks `SweepTrade`,
+            // so the corpus is projected once here — a load-time cost, not the live
+            // hot path.) `curve_only` filters `Trade` first, before `venue` is dropped.
             let tt = if sel.curve_only {
                 let filtered: Vec<Trade> =
                     st.trades.iter().filter(|t| t.venue == "curve").cloned().collect();
-                TokenTrades {
-                    mint: st.token.mint_address.clone(),
-                    symbol: st.token.symbol.clone(),
-                    fp,
-                    trades: Arc::new(filtered),
-                }
+                TokenTrades::from_trades(mint, symbol, fp, &filtered)
             } else {
-                TokenTrades {
-                    mint: st.token.mint_address.clone(),
-                    symbol: st.token.symbol.clone(),
-                    fp,
-                    trades: st.trades.clone(),
-                }
+                TokenTrades::from_trades(mint, symbol, fp, &st.trades)
             };
             if !tt.trades.is_empty() {
                 tokens.push(tt);
@@ -482,6 +500,10 @@ pub async fn load_or_build<S: CorpusSource>(
 // Compact columnar Parquet (write + read)
 // ---------------------------------------------------------------------------
 
+/// The slim corpus-cache schema — exactly the [`SweepTrade`] fields plus the
+/// per-token `mint`/`symbol` and the `wallet` address (re-interned to a `u32` on
+/// read). `venue` (a load-time filter) and `vtok`/`rtok` (read by no sweep fn)
+/// are intentionally dropped vs. the full `Trade`.
 fn corpus_schema() -> Schema {
     Schema::new(vec![
         Field::new("mint", DataType::Utf8, false),
@@ -495,11 +517,8 @@ fn corpus_schema() -> Schema {
         Field::new("block_time", DataType::Int64, false),
         Field::new("leg_index", DataType::Int32, false),
         Field::new("tx_signature", DataType::Utf8, false),
-        Field::new("venue", DataType::Utf8, false),
         Field::new("vsol", DataType::Float64, true),
-        Field::new("vtok", DataType::Float64, true),
         Field::new("rsol", DataType::Float64, true),
-        Field::new("rtok", DataType::Float64, true),
     ])
 }
 
@@ -524,11 +543,8 @@ pub fn write_corpus_parquet(corpus: &Corpus, path: &Path) -> Result<()> {
     let mut block_time = Int64Builder::new();
     let mut leg_index = Int32Builder::new();
     let mut tx = StringBuilder::new();
-    let mut venue = StringBuilder::new();
     let mut vsol = Float64Builder::new();
-    let mut vtok = Float64Builder::new();
     let mut rsol = Float64Builder::new();
-    let mut rtok = Float64Builder::new();
     let mut pending = 0usize;
 
     macro_rules! flush {
@@ -547,11 +563,8 @@ pub fn write_corpus_parquet(corpus: &Corpus, path: &Path) -> Result<()> {
                     Arc::new(block_time.finish()),
                     Arc::new(leg_index.finish()),
                     Arc::new(tx.finish()),
-                    Arc::new(venue.finish()),
                     Arc::new(vsol.finish()),
-                    Arc::new(vtok.finish()),
                     Arc::new(rsol.finish()),
-                    Arc::new(rtok.finish()),
                 ],
             )?;
             writer.write(&batch)?;
@@ -562,20 +575,18 @@ pub fn write_corpus_parquet(corpus: &Corpus, path: &Path) -> Result<()> {
         for t in token.trades.iter() {
             mint.append_value(&token.mint);
             symbol.append_value(&token.symbol);
-            wallet.append_value(&t.wallet_address);
-            is_buy.append_value(matches!(t.trade_type, TradeType::Buy));
+            // Re-materialise the wallet address from the token-local intern table.
+            wallet.append_value(&*token.wallets[t.wallet as usize]);
+            is_buy.append_value(t.is_buy);
             sol_amount.append_value(t.sol_amount);
             token_amount.append_value(t.token_amount);
             price.append_value(t.price_per_token);
             slot.append_value(t.slot as i64);
             block_time.append_value(t.block_time.timestamp());
             leg_index.append_value(t.leg_index as i32);
-            tx.append_value(&t.tx_signature);
-            venue.append_value(&t.venue);
+            tx.append_value(&*t.tx_signature);
             vsol.append_option(t.virtual_sol_reserves);
-            vtok.append_option(t.virtual_token_reserves);
             rsol.append_option(t.real_sol_reserves);
-            rtok.append_option(t.real_token_reserves);
             pending += 1;
         }
         if pending >= FLUSH_ROWS {
@@ -598,10 +609,10 @@ fn opt_f64(arr: &Float64Array, i: usize) -> Option<f64> {
     }
 }
 
-/// Read a compact corpus Parquet back into [`Corpus`], re-grouping the
-/// mint-contiguous rows into per-token histories. Unused `Trade` fields
-/// (`id`, instruction labels) are rehydrated to inert defaults — the pure
-/// entry/exit fns never read them.
+/// Read a slim corpus Parquet back into [`Corpus`], re-grouping the
+/// mint-contiguous rows into per-token [`SweepTrade`] buffers and re-interning
+/// each token's wallet addresses to a token-local `u32`. The dropped `Trade`
+/// fields are never reconstructed — no sweep fn reads them.
 pub fn read_corpus_parquet(path: &Path) -> Result<Corpus> {
     let file = std::fs::File::open(path)?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
@@ -610,7 +621,8 @@ pub fn read_corpus_parquet(path: &Path) -> Result<Corpus> {
     let mut tokens: Vec<TokenTrades> = Vec::new();
     let mut cur_mint: Option<String> = None;
     let mut cur_symbol = String::new();
-    let mut cur_trades: Vec<Trade> = Vec::new();
+    let mut cur_trades: Vec<SweepTrade> = Vec::new();
+    let mut cur_interner = WalletInterner::default();
 
     for batch in reader {
         let batch = batch?;
@@ -625,11 +637,8 @@ pub fn read_corpus_parquet(path: &Path) -> Result<Corpus> {
         let block_time = col::<Int64Array>(&batch, 8)?;
         let leg_index = col::<Int32Array>(&batch, 9)?;
         let tx = col_str(&batch, 10)?;
-        let venue = col_str(&batch, 11)?;
-        let vsol = col::<Float64Array>(&batch, 12)?;
-        let vtok = col::<Float64Array>(&batch, 13)?;
-        let rsol = col::<Float64Array>(&batch, 14)?;
-        let rtok = col::<Float64Array>(&batch, 15)?;
+        let vsol = col::<Float64Array>(&batch, 11)?;
+        let rsol = col::<Float64Array>(&batch, 12)?;
 
         for i in 0..batch.num_rows() {
             let m = mint.value(i);
@@ -640,32 +649,25 @@ pub fn read_corpus_parquet(path: &Path) -> Result<Corpus> {
                         symbol: std::mem::take(&mut cur_symbol),
                         fp: TokenFingerprint::default(),
                         trades: Arc::new(std::mem::take(&mut cur_trades)),
+                        wallets: Arc::new(std::mem::take(&mut cur_interner).into_table()),
                     });
                 }
                 cur_mint = Some(m.to_string());
                 cur_symbol = symbol.value(i).to_string();
             }
             let bt = DateTime::<Utc>::from_timestamp(block_time.value(i), 0).unwrap_or_else(Utc::now);
-            cur_trades.push(Trade {
-                id: uuid::Uuid::nil(),
-                mint_address: m.to_string(),
-                wallet_address: wallet.value(i).to_string(),
-                trade_type: if is_buy.value(i) { TradeType::Buy } else { TradeType::Sell },
+            cur_trades.push(SweepTrade {
+                block_time: bt,
                 sol_amount: sol_amount.value(i),
                 token_amount: token_amount.value(i),
                 price_per_token: price.value(i),
-                tx_signature: tx.value(i).to_string(),
-                leg_index: leg_index.value(i) as u32,
-                slot: slot.value(i) as u64,
-                block_time: bt,
-                received_at: bt,
                 virtual_sol_reserves: opt_f64(vsol, i),
-                virtual_token_reserves: opt_f64(vtok, i),
                 real_sol_reserves: opt_f64(rsol, i),
-                real_token_reserves: opt_f64(rtok, i),
-                instruction_type: String::new(),
-                instruction_labels: serde_json::Value::Null,
-                venue: venue.value(i).to_string(),
+                slot: slot.value(i) as u64,
+                wallet: cur_interner.intern(wallet.value(i)),
+                leg_index: leg_index.value(i) as u32,
+                is_buy: is_buy.value(i),
+                tx_signature: Box::from(tx.value(i)),
             });
         }
     }
@@ -675,6 +677,7 @@ pub fn read_corpus_parquet(path: &Path) -> Result<Corpus> {
             symbol: cur_symbol,
             fp: TokenFingerprint::default(),
             trades: Arc::new(cur_trades),
+            wallets: Arc::new(cur_interner.into_table()),
         });
     }
     let hash = path
@@ -700,12 +703,13 @@ fn col_str<'a>(batch: &'a RecordBatch, i: usize) -> Result<&'a StringArray> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::trade::TradeType;
     use chrono::Utc;
 
-    fn trade(mint: &str, price: f64, buy: bool) -> Trade {
+    fn trade(mint: &str, wallet: &str, price: f64, buy: bool) -> Trade {
         let mut t = Trade::new(
             mint.into(),
-            "wallet".into(),
+            wallet.into(),
             if buy { TradeType::Buy } else { TradeType::Sell },
             1.0,
             1.0 / price,
@@ -719,23 +723,24 @@ mod tests {
         t
     }
 
+    fn token(mint: &str, symbol: &str, trades: &[Trade]) -> TokenTrades {
+        TokenTrades::from_trades(mint.into(), symbol.into(), TokenFingerprint::default(), trades)
+    }
+
     #[test]
     fn corpus_parquet_round_trips_grouped_by_mint() {
-        let tokens = vec![
-            TokenTrades {
-                mint: "m1".into(),
-                symbol: "S1".into(),
-                fp: TokenFingerprint::default(),
-                trades: Arc::new(vec![trade("m1", 1.0, true), trade("m1", 2.0, false)]),
-            },
-            TokenTrades {
-                mint: "m2".into(),
-                symbol: "S2".into(),
-                fp: TokenFingerprint::default(),
-                trades: Arc::new(vec![trade("m2", 3.0, true)]),
-            },
-        ];
-        let corpus = Corpus { tokens, hash: "h".into() };
+        let corpus = Corpus {
+            tokens: vec![
+                // Two distinct wallets so the re-interned table round-trips both ids.
+                token(
+                    "m1",
+                    "S1",
+                    &[trade("m1", "wA", 1.0, true), trade("m1", "wB", 2.0, false)],
+                ),
+                token("m2", "S2", &[trade("m2", "wA", 3.0, true)]),
+            ],
+            hash: "h".into(),
+        };
         let path = std::env::temp_dir().join(format!("corpus_rt_{}.parquet", std::process::id()));
         write_corpus_parquet(&corpus, &path).unwrap();
         let back = read_corpus_parquet(&path).unwrap();
@@ -745,8 +750,14 @@ mod tests {
         let m1 = back.tokens.iter().find(|t| t.mint == "m1").unwrap();
         assert_eq!(m1.trades.len(), 2);
         assert!((m1.trades[1].price_per_token - 2.0).abs() < 1e-9);
-        assert_eq!(m1.trades[1].trade_type, TradeType::Sell);
+        assert!(!m1.trades[1].is_buy, "second m1 trade is a sell");
         assert_eq!(m1.trades[0].real_sol_reserves, Some(10.0));
+        // Wallets re-interned per token: m1 has two distinct addresses, both
+        // recoverable through the token-local table.
+        assert_eq!(m1.wallets.len(), 2);
+        assert_ne!(m1.trades[0].wallet, m1.trades[1].wallet);
+        assert_eq!(&*m1.wallets[m1.trades[0].wallet as usize], "wA");
+        assert_eq!(&*m1.wallets[m1.trades[1].wallet as usize], "wB");
         std::fs::remove_file(&path).ok();
     }
 }

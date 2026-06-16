@@ -133,9 +133,9 @@ mod tests {
     use crate::models::trade::{Trade, TradeType};
     use crate::sweep::corpus::TokenTrades;
     use crate::sweep::grouping::TokenFingerprint;
+    use crate::sweep::projection::SweepTrade;
     use crate::sweep::strategy::{ExitCode, ParamSpace, SweepMethod, TokenOutcome};
     use chrono::Utc;
-    use std::sync::Arc;
 
     /// Fires on every token; PnL == the param value, so combo `i` has expectancy
     /// == params[i] and `best_combo` must pick the largest.
@@ -150,7 +150,7 @@ mod tests {
         fn id(&self) -> &'static str {
             "mock"
         }
-        fn simulate(&self, trades: &[Trade], p: &f64) -> TokenOutcome {
+        fn simulate(&self, trades: &[SweepTrade], p: &f64) -> TokenOutcome {
             TokenOutcome {
                 fired: !trades.is_empty(),
                 holding_secs: 1,
@@ -175,15 +175,15 @@ mod tests {
             1,
             Utc::now(),
         );
-        TokenTrades {
-            mint: mint.into(),
-            symbol: mint.into(),
-            fp: TokenFingerprint {
+        TokenTrades::from_trades(
+            mint.into(),
+            mint.into(),
+            TokenFingerprint {
                 creator_wallet: creator.into(),
                 ..Default::default()
             },
-            trades: Arc::new(vec![t]),
-        }
+            &[t],
+        )
     }
 
     fn corpus() -> Corpus {

@@ -5,7 +5,7 @@
 //! aggregate layers never know which concrete strategy ran: they only see
 //! [`TokenOutcome`] rows.
 
-use crate::models::trade::Trade;
+use crate::sweep::projection::SweepTrade;
 
 /// How a sweep samples a strategy's param space. Pluggable so a strategy can
 /// grid the high-leverage knobs and random/Latin-hypercube the rest, and so the
@@ -149,9 +149,12 @@ pub trait Strategy: ParamSpace + Send + Sync {
     fn id(&self) -> &'static str;
 
     /// Simulate this strategy on one token's full trade history under one param
-    /// set. Pure: no IO, no shared mutation, returns a `Copy` value — safe to call
-    /// from many `rayon` threads. PnL is frictionless (see [`round_trip`]).
-    fn simulate(&self, trades: &[Trade], params: &Self::Params) -> TokenOutcome;
+    /// set. The history is the slim, wallet-interned [`SweepTrade`] projection the
+    /// corpus built once at load (not the heavy `Trade`); the shared entry/exit
+    /// fns run over it via the `TradeRow` abstraction. Pure: no IO, no shared
+    /// mutation, returns a `Copy` value — safe to call from many `rayon` threads.
+    /// PnL is frictionless (see [`round_trip`]).
+    fn simulate(&self, trades: &[SweepTrade], params: &Self::Params) -> TokenOutcome;
 
     /// Flatten one param set to a JSON object stored with the combo's result row,
     /// so the UI can show/sort by any knob without a per-strategy schema.

@@ -10,8 +10,13 @@
 //! [`strategy::ParamSpace`] impl under [`strategies`] — the corpus, grouping,
 //! engine, aggregate, and persistence layers are reused verbatim. Module layout,
 //! one responsibility each:
-//! - [`corpus`] — `CorpusSource` (cache | DB) → compact `TokenTrades` (carrying a
-//!   grouping [`grouping::TokenFingerprint`]), cached to Parquet by corpus hash.
+//! - [`corpus`] — `CorpusSource` (cache | DB) → `TokenTrades`, each token
+//!   projected once into a slim, wallet-interned [`projection::SweepTrade`] buffer
+//!   (carrying a grouping [`grouping::TokenFingerprint`]), cached to Parquet by
+//!   corpus hash.
+//! - [`projection`] — `SweepTrade`, the slim row the hot loop walks; the shared
+//!   entry/exit fns are generic over `TradeRow` so they serve it and the live
+//!   `Trade` from one implementation.
 //! - [`strategy`] — `Strategy` + `ParamSpace` traits + `TokenOutcome` and the
 //!   frictionless `round_trip`.
 //! - [`engine`] — `rayon` over tokens (combos inner) → folded `ComboAgg`s.
@@ -21,9 +26,10 @@
 //! - [`registry`] — `strategy_id` → builds the concrete `Strategy` + axes.
 //! - [`strategies`] — the per-strategy `Strategy` impls (tpsl2, …).
 //!
-//! Decision parity: `simulate` calls the *same* pure fns the live path uses, so
-//! backtest and real trading resolve identical entry/exit decisions. PnL is
-//! frictionless for now (pure price ratio — see [`strategy::round_trip`]).
+//! Decision parity: `simulate` calls the *same* pure fns the live path uses (now
+//! generic over `TradeRow`, monomorphized per row type), so backtest and real
+//! trading resolve identical entry/exit decisions. PnL is frictionless for now
+//! (pure price ratio — see [`strategy::round_trip`]).
 
 pub mod aggregate;
 pub mod corpus;
@@ -31,6 +37,7 @@ pub mod engine;
 pub mod grouped_engine;
 pub mod grouping;
 pub mod progress;
+pub mod projection;
 pub mod registry;
 pub mod strategies;
 pub mod strategy;

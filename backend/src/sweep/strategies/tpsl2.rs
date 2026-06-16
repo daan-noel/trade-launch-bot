@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::sweep::strategy::{
     round_trip, ExitCode, ParamSpace, Strategy, SweepMethod, TokenOutcome,
 };
-use crate::models::trade::Trade;
+use crate::sweep::projection::SweepTrade;
 use crate::models::Tpsl2Rule;
 use crate::strategies::tpsl_sniper_2::{entry, exit};
 
@@ -303,7 +303,7 @@ impl Strategy for Tpsl2Strategy {
         "tpsl2"
     }
 
-    fn simulate(&self, trades: &[Trade], params: &Tpsl2Params) -> TokenOutcome {
+    fn simulate(&self, trades: &[SweepTrade], params: &Tpsl2Params) -> TokenOutcome {
         let rule = self.rule_from(params);
 
         // (1) Decision: the scalp-entry trigger — the live gate logic, unchanged.

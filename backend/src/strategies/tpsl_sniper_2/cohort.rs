@@ -11,20 +11,24 @@
 
 use std::collections::HashSet;
 
-use crate::models::trade::{Trade, TradeType};
+use crate::models::trade::TradeRow;
 
 /// Wallets that bought within `slot_window` slots of the token's first trade —
 /// the launch cohort. Empty when `trades` is empty. `slot_window` mirrors
 /// [`crate::config::constants::RUGGED_EARLY_SLOT_WINDOW`].
-pub fn early_cohort_wallets(trades: &[Trade], slot_window: i64) -> HashSet<String> {
+///
+/// Generic over [`TradeRow`] so the live path (`T = Trade`, `Wallet = String`)
+/// and the sweep (`Wallet = u32`) share one cohort definition; the returned set
+/// is keyed by the row's wallet identity.
+pub fn early_cohort_wallets<T: TradeRow>(trades: &[T], slot_window: i64) -> HashSet<T::Wallet> {
     let Some(first) = trades.first() else {
         return HashSet::new();
     };
-    let cutoff = first.slot.saturating_add(slot_window.max(0) as u64);
+    let cutoff = first.slot().saturating_add(slot_window.max(0) as u64);
     trades
         .iter()
-        .filter(|t| t.trade_type == TradeType::Buy && t.slot <= cutoff)
-        .map(|t| t.wallet_address.clone())
+        .filter(|t| t.is_buy() && t.slot() <= cutoff)
+        .map(|t| t.wallet().clone())
         .collect()
 }
 
@@ -58,19 +62,16 @@ impl CohortFlow {
 }
 
 /// Sum token/SOL flow for `wallets` over `trades`.
-pub fn cohort_flow(trades: &[Trade], wallets: &HashSet<String>) -> CohortFlow {
+pub fn cohort_flow<T: TradeRow>(trades: &[T], wallets: &HashSet<T::Wallet>) -> CohortFlow {
     let mut f = CohortFlow::default();
-    for t in trades.iter().filter(|t| wallets.contains(&t.wallet_address)) {
-        match t.trade_type {
-            TradeType::Buy => {
-                f.bought_tokens += t.token_amount;
-                f.net_tokens += t.token_amount;
-                f.net_sol += t.sol_amount;
-            }
-            TradeType::Sell => {
-                f.net_tokens -= t.token_amount;
-                f.net_sol -= t.sol_amount;
-            }
+    for t in trades.iter().filter(|t| wallets.contains(t.wallet())) {
+        if t.is_buy() {
+            f.bought_tokens += t.token_amount();
+            f.net_tokens += t.token_amount();
+            f.net_sol += t.sol_amount();
+        } else {
+            f.net_tokens -= t.token_amount();
+            f.net_sol -= t.sol_amount();
         }
     }
     f
@@ -82,12 +83,13 @@ pub fn cohort_flow(trades: &[Trade], wallets: &HashSet<String>) -> CohortFlow {
 /// Used by [`super::entry::scalp::scalp_features`] (the per-prefix feature oracle);
 /// the linearized `find_scalp_entry` carries the outside-net SOL running total.
 #[cfg_attr(not(test), allow(dead_code))]
-pub fn outside_net_sol(trades: &[Trade], cohort: &HashSet<String>) -> f64 {
+pub fn outside_net_sol<T: TradeRow>(trades: &[T], cohort: &HashSet<T::Wallet>) -> f64 {
     let mut net = 0.0;
-    for t in trades.iter().filter(|t| !cohort.contains(&t.wallet_address)) {
-        match t.trade_type {
-            TradeType::Buy => net += t.sol_amount,
-            TradeType::Sell => net -= t.sol_amount,
+    for t in trades.iter().filter(|t| !cohort.contains(t.wallet())) {
+        if t.is_buy() {
+            net += t.sol_amount();
+        } else {
+            net -= t.sol_amount();
         }
     }
     net
@@ -96,6 +98,7 @@ pub fn outside_net_sol(trades: &[Trade], cohort: &HashSet<String>) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::trade::{Trade, TradeType};
     use chrono::{DateTime, Utc};
 
     fn base_time() -> DateTime<Utc> {
@@ -167,9 +170,10 @@ mod tests {
 
     #[test]
     fn empty_trades_yield_empty_cohort_and_zero_flow() {
-        let cohort = early_cohort_wallets(&[], 150);
+        let empty: [Trade; 0] = [];
+        let cohort = early_cohort_wallets(&empty, 150);
         assert!(cohort.is_empty());
-        assert_eq!(cohort_flow(&[], &cohort), CohortFlow::default());
+        assert_eq!(cohort_flow(&empty, &cohort), CohortFlow::default());
         assert_eq!(CohortFlow::default().held_ratio(), 0.0);
     }
 }

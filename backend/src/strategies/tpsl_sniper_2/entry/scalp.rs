@@ -23,7 +23,7 @@ use super::super::cohort::{cohort_flow, early_cohort_wallets, outside_net_sol};
 use super::super::util::{none_if_zero_f64, none_if_zero_u64};
 use super::EntryFill;
 use crate::config::constants::RUGGED_EARLY_SLOT_WINDOW;
-use crate::models::trade::{Trade, TradeType};
+use crate::models::trade::{Trade, TradeRow};
 use crate::models::Tpsl2Rule;
 
 /// Liveness window for `p_entry_min_alive_sol`: total SOL traded in the trailing
@@ -191,7 +191,11 @@ pub fn higher_low_confirmed(prefix: &[Trade], pullback_pct: f64, min_span_secs: 
 /// records the original trade index of the turn-up that completes the confirming
 /// higher low — so `find_scalp_entry` can gate on `i >= idx` instead of re-walking
 /// the prefix per candidate (the confirmation is monotonic in prefix length).
-fn higher_low_confirmed_index(trades: &[Trade], pullback_pct: f64, min_span_secs: i64) -> Option<usize> {
+fn higher_low_confirmed_index<T: TradeRow>(
+    trades: &[T],
+    pullback_pct: f64,
+    min_span_secs: i64,
+) -> Option<usize> {
     if pullback_pct <= 0.0 {
         return None;
     }
@@ -200,7 +204,7 @@ fn higher_low_confirmed_index(trades: &[Trade], pullback_pct: f64, min_span_secs
     let series: Vec<(usize, DateTime<Utc>, f64)> = trades
         .iter()
         .enumerate()
-        .map(|(i, t)| (i, t.block_time, t.price_per_token))
+        .map(|(i, t)| (i, t.block_time(), t.price_per_token()))
         .filter(|(_, _, p)| *p > 0.0)
         .collect();
     let &(_, _, p0) = series.first()?;
@@ -254,7 +258,7 @@ fn higher_low_confirmed_index(trades: &[Trade], pullback_pct: f64, min_span_secs
 /// Returns `None` when the rule configures no scalp gate; callers gate on
 /// [`rule_configures_any_scalp_gate`] (the backtest rejects such a rule up front),
 /// so this is never a silent buy-everything path.
-pub fn find_scalp_entry(trades: &[Trade], rule: &Tpsl2Rule) -> Option<EntryFill> {
+pub fn find_scalp_entry<T: TradeRow>(trades: &[T], rule: &Tpsl2Rule) -> Option<EntryFill> {
     if !rule_configures_any_scalp_gate(rule) || trades.is_empty() {
         return None;
     }
@@ -281,7 +285,7 @@ pub fn find_scalp_entry(trades: &[Trade], rule: &Tpsl2Rule) -> Option<EntryFill>
     // confirmation is monotonic in prefix length, so one forward pass suffices.
     let higher_low_idx = pullback.and_then(|pb| higher_low_confirmed_index(trades, pb, higher_low_secs));
 
-    let first_time = trades[0].block_time;
+    let first_time = trades[0].block_time();
     // Running cohort/outside flow accumulators (mirror `cohort_flow` / `outside_net_sol`).
     let mut cohort_bought = 0.0f64;
     let mut cohort_net_tokens = 0.0f64;
@@ -294,44 +298,41 @@ pub fn find_scalp_entry(trades: &[Trade], rule: &Tpsl2Rule) -> Option<EntryFill>
 
     for i in 0..trades.len() {
         let t = &trades[i];
+        let block_time = t.block_time();
+        let sol_amount = t.sol_amount();
         // Fold this trade into the running flow/liquidity accumulators FIRST so the
         // features below reflect the prefix `[0..=i]` (the candidate inclusive).
-        let in_cohort = cohort.contains(&t.wallet_address);
-        match t.trade_type {
-            TradeType::Buy => {
-                if in_cohort {
-                    cohort_bought += t.token_amount;
-                    cohort_net_tokens += t.token_amount;
-                    cohort_net_sol += t.sol_amount;
-                } else {
-                    organic_sol += t.sol_amount;
-                }
+        let in_cohort = cohort.contains(t.wallet());
+        if t.is_buy() {
+            if in_cohort {
+                cohort_bought += t.token_amount();
+                cohort_net_tokens += t.token_amount();
+                cohort_net_sol += sol_amount;
+            } else {
+                organic_sol += sol_amount;
             }
-            TradeType::Sell => {
-                if in_cohort {
-                    cohort_net_tokens -= t.token_amount;
-                    cohort_net_sol -= t.sol_amount;
-                } else {
-                    organic_sol -= t.sol_amount;
-                }
-            }
+        } else if in_cohort {
+            cohort_net_tokens -= t.token_amount();
+            cohort_net_sol -= sol_amount;
+        } else {
+            organic_sol -= sol_amount;
         }
-        if let Some(r) = t.real_sol_reserves {
+        if let Some(r) = t.real_sol_reserves() {
             last_real_reserves = r;
         }
         // Slide the alive window to [cand.block_time - ALIVE_WINDOW_SECS, cand].
-        alive_sol += t.sol_amount;
-        let alive_cutoff = t.block_time - chrono::Duration::seconds(ALIVE_WINDOW_SECS);
-        while alive_lo <= i && trades[alive_lo].block_time < alive_cutoff {
-            alive_sol -= trades[alive_lo].sol_amount;
+        alive_sol += sol_amount;
+        let alive_cutoff = block_time - chrono::Duration::seconds(ALIVE_WINDOW_SECS);
+        while alive_lo <= i && trades[alive_lo].block_time() < alive_cutoff {
+            alive_sol -= trades[alive_lo].sol_amount();
             alive_lo += 1;
         }
 
-        if t.trade_type != TradeType::Buy || t.price_per_token <= 0.0 {
+        if !t.is_buy() || t.price_per_token() <= 0.0 {
             continue;
         }
 
-        let age_secs = (t.block_time - first_time).num_seconds();
+        let age_secs = (block_time - first_time).num_seconds();
         let cohort_held_ratio = if cohort_bought > 0.0 {
             cohort_net_tokens.max(0.0) / cohort_bought
         } else {
@@ -379,10 +380,10 @@ pub fn find_scalp_entry(trades: &[Trade], rule: &Tpsl2Rule) -> Option<EntryFill>
         }
 
         return Some(EntryFill {
-            price: t.price_per_token,
-            amount_sol: t.sol_amount,
-            tx_signature: t.tx_signature.clone(),
-            block_time: t.block_time,
+            price: t.price_per_token(),
+            amount_sol: sol_amount,
+            tx_signature: t.tx_signature().to_string(),
+            block_time,
         });
     }
     None
@@ -408,43 +409,44 @@ pub fn find_scalp_entry(trades: &[Trade], rule: &Tpsl2Rule) -> Option<EntryFill>
 /// Caveat: `leg_index` orders legs *within* a tx, so `(slot, leg_index)` does not
 /// fully order two distinct txs in the same slot; ties are resolved by the
 /// highest-price / latest rule as specified.
-pub fn find_worst_case_paper_entry(trades: &[Trade], target_tx: &str) -> EntryFill {
-    let entry_from = |t: &Trade, amount_sol: f64| EntryFill {
-        price: t.price_per_token,
+pub fn find_worst_case_paper_entry<T: TradeRow>(trades: &[T], target_tx: &str) -> EntryFill {
+    let entry_from = |t: &T, amount_sol: f64| EntryFill {
+        price: t.price_per_token(),
         amount_sol,
-        tx_signature: t.tx_signature.clone(),
-        block_time: t.block_time,
+        tx_signature: t.tx_signature().to_string(),
+        block_time: t.block_time(),
     };
 
-    let Some(target) = trades.iter().find(|t| t.tx_signature == target_tx) else {
+    let Some(target) = trades.iter().find(|t| t.tx_signature() == target_tx) else {
         // The trigger isn't in the slice — degrade to the first usable trade, or
         // (no trades at all) a zero-priced empty fill keyed to the missing tx.
         return trades
             .iter()
-            .find(|t| t.price_per_token > 0.0 && !Trade::is_dust(t.sol_amount))
-            .map(|t| entry_from(t, t.sol_amount))
+            .find(|t| t.price_per_token() > 0.0 && !Trade::is_dust(t.sol_amount()))
+            .map(|t| entry_from(t, t.sol_amount()))
             .unwrap_or(EntryFill {
                 price: 0.0,
                 amount_sol: 0.0,
                 tx_signature: target_tx.to_string(),
-                block_time: trades.first().map(|t| t.block_time).unwrap_or_else(Utc::now),
+                block_time: trades.first().map(|t| t.block_time()).unwrap_or_else(Utc::now),
             });
     };
-    let trigger_sol = target.sol_amount;
-    let target_key = (target.slot, target.leg_index);
+    let trigger_sol = target.sol_amount();
+    let target_slot = target.slot();
+    let target_key = (target_slot, target.leg_index());
 
     // Adverse candidates: same slot or the next, strictly after the trigger,
     // non-dust, priced. The worst case is the highest price; ties break to the
     // latest by (slot, leg_index).
     let worst = trades
         .iter()
-        .filter(|t| t.slot == target.slot || t.slot == target.slot + 1)
-        .filter(|t| (t.slot, t.leg_index) > target_key && t.tx_signature != target_tx)
-        .filter(|t| t.price_per_token > 0.0 && !Trade::is_dust(t.sol_amount))
+        .filter(|t| t.slot() == target_slot || t.slot() == target_slot + 1)
+        .filter(|t| (t.slot(), t.leg_index()) > target_key && t.tx_signature() != target_tx)
+        .filter(|t| t.price_per_token() > 0.0 && !Trade::is_dust(t.sol_amount()))
         .max_by(|a, b| {
-            a.price_per_token
-                .total_cmp(&b.price_per_token)
-                .then_with(|| (a.slot, a.leg_index).cmp(&(b.slot, b.leg_index)))
+            a.price_per_token()
+                .total_cmp(&b.price_per_token())
+                .then_with(|| (a.slot(), a.leg_index()).cmp(&(b.slot(), b.leg_index())))
         });
 
     // Worst-case adverse trade if any, else fall back to the trigger itself.
@@ -457,6 +459,7 @@ pub fn find_worst_case_paper_entry(trades: &[Trade], target_tx: &str) -> EntryFi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::trade::TradeType;
 
     fn base_time() -> DateTime<Utc> {
         DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap()

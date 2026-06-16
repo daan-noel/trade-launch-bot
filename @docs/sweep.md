@@ -44,8 +44,9 @@ corpus (DB-range, once) ─► attach_fingerprints ─► partition by GroupKey
 | File | Owns |
 |---|---|
 | `mod.rs` | Module map + parity note. |
-| `strategy.rs` | `Strategy` + `ParamSpace` traits; `TokenOutcome` (`Copy`, no String), `ExitCode`, `SweepMethod` (Grid/Random/LHS), frictionless `round_trip`. |
-| `corpus.rs` | `CorpusSource` trait + `CacheSource` (live `TokenCache`, zero-copy) / `DbSource` (chunked, per-mint-capped batch query). `TokenTrades` carries `fp: TokenFingerprint` (grouping only — `simulate` never reads it). `Selection` = cap + `created_after`/`created_before` window + curve_only. Compact **trade-only** Parquet corpus cache (fingerprint-free). `attach_fingerprints(pool, &mut Corpus)` — a cheap separate chunked `tokens` lookup (incl. JSONB `max_sol_cost`/`spendable_sol_in` → bigint) that fills each token's `fp`. |
+| `strategy.rs` | `Strategy` + `ParamSpace` traits; `Strategy::simulate` takes the slim `&[SweepTrade]` projection (not `Trade`). `TokenOutcome` (`Copy`, no String), `ExitCode`, `SweepMethod` (Grid/Random/LHS), frictionless `round_trip`. |
+| `projection.rs` | `SweepTrade` — the slim per-trade row the hot loop walks (only the `TradeRow` fields; wallet interned to a token-local `u32`, `tx_signature` the one retained string; ~3× smaller than `Trade`, so cohort membership is `u32`-keyed not String-keyed). `project_trades(&[Trade]) -> (Vec<SweepTrade>, Vec<Box<str>>)` interns wallets per token via `WalletInterner`. The shared entry/exit/cohort fns are generic over `TradeRow` (defined in `models/trade.rs`), so they run over **either** the live `Trade` or `SweepTrade` with one implementation — decision parity preserved, live path unchanged. |
+| `corpus.rs` | `CorpusSource` trait + `CacheSource` (live `TokenCache`) / `DbSource` (chunked, per-mint-capped batch query). Each token is **projected once at load** into a slim, wallet-interned `SweepTrade` buffer (see `projection.rs`) — `Trade` never enters the sweep loop. `TokenTrades { trades: Arc<Vec<SweepTrade>>, wallets: Arc<Vec<Box<str>>> (u32→address, only for Parquet write), fp: TokenFingerprint }` (`fp` = grouping only — `simulate` never reads it). `TokenTrades::from_trades` is the single projection entry point (cache/DB/tests all route through it; `curve_only` filters `Trade` before the projection drops `venue`). `Selection` = cap + `created_after`/`created_before` window + curve_only. Compact **slim** Parquet corpus cache (`SweepTrade` columns + wallet/tx strings re-interned on read; fingerprint-free; drops `vtok`/`rtok`/`venue` no sweep fn reads). `attach_fingerprints(pool, &mut Corpus)` — a cheap separate chunked `tokens` lookup (incl. JSONB `max_sol_cost`/`spendable_sol_in` → bigint) that fills each token's `fp`. |
 | `engine.rs` | `run_sweep` — `rayon` over tokens (combos inner, slice stays cache-hot); single fold thread → one `ComboAgg` per combo. Returns `SweepStats` + `Vec<ComboMetrics>`. **Reused verbatim per group.** Takes a `&dyn SweepObserver`: the fold thread calls `token_done()` per folded token (uncontended progress), and producers run via `try_for_each_with` so a cancel makes rayon stop scheduling tokens at once. The cancel flag is also polled **inside** each token's combo fold every `CANCEL_CHECK_STRIDE` (256) combos, so a large combo set (up to `HARD_MAX_COMBOS`) bails mid-token instead of after — worst-case stop latency is one chunk × ≤pool-size in-flight tokens (sub-100ms), not one full token. A token that bails mid-fold is never sent to the folder; the caller discards the partial result. |
 | `progress.rs` | `SweepObserver` trait (`set_total`, `token_done`, `cancelled`) — keeps the engine transport-agnostic. `SweepProgress` impl broadcasts throttled `SseEvent::SweepProgress { strategy_id, processed, total }` (~100 frames/run + final) where `total` = surviving tokens across all groups, and surfaces the shared `AppState.sweep_cancel` flag to the hot loop. `NoopObserver` for tests. |
 | `aggregate.rs` | `ComboAgg` (streaming accumulator) → `ComboMetrics` (one ranked row): win rate, total/expectancy/median/mean/p90/best/worst PnL, `std_pnl_pct`, profit factor, robust `score` (`μ−Z·σ/√n` on closed trades), holding stats, exit-reason mix. |
@@ -58,10 +59,9 @@ corpus (DB-range, once) ─► attach_fingerprints ─► partition by GroupKey
 
 ## Persistence (per-strategy tables) + API
 Tables are **separate per strategy** (`<strategy>_grouped_sweep_{runs,groups,results}`,
-see [database.md](database.md)). TPSL2's triple lives in `0001_init`; TPSL1's
-identical-shape triple in migration `0004_tpsl1_grouped_sweep` (its
-`n_exit_cohort` column stays 0 — kept for schema parity with the generic repo's
-INSERT). The repo is generic and **table-name-driven**; the registry maps
+see [database.md](database.md)). Both TPSL2's and TPSL1's identical-shape triples
+live in `0001_init` (TPSL1's `n_exit_cohort` column stays 0 — kept for schema
+parity with the generic repo's INSERT). The repo is generic and **table-name-driven**; the registry maps
 `strategy_id` → the table triple.
 
 - `models/grouped_sweep.rs` — `GroupedSweepRun` / `GroupedSweepGroupSummary` /
@@ -135,9 +135,15 @@ Run-picker row also carries **Delete run** (current run) + **Clear runs before
 `GroupedSweep` so the list refetches.
 
 ## Invariants
-- The hot loop is strategy-blind and allocation-free; grouping is an O(tokens)
-  partition + O(groups) Arc-clones bolted on top — `engine.rs`/`aggregate.rs` are
-  reused **unchanged** per group.
+- The hot loop is strategy-blind and walks the slim, wallet-interned `SweepTrade`
+  projection built once per token at load (not `Trade`); the shared entry/exit/
+  cohort fns are generic over `TradeRow` so the *same* code serves the live path
+  (`T = Trade`) and the sweep (`T = SweepTrade`) — decision parity preserved, live
+  runtime unchanged (monomorphized). Cohort sets are `u32`-keyed. (It is not fully
+  allocation-free: a `HashSet<u32>` cohort is still built per `simulate` for the
+  scalp/E5 gates — hoisting that into a per-token prep is a follow-up.) Grouping is
+  an O(tokens) partition + O(groups) Arc-clones bolted on top — `engine.rs`/
+  `aggregate.rs` are reused **unchanged** per group.
 - Bound every load: `Selection` caps tokens + per-mint trades; `min_tokens` drops
   weak groups **before** any sweep work; `MAX_COMBOS` (default 5000) caps
   combos/group — a run may raise it via `max_combos`, server-clamped to
