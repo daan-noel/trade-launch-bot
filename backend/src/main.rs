@@ -431,6 +431,21 @@ async fn main() -> anyhow::Result<()> {
         )
     };
 
+    // Bound the in-memory token cache: evict mints that have gone quiet beyond the
+    // activity window and hold no open position, so the cache doesn't grow one
+    // entry per created mint for the life of the process. The held-mint exemption
+    // reads the strategy runtime caches' in-memory holding indexes (paper + real),
+    // so no DB round trip and no coupling into `strategies/`.
+    {
+        let token_cache = token_cache.clone();
+        let tpsl1 = tpsl1_cache.clone();
+        let tpsl2 = tpsl2_cache.clone();
+        tokio::spawn(state::token_cache::run_token_cache_eviction(
+            token_cache,
+            move |mint: &str| tpsl1.is_mint_held(mint) || tpsl2.is_mint_held(mint),
+        ));
+    }
+
     // Built after the transport branch so AppState shares the active pipeline's
     // pool→mint index and migration signal with the HTTP handlers (a token sync
     // registers a migrated token's pool so live ingest subscribes immediately).

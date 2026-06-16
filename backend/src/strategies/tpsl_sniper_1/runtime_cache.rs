@@ -267,6 +267,16 @@ impl Tpsl1RuntimeCache {
             .unwrap_or_default()
     }
 
+    /// True when this strategy currently holds at least one open position (paper
+    /// or real) on `mint`. The token-cache eviction sweep consults this so a mint
+    /// with a live exit is never dropped from the cache — its sell-confirm /
+    /// exit-fill loops resolve fills against that cache. O(1) shard lookup; an
+    /// empty list is never retained (see `remove_from_holding_index`), so key
+    /// presence already implies at least one open position.
+    pub fn is_mint_held(&self, mint: &str) -> bool {
+        self.holding_by_mint.contains_key(mint)
+    }
+
     /// Snapshot of every Holding position across all mints. Used by the
     /// time-driven exit sweep, which must scan all open positions on each tick
     /// (not just those of a mint that just traded). Positions are held by `Arc`,

@@ -244,6 +244,25 @@ pub const SEED_ACTIVITY_WINDOW_DAYS: i64 = 7;
 /// only its newest window at startup instead of its full (unbounded) history.
 pub const SEED_TRADES_PER_MINT: i64 = crate::state::token_cache::MAX_TRADES_RETAINED as i64;
 
+/// How often the runtime token-cache eviction sweep runs. The cache grows one
+/// entry per created mint, so without a periodic prune it would climb without
+/// bound for the life of the process. Growth is gradual (driven by token
+/// creations), so a coarse interval keeps the per-pass `DashMap` walk well clear
+/// of the hot path while still bounding resident size.
+pub const TOKEN_CACHE_EVICT_INTERVAL_SECONDS: u64 = 300; // 5 minutes
+
+/// A tracked token that has been inactive for at least this long — no trade,
+/// falling back to its creation time for a mint that never traded — and has no
+/// open position is evicted from the in-memory cache. This bounds the live
+/// process's heap: Pump.fun mints thousands of tokens/day, the vast majority of
+/// which die within minutes, and every one would otherwise stay resident forever.
+/// An evicted mint behaves exactly like any untracked mint — the live path
+/// ignores its trades (cache miss) until a manual re-sync re-seeds it, the same
+/// contract as `SEED_ACTIVITY_WINDOW_DAYS`. A mint with an open paper/real
+/// position is always exempt regardless of idleness, so an open exit (whose
+/// confirm loop reads this cache) never strands.
+pub const TOKEN_CACHE_EVICT_IDLE_SECONDS: i64 = 6 * 3600; // 6 hours
+
 
 
 

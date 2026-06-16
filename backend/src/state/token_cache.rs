@@ -1,10 +1,13 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
+use tracing::info;
 
 use crate::config::constants::{
     total_supply_for, INITIAL_VIRTUAL_TOKEN_RESERVES, LIFETIME_GAP_SECONDS,
+    TOKEN_CACHE_EVICT_IDLE_SECONDS, TOKEN_CACHE_EVICT_INTERVAL_SECONDS,
 };
 use crate::models::{token::Token, trade::Trade};
 
@@ -236,3 +239,144 @@ impl TokenState {
 /// Concurrent in-memory map: mint_address → TokenState.
 /// A token present here means it is actively tracked.
 pub type TokenCache = DashMap<String, TokenState>;
+
+// ---------------------------------------------------------------------------
+// Runtime eviction
+// ---------------------------------------------------------------------------
+
+/// Eviction predicate: a token is evictable when it is **not** currently held and
+/// has been inactive for at least `idle_secs`. "Inactive" is measured from the
+/// last trade, falling back to the token's creation time for a mint that has
+/// never traded — so a freshly-created mint is never dropped before it has had a
+/// chance to trade (and be sniped), while a created-but-never-traded launch is
+/// still reclaimed once it ages out. Pure so the sweep below stays trivially
+/// testable without a clock or a `DashMap`.
+fn token_is_evictable(state: &TokenState, now: DateTime<Utc>, idle_secs: i64, held: bool) -> bool {
+    if held {
+        return false;
+    }
+    let last_activity = state.last_trade_at.unwrap_or(state.token.created_at);
+    now.signed_duration_since(last_activity).num_seconds() >= idle_secs
+}
+
+/// Periodic eviction sweep: drop tokens that have gone quiet beyond
+/// `TOKEN_CACHE_EVICT_IDLE_SECONDS` and hold no open position, bounding the live
+/// process's heap. Without this the cache grows one entry per created mint
+/// forever (Pump.fun mints thousands/day) → eventual OOM of the trading process.
+///
+/// `is_held` is supplied by the composition root (closing over the strategy
+/// runtime caches' in-memory holding indexes, which cover **both** paper and real
+/// positions), so this stays decoupled from `strategies/` and needs no DB round
+/// trip — the exemption is read from memory that is already kept in lockstep with
+/// every position open/close. An evicted mint is re-added by a fresh manual sync
+/// (`token_sync`), matching the seed's activity-window contract.
+///
+/// Off the hot path: a coarse interval; collect-then-remove so no shard guard is
+/// held across the removals and the map is never mutated mid-iteration (mirrors
+/// `evict_mayhem_tokens`).
+pub async fn run_token_cache_eviction<F>(token_cache: Arc<TokenCache>, is_held: F)
+where
+    F: Fn(&str) -> bool + Send + 'static,
+{
+    let mut tick = tokio::time::interval(Duration::from_secs(TOKEN_CACHE_EVICT_INTERVAL_SECONDS));
+    // `interval` fires its first tick immediately; skip it so the first sweep
+    // never races the still-hydrating startup seed (and so a just-booted process
+    // gives live ingest a full interval to populate first).
+    tick.tick().await;
+    loop {
+        tick.tick().await;
+
+        let now = Utc::now();
+        let stale: Vec<String> = token_cache
+            .iter()
+            .filter(|e| {
+                token_is_evictable(e.value(), now, TOKEN_CACHE_EVICT_IDLE_SECONDS, is_held(e.key()))
+            })
+            .map(|e| e.key().clone())
+            .collect();
+
+        if stale.is_empty() {
+            continue;
+        }
+        for mint in &stale {
+            token_cache.remove(mint);
+        }
+        info!(
+            "TokenCache eviction: dropped {} idle token(s) (>{}s quiet, no open position); {} remain",
+            stale.len(),
+            TOKEN_CACHE_EVICT_IDLE_SECONDS,
+            token_cache.len()
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration as ChronoDuration;
+
+    fn token_created_at(created_at: DateTime<Utc>) -> Token {
+        Token::new(
+            "MINT-evict".into(),
+            "creator".into(),
+            "Evict Test".into(),
+            "EVT".into(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+            serde_json::Value::Array(vec![]),
+            "create-sig".into(),
+            created_at,
+        )
+    }
+
+    const IDLE: i64 = TOKEN_CACHE_EVICT_IDLE_SECONDS;
+
+    #[test]
+    fn keeps_recently_traded_token() {
+        let now = Utc::now();
+        let mut state = TokenState::new(token_created_at(now - ChronoDuration::days(2)));
+        state.last_trade_at = Some(now - ChronoDuration::seconds(IDLE / 2));
+        assert!(!token_is_evictable(&state, now, IDLE, false));
+    }
+
+    #[test]
+    fn evicts_long_quiet_token() {
+        let now = Utc::now();
+        let mut state = TokenState::new(token_created_at(now - ChronoDuration::days(2)));
+        state.last_trade_at = Some(now - ChronoDuration::seconds(IDLE + 60));
+        assert!(token_is_evictable(&state, now, IDLE, false));
+    }
+
+    #[test]
+    fn keeps_fresh_never_traded_token() {
+        // A brand-new mint with no trades yet must survive long enough to trade.
+        let now = Utc::now();
+        let state = TokenState::new(token_created_at(now - ChronoDuration::seconds(30)));
+        assert!(state.last_trade_at.is_none());
+        assert!(!token_is_evictable(&state, now, IDLE, false));
+    }
+
+    #[test]
+    fn evicts_old_never_traded_token() {
+        // Created-but-never-traded launches still age out (fallback to created_at).
+        let now = Utc::now();
+        let state = TokenState::new(token_created_at(now - ChronoDuration::seconds(IDLE + 60)));
+        assert!(token_is_evictable(&state, now, IDLE, false));
+    }
+
+    #[test]
+    fn never_evicts_a_held_mint() {
+        // The open-position exemption overrides idleness regardless of how quiet.
+        let now = Utc::now();
+        let mut state = TokenState::new(token_created_at(now - ChronoDuration::days(30)));
+        state.last_trade_at = Some(now - ChronoDuration::days(10));
+        assert!(!token_is_evictable(&state, now, IDLE, true));
+    }
+}
