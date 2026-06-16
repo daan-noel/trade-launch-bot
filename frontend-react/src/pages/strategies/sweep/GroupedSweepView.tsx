@@ -229,7 +229,7 @@ export function GroupedSweepView({
             rows={groups}
             rowKey={(g) => g.id}
             groupLabels={{ metrics: 'Metrics', entry: 'Entry', exit: 'Exit' }}
-            defaultSort={{ col: 'best_expectancy_sol', dir: 'desc' }}
+            defaultSort={{ col: 'best_score', dir: 'desc' }}
             searchable
             colFilters
             colToggle

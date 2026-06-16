@@ -212,10 +212,25 @@ export function buildGroupColumns(paramKeys: string[]): ColumnDef<GroupedSweepGr
       searchValue: () => '',
     },
     {
+      key: 'best_score',
+      label: 'Best score',
+      group: 'metrics',
+      tooltip:
+        'Robust realized score (μ−Z·σ/√n over closed trades) of this group’s best combo — the ranking metric (matches the drill-in table’s default sort)',
+      sortable: true,
+      render: (g) =>
+        g.best_score == null
+          ? tone('—', 'text-text-dim')
+          : tone(formatDecimalTrim(g.best_score, 1), goodBad(g.best_score)),
+      sortValue: (g) => g.best_score,
+      filterNumber: (g) => g.best_score,
+      searchValue: () => '',
+    },
+    {
       key: 'best_expectancy_sol',
       label: 'Best exp.',
       group: 'metrics',
-      tooltip: 'Mean net PnL per trade (SOL) of this group’s best combo — the ranking metric',
+      tooltip: 'Mean net PnL per trade (SOL) of this group’s best combo (secondary readout)',
       sortable: true,
       render: (g) => tone(solText(g.best_expectancy_sol), goodBad(g.best_expectancy_sol)),
       sortValue: (g) => g.best_expectancy_sol,

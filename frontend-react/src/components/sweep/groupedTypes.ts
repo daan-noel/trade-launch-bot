@@ -156,9 +156,12 @@ export interface GroupedSweepGroupRecord {
   /** `{ "creator_wallet": "4f3a…", "max_sol_cost": "12345" }`; `{}` = the ALL group. */
   group_key: Record<string, string>;
   token_count: number;
-  /** The best combo's `n_fired` — sample size behind `best_expectancy_sol`. */
+  /** The best combo's `n_fired` — sample size behind the headline pick. */
   fired_count: number;
   best_combo_id: number;
+  /** Robust realized score (`μ−Z·σ/√n` over closed trades) of the winning combo
+   *  — the headline ranking metric; `null` when it has < 2 closed trades. */
+  best_score: number | null;
   best_expectancy_sol: number;
   best_params: Record<string, number | null>;
 }

@@ -8,13 +8,15 @@
 //! [`registry`](crate::sweep::registry). A new strategy adds a sibling module
 //! here with its own params/axes/`simulate` — the generic sweep layers are reused.
 
+use std::collections::HashSet;
+
 use chrono::{DateTime, Utc};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 
 use crate::sweep::strategy::{
-    round_trip, ExitCode, ParamSpace, Strategy, SweepMethod, TokenOutcome,
+    round_trip_with_costs, CostModel, ExitCode, ParamSpace, Strategy, SweepMethod, TokenOutcome,
 };
 use crate::sweep::projection::SweepTrade;
 use crate::models::Tpsl2Rule;
@@ -87,6 +89,8 @@ pub enum Tpsl2Entry {
 pub struct Tpsl2Strategy {
     base: Tpsl2Rule,
     axes: Tpsl2Axes,
+    /// Execution costs applied to every simulated round-trip (Rec 1).
+    costs: CostModel,
 }
 
 /// Grid axes for the coarse pass. Each `Vec` is one knob's candidate values.
@@ -236,7 +240,7 @@ impl Tpsl2Axes {
 
 impl Tpsl2Strategy {
     pub fn new(base: Tpsl2Rule, axes: Tpsl2Axes) -> Self {
-        Self { base, axes }
+        Self { base, axes, costs: CostModel::pumpfun_default() }
     }
 
     /// Pair a scalar param set with its resolved `Tpsl2Rule` (built once here, not
@@ -349,6 +353,10 @@ fn pick<T: Copy>(rng: &mut StdRng, xs: &[T]) -> T {
 impl Strategy for Tpsl2Strategy {
     type Entry = Tpsl2Entry;
     type EntryKey = Tpsl2EntryKey;
+    /// The token's launch cohort (interned `u32` wallet ids) — built once per token
+    /// and reused across every entry-param tuple, instead of rebuilding the
+    /// `HashSet` inside each `find_scalp_entry` resolve (the #7 cohort hoist).
+    type TokenState = HashSet<u32>;
 
     fn id(&self) -> &'static str {
         "tpsl2"
@@ -368,10 +376,22 @@ impl Strategy for Tpsl2Strategy {
         }
     }
 
-    fn resolve_entry(&self, trades: &[SweepTrade], params: &Tpsl2Combo) -> Tpsl2Entry {
+    fn prepare_token(&self, trades: &[SweepTrade]) -> HashSet<u32> {
+        // Cohort depends only on the trade slice (first slot + window), never on a
+        // rule's params — so hoist it out of the per-entry-key resolve.
+        entry::scalp_cohort(trades)
+    }
+
+    fn resolve_entry(
+        &self,
+        trades: &[SweepTrade],
+        cohort: &HashSet<u32>,
+        params: &Tpsl2Combo,
+    ) -> Tpsl2Entry {
         let rule = &params.rule;
-        // (1) Decision: the scalp-entry trigger — the live gate logic, unchanged.
-        let Some(target) = entry::find_scalp_entry(trades, rule) else {
+        // (1) Decision: the scalp-entry trigger — the live gate logic, unchanged,
+        // but fed the per-token cohort so the `HashSet` isn't rebuilt per resolve.
+        let Some(target) = entry::find_scalp_entry_with_cohort(trades, rule, cohort) else {
             return Tpsl2Entry::None;
         };
         // (2) Worst-case entry fill (adverse same-/next-slot tick).
@@ -397,7 +417,7 @@ impl Strategy for Tpsl2Strategy {
         // (3) Exit decision via the shared ladder.
         match exit::find_trade_driven_exit(trades, entry_time, entry_price, rule) {
             Some(f) => {
-                let econ = round_trip(entry_price, f.price, notional);
+                let econ = round_trip_with_costs(entry_price, f.price, notional, &self.costs);
                 TokenOutcome {
                     fired: true,
                     holding_secs: (f.block_time - entry_time).num_seconds(),
@@ -410,7 +430,7 @@ impl Strategy for Tpsl2Strategy {
                 // Still open at end of history — mark unrealized PnL at last price,
                 // so the scoring layer can separate open from closed outcomes.
                 let last_price = trades.last().map(|t| t.price_per_token).unwrap_or(entry_price);
-                let econ = round_trip(entry_price, last_price, notional);
+                let econ = round_trip_with_costs(entry_price, last_price, notional, &self.costs);
                 TokenOutcome {
                     fired: true,
                     holding_secs: 0,

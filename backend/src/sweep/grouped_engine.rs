@@ -1,35 +1,94 @@
-//! Grouped sweep: partition the corpus by exact-value fingerprint key, then run
-//! the existing per-combo [`engine::run_sweep`] **once per group**.
+//! Grouped sweep: partition the corpus by exact-value fingerprint key, then sweep
+//! each group's combos × tokens, surfacing each group's best combo.
 //!
-//! This is the partition-then-reuse design: the rayon hot loop in [`engine`] is
-//! untouched and stays allocation-free; the only added work is an `O(tokens)`
-//! grouping pass and `O(groups)` sub-corpus assembly (each sub-corpus is a
-//! refcount-clone of `TokenTrades` — `trades` is an `Arc`, so no trade buffer is
-//! copied). Groups run **sequentially**; each `run_sweep`'s inner `par_iter`
-//! uses the single (bounded) rayon pool, so pools are never nested.
+//! **Pool utilisation (two-phase driver).** Naively sweeping each group with its
+//! own `run_sweep` left most cores idle on the common many-small-groups case (a
+//! 3-token group uses 3 threads on an N-thread pool). The fix routes groups by
+//! size against the pool:
+//!   - **Large groups** (`≥ LARGE_GROUP_TOKEN_FACTOR × threads` tokens) are swept
+//!     one at a time via [`run_sweep`], whose inner `par_iter` already saturates
+//!     the pool on a single group — so big/few-group runs (incl. the "ALL" case)
+//!     are unchanged.
+//!   - **Small groups** are swept **across groups in parallel** (`par_iter` over
+//!     the groups), each folded **single-threaded** — so the pool stays busy even
+//!     when every group is tiny.
 //!
-//! Empty `fields` ⇒ a single "ALL" group ⇒ identical to a global ungrouped sweep.
+//! This is the "fan the outer loop with rayon, sharing the bounded pool" design.
+//! It is deliberately **not** a full fold-time partition (one `par_iter` over the
+//! whole corpus routing into per-group accumulators): that keeps *every* group's
+//! `combos × ComboAgg` resident at once — at default settings (~1k groups × 5k
+//! combos) tens of GB — whereas this driver holds at most `threads × combos`
+//! accumulators (each group finalised to small `ComboMetrics` then freed). No
+//! pools are nested (large groups fold serially inside their own `run_sweep`;
+//! small groups fold serially inside the cross-group `par_iter`).
+//!
+//! Each sub-corpus is a refcount-clone of `TokenTrades` (`trades` is an `Arc`, so
+//! no trade buffer is copied). Empty `fields` ⇒ a single "ALL" group ⇒ identical
+//! to a global ungrouped sweep.
 
-use std::cmp::Ordering::Equal;
+use std::cmp::Ordering::{self, Equal, Greater, Less};
 use std::collections::HashMap;
 
 use anyhow::{bail, Result};
+use rayon::prelude::*;
 
-use crate::sweep::aggregate::ComboMetrics;
+use crate::sweep::aggregate::{ComboAgg, ComboMetrics};
 use crate::sweep::corpus::Corpus;
-use crate::sweep::engine::run_sweep;
+use crate::sweep::engine::{fill_outcomes, run_sweep};
 use crate::sweep::grouping::{group_key, GroupField, GroupKey};
 use crate::sweep::progress::SweepObserver;
-use crate::sweep::strategy::Strategy;
+use crate::sweep::strategy::{Strategy, TokenOutcome};
+
+/// A group with at least `this × pool_threads` tokens is swept with **intra-group**
+/// parallelism (its own `run_sweep` saturates the pool); smaller groups are swept
+/// **across** groups in parallel instead. The factor gives a large group enough
+/// tokens that rayon's per-token parallelism pays for its fold-thread overhead.
+const LARGE_GROUP_TOKEN_FACTOR: usize = 4;
+
+/// Per-combo coverage floor for the group winner: a combo must fire on
+/// `max(min_fired_abs, ceil(fire_frac · group_tokens))` tokens before it's
+/// eligible to be crowned `best_combo`. Stops a combo that fired on a lucky 2
+/// tokens out of 200 from out-ranking a combo proven over 150 — the
+/// over-fit failure mode the headline pick used to have.
+#[derive(Clone, Copy, Debug)]
+pub struct CoverageFloor {
+    /// Absolute minimum fired tokens (e.g. 10).
+    pub min_fired_abs: u64,
+    /// Fraction of the group's tokens that must fire (e.g. 0.05 = 5%).
+    pub fire_frac: f64,
+}
+
+impl Default for CoverageFloor {
+    fn default() -> Self {
+        Self { min_fired_abs: 10, fire_frac: 0.05 }
+    }
+}
+
+impl CoverageFloor {
+    /// The absolute fired-token threshold for a group of `group_tokens` tokens.
+    /// Always ≥ 1 (a combo that never fired can never be the winner).
+    fn threshold(&self, group_tokens: usize) -> u64 {
+        let frac = (self.fire_frac.max(0.0) * group_tokens as f64).ceil() as u64;
+        self.min_fired_abs.max(frac).max(1)
+    }
+}
 
 /// One group's full sweep: its key, how many tokens fell into it, the per-combo
-/// ranked metrics, and the winning combo (max expectancy per trade).
+/// ranked metrics, and the winning combo. The winner is chosen on the **robust,
+/// realized** `score` (the same metric the drill-in table sorts by) among combos
+/// clearing the [`CoverageFloor`] — see [`best_combo`].
 pub struct GroupResult {
     pub key: GroupKey,
     pub token_count: usize,
     pub metrics: Vec<ComboMetrics>,
-    /// Combo id maximising expectancy among combos that fired (see [`best_combo`]).
+    /// Combo id maximising the robust realized `score` among combos clearing the
+    /// coverage floor (see [`best_combo`]).
     pub best_combo_id: u32,
+    /// The winning combo's robust `score` (`μ−Z·σ/√n` over closed trades), or
+    /// `None` when it has < 2 closed trades. The page's headline metric.
+    pub best_score: Option<f64>,
+    /// The winning combo's expectancy per trade — kept as a secondary readout
+    /// (no longer the ranking metric).
     pub best_expectancy_sol: f64,
 }
 
@@ -55,6 +114,7 @@ pub fn run_grouped_sweep<S: Strategy>(
     corpus: &Corpus,
     fields: &[GroupField],
     min_tokens: usize,
+    coverage: CoverageFloor,
     observer: &dyn SweepObserver,
 ) -> Result<Vec<GroupResult>> {
     let floor = min_tokens.max(1);
@@ -83,49 +143,178 @@ pub fn run_grouped_sweep<S: Strategy>(
         "grouped sweep: partitioned corpus, sweeping each group"
     );
 
-    let mut out = Vec::with_capacity(surviving.len());
-    for (key, idx) in surviving {
+    let threads = rayon::current_num_threads().max(1);
+    let large_min = LARGE_GROUP_TOKEN_FACTOR * threads;
+
+    // Fill survivor slots by position so the deterministic group order survives
+    // regardless of which phase produced each result.
+    let mut results: Vec<Option<GroupResult>> = (0..surviving.len()).map(|_| None).collect();
+
+    // Phase 1 — large groups: intra-group parallel, one group at a time.
+    for (pos, (key, idx)) in surviving.iter().enumerate() {
+        if idx.len() < large_min {
+            continue;
+        }
         if observer.cancelled() {
             bail!("sweep cancelled");
         }
-        // Sub-corpus: refcount-clone each token (Arc trades — no buffer copy).
-        let sub = Corpus {
-            tokens: idx.iter().map(|&i| corpus.tokens[i].clone()).collect(),
-            hash: corpus.hash.clone(),
-        };
-        let token_count = sub.token_count();
+        let sub = sub_corpus(corpus, idx);
         let (_stats, metrics) = run_sweep(strategy, params, &sub, observer)?;
         // A cancel mid-group leaves the just-swept metrics partial — discard.
         if observer.cancelled() {
             bail!("sweep cancelled");
         }
-        let (best_combo_id, best_expectancy_sol) = best_combo(&metrics);
-        out.push(GroupResult {
-            key,
-            token_count,
-            metrics,
-            best_combo_id,
-            best_expectancy_sol,
-        });
+        results[pos] = Some(make_group_result(key.clone(), idx.len(), metrics, coverage));
     }
-    Ok(out)
+
+    // Phase 2 — small groups: parallel across groups (each folded single-threaded),
+    // so the pool stays saturated even when every group is tiny.
+    let small: Vec<(usize, &GroupKey, &Vec<usize>)> = surviving
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, idx))| idx.len() < large_min)
+        .map(|(pos, (key, idx))| (pos, key, idx))
+        .collect();
+    let small_results: Vec<Result<(usize, GroupResult)>> = small
+        .par_iter()
+        .map(|&(pos, key, idx)| {
+            let metrics = sweep_group_serial(strategy, params, corpus, idx, observer)?;
+            Ok((pos, make_group_result(key.clone(), idx.len(), metrics, coverage)))
+        })
+        .collect();
+    for r in small_results {
+        let (pos, gr) = r?;
+        results[pos] = Some(gr);
+    }
+
+    Ok(results
+        .into_iter()
+        .map(|g| g.expect("every survivor slot filled by one phase"))
+        .collect())
 }
 
-/// Best combo = max `expectancy_sol` among combos that fired at least once; ties
-/// broken by fired count, then total PnL. `(0, 0.0)` when no combo fired.
-fn best_combo(metrics: &[ComboMetrics]) -> (u32, f64) {
-    metrics
+/// Refcount-clone a group's tokens into a sub-`Corpus` (Arc trades — no buffer copy).
+fn sub_corpus(corpus: &Corpus, idx: &[usize]) -> Corpus {
+    Corpus {
+        tokens: idx.iter().map(|&i| corpus.tokens[i].clone()).collect(),
+        hash: corpus.hash.clone(),
+    }
+}
+
+/// Fold one small group's tokens **single-threaded** into per-combo metrics. Used
+/// inside the cross-group `par_iter`, so this must stay serial (no nested pool).
+/// Resolves entries via the shared [`fill_outcomes`], so it matches `run_sweep`'s
+/// decisions exactly. Bails on cancel (the caller discards the run).
+fn sweep_group_serial<S: Strategy>(
+    strategy: &S,
+    params: &[S::Params],
+    corpus: &Corpus,
+    idx: &[usize],
+    observer: &dyn SweepObserver,
+) -> Result<Vec<ComboMetrics>> {
+    let mut aggs = vec![ComboAgg::default(); params.len()];
+    let mut outs: Vec<TokenOutcome> = Vec::with_capacity(params.len());
+    for &i in idx {
+        if observer.cancelled() {
+            bail!("sweep cancelled");
+        }
+        if fill_outcomes(strategy, params, &corpus.tokens[i].trades, observer, &mut outs).is_err() {
+            bail!("sweep cancelled");
+        }
+        for (combo_id, o) in outs.iter().enumerate() {
+            aggs[combo_id].record(o);
+        }
+        observer.token_done();
+    }
+    Ok(aggs.into_iter().enumerate().map(|(id, a)| a.finalize(id as u32)).collect())
+}
+
+/// Assemble a [`GroupResult`] from a group's ranked metrics + the coverage floor.
+fn make_group_result(
+    key: GroupKey,
+    token_count: usize,
+    metrics: Vec<ComboMetrics>,
+    coverage: CoverageFloor,
+) -> GroupResult {
+    let (best_combo_id, best_score, best_expectancy_sol) =
+        best_combo(&metrics, token_count, coverage);
+    GroupResult {
+        key,
+        token_count,
+        metrics,
+        best_combo_id,
+        best_score,
+        best_expectancy_sol,
+    }
+}
+
+/// Best combo = max robust **realized** `score` (`μ−Z·σ/√n` over closed trades)
+/// among combos clearing the [`CoverageFloor`] — the same metric the drill-in
+/// table sorts by, so the crowned combo *is* row 1 of its own table. Ties break
+/// by fired count, then total PnL. Returns `(combo_id, score, expectancy_sol)`.
+///
+/// If no combo clears the floor, fall back to the most-fired combo (a low-
+/// confidence pick — logged) so the group still surfaces something. `(0, None,
+/// 0.0)` only when no combo fired at all.
+fn best_combo(
+    metrics: &[ComboMetrics],
+    group_tokens: usize,
+    floor: CoverageFloor,
+) -> (u32, Option<f64>, f64) {
+    let threshold = floor.threshold(group_tokens);
+    let eligible = metrics
+        .iter()
+        .filter(|m| m.n_fired >= threshold)
+        .max_by(|a, b| rank_combo(a, b));
+    if let Some(m) = eligible {
+        return (m.combo_id, m.score, m.expectancy_sol);
+    }
+
+    // Nobody cleared the floor — the group is too thin for a trustworthy pick.
+    // Surface the most-fired combo so the row isn't empty, but flag it.
+    let fallback = metrics
         .iter()
         .filter(|m| m.n_fired > 0)
         .max_by(|a, b| {
-            a.expectancy_sol
-                .partial_cmp(&b.expectancy_sol)
-                .unwrap_or(Equal)
-                .then_with(|| a.n_fired.cmp(&b.n_fired))
+            a.n_fired
+                .cmp(&b.n_fired)
+                .then_with(|| score_cmp(a.score, b.score))
                 .then_with(|| a.total_pnl_sol.partial_cmp(&b.total_pnl_sol).unwrap_or(Equal))
-        })
-        .map(|m| (m.combo_id, m.expectancy_sol))
-        .unwrap_or((0, 0.0))
+        });
+    match fallback {
+        Some(m) => {
+            tracing::warn!(
+                group_tokens,
+                threshold,
+                combo_id = m.combo_id,
+                n_fired = m.n_fired,
+                "grouped sweep: no combo cleared the coverage floor; \
+                 falling back to most-fired (low-confidence headline pick)"
+            );
+            (m.combo_id, m.score, m.expectancy_sol)
+        }
+        None => (0, None, 0.0),
+    }
+}
+
+/// Rank two floor-clearing combos: higher robust `score` first (an absent score
+/// — fewer than 2 closed trades — sorts as worst), then more fired tokens, then
+/// higher total PnL.
+fn rank_combo(a: &ComboMetrics, b: &ComboMetrics) -> Ordering {
+    score_cmp(a.score, b.score)
+        .then_with(|| a.n_fired.cmp(&b.n_fired))
+        .then_with(|| a.total_pnl_sol.partial_cmp(&b.total_pnl_sol).unwrap_or(Equal))
+}
+
+/// Order two optional scores, higher = better, with `None` (no realized
+/// evidence) treated as strictly worse than any `Some`.
+fn score_cmp(a: Option<f64>, b: Option<f64>) -> Ordering {
+    match (a, b) {
+        (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(Equal),
+        (Some(_), None) => Greater,
+        (None, Some(_)) => Less,
+        (None, None) => Equal,
+    }
 }
 
 #[cfg(test)]
@@ -150,11 +339,13 @@ mod tests {
     impl Strategy for Mock {
         type Entry = bool;
         type EntryKey = ();
+        type TokenState = ();
         fn id(&self) -> &'static str {
             "mock"
         }
         fn entry_key(&self, _p: &f64) {}
-        fn resolve_entry(&self, trades: &[SweepTrade], _p: &f64) -> bool {
+        fn prepare_token(&self, _trades: &[SweepTrade]) {}
+        fn resolve_entry(&self, trades: &[SweepTrade], _state: &(), _p: &f64) -> bool {
             !trades.is_empty()
         }
         fn resolve_exit(&self, _trades: &[SweepTrade], entry: &bool, p: &f64) -> TokenOutcome {
@@ -193,6 +384,38 @@ mod tests {
         )
     }
 
+    /// A zeroed `ComboMetrics` to spread `..base_metrics()` over in best_combo
+    /// tests — only the fields a test sets matter to the ranking.
+    fn base_metrics() -> ComboMetrics {
+        ComboMetrics {
+            combo_id: 0,
+            n_fired: 0,
+            n_open: 0,
+            n_closed: 0,
+            win_rate: 0.0,
+            total_pnl_sol: 0.0,
+            mean_pnl_pct: 0.0,
+            median_pnl_pct: 0.0,
+            p90_pnl_pct: 0.0,
+            best_pnl_pct: 0.0,
+            worst_pnl_pct: 0.0,
+            std_pnl_pct: 0.0,
+            profit_factor: None,
+            score: None,
+            expectancy_sol: 0.0,
+            avg_holding_secs: 0.0,
+            median_holding_secs: 0.0,
+            n_exit_take_profit: 0,
+            n_exit_stop_loss: 0,
+            n_exit_trailing: 0,
+            n_exit_stall: 0,
+            n_exit_time: 0,
+            n_exit_liquidity: 0,
+            n_exit_cohort: 0,
+            n_exit_open: 0,
+        }
+    }
+
     fn corpus() -> Corpus {
         Corpus {
             tokens: vec![
@@ -204,6 +427,9 @@ mod tests {
         }
     }
 
+    /// A permissive floor (any single fire is eligible) for the small fixtures.
+    const OPEN_FLOOR: CoverageFloor = CoverageFloor { min_fired_abs: 1, fire_frac: 0.0 };
+
     #[test]
     fn groups_by_exact_creator_and_picks_best_combo() {
         use crate::sweep::grouping::GroupField;
@@ -214,6 +440,7 @@ mod tests {
             &corpus(),
             &[GroupField::CreatorWallet],
             1,
+            OPEN_FLOOR,
             &crate::sweep::progress::NoopObserver,
         )
         .unwrap();
@@ -222,9 +449,93 @@ mod tests {
         // Largest group (devA, 2 tokens) sorts first.
         assert_eq!(groups[0].token_count, 2);
         assert_eq!(groups[1].token_count, 1);
-        // Best combo is params[1] = 3.0 → combo_id 1, expectancy 3.0.
+        // Identical per-combo returns (σ=0) ⇒ score == realized mean == param, so
+        // the winner is still params[1] = 3.0 → combo_id 1.
         assert_eq!(groups[0].best_combo_id, 1);
+        assert_eq!(groups[0].best_score, Some(3.0));
         assert!((groups[0].best_expectancy_sol - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn large_and_small_groups_both_swept_in_deterministic_order() {
+        // One group clears the large-group threshold (phase 1: intra-group
+        // parallel) and one stays small (phase 2: cross-group parallel). Both must
+        // be swept correctly and assembled in the deterministic largest-first
+        // order regardless of which phase produced each slot.
+        use crate::sweep::grouping::GroupField;
+        let threads = rayon::current_num_threads().max(1);
+        let big = LARGE_GROUP_TOKEN_FACTOR * threads + 1; // clears `large_min`
+        let mut tokens: Vec<TokenTrades> =
+            (0..big).map(|i| token(&format!("a{i}"), "devA")).collect();
+        tokens.push(token("b0", "devB"));
+        tokens.push(token("b1", "devB"));
+        let corpus = Corpus { tokens, hash: "h".into() };
+
+        let params = Mock.sample(SweepMethod::Grid);
+        let groups = run_grouped_sweep(
+            &Mock,
+            &params,
+            &corpus,
+            &[GroupField::CreatorWallet],
+            1,
+            OPEN_FLOOR,
+            &crate::sweep::progress::NoopObserver,
+        )
+        .unwrap();
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].token_count, big, "large group (phase 1) sorts first");
+        assert_eq!(groups[1].token_count, 2, "small group (phase 2) second");
+        // Both groups see identical per-combo returns ⇒ winner is params[1] = 3.0.
+        assert_eq!(groups[0].best_combo_id, 1);
+        assert_eq!(groups[1].best_combo_id, 1);
+    }
+
+    #[test]
+    fn coverage_floor_excludes_thin_combos() {
+        // Two combos: A fires on 1 token with a huge score, B on 2 with a modest
+        // one. A floor of 2 fired tokens makes A ineligible → B wins despite the
+        // lower score (the over-fit guard).
+        let metrics = vec![
+            ComboMetrics { combo_id: 0, n_fired: 1, score: Some(999.0), expectancy_sol: 9.0,
+                total_pnl_sol: 9.0, ..base_metrics() },
+            ComboMetrics { combo_id: 1, n_fired: 2, score: Some(5.0), expectancy_sol: 1.0,
+                total_pnl_sol: 2.0, ..base_metrics() },
+        ];
+        let floor = CoverageFloor { min_fired_abs: 2, fire_frac: 0.0 };
+        let (id, score, _) = best_combo(&metrics, 100, floor);
+        assert_eq!(id, 1, "thin combo 0 is below the floor");
+        assert_eq!(score, Some(5.0));
+    }
+
+    #[test]
+    fn coverage_floor_falls_back_to_most_fired_when_none_clear() {
+        // No combo clears the floor → fall back to the most-fired one.
+        let metrics = vec![
+            ComboMetrics { combo_id: 0, n_fired: 1, score: Some(1.0), expectancy_sol: 1.0,
+                ..base_metrics() },
+            ComboMetrics { combo_id: 1, n_fired: 3, score: Some(0.5), expectancy_sol: 0.5,
+                ..base_metrics() },
+        ];
+        let floor = CoverageFloor { min_fired_abs: 10, fire_frac: 0.0 };
+        let (id, _, _) = best_combo(&metrics, 100, floor);
+        assert_eq!(id, 1, "most-fired fallback");
+    }
+
+    #[test]
+    fn best_combo_ranks_on_score_not_expectancy() {
+        // Combo 0 has the higher expectancy but a worse robust score (dispersion);
+        // ranking on score must crown combo 1.
+        let metrics = vec![
+            ComboMetrics { combo_id: 0, n_fired: 50, score: Some(1.0), expectancy_sol: 9.0,
+                ..base_metrics() },
+            ComboMetrics { combo_id: 1, n_fired: 50, score: Some(4.0), expectancy_sol: 2.0,
+                ..base_metrics() },
+        ];
+        let (id, score, exp) = best_combo(&metrics, 100, CoverageFloor::default());
+        assert_eq!(id, 1);
+        assert_eq!(score, Some(4.0));
+        assert!((exp - 2.0).abs() < 1e-9);
     }
 
     #[test]
@@ -237,6 +548,7 @@ mod tests {
             &corpus(),
             &[GroupField::CreatorWallet],
             2,
+            OPEN_FLOOR,
             &crate::sweep::progress::NoopObserver,
         )
         .unwrap();
@@ -247,9 +559,16 @@ mod tests {
     #[test]
     fn empty_fields_is_single_all_group() {
         let params = Mock.sample(SweepMethod::Grid);
-        let groups =
-            run_grouped_sweep(&Mock, &params, &corpus(), &[], 1, &crate::sweep::progress::NoopObserver)
-                .unwrap();
+        let groups = run_grouped_sweep(
+            &Mock,
+            &params,
+            &corpus(),
+            &[],
+            1,
+            OPEN_FLOOR,
+            &crate::sweep::progress::NoopObserver,
+        )
+        .unwrap();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].token_count, 3);
     }

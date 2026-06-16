@@ -17,6 +17,8 @@
 //! Cohort / outside split reuses [`super::super::cohort`] so it matches rug
 //! detection and the E5 exit exactly.
 
+use std::collections::HashSet;
+
 use chrono::{DateTime, Utc};
 
 use super::super::cohort::{cohort_flow, early_cohort_wallets, outside_net_sol};
@@ -250,6 +252,17 @@ fn higher_low_confirmed_index<T: TradeRow>(
     None
 }
 
+/// The launch cohort for a token's trade slice — the wallet set every scalp gate
+/// splits cohort-vs-outside flow against. Depends **only** on the trades (the
+/// first trade's slot + `EARLY_COHORT_SLOT_WINDOW`), never on a rule's params, so
+/// the sweep computes it **once per token** (see `Strategy::prepare_token`) and
+/// reuses it across every entry-param tuple instead of rebuilding the `HashSet`
+/// per resolve. The live/backtest paths call [`find_scalp_entry`], which computes
+/// it inline — same definition, so decisions stay byte-identical.
+pub fn scalp_cohort<T: TradeRow>(trades: &[T]) -> HashSet<T::Wallet> {
+    early_cohort_wallets(trades, EARLY_COHORT_SLOT_WINDOW)
+}
+
 /// Walk a token's trades and return the entry fill at the **first trade where
 /// every configured scalp gate holds**, or `None` if none qualifies. The
 /// candidate must be a buy (we enter by buying, filling at its price). Trades are
@@ -258,7 +271,28 @@ fn higher_low_confirmed_index<T: TradeRow>(
 /// Returns `None` when the rule configures no scalp gate; callers gate on
 /// [`rule_configures_any_scalp_gate`] (the backtest rejects such a rule up front),
 /// so this is never a silent buy-everything path.
+///
+/// Computes the launch cohort inline ([`scalp_cohort`]); the sweep hot path calls
+/// [`find_scalp_entry_with_cohort`] with a per-token-cached cohort instead.
 pub fn find_scalp_entry<T: TradeRow>(trades: &[T], rule: &Tpsl2Rule) -> Option<EntryFill> {
+    if !rule_configures_any_scalp_gate(rule) || trades.is_empty() {
+        return None;
+    }
+    let cohort = scalp_cohort(trades);
+    find_scalp_entry_with_cohort(trades, rule, &cohort)
+}
+
+/// [`find_scalp_entry`] with the launch `cohort` supplied by the caller — the form
+/// the sweep uses so the cohort `HashSet` is built once per token, not once per
+/// entry-param tuple. `cohort` MUST equal [`scalp_cohort(trades)`](scalp_cohort)
+/// for the slice; passing a mismatched set changes the cohort/outside split and so
+/// the resolved entry. The live path goes through [`find_scalp_entry`], which
+/// computes it from the same definition, keeping decisions identical.
+pub fn find_scalp_entry_with_cohort<T: TradeRow>(
+    trades: &[T],
+    rule: &Tpsl2Rule,
+    cohort: &HashSet<T::Wallet>,
+) -> Option<EntryFill> {
     if !rule_configures_any_scalp_gate(rule) || trades.is_empty() {
         return None;
     }
@@ -276,10 +310,11 @@ pub fn find_scalp_entry<T: TradeRow>(trades: &[T], rule: &Tpsl2Rule) -> Option<E
     // (cutoff = first.slot + EARLY_COHORT_SLOT_WINDOW), a superset of every prefix
     // cohort — and identical to it for any real launch series, where a cohort
     // wallet's first trade IS its in-window buy (a wallet can't sell before it has
-    // bought on the curve). Computing it once, then carrying the cohort/outside
-    // flows, the trailing alive-window sum, and the last-seen real reserves forward
-    // as the walk advances replaces the per-candidate prefix rescans (was O(n²)).
-    let cohort = early_cohort_wallets(trades, EARLY_COHORT_SLOT_WINDOW);
+    // bought on the curve). Carrying the cohort/outside flows, the trailing
+    // alive-window sum, and the last-seen real reserves forward as the walk advances
+    // replaces the per-candidate prefix rescans (was O(n²)). The cohort itself is
+    // supplied by the caller (hoisted once per token in the sweep; computed inline
+    // by [`find_scalp_entry`] on the live path).
 
     // First index (if any) at which the higher-low shape is confirmed; the
     // confirmation is monotonic in prefix length, so one forward pass suffices.
@@ -665,6 +700,41 @@ mod tests {
                 scalp_entry_oracle(&trades, &r),
                 "linearized find_scalp_entry diverged from the per-prefix oracle for combo {:?}",
                 (age, alive, organic, cohort_held, liq, organic_liq)
+            );
+        }
+    }
+
+    #[test]
+    fn with_cohort_matches_inline_cohort() {
+        // The #7 cohort hoist: feeding `scalp_cohort(trades)` into
+        // `find_scalp_entry_with_cohort` must resolve byte-identical entries to the
+        // inline-cohort `find_scalp_entry` — that equality is what lets the sweep
+        // build the cohort once per token without changing any decision.
+        let trades = vec![
+            buy("dev", 5.0, 100.0, 1, 0),
+            buy("dev2", 3.0, 60.0, 2, 1),
+            t("dev", TradeType::Sell, 4.0, 90.0, 50, 3),
+            buy("out", 1.0, 5.0, 500, 5),
+            buy("out2", 1.5, 12.0, 540, 7),
+        ];
+        let cohort = scalp_cohort(&trades);
+        for &(age, organic, cohort_held, liq) in &[
+            (Some(5u64), None, None, None),
+            (None, Some(1.0f64), None, None),
+            (None, None, Some(50.0f64), None),
+            (None, None, None, Some(0.0f64)),
+            (Some(5), Some(1.0), Some(50.0), None),
+        ] {
+            let mut r = rule();
+            r.p_entry_min_age_secs = age;
+            r.p_entry_min_organic_sol = organic;
+            r.p_entry_max_cohort_held = cohort_held;
+            r.p_entry_min_liquidity_sol = liq;
+            assert_eq!(
+                find_scalp_entry(&trades, &r),
+                find_scalp_entry_with_cohort(&trades, &r, &cohort),
+                "hoisted-cohort entry diverged from inline-cohort for {:?}",
+                (age, organic, cohort_held, liq)
             );
         }
     }

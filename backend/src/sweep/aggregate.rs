@@ -19,7 +19,16 @@ const SCORE_Z: f64 = 1.64;
 /// mark open positions to their last price (so a still-running token still
 /// counts); holding-time stats and the robust [`score`](ComboMetrics::score) use
 /// closed positions only.
-#[derive(Default, Clone)]
+///
+/// **Bounded memory (O(1) per combo).** Median/p90 come from a fixed-size
+/// [`QuantileSketch`] rather than a per-token `Vec`, so a combo's footprint no
+/// longer grows with the number of tokens it fires on. At `HARD_MAX_COMBOS` ×
+/// a few-thousand-token group the old `Vec<f32>`/`Vec<i32>` reached multi-GB held
+/// in the fold thread; the sketch caps each combo at ~4 KB regardless of corpus
+/// size — the cap that actually lets big sweeps run. Best/worst stay **exact**
+/// (running min/max); mean/holding-mean stay exact (running sums); only the two
+/// interior quantiles are approximate (~4% relative error, see [`QuantileSketch`]).
+#[derive(Clone)]
 pub struct ComboAgg {
     fired: u64,
     open: u64,
@@ -27,16 +36,48 @@ pub struct ComboAgg {
     pnl_sol_sum: f64,
     gross_win_sol: f64,
     gross_loss_sol: f64,
-    /// pnl% of every fired token (mark-to-market for open) — for quantiles.
-    pnl_pct: Vec<f32>,
+    /// Σ pnl% over every fired token (mark-to-market for open) — exact mean.
+    pnl_pct_sum: f64,
+    /// Exact min/max pnl% over every fired token — `best`/`worst` stay precise.
+    pnl_min: f32,
+    pnl_max: f32,
+    /// pnl% distribution of every fired token (mark-to-market for open) — for the
+    /// approximate median/p90.
+    pnl_sketch: QuantileSketch,
     /// Σ and Σ² of *closed* pnl% — the realized mean/stddev the score ranks on
     /// (open positions excluded: their pnl% is unrealized mark-to-market).
     closed_pct_sum: f64,
     closed_pct_sum_sq: f64,
-    /// holding seconds of closed positions only.
-    holding: Vec<i32>,
+    /// Σ holding seconds over closed positions — exact holding mean.
+    holding_sum: i64,
+    /// holding-seconds distribution of closed positions — for the median.
+    holding_sketch: QuantileSketch,
     /// counts indexed by [`exit_index`].
     exit_counts: [u32; 8],
+}
+
+impl Default for ComboAgg {
+    fn default() -> Self {
+        Self {
+            fired: 0,
+            open: 0,
+            wins: 0,
+            pnl_sol_sum: 0.0,
+            gross_win_sol: 0.0,
+            gross_loss_sol: 0.0,
+            pnl_pct_sum: 0.0,
+            // Sentinels so the first recorded value wins min/max; an unfired combo
+            // reports best/worst = 0 (handled in `finalize`).
+            pnl_min: f32::INFINITY,
+            pnl_max: f32::NEG_INFINITY,
+            pnl_sketch: QuantileSketch::default(),
+            closed_pct_sum: 0.0,
+            closed_pct_sum_sq: 0.0,
+            holding_sum: 0,
+            holding_sketch: QuantileSketch::default(),
+            exit_counts: [0; 8],
+        }
+    }
 }
 
 impl ComboAgg {
@@ -47,7 +88,10 @@ impl ComboAgg {
         }
         self.fired += 1;
         self.pnl_sol_sum += o.pnl_sol as f64;
-        self.pnl_pct.push(o.pnl_percent);
+        self.pnl_pct_sum += o.pnl_percent as f64;
+        self.pnl_min = self.pnl_min.min(o.pnl_percent);
+        self.pnl_max = self.pnl_max.max(o.pnl_percent);
+        self.pnl_sketch.record(o.pnl_percent as f64);
         if o.pnl_sol > 0.0 {
             self.wins += 1;
             self.gross_win_sol += o.pnl_sol as f64;
@@ -57,7 +101,8 @@ impl ComboAgg {
         if o.exit == ExitCode::Open {
             self.open += 1;
         } else {
-            self.holding.push(o.holding_secs as i32);
+            self.holding_sum += o.holding_secs;
+            self.holding_sketch.record(o.holding_secs as f64);
             let p = o.pnl_percent as f64;
             self.closed_pct_sum += p;
             self.closed_pct_sum_sq += p * p;
@@ -65,22 +110,34 @@ impl ComboAgg {
         self.exit_counts[exit_index(o.exit)] += 1;
     }
 
-    /// Collapse to the final ranked row. Sorts the internal vectors.
-    pub fn finalize(mut self, combo_id: u32) -> ComboMetrics {
+    /// Collapse to the final ranked row.
+    pub fn finalize(self, combo_id: u32) -> ComboMetrics {
         let n = self.fired as f64;
-        let (median_pnl_pct, p90_pnl_pct, best_pnl_pct, worst_pnl_pct) = pct_stats(&mut self.pnl_pct);
-        let mean_pnl_pct = if self.fired == 0 {
-            0.0
+        let (median_pnl_pct, p90_pnl_pct, best_pnl_pct, worst_pnl_pct) = if self.fired == 0 {
+            (0.0, 0.0, 0.0, 0.0)
         } else {
-            self.pnl_pct.iter().map(|v| *v as f64).sum::<f64>() / n
+            (
+                self.pnl_sketch.quantile(0.5),
+                self.pnl_sketch.quantile(0.9),
+                self.pnl_max as f64,
+                self.pnl_min as f64,
+            )
         };
-        let (avg_holding_secs, median_holding_secs) = holding_stats(&mut self.holding);
+        let mean_pnl_pct = if self.fired == 0 { 0.0 } else { self.pnl_pct_sum / n };
+        let n_closed = self.fired - self.open;
+        let (avg_holding_secs, median_holding_secs) = if n_closed == 0 {
+            (0.0, 0.0)
+        } else {
+            (
+                self.holding_sum as f64 / n_closed as f64,
+                self.holding_sketch.quantile(0.5),
+            )
+        };
         let profit_factor = if self.gross_loss_sol > 0.0 {
             Some(self.gross_win_sol / self.gross_loss_sol)
         } else {
             None // no losing trades → undefined (shown as ∞)
         };
-        let n_closed = self.fired - self.open;
         let (std_pnl_pct, score) =
             robust_score(n_closed, self.closed_pct_sum, self.closed_pct_sum_sq);
         ComboMetrics {
@@ -184,28 +241,107 @@ fn exit_index(e: ExitCode) -> usize {
     }
 }
 
-/// (median, p90, best=max, worst=min) of a pnl% sample. Sorts in place.
-fn pct_stats(xs: &mut [f32]) -> (f64, f64, f64, f64) {
-    if xs.is_empty() {
-        return (0.0, 0.0, 0.0, 0.0);
-    }
-    xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let median = xs[xs.len() / 2] as f64;
-    let p90 = xs[((xs.len() as f64 * 0.9) as usize).min(xs.len() - 1)] as f64;
-    let worst = xs[0] as f64;
-    let best = xs[xs.len() - 1] as f64;
-    (median, p90, best, worst)
+// --------------------------------------------------------------------------
+// Quantile sketch
+// --------------------------------------------------------------------------
+
+/// Buckets per sign. With [`SKETCH_GAMMA`] this covers roughly `[1e-3, 3e5]` in
+/// magnitude — wide enough for both pnl% (−100%..hundreds-of-thousands %) and
+/// holding seconds (0..days). Values outside the range clamp into the end
+/// buckets: their *rank* still counts correctly, only the returned value saturates.
+const SKETCH_N: usize = 256;
+/// Index offset so sub-unit magnitudes (e.g. 0.1% pnl, 1-second holds) land in
+/// low buckets rather than clamping at 0. Chosen with [`SKETCH_INV_LN_GAMMA`] so
+/// bucket 0 ≈ magnitude `1e-3`.
+const SKETCH_BIAS: f64 = 90.0;
+/// `1 / ln(GAMMA)` for `GAMMA = 1.08`. Each bucket is 8% wider than the previous,
+/// giving ~3.9% relative error `(GAMMA−1)/(GAMMA+1)` on a returned quantile.
+/// Precomputed (no `ln` of a constant in the hot fold path).
+const SKETCH_INV_LN_GAMMA: f64 = 12.99370711;
+
+/// Fixed-memory, **order-independent** quantile sketch (DDSketch-style log
+/// buckets). Replaces the old per-combo sample `Vec`s so each [`ComboAgg`] is
+/// O(1) regardless of how many tokens it fires on (see [`ComboAgg`] for why that
+/// matters at scale). Each value maps to a log-scaled bucket; the returned
+/// quantile is the bucket's geometric midpoint (~3.9% relative error). Counts are
+/// integers, so the estimate is **identical regardless of fold order** — grouped
+/// and parallel folds reproduce the same median/p90, unlike order-sensitive
+/// P²/t-digest. A two-sided layout (plus an exact zero count) handles the signed
+/// pnl% domain; holding seconds simply never touch the negative buckets.
+#[derive(Clone)]
+struct QuantileSketch {
+    /// Counts for v < 0, indexed by the bucket of `|v|`.
+    neg: [u32; SKETCH_N],
+    /// Counts for v > 0.
+    pos: [u32; SKETCH_N],
+    /// Count of exactly-zero values.
+    zero: u32,
 }
 
-/// (mean, median) holding seconds. Sorts in place.
-fn holding_stats(xs: &mut [i32]) -> (f64, f64) {
-    if xs.is_empty() {
-        return (0.0, 0.0);
+impl Default for QuantileSketch {
+    fn default() -> Self {
+        Self { neg: [0; SKETCH_N], pos: [0; SKETCH_N], zero: 0 }
     }
-    let mean = xs.iter().map(|v| *v as f64).sum::<f64>() / xs.len() as f64;
-    xs.sort_unstable();
-    let median = xs[xs.len() / 2] as f64;
-    (mean, median)
+}
+
+/// Bucket index for a strictly-positive magnitude, clamped into `[0, SKETCH_N)`.
+fn sketch_bucket(mag: f64) -> usize {
+    let idx = (mag.ln() * SKETCH_INV_LN_GAMMA + SKETCH_BIAS).floor();
+    idx.clamp(0.0, (SKETCH_N - 1) as f64) as usize
+}
+
+/// Geometric midpoint value represented by bucket `i`.
+fn sketch_value_at(i: usize) -> f64 {
+    ((i as f64 - SKETCH_BIAS + 0.5) / SKETCH_INV_LN_GAMMA).exp()
+}
+
+impl QuantileSketch {
+    fn record(&mut self, v: f64) {
+        if v > 0.0 {
+            self.pos[sketch_bucket(v)] += 1;
+        } else if v < 0.0 {
+            self.neg[sketch_bucket(-v)] += 1;
+        } else {
+            self.zero += 1;
+        }
+    }
+
+    fn count(&self) -> u64 {
+        let neg: u64 = self.neg.iter().map(|&c| c as u64).sum();
+        let pos: u64 = self.pos.iter().map(|&c| c as u64).sum();
+        neg + pos + self.zero as u64
+    }
+
+    /// Approximate `q`-quantile (`q ∈ [0,1]`) over all recorded values. `0.0` on
+    /// an empty sketch. Walks buckets in ascending value order: most-negative
+    /// (high `neg` index) → zero → most-positive.
+    fn quantile(&self, q: f64) -> f64 {
+        let total = self.count();
+        if total == 0 {
+            return 0.0;
+        }
+        let target = ((q * total as f64) as u64).min(total - 1);
+        let mut cum = 0u64;
+        // Negative side: larger |v| = more negative = smaller value first.
+        for i in (0..SKETCH_N).rev() {
+            cum += self.neg[i] as u64;
+            if cum > target {
+                return -sketch_value_at(i);
+            }
+        }
+        cum += self.zero as u64;
+        if cum > target {
+            return 0.0;
+        }
+        for i in 0..SKETCH_N {
+            cum += self.pos[i] as u64;
+            if cum > target {
+                return sketch_value_at(i);
+            }
+        }
+        // Rank ≥ total only on rounding; fall back to the largest seen bucket.
+        sketch_value_at(SKETCH_N - 1)
+    }
 }
 
 #[cfg(test)]
@@ -302,5 +438,64 @@ mod tests {
         assert_eq!(m.n_closed, 0);
         assert_eq!(m.avg_holding_secs, 0.0);
         assert_eq!(m.n_exit_open, 1);
+    }
+
+    #[test]
+    fn best_worst_and_mean_are_exact() {
+        // best/worst (running min/max) and mean (running sum) stay precise even
+        // though median/p90 go through the approximate sketch.
+        let mut a = ComboAgg::default();
+        for v in [10.0, -30.0, 250.0, 5.0, -100.0] {
+            a.record(&outcome(0.1, v, ExitCode::TakeProfit, 7));
+        }
+        let m = a.finalize(0);
+        assert_eq!(m.best_pnl_pct, 250.0);
+        assert_eq!(m.worst_pnl_pct, -100.0);
+        // mean = (10 − 30 + 250 + 5 − 100) / 5 = 27
+        assert!((m.mean_pnl_pct - 27.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sketch_median_p90_within_relative_error() {
+        // 1..=1000 → exact median 500/501, p90 ~900. The log sketch must land
+        // within its ~4% relative-error band on both.
+        let mut a = ComboAgg::default();
+        for v in 1..=1000 {
+            a.record(&outcome(0.1, v as f32, ExitCode::TakeProfit, v));
+        }
+        let m = a.finalize(0);
+        assert!((m.median_pnl_pct - 500.0).abs() / 500.0 < 0.05, "median {}", m.median_pnl_pct);
+        assert!((m.p90_pnl_pct - 900.0).abs() / 900.0 < 0.05, "p90 {}", m.p90_pnl_pct);
+        // Holding fed the same 1..=1000 sample (closed) → median ~500.
+        assert!(
+            (m.median_holding_secs - 500.0).abs() / 500.0 < 0.05,
+            "holding median {}",
+            m.median_holding_secs
+        );
+    }
+
+    #[test]
+    fn sketch_handles_signed_and_zero() {
+        // Half strongly negative, half strongly positive, one zero → median ≈ 0.
+        let mut a = ComboAgg::default();
+        for _ in 0..50 {
+            a.record(&outcome(0.1, -200.0, ExitCode::StopLoss, 1));
+        }
+        a.record(&outcome(0.1, 0.0, ExitCode::TimeStop, 1));
+        for _ in 0..50 {
+            a.record(&outcome(0.1, 300.0, ExitCode::TakeProfit, 1));
+        }
+        let m = a.finalize(0);
+        // The 51st-of-101 ordered value is the single 0.0 sample.
+        assert_eq!(m.median_pnl_pct, 0.0);
+        assert_eq!(m.best_pnl_pct, 300.0);
+        assert_eq!(m.worst_pnl_pct, -200.0);
+    }
+
+    #[test]
+    fn sketch_quantile_empty_is_zero() {
+        let s = QuantileSketch::default();
+        assert_eq!(s.quantile(0.5), 0.0);
+        assert_eq!(s.count(), 0);
     }
 }

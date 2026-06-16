@@ -100,6 +100,24 @@ impl Corpus {
     }
 }
 
+/// Which slice of a token's lifetime the DB per-mint cap keeps when the token has
+/// more than `per_mint_cap` lifetime trades. Only matters for high-volume tokens
+/// past the cap; below it the whole history loads either way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TradeWindow {
+    /// Keep the **earliest** `per_mint_cap` trades — the launch window the entry
+    /// logic (`find_scalp_entry`) decides on. The correct default for a historical
+    /// backtest: replaying newest-first would silently drop the first minutes and
+    /// resolve entry against a truncated mid-life slice (Rec 4).
+    #[default]
+    LaunchWindow,
+    /// Keep the **newest** `per_mint_cap` trades — parity with the live cache's
+    /// retained recent window, for a "what would I do right now" replay. A
+    /// selectable mode; the grouped-sweep handler defaults to `LaunchWindow`.
+    #[allow(dead_code)]
+    Recent,
+}
+
 /// Explicit population scope — never "load everything". A loader clips to
 /// `token_cap` and/or `created_after`, logging which bound bit so the run never
 /// silently truncates.
@@ -114,8 +132,10 @@ pub struct Selection {
     /// Only tokens created strictly before this instant (DB source) — the upper
     /// bound of a date/time range. `None` ⇒ no upper bound.
     pub created_before: Option<DateTime<Utc>>,
-    /// Per-mint trade cap for the DB batch query (newest N per mint).
+    /// Per-mint trade cap for the DB batch query.
     pub per_mint_cap: i64,
+    /// Which `per_mint_cap` slice to keep for over-cap tokens (DB source).
+    pub window: TradeWindow,
     /// Drop AMM (post-migration) legs, keeping only bonding-curve trades.
     pub curve_only: bool,
 }
@@ -128,6 +148,7 @@ impl Default for Selection {
             created_after: None,
             created_before: None,
             per_mint_cap: crate::state::token_cache::MAX_TRADES_RETAINED as i64,
+            window: TradeWindow::LaunchWindow,
             curve_only: false,
         }
     }
@@ -257,19 +278,32 @@ impl DbSource {
     }
 
     /// Trades for a chunk of mints in one round-trip, each mint capped to its
-    /// newest `per_mint_cap` trades (a per-mint `ROW_NUMBER` window bounds the
-    /// worst case to `mints.len() * per_mint_cap` rows), grouped chronological
-    /// per mint. Mints with no trades are simply absent. Slim projection (no
-    /// `ix_labels` JSONB) — the sweep never reads per-trade labels.
+    /// `per_mint_cap` slice (a per-mint `ROW_NUMBER` window bounds the worst case
+    /// to `mints.len() * per_mint_cap` rows), grouped chronological per mint. The
+    /// `window` picks **which** slice an over-cap token keeps: `LaunchWindow` ranks
+    /// earliest-first so the entry-relevant launch prefix is always present (Rec 4);
+    /// `Recent` ranks newest-first (live-cache parity). Mints with no trades are
+    /// simply absent. Slim projection (no `ix_labels` JSONB) — the sweep never
+    /// reads per-trade labels.
     async fn fetch_chunk(
         &self,
         mints: &[String],
         per_mint_cap: i64,
+        window: TradeWindow,
     ) -> Result<HashMap<String, Vec<Trade>>> {
-        // Newest `per_mint_cap` per mint via the DESC window, then re-sorted ASC
-        // so each mint's run arrives chronological — the launch→recent window the
-        // live cache holds.
-        let rows = sqlx::query_as::<_, TradeSlimRow>(
+        // The partition order decides which `per_mint_cap` rows survive the cut;
+        // the final result is re-sorted ASC either way, so each mint's run arrives
+        // chronological. The two orderings are fixed column lists (no user input),
+        // so formatting them into the statement is injection-safe.
+        let partition_order = match window {
+            TradeWindow::LaunchWindow => {
+                "slot ASC, block_time ASC, tx_signature ASC, leg_index ASC"
+            }
+            TradeWindow::Recent => {
+                "slot DESC, block_time DESC, tx_signature DESC, leg_index DESC"
+            }
+        };
+        let sql = format!(
             r#"
             WITH ranked AS (
                 SELECT id, mint_address, wallet_address, trade_type,
@@ -280,7 +314,7 @@ impl DbSource {
                        ix_type, venue,
                        ROW_NUMBER() OVER (
                          PARTITION BY mint_address
-                         ORDER BY slot DESC, block_time DESC, tx_signature DESC, leg_index DESC
+                         ORDER BY {partition_order}
                        ) AS rn
                 FROM trades
                 WHERE mint_address = ANY($1)
@@ -294,12 +328,13 @@ impl DbSource {
             FROM ranked
             WHERE rn <= $2
             ORDER BY mint_address ASC, slot ASC, block_time ASC, tx_signature ASC, leg_index ASC
-            "#,
-        )
-        .bind(mints)
-        .bind(per_mint_cap)
-        .fetch_all(&self.pool)
-        .await?;
+            "#
+        );
+        let rows = sqlx::query_as::<_, TradeSlimRow>(&sql)
+            .bind(mints)
+            .bind(per_mint_cap)
+            .fetch_all(&self.pool)
+            .await?;
 
         let mut grouped: HashMap<String, Vec<Trade>> = HashMap::with_capacity(mints.len());
         for row in rows {
@@ -439,7 +474,7 @@ impl CorpusSource for DbSource {
         let mut tokens: Vec<TokenTrades> = Vec::with_capacity(mints.len());
         for chunk in mints.chunks(self.chunk) {
             let grouped = self
-                .fetch_chunk(chunk, sel.per_mint_cap)
+                .fetch_chunk(chunk, sel.per_mint_cap, sel.window)
                 .await
                 .context("batched trade fetch for corpus chunk")?;
             for mint in chunk {
@@ -488,6 +523,7 @@ pub fn selection_cache_key(sel: &Selection) -> String {
     let mut h = DefaultHasher::new();
     sel.token_cap.hash(&mut h);
     sel.per_mint_cap.hash(&mut h);
+    (sel.window as u8).hash(&mut h);
     sel.curve_only.hash(&mut h);
     sel.created_after.map(|t| t.timestamp_millis()).hash(&mut h);
     sel.created_before.map(|t| t.timestamp_millis()).hash(&mut h);
@@ -796,6 +832,22 @@ mod tests {
 
     fn token(mint: &str, symbol: &str, trades: &[Trade]) -> TokenTrades {
         TokenTrades::from_trades(mint.into(), symbol.into(), TokenFingerprint::default(), trades)
+    }
+
+    #[test]
+    fn default_window_is_launch_window() {
+        // A historical backtest must keep the launch prefix by default (Rec 4).
+        assert_eq!(Selection::default().window, TradeWindow::LaunchWindow);
+        assert_eq!(TradeWindow::default(), TradeWindow::LaunchWindow);
+    }
+
+    #[test]
+    fn cache_key_distinguishes_window() {
+        // Two runs over the same window but different trade slices must not share a
+        // cached corpus.
+        let launch = Selection { window: TradeWindow::LaunchWindow, ..Selection::default() };
+        let recent = Selection { window: TradeWindow::Recent, ..Selection::default() };
+        assert_ne!(selection_cache_key(&launch), selection_cache_key(&recent));
     }
 
     #[test]

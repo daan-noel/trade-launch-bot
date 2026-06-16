@@ -25,6 +25,7 @@ use crate::state::token_cache::MAX_TRADES_RETAINED;
 use crate::storage::repositories::grouped_sweep_repo::{GroupedSweepRepo, GroupedSweepTables};
 use crate::sweep::aggregate::ComboMetrics;
 use crate::sweep::corpus::{attach_fingerprints, corpus_cache_dir, load_grouped_corpus, Selection};
+use crate::sweep::grouped_engine::CoverageFloor;
 use crate::sweep::grouping::GroupField;
 use crate::sweep::registry::{self, GroupedSweepOutput};
 use crate::sweep::strategy::SweepMethod;
@@ -55,6 +56,14 @@ pub struct StartGroupedSweepBody {
     /// Drop groups with fewer than this many tokens before sweeping.
     #[serde(default = "default_min_tokens")]
     pub min_tokens: usize,
+    /// Coverage floor — absolute minimum fired tokens a combo needs before it's
+    /// eligible to be a group's headline pick (over-fit guard, finding #2).
+    #[serde(default = "default_min_fired_abs")]
+    pub min_fired_abs: u64,
+    /// Coverage floor — fraction of the group's tokens a combo must fire on
+    /// (the floor is `max(min_fired_abs, ceil(fire_frac · group_tokens))`).
+    #[serde(default = "default_fire_frac")]
+    pub fire_frac: f64,
     /// `grid` | `random:N` | `lhs:N`. Defaults to a full grid.
     #[serde(default)]
     pub method: Option<String>,
@@ -78,6 +87,12 @@ pub struct StartGroupedSweepBody {
 
 fn default_min_tokens() -> usize {
     10
+}
+fn default_min_fired_abs() -> u64 {
+    10
+}
+fn default_fire_frac() -> f64 {
+    0.05
 }
 fn default_token_cap() -> usize {
     10_000
@@ -209,6 +224,10 @@ async fn run_grouped_sweep_job(
 
     let token_cap = b.token_cap.clamp(1, 100_000);
     let min_tokens = b.min_tokens.max(1);
+    let floor = CoverageFloor {
+        min_fired_abs: b.min_fired_abs,
+        fire_frac: b.fire_frac.clamp(0.0, 1.0),
+    };
     let method = b.method.as_deref().map(SweepMethod::parse).unwrap_or(SweepMethod::Grid);
 
     let sel = Selection {
@@ -217,6 +236,9 @@ async fn run_grouped_sweep_job(
         created_after: b.created_after,
         created_before: b.created_before,
         per_mint_cap: MAX_TRADES_RETAINED as i64,
+        // Keep each over-cap token's launch window — the entry logic decides on the
+        // first minutes, which a newest-first cap would drop (Rec 4).
+        window: crate::sweep::corpus::TradeWindow::LaunchWindow,
         curve_only: b.curve_only,
     };
 
@@ -268,6 +290,7 @@ async fn run_grouped_sweep_job(
         corpus,
         b.group_by.clone(),
         min_tokens,
+        floor,
         b.max_combos,
         observer,
     )
@@ -330,7 +353,7 @@ async fn run_grouped_sweep_job(
 /// Flatten the sweep output into the repo's write units: one group per surviving
 /// fingerprint, carrying its ranked combo rows. `group_index` is the deterministic
 /// order the engine returned (largest group first). `fired_count` is the best
-/// combo's `n_fired` — the sample size behind the group's headline expectancy.
+/// combo's `n_fired` — the sample size behind the group's headline pick.
 fn build_group_writes(output: &GroupedSweepOutput) -> Vec<GroupedSweepGroupWrite> {
     let param_at = |id: u32| -> serde_json::Value {
         output
@@ -361,6 +384,7 @@ fn build_group_writes(output: &GroupedSweepOutput) -> Vec<GroupedSweepGroupWrite
                 token_count: g.token_count as i32,
                 fired_count,
                 best_combo_id: g.best_combo_id as i32,
+                best_score: g.best_score,
                 best_expectancy_sol: g.best_expectancy_sol,
                 best_params: param_at(g.best_combo_id),
                 results,

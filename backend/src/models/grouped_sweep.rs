@@ -37,8 +37,10 @@ pub struct GroupedSweepRun {
 }
 
 /// One group's summary row (the group-list table): its fingerprint key, sample
-/// size, and the winning combo by expectancy. `fired_count` is the **best
-/// combo's** `n_fired` — the sample size behind `best_expectancy_sol`.
+/// size, and the winning combo. The winner is picked on the robust realized
+/// `best_score` (the headline metric); `fired_count` is its `n_fired` — the
+/// sample size behind the pick — and `best_expectancy_sol` its expectancy
+/// (kept as a secondary readout, no longer the ranking metric).
 #[derive(Debug, Clone, Serialize)]
 pub struct GroupedSweepGroupSummary {
     pub id: Uuid,
@@ -47,6 +49,9 @@ pub struct GroupedSweepGroupSummary {
     pub token_count: i32,
     pub fired_count: i64,
     pub best_combo_id: i32,
+    /// Robust realized `score` of the winning combo (`μ−Z·σ/√n` over closed
+    /// trades); `None` when it has < 2 closed trades. The page's headline metric.
+    pub best_score: Option<f64>,
     pub best_expectancy_sol: f64,
     pub best_params: Value,
 }
@@ -98,6 +103,7 @@ pub struct GroupedSweepGroupWrite {
     pub token_count: i32,
     pub fired_count: i64,
     pub best_combo_id: i32,
+    pub best_score: Option<f64>,
     pub best_expectancy_sol: f64,
     pub best_params: Value,
     pub results: Vec<GroupedSweepResult>,

@@ -91,6 +91,7 @@ struct GroupDbRow {
     token_count: i32,
     fired_count: i64,
     best_combo_id: i32,
+    best_score: Option<f64>,
     best_expectancy_sol: f64,
     best_params: sqlx::types::Json<Value>,
 }
@@ -104,6 +105,7 @@ impl From<GroupDbRow> for GroupedSweepGroupSummary {
             token_count: r.token_count,
             fired_count: r.fired_count,
             best_combo_id: r.best_combo_id,
+            best_score: r.best_score,
             best_expectancy_sol: r.best_expectancy_sol,
             best_params: r.best_params.0,
         }
@@ -224,8 +226,8 @@ impl GroupedSweepRepo {
         let group_sql = format!(
             "INSERT INTO {} \
              (id, run_id, group_index, group_key, token_count, fired_count, \
-              best_combo_id, best_expectancy_sol, best_params) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+              best_combo_id, best_score, best_expectancy_sol, best_params) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
             t.groups
         );
         for g in groups {
@@ -238,6 +240,7 @@ impl GroupedSweepRepo {
                 .bind(g.token_count)
                 .bind(g.fired_count)
                 .bind(g.best_combo_id)
+                .bind(g.best_score)
                 .bind(g.best_expectancy_sol)
                 .bind(sqlx::types::Json(&g.best_params))
                 .execute(&mut tx)
@@ -324,16 +327,17 @@ impl GroupedSweepRepo {
         Ok(res.rows_affected())
     }
 
-    /// Group summaries for a run, best opportunity first (highest expectancy).
+    /// Group summaries for a run, best opportunity first (highest robust score;
+    /// groups with no scoreable winner sort last, then by group index).
     pub async fn list_groups(
         &self,
         run_id: Uuid,
     ) -> anyhow::Result<Vec<GroupedSweepGroupSummary>> {
         let sql = format!(
             "SELECT id, group_index, group_key, token_count, fired_count, \
-                    best_combo_id, best_expectancy_sol, best_params \
+                    best_combo_id, best_score, best_expectancy_sol, best_params \
              FROM {} WHERE run_id = $1 \
-             ORDER BY best_expectancy_sol DESC, group_index ASC",
+             ORDER BY best_score DESC NULLS LAST, group_index ASC",
             self.tables.groups
         );
         let rows = sqlx::query_as::<_, GroupDbRow>(&sql)

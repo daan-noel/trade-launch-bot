@@ -6,6 +6,10 @@
 //! [`TokenOutcome`] rows.
 
 use crate::sweep::projection::SweepTrade;
+use pump_trader::constants::{
+    COMPUTE_UNIT_LIMIT_CURVE_BUY, COMPUTE_UNIT_LIMIT_CURVE_SELL,
+    COMPUTE_UNIT_PRICE_MICRO_LAMPORTS, LAMPORTS_PER_SOL,
+};
 
 /// How a sweep samples a strategy's param space. Pluggable so a strategy can
 /// grid the high-leverage knobs and random/Latin-hypercube the rest, and so the
@@ -115,14 +119,109 @@ pub struct LegEconomics {
 }
 
 /// Frictionless PnL of a buy@`entry_price` / sell@`exit_price` round-trip sized
-/// at `notional_sol` — pure price-to-price, no fees/slippage/latency. A future
-/// cost layer would slot in here without touching any `Strategy` impl.
+/// at `notional_sol` — pure price-to-price, no fees/slippage/latency. Kept for
+/// unit tests and as the analytic baseline; the sweep itself prices trades with
+/// [`round_trip_with_costs`] so the table reflects what the live trader pays.
+#[cfg_attr(not(test), allow(dead_code))] // test + analytic baseline for the cost model
 pub fn round_trip(entry_price: f64, exit_price: f64, notional_sol: f64) -> LegEconomics {
     if entry_price <= 0.0 || notional_sol <= 0.0 {
         return LegEconomics { pnl_sol: 0.0, pnl_percent: 0.0 };
     }
     let tokens = notional_sol / entry_price;
     let pnl_sol = tokens * exit_price - notional_sol;
+    LegEconomics {
+        pnl_sol,
+        pnl_percent: pnl_sol / notional_sol * 100.0,
+    }
+}
+
+/// Representative landed Jito tip per leg, in SOL. The live trader sizes the tip
+/// per-trade from the auction floor, clamped to `[MIN_JITO_TIP_SOL,
+/// MAX_JITO_TIP_SOL]` (see `pump_trader`); for the backtest a fixed mid-range
+/// stand-in is enough to stop the sweep treating tips as free. Tune toward
+/// `MAX_JITO_TIP_SOL` to model hotter auctions.
+const SWEEP_REPRESENTATIVE_JITO_TIP_SOL: f64 = 0.001;
+
+/// pump.fun's standard per-leg trading fee, in basis points (≈ 1%). The live
+/// `min_out` math over-estimates this with `CURVE_FEE_BUFFER_BPS` (200) for a
+/// safe lower bound; the *actual* fee charged is ≈ 100 bps, which is what a PnL
+/// estimate should subtract.
+const SWEEP_FEE_BPS_PER_LEG: f64 = 100.0;
+
+/// Modeled per-leg execution slippage, in basis points — the curve/AMM impact of
+/// the order itself, applied symmetrically (buy fills higher, sell fills lower).
+/// Distinct from, and well under, the live 5% slippage *tolerance*
+/// (`DEFAULT_SLIPPAGE_BPS`), which is a max-revert guard, not the expected fill.
+const SWEEP_SLIPPAGE_BPS_PER_LEG: f64 = 100.0;
+
+/// Priority fee for one leg, in SOL: `cu_price (µlamports/cu) × cu_limit`, scaled
+/// from micro-lamports to SOL. Charged on every included tx (success or revert).
+fn priority_fee_sol(cu_limit: u32) -> f64 {
+    let lamports = COMPUTE_UNIT_PRICE_MICRO_LAMPORTS as f64 * cu_limit as f64 / 1_000_000.0;
+    lamports / LAMPORTS_PER_SOL as f64
+}
+
+/// The execution-cost model the sweep prices every round-trip with, so backtest
+/// PnL reflects the frictions the live trader actually pays rather than a
+/// frictionless price-to-price delta. Resolved once per run from protocol
+/// constants ([`CostModel::pumpfun_default`]) and threaded into every
+/// [`Strategy::resolve_exit`], so backtest and live agree on what a trade costs.
+///
+/// All three knobs apply to **both** legs, keeping entry/exit symmetric — the old
+/// model charged the entry an adverse worst-case fill but let the exit settle at
+/// the frictionless decision price, which systematically inflated expectancy on
+/// exactly the small, fast round-trips the strategy lives on.
+#[derive(Clone, Copy, Debug)]
+pub struct CostModel {
+    /// Trading fee per leg, basis points (pump.fun curve ≈ 100 bps = 1%).
+    pub fee_bps_per_leg: f64,
+    /// Execution slippage per leg, basis points — worsens both fills symmetrically.
+    pub slippage_bps: f64,
+    /// Fixed SOL cost per leg (Jito tip + priority fee), charged on buy and sell.
+    pub fixed_cost_sol_per_leg: f64,
+}
+
+impl CostModel {
+    /// The default cost model, derived from the live `pump_trader` constants so the
+    /// backtest and the real trade path agree on fees/tips. The fixed per-leg cost
+    /// is a representative Jito tip plus the priority fee at the average curve
+    /// buy/sell compute-unit limit.
+    pub fn pumpfun_default() -> Self {
+        let avg_priority_sol = (priority_fee_sol(COMPUTE_UNIT_LIMIT_CURVE_BUY)
+            + priority_fee_sol(COMPUTE_UNIT_LIMIT_CURVE_SELL))
+            / 2.0;
+        Self {
+            fee_bps_per_leg: SWEEP_FEE_BPS_PER_LEG,
+            slippage_bps: SWEEP_SLIPPAGE_BPS_PER_LEG,
+            fixed_cost_sol_per_leg: SWEEP_REPRESENTATIVE_JITO_TIP_SOL + avg_priority_sol,
+        }
+    }
+}
+
+/// PnL of a buy@`entry_price` / sell@`exit_price` round-trip sized at
+/// `notional_sol`, **net of the [`CostModel`]**: symmetric slippage worsens both
+/// fills, a trading fee is charged on each leg's SOL value, and a fixed per-leg
+/// cost (tip + priority fee) is subtracted twice. This is the single cost gate —
+/// no `Strategy` impl prices a trade any other way.
+pub fn round_trip_with_costs(
+    entry_price: f64,
+    exit_price: f64,
+    notional_sol: f64,
+    costs: &CostModel,
+) -> LegEconomics {
+    if entry_price <= 0.0 || notional_sol <= 0.0 {
+        return LegEconomics { pnl_sol: 0.0, pnl_percent: 0.0 };
+    }
+    let slip = costs.slippage_bps / 10_000.0;
+    let fee = costs.fee_bps_per_leg / 10_000.0;
+    // Adverse fills: pay up on the buy, receive less on the sell.
+    let eff_entry = entry_price * (1.0 + slip);
+    let eff_exit = exit_price * (1.0 - slip);
+    let tokens = notional_sol / eff_entry;
+    let gross_proceeds = tokens * eff_exit;
+    // Trading fee on each leg's SOL value, plus the fixed per-leg cost twice.
+    let costs_sol = (notional_sol + gross_proceeds) * fee + costs.fixed_cost_sol_per_leg * 2.0;
+    let pnl_sol = gross_proceeds - notional_sol - costs_sol;
     LegEconomics {
         pnl_sol,
         pnl_percent: pnl_sol / notional_sol * 100.0,
@@ -165,18 +264,36 @@ pub trait Strategy: ParamSpace + Send + Sync {
     /// on a grid, is once per contiguous exit-block).
     type EntryKey: PartialEq;
 
+    /// Param-independent, **per-token** state the engine computes once before a
+    /// token's combo loop and threads into every [`Strategy::resolve_entry`] on
+    /// that token. Lets a strategy hoist work that depends only on the trade slice
+    /// (tpsl2's launch-cohort wallet `HashSet`) out of the per-entry-key resolve,
+    /// where it would otherwise rebuild once per distinct entry tuple. A strategy
+    /// with no such state sets this to `()`.
+    type TokenState;
+
     /// Stable id stored alongside every combo (e.g. `"tpsl2"`).
     fn id(&self) -> &'static str;
 
     /// The entry-param signature of a combo. Combos sharing it share an entry.
     fn entry_key(&self, params: &Self::Params) -> Self::EntryKey;
 
+    /// Compute the shared [`Strategy::TokenState`] for one token, **once** before
+    /// any combo runs against it. Pure over the slim [`SweepTrade`] slice.
+    fn prepare_token(&self, trades: &[SweepTrade]) -> Self::TokenState;
+
     /// Resolve the entry on one token's full trade history under a combo's **entry**
-    /// params. The expensive half (the scalp/cohort walk); called once per distinct
-    /// [`Strategy::entry_key`] per token. The history is the slim, wallet-interned
-    /// [`SweepTrade`] projection (not the heavy `Trade`); the shared entry fns run
-    /// over it via the `TradeRow` abstraction. Pure — safe from many `rayon` threads.
-    fn resolve_entry(&self, trades: &[SweepTrade], params: &Self::Params) -> Self::Entry;
+    /// params, given the pre-computed [`Strategy::TokenState`]. The expensive half
+    /// (the scalp walk); called once per distinct [`Strategy::entry_key`] per token.
+    /// The history is the slim, wallet-interned [`SweepTrade`] projection (not the
+    /// heavy `Trade`); the shared entry fns run over it via the `TradeRow`
+    /// abstraction. Pure — safe from many `rayon` threads.
+    fn resolve_entry(
+        &self,
+        trades: &[SweepTrade],
+        state: &Self::TokenState,
+        params: &Self::Params,
+    ) -> Self::Entry;
 
     /// Resolve the exit + economics given a pre-resolved `entry`, under a combo's
     /// **exit** params. Called once per combo. Returns a `Copy` [`TokenOutcome`];
@@ -208,6 +325,39 @@ mod tests {
     fn flat_price_is_breakeven() {
         let e = round_trip(1.0, 1.0, 0.1);
         assert!(e.pnl_sol.abs() < 1e-9, "no frictions → flat price is breakeven");
+    }
+
+    #[test]
+    fn costs_make_a_flat_round_trip_a_loss() {
+        // With no price move the frictionless trip is breakeven, but fees + tip +
+        // priority fee on both legs must turn it negative.
+        let costs = CostModel::pumpfun_default();
+        let e = round_trip_with_costs(1.0, 1.0, 0.1, &costs);
+        assert!(e.pnl_sol < 0.0, "frictional flat round-trip must lose money");
+    }
+
+    #[test]
+    fn costs_are_always_worse_than_frictionless() {
+        // For the same prices, the cost model can never report more PnL than the
+        // frictionless baseline — the whole point of finding #1.
+        let costs = CostModel::pumpfun_default();
+        for &(entry, exit) in &[(1.0, 2.0), (1.0, 0.5), (0.001, 0.0015)] {
+            let net = round_trip_with_costs(entry, exit, 0.1, &costs);
+            let gross = round_trip(entry, exit, 0.1);
+            assert!(
+                net.pnl_sol < gross.pnl_sol,
+                "net ({}) must be below gross ({})",
+                net.pnl_sol,
+                gross.pnl_sol
+            );
+        }
+    }
+
+    #[test]
+    fn costs_guard_degenerate_inputs() {
+        let costs = CostModel::pumpfun_default();
+        assert_eq!(round_trip_with_costs(0.0, 1.0, 0.1, &costs).pnl_sol, 0.0);
+        assert_eq!(round_trip_with_costs(1.0, 1.0, 0.0, &costs).pnl_sol, 0.0);
     }
 
     #[test]

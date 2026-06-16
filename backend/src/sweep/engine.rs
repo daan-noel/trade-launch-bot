@@ -10,12 +10,62 @@ use rayon::prelude::*;
 use crate::sweep::aggregate::{ComboAgg, ComboMetrics};
 use crate::sweep::corpus::Corpus;
 use crate::sweep::progress::SweepObserver;
+use crate::sweep::projection::SweepTrade;
 use crate::sweep::strategy::{Strategy, TokenOutcome};
 
 /// How many combos one token folds between cancel polls. Small enough that a
 /// cancel lands sub-100ms even on a huge combo set, large enough that the atomic
 /// load is amortised to noise against the inner `simulate` work.
 const CANCEL_CHECK_STRIDE: usize = 256;
+
+/// Resolve every combo's outcome for one token's `trades` into `out` (cleared
+/// first), one [`TokenOutcome`] per combo in `params` order. The expensive entry
+/// is resolved **once per distinct `entry_key`** and reused across that key's exit
+/// sub-grid: on a grid the exit axes are the low-order digits, so a token's combos
+/// arrive as contiguous same-entry blocks and the entry recomputes E×/token, not
+/// E·X× (a scattered `random:N` order still resolves correctly — only the reuse
+/// rate falls). Param-independent per-token state ([`Strategy::prepare_token`],
+/// e.g. the launch cohort) is computed once up front and shared across every
+/// entry resolve. The cancel flag is polled every [`CANCEL_CHECK_STRIDE`] combos so
+/// a large combo set bails mid-token; on a cancel `out` is left **partial** and
+/// `Err(())` is returned — the caller must discard it (never fold a short `out`,
+/// which is indexed by `combo_id`).
+///
+/// Shared by the parallel [`run_sweep`] and the serial per-group fold in
+/// `grouped_engine`, so both resolve entries identically.
+pub(crate) fn fill_outcomes<S: Strategy>(
+    strategy: &S,
+    params: &[S::Params],
+    trades: &[SweepTrade],
+    observer: &dyn SweepObserver,
+    out: &mut Vec<TokenOutcome>,
+) -> std::result::Result<(), ()> {
+    out.clear();
+    let mut entry_cache: Option<(S::EntryKey, S::Entry)> = None;
+    // Param-independent per-token state (e.g. tpsl2's launch cohort), computed once
+    // here and shared across every entry resolution on this token rather than
+    // rebuilt per distinct entry-param tuple.
+    let token_state = strategy.prepare_token(trades);
+    for chunk in params.chunks(CANCEL_CHECK_STRIDE) {
+        if observer.cancelled() {
+            return Err(());
+        }
+        for p in chunk {
+            let key = strategy.entry_key(p);
+            let stale = match &entry_cache {
+                Some((k, _)) => k != &key,
+                None => true,
+            };
+            if stale {
+                let entry = strategy.resolve_entry(trades, &token_state, p);
+                entry_cache = Some((key, entry));
+            }
+            let entry = &entry_cache.as_ref().unwrap().1;
+            out.push(strategy.resolve_exit(trades, entry, p));
+        }
+    }
+    Ok(())
+}
 
 /// Headline counts for a completed sweep.
 #[derive(Clone, Copy, Debug)]
@@ -92,38 +142,12 @@ pub fn run_sweep<S: Strategy>(
                 if observer.cancelled() {
                     return Err(());
                 }
-                // Fold all combos for this token, but poll the cancel flag every
-                // CANCEL_CHECK_STRIDE so a cancel interrupts a large combo set
-                // mid-token instead of after it. A partial `outs` on bail is never
-                // sent (the folder indexes by combo_id); the caller discards the
-                // run's aggregates once it sees `cancelled()`.
+                // Fold all combos for this token (entry resolved once per key,
+                // cancel polled mid-fold — see `fill_outcomes`). A partial `outs`
+                // on bail is never sent; the caller discards the run's aggregates
+                // once it sees `cancelled()`.
                 let mut outs: Vec<TokenOutcome> = Vec::with_capacity(params.len());
-                // Resolve the entry once per distinct entry-param tuple and reuse it
-                // across that tuple's whole exit sub-grid (Rec 1). The grid lays the
-                // exit axes as the low-order digits, so a token's combos arrive as
-                // contiguous same-entry blocks: keeping just the last resolved
-                // `(key, entry)` recomputes the expensive entry exactly once per
-                // block (E times/token, not E·X). A scattered (random:N) order still
-                // resolves correctly — only the reuse rate falls to the old level.
-                let mut entry_cache: Option<(S::EntryKey, S::Entry)> = None;
-                for chunk in params.chunks(CANCEL_CHECK_STRIDE) {
-                    if observer.cancelled() {
-                        return Err(());
-                    }
-                    for p in chunk {
-                        let key = strategy.entry_key(p);
-                        let stale = match &entry_cache {
-                            Some((k, _)) => k != &key,
-                            None => true,
-                        };
-                        if stale {
-                            let entry = strategy.resolve_entry(&tt.trades, p);
-                            entry_cache = Some((key, entry));
-                        }
-                        let entry = &entry_cache.as_ref().unwrap().1;
-                        outs.push(strategy.resolve_exit(&tt.trades, entry, p));
-                    }
-                }
+                fill_outcomes(strategy, params, &tt.trades, observer, &mut outs)?;
                 // Folder never drops early; ignore only on shutdown races.
                 let _ = tx.send(outs);
                 Ok(())
@@ -173,11 +197,13 @@ mod tests {
         // and the engine resolves it once per token (exercises the entry cache).
         type Entry = bool;
         type EntryKey = ();
+        type TokenState = ();
         fn id(&self) -> &'static str {
             "mock"
         }
         fn entry_key(&self, _p: &f64) {}
-        fn resolve_entry(&self, trades: &[SweepTrade], _p: &f64) -> bool {
+        fn prepare_token(&self, _trades: &[SweepTrade]) {}
+        fn resolve_entry(&self, trades: &[SweepTrade], _state: &(), _p: &f64) -> bool {
             !trades.is_empty()
         }
         fn resolve_exit(&self, _trades: &[SweepTrade], entry: &bool, p: &f64) -> TokenOutcome {
@@ -263,13 +289,15 @@ mod tests {
     impl Strategy for EntryMock {
         type Entry = i64;
         type EntryKey = i64;
+        type TokenState = ();
         fn id(&self) -> &'static str {
             "entry-mock"
         }
         fn entry_key(&self, p: &(i64, f64)) -> i64 {
             p.0
         }
-        fn resolve_entry(&self, _trades: &[SweepTrade], p: &(i64, f64)) -> i64 {
+        fn prepare_token(&self, _trades: &[SweepTrade]) {}
+        fn resolve_entry(&self, _trades: &[SweepTrade], _state: &(), p: &(i64, f64)) -> i64 {
             p.0
         }
         fn resolve_exit(&self, _trades: &[SweepTrade], entry: &i64, _p: &(i64, f64)) -> TokenOutcome {

@@ -20,7 +20,7 @@ use crate::storage::repositories::grouped_sweep_repo::GroupedSweepTables;
 use crate::storage::repositories::tpsl1_strategy_rule_repo::Tpsl1StrategyRuleRepo;
 use crate::storage::repositories::tpsl2_strategy_rule_repo::Tpsl2StrategyRuleRepo;
 use crate::sweep::corpus::Corpus;
-use crate::sweep::grouped_engine::{run_grouped_sweep, GroupResult};
+use crate::sweep::grouped_engine::{run_grouped_sweep, CoverageFloor, GroupResult};
 use crate::sweep::grouping::GroupField;
 use crate::sweep::progress::SweepObserver;
 use crate::sweep::strategies::tpsl1::{
@@ -119,19 +119,22 @@ pub async fn run_grouped(
     corpus: Corpus,
     fields: Vec<GroupField>,
     min_tokens: usize,
+    floor: CoverageFloor,
     max_combos: Option<usize>,
     observer: Arc<dyn SweepObserver + Send>,
 ) -> Result<GroupedSweepOutput> {
     match strategy_id {
         "tpsl1" => {
             sweep_tpsl1(
-                pool, rule_id, axes_json, method, corpus, fields, min_tokens, max_combos, observer,
+                pool, rule_id, axes_json, method, corpus, fields, min_tokens, floor, max_combos,
+                observer,
             )
             .await
         }
         "tpsl2" => {
             sweep_tpsl2(
-                pool, rule_id, axes_json, method, corpus, fields, min_tokens, max_combos, observer,
+                pool, rule_id, axes_json, method, corpus, fields, min_tokens, floor, max_combos,
+                observer,
             )
             .await
         }
@@ -186,6 +189,7 @@ async fn sweep_tpsl2(
     corpus: Corpus,
     fields: Vec<GroupField>,
     min_tokens: usize,
+    floor: CoverageFloor,
     max_combos: Option<usize>,
     observer: Arc<dyn SweepObserver + Send>,
 ) -> Result<GroupedSweepOutput> {
@@ -235,7 +239,15 @@ async fn sweep_tpsl2(
             .build()
             .map_err(|e| anyhow!("rayon pool build failed: {e}"))?;
         pool.install(|| {
-            run_grouped_sweep(&strategy, &params, &corpus, &fields, min_tokens, observer.as_ref())
+            run_grouped_sweep(
+                &strategy,
+                &params,
+                &corpus,
+                &fields,
+                min_tokens,
+                floor,
+                observer.as_ref(),
+            )
         })
     })
     .await??;
@@ -279,6 +291,7 @@ async fn sweep_tpsl1(
     corpus: Corpus,
     fields: Vec<GroupField>,
     min_tokens: usize,
+    floor: CoverageFloor,
     max_combos: Option<usize>,
     observer: Arc<dyn SweepObserver + Send>,
 ) -> Result<GroupedSweepOutput> {
@@ -327,7 +340,15 @@ async fn sweep_tpsl1(
             .build()
             .map_err(|e| anyhow!("rayon pool build failed: {e}"))?;
         pool.install(|| {
-            run_grouped_sweep(&strategy, &params, &corpus, &fields, min_tokens, observer.as_ref())
+            run_grouped_sweep(
+                &strategy,
+                &params,
+                &corpus,
+                &fields,
+                min_tokens,
+                floor,
+                observer.as_ref(),
+            )
         })
     })
     .await??;

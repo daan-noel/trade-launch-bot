@@ -21,7 +21,7 @@ use crate::models::Tpsl1Rule;
 use crate::strategies::tpsl_sniper_1::{entry, exit};
 use crate::sweep::projection::SweepTrade;
 use crate::sweep::strategy::{
-    round_trip, ExitCode, ParamSpace, Strategy, SweepMethod, TokenOutcome,
+    round_trip_with_costs, CostModel, ExitCode, ParamSpace, Strategy, SweepMethod, TokenOutcome,
 };
 
 /// The full TPSL1 swept param set — the exit ladder. `take_profit`/`stop_loss`
@@ -43,6 +43,8 @@ pub struct Tpsl1Params {
 pub struct Tpsl1Strategy {
     base: Tpsl1Rule,
     axes: Tpsl1Axes,
+    /// Execution costs applied to every simulated round-trip (Rec 1).
+    costs: CostModel,
 }
 
 /// One evaluated combo: the `Copy` scalar params paired with the `Tpsl1Rule` they
@@ -158,7 +160,7 @@ impl Tpsl1Axes {
 
 impl Tpsl1Strategy {
     pub fn new(base: Tpsl1Rule, axes: Tpsl1Axes) -> Self {
-        Self { base, axes }
+        Self { base, axes, costs: CostModel::pumpfun_default() }
     }
 
     /// Pair a scalar param set with its resolved `Tpsl1Rule` (built once here, not
@@ -246,6 +248,8 @@ impl Strategy for Tpsl1Strategy {
     // Entry is param-free (no per-trade gate), so every combo shares one key and
     // the engine resolves the entry once per token.
     type EntryKey = ();
+    // No param-independent per-token state to hoist (TPSL1 has no cohort gate).
+    type TokenState = ();
 
     fn id(&self) -> &'static str {
         "tpsl1"
@@ -253,7 +257,9 @@ impl Strategy for Tpsl1Strategy {
 
     fn entry_key(&self, _params: &Tpsl1Combo) {}
 
-    fn resolve_entry(&self, trades: &[SweepTrade], _params: &Tpsl1Combo) -> Tpsl1Entry {
+    fn prepare_token(&self, _trades: &[SweepTrade]) {}
+
+    fn resolve_entry(&self, trades: &[SweepTrade], _state: &(), _params: &Tpsl1Combo) -> Tpsl1Entry {
         // (1) Entry fill — the live/backtest fill resolution (cap 1, matching
         // `run_backtest`). TPSL1 has no per-trade entry gate; the token-creation
         // filter ran upstream when the corpus was selected.
@@ -281,7 +287,7 @@ impl Strategy for Tpsl1Strategy {
         // (2) Exit decision via the shared ladder.
         match exit::find_trade_driven_exit(trades, entry_time, entry_price, rule) {
             Some(f) => {
-                let econ = round_trip(entry_price, f.price, notional);
+                let econ = round_trip_with_costs(entry_price, f.price, notional, &self.costs);
                 TokenOutcome {
                     fired: true,
                     holding_secs: (f.block_time - entry_time).num_seconds(),
@@ -294,7 +300,7 @@ impl Strategy for Tpsl1Strategy {
                 // Still open at end of history — mark unrealized PnL at last price,
                 // so the scoring layer can separate open from closed outcomes.
                 let last_price = trades.last().map(|t| t.price_per_token).unwrap_or(entry_price);
-                let econ = round_trip(entry_price, last_price, notional);
+                let econ = round_trip_with_costs(entry_price, last_price, notional, &self.costs);
                 TokenOutcome {
                     fired: true,
                     holding_secs: 0,
