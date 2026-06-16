@@ -9,8 +9,9 @@
 //! lives here and is wired in by the handler.
 //!
 //! Cancellation is cooperative: the handler flips an `AtomicBool` (via the cancel
-//! endpoint) and the engine polls [`SweepObserver::cancelled`] between groups and
-//! inside the per-token hot loop, bailing fast without an extra RPC/DB hit.
+//! endpoint) and the engine polls [`SweepObserver::cancelled`] between groups,
+//! between tokens, and between chunks of combos *within* a token, bailing fast
+//! (sub-100ms even on a large combo set) without an extra RPC/DB hit.
 //!
 //! [`engine`]: crate::sweep::engine
 //! [`grouped_engine`]: crate::sweep::grouped_engine

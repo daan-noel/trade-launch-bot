@@ -12,6 +12,11 @@ use crate::sweep::corpus::Corpus;
 use crate::sweep::progress::SweepObserver;
 use crate::sweep::strategy::{Strategy, TokenOutcome};
 
+/// How many combos one token folds between cancel polls. Small enough that a
+/// cancel lands sub-100ms even on a huge combo set, large enough that the atomic
+/// load is amortised to noise against the inner `simulate` work.
+const CANCEL_CHECK_STRIDE: usize = 256;
+
 /// Headline counts for a completed sweep.
 #[derive(Clone, Copy, Debug)]
 pub struct SweepStats {
@@ -28,10 +33,15 @@ pub struct SweepStats {
 ///
 /// `observer` reports one `token_done` per folded token (for the progress bar)
 /// and is polled for cancellation: once `cancelled()` is set, the per-token
-/// producers stop scheduling new tokens via `try_for_each_with` so the run
-/// aborts near-immediately (only the ≤pool-size in-flight tokens finish, not the
-/// whole remaining corpus) — the caller checks `cancelled()` after and discards
-/// the partial result.
+/// producers stop scheduling new tokens via `try_for_each_with`, AND the inner
+/// combo loop bails between chunks of [`CANCEL_CHECK_STRIDE`] combos. Without the
+/// inner check, a single token folds the full combo set (up to `HARD_MAX_COMBOS`)
+/// before the next cancel poll — seconds of work per in-flight token — so a cancel
+/// couldn't land promptly on a large-combo run. With it, the worst-case stop
+/// latency is one chunk × the ≤pool-size in-flight tokens. A token that bails
+/// mid-loop produces a short `outs` (fewer than `n_combos`); it is NEVER sent to
+/// the folder (which indexes by `combo_id`), and the caller discards the partial
+/// aggregates after checking `cancelled()`.
 pub fn run_sweep<S: Strategy>(
     strategy: &S,
     params: &[S::Params],
@@ -82,10 +92,18 @@ pub fn run_sweep<S: Strategy>(
                 if observer.cancelled() {
                     return Err(());
                 }
-                let outs: Vec<TokenOutcome> = params
-                    .iter()
-                    .map(|p| strategy.simulate(&tt.trades, p))
-                    .collect();
+                // Fold all combos for this token, but poll the cancel flag every
+                // CANCEL_CHECK_STRIDE so a cancel interrupts a large combo set
+                // mid-token instead of after it. A partial `outs` on bail is never
+                // sent (the folder indexes by combo_id); the caller discards the
+                // run's aggregates once it sees `cancelled()`.
+                let mut outs: Vec<TokenOutcome> = Vec::with_capacity(params.len());
+                for chunk in params.chunks(CANCEL_CHECK_STRIDE) {
+                    if observer.cancelled() {
+                        return Err(());
+                    }
+                    outs.extend(chunk.iter().map(|p| strategy.simulate(&tt.trades, p)));
+                }
                 // Folder never drops early; ignore only on shutdown races.
                 let _ = tx.send(outs);
                 Ok(())
@@ -169,6 +187,37 @@ mod tests {
             fp: crate::sweep::grouping::TokenFingerprint::default(),
             trades: Arc::new(trades),
         }
+    }
+
+    /// Observer that reports cancelled from the first poll — proves the producer
+    /// short-circuits before folding any token (rows == 0) and the run still
+    /// returns `Ok` (no hang/panic) so the caller can map it to a cancellation.
+    struct AlwaysCancelled;
+    impl crate::sweep::progress::SweepObserver for AlwaysCancelled {
+        fn set_total(&self, _total: usize) {}
+        fn token_done(&self) {}
+        fn cancelled(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn cancel_bails_without_folding_any_token() {
+        // A large combo set: without the per-chunk cancel check a single token
+        // would fold all 1_000 combos before the next poll. With it (and the
+        // top-of-token check) a pre-set cancel folds nothing.
+        let params: Vec<f64> = (0..1_000).map(|i| i as f64).collect();
+        let corpus = Corpus {
+            tokens: vec![token("a", 4), token("b", 4)],
+            hash: "h".into(),
+        };
+        let (stats, metrics) = run_sweep(&Mock, &params, &corpus, &AlwaysCancelled).unwrap();
+        assert_eq!(stats.rows, 0, "cancel short-circuits before any combo is folded");
+        assert_eq!(stats.fired, 0);
+        // Metrics are still shaped (one row per combo), just empty — the caller
+        // discards them on cancel.
+        assert_eq!(metrics.len(), params.len());
+        assert!(metrics.iter().all(|m| m.n_fired == 0));
     }
 
     #[test]
