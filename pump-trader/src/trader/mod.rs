@@ -265,7 +265,11 @@ pub struct PumpFunTrader {
     // get/insert with no `.await` held, and sharding means the WS-ingest writer
     // and the trade readers no longer serialize on one global mutex.
     amm_pool_cache: Arc<DashMap<String, AmmPoolInfo>>,
-    amm_global_config: Arc<std::sync::Mutex<Option<AmmGlobalConfig>>>,
+    // GlobalConfig + the instant it was fetched. Governance-mutable fee bps mean
+    // a stale cache would silently loosen slippage protection forever; the fetch
+    // instant lets `amm_config` refresh past a max-age (every other cache is
+    // freshness-bounded — this one used to be cached for the process lifetime).
+    amm_global_config: Arc<std::sync::Mutex<Option<(AmmGlobalConfig, std::time::Instant)>>>,
 
     // Per-token caches.
     user_token_accounts: Arc<DashMap<String, Pubkey>>,

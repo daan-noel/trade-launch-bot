@@ -323,10 +323,20 @@ impl PumpFunTrader {
         let min_sol_output: u64 = match slippage_bps {
             Some(slip) => match self.curve_reserves(token_mint, &pdas.bonding_curve).await {
                 Ok((vt, vq)) => {
-                    let gross =
-                        vq.saturating_mul(token_amount as u128) / (vt + token_amount as u128);
-                    let net = gross.saturating_mul(10_000 - CURVE_FEE_BUFFER_BPS) / 10_000;
-                    ((net * 10_000u128.saturating_sub(slip as u128) / 10_000) as u64).max(1)
+                    // Saturating throughout on untrusted reserve reads; a zero
+                    // denominator falls back to the unprotected min_out=1.
+                    let denom = vt.saturating_add(token_amount as u128);
+                    if denom == 0 {
+                        1
+                    } else {
+                        let gross = vq.saturating_mul(token_amount as u128) / denom;
+                        let net =
+                            gross.saturating_mul(10_000u128.saturating_sub(CURVE_FEE_BUFFER_BPS))
+                                / 10_000;
+                        ((net.saturating_mul(10_000u128.saturating_sub(slip as u128)) / 10_000)
+                            as u64)
+                            .max(1)
+                    }
                 }
                 Err(e) => {
                     warn!("curve sell slippage: reserve read failed ({e}); using min_out=1");

@@ -415,8 +415,12 @@ impl Tpsl2PositionRepo {
     /// re-track an existing mint (a trade for an untracked mint is dropped), so an
     /// open exit would otherwise strand once its token aged out of the seed set.
     pub async fn distinct_unsettled_mints(&self) -> anyhow::Result<Vec<String>> {
+        // Positive `IN` over the non-`End` statuses (`End` is the only settled
+        // one) so the predicate can be index-served — a negated `status <> 'End'`
+        // degrades toward a full scan as the table grows.
         let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT DISTINCT mint FROM tpsl2_real_positions WHERE status <> 'End'",
+            "SELECT DISTINCT mint FROM tpsl2_real_positions \
+             WHERE status IN ('Holding', 'ExitPending', 'ExitFailed')",
         )
         .fetch_all(&self.pool)
         .await?;

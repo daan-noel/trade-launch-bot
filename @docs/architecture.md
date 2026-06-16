@@ -9,7 +9,7 @@ Subsystem deep-dives: [ingest.md](ingest.md) · [strategies.md](strategies.md) �
 - `backend/src/trader/mod.rs` re-exports `pump_trader::{PumpFunTrader, TraderConfig, WalletHolding}`.
 
 ## Composition root — `backend/src/main.rs`
-`main` builds config → trader → DB → shared state → long-lived tokio tasks joined in one `tokio::select!` (any exit ⇒ log + stop). The `TokenCache` seed (`storage::seed`) runs in a spawned background task, *not* on the boot path — ingest/HTTP start immediately and the cache hydrates concurrently (build-then-insert keeps it race-safe vs the live pipeline; a seed failure is logged, not fatal).
+`main` builds config → trader → DB → shared state → long-lived tokio tasks joined in one `tokio::select!`. Any of the forever-tasks resolving (clean return, error, or panic) is a **fault**: `main` logs it and returns `Err` via the `task_fault` helper so the process **exits non-zero** and a supervisor restarts it (a clean HTTP-server stop is the one legitimate `Ok` shutdown — the old `_ = task` arms returned `Ok(())`, masking a panicked ingest/strategy task as a clean exit). The `TokenCache` seed (`storage::seed`) runs in a spawned background task, *not* on the boot path — ingest/HTTP start immediately and the cache hydrates concurrently (build-then-insert keeps it race-safe vs the live pipeline; a seed failure is logged, not fatal).
 - `require_bearer_auth()` — Actix middleware, **fail-closed**: mutating verbs (POST/PUT/DELETE/PATCH) require a matching `Authorization: Bearer <API_AUTH_TOKEN>`; GET/OPTIONS always pass. `API_AUTH_TOKEN` is **required** at startup (`Settings::from_env` rejects missing/empty), so a forgotten token blocks trades instead of exposing them. The browser path supplies the bearer via the proxy (nginx `proxy_set_header Authorization` in prod, the Vite dev proxy in dev) — the token stays server-side, never in the bundle.
 - `parse_wallet_keypair()` — base58 → `Keypair`.
 - `run_probe()` — one-shot `probe` subcommands (ladder/fanout/simulate-sell/holdings), run before DB/ingest, then exit.
@@ -27,7 +27,7 @@ Subsystem deep-dives: [ingest.md](ingest.md) · [strategies.md](strategies.md) �
 | `config/` | `settings.rs` (env load) + `constants.rs` (pump.fun/Raydium program IDs, curve params) |
 | `ingest_laserstream/` | Yellowstone gRPC live transport → pipeline → db_writer. See [ingest.md](ingest.md) |
 | `models/` | Domain types (Token, Trade, Position, PaperRun, SseEvent, Tpsl{1,2}Rule, Wallet*) |
-| `services/` | `sol_price.rs`, `token_sync.rs` (RPC backfill), `helius_rpc.rs`, `laserstream_replay.rs`, `wallet_tokens.rs`, `clients/`, `http.rs` |
+| `services/` | `sol_price.rs` (60s poller; **CoinGecko primary with bounded retry + `Retry-After`/exponential backoff, falls back to Jupiter** so one source being down/rate-limited doesn't stall the SOL/USD feed), `token_sync.rs` (RPC backfill), `helius_rpc.rs`, `laserstream_replay.rs`, `wallet_tokens.rs`, `clients/` (`coingecko.rs`, `jupiter.rs` — both now `error_for_status` + backoff), `http.rs` |
 | `state/` | In-memory shared state (below) |
 | `storage/` | Postgres + repositories. See [database.md](database.md) |
 | `strategies/` | StrategyRunner + tpsl_sniper_{1,2}. See [strategies.md](strategies.md) |
@@ -43,7 +43,7 @@ Subsystem deep-dives: [ingest.md](ingest.md) · [strategies.md](strategies.md) �
 | `handlers/tokens/sync.rs` | `sync_token`, `preview_sync` (RPC backfill, gated by `SyncGate`) |
 | `handlers/tokens/analysis.rs` | `get_token_analysis`, `list_creators`, `get_creator`, `list_analysis_results` |
 | `handlers/tokens/swing.rs` | `detect_token_swings`, `detect_tokens_swings_batch` |
-| `handlers/trading/solana.rs` | `manual_buy` (validates `sol_amount`: finite, >0, ≤`MAX_MANUAL_BUY_SOL` → 400 before any on-chain work), `manual_sell` (**Sell All**: live-balance clear loop selling 100% each pass ≤ `SELL_ALL_MAX_PASSES`, then fire-and-forget `close_token_account` for rent), `get_wallet_tokens`, `get_wallet_token(_balance)`, `get_prices` |
+| `handlers/trading/solana.rs` | `manual_buy` (validates `sol_amount`: finite, >0, ≤`MAX_MANUAL_BUY_SOL` → 400 before any on-chain work, **and the mint via `validate_solana_address`**), `manual_sell` (**Sell All**: live-balance clear loop selling 100% each pass ≤ `SELL_ALL_MAX_PASSES`, then fire-and-forget `close_token_account` for rent; mint validated up front), `get_wallet_tokens`, `get_wallet_token(_balance)` (wallet+mint validated before the RPC), `get_prices` (mints validated + capped at `MAX_PRICE_IDS`=100 before the single Jupiter fan-out — amplification guard) |
 | `handlers/system/stream.rs` | `stream_events` (`/api/stream`) + `SseFrame`/`run_sse_render_bridge` — render each event to wire bytes ONCE (one cache read), fan shared `Arc<SseFrame>` to all subscribers (no per-subscriber re-serialization) |
 | `handlers/system/system.rs` | `get/set_live_mode`, `get_sol_price`, `get/update_settings` |
 | `handlers/system/wallets.rs` | profile/wallet/tag CRUD |

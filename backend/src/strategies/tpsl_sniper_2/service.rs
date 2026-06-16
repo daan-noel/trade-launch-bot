@@ -2,11 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use dashmap::DashSet;
 use sqlx::PgPool;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
-use uuid::Uuid;
 
 use crate::models::ingest::SseEvent;
 use crate::models::Position;
@@ -33,12 +31,6 @@ pub struct Tpsl2StrategyService {
     sse_tx: broadcast::Sender<SseEvent>,
     /// Persisted-trade wakeup hub for the snipe buy confirm loop.
     trade_signals: Arc<TradeSignals>,
-    /// Positions with a real sell currently in flight. A real exit spawns its
-    /// slow sell loop off the runner's `select!` task (so a sell never blocks
-    /// ping handling or the time sweep); this set lets the next trade/sweep skip
-    /// a position already selling, preserving the no-double-sell invariant that
-    /// the previously-inline-awaited sell got from select-loop serialization.
-    selling: Arc<DashSet<Uuid>>,
 }
 
 impl Tpsl2StrategyService {
@@ -60,7 +52,6 @@ impl Tpsl2StrategyService {
             token_cache,
             sse_tx,
             trade_signals,
-            selling: Arc::new(DashSet::new()),
         }
     }
 
@@ -409,6 +400,11 @@ impl Tpsl2StrategyService {
             );
 
             if rule.trade_mode == "paper" {
+                // Claim the exit; if one is already in flight for this position
+                // skip (don't spawn a second fill-poll). Released by the poll task.
+                if !self.runtime.try_begin_exit(position.id) {
+                    continue;
+                }
                 let prev = position.clone();
                 position.mark_exit_pending();
                 if let Err(err) = self.paper_repo.update(&position).await {
@@ -416,11 +412,16 @@ impl Tpsl2StrategyService {
                         "Failed to mark position {} as ExitPending: {err}",
                         position.id
                     );
-                } else {
-                    self.runtime.sync_position(Some(&prev), &position);
-                    info!(position_id = %position.id, mint = %mint,
-                        "[PAPER] Position marked ExitPending");
+                    // The write failed, so the position is still Holding. Release
+                    // the claim and skip the spawn — otherwise the next ping/sweep
+                    // re-fires the ladder and spawns another poll, an unbounded
+                    // task storm under a dump that saturates `paper_poll_sem`.
+                    self.runtime.end_exit(position.id);
+                    continue;
                 }
+                self.runtime.sync_position(Some(&prev), &position);
+                info!(position_id = %position.id, mint = %mint,
+                    "[PAPER] Position marked ExitPending");
                 super::execution::paper::spawn_exit_fill_poll(
                     self.paper_repo.clone(),
                     self.runtime.clone(),
@@ -574,8 +575,9 @@ impl Tpsl2StrategyService {
         trigger_time: DateTime<Utc>,
         reason: String,
     ) {
-        // Claim the position; bail if a sell is already in flight for it.
-        if !self.selling.insert(position.id) {
+        // Claim the position via the shared exit guard; bail if a sell is already
+        // in flight for it (from the ladder OR the manual Stop&Close lifecycle).
+        if !self.runtime.try_begin_exit(position.id) {
             return;
         }
 
@@ -597,9 +599,9 @@ impl Tpsl2StrategyService {
         let position_repo = self.position_repo.clone();
         let trade_repo = self.trade_repo.clone();
         let runtime = self.runtime.clone();
+        let exit_guard = self.runtime.clone();
         let token_cache = self.token_cache.clone();
         let trade_signals = self.trade_signals.clone();
-        let selling = self.selling.clone();
         tokio::spawn(async move {
             super::execution::real::sell_and_close_position(
                 trader,
@@ -614,7 +616,7 @@ impl Tpsl2StrategyService {
                 reason,
             )
             .await;
-            selling.remove(&position_id);
+            exit_guard.end_exit(position_id);
         });
     }
 }

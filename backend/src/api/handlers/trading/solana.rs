@@ -4,9 +4,15 @@ use actix_web::{web, HttpResponse, Responder};
 use serde::Deserialize;
 
 use crate::config::constants::{DEFAULT_SLIPPAGE_BPS, MAX_MANUAL_BUY_SOL, SLIPPAGE_MAX_BPS};
+use crate::models::wallet::validate_solana_address;
 use crate::services::clients::jupiter;
 use crate::services::wallet_tokens;
 use crate::state::app_state::AppState;
+
+/// Max mints accepted per `get_prices` request. The `ids` list is fanned into a
+/// single Jupiter URL, so an unbounded list is a cheap amplification vector —
+/// cap it (extra ids are dropped).
+const MAX_PRICE_IDS: usize = 100;
 
 #[derive(Deserialize)]
 pub struct BuyRequest {
@@ -73,6 +79,12 @@ pub async fn manual_buy(
             )
         }));
     }
+    // Validate the mint format before any RPC — rejects a bad/log-injected mint
+    // up front instead of wasting a `resolve_buy_routing` round-trip on it.
+    if let Err(e) = validate_solana_address(&body.mint) {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({ "error": format!("invalid mint: {e}") }));
+    }
 
     // Resolve routing facts (creator, token program, migration status) from
     // chain — the source of truth, so a typed-in mint the cache has never seen,
@@ -137,6 +149,11 @@ pub async fn manual_sell(
     app_state: web::Data<Arc<AppState>>,
     body: web::Json<SellRequest>,
 ) -> impl Responder {
+    // Validate the mint format before any RPC (same as manual_buy).
+    if let Err(e) = validate_solana_address(&body.mint) {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({ "error": format!("invalid mint: {e}") }));
+    }
     let token_account_override = body.token_account.as_deref();
 
     // Resolve routing live on-chain — same as manual_buy. The in-memory
@@ -275,6 +292,10 @@ pub async fn get_wallet_token(
     path: web::Path<String>,
 ) -> impl Responder {
     let mint = path.into_inner();
+    if let Err(e) = validate_solana_address(&mint) {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({ "error": format!("invalid mint: {e}") }));
+    }
     match wallet_tokens::enrich_one(app_state.get_ref(), &mint).await {
         Ok(holding) => HttpResponse::Ok().json(holding),
         Err(e) => {
@@ -299,10 +320,15 @@ pub struct PricesQuery {
 /// `{ mint: { price_usd, liquidity, price_change_24h, token_created_at } }`
 /// map; mints Jupiter doesn't price are simply absent.
 pub async fn get_prices(query: web::Query<PricesQuery>) -> impl Responder {
+    // Bound the fan-out (amplification guard) and drop malformed/log-injected
+    // ids: `take` first so an oversized list never materializes past the cap.
     let mints: Vec<String> = query
         .ids
         .split(',')
+        .map(|s| s.trim())
         .filter(|s| !s.is_empty())
+        .take(MAX_PRICE_IDS)
+        .filter(|s| validate_solana_address(s).is_ok())
         .map(|s| s.to_string())
         .collect();
     match jupiter::fetch_prices(&mints).await {
@@ -323,6 +349,12 @@ pub async fn get_wallet_token_balance(
     path: web::Path<(String, String)>,
 ) -> impl Responder {
     let (wallet, mint) = path.into_inner();
+    // Validate both addresses before the RPC — skips a wasted round-trip and
+    // keeps raw client input out of the logs / RPC payload.
+    if let Err(e) = validate_solana_address(&wallet).and_then(|_| validate_solana_address(&mint)) {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({ "error": format!("invalid address: {e}") }));
+    }
     match app_state.trader.get_token_balance(&wallet, &mint).await {
         Ok(balance) => HttpResponse::Ok().json(balance),
         Err(e) => {

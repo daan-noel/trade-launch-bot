@@ -10,7 +10,9 @@
 // ============================================================
 
 use super::PumpFunTrader;
-use crate::constants::{NONCE_MAX_WAIT_ITERS, NONCE_WAIT_SLEEP_MS};
+use crate::constants::{
+    NONCE_MAX_WAIT_ITERS, NONCE_REFRESH_MAX_ATTEMPTS, NONCE_REFRESH_RETRY_MS, NONCE_WAIT_SLEEP_MS,
+};
 use anyhow::{Context, Result};
 use solana_client::nonce_utils;
 use solana_sdk::{hash::Hash, nonce::State, pubkey::Pubkey};
@@ -92,24 +94,63 @@ impl PumpFunTrader {
         let available = Arc::clone(&self.nonce_available);
 
         tokio::spawn(async move {
-            let result: anyhow::Result<Hash> = async {
-                let account = rpc
-                    .get_account(&nonce_pubkey)
-                    .await
-                    .with_context(|| format!("get_account failed for {}", nonce_pubkey))?;
-                match nonce_utils::state_from_account(&account)? {
-                    State::Initialized(data) => Ok(data.blockhash()),
-                    _ => anyhow::bail!("Nonce account {} not initialized", nonce_pubkey),
+            // The hash the just-sent tx spent — still cached (the slot stayed
+            // `in_use`, so nobody else touched it). We must NOT re-arm the slot
+            // with this same hash: once the in-flight tx lands it consumes the
+            // nonce and advances the on-chain blockhash, so a retry built on the
+            // old hash is a guaranteed-fail tx (burned retry + escalated tip).
+            let used_hash: Option<Hash> = {
+                let guard = slots.lock().unwrap_or_else(|p| p.into_inner());
+                guard.get(&nonce_pubkey).and_then(|s| s.cached_hash)
+            };
+
+            // Re-read the nonce account until its blockhash actually advances past
+            // `used_hash` (i.e. the spend is visible — robust to the read commitment
+            // lagging the tx's landing slot). If it never advances within the
+            // window, the in-flight tx almost certainly didn't land, so the old
+            // hash is still valid and safe to re-arm; we fall back to it.
+            let mut advanced: Option<Hash> = None;
+            let mut last_ok: Option<Hash> = None;
+            for attempt in 0..NONCE_REFRESH_MAX_ATTEMPTS {
+                let result: anyhow::Result<Hash> = async {
+                    let account = rpc
+                        .get_account(&nonce_pubkey)
+                        .await
+                        .with_context(|| format!("get_account failed for {}", nonce_pubkey))?;
+                    match nonce_utils::state_from_account(&account)? {
+                        State::Initialized(data) => Ok(data.blockhash()),
+                        _ => anyhow::bail!("Nonce account {} not initialized", nonce_pubkey),
+                    }
                 }
+                .await;
+
+                match result {
+                    Ok(hash) => {
+                        last_ok = Some(hash);
+                        if used_hash != Some(hash) {
+                            advanced = Some(hash);
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "⚠️  Failed to refresh nonce {} (attempt {}): {}",
+                            nonce_pubkey, attempt, e
+                        );
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(NONCE_REFRESH_RETRY_MS)).await;
             }
-            .await;
 
             let mut guard = slots.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(slot) = guard.get_mut(&nonce_pubkey) {
-                match result {
-                    Ok(hash) => slot.cached_hash = Some(hash),
-                    Err(e) => {
-                        warn!("⚠️  Failed to refresh nonce {}: {}", nonce_pubkey, e);
+                // Prefer the advanced hash; else the last good read (== the old
+                // hash, valid because the tx didn't consume it). Only when every
+                // read errored do we drop the hash (re-fetched fresh on next use).
+                match advanced.or(last_ok) {
+                    Some(hash) => slot.cached_hash = Some(hash),
+                    None => {
+                        warn!("⚠️  Nonce {} refresh: all reads failed; clearing hash", nonce_pubkey);
                         slot.cached_hash = None;
                     }
                 }

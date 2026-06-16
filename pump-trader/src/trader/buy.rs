@@ -183,10 +183,20 @@ impl PumpFunTrader {
                 Some(slip) => match self.curve_reserves(&mint_str, &bonding_curve).await {
                     Ok((vt, vq)) => {
                         let net = (buy_lamports as u128)
-                            .saturating_mul(10_000 - CURVE_FEE_BUFFER_BPS)
+                            .saturating_mul(10_000u128.saturating_sub(CURVE_FEE_BUFFER_BPS))
                             / 10_000;
-                        let expected = vt.saturating_mul(net) / (vq + net);
-                        ((expected * 10_000u128.saturating_sub(slip as u128) / 10_000) as u64).max(1)
+                        // Saturating throughout on untrusted reserve reads; a zero
+                        // denominator (both reserves read as 0) falls back to the
+                        // unprotected min_out=1 rather than panicking.
+                        let denom = vq.saturating_add(net);
+                        if denom == 0 {
+                            1
+                        } else {
+                            let expected = vt.saturating_mul(net) / denom;
+                            ((expected.saturating_mul(10_000u128.saturating_sub(slip as u128))
+                                / 10_000) as u64)
+                                .max(1)
+                        }
                     }
                     Err(e) => {
                         warn!("curve buy slippage: reserve read failed ({e}); using min_out=1");

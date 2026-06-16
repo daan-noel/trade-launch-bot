@@ -229,6 +229,10 @@ pub(crate) fn spawn_exit_fill_poll(
                 .await;
             }
         }
+
+        // Release the shared exit claim now the fill-poll is done (the caller
+        // claimed it before spawning to bound this to one task per position).
+        runtime.end_exit(position_id);
     });
 }
 

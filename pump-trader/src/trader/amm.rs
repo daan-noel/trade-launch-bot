@@ -53,6 +53,10 @@ const SELL_DISC: [u8; 8] = [51, 230, 133, 164, 1, 127, 131, 173];
 
 const BPS_DENOM: u128 = 10_000;
 
+/// Max age of the cached PumpSwap GlobalConfig before `amm_config` re-fetches.
+/// Fee bps are governance-mutable, so the cache must be freshness-bounded.
+const AMM_CONFIG_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(300);
+
 impl PumpFunTrader {
     // -----------------------------------------------------------------------
     // Public API
@@ -245,14 +249,21 @@ impl PumpFunTrader {
         let spendable = super::buy_lamports_checked(sol_amount)?;
         let slip = slippage_bps.unwrap_or(AMM_DEFAULT_SLIPPAGE_BPS) as u128;
         let fee_bps = (cfg.lp_fee_bps + cfg.protocol_fee_bps + cfg.coin_creator_fee_bps) as u128;
+        // A garbage/misread global-config (fee >= 100%) would wrap `BPS_DENOM -
+        // fee_bps` in release and silently drop slippage protection on a real
+        // spend — bail instead. `saturating_sub` keeps `slip` (caller input) safe
+        // even past 100%.
+        if fee_bps >= BPS_DENOM {
+            bail!("amm buy: fee_bps {fee_bps} >= 100% (bad global_config)");
+        }
 
         // Fee is taken off the quote (SOL) side before the curve swap.
-        let quote_net = (spendable as u128).saturating_mul(BPS_DENOM - fee_bps) / BPS_DENOM;
+        let quote_net = (spendable as u128).saturating_mul(BPS_DENOM.saturating_sub(fee_bps)) / BPS_DENOM;
         let base_out = cp_amount_out(quote_net, quote_res, base_res);
         // Exact-base-out buy: request slightly fewer tokens than the budget
         // buys (the slippage haircut) so the actual cost stays under the
         // wrapped `spendable`, which is the spend cap.
-        let base_amount_out = (base_out.saturating_mul(BPS_DENOM - slip) / BPS_DENOM) as u64;
+        let base_amount_out = (base_out.saturating_mul(BPS_DENOM.saturating_sub(slip)) / BPS_DENOM) as u64;
 
         let quote_tp = self.token_program; // WSOL is legacy SPL
         let user_base =
@@ -322,10 +333,15 @@ impl PumpFunTrader {
 
         let slip = slippage_bps.unwrap_or(AMM_DEFAULT_SLIPPAGE_BPS) as u128;
         let fee_bps = (cfg.lp_fee_bps + cfg.protocol_fee_bps + cfg.coin_creator_fee_bps) as u128;
+        // See `build_amm_buy_ixs`: bail on a >= 100% fee rather than wrap the
+        // slippage denominator; `saturating_sub` guards the caller-supplied slip.
+        if fee_bps >= BPS_DENOM {
+            bail!("amm sell: fee_bps {fee_bps} >= 100% (bad global_config)");
+        }
 
         let gross = cp_amount_out(token_amount as u128, base_res, quote_res);
-        let net = gross.saturating_mul(BPS_DENOM - fee_bps) / BPS_DENOM;
-        let min_quote_out = (net.saturating_mul(BPS_DENOM - slip) / BPS_DENOM) as u64;
+        let net = gross.saturating_mul(BPS_DENOM.saturating_sub(fee_bps)) / BPS_DENOM;
+        let min_quote_out = (net.saturating_mul(BPS_DENOM.saturating_sub(slip)) / BPS_DENOM) as u64;
 
         let quote_tp = self.token_program;
         let user_base = self
@@ -621,10 +637,15 @@ impl PumpFunTrader {
         rpc_json_call(&self.http, &self.config.rpc_url, method, params).await
     }
 
-    /// Fetch + cache GlobalConfig (fee bps + a protocol fee recipient).
+    /// Fetch + cache GlobalConfig (fee bps + a protocol fee recipient). Cached
+    /// only up to [`AMM_CONFIG_MAX_AGE`]: fee bps are governance-mutable, so a
+    /// process-lifetime cache would silently keep slippage protection loose after
+    /// a fee raise until restart.
     async fn amm_config(&self) -> Result<AmmGlobalConfig> {
-        if let Some(c) = *self.amm_global_config.lock().unwrap() {
-            return Ok(c);
+        if let Some((c, fetched)) = *self.amm_global_config.lock().unwrap() {
+            if fetched.elapsed() < AMM_CONFIG_MAX_AGE {
+                return Ok(c);
+            }
         }
 
         let pda = self.amm_global_config_pda;
@@ -661,7 +682,7 @@ impl PumpFunTrader {
             coin_creator_fee_bps,
             protocol_fee_recipient,
         };
-        *self.amm_global_config.lock().unwrap() = Some(cfg);
+        *self.amm_global_config.lock().unwrap() = Some((cfg, Instant::now()));
         Ok(cfg)
     }
 

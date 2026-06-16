@@ -156,6 +156,14 @@ pub async fn stop_and_close_rule(
             .and_then(|e| e.value().current_price)
             .unwrap_or(position.entry_price);
 
+        // Claim the shared exit guard so this manual close can never race a
+        // concurrent ladder/time exit for the same position into a double-sell.
+        // Skip the position if an exit is already in flight for it.
+        let position_id = position.id;
+        if !app_state.tpsl2_cache.try_begin_exit(position_id) {
+            continue;
+        }
+
         if rule.trade_mode == "paper" {
             let paper_repo = Tpsl2PaperTradingRepo::new(app_state.db.clone());
             super::execution::paper::record_time_exit(
@@ -170,11 +178,14 @@ pub async fn stop_and_close_rule(
                 &rule,
             )
             .await;
+            // `record_time_exit` closes synchronously here, so release now.
+            app_state.tpsl2_cache.end_exit(position_id);
         } else {
             // Real: sell on-chain. Spawn so the slow sell-with-retries loop runs
             // off the request path; the table reflects the drain via polling.
             let trader = app_state.trader.clone();
             let runtime = app_state.tpsl2_cache.clone();
+            let exit_guard = app_state.tpsl2_cache.clone();
             let token_cache = app_state.token_cache.clone();
             let position_repo = Tpsl2PositionRepo::new(app_state.db.clone());
             let trade_repo = TradeRepo::new(app_state.db.clone());
@@ -204,6 +215,8 @@ pub async fn stop_and_close_rule(
                     MANUAL_CLOSE_REASON.to_string(),
                 )
                 .await;
+                // Release the shared exit claim once the spawned sell finishes.
+                exit_guard.end_exit(position_id);
             });
         }
     }

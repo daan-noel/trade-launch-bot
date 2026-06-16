@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::services::http;
 
+/// Wrapped-SOL mint — used to read a SOL/USD price from Jupiter as a fallback
+/// when the primary (CoinGecko) source is down or rate-limited.
+pub const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
+
 /// Raw per-mint entry from Jupiter price v3. Map keyed by mint address.
 #[derive(Debug, Default, Deserialize)]
 struct RawPriceEntry {
@@ -30,8 +34,15 @@ pub async fn fetch_prices(mints: &[String]) -> anyhow::Result<HashMap<String, Ju
     }
     let ids = mints.join(",");
     let url = format!("https://api.jup.ag/price/v3?ids={ids}");
-    let data: HashMap<String, RawPriceEntry> =
-        http::client().get(&url).send().await?.json().await?;
+    // `error_for_status` first so a 4xx/5xx (which can return an HTML body) fails
+    // with the status instead of a confusing JSON-parse error.
+    let data: HashMap<String, RawPriceEntry> = http::client()
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
 
     let result = data
         .into_iter()
@@ -48,4 +59,14 @@ pub async fn fetch_prices(mints: &[String]) -> anyhow::Result<HashMap<String, Ju
         })
         .collect();
     Ok(result)
+}
+
+/// Read SOL/USD from Jupiter (via the WSOL mint). Secondary source behind
+/// CoinGecko for the price poller.
+pub async fn fetch_sol_usd() -> anyhow::Result<f64> {
+    let prices = fetch_prices(&[WSOL_MINT.to_string()]).await?;
+    prices
+        .get(WSOL_MINT)
+        .and_then(|e| e.price_usd)
+        .ok_or_else(|| anyhow::anyhow!("Jupiter returned no USD price for WSOL"))
 }

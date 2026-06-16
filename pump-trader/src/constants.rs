@@ -180,6 +180,12 @@ pub const CONFIRM_POLL_SCHEDULE_MS: &[u64] = &[250, 400, 700, 1_000];
 pub const NONCE_MAX_WAIT_ITERS: usize = 200;
 /// Sleep between nonce spin-wait iterations, in milliseconds.
 pub const NONCE_WAIT_SLEEP_MS: u64 = 20;
+/// After a send, how many times the refresh re-reads the nonce account waiting
+/// for its blockhash to actually advance (the spending tx to land/consume it)
+/// before giving up and re-arming with the last good read.
+pub const NONCE_REFRESH_MAX_ATTEMPTS: usize = 8;
+/// Delay between nonce-refresh re-reads, in milliseconds.
+pub const NONCE_REFRESH_RETRY_MS: u64 = 150;
 
 /// Max age of a WS-fed reserve snapshot still trusted on the trade path before
 /// falling back to an on-chain read. Within this window the cached reserve is as

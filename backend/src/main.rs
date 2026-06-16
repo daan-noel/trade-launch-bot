@@ -553,25 +553,48 @@ async fn main() -> anyhow::Result<()> {
 
     info!("System running — waiting for events");
 
-    tokio::select! {
-        _ = producer_task => error!("Ingest producer task exited unexpectedly"),
-        _ = pipeline_task  => error!("Ingest pipeline exited unexpectedly"),
-        _ = db_writer_task  => error!("DbWriter task exited unexpectedly"),
-        _ = strategy_task => error!("Strategy runner exited unexpectedly"),
-        _ = price_task    => error!("SOL price poller exited unexpectedly"),
+    // Every long-lived task is supposed to run for the process lifetime, so ANY
+    // of them resolving is a fault — whether it returned cleanly, errored, or
+    // panicked. Bind each arm's `JoinHandle` result and surface a fault as an
+    // `Err`, so `main` exits non-zero and a supervisor restarts the process.
+    // (The old `_ = task` arms logged and then returned `Ok(())`, so a panicked
+    // ingest/strategy task looked like a clean shutdown and was never restarted.)
+    let outcome: anyhow::Result<()> = tokio::select! {
+        res = producer_task => Err(task_fault("Ingest producer", res)),
+        res = pipeline_task  => Err(task_fault("Ingest pipeline", res)),
+        res = db_writer_task => Err(task_fault("DbWriter", res)),
+        res = strategy_task => Err(task_fault("Strategy runner", res)),
+        res = price_task    => Err(task_fault("SOL price poller", res)),
         res = async {
             match server_task {
                 Some(task) => task.await,
                 None => std::future::pending().await,
             }
-        } => {
-            match res {
-                Ok(Ok(())) => info!("HTTP server stopped"),
-                Ok(Err(e)) => error!("HTTP server error: {e}"),
-                Err(e) => error!("HTTP server task panicked: {e}"),
+        } => match res {
+            // A clean HTTP stop is a legitimate shutdown (e.g. Ctrl-C), not a fault.
+            Ok(Ok(())) => {
+                info!("HTTP server stopped");
+                Ok(())
             }
-        }
-    }
+            Ok(Err(e)) => Err(anyhow::anyhow!("HTTP server error: {e}")),
+            Err(e) => Err(anyhow::anyhow!("HTTP server task panicked: {e}")),
+        },
+    };
 
-    Ok(())
+    if let Err(ref e) = outcome {
+        error!("Fatal: {e} — exiting non-zero so the supervisor restarts the process");
+    }
+    outcome
+}
+
+/// Classify a long-lived task's `JoinHandle` result as a fatal error. These
+/// tasks never return in normal operation, so a clean `Ok` return is as much a
+/// fault as a panic; either way the process must exit non-zero. Generic over the
+/// task's output so it works for `()` and `Result<_>` tasks alike.
+fn task_fault<T>(name: &str, res: Result<T, tokio::task::JoinError>) -> anyhow::Error {
+    match res {
+        Ok(_) => anyhow::anyhow!("{name} task exited unexpectedly"),
+        Err(e) if e.is_panic() => anyhow::anyhow!("{name} task panicked: {e}"),
+        Err(e) => anyhow::anyhow!("{name} task aborted: {e}"),
+    }
 }

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use chrono::{DateTime, Utc};
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use sqlx::PgPool;
 use tokio::sync::{broadcast, Semaphore};
 use uuid::Uuid;
@@ -55,6 +55,15 @@ pub struct Tpsl1RuntimeCache {
     /// permit before doing DB work, so a burst of fills can't spawn an unbounded
     /// number of feed-polling tasks all hammering the DB at once.
     paper_poll_sem: Arc<Semaphore>,
+    /// Positions with an exit currently in flight — a real on-chain sell or a
+    /// paper exit fill-poll. Lives on the runtime cache (not the service) so
+    /// **every** exit path shares one guard: the trade/time ladder
+    /// (`trigger_real_exit` / paper fill-poll) and the manual Stop&Close
+    /// lifecycle. Claiming here closes the double-sell race where Stop&Close and
+    /// a concurrent ladder exit could both submit a sell for the same position,
+    /// and bounds the paper fill-poll to one task per position (no re-spawn storm
+    /// when an ExitPending DB write fails and leaves the position Holding).
+    exiting: Arc<DashSet<Uuid>>,
     /// Cold-lane broadcast — every position transition emits a `TpslPositionsChanged`
     /// signal so SSE clients refetch the affected rule's positions in real time
     /// instead of polling.
@@ -76,6 +85,7 @@ impl Tpsl1RuntimeCache {
             exit_state_by_position: Arc::new(DashMap::new()),
             time_exit_holding: Arc::new(DashMap::new()),
             paper_poll_sem: Arc::new(Semaphore::new(PAPER_POLL_CONCURRENCY)),
+            exiting: Arc::new(DashSet::new()),
             sse_tx,
         }
     }
@@ -83,6 +93,18 @@ impl Tpsl1RuntimeCache {
     /// Shared semaphore bounding concurrent paper fill-poll tasks.
     pub fn paper_poll_sem(&self) -> Arc<Semaphore> {
         self.paper_poll_sem.clone()
+    }
+
+    /// Claim `position_id` for an in-flight exit (real sell or paper fill-poll).
+    /// Returns `true` if newly claimed, `false` if an exit is already running for
+    /// it — in which case the caller MUST skip (the no-double-sell invariant).
+    pub fn try_begin_exit(&self, position_id: Uuid) -> bool {
+        self.exiting.insert(position_id)
+    }
+
+    /// Release an exit claim once the sell loop / fill-poll finishes.
+    pub fn end_exit(&self, position_id: Uuid) {
+        self.exiting.remove(&position_id);
     }
 
     pub async fn load_from_db(&self, pool: &PgPool) -> anyhow::Result<()> {
