@@ -14,7 +14,10 @@
 --     *grouped* sweep tables, which are the only sweep tables created here.
 --   * Both strategies' *grouped* sweep triples (tpsl1_* and tpsl2_*) are created
 --     here — the per-strategy tables formerly added by a later migration are
---     folded in.
+--     folded in, including the `best_score` column on both *_grouped_sweep_groups.
+--   * tokens_info uses `is_dead` directly (the `is_rugged` -> `is_dead` rename is
+--     folded in), and carries its id PRIMARY KEY / mint_address UNIQUE from the
+--     start (the later constraint-restore migration is a no-op on a fresh DB).
 -- Data-only migrations (percent rescales, source relabels) leave no schema trace
 -- and are intentionally omitted. Tables are ordered so foreign-key targets are
 -- created before their referrers.
@@ -235,7 +238,7 @@ CREATE TABLE IF NOT EXISTS tokens_info (
     trade_count            BIGINT      NOT NULL DEFAULT 0,
     last_trade_at          TIMESTAMPTZ,
     current_price          DOUBLE PRECISION,
-    is_rugged              BOOLEAN     NOT NULL DEFAULT FALSE,
+    is_dead                BOOLEAN     NOT NULL DEFAULT FALSE,
     is_migrated            BOOLEAN     NOT NULL DEFAULT FALSE,
     last_synced_at         TIMESTAMPTZ,
     last_synced_curve_sig  TEXT,
@@ -630,6 +633,10 @@ CREATE TABLE IF NOT EXISTS tpsl2_grouped_sweep_groups (
     fired_count         BIGINT      NOT NULL,       -- best combo's n_fired (sample size)
     best_combo_id       INTEGER     NOT NULL,
     best_expectancy_sol DOUBLE PRECISION NOT NULL,
+    -- Robust realized rank (μ−Z·σ/√n over closed trades, coverage-gated): the
+    -- same metric the drill-in combo table sorts by. NULL when the winning combo
+    -- has < 2 closed trades (no score).
+    best_score          DOUBLE PRECISION,
     best_params         JSONB       NOT NULL
 );
 
@@ -727,6 +734,10 @@ CREATE TABLE IF NOT EXISTS tpsl1_grouped_sweep_groups (
     fired_count         BIGINT      NOT NULL,       -- best combo's n_fired (sample size)
     best_combo_id       INTEGER     NOT NULL,
     best_expectancy_sol DOUBLE PRECISION NOT NULL,
+    -- Robust realized rank (μ−Z·σ/√n over closed trades, coverage-gated): the
+    -- same metric the drill-in combo table sorts by. NULL when the winning combo
+    -- has < 2 closed trades (no score).
+    best_score          DOUBLE PRECISION,
     best_params         JSONB       NOT NULL
 );
 
