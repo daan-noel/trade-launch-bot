@@ -16,7 +16,8 @@ use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 
 use crate::sweep::strategy::{
-    round_trip_with_costs, CostModel, ExitCode, ParamSpace, Strategy, SweepMethod, TokenOutcome,
+    index_of, lhs_index_plan, neighbor_indices, round_trip_with_costs, CostModel, ExitCode,
+    ParamSpace, Strategy, SweepMethod, TokenOutcome,
 };
 use crate::sweep::projection::SweepTrade;
 use crate::models::Tpsl2Rule;
@@ -236,6 +237,32 @@ impl Tpsl2Axes {
             * self.entry_min_liquidity_sol.len()
             * self.entry_min_organic_liq.len()
     }
+
+    /// Grid size as `u128` — the index space the random sampler draws **without
+    /// replacement** from. `u128` (not `combo_count`'s `usize`) so a wide page-
+    /// supplied grid can't overflow the product before the draw clamps to it.
+    fn grid_total_u128(&self) -> u128 {
+        [
+            self.take_profit.len(),
+            self.stop_loss.len(),
+            self.trailing_stop_pct.len(),
+            self.time_stop_secs.len(),
+            self.stall_secs.len(),
+            self.liquidity_drop_pct.len(),
+            self.cohort_ratio.len(),
+            self.entry_min_age_secs.len(),
+            self.entry_min_alive_sol.len(),
+            self.entry_min_organic_sol.len(),
+            self.entry_pullback_pct.len(),
+            self.entry_higher_low_secs.len(),
+            self.entry_max_cohort_held.len(),
+            self.entry_min_liquidity_sol.len(),
+            self.entry_min_organic_liq.len(),
+        ]
+        .iter()
+        .map(|&l| l as u128)
+        .product()
+    }
 }
 
 impl Tpsl2Strategy {
@@ -247,6 +274,41 @@ impl Tpsl2Strategy {
     /// per token in the hot loop — see [`Tpsl2Combo`]).
     fn combo(&self, raw: Tpsl2Params) -> Tpsl2Combo {
         Tpsl2Combo { rule: self.rule_from(&raw), raw }
+    }
+
+    /// Decode a flat grid index into its combo by mixed-radix over the axis
+    /// lengths (the low-order digit is `take_profit`, matching the LHS plan's
+    /// column order). Shared by the full-grid and the random (without-replacement)
+    /// samplers so the two index the **same** grid identically.
+    fn combo_at(&self, index: u128) -> Tpsl2Combo {
+        let a = &self.axes;
+        let mut rem = index;
+        // `take` pulls this axis's value for `index` and advances `rem`.
+        macro_rules! take {
+            ($axis:expr) => {{
+                let xs = &$axis;
+                let v = xs[(rem % xs.len() as u128) as usize];
+                rem /= xs.len() as u128;
+                v
+            }};
+        }
+        self.combo(Tpsl2Params {
+            take_profit: take!(a.take_profit),
+            stop_loss: take!(a.stop_loss),
+            trailing_stop_pct: take!(a.trailing_stop_pct),
+            time_stop_secs: take!(a.time_stop_secs),
+            stall_secs: take!(a.stall_secs),
+            liquidity_drop_pct: take!(a.liquidity_drop_pct),
+            cohort_ratio: take!(a.cohort_ratio),
+            entry_min_age_secs: take!(a.entry_min_age_secs),
+            entry_min_alive_sol: take!(a.entry_min_alive_sol),
+            entry_min_organic_sol: take!(a.entry_min_organic_sol),
+            entry_pullback_pct: take!(a.entry_pullback_pct),
+            entry_higher_low_secs: take!(a.entry_higher_low_secs),
+            entry_max_cohort_held: take!(a.entry_max_cohort_held),
+            entry_min_liquidity_sol: take!(a.entry_min_liquidity_sol),
+            entry_min_organic_liq: take!(a.entry_min_organic_liq),
+        })
     }
 
     /// Overlay one param set onto the base rule, producing the exact `Tpsl2Rule`
@@ -279,75 +341,137 @@ impl ParamSpace for Tpsl2Strategy {
         let a = &self.axes;
         match method {
             SweepMethod::Grid => {
-                // Full grid = Cartesian product of all 15 axes. Mixed-radix decode
-                // (one index per combo) keeps this flat and adding an axis a
-                // one-line change, vs. a 15-deep loop nest.
-                let total = a.combo_count();
-                let mut out = Vec::with_capacity(total);
-                for idx in 0..total {
-                    let mut rem = idx;
-                    // `take` pulls this axis's value for `idx` and advances `rem`.
-                    macro_rules! take {
-                        ($axis:expr) => {{
-                            let xs = &$axis;
-                            let v = xs[rem % xs.len()];
-                            rem /= xs.len();
-                            v
-                        }};
+                // Full grid = Cartesian product of all 15 axes, one combo per flat
+                // index (mixed-radix decode in `combo_at`). The grid is pre-checked
+                // ≤ cap, so `combo_count` (usize) can't overflow here.
+                (0..a.combo_count() as u128).map(|idx| self.combo_at(idx)).collect()
+            }
+            SweepMethod::Random { n, seed } => {
+                // Draw `n` combos **without replacement** from the grid index space:
+                // a plain per-axis `pick` silently collapses to < n distinct combos
+                // when the axes are small (the old behaviour). Drawing distinct grid
+                // indices guarantees `min(n, grid_size)` distinct combos and logs the
+                // shrinkage instead of hiding it. (#9 hygiene.)
+                let total = a.grid_total_u128();
+                let target = (n as u128).min(total) as usize;
+                let mut rng = StdRng::seed_from_u64(seed);
+                let mut seen: HashSet<u128> = HashSet::with_capacity(target);
+                let mut out = Vec::with_capacity(target);
+                while out.len() < target {
+                    let idx = rng.gen_range(0..total);
+                    if seen.insert(idx) {
+                        out.push(self.combo_at(idx));
                     }
-                    out.push(self.combo(Tpsl2Params {
-                        take_profit: take!(a.take_profit),
-                        stop_loss: take!(a.stop_loss),
-                        trailing_stop_pct: take!(a.trailing_stop_pct),
-                        time_stop_secs: take!(a.time_stop_secs),
-                        stall_secs: take!(a.stall_secs),
-                        liquidity_drop_pct: take!(a.liquidity_drop_pct),
-                        cohort_ratio: take!(a.cohort_ratio),
-                        entry_min_age_secs: take!(a.entry_min_age_secs),
-                        entry_min_alive_sol: take!(a.entry_min_alive_sol),
-                        entry_min_organic_sol: take!(a.entry_min_organic_sol),
-                        entry_pullback_pct: take!(a.entry_pullback_pct),
-                        entry_higher_low_secs: take!(a.entry_higher_low_secs),
-                        entry_max_cohort_held: take!(a.entry_max_cohort_held),
-                        entry_min_liquidity_sol: take!(a.entry_min_liquidity_sol),
-                        entry_min_organic_liq: take!(a.entry_min_organic_liq),
-                    }));
+                }
+                if target < n {
+                    tracing::info!(
+                        requested = n,
+                        distinct = target,
+                        "random sweep: grid smaller than N — sampled all distinct combos"
+                    );
                 }
                 out
             }
-            SweepMethod::Random { n, seed } | SweepMethod::LatinHypercube { n, seed } => {
-                // Random draw from each axis's candidate set. (LHS degrades to a
-                // seeded random draw here; the axes are discrete so the coverage
-                // gain is marginal — kept as a distinct tag for the analysis layer.)
+            SweepMethod::LatinHypercube { n, seed } => {
+                // Real LHS over the discrete axes: per-axis balanced+permuted strata
+                // (every candidate value on every axis sampled ⌊n/len⌋–⌈n/len⌉ times,
+                // columns decorrelated) — even coverage `Random` only reaches in
+                // expectation. The `lens` array MUST stay in the same axis order as
+                // the `take!` calls below (plan column index == axis position).
                 let mut rng = StdRng::seed_from_u64(seed);
+                let lens = [
+                    a.take_profit.len(),
+                    a.stop_loss.len(),
+                    a.trailing_stop_pct.len(),
+                    a.time_stop_secs.len(),
+                    a.stall_secs.len(),
+                    a.liquidity_drop_pct.len(),
+                    a.cohort_ratio.len(),
+                    a.entry_min_age_secs.len(),
+                    a.entry_min_alive_sol.len(),
+                    a.entry_min_organic_sol.len(),
+                    a.entry_pullback_pct.len(),
+                    a.entry_higher_low_secs.len(),
+                    a.entry_max_cohort_held.len(),
+                    a.entry_min_liquidity_sol.len(),
+                    a.entry_min_organic_liq.len(),
+                ];
+                let plan = lhs_index_plan(&mut rng, n, &lens);
                 (0..n)
-                    .map(|_| {
+                    .map(|i| {
+                        let mut col = 0usize;
+                        // `take` reads axis `col`'s LHS-planned value for draw `i`.
+                        macro_rules! take {
+                            ($axis:expr) => {{
+                                let v = $axis[plan[col][i]];
+                                col += 1;
+                                v
+                            }};
+                        }
                         self.combo(Tpsl2Params {
-                            take_profit: pick(&mut rng, &a.take_profit),
-                            stop_loss: pick(&mut rng, &a.stop_loss),
-                            trailing_stop_pct: pick(&mut rng, &a.trailing_stop_pct),
-                            time_stop_secs: pick(&mut rng, &a.time_stop_secs),
-                            stall_secs: pick(&mut rng, &a.stall_secs),
-                            liquidity_drop_pct: pick(&mut rng, &a.liquidity_drop_pct),
-                            cohort_ratio: pick(&mut rng, &a.cohort_ratio),
-                            entry_min_age_secs: pick(&mut rng, &a.entry_min_age_secs),
-                            entry_min_alive_sol: pick(&mut rng, &a.entry_min_alive_sol),
-                            entry_min_organic_sol: pick(&mut rng, &a.entry_min_organic_sol),
-                            entry_pullback_pct: pick(&mut rng, &a.entry_pullback_pct),
-                            entry_higher_low_secs: pick(&mut rng, &a.entry_higher_low_secs),
-                            entry_max_cohort_held: pick(&mut rng, &a.entry_max_cohort_held),
-                            entry_min_liquidity_sol: pick(&mut rng, &a.entry_min_liquidity_sol),
-                            entry_min_organic_liq: pick(&mut rng, &a.entry_min_organic_liq),
+                            take_profit: take!(a.take_profit),
+                            stop_loss: take!(a.stop_loss),
+                            trailing_stop_pct: take!(a.trailing_stop_pct),
+                            time_stop_secs: take!(a.time_stop_secs),
+                            stall_secs: take!(a.stall_secs),
+                            liquidity_drop_pct: take!(a.liquidity_drop_pct),
+                            cohort_ratio: take!(a.cohort_ratio),
+                            entry_min_age_secs: take!(a.entry_min_age_secs),
+                            entry_min_alive_sol: take!(a.entry_min_alive_sol),
+                            entry_min_organic_sol: take!(a.entry_min_organic_sol),
+                            entry_pullback_pct: take!(a.entry_pullback_pct),
+                            entry_higher_low_secs: take!(a.entry_higher_low_secs),
+                            entry_max_cohort_held: take!(a.entry_max_cohort_held),
+                            entry_min_liquidity_sol: take!(a.entry_min_liquidity_sol),
+                            entry_min_organic_liq: take!(a.entry_min_organic_liq),
                         })
                     })
                     .collect()
             }
         }
     }
-}
 
-fn pick<T: Copy>(rng: &mut StdRng, xs: &[T]) -> T {
-    xs[rng.gen_range(0..xs.len())]
+    /// Coordinate-move neighborhood: for each survivor, vary one axis at a time to
+    /// its adjacent candidate value(s), holding the others fixed. `Tpsl2Params` is
+    /// `Copy`, so each neighbor is a cheap field overwrite. Duplicates are fine —
+    /// the grouped driver dedups by `params_json`.
+    fn refine(&self, survivors: &[Tpsl2Combo]) -> Vec<Tpsl2Combo> {
+        let a = &self.axes;
+        let mut out = Vec::new();
+        for s in survivors {
+            let p = s.raw;
+            // For one axis, push the survivor with that field moved to each
+            // adjacent candidate (skips an axis whose value isn't on its list).
+            macro_rules! walk {
+                ($axis:expr, $field:ident) => {{
+                    let xs = &$axis;
+                    if let Some(i) = index_of(xs, &p.$field) {
+                        for ni in neighbor_indices(i, xs.len()) {
+                            let mut np = p;
+                            np.$field = xs[ni];
+                            out.push(self.combo(np));
+                        }
+                    }
+                }};
+            }
+            walk!(a.take_profit, take_profit);
+            walk!(a.stop_loss, stop_loss);
+            walk!(a.trailing_stop_pct, trailing_stop_pct);
+            walk!(a.time_stop_secs, time_stop_secs);
+            walk!(a.stall_secs, stall_secs);
+            walk!(a.liquidity_drop_pct, liquidity_drop_pct);
+            walk!(a.cohort_ratio, cohort_ratio);
+            walk!(a.entry_min_age_secs, entry_min_age_secs);
+            walk!(a.entry_min_alive_sol, entry_min_alive_sol);
+            walk!(a.entry_min_organic_sol, entry_min_organic_sol);
+            walk!(a.entry_pullback_pct, entry_pullback_pct);
+            walk!(a.entry_higher_low_secs, entry_higher_low_secs);
+            walk!(a.entry_max_cohort_held, entry_max_cohort_held);
+            walk!(a.entry_min_liquidity_sol, entry_min_liquidity_sol);
+            walk!(a.entry_min_organic_liq, entry_min_organic_liq);
+        }
+        out
+    }
 }
 
 impl Strategy for Tpsl2Strategy {
@@ -461,5 +585,115 @@ impl Strategy for Tpsl2Strategy {
             "entry_min_liquidity_sol": p.entry_min_liquidity_sol,
             "entry_min_organic_liq": p.entry_min_organic_liq,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn strategy() -> Tpsl2Strategy {
+        // A minimal base rule; the swept params overlay the entry/exit fields.
+        let base = Tpsl2Rule::new(
+            "test".into(),
+            Some(1.0),
+            None,
+            None,
+            serde_json::json!([]),
+            "paper".into(),
+            1.0,
+            50.0,
+            30.0,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        Tpsl2Strategy::new(base, Tpsl2Axes::default())
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // candidate values are exact, compared for identity
+    fn refine_walks_adjacent_axis_values_one_axis_at_a_time() {
+        let s = strategy();
+        let a = Tpsl2Axes::default();
+        // A survivor at index 0 on every axis: each multi-valued axis (len ≥ 2)
+        // contributes its single forward neighbor, every single-valued axis none.
+        // Default tpsl2 has 8 multi-valued axes ⇒ 8 neighbors.
+        let survivor = s.combo(Tpsl2Params {
+            take_profit: a.take_profit[0],
+            stop_loss: a.stop_loss[0],
+            trailing_stop_pct: a.trailing_stop_pct[0],
+            time_stop_secs: a.time_stop_secs[0],
+            stall_secs: a.stall_secs[0],
+            liquidity_drop_pct: a.liquidity_drop_pct[0],
+            cohort_ratio: a.cohort_ratio[0],
+            entry_min_age_secs: a.entry_min_age_secs[0],
+            entry_min_alive_sol: a.entry_min_alive_sol[0],
+            entry_min_organic_sol: a.entry_min_organic_sol[0],
+            entry_pullback_pct: a.entry_pullback_pct[0],
+            entry_higher_low_secs: a.entry_higher_low_secs[0],
+            entry_max_cohort_held: a.entry_max_cohort_held[0],
+            entry_min_liquidity_sol: a.entry_min_liquidity_sol[0],
+            entry_min_organic_liq: a.entry_min_organic_liq[0],
+        });
+        let neighbors = s.refine(std::slice::from_ref(&survivor));
+        assert_eq!(neighbors.len(), 8, "one forward coordinate move per multi-valued axis");
+
+        // Every neighbor differs from the survivor in exactly one field, and the
+        // changed value is on that axis (a valid candidate).
+        let p = survivor.raw;
+        for n in &neighbors {
+            let q = n.raw;
+            let diffs = (q.take_profit != p.take_profit) as u8
+                + (q.stop_loss != p.stop_loss) as u8
+                + (q.trailing_stop_pct != p.trailing_stop_pct) as u8
+                + (q.time_stop_secs != p.time_stop_secs) as u8
+                + (q.stall_secs != p.stall_secs) as u8
+                + (q.liquidity_drop_pct != p.liquidity_drop_pct) as u8
+                + (q.cohort_ratio != p.cohort_ratio) as u8
+                + (q.entry_min_age_secs != p.entry_min_age_secs) as u8
+                + (q.entry_min_alive_sol != p.entry_min_alive_sol) as u8
+                + (q.entry_min_organic_sol != p.entry_min_organic_sol) as u8
+                + (q.entry_pullback_pct != p.entry_pullback_pct) as u8
+                + (q.entry_higher_low_secs != p.entry_higher_low_secs) as u8
+                + (q.entry_max_cohort_held != p.entry_max_cohort_held) as u8
+                + (q.entry_min_liquidity_sol != p.entry_min_liquidity_sol) as u8
+                + (q.entry_min_organic_liq != p.entry_min_organic_liq) as u8;
+            assert_eq!(diffs, 1, "a coordinate move changes exactly one axis");
+        }
+    }
+
+    #[test]
+    fn no_survivors_yields_no_neighbors() {
+        assert!(strategy().refine(&[]).is_empty());
+    }
+
+    #[test]
+    fn random_samples_without_replacement() {
+        let s = strategy();
+        let grid = s.axes.combo_count();
+        let distinct = |combos: &[Tpsl2Combo]| -> usize {
+            combos
+                .iter()
+                .map(|c| s.params_json(c).to_string())
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+        };
+
+        // N over the grid clamps to the distinct grid size — no silent duplicates.
+        let over = s.sample(SweepMethod::Random { n: grid * 4, seed: 7 });
+        assert_eq!(over.len(), grid, "clamped to grid size");
+        assert_eq!(distinct(&over), over.len(), "all distinct");
+
+        // N under the grid returns exactly N distinct combos.
+        let under = s.sample(SweepMethod::Random { n: 200, seed: 7 });
+        assert_eq!(under.len(), 200);
+        assert_eq!(distinct(&under), 200, "all distinct");
     }
 }

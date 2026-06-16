@@ -28,7 +28,7 @@ use crate::sweep::corpus::{attach_fingerprints, corpus_cache_dir, load_grouped_c
 use crate::sweep::grouped_engine::CoverageFloor;
 use crate::sweep::grouping::GroupField;
 use crate::sweep::registry::{self, GroupedSweepOutput};
-use crate::sweep::strategy::SweepMethod;
+use crate::sweep::strategy::parse_method;
 
 // ---------------------------------------------------------------------------
 // Request / query bodies
@@ -64,7 +64,9 @@ pub struct StartGroupedSweepBody {
     /// (the floor is `max(min_fired_abs, ceil(fire_frac · group_tokens))`).
     #[serde(default = "default_fire_frac")]
     pub fire_frac: f64,
-    /// `grid` | `random:N` | `lhs:N`. Defaults to a full grid.
+    /// `grid` | `random:N` | `lhs:N` | `refine:N[:K]`. `refine` runs a coarse LHS
+    /// pass of `N` draws then re-sweeps a neighborhood around each group's top-`K`
+    /// combos (`K` default 3). Defaults to a full grid.
     #[serde(default)]
     pub method: Option<String>,
     /// Strategy-specific param axes (e.g. TPSL2's `AxesSpec`). Omitted axes fall
@@ -228,7 +230,15 @@ async fn run_grouped_sweep_job(
         min_fired_abs: b.min_fired_abs,
         fire_frac: b.fire_frac.clamp(0.0, 1.0),
     };
-    let method = b.method.as_deref().map(SweepMethod::parse).unwrap_or(SweepMethod::Grid);
+    // `grid` | `random:N` | `lhs:N` | `refine:N[:K]`. A `refine` form runs a coarse
+    // LHS pass then a per-group neighborhood refine (see `parse_method`).
+    let (method, refine) = b
+        .method
+        .as_deref()
+        .map(parse_method)
+        .unwrap_or((crate::sweep::strategy::SweepMethod::Grid, None));
+    // Stored run tag: the refine pass reports as its own method, else the sampler.
+    let method_tag = if refine.is_some() { "refine".to_string() } else { method.tag().to_string() };
 
     let sel = Selection {
         mints: None,
@@ -287,6 +297,7 @@ async fn run_grouped_sweep_job(
         b.rule_id,
         b.axes.clone(),
         method,
+        refine,
         corpus,
         b.group_by.clone(),
         min_tokens,
@@ -315,7 +326,7 @@ async fn run_grouped_sweep_job(
         strategy_id: b.strategy_id.clone(),
         rule_id: b.rule_id,
         source: "db".to_string(),
-        method: method.tag().to_string(),
+        method: method_tag,
         created_after: b.created_after,
         created_before: b.created_before,
         curve_only: b.curve_only,

@@ -27,7 +27,7 @@
 //! to a global ungrouped sweep.
 
 use std::cmp::Ordering::{self, Equal, Greater, Less};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{bail, Result};
 use rayon::prelude::*;
@@ -36,8 +36,8 @@ use crate::sweep::aggregate::{ComboAgg, ComboMetrics};
 use crate::sweep::corpus::Corpus;
 use crate::sweep::engine::{fill_outcomes, run_sweep};
 use crate::sweep::grouping::{group_key, GroupField, GroupKey};
-use crate::sweep::progress::SweepObserver;
-use crate::sweep::strategy::{Strategy, TokenOutcome};
+use crate::sweep::progress::{CancelOnly, SweepObserver};
+use crate::sweep::strategy::{RefineSpec, Strategy, TokenOutcome};
 
 /// A group with at least `this × pool_threads` tokens is swept with **intra-group**
 /// parallelism (its own `run_sweep` saturates the pool); smaller groups are swept
@@ -193,6 +193,103 @@ pub fn run_grouped_sweep<S: Strategy>(
         .collect())
 }
 
+/// Run a grouped sweep, optionally with a coarse→refine second pass.
+///
+/// Without `refine`, this is a single [`run_grouped_sweep`] over `coarse`. With
+/// it: sweep `coarse` **silently** (the bar tracks only the final pass) but
+/// cancellably, take each group's top-`top_k` combos, ask the strategy for a
+/// neighborhood around them ([`Strategy::refine`]), then sweep the deduped union
+/// of the coarse combos and every neighborhood (this final pass drives the
+/// progress bar). The union is capped at `cap` — coarse combos are kept first, so
+/// the cap only ever trims refinement.
+///
+/// Returns the final combo list (its index is the `combo_id` of the per-group
+/// results) and the per-group results, so the caller can emit one `params_json`
+/// per surviving combo. Order is deterministic: coarse-then-neighborhood, both in
+/// a deterministic order, deduped first-seen.
+// One orchestration fn threading the same params the dispatch already carries;
+// bundling them into a struct would only add indirection for two call sites.
+#[allow(clippy::too_many_arguments)]
+pub fn run_grouped_with_refine<S: Strategy>(
+    strategy: &S,
+    coarse: Vec<S::Params>,
+    refine: Option<RefineSpec>,
+    corpus: &Corpus,
+    fields: &[GroupField],
+    min_tokens: usize,
+    coverage: CoverageFloor,
+    cap: usize,
+    observer: &dyn SweepObserver,
+) -> Result<(Vec<S::Params>, Vec<GroupResult>)> {
+    let Some(spec) = refine else {
+        let groups =
+            run_grouped_sweep(strategy, &coarse, corpus, fields, min_tokens, coverage, observer)?;
+        return Ok((coarse, groups));
+    };
+
+    // Coarse pass — only used to locate each group's promising region, so it folds
+    // silently (the final pass owns the bar) while still honouring a cancel.
+    let coarse_groups = run_grouped_sweep(
+        strategy,
+        &coarse,
+        corpus,
+        fields,
+        min_tokens,
+        coverage,
+        &CancelOnly(observer),
+    )?;
+
+    // Seed the neighborhood from each group's top-K coarse combos, deduped across
+    // groups by params_json (groups overlap heavily on their best combos).
+    let mut survivors: Vec<S::Params> = Vec::new();
+    let mut seen_survivors: HashSet<String> = HashSet::new();
+    for g in &coarse_groups {
+        for id in top_combo_ids(&g.metrics, spec.top_k) {
+            if let Some(p) = coarse.get(id as usize) {
+                if seen_survivors.insert(strategy.params_json(p).to_string()) {
+                    survivors.push(p.clone());
+                }
+            }
+        }
+    }
+    let neighbors = strategy.refine(&survivors);
+
+    // Union = coarse ++ neighborhood, deduped by params_json, capped (coarse kept
+    // first so the cap only trims refinement, never the baseline coverage).
+    let mut union: Vec<S::Params> = Vec::with_capacity(coarse.len() + neighbors.len());
+    let mut seen: HashSet<String> = HashSet::new();
+    for p in coarse.into_iter().chain(neighbors) {
+        if union.len() >= cap {
+            break;
+        }
+        if seen.insert(strategy.params_json(&p).to_string()) {
+            union.push(p);
+        }
+    }
+
+    tracing::info!(
+        survivors = survivors.len(),
+        combos = union.len(),
+        cap,
+        "coarse→refine: re-sweeping the union of coarse + per-group neighborhoods"
+    );
+
+    let groups =
+        run_grouped_sweep(strategy, &union, corpus, fields, min_tokens, coverage, observer)?;
+    Ok((union, groups))
+}
+
+/// The `k` best combo ids in a group's ranked metrics — ranked exactly as
+/// [`best_combo`] ranks (robust `score`, then fired count, then total PnL), among
+/// combos that fired at least once. The coarse→refine driver seeds each group's
+/// neighborhood from these. Fewer than `k` are returned if fewer combos fired.
+pub fn top_combo_ids(metrics: &[ComboMetrics], k: usize) -> Vec<u32> {
+    let mut ranked: Vec<&ComboMetrics> = metrics.iter().filter(|m| m.n_fired > 0).collect();
+    // `rank_combo(a, b) == Greater` means a is the better combo → sort descending.
+    ranked.sort_by(|a, b| rank_combo(b, a));
+    ranked.into_iter().take(k).map(|m| m.combo_id).collect()
+}
+
 /// Refcount-clone a group's tokens into a sub-`Corpus` (Arc trades — no buffer copy).
 fn sub_corpus(corpus: &Corpus, idx: &[usize]) -> Corpus {
     Corpus {
@@ -334,6 +431,11 @@ mod tests {
         type Params = f64;
         fn sample(&self, _m: SweepMethod) -> Vec<f64> {
             vec![1.0, 3.0, 2.0]
+        }
+        /// Neighborhood = each survivor nudged up by 0.5 (a fresh, higher-PnL combo
+        /// so the refine pass measurably changes the winner).
+        fn refine(&self, survivors: &[f64]) -> Vec<f64> {
+            survivors.iter().map(|p| p + 0.5).collect()
         }
     }
     impl Strategy for Mock {
@@ -554,6 +656,84 @@ mod tests {
         .unwrap();
         assert_eq!(groups.len(), 1, "only devA (2 tokens) clears min_tokens=2");
         assert_eq!(groups[0].token_count, 2);
+    }
+
+    #[test]
+    fn top_combo_ids_ranks_by_score_and_skips_unfired() {
+        let metrics = vec![
+            ComboMetrics { combo_id: 0, n_fired: 5, score: Some(1.0), ..base_metrics() },
+            ComboMetrics { combo_id: 1, n_fired: 5, score: Some(9.0), ..base_metrics() },
+            ComboMetrics { combo_id: 2, n_fired: 0, score: None, ..base_metrics() },
+            ComboMetrics { combo_id: 3, n_fired: 5, score: Some(4.0), ..base_metrics() },
+        ];
+        // Best→worst among fired combos: 1 (9), 3 (4), 0 (1); combo 2 never fired.
+        assert_eq!(top_combo_ids(&metrics, 2), vec![1, 3]);
+        assert_eq!(top_combo_ids(&metrics, 10), vec![1, 3, 0]);
+    }
+
+    #[test]
+    fn refine_none_is_a_plain_grouped_sweep() {
+        let coarse = Mock.sample(SweepMethod::Grid);
+        let (final_params, groups) = run_grouped_with_refine(
+            &Mock,
+            coarse,
+            None,
+            &corpus(),
+            &[crate::sweep::grouping::GroupField::CreatorWallet],
+            1,
+            OPEN_FLOOR,
+            100,
+            &crate::sweep::progress::NoopObserver,
+        )
+        .unwrap();
+        assert_eq!(final_params.len(), 3, "combo set unchanged without refine");
+        assert_eq!(groups.len(), 2);
+    }
+
+    #[test]
+    fn refine_grows_combo_set_and_resweeps_union() {
+        use crate::sweep::strategy::RefineSpec;
+        // Single ALL group of 3 tokens. Coarse best = 3.0 (combo 1); top_k=1 seeds
+        // the neighborhood with 3.0 → Mock.refine adds 3.5; union = [1,3,2,3.5].
+        let coarse = Mock.sample(SweepMethod::Grid);
+        let (final_params, groups) = run_grouped_with_refine(
+            &Mock,
+            coarse,
+            Some(RefineSpec { top_k: 1 }),
+            &corpus(),
+            &[],
+            1,
+            OPEN_FLOOR,
+            100,
+            &crate::sweep::progress::NoopObserver,
+        )
+        .unwrap();
+        assert_eq!(final_params.len(), 4, "neighborhood combo appended to the union");
+        assert_eq!(groups.len(), 1);
+        // The refined combo (3.5, index 3) now wins.
+        assert_eq!(groups[0].best_combo_id, 3);
+        assert_eq!(groups[0].best_score, Some(3.5));
+    }
+
+    #[test]
+    fn refine_union_is_capped_coarse_kept_first() {
+        use crate::sweep::strategy::RefineSpec;
+        // cap = 3 == coarse size, so the neighborhood can't fit — the union is just
+        // the coarse combos (kept first), proving the cap never trims baseline cover.
+        let coarse = Mock.sample(SweepMethod::Grid);
+        let (final_params, _groups) = run_grouped_with_refine(
+            &Mock,
+            coarse,
+            Some(RefineSpec { top_k: 1 }),
+            &corpus(),
+            &[],
+            1,
+            OPEN_FLOOR,
+            3,
+            &crate::sweep::progress::NoopObserver,
+        )
+        .unwrap();
+        assert_eq!(final_params.len(), 3, "cap trims refinement, not the coarse combos");
     }
 
     #[test]

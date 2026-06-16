@@ -20,14 +20,14 @@ use crate::storage::repositories::grouped_sweep_repo::GroupedSweepTables;
 use crate::storage::repositories::tpsl1_strategy_rule_repo::Tpsl1StrategyRuleRepo;
 use crate::storage::repositories::tpsl2_strategy_rule_repo::Tpsl2StrategyRuleRepo;
 use crate::sweep::corpus::Corpus;
-use crate::sweep::grouped_engine::{run_grouped_sweep, CoverageFloor, GroupResult};
+use crate::sweep::grouped_engine::{run_grouped_with_refine, CoverageFloor, GroupResult};
 use crate::sweep::grouping::GroupField;
 use crate::sweep::progress::SweepObserver;
 use crate::sweep::strategies::tpsl1::{
     AxesSpec as Tpsl1AxesSpec, Tpsl1Axes, Tpsl1Strategy,
 };
 use crate::sweep::strategies::tpsl2::{AxesSpec, Tpsl2Axes, Tpsl2Strategy};
-use crate::sweep::strategy::{ParamSpace, Strategy, SweepMethod};
+use crate::sweep::strategy::{ParamSpace, RefineSpec, Strategy, SweepMethod};
 
 /// Default cap on the param combos a single grouped sweep evaluates **per group**.
 /// Bounds the `groups × combos × tokens` work; the handler rejects a full grid
@@ -116,6 +116,7 @@ pub async fn run_grouped(
     rule_id: Option<Uuid>,
     axes_json: Value,
     method: SweepMethod,
+    refine: Option<RefineSpec>,
     corpus: Corpus,
     fields: Vec<GroupField>,
     min_tokens: usize,
@@ -126,15 +127,15 @@ pub async fn run_grouped(
     match strategy_id {
         "tpsl1" => {
             sweep_tpsl1(
-                pool, rule_id, axes_json, method, corpus, fields, min_tokens, floor, max_combos,
-                observer,
+                pool, rule_id, axes_json, method, refine, corpus, fields, min_tokens, floor,
+                max_combos, observer,
             )
             .await
         }
         "tpsl2" => {
             sweep_tpsl2(
-                pool, rule_id, axes_json, method, corpus, fields, min_tokens, floor, max_combos,
-                observer,
+                pool, rule_id, axes_json, method, refine, corpus, fields, min_tokens, floor,
+                max_combos, observer,
             )
             .await
         }
@@ -186,6 +187,7 @@ async fn sweep_tpsl2(
     rule_id: Option<Uuid>,
     axes_json: Value,
     method: SweepMethod,
+    refine: Option<RefineSpec>,
     corpus: Corpus,
     fields: Vec<GroupField>,
     min_tokens: usize,
@@ -225,35 +227,42 @@ async fn sweep_tpsl2(
         params.truncate(cap);
     }
 
-    // Capture the param JSON before `strategy` moves into the blocking task.
-    let combo_params: Vec<Value> = params.iter().map(|p| strategy.params_json(p)).collect();
-    let combo_count = params.len();
     let threads = bounded_threads();
 
-    let groups = tokio::task::spawn_blocking(move || -> Result<Vec<GroupResult>> {
-        // Bound the pool so the sweep can't saturate every core in the live
-        // process; `install` makes the inner `par_iter` use this pool.
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .thread_name(|i| format!("grouped-sweep-{i}"))
-            .build()
-            .map_err(|e| anyhow!("rayon pool build failed: {e}"))?;
-        pool.install(|| {
-            run_grouped_sweep(
-                &strategy,
-                &params,
-                &corpus,
-                &fields,
-                min_tokens,
-                floor,
-                observer.as_ref(),
-            )
-        })
-    })
+    // The coarse→refine driver may grow the combo set (a neighborhood around each
+    // group's survivors), so the final param list — and thus its `params_json` — is
+    // only known after the sweep. Capture it inside the blocking task.
+    let (combo_params, groups) = tokio::task::spawn_blocking(
+        move || -> Result<(Vec<Value>, Vec<GroupResult>)> {
+            // Bound the pool so the sweep can't saturate every core in the live
+            // process; `install` makes the inner `par_iter` use this pool.
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .thread_name(|i| format!("grouped-sweep-{i}"))
+                .build()
+                .map_err(|e| anyhow!("rayon pool build failed: {e}"))?;
+            pool.install(|| {
+                let (final_params, groups) = run_grouped_with_refine(
+                    &strategy,
+                    params,
+                    refine,
+                    &corpus,
+                    &fields,
+                    min_tokens,
+                    floor,
+                    cap,
+                    observer.as_ref(),
+                )?;
+                let combo_params: Vec<Value> =
+                    final_params.iter().map(|p| strategy.params_json(p)).collect();
+                Ok((combo_params, groups))
+            })
+        },
+    )
     .await??;
 
     Ok(GroupedSweepOutput {
-        combo_count,
+        combo_count: combo_params.len(),
         combo_params,
         axes_json,
         groups,
@@ -288,6 +297,7 @@ async fn sweep_tpsl1(
     rule_id: Option<Uuid>,
     axes_json: Value,
     method: SweepMethod,
+    refine: Option<RefineSpec>,
     corpus: Corpus,
     fields: Vec<GroupField>,
     min_tokens: usize,
@@ -328,33 +338,39 @@ async fn sweep_tpsl1(
         params.truncate(cap);
     }
 
-    // Capture the param JSON before `strategy` moves into the blocking task.
-    let combo_params: Vec<Value> = params.iter().map(|p| strategy.params_json(p)).collect();
-    let combo_count = params.len();
     let threads = bounded_threads();
 
-    let groups = tokio::task::spawn_blocking(move || -> Result<Vec<GroupResult>> {
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .thread_name(|i| format!("grouped-sweep-{i}"))
-            .build()
-            .map_err(|e| anyhow!("rayon pool build failed: {e}"))?;
-        pool.install(|| {
-            run_grouped_sweep(
-                &strategy,
-                &params,
-                &corpus,
-                &fields,
-                min_tokens,
-                floor,
-                observer.as_ref(),
-            )
-        })
-    })
+    // The coarse→refine driver may grow the combo set, so the final param list is
+    // only known after the sweep — capture its `params_json` inside the task.
+    let (combo_params, groups) = tokio::task::spawn_blocking(
+        move || -> Result<(Vec<Value>, Vec<GroupResult>)> {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .thread_name(|i| format!("grouped-sweep-{i}"))
+                .build()
+                .map_err(|e| anyhow!("rayon pool build failed: {e}"))?;
+            pool.install(|| {
+                let (final_params, groups) = run_grouped_with_refine(
+                    &strategy,
+                    params,
+                    refine,
+                    &corpus,
+                    &fields,
+                    min_tokens,
+                    floor,
+                    cap,
+                    observer.as_ref(),
+                )?;
+                let combo_params: Vec<Value> =
+                    final_params.iter().map(|p| strategy.params_json(p)).collect();
+                Ok((combo_params, groups))
+            })
+        },
+    )
     .await??;
 
     Ok(GroupedSweepOutput {
-        combo_count,
+        combo_count: combo_params.len(),
         combo_params,
         axes_json,
         groups,

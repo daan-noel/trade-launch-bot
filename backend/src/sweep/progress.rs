@@ -109,6 +109,21 @@ impl SweepObserver for SweepProgress {
     }
 }
 
+/// Forwards only cancellation, swallowing progress. The coarse→refine driver
+/// wraps the real observer in this for its **coarse** pass so the progress bar
+/// tracks just the final (larger) refine sweep — a `set_total`/`token_done` from
+/// the coarse pass would otherwise reset the bar or push it past 100%. A cancel
+/// during the coarse pass still bails (it delegates `cancelled`).
+pub struct CancelOnly<'a>(pub &'a dyn SweepObserver);
+
+impl SweepObserver for CancelOnly<'_> {
+    fn set_total(&self, _total: usize) {}
+    fn token_done(&self) {}
+    fn cancelled(&self) -> bool {
+        self.0.cancelled()
+    }
+}
+
 /// No-op observer for tests / call sites that don't report progress.
 #[cfg(test)]
 pub struct NoopObserver;

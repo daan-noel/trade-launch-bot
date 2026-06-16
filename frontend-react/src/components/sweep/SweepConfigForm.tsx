@@ -112,8 +112,10 @@ interface SweepConfig {
   createdBefore: string;
   groupBy: GroupField[];
   axesText: Record<string, string>;
-  methodKind: 'grid' | 'random';
+  methodKind: 'grid' | 'random' | 'refine';
   randomN: number;
+  /** Per-group survivors that seed the neighborhood in `refine` mode. */
+  refineTopK: number;
   minTokens: number;
   tokenCap: number;
   maxCombos: number;
@@ -130,6 +132,7 @@ function defaultSweepConfig(axes: AxisDef[]): SweepConfig {
     axesText: defaultAxesText(axes),
     methodKind: 'grid',
     randomN: 500,
+    refineTopK: 3,
     minTokens: 10,
     tokenCap: 10000,
     maxCombos: DEFAULT_MAX_COMBOS,
@@ -175,6 +178,7 @@ export function SweepConfigForm({ strategyId, axes, storageKey, running, onRun }
     axesText,
     methodKind,
     randomN,
+    refineTopK,
     minTokens,
     tokenCap,
     maxCombos,
@@ -187,8 +191,9 @@ export function SweepConfigForm({ strategyId, axes, storageKey, running, onRun }
   }
   const setCreatedAfter = (v: string) => setField('createdAfter', v);
   const setCreatedBefore = (v: string) => setField('createdBefore', v);
-  const setMethodKind = (v: 'grid' | 'random') => setField('methodKind', v);
+  const setMethodKind = (v: SweepConfig['methodKind']) => setField('methodKind', v);
   const setRandomN = (v: number) => setField('randomN', v);
+  const setRefineTopK = (v: number) => setField('refineTopK', v);
   const setMinTokens = (v: number) => setField('minTokens', v);
   const setTokenCap = (v: number) => setField('tokenCap', v);
   const setMaxCombos = (v: number) => setField('maxCombos', v);
@@ -202,9 +207,10 @@ export function SweepConfigForm({ strategyId, axes, storageKey, running, onRun }
   const entryAxes = useMemo(() => axes.filter((a) => a.group === 'entry'), [axes]);
   const exitAxes = useMemo(() => axes.filter((a) => a.group === 'exit'), [axes]);
 
-  // Projected combos: grid = product of axis lengths; random = N (both capped).
+  // Projected combos: grid = product of axis lengths; random/refine = the coarse
+  // N (refine grows the union past N around survivors, but caps at the same cap).
   const projected = useMemo(() => {
-    if (methodKind === 'random') return Math.max(1, randomN);
+    if (methodKind !== 'grid') return Math.max(1, randomN);
     return axes.reduce((acc, a) => acc * axisLen(axesText[a.key] ?? '', a), 1);
   }, [methodKind, randomN, axesText, axes]);
 
@@ -235,7 +241,12 @@ export function SweepConfigForm({ strategyId, axes, storageKey, running, onRun }
       curve_only: curveOnly,
       group_by: groupBy,
       min_tokens: minTokens,
-      method: methodKind === 'random' ? `random:${Math.max(1, randomN)}` : 'grid',
+      method:
+        methodKind === 'refine'
+          ? `refine:${Math.max(1, randomN)}:${Math.max(1, refineTopK)}`
+          : methodKind === 'random'
+            ? `random:${Math.max(1, randomN)}`
+            : 'grid',
       axes: buildAxes(),
       token_cap: tokenCap,
       // Only send an override when it differs from the default, so the backend
@@ -265,19 +276,37 @@ export function SweepConfigForm({ strategyId, axes, storageKey, running, onRun }
         </Field>
 
         <Field label="Method" className="w-[140px]">
-          <Select value={methodKind} onChange={(e) => setMethodKind(e.target.value as 'grid' | 'random')}>
+          <Select
+            value={methodKind}
+            onChange={(e) => setMethodKind(e.target.value as SweepConfig['methodKind'])}
+          >
             <option value="grid">Full grid</option>
             <option value="random">Random N</option>
+            <option value="refine">Coarse → refine</option>
           </Select>
         </Field>
 
-        {methodKind === 'random' && (
-          <Field label="Samples (N)" className="w-[110px]">
+        {methodKind !== 'grid' && (
+          <Field
+            label={methodKind === 'refine' ? 'Coarse N' : 'Samples (N)'}
+            className="w-[110px]"
+          >
             <Input
               type="number"
               min={1}
               value={randomN}
               onChange={(e) => setRandomN(Math.max(1, Number(e.target.value) || 1))}
+            />
+          </Field>
+        )}
+
+        {methodKind === 'refine' && (
+          <Field label="Top-K / group" hint="survivors refined" className="w-[120px]">
+            <Input
+              type="number"
+              min={1}
+              value={refineTopK}
+              onChange={(e) => setRefineTopK(Math.max(1, Number(e.target.value) || 1))}
             />
           </Field>
         )}
