@@ -32,14 +32,14 @@ impl<T> Setting<T> {
 pub mod keys {
     use super::Setting;
 
-    pub const TRACK_MAYHEM: Setting<bool> = Setting::new("ingest.track_mayhem", || true);
+    pub const TRACK_MAYHEM: Setting<bool> = Setting::new("ingest.track_mayhem", || false);
     pub const TRACK_POST_MIGRATION: Setting<bool> =
-        Setting::new("ingest.track_post_migration", || true);
+        Setting::new("ingest.track_post_migration", || false);
     pub const TIMEZONE: Setting<Option<String>> = Setting::new("ui.timezone", || None);
     pub const PRICE_UNIT: Setting<Option<String>> = Setting::new("ui.price_unit", || None);
     pub const SLIPPAGE_BPS: Setting<Option<u64>> = Setting::new("trade.slippage_bps", || None);
     pub const LIVE: Setting<bool> = Setting::new("ingest.live", || false);
-    pub const PERSIST_RAW: Setting<bool> = Setting::new("ingest.persist_raw", || true);
+    pub const PERSIST_RAW: Setting<bool> = Setting::new("ingest.persist_raw", || false);
 }
 
 /// Global, server-wide settings — the assembled, strongly-typed view of the
@@ -69,7 +69,7 @@ pub struct AppSettings {
     pub live: bool,
     /// Persist raw transaction blobs to `raw_transactions`. When off, the ingest
     /// pipeline skips the raw-blob enqueue (trades/metrics are still recorded) to
-    /// curb DB growth. Default on.
+    /// curb DB growth. Default off.
     pub persist_raw: bool,
 }
 
@@ -183,11 +183,11 @@ mod tests {
     #[test]
     fn from_map_fills_defaults_for_absent_keys() {
         let settings = AppSettings::from_map(&HashMap::new());
-        // Defaults: tracking on, live off, optional prefs unset.
-        assert!(settings.track_mayhem);
-        assert!(settings.track_post_migration);
+        // Defaults: tracking off, live off, optional prefs unset.
+        assert!(!settings.track_mayhem);
+        assert!(!settings.track_post_migration);
         assert!(!settings.live);
-        assert!(settings.persist_raw);
+        assert!(!settings.persist_raw);
         assert_eq!(settings.timezone, None);
         assert_eq!(settings.price_unit, None);
         assert_eq!(settings.slippage_bps, None);
@@ -206,7 +206,7 @@ mod tests {
         assert!(!settings.track_mayhem); // overridden
         assert!(settings.live); // overridden
         assert!(!settings.persist_raw); // overridden
-        assert!(settings.track_post_migration); // still default
+        assert!(!settings.track_post_migration); // still default
         assert_eq!(settings.price_unit.as_deref(), Some("USD"));
         assert_eq!(settings.slippage_bps, Some(250));
         assert_eq!(settings.timezone, None); // still default
