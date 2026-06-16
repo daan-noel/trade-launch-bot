@@ -984,8 +984,14 @@ fn tri_match(value: bool, tri: &str) -> bool {
     }
 }
 
-/// datetime-local value -> UTC instant (mirrors filters.ts `parseDt`: append
-/// `:00Z` when seconds are absent, else `Z`).
+/// datetime-local value -> UTC instant. The string is treated as a UTC
+/// wall-clock: append `:00Z` when seconds are absent (16 chars), else `Z`.
+///
+/// The frontend now pre-converts the picker value from the selected project
+/// timezone to the exact UTC wall-clock before sending it (a 19-char
+/// `YYYY-MM-DDTHH:mm:ss`, the non-16-char branch). This contract — "datetime
+/// filters are UTC, the client does any tz conversion" — is intentional; keep it
+/// when editing. See `datetimeLocalToUtcWallClock` in `frontend-react/utils/date.ts`.
 fn parse_dt(v: &str) -> Option<DateTime<Utc>> {
     if v.is_empty() {
         return None;

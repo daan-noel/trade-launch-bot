@@ -327,10 +327,11 @@ export function SwingDetectionPage() {
       search: tableQuery.search,
       colFilters: tableQuery.colFilters,
       filters: effectiveFilters,
+      timezone,
       swingRunId: swingSortActive ? swingRunId : undefined,
       swingChainLatencyMs: swingSortActive ? debouncedChainLatency : undefined,
     }),
-    [tableQuery, effectiveFilters, swingSortActive, swingRunId, debouncedChainLatency],
+    [tableQuery, effectiveFilters, timezone, swingSortActive, swingRunId, debouncedChainLatency],
   );
   // Resets the table to page 1 whenever the server-side reduction changes.
   const filtersResetKey = useMemo(() => JSON.stringify(effectiveFilters), [effectiveFilters]);

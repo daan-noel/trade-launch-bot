@@ -5,6 +5,7 @@ import { API_BASE } from 'services/config';
 import type { AppSettings } from 'services/api';
 import type { TokenFilters } from 'components/tokens/filters';
 import type { SortDir } from 'components/table/types';
+import { datetimeLocalToUtcWallClock } from 'utils/date';
 import type {
   GroupedSweepRunRecord,
   GroupedSweepGroupRecord,
@@ -47,6 +48,21 @@ export interface TokensArgs {
 }
 
 /**
+ * The datetime-range `TokenFilters` keys and which side of the range each is.
+ * The bound only matters inside a DST transition, where it makes the wall-clock
+ * → UTC tie-break inclusion-safe (see `datetimeLocalToUtcWallClock`). Any key not
+ * listed here is passed to the backend verbatim.
+ */
+const DATETIME_FILTER_BOUND = {
+  created_from: 'lower',
+  created_to: 'upper',
+  last_trade_from: 'lower',
+  last_trade_to: 'upper',
+  ath_from: 'lower',
+  ath_to: 'upper',
+} as const;
+
+/**
  * Args for the server-side paginated Tokens view. Unlike `TokensArgs` (which
  * pulls the whole list for client-side analysis on the Swing page), this asks
  * the backend to filter/sort/page so only one page crosses the wire. Mirrors
@@ -60,6 +76,13 @@ export interface TokensPageArgs {
   search: string;
   colFilters: Record<string, string>;
   filters: TokenFilters;
+  /**
+   * Selected project timezone. Exists to normalize the datetime-range `f_*`
+   * filters from picker wall-clock to the exact UTC instant at the param
+   * boundary (see `DATETIME_FILTER_BOUND` / `datetimeLocalToUtcWallClock`). Also
+   * makes the RTK cache key tz-aware so switching timezone correctly refetches.
+   */
+  timezone: string;
   /**
    * Swing Detection page only: the last "Swing Detection All" run id and its
    * chain-latency budget. Sent so the backend can sort the chain columns
@@ -189,7 +212,14 @@ export const apiSlice = createApi({
           .join(';');
         if (cf) p.set('cf', cf);
         for (const [k, v] of Object.entries(a.filters)) {
-          if (v) p.set(`f_${k}`, String(v));
+          if (!v) continue;
+          // Datetime-range filters carry picker wall-clock in the selected tz;
+          // normalize to the exact UTC instant the backend's `parse_dt` expects.
+          const bound = DATETIME_FILTER_BOUND[k as keyof typeof DATETIME_FILTER_BOUND];
+          const out = bound
+            ? datetimeLocalToUtcWallClock(String(v), a.timezone, bound)
+            : String(v);
+          if (out) p.set(`f_${k}`, out);
         }
         // Chain-column sort inputs (Swing Detection page). The backend only reads
         // them when `sort_col` is a chain column, but sending them always keeps

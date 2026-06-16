@@ -27,6 +27,7 @@ import {
 } from 'store/apiSlice';
 import type { AppDispatch } from '../../store';
 import { cn } from 'lib/cn';
+import { useTimezone } from 'context/TimezoneContext';
 import { STORAGE_KEYS, getJSON, setJSON } from 'lib/storage';
 
 const LS_LIVE_KEY = STORAGE_KEYS.tokensLive;
@@ -68,6 +69,10 @@ export function TokensPage() {
   // `filters` panel as query args.
   const [tableQuery, setTableQuery] = useState<TableQuery>(INITIAL_QUERY);
 
+  // Selected project timezone — sent so datetime-range filters normalize from
+  // picker wall-clock to the exact UTC instant at the query boundary.
+  const { timezone } = useTimezone();
+
   // The query args, shared by the live query and the adjacent-page prefetch
   // below so both hit identical cache keys.
   const queryArgs = useMemo(
@@ -79,8 +84,9 @@ export function TokensPage() {
       search: tableQuery.search,
       colFilters: tableQuery.colFilters,
       filters,
+      timezone,
     }),
-    [tableQuery, filters],
+    [tableQuery, filters, timezone],
   );
 
   // Server-side page: only one page crosses the wire. Polling re-runs the

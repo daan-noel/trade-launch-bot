@@ -10,7 +10,9 @@ export interface TokenFilters {
   mint: string;
   creator: string;
   create_tx: string;
-  // Time (datetime-local "YYYY-MM-DDTHH:mm", interpreted as UTC)
+  // Time (datetime-local "YYYY-MM-DDTHH:mm"). Stored as wall-clock in the
+  // selected project timezone; normalized to the exact UTC instant at the
+  // getTokensPage query boundary via datetimeLocalToUtcWallClock.
   created_from: string;
   created_to: string;
   last_trade_from: string;
@@ -172,7 +174,14 @@ function optF64(opt: number | null | undefined, min: string, max: string): boole
   return rangeF64(opt, min, max);
 }
 
-/** datetime-local value -> epoch ms, interpreted as UTC to match the UTC table display. */
+/**
+ * datetime-local value -> epoch ms, interpreted as UTC. NOTE: this (and
+ * `dateInRange`/`tokenPassesFilters`) has no live call sites — both pages filter
+ * server-side; only `activeFilterCount` is still used. Any future client-side
+ * caller must first pre-convert the picker value via `datetimeLocalToUtcWallClock`
+ * (utils/date.ts), since the picker now means wall-clock in the selected project
+ * timezone, not UTC.
+ */
 function parseDt(v: string): number | null {
   if (!v) return null;
   const iso = v.length === 16 ? `${v}:00Z` : `${v}Z`;

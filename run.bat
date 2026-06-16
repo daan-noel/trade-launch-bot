@@ -13,6 +13,6 @@ docker compose exec postgres psql -U postgres -d meme_bot -c "SELECT version, su
 
 
 @REM DB backup:
-docker compose exec -T db pg_dump -U postgres -Fc -d meme_bot > backup.dump
+docker compose exec -T postgres pg_dump -U postgres -Fc -d meme_bot > backup.dump
 @REM DB restore:
 pg_restore -U postgres -d meme_bot --clean --if-exists < backup.dump
