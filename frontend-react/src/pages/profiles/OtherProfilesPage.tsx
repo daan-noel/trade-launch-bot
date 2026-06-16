@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useDispatch } from 'react-redux';
 import {
   createProfile,
   createTag,
@@ -6,13 +7,14 @@ import {
   deleteProfile,
   deleteTag,
   deleteWalletEntry,
-  fetchProfiles,
   fetchTags,
   updateProfile,
   updateProfileTags,
   updateTag,
   updateWalletEntry,
 } from 'services/api';
+import { apiErrorMessage, apiSlice, useGetProfilesQuery } from 'store/apiSlice';
+import type { AppDispatch } from '../../store';
 import type { ProfileType, WalletEntry, WalletProfile, WalletProfileTag } from 'types';
 import { Badge, type BadgeVariant } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
@@ -25,6 +27,10 @@ import { formatIsoLines } from 'utils/date';
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
+
+// Stable empty fallback so `useGetProfilesQuery`'s default never creates a new
+// array reference on each render (matches the other profile consumers).
+const EMPTY_PROFILES: WalletProfile[] = [];
 
 const PROFILE_TYPES: ProfileType[] = ['trader', 'whale', 'dev'];
 
@@ -738,7 +744,10 @@ interface ProfileCardProps {
   onTagToggle: (profile: WalletProfile, tag: WalletProfileTag, assign: boolean) => void;
 }
 
-function ProfileCard({
+// Memoized: a card only re-renders when its own profile/tags/toggling flag
+// change. With the page's callbacks stabilized via `useCallback`, editing one
+// profile no longer re-renders every sibling card.
+const ProfileCard = memo(function ProfileCard({
   profile,
   allTags,
   togglingWalletId,
@@ -804,17 +813,33 @@ function ProfileCard({
       </div>
     </div>
   );
-}
+});
 
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
 export function OtherProfilesPage() {
-  const [profiles, setProfiles] = useState<WalletProfile[]>([]);
+  const dispatch = useDispatch<AppDispatch>();
+
+  // Profiles live in the shared RTK Query cache (`getProfiles`) — the same one
+  // the Swing-detection / Sync chart markers read, so an edit here propagates to
+  // those overlays without a re-fetch. CRUD still goes through the imperative
+  // `services/api` helpers; we patch the cache optimistically with
+  // `updateQueryData` (mirrors the `updateSettings`/wallet-holdings pattern).
+  const { data: allProfiles = EMPTY_PROFILES, isLoading: loading, error: queryError } =
+    useGetProfilesQuery();
+  const error = apiErrorMessage(queryError, 'Failed to load profiles') ?? '';
+
+  // The editor manages everyone but "mine" (that lives on the My-wallet page).
+  const profiles = useMemo(
+    () => allProfiles.filter((p) => p.profile_type !== 'mine'),
+    [allProfiles],
+  );
+
+  // Tags are their own resource (not part of the shared profiles query), so the
+  // page still owns them imperatively.
   const [allTags, setAllTags] = useState<WalletProfileTag[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
 
   const [manageTagsOpen, setManageTagsOpen] = useState(false);
 
@@ -825,129 +850,125 @@ export function OtherProfilesPage() {
   const [deleteProfileModal, setDeleteProfileModal] = useState<{ open: boolean; profile: WalletProfile | null }>({ open: false, profile: null });
   const [deleteWalletModal, setDeleteWalletModal] = useState<{ open: boolean; wallet: WalletEntry | null }>({ open: false, wallet: null });
 
-  const load = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError('');
-      const [all, tags] = await Promise.all([fetchProfiles(), fetchTags()]);
-      setProfiles(all.filter((p) => p.profile_type !== 'mine'));
-      setAllTags(tags);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load profiles');
-    } finally {
-      setLoading(false);
-    }
+  // Mutate the shared `getProfiles` cache entry. Returns the RTK patch so the
+  // caller can `.undo()` it if the backend write fails.
+  const patchProfiles = useCallback(
+    (recipe: (draft: WalletProfile[]) => void) =>
+      dispatch(apiSlice.util.updateQueryData('getProfiles', undefined, recipe)),
+    [dispatch],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchTags()
+      .then((tags) => { if (!cancelled) setAllTags(tags); })
+      .catch(() => { /* tags overview just stays empty on error */ });
+    return () => { cancelled = true; };
   }, []);
 
-  useEffect(() => { load(); }, [load]);
-
   // Profile saved (create or edit)
-  const handleProfileSaved = (saved: WalletProfile) => {
-    setProfiles((prev) => {
-      const idx = prev.findIndex((p) => p.id === saved.id);
-      if (idx >= 0) {
-        const next = [...prev];
-        next[idx] = { ...next[idx], name: saved.name, profile_type: saved.profile_type };
-        return next;
+  const handleProfileSaved = useCallback((saved: WalletProfile) => {
+    patchProfiles((draft) => {
+      const existing = draft.find((p) => p.id === saved.id);
+      if (existing) {
+        existing.name = saved.name;
+        existing.profile_type = saved.profile_type;
+      } else {
+        draft.push(saved);
       }
-      return [...prev, saved];
     });
-  };
+  }, [patchProfiles]);
 
   // Tag CRUD
-  const handleTagCreated = (tag: WalletProfileTag) => setAllTags((prev) => [...prev, tag]);
+  const handleTagCreated = useCallback((tag: WalletProfileTag) => setAllTags((prev) => [...prev, tag]), []);
 
-  const handleTagUpdated = (tag: WalletProfileTag) => {
+  const handleTagUpdated = useCallback((tag: WalletProfileTag) => {
     setAllTags((prev) => prev.map((t) => (t.id === tag.id ? tag : t)));
     // Reflect update in profiles that have this tag
-    setProfiles((prev) =>
-      prev.map((p) => ({
-        ...p,
-        tags: p.tags.map((t) => (t.id === tag.id ? tag : t)),
-      })),
-    );
-  };
+    patchProfiles((draft) => {
+      for (const p of draft) {
+        p.tags = p.tags.map((t) => (t.id === tag.id ? tag : t));
+      }
+    });
+  }, [patchProfiles]);
 
-  const handleTagDeleted = (id: string) => {
+  const handleTagDeleted = useCallback((id: string) => {
     setAllTags((prev) => prev.filter((t) => t.id !== id));
     // Remove from any profiles
-    setProfiles((prev) =>
-      prev.map((p) => ({ ...p, tags: p.tags.filter((t) => t.id !== id) })),
-    );
-  };
+    patchProfiles((draft) => {
+      for (const p of draft) {
+        p.tags = p.tags.filter((t) => t.id !== id);
+      }
+    });
+  }, [patchProfiles]);
 
   // Per-profile tag toggle (optimistic)
-  const handleTagToggle = async (profile: WalletProfile, tag: WalletProfileTag, assign: boolean) => {
+  const handleTagToggle = useCallback(async (profile: WalletProfile, tag: WalletProfileTag, assign: boolean) => {
     const newTags = assign
       ? [...profile.tags, tag]
       : profile.tags.filter((t) => t.id !== tag.id);
     const newTagIds = newTags.map((t) => t.id);
 
     // Optimistic update
-    setProfiles((prev) =>
-      prev.map((p) => (p.id === profile.id ? { ...p, tags: newTags } : p)),
-    );
+    const patch = patchProfiles((draft) => {
+      const target = draft.find((p) => p.id === profile.id);
+      if (target) target.tags = newTags;
+    });
 
     try {
       await updateProfileTags(profile.id, newTagIds);
     } catch {
-      // Revert on failure
-      setProfiles((prev) =>
-        prev.map((p) => (p.id === profile.id ? { ...p, tags: profile.tags } : p)),
-      );
+      patch.undo();
     }
-  };
+  }, [patchProfiles]);
 
   // Wallet added
-  const handleWalletAdded = (wallet: WalletEntry) => {
-    setProfiles((prev) =>
-      prev.map((p) =>
-        p.id === wallet.profile_id ? { ...p, wallets: [...p.wallets, wallet] } : p,
-      ),
-    );
-  };
+  const handleWalletAdded = useCallback((wallet: WalletEntry) => {
+    patchProfiles((draft) => {
+      const target = draft.find((p) => p.id === wallet.profile_id);
+      if (target) target.wallets.push(wallet);
+    });
+  }, [patchProfiles]);
 
   // Wallet tracked toggle (optimistic, inline)
   const [togglingWalletId, setTogglingWalletId] = useState<string | null>(null);
 
-  const handleToggleWalletTracked = async (wallet: WalletEntry) => {
+  const handleToggleWalletTracked = useCallback(async (wallet: WalletEntry) => {
     if (togglingWalletId) return;
     const next = !wallet.is_tracked;
     setTogglingWalletId(wallet.id);
     // Optimistic
-    setProfiles((prev) =>
-      prev.map((p) =>
-        p.id === wallet.profile_id
-          ? { ...p, wallets: p.wallets.map((w) => (w.id === wallet.id ? { ...w, is_tracked: next } : w)) }
-          : p,
-      ),
-    );
+    const patch = patchProfiles((draft) => {
+      const target = draft.find((p) => p.id === wallet.profile_id);
+      const w = target?.wallets.find((x) => x.id === wallet.id);
+      if (w) w.is_tracked = next;
+    });
     try {
       await updateWalletEntry(wallet.id, { is_tracked: next, comment: wallet.comment });
     } catch {
-      // Revert on failure
-      setProfiles((prev) =>
-        prev.map((p) =>
-          p.id === wallet.profile_id
-            ? { ...p, wallets: p.wallets.map((w) => (w.id === wallet.id ? { ...w, is_tracked: wallet.is_tracked } : w)) }
-            : p,
-        ),
-      );
+      patch.undo();
     } finally {
       setTogglingWalletId(null);
     }
-  };
+  }, [patchProfiles, togglingWalletId]);
 
   // Wallet edited
-  const handleWalletSaved = (wallet: WalletEntry) => {
-    setProfiles((prev) =>
-      prev.map((p) =>
-        p.id === wallet.profile_id
-          ? { ...p, wallets: p.wallets.map((w) => (w.id === wallet.id ? wallet : w)) }
-          : p,
-      ),
-    );
-  };
+  const handleWalletSaved = useCallback((wallet: WalletEntry) => {
+    patchProfiles((draft) => {
+      const target = draft.find((p) => p.id === wallet.profile_id);
+      if (!target) return;
+      const idx = target.wallets.findIndex((w) => w.id === wallet.id);
+      if (idx >= 0) target.wallets[idx] = wallet;
+    });
+  }, [patchProfiles]);
+
+  // Stable open-modal handlers so each memoized ProfileCard keeps the same
+  // callback identity across parent renders (no re-render on a sibling edit).
+  const handleEditProfile = useCallback((p: WalletProfile) => setProfileModal({ open: true, profile: p }), []);
+  const handleDeleteProfile = useCallback((p: WalletProfile) => setDeleteProfileModal({ open: true, profile: p }), []);
+  const handleAddWallet = useCallback((p: WalletProfile) => setAddWalletModal({ open: true, profileId: p.id }), []);
+  const handleEditWallet = useCallback((w: WalletEntry) => setEditWalletModal({ open: true, wallet: w }), []);
+  const handleDeleteWallet = useCallback((w: WalletEntry) => setDeleteWalletModal({ open: true, wallet: w }), []);
 
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-6 p-6">
@@ -993,11 +1014,11 @@ export function OtherProfilesPage() {
             key={p.id}
             profile={p}
             allTags={allTags}
-            onEdit={(p) => setProfileModal({ open: true, profile: p })}
-            onDelete={(p) => setDeleteProfileModal({ open: true, profile: p })}
-            onAddWallet={(p) => setAddWalletModal({ open: true, profileId: p.id })}
-            onEditWallet={(w) => setEditWalletModal({ open: true, wallet: w })}
-            onDeleteWallet={(w) => setDeleteWalletModal({ open: true, wallet: w })}
+            onEdit={handleEditProfile}
+            onDelete={handleDeleteProfile}
+            onAddWallet={handleAddWallet}
+            onEditWallet={handleEditWallet}
+            onDeleteWallet={handleDeleteWallet}
             onToggleWalletTracked={handleToggleWalletTracked}
             togglingWalletId={togglingWalletId}
             onTagToggle={handleTagToggle}
@@ -1043,7 +1064,10 @@ export function OtherProfilesPage() {
         onConfirm={async () => {
           const id = deleteProfileModal.profile!.id;
           await deleteProfile(id);
-          setProfiles((prev) => prev.filter((p) => p.id !== id));
+          patchProfiles((draft) => {
+            const idx = draft.findIndex((p) => p.id === id);
+            if (idx >= 0) draft.splice(idx, 1);
+          });
         }}
       />
 
@@ -1054,11 +1078,12 @@ export function OtherProfilesPage() {
         onConfirm={async () => {
           const w = deleteWalletModal.wallet!;
           await deleteWalletEntry(w.id);
-          setProfiles((prev) =>
-            prev.map((p) =>
-              p.id === w.profile_id ? { ...p, wallets: p.wallets.filter((x) => x.id !== w.id) } : p,
-            ),
-          );
+          patchProfiles((draft) => {
+            const target = draft.find((p) => p.id === w.profile_id);
+            if (!target) return;
+            const idx = target.wallets.findIndex((x) => x.id === w.id);
+            if (idx >= 0) target.wallets.splice(idx, 1);
+          });
         }}
       />
     </div>

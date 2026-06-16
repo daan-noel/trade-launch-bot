@@ -176,6 +176,17 @@ fn build_state(
         state.push_trade_capped(trade);
     }
 
+    // Prime the dead-token liquidity signal from the seeded tail: the newest trade
+    // (by block_time) that carries a real-reserve snapshot. The live path maintains
+    // this field incrementally in `add_trade`, but seed bypasses that via
+    // `push_trade_capped`, so populate it directly here. One-time, off the hot path.
+    state.current_real_sol_reserves = state
+        .trades
+        .iter()
+        .filter(|t| t.real_sol_reserves.is_some())
+        .max_by_key(|t| t.block_time)
+        .and_then(|t| t.real_sol_reserves);
+
     state
 }
 

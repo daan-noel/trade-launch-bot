@@ -54,6 +54,10 @@ export function fieldClassName({
 
 export type FieldProps = { fieldSize?: FieldSize; variant?: FieldVariant };
 
+// Safe stand-in handed back if a ref is read before the element mounts, so
+// imperative calls (`focus()`, `select()`) are no-ops instead of throwing on null.
+const NOOP_INPUT = { focus() {}, blur() {}, select() {}, value: '' };
+
 export const Input = forwardRef<
   HTMLInputElement,
   InputHTMLAttributes<HTMLInputElement> & FieldProps & { unit?: string; blankZero?: boolean }
@@ -62,7 +66,13 @@ export const Input = forwardRef<
   ref,
 ) {
   const innerRef = useRef<HTMLInputElement | null>(null);
-  useImperativeHandle(ref, () => innerRef.current as HTMLInputElement, []);
+  // Guard against exposing a null handle before mount: resolve to the live node
+  // if present, else a safe no-op stand-in so `.focus()` etc. never throw.
+  useImperativeHandle(
+    ref,
+    () => innerRef.current ?? (NOOP_INPUT as unknown as HTMLInputElement),
+    [],
+  );
 
   // `blankZero`: render a literal 0 as an empty field (for "0 = off" params, so
   // an unset gate reads blank). Display-only — the bound value is untouched, so
@@ -117,7 +127,12 @@ export const Textarea = forwardRef<
   ref,
 ) {
   const innerRef = useRef<HTMLTextAreaElement | null>(null);
-  useImperativeHandle(ref, () => innerRef.current as HTMLTextAreaElement, []);
+  // Guard against exposing a null handle before mount (see Input above).
+  useImperativeHandle(
+    ref,
+    () => innerRef.current ?? (NOOP_INPUT as unknown as HTMLTextAreaElement),
+    [],
+  );
 
   const resize = useCallback(() => {
     const el = innerRef.current;

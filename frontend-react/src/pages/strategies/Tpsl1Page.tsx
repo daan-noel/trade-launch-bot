@@ -59,6 +59,12 @@ import type {
 } from 'types';
 import { cn } from 'lib/cn';
 
+// Module-level, referentially-stable rowKey fns: each only reads the row, so a
+// single shared identity lets DataTable's page/select effects (and the row
+// memo) skip churn that an inline `(r) => r.x` would trigger every render.
+const keyByMint = (r: { mint: string }) => r.mint;
+const keyById = (r: { id: string }) => r.id;
+
 function SectionDivider() {
   return <div role="separator" className="my-6 border-t border-white/6" />;
 }
@@ -137,6 +143,14 @@ function PaperResultSection({
   const { run } = data;
   // Inline confirm for the destructive Clear (mirrors the row-delete pattern).
   const [confirmClear, setConfirmClear] = useState(false);
+
+  // Stable onSelect so the paper table's memoized rows survive an unrelated
+  // re-render (e.g. a price tick); resolves the clicked key back to its row.
+  const tokens = data.tokens;
+  const handleSelect = useCallback(
+    (key: string | null) => onSelectToken(key ? tokens.find((t) => t.mint === key) ?? null : null),
+    [tokens, onSelectToken],
+  );
 
   if (!run) {
     return (
@@ -236,16 +250,16 @@ function PaperResultSection({
         ) : (
           <DataTable
             columns={simCols}
-            rows={data.tokens}
-            rowKey={(r) => r.mint}
+            rows={tokens}
+            rowKey={keyByMint}
             selectedKey={selectedMint}
-            onSelect={(key) =>
-              onSelectToken(key ? data.tokens.find((t) => t.mint === key) ?? null : null)
-            }
+            onSelect={handleSelect}
             defaultPageSize={20}
             pageSizeOptions={[20, 50, 100]}
             searchable
             colFilters
+            colToggle
+            tableId="tpsl1_paper"
           />
         )}
       </section>
@@ -1018,7 +1032,7 @@ export function Tpsl1Page() {
           <DataTable
             columns={ruleColumns}
             rows={rules}
-            rowKey={(r) => r.id}
+            rowKey={keyById}
             rowActions={ruleActions}
             selectedKey={selectedRuleId}
             onSelect={setSelectedRuleId}
@@ -1050,7 +1064,7 @@ export function Tpsl1Page() {
               <DataTable
                 columns={posCols}
                 rows={positions}
-                rowKey={(r) => r.id}
+                rowKey={keyById}
                 selectedKey={inspect?.table === 'positions' ? inspect.key : null}
                 onSelect={onSelectPosition}
                 defaultPageSize={20}
@@ -1094,11 +1108,13 @@ export function Tpsl1Page() {
             <DataTable
               columns={matchedColumns}
               rows={matchedResult.tokens}
-              rowKey={(r) => r.mint}
+              rowKey={keyByMint}
               defaultPageSize={20}
               pageSizeOptions={[20, 50, 100]}
               searchable
               colFilters
+              colToggle
+              tableId="tpsl1_matched"
               selectable={false}
             />
           )}
@@ -1130,13 +1146,15 @@ export function Tpsl1Page() {
               <DataTable
                 columns={simCols}
                 rows={simResult.tokens}
-                rowKey={(r) => r.mint}
+                rowKey={keyByMint}
                 selectedKey={inspect?.table === 'sim' ? inspect.key : null}
                 onSelect={onSelectSim}
                 defaultPageSize={20}
                 pageSizeOptions={[20, 50, 100]}
                 searchable
                 colFilters
+                colToggle
+                tableId="tpsl1_sim"
               />
             )}
           </section>

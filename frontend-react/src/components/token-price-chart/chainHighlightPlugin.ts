@@ -12,6 +12,7 @@ import type {
   Logical,
 } from 'lightweight-charts';
 import { CHART_COLORS } from './constants';
+import { measureLabelWidth } from './labelMetrics';
 
 /** Longest swing chain to highlight as a full-height band. */
 export interface ChainHighlightDef {
@@ -45,17 +46,6 @@ const LABEL_TOP = 6; // CSS px from the top of the pane to the chip
 const LABEL_HEIGHT = 16; // CSS px chip height
 const LABEL_FONT = 'bold 10px sans-serif'; // chip text font (CSS px)
 const MIN_HALF = 3; // CSS px minimum half-bar so narrow bands stay visible
-
-/** Cached offscreen 2D context for measuring chip text width in CSS px. */
-let measureCtx: CanvasRenderingContext2D | null | undefined;
-function measureLabelWidth(text: string): number {
-  if (measureCtx === undefined) {
-    measureCtx = document.createElement('canvas').getContext('2d');
-  }
-  if (!measureCtx) return text.length * 6; // rough fallback if no 2D context
-  measureCtx.font = LABEL_FONT;
-  return measureCtx.measureText(text).width;
-}
 
 function roundRectPath(
   ctx: CanvasRenderingContext2D,
@@ -205,7 +195,7 @@ export class ChainHighlightPlugin
     const left = Math.min(xLo, xHi) - half;
     const right = Math.max(xLo, xHi) + half;
     const label = `Longest chain · ${def.pairCount} pairs`;
-    const chipWidth = measureLabelWidth(label) + LABEL_PAD_X * 2;
+    const chipWidth = measureLabelWidth(label, LABEL_FONT) + LABEL_PAD_X * 2;
 
     this._band = {
       left,

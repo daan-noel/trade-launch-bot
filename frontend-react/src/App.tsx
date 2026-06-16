@@ -1,21 +1,28 @@
+import { lazy, Suspense } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AppProviders } from 'context/AppProviders';
 import { AppLayout } from 'components/layout/AppLayout';
 import { RouteErrorBoundary } from 'components/ui/ErrorBoundary';
-import { HomePage } from 'pages/home/HomePage';
-import { DashboardPage } from 'pages/dashboard/DashboardPage';
-import { TokensPage } from 'pages/tokens/TokensPage';
-import { SyncTokenPage } from 'pages/tokens/SyncTokenPage';
-import { TransactionsPage } from 'pages/transactions/TransactionsPage';
-import { AnalysisPage } from 'pages/analysis/AnalysisPage';
-import { SwingDetectionPage } from 'pages/analysis/SwingDetectionPage';
-import { MyWalletPage } from 'pages/profiles/MyWalletPage';
-import { OtherProfilesPage } from 'pages/profiles/OtherProfilesPage';
-import { Tpsl1Page } from 'pages/strategies/Tpsl1Page';
-import { Tpsl2Page } from 'pages/strategies/Tpsl2Page';
-import { Tpsl1GroupedSweepPage, Tpsl2GroupedSweepPage } from 'pages/strategies/sweep';
-import { SettingsPage } from 'pages/settings/SettingsPage';
-import { NotFoundPage } from 'pages/not-found/NotFoundPage';
+import { SuspenseFallback } from 'components/ui/SuspenseFallback';
+
+// Code-split each route into its own chunk so heavy tables/charts/sweep stay out
+// of the initial bundle. Pages export named (not default) components, so map the
+// named export onto `default` in each lazy() call.
+const HomePage = lazy(() => import('pages/home/HomePage').then((m) => ({ default: m.HomePage })));
+const DashboardPage = lazy(() => import('pages/dashboard/DashboardPage').then((m) => ({ default: m.DashboardPage })));
+const TokensPage = lazy(() => import('pages/tokens/TokensPage').then((m) => ({ default: m.TokensPage })));
+const SyncTokenPage = lazy(() => import('pages/tokens/SyncTokenPage').then((m) => ({ default: m.SyncTokenPage })));
+const TransactionsPage = lazy(() => import('pages/transactions/TransactionsPage').then((m) => ({ default: m.TransactionsPage })));
+const AnalysisPage = lazy(() => import('pages/analysis/AnalysisPage').then((m) => ({ default: m.AnalysisPage })));
+const SwingDetectionPage = lazy(() => import('pages/analysis/SwingDetectionPage').then((m) => ({ default: m.SwingDetectionPage })));
+const MyWalletPage = lazy(() => import('pages/profiles/MyWalletPage').then((m) => ({ default: m.MyWalletPage })));
+const OtherProfilesPage = lazy(() => import('pages/profiles/OtherProfilesPage').then((m) => ({ default: m.OtherProfilesPage })));
+const Tpsl1Page = lazy(() => import('pages/strategies/Tpsl1Page').then((m) => ({ default: m.Tpsl1Page })));
+const Tpsl2Page = lazy(() => import('pages/strategies/Tpsl2Page').then((m) => ({ default: m.Tpsl2Page })));
+const Tpsl1GroupedSweepPage = lazy(() => import('pages/strategies/sweep/Tpsl1GroupedSweepPage').then((m) => ({ default: m.Tpsl1GroupedSweepPage })));
+const Tpsl2GroupedSweepPage = lazy(() => import('pages/strategies/sweep/Tpsl2GroupedSweepPage').then((m) => ({ default: m.Tpsl2GroupedSweepPage })));
+const SettingsPage = lazy(() => import('pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
+const NotFoundPage = lazy(() => import('pages/not-found/NotFoundPage').then((m) => ({ default: m.NotFoundPage })));
 
 export default function App() {
   return (
@@ -24,28 +31,30 @@ export default function App() {
         {/* Top-level net: catches anything the per-page boundary can't (Header,
             layout, providers-level render). Resets on route change. */}
         <RouteErrorBoundary variant="root">
-          <Routes>
-          <Route element={<AppLayout />}>
-            <Route index element={<HomePage />} />
-            <Route path="dashboard" element={<DashboardPage />} />
-            <Route path="tokens" element={<TokensPage />} />
-            <Route path="token/sync" element={<SyncTokenPage />} />
-            <Route path="transactions" element={<TransactionsPage />} />
-            <Route path="analysis" element={<Navigate to="/analysis/general" replace />} />
-            <Route path="analysis/general" element={<AnalysisPage />} />
-            <Route path="analysis/swing-detection" element={<SwingDetectionPage />} />
-            <Route path="wallet" element={<Navigate to="/profiles/mine" replace />} />
-            <Route path="profiles/mine" element={<MyWalletPage />} />
-            <Route path="profiles/other" element={<OtherProfilesPage />} />
-            <Route path="strategies/tpsl1" element={<Tpsl1Page />} />
-            <Route path="strategies/tpsl2" element={<Tpsl2Page />} />
-            <Route path="strategies/grouped-sweep-tpsl1" element={<Tpsl1GroupedSweepPage />} />
-            <Route path="strategies/grouped-sweep-tpsl2" element={<Tpsl2GroupedSweepPage />} />
-            <Route path="strategies" element={<Navigate to="/strategies/tpsl2" replace />} />
-            <Route path="settings" element={<SettingsPage />} />
-            <Route path="*" element={<NotFoundPage />} />
-          </Route>
-          </Routes>
+          <Suspense fallback={<SuspenseFallback />}>
+            <Routes>
+            <Route element={<AppLayout />}>
+              <Route index element={<HomePage />} />
+              <Route path="dashboard" element={<DashboardPage />} />
+              <Route path="tokens" element={<TokensPage />} />
+              <Route path="token/sync" element={<SyncTokenPage />} />
+              <Route path="transactions" element={<TransactionsPage />} />
+              <Route path="analysis" element={<Navigate to="/analysis/general" replace />} />
+              <Route path="analysis/general" element={<AnalysisPage />} />
+              <Route path="analysis/swing-detection" element={<SwingDetectionPage />} />
+              <Route path="wallet" element={<Navigate to="/profiles/mine" replace />} />
+              <Route path="profiles/mine" element={<MyWalletPage />} />
+              <Route path="profiles/other" element={<OtherProfilesPage />} />
+              <Route path="strategies/tpsl1" element={<Tpsl1Page />} />
+              <Route path="strategies/tpsl2" element={<Tpsl2Page />} />
+              <Route path="strategies/grouped-sweep-tpsl1" element={<Tpsl1GroupedSweepPage />} />
+              <Route path="strategies/grouped-sweep-tpsl2" element={<Tpsl2GroupedSweepPage />} />
+              <Route path="strategies" element={<Navigate to="/strategies/tpsl2" replace />} />
+              <Route path="settings" element={<SettingsPage />} />
+              <Route path="*" element={<NotFoundPage />} />
+            </Route>
+            </Routes>
+          </Suspense>
         </RouteErrorBoundary>
       </AppProviders>
     </BrowserRouter>

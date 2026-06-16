@@ -301,6 +301,17 @@ export function SwingDetectionPage() {
   );
   const chainLatencyValue = typeof chainLatencyMs === 'number' ? chainLatencyMs : 0;
 
+  // Debounced copy of the global chain latency. The raw input stays responsive
+  // (it drives `value={chainLatencyMs}`), but the expensive consumers — the
+  // O(n) `chainStatsByMint` grouping over every mint and the server-side query
+  // re-group — read this settled value so a burst of keystrokes coalesces into
+  // one recompute instead of one per character.
+  const [debouncedChainLatency, setDebouncedChainLatency] = useState(chainLatencyValue);
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedChainLatency(chainLatencyValue), 200);
+    return () => clearTimeout(id);
+  }, [chainLatencyValue]);
+
   // Whether the table is currently ordered by a browser-derived chain column.
   // Only then are the run id + latency sent (and folded into the cache key), so
   // tweaking latency while sorting a normal column doesn't trigger a refetch.
@@ -317,9 +328,9 @@ export function SwingDetectionPage() {
       colFilters: tableQuery.colFilters,
       filters: effectiveFilters,
       swingRunId: swingSortActive ? swingRunId : undefined,
-      swingChainLatencyMs: swingSortActive ? chainLatencyValue : undefined,
+      swingChainLatencyMs: swingSortActive ? debouncedChainLatency : undefined,
     }),
-    [tableQuery, effectiveFilters, swingSortActive, swingRunId, chainLatencyValue],
+    [tableQuery, effectiveFilters, swingSortActive, swingRunId, debouncedChainLatency],
   );
   // Resets the table to page 1 whenever the server-side reduction changes.
   const filtersResetKey = useMemo(() => JSON.stringify(effectiveFilters), [effectiveFilters]);
@@ -460,10 +471,10 @@ export function SwingDetectionPage() {
   const chainStatsByMint = useMemo(() => {
     const map = new Map<string, SwingChainStats>();
     for (const [mint, swings] of swingsByMint) {
-      map.set(mint, computeChainStats(swings, chainLatencyValue));
+      map.set(mint, computeChainStats(swings, debouncedChainLatency));
     }
     return map;
-  }, [swingsByMint, chainLatencyValue]);
+  }, [swingsByMint, debouncedChainLatency]);
 
   // Base token columns built once (their price cells read the rate from context);
   // only the appended chain columns rebuild when a global run updates the stats.
@@ -853,52 +864,12 @@ export function SwingDetectionPage() {
     connectSwings,
   ]);
 
-  // Inline element generators — plain functions that read this component's
-  // scope directly, so there are no props to thread through.
-  function renderControlsBar() {
-    return (
-      <div className="mb-3 flex flex-wrap items-end gap-3">
-        <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
-          Created from
-          <Input
-            type="datetime-local"
-            fieldSize="md"
-            variant="card"
-            value={createdFrom}
-            onChange={(e) => dispatch(setCreatedFrom(e.target.value))}
-            className="min-w-0 font-normal normal-case tracking-normal"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
-          Created to
-          <Input
-            type="datetime-local"
-            fieldSize="md"
-            variant="card"
-            value={createdTo}
-            onChange={(e) => dispatch(setCreatedTo(e.target.value))}
-            className="min-w-0 font-normal normal-case tracking-normal"
-          />
-        </label>
-        <Button variant="primary" onClick={handleRefresh} disabled={loading}>
-          {loading ? 'Refreshing…' : 'Fetch'}
-        </Button>
-        {(createdFrom || createdTo) && (
-          <Button variant="ghost" onClick={() => dispatch(clearCreatedRange())}>
-            Clear
-          </Button>
-        )}
-        <span className="flex-1" />
-        {renderSwingDetectionAllButton()}
-        {renderGobalTokenFiltersButton()}
-        {renderSwingDetectionAllPanel()}
-        {renderGlobalTokenFiltersPanel()}
-      </div>
-    );
-  }
-
-  function renderGobalTokenFiltersButton() {
-    return (
+  // Memoized subtrees — each reads this component's scope directly (no props to
+  // thread) but only rebuilds when the inputs it actually reads change, so a
+  // keystroke in an unrelated field (e.g. chain latency) doesn't re-render the
+  // ~300-line "Swing Detection All" panel.
+  const globalTokenFiltersButton = useMemo(
+    () => (
       <Button
         variant="subtle"
         size="sm"
@@ -907,10 +878,12 @@ export function SwingDetectionPage() {
       >
         {filterCount > 0 ? `Global Filters (${filterCount})` : 'Global Filters'}
       </Button>
-    );
-  }
-  function renderGlobalTokenFiltersPanel() {
-    return (
+    ),
+    [showFilters, filterCount],
+  );
+
+  const globalTokenFiltersPanel = useMemo(
+    () =>
       showFilters && (
         <FilterPanel
           filters={filters}
@@ -924,34 +897,35 @@ export function SwingDetectionPage() {
             saveStoredTokenFilters(empty);
           }}
         />
-      )
-    );
-  }
+      ),
+    [showFilters, filters],
+  );
 
-  function renderSwingDetectionAllButton() {
-    return (
+  const swingDetectionAllButton = useMemo(
+    () =>
       loaded && (
-        <>
-          <Button
-            variant={showSwingAll ? 'primary' : 'subtle'}
-            size="sm"
-            active={showSwingAll}
-            onClick={() => setShowSwingAll((v) => !v)}
-          >
-            {swingAllRanCount != null ? `Swing Detection All (${swingAllRanCount})` : "Swing Detection All"}
-          </Button>
-        </>
-      )
-    )
-  };
-  function renderSwingDetectionAllPanel() {
+        <Button
+          variant={showSwingAll ? 'primary' : 'subtle'}
+          size="sm"
+          active={showSwingAll}
+          onClick={() => setShowSwingAll((v) => !v)}
+        >
+          {swingAllRanCount != null
+            ? `Swing Detection All (${swingAllRanCount})`
+            : 'Swing Detection All'}
+        </Button>
+      ),
+    [loaded, showSwingAll, swingAllRanCount],
+  );
+
+  const swingDetectionAllPanel = useMemo(() => {
+    if (!loaded || !showSwingAll) return false;
     const tokenCount = total;
     const runLabel = swingAllLoading
       ? 'Running…'
       : `Run on ${tokenCount} token${tokenCount === 1 ? '' : 's'}`;
 
     return (
-      loaded && showSwingAll &&
       <div className="w-full mb-3 rounded-lg border border-white/8 bg-bg-card/40 p-4">
         <p className="mb-3 text-[12px] text-text-dim">
           Runs swing detection on all{' '}
@@ -1166,9 +1140,77 @@ export function SwingDetectionPage() {
           </p>
         )}
       </div>
-
     );
-  }
+  }, [
+    loaded,
+    showSwingAll,
+    total,
+    swingAllTab,
+    swingParams,
+    updateSwingParam,
+    chainLatencyMs,
+    swingAllRanCount,
+    curveOnly,
+    windowStartSec,
+    windowEndSec,
+    handleRunAllSwings,
+    swingAllLoading,
+    swingAllError,
+    swingAllProgress,
+  ]);
+
+  const controlsBar = useMemo(
+    () => (
+      <div className="mb-3 flex flex-wrap items-end gap-3">
+        <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
+          Created from
+          <Input
+            type="datetime-local"
+            fieldSize="md"
+            variant="card"
+            value={createdFrom}
+            onChange={(e) => dispatch(setCreatedFrom(e.target.value))}
+            className="min-w-0 font-normal normal-case tracking-normal"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
+          Created to
+          <Input
+            type="datetime-local"
+            fieldSize="md"
+            variant="card"
+            value={createdTo}
+            onChange={(e) => dispatch(setCreatedTo(e.target.value))}
+            className="min-w-0 font-normal normal-case tracking-normal"
+          />
+        </label>
+        <Button variant="primary" onClick={handleRefresh} disabled={loading}>
+          {loading ? 'Refreshing…' : 'Fetch'}
+        </Button>
+        {(createdFrom || createdTo) && (
+          <Button variant="ghost" onClick={() => dispatch(clearCreatedRange())}>
+            Clear
+          </Button>
+        )}
+        <span className="flex-1" />
+        {swingDetectionAllButton}
+        {globalTokenFiltersButton}
+        {swingDetectionAllPanel}
+        {globalTokenFiltersPanel}
+      </div>
+    ),
+    [
+      createdFrom,
+      createdTo,
+      handleRefresh,
+      loading,
+      dispatch,
+      swingDetectionAllButton,
+      globalTokenFiltersButton,
+      swingDetectionAllPanel,
+      globalTokenFiltersPanel,
+    ],
+  );
 
   return (
     <div>
@@ -1183,7 +1225,7 @@ export function SwingDetectionPage() {
 
       <SectionDivider />
 
-      {renderControlsBar()}
+      {controlsBar}
 
       {error && <p className="mb-2 text-sm text-red">{error}</p>}
 

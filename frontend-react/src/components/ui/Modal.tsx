@@ -1,4 +1,5 @@
-import { useRef, type ReactNode } from 'react';
+import { useEffect, useId, useRef, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { cn } from 'lib/cn';
 
 interface ModalProps {
@@ -15,12 +16,61 @@ const MODAL_WIDTH: Record<NonNullable<ModalProps['size']>, string> = {
   xl: 'max-w-[1200px]',
 };
 
+/** Selector for the focusable elements we keep `Tab` cycling between. */
+const FOCUSABLE =
+  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
 export function Modal({ title, open, onClose, children, size = 'md' }: ModalProps) {
   const pressedOnBackdrop = useRef(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+
+  // Escape-to-close + Tab/Shift+Tab focus trap, mirroring the portal popovers.
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      const focusable = dialog.querySelectorAll<HTMLElement>(FOCUSABLE);
+      if (focusable.length === 0) {
+        e.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (e.shiftKey) {
+        if (active === first || !dialog.contains(active)) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else if (active === last || !dialog.contains(active)) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [open, onClose]);
+
+  // Focus the first focusable element on open; restore focus on close/unmount.
+  useEffect(() => {
+    if (!open) return;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const dialog = dialogRef.current;
+    const focusable = dialog?.querySelectorAll<HTMLElement>(FOCUSABLE);
+    (focusable && focusable.length > 0 ? focusable[0] : dialog)?.focus();
+    return () => previouslyFocused?.focus();
+  }, [open]);
 
   if (!open) return null;
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-[200] flex justify-center overflow-y-auto bg-black/65 p-5 backdrop-blur-sm"
       onMouseDown={(e) => {
@@ -31,13 +81,20 @@ export function Modal({ title, open, onClose, children, size = 'md' }: ModalProp
       }}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
         className={cn(
-          'flex h-fit w-full flex-col overflow-hidden rounded-xl border border-white/8 bg-bg-panel shadow-[0_24px_80px_rgba(0,0,0,0.7)]',
+          'flex h-fit w-full flex-col overflow-hidden rounded-xl border border-white/8 bg-bg-panel shadow-[0_24px_80px_rgba(0,0,0,0.7)] focus:outline-none',
           MODAL_WIDTH[size],
         )}
       >
         <div className="flex items-center justify-between border-b border-white/6 px-5 py-3.5">
-          <h2 className="text-[15px] font-bold text-text">{title}</h2>
+          <h2 id={titleId} className="text-[15px] font-bold text-text">
+            {title}
+          </h2>
           <button
             type="button"
             onClick={onClose}
@@ -48,7 +105,8 @@ export function Modal({ title, open, onClose, children, size = 'md' }: ModalProp
         </div>
         <div className="overflow-y-auto overflow-x-hidden p-5">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

@@ -163,6 +163,15 @@ pub const INITIAL_VIRTUAL_SOL_RESERVES: f64 = 30000000000.0;
 pub const INITIAL_REAL_TOKEN_RESERVES: f64 = 793100000000000.0;
 pub const TOKEN_TOTAL_SUPPLY: f64 = 1000000000000000.0;
 
+/// The bonding-curve **genesis spot price** in the same units as a trade's
+/// `price_per_token` — whole SOL per raw token unit (token amounts stay raw in the
+/// decoder, SOL is scaled to whole). Constant for every Pump.fun mint:
+/// `virtual_sol / virtual_token` at curve genesis. Used as the dead-token launch
+/// baseline when a token has no recorded dev buy, so a no-dev-buy mint is still
+/// evaluated against a real floor instead of being silently immune to deadness.
+pub const PUMPFUN_GENESIS_PRICE_PER_RAW_TOKEN: f64 =
+    INITIAL_VIRTUAL_SOL_RESERVES / LAMPORTS_PER_SOL as f64 / INITIAL_VIRTUAL_TOKEN_RESERVES;
+
 /// Total token supply (raw units) for a token, accounting for Mayhem-mode
 /// tokens which are minted via `create_v2` with 2× the standard supply (2B vs
 /// 1B). Use this anywhere FDV / market cap is computed as `supply × price`.

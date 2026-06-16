@@ -14,6 +14,13 @@ import { Button } from 'components/ui/Button';
 
 type Tab = 'creators' | 'results';
 
+// Module-level, referentially-stable rowKey fns: each only reads the row, so a
+// single shared identity lets DataTable's row memo skip churn that an inline
+// `(r) => ...` would trigger on every poll-driven re-render.
+const creatorKey = (c: { wallet_address: string }) => c.wallet_address;
+const resultKey = (r: { analyzer_name: string; computed_at: string }) =>
+  `${r.analyzer_name}-${r.computed_at}`;
+
 export function AnalysisPage() {
   const [tab, setTab] = useState<Tab>('creators');
 
@@ -76,7 +83,7 @@ export function AnalysisPage() {
               <DataTable
                 columns={creatorColumns}
                 rows={creators}
-                rowKey={(c) => c.wallet_address}
+                rowKey={creatorKey}
                 searchable={false}
                 colFilters={false}
                 paginate={false}
@@ -108,7 +115,7 @@ export function AnalysisPage() {
               <DataTable
                 columns={analysisColumns}
                 rows={results}
-                rowKey={(r) => `${r.analyzer_name}-${r.computed_at}`}
+                rowKey={resultKey}
                 searchable={false}
                 colFilters={false}
                 paginate={false}

@@ -697,6 +697,20 @@ export function TokenPriceChart({
   const rangeSelectModeRef = useRef(rangeSelectMode);
   rangeSelectModeRef.current = rangeSelectMode;
 
+  // crosshair-move fires on every pixel; without coalescing each move triggers a
+  // full TokenPriceChart + ChartToolbar re-render. Collect the latest tooltip
+  // snapshot per move and flush all setters once per animation frame so hovering
+  // costs at most one render per frame instead of one per pixel.
+  const crosshairRafRef = useRef<number | null>(null);
+  const pendingCrosshairRef = useRef<{
+    crosshair: ChartCrosshairInfo | null;
+    barTooltip: ChartBarTooltipState | null;
+    swingTooltip: ChartSwingTooltipState | null;
+    chainTooltip: ChartChainTooltipState | null;
+    rangeTooltip: ChartRangeTooltipState | null;
+    walletMarkersTooltip: ChartWalletMarkersTooltipState | null;
+  } | null>(null);
+
   const athLineAvailable = athChartValue(athPriceInSol, metric, toValue) != null;
 
   useEffect(() => {
@@ -815,7 +829,58 @@ export function TokenPriceChart({
     });
     ro.observe(el);
 
+    const flushCrosshair = () => {
+      crosshairRafRef.current = null;
+      const next = pendingCrosshairRef.current;
+      if (!next) return;
+      setCrosshair(next.crosshair);
+      setBarTooltip(next.barTooltip);
+      setSwingTooltip(next.swingTooltip);
+      setChainTooltip(next.chainTooltip);
+      setRangeTooltip(next.rangeTooltip);
+      setWalletMarkersTooltip(next.walletMarkersTooltip);
+    };
+    const scheduleCrosshair = () => {
+      if (crosshairRafRef.current == null) {
+        crosshairRafRef.current = requestAnimationFrame(flushCrosshair);
+      }
+    };
+
     chart.subscribeCrosshairMove((param) => {
+      // Each move accumulates into a single snapshot flushed once per frame (see
+      // pendingCrosshairRef). Local setters below write the snapshot instead of
+      // calling React setters per pixel; the rAF coalesces them into one render.
+      const next = {
+        crosshair: null as ChartCrosshairInfo | null,
+        barTooltip: null as ChartBarTooltipState | null,
+        swingTooltip: null as ChartSwingTooltipState | null,
+        chainTooltip: null as ChartChainTooltipState | null,
+        rangeTooltip: null as ChartRangeTooltipState | null,
+        walletMarkersTooltip: null as ChartWalletMarkersTooltipState | null,
+      };
+      pendingCrosshairRef.current = next;
+      const setCrosshair = (v: ChartCrosshairInfo | null) => {
+        next.crosshair = v;
+      };
+      const setBarTooltip = (v: ChartBarTooltipState | null) => {
+        next.barTooltip = v;
+      };
+      const setSwingTooltip = (v: ChartSwingTooltipState | null) => {
+        next.swingTooltip = v;
+      };
+      const setChainTooltip = (v: ChartChainTooltipState | null) => {
+        next.chainTooltip = v;
+      };
+      const setRangeTooltip = (v: ChartRangeTooltipState | null) => {
+        next.rangeTooltip = v;
+      };
+      const setWalletMarkersTooltip = (v: ChartWalletMarkersTooltipState | null) => {
+        next.walletMarkersTooltip = v;
+      };
+      // Schedule the single per-frame flush; every early return below has already
+      // recorded its intent into `next` via the shadowed setters above.
+      scheduleCrosshair();
+
       // Hovering the chain label chip (not the band body) shows the chain totals
       // tooltip and suppresses every other tooltip.
       const onChainLabel =
@@ -1032,6 +1097,11 @@ export function TokenPriceChart({
     return () => {
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(onVisibleLogicalRangeChange);
       chart.timeScale().unsubscribeVisibleTimeRangeChange(onVisibleTimeRangeChange);
+      if (crosshairRafRef.current != null) {
+        cancelAnimationFrame(crosshairRafRef.current);
+        crosshairRafRef.current = null;
+      }
+      pendingCrosshairRef.current = null;
       ro.disconnect();
       markersPluginRef.current?.detach();
       markersPluginRef.current = null;
@@ -1284,13 +1354,18 @@ export function TokenPriceChart({
       hiTime: range.hi as UTCTimestamp,
       pairCount: highlightChain.pairCount,
     });
-  }, [highlightChain, showChainHighlight, groupMode, intervalSec, sortedTrades, showChart, style, bars]);
+    // `style` re-applies the highlight after a style switch recreates the series
+    // (and its plugin). `bars` is intentionally NOT a dep: a bars change on a tick
+    // reuses the existing series/plugin, so re-running per tick would only repaint.
+  }, [highlightChain, showChainHighlight, groupMode, intervalSec, sortedTrades, showChart, style]);
 
   // Render the committed range selection as a band with a duration chip. Keyed
-  // on style/grouping/bars so it re-applies after the series (and its plugin)
-  // is recreated; the live drag preview is driven directly from the pointer
+  // on style/grouping so it re-applies after the series (and its plugin) is
+  // recreated; the live drag preview is driven directly from the pointer
   // handlers below. `rangeSelectMode` is a dep so flipping the mode wipes any
-  // stale draft band left over from an interrupted drag.
+  // stale draft band left over from an interrupted drag. `bars` is intentionally
+  // NOT a dep: a per-tick bars change reuses the existing series/plugin, so
+  // re-running here would only repaint the unchanged band.
   useEffect(() => {
     const prim = rangeSelectPrimRef.current;
     if (!prim || !showChart) return;
@@ -1308,7 +1383,7 @@ export function TokenPriceChart({
       label,
       dashed: false,
     });
-  }, [selectedRange, rangeStats, rangeSelectMode, showChart, style, groupingKey, bars]);
+  }, [selectedRange, rangeStats, rangeSelectMode, showChart, style, groupingKey]);
 
   // Surface the committed range (with grouping context) to the parent so it can
   // list the range's trades below the chart. `selectedRange` is reset to null on

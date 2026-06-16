@@ -8,7 +8,8 @@ use tracing::info;
 use crate::config::constants::{
     total_supply_for, DEAD_DUST_VOLUME_SOL, DEAD_DUST_WINDOW_SECONDS, DEAD_MAX_LIQUIDITY_SOL,
     DEAD_MIN_AGE_SECONDS, DEAD_PRICE_PROXIMITY_RATIO, INITIAL_VIRTUAL_TOKEN_RESERVES,
-    LIFETIME_GAP_SECONDS, TOKEN_CACHE_EVICT_IDLE_SECONDS, TOKEN_CACHE_EVICT_INTERVAL_SECONDS,
+    LIFETIME_GAP_SECONDS, PUMPFUN_GENESIS_PRICE_PER_RAW_TOKEN, TOKEN_CACHE_EVICT_IDLE_SECONDS,
+    TOKEN_CACHE_EVICT_INTERVAL_SECONDS,
 };
 use crate::models::{token::Token, trade::Trade};
 
@@ -69,6 +70,12 @@ pub struct TokenState {
     pub initial_virtual_token_reserves: Option<f64>,
     /// Latest virtual token reserves snapshot.
     pub current_virtual_token_reserves: Option<f64>,
+    /// Latest known **real** SOL reserves — the dead-token liquidity signal
+    /// (`is_dead` Signal 1). Maintained from the chronologically newest trade that
+    /// carries a snapshot, NOT `trades.last()`, so a lag-inverted older trade
+    /// arriving last can't rewind it. Only advanced by trades that carry reserves,
+    /// so a reserve-less newest trade doesn't shadow the last real reading.
+    pub current_real_sol_reserves: Option<f64>,
     /// Latest computed market cap (SOL) if available.
     pub market_cap: Option<f64>,
     /// Current token price from the latest trade.
@@ -111,6 +118,7 @@ impl TokenState {
             last_trade_at: None,
             initial_virtual_token_reserves: None,
             current_virtual_token_reserves: None,
+            current_real_sol_reserves: None,
             market_cap: None,
             current_price: initial_price,
             ath_price: initial_price,
@@ -143,18 +151,25 @@ impl TokenState {
         }
 
         // Signal 1 — liquidity gone. Latest real SOL reserves below the floor.
-        // No reserve snapshot yet → can't confirm death, treat as alive.
-        let latest_liquidity = self.trades.last().and_then(|t| t.real_sol_reserves);
+        // Reads the maintained newest-by-block_time snapshot (not `trades.last()`,
+        // which gRPC index lag can leave pointing at an older trade). No snapshot
+        // yet → can't confirm death, treat as alive.
+        let latest_liquidity = self.current_real_sol_reserves;
         let liquidity_gone = matches!(latest_liquidity, Some(sol) if sol < DEAD_MAX_LIQUIDITY_SOL);
         if !liquidity_gone {
             return false;
         }
 
-        // Signal 2 — price round-tripped to (or below) launch price.
-        let price_at_launch = match (self.current_price, self.initial_price()) {
-            (Some(price), Some(init)) if init > 0.0 => {
-                price <= init * (1.0 + DEAD_PRICE_PROXIMITY_RATIO)
-            }
+        // Signal 2 — price round-tripped to (or below) launch price. The baseline
+        // is the token's own recorded dev-buy fill when known (self-calibrating to
+        // its recorded units); otherwise the bonding-curve genesis price — a
+        // constant for every Pump.fun mint — so a no-dev-buy mint is still evaluated
+        // against a real floor rather than being silently immune to deadness.
+        let baseline = self
+            .initial_price()
+            .unwrap_or(PUMPFUN_GENESIS_PRICE_PER_RAW_TOKEN);
+        let price_at_launch = match self.current_price {
+            Some(price) if baseline > 0.0 => price <= baseline * (1.0 + DEAD_PRICE_PROXIMITY_RATIO),
             _ => false,
         };
         if !price_at_launch {
@@ -162,13 +177,18 @@ impl TokenState {
         }
 
         // Signal 3 — only dust (or nothing) traded in the trailing window. Trades
-        // are oldest-first, so walk from the back and stop once outside the window.
+        // are appended in arrival order, which is *almost* block-time order but can
+        // briefly invert under gRPC index lag, so `filter` the whole retained tail
+        // rather than `take_while` from the back: a stray out-of-order older trade
+        // must not stop the walk early and under-count recent volume (which would
+        // risk a false-positive dead flag). Gated behind Signals 1+2, this only
+        // runs on already-drained, at-launch-price tokens — a short, low-volume
+        // tail — so scanning it in full stays cheap on the hot path.
         let cutoff = now - chrono::Duration::seconds(DEAD_DUST_WINDOW_SECONDS);
         let recent_volume: f64 = self
             .trades
             .iter()
-            .rev()
-            .take_while(|t| t.block_time >= cutoff)
+            .filter(|t| t.block_time >= cutoff)
             .map(|t| t.sol_amount)
             .sum();
         recent_volume <= DEAD_DUST_VOLUME_SOL
@@ -178,20 +198,28 @@ impl TokenState {
     pub fn add_trade(&mut self, trade: Trade) {
         self.volume_sol_total += trade.sol_amount;
         self.trade_count += 1;
-        self.last_trade_at = Some(trade.block_time);
 
-        // Update current price from the latest trade
         let price = trade.price_per_token;
-        self.current_price = Some(price);
 
-        // Update all-time high price
+        // All-time high is a max — order-independent, so always considered.
         if self.ath_price.is_none() || price > self.ath_price.unwrap_or(0.0) {
             self.ath_price = Some(price);
             self.ath_timestamp = Some(trade.block_time);
         }
 
-        self.update_reserves(&trade);
-        self.update_market_cap(price);
+        // "Latest" snapshots — last_trade_at, current_price, reserves, market cap —
+        // must track the chronologically newest trade, NOT merely the most recently
+        // appended one: gRPC index lag can deliver an older trade after a newer one
+        // (the same inversion `is_dead` Signal 3 defends against). Advance them only
+        // when this trade is at least as new as the newest seen, so a lag-delayed
+        // old trade can't rewind price/liquidity and mis-flag deadness.
+        let is_newest = self.last_trade_at.map_or(true, |t| trade.block_time >= t);
+        if is_newest {
+            self.last_trade_at = Some(trade.block_time);
+            self.current_price = Some(price);
+            self.update_reserves(&trade);
+            self.update_market_cap(price);
+        }
 
         self.push_trade_capped(trade);
     }
@@ -225,6 +253,12 @@ impl TokenState {
                 self.initial_virtual_token_reserves = Some(INITIAL_VIRTUAL_TOKEN_RESERVES);
             }
             self.current_virtual_token_reserves = Some(current);
+        }
+        // Newest known real SOL reserves for the dead-token liquidity signal. Only
+        // overwrite when this trade carries a snapshot, so a reserve-less newest
+        // trade doesn't shadow the last real reading.
+        if let Some(sol) = trade.real_sol_reserves {
+            self.current_real_sol_reserves = Some(sol);
         }
     }
 
@@ -511,6 +545,98 @@ mod tests {
         let now = Utc::now();
         let mut state = TokenState::new(token_with_launch(now - ChronoDuration::seconds(30), 1.0, 1000));
         state.add_trade(trade_at(now - ChronoDuration::seconds(10), 0.001, 1.0, 0.5));
+        assert!(!state.is_dead(now));
+    }
+
+    #[test]
+    fn alive_when_no_dev_buy_and_price_above_genesis() {
+        // No initial_buy_sol/initial_supply_token → Signal 2 falls back to the
+        // genesis floor. This dust trade's price sits far above genesis, so the
+        // token has NOT round-tripped to launch and stays alive — even with
+        // liquidity drained.
+        let now = Utc::now();
+        let token = token_created_at(now - ChronoDuration::hours(2)); // no launch fields
+        let mut state = TokenState::new(token);
+        assert!(state.initial_price().is_none());
+        state.add_trade(trade_at(now - ChronoDuration::seconds(30), 0.001, 1.0, 0.5));
+        assert!(!state.is_dead(now));
+    }
+
+    #[test]
+    fn dead_when_no_dev_buy_and_price_at_genesis_floor() {
+        // The fallback's point: a no-dev-buy mint is still evaluable. With price at
+        // the genesis floor, liquidity drained, and only dust trading, it is dead —
+        // the old None-baseline path would have left it permanently alive.
+        let now = Utc::now();
+        let token = token_created_at(now - ChronoDuration::hours(2)); // no launch fields
+        let mut state = TokenState::new(token);
+        assert!(state.initial_price().is_none());
+        // price_per_token == genesis floor (sol / tokens == constant / 1.0).
+        state.add_trade(trade_at(
+            now - ChronoDuration::seconds(30),
+            PUMPFUN_GENESIS_PRICE_PER_RAW_TOKEN,
+            1.0,
+            0.5,
+        ));
+        assert!(state.is_dead(now));
+    }
+
+    #[test]
+    fn alive_when_recovered_but_stale_trade_appended_last() {
+        // Signals 1 & 2 must read the chronologically-newest trade, not the
+        // last-*appended* one. A recovered token (healthy reserves, price well
+        // above launch) receives an OLD drained, at-launch dust trade last under
+        // gRPC index lag. Reading `trades.last()` / a last-write `current_price`
+        // would wrongly flag it dead; newest-by-block_time keeps it alive.
+        let now = Utc::now();
+        let mut state =
+            TokenState::new(token_with_launch(now - ChronoDuration::hours(2), 1.0, 1000));
+        // Both trades are dust by SOL (so Signal 3 alone reads "quiet" and would
+        // flag dead) — only Signals 1 & 2 separate the verdict. Newest by time: a
+        // dust buy, but with healthy reserves (5.0) and price (0.5 ≫ launch 0.001).
+        state.add_trade(trade_at(now - ChronoDuration::seconds(20), 0.001, 0.002, 5.0));
+        // Appended last but timestamped earlier: drained reserves, at-launch price.
+        state.add_trade(trade_at(now - ChronoDuration::seconds(120), 0.001, 1.0, 0.2));
+        assert!(!state.is_dead(now));
+    }
+
+    #[test]
+    fn dead_despite_out_of_order_trade_in_window() {
+        // Signal 3 must sum the WHOLE in-window tail, not stop at the first
+        // out-of-order older trade. Append a recent dust trade, then a trade whose
+        // block_time is *earlier* (gRPC index lag inverting arrival order) — both
+        // are dust and within the window, so the token is still dead. A `take_while`
+        // from the back would stop at the older trade and could misjudge.
+        let now = Utc::now();
+        let mut state =
+            TokenState::new(token_with_launch(now - ChronoDuration::hours(2), 1.0, 1000));
+        state.add_trade(trade_at(now - ChronoDuration::seconds(30), 0.001, 1.0, 0.5));
+        // Arrives after, but timestamped earlier — still inside the dust window.
+        state.add_trade(trade_at(now - ChronoDuration::seconds(90), 0.001, 1.0, 0.5));
+        assert!(state.is_dead(now));
+    }
+
+    #[test]
+    fn alive_when_out_of_order_trade_pushes_window_volume_over_dust() {
+        // The flip side, and the case that actually distinguishes `filter` from
+        // `take_while`: a non-dust trade sits inside the window, but the
+        // newest-*appended* trade is timestamped *outside* the window (arrival order
+        // inverted by index lag). A back-walk (`take_while`) hits the out-of-window
+        // trade first and stops, missing the big trade → wrongly flags dead.
+        // `filter` scans the whole tail, counts the big trade, and keeps it alive.
+        let now = Utc::now();
+        let mut state =
+            TokenState::new(token_with_launch(now - ChronoDuration::hours(2), 1.0, 1000));
+        // In-window, well above the dust threshold.
+        state.add_trade(trade_at(now - ChronoDuration::seconds(60), 1.0, 1000.0, 0.5));
+        // Appended last but timestamped beyond DEAD_DUST_WINDOW_SECONDS — gates a
+        // back-walk before it can reach the big trade above.
+        state.add_trade(trade_at(
+            now - ChronoDuration::seconds(DEAD_DUST_WINDOW_SECONDS + 60),
+            0.001,
+            1.0,
+            0.5,
+        ));
         assert!(!state.is_dead(now));
     }
 }

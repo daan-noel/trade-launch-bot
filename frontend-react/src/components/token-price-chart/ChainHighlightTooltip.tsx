@@ -1,13 +1,6 @@
 import { CHART_COLORS } from './constants';
 import type { ChartChainTooltipState } from './types';
-import { formatDecimalTrim } from 'utils/format';
-
-function formatDuration(ms: number): string {
-  const sec = ms / 1000;
-  if (sec < 60) return `${formatDecimalTrim(sec, 1)}s`;
-  if (sec < 3600) return `${formatDecimalTrim(sec / 60, 1)}m`;
-  return `${formatDecimalTrim(sec / 3600, 1)}h`;
-}
+import { formatDecimalTrim, formatDurationMs } from 'utils/format';
 
 /** Buy/sell split of the trades inside the chain window. */
 export interface ChainTradeCounts {
@@ -58,7 +51,7 @@ export function ChainHighlightTooltip({
         >
           LONGEST CHAIN
         </span>
-        <span style={{ color: CHART_COLORS.panelTextDim }}>{formatDuration(durationMs)}</span>
+        <span style={{ color: CHART_COLORS.panelTextDim }}>{formatDurationMs(durationMs)}</span>
       </div>
       <div className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
         <span style={{ color: CHART_COLORS.panelTextDim }}>Pairs</span>

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type MouseEvent } from 'react';
+import { memo, useEffect, useRef, useState, type MouseEvent } from 'react';
 import { cn } from 'lib/cn';
 import { truncate } from 'utils/format';
 import { getAddressExplorerLinks, type AddressKind } from 'utils/addressLinks';
@@ -93,7 +93,7 @@ const iconBtnLg =
 
 const HOVER_DELAY_MS = 500;
 
-export function AddressDisplay({
+function AddressDisplayBase({
   address,
   kind,
   display,
@@ -106,6 +106,7 @@ export function AddressDisplay({
   const [copied, setCopied] = useState(false);
   const [showActions, setShowActions] = useState(isFull);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const links = getAddressExplorerLinks(kind, address);
   const label = isFull ? address : (display ?? truncate(address, truncateLen));
   const iconSize = isFull ? 'lg' : 'sm';
@@ -130,7 +131,20 @@ export function AddressDisplay({
     setShowActions(false);
   };
 
-  useEffect(() => () => clearHoverTimer(), []);
+  const clearCopyTimer = () => {
+    if (copyTimerRef.current) {
+      clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = null;
+    }
+  };
+
+  useEffect(
+    () => () => {
+      clearHoverTimer();
+      clearCopyTimer();
+    },
+    [],
+  );
 
   const stop = (e: MouseEvent) => {
     if (stopPropagation) e.stopPropagation();
@@ -141,7 +155,8 @@ export function AddressDisplay({
     try {
       await navigator.clipboard.writeText(address);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      clearCopyTimer();
+      copyTimerRef.current = setTimeout(() => setCopied(false), 1500);
     } catch {
       /* ignore */
     }
@@ -207,3 +222,5 @@ export function AddressDisplay({
     </div>
   );
 }
+
+export const AddressDisplay = memo(AddressDisplayBase);

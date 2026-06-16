@@ -1,17 +1,9 @@
 import { CHART_COLORS } from './constants';
 import { cn } from './cn';
 import type { ChartSwingTooltipState } from './types';
-import { formatDecimalTrim } from 'utils/format';
+import { formatDecimalTrim, formatDurationMs } from 'utils/format';
 import { useTimezone } from 'context/TimezoneContext';
 import { formatTimestampMsCompact } from 'utils/date';
-
-function formatDuration(ms: number | undefined): string {
-  if (ms == null) return '—';
-  const sec = ms / 1000;
-  if (sec < 60) return `${formatDecimalTrim(sec, 1)}s`;
-  if (sec < 3600) return `${formatDecimalTrim(sec / 60, 1)}m`;
-  return `${formatDecimalTrim(sec / 3600, 1)}h`;
-}
 
 export function SwingCrosshairTooltip({
   tooltip,
@@ -57,7 +49,7 @@ export function SwingCrosshairTooltip({
           {isHigh ? 'SWING HIGH' : 'SWING LOW'}
         </span>
         <span style={{ color: CHART_COLORS.panelTextDim }}>
-          {formatDuration(leg.duration_ms)}
+          {formatDurationMs(leg.duration_ms)}
         </span>
       </div>
       <div className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">

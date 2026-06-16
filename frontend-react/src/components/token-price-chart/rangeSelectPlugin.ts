@@ -12,6 +12,7 @@ import type {
   Logical,
 } from 'lightweight-charts';
 import { CHART_COLORS } from './constants';
+import { measureLabelWidth } from './labelMetrics';
 
 /**
  * A user-drawn time range to highlight as a full-height band.
@@ -54,17 +55,6 @@ const LABEL_TOP = 6; // CSS px from the top of the pane to the chip
 const LABEL_HEIGHT = 16; // CSS px chip height
 const LABEL_FONT = 'bold 10px sans-serif'; // chip text font (CSS px)
 const MIN_HALF = 3; // CSS px minimum half-bar so narrow bands stay visible
-
-/** Cached offscreen 2D context for measuring chip text width in CSS px. */
-let measureCtx: CanvasRenderingContext2D | null | undefined;
-function measureLabelWidth(text: string): number {
-  if (measureCtx === undefined) {
-    measureCtx = document.createElement('canvas').getContext('2d');
-  }
-  if (!measureCtx) return text.length * 6; // rough fallback if no 2D context
-  measureCtx.font = LABEL_FONT;
-  return measureCtx.measureText(text).width;
-}
 
 function roundRectPath(
   ctx: CanvasRenderingContext2D,
@@ -219,7 +209,7 @@ export class RangeSelectPlugin
     const labelRect =
       label != null
         ? (() => {
-            const chipWidth = measureLabelWidth(label) + LABEL_PAD_X * 2;
+            const chipWidth = measureLabelWidth(label, LABEL_FONT) + LABEL_PAD_X * 2;
             return {
               left: (left + right) / 2 - chipWidth / 2,
               top: LABEL_TOP,

@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { getTimezoneSelectOptions } from 'components/token-price-chart/chartTimezone';
 import { useTimezone } from 'context/TimezoneContext';
+import { Select } from 'components/ui/Select';
 import { cn } from 'lib/cn';
 
 type TimezoneSelectProps = {
@@ -13,13 +14,15 @@ export function TimezoneSelect({ className, disabled }: TimezoneSelectProps) {
   const options = useMemo(() => getTimezoneSelectOptions(timezone), [timezone]);
 
   return (
-    <select
+    <Select
       value={timezone}
       disabled={disabled}
       onChange={(e) => setTimezone(e.target.value)}
       title="Display timezone"
+      // Keep the toolbar-pill look (semibold, max-width, hover) layered over the
+      // shared field base via Select's merged className.
       className={cn(
-        'max-w-[14rem] truncate rounded-lg border border-white/6 bg-white/3 px-2 py-1 text-[11px] font-semibold text-text-dim transition-colors hover:text-text focus:outline-none focus:ring-1 focus:ring-primary/30',
+        'max-w-[14rem] truncate rounded-lg !border-white/6 !bg-white/3 font-semibold text-text-dim transition-colors hover:text-text focus:ring-1 focus:ring-primary/30',
         disabled && 'cursor-not-allowed opacity-40',
         className,
       )}
@@ -29,6 +32,6 @@ export function TimezoneSelect({ className, disabled }: TimezoneSelectProps) {
           {opt.label}
         </option>
       ))}
-    </select>
+    </Select>
   );
 }

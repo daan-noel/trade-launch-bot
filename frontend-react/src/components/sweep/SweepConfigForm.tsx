@@ -221,8 +221,7 @@ export function SweepConfigForm({ strategyId, axes, storageKey, running, onRun }
     for (const a of axes) {
       // Backend types: take_profit/stop_loss are number[]; the rest (number|null)[].
       const vals = parseAxis(axesText[a.key] ?? '', a.nullable);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (spec as any)[a.key] = a.nullable ? vals : vals.filter((v): v is number => v !== null);
+      spec[a.key] = a.nullable ? vals : vals.filter((v): v is number => v !== null);
     }
     return spec as GroupedSweepStartArgs['axes'];
   }

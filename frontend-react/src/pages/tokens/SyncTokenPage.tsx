@@ -16,7 +16,7 @@ import { usePriceUnit } from 'context/PriceUnitContext';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { syncToken } from 'services/api';
 import { useGetProfilesQuery, useGetSettingsQuery } from 'store/apiSlice';
-import type { SyncProgressEvent, TokenDetailRecord, WalletProfile } from 'types';
+import type { SyncProgressEvent, TokenDetailRecord, TradeRecord, WalletProfile } from 'types';
 import type { AppDispatch, RootState } from '../../store';
 import {
   cacheSyncPreview,
@@ -100,6 +100,11 @@ function parseMints(raw: string): string[] {
 
 /** A synced-tokens table row: a sync result, with its token record (null on failure). */
 type SyncedRow = SyncResultItem & { token: TokenDetailRecord | null };
+
+/** Stable row-key refs so a SOL/USD or live-trade tick doesn't break DataTable's
+ *  row memo by handing it a fresh function identity each render. */
+const syncedRowKey = (r: SyncedRow) => r.mint;
+const tradeRowKey = (t: TradeRecord) => `${t.tx_signature}-${t.leg_index}`;
 
 /** Compact column set for the synced-tokens picker table. */
 function syncedTokenColumns(
@@ -344,6 +349,17 @@ export function SyncTokenPage() {
     dispatch(clearSyncOutput());
   }, [dispatch]);
 
+  // Stable select handler so the synced-tokens DataTable's row memo holds across
+  // SOL/USD + live-trade ticks (an inline arrow would re-create it every render).
+  const handleSelectSynced = useCallback(
+    (key: string | null) => {
+      if (key && syncedTokens.some((t) => t.token.mint_address === key)) {
+        dispatch(setSelectedMint(key));
+      }
+    },
+    [syncedTokens, dispatch],
+  );
+
   // Drop a single mint from the textarea (used by the input status table). Rebuilds
   // from the parsed, deduped list so the remaining mints stay one-per-line.
   const handleRemoveMint = useCallback((target: string) => {
@@ -580,13 +596,9 @@ export function SyncTokenPage() {
           <DataTable
             columns={syncedColumns}
             rows={syncedRows}
-            rowKey={(r) => r.mint}
+            rowKey={syncedRowKey}
             selectedKey={selectedMint}
-            onSelect={(key) => {
-              if (key && syncedTokens.some((t) => t.token.mint_address === key)) {
-                dispatch(setSelectedMint(key));
-              }
-            }}
+            onSelect={handleSelectSynced}
             defaultPageSize={25}
             searchable
             hoverable
@@ -632,7 +644,7 @@ export function SyncTokenPage() {
             key={selected.token.mint_address}
             columns={tradeColumns}
             rows={selected.trades}
-            rowKey={(t) => `${t.tx_signature}-${t.leg_index}`}
+            rowKey={tradeRowKey}
             defaultPageSize={25}
             searchable
             colFilters

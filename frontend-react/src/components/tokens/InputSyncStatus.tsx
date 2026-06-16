@@ -1,12 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { fetchSyncPreview, fetchTokenDetail } from 'services/api';
+import { fetchSyncPreview } from 'services/api';
 import { RelativeTimeCell } from 'components/table/RelativeTimeCell';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
 import type { AppDispatch, RootState } from '../../store';
+import { apiSlice } from 'store/apiSlice';
 import { cacheSyncPreview } from 'store/syncTokenSlice';
+
+/**
+ * Max DB-freshness lookups in flight at once. The input can hold hundreds of
+ * mints; firing one fetch each (the old `Promise.all`) hammered the backend
+ * with an unbounded burst. We drain the list through a small fixed pool of
+ * workers instead.
+ */
+const FRESHNESS_CONCURRENCY = 5;
+
+/**
+ * Max "to fetch" preview counts in flight at once. These hit Helius (slow /
+ * credit-costly), so a long mint list is drained through a small pool rather
+ * than fired all at once.
+ */
+const PREVIEW_CONCURRENCY = 4;
 
 type MintStatus =
   | { state: 'loading' }
@@ -112,24 +128,40 @@ export function InputSyncStatus({
         for (const mint of mints) next[mint] = prev[mint] ?? { state: 'loading' };
         return next;
       });
-      void Promise.all(
-        mints.map(async (mint): Promise<readonly [string, MintStatus]> => {
+      // Drain the mint list through a bounded pool of workers (instead of one
+      // request per mint at once). Each lookup goes through the shared RTK
+      // `getTokenDetail` cache — deduped with the Tokens/TPSL detail views and
+      // retained, so re-typing or revisiting a mint resolves without a refetch
+      // — and commits its row as it lands so the table fills in progressively.
+      const queue = mints.slice();
+      const worker = async () => {
+        for (;;) {
+          const mint = queue.shift();
+          if (mint === undefined || cancelled) return;
+          let status: MintStatus;
           try {
-            const d = await fetchTokenDetail(mint);
-            return [mint, { state: 'found', symbol: d.symbol, lastSyncedAt: d.last_synced_at }];
+            const sub = dispatch(apiSlice.endpoints.getTokenDetail.initiate(mint));
+            try {
+              const d = await sub.unwrap();
+              status = { state: 'found', symbol: d.symbol, lastSyncedAt: d.last_synced_at };
+            } finally {
+              sub.unsubscribe();
+            }
           } catch {
-            return [mint, { state: 'missing' }];
+            status = { state: 'missing' };
           }
-        }),
-      ).then((entries) => {
-        if (!cancelled) setStatuses(Object.fromEntries(entries));
-      });
+          if (cancelled) return;
+          setStatuses((prev) => ({ ...prev, [mint]: status }));
+        }
+      };
+      const pool = Math.min(FRESHNESS_CONCURRENCY, queue.length);
+      for (let i = 0; i < pool; i++) void worker();
     }, 400);
     return () => {
       cancelled = true;
       clearTimeout(handle);
     };
-  }, [mints, refreshSignal]);
+  }, [mints, refreshSignal, dispatch]);
 
   // "To fetch" estimate (hits Helius to count signatures). Only fetches mints
   // whose count isn't already cached for the current post-migrate setting, so
@@ -151,14 +183,19 @@ export function InputSyncStatus({
         for (const m of missing) next[`${m}|${includePostMigrate}`] = { state: 'loading' };
         return next;
       });
-      // Fire each request independently and commit its result the moment it
-      // resolves, so a row's count shows as soon as it's fetched instead of
-      // waiting for the whole batch to finish.
-      for (const m of missing) {
-        const key = `${m}|${includePostMigrate}`;
-        inFlight.current.add(key);
-        void fetchSyncPreview(m, includePostMigrate)
-          .then((p) => {
+      // Drain the missing mints through a bounded pool, committing each result
+      // the moment it resolves so a row's count shows as soon as it's fetched
+      // instead of waiting for the whole batch — without firing every Helius
+      // count request at once.
+      const queue = missing.slice();
+      const worker = async () => {
+        for (;;) {
+          const m = queue.shift();
+          if (m === undefined) return;
+          const key = `${m}|${includePostMigrate}`;
+          inFlight.current.add(key);
+          try {
+            const p = await fetchSyncPreview(m, includePostMigrate);
             dispatch(
               cacheSyncPreview({
                 key,
@@ -176,14 +213,15 @@ export function InputSyncStatus({
               delete next[key];
               return next;
             });
-          })
-          .catch(() => {
+          } catch {
             setPending((prev) => ({ ...prev, [key]: { state: 'error' } }));
-          })
-          .finally(() => {
+          } finally {
             inFlight.current.delete(key);
-          });
-      }
+          }
+        }
+      };
+      const pool = Math.min(PREVIEW_CONCURRENCY, queue.length);
+      for (let i = 0; i < pool; i++) void worker();
     }, 500);
     return () => clearTimeout(handle);
   }, [mints, refreshSignal, includePostMigrate, dispatch]);

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import {
   CHART_COLORS,
   CHART_GROUP_MODES,
@@ -285,8 +285,9 @@ export function ChartToolbar({
   onRangeSelectModeChange,
 }: ChartToolbarProps) {
   const intervalsDisabled = groupMode === 'slot';
-  const formatChartPrice = createChartPriceFormatter(priceUnit);
-  const formatVol = createChartPriceFormatter('SOL');
+  // Memoize so crosshair-move re-renders don't rebuild the formatters per pixel.
+  const formatChartPrice = useMemo(() => createChartPriceFormatter(priceUnit), [priceUnit]);
+  const formatVol = useMemo(() => createChartPriceFormatter('SOL'), []);
 
   const crosshairLine = crosshair ? (
     <BarCrosshairFields

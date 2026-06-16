@@ -221,10 +221,11 @@ export function FilterPanel({ filters, onApply, onClear }: FilterPanelProps) {
   );
 
   const draftCount = activeFilterCount(draft);
-  const dirty = useMemo(
-    () => JSON.stringify(draft) !== JSON.stringify(filters),
-    [draft, filters],
-  );
+  // Serialize each side once and only when it changes, so a keystroke (which
+  // only mutates `draft`) doesn't re-stringify the unchanged applied `filters`.
+  const draftJson = useMemo(() => JSON.stringify(draft), [draft]);
+  const filtersJson = useMemo(() => JSON.stringify(filters), [filters]);
+  const dirty = draftJson !== filtersJson;
 
   return (
     <form

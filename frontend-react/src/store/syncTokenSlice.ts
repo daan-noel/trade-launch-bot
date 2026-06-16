@@ -19,6 +19,15 @@ export type SyncPreviewData = {
   totalCapped: boolean;
 };
 
+/**
+ * Upper bound on the heavy per-token output (results + their token/trade
+ * records) retained in Redux. Sync runs over large mint lists would otherwise
+ * grow these arrays — and the O(n) merge scan over them — without limit for the
+ * whole session. We keep the most-recent {@link MAX_RETAINED_TOKENS} in
+ * first-seen order and evict the oldest, dropping their cached previews too.
+ */
+const MAX_RETAINED_TOKENS = 200;
+
 interface SyncTokenState {
   /** Per-mint ok/fail results, accumulated across sync runs. */
   results: SyncResultItem[];
@@ -52,12 +61,16 @@ const syncTokenSlice = createSlice({
   name: 'syncToken',
   initialState,
   reducers: {
-    /** Reset all accumulated sync output and the mint cache. */
+    /** Reset all accumulated sync output, the mint cache, and cached previews. */
     clearSyncOutput(state) {
       state.results = [];
       state.syncedTokens = [];
       state.selectedMint = null;
       state.syncedMints = [];
+      // Drop cached previews too: with the output gone the user is starting
+      // fresh, so any re-added mint should be re-counted rather than read a
+      // stale estimate. (Previously these leaked for the whole session.)
+      state.syncPreviews = {};
     },
     /** Store a freshly fetched sync preview under its `${mint}|${flag}` key. */
     cacheSyncPreview(
@@ -65,17 +78,6 @@ const syncTokenSlice = createSlice({
       action: PayloadAction<{ key: string; data: SyncPreviewData }>,
     ) {
       state.syncPreviews[action.payload.key] = action.payload.data;
-    },
-    /**
-     * Drop cached previews for the given mints (both post-migrate variants) so
-     * they're re-counted — used after a sync changes a mint's pending/total tx
-     * counts.
-     */
-    invalidateSyncPreviews(state, action: PayloadAction<string[]>) {
-      for (const mint of action.payload) {
-        delete state.syncPreviews[`${mint}|true`];
-        delete state.syncPreviews[`${mint}|false`];
-      }
     },
     /**
      * Merge a completed (or partially aborted) sync run into the existing
@@ -107,6 +109,24 @@ const syncTokenSlice = createSlice({
       for (const r of action.payload.results) {
         if (!state.syncedMints.includes(r.mint)) state.syncedMints.push(r.mint);
       }
+      // Cap the heavy output so a long session over many mints can't grow these
+      // arrays (and the merge scan above) unbounded. Evict the oldest results
+      // and drop their token/trade records + cached previews; `syncedMints`
+      // stays (cheap string list) so the user can still reload the full set.
+      if (state.results.length > MAX_RETAINED_TOKENS) {
+        const evicted = state.results.splice(
+          0,
+          state.results.length - MAX_RETAINED_TOKENS,
+        );
+        const dropped = new Set(evicted.map((r) => r.mint));
+        state.syncedTokens = state.syncedTokens.filter(
+          (t) => !dropped.has(t.token.mint_address),
+        );
+        for (const mint of dropped) {
+          delete state.syncPreviews[`${mint}|true`];
+          delete state.syncPreviews[`${mint}|false`];
+        }
+      }
       // Keep the current selection if it still exists; otherwise select the
       // first newly synced token, falling back to the first synced overall.
       const stillValid =
@@ -130,7 +150,6 @@ export const {
   mergeSyncOutput,
   setSelectedMint,
   cacheSyncPreview,
-  invalidateSyncPreviews,
 } = syncTokenSlice.actions;
 
 export default syncTokenSlice.reducer;
