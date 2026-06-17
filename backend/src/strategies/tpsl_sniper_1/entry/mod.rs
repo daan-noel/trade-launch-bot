@@ -119,9 +119,7 @@ fn check_compute_unit_limit(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome
         return CriterionOutcome::NotConfigured;
     };
     match token.cu_limit {
-        Some(v) if within_tolerance(v as f64, rule_val as f64, rule.tolerance_pct, 1e-15) => {
-            CriterionOutcome::Satisfied
-        }
+        Some(v) if v == rule_val => CriterionOutcome::Satisfied,
         _ => CriterionOutcome::Rejected,
     }
 }
@@ -131,9 +129,7 @@ fn check_compute_unit_price(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome
         return CriterionOutcome::NotConfigured;
     };
     match token.cu_price {
-        Some(v) if within_tolerance(v as f64, rule_val as f64, rule.tolerance_pct, 1e-9) => {
-            CriterionOutcome::Satisfied
-        }
+        Some(v) if v == rule_val => CriterionOutcome::Satisfied,
         _ => CriterionOutcome::Rejected,
     }
 }
