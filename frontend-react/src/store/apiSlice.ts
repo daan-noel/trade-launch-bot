@@ -116,6 +116,10 @@ export const TOKEN_TRADES_LIMIT = 5_000;
 
 export interface TokensResponse {
   total: number;
+  /** Filtered count restricted to the live, cache-tracked subset (≤ `total`).
+   *  Defaulted to `total` for the simple `getTokens` endpoint, which doesn't
+   *  emit it. */
+  tracked: number;
   items: TokenRecord[];
 }
 
@@ -145,6 +149,9 @@ export interface AnalysisResponse {
 function withCreatedMs(r: TokensResponse): TokensResponse {
   return {
     total: r.total,
+    // `getTokens` (the simple list) omits `tracked`; fall back to `total` so the
+    // field is always a number for consumers.
+    tracked: r.tracked ?? r.total,
     items: r.items.map((t) => ({ ...t, created_at_ms: Date.parse(t.created_at) })),
   };
 }

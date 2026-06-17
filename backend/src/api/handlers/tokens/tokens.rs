@@ -251,7 +251,12 @@ impl From<&TokenState> for TokenDetail {
 
 #[derive(Serialize)]
 pub struct TokensListResponse {
+    /// Filtered count over the whole merged universe (live cache overlaying the
+    /// DB base) — what the table's pager needs.
     pub total: usize,
+    /// Filtered count restricted to the live, cache-tracked subset. Always
+    /// `<= total`; the UI shows it alongside `total` as "tracked vs all".
+    pub tracked: usize,
     pub items: Vec<TokenSummary>,
 }
 
@@ -378,6 +383,10 @@ pub async fn list_tokens(
         // `total` is the FILTERED count — that's what the table's pager needs.
         let total = matched.len();
 
+        // Same reduction, restricted to the live cache-tracked subset. Cheap: the
+        // resident set is small (post-eviction) relative to the merged universe.
+        let tracked = snapshot.tracked_filtered_count(|t| q.matches(t, now));
+
         // Sorting a chain column? Compute each matched mint's key from the raw
         // legs stashed under the run, grouped at the requested latency. Cheap
         // (a handful of legs per mint) and only over the filtered set. Mints the
@@ -414,7 +423,7 @@ pub async fn list_tokens(
             .take(limit)
             .cloned()
             .collect();
-        let resp = TokensListResponse { total, items };
+        let resp = TokensListResponse { total, tracked, items };
 
         // Serialize + fingerprint here, off the async worker pool. The ETag is a
         // content hash of the page bytes, so a poll that produces a byte-identical

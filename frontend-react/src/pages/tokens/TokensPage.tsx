@@ -118,6 +118,9 @@ export function TokensPage() {
   if (tokensData?.items) lastItemsRef.current = tokensData.items;
   const tokens = tokensData?.items ?? lastItemsRef.current;
   const total = tokensData?.total ?? 0;
+  // Live, cache-tracked subset of `total` (≤ total) — shown beside it so the
+  // page reports both the whole universe and the actively-tracked count.
+  const tracked = tokensData?.tracked ?? 0;
   const error = apiErrorMessage(tokensError, 'Failed to load tokens');
 
   // Warm the adjacent pages so forward/back paging resolves from cache instead
@@ -269,7 +272,10 @@ export function TokensPage() {
       <div className="mb-3.5 flex flex-wrap items-center gap-3">
         <h2 className="text-lg font-extrabold text-text">Tokens</h2>
         <Badge variant="primary" className="font-mono">
-          {total} {anyActive ? 'matched' : 'total'}
+          {total} {anyActive ? 'matched' : 'all'}
+        </Badge>
+        <Badge variant="neutral" className="font-mono">
+          {tracked} tracked
         </Badge>
         <StatusButton
           state={live ? 'live' : 'dead'}

@@ -61,6 +61,13 @@ impl TokenListSnapshot {
         }
     }
 
+    /// Count of live (cache-tracked) rows that satisfy `pred`. Reported beside the
+    /// merged `total` so the UI can show "tracked vs all". Scans only `live_rows`
+    /// (the small resident set), never the DB base.
+    pub fn tracked_filtered_count(&self, mut pred: impl FnMut(&TokenSummary) -> bool) -> usize {
+        self.live_rows.iter().filter(|t| pred(t)).count()
+    }
+
     /// Merged view — live cache overlaying the DB base — newest-first by
     /// `created_at`, keeping only rows that satisfy `pred`. A two-pointer merge of
     /// the two desc-sorted sources: it returns borrows (no clone), and DB rows
