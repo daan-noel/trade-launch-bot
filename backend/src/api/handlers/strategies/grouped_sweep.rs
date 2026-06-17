@@ -49,6 +49,13 @@ pub struct StartGroupedSweepBody {
     /// Fingerprint fields to group by (exact-value). Empty ⇒ one "ALL" group.
     #[serde(default)]
     pub group_by: Vec<GroupField>,
+    /// Optional exact-set instruction-label filter: when set (and non-empty),
+    /// restrict the corpus to tokens whose normalized `ix_labels` set EXACTLY
+    /// equals these labels, then sweep that slice. The page offers this as the
+    /// alternative to grouping by `ix_labels` — it's disabled there when the
+    /// `IxLabels` group-by is selected. Empty/omitted ⇒ no filter.
+    #[serde(default)]
+    pub ix_labels_filter: Option<Vec<String>>,
     /// Drop groups with fewer than this many tokens before sweeping.
     #[serde(default = "default_min_tokens")]
     pub min_tokens: usize,
@@ -279,6 +286,31 @@ async fn run_grouped_sweep_job(
         tracing::error!("grouped sweep: attach_fingerprints failed: {e}");
         return HttpResponse::InternalServerError()
             .json(serde_json::json!({"error": e.to_string()}));
+    }
+    // Optional exact-set ix_labels filter (applied post-fingerprint, in-memory so
+    // the unfiltered Parquet corpus cache is reused across filter values): keep only
+    // tokens whose label set equals the requested set. Normalize the request set the
+    // same way the fingerprint is, so the `==` is order/dup-insensitive. An empty
+    // request set is "no filter" (not "tokens with no labels").
+    if let Some(want) = b
+        .ix_labels_filter
+        .as_ref()
+        .filter(|f| !f.is_empty())
+        .map(|f| crate::sweep::grouping::normalize_label_vec(f.clone()))
+    {
+        let before = corpus.tokens.len();
+        corpus.tokens.retain(|t| t.fp.ix_labels == want);
+        tracing::info!(
+            kept = corpus.tokens.len(),
+            dropped = before - corpus.tokens.len(),
+            labels = ?want,
+            "grouped sweep: ix_labels exact-set filter applied"
+        );
+        if corpus.tokens.is_empty() {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "no tokens match that instruction-label filter — adjust the labels or widen the selection"
+            }));
+        }
     }
     // Corpus is fully resident here — the Phase 0 baseline's first peak (every
     // streaming phase is judged against this RSS/seconds reading).

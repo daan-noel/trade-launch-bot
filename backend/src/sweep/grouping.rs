@@ -78,10 +78,19 @@ pub fn extract_lamports(instruction: Option<&Value>, key: &str) -> Option<i64> {
 
 /// Sort + dedup an instruction-labels JSON array into stable strings.
 pub fn normalize_labels(labels: &Value) -> Vec<String> {
-    let mut v: Vec<String> = labels
+    let v: Vec<String> = labels
         .as_array()
         .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
         .unwrap_or_default();
+    normalize_label_vec(v)
+}
+
+/// Sort + dedup a label `Vec` into the same stable form `ix_labels` keys on, so an
+/// exact-set comparison against a [`TokenFingerprint::ix_labels`] is order- and
+/// duplicate-insensitive. Shared by [`normalize_labels`] and the grouped-sweep
+/// ix-labels corpus filter (the filter set must normalize identically to the
+/// fingerprint it's matched against).
+pub fn normalize_label_vec(mut v: Vec<String>) -> Vec<String> {
     v.sort();
     v.dedup();
     v

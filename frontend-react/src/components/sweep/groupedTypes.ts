@@ -185,6 +185,11 @@ export interface GroupedSweepStartArgs {
   created_before?: string;
   curve_only?: boolean;
   group_by: GroupField[];
+  /** Exact-set instruction-label filter — restrict the corpus to tokens whose
+   *  `ix_labels` set equals these labels, then sweep. The page sends this only
+   *  when grouping by `ix_labels` is OFF (the two are mutually exclusive: group
+   *  by the label set, or pin a single set and sweep it). Omitted ⇒ no filter. */
+  ix_labels_filter?: string[];
   min_tokens?: number;
   /** `grid` | `random:N` | `lhs:N`. */
   method?: string;

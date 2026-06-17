@@ -2,7 +2,7 @@ import { useMemo, type ReactNode } from 'react';
 import { cn } from 'lib/cn';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { Button } from 'components/ui/Button';
-import { Input } from 'components/ui/Input';
+import { Input, Textarea } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { Checkbox } from 'components/ui/Checkbox';
 import { Badge } from 'components/ui/Badge';
@@ -111,6 +111,9 @@ interface SweepConfig {
   createdAfter: string;
   createdBefore: string;
   groupBy: GroupField[];
+  /** Raw JSON-array text for the exact-set ix_labels corpus filter. Used only
+   *  when the `ix_labels` group-by is OFF (the textarea is disabled otherwise). */
+  ixLabelsFilter: string;
   axesText: Record<string, string>;
   methodKind: 'grid' | 'random' | 'refine';
   randomN: number;
@@ -129,6 +132,7 @@ function defaultSweepConfig(axes: AxisDef[]): SweepConfig {
     createdAfter: '',
     createdBefore: '',
     groupBy: ['cu_price'],
+    ixLabelsFilter: '',
     axesText: defaultAxesText(axes),
     methodKind: 'grid',
     randomN: 500,
@@ -157,6 +161,26 @@ function parseAxis(text: string, nullable: boolean): (number | null)[] {
   return out;
 }
 
+/** Parse the ix_labels filter textarea (a JSON array of strings) into a label
+ *  set, or an error message. Empty text ⇒ no filter (`null` labels, no error).
+ *  Whitespace-only labels are dropped; an array that parses to no usable labels
+ *  is treated as no filter so an empty `[]` doesn't accidentally pin "no labels". */
+function parseIxLabelsFilter(text: string): { labels: string[] | null; error: string | null } {
+  const t = text.trim();
+  if (t === '') return { labels: null, error: null };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(t);
+  } catch {
+    return { labels: null, error: 'Invalid JSON' };
+  }
+  if (!Array.isArray(parsed) || !parsed.every((x) => typeof x === 'string')) {
+    return { labels: null, error: 'Expected a JSON array of strings, e.g. ["Pump.Fun: Buy"]' };
+  }
+  const labels = (parsed as string[]).map((s) => s.trim()).filter((s) => s !== '');
+  return { labels: labels.length > 0 ? labels : null, error: null };
+}
+
 /** Effective length of an axis for combo-count projection: what the user typed,
  *  else the backend default (an empty box falls back to the default server-side). */
 function axisLen(text: string, def: AxisDef): number {
@@ -175,6 +199,7 @@ export function SweepConfigForm({ strategyId, axes, storageKey, running, onRun }
     createdAfter,
     createdBefore,
     groupBy,
+    ixLabelsFilter,
     axesText,
     methodKind,
     randomN,
@@ -198,6 +223,7 @@ export function SweepConfigForm({ strategyId, axes, storageKey, running, onRun }
   const setTokenCap = (v: number) => setField('tokenCap', v);
   const setMaxCombos = (v: number) => setField('maxCombos', v);
   const setCurveOnly = (v: boolean) => setField('curveOnly', v);
+  const setIxLabelsFilter = (v: string) => setField('ixLabelsFilter', v);
   const setAxesText = (fn: (prev: Record<string, string>) => Record<string, string>) =>
     setConfig((prev) => {
       const base = { ...DEFAULT_SWEEP_CONFIG, ...prev };
@@ -206,6 +232,14 @@ export function SweepConfigForm({ strategyId, axes, storageKey, running, onRun }
 
   const entryAxes = useMemo(() => axes.filter((a) => a.group === 'entry'), [axes]);
   const exitAxes = useMemo(() => axes.filter((a) => a.group === 'exit'), [axes]);
+
+  // The ix_labels group-by and the ix_labels corpus filter are mutually exclusive:
+  // group by the label set, OR pin one set and sweep it. When grouping is on, the
+  // filter textarea is disabled and never sent.
+  const ixLabelsGrouped = groupBy.includes('ix_labels');
+  const ixFilter = useMemo(() => parseIxLabelsFilter(ixLabelsFilter), [ixLabelsFilter]);
+  // Only an active (grouping OFF) filter with a parse error blocks the run.
+  const ixFilterError = !ixLabelsGrouped ? ixFilter.error : null;
 
   // Projected combos: grid = product of axis lengths; random/refine = the coarse
   // N (refine grows the union past N around survivors, but caps at the same cap).
@@ -233,13 +267,16 @@ export function SweepConfigForm({ strategyId, axes, storageKey, running, onRun }
   }
 
   function handleRun() {
-    if (overCap || running) return;
+    if (overCap || running || ixFilterError) return;
     onRun({
       strategy_id: strategyId,
       created_after: toUtc(createdAfter),
       created_before: toUtc(createdBefore),
       curve_only: curveOnly,
       group_by: groupBy,
+      // Send the exact-set filter only when grouping by ix_labels is OFF and the
+      // textarea parsed to a non-empty label set.
+      ix_labels_filter: !ixLabelsGrouped && ixFilter.labels ? ixFilter.labels : undefined,
       min_tokens: minTokens,
       method:
         methodKind === 'refine'
@@ -355,8 +392,14 @@ export function SweepConfigForm({ strategyId, axes, storageKey, running, onRun }
           <Button
             variant="primary"
             onClick={handleRun}
-            disabled={running || overCap}
-            title={overCap ? `Over the ${effectiveCap.toLocaleString()} combo cap — narrow the grid, raise Max combos, or use Random N` : 'Run the grouped sweep'}
+            disabled={running || overCap || !!ixFilterError}
+            title={
+              overCap
+                ? `Over the ${effectiveCap.toLocaleString()} combo cap — narrow the grid, raise Max combos, or use Random N`
+                : ixFilterError
+                  ? `Fix the instruction-label filter: ${ixFilterError}`
+                  : 'Run the grouped sweep'
+            }
           >
             {running ? 'Sweeping…' : 'Run grouped sweep'}
           </Button>
@@ -381,6 +424,38 @@ export function SweepConfigForm({ strategyId, axes, storageKey, running, onRun }
             No fields selected → one “ALL” group (a single global sweep).
           </p>
         )}
+
+        {/* Exact-set instruction-label filter — the alternative to grouping by
+            ix_labels. Disabled while the ix_labels group-by is on (then the page
+            groups by the label set instead of pinning one). */}
+        <div className="mt-3">
+          <Field
+            label="Instruction-label filter"
+            hint={
+              ixLabelsGrouped
+                ? '(disabled — grouping by Instruction labels)'
+                : 'exact-set · JSON array of labels'
+            }
+          >
+            <Textarea
+              value={ixLabelsFilter}
+              disabled={ixLabelsGrouped}
+              onChange={(e) => setIxLabelsFilter(e.target.value)}
+              placeholder='["Pump.Fun: Create","System: Transfer"]'
+              autoResize
+            />
+          </Field>
+          {ixFilterError ? (
+            <p className="mt-1 text-xs text-danger">{ixFilterError}</p>
+          ) : (
+            !ixLabelsGrouped &&
+            ixFilter.labels && (
+              <p className="mt-1 text-xs text-text-dim/70">
+                Sweeping only tokens whose label set is exactly these {ixFilter.labels.length}.
+              </p>
+            )
+          )}
+        </div>
       </div>
 
       {/* Editable param grid — split into entry/exit groups, ordered to match
