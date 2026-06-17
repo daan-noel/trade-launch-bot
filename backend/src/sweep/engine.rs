@@ -61,7 +61,7 @@ pub(crate) fn fill_outcomes<S: Strategy>(
                 entry_cache = Some((key, entry));
             }
             let entry = &entry_cache.as_ref().unwrap().1;
-            out.push(strategy.resolve_exit(trades, entry, p));
+            out.push(strategy.resolve_exit(trades, &token_state, entry, p));
         }
     }
     Ok(())
@@ -182,6 +182,14 @@ fn fold_batch<S: Strategy>(
 ) -> Result<(u64, u64, Vec<ComboAgg>)> {
     let n_combos = params.len();
     let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<TokenOutcome>>(256);
+    // Buffer-recycle channel (folder → producers): the folder returns each drained
+    // outcome buffer here so a producer can refill it instead of allocating a fresh
+    // `vec![; n_combos]` (≈ `n_combos × sizeof(TokenOutcome)`) for every token. At
+    // big-group scale (thousands of tokens × `n_batches`) that alloc/free churn was
+    // pure overhead. Unbounded (the folder only ever holds one buffer at a time);
+    // the `Receiver` is shared across producers behind a short-held `Mutex`.
+    let (ret_tx, ret_rx) = std::sync::mpsc::channel::<Vec<TokenOutcome>>();
+    let ret_rx = std::sync::Mutex::new(ret_rx);
 
     std::thread::scope(|scope| -> Result<(u64, u64, Vec<ComboAgg>)> {
         // Single fold thread: drains outcomes and accumulates per combo.
@@ -200,6 +208,9 @@ fn fold_batch<S: Strategy>(
                 // One folded token = one progress unit. The folder is single-
                 // threaded, so this is uncontended (no lock on the hot path).
                 observer.token_done();
+                // Hand the buffer back for reuse (cleared by `fill_outcomes` on the
+                // next refill). Ignore the error if every producer has already gone.
+                let _ = ret_tx.send(outs);
             }
             (rows, fired, aggs)
         });
@@ -216,11 +227,18 @@ fn fold_batch<S: Strategy>(
                 if observer.cancelled() {
                     return Err(());
                 }
+                // Reuse a recycled outcome buffer if one is waiting, else allocate.
+                // `fill_outcomes` clears it before refilling, so a stale buffer is
+                // safe. The `Mutex` is held only for a non-blocking `try_recv`.
+                let mut outs = ret_rx
+                    .lock()
+                    .ok()
+                    .and_then(|rx| rx.try_recv().ok())
+                    .unwrap_or_else(|| Vec::with_capacity(n_combos));
                 // Fold all combos for this token (entry resolved once per key,
                 // cancel polled mid-fold — see `fill_outcomes`). A partial `outs`
                 // on bail is never sent; the caller discards the run's aggregates
                 // once it sees `cancelled()`.
-                let mut outs: Vec<TokenOutcome> = Vec::with_capacity(n_combos);
                 fill_outcomes(strategy, params, &tt.trades, observer, &mut outs)?;
                 // Folder never drops early; ignore only on shutdown races.
                 let _ = tx.send(outs);
@@ -264,7 +282,7 @@ mod tests {
         fn resolve_entry(&self, trades: &[SweepTrade], _state: &(), _p: &f64) -> bool {
             !trades.is_empty()
         }
-        fn resolve_exit(&self, _trades: &[SweepTrade], entry: &bool, p: &f64) -> TokenOutcome {
+        fn resolve_exit(&self, _trades: &[SweepTrade], _state: &(), entry: &bool, p: &f64) -> TokenOutcome {
             TokenOutcome {
                 fired: *entry,
                 holding_secs: 1,
@@ -359,7 +377,7 @@ mod tests {
         fn resolve_entry(&self, _trades: &[SweepTrade], _state: &(), p: &(i64, f64)) -> i64 {
             p.0
         }
-        fn resolve_exit(&self, _trades: &[SweepTrade], entry: &i64, _p: &(i64, f64)) -> TokenOutcome {
+        fn resolve_exit(&self, _trades: &[SweepTrade], _state: &(), entry: &i64, _p: &(i64, f64)) -> TokenOutcome {
             TokenOutcome {
                 fired: true,
                 holding_secs: 0,

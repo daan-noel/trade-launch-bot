@@ -245,6 +245,45 @@ impl TokenRepo {
         Ok(rows.into_iter().map(Token::from).collect())
     }
 
+    /// One keyset page of tokens, newest-first, for the analysis scans (tpsl
+    /// matched / simulate) that must consider the **whole** `tokens` table rather
+    /// than only the live cache. `cursor = None` fetches the first page; otherwise
+    /// rows strictly older than the cursor `(created_at, mint_address)` are returned,
+    /// so deep pages never pay an `OFFSET` scan. Optional `since` (inclusive) / `until`
+    /// (exclusive) clip the scan to a creation-time window; all three predicates ride
+    /// `idx_tokens_created_at`. The caller loops, advancing the cursor to the page's
+    /// last row, until a short (< `limit`) page ends the scan — keeping only the sparse
+    /// matches resident, never the whole table. Reuses the explicit `TOKEN_COLS`.
+    pub async fn find_page_before(
+        &self,
+        cursor: Option<(DateTime<Utc>, String)>,
+        limit: i64,
+        since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
+    ) -> anyhow::Result<Vec<Token>> {
+        let (cursor_at, cursor_mint) = match cursor {
+            Some((at, mint)) => (Some(at), Some(mint)),
+            None => (None, None),
+        };
+        let rows = sqlx::query_as::<_, TokenDbRow>(&format!(
+            "SELECT {TOKEN_COLS} FROM tokens \
+             WHERE ($1::timestamptz IS NULL OR (created_at, mint_address) < ($1, $2)) \
+               AND ($3::timestamptz IS NULL OR created_at >= $3) \
+               AND ($4::timestamptz IS NULL OR created_at < $4) \
+             ORDER BY created_at DESC, mint_address DESC \
+             LIMIT $5"
+        ))
+        .bind(cursor_at)
+        .bind(cursor_mint)
+        .bind(since)
+        .bind(until)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(Token::from).collect())
+    }
+
     /// Load the token-list rows (`tokens LEFT JOIN tokens_info`) created since
     /// `since`, newest-first, capped at `limit`. Backs the DB-base of the
     /// `GET /api/tokens` snapshot so the list reflects the whole seeded universe —

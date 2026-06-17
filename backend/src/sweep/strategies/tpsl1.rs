@@ -373,6 +373,7 @@ impl Strategy for Tpsl1Strategy {
     fn resolve_exit(
         &self,
         trades: &[SweepTrade],
+        _state: &(),
         entry: &Tpsl1Entry,
         params: &Tpsl1Combo,
     ) -> TokenOutcome {

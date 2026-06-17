@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode
 import { DataTable } from 'components/table/DataTable';
 import { Badge, type BadgeVariant } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
+import { Input } from 'components/ui/Input';
 import { InlineAlert, Modal } from 'components/ui/Modal';
 import {
   buildCreatePayload,
@@ -21,7 +22,7 @@ import {
   simColumns,
 } from 'components/tpsl2/tableColumns';
 import { useTimezone } from 'context/TimezoneContext';
-import { formatIso } from 'utils/date';
+import { datetimeLocalToUtcWallClock, formatIso } from 'utils/date';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { usePolledRules } from 'hooks/usePolledRules';
 import { useRulePositions } from 'hooks/useRulePositions';
@@ -546,6 +547,7 @@ const RuleActionsCell = memo(function RuleActionsCell({
 export function Tpsl2Page() {
   const price = usePriceDisplay();
   const dispatch = useDispatch<AppDispatch>();
+  const { timezone } = useTimezone();
   // Simulation progress/running is tracked app-wide so it survives navigation
   // (the backtest runs on the backend regardless); the global indicator renders
   // its progress bar + cancel.
@@ -588,6 +590,12 @@ export function Tpsl2Page() {
   } | null>(null);
   const [matchedError, setMatchedError] = useState<string | null>(null);
   const [matchedLoading, setMatchedLoading] = useState(false);
+  // Transient creation-time window for matched + simulate (NOT persisted on any
+  // rule). Empty = all-time. `datetime-local` strings; converted to ISO before the
+  // request so they ride the matched/simulate RTK cache key (different ranges cache
+  // separately). Scopes the backend's full-`tokens`-table scan.
+  const [analysisFrom, setAnalysisFrom] = useState('');
+  const [analysisTo, setAnalysisTo] = useState('');
 
   const [paperResult, setPaperResult] = useState<{
     ruleId: string;
@@ -800,6 +808,17 @@ export function Tpsl2Page() {
     [selectedRuleId, setRules],
   );
 
+  // Resolve the transient picker window to ISO bounds (UTC wall-clock, tz-aware),
+  // omitting unset sides. Part of the matched/simulate RTK arg, so it both scopes
+  // the backend scan and keys the cache per range.
+  const analysisRange = useMemo(
+    () => ({
+      from: datetimeLocalToUtcWallClock(analysisFrom, timezone, 'lower') || undefined,
+      to: datetimeLocalToUtcWallClock(analysisTo, timezone, 'upper') || undefined,
+    }),
+    [analysisFrom, analysisTo, timezone],
+  );
+
   const handleSimulate = useCallback(
     async (rule: RuleRecord) => {
       setSimResult(null);
@@ -807,7 +826,11 @@ export function Tpsl2Page() {
       markStarting('simulation', rule.id, `Sim: ${rule.rule_name}`);
       setSimLoading(true);
       try {
-        const tokens = await fetchSimulateCached(dispatch, { strategy: 'tpsl2', ruleId: rule.id });
+        const tokens = await fetchSimulateCached(dispatch, {
+          strategy: 'tpsl2',
+          ruleId: rule.id,
+          ...analysisRange,
+        });
         if ('cancelled' in tokens) {
           // User cancelled — drop the cached cancel marker so a re-run refetches.
           invalidateStrategyResult(dispatch, { strategy: 'tpsl2', ruleId: rule.id });
@@ -824,7 +847,7 @@ export function Tpsl2Page() {
         markFinished('simulation', rule.id);
       }
     },
-    [dispatch, markStarting, markFinished],
+    [dispatch, markStarting, markFinished, analysisRange],
   );
 
   const handleMatched = useCallback(
@@ -837,7 +860,11 @@ export function Tpsl2Page() {
       setMatchedError(null);
       setMatchedLoading(true);
       try {
-        const tokens = await fetchMatchedCached(dispatch, { strategy: 'tpsl2', ruleId: rule.id });
+        const tokens = await fetchMatchedCached(dispatch, {
+          strategy: 'tpsl2',
+          ruleId: rule.id,
+          ...analysisRange,
+        });
         setMatchedResult({ ruleId: rule.id, tokens });
       } catch (e) {
         setMatchedError(
@@ -847,7 +874,7 @@ export function Tpsl2Page() {
         setMatchedLoading(false);
       }
     },
-    [matchedResult, dispatch],
+    [matchedResult, dispatch, analysisRange],
   );
 
   const handlePaperResult = useCallback(
@@ -1030,6 +1057,43 @@ export function Tpsl2Page() {
       {actionError && <InlineAlert variant="error">{actionError}</InlineAlert>}
       {loading && <p className="text-text-dim">Loading rules…</p>}
       {error && <InlineAlert variant="error">{error}</InlineAlert>}
+
+      {/* Transient creation-time window for Matched + Simulate (not saved on any
+          rule). Empty = all-time; set a range to bound the full-table scan. */}
+      <div className="mb-3 flex flex-wrap items-end gap-3 text-[11px] text-text-dim">
+        <span className="font-semibold uppercase tracking-wide">Analysis window</span>
+        <label className="flex items-center gap-1.5">
+          From
+          <Input
+            type="datetime-local"
+            value={analysisFrom}
+            onChange={(e) => setAnalysisFrom(e.target.value)}
+          />
+        </label>
+        <label className="flex items-center gap-1.5">
+          To
+          <Input
+            type="datetime-local"
+            value={analysisTo}
+            onChange={(e) => setAnalysisTo(e.target.value)}
+          />
+        </label>
+        {(analysisFrom || analysisTo) && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setAnalysisFrom('');
+              setAnalysisTo('');
+            }}
+          >
+            Clear
+          </Button>
+        )}
+        <span className="text-text-dim/70">
+          Scopes Matched / Simulate by token creation time. Empty = all tokens.
+        </span>
+      </div>
 
       {!loading && !error && (
         <RuleRowProvider value={rowContext}>

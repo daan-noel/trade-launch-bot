@@ -201,22 +201,28 @@ fn higher_low_confirmed_index<T: TradeRow>(
     if pullback_pct <= 0.0 {
         return None;
     }
-    // (original index, time, price) for price-positive trades — mirrors the
-    // `series` filter in `higher_low_confirmed`.
-    let series: Vec<(usize, DateTime<Utc>, f64)> = trades
-        .iter()
-        .enumerate()
-        .map(|(i, t)| (i, t.block_time(), t.price_per_token()))
-        .filter(|(_, _, p)| *p > 0.0)
-        .collect();
-    let &(_, _, p0) = series.first()?;
 
-    let mut high = p0;
+    // Single forward pass over the price-positive trades — no intermediate `series`
+    // Vec (this resolves once per entry-key per token, so the alloc was pure waste).
+    // The first price-positive trade seeds `high` and is skipped (mirrors the old
+    // `series.first()` + `skip(1)`); price≤0 rows are ignored inline.
+    let mut high = 0.0f64;
+    let mut seeded = false;
     let mut cur_low: Option<(DateTime<Utc>, f64)> = None;
     let mut prev_low: Option<(DateTime<Utc>, f64)> = None;
     let mut established = false;
 
-    for &(idx, t, price) in series.iter().skip(1) {
+    for (idx, tr) in trades.iter().enumerate() {
+        let price = tr.price_per_token();
+        if price <= 0.0 {
+            continue;
+        }
+        if !seeded {
+            high = price;
+            seeded = true;
+            continue;
+        }
+        let t = tr.block_time();
         match cur_low {
             None => {
                 if price >= high {

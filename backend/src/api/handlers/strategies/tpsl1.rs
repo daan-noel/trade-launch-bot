@@ -583,12 +583,32 @@ pub struct MatchedTokenResult {
     pub cu_price: Option<u64>,
 }
 
-/// Return all tokens in the database that satisfy a rule's entry criteria.
+/// Transient creation-time window for the analysis endpoints (matched + simulate).
+/// Both bounds optional; empty = all-time. Not persisted on the rule — a per-request
+/// scope that bounds an otherwise full-table scan. `from` → `since` (inclusive),
+/// `to` → `until` (exclusive). (tpsl1 twin of the tpsl2 struct — clones stay
+/// independent.)
+#[derive(Deserialize)]
+pub struct AnalysisRange {
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
+}
+
+/// Upper bound on matched rows returned to the page (matches are sparse; when hit
+/// we log rather than silently cap or change the response shape).
+const MATCHED_RESULT_CAP: usize = 5_000;
+
+/// Return the tokens in the database that satisfy a rule's entry criteria.
+///
+/// Scans the **whole** `tokens` table (keyset-streamed, decoupled from the live
+/// `token_cache` so an old, evicted-but-matching mint is still found), optionally
+/// bounded to `?from=&to=` by `created_at`. Only the sparse matches are resident.
 ///
 /// GET /api/strategies/tpsl1/rules/{rule_id}/matched
 pub async fn get_matched_tokens(
     app_state: web::Data<Arc<AppState>>,
     rule_id: web::Path<Uuid>,
+    range: web::Query<AnalysisRange>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
     let rule_repo = app_state.tpsl1_rule_repo();
@@ -606,41 +626,48 @@ pub async fn get_matched_tokens(
         }
     };
 
-    // Match against the in-memory token cache — the same source the live run
-    // evaluates — instead of `SELECT *`-ing the continuously-growing `tokens`
-    // table on every click. Filter by reference (non-matches are never cloned)
-    // on the blocking pool so the CPU scan can't stall an HTTP worker, mirroring
-    // the Tokens list endpoint.
-    let state = app_state.get_ref().clone();
-    let matched = web::block(move || -> Vec<MatchedTokenResult> {
-        state
-            .token_cache
-            .iter()
-            .filter(|e| token_matches_buy_rule(&e.value().token, &rule))
-            .map(|e| {
-                let t = &e.value().token;
-                MatchedTokenResult {
-                    mint: t.mint_address.clone(),
-                    symbol: t.symbol.clone(),
-                    name: t.name.clone(),
-                    created_at: t.created_at,
-                    initial_buy_sol: t.initial_buy_sol,
-                    cu_limit: t.cu_limit,
-                    cu_price: t.cu_price,
-                }
-            })
-            .collect()
-    })
+    let repo = app_state.token_repo();
+    let matched = crate::strategies::analysis::collect_matching_tokens(
+        &repo,
+        range.from,
+        range.to,
+        |t| token_matches_buy_rule(t, &rule),
+    )
     .await;
 
-    match matched {
-        Ok(matched) => HttpResponse::Ok().json(matched),
+    let mut tokens = match matched {
+        Ok(t) => t,
         Err(e) => {
-            tracing::error!("matched-token build failed: {e}");
-            HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "Failed to build matched tokens"}))
+            tracing::error!("matched-token scan failed: {e}");
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "Failed to build matched tokens"}));
         }
+    };
+
+    if tokens.len() > MATCHED_RESULT_CAP {
+        tracing::warn!(
+            rule_id = %rule_id,
+            matched = tokens.len(),
+            cap = MATCHED_RESULT_CAP,
+            "matched-token result capped; narrow the from/to range to see the rest"
+        );
+        tokens.truncate(MATCHED_RESULT_CAP);
     }
+
+    let results: Vec<MatchedTokenResult> = tokens
+        .into_iter()
+        .map(|t| MatchedTokenResult {
+            mint: t.mint_address,
+            symbol: t.symbol,
+            name: t.name,
+            created_at: t.created_at,
+            initial_buy_sol: t.initial_buy_sol,
+            cu_limit: t.cu_limit,
+            cu_price: t.cu_price,
+        })
+        .collect();
+
+    HttpResponse::Ok().json(results)
 }
 
 // ---------------------------------------------------------------------------
@@ -653,9 +680,12 @@ pub async fn get_matched_tokens(
 pub async fn simulate_tpsl_rule(
     app_state: web::Data<Arc<AppState>>,
     rule_id: web::Path<Uuid>,
+    range: web::Query<AnalysisRange>,
 ) -> impl Responder {
     // delegate to the tpsl_sniper_1 simulation module (E1+ exit-walk engine)
     let rid = rule_id.into_inner();
+    // Optional creation-time window scoping the candidate scan (empty = all-time).
+    let (since, until) = (range.from, range.to);
     // Register a cooperative cancel flag + a readable progress snapshot for this
     // run so the global jobs endpoints (`/api/jobs/status`, the generic sim-cancel)
     // can observe and abort it. Both are removed on every exit path (RAII guard),
@@ -695,8 +725,15 @@ pub async fn simulate_tpsl_rule(
             cancel: cancel.clone(),
         };
 
-        match crate::strategies::tpsl_sniper_1::run_backtest(app_state.clone(), rid, cancel, cell)
-            .await
+        match crate::strategies::tpsl_sniper_1::run_backtest(
+            app_state.clone(),
+            rid,
+            since,
+            until,
+            cancel,
+            cell,
+        )
+        .await
         {
             Ok(summary) => HttpResponse::Ok().json(summary),
             Err(e) => {

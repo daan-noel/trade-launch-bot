@@ -390,6 +390,133 @@ mod tests {
         }
     }
 
+    /// Keyset paging: `find_page_before` tiles the table newest-first with no gap
+    /// or duplicate across the `(created_at, mint_address)` tiebreak (incl. two rows
+    /// sharing a `created_at`), and the optional `[since, until)` window clips to
+    /// exactly the in-range rows.
+    #[tokio::test]
+    #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
+    async fn find_page_before_tiles_keyset_and_clips_window() {
+        let Some(pool) = test_pool().await else { return };
+        let token_repo = TokenRepo::new(pool.clone());
+        // A unique base so the run's rows are isolable, despite scanning the whole table.
+        let tag = uniq("");
+        let now = Utc::now();
+        // t0 newest … t4 oldest, 1 min apart; t2a/t2b SHARE t2's timestamp to force
+        // the mint-address tiebreak across a page boundary.
+        let t = |secs: i64| now - chrono::Duration::seconds(secs);
+        let rows = [
+            (format!("MINT-kp-0-{tag}"), t(0)),
+            (format!("MINT-kp-1-{tag}"), t(60)),
+            (format!("MINT-kp-2a-{tag}"), t(120)),
+            (format!("MINT-kp-2b-{tag}"), t(120)),
+            (format!("MINT-kp-3-{tag}"), t(180)),
+            (format!("MINT-kp-4-{tag}"), t(240)),
+        ];
+        for (mint, created) in &rows {
+            token_repo.insert(&token(mint, *created)).await.expect("insert");
+        }
+        let ours: HashSet<&String> = rows.iter().map(|(m, _)| m).collect();
+
+        // Page the whole table at limit=2; keep only our run's mints. Pages must tile
+        // with no gap/dupe and arrive in (created_at, mint) DESC order.
+        let mut cursor: Option<(chrono::DateTime<Utc>, String)> = None;
+        let mut seen: Vec<(chrono::DateTime<Utc>, String)> = Vec::new();
+        loop {
+            let page = token_repo
+                .find_page_before(cursor.clone(), 2, None, None)
+                .await
+                .expect("page");
+            if page.is_empty() {
+                break;
+            }
+            cursor = page
+                .last()
+                .map(|t| (t.created_at, t.mint_address.clone()));
+            for tk in &page {
+                if ours.contains(&tk.mint_address) {
+                    seen.push((tk.created_at, tk.mint_address.clone()));
+                }
+            }
+            if page.len() < 2 {
+                break;
+            }
+        }
+
+        assert_eq!(seen.len(), rows.len(), "every row seen exactly once (no gap/dupe)");
+        let mut sorted = seen.clone();
+        sorted.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+        assert_eq!(seen, sorted, "rows arrive in (created_at, mint) DESC order");
+
+        // Window: since = t(180) inclusive, until = t(60) exclusive → t2a, t2b, t3.
+        let windowed: HashSet<String> = token_repo
+            .find_page_before(None, 1000, Some(t(180)), Some(t(60)))
+            .await
+            .expect("windowed")
+            .into_iter()
+            .map(|tk| tk.mint_address)
+            .filter(|m| ours.contains(m))
+            .collect();
+        assert!(windowed.contains(&format!("MINT-kp-2a-{tag}")), "in-window kept");
+        assert!(windowed.contains(&format!("MINT-kp-2b-{tag}")), "in-window kept");
+        assert!(windowed.contains(&format!("MINT-kp-3-{tag}")), "since is inclusive");
+        assert!(!windowed.contains(&format!("MINT-kp-1-{tag}")), "until is exclusive");
+        assert!(!windowed.contains(&format!("MINT-kp-4-{tag}")), "older than since dropped");
+
+        for (mint, _) in &rows {
+            let _ = sqlx::query("DELETE FROM tokens WHERE mint_address = $1")
+                .bind(mint)
+                .execute(&pool)
+                .await;
+        }
+    }
+
+    /// `collect_matching_tokens` retains only the tokens its `keep` predicate accepts
+    /// and forwards the `[since, until)` window (here: a row outside the window is not
+    /// even scanned, so it can't match even though `keep` would accept it).
+    #[tokio::test]
+    #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
+    async fn collect_matching_tokens_keeps_only_matches_within_window() {
+        let Some(pool) = test_pool().await else { return };
+        let token_repo = TokenRepo::new(pool.clone());
+        let tag = uniq("");
+        let now = Utc::now();
+        let keep_in = format!("MINT-cm-keep-in-{tag}");
+        let drop_in = format!("MINT-cm-drop-in-{tag}");
+        let keep_out = format!("MINT-cm-keep-out-{tag}"); // matches `keep` but pre-window
+        token_repo.insert(&token(&keep_in, now)).await.expect("insert");
+        token_repo.insert(&token(&drop_in, now)).await.expect("insert");
+        token_repo
+            .insert(&token(&keep_out, now - chrono::Duration::days(10)))
+            .await
+            .expect("insert");
+
+        // Window starts 1 day ago, so `keep_out` (10 days old) is outside it.
+        let since = Some(now - chrono::Duration::days(1));
+        let got: HashSet<String> = crate::strategies::analysis::collect_matching_tokens(
+            &token_repo,
+            since,
+            None,
+            |t| t.mint_address.contains("keep"),
+        )
+        .await
+        .expect("scan")
+        .into_iter()
+        .map(|t| t.mint_address)
+        .collect();
+
+        assert!(got.contains(&keep_in), "matching, in-window token kept");
+        assert!(!got.contains(&drop_in), "non-matching token dropped by `keep`");
+        assert!(!got.contains(&keep_out), "matching token outside the window not scanned");
+
+        for m in [&keep_in, &drop_in, &keep_out] {
+            let _ = sqlx::query("DELETE FROM tokens WHERE mint_address = $1")
+                .bind(m)
+                .execute(&pool)
+                .await;
+        }
+    }
+
     /// Position safety net: `distinct_unsettled_mints` surfaces a mint with a
     /// Holding position (so the seed always tracks it, even outside the window) and
     /// omits one whose only position has settled (`End`).

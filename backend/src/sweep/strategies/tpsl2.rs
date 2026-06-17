@@ -21,7 +21,7 @@ use crate::sweep::strategy::{
 };
 use crate::sweep::projection::SweepTrade;
 use crate::models::Tpsl2Rule;
-use crate::strategies::tpsl_sniper_2::{entry, exit};
+use crate::strategies::tpsl_sniper_2::{cohort, entry, exit};
 
 /// The full TPSL2 rule param set, every knob swept. `take_profit`/`stop_loss` are
 /// always-on; every other knob is `Option` and a `None` (the default axis when
@@ -86,12 +86,32 @@ pub enum Tpsl2Entry {
     Entered { price: f64, time: DateTime<Utc> },
 }
 
+/// Param-independent per-token state, computed once before a token's combo loop and
+/// shared across every entry **and** exit resolve. Holds the launch cohort (the
+/// scalp gates' cohort/outside split) plus the cohort's total bought bag — the E5
+/// exit denominator. Hoisting both out of the per-combo resolves removes the
+/// `HashSet` rebuild + `cohort_flow` pass that `find_trade_driven_exit` used to run
+/// on every `(combo × token)` when E5 was swept (the #1 cohort-exit hoist, mirroring
+/// the entry `#7` hoist).
+pub struct Tpsl2TokenState {
+    /// Launch cohort wallet ids — fed to both `find_scalp_entry_with_cohort` and the
+    /// E5 exit. Identical to `early_cohort_wallets(trades, EARLY_COHORT_SLOT_WINDOW)`.
+    cohort: std::collections::HashSet<u32>,
+    /// The cohort's total bought tokens (E5's dump-ratio denominator). Only computed
+    /// when `cohort_ratio` is on the swept axes — `0.0` otherwise (E5 ignores it).
+    cohort_bought: f64,
+}
+
 /// Declares the param axes and carries the base rule the swept params overlay.
 pub struct Tpsl2Strategy {
     base: Tpsl2Rule,
     axes: Tpsl2Axes,
     /// Execution costs applied to every simulated round-trip (Rec 1).
     costs: CostModel,
+    /// Whether any swept combo enables the E5 cohort-dump exit. When false, the
+    /// per-token `cohort_bought` pass is skipped (E5 never reads it), so a non-cohort
+    /// sweep pays nothing for the hoist.
+    sweeps_cohort_exit: bool,
 }
 
 /// Grid axes for the coarse pass. Each `Vec` is one knob's candidate values.
@@ -267,7 +287,8 @@ impl Tpsl2Axes {
 
 impl Tpsl2Strategy {
     pub fn new(base: Tpsl2Rule, axes: Tpsl2Axes) -> Self {
-        Self { base, axes, costs: CostModel::pumpfun_default() }
+        let sweeps_cohort_exit = axes.cohort_ratio.iter().any(Option::is_some);
+        Self { base, axes, costs: CostModel::pumpfun_default(), sweeps_cohort_exit }
     }
 
     /// Pair a scalar param set with its resolved `Tpsl2Rule` (built once here, not
@@ -472,15 +493,52 @@ impl ParamSpace for Tpsl2Strategy {
         }
         out
     }
+
+    /// Stable-sort the combo set so combos sharing the 8 scalp-gate knobs land
+    /// contiguously, restoring the engine's per-entry-key cache hit rate under
+    /// `random`/`lhs`/`refine` (a full `Grid` is already entry-contiguous). The
+    /// entry resolve — a full trade-slice walk plus the higher-low scan — is the
+    /// expensive half, so without this it re-runs ~once per combo on a shuffled
+    /// order instead of once per entry tuple. Decision-neutral: only evaluation
+    /// order changes.
+    fn order_for_entry_cache(&self, params: &mut [Tpsl2Combo]) {
+        params.sort_by_cached_key(|c| entry_order_key(&c.raw));
+    }
+}
+
+/// A total-order key over a combo's 8 entry-gate knobs (the [`Tpsl2EntryKey`]
+/// fields). Used only to group same-entry combos contiguously, so the encoding only
+/// needs to be injective on the candidate values: `Option`s map a present value to
+/// its bit pattern and `None` to a reserved sentinel. The axes never carry `NaN`/
+/// `-0.0`, so equal bits ⟺ equal value ⟺ equal `entry_key` (`PartialEq`).
+fn entry_order_key(p: &Tpsl2Params) -> [u64; 8] {
+    // `+1` keeps `None` (0) distinct from `Some(0)` (1); real age/secs never hit u64::MAX.
+    fn ou64(o: Option<u64>) -> u64 {
+        o.map(|v| v.wrapping_add(1)).unwrap_or(0)
+    }
+    fn of64(o: Option<f64>) -> u64 {
+        o.map(f64::to_bits).unwrap_or(u64::MAX)
+    }
+    [
+        ou64(p.entry_min_age_secs),
+        of64(p.entry_min_alive_sol),
+        of64(p.entry_min_organic_sol),
+        of64(p.entry_pullback_pct),
+        ou64(p.entry_higher_low_secs),
+        of64(p.entry_max_cohort_held),
+        of64(p.entry_min_liquidity_sol),
+        of64(p.entry_min_organic_liq),
+    ]
 }
 
 impl Strategy for Tpsl2Strategy {
     type Entry = Tpsl2Entry;
     type EntryKey = Tpsl2EntryKey;
-    /// The token's launch cohort (interned `u32` wallet ids) — built once per token
-    /// and reused across every entry-param tuple, instead of rebuilding the
-    /// `HashSet` inside each `find_scalp_entry` resolve (the #7 cohort hoist).
-    type TokenState = HashSet<u32>;
+    /// The token's launch cohort + bought bag (see [`Tpsl2TokenState`]) — built once
+    /// per token and reused across every entry **and** exit resolve, instead of
+    /// rebuilding the cohort `HashSet` inside each `find_scalp_entry` (#7) **and**
+    /// each `find_trade_driven_exit` E5 precompute (#1).
+    type TokenState = Tpsl2TokenState;
 
     fn id(&self) -> &'static str {
         "tpsl2"
@@ -500,16 +558,24 @@ impl Strategy for Tpsl2Strategy {
         }
     }
 
-    fn prepare_token(&self, trades: &[SweepTrade]) -> HashSet<u32> {
+    fn prepare_token(&self, trades: &[SweepTrade]) -> Tpsl2TokenState {
         // Cohort depends only on the trade slice (first slot + window), never on a
-        // rule's params — so hoist it out of the per-entry-key resolve.
-        entry::scalp_cohort(trades)
+        // rule's params — so hoist it out of the per-entry-key resolve (#7) and the
+        // per-combo E5 exit precompute (#1). The bag denominator is needed only when
+        // E5 is swept; skip its extra pass otherwise.
+        let cohort = entry::scalp_cohort(trades);
+        let cohort_bought = if self.sweeps_cohort_exit {
+            cohort::cohort_flow(trades, &cohort).bought_tokens
+        } else {
+            0.0
+        };
+        Tpsl2TokenState { cohort, cohort_bought }
     }
 
     fn resolve_entry(
         &self,
         trades: &[SweepTrade],
-        cohort: &HashSet<u32>,
+        state: &Tpsl2TokenState,
         params: &Tpsl2Combo,
     ) -> Tpsl2Entry {
         let rule = &params.rule;
@@ -518,7 +584,8 @@ impl Strategy for Tpsl2Strategy {
         // The indexed variant hands back the trigger's position so the worst-case
         // fill is resolved by index, never by `tx_signature` — letting `SweepTrade`
         // carry no signature string at all (Phase 1.2).
-        let Some((trigger_idx, _)) = entry::find_scalp_entry_with_cohort_indexed(trades, rule, cohort)
+        let Some((trigger_idx, _)) =
+            entry::find_scalp_entry_with_cohort_indexed(trades, rule, &state.cohort)
         else {
             return Tpsl2Entry::None;
         };
@@ -533,6 +600,7 @@ impl Strategy for Tpsl2Strategy {
     fn resolve_exit(
         &self,
         trades: &[SweepTrade],
+        state: &Tpsl2TokenState,
         entry: &Tpsl2Entry,
         params: &Tpsl2Combo,
     ) -> TokenOutcome {
@@ -542,8 +610,16 @@ impl Strategy for Tpsl2Strategy {
         let rule = &params.rule;
         let notional = rule.buy_amount;
 
-        // (3) Exit decision via the shared ladder.
-        match exit::find_trade_driven_exit(trades, entry_time, entry_price, rule) {
+        // (3) Exit decision via the shared ladder, fed the per-token cohort so the
+        // E5 precompute (cohort `HashSet` + bag) isn't rebuilt per combo (#1).
+        match exit::find_trade_driven_exit_with_cohort(
+            trades,
+            entry_time,
+            entry_price,
+            rule,
+            &state.cohort,
+            state.cohort_bought,
+        ) {
             Some(f) => {
                 let econ = round_trip_with_costs(entry_price, f.price, notional, &self.costs);
                 TokenOutcome {
@@ -699,5 +775,35 @@ mod tests {
         let under = s.sample(SweepMethod::Random { n: 200, seed: 7 });
         assert_eq!(under.len(), 200);
         assert_eq!(distinct(&under), 200, "all distinct");
+    }
+
+    #[test]
+    fn order_for_entry_cache_is_a_permutation_grouping_same_entry() {
+        // #2: a shuffled (random) sample, ordered for the entry cache, must (a) be a
+        // pure permutation — no combo added/dropped — and (b) place same-entry-key
+        // combos contiguously so the engine's single-slot entry cache hits.
+        let s = strategy();
+        let mut combos = s.sample(SweepMethod::Random { n: 200, seed: 11 });
+
+        let mut before: Vec<String> =
+            combos.iter().map(|c| s.params_json(c).to_string()).collect();
+        s.order_for_entry_cache(&mut combos);
+        let mut after: Vec<String> =
+            combos.iter().map(|c| s.params_json(c).to_string()).collect();
+        before.sort();
+        after.sort();
+        assert_eq!(before, after, "ordering must be a pure permutation of the combos");
+
+        // Contiguity: walking the ordered combos, each distinct entry key forms one
+        // unbroken run — a key that reappears after a different key fails the cache.
+        let mut seen: HashSet<[u64; 8]> = HashSet::new();
+        let mut prev: Option<[u64; 8]> = None;
+        for c in &combos {
+            let k = entry_order_key(&c.raw);
+            if Some(k) != prev {
+                assert!(seen.insert(k), "entry key {k:?} reappeared non-contiguously");
+                prev = Some(k);
+            }
+        }
     }
 }

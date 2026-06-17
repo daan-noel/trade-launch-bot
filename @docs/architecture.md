@@ -48,7 +48,7 @@ Subsystem deep-dives: [ingest.md](ingest.md) · [strategies.md](strategies.md) �
 | `handlers/system/stream.rs` | `stream_events` (`/api/stream`) + `SseFrame`/`run_sse_render_bridge` — render each event to wire bytes ONCE (one cache read), fan shared `Arc<SseFrame>` to all subscribers (no per-subscriber re-serialization) |
 | `handlers/system/system.rs` | `get/set_live_mode`, `get_sol_price`, `get/update_settings` |
 | `handlers/system/wallets.rs` | profile/wallet/tag CRUD |
-| `handlers/strategies/tpsl1.rs` | rule CRUD + lifecycle (`activate`/`pause`/`stop`), `matched`, `simulate`, `paper-result` (GET = view, DELETE = "Clear results", paper + idle only) |
+| `handlers/strategies/tpsl1.rs` | rule CRUD + lifecycle (`activate`/`pause`/`stop`), `matched`, `simulate` (both scan the **whole** `tokens` table — not the live cache — via `strategies::analysis::collect_matching_tokens`, with an optional `?from=&to=` (`AnalysisRange`) creation-time window; matched caps results at `MATCHED_RESULT_CAP` and logs when hit), `paper-result` (GET = view, DELETE = "Clear results", paper + idle only) |
 | `handlers/strategies/tpsl1_positions.rs` | position queries (by id/mint/wallet/rule, list) |
 | `handlers/strategies/tpsl2*.rs` | identical surface for TPSL2 |
 

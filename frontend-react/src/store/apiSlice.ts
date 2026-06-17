@@ -38,7 +38,25 @@ import type {
 export interface StrategyRuleArg {
   strategy: 'tpsl1' | 'tpsl2';
   ruleId: string;
+  /**
+   * Optional transient creation-time window for `matched` / `simulate` only
+   * (ISO strings; empty = all-time). Not persisted on the rule — it scopes the
+   * backend's full-`tokens`-table scan. Part of the arg, so different ranges
+   * cache separately while a rule edit still invalidates the whole pair.
+   * Ignored by `paper-result`.
+   */
+  from?: string;
+  to?: string;
 }
+
+/** Append `?from=&to=` (only the bounds that are set) to an analysis-endpoint URL. */
+const withAnalysisRange = (url: string, { from, to }: StrategyRuleArg): string => {
+  const qs = new URLSearchParams();
+  if (from) qs.set('from', from);
+  if (to) qs.set('to', to);
+  const s = qs.toString();
+  return s ? `${url}?${s}` : url;
+};
 
 /** Cache tag for a rule's `matched` + `simulate` results — both derive from the
  *  rule's entry criteria, so editing the rule invalidates the pair. */
@@ -254,8 +272,11 @@ export const apiSlice = createApi({
     // tagged by rule so a rule edit can invalidate them; `paper-result` is
     // force-refetched on the paper-finished SSE event.
     getStrategyMatched: builder.query<MatchedTokenRecord[], StrategyRuleArg>({
-      query: ({ strategy, ruleId }) =>
-        `/api/strategies/${strategy}/rules/${encodeURIComponent(ruleId)}/matched`,
+      query: (a) =>
+        withAnalysisRange(
+          `/api/strategies/${a.strategy}/rules/${encodeURIComponent(a.ruleId)}/matched`,
+          a,
+        ),
       providesTags: (_r, _e, a) => [strategyResultTag(a)],
       keepUnusedDataFor: 60,
     }),
@@ -265,8 +286,11 @@ export const apiSlice = createApi({
       SimulatedTokenResult[] | { cancelled: true },
       StrategyRuleArg
     >({
-      query: ({ strategy, ruleId }) =>
-        `/api/strategies/${strategy}/rules/${encodeURIComponent(ruleId)}/simulate`,
+      query: (a) =>
+        withAnalysisRange(
+          `/api/strategies/${a.strategy}/rules/${encodeURIComponent(a.ruleId)}/simulate`,
+          a,
+        ),
       providesTags: (_r, _e, a) => [strategyResultTag(a)],
       keepUnusedDataFor: 60,
     }),

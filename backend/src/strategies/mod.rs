@@ -1,3 +1,4 @@
+pub mod analysis;
 pub mod runner;
 pub mod sim_progress;
 pub mod tpsl_sniper_1;

@@ -94,6 +94,8 @@ fn select_simulated_tokens(
 pub async fn run_backtest(
     app_state: actix_web::web::Data<Arc<AppState>>,
     rule_id: Uuid,
+    since: Option<DateTime<Utc>>,
+    until: Option<DateTime<Utc>>,
     cancel: Arc<std::sync::atomic::AtomicBool>,
     progress_cell: Arc<crate::state::job_progress::ProgressCell>,
 ) -> Result<Vec<BacktestTokenResult>> {
@@ -108,23 +110,23 @@ pub async fn run_backtest(
     let max_concurrent_tokens = none_if_zero_u64(rule.p_max_concurrent_tokens).map(|v| v as usize);
     let max_total_tokens = none_if_zero_u64(rule.p_max_total_tokens).map(|v| v as usize);
 
-    // Candidate tokens come from the in-memory cache — the same source the live
-    // run evaluates — instead of `SELECT *`-ing the whole `tokens` table. Filter
-    // by reference, then clone only the matches into owned `Token`s for the
-    // concurrent fetch below.
+    // Candidate tokens are scanned from the **whole** `tokens` table (keyset-
+    // streamed within the optional `[since, until)` window), decoupled from the
+    // live `token_cache` so an old, evicted-but-matching mint is still simulated.
+    // Only the sparse matches stay resident — never the table.
     //
     // Never trade Mayhem-Mode tokens: they carry an AI random-walk agent (2B supply,
     // net-sell drift, ±300% noise) for their first 24h — manufactured chaos, not a
     // snipeable edge. Exclude them outright (legacy-only policy, 2026-06 regime).
-    let tokens: Vec<Token> = app_state
-        .token_cache
-        .iter()
-        .filter(|e| {
-            let t = &e.value().token;
-            !t.is_mayhem_mode && entry::token_matches_buy_rule(t, &rule)
-        })
-        .map(|e| e.value().token.clone())
-        .collect();
+    let repo = app_state.token_repo();
+    let tokens: Vec<Token> = crate::strategies::analysis::collect_matching_tokens(
+        &repo,
+        since,
+        until,
+        |t| !t.is_mayhem_mode && entry::token_matches_buy_rule(t, &rule),
+    )
+    .await
+    .map_err(|e| anyhow!("candidate token scan failed: {e}"))?;
 
     // Resolve each candidate's entry/exit from its trade history. The history is
     // fetched in batched chunks — one query per `BACKTEST_FETCH_CHUNK` mints

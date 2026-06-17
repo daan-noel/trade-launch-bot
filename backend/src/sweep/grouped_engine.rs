@@ -303,7 +303,7 @@ pub fn run_grouped_sweep<S: Strategy>(
 #[allow(clippy::too_many_arguments)]
 pub fn run_grouped_with_refine<S: Strategy>(
     strategy: &S,
-    coarse: Vec<S::Params>,
+    mut coarse: Vec<S::Params>,
     refine: Option<RefineSpec>,
     corpus: &Corpus,
     fields: &[GroupField],
@@ -313,6 +313,11 @@ pub fn run_grouped_with_refine<S: Strategy>(
     observer: &dyn SweepObserver,
     sink: &dyn GroupSink,
 ) -> Result<(Vec<S::Params>, Vec<GroupResult>)> {
+    // Group same-entry combos contiguously so the engine's single-slot entry cache
+    // hits maximally regardless of sampler (grid/random/lhs/refine) — a no-op for
+    // param-free entries. Decision-neutral: only the evaluation order changes, and
+    // combo_id (= position) stays consistent across this run's groups.
+    strategy.order_for_entry_cache(&mut coarse);
     let Some(spec) = refine else {
         // No refine: the single pass is the final one — persist its groups.
         let groups = run_grouped_sweep(
@@ -364,6 +369,9 @@ pub fn run_grouped_with_refine<S: Strategy>(
             union.push(p);
         }
     }
+    // Re-group the grown union so the final (persisted, combo-id-fixed) pass keeps
+    // its same-entry combos contiguous too.
+    strategy.order_for_entry_cache(&mut union);
 
     tracing::info!(
         survivors = survivors.len(),
@@ -570,7 +578,7 @@ mod tests {
         fn resolve_entry(&self, trades: &[SweepTrade], _state: &(), _p: &f64) -> bool {
             !trades.is_empty()
         }
-        fn resolve_exit(&self, _trades: &[SweepTrade], entry: &bool, p: &f64) -> TokenOutcome {
+        fn resolve_exit(&self, _trades: &[SweepTrade], _state: &(), entry: &bool, p: &f64) -> TokenOutcome {
             TokenOutcome {
                 fired: *entry,
                 holding_secs: 1,

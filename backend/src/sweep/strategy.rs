@@ -343,6 +343,20 @@ pub trait ParamSpace {
     fn refine(&self, _survivors: &[Self::Params]) -> Vec<Self::Params> {
         Vec::new()
     }
+
+    /// Reorder the *final* combo set in place so combos sharing an entry-param
+    /// identity ([`Strategy::entry_key`]) land **contiguously**. The engine keeps a
+    /// single-slot entry cache that only hits while consecutive combos share a key,
+    /// so a full `Grid` (entry knobs are the high-order digits ⇒ already
+    /// contiguous) resolves each entry once per tuple — but `Random`/`LatinHypercube`/
+    /// `refine` hand out a shuffled order, collapsing the cache to ~one entry
+    /// resolve per combo. A strategy whose entry is expensive overrides this to
+    /// stable-sort by its entry key, restoring the contiguous-block property under
+    /// every sampler. Called once on the shared combo vec before the per-group
+    /// sweeps, so `combo_id` (= position) stays consistent across groups. The
+    /// default is a no-op (param-free entries gain nothing). Decision-neutral: it
+    /// only changes evaluation order, never any combo's resolved outcome.
+    fn order_for_entry_cache(&self, _params: &mut [Self::Params]) {}
 }
 
 /// The pure black-box backtest, **factored into entry then exit** so the engine
@@ -401,11 +415,15 @@ pub trait Strategy: ParamSpace + Send + Sync {
     ) -> Self::Entry;
 
     /// Resolve the exit + economics given a pre-resolved `entry`, under a combo's
-    /// **exit** params. Called once per combo. Returns a `Copy` [`TokenOutcome`];
-    /// PnL is frictionless (see [`round_trip`]).
+    /// **exit** params. Called once per combo. Also receives the shared
+    /// [`Strategy::TokenState`] so an exit feature can reuse param-independent
+    /// per-token precompute (tpsl2's E5 launch cohort) instead of rebuilding it per
+    /// combo. Returns a `Copy` [`TokenOutcome`]; PnL is frictionless (see
+    /// [`round_trip`]).
     fn resolve_exit(
         &self,
         trades: &[SweepTrade],
+        state: &Self::TokenState,
         entry: &Self::Entry,
         params: &Self::Params,
     ) -> TokenOutcome;

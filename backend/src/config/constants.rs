@@ -246,6 +246,13 @@ pub const POOL_REFRESH_INTERVAL_SECONDS: u64 = 120; // 2 minutes
 /// does for any cache miss); raise it to keep more history warm at startup.
 pub const SEED_TOKEN_LIMIT: i64 = 100_000;
 
+/// Keyset page size for the analysis scans (tpsl matched / simulate) that stream
+/// the **whole** `tokens` table one page at a time instead of resident-cache-only.
+/// Memory per page = page rows × `Token` (transient — dropped once the page is
+/// filtered to its sparse matches), so this trades round-trips against peak
+/// per-page heap. See `TokenRepo::find_page_before`.
+pub const ANALYSIS_SCAN_PAGE: i64 = 5_000;
+
 /// Only tokens created within this window are pulled into the startup cache seed
 /// (on top of the `SEED_TOKEN_LIMIT` cap). The seed's dominant cost is scanning
 /// those mints' trade history, so excluding the long tail of long-dead memecoins
