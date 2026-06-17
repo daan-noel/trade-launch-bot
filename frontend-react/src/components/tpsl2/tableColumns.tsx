@@ -27,6 +27,8 @@ export function exitReasonBadge(reason: string | null | undefined) {
       return <span className="font-bold text-info">TIME</span>;
     case 'ExitFailed':
       return <span className="font-bold text-red">FAIL</span>;
+    case 'ManualClose':
+      return <span className="font-bold text-text-dim">MANUAL</span>;
     default:
       return <span className="text-text-dim">Open</span>;
   }

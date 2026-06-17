@@ -1,7 +1,7 @@
 import { apiSlice, type StrategyRuleArg } from './apiSlice';
 import type { AppDispatch } from './index';
 import type {
-  MatchedTokenRecord,
+  MatchedTokensResponse,
   PaperResultResponse,
   SimulatedTokenResult,
 } from 'types';
@@ -35,7 +35,7 @@ export function fetchMatchedCached(
   dispatch: AppDispatch,
   arg: StrategyRuleArg,
   force = false,
-): Promise<MatchedTokenRecord[]> {
+): Promise<MatchedTokensResponse> {
   return run(dispatch(apiSlice.endpoints.getStrategyMatched.initiate(arg, opts(force))));
 }
 

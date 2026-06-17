@@ -20,7 +20,7 @@ import type {
 import type {
   AnalysisRecord,
   CreatorRecord,
-  MatchedTokenRecord,
+  MatchedTokensResponse,
   PaperResultResponse,
   SimulatedTokenResult,
   TokenDetailRecord,
@@ -271,7 +271,7 @@ export const apiSlice = createApi({
     // the cache instead of re-hitting the backend. `matched`/`simulate` are
     // tagged by rule so a rule edit can invalidate them; `paper-result` is
     // force-refetched on the paper-finished SSE event.
-    getStrategyMatched: builder.query<MatchedTokenRecord[], StrategyRuleArg>({
+    getStrategyMatched: builder.query<MatchedTokensResponse, StrategyRuleArg>({
       query: (a) =>
         withAnalysisRange(
           `/api/strategies/${a.strategy}/rules/${encodeURIComponent(a.ruleId)}/matched`,

@@ -594,9 +594,16 @@ pub struct AnalysisRange {
     pub to: Option<DateTime<Utc>>,
 }
 
-/// Upper bound on matched rows returned to the page (matches are sparse; when hit
-/// we log rather than silently cap or change the response shape).
+/// Upper bound on matched rows returned to the page. When hit, the true total is
+/// included in the response so the frontend can inform the user.
 const MATCHED_RESULT_CAP: usize = 5_000;
+
+#[derive(Serialize)]
+pub struct MatchedTokensResponse {
+    pub tokens: Vec<MatchedTokenResult>,
+    pub total: usize,
+    pub capped: bool,
+}
 
 /// Return the tokens in the database that satisfy a rule's entry criteria.
 ///
@@ -644,10 +651,12 @@ pub async fn get_matched_tokens(
         }
     };
 
-    if tokens.len() > MATCHED_RESULT_CAP {
+    let total = tokens.len();
+    let capped = total > MATCHED_RESULT_CAP;
+    if capped {
         tracing::warn!(
             rule_id = %rule_id,
-            matched = tokens.len(),
+            matched = total,
             cap = MATCHED_RESULT_CAP,
             "matched-token result capped; narrow the from/to range to see the rest"
         );
@@ -667,7 +676,7 @@ pub async fn get_matched_tokens(
         })
         .collect();
 
-    HttpResponse::Ok().json(results)
+    HttpResponse::Ok().json(MatchedTokensResponse { tokens: results, total, capped })
 }
 
 // ---------------------------------------------------------------------------

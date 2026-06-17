@@ -130,6 +130,14 @@ export interface MatchedTokenRecord {
   cu_price: number | null;
 }
 
+export interface MatchedTokensResponse {
+  tokens: MatchedTokenRecord[];
+  /** True count before cap was applied. */
+  total: number;
+  /** True when total > 5000 and only the first 5000 are in `tokens`. */
+  capped: boolean;
+}
+
 export interface SimulatedTokenResult {
   mint: string;
   symbol: string;

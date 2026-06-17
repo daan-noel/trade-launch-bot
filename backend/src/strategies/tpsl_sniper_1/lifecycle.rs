@@ -166,6 +166,14 @@ pub async fn stop_and_close_rule(
 
         if rule.trade_mode == "paper" {
             let paper_repo = Tpsl1PaperTradingRepo::new(app_state.db.clone());
+            // 0-entry positions never received a fill — delete them rather than
+            // stamping a ManualClose exit at price 0.
+            if position.entry_price <= 0.0 {
+                let _ = paper_repo.delete_position(position_id).await;
+                app_state.tpsl1_cache.remove_position(&position);
+                app_state.tpsl1_cache.end_exit(position_id);
+                continue;
+            }
             super::execution::paper::record_time_exit(
                 &paper_repo,
                 &app_state.tpsl1_cache,

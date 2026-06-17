@@ -587,6 +587,8 @@ export function Tpsl2Page() {
   const [matchedResult, setMatchedResult] = useState<{
     ruleId: string;
     tokens: import('types').MatchedTokenRecord[];
+    total: number;
+    capped: boolean;
   } | null>(null);
   const [matchedError, setMatchedError] = useState<string | null>(null);
   const [matchedLoading, setMatchedLoading] = useState(false);
@@ -860,12 +862,12 @@ export function Tpsl2Page() {
       setMatchedError(null);
       setMatchedLoading(true);
       try {
-        const tokens = await fetchMatchedCached(dispatch, {
+        const { tokens, total, capped } = await fetchMatchedCached(dispatch, {
           strategy: 'tpsl2',
           ruleId: rule.id,
           ...analysisRange,
         });
-        setMatchedResult({ ruleId: rule.id, tokens });
+        setMatchedResult({ ruleId: rule.id, tokens, total, capped });
       } catch (e) {
         setMatchedError(
           apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0], 'Failed to load matched tokens'),
@@ -1156,7 +1158,7 @@ export function Tpsl2Page() {
             marker="bg-[#9370db]"
             badge="neutral"
             badgeClass="border-[#9370db]/40 bg-[#9370db]/12 text-[#9370db]"
-            count={matchedResult.tokens.length}
+            count={matchedResult.total}
             subtitle={matchedRuleName ?? undefined}
             action={
               <button
@@ -1168,6 +1170,13 @@ export function Tpsl2Page() {
               </button>
             }
           />
+          {matchedResult.capped && (
+            <p className="mb-2 text-sm text-amber-400">
+              Showing first 5,000 of {matchedResult.total.toLocaleString()} total matches.
+              Matched scans all-time historical tokens — use the date range above to narrow
+              results to a recent window.
+            </p>
+          )}
           {matchedResult.tokens.length === 0 ? (
             <p className="text-text-dim">
               No tokens in the database match this rule&apos;s entry criteria.
