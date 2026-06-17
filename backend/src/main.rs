@@ -475,6 +475,14 @@ async fn main() -> anyhow::Result<()> {
         trade_signals.clone(),
     ));
 
+    // Keep the token-list DB base fresh so `GET /api/tokens` reflects the whole
+    // seeded universe (tokens + persisted stats), not just mints still resident in
+    // the live cache after idle eviction. Fire-and-forget like the eviction sweep.
+    tokio::spawn(state::token_list_cache::run_token_list_db_refresh(
+        app_state.token_repo(),
+        app_state.token_list.clone(),
+    ));
+
     let strategy_runner = strategies::StrategyRunner::new(
         db.clone(),
         trader.clone(),

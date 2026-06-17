@@ -138,8 +138,9 @@ export function TokensPage() {
   // Resets the table to page 1 when the global filter panel changes.
   const filtersResetKey = useMemo(() => JSON.stringify(filters), [filters]);
   const filterCount = activeFilterCount(filters);
-  // Whether any reduction is active — drives the "matched" vs "tracked" badge,
-  // since `total` is now the filtered count.
+  // Whether any reduction is active — drives the "matched" vs "total" badge.
+  // Unfiltered, `total` is the whole DB-backed token universe (not just the
+  // cache-tracked subset); with any reduction it's the filtered count.
   const anyActive =
     filterCount > 0 ||
     !!tableQuery.search ||
@@ -268,7 +269,7 @@ export function TokensPage() {
       <div className="mb-3.5 flex flex-wrap items-center gap-3">
         <h2 className="text-lg font-extrabold text-text">Tokens</h2>
         <Badge variant="primary" className="font-mono">
-          {total} {anyActive ? 'matched' : 'tracked'}
+          {total} {anyActive ? 'matched' : 'total'}
         </Badge>
         <StatusButton
           state={live ? 'live' : 'dead'}

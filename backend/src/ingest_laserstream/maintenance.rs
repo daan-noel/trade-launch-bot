@@ -25,7 +25,7 @@ pub async fn run_partition_maintenance(pool: PgPool) {
     let mut tick = tokio::time::interval(Duration::from_secs(MAINT_INTERVAL_SECS));
     loop {
         tick.tick().await;
-        let today = Utc::now().date_naive();
+        let today: chrono::prelude::NaiveDate = Utc::now().date_naive();
 
         // Ensure today plus the next two days exist (ahead of ingest), and drop
         // every existing partition past the retention cutoff — for both the

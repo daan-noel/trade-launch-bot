@@ -24,10 +24,14 @@ const SCORE_Z: f64 = 1.64;
 /// [`QuantileSketch`] rather than a per-token `Vec`, so a combo's footprint no
 /// longer grows with the number of tokens it fires on. At `HARD_MAX_COMBOS` ×
 /// a few-thousand-token group the old `Vec<f32>`/`Vec<i32>` reached multi-GB held
-/// in the fold thread; the sketch caps each combo at ~4 KB regardless of corpus
-/// size — the cap that actually lets big sweeps run. Best/worst stay **exact**
-/// (running min/max); mean/holding-mean stay exact (running sums); only the two
-/// interior quantiles are approximate (~4% relative error, see [`QuantileSketch`]).
+/// in the fold thread; the sketch caps each combo at ~0.6 KB regardless of corpus
+/// size — the cap that actually lets big sweeps run. The whole sweep allocates
+/// one contiguous `vec![ComboAgg; n_combos]`, so this per-combo size is multiplied
+/// by the (large) combo count × pool threads: keeping `ComboAgg` small is what
+/// stops a high-`max_combos` run from OOM-aborting the process. Best/worst stay
+/// **exact** (running min/max); mean/holding-mean stay exact (running sums); only
+/// the two interior quantiles are approximate (~15% relative error, see
+/// [`QuantileSketch`]).
 #[derive(Clone)]
 pub struct ComboAgg {
     fired: u64,
@@ -245,19 +249,29 @@ fn exit_index(e: ExitCode) -> usize {
 // Quantile sketch
 // --------------------------------------------------------------------------
 
-/// Buckets per sign. With [`SKETCH_GAMMA`] this covers roughly `[1e-3, 3e5]` in
-/// magnitude — wide enough for both pnl% (−100%..hundreds-of-thousands %) and
+/// Buckets per sign. With [`SKETCH_INV_LN_GAMMA`] this covers roughly `[1e-3, 3e5]`
+/// in magnitude — wide enough for both pnl% (−100%..hundreds-of-thousands %) and
 /// holding seconds (0..days). Values outside the range clamp into the end
 /// buckets: their *rank* still counts correctly, only the returned value saturates.
-const SKETCH_N: usize = 256;
+///
+/// Kept deliberately small (64, not 256): each bucket is a counter in the
+/// per-combo [`ComboAgg`], and the whole sweep holds `n_combos` of those in one
+/// contiguous `Vec`. 64 buckets per sign (vs. 256) cuts each sketch ~4×, the main
+/// lever keeping a high-`max_combos` run from exhausting memory. The cost is a
+/// coarser quantile (see the relative-error note on [`SKETCH_INV_LN_GAMMA`]).
+const SKETCH_N: usize = 64;
 /// Index offset so sub-unit magnitudes (e.g. 0.1% pnl, 1-second holds) land in
 /// low buckets rather than clamping at 0. Chosen with [`SKETCH_INV_LN_GAMMA`] so
-/// bucket 0 ≈ magnitude `1e-3`.
-const SKETCH_BIAS: f64 = 90.0;
-/// `1 / ln(GAMMA)` for `GAMMA = 1.08`. Each bucket is 8% wider than the previous,
-/// giving ~3.9% relative error `(GAMMA−1)/(GAMMA+1)` on a returned quantile.
-/// Precomputed (no `ln` of a constant in the hot fold path).
-const SKETCH_INV_LN_GAMMA: f64 = 12.99370711;
+/// bucket 0 ≈ magnitude `1e-3` and the top bucket ≈ `3e5` — the same range the
+/// old 256-bucket layout covered, just spread over 64 wider buckets.
+const SKETCH_BIAS: f64 = 22.65;
+/// `1 / ln(GAMMA)` for `GAMMA ≈ 1.357`. Each bucket is ~36% wider than the
+/// previous, giving ~15% relative error `(GAMMA−1)/(GAMMA+1)` on a returned
+/// quantile — coarser than the old 256-bucket sketch (~3.9%) in exchange for a 4×
+/// smaller `ComboAgg`. Best/worst/mean/total stay exact; only median/p90 widen,
+/// and the sweep ranks combos on `score`, not on these. Precomputed (no `ln` of a
+/// constant in the hot fold path).
+const SKETCH_INV_LN_GAMMA: f64 = 3.27885;
 
 /// Fixed-memory, **order-independent** quantile sketch (DDSketch-style log
 /// buckets). Replaces the old per-combo sample `Vec`s so each [`ComboAgg`] is
@@ -268,14 +282,21 @@ const SKETCH_INV_LN_GAMMA: f64 = 12.99370711;
 /// and parallel folds reproduce the same median/p90, unlike order-sensitive
 /// P²/t-digest. A two-sided layout (plus an exact zero count) handles the signed
 /// pnl% domain; holding seconds simply never touch the negative buckets.
+///
+/// Counts are `u16` (saturating), not `u32`: a bucket only ever counts tokens that
+/// fired into it (≤ the corpus size, a few thousand under the default caps), so the
+/// 4-billion headroom of a `u32` was pure waste — halving the counter halves the
+/// sketch again. A bucket that somehow exceeds 65 535 fires saturates rather than
+/// wrapping (a wrap would corrupt the rank); at that point the quantile is already
+/// only a coarse estimate, so the saturation is a negligible further approximation.
 #[derive(Clone)]
 struct QuantileSketch {
     /// Counts for v < 0, indexed by the bucket of `|v|`.
-    neg: [u32; SKETCH_N],
+    neg: [u16; SKETCH_N],
     /// Counts for v > 0.
-    pos: [u32; SKETCH_N],
+    pos: [u16; SKETCH_N],
     /// Count of exactly-zero values.
-    zero: u32,
+    zero: u16,
 }
 
 impl Default for QuantileSketch {
@@ -297,12 +318,16 @@ fn sketch_value_at(i: usize) -> f64 {
 
 impl QuantileSketch {
     fn record(&mut self, v: f64) {
+        // Saturating: a u16 bucket that overflows must clamp, never wrap (a wrap
+        // would corrupt the cumulative rank the quantile walk depends on).
         if v > 0.0 {
-            self.pos[sketch_bucket(v)] += 1;
+            let b = &mut self.pos[sketch_bucket(v)];
+            *b = b.saturating_add(1);
         } else if v < 0.0 {
-            self.neg[sketch_bucket(-v)] += 1;
+            let b = &mut self.neg[sketch_bucket(-v)];
+            *b = b.saturating_add(1);
         } else {
-            self.zero += 1;
+            self.zero = self.zero.saturating_add(1);
         }
     }
 
@@ -457,18 +482,19 @@ mod tests {
 
     #[test]
     fn sketch_median_p90_within_relative_error() {
-        // 1..=1000 → exact median 500/501, p90 ~900. The log sketch must land
-        // within its ~4% relative-error band on both.
+        // 1..=1000 → exact median 500/501, p90 ~900. The 64-bucket log sketch must
+        // land within its ~15% relative-error band on both (wider than the old
+        // 256-bucket ~4% band, the trade for a 4× smaller per-combo footprint).
         let mut a = ComboAgg::default();
         for v in 1..=1000 {
             a.record(&outcome(0.1, v as f32, ExitCode::TakeProfit, v));
         }
         let m = a.finalize(0);
-        assert!((m.median_pnl_pct - 500.0).abs() / 500.0 < 0.05, "median {}", m.median_pnl_pct);
-        assert!((m.p90_pnl_pct - 900.0).abs() / 900.0 < 0.05, "p90 {}", m.p90_pnl_pct);
+        assert!((m.median_pnl_pct - 500.0).abs() / 500.0 < 0.16, "median {}", m.median_pnl_pct);
+        assert!((m.p90_pnl_pct - 900.0).abs() / 900.0 < 0.16, "p90 {}", m.p90_pnl_pct);
         // Holding fed the same 1..=1000 sample (closed) → median ~500.
         assert!(
-            (m.median_holding_secs - 500.0).abs() / 500.0 < 0.05,
+            (m.median_holding_secs - 500.0).abs() / 500.0 < 0.16,
             "holding median {}",
             m.median_holding_secs
         );

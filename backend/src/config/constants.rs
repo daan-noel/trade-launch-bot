@@ -281,6 +281,16 @@ pub const TOKEN_CACHE_EVICT_INTERVAL_SECONDS: u64 = 300; // 5 minutes
 /// confirm loop reads this cache) never strands.
 pub const TOKEN_CACHE_EVICT_IDLE_SECONDS: i64 = 6 * 3600; // 6 hours
 
+/// How often the background task refreshes the DB-backed base of the token-list
+/// snapshot (`tokens LEFT JOIN tokens_info`, windowed by `SEED_ACTIVITY_WINDOW_DAYS`
+/// + capped at `SEED_TOKEN_LIMIT`). This base lets `GET /api/tokens` reflect the
+/// whole seeded universe — including mints already evicted from the live cache by
+/// `TOKEN_CACHE_EVICT_IDLE_SECONDS` — overlaid with live cache stats for tracked
+/// mints. Coarse on purpose: the base only matters for idle/evicted mints (whose
+/// stats are static), since tracked mints are always superseded by the live
+/// overlay, so one bounded query per minute is plenty and keeps DB load trivial.
+pub const TOKEN_LIST_DB_REFRESH_SECS: u64 = 60;
+
 
 
 

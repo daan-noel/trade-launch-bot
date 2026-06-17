@@ -15,6 +15,7 @@ use serde_json::Value;
 
 use crate::models::{Tpsl1Rule, Tpsl2Rule};
 use crate::storage::repositories::grouped_sweep_repo::GroupedSweepTables;
+use crate::sweep::aggregate::ComboAgg;
 use crate::sweep::corpus::Corpus;
 use crate::sweep::grouped_engine::{run_grouped_with_refine, CoverageFloor, GroupResult};
 use crate::sweep::grouping::GroupField;
@@ -41,6 +42,67 @@ pub const HARD_MAX_COMBOS: usize = 500_000;
 /// given, else the default, clamped to the hard backstop (and ≥ 1).
 fn effective_cap(max_combos: Option<usize>) -> usize {
     max_combos.unwrap_or(MAX_COMBOS).clamp(1, HARD_MAX_COMBOS)
+}
+
+/// Default ceiling (MB) on the per-combo fold accumulators a single run may
+/// allocate. The sweep holds one contiguous `vec![ComboAgg; combos]` per active
+/// fold; the small-group phase runs up to `pool_threads` of those concurrently, so
+/// peak ≈ `threads × combos × sizeof(ComboAgg)`. `HARD_MAX_COMBOS` alone doesn't
+/// bound this (a 500k-combo run is hundreds of MB × threads), so a too-large run
+/// used to OOM-**abort the whole process** (a failed Rust alloc calls `abort()`).
+/// This budget converts that into a clean rejected request. Override with
+/// `SWEEP_MEMORY_BUDGET_MB`.
+const DEFAULT_SWEEP_MEMORY_BUDGET_MB: usize = 1_024;
+
+/// The fold-accumulator memory budget in bytes (`SWEEP_MEMORY_BUDGET_MB` or the
+/// default), saturating so a fat-fingered override can't wrap.
+fn sweep_memory_budget_bytes() -> u64 {
+    std::env::var("SWEEP_MEMORY_BUDGET_MB")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&m| m >= 1)
+        .unwrap_or(DEFAULT_SWEEP_MEMORY_BUDGET_MB)
+        .saturating_mul(1024 * 1024) as u64
+}
+
+/// Reject — **before allocating** — a run whose worst-case fold-accumulator memory
+/// (`threads × combos × sizeof(ComboAgg)`) would blow the budget, so an oversized
+/// `max_combos` fails as a clear error instead of OOM-aborting the backend. `cap`
+/// is the worst-case combo count (the refine union is also capped at it). Returns
+/// `Ok` with nothing; on success the caller logs the projection.
+fn check_sweep_memory(cap: usize, threads: usize) -> Result<()> {
+    let per = std::mem::size_of::<ComboAgg>() as u64;
+    let budget = sweep_memory_budget_bytes();
+    let projected = fits_sweep_memory(cap, threads, per, budget)?;
+    tracing::info!(
+        cap,
+        threads,
+        per_combo_bytes = per,
+        projected_mb = projected / (1024 * 1024),
+        budget_mb = budget / (1024 * 1024),
+        "grouped sweep: fold-accumulator memory within budget"
+    );
+    Ok(())
+}
+
+/// Pure budget check: the worst-case fold-accumulator bytes
+/// (`threads × combos × per`, saturating) against `budget`. Returns the projected
+/// bytes when it fits, else a caller-facing error. Split out so the arithmetic is
+/// unit-testable without touching env / `ComboAgg` layout.
+fn fits_sweep_memory(cap: usize, threads: usize, per: u64, budget: u64) -> Result<u64> {
+    let projected = (cap as u64)
+        .saturating_mul(threads as u64)
+        .saturating_mul(per);
+    if projected > budget {
+        let mb = |b: u64| b / (1024 * 1024);
+        bail!(
+            "sweep would allocate ~{} MB of fold accumulators ({cap} combos × {threads} threads × {per} B), \
+             over the {} MB budget — lower max_combos, narrow the axes, or raise SWEEP_MEMORY_BUDGET_MB",
+            mb(projected),
+            mb(budget),
+        );
+    }
+    Ok(projected)
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +282,10 @@ async fn sweep_tpsl2(
     }
 
     let threads = bounded_threads();
+    // Reject a run whose fold accumulators would exhaust memory before allocating
+    // (turns a process-killing OOM abort into a clean error). `cap` bounds the
+    // combo count across both the coarse and refine passes.
+    check_sweep_memory(cap, threads)?;
 
     // The coarse→refine driver may grow the combo set (a neighborhood around each
     // group's survivors), so the final param list — and thus its `params_json` — is
@@ -350,6 +416,9 @@ async fn sweep_tpsl1(
     }
 
     let threads = bounded_threads();
+    // Reject a run whose fold accumulators would exhaust memory before allocating
+    // (turns a process-killing OOM abort into a clean error).
+    check_sweep_memory(cap, threads)?;
 
     // The coarse→refine driver may grow the combo set, so the final param list is
     // only known after the sweep — capture its `params_json` inside the task.
@@ -386,6 +455,35 @@ async fn sweep_tpsl1(
         axes_json,
         groups,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MB: u64 = 1024 * 1024;
+
+    #[test]
+    fn within_budget_returns_projected_bytes() {
+        // 5k combos × 4 threads × 600 B ≈ 11 MB — comfortably under a 1 GB budget.
+        let projected = fits_sweep_memory(5_000, 4, 600, 1_024 * MB).unwrap();
+        assert_eq!(projected, 5_000 * 4 * 600);
+    }
+
+    #[test]
+    fn over_budget_is_rejected_not_aborted() {
+        // The reported OOM: ~315k combos × ~600 B × several threads is GBs — must
+        // surface as an Err the handler maps to a 4xx, never an allocation.
+        let err = fits_sweep_memory(315_000, 6, 600, 1_024 * MB).unwrap_err();
+        assert!(err.to_string().contains("over the"), "got: {err}");
+    }
+
+    #[test]
+    fn projection_saturates_instead_of_wrapping() {
+        // A fat-fingered cap can't wrap u64 into a small product that sneaks past
+        // the budget — saturation keeps it at the ceiling (rejected).
+        assert!(fits_sweep_memory(usize::MAX, usize::MAX, u64::MAX, 1_024 * MB).is_err());
+    }
 }
 
 /// Synthetic TPSL1 base rule the swept params overlay. As with TPSL2, only

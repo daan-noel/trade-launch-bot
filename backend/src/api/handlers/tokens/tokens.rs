@@ -120,6 +120,60 @@ impl From<&TokenState> for TokenSummary {
     }
 }
 
+impl From<crate::storage::repositories::token_repo::TokenListRow> for TokenSummary {
+    /// Build a list row from a joined `tokens` + `tokens_info` DB row, so the list
+    /// can include mints no longer resident in the live cache. Mirrors the
+    /// `&TokenState` conversion above, with one intentional gap: `active_lifetime_secs`
+    /// (gap-aware, recomputed from in-memory trade history) is NOT persisted, so it
+    /// is `None` for DB-sourced rows — the lifetime filter then exempts them and the
+    /// lifetime sort puts them last, matching the "alive/unknown" treatment.
+    fn from(r: crate::storage::repositories::token_repo::TokenListRow) -> Self {
+        let age_seconds = chrono::Utc::now()
+            .signed_duration_since(r.created_at)
+            .num_seconds();
+
+        let ix_labels_count = match &r.ix_labels.0 {
+            serde_json::Value::Array(arr) => arr.len(),
+            _ => 0,
+        };
+
+        let buy_ix = r.initial_buy_instruction.map(|v| v.0);
+
+        Self {
+            mint_address: r.mint_address,
+            symbol: r.symbol,
+            current_price: r.current_price,
+            ath_price: r.ath_price,
+            ath_timestamp: r.ath_timestamp,
+            volume_sol_total: r.volume.unwrap_or(0.0),
+            market_cap: r.market_cap,
+            initial_buy_sol: r.initial_buy_sol,
+            initial_supply_token: r.initial_supply_token.map(|v| v as u64),
+            token_amount: extract_buy_arg_u64(&buy_ix, "token_amount"),
+            max_sol_cost: extract_buy_arg_u64(&buy_ix, "max_sol_cost"),
+            spendable_sol_in: extract_buy_arg_u64(&buy_ix, "spendable_sol_in"),
+            min_tokens_out: extract_buy_arg_u64(&buy_ix, "min_tokens_out"),
+            cu_limit: r.cu_limit.map(|v| v as u64),
+            cu_price: r.cu_price.map(|v| v as u64),
+            is_mayhem_mode: r.is_mayhem_mode,
+            is_cashback_enabled: r.is_cashback_enabled,
+            ix_labels_count,
+            instruction_labels: r.ix_labels.0,
+            is_migrated: r.is_migrated.unwrap_or(false),
+            is_dead: r.is_dead.unwrap_or(false),
+            age_seconds,
+            created_at: r.created_at,
+            creator_address: r.creator_wallet,
+            create_tx_address: r.creation_tx_signature,
+            name: r.name,
+            trade_count: r.trade_count.unwrap_or(0) as u64,
+            last_trade_at: r.last_trade_at,
+            active_lifetime_secs: None,
+            last_synced_at: r.last_synced_at,
+        }
+    }
+}
+
 /// Full token detail including live stats.
 #[derive(Serialize)]
 pub struct TokenDetail {
@@ -316,12 +370,10 @@ pub async fn list_tokens(
 
         // Full-fidelity server-side reduction: global filters + search + per-column
         // filters (mirrors `tokenPassesFilters` and the DataTable). Filter by
-        // reference — non-matching rows are never cloned.
-        let mut matched: Vec<&TokenSummary> = snapshot
-            .rows
-            .iter()
-            .filter(|&t| q.matches(t, now))
-            .collect();
+        // reference — non-matching rows are never cloned. The snapshot merges the
+        // live cache over the DB base (whole seeded universe), so the list includes
+        // mints already evicted from the cache, newest-first.
+        let mut matched: Vec<&TokenSummary> = snapshot.merged_filtered(|t| q.matches(t, now));
 
         // `total` is the FILTERED count — that's what the table's pager needs.
         let total = matched.len();

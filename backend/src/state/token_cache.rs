@@ -325,25 +325,40 @@ pub type TokenCache = DashMap<String, TokenState>;
 // Runtime eviction
 // ---------------------------------------------------------------------------
 
-/// Eviction predicate: a token is evictable when it is **not** currently held and
-/// has been inactive for at least `idle_secs`. "Inactive" is measured from the
-/// last trade, falling back to the token's creation time for a mint that has
-/// never traded — so a freshly-created mint is never dropped before it has had a
-/// chance to trade (and be sniped), while a created-but-never-traded launch is
-/// still reclaimed once it ages out. Pure so the sweep below stays trivially
-/// testable without a clock or a `DashMap`.
+/// Eviction predicate: a token held by an open position is **never** evictable;
+/// otherwise it is evictable when **either**
+///   - it is **dead** (`TokenState::is_dead` — liquidity gone, price round-tripped
+///     to launch, only dust trading; past `DEAD_MIN_AGE_SECONDS`), regardless of
+///     how recently a (dust) trade arrived. A dead token keeps drawing dust trades,
+///     so `last_trade_at` stays fresh and the idle check below would never fire —
+///     yet it is worthless to track and every dust trade for it is wasted ingest
+///     work. Dropping it stops the pipeline from appending its trades (a now-untracked
+///     mint is a cache miss), so it is no longer tracked/ingested; **or**
+///   - it has been **inactive** for at least `idle_secs`. "Inactive" is measured
+///     from the last trade, falling back to the token's creation time for a mint
+///     that has never traded — so a freshly-created mint is never dropped before it
+///     has had a chance to trade (and be sniped), while a created-but-never-traded
+///     launch is still reclaimed once it ages out.
+///
+/// Pure so the sweep below stays trivially testable without a clock or a `DashMap`.
 fn token_is_evictable(state: &TokenState, now: DateTime<Utc>, idle_secs: i64, held: bool) -> bool {
     if held {
         return false;
+    }
+    // A dead token is reclaimed immediately, even if dust trades keep it "active".
+    if state.is_dead(now) {
+        return true;
     }
     let last_activity = state.last_trade_at.unwrap_or(state.token.created_at);
     now.signed_duration_since(last_activity).num_seconds() >= idle_secs
 }
 
-/// Periodic eviction sweep: drop tokens that have gone quiet beyond
-/// `TOKEN_CACHE_EVICT_IDLE_SECONDS` and hold no open position, bounding the live
-/// process's heap. Without this the cache grows one entry per created mint
-/// forever (Pump.fun mints thousands/day) → eventual OOM of the trading process.
+/// Periodic eviction sweep: drop tokens that hold no open position and are either
+/// **dead** (`TokenState::is_dead`) or have gone quiet beyond
+/// `TOKEN_CACHE_EVICT_IDLE_SECONDS`, bounding the live process's heap and keeping
+/// dead mints out of the ingest hot path. Without this the cache grows one entry
+/// per created mint forever (Pump.fun mints thousands/day) → eventual OOM of the
+/// trading process.
 ///
 /// `is_held` is supplied by the composition root (closing over the strategy
 /// runtime caches' in-memory holding indexes, which cover **both** paper and real
@@ -383,7 +398,7 @@ where
             token_cache.remove(mint);
         }
         info!(
-            "TokenCache eviction: dropped {} idle token(s) (>{}s quiet, no open position); {} remain",
+            "TokenCache eviction: dropped {} token(s) (dead or >{}s quiet, no open position); {} remain",
             stale.len(),
             TOKEN_CACHE_EVICT_IDLE_SECONDS,
             token_cache.len()
@@ -458,6 +473,32 @@ mod tests {
         let now = Utc::now();
         let mut state = TokenState::new(token_created_at(now - ChronoDuration::days(30)));
         state.last_trade_at = Some(now - ChronoDuration::days(10));
+        assert!(!token_is_evictable(&state, now, IDLE, true));
+    }
+
+    #[test]
+    fn evicts_dead_token_despite_recent_dust_trade() {
+        // A dead token keeps drawing dust trades, so its `last_trade_at` is recent
+        // and the idle check never fires — yet it must still be reclaimed so the
+        // ingest pipeline stops tracking it. (Helpers defined below in this module.)
+        let now = Utc::now();
+        let mut state =
+            TokenState::new(token_with_launch(now - ChronoDuration::hours(2), 1.0, 1000));
+        state.add_trade(trade_at(now - ChronoDuration::seconds(30), 0.001, 1.0, 0.5));
+        assert!(state.is_dead(now), "precondition: token is dead");
+        // last_trade_at is 30s ago → NOT idle, but dead ⇒ evictable.
+        assert!(token_is_evictable(&state, now, IDLE, false));
+    }
+
+    #[test]
+    fn never_evicts_held_dead_token() {
+        // Deadness never overrides the open-position exemption: an exit loop still
+        // needs the cache entry, so a held mint survives even when flagged dead.
+        let now = Utc::now();
+        let mut state =
+            TokenState::new(token_with_launch(now - ChronoDuration::hours(2), 1.0, 1000));
+        state.add_trade(trade_at(now - ChronoDuration::seconds(30), 0.001, 1.0, 0.5));
+        assert!(state.is_dead(now), "precondition: token is dead");
         assert!(!token_is_evictable(&state, now, IDLE, true));
     }
 

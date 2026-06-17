@@ -34,6 +34,46 @@ struct TokenDbRow {
     created_at: DateTime<Utc>,
 }
 
+/// A joined `tokens` + `tokens_info` row, shaped to build a `TokenSummary`
+/// directly (so the list endpoint can serve mints no longer resident in the live
+/// cache). All `tokens_info` columns are `Option` because the join is a LEFT JOIN
+/// — a token that has never traded (or predates its first metrics flush) has no
+/// `tokens_info` row yet, exactly like a freshly-tracked mint with zeroed stats.
+///
+/// Note: `tokens_info.age` is the wall-clock age at the last metrics flush, NOT
+/// the gap-aware `active_lifetime_secs` (which is recomputed from in-memory trade
+/// history and is not persisted). It is therefore intentionally NOT selected here;
+/// DB-sourced rows carry `active_lifetime_secs = None`.
+#[derive(sqlx::FromRow)]
+pub struct TokenListRow {
+    // tokens
+    pub mint_address: String,
+    pub creator_wallet: String,
+    pub name: String,
+    pub symbol: String,
+    pub initial_supply_token: Option<i64>,
+    pub initial_buy_sol: Option<f64>,
+    pub initial_buy_instruction: Option<Json<Value>>,
+    pub cu_limit: Option<i64>,
+    pub cu_price: Option<i64>,
+    pub is_mayhem_mode: bool,
+    pub is_cashback_enabled: bool,
+    pub ix_labels: Json<Value>,
+    pub creation_tx_signature: String,
+    pub created_at: DateTime<Utc>,
+    // tokens_info (LEFT JOIN → all nullable)
+    pub ath_price: Option<f64>,
+    pub ath_timestamp: Option<DateTime<Utc>>,
+    pub volume: Option<f64>,
+    pub market_cap: Option<f64>,
+    pub trade_count: Option<i64>,
+    pub last_trade_at: Option<DateTime<Utc>>,
+    pub current_price: Option<f64>,
+    pub is_dead: Option<bool>,
+    pub is_migrated: Option<bool>,
+    pub last_synced_at: Option<DateTime<Utc>>,
+}
+
 impl From<TokenDbRow> for Token {
     fn from(r: TokenDbRow) -> Self {
         Self {
@@ -203,6 +243,41 @@ impl TokenRepo {
         .await?;
 
         Ok(rows.into_iter().map(Token::from).collect())
+    }
+
+    /// Load the token-list rows (`tokens LEFT JOIN tokens_info`) created since
+    /// `since`, newest-first, capped at `limit`. Backs the DB-base of the
+    /// `GET /api/tokens` snapshot so the list reflects the whole seeded universe —
+    /// including mints already evicted from the live cache — not just resident
+    /// ones. Bounded on both axes (recency window + row cap), index-servable via
+    /// `idx_tokens_created_at`, so it never scans the full, forever-growing
+    /// `tokens` table. Mirrors `find_recent_active`'s bounding contract.
+    pub async fn find_list_rows(
+        &self,
+        limit: i64,
+        since: DateTime<Utc>,
+    ) -> anyhow::Result<Vec<TokenListRow>> {
+        let rows = sqlx::query_as::<_, TokenListRow>(
+            r#"
+            SELECT t.mint_address, t.creator_wallet, t.name, t.symbol,
+                   t.initial_supply_token, t.initial_buy_sol, t.initial_buy_instruction,
+                   t.cu_limit, t.cu_price, t.is_mayhem_mode, t.is_cashback_enabled,
+                   t.ix_labels, t.creation_tx_signature, t.created_at,
+                   i.ath_price, i.ath_timestamp, i.volume, i.market_cap, i.trade_count,
+                   i.last_trade_at, i.current_price, i.is_dead, i.is_migrated, i.last_synced_at
+              FROM tokens t
+              LEFT JOIN tokens_info i ON i.mint_address = t.mint_address
+             WHERE t.created_at >= $1
+             ORDER BY t.created_at DESC
+             LIMIT $2
+            "#,
+        )
+        .bind(since)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
     }
 
     /// Load the full `Token` rows for an explicit set of mints (`mint = ANY($1)`,
