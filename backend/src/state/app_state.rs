@@ -10,7 +10,8 @@ use crate::api::handlers::system::SseFrame;
 use crate::models::ingest::SseEvent;
 use crate::storage::repositories::settings_repo::AppSettings;
 use crate::storage::repositories::{
-    analysis_repo::AnalysisRepo, settings_repo::SettingsRepo, token_repo::TokenRepo,
+    analysis_repo::AnalysisRepo, creation_stats_repo::CreationStatsRepo,
+    settings_repo::SettingsRepo, token_repo::TokenRepo,
     trade_repo::TradeRepo, tpsl1_paper_trading_repo::Tpsl1PaperTradingRepo,
     tpsl1_position_repo::Tpsl1PositionRepo, tpsl1_strategy_rule_repo::Tpsl1StrategyRuleRepo,
     tpsl2_paper_trading_repo::Tpsl2PaperTradingRepo, tpsl2_position_repo::Tpsl2PositionRepo,
@@ -268,6 +269,10 @@ impl AppState {
 
     pub fn analysis_repo(&self) -> AnalysisRepo {
         AnalysisRepo::new(self.db.clone())
+    }
+
+    pub fn creation_stats_repo(&self) -> CreationStatsRepo {
+        CreationStatsRepo::new(self.db.clone())
     }
 
     pub fn wallet_repo(&self) -> WalletRepo {

@@ -1,0 +1,311 @@
+use actix_web::{web, HttpResponse, Responder};
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+use crate::state::app_state::AppState;
+use crate::storage::repositories::creation_stats_repo::{HeatCellRow, StatsFilter, TrendPointRow};
+
+/// Default outcome-maturity window (24h): tokens younger than this are excluded
+/// from migrate/dead counts so a fresh bucket doesn't read artificially bad.
+const DEFAULT_MATURITY_SECS: f64 = 86_400.0;
+/// Default look-back when the client sends no explicit `from`.
+const DEFAULT_WINDOW_DAYS: i64 = 30;
+/// Hard cap on the look-back span (defensive — keeps the index range scan bounded
+/// even if a client hand-crafts a huge `from`..`to`).
+const MAX_WINDOW_DAYS: i64 = 366;
+
+#[derive(Deserialize)]
+pub struct CreationStatsQuery {
+    /// `heatmap` (7×24 fold, default) | `trend` (absolute calendar buckets).
+    pub view: Option<String>,
+    /// Trend granularity: `hour` | `day` | `week` (default `day`). Ignored for heatmap.
+    pub bucket: Option<String>,
+    /// IANA timezone for bucketing; defaults to UTC.
+    pub tz: Option<String>,
+    /// Window bounds (RFC3339). Default: last 30d → now.
+    pub from: Option<String>,
+    pub to: Option<String>,
+    /// Outcome maturity window in seconds (default 24h).
+    pub maturity_secs: Option<f64>,
+    /// Segment filter: `all` | `mayhem` | `non_mayhem` | `cashback` | `non_cashback`.
+    pub segment: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Response types
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct HeatCell {
+    pub dow: i32,
+    pub hour: i32,
+    pub count: i64,
+    pub matured: i64,
+    pub known: i64,
+    pub migrated: i64,
+    pub dead: i64,
+}
+
+#[derive(Serialize)]
+pub struct TrendPoint {
+    /// Local wall-clock bucket start, e.g. `2026-06-01T00:00:00` (already shifted
+    /// into the requested tz; the client renders it on a UTC-formatting axis).
+    pub bucket: NaiveDateTime,
+    pub count: i64,
+    pub matured: i64,
+    pub known: i64,
+    pub migrated: i64,
+    pub dead: i64,
+}
+
+#[derive(Serialize)]
+pub struct CreationStatsResponse {
+    pub view: String,
+    pub bucket: String,
+    pub tz: String,
+    pub from: DateTime<Utc>,
+    pub to: DateTime<Utc>,
+    pub maturity_secs: f64,
+    pub segment: String,
+    /// Totals across the window (volume-view count, matured base, outcome-known
+    /// base) so the client can render share-of-total + a coverage % without a
+    /// second pass.
+    pub total: i64,
+    pub matured: i64,
+    pub known: i64,
+    /// Populated when `view=heatmap`, else empty.
+    pub cells: Vec<HeatCell>,
+    /// Populated when `view=trend`, else empty.
+    pub points: Vec<TrendPoint>,
+}
+
+// ---------------------------------------------------------------------------
+// Pure helpers (unit-tested without a DB)
+// ---------------------------------------------------------------------------
+
+/// Map a `segment` value to `(mayhem, cashback)` predicate options. `None` =
+/// "don't filter on this flag"; an unknown/`all`/missing value filters nothing.
+fn parse_segment(segment: &str) -> (Option<bool>, Option<bool>) {
+    match segment {
+        "mayhem" => (Some(true), None),
+        "non_mayhem" => (Some(false), None),
+        "cashback" => (None, Some(true)),
+        "non_cashback" => (None, Some(false)),
+        _ => (None, None),
+    }
+}
+
+/// Validate the trend granularity against the `date_trunc` units we allow
+/// (defends the bound text against an arbitrary value). Defaults to `day`.
+fn normalize_bucket(bucket: Option<&str>) -> &'static str {
+    match bucket {
+        Some("hour") => "hour",
+        Some("week") => "week",
+        _ => "day",
+    }
+}
+
+/// `YYYY-MM-DDTHH:MM[:SS]` (UTC wall-clock) or RFC3339 → instant. Mirrors the
+/// tokens-list `parse_dt` contract: bare datetime-local is treated as UTC.
+fn parse_dt(v: &str) -> Option<DateTime<Utc>> {
+    let v = v.trim();
+    if v.is_empty() {
+        return None;
+    }
+    if let Ok(d) = DateTime::parse_from_rfc3339(v) {
+        return Some(d.with_timezone(&Utc));
+    }
+    let iso = if v.len() == 16 {
+        format!("{v}:00Z")
+    } else {
+        format!("{v}Z")
+    };
+    DateTime::parse_from_rfc3339(&iso)
+        .ok()
+        .map(|d| d.with_timezone(&Utc))
+}
+
+/// Resolve the `[from, to)` window: defaults to the last 30d, and clamps the span
+/// to `MAX_WINDOW_DAYS` (moving `from` forward) so the range scan stays bounded.
+fn resolve_window(
+    from: Option<&str>,
+    to: Option<&str>,
+    now: DateTime<Utc>,
+) -> (DateTime<Utc>, DateTime<Utc>) {
+    let to = to.and_then(parse_dt).unwrap_or(now);
+    let mut from = from
+        .and_then(parse_dt)
+        .unwrap_or_else(|| to - Duration::days(DEFAULT_WINDOW_DAYS));
+    if from >= to {
+        from = to - Duration::days(DEFAULT_WINDOW_DAYS);
+    }
+    let max_from = to - Duration::days(MAX_WINDOW_DAYS);
+    if from < max_from {
+        from = max_from;
+    }
+    (from, to)
+}
+
+fn to_cell(r: HeatCellRow) -> HeatCell {
+    HeatCell {
+        dow: r.dow,
+        hour: r.hour,
+        count: r.total,
+        matured: r.matured,
+        known: r.known,
+        migrated: r.migrated,
+        dead: r.dead,
+    }
+}
+
+fn to_point(r: TrendPointRow) -> TrendPoint {
+    TrendPoint {
+        bucket: r.bucket,
+        count: r.total,
+        matured: r.matured,
+        known: r.known,
+        migrated: r.migrated,
+        dead: r.dead,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
+
+/// `GET /api/tokens/creation-stats` — token-creation-time bias aggregates.
+///
+/// Server-side GROUP BY over `tokens` ⋈ `tokens_info`; returns count + outcome
+/// (migrated/dead) per time bucket plus window totals for share/coverage. All
+/// three color metrics ship together so the UI toggles them without a refetch.
+pub async fn get_creation_stats(
+    state: web::Data<Arc<AppState>>,
+    query: web::Query<CreationStatsQuery>,
+) -> impl Responder {
+    let now = Utc::now();
+    let view = match query.view.as_deref() {
+        Some("trend") => "trend",
+        _ => "heatmap",
+    };
+    let bucket = normalize_bucket(query.bucket.as_deref());
+    let tz = query.tz.clone().unwrap_or_else(|| "UTC".to_string());
+    let maturity_secs = query.maturity_secs.unwrap_or(DEFAULT_MATURITY_SECS).max(0.0);
+    let segment = query.segment.clone().unwrap_or_else(|| "all".to_string());
+    let (mayhem, cashback) = parse_segment(&segment);
+    let (from, to) = resolve_window(query.from.as_deref(), query.to.as_deref(), now);
+
+    let repo = state.creation_stats_repo();
+    let filter = StatsFilter {
+        tz: &tz,
+        maturity_secs,
+        from,
+        to,
+        mayhem,
+        cashback,
+    };
+
+    let mut resp = CreationStatsResponse {
+        view: view.to_string(),
+        bucket: bucket.to_string(),
+        tz: tz.clone(),
+        from,
+        to,
+        maturity_secs,
+        segment,
+        total: 0,
+        matured: 0,
+        known: 0,
+        cells: Vec::new(),
+        points: Vec::new(),
+    };
+
+    if view == "trend" {
+        match repo.trend(bucket, filter).await {
+            Ok(rows) => {
+                for r in &rows {
+                    resp.total += r.total;
+                    resp.matured += r.matured;
+                    resp.known += r.known;
+                }
+                resp.points = rows.into_iter().map(to_point).collect();
+            }
+            Err(e) => return db_error(e),
+        }
+    } else {
+        match repo.heatmap(filter).await {
+            Ok(rows) => {
+                for r in &rows {
+                    resp.total += r.total;
+                    resp.matured += r.matured;
+                    resp.known += r.known;
+                }
+                resp.cells = rows.into_iter().map(to_cell).collect();
+            }
+            Err(e) => return db_error(e),
+        }
+    }
+
+    HttpResponse::Ok().json(resp)
+}
+
+fn db_error(e: anyhow::Error) -> HttpResponse {
+    tracing::error!("creation-stats query failed: {e}");
+    HttpResponse::InternalServerError().json(serde_json::json!({
+        "error": "failed to compute creation stats"
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn segment_maps_to_flag_predicates() {
+        assert_eq!(parse_segment("all"), (None, None));
+        assert_eq!(parse_segment("whatever"), (None, None));
+        assert_eq!(parse_segment("mayhem"), (Some(true), None));
+        assert_eq!(parse_segment("non_mayhem"), (Some(false), None));
+        assert_eq!(parse_segment("cashback"), (None, Some(true)));
+        assert_eq!(parse_segment("non_cashback"), (None, Some(false)));
+    }
+
+    #[test]
+    fn bucket_defaults_and_whitelists() {
+        assert_eq!(normalize_bucket(None), "day");
+        assert_eq!(normalize_bucket(Some("bogus")), "day");
+        assert_eq!(normalize_bucket(Some("hour")), "hour");
+        assert_eq!(normalize_bucket(Some("week")), "week");
+    }
+
+    #[test]
+    fn window_defaults_to_30d() {
+        let now = DateTime::parse_from_rfc3339("2026-06-16T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let (from, to) = resolve_window(None, None, now);
+        assert_eq!(to, now);
+        assert_eq!((to - from).num_days(), DEFAULT_WINDOW_DAYS);
+    }
+
+    #[test]
+    fn window_span_is_clamped() {
+        let now = DateTime::parse_from_rfc3339("2026-06-16T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        // from far in the past → clamped to MAX_WINDOW_DAYS before `to`.
+        let (from, to) = resolve_window(Some("2000-01-01T00:00:00Z"), None, now);
+        assert_eq!((to - from).num_days(), MAX_WINDOW_DAYS);
+    }
+
+    #[test]
+    fn inverted_window_falls_back() {
+        let now = DateTime::parse_from_rfc3339("2026-06-16T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        // from after to → ignore and use the 30d default ending at `to`.
+        let (from, to) =
+            resolve_window(Some("2026-06-15T00:00:00Z"), Some("2026-06-01T00:00:00Z"), now);
+        assert_eq!((to - from).num_days(), DEFAULT_WINDOW_DAYS);
+    }
+}

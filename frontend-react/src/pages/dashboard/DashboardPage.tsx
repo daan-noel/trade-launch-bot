@@ -1,39 +1,198 @@
-import { useMemo } from 'react';
-import { DataTable } from 'components/table/DataTable';
-import { tradeColumns } from 'components/transactions/tradeColumns';
-import { usePriceDisplay } from 'hooks/usePriceDisplay';
-import { tradeRowKey, useTradeStream } from 'hooks/useTradeStream';
+import { useMemo, useState } from 'react';
+import { Button } from 'components/ui/Button';
+import { Select } from 'components/ui/Select';
+import { TimezoneSelect } from 'components/ui/TimezoneSelect';
+import { StatCard } from 'components/ui/StatCard';
+import { useTimezone } from 'context/TimezoneContext';
+import { useGetCreationStatsQuery } from 'store/apiSlice';
+import { apiErrorMessage } from 'store/apiSlice';
+import { CreationHeatmap } from 'components/dashboard/CreationHeatmap';
+import { CreationTrendChart } from 'components/dashboard/CreationTrendChart';
+import {
+  BUCKET_OPTIONS,
+  METRIC_OPTIONS,
+  RANGE_OPTIONS,
+  SEGMENT_OPTIONS,
+  formatPct,
+  type CreationBucket,
+  type CreationMetric,
+  type CreationSegment,
+} from 'components/dashboard/creationStats';
+import { formatWithCommas } from 'utils/format';
+
+/** Floor `now` to the current hour and step back `days`, as an RFC3339 string.
+ *  Hour-stable so the RTK cache key doesn't churn on every render. */
+function windowFrom(days: number): string {
+  const d = new Date();
+  d.setMinutes(0, 0, 0);
+  d.setHours(d.getHours() - days * 24);
+  return d.toISOString();
+}
 
 export function DashboardPage() {
-  const price = usePriceDisplay();
-  const events = useTradeStream();
-  // Key on the unit label only: the rate-dependent cells read the rate from
-  // context, so the column array stays stable across USD-rate ticks.
-  const columns = useMemo(() => tradeColumns(price.unitLabel), [price.unitLabel]);
+  const { timezone } = useTimezone();
+  const [metric, setMetric] = useState<CreationMetric>('migrate_rate');
+  const [segment, setSegment] = useState<CreationSegment>('all');
+  const [bucket, setBucket] = useState<CreationBucket>('day');
+  const [rangeDays, setRangeDays] = useState(30);
+
+  const from = useMemo(() => windowFrom(rangeDays), [rangeDays]);
+
+  // Two cache entries: the heatmap fold + the absolute-time trend. The metric
+  // toggle re-colors the heatmap client-side (all metrics ship in one payload),
+  // so changing it never refetches.
+  const heat = useGetCreationStatsQuery({
+    view: 'heatmap',
+    bucket: 'day',
+    tz: timezone,
+    from,
+    segment,
+  });
+  const trend = useGetCreationStatsQuery({
+    view: 'trend',
+    bucket,
+    tz: timezone,
+    from,
+    segment,
+  });
+
+  const coverage =
+    heat.data && heat.data.matured > 0 ? heat.data.known / heat.data.matured : null;
 
   return (
-    <div>
-      <div className="mb-3.5 flex items-center gap-2.5">
-        <h2 className="text-base font-bold text-primary">Live Trades</h2>
-        <span className="flex items-center gap-1.5 rounded border border-primary/30 bg-primary/12 px-2 py-0.5 text-[10px] font-bold tracking-wider text-primary">
-          <span className="size-1.5 animate-pulse rounded-full bg-primary" />
-          LIVE
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2.5">
+        <h2 className="text-base font-bold text-primary">Token Creation Bias</h2>
+        <span className="text-xs text-text-dim">
+          When tokens launch vs. how they end up
         </span>
       </div>
 
-      {events.length === 0 ? (
-        <p className="text-text-dim">Waiting for live trades from stream…</p>
-      ) : (
-        <DataTable
-          columns={columns}
-          rows={events}
-          rowKey={tradeRowKey}
-          searchable={false}
-          colFilters={false}
-          selectable={false}
-          emptyMessage="Waiting for live trades…"
+      {/* Shared control bar */}
+      <div className="flex flex-wrap items-center gap-2">
+        <TimezoneSelect />
+
+        <Select
+          value={String(rangeDays)}
+          onChange={(e) => setRangeDays(Number(e.target.value))}
+          title="Look-back window"
+          className="max-w-[7rem]"
+        >
+          {RANGE_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              Last {o.label}
+            </option>
+          ))}
+        </Select>
+
+        <Select
+          value={segment}
+          onChange={(e) => setSegment(e.target.value as CreationSegment)}
+          title="Segment"
+          className="max-w-[12rem]"
+        >
+          {SEGMENT_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </Select>
+
+        <div className="flex items-center gap-1">
+          {METRIC_OPTIONS.map((o) => (
+            <Button
+              key={o.value}
+              size="sm"
+              variant="subtle"
+              active={metric === o.value}
+              onClick={() => setMetric(o.value)}
+            >
+              {o.label}
+            </Button>
+          ))}
+        </div>
+      </div>
+
+      {/* Summary stats */}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <StatCard
+          label="Tokens created"
+          value={heat.data ? formatWithCommas(heat.data.total) : '—'}
         />
+        <StatCard
+          label="Matured"
+          value={heat.data ? formatWithCommas(heat.data.matured) : '—'}
+        />
+        <StatCard
+          label="Outcome coverage"
+          value={formatPct(coverage)}
+          variant={coverage != null && coverage < 0.5 ? 'warning' : 'default'}
+        />
+        <StatCard
+          label="Maturity window"
+          value={
+            heat.data ? `${Math.round(heat.data.maturity_secs / 3600)}h` : '24h'
+          }
+        />
+      </div>
+
+      {heat.isError && (
+        <p className="text-red">
+          {apiErrorMessage(heat.error, 'Failed to load creation stats')}
+        </p>
       )}
+
+      {/* Panel B — seasonality heatmap (centerpiece) */}
+      <section className="rounded-lg border border-white/8 bg-white/2 p-3">
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-text">
+            Weekly seasonality — day × hour
+          </h3>
+          <span className="text-[10px] text-text-dim">
+            {metric === 'count'
+              ? 'shade = share of total created'
+              : 'shade = rate (matured tokens with known outcome)'}
+          </span>
+        </div>
+        {heat.isLoading ? (
+          <p className="text-text-dim">Loading…</p>
+        ) : heat.data && heat.data.cells.length > 0 ? (
+          <CreationHeatmap
+            cells={heat.data.cells}
+            metric={metric}
+            total={heat.data.total}
+          />
+        ) : (
+          <p className="text-text-dim">No tokens created in this window.</p>
+        )}
+      </section>
+
+      {/* Panel A — absolute-time trend */}
+      <section className="rounded-lg border border-white/8 bg-white/2 p-3">
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-text">Creation trend</h3>
+          <div className="flex items-center gap-1">
+            {BUCKET_OPTIONS.map((o) => (
+              <Button
+                key={o.value}
+                size="sm"
+                variant="subtle"
+                active={bucket === o.value}
+                onClick={() => setBucket(o.value)}
+              >
+                {o.label}
+              </Button>
+            ))}
+          </div>
+        </div>
+        {trend.isLoading ? (
+          <p className="text-text-dim">Loading…</p>
+        ) : trend.data && trend.data.points.length > 0 ? (
+          <CreationTrendChart points={trend.data.points} />
+        ) : (
+          <p className="text-text-dim">No tokens created in this window.</p>
+        )}
+      </section>
     </div>
   );
 }

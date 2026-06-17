@@ -1,4 +1,5 @@
 pub mod analysis_repo;
+pub mod creation_stats_repo;
 pub mod grouped_sweep_repo;
 pub mod settings_repo;
 pub mod token_info_repo;

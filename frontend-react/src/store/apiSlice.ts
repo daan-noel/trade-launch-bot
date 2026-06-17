@@ -12,6 +12,10 @@ import type {
   GroupedSweepResultRecord,
   GroupedSweepStartArgs,
 } from 'components/sweep/groupedTypes';
+import type {
+  CreationStatsArgs,
+  CreationStatsResponse,
+} from 'components/dashboard/creationStats';
 
 import type {
   AnalysisRecord,
@@ -333,6 +337,22 @@ export const apiSlice = createApi({
       }),
       invalidatesTags: ['GroupedSweep'],
     }),
+    // Token-creation-time bias aggregate (dashboard). Server-side GROUP BY over
+    // tokens ⋈ tokens_info; all three color metrics ship together so the metric
+    // toggle is a pure client re-color. Cached 120s; the page floors `from` to the
+    // hour so the cache key stays stable across renders within the hour.
+    getCreationStats: builder.query<CreationStatsResponse, CreationStatsArgs>({
+      query: ({ view, bucket, tz, from, segment }) => {
+        const p = new URLSearchParams();
+        p.set('view', view);
+        p.set('bucket', bucket);
+        p.set('tz', tz);
+        p.set('segment', segment);
+        if (from) p.set('from', from);
+        return `/api/tokens/creation-stats?${p.toString()}`;
+      },
+      keepUnusedDataFor: 120,
+    }),
     getTokenDetail: builder.query<TokenDetailRecord, string>({
       query: (mint) => `/api/tokens/${encodeURIComponent(mint)}`,
     }),
@@ -471,6 +491,7 @@ export const apiSlice = createApi({
 export const {
   useGetTokensQuery,
   useGetTokensPageQuery,
+  useGetCreationStatsQuery,
   useGetTokenDetailQuery,
   useGetTokenTradesQuery,
   useGetCreatorsPageQuery,

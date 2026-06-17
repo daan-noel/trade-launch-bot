@@ -47,6 +47,7 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 | `transaction_repo.rs` | raw_transactions | insert(_many), find_by_signature, exists |
 | `token_info_repo.rs` | tokens_info | upsert_metrics, update_migration_status, get/update_sync_watermark, find_for(mints) (mint=ANY, chunked — bounded cold-start seed) |
 | `analysis_repo.rs` | tokens_analysis, creator_profiles | upsert_result, list_results, upsert/find/list_creator_profile |
+| `creation_stats_repo.rs` | tokens (+tokens_info) | `heatmap` (7×24 dow×hour fold), `trend` (date_trunc hour/day/week) — both TZ-aware in SQL (`created_at AT TIME ZONE $tz`), LEFT JOIN tokens_info for migrate/dead, maturity-window censoring (`make_interval`), optional mayhem/cashback segment via `$::bool IS NULL` short-circuit. Bounded `[from,to)` window. Serves `/api/tokens/creation-stats` (Dashboard bias panels) |
 | `settings_repo.rs` | app_settings | load_all, get_one, set_one, set_many |
 | `grouped_sweep_repo.rs` | `<strategy>_grouped_sweep_{runs,groups,results}` (table names injected via `GroupedSweepTables`, resolved by `sweep/registry.rs`) | generic + table-name-driven: save_run (run + groups + each group's combo rows, one txn, results in chunks(2000)), list_runs(limit), list_groups(run_id), list_results(run_id, group_id), delete_run(run_id), delete_runs_before(cutoff) — deletes cascade to groups/results via FK |
 | `wallet_repo.rs` | wallets | insert/update/delete, find_by_address, list_by_profile(s), touch_last_seen(_many) |

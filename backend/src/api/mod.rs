@@ -13,6 +13,12 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             )
             // Token endpoints
             .route("/tokens", web::get().to(handlers::tokens::list_tokens))
+            // Creation-time bias aggregate (dashboard). Registered before the
+            // `{mint}` route so the static path isn't captured as a mint.
+            .route(
+                "/tokens/creation-stats",
+                web::get().to(handlers::tokens::get_creation_stats),
+            )
             .route("/tokens/{mint}", web::get().to(handlers::tokens::get_token))
             .route(
                 "/tokens/{mint}/trades",
