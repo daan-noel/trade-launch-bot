@@ -574,7 +574,7 @@ export function buildUpdatePayload(form: RuleFormData, unlocked: LockGroupState)
       ? parseFloat(form.spendableSolIn)
       : 0;
     payload.p_token_ix_labels = parseIxLabels(form.ixLabels);
-    payload.tolerance_pct = form.tolerance.trim() ? parseFloat(form.tolerance) : undefined;
+    payload.tolerance_pct = form.tolerance.trim() ? parseFloat(form.tolerance) : 0;
   }
   return payload;
 }
