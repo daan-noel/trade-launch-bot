@@ -76,6 +76,31 @@ pub struct SweepStats {
     pub fired: u64,
 }
 
+/// Largest combo batch whose fold accumulators stay within the memory budget
+/// (Phase 2.5). The fold holds `threads × batch × sizeof(ComboAgg)` resident, so a
+/// combo set too big to hold at once is swept in sequential batches of this size
+/// instead of being rejected. The returned batch is in `1..=n_combos` (`1` when even
+/// a single combo per thread would exceed the budget — `ComboAgg` is sub-KB, so this
+/// floor never actually OOMs). Sized against the same `SWEEP_MEMORY_BUDGET_MB` the
+/// registry guard reads.
+pub fn combo_batch_size(n_combos: usize, threads: usize) -> usize {
+    if n_combos == 0 {
+        return 1;
+    }
+    let per = std::mem::size_of::<ComboAgg>().max(1) as u64;
+    let threads = threads.max(1) as u64;
+    let budget = crate::sweep::registry::sweep_memory_budget_bytes();
+    let max_batch = (budget / (threads * per)).max(1);
+    (max_batch as usize).min(n_combos)
+}
+
+/// Number of `batch`-sized passes needed to cover `n_combos` combos (≥ 1). Used by
+/// the grouped driver to scale the progress total: each token is folded once per
+/// batch, so the bar's denominator is `tokens × this`.
+pub fn combo_batch_count(n_combos: usize, batch: usize) -> usize {
+    n_combos.div_ceil(batch.max(1)).max(1)
+}
+
 /// Run every combo against every token; fold the per-(combo, token) outcomes
 /// into one ranked [`ComboMetrics`] row per combo. Parallel over tokens; the
 /// inner loop runs all combos for one token before moving on. The writer thread
@@ -97,19 +122,68 @@ pub fn run_sweep<S: Strategy>(
     params: &[S::Params],
     corpus: &Corpus,
     observer: &dyn SweepObserver,
+    batch: usize,
 ) -> Result<(SweepStats, Vec<ComboMetrics>)> {
-    let projected = corpus.token_count() as u64 * params.len() as u64;
+    let n_combos = params.len();
+    let batch = batch.clamp(1, n_combos.max(1));
+    let projected = corpus.token_count() as u64 * n_combos as u64;
     tracing::info!(
         tokens = corpus.token_count(),
-        combos = params.len(),
+        combos = n_combos,
+        batch,
+        n_batches = combo_batch_count(n_combos, batch),
         projected_evals = projected,
-        "sweep: starting (folding to per-combo metrics)"
+        "sweep: starting (folding to per-combo metrics, batched)"
     );
 
+    // Fold the combo space in budget-sized batches (Phase 2.5): each batch is a full
+    // token-fold over only its combos, finalised to `ComboMetrics` and freed before
+    // the next, so peak accumulator memory is `batch × ComboAgg`, not the full combo
+    // count. Combo ids are kept global (`offset + local`) so the metrics vector is
+    // indexed by `combo_id` exactly as a single-batch run would be.
+    let mut metrics: Vec<ComboMetrics> = Vec::with_capacity(n_combos);
+    let mut total_rows = 0u64;
+    let mut total_fired = 0u64;
+    for (b, chunk) in params.chunks(batch).enumerate() {
+        let offset = b * batch;
+        let (rows, fired, aggs) = fold_batch(strategy, chunk, corpus, observer)?;
+        total_rows += rows;
+        total_fired += fired;
+        metrics.extend(
+            aggs.into_iter()
+                .enumerate()
+                .map(|(i, a)| a.finalize((offset + i) as u32)),
+        );
+    }
+
+    Ok((
+        SweepStats {
+            tokens: corpus.token_count(),
+            combos: n_combos,
+            rows: total_rows,
+            fired: total_fired,
+        },
+        metrics,
+    ))
+}
+
+/// Fold one combo batch over the whole corpus: parallel over tokens, all of this
+/// batch's combos inner, a single writer thread accumulating one [`ComboAgg`] per
+/// batch combo. Returns the batch's `(rows, fired, aggs)` (aggs indexed by the
+/// batch-local combo position). Reports one `token_done` per folded token, so a run
+/// of `n_batches` batches reports `tokens × n_batches` units — the grouped driver
+/// scales `set_total` to match. Cancel handling is unchanged: a bail leaves the
+/// aggs partial and the caller discards them.
+fn fold_batch<S: Strategy>(
+    strategy: &S,
+    params: &[S::Params],
+    corpus: &Corpus,
+    observer: &dyn SweepObserver,
+) -> Result<(u64, u64, Vec<ComboAgg>)> {
     let n_combos = params.len();
     let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<TokenOutcome>>(256);
 
-    let (rows, fired, aggs) = std::thread::scope(|scope| -> Result<(u64, u64, Vec<ComboAgg>)> {
+    std::thread::scope(|scope| -> Result<(u64, u64, Vec<ComboAgg>)> {
         // Single fold thread: drains outcomes and accumulates per combo.
         let folder = scope.spawn(move || -> (u64, u64, Vec<ComboAgg>) {
             let mut aggs = vec![ComboAgg::default(); n_combos];
@@ -146,7 +220,7 @@ pub fn run_sweep<S: Strategy>(
                 // cancel polled mid-fold — see `fill_outcomes`). A partial `outs`
                 // on bail is never sent; the caller discards the run's aggregates
                 // once it sees `cancelled()`.
-                let mut outs: Vec<TokenOutcome> = Vec::with_capacity(params.len());
+                let mut outs: Vec<TokenOutcome> = Vec::with_capacity(n_combos);
                 fill_outcomes(strategy, params, &tt.trades, observer, &mut outs)?;
                 // Folder never drops early; ignore only on shutdown races.
                 let _ = tx.send(outs);
@@ -155,23 +229,7 @@ pub fn run_sweep<S: Strategy>(
         drop(tx);
 
         Ok(folder.join().expect("sweep folder thread panicked"))
-    })?;
-
-    let metrics: Vec<ComboMetrics> = aggs
-        .into_iter()
-        .enumerate()
-        .map(|(id, a)| a.finalize(id as u32))
-        .collect();
-
-    Ok((
-        SweepStats {
-            tokens: corpus.token_count(),
-            combos: params.len(),
-            rows,
-            fired,
-        },
-        metrics,
-    ))
+    })
 }
 
 #[cfg(test)]
@@ -265,7 +323,8 @@ mod tests {
             tokens: vec![token("a", 4), token("b", 4)],
             hash: "h".into(),
         };
-        let (stats, metrics) = run_sweep(&Mock, &params, &corpus, &AlwaysCancelled).unwrap();
+        let (stats, metrics) =
+            run_sweep(&Mock, &params, &corpus, &AlwaysCancelled, params.len()).unwrap();
         assert_eq!(stats.rows, 0, "cancel short-circuits before any combo is folded");
         assert_eq!(stats.fired, 0);
         // Metrics are still shaped (one row per combo), just empty — the caller
@@ -325,7 +384,8 @@ mod tests {
             hash: "h".into(),
         };
         let (_stats, metrics) =
-            run_sweep(&EntryMock, &params, &corpus, &crate::sweep::progress::NoopObserver).unwrap();
+            run_sweep(&EntryMock, &params, &corpus, &crate::sweep::progress::NoopObserver, params.len())
+                .unwrap();
         // One token fires once per combo, so each combo's total PnL == the entry it
         // was handed, which must equal that combo's own entry key.
         for (i, m) in metrics.iter().enumerate() {
@@ -345,7 +405,8 @@ mod tests {
         };
         let params = Mock.sample(SweepMethod::Grid);
         let (stats, metrics) =
-            run_sweep(&Mock, &params, &corpus, &crate::sweep::progress::NoopObserver).unwrap();
+            run_sweep(&Mock, &params, &corpus, &crate::sweep::progress::NoopObserver, params.len())
+                .unwrap();
 
         assert_eq!(stats.tokens, 2);
         assert_eq!(stats.combos, 3);
@@ -354,5 +415,42 @@ mod tests {
         assert_eq!(metrics.len(), 3, "one ranked row per combo");
         // Both tokens have trades, so every combo fires on both.
         assert!(metrics.iter().all(|m| m.n_fired == 2));
+    }
+
+    /// Folding the same corpus in combo batches of 1 must produce byte-identical
+    /// per-combo metrics to a single-batch run (combo ids stay global, the fold is
+    /// order-independent), and the same `rows`/`fired` totals — proving Phase 2.5
+    /// chunking is a pure memory/CPU trade with no effect on results.
+    #[test]
+    fn batched_fold_matches_single_batch() {
+        let corpus = Corpus {
+            tokens: vec![token("a", 3), token("b", 2), token("c", 4)],
+            hash: "h".into(),
+        };
+        let params = Mock.sample(SweepMethod::Grid); // 3 combos
+        let obs = crate::sweep::progress::NoopObserver;
+
+        let (whole_stats, whole) = run_sweep(&Mock, &params, &corpus, &obs, params.len()).unwrap();
+        let (batched_stats, batched) = run_sweep(&Mock, &params, &corpus, &obs, 1).unwrap();
+
+        assert_eq!(whole_stats.rows, batched_stats.rows);
+        assert_eq!(whole_stats.fired, batched_stats.fired);
+        assert_eq!(whole.len(), batched.len());
+        for (w, b) in whole.iter().zip(&batched) {
+            assert_eq!(w.combo_id, b.combo_id);
+            assert_eq!(w.n_fired, b.n_fired);
+            assert_eq!(w.total_pnl_sol, b.total_pnl_sol);
+        }
+    }
+
+    #[test]
+    fn combo_batch_size_floors_at_one_and_caps_at_combos() {
+        // A huge budget ⇒ one batch covers everything; the batch never exceeds the
+        // combo count.
+        assert_eq!(combo_batch_size(5, 4), 5);
+        assert_eq!(combo_batch_size(0, 4), 1);
+        assert_eq!(combo_batch_count(7, 3), 3);
+        assert_eq!(combo_batch_count(6, 3), 2);
+        assert_eq!(combo_batch_count(0, 3), 1);
     }
 }

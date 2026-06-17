@@ -34,7 +34,7 @@ use rayon::prelude::*;
 
 use crate::sweep::aggregate::{ComboAgg, ComboMetrics};
 use crate::sweep::corpus::Corpus;
-use crate::sweep::engine::{fill_outcomes, run_sweep};
+use crate::sweep::engine::{combo_batch_count, combo_batch_size, fill_outcomes, run_sweep};
 use crate::sweep::grouping::{group_key, GroupField, GroupKey};
 use crate::sweep::progress::{CancelOnly, SweepObserver};
 use crate::sweep::strategy::{RefineSpec, Strategy, TokenOutcome};
@@ -130,21 +130,36 @@ pub fn run_grouped_sweep<S: Strategy>(
     let surviving: Vec<(GroupKey, Vec<usize>)> =
         surviving.into_iter().map(|(_, key, idx)| (key, idx)).collect();
 
-    // Total work unit = tokens across all surviving groups; lets the bar show a
-    // real percentage that climbs smoothly through every group's per-token fold.
-    let total_tokens: usize = surviving.iter().map(|(_, idx)| idx.len()).sum();
-    observer.set_total(total_tokens);
+    let threads = rayon::current_num_threads().max(1);
+    let large_min = LARGE_GROUP_TOKEN_FACTOR * threads;
 
+    // Phase 2.5: sweep the combo space in budget-sized batches so peak accumulator
+    // memory is `threads × batch × ComboAgg`, independent of the total combo count.
+    // The batch is global (same for every group + pass) so the progress total scales
+    // cleanly: each token is folded once per batch, so the bar's denominator is
+    // `tokens × n_batches`.
+    let batch = combo_batch_size(params.len(), threads);
+    let n_batches = combo_batch_count(params.len(), batch);
+
+    // Total work unit = tokens across all surviving groups × the batch count; lets
+    // the bar show a real percentage that climbs smoothly through every group's
+    // per-token fold (re-walked once per combo batch).
+    let total_tokens: usize = surviving.iter().map(|(_, idx)| idx.len()).sum();
+    observer.set_total(total_tokens * n_batches);
+
+    // Phase 0.3 — RSS at the structural peak (corpus + the partition map resident)
+    // and a wall-clock origin for the per-sweep duration, both logged again at done.
+    let sweep_started = std::time::Instant::now();
     tracing::info!(
         groups = surviving.len(),
         n_fields = fields.len(),
         min_tokens = floor,
         combos = params.len(),
+        batch,
+        n_batches,
+        rss_mb = crate::sweep::obs::process_rss_mb(),
         "grouped sweep: partitioned corpus, sweeping each group"
     );
-
-    let threads = rayon::current_num_threads().max(1);
-    let large_min = LARGE_GROUP_TOKEN_FACTOR * threads;
 
     // Fill survivor slots by position so the deterministic group order survives
     // regardless of which phase produced each result.
@@ -159,7 +174,7 @@ pub fn run_grouped_sweep<S: Strategy>(
             bail!("sweep cancelled");
         }
         let sub = sub_corpus(corpus, idx);
-        let (_stats, metrics) = run_sweep(strategy, params, &sub, observer)?;
+        let (_stats, metrics) = run_sweep(strategy, params, &sub, observer, batch)?;
         // A cancel mid-group leaves the just-swept metrics partial — discard.
         if observer.cancelled() {
             bail!("sweep cancelled");
@@ -178,7 +193,7 @@ pub fn run_grouped_sweep<S: Strategy>(
     let small_results: Vec<Result<(usize, GroupResult)>> = small
         .par_iter()
         .map(|&(pos, key, idx)| {
-            let metrics = sweep_group_serial(strategy, params, corpus, idx, observer)?;
+            let metrics = sweep_group_serial(strategy, params, corpus, idx, observer, batch)?;
             Ok((pos, make_group_result(key.clone(), idx.len(), metrics, coverage)))
         })
         .collect();
@@ -187,10 +202,17 @@ pub fn run_grouped_sweep<S: Strategy>(
         results[pos] = Some(gr);
     }
 
-    Ok(results
+    let groups: Vec<GroupResult> = results
         .into_iter()
         .map(|g| g.expect("every survivor slot filled by one phase"))
-        .collect())
+        .collect();
+    tracing::info!(
+        groups = groups.len(),
+        rss_mb = crate::sweep::obs::process_rss_mb(),
+        elapsed_s = sweep_started.elapsed().as_secs_f64(),
+        "grouped sweep: all groups folded"
+    );
+    Ok(groups)
 }
 
 /// Run a grouped sweep, optionally with a coarse→refine second pass.
@@ -302,28 +324,47 @@ fn sub_corpus(corpus: &Corpus, idx: &[usize]) -> Corpus {
 /// inside the cross-group `par_iter`, so this must stay serial (no nested pool).
 /// Resolves entries via the shared [`fill_outcomes`], so it matches `run_sweep`'s
 /// decisions exactly. Bails on cancel (the caller discards the run).
+///
+/// Combos are folded in `batch`-sized passes (Phase 2.5): peak accumulator memory is
+/// `batch × ComboAgg` per group, so the cross-group `par_iter` peaks at
+/// `threads × batch × ComboAgg`. Combo ids stay global (`offset + local`), and each
+/// token is folded once per batch (the `tokens × n_batches` progress total accounts
+/// for it).
 fn sweep_group_serial<S: Strategy>(
     strategy: &S,
     params: &[S::Params],
     corpus: &Corpus,
     idx: &[usize],
     observer: &dyn SweepObserver,
+    batch: usize,
 ) -> Result<Vec<ComboMetrics>> {
-    let mut aggs = vec![ComboAgg::default(); params.len()];
-    let mut outs: Vec<TokenOutcome> = Vec::with_capacity(params.len());
-    for &i in idx {
-        if observer.cancelled() {
-            bail!("sweep cancelled");
+    let n_combos = params.len();
+    let batch = batch.clamp(1, n_combos.max(1));
+    let mut metrics: Vec<ComboMetrics> = Vec::with_capacity(n_combos);
+    for (b, chunk) in params.chunks(batch).enumerate() {
+        let offset = b * batch;
+        let mut aggs = vec![ComboAgg::default(); chunk.len()];
+        let mut outs: Vec<TokenOutcome> = Vec::with_capacity(chunk.len());
+        for &i in idx {
+            if observer.cancelled() {
+                bail!("sweep cancelled");
+            }
+            if fill_outcomes(strategy, chunk, &corpus.tokens[i].trades, observer, &mut outs).is_err()
+            {
+                bail!("sweep cancelled");
+            }
+            for (combo_id, o) in outs.iter().enumerate() {
+                aggs[combo_id].record(o);
+            }
+            observer.token_done();
         }
-        if fill_outcomes(strategy, params, &corpus.tokens[i].trades, observer, &mut outs).is_err() {
-            bail!("sweep cancelled");
-        }
-        for (combo_id, o) in outs.iter().enumerate() {
-            aggs[combo_id].record(o);
-        }
-        observer.token_done();
+        metrics.extend(
+            aggs.into_iter()
+                .enumerate()
+                .map(|(i, a)| a.finalize((offset + i) as u32)),
+        );
     }
-    Ok(aggs.into_iter().enumerate().map(|(id, a)| a.finalize(id as u32)).collect())
+    Ok(metrics)
 }
 
 /// Assemble a [`GroupResult`] from a group's ranked metrics + the coverage floor.

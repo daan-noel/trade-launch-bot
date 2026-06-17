@@ -515,11 +515,15 @@ impl Strategy for Tpsl2Strategy {
         let rule = &params.rule;
         // (1) Decision: the scalp-entry trigger — the live gate logic, unchanged,
         // but fed the per-token cohort so the `HashSet` isn't rebuilt per resolve.
-        let Some(target) = entry::find_scalp_entry_with_cohort(trades, rule, cohort) else {
+        // The indexed variant hands back the trigger's position so the worst-case
+        // fill is resolved by index, never by `tx_signature` — letting `SweepTrade`
+        // carry no signature string at all (Phase 1.2).
+        let Some((trigger_idx, _)) = entry::find_scalp_entry_with_cohort_indexed(trades, rule, cohort)
+        else {
             return Tpsl2Entry::None;
         };
         // (2) Worst-case entry fill (adverse same-/next-slot tick).
-        let entry_fill = entry::find_worst_case_paper_entry(trades, &target.tx_signature);
+        let entry_fill = entry::find_worst_case_paper_entry_at(trades, trigger_idx);
         if entry_fill.price <= 0.0 {
             return Tpsl2Entry::None;
         }

@@ -21,7 +21,6 @@ use uuid::Uuid;
 
 use crate::models::grouped_sweep::{GroupedSweepGroupWrite, GroupedSweepResult, GroupedSweepRun};
 use crate::state::app_state::AppState;
-use crate::state::token_cache::MAX_TRADES_RETAINED;
 use crate::storage::repositories::grouped_sweep_repo::{GroupedSweepRepo, GroupedSweepTables};
 use crate::sweep::aggregate::ComboMetrics;
 use crate::sweep::corpus::{attach_fingerprints, corpus_cache_dir, load_grouped_corpus, Selection};
@@ -221,6 +220,11 @@ async fn run_grouped_sweep_job(
     state.sweep_cancel.store(false, Ordering::Release);
     state.sweep_progress.reset();
 
+    // Phase 0.3 — start the RSS/wall-clock trace at admission so every milestone
+    // (corpus loaded, done) is measured from the same origin against the baseline.
+    let clock = crate::sweep::obs::SweepClock::start();
+    crate::sweep::obs::log_milestone(&clock, "admitted");
+
     let token_cap = b.token_cap.clamp(1, 100_000);
     let min_tokens = b.min_tokens.max(1);
     let floor = CoverageFloor {
@@ -242,7 +246,10 @@ async fn run_grouped_sweep_job(
         token_cap,
         created_after: b.created_after,
         created_before: b.created_before,
-        per_mint_cap: MAX_TRADES_RETAINED as i64,
+        // Sweep-specific cap (Phase 1.1): launch-window scalp entries decide on the
+        // first minutes, so a few thousand trades/token is plenty — far below the
+        // live `MAX_TRADES_RETAINED`. Override with `SWEEP_PER_MINT_CAP`.
+        per_mint_cap: crate::sweep::corpus::sweep_per_mint_cap(),
         // Keep each over-cap token's launch window — the entry logic decides on the
         // first minutes, which a newest-first cap would drop (Rec 4).
         window: crate::sweep::corpus::TradeWindow::LaunchWindow,
@@ -273,6 +280,16 @@ async fn run_grouped_sweep_job(
         return HttpResponse::InternalServerError()
             .json(serde_json::json!({"error": e.to_string()}));
     }
+    // Corpus is fully resident here — the Phase 0 baseline's first peak (every
+    // streaming phase is judged against this RSS/seconds reading).
+    tracing::info!(
+        tokens = corpus.token_count(),
+        trades = corpus.trade_count(),
+        rss_mb = crate::sweep::obs::process_rss_mb(),
+        elapsed_s = clock.elapsed_secs(),
+        milestone = "corpus_loaded",
+        "sweep: milestone"
+    );
 
     let corpus_hash = corpus.hash.clone();
     let token_count = corpus.token_count() as i32;
@@ -350,6 +367,9 @@ async fn run_grouped_sweep_job(
         tokens = run.token_count,
         groups = run.group_count,
         combos = run.combo_count,
+        rss_mb = crate::sweep::obs::process_rss_mb(),
+        elapsed_s = clock.elapsed_secs(),
+        milestone = "done",
         "grouped sweep: done"
     );
     HttpResponse::Ok().json(run)

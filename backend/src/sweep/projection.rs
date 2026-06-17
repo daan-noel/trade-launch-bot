@@ -18,9 +18,14 @@ use std::collections::HashMap;
 use crate::models::trade::{Trade, TradeRow, TradeType};
 
 /// One trade, projected to the scalar fields the sweep reads, with the wallet
-/// interned to a token-local `u32`. `tx_signature` is the only retained string
-/// (worst-case-entry resolution compares it once per `simulate`); every other
-/// `Trade` `String`/`Uuid`/JSON field is dropped.
+/// interned to a token-local `u32`. **No** `tx_signature` is retained (Phase 1.2):
+/// the only sweep consumer was the worst-case-entry trigger match, now resolved by
+/// **index** ([`find_worst_case_paper_entry_at`]) — so the ~88 B base58 string per
+/// trade is gone, halving the resident row. Every other `Trade`
+/// `String`/`Uuid`/JSON field is likewise dropped.
+///
+/// [`find_worst_case_paper_entry_at`]:
+///   crate::strategies::tpsl_sniper_2::entry::find_worst_case_paper_entry_at
 #[derive(Clone, Debug)]
 pub struct SweepTrade {
     pub block_time: DateTime<Utc>,
@@ -34,7 +39,6 @@ pub struct SweepTrade {
     pub wallet: u32,
     pub leg_index: u32,
     pub is_buy: bool,
-    pub tx_signature: Box<str>,
 }
 
 impl TradeRow for SweepTrade {
@@ -70,8 +74,17 @@ impl TradeRow for SweepTrade {
     fn wallet(&self) -> &u32 {
         &self.wallet
     }
+    /// The sweep never resolves the trigger by signature (it uses
+    /// [`find_worst_case_paper_entry_at`]), and no other shared `TradeRow` fn reads
+    /// a meaningful signature on the sweep row — so `SweepTrade` carries none and
+    /// returns the empty string. The `EntryFill`/`ExitFill` strings the shared fns
+    /// build from this are discarded in the sweep (its `TokenOutcome` is `Copy`,
+    /// signature-free).
+    ///
+    /// [`find_worst_case_paper_entry_at`]:
+    ///   crate::strategies::tpsl_sniper_2::entry::find_worst_case_paper_entry_at
     fn tx_signature(&self) -> &str {
-        &self.tx_signature
+        ""
     }
 }
 
@@ -119,7 +132,6 @@ pub fn project_trades(trades: &[Trade]) -> (Vec<SweepTrade>, Vec<Box<str>>) {
             wallet: interner.intern(&t.wallet_address),
             leg_index: t.leg_index,
             is_buy: matches!(t.trade_type, TradeType::Buy),
-            tx_signature: Box::from(t.tx_signature.as_str()),
         })
         .collect();
     (rows, interner.into_table())

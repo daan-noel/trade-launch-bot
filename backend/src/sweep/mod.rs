@@ -36,6 +36,7 @@ pub mod corpus;
 pub mod engine;
 pub mod grouped_engine;
 pub mod grouping;
+pub mod obs;
 pub mod progress;
 pub mod projection;
 pub mod registry;

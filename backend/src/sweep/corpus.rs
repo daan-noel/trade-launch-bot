@@ -22,7 +22,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use arrow::array::{
     Array, BooleanArray, BooleanBuilder, Float64Array, Float64Builder, Int32Array, Int32Builder,
     Int64Array, Int64Builder, StringArray, StringBuilder,
@@ -152,6 +152,141 @@ impl Default for Selection {
             curve_only: false,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Memory bounding (Phase 0/1 of the sweep memory plan)
+// ---------------------------------------------------------------------------
+
+/// Default sweep per-mint trade cap (Phase 1.1). Far below the live
+/// `MAX_TRADES_RETAINED` (50k): launch-window scalp entries decide on the first
+/// minutes, so a few thousand trades/token is plenty and cuts a high-volume
+/// token's corpus weight (and its entry/exit walk) ~10–25×. Override per box with
+/// `SWEEP_PER_MINT_CAP`.
+pub const SWEEP_DEFAULT_PER_MINT_CAP: i64 = 5_000;
+
+/// Effective per-mint trade cap for a sweep `Selection`: `SWEEP_PER_MINT_CAP` if
+/// set (≥1), else [`SWEEP_DEFAULT_PER_MINT_CAP`]. This is the second factor of the
+/// corpus weight (`tokens × trades/token`); `token_cap` bounds the first.
+pub fn sweep_per_mint_cap() -> i64 {
+    std::env::var("SWEEP_PER_MINT_CAP")
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or(SWEEP_DEFAULT_PER_MINT_CAP)
+}
+
+/// Estimated resident bytes per projected [`SweepTrade`]: the struct itself plus a
+/// small amortized share of the token-local `u32 → address` wallet table. Derived
+/// from `size_of::<SweepTrade>()` so the Phase 0 corpus pre-check tracks struct
+/// changes instead of silently drifting off a hardcoded constant. Phase 1.2 dropped
+/// the heap-allocated base58 `tx_signature` the row used to carry (~88 B/trade), so
+/// the only remaining off-struct cost is the amortized wallet-table share.
+pub fn estimated_per_trade_bytes() -> usize {
+    /// Amortized per-trade share of the per-token wallet intern table (the only
+    /// heap a `SweepTrade` now contributes to beyond its own struct).
+    const WALLET_TABLE_SHARE_BYTES: usize = 16;
+    std::mem::size_of::<SweepTrade>() + WALLET_TABLE_SHARE_BYTES
+}
+
+/// Default ceiling (MB) on the **corpus** (the resident per-token trade buffers) a
+/// single sweep may load. The corpus is the unbounded OOM-killer the
+/// fold-accumulator guard (`SWEEP_MEMORY_BUDGET_MB`) does not cover; this turns a
+/// process-killing mid-load OOM into a clean rejected request. ~512 MB suits a
+/// 4 GB box (leaving room for the live caches + accumulators). Override with
+/// `SWEEP_CORPUS_MEMORY_BUDGET_MB`.
+const DEFAULT_CORPUS_MEMORY_BUDGET_MB: u64 = 512;
+
+/// The corpus memory budget in bytes (`SWEEP_CORPUS_MEMORY_BUDGET_MB` or the
+/// default), saturating so a fat-fingered override can't wrap.
+pub fn corpus_memory_budget_bytes() -> u64 {
+    std::env::var("SWEEP_CORPUS_MEMORY_BUDGET_MB")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&m| m >= 1)
+        .unwrap_or(DEFAULT_CORPUS_MEMORY_BUDGET_MB)
+        .saturating_mul(1024 * 1024)
+}
+
+/// Default ceiling (MB) on **total** resident sweep memory at admission: current
+/// process RSS (the live caches already resident — ~1 GB) + the corpus we're about
+/// to load + the fold-accumulator budget. The corpus and accumulator budgets each
+/// guard one axis, but they can pass *individually* yet *jointly* OOM once the live
+/// caches are added — so Phase 0.2 sums all three against this one ceiling. ~3 GB
+/// leaves headroom on a 4 GB box. Override with `SWEEP_TOTAL_MEMORY_BUDGET_MB`.
+const DEFAULT_TOTAL_MEMORY_BUDGET_MB: u64 = 3_072;
+
+/// The total-sweep memory budget in bytes (`SWEEP_TOTAL_MEMORY_BUDGET_MB` or the
+/// default), saturating so an override can't wrap.
+pub fn total_memory_budget_bytes() -> u64 {
+    std::env::var("SWEEP_TOTAL_MEMORY_BUDGET_MB")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&m| m >= 1)
+        .unwrap_or(DEFAULT_TOTAL_MEMORY_BUDGET_MB)
+        .saturating_mul(1024 * 1024)
+}
+
+/// Holistic admission gate (Phase 0.2). Rejects a corpus load that would either
+/// (a) blow the **corpus-axis** budget on its own, or (b) push *total* resident
+/// memory — current RSS (live caches) + this corpus + the fold-accumulator budget
+/// — over [`total_memory_budget_bytes`]. The second check is the one the two
+/// independent caps miss: each can clear in isolation while their sum OOMs the box.
+/// RSS is best-effort; if it can't be read we fall back to the corpus-axis guard
+/// alone (already the prior behaviour) rather than blocking the run.
+fn admit_corpus_load(est_corpus: u64) -> Result<()> {
+    let mb = |b: u64| b / (1024 * 1024);
+
+    // (1) Corpus-axis guard — the unbounded mid-load OOM-killer.
+    let corpus_budget = corpus_memory_budget_bytes();
+    if est_corpus > corpus_budget {
+        bail!(
+            "corpus would need ~{} MB of resident trade buffers, over the {} MB corpus budget — \
+             narrow the date range, lower token_cap/SWEEP_PER_MINT_CAP, or raise \
+             SWEEP_CORPUS_MEMORY_BUDGET_MB",
+            mb(est_corpus),
+            mb(corpus_budget),
+        );
+    }
+
+    // (2) Holistic guard — corpus + accumulators + already-resident live caches.
+    let accum = crate::sweep::registry::sweep_memory_budget_bytes();
+    let total_budget = total_memory_budget_bytes();
+    match crate::sweep::obs::process_rss_bytes() {
+        Some(rss) => {
+            let projected = rss.saturating_add(est_corpus).saturating_add(accum);
+            if projected > total_budget {
+                bail!(
+                    "sweep would need ~{} MB resident (live caches {} + corpus {} + fold {}), \
+                     over the {} MB total budget — narrow the window, lower token_cap / \
+                     SWEEP_PER_MINT_CAP / SWEEP_MEMORY_BUDGET_MB, or raise \
+                     SWEEP_TOTAL_MEMORY_BUDGET_MB",
+                    mb(projected),
+                    mb(rss),
+                    mb(est_corpus),
+                    mb(accum),
+                    mb(total_budget),
+                );
+            }
+            tracing::info!(
+                rss_mb = mb(rss),
+                corpus_mb = mb(est_corpus),
+                accum_budget_mb = mb(accum),
+                projected_mb = mb(projected),
+                total_budget_mb = mb(total_budget),
+                "corpus: holistic admission within budget"
+            );
+        }
+        None => {
+            // RSS unreadable on this platform/run — corpus-axis check (passed) stands.
+            tracing::info!(
+                corpus_mb = mb(est_corpus),
+                corpus_budget_mb = mb(corpus_budget),
+                "corpus: pre-check within budget (RSS unavailable — corpus axis only)"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Source of a corpus — cache or DB, one interface.
@@ -381,6 +516,32 @@ impl DbSource {
             Ok(rows)
         }
     }
+
+    /// Phase 0 pre-check: estimate the resident corpus bytes **before** loading any
+    /// trade rows, so an oversized population is rejected as a clean error instead
+    /// of OOM-killing the backend mid-load. Counts `min(trade_count, per_mint_cap)`
+    /// per candidate mint via one `GROUP BY` aggregate per chunk (no trade row ever
+    /// materialized) and multiplies by [`estimated_per_trade_bytes`].
+    pub async fn estimate_corpus_bytes(&self, sel: &Selection) -> Result<u64> {
+        let candidates = self.candidates(sel).await?;
+        let mints: Vec<String> = candidates.into_iter().map(|(m, _)| m).collect();
+        let cap = sel.per_mint_cap.max(1) as u64;
+        let mut total_trades: u64 = 0;
+        for chunk in mints.chunks(self.chunk) {
+            let rows: Vec<(String, i64)> = sqlx::query_as(
+                "SELECT mint_address, count(*) FROM trades \
+                 WHERE mint_address = ANY($1) GROUP BY mint_address",
+            )
+            .bind(chunk)
+            .fetch_all(&self.pool)
+            .await
+            .context("estimating corpus size")?;
+            for (_mint, n) in rows {
+                total_trades = total_trades.saturating_add((n.max(0) as u64).min(cap));
+            }
+        }
+        Ok(total_trades.saturating_mul(estimated_per_trade_bytes() as u64))
+    }
 }
 
 /// A token's grouping fingerprint columns, projected straight from `tokens`. The
@@ -472,6 +633,7 @@ impl CorpusSource for DbSource {
         let mints: Vec<String> = candidates.into_iter().map(|(m, _)| m).collect();
 
         let mut tokens: Vec<TokenTrades> = Vec::with_capacity(mints.len());
+        let mut capped = 0u64;
         for chunk in mints.chunks(self.chunk) {
             let grouped = self
                 .fetch_chunk(chunk, sel.per_mint_cap, sel.window)
@@ -482,10 +644,23 @@ impl CorpusSource for DbSource {
                     if trades.is_empty() {
                         continue;
                     }
+                    // A token at exactly the cap was (almost certainly) truncated —
+                    // surface it so a too-small `SWEEP_PER_MINT_CAP` doesn't silently
+                    // clip a slow exit (Phase 1.1 risk note).
+                    if trades.len() as i64 >= sel.per_mint_cap {
+                        capped += 1;
+                    }
                     let symbol = symbols.get(mint).cloned().unwrap_or_default();
                     tokens.push(finalize_token(mint.clone(), symbol, trades.clone(), sel));
                 }
             }
+        }
+        if capped > 0 {
+            tracing::warn!(
+                capped,
+                per_mint_cap = sel.per_mint_cap,
+                "corpus: tokens hit the per-mint trade cap (raise SWEEP_PER_MINT_CAP if exits look truncated)"
+            );
         }
         tracing::info!(
             tokens = tokens.len(),
@@ -501,9 +676,12 @@ impl CorpusSource for DbSource {
 // Cache-first source: cache window + DB tail, then Parquet cache
 // ---------------------------------------------------------------------------
 
-/// Default on-disk location for cached corpora.
+/// Default on-disk location for cached corpora. The `v2` tag is the slim-schema
+/// version: Phase 1.2 dropped the `tx_signature` column, shifting later columns, so
+/// a pre-1.2 `corpus_<hash>.parquet` must never be read back with the new layout —
+/// bumping the prefix makes stale files simply miss (and rebuild) instead.
 pub fn corpus_cache_path(dir: &Path, hash: &str) -> PathBuf {
-    dir.join(format!("corpus_{hash}.parquet"))
+    dir.join(format!("corpus_v2_{hash}.parquet"))
 }
 
 /// Where corpus Parquet caches live: `$SWEEP_CORPUS_CACHE_DIR` if set, else a
@@ -567,10 +745,22 @@ pub async fn load_grouped_corpus(
     fresh: bool,
 ) -> Result<Corpus> {
     let source = DbSource::new(db);
-    if !selection_is_cacheable(sel, Utc::now()) {
+    let cacheable = selection_is_cacheable(sel, Utc::now());
+    let key = selection_cache_key(sel);
+    // A cache hit reads an already-bounded Parquet off disk (written from a capped
+    // corpus) and skips the DB entirely (principle 5), so only pre-check the budget
+    // when we're about to actually load trade rows from the DB.
+    let cache_hit = cacheable && !fresh && corpus_cache_path(cache_dir, &key).exists();
+    if !cache_hit {
+        // Holistic admission (Phase 0.2): corpus axis + accumulators + current RSS
+        // (live caches) vs one total ceiling — see [`admit_corpus_load`].
+        let est = source.estimate_corpus_bytes(sel).await?;
+        admit_corpus_load(est)?;
+    }
+
+    if !cacheable {
         return source.load(sel).await;
     }
-    let key = selection_cache_key(sel);
     if fresh {
         // Drop any stale cache so `load_or_build` re-loads from the DB and rewrites.
         std::fs::remove_file(corpus_cache_path(cache_dir, &key)).ok();
@@ -609,8 +799,9 @@ pub async fn load_or_build<S: CorpusSource>(
 
 /// The slim corpus-cache schema — exactly the [`SweepTrade`] fields plus the
 /// per-token `mint`/`symbol` and the `wallet` address (re-interned to a `u32` on
-/// read). `venue` (a load-time filter) and `vtok`/`rtok` (read by no sweep fn)
-/// are intentionally dropped vs. the full `Trade`.
+/// read). `tx_signature` (Phase 1.2 — no sweep fn reads it), `venue` (a load-time
+/// filter), and `vtok`/`rtok` (read by no sweep fn) are intentionally dropped vs.
+/// the full `Trade`.
 fn corpus_schema() -> Schema {
     Schema::new(vec![
         Field::new("mint", DataType::Utf8, false),
@@ -623,7 +814,6 @@ fn corpus_schema() -> Schema {
         Field::new("slot", DataType::Int64, false),
         Field::new("block_time", DataType::Int64, false),
         Field::new("leg_index", DataType::Int32, false),
-        Field::new("tx_signature", DataType::Utf8, false),
         Field::new("vsol", DataType::Float64, true),
         Field::new("rsol", DataType::Float64, true),
     ])
@@ -649,7 +839,6 @@ pub fn write_corpus_parquet(corpus: &Corpus, path: &Path) -> Result<()> {
     let mut slot = Int64Builder::new();
     let mut block_time = Int64Builder::new();
     let mut leg_index = Int32Builder::new();
-    let mut tx = StringBuilder::new();
     let mut vsol = Float64Builder::new();
     let mut rsol = Float64Builder::new();
     let mut pending = 0usize;
@@ -669,7 +858,6 @@ pub fn write_corpus_parquet(corpus: &Corpus, path: &Path) -> Result<()> {
                     Arc::new(slot.finish()),
                     Arc::new(block_time.finish()),
                     Arc::new(leg_index.finish()),
-                    Arc::new(tx.finish()),
                     Arc::new(vsol.finish()),
                     Arc::new(rsol.finish()),
                 ],
@@ -691,7 +879,6 @@ pub fn write_corpus_parquet(corpus: &Corpus, path: &Path) -> Result<()> {
             slot.append_value(t.slot as i64);
             block_time.append_value(t.block_time.timestamp());
             leg_index.append_value(t.leg_index as i32);
-            tx.append_value(&*t.tx_signature);
             vsol.append_option(t.virtual_sol_reserves);
             rsol.append_option(t.real_sol_reserves);
             pending += 1;
@@ -716,16 +903,22 @@ fn opt_f64(arr: &Float64Array, i: usize) -> Option<f64> {
     }
 }
 
-/// Read a slim corpus Parquet back into [`Corpus`], re-grouping the
-/// mint-contiguous rows into per-token [`SweepTrade`] buffers and re-interning
-/// each token's wallet addresses to a token-local `u32`. The dropped `Trade`
-/// fields are never reconstructed — no sweep fn reads them.
-pub fn read_corpus_parquet(path: &Path) -> Result<Corpus> {
+/// Stream a slim corpus Parquet **token by token**, invoking `emit` with each
+/// completed [`TokenTrades`] as soon as the mint-contiguous rows for that token end
+/// (the file is written one contiguous run per mint, so a mint change closes the
+/// previous token). Only one token's `SweepTrade` buffer is resident at a time — the
+/// Phase 2a enabler for a streamed grouped fold (peak corpus memory `O(in-flight
+/// tokens)` instead of `O(all tokens)`). `emit` returning `Err` aborts the scan
+/// (e.g. a cancelled sweep). [`read_corpus_parquet`] is the collect-into-`Vec`
+/// wrapper, so the existing round-trip test covers this path.
+pub fn stream_corpus_parquet<F>(path: &Path, mut emit: F) -> Result<()>
+where
+    F: FnMut(TokenTrades) -> Result<()>,
+{
     let file = std::fs::File::open(path)?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
     let reader = builder.build()?;
 
-    let mut tokens: Vec<TokenTrades> = Vec::new();
     let mut cur_mint: Option<String> = None;
     let mut cur_symbol = String::new();
     let mut cur_trades: Vec<SweepTrade> = Vec::new();
@@ -743,21 +936,20 @@ pub fn read_corpus_parquet(path: &Path) -> Result<Corpus> {
         let slot = col::<Int64Array>(&batch, 7)?;
         let block_time = col::<Int64Array>(&batch, 8)?;
         let leg_index = col::<Int32Array>(&batch, 9)?;
-        let tx = col_str(&batch, 10)?;
-        let vsol = col::<Float64Array>(&batch, 11)?;
-        let rsol = col::<Float64Array>(&batch, 12)?;
+        let vsol = col::<Float64Array>(&batch, 10)?;
+        let rsol = col::<Float64Array>(&batch, 11)?;
 
         for i in 0..batch.num_rows() {
             let m = mint.value(i);
             if cur_mint.as_deref() != Some(m) {
                 if let Some(prev) = cur_mint.take() {
-                    tokens.push(TokenTrades {
+                    emit(TokenTrades {
                         mint: prev,
                         symbol: std::mem::take(&mut cur_symbol),
                         fp: TokenFingerprint::default(),
                         trades: Arc::new(std::mem::take(&mut cur_trades)),
                         wallets: Arc::new(std::mem::take(&mut cur_interner).into_table()),
-                    });
+                    })?;
                 }
                 cur_mint = Some(m.to_string());
                 cur_symbol = symbol.value(i).to_string();
@@ -774,19 +966,32 @@ pub fn read_corpus_parquet(path: &Path) -> Result<Corpus> {
                 wallet: cur_interner.intern(wallet.value(i)),
                 leg_index: leg_index.value(i) as u32,
                 is_buy: is_buy.value(i),
-                tx_signature: Box::from(tx.value(i)),
             });
         }
     }
     if let Some(prev) = cur_mint.take() {
-        tokens.push(TokenTrades {
+        emit(TokenTrades {
             mint: prev,
             symbol: cur_symbol,
             fp: TokenFingerprint::default(),
             trades: Arc::new(cur_trades),
             wallets: Arc::new(cur_interner.into_table()),
-        });
+        })?;
     }
+    Ok(())
+}
+
+/// Read a slim corpus Parquet back into [`Corpus`], re-grouping the
+/// mint-contiguous rows into per-token [`SweepTrade`] buffers and re-interning
+/// each token's wallet addresses to a token-local `u32`. The dropped `Trade`
+/// fields are never reconstructed — no sweep fn reads them. Thin collect-into-`Vec`
+/// wrapper over [`stream_corpus_parquet`].
+pub fn read_corpus_parquet(path: &Path) -> Result<Corpus> {
+    let mut tokens: Vec<TokenTrades> = Vec::new();
+    stream_corpus_parquet(path, |tt| {
+        tokens.push(tt);
+        Ok(())
+    })?;
     let hash = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -832,6 +1037,21 @@ mod tests {
 
     fn token(mint: &str, symbol: &str, trades: &[Trade]) -> TokenTrades {
         TokenTrades::from_trades(mint.into(), symbol.into(), TokenFingerprint::default(), trades)
+    }
+
+    #[test]
+    fn per_trade_estimate_covers_struct_and_heap() {
+        // The Phase 0 pre-check must over- (never under-) count: a SweepTrade owns a
+        // heap base58 signature beyond its struct size, so the estimate must exceed
+        // size_of alone or it would under-budget and let an OOM through.
+        assert!(estimated_per_trade_bytes() > std::mem::size_of::<SweepTrade>());
+    }
+
+    #[test]
+    fn sweep_per_mint_cap_defaults_below_live_retention() {
+        // The sweep cap must sit well under the live MAX_TRADES_RETAINED (50k) —
+        // that gap is the Phase 1.1 corpus cut.
+        assert!(SWEEP_DEFAULT_PER_MINT_CAP < crate::state::token_cache::MAX_TRADES_RETAINED as i64);
     }
 
     #[test]
@@ -881,6 +1101,48 @@ mod tests {
         assert_ne!(m1.trades[0].wallet, m1.trades[1].wallet);
         assert_eq!(&*m1.wallets[m1.trades[0].wallet as usize], "wA");
         assert_eq!(&*m1.wallets[m1.trades[1].wallet as usize], "wB");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn streaming_reader_yields_one_token_at_a_time_matching_collect() {
+        // The Phase 2a streaming primitive must emit exactly the same per-token
+        // buffers (count, order, trade counts) the collect-into-Vec reader builds,
+        // and must surface an emit `Err` as an early abort (a cancelled stream).
+        let corpus = Corpus {
+            tokens: vec![
+                token("m1", "S1", &[trade("m1", "wA", 1.0, true), trade("m1", "wB", 2.0, false)]),
+                token("m2", "S2", &[trade("m2", "wA", 3.0, true)]),
+                token("m3", "S3", &[trade("m3", "wC", 4.0, true)]),
+            ],
+            hash: "h".into(),
+        };
+        let path =
+            std::env::temp_dir().join(format!("corpus_stream_{}.parquet", std::process::id()));
+        write_corpus_parquet(&corpus, &path).unwrap();
+
+        // Streamed tokens equal the collected reader's tokens, in order.
+        let collected = read_corpus_parquet(&path).unwrap();
+        let mut streamed: Vec<(String, usize)> = Vec::new();
+        stream_corpus_parquet(&path, |tt| {
+            streamed.push((tt.mint.clone(), tt.trades.len()));
+            Ok(())
+        })
+        .unwrap();
+        let expected: Vec<(String, usize)> =
+            collected.tokens.iter().map(|t| (t.mint.clone(), t.trades.len())).collect();
+        assert_eq!(streamed, expected);
+        assert_eq!(streamed.len(), 3, "one emit per mint");
+
+        // An `Err` from `emit` aborts the scan after the first token (cancel path).
+        let mut seen = 0usize;
+        let err = stream_corpus_parquet(&path, |_tt| {
+            seen += 1;
+            anyhow::bail!("stop")
+        });
+        assert!(err.is_err());
+        assert_eq!(seen, 1, "emit Err stops the stream immediately");
+
         std::fs::remove_file(&path).ok();
     }
 }

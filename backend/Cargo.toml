@@ -91,3 +91,6 @@ pump-trader = { path = "../pump-trader" }
 rayon = "1"
 arrow = "53"
 parquet = "53"
+# Cross-platform process RSS read (win32 GetProcessMemoryInfo / Linux /proc /
+# macOS task_info) for the sweep memory observability milestones (Phase 0.3).
+memory-stats = "1"

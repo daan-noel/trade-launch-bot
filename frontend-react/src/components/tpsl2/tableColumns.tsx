@@ -249,6 +249,15 @@ export const matchedColumns: ColumnDef<MatchedTokenRecord>[] = [
     searchValue: (r) => `${r.symbol} ${r.name}`,
   },
   {
+    key: 'mint',
+    label: 'Mint',
+    group: 'identity',
+    render: (r) => (
+      <AddressDisplay address={r.mint} kind="token" display={r.mint.slice(0, 6)} />
+    ),
+    searchValue: (r) => r.mint,
+  },
+  {
     key: 'name',
     label: 'Name',
     group: 'identity',
@@ -306,6 +315,15 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
       ),
       sortValue: (r) => r.symbol,
       searchValue: (r) => r.symbol,
+    },
+    {
+      key: 'mint',
+      label: 'Mint',
+      group: 'identity',
+      render: (r) => (
+        <AddressDisplay address={r.mint} kind="token" display={r.mint.slice(0, 6)} />
+      ),
+      searchValue: (r) => r.mint,
     },
     {
       key: 'target_price',

@@ -21,8 +21,8 @@ use crate::models::{Tpsl2Rule, Token};
 
 mod scalp;
 pub use scalp::{
-    find_scalp_entry, find_scalp_entry_with_cohort, find_worst_case_paper_entry,
-    rule_configures_any_scalp_gate, scalp_cohort,
+    find_scalp_entry, find_scalp_entry_with_cohort_indexed, find_worst_case_paper_entry,
+    find_worst_case_paper_entry_at, rule_configures_any_scalp_gate, scalp_cohort,
 };
 
 const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;

@@ -293,6 +293,21 @@ pub fn find_scalp_entry_with_cohort<T: TradeRow>(
     rule: &Tpsl2Rule,
     cohort: &HashSet<T::Wallet>,
 ) -> Option<EntryFill> {
+    find_scalp_entry_with_cohort_indexed(trades, rule, cohort).map(|(_, fill)| fill)
+}
+
+/// [`find_scalp_entry_with_cohort`] that also returns the trigger trade's **index**
+/// in `trades`. The sweep uses this so it can hand the index straight to
+/// [`find_worst_case_paper_entry_at`] (string-free), letting [`SweepTrade`] drop
+/// its `tx_signature` entirely (Phase 1.2). The string-returning wrapper above is
+/// what the live/backtest paths keep using, so their behavior is unchanged.
+///
+/// [`SweepTrade`]: crate::sweep::projection::SweepTrade
+pub fn find_scalp_entry_with_cohort_indexed<T: TradeRow>(
+    trades: &[T],
+    rule: &Tpsl2Rule,
+    cohort: &HashSet<T::Wallet>,
+) -> Option<(usize, EntryFill)> {
     if !rule_configures_any_scalp_gate(rule) || trades.is_empty() {
         return None;
     }
@@ -414,12 +429,15 @@ pub fn find_scalp_entry_with_cohort<T: TradeRow>(
             }
         }
 
-        return Some(EntryFill {
-            price: t.price_per_token(),
-            amount_sol: sol_amount,
-            tx_signature: t.tx_signature().to_string(),
-            block_time,
-        });
+        return Some((
+            i,
+            EntryFill {
+                price: t.price_per_token(),
+                amount_sol: sol_amount,
+                tx_signature: t.tx_signature().to_string(),
+                block_time,
+            },
+        ));
     }
     None
 }
@@ -445,6 +463,42 @@ pub fn find_scalp_entry_with_cohort<T: TradeRow>(
 /// fully order two distinct txs in the same slot; ties are resolved by the
 /// highest-price / latest rule as specified.
 pub fn find_worst_case_paper_entry<T: TradeRow>(trades: &[T], target_tx: &str) -> EntryFill {
+    match trades.iter().position(|t| t.tx_signature() == target_tx) {
+        Some(idx) => find_worst_case_paper_entry_at(trades, idx),
+        None => {
+            // The trigger isn't in the slice — degrade to the first usable trade, or
+            // (no trades at all) a zero-priced empty fill keyed to the missing tx.
+            trades
+                .iter()
+                .find(|t| t.price_per_token() > 0.0 && !Trade::is_dust(t.sol_amount()))
+                .map(|t| EntryFill {
+                    price: t.price_per_token(),
+                    amount_sol: t.sol_amount(),
+                    tx_signature: t.tx_signature().to_string(),
+                    block_time: t.block_time(),
+                })
+                .unwrap_or(EntryFill {
+                    price: 0.0,
+                    amount_sol: 0.0,
+                    tx_signature: target_tx.to_string(),
+                    block_time: trades.first().map(|t| t.block_time()).unwrap_or_else(Utc::now),
+                })
+        }
+    }
+}
+
+/// [`find_worst_case_paper_entry`] keyed by the trigger trade's **index** rather
+/// than its `tx_signature`. The sweep resolves the trigger index from
+/// [`find_scalp_entry_with_cohort_indexed`] and calls this directly, so its
+/// [`SweepTrade`] rows need carry no signature string at all (Phase 1.2). The
+/// signature-keyed wrapper above (used by the live/backtest paths) is a thin
+/// `position()` lookup over this — identical selection, since the old
+/// `tx_signature() != target_tx` exclusion was redundant with the strict
+/// `(slot, leg_index) > target_key` filter (the trigger shares the target key, so
+/// `>` already drops it). `target_idx` must index a real trade in `trades`.
+///
+/// [`SweepTrade`]: crate::sweep::projection::SweepTrade
+pub fn find_worst_case_paper_entry_at<T: TradeRow>(trades: &[T], target_idx: usize) -> EntryFill {
     let entry_from = |t: &T, amount_sol: f64| EntryFill {
         price: t.price_per_token(),
         amount_sol,
@@ -452,31 +506,19 @@ pub fn find_worst_case_paper_entry<T: TradeRow>(trades: &[T], target_tx: &str) -
         block_time: t.block_time(),
     };
 
-    let Some(target) = trades.iter().find(|t| t.tx_signature() == target_tx) else {
-        // The trigger isn't in the slice — degrade to the first usable trade, or
-        // (no trades at all) a zero-priced empty fill keyed to the missing tx.
-        return trades
-            .iter()
-            .find(|t| t.price_per_token() > 0.0 && !Trade::is_dust(t.sol_amount()))
-            .map(|t| entry_from(t, t.sol_amount()))
-            .unwrap_or(EntryFill {
-                price: 0.0,
-                amount_sol: 0.0,
-                tx_signature: target_tx.to_string(),
-                block_time: trades.first().map(|t| t.block_time()).unwrap_or_else(Utc::now),
-            });
-    };
+    let target = &trades[target_idx];
     let trigger_sol = target.sol_amount();
     let target_slot = target.slot();
     let target_key = (target_slot, target.leg_index());
 
     // Adverse candidates: same slot or the next, strictly after the trigger,
     // non-dust, priced. The worst case is the highest price; ties break to the
-    // latest by (slot, leg_index).
+    // latest by (slot, leg_index). The strict `> target_key` already excludes the
+    // trigger itself (it sits at exactly `target_key`).
     let worst = trades
         .iter()
         .filter(|t| t.slot() == target_slot || t.slot() == target_slot + 1)
-        .filter(|t| (t.slot(), t.leg_index()) > target_key && t.tx_signature() != target_tx)
+        .filter(|t| (t.slot(), t.leg_index()) > target_key)
         .filter(|t| t.price_per_token() > 0.0 && !Trade::is_dust(t.sol_amount()))
         .max_by(|a, b| {
             a.price_per_token()
