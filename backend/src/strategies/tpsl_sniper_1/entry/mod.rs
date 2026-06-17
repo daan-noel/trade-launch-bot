@@ -163,11 +163,20 @@ fn check_spendable_sol_in(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome {
 }
 
 fn check_instruction_labels(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome {
-    if !rule.p_token_ix_labels.as_array().map_or(false, |a| !a.is_empty()) {
+    let Some(rule_labels) = rule.p_token_ix_labels.as_array() else {
+        return CriterionOutcome::NotConfigured;
+    };
+    if rule_labels.is_empty() {
         return CriterionOutcome::NotConfigured;
     }
-    // Presence check only for now (TODO: per-label matching).
-    if token.instruction_labels.as_array().map_or(false, |a| !a.is_empty()) {
+    let token_labels = match token.instruction_labels.as_array() {
+        Some(a) => a,
+        None => return CriterionOutcome::Rejected,
+    };
+    // Exact ordered match: same length, same string at every position.
+    if rule_labels.len() == token_labels.len()
+        && rule_labels.iter().zip(token_labels.iter()).all(|(r, t)| r == t)
+    {
         CriterionOutcome::Satisfied
     } else {
         CriterionOutcome::Rejected
@@ -348,12 +357,26 @@ mod tests {
     }
 
     #[test]
-    fn instruction_labels_require_presence() {
-        let rule = rule_with_entry(None, None, None, json!(["create"]), None, None, 0.0);
-        let with_labels = token_with(None, None, None, None, json!(["create"]));
-        let without = token_with(None, None, None, None, json!([]));
-        assert!(token_matches_buy_rule(&with_labels, &rule));
-        assert!(!token_matches_buy_rule(&without, &rule));
+    fn instruction_labels_exact_ordered_match() {
+        let rule = rule_with_entry(None, None, None, json!(["A", "B", "C"]), None, None, 0.0);
+        // Exact match passes.
+        let exact = token_with(None, None, None, None, json!(["A", "B", "C"]));
+        assert!(token_matches_buy_rule(&exact, &rule));
+        // Wrong order rejected.
+        let reordered = token_with(None, None, None, None, json!(["A", "C", "B"]));
+        assert!(!token_matches_buy_rule(&reordered, &rule));
+        // Subset rejected.
+        let subset = token_with(None, None, None, None, json!(["A", "B"]));
+        assert!(!token_matches_buy_rule(&subset, &rule));
+        // Superset rejected.
+        let superset = token_with(None, None, None, None, json!(["A", "B", "C", "D"]));
+        assert!(!token_matches_buy_rule(&superset, &rule));
+        // Empty token labels rejected.
+        let empty = token_with(None, None, None, None, json!([]));
+        assert!(!token_matches_buy_rule(&empty, &rule));
+        // Different label rejected.
+        let diff = token_with(None, None, None, None, json!(["A", "B", "X"]));
+        assert!(!token_matches_buy_rule(&diff, &rule));
     }
 
     // The degenerate-case fix: a rule with only a tolerance and no real criteria
