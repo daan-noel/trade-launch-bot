@@ -85,13 +85,22 @@ pub(crate) fn spawn_entry_fill_poll(
                 continue;
             }
             last_count = Some(trade_count);
-            if let Some(target_fill) = super::super::entry::find_scalp_entry(&trades, &rule) {
+            // Resolve the trigger by **index** (Phase B step 1): the cache row carries
+            // no signature, so the worst-case entry is keyed off the trigger's position
+            // in `trades`, not a sig match. `scalp_cohort` + the indexed resolver give
+            // the exact same trigger the sig-keyed `find_scalp_entry` did.
+            let cohort = super::super::entry::scalp_cohort(&trades);
+            if let Some((trigger_idx, target_fill)) =
+                super::super::entry::find_scalp_entry_with_cohort_indexed(&trades, &rule, &cohort)
+            {
                 // The trigger trade is the *target*; the recorded *entry* is the
                 // worst-case adverse fill in the trigger's block (and the next), so
                 // paper has a real target↔entry gap. They coincide only in the
                 // fallback case where no adverse trade exists.
-                let entry =
-                    super::super::entry::find_worst_case_paper_entry(&trades, &target_fill.tx_signature);
+                let entry = super::super::entry::find_worst_case_paper_entry_at(&trades, trigger_idx);
+                // The cache fills have no sig — record synthetic, position-scoped ids.
+                let target_tx = format!("paper-target-{position_id}");
+                let entry_tx = format!("paper-entry-{position_id}");
                 if let Ok(Some(prev)) = paper_repo.find_by_id(position_id).await {
                     // Persist the trigger as the target, then the worst-case entry.
                     // Each writer RETURNs the updated row; sync off the latest so the
@@ -102,20 +111,14 @@ pub(crate) fn spawn_entry_fill_poll(
                             target_fill.price,
                             target_fill.amount_sol,
                             target_fill.block_time,
-                            &target_fill.tx_signature,
+                            &target_tx,
                         )
                         .await
                     {
                         warn!("[PAPER] Failed to record target for position {position_id}: {err}");
                     }
                     if let Ok(current) = paper_repo
-                        .update_entry(
-                            position_id,
-                            &entry.tx_signature,
-                            buy_amount,
-                            entry.price,
-                            entry.block_time,
-                        )
+                        .update_entry(position_id, &entry_tx, buy_amount, entry.price, entry.block_time)
                         .await
                     {
                         runtime.sync_position(Some(&prev), &current);
@@ -123,7 +126,7 @@ pub(crate) fn spawn_entry_fill_poll(
                 }
                 info!(
                     "[PAPER] Set target/entry for position {}: target {} (tx: {}) → entry {} (tx: {})",
-                    position_id, target_fill.price, target_fill.tx_signature, entry.price, entry.tx_signature
+                    position_id, target_fill.price, target_tx, entry.price, entry_tx
                 );
                 recorded = true;
                 break;
@@ -160,7 +163,6 @@ pub(crate) fn spawn_exit_fill_poll(
     sse_tx: broadcast::Sender<SseEvent>,
     mint: String,
     position_id: Uuid,
-    entry_tx: String,
     entry_price: f64,
     entry_time_db: Option<DateTime<Utc>>,
     // The full rule drives the exit-fill resolver so the recorded paper exit
@@ -191,27 +193,24 @@ pub(crate) fn spawn_exit_fill_poll(
                 cache_trades(&token_cache, &mint).filter(|(_, c)| last_count != Some(*c))
             {
                 last_count = Some(trade_count);
-                // Prefer the entry trade's own block time; fall back to the
-                // entry_time stored on the position (set together with entry_price).
-                // The old `Utc::now()` fallback made every trade look pre-entry
-                // whenever the entry row wasn't in the fetched set, so the walk saw
-                // nothing and the position always reverted to Holding.
-                let entry_block_time = trades
-                    .iter()
-                    .find(|t| t.tx_signature == entry_tx)
-                    .map(|t| t.block_time)
-                    .or(entry_time_db)
-                    .unwrap_or_else(chrono::Utc::now);
+                // The entry block time is the one persisted with `entry_price` at
+                // entry recording (`entry_time_db`). The cache row no longer carries a
+                // signature (Phase B step 1), so there's nothing to match it against;
+                // the persisted entry time is the same value the old sig lookup
+                // recovered. `Utc::now()` only as a last-resort if it's somehow unset.
+                let entry_block_time = entry_time_db.unwrap_or_else(chrono::Utc::now);
                 if let Some(fill) =
                     super::super::exit::find_trade_driven_exit(&trades, entry_block_time, entry_price, &rule)
                 {
+                    // Synthetic, position-scoped exit id — the cache fill has no sig.
+                    let exit_tx = format!("paper-exit-{position_id}");
                     if let Ok(Some(prev)) = paper_repo.find_by_id(position_id).await {
                         // `update_exit` returns the updated row (RETURNING), so we
                         // sync runtime state directly without a read-back.
                         if let Ok(current) = paper_repo
                             .update_exit(
                                 position_id,
-                                &fill.tx_signature,
+                                &exit_tx,
                                 fill.price,
                                 fill.block_time,
                                 fill.reason.as_str(),
@@ -223,7 +222,7 @@ pub(crate) fn spawn_exit_fill_poll(
                     }
                     info!(
                         "[PAPER] Set exit for position {}: {} (tx: {}, reason: {})",
-                        position_id, fill.price, fill.tx_signature, fill.reason
+                        position_id, fill.price, exit_tx, fill.reason
                     );
                     found = true;
                     break;

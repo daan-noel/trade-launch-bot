@@ -24,9 +24,9 @@ use crate::state::app_state::AppState;
 use crate::storage::repositories::grouped_sweep_repo::{GroupedSweepRepo, GroupedSweepTables};
 use crate::sweep::aggregate::ComboMetrics;
 use crate::sweep::corpus::{attach_fingerprints, corpus_cache_dir, load_grouped_corpus, Selection};
-use crate::sweep::grouped_engine::CoverageFloor;
+use crate::sweep::grouped_engine::{CoverageFloor, GroupResult, GroupSink};
 use crate::sweep::grouping::GroupField;
-use crate::sweep::registry::{self, GroupedSweepOutput};
+use crate::sweep::registry;
 use crate::sweep::strategy::parse_method;
 
 // ---------------------------------------------------------------------------
@@ -295,6 +295,70 @@ async fn run_grouped_sweep_job(
     let token_count = corpus.token_count() as i32;
     let grouping_spec = serde_json::to_value(&b.group_by).unwrap_or_else(|_| serde_json::json!([]));
 
+    // Phase 4 — write the run header up front (`status = "running"`) BEFORE the
+    // sweep, so the per-group `append_group` writes (FK → this row) can land
+    // incrementally and a cancel/crash keeps whatever finished. `group_count` /
+    // `combo_count` are placeholders (0) here, set by the engine's `begin` once
+    // the surviving + combo sets are known; `axes_spec` is the raw request axes
+    // until `finalize_completed` swaps in the resolved set. Counts/status/axes are
+    // re-stamped at the terminal step.
+    let run_id = Uuid::new_v4();
+    let mut run = GroupedSweepRun {
+        id: run_id,
+        strategy_id: b.strategy_id.clone(),
+        source: "db".to_string(),
+        method: method_tag,
+        created_after: b.created_after,
+        created_before: b.created_before,
+        curve_only: b.curve_only,
+        grouping_spec,
+        axes_spec: b.axes.clone(),
+        min_tokens: min_tokens as i32,
+        token_count,
+        group_count: 0,
+        combo_count: 0,
+        corpus_hash: Some(corpus_hash),
+        created_at: Utc::now(),
+        status: "running".to_string(),
+        groups_done: 0,
+    };
+    let repo = GroupedSweepRepo::new(state.db.clone(), tables);
+    if let Err(e) = repo.insert_run(&run).await {
+        tracing::error!("grouped sweep: insert_run failed: {e}");
+        return HttpResponse::InternalServerError()
+            .json(serde_json::json!({"error": e.to_string()}));
+    }
+
+    // Single DB-writer task: the engine's per-group emits (which arrive out of
+    // order from the cross-group small-group phase) are serialized through one
+    // unbounded channel into one task, so concurrent folds never race the
+    // connection. It drains until the sink (and thus the sender) drops when the
+    // sweep ends, then returns the persisted-group tally. Unbounded so the sync
+    // engine callback never blocks a rayon worker.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SweepWrite>();
+    let writer = {
+        let db = state.db.clone();
+        actix_web::rt::spawn(async move {
+            let repo = GroupedSweepRepo::new(db, tables);
+            let mut groups_done = 0i32;
+            while let Some(msg) = rx.recv().await {
+                match msg {
+                    SweepWrite::Begin { group_count, combo_count } => {
+                        if let Err(e) = repo.update_run_counts(run_id, group_count, combo_count).await
+                        {
+                            tracing::error!("grouped sweep: update_run_counts failed: {e}");
+                        }
+                    }
+                    SweepWrite::Group(g) => match repo.append_group(run_id, &g).await {
+                        Ok(()) => groups_done += 1,
+                        Err(e) => tracing::error!("grouped sweep: append_group failed: {e}"),
+                    },
+                }
+            }
+            groups_done
+        })
+    };
+
     // Streams real `processed / total` token frames over SSE and carries the
     // shared cancel flag into the engine's hot loop.
     let observer: Arc<dyn crate::sweep::progress::SweepObserver + Send> =
@@ -304,8 +368,12 @@ async fn run_grouped_sweep_job(
             state.sweep_cancel.clone(),
             state.sweep_progress.clone(),
         ));
+    // The sink hands each fully-folded group to the writer task. `run_grouped`
+    // takes ownership, so it (and its sender) drop when the sweep ends — closing
+    // the channel and letting the writer task finish.
+    let sink: Arc<dyn GroupSink + Send + Sync> = Arc::new(HandlerSink { tx });
 
-    let output = match registry::run_grouped(
+    let result = registry::run_grouped(
         &b.strategy_id,
         b.axes.clone(),
         method,
@@ -316,50 +384,64 @@ async fn run_grouped_sweep_job(
         floor,
         b.max_combos,
         observer,
+        sink,
     )
-    .await
-    {
+    .await;
+
+    // The sweep is done — the sink dropped, so the writer drains and returns how
+    // many groups actually persisted (the partial count on cancel/error).
+    let groups_done = writer.await.unwrap_or(0);
+
+    let output = match result {
         Ok(o) => o,
         Err(e) => {
-            // A cooperative cancel surfaces as an engine error; report it as a
-            // benign cancellation (no run persisted) rather than a failure.
+            // A cooperative cancel surfaces as an engine error. Keep whatever
+            // groups already committed and mark the run cancelled (honestly
+            // partial) instead of discarding them.
             if state.sweep_cancel.load(Ordering::Acquire) {
-                tracing::info!("grouped sweep: cancelled by user");
-                return HttpResponse::Ok().json(serde_json::json!({"cancelled": true}));
+                tracing::info!(groups_done, "grouped sweep: cancelled by user (partial kept)");
+                if let Err(e) = repo.mark_cancelled(run_id).await {
+                    tracing::error!("grouped sweep: mark_cancelled failed: {e}");
+                }
+                return HttpResponse::Ok().json(serde_json::json!({
+                    "cancelled": true,
+                    "run_id": run_id,
+                    "groups_done": groups_done,
+                }));
             }
+            // Config errors (bad axes / over-cap grid) fail before any group
+            // folds, leaving an empty placeholder run — drop it so it doesn't
+            // litter the picker as a 0-group cancelled run.
             tracing::error!("grouped sweep failed: {e}");
-            // Config errors (bad axes / over-cap grid) are client-fixable.
+            if let Err(del) = repo.delete_run(run_id).await {
+                tracing::error!("grouped sweep: cleanup of failed run failed: {del}");
+            }
             return HttpResponse::BadRequest().json(serde_json::json!({"error": e.to_string()}));
         }
     };
 
-    let run = GroupedSweepRun {
-        id: Uuid::new_v4(),
-        strategy_id: b.strategy_id.clone(),
-        source: "db".to_string(),
-        method: method_tag,
-        created_after: b.created_after,
-        created_before: b.created_before,
-        curve_only: b.curve_only,
-        grouping_spec,
-        axes_spec: output.axes_json.clone(),
-        min_tokens: min_tokens as i32,
-        token_count,
-        group_count: output.groups.len() as i32,
-        combo_count: output.combo_count as i32,
-        corpus_hash: Some(corpus_hash),
-        created_at: Utc::now(),
-    };
-
-    let groups = build_group_writes(&output);
-    if let Err(e) = GroupedSweepRepo::new(state.db.clone(), tables)
-        .save_run(&run, &groups)
+    // Full success — stamp the terminal status, authoritative counts, and the
+    // resolved axes (only known now).
+    if let Err(e) = repo
+        .finalize_completed(
+            run_id,
+            output.groups.len() as i32,
+            output.combo_count as i32,
+            &output.axes_json,
+        )
         .await
     {
-        tracing::error!("grouped sweep: persist failed: {e}");
+        tracing::error!("grouped sweep: finalize failed: {e}");
         return HttpResponse::InternalServerError()
             .json(serde_json::json!({"error": e.to_string()}));
     }
+
+    // Reflect the finalized state in the response body the client gets back.
+    run.axes_spec = output.axes_json.clone();
+    run.group_count = output.groups.len() as i32;
+    run.combo_count = output.combo_count as i32;
+    run.groups_done = groups_done;
+    run.status = "completed".to_string();
 
     tracing::info!(
         run_id = %run.id,
@@ -375,47 +457,69 @@ async fn run_grouped_sweep_job(
     HttpResponse::Ok().json(run)
 }
 
-/// Flatten the sweep output into the repo's write units: one group per surviving
-/// fingerprint, carrying its ranked combo rows. `group_index` is the deterministic
-/// order the engine returned (largest group first). `fired_count` is the best
-/// combo's `n_fired` — the sample size behind the group's headline pick.
-fn build_group_writes(output: &GroupedSweepOutput) -> Vec<GroupedSweepGroupWrite> {
-    let param_at = |id: u32| -> serde_json::Value {
-        output
-            .combo_params
-            .get(id as usize)
-            .cloned()
-            .unwrap_or(serde_json::Value::Null)
-    };
+/// Message to the single per-run DB-writer task. `Begin` carries the engine's
+/// fixed group/combo counts (one per run); `Group` carries one completed group's
+/// write unit. Boxed so the enum stays small despite the large group payload.
+enum SweepWrite {
+    Begin { group_count: i32, combo_count: i32 },
+    Group(Box<GroupedSweepGroupWrite>),
+}
 
-    output
-        .groups
+/// The [`GroupSink`] bridge from the (sync, rayon-worker) engine to the (async)
+/// DB-writer task: each emit is forwarded over the unbounded channel. Sends are
+/// best-effort — a closed channel (writer already gone) just drops the emit,
+/// which only happens on shutdown.
+struct HandlerSink {
+    tx: tokio::sync::mpsc::UnboundedSender<SweepWrite>,
+}
+
+impl GroupSink for HandlerSink {
+    fn begin(&self, group_count: usize, combo_count: usize) {
+        let _ = self.tx.send(SweepWrite::Begin {
+            group_count: group_count as i32,
+            combo_count: combo_count as i32,
+        });
+    }
+
+    fn group_done(&self, group_index: usize, group: &GroupResult, combo_params: &[serde_json::Value]) {
+        let write = group_to_write(group_index, group, combo_params);
+        let _ = self.tx.send(SweepWrite::Group(Box::new(write)));
+    }
+}
+
+/// Flatten one fully-folded group into the repo's write unit. `group_index` is the
+/// engine's deterministic order (largest group first). `fired_count` is the best
+/// combo's `n_fired` — the sample size behind the group's headline pick.
+/// `combo_params[combo_id]` is each ranked combo's param JSON.
+fn group_to_write(
+    group_index: usize,
+    g: &GroupResult,
+    combo_params: &[serde_json::Value],
+) -> GroupedSweepGroupWrite {
+    let param_at = |id: u32| -> serde_json::Value {
+        combo_params.get(id as usize).cloned().unwrap_or(serde_json::Value::Null)
+    };
+    let fired_count = g
+        .metrics
+        .get(g.best_combo_id as usize)
+        .map(|m| m.n_fired as i64)
+        .unwrap_or(0);
+    let results = g
+        .metrics
         .iter()
-        .enumerate()
-        .map(|(idx, g)| {
-            let fired_count = g
-                .metrics
-                .get(g.best_combo_id as usize)
-                .map(|m| m.n_fired as i64)
-                .unwrap_or(0);
-            let results = g
-                .metrics
-                .iter()
-                .map(|m| metrics_to_result(m, param_at(m.combo_id)))
-                .collect();
-            GroupedSweepGroupWrite {
-                group_index: idx as i32,
-                group_key: g.key.to_json(),
-                token_count: g.token_count as i32,
-                fired_count,
-                best_combo_id: g.best_combo_id as i32,
-                best_score: g.best_score,
-                best_expectancy_sol: g.best_expectancy_sol,
-                best_params: param_at(g.best_combo_id),
-                results,
-            }
-        })
-        .collect()
+        .map(|m| metrics_to_result(m, param_at(m.combo_id)))
+        .collect();
+    GroupedSweepGroupWrite {
+        group_index: group_index as i32,
+        group_key: g.key.to_json(),
+        token_count: g.token_count as i32,
+        fired_count,
+        best_combo_id: g.best_combo_id as i32,
+        best_score: g.best_score,
+        best_expectancy_sol: g.best_expectancy_sol,
+        best_params: param_at(g.best_combo_id),
+        results,
+    }
 }
 
 /// Map one combo's aggregated metrics + its param JSON into a persistable row.

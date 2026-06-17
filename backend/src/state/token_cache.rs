@@ -13,6 +13,7 @@ use crate::config::constants::{
 };
 use crate::models::token::Token;
 use crate::models::trade::{Trade, TradeRow, TradeType};
+use crate::sweep::projection::WalletInterner;
 
 /// Hard cap on retained in-memory trade history per token. The cache keeps only
 /// the most recent `MAX_TRADES_RETAINED` trades; the oldest are trimmed from the
@@ -49,15 +50,21 @@ pub const TRADES_TRIM_SLACK: usize = 5_000;
 /// decision-logic change. The full `Trade` is still what the DB and the
 /// `/api/tokens/:mint/trades` + swing endpoints serve (both read from Postgres).
 ///
-/// Implements [`TradeRow`] (`Wallet = String`) so every shared entry/exit/cohort
-/// fn runs against it unchanged — exactly as the sweep's `SweepTrade` does. The
-/// `wallet_address` + `tx_signature` strings are retained for now: the live paper
-/// fill resolver still matches the entry by signature and E5 cohort sets key on
-/// the wallet. Phase B interns the wallet to a `u32` and drops the signature.
+/// Implements [`TradeRow`] (`Wallet = u32`) so every shared entry/exit/cohort fn
+/// runs against it unchanged — exactly as the sweep's `SweepTrade` does. No
+/// `tx_signature` is retained (Phase B step 1): the live paper fill resolvers work
+/// by **trade index**, not sig match, and `tx_signature()` returns `""` (same as
+/// `SweepTrade`) — the backtest still reads the real sig off the DB `Trade`, and
+/// real mode records it from the on-chain confirm, never the cache.
+///
+/// The wallet is stored as a token-local interned `u32` (Phase B step 2), not the
+/// 44-byte base58 String: `TokenState::interner` maps `u32 → address` and is the
+/// only resident copy of each distinct wallet string. Cohort-set membership in the
+/// entry/exit walks is therefore integer-keyed (a hot-path win too).
 #[derive(Clone, Debug)]
 pub struct CachedTrade {
-    pub wallet_address: String,
-    pub tx_signature: String,
+    /// Token-local interned wallet id (index into `TokenState::interner`'s table).
+    pub wallet: u32,
     pub is_buy: bool,
     /// `true` for a bonding-curve leg, `false` for a post-migration AMM leg. A
     /// 1-byte stand-in for the dropped `venue` String — the only `venue` use off
@@ -74,11 +81,14 @@ pub struct CachedTrade {
     pub real_sol_reserves: Option<f64>,
 }
 
-impl From<&Trade> for CachedTrade {
-    fn from(t: &Trade) -> Self {
+impl CachedTrade {
+    /// Project a live [`Trade`] into the slim cache row, given the wallet's already-
+    /// interned `u32` id (the caller interns against the owning `TokenState`, so this
+    /// stays a plain field copy — no `From` impl, since the wallet can't be resolved
+    /// without the token-local interner).
+    pub fn from_trade(t: &Trade, wallet: u32) -> Self {
         Self {
-            wallet_address: t.wallet_address.clone(),
-            tx_signature: t.tx_signature.clone(),
+            wallet,
             is_buy: matches!(t.trade_type, TradeType::Buy),
             is_curve: t.venue == "curve",
             sol_amount: t.sol_amount,
@@ -95,7 +105,7 @@ impl From<&Trade> for CachedTrade {
 }
 
 impl TradeRow for CachedTrade {
-    type Wallet = String;
+    type Wallet = u32;
 
     fn is_buy(&self) -> bool {
         self.is_buy
@@ -127,11 +137,13 @@ impl TradeRow for CachedTrade {
     fn real_sol_reserves(&self) -> Option<f64> {
         self.real_sol_reserves
     }
-    fn wallet(&self) -> &String {
-        &self.wallet_address
+    fn wallet(&self) -> &u32 {
+        &self.wallet
     }
+    /// No signature is retained on the cache row (Phase B step 1) — the live paper
+    /// resolvers key off the trade index, not the sig. Mirrors `SweepTrade`.
     fn tx_signature(&self) -> &str {
-        &self.tx_signature
+        ""
     }
 }
 
@@ -196,6 +208,13 @@ pub struct TokenState {
     /// Wall-clock time of the last successful manual sync, if any. Populated from
     /// `tokens_info.last_synced_at` on seed and refreshed after each sync.
     pub last_synced_at: Option<DateTime<Utc>>,
+
+    /// Token-local wallet interner: maps each distinct wallet address to a dense
+    /// `u32` id (`CachedTrade::wallet`) and back. The only resident copy of each
+    /// wallet string for this token (Phase B step 2). Grows with distinct wallets
+    /// seen and is **not** trimmed when `trades` front-trims — the `u32` ids in the
+    /// retained rows stay valid because table indices never shift.
+    pub interner: WalletInterner,
 }
 
 impl TokenState {
@@ -229,7 +248,24 @@ impl TokenState {
             is_migrated: false,
             amm_pool_prewarmed: false,
             last_synced_at: None,
+            interner: WalletInterner::default(),
         }
+    }
+
+    /// Intern a live trade's wallet to this token's `u32` namespace and project it
+    /// into the slim cache row. The interning side-effect makes this `&mut self`;
+    /// the returned row is then appended via [`push_trade_capped`](Self::push_trade_capped).
+    /// Used by [`add_trade`](Self::add_trade) and the seed/sync rebuild paths.
+    pub fn intern_trade(&mut self, trade: &Trade) -> CachedTrade {
+        let wallet = self.interner.intern(&trade.wallet_address);
+        CachedTrade::from_trade(trade, wallet)
+    }
+
+    /// Clone this token's `u32 → address` wallet table — for the sweep cache corpus
+    /// source, which projects the retained `CachedTrade`s into `SweepTrade`s reusing
+    /// these exact ids (no re-hash) and needs the table to write addresses back.
+    pub fn wallet_table(&self) -> Vec<Box<str>> {
+        self.interner.clone_table()
     }
 
     /// The token's launch price (initial buy SOL ÷ initial supply), if both are
@@ -300,7 +336,8 @@ impl TokenState {
     /// Append a live trade and update aggregate metrics.
     pub fn add_trade(&mut self, trade: Trade) {
         self.apply_aggregates(&trade);
-        self.push_trade_capped(CachedTrade::from(&trade));
+        let cached = self.intern_trade(&trade);
+        self.push_trade_capped(cached);
     }
 
     /// Re-fold a retained [`CachedTrade`] through the aggregate path. Used by
@@ -393,7 +430,7 @@ impl TokenState {
     pub fn unique_wallets(&self) -> usize {
         let mut seen = std::collections::HashSet::new();
         for t in self.trades.iter() {
-            seen.insert(t.wallet_address.as_str());
+            seen.insert(t.wallet);
         }
         seen.len()
     }
@@ -821,7 +858,11 @@ mod tests {
         t.real_sol_reserves = Some(7.5);
         t.venue = "amm".into();
 
-        let c = CachedTrade::from(&t);
+        // Intern the wallet against a token-local interner (Phase B step 2), exactly
+        // as the live append path does, then project.
+        let mut interner = WalletInterner::default();
+        let wallet_id = interner.intern(&t.wallet_address);
+        let c = CachedTrade::from_trade(&t, wallet_id);
 
         assert_eq!(c.is_buy(), t.is_buy());
         assert_eq!(c.sol_amount(), t.sol_amount());
@@ -833,8 +874,13 @@ mod tests {
         assert_eq!(c.virtual_sol_reserves(), t.virtual_sol_reserves());
         assert_eq!(c.virtual_token_reserves(), t.virtual_token_reserves());
         assert_eq!(c.real_sol_reserves(), t.real_sol_reserves());
-        assert_eq!(c.wallet(), t.wallet());
-        assert_eq!(c.tx_signature(), t.tx_signature());
+        // The cache wallet is an interned `u32`; the interner table maps it back to
+        // the source `Trade`'s wallet address.
+        assert_eq!(*c.wallet(), wallet_id);
+        assert_eq!(&*interner.clone_table()[wallet_id as usize], t.wallet());
+        // The cache row carries no signature (Phase B step 1): `tx_signature()` is
+        // always `""`, regardless of the source `Trade`'s sig.
+        assert_eq!(c.tx_signature(), "");
         // `is_curve` stands in for the dropped `venue` String (here an AMM leg).
         assert!(!c.is_curve);
     }

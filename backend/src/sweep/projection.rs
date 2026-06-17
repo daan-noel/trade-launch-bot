@@ -89,9 +89,14 @@ impl TradeRow for SweepTrade {
 }
 
 /// Interns wallet addresses to dense token-local `u32` ids in first-seen order.
-/// The map is discarded once the token is projected; the `Vec` (`u32 → address`)
-/// is retained so the Parquet cache can write the addresses back.
-#[derive(Default)]
+/// The `Vec` (`u32 → address`) maps an id back to its address.
+///
+/// The sweep discards the map once a token is projected (keeping only the table for
+/// the Parquet write). The **live token cache** keeps a `WalletInterner` resident on
+/// each `TokenState` so it can intern every appended trade's wallet to a `u32` (Phase
+/// B step 2) — hence `Clone` (the state derives it) and `clone_table` (the cache
+/// corpus source re-uses the table without consuming the live interner).
+#[derive(Default, Clone)]
 pub struct WalletInterner {
     by_addr: HashMap<String, u32>,
     table: Vec<Box<str>>,
@@ -108,9 +113,24 @@ impl WalletInterner {
         id
     }
 
-    /// The finished `u32 → address` table.
+    /// The finished `u32 → address` table (consuming form, for the sweep projection).
     pub fn into_table(self) -> Vec<Box<str>> {
         self.table
+    }
+
+    /// A copy of the `u32 → address` table without consuming the interner — for the
+    /// live cache's corpus source, which must keep interning new trades afterwards.
+    pub fn clone_table(&self) -> Vec<Box<str>> {
+        self.table.clone()
+    }
+
+    /// Number of distinct wallets interned so far.
+    pub fn len(&self) -> usize {
+        self.table.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.table.is_empty()
     }
 }
 

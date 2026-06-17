@@ -14,6 +14,10 @@ pub fn recompute_token_state(state: &mut TokenState) {
 
     let mut fresh = TokenState::new(token);
     fresh.is_migrated = is_migrated;
+    // Carry the wallet interner over: the retained `CachedTrade`s hold `u32` ids in
+    // the *old* interner's namespace, and `add_cached_trade` does not re-intern, so
+    // `fresh` must keep the same `u32 → address` table or those ids would dangle.
+    fresh.interner = std::mem::take(&mut state.interner);
     // `trades` is the only Arc holder here (taken out of `state`), so unwrap moves
     // the Vec without copying; fall back to a clone only if somehow shared.
     let trades = Arc::try_unwrap(trades).unwrap_or_else(|a| (*a).clone());

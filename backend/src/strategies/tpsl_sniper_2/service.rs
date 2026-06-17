@@ -268,6 +268,12 @@ impl Tpsl2StrategyService {
                             // carries target_*. The just-inserted in-memory `position`
                             // is the current DB state (nothing has mutated it since
                             // the insert), so use it as `prev` instead of a read-back.
+                            //
+                            // `target.tx_signature` is empty: the trigger was resolved
+                            // off the sig-free live cache (Phase B step 1). target_* is
+                            // a display/diagnostic snapshot, not a decision input;
+                            // re-fetching the trigger's real sig would add a DB round
+                            // trip to the entry path, which the latency budget forbids.
                             match position_repo
                                 .update_target(
                                     position_id,
@@ -441,7 +447,6 @@ impl Tpsl2StrategyService {
                     self.sse_tx.clone(),
                     mint.clone(),
                     position.id,
-                    position.entry_tx.clone(),
                     position.entry_price,
                     position.entry_time,
                     rule.clone(),

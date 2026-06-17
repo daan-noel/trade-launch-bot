@@ -310,6 +310,24 @@ async fn main() -> anyhow::Result<()> {
     // Database — connect and run migrations
     let db = storage::postgres::connect(&settings).await?;
 
+    // Crash recovery (Phase 4): a killed process can leave a grouped sweep stuck at
+    // `status = 'running'`. The single-flight gate allows one sweep at a time and
+    // none can be live at boot, so any `running` run is an orphan — mark it
+    // `cancelled` (its already-persisted groups stay) so the UI stops showing it as
+    // live. Best-effort: a failure here is logged, not fatal.
+    for strategy_id in sweep::registry::strategy_ids() {
+        if let Some(tables) = sweep::registry::tables_for(strategy_id) {
+            match storage::repositories::grouped_sweep_repo::GroupedSweepRepo::new(db.clone(), tables)
+                .reconcile_orphaned_runs()
+                .await
+            {
+                Ok(0) => {}
+                Ok(n) => warn!("grouped sweep: marked {n} orphaned '{strategy_id}' run(s) cancelled"),
+                Err(e) => error!("grouped sweep: orphaned-run reconcile for '{strategy_id}' failed: {e}"),
+            }
+        }
+    }
+
     // In-memory caches (shared between services and future API handlers)
     let token_cache = Arc::new(state::token_cache::TokenCache::new());
 

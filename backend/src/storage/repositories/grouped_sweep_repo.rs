@@ -7,10 +7,15 @@
 //! internal consts in the registry — never client input — so the interpolation
 //! is injection-safe.
 //!
-//! `save_run` writes a run + its groups + each group's bounded combo rows in one
-//! transaction (combo rows bulk-inserted in `chunks(2000)` to stay under the
-//! 65535 bind-parameter ceiling). Reads serve the grouped-sweep page: runs list,
-//! per-run group summaries, and a group's ranked combo rows.
+//! Writes are **incremental** (Phase 4 partial persistence): `insert_run` writes
+//! the run header up front (`status = 'running'`), `append_group` commits each
+//! completed group + its bounded combo rows in its own transaction (combo rows
+//! bulk-inserted in `chunks(2000)` to stay under the 65535 bind-parameter
+//! ceiling) and bumps `groups_done`, and `finalize_run` stamps the terminal
+//! status — so a cancel/crash mid-sweep keeps whatever already committed.
+//! `reconcile_orphaned_runs` marks runs left at `running` by a killed process as
+//! `cancelled` at startup. Reads serve the grouped-sweep page: runs list, per-run
+//! group summaries, and a group's ranked combo rows.
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -57,6 +62,8 @@ struct RunDbRow {
     combo_count: i32,
     corpus_hash: Option<String>,
     created_at: DateTime<Utc>,
+    status: String,
+    groups_done: i32,
 }
 
 impl From<RunDbRow> for GroupedSweepRun {
@@ -77,6 +84,8 @@ impl From<RunDbRow> for GroupedSweepRun {
             combo_count: r.combo_count,
             corpus_hash: r.corpus_hash,
             created_at: r.created_at,
+            status: r.status,
+            groups_done: r.groups_done,
         }
     }
 }
@@ -182,24 +191,20 @@ impl GroupedSweepRepo {
         Self { pool, tables }
     }
 
-    /// Persist a run, its groups, and each group's ranked combo rows atomically.
-    /// A fresh `group_id` links each group's result rows. `run.group_count` /
-    /// `run.combo_count` are taken as given (set by the caller).
-    pub async fn save_run(
-        &self,
-        run: &GroupedSweepRun,
-        groups: &[GroupedSweepGroupWrite],
-    ) -> anyhow::Result<()> {
-        let t = self.tables;
-        let mut tx = self.pool.begin().await?;
-
+    /// Phase 4 — write the run header up front with `status = 'running'` (before
+    /// any group is swept) so a cancel/crash mid-sweep leaves a recoverable row.
+    /// `group_count` / `combo_count` are placeholders here (0); they're filled by
+    /// [`update_run_counts`] once the engine knows them and re-affirmed by
+    /// [`finalize_run`]. `groups_done` starts at 0 and is bumped per
+    /// [`append_group`].
+    pub async fn insert_run(&self, run: &GroupedSweepRun) -> anyhow::Result<()> {
         let run_sql = format!(
             "INSERT INTO {} \
              (id, strategy_id, source, method, created_after, created_before, \
               curve_only, grouping_spec, axes_spec, min_tokens, token_count, group_count, \
-              combo_count, corpus_hash, created_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
-            t.runs
+              combo_count, corpus_hash, created_at, status, groups_done) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)",
+            self.tables.runs
         );
         sqlx::query(&run_sql)
             .bind(run.id)
@@ -217,9 +222,51 @@ impl GroupedSweepRepo {
             .bind(run.combo_count)
             .bind(&run.corpus_hash)
             .bind(run.created_at)
-            .execute(&mut tx)
+            .bind(&run.status)
+            .bind(run.groups_done)
+            .execute(&self.pool)
             .await?;
+        Ok(())
+    }
 
+    /// Set the surviving-group + per-group-combo counts once the engine has
+    /// partitioned the corpus and fixed the (possibly refine-expanded) combo set.
+    /// Lets the run picker render "`groups_done` / `group_count`" while the sweep
+    /// is still in flight.
+    pub async fn update_run_counts(
+        &self,
+        run_id: Uuid,
+        group_count: i32,
+        combo_count: i32,
+    ) -> anyhow::Result<()> {
+        let sql = format!(
+            "UPDATE {} SET group_count = $2, combo_count = $3 WHERE id = $1",
+            self.tables.runs
+        );
+        sqlx::query(&sql)
+            .bind(run_id)
+            .bind(group_count)
+            .bind(combo_count)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Persist one **completed** group (its summary + ranked combo rows) and bump
+    /// the run's `groups_done`, all in one transaction — so whatever committed
+    /// survives a crash. Called per group as the engine finalizes it, serialized
+    /// through a single writer task so concurrent small-group folds don't race the
+    /// connection. A half-folded group is never passed here (only fully-folded
+    /// groups are honest — see the engine's cancel checks).
+    pub async fn append_group(
+        &self,
+        run_id: Uuid,
+        g: &GroupedSweepGroupWrite,
+    ) -> anyhow::Result<()> {
+        let t = self.tables;
+        let mut tx = self.pool.begin().await?;
+
+        let group_id = Uuid::new_v4();
         let group_sql = format!(
             "INSERT INTO {} \
              (id, run_id, group_index, group_key, token_count, fired_count, \
@@ -227,69 +274,120 @@ impl GroupedSweepRepo {
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
             t.groups
         );
-        for g in groups {
-            let group_id = Uuid::new_v4();
-            sqlx::query(&group_sql)
-                .bind(group_id)
-                .bind(run.id)
-                .bind(g.group_index)
-                .bind(sqlx::types::Json(&g.group_key))
-                .bind(g.token_count)
-                .bind(g.fired_count)
-                .bind(g.best_combo_id)
-                .bind(g.best_score)
-                .bind(g.best_expectancy_sol)
-                .bind(sqlx::types::Json(&g.best_params))
-                .execute(&mut tx)
-                .await?;
+        sqlx::query(&group_sql)
+            .bind(group_id)
+            .bind(run_id)
+            .bind(g.group_index)
+            .bind(sqlx::types::Json(&g.group_key))
+            .bind(g.token_count)
+            .bind(g.fired_count)
+            .bind(g.best_combo_id)
+            .bind(g.best_score)
+            .bind(g.best_expectancy_sol)
+            .bind(sqlx::types::Json(&g.best_params))
+            .execute(&mut tx)
+            .await?;
 
-            // 28 binds/row → chunk well under the 65535 param ceiling.
-            for chunk in g.results.chunks(2000) {
-                let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(format!(
-                    "INSERT INTO {} \
-                     (run_id, group_id, combo_id, params, n_fired, n_open, n_closed, win_rate, \
-                      total_pnl_sol, mean_pnl_pct, median_pnl_pct, p90_pnl_pct, best_pnl_pct, \
-                      worst_pnl_pct, std_pnl_pct, profit_factor, score, expectancy_sol, \
-                      avg_holding_secs, median_holding_secs, n_exit_take_profit, n_exit_stop_loss, \
-                      n_exit_trailing, n_exit_stall, n_exit_time, n_exit_liquidity, n_exit_cohort, n_exit_open) ",
-                    t.results
-                ));
-                qb.push_values(chunk, |mut b, r| {
-                    b.push_bind(run.id)
-                        .push_bind(group_id)
-                        .push_bind(r.combo_id)
-                        .push_bind(sqlx::types::Json(&r.params))
-                        .push_bind(r.n_fired)
-                        .push_bind(r.n_open)
-                        .push_bind(r.n_closed)
-                        .push_bind(r.win_rate)
-                        .push_bind(r.total_pnl_sol)
-                        .push_bind(r.mean_pnl_pct)
-                        .push_bind(r.median_pnl_pct)
-                        .push_bind(r.p90_pnl_pct)
-                        .push_bind(r.best_pnl_pct)
-                        .push_bind(r.worst_pnl_pct)
-                        .push_bind(r.std_pnl_pct)
-                        .push_bind(r.profit_factor)
-                        .push_bind(r.score)
-                        .push_bind(r.expectancy_sol)
-                        .push_bind(r.avg_holding_secs)
-                        .push_bind(r.median_holding_secs)
-                        .push_bind(r.n_exit_take_profit)
-                        .push_bind(r.n_exit_stop_loss)
-                        .push_bind(r.n_exit_trailing)
-                        .push_bind(r.n_exit_stall)
-                        .push_bind(r.n_exit_time)
-                        .push_bind(r.n_exit_liquidity)
-                        .push_bind(r.n_exit_cohort)
-                        .push_bind(r.n_exit_open);
-                });
-                qb.build().execute(&mut tx).await?;
-            }
+        // 28 binds/row → chunk well under the 65535 param ceiling.
+        for chunk in g.results.chunks(2000) {
+            let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(format!(
+                "INSERT INTO {} \
+                 (run_id, group_id, combo_id, params, n_fired, n_open, n_closed, win_rate, \
+                  total_pnl_sol, mean_pnl_pct, median_pnl_pct, p90_pnl_pct, best_pnl_pct, \
+                  worst_pnl_pct, std_pnl_pct, profit_factor, score, expectancy_sol, \
+                  avg_holding_secs, median_holding_secs, n_exit_take_profit, n_exit_stop_loss, \
+                  n_exit_trailing, n_exit_stall, n_exit_time, n_exit_liquidity, n_exit_cohort, n_exit_open) ",
+                t.results
+            ));
+            qb.push_values(chunk, |mut b, r| {
+                b.push_bind(run_id)
+                    .push_bind(group_id)
+                    .push_bind(r.combo_id)
+                    .push_bind(sqlx::types::Json(&r.params))
+                    .push_bind(r.n_fired)
+                    .push_bind(r.n_open)
+                    .push_bind(r.n_closed)
+                    .push_bind(r.win_rate)
+                    .push_bind(r.total_pnl_sol)
+                    .push_bind(r.mean_pnl_pct)
+                    .push_bind(r.median_pnl_pct)
+                    .push_bind(r.p90_pnl_pct)
+                    .push_bind(r.best_pnl_pct)
+                    .push_bind(r.worst_pnl_pct)
+                    .push_bind(r.std_pnl_pct)
+                    .push_bind(r.profit_factor)
+                    .push_bind(r.score)
+                    .push_bind(r.expectancy_sol)
+                    .push_bind(r.avg_holding_secs)
+                    .push_bind(r.median_holding_secs)
+                    .push_bind(r.n_exit_take_profit)
+                    .push_bind(r.n_exit_stop_loss)
+                    .push_bind(r.n_exit_trailing)
+                    .push_bind(r.n_exit_stall)
+                    .push_bind(r.n_exit_time)
+                    .push_bind(r.n_exit_liquidity)
+                    .push_bind(r.n_exit_cohort)
+                    .push_bind(r.n_exit_open);
+            });
+            qb.build().execute(&mut tx).await?;
         }
+
+        let bump_sql = format!(
+            "UPDATE {} SET groups_done = groups_done + 1 WHERE id = $1",
+            t.runs
+        );
+        sqlx::query(&bump_sql).bind(run_id).execute(&mut tx).await?;
 
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Mark a run `completed` and stamp its authoritative final counts + the
+    /// resolved (post-defaults/dedup) axes, which are only known once the sweep
+    /// returns. `groups_done` is left as the tally [`append_group`] maintained.
+    pub async fn finalize_completed(
+        &self,
+        run_id: Uuid,
+        group_count: i32,
+        combo_count: i32,
+        axes_spec: &Value,
+    ) -> anyhow::Result<()> {
+        let sql = format!(
+            "UPDATE {} SET status = 'completed', group_count = $2, combo_count = $3, \
+             axes_spec = $4 WHERE id = $1",
+            self.tables.runs
+        );
+        sqlx::query(&sql)
+            .bind(run_id)
+            .bind(group_count)
+            .bind(combo_count)
+            .bind(sqlx::types::Json(axes_spec))
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Mark a run `cancelled` (user cancel mid-sweep), leaving its already-persisted
+    /// groups and the running counts [`update_run_counts`]/[`append_group`] set —
+    /// so the partial run reads as "`groups_done` / `group_count`", honestly partial.
+    pub async fn mark_cancelled(&self, run_id: Uuid) -> anyhow::Result<()> {
+        let sql = format!("UPDATE {} SET status = 'cancelled' WHERE id = $1", self.tables.runs);
+        sqlx::query(&sql).bind(run_id).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Crash recovery: mark every run still stuck at `status = 'running'` as
+    /// `cancelled`. The single-flight gate allows one sweep at a time, and no
+    /// sweep can be live at process start, so any `running` row at boot is an
+    /// orphan from a killed process — its already-persisted groups stay, but it
+    /// stops masquerading as live. Returns the number of rows reconciled.
+    pub async fn reconcile_orphaned_runs(&self) -> anyhow::Result<u64> {
+        let sql = format!(
+            "UPDATE {} SET status = 'cancelled' WHERE status = 'running'",
+            self.tables.runs
+        );
+        let res = sqlx::query(&sql).execute(&self.pool).await?;
+        Ok(res.rows_affected())
     }
 
     /// Runs newest first, bounded by `limit`. (The table is already per-strategy.)
@@ -297,7 +395,7 @@ impl GroupedSweepRepo {
         let sql = format!(
             "SELECT id, strategy_id, source, method, created_after, created_before, \
                     curve_only, grouping_spec, axes_spec, min_tokens, token_count, group_count, \
-                    combo_count, corpus_hash, created_at \
+                    combo_count, corpus_hash, created_at, status, groups_done \
              FROM {} ORDER BY created_at DESC LIMIT $1",
             self.tables.runs
         );

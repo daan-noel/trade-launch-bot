@@ -11,7 +11,7 @@ use crate::{
         SEED_TOKEN_LIMIT, SEED_TRADES_PER_MINT,
     },
     models::{token::Token, token_info::TokenInfo, trade::Trade},
-    state::token_cache::{CachedTrade, TokenCache, TokenState},
+    state::token_cache::{TokenCache, TokenState},
     storage::repositories::{
         token_info_repo::TokenInfoRepo,
         token_repo::TokenRepo,
@@ -173,7 +173,10 @@ fn build_state(
     }
 
     for trade in &trades {
-        state.push_trade_capped(CachedTrade::from(trade));
+        // Intern the wallet into the token's `u32` namespace (Phase B step 2) before
+        // pushing — same path as the live append, so seeded rows match live rows.
+        let cached = state.intern_trade(trade);
+        state.push_trade_capped(cached);
     }
 
     // Prime the dead-token liquidity signal from the seeded tail: the newest trade

@@ -592,9 +592,12 @@ pub async fn run_token_sync(
     // `trades` (full `Trade`) is also returned uncapped in `SyncOutput` below,
     // while `recompute_token_state` rebuilds `state.trades` through the 50K
     // retention ring — so the two are not interchangeable for high-volume mints.
-    // Project to the slim `CachedTrade` for the cache window; the uncapped `Trade`
-    // vec is retained for the API output. Cold sync path.
-    state.trades = std::sync::Arc::new(trades.iter().map(CachedTrade::from).collect());
+    // Project to the slim `CachedTrade` for the cache window, interning each wallet
+    // into the token's `u32` namespace (Phase B step 2); the uncapped `Trade` vec is
+    // retained for the API output. `recompute_token_state` below carries this
+    // interner forward, so the retained ids stay valid. Cold sync path.
+    let cached: Vec<CachedTrade> = trades.iter().map(|t| state.intern_trade(t)).collect();
+    state.trades = std::sync::Arc::new(cached);
     state.is_migrated = is_migrated;
 
     token_metrics::recompute_token_state(&mut state);

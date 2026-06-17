@@ -31,6 +31,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::{bail, Result};
 use rayon::prelude::*;
+use serde_json::Value;
 
 use crate::sweep::aggregate::{ComboAgg, ComboMetrics};
 use crate::sweep::corpus::Corpus;
@@ -92,6 +93,44 @@ pub struct GroupResult {
     pub best_expectancy_sol: f64,
 }
 
+/// Sink for **incremental** per-group results (Phase 4 partial persistence). The
+/// engine calls [`begin`](GroupSink::begin) once — after the surviving group set
+/// and the final (possibly refine-expanded) combo set are fixed, before any group
+/// fires — then [`group_done`](GroupSink::group_done) once per **fully-folded**
+/// group. A half-folded group is never emitted (the engine bails on cancel before
+/// the emit), so a sink may treat every `group_done` as a complete, persistable
+/// group.
+///
+/// `group_done` fires in deterministic order for large groups but in arrival
+/// order for the cross-group small-group phase, so it may be called concurrently
+/// from rayon workers — implementors must be `Sync` and self-serialize (e.g. hand
+/// off to a single writer task). Each call carries the deterministic `group_index`
+/// regardless of arrival order. `combo_params[combo_id]` is the param JSON for
+/// each ranked combo in the group's metrics.
+pub trait GroupSink: Sync {
+    /// Whether the caller wants per-group emits at all. A `false` sink (e.g. the
+    /// silent coarse refine pass) lets the engine skip building the per-combo
+    /// param JSON and the emit calls entirely. Defaults to `true`.
+    fn wants_groups(&self) -> bool {
+        true
+    }
+    /// Fired once before the first group, with the surviving group count and the
+    /// final per-group combo count.
+    fn begin(&self, _group_count: usize, _combo_count: usize) {}
+    /// Fired once per fully-folded group.
+    fn group_done(&self, group_index: usize, group: &GroupResult, combo_params: &[Value]);
+}
+
+/// A sink that discards every group — the silent coarse refine pass and any
+/// caller that doesn't persist incrementally use this.
+pub struct NoopSink;
+impl GroupSink for NoopSink {
+    fn wants_groups(&self) -> bool {
+        false
+    }
+    fn group_done(&self, _index: usize, _group: &GroupResult, _combo_params: &[Value]) {}
+}
+
 /// Partition token indices by exact-value group key. Pure `O(tokens)` pass.
 pub fn partition(corpus: &Corpus, fields: &[GroupField]) -> HashMap<GroupKey, Vec<usize>> {
     let mut groups: HashMap<GroupKey, Vec<usize>> = HashMap::new();
@@ -108,6 +147,9 @@ pub fn partition(corpus: &Corpus, fields: &[GroupField]) -> HashMap<GroupKey, Ve
 /// `observer` is told the total surviving-token count up front (so the progress
 /// bar is determinate from the first frame) and polled for cancellation between
 /// groups; a cancel bails with an `Err` the caller maps to a cancelled response.
+// One extra param (`sink`) past clippy's threshold; threading it through a struct
+// would only add indirection for the two internal call sites.
+#[allow(clippy::too_many_arguments)]
 pub fn run_grouped_sweep<S: Strategy>(
     strategy: &S,
     params: &[S::Params],
@@ -116,6 +158,7 @@ pub fn run_grouped_sweep<S: Strategy>(
     min_tokens: usize,
     coverage: CoverageFloor,
     observer: &dyn SweepObserver,
+    sink: &dyn GroupSink,
 ) -> Result<Vec<GroupResult>> {
     let floor = min_tokens.max(1);
     // Decorate with the tie-break key once (JSON-serializing inside the comparator
@@ -165,6 +208,19 @@ pub fn run_grouped_sweep<S: Strategy>(
     // regardless of which phase produced each result.
     let mut results: Vec<Option<GroupResult>> = (0..surviving.len()).map(|_| None).collect();
 
+    // Phase 4 — per-group incremental emit. Build the per-combo param JSON once
+    // (skipped entirely when the sink doesn't want groups, e.g. the silent coarse
+    // refine pass) and announce the group/combo counts before the first group.
+    let emit = sink.wants_groups();
+    let combo_params: Vec<Value> = if emit {
+        params.iter().map(|p| strategy.params_json(p)).collect()
+    } else {
+        Vec::new()
+    };
+    if emit {
+        sink.begin(surviving.len(), params.len());
+    }
+
     // Phase 1 — large groups: intra-group parallel, one group at a time.
     for (pos, (key, idx)) in surviving.iter().enumerate() {
         if idx.len() < large_min {
@@ -179,7 +235,12 @@ pub fn run_grouped_sweep<S: Strategy>(
         if observer.cancelled() {
             bail!("sweep cancelled");
         }
-        results[pos] = Some(make_group_result(key.clone(), idx.len(), metrics, coverage));
+        let gr = make_group_result(key.clone(), idx.len(), metrics, coverage);
+        // Emit a fully-folded group for incremental persistence before storing it.
+        if emit {
+            sink.group_done(pos, &gr, &combo_params);
+        }
+        results[pos] = Some(gr);
     }
 
     // Phase 2 — small groups: parallel across groups (each folded single-threaded),
@@ -194,7 +255,15 @@ pub fn run_grouped_sweep<S: Strategy>(
         .par_iter()
         .map(|&(pos, key, idx)| {
             let metrics = sweep_group_serial(strategy, params, corpus, idx, observer, batch)?;
-            Ok((pos, make_group_result(key.clone(), idx.len(), metrics, coverage)))
+            let gr = make_group_result(key.clone(), idx.len(), metrics, coverage);
+            // `sweep_group_serial` bails on cancel, so reaching here means a
+            // fully-folded group — safe to emit for incremental persistence.
+            // Called from rayon workers, so out of order; `pos` carries the
+            // deterministic group_index.
+            if emit {
+                sink.group_done(pos, &gr, &combo_params);
+            }
+            Ok((pos, gr))
         })
         .collect();
     for r in small_results {
@@ -242,15 +311,21 @@ pub fn run_grouped_with_refine<S: Strategy>(
     coverage: CoverageFloor,
     cap: usize,
     observer: &dyn SweepObserver,
+    sink: &dyn GroupSink,
 ) -> Result<(Vec<S::Params>, Vec<GroupResult>)> {
     let Some(spec) = refine else {
-        let groups =
-            run_grouped_sweep(strategy, &coarse, corpus, fields, min_tokens, coverage, observer)?;
+        // No refine: the single pass is the final one — persist its groups.
+        let groups = run_grouped_sweep(
+            strategy, &coarse, corpus, fields, min_tokens, coverage, observer, sink,
+        )?;
         return Ok((coarse, groups));
     };
 
     // Coarse pass — only used to locate each group's promising region, so it folds
-    // silently (the final pass owns the bar) while still honouring a cancel.
+    // silently (the final pass owns the bar) while still honouring a cancel. Its
+    // groups are throwaway (the combo-id space isn't final yet), so they are NOT
+    // persisted: a cancel during coarse leaves no checkpointable group → a full
+    // cancel, exactly as the Phase 4 plan requires.
     let coarse_groups = run_grouped_sweep(
         strategy,
         &coarse,
@@ -259,6 +334,7 @@ pub fn run_grouped_with_refine<S: Strategy>(
         min_tokens,
         coverage,
         &CancelOnly(observer),
+        &NoopSink,
     )?;
 
     // Seed the neighborhood from each group's top-K coarse combos, deduped across
@@ -296,8 +372,11 @@ pub fn run_grouped_with_refine<S: Strategy>(
         "coarse→refine: re-sweeping the union of coarse + per-group neighborhoods"
     );
 
-    let groups =
-        run_grouped_sweep(strategy, &union, corpus, fields, min_tokens, coverage, observer)?;
+    // Final pass owns the bar and produces the persistable groups (combo-id space
+    // now fixed), so it carries the real sink.
+    let groups = run_grouped_sweep(
+        strategy, &union, corpus, fields, min_tokens, coverage, observer, sink,
+    )?;
     Ok((union, groups))
 }
 
@@ -585,6 +664,7 @@ mod tests {
             1,
             OPEN_FLOOR,
             &crate::sweep::progress::NoopObserver,
+            &NoopSink,
         )
         .unwrap();
 
@@ -623,6 +703,7 @@ mod tests {
             1,
             OPEN_FLOOR,
             &crate::sweep::progress::NoopObserver,
+            &NoopSink,
         )
         .unwrap();
 
@@ -693,6 +774,7 @@ mod tests {
             2,
             OPEN_FLOOR,
             &crate::sweep::progress::NoopObserver,
+            &NoopSink,
         )
         .unwrap();
         assert_eq!(groups.len(), 1, "only devA (2 tokens) clears min_tokens=2");
@@ -725,6 +807,7 @@ mod tests {
             OPEN_FLOOR,
             100,
             &crate::sweep::progress::NoopObserver,
+            &NoopSink,
         )
         .unwrap();
         assert_eq!(final_params.len(), 3, "combo set unchanged without refine");
@@ -747,6 +830,7 @@ mod tests {
             OPEN_FLOOR,
             100,
             &crate::sweep::progress::NoopObserver,
+            &NoopSink,
         )
         .unwrap();
         assert_eq!(final_params.len(), 4, "neighborhood combo appended to the union");
@@ -772,9 +856,80 @@ mod tests {
             OPEN_FLOOR,
             3,
             &crate::sweep::progress::NoopObserver,
+            &NoopSink,
         )
         .unwrap();
         assert_eq!(final_params.len(), 3, "cap trims refinement, not the coarse combos");
+    }
+
+    /// A sink that records every emit so a test can assert the engine fired
+    /// `begin` once and one `group_done` per surviving group, with the param JSON.
+    #[derive(Default)]
+    struct RecordingSink {
+        begins: std::sync::Mutex<Vec<(usize, usize)>>,
+        groups: std::sync::Mutex<Vec<(usize, usize)>>, // (group_index, combo_params.len())
+    }
+    impl GroupSink for RecordingSink {
+        fn begin(&self, group_count: usize, combo_count: usize) {
+            self.begins.lock().unwrap().push((group_count, combo_count));
+        }
+        fn group_done(&self, group_index: usize, _g: &GroupResult, combo_params: &[Value]) {
+            self.groups.lock().unwrap().push((group_index, combo_params.len()));
+        }
+    }
+
+    #[test]
+    fn sink_emits_begin_once_and_one_group_done_per_group() {
+        use crate::sweep::grouping::GroupField;
+        let params = Mock.sample(SweepMethod::Grid); // 3 combos
+        let sink = RecordingSink::default();
+        let groups = run_grouped_sweep(
+            &Mock,
+            &params,
+            &corpus(), // devA(2) + devB(1) → 2 surviving groups
+            &[GroupField::CreatorWallet],
+            1,
+            OPEN_FLOOR,
+            &crate::sweep::progress::NoopObserver,
+            &sink,
+        )
+        .unwrap();
+
+        assert_eq!(groups.len(), 2);
+        // begin fired exactly once with (surviving groups, combo count).
+        assert_eq!(*sink.begins.lock().unwrap(), vec![(2, 3)]);
+        // One group_done per group, each carrying the 3-combo param JSON; indices
+        // cover both deterministic slots regardless of arrival order.
+        let mut done = sink.groups.lock().unwrap().clone();
+        done.sort();
+        assert_eq!(done, vec![(0, 3), (1, 3)]);
+    }
+
+    #[test]
+    fn refine_persists_only_final_pass_groups() {
+        use crate::sweep::strategy::RefineSpec;
+        // Single ALL group, refine on: the coarse pass must NOT emit (its combo-id
+        // space is throwaway); only the final union pass persists. So exactly one
+        // begin + one group_done, with the *grown* union combo count (4, not 3).
+        let coarse = Mock.sample(SweepMethod::Grid); // 3
+        let sink = RecordingSink::default();
+        let (final_params, groups) = run_grouped_with_refine(
+            &Mock,
+            coarse,
+            Some(RefineSpec { top_k: 1 }),
+            &corpus(),
+            &[],
+            1,
+            OPEN_FLOOR,
+            100,
+            &crate::sweep::progress::NoopObserver,
+            &sink,
+        )
+        .unwrap();
+        assert_eq!(final_params.len(), 4, "union grew by the refined neighbor");
+        assert_eq!(groups.len(), 1);
+        assert_eq!(*sink.begins.lock().unwrap(), vec![(1, 4)], "only the final pass emits");
+        assert_eq!(*sink.groups.lock().unwrap(), vec![(0, 4)]);
     }
 
     #[test]
@@ -788,6 +943,7 @@ mod tests {
             1,
             OPEN_FLOOR,
             &crate::sweep::progress::NoopObserver,
+            &NoopSink,
         )
         .unwrap();
         assert_eq!(groups.len(), 1);

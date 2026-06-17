@@ -81,6 +81,50 @@ impl TokenTrades {
             wallets: Arc::new(wallets),
         }
     }
+
+    /// Project the live cache's already-interned [`CachedTrade`]s (`Wallet = u32`)
+    /// into the sweep buffer **without re-hashing** any wallet: the cache row's `u32`
+    /// is already a token-local dense id, so it is copied straight across and the
+    /// token's own `u32 → address` table ([`TokenState::wallet_table`]) becomes the
+    /// `wallets` table. This is the cache corpus source's path — distinct from
+    /// [`from_trades`](Self::from_trades), which interns a `String`-walleted source
+    /// (the DB `Trade`). Apply `curve_only` before calling (filter the iterator).
+    ///
+    /// [`TokenState::wallet_table`]: crate::state::token_cache::TokenState::wallet_table
+    pub fn from_cached<'a>(
+        mint: String,
+        symbol: String,
+        fp: TokenFingerprint,
+        trades: impl IntoIterator<Item = &'a CachedTrade>,
+        wallets: Vec<Box<str>>,
+    ) -> Self {
+        let rows: Vec<SweepTrade> = trades.into_iter().map(sweep_trade_from_cached).collect();
+        Self {
+            mint,
+            symbol,
+            fp,
+            trades: Arc::new(rows),
+            wallets: Arc::new(wallets),
+        }
+    }
+}
+
+/// Copy a slim live-cache [`CachedTrade`] into a [`SweepTrade`], preserving its
+/// already-interned token-local `u32` wallet id (no re-hash — see
+/// [`TokenTrades::from_cached`]).
+fn sweep_trade_from_cached(t: &CachedTrade) -> SweepTrade {
+    SweepTrade {
+        block_time: t.block_time,
+        sol_amount: t.sol_amount,
+        token_amount: t.token_amount,
+        price_per_token: t.price_per_token,
+        virtual_sol_reserves: t.virtual_sol_reserves,
+        real_sol_reserves: t.real_sol_reserves,
+        slot: t.slot,
+        wallet: t.wallet,
+        leg_index: t.leg_index,
+        is_buy: t.is_buy,
+    }
 }
 
 /// The whole loaded population plus the hash that keys its Parquet cache.
@@ -371,14 +415,15 @@ impl CorpusSource for CacheSource {
             // Project the slim cache rows to the sweep buffer under the shard guard.
             // (We no longer refcount-clone the live `Arc<Vec<CachedTrade>>`: the sweep
             // walks `SweepTrade`, so the corpus is projected once here — a load-time
-            // cost, not the live hot path.) `curve_only` filters on the cache row's
-            // 1-byte `is_curve` flag (the dropped `venue` stand-in) before projection.
+            // cost, not the live hot path.) The cache row's wallet is already an
+            // interned token-local `u32`, so it copies straight across reusing the
+            // token's `wallet_table` (no re-hash — Phase B step 2). `curve_only`
+            // filters on the 1-byte `is_curve` flag before projection.
+            let wallets = st.wallet_table();
             let tt = if sel.curve_only {
-                let filtered: Vec<CachedTrade> =
-                    st.trades.iter().filter(|t| t.is_curve).cloned().collect();
-                TokenTrades::from_trades(mint, symbol, fp, &filtered)
+                TokenTrades::from_cached(mint, symbol, fp, st.trades.iter().filter(|t| t.is_curve), wallets)
             } else {
-                TokenTrades::from_trades(mint, symbol, fp, &st.trades)
+                TokenTrades::from_cached(mint, symbol, fp, st.trades.iter(), wallets)
             };
             if !tt.trades.is_empty() {
                 tokens.push(tt);

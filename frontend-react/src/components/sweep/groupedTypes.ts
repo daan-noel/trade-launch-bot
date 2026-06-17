@@ -146,6 +146,13 @@ export interface GroupedSweepRunRecord {
   combo_count: number;
   corpus_hash: string | null;
   created_at: string;
+  /** Lifecycle: `running` (in flight), `completed` (full sweep), or `cancelled`
+   *  (cancelled / crash-recovered → only `groups_done` of `group_count` groups
+   *  present). A `cancelled` run is honestly partial — render it with a banner so
+   *  it's never mistaken for a complete sweep. */
+  status: 'running' | 'completed' | 'cancelled';
+  /** Groups persisted so far; equals `group_count` for a `completed` run. */
+  groups_done: number;
 }
 
 /** One group's summary row: its fingerprint key, sample size, and winning combo. */

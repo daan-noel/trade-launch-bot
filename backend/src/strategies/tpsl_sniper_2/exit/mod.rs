@@ -152,8 +152,15 @@ impl ExitWalkState {
 /// window end (a token evicted and re-tracked from empty, or — only under a
 /// pathological cap overrun — unfolded trades trimmed away) we rebuild from
 /// whatever the window holds rather than trust a stale cursor.
+/// Generic over the wallet identity `W` (the [`TradeRow::Wallet`] of whatever rows
+/// seed it). The live path always seeds it from the cache's [`CachedTrade`]
+/// (`W = u32`, the default), so `runtime_cache`'s `DashMap<Uuid, CachedExitState>`
+/// resolves to `CachedExitState<u32>`; the exit unit tests drive it from `Trade`
+/// (`W = String`). Only the E5 cohort memo is wallet-typed, so non-E5 use is `W`-inert.
+///
+/// [`CachedTrade`]: crate::state::token_cache::CachedTrade
 #[derive(Debug, Clone)]
-pub struct CachedExitState {
+pub struct CachedExitState<W = u32> {
     pub state: ExitWalkState,
     entry_time: DateTime<Utc>,
     entry_price: f64,
@@ -162,7 +169,7 @@ pub struct CachedExitState {
     /// the cohort set + bag (denominator) are fixed at seed time and only
     /// `net` advances incrementally as cohort trades replay — replacing the
     /// per-ping HashSet rebuild + three full passes.
-    cohort: Option<CohortMemo>,
+    cohort: Option<CohortMemo<W>>,
 }
 
 /// Memoized E5 launch cohort: the wallet set + everything it ever bought (the
@@ -170,20 +177,20 @@ pub struct CachedExitState {
 /// the cohort's running net holdings advanced trade-by-trade. Computed once at the
 /// position's first sight (mirroring the peak memo); never rebuilt per ping.
 #[derive(Debug, Clone)]
-struct CohortMemo {
-    wallets: std::collections::HashSet<String>,
+struct CohortMemo<W> {
+    wallets: std::collections::HashSet<W>,
     bought: f64,
     /// Net cohort holdings, current as of `consumed_abs`. Seeded to the net as of
     /// `entry_time`, then evolved by each post-entry cohort trade.
     net: f64,
 }
 
-impl CachedExitState {
+impl<W: Eq + std::hash::Hash + Clone> CachedExitState<W> {
     /// Seed from the retained post-entry history (one-time, at first sight of the
     /// position) and record the absolute fold cursor. `base` is the token's
     /// `trades_base` (count already trimmed from the front). No cohort memo — used
     /// by the clock sweep, which never needs E5.
-    pub fn build<T: TradeRow<Wallet = String>>(
+    pub fn build<T: TradeRow<Wallet = W>>(
         trades: &[T],
         base: u64,
         entry_price: f64,
@@ -204,7 +211,7 @@ impl CachedExitState {
     /// memo is seeded (computed once here from the retained window). Used to seed
     /// the trade gate so its first pass reproduces a full re-walk while memoizing
     /// for subsequent incremental pings.
-    pub fn build_unfolded<T: TradeRow<Wallet = String>>(
+    pub fn build_unfolded<T: TradeRow<Wallet = W>>(
         trades: &[T],
         base: u64,
         entry_price: f64,
@@ -237,7 +244,7 @@ impl CachedExitState {
     /// `net` is seeded to the cohort's net holdings as of the current fold cursor
     /// (`consumed_abs`), so a following incremental advance continues correctly.
     /// No-op once a cohort memo is present or when E5 is off.
-    pub fn ensure_cohort_seeded<T: TradeRow<Wallet = String>>(
+    pub fn ensure_cohort_seeded<T: TradeRow<Wallet = W>>(
         &mut self,
         trades: &[T],
         base: u64,
@@ -269,7 +276,7 @@ impl CachedExitState {
     /// tests pin [`advance_and_find_exit`]'s folding against it); the live trade
     /// gate folds + evaluates in one pass via [`advance_and_find_exit`].
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn advance<T: TradeRow<Wallet = String>>(&mut self, trades: &[T], base: u64) {
+    pub fn advance<T: TradeRow<Wallet = W>>(&mut self, trades: &[T], base: u64) {
         let start = self.consumed_abs.saturating_sub(base);
         if start > trades.len() as u64 {
             self.state =
@@ -297,7 +304,7 @@ impl CachedExitState {
     /// would already have exited the position. The rebuild branch (history
     /// reset/over-trimmed) re-walks the whole window from the seeded cohort net;
     /// old trades there are idempotent, so the first firing trade is unchanged.
-    pub fn advance_and_find_exit<T: TradeRow<Wallet = String>>(
+    pub fn advance_and_find_exit<T: TradeRow<Wallet = W>>(
         &mut self,
         trades: &[T],
         base: u64,

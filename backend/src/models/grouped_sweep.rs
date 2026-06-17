@@ -33,6 +33,14 @@ pub struct GroupedSweepRun {
     pub combo_count: i32,
     pub corpus_hash: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// Lifecycle: `running` (in flight), `completed` (full sweep), or
+    /// `cancelled` (cancelled / crash-recovered → only `groups_done` groups
+    /// present). Phase 4 partial persistence — a `cancelled` run is honest about
+    /// being partial so the UI never shows it as a complete sweep.
+    pub status: String,
+    /// Groups persisted so far; equals `group_count` for a `completed` run, fewer
+    /// for a `cancelled`/partial one. Drives the run picker's "37 / 200 groups".
+    pub groups_done: i32,
 }
 
 /// One group's summary row (the group-list table): its fingerprint key, sample

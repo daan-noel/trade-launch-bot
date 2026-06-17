@@ -16,7 +16,7 @@ use serde_json::Value;
 use crate::models::{Tpsl1Rule, Tpsl2Rule};
 use crate::storage::repositories::grouped_sweep_repo::GroupedSweepTables;
 use crate::sweep::corpus::Corpus;
-use crate::sweep::grouped_engine::{run_grouped_with_refine, CoverageFloor, GroupResult};
+use crate::sweep::grouped_engine::{run_grouped_with_refine, CoverageFloor, GroupResult, GroupSink};
 use crate::sweep::grouping::GroupField;
 use crate::sweep::progress::SweepObserver;
 use crate::sweep::strategies::tpsl1::{
@@ -104,13 +104,13 @@ pub fn strategy_ids() -> &'static [&'static str] {
 // ---------------------------------------------------------------------------
 
 /// The strategy-agnostic result of a grouped sweep, ready for the generic repo:
-/// the per-group sweep results plus the combo→param-JSON map (indexed by
-/// `combo_id`) and the resolved axes JSON to store on the run.
+/// the per-group sweep results plus the resolved axes JSON to store on the run.
+/// The combo→param-JSON map is no longer carried here — the engine's [`GroupSink`]
+/// builds each group's write incrementally (Phase 4), so only the final combo
+/// count survives to stamp on the run.
 pub struct GroupedSweepOutput {
-    /// Number of param combos evaluated per group (== `combo_params.len()`).
+    /// Number of param combos evaluated per group.
     pub combo_count: usize,
-    /// `params_json` for each combo, indexed by `combo_id`.
-    pub combo_params: Vec<Value>,
     /// The resolved axes (after defaults + dedup) for storage / re-run.
     pub axes_json: Value,
     /// One entry per surviving group (≥ `min_tokens` tokens).
@@ -139,19 +139,20 @@ pub async fn run_grouped(
     floor: CoverageFloor,
     max_combos: Option<usize>,
     observer: Arc<dyn SweepObserver + Send>,
+    sink: Arc<dyn GroupSink + Send + Sync>,
 ) -> Result<GroupedSweepOutput> {
     match strategy_id {
         "tpsl1" => {
             sweep_tpsl1(
                 axes_json, method, refine, corpus, fields, min_tokens, floor, max_combos,
-                observer,
+                observer, sink,
             )
             .await
         }
         "tpsl2" => {
             sweep_tpsl2(
                 axes_json, method, refine, corpus, fields, min_tokens, floor, max_combos,
-                observer,
+                observer, sink,
             )
             .await
         }
@@ -208,6 +209,7 @@ async fn sweep_tpsl2(
     floor: CoverageFloor,
     max_combos: Option<usize>,
     observer: Arc<dyn SweepObserver + Send>,
+    sink: Arc<dyn GroupSink + Send + Sync>,
 ) -> Result<GroupedSweepOutput> {
     let cap = effective_cap(max_combos);
 
@@ -247,10 +249,11 @@ async fn sweep_tpsl2(
     // (≤ HARD_MAX_COMBOS) still bounds the *work*.
 
     // The coarse→refine driver may grow the combo set (a neighborhood around each
-    // group's survivors), so the final param list — and thus its `params_json` — is
-    // only known after the sweep. Capture it inside the blocking task.
-    let (combo_params, groups) = tokio::task::spawn_blocking(
-        move || -> Result<(Vec<Value>, Vec<GroupResult>)> {
+    // group's survivors), so the final combo count is only known after the sweep.
+    // The per-combo param JSON is emitted by the sink during the fold (Phase 4), so
+    // the task only needs to surface the final count here.
+    let (combo_count, groups) = tokio::task::spawn_blocking(
+        move || -> Result<(usize, Vec<GroupResult>)> {
             // Bound the pool so the sweep can't saturate every core in the live
             // process; `install` makes the inner `par_iter` use this pool.
             let pool = rayon::ThreadPoolBuilder::new()
@@ -269,21 +272,15 @@ async fn sweep_tpsl2(
                     floor,
                     cap,
                     observer.as_ref(),
+                    sink.as_ref(),
                 )?;
-                let combo_params: Vec<Value> =
-                    final_params.iter().map(|p| strategy.params_json(p)).collect();
-                Ok((combo_params, groups))
+                Ok((final_params.len(), groups))
             })
         },
     )
     .await??;
 
-    Ok(GroupedSweepOutput {
-        combo_count: combo_params.len(),
-        combo_params,
-        axes_json,
-        groups,
-    })
+    Ok(GroupedSweepOutput { combo_count, axes_json, groups })
 }
 
 /// Notional (in SOL) every simulated round-trip is priced at — the **only**
@@ -341,6 +338,7 @@ async fn sweep_tpsl1(
     floor: CoverageFloor,
     max_combos: Option<usize>,
     observer: Arc<dyn SweepObserver + Send>,
+    sink: Arc<dyn GroupSink + Send + Sync>,
 ) -> Result<GroupedSweepOutput> {
     let cap = effective_cap(max_combos);
 
@@ -378,10 +376,11 @@ async fn sweep_tpsl1(
     // Combos are swept in budget-sized batches (Phase 2.5), so a large combo set is
     // bounded in memory rather than rejected — see `sweep_tpsl2` for the rationale.
 
-    // The coarse→refine driver may grow the combo set, so the final param list is
-    // only known after the sweep — capture its `params_json` inside the task.
-    let (combo_params, groups) = tokio::task::spawn_blocking(
-        move || -> Result<(Vec<Value>, Vec<GroupResult>)> {
+    // The coarse→refine driver may grow the combo set, so the final combo count is
+    // only known after the sweep; the per-combo param JSON is emitted by the sink
+    // during the fold (Phase 4).
+    let (combo_count, groups) = tokio::task::spawn_blocking(
+        move || -> Result<(usize, Vec<GroupResult>)> {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .thread_name(|i| format!("grouped-sweep-{i}"))
@@ -398,21 +397,15 @@ async fn sweep_tpsl1(
                     floor,
                     cap,
                     observer.as_ref(),
+                    sink.as_ref(),
                 )?;
-                let combo_params: Vec<Value> =
-                    final_params.iter().map(|p| strategy.params_json(p)).collect();
-                Ok((combo_params, groups))
+                Ok((final_params.len(), groups))
             })
         },
     )
     .await??;
 
-    Ok(GroupedSweepOutput {
-        combo_count: combo_params.len(),
-        combo_params,
-        axes_json,
-        groups,
-    })
+    Ok(GroupedSweepOutput { combo_count, axes_json, groups })
 }
 
 /// Synthetic TPSL1 base rule the swept params overlay. As with TPSL2, only

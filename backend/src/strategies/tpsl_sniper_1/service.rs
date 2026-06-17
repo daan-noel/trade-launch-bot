@@ -394,7 +394,6 @@ impl Tpsl1StrategyService {
                     self.sse_tx.clone(),
                     mint.clone(),
                     position.id,
-                    position.entry_tx.clone(),
                     position.entry_price,
                     position.entry_time,
                     rule.clone(),

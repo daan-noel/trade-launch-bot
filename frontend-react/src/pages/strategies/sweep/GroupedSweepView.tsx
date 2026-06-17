@@ -7,7 +7,11 @@ import { useBackgroundJobActions, useBackgroundJobsState } from 'context/Backgro
 import { buildSweepColumns } from 'components/sweep/sweepColumns';
 import { buildGroupColumns } from 'components/sweep/groupColumns';
 import { SweepConfigForm } from 'components/sweep/SweepConfigForm';
-import { type AxisDef, type GroupedSweepStartArgs } from 'components/sweep/groupedTypes';
+import {
+  type AxisDef,
+  type GroupedSweepStartArgs,
+  type GroupedSweepRunRecord,
+} from 'components/sweep/groupedTypes';
 import {
   apiErrorMessage,
   useGetGroupedSweepRunsQuery,
@@ -25,6 +29,15 @@ import {
 
 function SectionDivider() {
   return <div role="separator" className="my-6 border-t border-white/6" />;
+}
+
+/** Run-picker groups label: a completed run shows its full group count; a running
+ *  or cancelled (partial) run shows "done / total" so the picker reveals at a
+ *  glance that it isn't a full sweep. */
+function runGroupsLabel(r: GroupedSweepRunRecord): string {
+  if (r.status === 'completed') return `${r.group_count} groups`;
+  const tag = r.status === 'running' ? 'running' : 'partial';
+  return `${tag} ${r.groups_done}/${r.group_count} groups`;
 }
 
 export interface GroupedSweepViewProps {
@@ -113,7 +126,12 @@ export function GroupedSweepView({
     markStarting('sweep', 'sweep', 'Grouped sweep');
     try {
       const created = await startSweep(args).unwrap();
-      if ('cancelled' in created) return; // user cancelled — no run persisted
+      if ('cancelled' in created) {
+        // Cancelled mid-sweep — the groups that finished are kept as a partial
+        // run; jump to it (if any persisted) so the user sees what completed.
+        if (created.groups_done > 0) setSelectedRunId(created.run_id);
+        return;
+      }
       setSelectedRunId(created.id); // jump to the fresh run
     } catch {
       // Surfaced via startState.error (e.g. 409 = one already running).
@@ -126,6 +144,7 @@ export function GroupedSweepView({
   );
   const groups = groupsQuery.data ?? [];
   const activeGroup = groups.find((g) => g.id === activeGroupId) ?? null;
+  const activeRun = runs.find((r) => r.id === activeRunId) ?? null;
 
   const resultsQuery = useGetGroupedSweepResultsQuery(
     { strategyId, runId: activeRunId ?? '', groupId: activeGroupId ?? '' },
@@ -185,7 +204,7 @@ export function GroupedSweepView({
                 <option key={r.id} value={r.id}>
                   {new Date(r.created_at).toLocaleString()} · {r.method} ·{' '}
                   {r.grouping_spec.length ? r.grouping_spec.join('+') : 'ALL'} ·{' '}
-                  {r.token_count} tokens · {r.group_count} groups × {r.combo_count} combos
+                  {r.token_count} tokens · {runGroupsLabel(r)} × {r.combo_count} combos
                 </option>
               ))}
             </select>
@@ -223,6 +242,16 @@ export function GroupedSweepView({
 
           {deleteErr && <InlineAlert variant="error">{deleteErr}</InlineAlert>}
           {groupsErr && <InlineAlert variant="error">{groupsErr}</InlineAlert>}
+
+          {activeRun && activeRun.status !== 'completed' && (
+            <InlineAlert variant="warning">
+              {activeRun.status === 'running' ? 'In-progress' : 'Partial'} run —{' '}
+              {activeRun.groups_done} of {activeRun.group_count} groups
+              {activeRun.status === 'running'
+                ? ' persisted so far. The sweep is still running; more groups will appear as they finish.'
+                : ' completed before the run was cancelled. The remaining groups were not swept — this is not a full sweep.'}
+            </InlineAlert>
+          )}
 
           <DataTable
             columns={groupColumns}
