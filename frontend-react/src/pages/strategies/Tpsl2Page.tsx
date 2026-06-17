@@ -549,7 +549,7 @@ export function Tpsl2Page() {
   // Simulation progress/running is tracked app-wide so it survives navigation
   // (the backtest runs on the backend regardless); the global indicator renders
   // its progress bar + cancel.
-  const { markStarting } = useBackgroundJobActions();
+  const { markStarting, markFinished } = useBackgroundJobActions();
 
   // Rule list: one initial load then a visibility-gated silent poll, deduped
   // into a shared hook (see usePolledRules). `loadRules` is the silent/forced
@@ -818,9 +818,13 @@ export function Tpsl2Page() {
         setSimError(apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0], 'Simulation failed'));
       } finally {
         setSimLoading(false);
+        // Clear the optimistic job ourselves: on a cache hit / cancel / missed
+        // SSE frame the backend's `simulation_finished` never arrives, so without
+        // this the progress bar would spin forever. Idempotent with the SSE.
+        markFinished('simulation', rule.id);
       }
     },
-    [dispatch, markStarting],
+    [dispatch, markStarting, markFinished],
   );
 
   const handleMatched = useCallback(

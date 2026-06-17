@@ -29,7 +29,7 @@ use crate::{
         transaction::RawTransaction,
     },
     state::{
-        token_cache::{TokenCache, TokenState},
+        token_cache::{CachedTrade, TokenCache, TokenState},
         token_metrics::{self, metrics_from_state},
     },
     storage::repositories::{
@@ -589,11 +589,12 @@ pub async fn run_token_sync(
         .map_err(|e| SyncError::Internal(e.to_string()))?;
 
     let mut state = TokenState::new(token);
-    // `trades` is also returned (uncapped) in `SyncOutput` below, while
-    // `recompute_token_state` rebuilds `state.trades` through the 50K retention
-    // ring — so the two are not interchangeable for high-volume mints and this
-    // copy is genuinely required (L11: not a redundant clone). Cold sync path.
-    state.trades = std::sync::Arc::new(trades.clone());
+    // `trades` (full `Trade`) is also returned uncapped in `SyncOutput` below,
+    // while `recompute_token_state` rebuilds `state.trades` through the 50K
+    // retention ring — so the two are not interchangeable for high-volume mints.
+    // Project to the slim `CachedTrade` for the cache window; the uncapped `Trade`
+    // vec is retained for the API output. Cold sync path.
+    state.trades = std::sync::Arc::new(trades.iter().map(CachedTrade::from).collect());
     state.is_migrated = is_migrated;
 
     token_metrics::recompute_token_state(&mut state);

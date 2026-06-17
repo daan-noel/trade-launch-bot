@@ -35,8 +35,8 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
 use sqlx::PgPool;
 
-use crate::models::trade::Trade;
-use crate::state::token_cache::TokenCache;
+use crate::models::trade::{Trade, TradeRow};
+use crate::state::token_cache::{CachedTrade, TokenCache};
 use crate::storage::repositories::trade_repo::TradeSlimRow;
 use crate::sweep::grouping::{extract_lamports, normalize_labels, TokenFingerprint};
 use crate::sweep::projection::{project_trades, SweepTrade, WalletInterner};
@@ -66,11 +66,11 @@ impl TokenTrades {
     /// Project a token's chronological `Trade` slice into the slim sweep buffer
     /// once, at load. Apply any corpus-wide trade filter (e.g. `curve_only`)
     /// **before** calling this — `SweepTrade` drops `venue`.
-    pub fn from_trades(
+    pub fn from_trades<T: TradeRow<Wallet = String>>(
         mint: String,
         symbol: String,
         fp: TokenFingerprint,
-        trades: &[Trade],
+        trades: &[T],
     ) -> Self {
         let (rows, wallets) = project_trades(trades);
         Self {
@@ -368,13 +368,14 @@ impl CorpusSource for CacheSource {
             let fp = TokenFingerprint::from_token(&st.token);
             let mint = st.token.mint_address.clone();
             let symbol = st.token.symbol.clone();
-            // Project to the slim sweep buffer under the shard guard. (We no longer
-            // refcount-clone the live `Arc<Vec<Trade>>`: the sweep walks `SweepTrade`,
-            // so the corpus is projected once here — a load-time cost, not the live
-            // hot path.) `curve_only` filters `Trade` first, before `venue` is dropped.
+            // Project the slim cache rows to the sweep buffer under the shard guard.
+            // (We no longer refcount-clone the live `Arc<Vec<CachedTrade>>`: the sweep
+            // walks `SweepTrade`, so the corpus is projected once here — a load-time
+            // cost, not the live hot path.) `curve_only` filters on the cache row's
+            // 1-byte `is_curve` flag (the dropped `venue` stand-in) before projection.
             let tt = if sel.curve_only {
-                let filtered: Vec<Trade> =
-                    st.trades.iter().filter(|t| t.venue == "curve").cloned().collect();
+                let filtered: Vec<CachedTrade> =
+                    st.trades.iter().filter(|t| t.is_curve).cloned().collect();
                 TokenTrades::from_trades(mint, symbol, fp, &filtered)
             } else {
                 TokenTrades::from_trades(mint, symbol, fp, &st.trades)

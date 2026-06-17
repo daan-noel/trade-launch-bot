@@ -15,7 +15,7 @@
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
-use crate::models::trade::{Trade, TradeRow, TradeType};
+use crate::models::trade::TradeRow;
 
 /// One trade, projected to the scalar fields the sweep reads, with the wallet
 /// interned to a token-local `u32`. **No** `tx_signature` is retained (Phase 1.2):
@@ -114,24 +114,28 @@ impl WalletInterner {
     }
 }
 
-/// Project a token's chronological `Trade` slice into the slim sweep rows plus the
-/// interned `u32 → wallet` table. Field-for-field with [`Trade`]'s scalar reads;
-/// no decision data is lost.
-pub fn project_trades(trades: &[Trade]) -> (Vec<SweepTrade>, Vec<Box<str>>) {
+/// Project a token's chronological trade slice into the slim sweep rows plus the
+/// interned `u32 → wallet` table. Generic over any [`TradeRow`] whose `Wallet` is a
+/// `String`, so it projects either the DB-loaded full [`Trade`] (DB corpus source)
+/// or the live cache's slim `CachedTrade` (cache corpus source) field-for-field; no
+/// decision data is lost.
+pub fn project_trades<T: TradeRow<Wallet = String>>(
+    trades: &[T],
+) -> (Vec<SweepTrade>, Vec<Box<str>>) {
     let mut interner = WalletInterner::default();
     let rows: Vec<SweepTrade> = trades
         .iter()
         .map(|t| SweepTrade {
-            block_time: t.block_time,
-            sol_amount: t.sol_amount,
-            token_amount: t.token_amount,
-            price_per_token: t.price_per_token,
-            virtual_sol_reserves: t.virtual_sol_reserves,
-            real_sol_reserves: t.real_sol_reserves,
-            slot: t.slot,
-            wallet: interner.intern(&t.wallet_address),
-            leg_index: t.leg_index,
-            is_buy: matches!(t.trade_type, TradeType::Buy),
+            block_time: t.block_time(),
+            sol_amount: t.sol_amount(),
+            token_amount: t.token_amount(),
+            price_per_token: t.price_per_token(),
+            virtual_sol_reserves: t.virtual_sol_reserves(),
+            real_sol_reserves: t.real_sol_reserves(),
+            slot: t.slot(),
+            wallet: interner.intern(t.wallet()),
+            leg_index: t.leg_index(),
+            is_buy: t.is_buy(),
         })
         .collect();
     (rows, interner.into_table())

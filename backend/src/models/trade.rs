@@ -164,6 +164,12 @@ pub trait TradeRow {
     fn block_time(&self) -> DateTime<Utc>;
     /// Virtual bonding-curve SOL reserves (tpsl1's E4 liquidity exit reads this).
     fn virtual_sol_reserves(&self) -> Option<f64>;
+    /// Virtual bonding-curve TOKEN reserves. Only the live `Trade`/`CachedTrade`
+    /// carry this (used to maintain `TokenState::current_virtual_token_reserves`);
+    /// the sweep row drops it, so the default is `None`.
+    fn virtual_token_reserves(&self) -> Option<f64> {
+        None
+    }
     /// Real (non-virtual) SOL reserves (tpsl2's E4 + scalp liquidity gates read this).
     fn real_sol_reserves(&self) -> Option<f64>;
     /// Borrowed wallet identity — borrowed so cohort membership never clones.
@@ -197,6 +203,9 @@ impl TradeRow for Trade {
     }
     fn virtual_sol_reserves(&self) -> Option<f64> {
         self.virtual_sol_reserves
+    }
+    fn virtual_token_reserves(&self) -> Option<f64> {
+        self.virtual_token_reserves
     }
     fn real_sol_reserves(&self) -> Option<f64> {
         self.real_sol_reserves

@@ -142,25 +142,18 @@ pub async fn detect_token_swings(
         curve_only,
     } = body.into_inner();
 
-    let trades: Arc<Vec<Trade>> = if let Some(entry) = state.token_cache.get(&mint) {
-        // Refcount-clone the trade buffer out of the shard guard and drop it
-        // immediately — an O(1) Arc bump under the lock. We keep it as a shared
-        // Arc (never deep-copy it): the scan below reads it in place and clones
-        // only the trades a curve/window filter actually retains.
-        let trades = entry.trades.clone();
-        drop(entry);
-        trades
-    } else {
-        let repo = state.trade_repo();
-        // Bounded fallback: never materialise an unbounded mint history.
-        match repo.find_by_mint_paged(&mint, SWING_DB_TRADE_CAP, 0).await {
-            Ok(trades) => Arc::new(trades),
-            Err(e) => {
-                tracing::error!("DB error fetching trades for swing analysis {mint}: {e}");
-                return HttpResponse::InternalServerError().json(serde_json::json!({
-                    "error": "database error"
-                }));
-            }
+    // Read full `Trade` rows from the DB (not the slim cache window): swing
+    // analysis is a cold, bounded, paginated path, and the live `TokenCache` now
+    // retains only a slimmed `CachedTrade` projection. Bounded read — never
+    // materialise an unbounded mint history.
+    let repo = state.trade_repo();
+    let trades: Arc<Vec<Trade>> = match repo.find_by_mint_paged(&mint, SWING_DB_TRADE_CAP, 0).await {
+        Ok(trades) => Arc::new(trades),
+        Err(e) => {
+            tracing::error!("DB error fetching trades for swing analysis {mint}: {e}");
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "database error"
+            }));
         }
     };
 
@@ -242,14 +235,11 @@ pub async fn detect_tokens_swings_batch(
     let fetches = mints.into_iter().enumerate().map(|(idx, mint)| {
         let app = app.clone();
         async move {
-            let trades: Arc<Vec<Trade>> = if let Some(entry) = app.token_cache.get(&mint) {
-                // Refcount-clone under the guard and keep it shared — the scan
-                // below borrows it, so no deep copy ever blocks the ingest writer.
-                let trades = entry.trades.clone();
-                drop(entry);
-                trades
-            } else {
-                let repo = app.trade_repo();
+            // DB-only (see the single-mint path): the cache holds a slim
+            // `CachedTrade` projection, and batch swing analysis is a cold bounded
+            // path, so read full `Trade`s from Postgres.
+            let repo = app.trade_repo();
+            let trades: Arc<Vec<Trade>> =
                 match repo.find_by_mint_paged(&mint, SWING_DB_TRADE_CAP, 0).await {
                     Ok(trades) => Arc::new(trades),
                     Err(e) => {
@@ -258,8 +248,7 @@ pub async fn detect_tokens_swings_batch(
                         );
                         Arc::new(Vec::new())
                     }
-                }
-            };
+                };
             (idx, mint, trades)
         }
     });

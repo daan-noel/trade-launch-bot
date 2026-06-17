@@ -10,7 +10,7 @@ use uuid::Uuid;
 use super::exit::{CachedExitState, ExitWalkState};
 use super::util::none_if_zero_u64;
 use crate::models::ingest::SseEvent;
-use crate::models::trade::Trade;
+use crate::state::token_cache::CachedTrade;
 use crate::models::{PaperRun, PaperRunStatus, Position, PositionStatus, Tpsl2Rule};
 use crate::storage::repositories::{
     tpsl2_paper_trading_repo::Tpsl2PaperTradingRepo, tpsl2_position_repo::Tpsl2PositionRepo,
@@ -341,7 +341,7 @@ impl Tpsl2RuntimeCache {
         position_id: Uuid,
         entry_price: f64,
         entry_time: DateTime<Utc>,
-        trades: &[Trade],
+        trades: &[CachedTrade],
         trades_base: u64,
     ) -> ExitWalkState {
         let cached = CachedExitState::build(trades, trades_base, entry_price, entry_time);
@@ -367,7 +367,7 @@ impl Tpsl2RuntimeCache {
         position_id: Uuid,
         entry_price: f64,
         entry_time: DateTime<Utc>,
-        trades: &[Trade],
+        trades: &[CachedTrade],
         trades_base: u64,
         params: &super::exit::LadderParams,
     ) -> Option<super::exit::ExitReason> {

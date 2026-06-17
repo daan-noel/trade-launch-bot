@@ -157,7 +157,12 @@ impl CachedExitState {
     /// Seed from the retained post-entry history (one-time, at first sight of the
     /// position) and record the absolute fold cursor. `base` is the token's
     /// `trades_base` (count already trimmed from the front).
-    pub fn build(trades: &[Trade], base: u64, entry_price: f64, entry_time: DateTime<Utc>) -> Self {
+    pub fn build<T: TradeRow>(
+        trades: &[T],
+        base: u64,
+        entry_price: f64,
+        entry_time: DateTime<Utc>,
+    ) -> Self {
         Self {
             state: ExitWalkState::rebuild_from_trades(trades, entry_price, entry_time),
             entry_time,
@@ -191,7 +196,7 @@ impl CachedExitState {
     /// tests pin [`advance_and_find_exit`]'s folding against it); the live trade
     /// gate folds + evaluates in one pass via [`advance_and_find_exit`].
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn advance(&mut self, trades: &[Trade], base: u64) {
+    pub fn advance<T: TradeRow>(&mut self, trades: &[T], base: u64) {
         let start = self.consumed_abs.saturating_sub(base);
         if start > trades.len() as u64 {
             self.state =
@@ -200,7 +205,7 @@ impl CachedExitState {
             return;
         }
         for t in &trades[start as usize..] {
-            if t.block_time > self.entry_time {
+            if t.block_time() > self.entry_time {
                 self.state.update_with_trade(t);
             }
         }
@@ -220,9 +225,9 @@ impl CachedExitState {
     /// rebuild branch (history reset/over-trimmed) re-walks the whole window; old
     /// trades there are idempotent (same peaks → same non-firing result), so the
     /// first firing trade is unchanged.
-    pub fn advance_and_find_exit(
+    pub fn advance_and_find_exit<T: TradeRow>(
         &mut self,
-        trades: &[Trade],
+        trades: &[T],
         base: u64,
         params: &LadderParams,
     ) -> Option<ExitReason> {
@@ -242,7 +247,7 @@ impl CachedExitState {
 
         let mut fired = None;
         for t in &trades[from..] {
-            if t.block_time <= self.entry_time {
+            if t.block_time() <= self.entry_time {
                 continue;
             }
             self.state.update_with_trade(t);

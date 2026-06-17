@@ -16,7 +16,7 @@ use uuid::Uuid;
 use super::super::util::none_if_zero_u64;
 use super::super::Tpsl2RuntimeCache;
 use crate::models::ingest::SseEvent;
-use crate::models::trade::Trade;
+use crate::state::token_cache::CachedTrade;
 use crate::models::{Position, PositionStatus, Tpsl2Rule};
 use crate::state::token_cache::TokenCache;
 use crate::storage::repositories::tpsl2_paper_trading_repo::Tpsl2PaperTradingRepo;
@@ -35,7 +35,7 @@ use crate::storage::repositories::tpsl2_paper_trading_repo::Tpsl2PaperTradingRep
 /// skip its O(n) fill walk on an idle tick where no new trade landed (the count
 /// is monotonic; the resolvers watch ALL wallets on the mint, so there's no
 /// per-(wallet,mint) `TradeSignals` key to wake on instead).
-fn cache_trades(token_cache: &TokenCache, mint: &str) -> Option<(Arc<Vec<Trade>>, u64)> {
+fn cache_trades(token_cache: &TokenCache, mint: &str) -> Option<(Arc<Vec<CachedTrade>>, u64)> {
     token_cache
         .get(mint)
         .map(|e| (e.value().trades.clone(), e.value().trade_count))

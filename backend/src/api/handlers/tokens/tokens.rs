@@ -555,8 +555,11 @@ const MAX_TRADES_OFFSET: i64 = 50_000;
 
 /// `GET /api/tokens/:mint/trades`
 ///
-/// Returns trades for a token in chronological order (cache first, else DB),
-/// bounded by `limit` (default & cap 5000) and `offset`.
+/// Returns full `Trade` rows for a token in chronological order from the DB,
+/// bounded by `limit` (default & cap 5000) and `offset`. Reads from Postgres
+/// rather than the live cache: the `TokenCache` now retains only a slimmed
+/// `CachedTrade` projection (missing the `id`/`instruction_labels`/… fields this
+/// endpoint serializes), and this is a cold, paginated path off the hot loop.
 pub async fn get_trades(
     state: web::Data<Arc<AppState>>,
     path: web::Path<String>,
@@ -565,17 +568,6 @@ pub async fn get_trades(
     let mint = path.into_inner();
     let limit = query.limit.clamp(1, 5_000);
     let offset = query.offset.clamp(0, MAX_TRADES_OFFSET);
-
-    if let Some(entry) = state.token_cache.get(&mint) {
-        let page: Vec<_> = entry
-            .trades
-            .iter()
-            .skip(offset as usize)
-            .take(limit as usize)
-            .cloned()
-            .collect();
-        return HttpResponse::Ok().json(page);
-    }
 
     let repo = state.trade_repo();
     match repo.find_by_mint_paged(&mint, limit, offset).await {

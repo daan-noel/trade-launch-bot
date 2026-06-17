@@ -11,7 +11,7 @@ use crate::{
         SEED_TOKEN_LIMIT, SEED_TRADES_PER_MINT,
     },
     models::{token::Token, token_info::TokenInfo, trade::Trade},
-    state::token_cache::{TokenCache, TokenState},
+    state::token_cache::{CachedTrade, TokenCache, TokenState},
     storage::repositories::{
         token_info_repo::TokenInfoRepo,
         token_repo::TokenRepo,
@@ -172,8 +172,8 @@ fn build_state(
         }
     }
 
-    for trade in trades {
-        state.push_trade_capped(trade);
+    for trade in &trades {
+        state.push_trade_capped(CachedTrade::from(trade));
     }
 
     // Prime the dead-token liquidity signal from the seeded tail: the newest trade

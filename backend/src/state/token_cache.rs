@@ -11,7 +11,8 @@ use crate::config::constants::{
     LIFETIME_GAP_SECONDS, PUMPFUN_GENESIS_PRICE_PER_RAW_TOKEN, TOKEN_CACHE_EVICT_IDLE_SECONDS,
     TOKEN_CACHE_EVICT_INTERVAL_SECONDS,
 };
-use crate::models::{token::Token, trade::Trade};
+use crate::models::token::Token;
+use crate::models::trade::{Trade, TradeRow, TradeType};
 
 /// Hard cap on retained in-memory trade history per token. The cache keeps only
 /// the most recent `MAX_TRADES_RETAINED` trades; the oldest are trimmed from the
@@ -34,6 +35,107 @@ pub const MAX_TRADES_RETAINED: usize = 50_000;
 pub const TRADES_TRIM_SLACK: usize = 5_000;
 
 // ---------------------------------------------------------------------------
+// CachedTrade
+// ---------------------------------------------------------------------------
+
+/// Slim, cache-resident projection of [`Trade`] for the live token cache.
+///
+/// `TokenState::trades` retains up to `MAX_TRADES_RETAINED` rows per token across
+/// thousands of resident tokens, so the per-row size dominates the live process's
+/// heap. This drops every `Trade` field the live hot path never reads off the
+/// cache — `id`, `mint_address` (the cache key already identifies the mint),
+/// `received_at`, `instruction_labels`, `instruction_type`, `venue`, and
+/// `real_token_reserves` — roughly halving the row (~600 B → ~300 B) with no
+/// decision-logic change. The full `Trade` is still what the DB and the
+/// `/api/tokens/:mint/trades` + swing endpoints serve (both read from Postgres).
+///
+/// Implements [`TradeRow`] (`Wallet = String`) so every shared entry/exit/cohort
+/// fn runs against it unchanged — exactly as the sweep's `SweepTrade` does. The
+/// `wallet_address` + `tx_signature` strings are retained for now: the live paper
+/// fill resolver still matches the entry by signature and E5 cohort sets key on
+/// the wallet. Phase B interns the wallet to a `u32` and drops the signature.
+#[derive(Clone, Debug)]
+pub struct CachedTrade {
+    pub wallet_address: String,
+    pub tx_signature: String,
+    pub is_buy: bool,
+    /// `true` for a bonding-curve leg, `false` for a post-migration AMM leg. A
+    /// 1-byte stand-in for the dropped `venue` String — the only `venue` use off
+    /// the cache is the sweep corpus's `curve_only` filter (`CacheSource`).
+    pub is_curve: bool,
+    pub sol_amount: f64,
+    pub token_amount: f64,
+    pub price_per_token: f64,
+    pub slot: u64,
+    pub leg_index: u32,
+    pub block_time: DateTime<Utc>,
+    pub virtual_sol_reserves: Option<f64>,
+    pub virtual_token_reserves: Option<f64>,
+    pub real_sol_reserves: Option<f64>,
+}
+
+impl From<&Trade> for CachedTrade {
+    fn from(t: &Trade) -> Self {
+        Self {
+            wallet_address: t.wallet_address.clone(),
+            tx_signature: t.tx_signature.clone(),
+            is_buy: matches!(t.trade_type, TradeType::Buy),
+            is_curve: t.venue == "curve",
+            sol_amount: t.sol_amount,
+            token_amount: t.token_amount,
+            price_per_token: t.price_per_token,
+            slot: t.slot,
+            leg_index: t.leg_index,
+            block_time: t.block_time,
+            virtual_sol_reserves: t.virtual_sol_reserves,
+            virtual_token_reserves: t.virtual_token_reserves,
+            real_sol_reserves: t.real_sol_reserves,
+        }
+    }
+}
+
+impl TradeRow for CachedTrade {
+    type Wallet = String;
+
+    fn is_buy(&self) -> bool {
+        self.is_buy
+    }
+    fn sol_amount(&self) -> f64 {
+        self.sol_amount
+    }
+    fn token_amount(&self) -> f64 {
+        self.token_amount
+    }
+    fn price_per_token(&self) -> f64 {
+        self.price_per_token
+    }
+    fn slot(&self) -> u64 {
+        self.slot
+    }
+    fn leg_index(&self) -> u32 {
+        self.leg_index
+    }
+    fn block_time(&self) -> DateTime<Utc> {
+        self.block_time
+    }
+    fn virtual_sol_reserves(&self) -> Option<f64> {
+        self.virtual_sol_reserves
+    }
+    fn virtual_token_reserves(&self) -> Option<f64> {
+        self.virtual_token_reserves
+    }
+    fn real_sol_reserves(&self) -> Option<f64> {
+        self.real_sol_reserves
+    }
+    fn wallet(&self) -> &String {
+        &self.wallet_address
+    }
+    fn tx_signature(&self) -> &str {
+        &self.tx_signature
+    }
+}
+
+// ---------------------------------------------------------------------------
 // TokenState
 // ---------------------------------------------------------------------------
 
@@ -46,12 +148,13 @@ pub struct TokenState {
     /// Retained trade history in chronological order (oldest first), capped at
     /// `MAX_TRADES_RETAINED`. NOT necessarily the full history — see `trades_base`.
     ///
-    /// Wrapped in `Arc` so API readers (swing/paper polls) clone a refcount under
-    /// the shard guard instead of deep-copying up to 50K `Trade`s while the ingest
-    /// writer is blocked on `get_mut`. The append hot path mutates in place via
-    /// `Arc::make_mut`, which only copies on the rare tick where a reader is still
-    /// holding a snapshot — and that copy lands on the writer, off the read guard.
-    pub trades: Arc<Vec<Trade>>,
+    /// Wrapped in `Arc` so readers (paper fill-polls, the exit memo seed) clone a
+    /// refcount under the shard guard instead of deep-copying up to 50K
+    /// `CachedTrade`s while the ingest writer is blocked on `get_mut`. The append
+    /// hot path mutates in place via `Arc::make_mut`, which only copies on the rare
+    /// tick where a reader is still holding a snapshot — and that copy lands on the
+    /// writer, off the read guard.
+    pub trades: Arc<Vec<CachedTrade>>,
 
     /// Absolute count of trades trimmed from the front of `trades` over the
     /// token's lifetime. The logical index of `trades[0]` is `trades_base`, so
@@ -194,17 +297,33 @@ impl TokenState {
         recent_volume <= DEAD_DUST_VOLUME_SOL
     }
 
-    /// Append a trade and update aggregate metrics.
+    /// Append a live trade and update aggregate metrics.
     pub fn add_trade(&mut self, trade: Trade) {
-        self.volume_sol_total += trade.sol_amount;
+        self.apply_aggregates(&trade);
+        self.push_trade_capped(CachedTrade::from(&trade));
+    }
+
+    /// Re-fold a retained [`CachedTrade`] through the aggregate path. Used by
+    /// `recompute_token_state`, the only caller that rebuilds a token's state from
+    /// its already-slimmed retained history rather than from live `Trade`s.
+    pub fn add_cached_trade(&mut self, trade: CachedTrade) {
+        self.apply_aggregates(&trade);
+        self.push_trade_capped(trade);
+    }
+
+    /// Fold one trade (live `Trade` or retained `CachedTrade` — both `TradeRow`)
+    /// into the aggregate metrics: cumulative volume, count, ATH, and the
+    /// newest-by-block_time snapshots (price, reserves, market cap).
+    fn apply_aggregates<T: TradeRow>(&mut self, trade: &T) {
+        self.volume_sol_total += trade.sol_amount();
         self.trade_count += 1;
 
-        let price = trade.price_per_token;
+        let price = trade.price_per_token();
 
         // All-time high is a max — order-independent, so always considered.
         if self.ath_price.is_none() || price > self.ath_price.unwrap_or(0.0) {
             self.ath_price = Some(price);
-            self.ath_timestamp = Some(trade.block_time);
+            self.ath_timestamp = Some(trade.block_time());
         }
 
         // "Latest" snapshots — last_trade_at, current_price, reserves, market cap —
@@ -213,15 +332,13 @@ impl TokenState {
         // (the same inversion `is_dead` Signal 3 defends against). Advance them only
         // when this trade is at least as new as the newest seen, so a lag-delayed
         // old trade can't rewind price/liquidity and mis-flag deadness.
-        let is_newest = self.last_trade_at.map_or(true, |t| trade.block_time >= t);
+        let is_newest = self.last_trade_at.map_or(true, |t| trade.block_time() >= t);
         if is_newest {
-            self.last_trade_at = Some(trade.block_time);
+            self.last_trade_at = Some(trade.block_time());
             self.current_price = Some(price);
-            self.update_reserves(&trade);
+            self.update_reserves(trade);
             self.update_market_cap(price);
         }
-
-        self.push_trade_capped(trade);
     }
 
     /// Append a trade to the retained history, trimming the oldest trades once the
@@ -230,7 +347,7 @@ impl TokenState {
     /// them from the DB), so this is also the path the cache seed uses to bound
     /// startup memory without recomputing stats. `trades_base` advances by exactly
     /// the number trimmed so the exit memo's absolute cursor stays valid.
-    pub fn push_trade_capped(&mut self, trade: Trade) {
+    pub fn push_trade_capped(&mut self, trade: CachedTrade) {
         // `make_mut` mutates in place when we hold the only reference (the common
         // hot-path case); it copies once only if an API reader is still holding a
         // snapshot Arc from a concurrent request.
@@ -244,8 +361,8 @@ impl TokenState {
         }
     }
 
-    fn update_reserves(&mut self, trade: &Trade) {
-        if let Some(current) = trade.virtual_token_reserves {
+    fn update_reserves<T: TradeRow>(&mut self, trade: &T) {
+        if let Some(current) = trade.virtual_token_reserves() {
             // Use the configured static initial virtual token reserves as the
             // baseline. Do not attempt to reconstruct initial reserves from
             // the first trade — it's constant for Pump.fun tokens.
@@ -257,7 +374,7 @@ impl TokenState {
         // Newest known real SOL reserves for the dead-token liquidity signal. Only
         // overwrite when this trade carries a snapshot, so a reserve-less newest
         // trade doesn't shadow the last real reading.
-        if let Some(sol) = trade.real_sol_reserves {
+        if let Some(sol) = trade.real_sol_reserves() {
             self.current_real_sol_reserves = Some(sol);
         }
     }
@@ -287,7 +404,7 @@ impl TokenState {
     /// late trade after the token went quiet doesn't inflate the lifetime.
     /// `None` when the token has no trades. Trades are stored oldest-first.
     pub fn active_lifetime_secs(&self) -> Option<i64> {
-        let trades: &[Trade] = &self.trades;
+        let trades: &[CachedTrade] = &self.trades;
         let mut end = trades.len();
         if end == 0 {
             return None;
@@ -679,5 +796,46 @@ mod tests {
             0.5,
         ));
         assert!(!state.is_dead(now));
+    }
+
+    #[test]
+    fn cached_trade_matches_trade_on_every_traderow_read() {
+        // CachedTrade is a slim projection of Trade; its TradeRow reads (the only
+        // way the live entry/exit/cohort fns see a cache row) must be identical to
+        // the source Trade's, or decision parity silently breaks. Mirrors the sweep
+        // projection's field-for-field guarantee.
+        let now = Utc::now();
+        let mut t = Trade::new(
+            "MINT-parity".into(),
+            "wallet-parity".into(),
+            TradeType::Sell,
+            1.25,
+            42_000.0,
+            "sig-parity".into(),
+            999,
+            now,
+        );
+        t.leg_index = 3;
+        t.virtual_sol_reserves = Some(31.0);
+        t.virtual_token_reserves = Some(900_000.0);
+        t.real_sol_reserves = Some(7.5);
+        t.venue = "amm".into();
+
+        let c = CachedTrade::from(&t);
+
+        assert_eq!(c.is_buy(), t.is_buy());
+        assert_eq!(c.sol_amount(), t.sol_amount());
+        assert_eq!(c.token_amount(), t.token_amount());
+        assert_eq!(c.price_per_token(), t.price_per_token());
+        assert_eq!(c.slot(), t.slot());
+        assert_eq!(c.leg_index(), t.leg_index());
+        assert_eq!(c.block_time(), t.block_time());
+        assert_eq!(c.virtual_sol_reserves(), t.virtual_sol_reserves());
+        assert_eq!(c.virtual_token_reserves(), t.virtual_token_reserves());
+        assert_eq!(c.real_sol_reserves(), t.real_sol_reserves());
+        assert_eq!(c.wallet(), t.wallet());
+        assert_eq!(c.tx_signature(), t.tx_signature());
+        // `is_curve` stands in for the dropped `venue` String (here an AMM leg).
+        assert!(!c.is_curve);
     }
 }

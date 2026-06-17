@@ -183,7 +183,12 @@ impl CachedExitState {
     /// position) and record the absolute fold cursor. `base` is the token's
     /// `trades_base` (count already trimmed from the front). No cohort memo — used
     /// by the clock sweep, which never needs E5.
-    pub fn build(trades: &[Trade], base: u64, entry_price: f64, entry_time: DateTime<Utc>) -> Self {
+    pub fn build<T: TradeRow<Wallet = String>>(
+        trades: &[T],
+        base: u64,
+        entry_price: f64,
+        entry_time: DateTime<Utc>,
+    ) -> Self {
         Self {
             state: ExitWalkState::rebuild_from_trades(trades, entry_price, entry_time),
             entry_time,
@@ -199,8 +204,8 @@ impl CachedExitState {
     /// memo is seeded (computed once here from the retained window). Used to seed
     /// the trade gate so its first pass reproduces a full re-walk while memoizing
     /// for subsequent incremental pings.
-    pub fn build_unfolded(
-        trades: &[Trade],
+    pub fn build_unfolded<T: TradeRow<Wallet = String>>(
+        trades: &[T],
         base: u64,
         entry_price: f64,
         entry_time: DateTime<Utc>,
@@ -213,7 +218,7 @@ impl CachedExitState {
             let bought = cohort_flow(trades, &wallets).bought_tokens;
             let net: f64 = trades
                 .iter()
-                .filter(|t| t.block_time <= entry_time && wallets.contains(&t.wallet_address))
+                .filter(|t| t.block_time() <= entry_time && wallets.contains(t.wallet()))
                 .map(signed_tokens)
                 .sum();
             CohortMemo { wallets, bought, net }
@@ -232,7 +237,12 @@ impl CachedExitState {
     /// `net` is seeded to the cohort's net holdings as of the current fold cursor
     /// (`consumed_abs`), so a following incremental advance continues correctly.
     /// No-op once a cohort memo is present or when E5 is off.
-    pub fn ensure_cohort_seeded(&mut self, trades: &[Trade], base: u64, params: &LadderParams) {
+    pub fn ensure_cohort_seeded<T: TradeRow<Wallet = String>>(
+        &mut self,
+        trades: &[T],
+        base: u64,
+        params: &LadderParams,
+    ) {
         if self.cohort.is_some() || params.cohort_exit_ratio.is_none() {
             return;
         }
@@ -242,7 +252,7 @@ impl CachedExitState {
         let bought = cohort_flow(trades, &wallets).bought_tokens;
         let net: f64 = trades[..cursor]
             .iter()
-            .filter(|t| wallets.contains(&t.wallet_address))
+            .filter(|t| wallets.contains(t.wallet()))
             .map(signed_tokens)
             .sum();
         self.cohort = Some(CohortMemo { wallets, bought, net });
@@ -259,7 +269,7 @@ impl CachedExitState {
     /// tests pin [`advance_and_find_exit`]'s folding against it); the live trade
     /// gate folds + evaluates in one pass via [`advance_and_find_exit`].
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn advance(&mut self, trades: &[Trade], base: u64) {
+    pub fn advance<T: TradeRow<Wallet = String>>(&mut self, trades: &[T], base: u64) {
         let start = self.consumed_abs.saturating_sub(base);
         if start > trades.len() as u64 {
             self.state =
@@ -268,7 +278,7 @@ impl CachedExitState {
             return;
         }
         for t in &trades[start as usize..] {
-            if t.block_time > self.entry_time {
+            if t.block_time() > self.entry_time {
                 self.state.update_with_trade(t);
             }
         }
@@ -287,9 +297,9 @@ impl CachedExitState {
     /// would already have exited the position. The rebuild branch (history
     /// reset/over-trimmed) re-walks the whole window from the seeded cohort net;
     /// old trades there are idempotent, so the first firing trade is unchanged.
-    pub fn advance_and_find_exit(
+    pub fn advance_and_find_exit<T: TradeRow<Wallet = String>>(
         &mut self,
-        trades: &[Trade],
+        trades: &[T],
         base: u64,
         params: &LadderParams,
     ) -> Option<ExitReason> {
@@ -314,7 +324,7 @@ impl CachedExitState {
             if let Some(c) = self.cohort.as_mut() {
                 c.net = trades
                     .iter()
-                    .filter(|t| t.block_time <= self.entry_time && c.wallets.contains(&t.wallet_address))
+                    .filter(|t| t.block_time() <= self.entry_time && c.wallets.contains(t.wallet()))
                     .map(signed_tokens)
                     .sum();
             }
@@ -322,12 +332,12 @@ impl CachedExitState {
 
         let mut fired = None;
         for t in &trades[from..] {
-            if t.block_time <= self.entry_time {
+            if t.block_time() <= self.entry_time {
                 continue;
             }
             self.state.update_with_trade(t);
             if let Some(c) = self.cohort.as_mut() {
-                if c.wallets.contains(&t.wallet_address) {
+                if c.wallets.contains(t.wallet()) {
                     c.net += signed_tokens(t);
                 }
             }

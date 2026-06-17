@@ -18,7 +18,7 @@ pub fn recompute_token_state(state: &mut TokenState) {
     // the Vec without copying; fall back to a clone only if somehow shared.
     let trades = Arc::try_unwrap(trades).unwrap_or_else(|a| (*a).clone());
     for trade in trades {
-        fresh.add_trade(trade);
+        fresh.add_cached_trade(trade);
     }
     *state = fresh;
 }

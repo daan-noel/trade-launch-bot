@@ -81,6 +81,12 @@ interface BackgroundJobActions {
    *  indicator shows before the first SSE frame (which only arrives once the
    *  backend finishes selecting/partitioning candidates). */
   markStarting: (kind: JobKind, id: string, label: string) => void;
+  /** Clear an optimistically-registered job when the page's own request settles.
+   *  The `*_finished` SSE event only fires when the backend actually ran the job,
+   *  so a cache hit / dedupe / cancelled marker / missed frame would otherwise
+   *  leave a phantom job whose progress bar spins forever. Idempotent with the
+   *  SSE-driven removal. */
+  markFinished: (kind: JobKind, id: string) => void;
   cancel: (job: BackgroundJob) => void;
 }
 
@@ -199,6 +205,8 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
     [upsert],
   );
 
+  const markFinished = useCallback((kind: JobKind, id: string) => remove(kind, id), [remove]);
+
   const isRunning = useCallback((kind: JobKind, id: string) => jobs.has(keyOf(kind, id)), [jobs]);
 
   const cancel = useCallback(
@@ -213,8 +221,8 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
   // `markStarting`/`cancel` depend only on the stable `upsert`, so this value is
   // referentially stable — action-only consumers skip the progress-tick renders.
   const actions = useMemo<BackgroundJobActions>(
-    () => ({ markStarting, cancel }),
-    [markStarting, cancel],
+    () => ({ markStarting, markFinished, cancel }),
+    [markStarting, markFinished, cancel],
   );
 
   const state = useMemo<BackgroundJobsState>(
