@@ -153,11 +153,14 @@ pub(super) fn extract_compute_budget(
 
 /// Produce a single human-readable label for one instruction.
 ///
-/// `parsed_type` is the Helius `jsonParsed` instruction type (`parsed.type`)
-/// when available — present only on the RPC/`Value` path. The protobuf-native
-/// live path has no such field and passes `None`, so System/Token/ATA
-/// instructions there fall through to `"<friendly>: Unknown"` (matching the
-/// live adapter's output before Tier B, where `parsed` was never synthesized).
+/// System Program, SPL Token / Token-2022, and Associated Token instructions are
+/// decoded directly from their instruction-data discriminator (4-byte u32 LE for
+/// System, 1-byte index for Token, empty-data/1-byte for ATA), exactly like
+/// Compute Budget — so the protobuf-native live path keeps them labelled instead of
+/// rendering `"<friendly>: Unknown"`. `parsed_type` is the Helius `jsonParsed`
+/// instruction type (`parsed.type`), present only on the legacy RPC/`Value` path; it
+/// is used as a fallback for anything the byte decode doesn't recognise. The
+/// protobuf path passes `None`.
 pub(super) fn label_instruction(
     program_id: &str,
     parsed_type: Option<&str>,
@@ -217,19 +220,33 @@ pub(super) fn label_instruction(
         return "Pump.Fun: Unknown".to_owned();
     }
 
-    // ── System / Token programs — use Helius-parsed "type" ───────────────────
-    let use_parsed = [
-        SYSTEM_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-        TOKEN_2022_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID,
-    ];
-    if use_parsed.contains(&program_id) {
-        let friendly = program_friendly_name(program_id).unwrap_or("Unknown Program");
-        if let Some(t) = parsed_type {
-            return format!("{}: {}", friendly, capitalize_first(t));
+    // ── System Program — 4-byte u32 LE instruction discriminator ─────────────
+    if program_id == SYSTEM_PROGRAM_ID {
+        if let Some(name) = data_bytes.and_then(system_ix_name) {
+            return format!("System Program: {name}");
         }
-        return format!("{}: Unknown", friendly);
+        return label_from_parsed_or_unknown("System Program", parsed_type);
+    }
+
+    // ── SPL Token / Token-2022 — 1-byte instruction index ────────────────────
+    if program_id == TOKEN_PROGRAM_ID || program_id == TOKEN_2022_PROGRAM_ID {
+        let friendly = if program_id == TOKEN_PROGRAM_ID {
+            "Token Program"
+        } else {
+            "Token 2022"
+        };
+        if let Some(name) = data_bytes.and_then(token_ix_name) {
+            return format!("{friendly}: {name}");
+        }
+        return label_from_parsed_or_unknown(friendly, parsed_type);
+    }
+
+    // ── Associated Token — empty data = legacy Create; else 1-byte index ─────
+    if program_id == ASSOCIATED_TOKEN_PROGRAM_ID {
+        if let Some(name) = ata_ix_name(data_bytes) {
+            return format!("Associated Token: {name}");
+        }
+        return label_from_parsed_or_unknown("Associated Token", parsed_type);
     }
 
     // ── All other known programs ──────────────────────────────────────────────
@@ -246,10 +263,146 @@ pub(super) fn label_instruction(
     format!("Unknown (...{})", suffix)
 }
 
+/// Fallback label for a native program whose byte-level discriminator wasn't
+/// recognised: use the Helius `parsed.type` if present (legacy RPC path), else
+/// `"<friendly>: Unknown"`.
+fn label_from_parsed_or_unknown(friendly: &str, parsed_type: Option<&str>) -> String {
+    match parsed_type {
+        Some(t) => format!("{}: {}", friendly, capitalize_first(t)),
+        None => format!("{friendly}: Unknown"),
+    }
+}
+
+/// System Program instruction name by its 4-byte little-endian `u32`
+/// discriminator. Returns `None` for data shorter than 4 bytes or an
+/// unrecognised variant.
+fn system_ix_name(data: &[u8]) -> Option<&'static str> {
+    let disc = u32::from_le_bytes(data.get(0..4)?.try_into().ok()?);
+    let name = match disc {
+        0 => "CreateAccount",
+        1 => "Assign",
+        2 => "Transfer",
+        3 => "CreateAccountWithSeed",
+        4 => "AdvanceNonceAccount",
+        5 => "WithdrawNonceAccount",
+        6 => "InitializeNonceAccount",
+        7 => "AuthorizeNonceAccount",
+        8 => "Allocate",
+        9 => "AllocateWithSeed",
+        10 => "AssignWithSeed",
+        11 => "TransferWithSeed",
+        12 => "UpgradeNonceAccount",
+        _ => return None,
+    };
+    Some(name)
+}
+
+/// SPL Token / Token-2022 instruction name by its leading discriminator byte.
+/// Covers the standard SPL Token instruction set (shared by Token-2022 for
+/// indices 0–25); Token-2022 extension instructions (26+) and any unrecognised
+/// byte return `None`.
+fn token_ix_name(data: &[u8]) -> Option<&'static str> {
+    let name = match data.first()? {
+        0 => "InitializeMint",
+        1 => "InitializeAccount",
+        2 => "InitializeMultisig",
+        3 => "Transfer",
+        4 => "Approve",
+        5 => "Revoke",
+        6 => "SetAuthority",
+        7 => "MintTo",
+        8 => "Burn",
+        9 => "CloseAccount",
+        10 => "FreezeAccount",
+        11 => "ThawAccount",
+        12 => "TransferChecked",
+        13 => "ApproveChecked",
+        14 => "MintToChecked",
+        15 => "BurnChecked",
+        16 => "InitializeAccount2",
+        17 => "SyncNative",
+        18 => "InitializeAccount3",
+        19 => "InitializeMultisig2",
+        20 => "InitializeMint2",
+        21 => "GetAccountDataSize",
+        22 => "InitializeImmutableOwner",
+        23 => "AmountToUiAmount",
+        24 => "UiAmountToAmount",
+        25 => "InitializeMintCloseAuthority",
+        _ => return None,
+    };
+    Some(name)
+}
+
+/// Associated Token Account instruction name. The legacy `Create` carries **no**
+/// instruction data (the most common case in a pump create+buy); newer variants
+/// carry a 1-byte discriminator. Returns `None` for an unrecognised byte.
+fn ata_ix_name(data: Option<&[u8]>) -> Option<&'static str> {
+    match data {
+        Some(b) if b.is_empty() => Some("Create"),
+        Some(b) => match b[0] {
+            0 => Some("Create"),
+            1 => Some("CreateIdempotent"),
+            2 => Some("RecoverNested"),
+            _ => None,
+        },
+        None => None,
+    }
+}
+
 fn capitalize_first(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
         None => String::new(),
         Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The protobuf path passes `parsed_type=None`; native programs must still
+    /// resolve from their instruction-data discriminator instead of "Unknown".
+    #[test]
+    fn native_programs_decode_from_bytes_without_parsed_type() {
+        // System Program: 4-byte u32 LE discriminator → 2 = Transfer.
+        assert_eq!(
+            label_instruction(SYSTEM_PROGRAM_ID, None, Some(&2u32.to_le_bytes())),
+            "System Program: Transfer"
+        );
+        // SPL Token: 1-byte index → 7 = MintTo.
+        assert_eq!(
+            label_instruction(TOKEN_PROGRAM_ID, None, Some(&[7])),
+            "Token Program: MintTo"
+        );
+        // Token-2022 shares the SPL index space.
+        assert_eq!(
+            label_instruction(TOKEN_2022_PROGRAM_ID, None, Some(&[3])),
+            "Token 2022: Transfer"
+        );
+        // ATA legacy Create carries no instruction data.
+        assert_eq!(
+            label_instruction(ASSOCIATED_TOKEN_PROGRAM_ID, None, Some(&[])),
+            "Associated Token: Create"
+        );
+        assert_eq!(
+            label_instruction(ASSOCIATED_TOKEN_PROGRAM_ID, None, Some(&[1])),
+            "Associated Token: CreateIdempotent"
+        );
+    }
+
+    /// Unrecognised discriminators fall back to "<friendly>: Unknown" (or the
+    /// Helius parsed type when the legacy RPC path supplies one).
+    #[test]
+    fn unrecognised_discriminator_falls_back() {
+        assert_eq!(
+            label_instruction(SYSTEM_PROGRAM_ID, None, Some(&99u32.to_le_bytes())),
+            "System Program: Unknown"
+        );
+        assert_eq!(
+            label_instruction(TOKEN_PROGRAM_ID, Some("syncNative"), Some(&[250])),
+            "Token Program: SyncNative"
+        );
     }
 }
