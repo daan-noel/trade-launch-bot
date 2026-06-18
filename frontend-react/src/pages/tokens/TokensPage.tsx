@@ -61,6 +61,7 @@ export function TokensPage() {
   const columns = useMemo(() => tokenColumns(), []);
 
   const [live, setLive] = useState(loadLive);
+  const [trackedOnly, setTrackedOnly] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState<TokenFilters>(loadStoredTokenFilters);
   const [selectedMint, setSelectedMint] = useState<string | null>(null);
@@ -85,8 +86,9 @@ export function TokensPage() {
       colFilters: tableQuery.colFilters,
       filters,
       timezone,
+      trackedOnly,
     }),
-    [tableQuery, filters, timezone],
+    [tableQuery, filters, timezone, trackedOnly],
   );
 
   // Server-side page: only one page crosses the wire. Polling re-runs the
@@ -138,8 +140,8 @@ export function TokensPage() {
     if (hasPrevPage) prefetchPage({ ...queryArgs, page: tableQuery.page - 1 });
   }, [prefetchPage, queryArgs, tableQuery.page, hasNextPage, hasPrevPage]);
 
-  // Resets the table to page 1 when the global filter panel changes.
-  const filtersResetKey = useMemo(() => JSON.stringify(filters), [filters]);
+  // Resets the table to page 1 when the global filter panel or tracked-only mode changes.
+  const filtersResetKey = useMemo(() => JSON.stringify({ filters, trackedOnly }), [filters, trackedOnly]);
   const filterCount = activeFilterCount(filters);
   // Whether any reduction is active — drives the "matched" vs "total" badge.
   // Unfiltered, `total` is the whole DB-backed token universe (not just the
@@ -271,10 +273,18 @@ export function TokensPage() {
     <div>
       <div className="mb-3.5 flex flex-wrap items-center gap-3">
         <h2 className="text-lg font-extrabold text-text">Tokens</h2>
-        <Badge variant="primary" className="font-mono">
+        <Badge
+          variant={trackedOnly ? 'neutral' : 'primary'}
+          className="cursor-pointer font-mono"
+          onClick={() => setTrackedOnly(false)}
+        >
           {total} {anyActive ? 'matched' : 'all'}
         </Badge>
-        <Badge variant="neutral" className="font-mono">
+        <Badge
+          variant={trackedOnly ? 'primary' : 'neutral'}
+          className="cursor-pointer font-mono"
+          onClick={() => setTrackedOnly(true)}
+        >
           {tracked} tracked
         </Badge>
         <StatusButton

@@ -341,6 +341,9 @@ pub struct PaginationParams {
     pub f_dead: Option<String>,
     pub f_mayhem: Option<String>,
     pub f_cashback: Option<String>,
+    /// When `true`, restrict results to the live cache-tracked subset only
+    /// (mirrors the "tracked" badge click on the Tokens page).
+    pub tracked_only: Option<bool>,
 }
 
 fn default_limit() -> i64 {
@@ -364,6 +367,7 @@ pub async fn list_tokens(
     let q = TokenQuery::from_params(&query);
     let limit_q = query.limit;
     let offset_q = query.offset;
+    let tracked_only = query.tracked_only.unwrap_or(false);
 
     let built = web::block(move || {
         let now = chrono::Utc::now();
@@ -373,19 +377,30 @@ pub async fn list_tokens(
         // clones the entire cache on every poll.
         let snapshot = state.token_list.get(&state.token_cache, now);
 
-        // Full-fidelity server-side reduction: global filters + search + per-column
-        // filters (mirrors `tokenPassesFilters` and the DataTable). Filter by
-        // reference — non-matching rows are never cloned. The snapshot merges the
-        // live cache over the DB base (whole seeded universe), so the list includes
-        // mints already evicted from the cache, newest-first.
-        let mut matched: Vec<&TokenSummary> = snapshot.merged_filtered(|t| q.matches(t, now));
+        // When `tracked_only`, restrict to the live cache subset; otherwise use the
+        // full merged universe (live cache overlaying the DB base).
+        let mut matched: Vec<&TokenSummary> = if tracked_only {
+            snapshot.tracked_filtered(|t| q.matches(t, now))
+        } else {
+            // Full-fidelity server-side reduction: global filters + search + per-column
+            // filters (mirrors `tokenPassesFilters` and the DataTable). Filter by
+            // reference — non-matching rows are never cloned. The snapshot merges the
+            // live cache over the DB base (whole seeded universe), so the list includes
+            // mints already evicted from the cache, newest-first.
+            snapshot.merged_filtered(|t| q.matches(t, now))
+        };
 
         // `total` is the FILTERED count — that's what the table's pager needs.
         let total = matched.len();
 
         // Same reduction, restricted to the live cache-tracked subset. Cheap: the
         // resident set is small (post-eviction) relative to the merged universe.
-        let tracked = snapshot.tracked_filtered_count(|t| q.matches(t, now));
+        // When already in tracked_only mode, `total` == `tracked`.
+        let tracked = if tracked_only {
+            total
+        } else {
+            snapshot.tracked_filtered_count(|t| q.matches(t, now))
+        };
 
         // Sorting a chain column? Compute each matched mint's key from the raw
         // legs stashed under the run, grouped at the requested latency. Cheap

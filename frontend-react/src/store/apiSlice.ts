@@ -113,6 +113,8 @@ export interface TokensPageArgs {
    */
   swingRunId?: string | null;
   swingChainLatencyMs?: number;
+  /** When true, restrict results to the live cache-tracked subset only. */
+  trackedOnly?: boolean;
 }
 
 /**
@@ -259,6 +261,7 @@ export const apiSlice = createApi({
             p.set('swing_chain_latency_ms', String(a.swingChainLatencyMs));
           }
         }
+        if (a.trackedOnly) p.set('tracked_only', 'true');
         return `/api/tokens?${p.toString()}`;
       },
       transformResponse: withCreatedMs,
