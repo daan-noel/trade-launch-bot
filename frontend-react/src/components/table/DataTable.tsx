@@ -4,7 +4,7 @@ import { Checkbox } from 'components/ui/Checkbox';
 import { Input } from 'components/ui/Input';
 import { Pagination, DEFAULT_PAGE_SIZE } from './Pagination';
 import { parseNumericPredicate } from './numericFilter';
-import { getTableCols, setTableCols } from 'lib/storage';
+import { getTableCols, setTableCols, getTablePrefs, setTablePrefs } from 'lib/storage';
 import type { ColumnDef, SortDir, SortValue, TableQuery } from './types';
 
 /**
@@ -147,9 +147,27 @@ export function DataTable<R>({
   resetKey,
 }: DataTableProps<R>) {
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(defaultPageSize);
-  const [sortCol, setSortCol] = useState<string | null>(defaultSort?.col ?? null);
-  const [sortDir, setSortDir] = useState<SortDir>(defaultSort?.dir ?? 'asc');
+  const [pageSize, setPageSize] = useState(() => {
+    if (tableId) {
+      const stored = getTablePrefs(tableId).pageSize;
+      if (stored != null) return stored;
+    }
+    return defaultPageSize;
+  });
+  const [sortCol, setSortCol] = useState<string | null>(() => {
+    if (tableId) {
+      const prefs = getTablePrefs(tableId);
+      if ('sortCol' in prefs) return prefs.sortCol ?? null;
+    }
+    return defaultSort?.col ?? null;
+  });
+  const [sortDir, setSortDir] = useState<SortDir>(() => {
+    if (tableId) {
+      const prefs = getTablePrefs(tableId);
+      if (prefs.sortDir != null) return prefs.sortDir;
+    }
+    return defaultSort?.dir ?? 'asc';
+  });
   const [search, setSearch] = useState('');
   const [colFiltersMap, setColFiltersMap] = useState<Record<string, string>>({});
   const [visibleCols, setVisibleCols] = useState<Set<string>>(() =>
@@ -175,6 +193,10 @@ export function DataTable<R>({
   useEffect(() => {
     if (tableId) saveVisibleCols(tableId, visibleCols);
   }, [visibleCols, tableId]);
+
+  useEffect(() => {
+    if (tableId) setTablePrefs(tableId, { pageSize, sortCol, sortDir });
+  }, [tableId, pageSize, sortCol, sortDir]);
 
   const visCols = useMemo(
     () => columns.filter((c) => visibleCols.has(c.key)),
@@ -309,25 +331,31 @@ export function DataTable<R>({
     return list;
   }, [serverSide, rows, columns, debouncedSearch, activeColFilters, sortCol, sortDir]);
 
-  // Reset paging when the *view* changes (search/filter/sort/selection), jumping
-  // to the selected row's page when one is selected. `processed` and `rowKey` are
-  // deliberately NOT dependencies: a poll hands back a new `rows`/`processed`
-  // identity (and parents typically pass an inline `rowKey`), so depending on them
-  // would reset the page out from under the user on every refresh. The listed
-  // deps are the genuine view changes, and they read the up-to-date `processed`
-  // from the current render.
+  // Reset to page 1 when the filter/sort/pageSize view changes. Selection changes
+  // are intentionally excluded: deselecting a row should not scroll the user back
+  // to page 1, and jumping to a newly-selected row is handled by the effect below.
+  // `processed` and `rowKey` are deliberately NOT dependencies — a poll hands back
+  // a new `rows`/`processed` identity, so depending on them would reset the page
+  // out from under the user on every refresh.
   useEffect(() => {
     if (!paginate || serverSide) return;
-    if (selectedKey) {
-      const index = processed.findIndex((row) => rowKey(row) === selectedKey);
-      if (index >= 0) {
-        setPage(Math.floor(index / pageSize) + 1);
-        return;
-      }
-    }
     setPage(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedSearch, debouncedColFilters, sortCol, sortDir, selectedKey, pageSize, paginate, serverSide]);
+  }, [debouncedSearch, debouncedColFilters, sortCol, sortDir, pageSize, paginate, serverSide]);
+
+  // Jump to the selected row's page when a row is selected (selectedKey becomes
+  // truthy or changes to a different key). Deselection (→ null) is a no-op here
+  // so the page stays where it was. `processed` and `rowKey` are intentionally
+  // excluded (poll-driven identity churn); `pageSize` is included so the jump
+  // recalculates correctly if pageSize also changed in the same render.
+  useEffect(() => {
+    if (!paginate || serverSide || !selectedKey) return;
+    const index = processed.findIndex((row) => rowKey(row) === selectedKey);
+    if (index >= 0) {
+      setPage(Math.floor(index / pageSize) + 1);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedKey, pageSize, paginate, serverSide]);
 
   // Debounce the text inputs before they drive filtering: server mode emits the
   // view-state from these; client mode feeds them into `processed` above. Either

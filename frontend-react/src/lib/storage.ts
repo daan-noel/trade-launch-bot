@@ -25,8 +25,12 @@ export const STORAGE_KEYS = {
   tokensLive: `${PREFIX}tokens.live`,
   swingCriteria: `${PREFIX}swing.criteria`,
   sweepConfig: `${PREFIX}sweep.config`,
+  /** Base key for persisted sweep run selection; append `.${strategyId}` for per-strategy key. */
+  sweepSel: `${PREFIX}sweep.sel`,
   /** Map of `{ [tableId]: visibleColumnKey[] }` — all DataTable column toggles. */
   tableCols: `${PREFIX}table.cols`,
+  /** Map of `{ [tableId]: { pageSize, sortCol, sortDir } }` — DataTable sort + page-size. */
+  tablePrefs: `${PREFIX}table.prefs`,
 } as const;
 
 // ── raw string accessors ────────────────────────────────────────────────────
@@ -93,6 +97,29 @@ export function setTableCols(tableId: string, cols: string[]): void {
   const map = getJSON<TableColsMap>(STORAGE_KEYS.tableCols, {});
   map[tableId] = cols;
   setJSON(STORAGE_KEYS.tableCols, map);
+}
+
+// ── table sort + page-size preferences ─────────────────────────────────────
+
+export interface TablePrefs {
+  pageSize?: number;
+  sortCol?: string | null;
+  sortDir?: 'asc' | 'desc';
+}
+
+type TablePrefsMap = Record<string, TablePrefs>;
+
+/** Sort/page-size preferences saved for `tableId`, or `{}` if none stored yet. */
+export function getTablePrefs(tableId: string): TablePrefs {
+  const map = getJSON<TablePrefsMap>(STORAGE_KEYS.tablePrefs, {});
+  return map[tableId] ?? {};
+}
+
+/** Persist sort/page-size preferences for `tableId` into the shared map. */
+export function setTablePrefs(tableId: string, prefs: TablePrefs): void {
+  const map = getJSON<TablePrefsMap>(STORAGE_KEYS.tablePrefs, {});
+  map[tableId] = prefs;
+  setJSON(STORAGE_KEYS.tablePrefs, map);
 }
 
 // ── one-time cleanup of pre-namespace keys ──────────────────────────────────

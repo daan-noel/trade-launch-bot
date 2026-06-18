@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useLocalStorage } from 'hooks/useLocalStorage';
+import { STORAGE_KEYS } from 'lib/storage';
 import { DataTable } from 'components/table/DataTable';
 import { InlineAlert } from 'components/ui/Modal';
 import { Badge } from 'components/ui/Badge';
@@ -69,8 +71,15 @@ export function GroupedSweepView({
   const runsQuery = useGetGroupedSweepRunsQuery({ strategyId });
   const runs = runsQuery.data ?? [];
 
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
-  const activeRunId = selectedRunId ?? runs[0]?.id ?? null;
+  const [selectedRunId, setSelectedRunId] = useLocalStorage<string | null>(
+    `${STORAGE_KEYS.sweepSel}.${strategyId}`,
+    null,
+  );
+  // Fall back to the newest run when the stored id is stale (run deleted) or
+  // nothing has been selected yet.
+  const activeRunId = (selectedRunId && runs.some((r) => r.id === selectedRunId))
+    ? selectedRunId
+    : (runs[0]?.id ?? null);
 
   const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
   // A new run invalidates the drilled-in group.

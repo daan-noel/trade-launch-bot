@@ -4,6 +4,17 @@ import { formatAge } from 'utils/format';
 import type { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { cn } from 'lib/cn';
 
+const EXIT_REASON_META: { key: string; label: string; cls: string }[] = [
+  { key: 'TakeProfit', label: 'TP', cls: 'text-green' },
+  { key: 'StopLoss', label: 'SL', cls: 'text-red' },
+  { key: 'TrailingStop', label: 'Trail', cls: 'text-text-mid' },
+  { key: 'Stall', label: 'Stall', cls: 'text-text-mid' },
+  { key: 'TimeStop', label: 'Time', cls: 'text-text-mid' },
+  { key: 'LiquidityExit', label: 'Liq', cls: 'text-text-mid' },
+  { key: 'CohortExit', label: 'Cohort', cls: 'text-text-mid' },
+  { key: 'Open', label: 'Open', cls: 'text-text-dim' },
+];
+
 interface SimSummaryCardProps {
   ruleName: string;
   tokens: SimulatedTokenResult[];
@@ -39,6 +50,7 @@ export function SimSummaryCard({
     avgHold,
     best,
     worst,
+    exitCounts,
   } = useMemo(() => {
     const tokensMatched = tokens.length;
     const openCount = tokens.filter((t) => t.exit_reason === 'Open').length;
@@ -79,6 +91,19 @@ export function SimSummaryCard({
       return m == null ? t.pnl_percent : Math.min(m, t.pnl_percent);
     }, null);
 
+    const exitCounts = tokens.reduce<Record<string, { total: number; wins: number; losses: number }>>(
+      (acc, t) => {
+        if (!acc[t.exit_reason]) acc[t.exit_reason] = { total: 0, wins: 0, losses: 0 };
+        acc[t.exit_reason].total += 1;
+        if (t.exit_reason !== 'Open') {
+          if ((t.pnl_sol ?? 0) >= 0) acc[t.exit_reason].wins += 1;
+          else acc[t.exit_reason].losses += 1;
+        }
+        return acc;
+      },
+      {},
+    );
+
     return {
       tokensMatched,
       openCount,
@@ -96,6 +121,7 @@ export function SimSummaryCard({
       avgHold,
       best,
       worst,
+      exitCounts,
     };
   }, [tokens]);
 
@@ -204,6 +230,34 @@ export function SimSummaryCard({
           </div>
         ))}
       </div>
+
+      {EXIT_REASON_META.some(({ key }) => (exitCounts[key]?.total ?? 0) > 0) && (
+        <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 border-t border-white/6 pt-4">
+          <span className="w-full text-[9px] font-semibold uppercase tracking-wider text-text-dim">
+            Exit Reasons
+          </span>
+          {EXIT_REASON_META.filter(({ key }) => (exitCounts[key]?.total ?? 0) > 0).map(({ key, label, cls }) => {
+            const c = exitCounts[key];
+            return (
+              <div key={key} className="flex flex-col gap-0.5">
+                <span className="text-[9px] font-semibold uppercase tracking-wider text-text-dim">
+                  {label}
+                </span>
+                <span className={cn('font-mono text-sm font-bold', cls)}>
+                  {c.total}
+                </span>
+                {key !== 'Open' && (
+                  <span className="font-mono text-[10px] font-semibold">
+                    <span className="text-green">{c.wins}</span>
+                    <span className="text-text-dim">/</span>
+                    <span className="text-red">{c.losses}</span>
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
