@@ -49,7 +49,13 @@ fn effective_cap(max_combos: Option<usize>) -> usize {
 /// 2.5). A combo set too big to hold at once is swept in sequential batches rather
 /// than rejected (the prior behaviour) — `HARD_MAX_COMBOS` still bounds the work.
 /// Override with `SWEEP_MEMORY_BUDGET_MB`.
-const DEFAULT_SWEEP_MEMORY_BUDGET_MB: usize = 1_024;
+///
+/// 256 MB is generous: at MAX_COMBOS=5_000 combos × 2 threads × ~600 B/ComboAgg
+/// actual peak is ~6 MB. Even at HARD_MAX_COMBOS=500_000 it's ~600 MB, so a
+/// 256 MB default batches those in ~2 passes with zero quality impact. The old
+/// 1024 MB default appeared verbatim in the holistic admission guard (rss + corpus +
+/// this), causing false OOM rejections on 4 GB boxes running a live server process.
+const DEFAULT_SWEEP_MEMORY_BUDGET_MB: usize = 256;
 
 /// The fold-accumulator memory budget in bytes (`SWEEP_MEMORY_BUDGET_MB` or the
 /// default), saturating so a fat-fingered override can't wrap. `pub(crate)` so the

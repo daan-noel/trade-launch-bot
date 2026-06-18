@@ -253,11 +253,15 @@ pub fn corpus_memory_budget_bytes() -> u64 {
 }
 
 /// Default ceiling (MB) on **total** resident sweep memory at admission: current
-/// process RSS (the live caches already resident — ~1 GB) + the corpus we're about
-/// to load + the fold-accumulator budget. The corpus and accumulator budgets each
-/// guard one axis, but they can pass *individually* yet *jointly* OOM once the live
-/// caches are added — so Phase 0.2 sums all three against this one ceiling. ~3 GB
-/// leaves headroom on a 4 GB box. Override with `SWEEP_TOTAL_MEMORY_BUDGET_MB`.
+/// process RSS (the live caches already resident) + the corpus we're about to load +
+/// the fold-accumulator budget. The corpus and accumulator budgets each guard one
+/// axis, but they can pass *individually* yet *jointly* OOM once the live caches are
+/// added — so Phase 0.2 sums all three against this one ceiling.
+///
+/// 3 GB leaves headroom on a 4 GB box when the fold budget is realistic (256 MB
+/// default). If the server RSS is high (~2 GB), lower `SWEEP_MEMORY_BUDGET_MB`
+/// before raising this — the fold budget is the cheapest knob (actual ComboAgg
+/// peak is ~6 MB at normal combo counts). Override with `SWEEP_TOTAL_MEMORY_BUDGET_MB`.
 const DEFAULT_TOTAL_MEMORY_BUDGET_MB: u64 = 3_072;
 
 /// The total-sweep memory budget in bytes (`SWEEP_TOTAL_MEMORY_BUDGET_MB` or the

@@ -30,10 +30,10 @@ use crate::sweep::projection::WalletInterner;
 /// (`CachedExitState::consumed_abs`) mapped through `trades_base`, so front-trims
 /// can never skip or double-fold a trade. Backtest/paper sims read full history
 /// from the DB, not this cache, so they are unaffected.
-pub const MAX_TRADES_RETAINED: usize = 50_000;
+pub const MAX_TRADES_RETAINED: usize = 10_000;
 /// Trim only once the window overruns the cap by this much, so the front-drain
 /// runs at most once per `TRADES_TRIM_SLACK` trades instead of on every push.
-pub const TRADES_TRIM_SLACK: usize = 5_000;
+pub const TRADES_TRIM_SLACK: usize = 1_000;
 
 // ---------------------------------------------------------------------------
 // CachedTrade

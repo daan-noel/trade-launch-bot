@@ -286,7 +286,7 @@ pub const TOKEN_CACHE_EVICT_INTERVAL_SECONDS: u64 = 300; // 5 minutes
 /// contract as `SEED_ACTIVITY_WINDOW_DAYS`. A mint with an open paper/real
 /// position is always exempt regardless of idleness, so an open exit (whose
 /// confirm loop reads this cache) never strands.
-pub const TOKEN_CACHE_EVICT_IDLE_SECONDS: i64 = 6 * 3600; // 6 hours
+pub const TOKEN_CACHE_EVICT_IDLE_SECONDS: i64 = 2 * 3600; // 2 hours
 
 /// How often the background task refreshes the DB-backed base of the token-list
 /// snapshot (`tokens LEFT JOIN tokens_info`, windowed by `SEED_ACTIVITY_WINDOW_DAYS`
