@@ -10,7 +10,7 @@ import { Accordion } from 'components/ui/Accordion';
 import { useBackgroundJobActions, useBackgroundJobsState } from 'context/BackgroundJobsContext';
 import { buildSweepColumns } from 'components/sweep/sweepColumns';
 import { buildGroupColumns } from 'components/sweep/groupColumns';
-import { computeParamColumnColors } from 'lib/sweepParamColors';
+import { computeParamColumnColors, computePnlColumnColors } from 'lib/sweepParamColors';
 import { SweepConfigForm } from 'components/sweep/SweepConfigForm';
 import { SelectedSweepHistory } from 'components/sweep/SelectedSweepHistory';
 import {
@@ -29,7 +29,7 @@ import {
   usePruneGroupedSweepsMutation,
 } from 'store/apiSlice';
 import { useStreamedSweepResults, COMBO_PAGE_SIZE } from 'hooks/useStreamedSweepResults';
-import type { ColumnDef, TableQuery } from 'components/table/types';
+import type { ColumnDef, SortEntry, TableQuery } from 'components/table/types';
 
 /** The grouped-sweep view is strategy-agnostic — the API/data layer and column
  *  builders are all driven by `strategyId` + a swept-param-key list. Each
@@ -176,9 +176,11 @@ export function GroupedSweepView({
   // churn on every parent re-render, which would reset the pager.
   const [comboPage, setComboPage] = useState(0);
   const [comboPageSize, setComboPageSize] = useState(COMBO_PAGE_SIZE);
+  const [comboSortKeys, setComboSortKeys] = useState<SortEntry[]>([]);
   const onComboQueryChange = useCallback((q: TableQuery) => {
     setComboPage(q.page - 1); // DataTable pages are 1-based; hook is 0-based
     setComboPageSize(q.pageSize);
+    setComboSortKeys(q.sortKeys);
   }, []);
 
   // Reset to page 0 whenever the selected group changes.
@@ -187,7 +189,7 @@ export function GroupedSweepView({
   }, [activeGroupId]);
 
   const { rows: results, total: resultsTotal, loading: resultsLoading, error: resultsErr } =
-    useStreamedSweepResults(strategyId, activeRunId, activeGroupId, comboPage, comboPageSize);
+    useStreamedSweepResults(strategyId, activeRunId, activeGroupId, comboPage, comboPageSize, comboSortKeys);
 
   const groupColumns = useMemo(() => buildGroupColumns(paramKeys), [paramKeys]);
   // Per-column tint plan for the drill-in combo table: constant knobs dim out,
@@ -197,9 +199,13 @@ export function GroupedSweepView({
     () => computeParamColumnColors(results, paramKeys),
     [results, paramKeys],
   );
+  const pnlColors = useMemo(
+    () => computePnlColumnColors(results),
+    [results],
+  );
   const comboColumns = useMemo(
-    () => buildSweepColumns(paramKeys, paramColors),
-    [paramKeys, paramColors],
+    () => buildSweepColumns(paramKeys, paramColors, pnlColors),
+    [paramKeys, paramColors, pnlColors],
   );
 
   const tokenResultsQuery = useGetComboTokenResultsQuery(

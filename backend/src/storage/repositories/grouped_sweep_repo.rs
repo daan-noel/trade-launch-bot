@@ -555,7 +555,13 @@ impl GroupedSweepRepo {
         Ok(count)
     }
 
-    /// One page of ranked combo rows for a group, best score first.
+    /// One page of ranked combo rows for a group.
+    ///
+    /// `sort_col` / `sort_dir` come from the frontend `TableQuery`. Both are
+    /// validated before this call: `sort_col` is either a known direct column
+    /// name or `None` (falls back to `score DESC NULLS LAST`); `sort_dir` is
+    /// `"asc"` or `"desc"`.
+    ///
     /// `limit`/`offset` are already validated by the caller.
     pub async fn list_results_paged(
         &self,
@@ -563,7 +569,19 @@ impl GroupedSweepRepo {
         group_id: Uuid,
         limit: i64,
         offset: i64,
+        sort_col: Option<&str>,
+        sort_dir: &str,
+        sort_param_key: Option<&str>,
     ) -> anyhow::Result<Vec<GroupedSweepResult>> {
+        let order = if let Some(param_key) = sort_param_key {
+            // Param column: extract from JSONB, cast to numeric.
+            // `param_key` is pre-validated to be [a-z0-9_]+ by the handler.
+            format!("(params->>'{}')::numeric {} NULLS LAST", param_key, sort_dir)
+        } else if let Some(col) = sort_col {
+            format!("{} {} NULLS LAST", col, sort_dir)
+        } else {
+            "score DESC NULLS LAST".to_string()
+        };
         let sql = format!(
             "SELECT combo_id, params, n_fired, n_open, n_closed, win_rate, total_pnl_sol, \
                     mean_pnl_pct, median_pnl_pct, p90_pnl_pct, best_pnl_pct, worst_pnl_pct, \
@@ -571,8 +589,8 @@ impl GroupedSweepRepo {
                     median_holding_secs, n_exit_take_profit, n_exit_stop_loss, n_exit_trailing, \
                     n_exit_stall, n_exit_time, n_exit_liquidity, n_exit_cohort, n_exit_open \
              FROM {} WHERE run_id = $1 AND group_id = $2 \
-             ORDER BY score DESC NULLS LAST LIMIT $3 OFFSET $4",
-            self.tables.results
+             ORDER BY {} LIMIT $3 OFFSET $4",
+            self.tables.results, order
         );
         let rows = sqlx::query_as::<_, ResultDbRow>(&sql)
             .bind(run_id)

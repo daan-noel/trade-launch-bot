@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { GroupedSweepResultRecord } from 'components/sweep/groupedTypes';
+import type { SortEntry } from 'components/table/types';
 
 export const COMBO_PAGE_SIZE = 200;
 
@@ -24,6 +25,7 @@ export function useStreamedSweepResults(
   groupId: string | null,
   page: number,
   pageSize: number,
+  sortKeys: SortEntry[] = [],
 ): StreamedSweepState {
   const [rows, setRows] = useState<GroupedSweepResultRecord[]>([]);
   const [total, setTotal] = useState(0);
@@ -45,15 +47,23 @@ export function useStreamedSweepResults(
     abortRef.current = controller;
 
     setRows([]);
-    setTotal(0);
+    // NOTE: do NOT reset `total` to 0 here. The DataTable's server-side
+    // page-clamp effect reacts to `serverTotal`; a transient 0 makes it compute
+    // `totalPages = 1` and snap the user back to page 1 the instant they change
+    // page or sort (which trips a refetch). Keep the prior count until the new
+    // `X-Total-Count` header lands below.
     setLoading(true);
     setError(null);
 
+    const primary = sortKeys[0];
+    const sortParams = primary
+      ? `&sort_col=${encodeURIComponent(primary.col)}&sort_dir=${primary.dir}`
+      : '';
     const url =
       `/api/strategies/sweeps/${encodeURIComponent(runId)}` +
       `/groups/${encodeURIComponent(groupId)}` +
       `/results?strategy_id=${encodeURIComponent(strategyId)}` +
-      `&page=${page}&limit=${pageSize}`;
+      `&page=${page}&limit=${pageSize}${sortParams}`;
 
     (async () => {
       try {
@@ -101,7 +111,8 @@ export function useStreamedSweepResults(
     })();
 
     return () => controller.abort();
-  }, [strategyId, runId, groupId, page, pageSize]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [strategyId, runId, groupId, page, pageSize, JSON.stringify(sortKeys)]);
 
   return { rows, total, loading, error };
 }

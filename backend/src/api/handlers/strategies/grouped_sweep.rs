@@ -151,6 +151,62 @@ pub struct ResultsQuery {
     /// Rows per page, clamped to 1–1000 (default 200).
     #[serde(default)]
     pub limit: Option<i64>,
+    /// Frontend column key to sort by (e.g. `"score"`, `"n_fired"`,
+    /// `"p_exit_take_profit"`). Omit to keep the default `score DESC`.
+    #[serde(default)]
+    pub sort_col: Option<String>,
+    /// `"asc"` or `"desc"` (default `"desc"`).
+    #[serde(default)]
+    pub sort_dir: Option<String>,
+}
+
+/// Validated sort spec derived from `ResultsQuery`.
+enum SortSpec {
+    Default,
+    DirectCol { col: &'static str, dir: &'static str },
+    ParamKey { key: String, dir: &'static str },
+}
+
+/// Allowlist of direct DB columns the frontend may sort by (maps frontend key
+/// → DB column name, which happen to be identical here).
+fn resolve_sort(col: &str, dir: &str) -> Option<SortSpec> {
+    let dir_str: &'static str = match dir { "asc" => "ASC", _ => "DESC" };
+    // Param column: frontend prefix is `p_`, DB expression is `(params->>'key')::numeric`.
+    if let Some(param_key) = col.strip_prefix("p_") {
+        // Only allow [a-z0-9_]+ to prevent injection.
+        if param_key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') && !param_key.is_empty() {
+            return Some(SortSpec::ParamKey { key: param_key.to_string(), dir: dir_str });
+        }
+        return None;
+    }
+    let db_col: &'static str = match col {
+        "score"               => "score",
+        "n_fired"             => "n_fired",
+        "n_closed"            => "n_closed",
+        "n_open"              => "n_open",
+        "win_rate"            => "win_rate",
+        "total_pnl_sol"       => "total_pnl_sol",
+        "mean_pnl_pct"        => "mean_pnl_pct",
+        "median_pnl_pct"      => "median_pnl_pct",
+        "p90_pnl_pct"         => "p90_pnl_pct",
+        "best_pnl_pct"        => "best_pnl_pct",
+        "worst_pnl_pct"       => "worst_pnl_pct",
+        "std_pnl_pct"         => "std_pnl_pct",
+        "profit_factor"       => "profit_factor",
+        "expectancy_sol"      => "expectancy_sol",
+        "avg_holding_secs"    => "avg_holding_secs",
+        "median_holding_secs" => "median_holding_secs",
+        "n_exit_take_profit"  => "n_exit_take_profit",
+        "n_exit_stop_loss"    => "n_exit_stop_loss",
+        "n_exit_trailing"     => "n_exit_trailing",
+        "n_exit_stall"        => "n_exit_stall",
+        "n_exit_time"         => "n_exit_time",
+        "n_exit_liquidity"    => "n_exit_liquidity",
+        "n_exit_cohort"       => "n_exit_cohort",
+        "n_exit_open"         => "n_exit_open",
+        _                     => return None,
+    };
+    Some(SortSpec::DirectCol { col: db_col, dir: dir_str })
 }
 
 // ---------------------------------------------------------------------------
@@ -795,6 +851,19 @@ pub async fn list_results(
     let limit = query.limit.unwrap_or(200).clamp(1, 1000);
     let offset = page * limit;
 
+    let sort_spec = match (&query.sort_col, &query.sort_dir) {
+        (Some(col), dir) => {
+            let dir_str = dir.as_deref().unwrap_or("desc");
+            resolve_sort(col, dir_str).unwrap_or(SortSpec::Default)
+        }
+        _ => SortSpec::Default,
+    };
+    let (sort_col, sort_dir, sort_param_key): (Option<&str>, &str, Option<&str>) = match &sort_spec {
+        SortSpec::Default => (None, "DESC", None),
+        SortSpec::DirectCol { col, dir } => (Some(col), dir, None),
+        SortSpec::ParamKey { key, dir } => (None, dir, Some(key.as_str())),
+    };
+
     let repo = GroupedSweepRepo::new(state.db.clone(), tables);
 
     let total = match repo.count_results(run_id, group_id).await {
@@ -806,7 +875,7 @@ pub async fn list_results(
         }
     };
 
-    let results = match repo.list_results_paged(run_id, group_id, limit, offset).await {
+    let results = match repo.list_results_paged(run_id, group_id, limit, offset, sort_col, sort_dir, sort_param_key).await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("DB error listing grouped sweep results: {e}");

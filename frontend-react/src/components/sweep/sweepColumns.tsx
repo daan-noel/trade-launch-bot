@@ -117,10 +117,15 @@ function count(
  * strategy's knobs render without changing this file) and keep `paramKeys`
  * order; cell text is colored by group (entry/exit knobs, counts, pnl, holding,
  * exits) and, on the PnL metrics, by meaning (green = good, red = bad).
+ *
+ * `pnlColors` applies the same per-value cell-band tint to the PnL metric
+ * columns that `paramColors` applies to param columns — rows sharing an
+ * identical metric value get the same background so clusters read at a glance.
  */
 export function buildSweepColumns(
   paramKeys: string[],
   paramColors?: Map<string, ParamColumnColor>,
+  pnlColors?: Map<string, ParamColumnColor>,
 ): ColumnDef<SweepResultRecord>[] {
   // One column per swept knob, in `paramKeys` order (the page owns that order).
   const paramCols: ColumnDef<SweepResultRecord>[] = paramKeys.map((k) => {
@@ -153,7 +158,7 @@ export function buildSweepColumns(
     };
   });
 
-  return [
+  const cols: ColumnDef<SweepResultRecord>[] = [
     ...paramCols,
 
     count('n_fired', 'Fired', 'counts', 'text-info', (r) => r.n_fired, {
@@ -242,4 +247,23 @@ export function buildSweepColumns(
     count('n_exit_cohort', 'Cohort', 'exits', 'text-text-mid', (r) => r.n_exit_cohort, { defaultVisible: false }),
     count('n_exit_open', 'Still open', 'exits', 'text-text-dim', (r) => r.n_exit_open, { defaultVisible: false }),
   ];
+
+  // Apply per-value cell tints to pnl-group columns (same palette mechanism as
+  // param columns). Column key === SweepResultRecord field name so `unknown` cast
+  // gives safe indexed access. Rows sharing an identical metric value get the same
+  // background band so clusters of equivalent combos are visible at a glance.
+  if (!pnlColors) return cols;
+  return cols.map((col) => {
+    if (col.group !== 'pnl') return col;
+    const color = pnlColors.get(col.key);
+    if (!color || color.constant) return col;
+    const { byValue } = color;
+    return {
+      ...col,
+      cellClassName: (r: SweepResultRecord) => {
+        const v = (r as unknown as Record<string, number | null>)[col.key];
+        return v == null ? undefined : byValue.get(v);
+      },
+    };
+  });
 }
