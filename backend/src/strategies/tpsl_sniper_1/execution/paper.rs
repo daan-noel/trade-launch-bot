@@ -19,6 +19,7 @@ use crate::models::ingest::SseEvent;
 use crate::models::{Position, PositionStatus, Tpsl1Rule};
 use crate::state::token_cache::{CachedTrade, TokenCache};
 use crate::storage::repositories::tpsl1_paper_trading_repo::Tpsl1PaperTradingRepo;
+use crate::storage::repositories::trade_repo;
 
 /// Snapshot the mint's retained trade window from the in-memory token cache
 /// (oldest-first), or `None` if the token isn't tracked. The WS pipeline keeps
@@ -53,6 +54,7 @@ pub(crate) fn spawn_entry_fill_poll(
     position_id: Uuid,
     buy_amount: f64,
 ) {
+    let pool = paper_repo.pool().clone();
     let poll_sem = runtime.paper_poll_sem();
     tokio::spawn(async move {
         // Bound concurrent fill-poll tasks; held for the task's lifetime.
@@ -73,11 +75,13 @@ pub(crate) fn spawn_entry_fill_poll(
             }
             last_count = Some(trade_count);
             if let Some(fill) = super::super::entry::find_entry_fill_in_trades(&trades, 5) {
-                // The cache row carries no signature (Phase B step 1), so the resolved
-                // fill's `tx_signature` is empty here — record a synthetic, position-
-                // scoped id (mirrors `paper-time-exit-{id}`). The real on-chain sig is
-                // a real-mode concept; paper never had one to begin with.
-                let entry_tx = format!("paper-entry-{position_id}");
+                // Recover the real tx_signature from the DB: the cache strips it for
+                // Phase B, but the fill is a real on-chain trade (another wallet) that
+                // was ingested into `trades`. Fall back to "" if not found.
+                let entry_tx = trade_repo::find_tx_by_fill(&pool, &mint, fill.block_time, fill.price)
+                    .await
+                    .unwrap_or_default()
+                    .unwrap_or_default();
                 if let Ok(Some(prev)) = paper_repo.find_by_id(position_id).await {
                     // `update_entry` RETURNs the updated row — sync off it directly
                     // instead of reading back the row we just wrote.
@@ -166,8 +170,11 @@ pub(crate) fn spawn_exit_fill_poll(
                 if let Some(fill) =
                     super::super::exit::find_trade_driven_exit(&trades, entry_block_time, entry_price, &rule)
                 {
-                    // Synthetic, position-scoped exit id — the cache fill has no sig.
-                    let exit_tx = format!("paper-exit-{position_id}");
+                    // Recover the real tx_signature from the DB (cache stripped it).
+                    let exit_tx = trade_repo::find_tx_by_fill(&pool, &mint, fill.block_time, fill.price)
+                        .await
+                        .unwrap_or_default()
+                        .unwrap_or_default();
                     if let Ok(Some(prev)) = paper_repo.find_by_id(position_id).await {
                         // `update_exit` returns the updated row (RETURNING), so we
                         // sync runtime state directly without a read-back.
@@ -247,7 +254,11 @@ pub(crate) async fn record_time_exit(
     reason: String,
     rule: &Tpsl1Rule,
 ) {
-    let exit_tx = format!("paper-time-exit-{}", position.id);
+    // Time exits have no confirming trade, so the lookup returns "" (graceful).
+    let exit_tx = trade_repo::find_tx_by_fill(pool, &position.mint, exit_time, exit_price)
+        .await
+        .unwrap_or_default()
+        .unwrap_or_default();
     let prev = position.clone();
     if let Err(err) = paper_repo
         .update_exit(position.id, &exit_tx, exit_price, exit_time, &reason)

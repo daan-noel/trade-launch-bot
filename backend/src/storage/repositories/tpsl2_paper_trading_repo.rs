@@ -140,6 +140,10 @@ impl Tpsl2PaperTradingRepo {
         Self { pool }
     }
 
+    pub(crate) fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
     // ---- runs -------------------------------------------------------------
 
     /// Start a fresh run for a rule. Deletes the rule's prior run (and, via

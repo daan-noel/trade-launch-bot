@@ -20,6 +20,7 @@ use crate::state::token_cache::CachedTrade;
 use crate::models::{Position, PositionStatus, Tpsl2Rule};
 use crate::state::token_cache::TokenCache;
 use crate::storage::repositories::tpsl2_paper_trading_repo::Tpsl2PaperTradingRepo;
+use crate::storage::repositories::trade_repo;
 
 /// Snapshot the mint's retained trade window from the in-memory token cache
 /// (oldest-first), or `None` if the token isn't tracked. The WS pipeline keeps
@@ -61,6 +62,7 @@ pub(crate) fn spawn_entry_fill_poll(
     rule: Tpsl2Rule,
 ) {
     let buy_amount = rule.buy_amount;
+    let pool = paper_repo.pool().clone();
     let poll_sem = runtime.paper_poll_sem();
     tokio::spawn(async move {
         // Bound concurrent fill-poll tasks; held for the task's lifetime.
@@ -98,9 +100,15 @@ pub(crate) fn spawn_entry_fill_poll(
                 // paper has a real target↔entry gap. They coincide only in the
                 // fallback case where no adverse trade exists.
                 let entry = super::super::entry::find_worst_case_paper_entry_at(&trades, trigger_idx);
-                // The cache fills have no sig — record synthetic, position-scoped ids.
-                let target_tx = format!("paper-target-{position_id}");
-                let entry_tx = format!("paper-entry-{position_id}");
+                // Recover real tx_signatures from the DB (cache strips them, Phase B).
+                let target_tx = trade_repo::find_tx_by_fill(&pool, &mint, target_fill.block_time, target_fill.price)
+                    .await
+                    .unwrap_or_default()
+                    .unwrap_or_default();
+                let entry_tx = trade_repo::find_tx_by_fill(&pool, &mint, entry.block_time, entry.price)
+                    .await
+                    .unwrap_or_default()
+                    .unwrap_or_default();
                 if let Ok(Some(prev)) = paper_repo.find_by_id(position_id).await {
                     // Persist the trigger as the target, then the worst-case entry.
                     // Each writer RETURNs the updated row; sync off the latest so the
@@ -202,8 +210,11 @@ pub(crate) fn spawn_exit_fill_poll(
                 if let Some(fill) =
                     super::super::exit::find_trade_driven_exit(&trades, entry_block_time, entry_price, &rule)
                 {
-                    // Synthetic, position-scoped exit id — the cache fill has no sig.
-                    let exit_tx = format!("paper-exit-{position_id}");
+                    // Recover the real tx_signature from the DB (cache stripped it).
+                    let exit_tx = trade_repo::find_tx_by_fill(&pool, &mint, fill.block_time, fill.price)
+                        .await
+                        .unwrap_or_default()
+                        .unwrap_or_default();
                     if let Ok(Some(prev)) = paper_repo.find_by_id(position_id).await {
                         // `update_exit` returns the updated row (RETURNING), so we
                         // sync runtime state directly without a read-back.
@@ -283,7 +294,11 @@ pub(crate) async fn record_time_exit(
     reason: String,
     rule: &Tpsl2Rule,
 ) {
-    let exit_tx = format!("paper-time-exit-{}", position.id);
+    // Time exits have no confirming trade, so the lookup returns "" (graceful).
+    let exit_tx = trade_repo::find_tx_by_fill(pool, &position.mint, exit_time, exit_price)
+        .await
+        .unwrap_or_default()
+        .unwrap_or_default();
     let prev = position.clone();
     if let Err(err) = paper_repo
         .update_exit(position.id, &exit_tx, exit_price, exit_time, &reason)

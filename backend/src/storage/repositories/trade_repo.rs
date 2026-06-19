@@ -619,6 +619,29 @@ impl TradeRepo {
     }
 }
 
+/// Look up the on-chain `tx_signature` for a real trade matching a paper fill.
+/// Paper execution finds fills in the in-memory cache (which strips `tx_signature`
+/// for Phase B), then calls this to recover the real signature so paper positions
+/// store the same tx as sim positions and the frontend highlight works identically.
+/// Returns `None` for time-driven exits where no real trade occurred.
+pub(crate) async fn find_tx_by_fill(
+    pool: &PgPool,
+    mint: &str,
+    block_time: DateTime<Utc>,
+    price_per_token: f64,
+) -> sqlx::Result<Option<String>> {
+    sqlx::query_scalar(
+        "SELECT tx_signature FROM trades \
+         WHERE mint_address = $1 AND block_time = $2 AND price_per_token = $3 \
+         LIMIT 1",
+    )
+    .bind(mint)
+    .bind(block_time)
+    .bind(price_per_token)
+    .fetch_optional(pool)
+    .await
+}
+
 /// Per-mint, lifetime-scoped aggregates the cache seed needs alongside a mint's
 /// (capped) recent trade run — computed in the same single scan as the trades
 /// (see [`TradeRepo::for_each_seed_mint`]). `lifetime_count`/`lifetime_volume`
