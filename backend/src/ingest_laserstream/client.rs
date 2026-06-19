@@ -22,7 +22,7 @@ use tonic::service::interceptor::InterceptedService;
 use tonic::service::Interceptor;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 use tonic::{Request, Status};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::config::constants::PUMP_SWAP_PROGRAM_ID;
 
@@ -42,6 +42,17 @@ const MAX_DECODING_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(30);
 /// Quiet window for coalescing a burst of pool-set changes into one resubscribe.
 const POOL_RESUBSCRIBE_DEBOUNCE: Duration = Duration::from_millis(250);
+/// Force a reconnect if no transaction update arrives within this window. The
+/// gRPC stream can go silent — server-side stall, a silently-dropped
+/// subscription, or a throttle that pauses delivery — WITHOUT sending an error or
+/// closing, in which case `stream.message()` blocks forever and ingest freezes
+/// with no log (only a manual restart recovers it). Pump.fun's firehose never
+/// pauses this long, so a gap this size means a dead stream: tear it down so the
+/// outer loop reconnects (replaying from `last_slot`, so no data is lost).
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How often the idle watchdog wakes to check the silence gap. A fraction of
+/// `STREAM_IDLE_TIMEOUT` so detection latency is bounded to roughly one tick.
+const STREAM_IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(15);
 
 /// Add 0..50% jitter to a reconnect delay to decorrelate reconnect storms.
 /// Derives the jitter from wall-clock subsecond nanos (no rng dependency).
@@ -267,12 +278,22 @@ async fn run_once(
         pool_index.len()
     );
 
+    // Idle watchdog: stamp the last time a transaction update arrived, and a timer
+    // that periodically checks the silence gap. If it grows past
+    // `STREAM_IDLE_TIMEOUT` the stream has stalled silently — return an error so
+    // the caller reconnects. Resets on transaction updates only (not keepalive
+    // pings), so a stream that pings but stops delivering txs is still caught.
+    let mut last_update = tokio::time::Instant::now();
+    let mut idle_check = tokio::time::interval(STREAM_IDLE_CHECK_INTERVAL);
+    idle_check.tick().await; // consume the immediate first tick
+
     loop {
         tokio::select! {
             msg = stream.message() => {
                 match msg {
                     Ok(Some(update)) => {
                         if let Some(UpdateOneof::Transaction(tx)) = update.update_oneof {
+                            last_update = tokio::time::Instant::now();
                             last_slot.fetch_max(tx.slot, Ordering::Relaxed);
                             // Cheap protobuf-log pre-filter: forward only txs the
                             // decoder would keep (curve or AMM program in the logs),
@@ -326,6 +347,17 @@ async fn run_once(
                 if !*live_rx.borrow() {
                     info!("LaserStream: live mode disabled — closing stream");
                     return Ok(());
+                }
+            }
+
+            // Idle watchdog tick — if no transaction has arrived within
+            // `STREAM_IDLE_TIMEOUT`, the stream stalled silently (no error/close).
+            // Return an error so `run` reconnects and replays from `last_slot`.
+            _ = idle_check.tick() => {
+                let idle = last_update.elapsed();
+                if idle >= STREAM_IDLE_TIMEOUT {
+                    warn!("LaserStream: no transaction update for {idle:?} — forcing reconnect");
+                    return Err(anyhow::anyhow!("stream idle for {idle:?}"));
                 }
             }
         }
