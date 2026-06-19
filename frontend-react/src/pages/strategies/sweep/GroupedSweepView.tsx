@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { STORAGE_KEYS } from 'lib/storage';
 import { DataTable } from 'components/table/DataTable';
 import { InlineAlert } from 'components/ui/Modal';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
+import { Accordion } from 'components/ui/Accordion';
 import { useBackgroundJobActions, useBackgroundJobsState } from 'context/BackgroundJobsContext';
 import { buildSweepColumns } from 'components/sweep/sweepColumns';
 import { buildGroupColumns } from 'components/sweep/groupColumns';
@@ -20,11 +21,12 @@ import {
   apiErrorMessage,
   useGetGroupedSweepRunsQuery,
   useGetGroupedSweepGroupsQuery,
-  useGetGroupedSweepResultsQuery,
   useStartGroupedSweepMutation,
   useDeleteGroupedSweepRunMutation,
   usePruneGroupedSweepsMutation,
 } from 'store/apiSlice';
+import { useStreamedSweepResults, COMBO_PAGE_SIZE } from 'hooks/useStreamedSweepResults';
+import type { TableQuery } from 'components/table/types';
 
 /** The grouped-sweep view is strategy-agnostic — the API/data layer and column
  *  builders are all driven by `strategyId` + a swept-param-key list. Each
@@ -163,11 +165,23 @@ export function GroupedSweepView({
   const activeGroup = groups.find((g) => g.id === activeGroupId) ?? null;
   const activeRun = runs.find((r) => r.id === activeRunId) ?? null;
 
-  const resultsQuery = useGetGroupedSweepResultsQuery(
-    { strategyId, runId: activeRunId ?? '', groupId: activeGroupId ?? '' },
-    { skip: !activeRunId || !activeGroupId },
-  );
-  const results = resultsQuery.data ?? [];
+  // Server-side pagination state for the combo table. `onComboQueryChange` is
+  // stable (useCallback) so DataTable's onQueryChange prop identity doesn't
+  // churn on every parent re-render, which would reset the pager.
+  const [comboPage, setComboPage] = useState(0);
+  const [comboPageSize, setComboPageSize] = useState(COMBO_PAGE_SIZE);
+  const onComboQueryChange = useCallback((q: TableQuery) => {
+    setComboPage(q.page - 1); // DataTable pages are 1-based; hook is 0-based
+    setComboPageSize(q.pageSize);
+  }, []);
+
+  // Reset to page 0 whenever the selected group changes.
+  useEffect(() => {
+    setComboPage(0);
+  }, [activeGroupId]);
+
+  const { rows: results, total: resultsTotal, loading: resultsLoading, error: resultsErr } =
+    useStreamedSweepResults(strategyId, activeRunId, activeGroupId, comboPage, comboPageSize);
 
   const groupColumns = useMemo(() => buildGroupColumns(paramKeys), [paramKeys]);
   // Per-column tint plan for the drill-in combo table: constant knobs dim out,
@@ -184,7 +198,6 @@ export function GroupedSweepView({
 
   const runsErr = apiErrorMessage(runsQuery.error, 'Failed to load sweep runs');
   const groupsErr = apiErrorMessage(groupsQuery.error, 'Failed to load groups');
-  const resultsErr = apiErrorMessage(resultsQuery.error, 'Failed to load combo results');
 
   return (
     <div>
@@ -195,17 +208,19 @@ export function GroupedSweepView({
         </Badge>
       </div>
 
-      <div ref={formRef}>
-        <SweepConfigForm
-          strategyId={strategyId}
-          axes={axes}
-          storageKey={storageKey}
-          running={sweepRunning}
-          onRun={run}
-          reuseNonce={reuseNonce}
-          reuseRun={activeRun}
-        />
-      </div>
+      <Accordion title="Configure sweep">
+        <div ref={formRef}>
+          <SweepConfigForm
+            strategyId={strategyId}
+            axes={axes}
+            storageKey={storageKey}
+            running={sweepRunning}
+            onRun={run}
+            reuseNonce={reuseNonce}
+            reuseRun={activeRun}
+          />
+        </div>
+      </Accordion>
 
       {startErr && <InlineAlert variant="error">{startErr}</InlineAlert>}
       {runsQuery.isLoading && <p className="text-text-dim">Loading sweep runs…</p>}
@@ -221,69 +236,72 @@ export function GroupedSweepView({
       {runs.length > 0 && (
         <>
           <SectionDivider />
-          <div className="mb-4 flex flex-wrap items-center gap-2.5">
-            <label className="text-sm text-text-dim" htmlFor="grouped-sweep-run">
-              Run
-            </label>
-            <select
-              id="grouped-sweep-run"
-              className="rounded-md border border-white/10 bg-surface px-2.5 py-1.5 text-sm text-primary"
-              value={activeRunId ?? ''}
-              onChange={(e) => setSelectedRunId(e.target.value)}
-            >
-              {runs.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.label ? `${r.label} · ` : ''}
-                  {new Date(r.created_at).toLocaleString()} · {r.method} ·{' '}
-                  {r.grouping_spec.length ? r.grouping_spec.join('+') : 'ALL'} ·{' '}
-                  {r.token_count} tokens · {runGroupsLabel(r)} × {r.combo_count} combos
-                </option>
-              ))}
-            </select>
-
-            <Button
-              variant="danger"
-              size="sm"
-              disabled={!activeRunId || deleteState.isLoading}
-              onClick={onDeleteRun}
-            >
-              {deleteState.isLoading ? 'Deleting…' : 'Delete Run'}
-            </Button>
-
-            <span className="ml-auto flex items-center gap-2">
-              <label className="text-sm text-text-dim" htmlFor="grouped-sweep-prune">
-                Clear runs before
-              </label>
-              <input
-                id="grouped-sweep-prune"
-                type="date"
-                className="rounded-md border border-white/10 bg-surface px-2.5 py-1.5 text-sm text-primary"
-                value={pruneBefore}
-                onChange={(e) => setPruneBefore(e.target.value)}
-              />
-              <Button
-                variant="danger"
-                size="sm"
-                disabled={!pruneBefore || pruneState.isLoading}
-                onClick={onPrune}
-              >
-                {pruneState.isLoading ? 'Clearing…' : 'Clear All OLD'}
-              </Button>
-            </span>
-          </div>
 
           {deleteErr && <InlineAlert variant="error">{deleteErr}</InlineAlert>}
           {groupsErr && <InlineAlert variant="error">{groupsErr}</InlineAlert>}
 
           {activeRun && (
-            <SelectedSweepHistory
-              strategyId={strategyId}
-              run={activeRun}
-              onReuse={() => {
-                setReuseNonce((n) => n + 1);
-                formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-              }}
-            />
+            <Accordion
+              header={<div className="flex flex-1 flex-wrap items-center gap-2.5">
+                <label className="text-sm text-text-dim" htmlFor="grouped-sweep-run">
+                  Run
+                </label>
+                <select
+                  id="grouped-sweep-run"
+                  className="rounded-md border border-white/10 bg-surface px-2.5 py-1.5 text-sm text-primary"
+                  value={activeRunId ?? ''}
+                  onChange={(e) => setSelectedRunId(e.target.value)}
+                >
+                  {runs.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.label ? `${r.label} · ` : ''}
+                      {new Date(r.created_at).toLocaleString()} · {r.method} ·{' '}
+                      {r.grouping_spec.length ? r.grouping_spec.join('+') : 'ALL'} ·{' '}
+                      {r.token_count} tokens · {runGroupsLabel(r)} × {r.combo_count} combos
+                    </option>
+                  ))}
+                </select>
+
+                <Button
+                  variant="danger"
+                  size="sm"
+                  disabled={!activeRunId || deleteState.isLoading}
+                  onClick={onDeleteRun}
+                >
+                  {deleteState.isLoading ? 'Deleting…' : 'Delete Run'}
+                </Button>
+
+                <span className="ml-auto flex items-center gap-2">
+                  <label className="text-sm text-text-dim" htmlFor="grouped-sweep-prune">
+                    Clear runs before
+                  </label>
+                  <input
+                    id="grouped-sweep-prune"
+                    type="date"
+                    className="rounded-md border border-white/10 bg-surface px-2.5 py-1.5 text-sm text-primary"
+                    value={pruneBefore}
+                    onChange={(e) => setPruneBefore(e.target.value)}
+                  />
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    disabled={!pruneBefore || pruneState.isLoading}
+                    onClick={onPrune}
+                  >
+                    {pruneState.isLoading ? 'Clearing…' : 'Clear All OLD'}
+                  </Button>
+                </span>
+              </div>}
+              defaultOpen={false} className="mb-3">
+              <SelectedSweepHistory
+                strategyId={strategyId}
+                run={activeRun}
+                onReuse={() => {
+                  setReuseNonce((n) => n + 1);
+                  formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }}
+              />
+            </Accordion>
           )}
 
           {activeRun && activeRun.status !== 'completed' && (
@@ -317,15 +335,15 @@ export function GroupedSweepView({
           />
 
           {activeGroupId && (
-            <div className="mt-5">
+            <div className="mt-12">
               <div className="mb-2 flex flex-wrap items-center gap-2">
                 <h3 className="text-sm font-bold text-secondary">Combos for group</h3>
                 {activeGroup && (
                   <span className="font-mono text-xs text-text-dim">
                     {Object.keys(activeGroup.group_key).length
                       ? Object.entries(activeGroup.group_key)
-                          .map(([k, v]) => `${k}=${v}`)
-                          .join(' · ')
+                        .map(([k, v]) => `${k}=${v}`)
+                        .join(' · ')
                       : 'ALL tokens'}{' '}
                     · {activeGroup.token_count} tokens
                   </span>
@@ -345,20 +363,23 @@ export function GroupedSweepView({
                   holding: 'Holding',
                   exits: 'Exit reasons',
                 }}
-                defaultSort={{ col: 'score', dir: 'desc' }}
                 searchable={false}
-                colFilters
+                colFilters={false}
                 colToggle
                 selectable={false}
-                defaultPageSize={25}
-                pageSizeOptions={[25, 50, 100]}
+                serverSide
+                serverTotal={resultsTotal}
+                onQueryChange={onComboQueryChange}
+                defaultPageSize={COMBO_PAGE_SIZE}
+                pageSizeOptions={[100, 200, 500]}
                 tableId={`${strategyId}_sweep_combos`}
-                resetKey={activeGroupId}
-                loading={resultsQuery.isFetching}
+                resetKey={activeGroupId ?? ''}
+                loading={resultsLoading}
                 emptyMessage="No combo results for this group."
               />
             </div>
           )}
+
         </>
       )}
     </div>

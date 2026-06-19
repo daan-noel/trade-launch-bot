@@ -16,6 +16,8 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use actix_web::{web, HttpResponse, Responder};
+use futures_util::StreamExt as _;
+use tokio_stream::wrappers::ReceiverStream;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -135,6 +137,17 @@ pub struct PruneQuery {
     pub strategy_id: String,
     /// Required cutoff — runs created strictly before this are deleted.
     pub before: DateTime<Utc>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct ResultsQuery {
+    pub strategy_id: String,
+    /// Zero-based page index (default 0).
+    #[serde(default)]
+    pub page: Option<i64>,
+    /// Rows per page, clamped to 1–1000 (default 200).
+    #[serde(default)]
+    pub limit: Option<i64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -726,28 +739,75 @@ pub async fn list_groups(
     }
 }
 
-/// `GET /api/strategies/sweeps/{run_id}/groups/{group_id}/results?strategy_id=tpsl2`
-/// — every ranked combo row for one group (the drill-in table).
+/// `GET /api/strategies/sweeps/{run_id}/groups/{group_id}/results?strategy_id=tpsl2&page=0&limit=200`
+///
+/// Streams one page of ranked combo rows as NDJSON (one JSON object per line).
+/// Best-score combos come first (`ORDER BY score DESC NULLS LAST`).
+/// The `X-Total-Count` response header carries the unfiltered group total so the
+/// frontend can render a correct page count without a second round-trip.
 pub async fn list_results(
     state: web::Data<Arc<AppState>>,
     path: web::Path<(Uuid, Uuid)>,
-    query: web::Query<StrategyQuery>,
-) -> impl Responder {
+    query: web::Query<ResultsQuery>,
+) -> HttpResponse {
     let tables = match registry::tables_for(&query.strategy_id) {
         Some(t) => t,
         None => return bad_strategy(&query.strategy_id),
     };
     let (run_id, group_id) = path.into_inner();
-    match GroupedSweepRepo::new(state.db.clone(), tables)
-        .list_results(run_id, group_id)
-        .await
-    {
-        Ok(results) => HttpResponse::Ok().json(results),
+    let page = query.page.unwrap_or(0).max(0);
+    let limit = query.limit.unwrap_or(200).clamp(1, 1000);
+    let offset = page * limit;
+
+    let repo = GroupedSweepRepo::new(state.db.clone(), tables);
+
+    let total = match repo.count_results(run_id, group_id).await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::error!("DB error counting grouped sweep results: {e}");
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "database error"}));
+        }
+    };
+
+    let results = match repo.list_results_paged(run_id, group_id, limit, offset).await {
+        Ok(r) => r,
         Err(e) => {
             tracing::error!("DB error listing grouped sweep results: {e}");
-            HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}))
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "database error"}));
         }
-    }
+    };
+
+    // Serialize each row as a newline-delimited JSON line and stream them through
+    // a channel so actix uses chunked transfer — the frontend reader sees rows
+    // arrive progressively rather than waiting for the full payload.
+    // `actix_web::Error` is !Send so we send plain `Bytes` and wrap in `Ok` below.
+    let (tx, rx) = tokio::sync::mpsc::channel::<actix_web::web::Bytes>(64);
+    tokio::spawn(async move {
+        for result in results {
+            match serde_json::to_vec(&result) {
+                Ok(mut bytes) => {
+                    bytes.push(b'\n');
+                    if tx.send(actix_web::web::Bytes::from(bytes)).await.is_err() {
+                        break; // client disconnected
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("NDJSON serialization error: {e}");
+                    break;
+                }
+            }
+        }
+    });
+
+    let stream = ReceiverStream::new(rx).map(Ok::<_, actix_web::Error>);
+
+    HttpResponse::Ok()
+        .content_type("application/x-ndjson")
+        .insert_header(("X-Total-Count", total.to_string()))
+        .insert_header(("Access-Control-Expose-Headers", "X-Total-Count"))
+        .streaming(stream)
 }
 
 /// `POST /api/strategies/sweeps/cancel` — request cancellation of the in-flight

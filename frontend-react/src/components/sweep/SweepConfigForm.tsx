@@ -6,6 +6,7 @@ import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { Checkbox } from 'components/ui/Checkbox';
 import { Badge } from 'components/ui/Badge';
+import { Accordion } from 'components/ui/Accordion';
 import {
   GROUP_FIELDS,
   GROUP_FIELD_LABELS,
@@ -470,7 +471,7 @@ export function SweepConfigForm({
   }
 
   return (
-    <div className="mb-4 rounded-md border border-white/10 bg-surface p-3">
+    <div className="mb-4 bg-surface">
       {/* Selection + grouping + run controls */}
       <div className="flex flex-wrap items-end gap-3">
         <Field label="Created range" hint="UTC" className="w-fit">
@@ -585,116 +586,72 @@ export function SweepConfigForm({
 
       {/* Group-by field picker + per-field value filters */}
       <div className="mt-3 border-t border-white/10 pt-3">
-        <div className="mb-2 flex items-center gap-1.5">
-          <span className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80">
-            Group by fingerprint
-          </span>
-          <span
-            className="cursor-default select-none text-[10px] text-text-dim/40 hover:text-text-dim/70"
-            title="Selection order = compound key — the first checked field is the primary group, the second is secondary, etc. Filter inputs restrict which tokens enter the sweep; they don't require the field to be checked."
-          >
-            ⓘ
-          </span>
-        </div>
-
-        {/* Numeric fields — 2-col grid, each row: badge · checkbox · label · text filter */}
-        <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-          {GROUP_FIELDS.filter((f) => f !== 'ix_labels' && f !== 'is_cashback_enabled').map((f) => {
-            const isGrouped = groupBy.includes(f);
-            const groupIndex = groupBy.indexOf(f);
-            const filterText = fieldFiltersText[f] ?? '';
-            const hasFilter = filterText.trim() !== '';
-            return (
-              <div key={f} className="flex min-w-0 items-center gap-1.5">
-                <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-                  {isGrouped && (
-                    <span className="flex h-4 w-4 items-center justify-center rounded-full bg-accent/20 text-[9px] font-bold leading-none text-accent">
-                      {groupIndex + 1}
-                    </span>
-                  )}
-                </span>
-                <label
-                  className={cn(
-                    'flex shrink-0 cursor-pointer items-center gap-1.5 text-sm',
-                    isGrouped ? 'text-text-base' : 'text-text-mid',
-                  )}
-                  title={groupByCheckboxTooltip(f, isGrouped)}
-                >
-                  <Checkbox checked={isGrouped} onChange={() => toggleGroupField(f)} />
-                  <span className="whitespace-nowrap">{GROUP_FIELD_LABELS[f]}</span>
-                </label>
-                <input
-                  type="text"
-                  value={filterText}
-                  onChange={(e) => setFieldFilterText(f, e.target.value)}
-                  placeholder="all values"
-                  title={fieldFilterTooltip(f, isGrouped)}
-                  className="min-w-0 flex-1 rounded border border-white/10 bg-surface px-2 py-0.5 text-xs text-text-mid placeholder:text-text-dim/30 focus:border-white/25 focus:outline-none"
-                />
-                {hasFilter && (
-                  <span
-                    className="shrink-0 text-[10px] text-text-dim/60"
-                    title={isGrouped ? 'Groups restricted to these values' : 'Corpus pinned to these values'}
-                  >
-                    {isGrouped ? 'filtered' : 'pinned'}
+        <Accordion
+          title="Group by fingerprint"
+          badge={
+            <span
+              className="cursor-default select-none text-[10px] text-text-dim/40 hover:text-text-dim/70"
+              title="Selection order = compound key — the first checked field is the primary group, the second is secondary, etc. Filter inputs restrict which tokens enter the sweep; they don't require the field to be checked."
+            >
+              ⓘ
+            </span>
+          }
+        >
+          {/* Numeric fields — 2-col grid, each row: badge · checkbox · label · text filter */}
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+            {GROUP_FIELDS.filter((f) => f !== 'ix_labels' && f !== 'is_cashback_enabled').map((f) => {
+              const isGrouped = groupBy.includes(f);
+              const groupIndex = groupBy.indexOf(f);
+              const filterText = fieldFiltersText[f] ?? '';
+              const hasFilter = filterText.trim() !== '';
+              return (
+                <div key={f} className="flex min-w-0 items-center gap-1.5">
+                  <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                    {isGrouped && (
+                      <span className="flex h-4 w-4 items-center justify-center rounded-full bg-accent/20 text-[9px] font-bold leading-none text-accent">
+                        {groupIndex + 1}
+                      </span>
+                    )}
                   </span>
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Enum fields — each on its own full-width row, below the numeric grid */}
-        <div className="mt-1.5 flex flex-col gap-1.5">
-          {/* Cashback — inline checkbox + select */}
-          {(() => {
-            const f = 'is_cashback_enabled' as const;
-            const isGrouped = groupBy.includes(f);
-            const groupIndex = groupBy.indexOf(f);
-            return (
-              <div className="flex min-w-0 items-center gap-1.5">
-                <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-                  {isGrouped && (
-                    <span className="flex h-4 w-4 items-center justify-center rounded-full bg-accent/20 text-[9px] font-bold leading-none text-accent">
-                      {groupIndex + 1}
+                  <label
+                    className={cn(
+                      'flex w-36 shrink-0 cursor-pointer items-center gap-1.5 text-sm',
+                      isGrouped ? 'text-text-base' : 'text-text-mid',
+                    )}
+                    title={groupByCheckboxTooltip(f, isGrouped)}
+                  >
+                    <Checkbox checked={isGrouped} onChange={() => toggleGroupField(f)} />
+                    <span className="whitespace-nowrap">{GROUP_FIELD_LABELS[f]}</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={filterText}
+                    onChange={(e) => setFieldFilterText(f, e.target.value)}
+                    placeholder="all values"
+                    title={fieldFilterTooltip(f, isGrouped)}
+                    className="min-w-0 flex-1 rounded border border-white/10 bg-surface px-2 py-0.5 text-xs text-text-mid placeholder:text-text-dim/30 focus:border-white/25 focus:outline-none"
+                  />
+                  {hasFilter && (
+                    <span
+                      className="shrink-0 text-[10px] text-text-dim/60"
+                      title={isGrouped ? 'Groups restricted to these values' : 'Corpus pinned to these values'}
+                    >
+                      {isGrouped ? 'filtered' : 'pinned'}
                     </span>
                   )}
-                </span>
-                <label
-                  className={cn(
-                    'flex shrink-0 cursor-pointer items-center gap-1.5 text-sm',
-                    isGrouped ? 'text-text-base' : 'text-text-mid',
-                  )}
-                  title={groupByCheckboxTooltip(f, isGrouped)}
-                >
-                  <Checkbox checked={isGrouped} onChange={() => toggleGroupField(f)} />
-                  <span className="whitespace-nowrap">{GROUP_FIELD_LABELS[f]}</span>
-                </label>
-                <select
-                  value={cashbackFilter}
-                  onChange={(e) => setCashbackFilter(e.target.value as SweepConfig['cashbackFilter'])}
-                  title={
-                    isGrouped
-                      ? 'Filter the corpus by Cashback on value.\n\n☑ ON  + cashback only → only cashback=true tokens enter the sweep, in their own group.\n☑ ON  + no cashback  → only cashback=false tokens, in their own group.\n☑ ON  + all          → all tokens included, split into true/false groups (default).'
-                      : 'Filter the corpus by Cashback on value.\n\n☐ OFF + cashback only → only cashback=true tokens enter the sweep, all in ONE group.\n☐ OFF + no cashback  → only cashback=false tokens, all in ONE group.\n☐ OFF + all          → no filter; all tokens flow into the sweep (default).'
-                  }
-                  className="w-36 rounded border border-white/10 bg-surface px-2 py-0.5 text-xs text-text-mid focus:border-white/25 focus:outline-none"
-                >
-                  <option value="all">all</option>
-                  <option value="true">cashback only</option>
-                  <option value="false">no cashback</option>
-                </select>
-              </div>
-            );
-          })()}
+                </div>
+              );
+            })}
+          </div>
 
-          {/* Instruction labels — checkbox row, then textarea below it */}
-          {(() => {
-            const f = 'ix_labels' as const;
-            const isGrouped = groupBy.includes(f);
-            const groupIndex = groupBy.indexOf(f);
-            return (
-              <div className="flex flex-col gap-0.5">
+          {/* Enum fields — each on its own full-width row, below the numeric grid */}
+          <div className="mt-1.5 flex flex-col gap-1.5">
+            {/* Cashback — inline checkbox + select */}
+            {(() => {
+              const f = 'is_cashback_enabled' as const;
+              const isGrouped = groupBy.includes(f);
+              const groupIndex = groupBy.indexOf(f);
+              return (
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className="flex h-4 w-4 shrink-0 items-center justify-center">
                     {isGrouped && (
@@ -705,7 +662,7 @@ export function SweepConfigForm({
                   </span>
                   <label
                     className={cn(
-                      'flex shrink-0 cursor-pointer items-center gap-1.5 text-sm',
+                      'flex w-36 shrink-0 cursor-pointer items-center gap-1.5 text-sm',
                       isGrouped ? 'text-text-base' : 'text-text-mid',
                     )}
                     title={groupByCheckboxTooltip(f, isGrouped)}
@@ -713,76 +670,119 @@ export function SweepConfigForm({
                     <Checkbox checked={isGrouped} onChange={() => toggleGroupField(f)} />
                     <span className="whitespace-nowrap">{GROUP_FIELD_LABELS[f]}</span>
                   </label>
-                  {!ixLabelsGrouped && ixFilter.labels && (
-                    <span className="text-[10px] text-text-dim/60">
-                      {ixFilter.labels.length} label{ixFilter.labels.length !== 1 ? 's' : ''} pinned
-                    </span>
-                  )}
-                </div>
-                <div className="ml-5 flex flex-col gap-0.5">
-                  <textarea
-                    ref={ixLabelsRef}
-                    rows={1}
-                    value={ixLabelsFilter}
-                    disabled={ixLabelsGrouped}
-                    onChange={(e) => setIxLabelsFilter(e.target.value)}
-                    placeholder='["Pump.Fun: Create"]'
+                  <select
+                    value={cashbackFilter}
+                    onChange={(e) => setCashbackFilter(e.target.value as SweepConfig['cashbackFilter'])}
                     title={
-                      ixLabelsGrouped
-                        ? 'Disabled: grouping by instruction labels. Uncheck to pin a specific label set here.'
-                        : 'Filter the corpus to tokens whose instruction-label set exactly matches this JSON array.\nLeave empty = all label sets included.'
+                      isGrouped
+                        ? 'Filter the corpus by Cashback on value.\n\n☑ ON  + cashback only → only cashback=true tokens enter the sweep, in their own group.\n☑ ON  + no cashback  → only cashback=false tokens, in their own group.\n☑ ON  + all          → all tokens included, split into true/false groups (default).'
+                        : 'Filter the corpus by Cashback on value.\n\n☐ OFF + cashback only → only cashback=true tokens enter the sweep, all in ONE group.\n☐ OFF + no cashback  → only cashback=false tokens, all in ONE group.\n☐ OFF + all          → no filter; all tokens flow into the sweep (default).'
                     }
-                    className="w-full resize-none overflow-hidden rounded border border-white/10 bg-surface px-2 py-1 font-mono text-xs text-text-mid placeholder:text-text-dim/30 focus:border-white/25 focus:outline-none disabled:cursor-not-allowed disabled:opacity-40"
-                  />
-                  {ixFilterError && (
-                    <span className="text-[10px] text-danger">{ixFilterError}</span>
-                  )}
+                    className="w-36 rounded border border-white/10 bg-surface px-2 py-0.5 text-xs text-text-mid focus:border-white/25 focus:outline-none"
+                  >
+                    <option value="all">all</option>
+                    <option value="true">cashback only</option>
+                    <option value="false">no cashback</option>
+                  </select>
                 </div>
-              </div>
-            );
-          })()}
-        </div>
+              );
+            })()}
 
-        {groupBy.length === 0 && (
-          <p className="mt-1.5 text-xs text-text-dim/70">
-            No fields selected → one "ALL" group (a single global sweep).
-          </p>
-        )}
+            {/* Instruction labels — checkbox row, then textarea below it */}
+            {(() => {
+              const f = 'ix_labels' as const;
+              const isGrouped = groupBy.includes(f);
+              const groupIndex = groupBy.indexOf(f);
+              return (
+                <div className="flex flex-col gap-0.5">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                      {isGrouped && (
+                        <span className="flex h-4 w-4 items-center justify-center rounded-full bg-accent/20 text-[9px] font-bold leading-none text-accent">
+                          {groupIndex + 1}
+                        </span>
+                      )}
+                    </span>
+                    <label
+                      className={cn(
+                        'flex w-36 shrink-0 cursor-pointer items-center gap-1.5 text-sm',
+                        isGrouped ? 'text-text-base' : 'text-text-mid',
+                      )}
+                      title={groupByCheckboxTooltip(f, isGrouped)}
+                    >
+                      <Checkbox checked={isGrouped} onChange={() => toggleGroupField(f)} />
+                      <span className="whitespace-nowrap">{GROUP_FIELD_LABELS[f]}</span>
+                    </label>
+                    {!ixLabelsGrouped && ixFilter.labels && (
+                      <span className="text-[10px] text-text-dim/60">
+                        {ixFilter.labels.length} label{ixFilter.labels.length !== 1 ? 's' : ''} pinned
+                      </span>
+                    )}
+                  </div>
+                  <div className="ml-5 flex flex-col gap-0.5">
+                    <textarea
+                      ref={ixLabelsRef}
+                      rows={1}
+                      value={ixLabelsFilter}
+                      disabled={ixLabelsGrouped}
+                      onChange={(e) => setIxLabelsFilter(e.target.value)}
+                      placeholder='["Pump.Fun: Create"]'
+                      title={
+                        ixLabelsGrouped
+                          ? 'Disabled: grouping by instruction labels. Uncheck to pin a specific label set here.'
+                          : 'Filter the corpus to tokens whose instruction-label set exactly matches this JSON array.\nLeave empty = all label sets included.'
+                      }
+                      className="w-full resize-none overflow-hidden rounded border border-white/10 bg-surface px-2 py-1 font-mono text-xs text-text-mid placeholder:text-text-dim/30 focus:border-white/25 focus:outline-none disabled:cursor-not-allowed disabled:opacity-40"
+                    />
+                    {ixFilterError && (
+                      <span className="text-[10px] text-danger">{ixFilterError}</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+
+          {groupBy.length === 0 && (
+            <p className="mt-1.5 text-xs text-text-dim/70">
+              No fields selected → one "ALL" group (a single global sweep).
+            </p>
+          )}
+        </Accordion>
       </div>
 
       {/* Editable param grid — split into entry/exit groups, ordered to match
           the TPSL2 rule modal so the two screens read the same. */}
       <div className="mt-3 border-t border-white/10 pt-3">
-        <span className="mb-2 block text-[9px] font-bold uppercase tracking-wider text-text-dim/80">
-          Param grid · comma-separated · "off" disables a nullable knob
-        </span>
-        <div className="flex flex-col gap-3 md:flex-row md:gap-4">
-          {/* Entry block only when this strategy has entry gates (TPSL1 has none). */}
-          {entryAxes.length > 0 && (
+        <Accordion title='Param grid · comma-separated · "off" disables a nullable knob'>
+          <div className="flex flex-col gap-3 md:flex-row md:gap-4">
+            {/* Entry block only when this strategy has entry gates (TPSL1 has none). */}
+            {entryAxes.length > 0 && (
+              <AxisGroup
+                title="Entry gates · scalp"
+                hint="when to buy"
+                accent="text-accent"
+                axes={entryAxes}
+                axesText={axesText}
+                setAxesText={setAxesText}
+                className="md:flex-1"
+              />
+            )}
             <AxisGroup
-              title="Entry gates · scalp"
-              hint="when to buy"
-              accent="text-accent"
-              axes={entryAxes}
+              title="Exit gates"
+              hint="when to sell"
+              accent="text-warning"
+              axes={exitAxes}
               axesText={axesText}
               setAxesText={setAxesText}
-              className="md:flex-1"
+              className={
+                entryAxes.length > 0
+                  ? 'border-t border-white/10 pt-3 md:flex-1 md:border-l md:border-t-0 md:pl-4 md:pt-0'
+                  : 'md:flex-1'
+              }
             />
-          )}
-          <AxisGroup
-            title="Exit gates"
-            hint="when to sell"
-            accent="text-warning"
-            axes={exitAxes}
-            axesText={axesText}
-            setAxesText={setAxesText}
-            className={
-              entryAxes.length > 0
-                ? 'border-t border-white/10 pt-3 md:flex-1 md:border-l md:border-t-0 md:pl-4 md:pt-0'
-                : 'md:flex-1'
-            }
-          />
-        </div>
+          </div>
+        </Accordion>
       </div>
     </div>
   );

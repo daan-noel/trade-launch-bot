@@ -79,7 +79,7 @@ export function SelectedSweepHistory({ strategyId, run, onReuse }: SelectedSweep
   const fieldLines = run.field_filters ? fieldFilterLines(run.field_filters) : [];
 
   return (
-    <div className="mb-4 rounded-md border border-white/10 bg-surface p-3">
+    <div className="mb-4 bg-surface">
       <div className="mb-2.5 flex flex-wrap items-center gap-2">
         <span className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80">
           Selected sweep history

@@ -476,12 +476,29 @@ impl GroupedSweepRepo {
         Ok(rows.into_iter().map(GroupedSweepGroupSummary::from).collect())
     }
 
-    /// Every ranked combo row for one group, ordered by combo id (the table
-    /// sorts/filters client-side). Scoped by `run_id` too as a safety guard.
-    pub async fn list_results(
+    /// Total combo count for a group — used to populate `X-Total-Count` on the
+    /// paged results endpoint without fetching the full row set.
+    pub async fn count_results(&self, run_id: Uuid, group_id: Uuid) -> anyhow::Result<i64> {
+        let sql = format!(
+            "SELECT COUNT(*) FROM {} WHERE run_id = $1 AND group_id = $2",
+            self.tables.results
+        );
+        let count: i64 = sqlx::query_scalar(&sql)
+            .bind(run_id)
+            .bind(group_id)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(count)
+    }
+
+    /// One page of ranked combo rows for a group, best score first.
+    /// `limit`/`offset` are already validated by the caller.
+    pub async fn list_results_paged(
         &self,
         run_id: Uuid,
         group_id: Uuid,
+        limit: i64,
+        offset: i64,
     ) -> anyhow::Result<Vec<GroupedSweepResult>> {
         let sql = format!(
             "SELECT combo_id, params, n_fired, n_open, n_closed, win_rate, total_pnl_sol, \
@@ -489,12 +506,15 @@ impl GroupedSweepRepo {
                     std_pnl_pct, profit_factor, score, expectancy_sol, avg_holding_secs, \
                     median_holding_secs, n_exit_take_profit, n_exit_stop_loss, n_exit_trailing, \
                     n_exit_stall, n_exit_time, n_exit_liquidity, n_exit_cohort, n_exit_open \
-             FROM {} WHERE run_id = $1 AND group_id = $2 ORDER BY combo_id",
+             FROM {} WHERE run_id = $1 AND group_id = $2 \
+             ORDER BY score DESC NULLS LAST LIMIT $3 OFFSET $4",
             self.tables.results
         );
         let rows = sqlx::query_as::<_, ResultDbRow>(&sql)
             .bind(run_id)
             .bind(group_id)
+            .bind(limit)
+            .bind(offset)
             .fetch_all(&self.pool)
             .await?;
         Ok(rows.into_iter().map(GroupedSweepResult::from).collect())
