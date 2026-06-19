@@ -25,9 +25,9 @@ pub struct Position {
     pub target_time: Option<DateTime<Utc>>,
     pub target_tx: Option<String>,
     /// Entry price (SOL per token) when the position was opened.
-    pub entry_price: f64,
+    pub entry_price: Option<f64>,
     /// Amount of tokens bought at entry.
-    pub entry_amount: f64,
+    pub entry_amount: Option<f64>,
     /// On-chain block time of the confirmed buy trade.
     pub entry_time: Option<DateTime<Utc>>,
     /// Transaction signature of the buy transaction.
@@ -97,11 +97,8 @@ impl Position {
     pub fn new(
         mint: String,
         wallet: String,
-        entry_price: f64,
-        entry_tx: String,
         strategy: String,
         rule_id: Uuid,
-        entry_amount: f64,
     ) -> Self {
         let now = Utc::now();
         Self {
@@ -113,10 +110,10 @@ impl Position {
             target_amount: None,
             target_time: None,
             target_tx: None,
-            entry_price,
-            entry_amount,
+            entry_price: None,
+            entry_amount: None,
             entry_time: None,
-            entry_tx,
+            entry_tx: String::new(),
             exit_price: None,
             exit_amount: None,
             exit_time: None,
@@ -182,8 +179,12 @@ impl Position {
 
     /// Calculate profit/loss percentage.
     pub fn pnl_percentage(&self) -> Option<f64> {
-        self.exit_price
-            .map(|ep| ((ep - self.entry_price) / self.entry_price) * 100.0)
+        match (self.exit_price, self.entry_price) {
+            (Some(exit), Some(entry)) if entry != 0.0 => {
+                Some(((exit - entry) / entry) * 100.0)
+            }
+            _ => None,
+        }
     }
 
     /// The exit reason to display: the reason recorded at exit time when present,

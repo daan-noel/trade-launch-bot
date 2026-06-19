@@ -154,7 +154,7 @@ pub async fn stop_and_close_rule(
             .token_cache
             .get(&position.mint)
             .and_then(|e| e.value().current_price)
-            .unwrap_or(position.entry_price);
+            .unwrap_or_else(|| position.entry_price.unwrap_or(0.0));
 
         // Claim the shared exit guard so this manual close can never race a
         // concurrent ladder/time exit for the same position into a double-sell.
@@ -168,7 +168,7 @@ pub async fn stop_and_close_rule(
             let paper_repo = Tpsl1PaperTradingRepo::new(app_state.db.clone());
             // 0-entry positions never received a fill — delete them rather than
             // stamping a ManualClose exit at price 0.
-            if position.entry_price <= 0.0 {
+            if position.entry_price.is_none() {
                 let _ = paper_repo.delete_position(position_id).await;
                 app_state.tpsl1_cache.remove_position(&position);
                 app_state.tpsl1_cache.end_exit(position_id);

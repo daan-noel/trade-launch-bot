@@ -1072,15 +1072,16 @@ pub(crate) fn paper_position_to_sim_result(
         .exit_reason_or_derived()
         .unwrap_or_else(|| "Open".to_string());
     // entry_amount is the SOL allocated per buy, so PnL in SOL is direct.
-    let pnl_sol = pnl_percent.map(|pct| p.entry_amount * (pct / 100.0));
+    let pnl_sol = pnl_percent.and_then(|pct| p.entry_amount.map(|a| a * (pct / 100.0)));
     let holding_secs = match (p.entry_time, p.exit_time) {
         (Some(e), Some(x)) => Some((x - e).num_seconds()),
         _ => None,
     };
     let ath_price = p
         .exit_price
-        .map(|x| x.max(p.entry_price))
-        .unwrap_or(p.entry_price);
+        .map(|x| x.max(p.entry_price.unwrap_or(0.0)))
+        .or(p.entry_price)
+        .unwrap_or(0.0);
     BacktestTokenResult {
         symbol: symbols.get(&p.mint).cloned().unwrap_or_default(),
         target_price: p.target_price,
@@ -1088,9 +1089,9 @@ pub(crate) fn paper_position_to_sim_result(
         target_time: p.target_time,
         target_tx: p.target_tx,
         mint: p.mint,
-        entry_price: p.entry_price,
+        entry_price: p.entry_price.unwrap_or(0.0),
         ath_price,
-        entry_amount: p.entry_amount,
+        entry_amount: p.entry_amount.unwrap_or(0.0),
         entry_tx: p.entry_tx,
         entry_time: p.entry_time.unwrap_or(p.created_at),
         exit_price: p.exit_price,
@@ -1114,12 +1115,12 @@ mod tests {
         let mut p = Position::new(
             "mint".into(),
             "wallet".into(),
-            entry,
-            "etx".into(),
             "TPSL2".into(),
             Uuid::new_v4(),
-            0.05,
         );
+        p.entry_price = Some(entry);
+        p.entry_tx = "etx".into();
+        p.entry_amount = Some(0.05);
         p.entry_time = Some(Utc::now());
         p.close(exit, "xtx".into(), 0.05, Utc::now());
         p
@@ -1152,12 +1153,12 @@ mod tests {
         let mut p = Position::new(
             "mint".into(),
             "wallet".into(),
-            1.0,
-            "etx".into(),
             "TPSL2".into(),
             Uuid::new_v4(),
-            0.05,
         );
+        p.entry_price = Some(1.0);
+        p.entry_tx = "etx".into();
+        p.entry_amount = Some(0.05);
         p.entry_time = Some(Utc::now());
         let r = paper_position_to_sim_result(p, &HashMap::new());
         assert_eq!(r.exit_reason, "Open");

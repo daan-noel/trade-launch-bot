@@ -195,13 +195,14 @@ impl Tpsl2StrategyService {
                 let mut position = Position::new(
                     mint.clone(),
                     self.trader.wallet_pubkey(),
-                    0.0,
-                    token.creation_tx_signature.clone(),
                     "TPSL2".to_string(),
                     rule_id,
-                    rule.buy_amount,
                 );
                 position.token_program_id = token.token_program_id.clone();
+                position.target_price = Some(0.0);
+                position.target_amount = Some(0.0);
+                position.target_tx = Some(String::new());
+                position.target_time = Some(token.created_at);
 
                 // Claim the cap slot + holding-index entry INLINE on the runner's
                 // select task, then spawn the slow DB insert + buy/fill off it — the
@@ -312,7 +313,7 @@ impl Tpsl2StrategyService {
                             );
                         }
                         if let Ok(Some(pos)) = position_repo.find_by_id(position_id).await {
-                            if pos.entry_price == 0.0 {
+                            if pos.entry_price.is_none() {
                                 let _ = position_repo.delete_position(position_id).await;
                                 runtime.remove_position(&pos);
                                 info!(
@@ -388,7 +389,7 @@ impl Tpsl2StrategyService {
                 // doubles as the clock-sweep's current snapshot.
                 if let Some(exit_reason) = self.runtime.exit_state_advance_and_find_exit(
                     position.id,
-                    position.entry_price,
+                    position.entry_price.unwrap_or(0.0),
                     entry_time,
                     trades,
                     trades_base,
@@ -410,7 +411,7 @@ impl Tpsl2StrategyService {
             let mut position = (*position).clone();
             // Reference price for the fill; fall back to this position's entry
             // price when the cache has no current price (a 0% move, not −100%).
-            let exit_price = current_price.unwrap_or(position.entry_price);
+            let exit_price = current_price.or(position.entry_price).unwrap_or(0.0);
             debug!(
                 "Position {} for token {mint} triggered exit: {:?}",
                 position.id, exit_reason
@@ -447,7 +448,7 @@ impl Tpsl2StrategyService {
                     self.sse_tx.clone(),
                     mint.clone(),
                     position.id,
-                    position.entry_price,
+                    position.entry_price.unwrap_or(0.0),
                     position.entry_time,
                     rule.clone(),
                     exit_price,
@@ -505,11 +506,11 @@ impl Tpsl2StrategyService {
             let (state, last_price) = match cache.get(&position.mint) {
                 Some(entry) => {
                     let st = entry.value();
-                    let last_price = st.current_price.unwrap_or(position.entry_price);
+                    let last_price = st.current_price.or(position.entry_price).unwrap_or(0.0);
                     let state = self.runtime.exit_state_get(position.id).unwrap_or_else(|| {
                         self.runtime.exit_state_build(
                             position.id,
-                            position.entry_price,
+                            position.entry_price.unwrap_or(0.0),
                             entry_time,
                             &st.trades,
                             st.trades_base,
@@ -522,9 +523,9 @@ impl Tpsl2StrategyService {
                 None => {
                     let state = self.runtime.exit_state_get(position.id).unwrap_or_else(|| {
                         self.runtime
-                            .exit_state_build(position.id, position.entry_price, entry_time, &[], 0)
+                            .exit_state_build(position.id, position.entry_price.unwrap_or(0.0), entry_time, &[], 0)
                     });
-                    (state, position.entry_price)
+                    (state, position.entry_price.unwrap_or(0.0))
                 }
             };
 

@@ -137,7 +137,7 @@ pub(crate) fn spawn_entry_fill_poll(
             // "buy not found" cleanup: drop the unentered position rather than leave
             // a 0-entry row that can never trade. No create-time price is synthesized.
             if let Ok(Some(pos)) = paper_repo.find_by_id(position_id).await {
-                if pos.entry_price <= 0.0 {
+                if pos.entry_price.is_none() {
                     let _ = paper_repo.delete_position(position_id).await;
                     runtime.remove_position(&pos);
                     info!(
@@ -293,7 +293,7 @@ pub(crate) async fn record_time_exit(
         return;
     }
     // Reflect the close in the snapshot synced to the runtime cache.
-    position.close(exit_price, exit_tx, position.entry_amount, exit_time);
+    position.close(exit_price, exit_tx, position.entry_amount.unwrap_or(0.0), exit_time);
     position.exit_reason = Some(reason);
     runtime.sync_position(Some(&prev), &position);
     info!(

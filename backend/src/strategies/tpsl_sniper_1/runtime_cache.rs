@@ -636,11 +636,8 @@ mod tests {
         Position::new(
             "MintAAA".to_string(),
             "WalletBBB".to_string(),
-            0.0, // 0-entry: the just-claimed, not-yet-filled entry state
-            "creation_tx".to_string(),
             "TPSL1".to_string(),
             rule_id,
-            1.0,
         )
     }
 

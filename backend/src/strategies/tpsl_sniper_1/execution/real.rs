@@ -313,7 +313,7 @@ pub(crate) async fn sell_and_close_position(
     exit_reason: String,
 ) {
     let mint = position.mint.clone();
-    let amount = position.entry_amount as u64;
+    let amount = position.entry_amount.unwrap_or(0.0) as u64;
     let base_token_program = position
         .token_program_id
         .clone()
@@ -908,15 +908,14 @@ mod tests {
         let position_repo = Tpsl1PositionRepo::new(pool.clone());
         let trade_repo = TradeRepo::new(pool.clone());
         let runtime = Arc::new(Tpsl1RuntimeCache::new(tokio::sync::broadcast::channel(8).0));
-        let position = Position::new(
+        let mut position = Position::new(
             mint.to_string(),
             wallet.to_string(),
-            0.0,
-            unique("create-"),
             "TPSL1".to_string(),
             Uuid::new_v4(),
-            0.001,
         );
+        position.entry_tx = unique("create-");
+        position.entry_amount = 0.001;
         position_repo.insert(&position).await.expect("insert position");
         runtime.sync_position(None, &position);
         (position, position_repo, trade_repo, runtime)

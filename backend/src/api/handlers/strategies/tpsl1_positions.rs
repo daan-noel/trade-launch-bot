@@ -23,14 +23,14 @@ pub struct PositionResponse {
     pub id: Uuid,
     pub mint: String,
     pub wallet: String,
-    pub entry_price: f64,
+    pub entry_price: Option<f64>,
     pub exit_price: Option<f64>,
     pub entry_tx: String,
     pub exit_tx: Option<String>,
     pub status: String,
     pub strategy: String,
     pub rule_id: Uuid,
-    pub entry_amount: f64,
+    pub entry_amount: Option<f64>,
     pub exit_amount: Option<f64>,
     pub pnl_percent: Option<f64>,
     pub entry_time: Option<DateTime<Utc>>,
@@ -316,35 +316,35 @@ mod tests {
         let mut open = Position::new(
             mints[0].clone(),
             unique("W"),
-            0.001,
-            unique("tx-"),
             "TPSL1".into(),
             rule.id,
-            0.05,
         );
+        open.entry_price = Some(0.001);
+        open.entry_tx = unique("tx-");
+        open.entry_amount = Some(0.05);
         open.entry_time = Some(Utc::now());
 
         let mut win = Position::new(
             mints[1].clone(),
             unique("W"),
-            0.001,
-            unique("tx-"),
             "TPSL1".into(),
             rule.id,
-            0.05,
         );
+        win.entry_price = Some(0.001);
+        win.entry_tx = unique("tx-");
+        win.entry_amount = Some(0.05);
         win.entry_time = Some(Utc::now());
         win.close(0.0015, unique("xtx-"), 0.075, Utc::now());
 
         let mut loss = Position::new(
             mints[2].clone(),
             unique("W"),
-            0.001,
-            unique("tx-"),
             "TPSL1".into(),
             rule.id,
-            0.05,
         );
+        loss.entry_price = Some(0.001);
+        loss.entry_tx = unique("tx-");
+        loss.entry_amount = Some(0.05);
         loss.entry_time = Some(Utc::now());
         loss.close(0.0008, unique("xtx-"), 0.04, Utc::now());
 

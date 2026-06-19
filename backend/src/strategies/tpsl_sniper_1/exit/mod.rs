@@ -452,7 +452,7 @@ pub fn should_position_exit_on_trade(
     rule: &Tpsl1Rule,
 ) -> Option<ExitReason> {
     let entry_time = clock_entry_time(position)?;
-    find_trade_driven_exit(trades, entry_time, position.entry_price, rule).map(|fill| fill.reason)
+    find_trade_driven_exit(trades, entry_time, position.entry_price.unwrap_or(0.0), rule).map(|fill| fill.reason)
 }
 
 /// Live **clock-driven** gate: should this Holding position exit on the
@@ -478,7 +478,7 @@ pub fn should_position_exit_on_clock(
 /// evaluating it would divide by ~0 and fire a phantom TakeProfit, flapping the
 /// position ExitPending→Holding. Returns the entry time once those hold.
 pub fn clock_entry_time(position: &Position) -> Option<DateTime<Utc>> {
-    if position.status != PositionStatus::Holding || position.entry_price <= 0.0 {
+    if position.status != PositionStatus::Holding || position.entry_price.is_none() {
         return None;
     }
     position.entry_time
@@ -548,15 +548,10 @@ mod tests {
 
     /// A Holding position entered at `entry_price` at `base_time()`.
     fn holding(entry_price: f64, rule_id: Uuid) -> Position {
-        let mut p = Position::new(
-            "mint".into(),
-            "wallet".into(),
-            entry_price,
-            "entry-sig".into(),
-            "TPSL1".into(),
-            rule_id,
-            1.0,
-        );
+        let mut p = Position::new("mint".into(), "wallet".into(), "TPSL1".into(), rule_id);
+        p.entry_price = Some(entry_price);
+        p.entry_tx = "entry-sig".into();
+        p.entry_amount = Some(1.0);
         p.entry_time = Some(base_time());
         p
     }
