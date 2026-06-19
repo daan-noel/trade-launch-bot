@@ -65,10 +65,11 @@ export function mergeTokenData<T extends { mint: string }>(
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const ALL_TOKEN_COLS: ColumnDef<any>[] = [
+  // identity
   {
     key: 'creator',
     label: 'Creator',
-    group: 'token_info',
+    group: 'identity',
     defaultVisible: false,
     render: (r: { creator_address?: string }) =>
       r.creator_address ? (
@@ -81,7 +82,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
   {
     key: 'create_tx',
     label: 'Create TX',
-    group: 'token_info',
+    group: 'identity',
     defaultVisible: false,
     render: (r: { create_tx_address?: string }) =>
       r.create_tx_address ? (
@@ -91,11 +92,12 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
       ),
     searchValue: (r: { create_tx_address?: string }) => r.create_tx_address ?? '',
   },
+  // activity
   {
     key: 'trade_count',
     label: 'Token Trades',
     tooltip: 'Total trades ever recorded for this token (all time).',
-    group: 'token_info',
+    group: 'activity',
     defaultVisible: false,
     sortable: true,
     render: (r: { trade_count?: number }) => r.trade_count ?? '—',
@@ -103,9 +105,30 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     searchValue: (r: { trade_count?: number }) => String(r.trade_count ?? ''),
   },
   {
+    key: 'last_trade',
+    label: 'Last Trade',
+    group: 'activity',
+    defaultVisible: false,
+    sortable: true,
+    render: (r: { last_trade_at?: string | null }) => <DateCell iso={r.last_trade_at ?? null} />,
+    sortValue: (r: { last_trade_at?: string | null }) => r.last_trade_at ?? null,
+    searchValue: (r: { last_trade_at?: string | null }) => r.last_trade_at ?? '',
+  },
+  {
+    key: 'last_synced',
+    label: 'Last Synced',
+    group: 'activity',
+    defaultVisible: false,
+    sortable: true,
+    render: (r: { last_synced_at?: string | null }) => <RelativeTimeCell iso={r.last_synced_at ?? null} />,
+    sortValue: (r: { last_synced_at?: string | null }) => r.last_synced_at ?? null,
+    searchValue: (r: { last_synced_at?: string | null }) => r.last_synced_at ?? '',
+  },
+  // price
+  {
     key: 'current_price',
     label: 'Price',
-    group: 'token_info',
+    group: 'price',
     defaultVisible: false,
     sortable: true,
     render: (r: { current_price?: number | null }) => <CurrentPriceCell sol={r.current_price ?? null} />,
@@ -115,7 +138,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
   {
     key: 'ath_price',
     label: 'ATH',
-    group: 'token_info',
+    group: 'price',
     defaultVisible: false,
     sortable: true,
     render: (r: { ath_price?: number | null }) => <PriceCell sol={r.ath_price ?? null} />,
@@ -125,17 +148,18 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
   {
     key: 'ath_timestamp',
     label: 'ATH At',
-    group: 'token_info',
+    group: 'price',
     defaultVisible: false,
     sortable: true,
     render: (r: { ath_timestamp?: string | null }) => <DateCell iso={r.ath_timestamp ?? null} />,
     sortValue: (r: { ath_timestamp?: string | null }) => r.ath_timestamp ?? null,
     searchValue: (r: { ath_timestamp?: string | null }) => r.ath_timestamp ?? '',
   },
+  // market
   {
     key: 'market_cap',
     label: 'MCap',
-    group: 'token_info',
+    group: 'market',
     defaultVisible: false,
     sortable: true,
     render: (r: { market_cap?: number | null }) => <CompactCell sol={r.market_cap ?? null} digits={3} />,
@@ -145,17 +169,18 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
   {
     key: 'volume',
     label: 'Volume',
-    group: 'token_info',
+    group: 'market',
     defaultVisible: false,
     sortable: true,
     render: (r: { volume_sol_total?: number }) => <CompactCell sol={r.volume_sol_total ?? null} digits={4} />,
     sortValue: (r: { volume_sol_total?: number }) => r.volume_sol_total ?? null,
     searchValue: (r: { volume_sol_total?: number }) => String(r.volume_sol_total ?? ''),
   },
+  // initial
   {
     key: 'initial_buy',
     label: 'Init Buy',
-    group: 'token_info',
+    group: 'initial',
     defaultVisible: false,
     sortable: true,
     render: (r: { initial_buy_sol?: number | null }) => <AmountCell sol={r.initial_buy_sol ?? null} />,
@@ -165,7 +190,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
   {
     key: 'init_supply',
     label: 'Init Supply',
-    group: 'token_info',
+    group: 'initial',
     defaultVisible: false,
     sortable: true,
     render: (r: { initial_supply_token?: number | null }) =>
@@ -173,10 +198,11 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     sortValue: (r: { initial_supply_token?: number | null }) => r.initial_supply_token ?? null,
     searchValue: (r: { initial_supply_token?: number | null }) => String(r.initial_supply_token ?? ''),
   },
+  // max_or_spendable
   {
     key: 'token_amount',
     label: 'Token Amt',
-    group: 'token_info',
+    group: 'max_or_spendable',
     defaultVisible: false,
     sortable: true,
     render: (r: { token_amount?: number | null }) =>
@@ -187,7 +213,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
   {
     key: 'max_sol_cost',
     label: 'Max SOL Cost',
-    group: 'token_info',
+    group: 'max_or_spendable',
     defaultVisible: false,
     sortable: true,
     render: (r: { max_sol_cost?: number | null }) =>
@@ -198,7 +224,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
   {
     key: 'spendable_sol_in',
     label: 'Spendable SOL In',
-    group: 'token_info',
+    group: 'max_or_spendable',
     defaultVisible: false,
     sortable: true,
     render: (r: { spendable_sol_in?: number | null }) =>
@@ -209,7 +235,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
   {
     key: 'min_tokens_out',
     label: 'Min Tokens',
-    group: 'token_info',
+    group: 'max_or_spendable',
     defaultVisible: false,
     sortable: true,
     render: (r: { min_tokens_out?: number | null }) =>
@@ -217,10 +243,11 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     sortValue: (r: { min_tokens_out?: number | null }) => r.min_tokens_out ?? null,
     searchValue: (r: { min_tokens_out?: number | null }) => String(r.min_tokens_out ?? ''),
   },
+  // compute
   {
     key: 'cu_limit',
     label: 'CU Limit',
-    group: 'token_info',
+    group: 'compute',
     defaultVisible: false,
     sortable: true,
     render: (r: { cu_limit?: number | null }) => (r.cu_limit != null ? r.cu_limit : '—'),
@@ -230,7 +257,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
   {
     key: 'cu_price',
     label: 'CU Price',
-    group: 'token_info',
+    group: 'compute',
     defaultVisible: false,
     sortable: true,
     render: (r: { cu_price?: number | null }) =>
@@ -238,10 +265,11 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     sortValue: (r: { cu_price?: number | null }) => r.cu_price ?? null,
     searchValue: (r: { cu_price?: number | null }) => String(r.cu_price ?? ''),
   },
+  // ix
   {
     key: 'ix_count',
     label: 'IX Count',
-    group: 'token_info',
+    group: 'ix',
     defaultVisible: false,
     sortable: true,
     render: (r: { ix_labels_count?: number }) => r.ix_labels_count ?? '—',
@@ -251,7 +279,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
   {
     key: 'ix_labels',
     label: 'IX Labels',
-    group: 'token_info',
+    group: 'ix',
     defaultVisible: false,
     render: (r: { instruction_labels?: unknown }) => {
       const raw = r.instruction_labels;
@@ -273,30 +301,11 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
       return arr.join(', ');
     },
   },
-  {
-    key: 'last_trade',
-    label: 'Last Trade',
-    group: 'token_info',
-    defaultVisible: false,
-    sortable: true,
-    render: (r: { last_trade_at?: string | null }) => <DateCell iso={r.last_trade_at ?? null} />,
-    sortValue: (r: { last_trade_at?: string | null }) => r.last_trade_at ?? null,
-    searchValue: (r: { last_trade_at?: string | null }) => r.last_trade_at ?? '',
-  },
-  {
-    key: 'last_synced',
-    label: 'Last Synced',
-    group: 'token_info',
-    defaultVisible: false,
-    sortable: true,
-    render: (r: { last_synced_at?: string | null }) => <RelativeTimeCell iso={r.last_synced_at ?? null} />,
-    sortValue: (r: { last_synced_at?: string | null }) => r.last_synced_at ?? null,
-    searchValue: (r: { last_synced_at?: string | null }) => r.last_synced_at ?? '',
-  },
+  // flags
   {
     key: 'migrated',
     label: 'Migrated',
-    group: 'token_info',
+    group: 'flags',
     defaultVisible: false,
     sortable: true,
     render: (r: { is_migrated?: boolean }) => (r.is_migrated ? '✓' : ''),
@@ -306,7 +315,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
   {
     key: 'dead',
     label: 'Dead',
-    group: 'token_info',
+    group: 'flags',
     defaultVisible: false,
     sortable: true,
     render: (r: { is_dead?: boolean }) => (r.is_dead ? '💀' : ''),
@@ -316,7 +325,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
   {
     key: 'mayhem_mode',
     label: 'Mayhem',
-    group: 'token_info',
+    group: 'flags',
     defaultVisible: false,
     sortable: true,
     render: (r: { is_mayhem_mode?: boolean }) => (r.is_mayhem_mode ? '✓' : ''),
@@ -326,7 +335,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
   {
     key: 'cashback',
     label: 'Cashback',
-    group: 'token_info',
+    group: 'flags',
     defaultVisible: false,
     sortable: true,
     render: (r: { is_cashback_enabled?: boolean }) => (r.is_cashback_enabled ? '✓' : ''),
