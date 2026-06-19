@@ -271,6 +271,11 @@ async fn sweep_tpsl2(
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .thread_name(|i| format!("grouped-sweep-{i}"))
+                // Default Windows PE stack (1 MB) is too small for the hot loop:
+                // fill_outcomes → resolve_entry/exit → exit ladder + cohort fns
+                // stack up enough frames to overflow on large corpora. 8 MB matches
+                // the Linux thread default and gives comfortable headroom.
+                .stack_size(8 * 1024 * 1024)
                 .build()
                 .map_err(|e| anyhow!("rayon pool build failed: {e}"))?;
             pool.install(|| {
@@ -398,6 +403,7 @@ async fn sweep_tpsl1(
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .thread_name(|i| format!("grouped-sweep-{i}"))
+                .stack_size(8 * 1024 * 1024)
                 .build()
                 .map_err(|e| anyhow!("rayon pool build failed: {e}"))?;
             pool.install(|| {

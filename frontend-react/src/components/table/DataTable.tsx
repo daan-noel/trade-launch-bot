@@ -480,16 +480,29 @@ export function DataTable<R>({
         )}
         <span className="flex-1" />
         {colFilters && (
-          <button
-            type="button"
-            onClick={() => setShowFilterRow((v) => !v)}
-            className={cn(
-              'rounded-md border border-white/8 bg-white/4 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider text-text-dim transition hover:text-text',
-              (showFilterRow || activeFilters > 0) && 'border-primary/35 bg-primary/12 text-primary',
+          <div className="flex items-center">
+            <button
+              type="button"
+              onClick={() => setShowFilterRow((v) => !v)}
+              className={cn(
+                'rounded-md border border-white/8 bg-white/4 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider text-text-dim transition hover:text-text',
+                activeFilters > 0 ? 'rounded-r-none border-r-0' : '',
+                (showFilterRow || activeFilters > 0) && 'border-primary/35 bg-primary/12 text-primary',
+              )}
+            >
+              {activeFilters > 0 ? `Filters (${activeFilters})` : 'Filters'}
+            </button>
+            {activeFilters > 0 && (
+              <button
+                type="button"
+                onClick={() => setColFiltersMap({})}
+                title="Clear all filters"
+                className="rounded-r-md border border-l-0 border-primary/35 bg-primary/12 px-1.5 py-1 text-[11px] text-primary transition hover:bg-primary/20 hover:text-white"
+              >
+                ✕
+              </button>
             )}
-          >
-            {activeFilters > 0 ? `Filters (${activeFilters})` : 'Filters'}
-          </button>
+          </div>
         )}
         {colToggle && (
           <button
