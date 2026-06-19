@@ -118,6 +118,9 @@ interface DataTableProps<R> {
    * search/sort/filter changes.
    */
   resetKey?: string | number;
+  /** Optional extra className(s) applied to each data row's `<tr>`. Useful for
+   *  per-row highlights (e.g. marking entry/exit trades). */
+  rowClassName?: (row: R) => string | undefined;
 }
 
 export function DataTable<R>({
@@ -145,6 +148,7 @@ export function DataTable<R>({
   onQueryChange,
   loading = false,
   resetKey,
+  rowClassName,
 }: DataTableProps<R>) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => {
@@ -622,6 +626,7 @@ export function DataTable<R>({
                       actionsCellCls={actionsCellCls}
                       rowDetail={rowDetail}
                       colCount={colCount}
+                      rowClassName={rowClassName}
                     />
                   );
                 })
@@ -664,6 +669,7 @@ interface TableRowProps<R> {
   actionsCellCls: string;
   rowDetail?: (row: R) => ReactNode;
   colCount: number;
+  rowClassName?: (row: R) => string | undefined;
 }
 
 /**
@@ -687,6 +693,7 @@ function TableRowInner<R>({
   actionsCellCls,
   rowDetail,
   colCount,
+  rowClassName,
 }: TableRowProps<R>) {
   return (
     <Fragment>
@@ -696,6 +703,7 @@ function TableRowInner<R>({
           selectable && 'cursor-pointer',
           'transition-colors hover:bg-primary/12',
           isSelected && selectable && 'bg-primary/18 shadow-[0_14px_32px_rgba(2,192,118,0.06)]',
+          rowClassName?.(row),
         )}
       >
         <td className="border-b border-border px-2 py-1.5 text-center text-[11px] text-text-dim">

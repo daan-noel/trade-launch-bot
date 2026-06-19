@@ -27,6 +27,16 @@ interface TokenTradeChartProps {
   eventMarkers?: ChartEventMarker[] | null;
 }
 
+/** Maps tx signature → kind for entry/exit row highlighting in the trades table. */
+function buildEntryExitMap(markers: ChartEventMarker[] | null | undefined): Map<string, 'entry' | 'exit'> {
+  const m = new Map<string, 'entry' | 'exit'>();
+  if (!markers) return m;
+  for (const marker of markers) {
+    if (marker.txSignature) m.set(marker.txSignature, marker.kind);
+  }
+  return m;
+}
+
 /** Trades within the clicked bar, matched the same way the chart buckets them. */
 function tradesInBar(trades: TradeRecord[], bar: ChartBarSelection): TradeRecord[] {
   if (bar.groupMode === 'slot') {
@@ -98,6 +108,18 @@ export function TokenTradeChart({ detail, eventMarkers = null }: TokenTradeChart
   }, []);
 
   const tradeColumns = useMemo(() => tokenTradeColumns(price.unitLabel), [price.unitLabel]);
+
+  const entryExitMap = useMemo(() => buildEntryExitMap(eventMarkers), [eventMarkers]);
+
+  const tradeRowClassName = useMemo(() => {
+    if (entryExitMap.size === 0) return undefined;
+    return (t: TradeRecord) => {
+      const kind = entryExitMap.get(t.tx_signature);
+      if (kind === 'entry') return 'bg-[#02c076]/12 hover:bg-[#02c076]/20';
+      if (kind === 'exit') return 'bg-[#f6465d]/12 hover:bg-[#f6465d]/20';
+      return undefined;
+    };
+  }, [entryExitMap]);
 
   const selectionTrades = useMemo(() => {
     if (selectedRange) return tradesInRange(trades, selectedRange);
@@ -174,6 +196,7 @@ export function TokenTradeChart({ detail, eventMarkers = null }: TokenTradeChart
             searchable
             colFilters
             hoverable
+            rowClassName={tradeRowClassName}
             emptyMessage={
               selectedRange ? 'No trades in this range.' : 'No trades in this bar.'
             }
