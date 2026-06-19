@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { DataTable } from 'components/table/DataTable';
 import { Badge, type BadgeVariant } from 'components/ui/Badge';
+import { SectionDivider } from 'components/ui/SectionDivider';
 import { Button } from 'components/ui/Button';
 import { Input } from 'components/ui/Input';
 import { InlineAlert, Modal } from 'components/ui/Modal';
@@ -67,9 +68,6 @@ import { cn } from 'lib/cn';
 const keyByMint = (r: { mint: string }) => r.mint;
 const keyById = (r: { id: string }) => r.id;
 
-function SectionDivider() {
-  return <div role="separator" className="my-6 border-t border-white/6" />;
-}
 
 /** Heading for a section: a colored marker bar + title + optional count badge,
  *  subtitle, and right-aligned actions. Reused across the page so every section

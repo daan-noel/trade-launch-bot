@@ -52,6 +52,7 @@ import {
   type SwingFilterForm,
 } from 'components/analysis/swingFilter';
 import { Badge } from 'components/ui/Badge';
+import { SectionDivider } from 'components/ui/SectionDivider';
 import { Button } from 'components/ui/Button';
 import { Checkbox } from 'components/ui/Checkbox';
 import { Input } from 'components/ui/Input';
@@ -110,9 +111,6 @@ const INITIAL_QUERY: TableQuery = {
   colFilters: {},
 };
 
-function SectionDivider() {
-  return <div role="separator" className="my-6 border-t border-white/6" />;
-}
 
 type AnalysisKind = 'swing';
 type SwingPanelTab = 'analysis' | 'chain' | 'timerange' | 'thresholds' | 'filter';

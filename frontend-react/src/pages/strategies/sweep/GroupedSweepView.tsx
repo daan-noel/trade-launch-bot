@@ -3,6 +3,7 @@ import { useLocalStorage } from 'hooks/useLocalStorage';
 import { STORAGE_KEYS } from 'lib/storage';
 import { DataTable } from 'components/table/DataTable';
 import { InlineAlert } from 'components/ui/Modal';
+import { SectionDivider } from 'components/ui/SectionDivider';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
 import { Accordion } from 'components/ui/Accordion';
@@ -33,9 +34,6 @@ import type { TableQuery } from 'components/table/types';
  *  strategy supplies its own keys + axes via a thin child page (see this
  *  folder's `Tpsl1GroupedSweepPage` / `Tpsl2GroupedSweepPage`). */
 
-function SectionDivider() {
-  return <div role="separator" className="my-6 border-t border-white/6" />;
-}
 
 /** Run-picker groups label: a completed run shows its full group count; a running
  *  or cancelled (partial) run shows "done / total" so the picker reveals at a
