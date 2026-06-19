@@ -594,6 +594,7 @@ export function SyncTokenPage() {
             </div>
           </div>
           <DataTable
+            tableId="sync_tokens"
             columns={syncedColumns}
             rows={syncedRows}
             rowKey={syncedRowKey}
@@ -641,6 +642,7 @@ export function SyncTokenPage() {
             </Badge>
           </div>
           <DataTable
+            tableId="sync_trades"
             key={selected.token.mint_address}
             columns={tradeColumns}
             rows={selected.trades}

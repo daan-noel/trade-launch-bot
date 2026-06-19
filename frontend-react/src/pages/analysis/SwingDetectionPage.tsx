@@ -1624,6 +1624,7 @@ export function SwingDetectionPage() {
                     </div>
                     {showSwingResultsTable && (
                       <DataTable
+                        tableId="swing_filtered"
                         columns={swingTableColumns}
                         rows={filteredSwings}
                         rowKey={swingLegKey}
@@ -1686,6 +1687,7 @@ export function SwingDetectionPage() {
                       </div>
                       {showSwingResultsTable && (
                         <DataTable
+                          tableId="swing_results"
                           columns={swingTableColumns}
                           rows={swingResult.swings}
                           rowKey={swingLegKey}
@@ -1765,6 +1767,7 @@ export function SwingDetectionPage() {
               </button>
             </div>
             <DataTable
+              tableId="swing_trades"
               columns={tradeTableColumns}
               rows={selectedSwingKey ? swingTrades : barTrades}
               rowKey={(t) => t.id}

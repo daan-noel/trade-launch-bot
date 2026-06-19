@@ -353,7 +353,7 @@ export function TokensPage() {
           className="mt-3.5 flex flex-col gap-2.5 rounded-lg border border-white/6 bg-bg-panel p-3"
         >
           <TokenDetailPanel detail={detail ?? null} loading={detailLoading} error={detailError} />
-          <TokenTradeChart detail={detail ?? null} />
+          <TokenTradeChart tableId="token_detail_trades" detail={detail ?? null} />
         </div>
       )}
     </div>

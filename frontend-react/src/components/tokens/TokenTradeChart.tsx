@@ -25,6 +25,8 @@ interface TokenTradeChartProps {
   detail: TokenDetailRecord | null;
   /** Strategy entry/exit points to overlay (TPSL result inspection). */
   eventMarkers?: ChartEventMarker[] | null;
+  /** Passed to DataTable so column visibility is persisted per call-site. */
+  tableId?: string;
 }
 
 /** Maps tx signature → kind for entry/exit row highlighting in the trades table. */
@@ -69,7 +71,7 @@ function tradesInRange(
  * them to the reusable {@link TokenPriceChart}. Clicking a candle — or
  * drag-selecting a time range — lists the underlying trades in a table below.
  */
-export function TokenTradeChart({ detail, eventMarkers = null }: TokenTradeChartProps) {
+export function TokenTradeChart({ detail, eventMarkers = null, tableId }: TokenTradeChartProps) {
   const { unit, usdRate } = usePriceUnit();
   const { timezone } = useTimezone();
   const price = usePriceDisplay();
@@ -189,6 +191,7 @@ export function TokenTradeChart({ detail, eventMarkers = null }: TokenTradeChart
             </button>
           </div>
           <DataTable
+            tableId={tableId}
             columns={tradeColumns}
             rows={selectionTrades}
             rowKey={(t) => t.id}

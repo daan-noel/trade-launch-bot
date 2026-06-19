@@ -81,6 +81,7 @@ export function AnalysisPage() {
           {!creatorLoad && !creatorErr && (
             <>
               <DataTable
+                tableId="analysis_creators"
                 columns={creatorColumns}
                 rows={creators}
                 rowKey={creatorKey}
@@ -113,6 +114,7 @@ export function AnalysisPage() {
           {!resultLoad && !resultErr && (
             <>
               <DataTable
+                tableId="analysis_results"
                 columns={analysisColumns}
                 rows={results}
                 rowKey={resultKey}

@@ -71,7 +71,7 @@ export function TokenInspectModal({ target, onClose }: TokenInspectModalProps) {
           loading={isFetching}
           error={apiErrorMessage(error, 'Failed to load detail')}
         />
-        <TokenTradeChart detail={detail ?? null} eventMarkers={eventMarkers} />
+        <TokenTradeChart tableId="tpsl1_inspect_trades" detail={detail ?? null} eventMarkers={eventMarkers} />
       </div>
     </Modal>
   );

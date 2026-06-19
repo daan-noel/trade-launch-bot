@@ -25,6 +25,7 @@ export function TransactionsPage() {
         <p className="text-text-dim">Waiting for live trades from stream…</p>
       ) : (
         <DataTable
+          tableId="transactions"
           columns={columns}
           rows={events}
           rowKey={tradeRowKey}
