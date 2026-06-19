@@ -81,7 +81,12 @@ both `_runs` tables (Phase 4 partial persistence). The repo is generic and
   `best_score: Option<f64>` (the headline robust-realized metric, `0003` migration
   added the nullable column) alongside the secondary `best_expectancy_sol`. The run
   model carries `status` (`running`/`completed`/`cancelled`) + `groups_done`
-  (Phase 4 — a `cancelled` run is honestly partial).
+  (Phase 4 — a `cancelled` run is honestly partial), and the **history-metadata**
+  columns (`0005`): `ix_labels_filter` / `field_filters` (the corpus filters the
+  run used, stored verbatim from the request so the history panel + re-run can read
+  them — previously applied in-memory then dropped), `token_cap` / `max_combos`
+  (the submitted caps, distinct from the realized `token_count`/`combo_count`), and
+  a user-editable `label`. All nullable → legacy rows read `null`.
 - `storage/repositories/grouped_sweep_repo.rs` — `GroupedSweepTables { runs,
   groups, results }` + **incremental** `GroupedSweepRepo` writes (Phase 4):
   `insert_run` (run header up front, `status='running'`),
@@ -90,7 +95,9 @@ both `_runs` tables (Phase 4 partial persistence). The repo is generic and
   completed group + its combo rows in `chunks(2000)`, bumps `groups_done`, own
   txn), `finalize_completed(run_id, group_count, combo_count, axes_spec)` /
   `mark_cancelled(run_id)` (terminal status), `reconcile_orphaned_runs` (boot
-  crash-recovery: `running` → `cancelled`), plus the reads `list_runs(limit)`,
+  crash-recovery: `running` → `cancelled`), `update_label(run_id, Option<&str>)`
+  (rename — blank clears to NULL; rows-affected so the handler 404s an unknown id),
+  plus the reads `list_runs(limit)`,
   `list_groups(run_id)`, `list_results(run_id, group_id)` and deletes
   `delete_run(run_id)` / `delete_runs_before(cutoff)` (FK `ON DELETE CASCADE`).
   Table names come only from fixed registry consts → SQL interpolation is
@@ -144,6 +151,9 @@ both `_runs` tables (Phase 4 partial persistence). The repo is generic and
     `AppState.sweep_cancel`; the engine polls it and bails. No-op if idle.
   - `DELETE /api/strategies/sweeps/{run_id}?strategy_id=` (`delete_run`) — drop one
     run (groups + results cascade via FK); 404 on unknown id.
+  - `PATCH /api/strategies/sweeps/{run_id}?strategy_id=` (`rename_run`; body
+    `{label}`) — set/clear a run's user-given name (blank ⇒ NULL); 404 on unknown
+    id; invalidates `GroupedSweep`.
   - `DELETE /api/strategies/sweeps?strategy_id=&before=<rfc3339>` (`prune_runs`) —
     delete all runs created strictly before `before` (`before` required so it can't
     wipe everything). Both deletes invalidate the page's `GroupedSweep` cache tag.
@@ -166,7 +176,16 @@ per-strategy localStorage key, and namespaces the `DataTable` `tableId` by
 `storageKey` props (no longer hardcoded to TPSL2) and hides the **Entry gates**
 subsection when a strategy has no entry axes (TPSL1). Group-summary `DataTable` →
 click a group → drill-in combo `DataTable`
-(reuses `buildSweepColumns`). `buildGroupColumns(paramKeys)` (same key list the
+(reuses `buildSweepColumns(paramKeys, paramColors?)`). The drill-in passes a
+**per-column tint plan** (`lib/sweepParamColors.computeParamColumnColors(results,
+paramKeys)`, memoized per group): a knob that's **constant** across the group's
+combos renders dimmed (the eye skips fixed knobs), while a **varying** knob gives
+each distinct value a stable low-opacity full-cell background (assigned in ascending
+value order, palette local per column) so equal values read as a color band down the
+column — near-identical combos differ only where the cells light up. The tint lands
+on the `<td>` via the generic `ColumnDef.cellClassName(row)` hook (distinct from the
+row-cluster `cellGroupClassName` the rule table uses; here every row is in the same
+group, so the signal is per-value, not per-row). `buildGroupColumns(paramKeys)` (same key list the
 drill-in receives): Group (fingerprint chips), the **Metrics** columns
 (Tokens/Fired/**Best-score** — the headline ranking metric, default sort — then
 Best-expectancy as a secondary readout, each a real sortable + numeric-filterable column),
@@ -192,7 +211,18 @@ label shows `running N/total` or `partial N/total groups` for a non-`completed`
 run (`runGroupsLabel`), and a `warning` `InlineAlert` banner above the group table
 flags an in-progress/cancelled run so a partial set is never mistaken for a full
 sweep; on cancel the view jumps to the persisted partial run (`run_id`) when any
-groups finished.
+groups finished. **Sweep history management (`0005`):** below the run picker,
+`components/sweep/SelectedSweepHistory` renders a read-only summary of the
+selected run's full launch config — token range, grouping, method, caps, field
+filters, and the `ix_labels_filter` as a pretty multi-line JSON block (the result
+tables never show it, so a saved run was otherwise illegible). It hosts the inline
+**rename** (`useRenameGroupedSweepRunMutation` → the `PATCH`; the custom name also
+prefixes the picker `<option>`) and a **Use these settings** button that re-runs
+the config: it bumps a `reuseNonce` the `SweepConfigForm` watches and maps the
+stored run back into the form's `SweepConfig` (`runToConfig` — parses the `method`
+tag, `axes_spec`, filters, caps), scrolling the form into view; it never
+auto-fires (a sweep is expensive). All of this reads the existing runs query —
+pure metadata, no extra groups/results fetch.
 
 ## Invariants
 - The hot loop is strategy-blind and walks the slim, wallet-interned `SweepTrade`

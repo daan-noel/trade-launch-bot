@@ -42,6 +42,13 @@ export interface ColumnDef<R> {
   tooltip?: string;
   render: (row: R) => ReactNode;
   /**
+   * Optional per-row class for this column's `<td>` (e.g. a value-based cell
+   * tint). Applied on top of the group even/odd tint, so it controls the cell's
+   * full background — not just the rendered content's bounding box, the way a
+   * `render`-level span would. Return undefined to leave the cell untinted.
+   */
+  cellClassName?: (row: R) => string | undefined;
+  /**
    * Custom header content. When set, replaces the default label + sort-arrow and
    * the header's click-to-sort (the column is expected to be non-sortable on its
    * own key). Receives the table's sort state so it can render its own controls.

@@ -8,6 +8,7 @@ import { Button } from 'components/ui/Button';
 import { useBackgroundJobActions, useBackgroundJobsState } from 'context/BackgroundJobsContext';
 import { buildSweepColumns } from 'components/sweep/sweepColumns';
 import { buildGroupColumns } from 'components/sweep/groupColumns';
+import { computeParamColumnColors } from 'lib/sweepParamColors';
 import { SweepConfigForm } from 'components/sweep/SweepConfigForm';
 import {
   type AxisDef,
@@ -162,7 +163,17 @@ export function GroupedSweepView({
   const results = resultsQuery.data ?? [];
 
   const groupColumns = useMemo(() => buildGroupColumns(paramKeys), [paramKeys]);
-  const comboColumns = useMemo(() => buildSweepColumns(paramKeys), [paramKeys]);
+  // Per-column tint plan for the drill-in combo table: constant knobs dim out,
+  // varying knobs get a per-value cell band so near-identical combos read at a
+  // glance. Recomputed per group (cheap, O(rows×params)).
+  const paramColors = useMemo(
+    () => computeParamColumnColors(results, paramKeys),
+    [results, paramKeys],
+  );
+  const comboColumns = useMemo(
+    () => buildSweepColumns(paramKeys, paramColors),
+    [paramKeys, paramColors],
+  );
 
   const runsErr = apiErrorMessage(runsQuery.error, 'Failed to load sweep runs');
   const groupsErr = apiErrorMessage(groupsQuery.error, 'Failed to load groups');

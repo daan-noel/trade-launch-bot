@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import type { ColumnDef } from 'components/table/types';
 import { cn } from 'lib/cn';
 import { formatDecimalTrim } from 'utils/format';
+import type { ParamColumnColor } from 'lib/sweepParamColors';
 import type { SweepResultRecord } from './types';
 
 // --- formatters -------------------------------------------------------------
@@ -117,7 +118,10 @@ function count(
  * order; cell text is colored by group (entry/exit knobs, counts, pnl, holding,
  * exits) and, on the PnL metrics, by meaning (green = good, red = bad).
  */
-export function buildSweepColumns(paramKeys: string[]): ColumnDef<SweepResultRecord>[] {
+export function buildSweepColumns(
+  paramKeys: string[],
+  paramColors?: Map<string, ParamColumnColor>,
+): ColumnDef<SweepResultRecord>[] {
   // One column per swept knob, in `paramKeys` order (the page owns that order).
   const paramCols: ColumnDef<SweepResultRecord>[] = paramKeys.map((k) => {
     // The TP/SL knobs echo their exit-column colors (green/red) so the ladder
@@ -125,12 +129,24 @@ export function buildSweepColumns(paramKeys: string[]): ColumnDef<SweepResultRec
     const cls = k === 'exit_take_profit' ? 'text-green' : k === 'exit_stop_loss' ? 'text-red' : 'text-secondary';
     // Group by trade side so entry gates and exit knobs tint as separate bands.
     const group = k.startsWith('entry_') ? 'entry' : 'exit';
+    // Per-column tint plan (when supplied): a knob that's constant across the
+    // group dims out so the eye skips it; a varying knob keeps its accent and
+    // gets a per-value full-cell background (via `cellClassName`) so equal values
+    // read as a color band down the column.
+    const color = paramColors?.get(k);
     return {
       key: `p_${k}`,
       label: k.replace(/_/g, ' '),
       group,
       sortable: true,
-      render: (r) => tone(fmtParam(k, r.params[k]), cls),
+      render: (r) => tone(fmtParam(k, r.params[k]), color?.constant ? 'text-text-dim' : cls),
+      cellClassName:
+        color && !color.constant
+          ? (r) => {
+              const v = r.params[k];
+              return v == null ? undefined : color.byValue.get(v);
+            }
+          : undefined,
       sortValue: (r) => r.params[k],
       filterNumber: (r) => r.params[k],
       searchValue: () => '',

@@ -740,6 +740,7 @@ function TableRowInner<R>({
               'border-b border-border px-2 py-1.5 text-center text-text',
               groupClasses[ci],
               cellGroupClassName?.(col.group, row),
+              col.cellClassName?.(row),
             )}
           >
             {col.render(row)}
