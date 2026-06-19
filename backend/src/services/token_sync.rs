@@ -1367,6 +1367,7 @@ async fn write_metrics(
             m.current_price,
             m.is_dead,
             m.is_migrated,
+            m.lifetime_secs,
         )
         .await
         .map_err(|e| SyncError::Internal(e.to_string()))

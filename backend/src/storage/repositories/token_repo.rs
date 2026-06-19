@@ -40,10 +40,8 @@ struct TokenDbRow {
 /// — a token that has never traded (or predates its first metrics flush) has no
 /// `tokens_info` row yet, exactly like a freshly-tracked mint with zeroed stats.
 ///
-/// Note: `tokens_info.age` is the wall-clock age at the last metrics flush, NOT
-/// the gap-aware `active_lifetime_secs` (which is recomputed from in-memory trade
-/// history and is not persisted). It is therefore intentionally NOT selected here;
-/// DB-sourced rows carry `active_lifetime_secs = None`.
+/// Note: `tokens_info.age` is the wall-clock age at the last metrics flush.
+/// `lifetime_secs` is read from the DB column (written at eviction / final flush).
 #[derive(sqlx::FromRow)]
 pub struct TokenListRow {
     // tokens
@@ -72,6 +70,7 @@ pub struct TokenListRow {
     pub is_dead: Option<bool>,
     pub is_migrated: Option<bool>,
     pub last_synced_at: Option<DateTime<Utc>>,
+    pub lifetime_secs: Option<i64>,
 }
 
 impl From<TokenDbRow> for Token {
@@ -303,7 +302,8 @@ impl TokenRepo {
                    t.cu_limit, t.cu_price, t.is_mayhem_mode, t.is_cashback_enabled,
                    t.ix_labels, t.creation_tx_signature, t.created_at,
                    i.ath_price, i.ath_timestamp, i.volume, i.market_cap, i.trade_count,
-                   i.last_trade_at, i.current_price, i.is_dead, i.is_migrated, i.last_synced_at
+                   i.last_trade_at, i.current_price, i.is_dead, i.is_migrated, i.last_synced_at,
+                   i.lifetime_secs
               FROM tokens t
               LEFT JOIN tokens_info i ON i.mint_address = t.mint_address
              WHERE t.created_at >= $1

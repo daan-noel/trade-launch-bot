@@ -264,7 +264,7 @@ mod tests {
             name: String::new(),
             trade_count: 0,
             last_trade_at: None,
-            active_lifetime_secs: None,
+            lifetime_secs: None,
             last_synced_at: None,
         }
     }

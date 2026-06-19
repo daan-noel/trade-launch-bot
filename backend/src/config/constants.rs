@@ -190,40 +190,29 @@ pub fn total_supply_for(is_mayhem_mode: bool) -> f64 {
 pub const EARLY_COHORT_SLOT_WINDOW: i64 = 150;
 
 // ── Dead-token detection ─────────────────────────────────────────────────────
-// A token is "dead" — nobody cares, momentum gone — when ALL of the signals below
-// hold at once. AND-ed (not OR-ed) on purpose: each alone has false positives on a
-// brand-new launch, so it's the combination that means dead. All are read from the
-// in-memory `TokenState` (latest reserves, current price, trailing volume) — no DB
-// scans — so the verdict is cheap to recompute on the ingest hot path. Distinct
-// from a *rug*: a dead token simply fizzled, nobody pulled liquidity.
-
-/// Don't evaluate deadness until a token is at least this old. A fresh launch can
-/// momentarily satisfy every signal (no liquidity yet, price still ≈ init, no
-/// volume) before it has had a chance to trade — this gate stops that misfire.
-pub const DEAD_MIN_AGE_SECONDS: i64 = 300; // 5 minutes
+// A token is "dead" when BOTH conditions hold simultaneously:
+//   1. Real SOL reserves are below `DEAD_MAX_LIQUIDITY_SOL` — liquidity is gone.
+//   2. No meaningful trade (≥ `DEAD_MEANINGFUL_TRADE_SOL`) has arrived for at least
+//      `DEAD_QUIET_SECS` — activity has permanently ceased.
+// This two-condition design is durable: the quiet requirement means a token that
+// temporarily dips in reserves during a trough but then recovers will NOT be flagged
+// dead (a new meaningful trade resets the quiet clock). The verdict flips to true
+// exactly once and stays there. All reads are from in-memory `TokenState` — no DB.
 
 /// Signal 1 — liquidity is gone. The latest `real_sol_reserves` is below this many
-/// SOL. Real SOL reserves can't be inflated by wash trading (a buy adds SOL, the
-/// matching wash-sell removes it, net ≈ 0), so this is the spoof-proof anchor.
+/// SOL. Spoof-proof anchor: a buy adds SOL, the matching wash-sell removes it, net≈0.
 pub const DEAD_MAX_LIQUIDITY_SOL: f64 = 1.0;
 
-/// Signal 2 — price round-tripped to launch. Current price is at or below the
-/// token's initial price scaled by `(1 + this)`, i.e. all the launch momentum is
-/// gone. A token that never moved off its init price never found demand.
-pub const DEAD_PRICE_PROXIMITY_RATIO: f64 = 0.10;
+/// Signal 2 — no meaningful trade for this many seconds. A "meaningful trade" is one
+/// with `sol_amount >= DEAD_MEANINGFUL_TRADE_SOL`; tiny probe/dust transactions are
+/// ignored so they cannot keep a dead token artificially alive. Falls back to
+/// `token.created_at` when no meaningful trade has ever arrived.
+pub const DEAD_QUIET_SECS: i64 = 120; // 2 minutes
 
-/// Signal 3 — only dust trades (or none) in the trailing `DEAD_DUST_WINDOW_SECONDS`.
-/// Catches a token that is technically "active" — staleness/eviction wouldn't fire —
-/// but whose remaining flow is negligible. Total traded SOL in the window ≤ this.
-pub const DEAD_DUST_VOLUME_SOL: f64 = 0.05;
-
-/// Trailing window over which Signal 3's dust volume is summed.
-pub const DEAD_DUST_WINDOW_SECONDS: i64 = 600; // 10 minutes
-
-/// A silence longer than this between consecutive trades marks the token going
-/// quiet. Trailing trades after such a gap are stripped when computing a token's
-/// active lifetime, so a lone late trade hours after death doesn't inflate it.
-pub const LIFETIME_GAP_SECONDS: i64 = 600; // 10 minutes
+/// SOL amount threshold below which a trade is considered dust and does NOT reset the
+/// quiet timer used by `DEAD_QUIET_SECS`. Prevents bot noise from keeping dead tokens
+/// alive indefinitely.
+pub const DEAD_MEANINGFUL_TRADE_SOL: f64 = 0.1;
 
 /// A migrated token's PumpSwap pool is included in the live subscription set
 /// only if it has traded within this window. Bounds the subscription to

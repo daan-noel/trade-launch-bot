@@ -66,16 +66,17 @@ pub struct TokenSummary {
     pub name: String,
     pub trade_count: u64,
     pub last_trade_at: Option<DateTime<Utc>>,
-    /// Gap-aware lifetime in seconds (creation → last non-stray trade).
-    pub active_lifetime_secs: Option<i64>,
+    /// Seconds from creation to the last meaningful trade; `Some` only when dead.
+    pub lifetime_secs: Option<i64>,
     pub last_synced_at: Option<DateTime<Utc>>,
 }
 
 impl From<&TokenState> for TokenSummary {
     fn from(s: &TokenState) -> Self {
-        let age_seconds = chrono::Utc::now()
-            .signed_duration_since(s.token.created_at)
-            .num_seconds();
+        let now = chrono::Utc::now();
+        let age_seconds = now.signed_duration_since(s.token.created_at).num_seconds();
+        let is_dead = s.is_dead(now);
+        let lifetime_secs = s.lifetime_secs(now);
 
         let ix_labels_count = match &s.token.instruction_labels {
             serde_json::Value::Array(arr) => arr.len(),
@@ -106,7 +107,7 @@ impl From<&TokenState> for TokenSummary {
             ix_labels_count,
             instruction_labels: s.token.instruction_labels.clone(),
             is_migrated: s.is_migrated,
-            is_dead: s.is_dead(chrono::Utc::now()),
+            is_dead,
             age_seconds,
             created_at: s.token.created_at,
             creator_address: s.token.creator_wallet.clone(),
@@ -114,7 +115,7 @@ impl From<&TokenState> for TokenSummary {
             name: s.token.name.clone(),
             trade_count: s.trade_count,
             last_trade_at: s.last_trade_at,
-            active_lifetime_secs: s.active_lifetime_secs(),
+            lifetime_secs,
             last_synced_at: s.last_synced_at,
         }
     }
@@ -122,11 +123,9 @@ impl From<&TokenState> for TokenSummary {
 
 impl From<crate::storage::repositories::token_repo::TokenListRow> for TokenSummary {
     /// Build a list row from a joined `tokens` + `tokens_info` DB row, so the list
-    /// can include mints no longer resident in the live cache. Mirrors the
-    /// `&TokenState` conversion above, with one intentional gap: `active_lifetime_secs`
-    /// (gap-aware, recomputed from in-memory trade history) is NOT persisted, so it
-    /// is `None` for DB-sourced rows — the lifetime filter then exempts them and the
-    /// lifetime sort puts them last, matching the "alive/unknown" treatment.
+    /// can include mints no longer resident in the live cache. `lifetime_secs` is
+    /// read directly from the DB column (written at eviction and by the final
+    /// metrics flush when a token dies).
     fn from(r: crate::storage::repositories::token_repo::TokenListRow) -> Self {
         let age_seconds = chrono::Utc::now()
             .signed_duration_since(r.created_at)
@@ -168,7 +167,7 @@ impl From<crate::storage::repositories::token_repo::TokenListRow> for TokenSumma
             name: r.name,
             trade_count: r.trade_count.unwrap_or(0) as u64,
             last_trade_at: r.last_trade_at,
-            active_lifetime_secs: None,
+            lifetime_secs: r.lifetime_secs,
             last_synced_at: r.last_synced_at,
         }
     }
@@ -1100,7 +1099,7 @@ fn lifetime_minutes(t: &TokenSummary, now: DateTime<Utc>) -> Option<f64> {
     if (now - last).num_milliseconds() < LIFETIME_STALE_MS {
         return None; // still trading → exempt
     }
-    if let Some(secs) = t.active_lifetime_secs {
+    if let Some(secs) = t.lifetime_secs {
         return Some(secs as f64 / 60.0);
     }
     Some((last - t.created_at).num_milliseconds() as f64 / 60_000.0)
@@ -1349,7 +1348,7 @@ fn col_filter_text(key: &str, t: &TokenSummary) -> String {
         "token_age" => t.age_seconds.to_string(),
         "created" => t.created_at.to_rfc3339(),
         "last_trade" => opt_num_str(t.last_trade_at.map(|d| d.to_rfc3339())),
-        "lifetime" => opt_num_str(t.active_lifetime_secs),
+        "lifetime" => opt_num_str(t.lifetime_secs),
         "last_synced" => opt_num_str(t.last_synced_at.map(|d| d.to_rfc3339())),
         "trade_count" => t.trade_count.to_string(),
         "ath_price" => opt_num_str(t.ath_price),
@@ -1411,7 +1410,7 @@ fn sort_key(col: &str, t: &TokenSummary) -> SortKey {
         "token_age" => SortKey::Num(Some(t.age_seconds as f64)),
         "created" => SortKey::Str(Some(t.created_at.to_rfc3339())),
         "last_trade" => SortKey::Str(t.last_trade_at.map(|d| d.to_rfc3339())),
-        "lifetime" => SortKey::Num(t.active_lifetime_secs.map(|v| v as f64)),
+        "lifetime" => SortKey::Num(t.lifetime_secs.map(|v| v as f64)),
         "last_synced" => SortKey::Str(t.last_synced_at.map(|d| d.to_rfc3339())),
         "trade_count" => SortKey::Num(Some(t.trade_count as f64)),
         "ath_price" => SortKey::Num(t.ath_price),

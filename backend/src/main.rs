@@ -465,9 +465,12 @@ async fn main() -> anyhow::Result<()> {
         let token_cache = token_cache.clone();
         let tpsl1 = tpsl1_cache.clone();
         let tpsl2 = tpsl2_cache.clone();
+        let evict_repo =
+            storage::repositories::token_info_repo::TokenInfoRepo::new(db.clone());
         tokio::spawn(state::token_cache::run_token_cache_eviction(
             token_cache,
             move |mint: &str| tpsl1.is_mint_held(mint) || tpsl2.is_mint_held(mint),
+            evict_repo,
         ));
     }
 

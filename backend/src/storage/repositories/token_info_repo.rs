@@ -35,14 +35,15 @@ impl TokenInfoRepo {
         current_price: Option<f64>,
         is_dead: bool,
         is_migrated: bool,
+        lifetime_secs: Option<i64>,
     ) -> anyhow::Result<()> {
         let now = Utc::now();
 
         sqlx::query(
             r#"
             INSERT INTO tokens_info
-                (mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_dead, is_migrated, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                (mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_dead, is_migrated, lifetime_secs, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             ON CONFLICT (mint_address) DO UPDATE
                 SET ath_price = COALESCE(EXCLUDED.ath_price, tokens_info.ath_price),
                     ath_timestamp = CASE WHEN EXCLUDED.ath_price IS NOT NULL
@@ -60,6 +61,7 @@ impl TokenInfoRepo {
                     current_price = EXCLUDED.current_price,
                     is_dead = EXCLUDED.is_dead,
                     is_migrated = tokens_info.is_migrated OR EXCLUDED.is_migrated,
+                    lifetime_secs = COALESCE(EXCLUDED.lifetime_secs, tokens_info.lifetime_secs),
                     updated_at = EXCLUDED.updated_at
             "#,
         )
@@ -74,6 +76,7 @@ impl TokenInfoRepo {
         .bind(current_price)
         .bind(is_dead)
         .bind(is_migrated)
+        .bind(lifetime_secs)
         .bind(now)
         .bind(now)
         .execute(&self.pool)

@@ -32,6 +32,9 @@ pub fn metrics_from_state(mint: &str, state: &TokenState) -> TokenMetricsWrite {
     let age_seconds = now
         .signed_duration_since(state.token.created_at)
         .num_seconds();
+    // Compute is_dead once so lifetime_secs can reuse it without a double call.
+    let is_dead = state.is_dead(now);
+    let lifetime_secs = state.lifetime_secs(now);
     TokenMetricsWrite {
         mint: mint.to_string(),
         ath_price: state.ath_price,
@@ -43,7 +46,7 @@ pub fn metrics_from_state(mint: &str, state: &TokenState) -> TokenMetricsWrite {
         last_trade_at: state.last_trade_at,
         current_price: state.current_price,
         is_migrated: state.is_migrated,
-        // Cheap in-memory verdict (no DB scan) — see `TokenState::is_dead`.
-        is_dead: state.is_dead(now),
+        is_dead,
+        lifetime_secs,
     }
 }

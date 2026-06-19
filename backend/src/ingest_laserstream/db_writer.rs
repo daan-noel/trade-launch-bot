@@ -65,6 +65,10 @@ pub struct TokenMetricsWrite {
     /// Cheap in-memory dead-token verdict computed at metrics time (see
     /// [`crate::state::token_cache::TokenState::is_dead`]); persisted as-is.
     pub is_dead: bool,
+    /// Seconds from token creation to the last meaningful trade (`sol_amount >=
+    /// DEAD_MEANINGFUL_TRADE_SOL`). `Some` only when `is_dead = true`; `None` while
+    /// the token is still alive.
+    pub lifetime_secs: Option<i64>,
 }
 
 pub struct DbWriter {
@@ -260,6 +264,7 @@ impl DbWriter {
                         m.current_price,
                         m.is_dead,
                         m.is_migrated,
+                        m.lifetime_secs,
                     )
                     .await
                 {
