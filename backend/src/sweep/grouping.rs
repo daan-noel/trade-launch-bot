@@ -76,7 +76,7 @@ pub fn extract_lamports(instruction: Option<&Value>, key: &str) -> Option<i64> {
     })
 }
 
-/// Sort + dedup an instruction-labels JSON array into stable strings.
+/// Dedup an instruction-labels JSON array, preserving on-chain order.
 pub fn normalize_labels(labels: &Value) -> Vec<String> {
     let v: Vec<String> = labels
         .as_array()
@@ -85,13 +85,10 @@ pub fn normalize_labels(labels: &Value) -> Vec<String> {
     normalize_label_vec(v)
 }
 
-/// Sort + dedup a label `Vec` into the same stable form `ix_labels` keys on, so an
-/// exact-set comparison against a [`TokenFingerprint::ix_labels`] is order- and
-/// duplicate-insensitive. Shared by [`normalize_labels`] and the grouped-sweep
-/// ix-labels corpus filter (the filter set must normalize identically to the
-/// fingerprint it's matched against).
+/// Dedup a label `Vec`, preserving on-chain order. Shared by [`normalize_labels`]
+/// and the grouped-sweep ix-labels corpus filter (the filter must normalize
+/// identically to the fingerprint so the `==` comparison is consistent).
 pub fn normalize_label_vec(mut v: Vec<String>) -> Vec<String> {
-    v.sort();
     v.dedup();
     v
 }
@@ -237,8 +234,9 @@ mod tests {
     }
 
     #[test]
-    fn labels_normalized_sorted_and_joined() {
-        assert_eq!(normalize_labels(&json!(["b", "a", "a"])), vec!["a", "b"]);
+    fn labels_normalized_order_preserved_and_joined() {
+        // dedup removes consecutive duplicates but preserves on-chain order
+        assert_eq!(normalize_labels(&json!(["b", "a", "a"])), vec!["b", "a"]);
         let k = group_key(&fp(), &[GroupField::IxLabels]);
         assert_eq!(k.0[0].1, "Pump.Fun: Create | System: Transfer");
     }

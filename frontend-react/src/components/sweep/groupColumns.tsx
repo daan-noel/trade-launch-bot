@@ -148,7 +148,6 @@ export function buildGroupColumns(paramKeys: string[]): ColumnDef<GroupedSweepGr
       label: 'Group (fingerprint)',
       group: 'group',
       sortable: false,
-      width: '280px',
       render: (g) => {
         const parts = keyParts(g);
         if (parts.length === 0) return chip('ALL tokens', 'text-text-dim');
@@ -169,11 +168,9 @@ export function buildGroupColumns(paramKeys: string[]): ColumnDef<GroupedSweepGr
                     {p.label}:
                   </span>
                   {ixParts ? (
-                    <div className="flex flex-col items-start gap-0.5">
-                      {ixParts.map((ix, i) => (
-                        <span key={i}>{chip(ix, 'text-secondary')}</span>
-                      ))}
-                    </div>
+                    <pre className="select-all whitespace-pre font-mono text-[11px] leading-relaxed text-secondary">
+                      {JSON.stringify(ixParts, null, 2)}
+                    </pre>
                   ) : (
                     <span>{chip(p.value, 'text-secondary')}</span>
                   )}
