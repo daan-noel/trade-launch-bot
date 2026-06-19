@@ -37,7 +37,7 @@ use crate::sweep::aggregate::{ComboAgg, ComboMetrics};
 use crate::sweep::corpus::Corpus;
 use crate::sweep::engine::{combo_batch_count, combo_batch_size, fill_outcomes, run_sweep};
 use crate::sweep::grouping::{group_key, GroupField, GroupKey};
-use crate::sweep::progress::{CancelOnly, SweepObserver};
+use crate::sweep::progress::SweepObserver;
 use crate::sweep::strategy::{RefineSpec, Strategy, TokenOutcome};
 
 /// A group with at least `this × pool_threads` tokens is swept with **intra-group**
@@ -287,17 +287,19 @@ pub fn run_grouped_sweep<S: Strategy>(
 /// Run a grouped sweep, optionally with a coarse→refine second pass.
 ///
 /// Without `refine`, this is a single [`run_grouped_sweep`] over `coarse`. With
-/// it: sweep `coarse` **silently** (the bar tracks only the final pass) but
-/// cancellably, take each group's top-`top_k` combos, ask the strategy for a
+/// it: sweep `coarse` using `coarse_observer` (so the coarse pass has its own
+/// progress bar), take each group's top-`top_k` combos, ask the strategy for a
 /// neighborhood around them ([`Strategy::refine`]), then sweep the deduped union
-/// of the coarse combos and every neighborhood (this final pass drives the
-/// progress bar). The union is capped at `cap` — coarse combos are kept first, so
-/// the cap only ever trims refinement.
+/// of the coarse combos and every neighborhood (this final pass uses `observer`).
+/// The union is capped at `cap` — coarse combos are kept first, so the cap only
+/// ever trims refinement.
 ///
-/// Returns the final combo list (its index is the `combo_id` of the per-group
-/// results) and the per-group results, so the caller can emit one `params_json`
-/// per surviving combo. Order is deterministic: coarse-then-neighborhood, both in
-/// a deterministic order, deduped first-seen.
+/// `coarse_observer` is only meaningful when `refine.is_some()`; in the no-refine
+/// path `observer` is used and `coarse_observer` is ignored. Returns the final
+/// combo list (its index is the `combo_id` of the per-group results) and the
+/// per-group results, so the caller can emit one `params_json` per surviving combo.
+/// Order is deterministic: coarse-then-neighborhood, both in a deterministic
+/// order, deduped first-seen.
 // One orchestration fn threading the same params the dispatch already carries;
 // bundling them into a struct would only add indirection for two call sites.
 #[allow(clippy::too_many_arguments)]
@@ -310,6 +312,7 @@ pub fn run_grouped_with_refine<S: Strategy>(
     min_tokens: usize,
     coverage: CoverageFloor,
     cap: usize,
+    coarse_observer: &dyn SweepObserver,
     observer: &dyn SweepObserver,
     sink: &dyn GroupSink,
 ) -> Result<(Vec<S::Params>, Vec<GroupResult>)> {
@@ -326,11 +329,11 @@ pub fn run_grouped_with_refine<S: Strategy>(
         return Ok((coarse, groups));
     };
 
-    // Coarse pass — only used to locate each group's promising region, so it folds
-    // silently (the final pass owns the bar) while still honouring a cancel. Its
-    // groups are throwaway (the combo-id space isn't final yet), so they are NOT
-    // persisted: a cancel during coarse leaves no checkpointable group → a full
-    // cancel, exactly as the Phase 4 plan requires.
+    // Coarse pass — only used to locate each group's promising region. Reports
+    // progress through `coarse_observer` so the frontend can show a "Coarse sweep"
+    // bar. Its groups are throwaway (the combo-id space isn't final yet), so they
+    // are NOT persisted: a cancel during coarse leaves no checkpointable group → a
+    // full cancel, exactly as the Phase 4 plan requires.
     let coarse_groups = run_grouped_sweep(
         strategy,
         &coarse,
@@ -338,7 +341,7 @@ pub fn run_grouped_with_refine<S: Strategy>(
         fields,
         min_tokens,
         coverage,
-        &CancelOnly(observer),
+        coarse_observer,
         &NoopSink,
     )?;
 
@@ -815,6 +818,7 @@ mod tests {
             OPEN_FLOOR,
             100,
             &crate::sweep::progress::NoopObserver,
+            &crate::sweep::progress::NoopObserver,
             &NoopSink,
         )
         .unwrap();
@@ -837,6 +841,7 @@ mod tests {
             1,
             OPEN_FLOOR,
             100,
+            &crate::sweep::progress::NoopObserver,
             &crate::sweep::progress::NoopObserver,
             &NoopSink,
         )
@@ -863,6 +868,7 @@ mod tests {
             1,
             OPEN_FLOOR,
             3,
+            &crate::sweep::progress::NoopObserver,
             &crate::sweep::progress::NoopObserver,
             &NoopSink,
         )
@@ -930,6 +936,7 @@ mod tests {
             1,
             OPEN_FLOOR,
             100,
+            &crate::sweep::progress::NoopObserver,
             &crate::sweep::progress::NoopObserver,
             &sink,
         )

@@ -417,19 +417,39 @@ async fn run_grouped_sweep_job(
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SweepWrite>();
     let writer = {
         let db = state.db.clone();
+        let writer_sse_tx = state.sse_tx.clone();
+        let writer_strategy_id = b.strategy_id.clone();
         actix_web::rt::spawn(async move {
             let repo = GroupedSweepRepo::new(db, tables);
             let mut groups_done = 0i32;
+            let mut total_groups = 0i32;
             while let Some(msg) = rx.recv().await {
                 match msg {
                     SweepWrite::Begin { group_count, combo_count } => {
+                        total_groups = group_count;
                         if let Err(e) = repo.update_run_counts(run_id, group_count, combo_count).await
                         {
                             tracing::error!("grouped sweep: update_run_counts failed: {e}");
                         }
+                        // Announce the saving phase so the frontend switches from
+                        // the sweep bar to a fresh saving bar before any DB writes.
+                        let _ = writer_sse_tx.send(crate::models::ingest::SseEvent::SweepProgress {
+                            strategy_id: writer_strategy_id.clone(),
+                            phase: "saving".to_string(),
+                            processed: 0,
+                            total: group_count as u64,
+                        });
                     }
                     SweepWrite::Group(g) => match repo.append_group(run_id, &g).await {
-                        Ok(()) => groups_done += 1,
+                        Ok(()) => {
+                            groups_done += 1;
+                            let _ = writer_sse_tx.send(crate::models::ingest::SseEvent::SweepProgress {
+                                strategy_id: writer_strategy_id.clone(),
+                                phase: "saving".to_string(),
+                                processed: groups_done as u64,
+                                total: total_groups as u64,
+                            });
+                        }
                         Err(e) => tracing::error!("grouped sweep: append_group failed: {e}"),
                     },
                 }
@@ -438,14 +458,25 @@ async fn run_grouped_sweep_job(
         })
     };
 
-    // Streams real `processed / total` token frames over SSE and carries the
-    // shared cancel flag into the engine's hot loop.
+    // Two phase-tagged observers: coarse_observer reports the coarse LHS pass
+    // (only active for `refine` runs); observer reports the final sweep pass.
+    // Both share the cancel flag; only `observer` writes the ProgressCell so
+    // `/api/jobs/status` recovery shows the sweep-phase bar (the most useful one).
+    let coarse_observer: Arc<dyn crate::sweep::progress::SweepObserver + Send> =
+        Arc::new(crate::sweep::progress::SweepProgress::new(
+            state.sse_tx.clone(),
+            b.strategy_id.clone(),
+            state.sweep_cancel.clone(),
+            Arc::new(crate::state::job_progress::ProgressCell::default()),
+            "coarse",
+        ));
     let observer: Arc<dyn crate::sweep::progress::SweepObserver + Send> =
         Arc::new(crate::sweep::progress::SweepProgress::new(
             state.sse_tx.clone(),
             b.strategy_id.clone(),
             state.sweep_cancel.clone(),
             state.sweep_progress.clone(),
+            "sweep",
         ));
     // The sink hands each fully-folded group to the writer task. `run_grouped`
     // takes ownership, so it (and its sender) drop when the sweep ends — closing
@@ -462,6 +493,7 @@ async fn run_grouped_sweep_job(
         min_tokens,
         floor,
         b.max_combos,
+        coarse_observer,
         observer,
         sink,
     )

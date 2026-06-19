@@ -42,19 +42,23 @@ pub trait SweepObserver: Sync {
     fn cancelled(&self) -> bool;
 }
 
-/// SSE-emitting observer for the grouped sweep. Broadcasts a throttled
-/// [`SseEvent::SweepProgress`] frame as tokens fold so the dashboard renders a
-/// real percentage, and surfaces the shared cancel flag to the engine.
+/// SSE-emitting observer for one phase of the grouped sweep. Broadcasts a
+/// throttled [`SseEvent::SweepProgress`] frame (tagged with `phase`) as tokens
+/// fold so the dashboard renders a real percentage, and surfaces the shared
+/// cancel flag to the engine.
 pub struct SweepProgress {
     sse_tx: broadcast::Sender<SseEvent>,
     strategy_id: String,
+    /// Which phase this observer represents: `"coarse"` | `"sweep"` | `"saving"`.
+    phase: String,
     total: AtomicUsize,
     done: AtomicUsize,
     /// Cooperative cancel flag, shared with the cancel endpoint via app state.
     cancel: Arc<AtomicBool>,
     /// Shared readable snapshot for `/api/jobs/status` (refresh recovery). Written
     /// on every tick (cheap atomic store) even when an SSE frame is throttled, so
-    /// a mid-run status read is always accurate.
+    /// a mid-run status read is always accurate. Pass a throwaway
+    /// `Arc<ProgressCell::default()>` for phases where status recovery isn't needed.
     cell: Arc<ProgressCell>,
 }
 
@@ -64,10 +68,12 @@ impl SweepProgress {
         strategy_id: impl Into<String>,
         cancel: Arc<AtomicBool>,
         cell: Arc<ProgressCell>,
+        phase: impl Into<String>,
     ) -> Self {
         Self {
             sse_tx,
             strategy_id: strategy_id.into(),
+            phase: phase.into(),
             total: AtomicUsize::new(0),
             done: AtomicUsize::new(0),
             cancel,
@@ -78,6 +84,7 @@ impl SweepProgress {
     fn send(&self, processed: usize) {
         let _ = self.sse_tx.send(SseEvent::SweepProgress {
             strategy_id: self.strategy_id.clone(),
+            phase: self.phase.clone(),
             processed: processed as u64,
             total: self.total.load(Ordering::Relaxed) as u64,
         });

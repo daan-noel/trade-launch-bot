@@ -131,6 +131,10 @@ pub struct GroupedSweepOutput {
 /// fingerprinted `corpus`. The sweep needs no DB rule — the base rule is
 /// synthesized in-process (see `sweep_base_rule_*`); the CPU sweep runs on a
 /// bounded blocking pool, which is the only reason this is async.
+///
+/// `coarse_observer` reports the coarse pass (only relevant for `refine` runs);
+/// `observer` reports the final sweep pass. Pass separate observers with distinct
+/// `phase` labels so the frontend can show one bar per phase.
 // One thin dispatch fn called once from the handler — bundling these into a
 // struct would only add an indirection for a single call site.
 #[allow(clippy::too_many_arguments)]
@@ -144,6 +148,7 @@ pub async fn run_grouped(
     min_tokens: usize,
     floor: CoverageFloor,
     max_combos: Option<usize>,
+    coarse_observer: Arc<dyn SweepObserver + Send>,
     observer: Arc<dyn SweepObserver + Send>,
     sink: Arc<dyn GroupSink + Send + Sync>,
 ) -> Result<GroupedSweepOutput> {
@@ -151,14 +156,14 @@ pub async fn run_grouped(
         "tpsl1" => {
             sweep_tpsl1(
                 axes_json, method, refine, corpus, fields, min_tokens, floor, max_combos,
-                observer, sink,
+                coarse_observer, observer, sink,
             )
             .await
         }
         "tpsl2" => {
             sweep_tpsl2(
                 axes_json, method, refine, corpus, fields, min_tokens, floor, max_combos,
-                observer, sink,
+                coarse_observer, observer, sink,
             )
             .await
         }
@@ -214,6 +219,7 @@ async fn sweep_tpsl2(
     min_tokens: usize,
     floor: CoverageFloor,
     max_combos: Option<usize>,
+    coarse_observer: Arc<dyn SweepObserver + Send>,
     observer: Arc<dyn SweepObserver + Send>,
     sink: Arc<dyn GroupSink + Send + Sync>,
 ) -> Result<GroupedSweepOutput> {
@@ -277,6 +283,7 @@ async fn sweep_tpsl2(
                     min_tokens,
                     floor,
                     cap,
+                    coarse_observer.as_ref(),
                     observer.as_ref(),
                     sink.as_ref(),
                 )?;
@@ -343,6 +350,7 @@ async fn sweep_tpsl1(
     min_tokens: usize,
     floor: CoverageFloor,
     max_combos: Option<usize>,
+    coarse_observer: Arc<dyn SweepObserver + Send>,
     observer: Arc<dyn SweepObserver + Send>,
     sink: Arc<dyn GroupSink + Send + Sync>,
 ) -> Result<GroupedSweepOutput> {
@@ -402,6 +410,7 @@ async fn sweep_tpsl1(
                     min_tokens,
                     floor,
                     cap,
+                    coarse_observer.as_ref(),
                     observer.as_ref(),
                     sink.as_ref(),
                 )?;

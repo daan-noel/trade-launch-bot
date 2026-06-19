@@ -4,6 +4,7 @@ import {
   useBackgroundJobActions,
   useBackgroundJobsState,
   type BackgroundJob,
+  type PhaseProgress,
 } from 'context/BackgroundJobsContext';
 
 /**
@@ -54,15 +55,31 @@ export function BackgroundJobsIndicator() {
           key={`${job.kind}:${job.id}`}
           className="rounded-md border border-white/10 bg-surface/95 px-3 pb-3 pt-1 shadow-lg backdrop-blur"
         >
-          <ProgressBar
-            label={job.label}
-            processed={job.processed}
-            total={job.total}
-            cancelling={job.cancelling}
-            etaMs={estimateEtaMs(job, now)}
-            elapsedMs={now - job.firstSeenAt}
-            onCancel={() => cancel(job)}
-          />
+          {job.phases.size > 0
+            ? Array.from(job.phases.entries()).map(([phaseKey, ph]: [string, PhaseProgress]) => (
+                <ProgressBar
+                  key={phaseKey}
+                  label={ph.label}
+                  processed={ph.done ? ph.total : ph.processed}
+                  total={ph.total}
+                  cancelling={phaseKey === job.activePhase ? job.cancelling : false}
+                  onCancel={phaseKey === job.activePhase ? () => cancel(job) : undefined}
+                  etaMs={phaseKey === job.activePhase ? estimateEtaMs(job, now) : null}
+                  elapsedMs={phaseKey === job.activePhase ? now - job.firstSeenAt : null}
+                  done={ph.done}
+                />
+              ))
+            : (
+              <ProgressBar
+                label={job.label}
+                processed={job.processed}
+                total={job.total}
+                cancelling={job.cancelling}
+                etaMs={estimateEtaMs(job, now)}
+                elapsedMs={now - job.firstSeenAt}
+                onCancel={() => cancel(job)}
+              />
+            )}
         </div>
       ))}
     </div>

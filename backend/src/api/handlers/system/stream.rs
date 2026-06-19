@@ -185,6 +185,7 @@ fn render_sse_frame(event: &SseEvent, state: &AppState) -> SseFrame {
         }
         SseEvent::SweepProgress {
             strategy_id,
+            phase,
             processed,
             total,
         } => {
@@ -192,7 +193,7 @@ fn render_sse_frame(event: &SseEvent, state: &AppState) -> SseFrame {
             (
                 None,
                 "sweep_progress",
-                json!({ "strategy_id": strategy_id, "processed": processed, "total": total }),
+                json!({ "strategy_id": strategy_id, "phase": phase, "processed": processed, "total": total }),
             )
         }
         SseEvent::SweepFinished {

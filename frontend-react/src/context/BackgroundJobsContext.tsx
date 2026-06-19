@@ -50,13 +50,29 @@ import type { SimulationProgressEvent, SweepProgressEvent } from 'types';
  */
 export type JobKind = 'sweep' | 'simulation';
 
+/** Progress state for one named phase of a sweep (coarse / sweep / saving). */
+export interface PhaseProgress {
+  label: string;
+  processed: number | null;
+  total: number | null;
+  /** True once the phase has finished (a later phase arrived or it hit 100%). */
+  done: boolean;
+}
+
+const PHASE_LABELS: Record<string, string> = {
+  coarse: 'Coarse sweep',
+  sweep: 'Sweep',
+  saving: 'Saving results',
+};
+
 export interface BackgroundJob {
   kind: JobKind;
   /** Map key + cancel target: the fixed `'sweep'` slot, or a simulation's rule_id. */
   id: string;
   /** Human label for the indicator (rule name when known, else a generic name). */
   label: string;
-  /** Null until the first progress frame declares the total (indeterminate bar). */
+  /** Null until the first progress frame declares the total (indeterminate bar).
+   *  Kept for status-recovery backwards compat; phases map is the live source. */
   processed: number | null;
   total: number | null;
   /** A cancel has been requested but the cooperative abort hasn't landed yet. */
@@ -69,6 +85,11 @@ export interface BackgroundJob {
    *  measures work done *since we started watching*, keeping ETA honest for
    *  recovered jobs. */
   firstSeenProcessed: number;
+  /** Per-phase progress, keyed by phase string ("coarse" / "sweep" / "saving").
+   *  Empty until the first phase-tagged frame arrives (falls back to single bar). */
+  phases: Map<string, PhaseProgress>;
+  /** The phase key that most recently received a progress frame. */
+  activePhase: string | null;
 }
 
 /** Singleton key for the single-flight grouped sweep. */
@@ -107,30 +128,62 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
   const dispatch = useDispatch<AppDispatch>();
   const [jobs, setJobs] = useState<Map<string, BackgroundJob>>(new Map());
 
-  /** Insert or update one job, preserving fields the caller didn't supply. */
-  const upsert = useCallback((kind: JobKind, id: string, patch: Partial<BackgroundJob>) => {
-    setJobs((prev) => {
-      const key = keyOf(kind, id);
-      const existing = prev.get(key);
-      const processed =
-        patch.processed !== undefined ? patch.processed : existing?.processed ?? null;
-      const next = new Map(prev);
-      next.set(key, {
-        kind,
-        id,
-        label:
-          patch.label ?? existing?.label ?? (kind === 'sweep' ? 'Grouped sweep' : 'Simulation'),
-        processed,
-        total: patch.total !== undefined ? patch.total : existing?.total ?? null,
-        cancelling: patch.cancelling ?? existing?.cancelling ?? false,
-        // Stamp the ETA baseline once, on first observation; afterwards carry it
-        // forward so the average rate measures from when we started watching.
-        firstSeenAt: existing?.firstSeenAt ?? Date.now(),
-        firstSeenProcessed: existing?.firstSeenProcessed ?? processed ?? 0,
+  /** Insert or update one job, preserving fields the caller didn't supply.
+   *  Pass `phase` when the update carries per-phase progress so the phases map
+   *  is updated and the previous active phase is marked done. */
+  const upsert = useCallback(
+    (kind: JobKind, id: string, patch: Partial<BackgroundJob>, phase?: string) => {
+      setJobs((prev) => {
+        const key = keyOf(kind, id);
+        const existing = prev.get(key);
+        const processed =
+          patch.processed !== undefined ? patch.processed : existing?.processed ?? null;
+
+        // Build the updated phases map when a phase-tagged frame arrives.
+        let newPhases: Map<string, PhaseProgress>;
+        let newActivePhase: string | null;
+        if (phase) {
+          newPhases = new Map(existing?.phases ?? []);
+          // Mark the previously active phase done when a different phase arrives.
+          const prevActive = existing?.activePhase ?? null;
+          if (prevActive && prevActive !== phase && newPhases.has(prevActive)) {
+            const prev_ph = newPhases.get(prevActive)!;
+            newPhases.set(prevActive, { ...prev_ph, done: true });
+          }
+          const existingPh = newPhases.get(phase);
+          newPhases.set(phase, {
+            label: PHASE_LABELS[phase] ?? phase,
+            processed: patch.processed !== undefined ? patch.processed : existingPh?.processed ?? null,
+            total: patch.total !== undefined ? patch.total : existingPh?.total ?? null,
+            done: false,
+          });
+          newActivePhase = phase;
+        } else {
+          newPhases = existing?.phases ?? new Map();
+          newActivePhase = existing?.activePhase ?? null;
+        }
+
+        const next = new Map(prev);
+        next.set(key, {
+          kind,
+          id,
+          label:
+            patch.label ?? existing?.label ?? (kind === 'sweep' ? 'Grouped sweep' : 'Simulation'),
+          processed,
+          total: patch.total !== undefined ? patch.total : existing?.total ?? null,
+          cancelling: patch.cancelling ?? existing?.cancelling ?? false,
+          // Stamp the ETA baseline once, on first observation; afterwards carry it
+          // forward so the average rate measures from when we started watching.
+          firstSeenAt: existing?.firstSeenAt ?? Date.now(),
+          firstSeenProcessed: existing?.firstSeenProcessed ?? processed ?? 0,
+          phases: newPhases,
+          activePhase: newActivePhase,
+        });
+        return next;
       });
-      return next;
-    });
-  }, []);
+    },
+    [],
+  );
 
   const remove = useCallback((kind: JobKind, id: string) => {
     setJobs((prev) => {
@@ -168,7 +221,7 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
       if (typeof e.data !== 'string') return;
       try {
         const p = JSON.parse(e.data) as SweepProgressEvent;
-        upsert('sweep', SWEEP_KEY, { processed: p.processed, total: p.total });
+        upsert('sweep', SWEEP_KEY, { processed: p.processed, total: p.total }, p.phase);
       } catch {
         /* ignore malformed frames */
       }
@@ -200,7 +253,7 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
 
   const markStarting = useCallback(
     (kind: JobKind, id: string, label: string) => {
-      upsert(kind, id, { label, processed: null, total: null, cancelling: false });
+      upsert(kind, id, { label, processed: null, total: null, cancelling: false, phases: new Map(), activePhase: null });
     },
     [upsert],
   );
