@@ -5,7 +5,7 @@ import { Input } from 'components/ui/Input';
 import { Pagination, DEFAULT_PAGE_SIZE } from './Pagination';
 import { parseNumericPredicate } from './numericFilter';
 import { getTableCols, setTableCols, getTablePrefs, setTablePrefs } from 'lib/storage';
-import type { ColumnDef, SortDir, SortValue, TableQuery } from './types';
+import type { ColumnDef, SortDir, SortEntry, SortValue, TableQuery } from './types';
 
 /**
  * Column-hover highlight, done in pure CSS instead of React state.
@@ -158,19 +158,15 @@ export function DataTable<R>({
     }
     return defaultPageSize;
   });
-  const [sortCol, setSortCol] = useState<string | null>(() => {
+  const [sortKeys, setSortKeys] = useState<SortEntry[]>(() => {
     if (tableId) {
       const prefs = getTablePrefs(tableId);
-      if ('sortCol' in prefs) return prefs.sortCol ?? null;
+      if (prefs.sortKeys) return prefs.sortKeys;
+      // Backward compat: migrate old single-sort prefs written by a previous build.
+      if (prefs.sortCol) return [{ col: prefs.sortCol, dir: prefs.sortDir ?? 'asc' }];
     }
-    return defaultSort?.col ?? null;
-  });
-  const [sortDir, setSortDir] = useState<SortDir>(() => {
-    if (tableId) {
-      const prefs = getTablePrefs(tableId);
-      if (prefs.sortDir != null) return prefs.sortDir;
-    }
-    return defaultSort?.dir ?? 'asc';
+    if (defaultSort?.col) return [{ col: defaultSort.col, dir: defaultSort.dir ?? 'asc' }];
+    return [];
   });
   const [search, setSearch] = useState('');
   const [colFiltersMap, setColFiltersMap] = useState<Record<string, string>>({});
@@ -199,8 +195,8 @@ export function DataTable<R>({
   }, [visibleCols, tableId]);
 
   useEffect(() => {
-    if (tableId) setTablePrefs(tableId, { pageSize, sortCol, sortDir });
-  }, [tableId, pageSize, sortCol, sortDir]);
+    if (tableId) setTablePrefs(tableId, { pageSize, sortKeys });
+  }, [tableId, pageSize, sortKeys]);
 
   const visCols = useMemo(
     () => columns.filter((c) => visibleCols.has(c.key)),
@@ -304,7 +300,7 @@ export function DataTable<R>({
     // Fast path: nothing is filtering or sorting (e.g. the live-trade tables,
     // which hand back a fresh `rows` up to 4×/sec). Skip the full-buffer filter
     // pass + array allocation and hand `rows` straight through.
-    if (!debouncedSearch && activeColFilters.length === 0 && !sortCol) return rows;
+    if (!debouncedSearch && activeColFilters.length === 0 && sortKeys.length === 0) return rows;
     const searchLower = debouncedSearch.toLowerCase();
     let list = rows.filter((row) => {
       if (searchLower) {
@@ -325,15 +321,22 @@ export function DataTable<R>({
       return true;
     });
 
-    if (sortCol) {
-      const col = columns.find((c) => c.key === sortCol);
-      if (col?.sortValue) {
-        const sv = col.sortValue;
-        list = [...list].sort((a, b) => compareSort(sv(a), sv(b), sortDir));
+    if (sortKeys.length > 0) {
+      const levels = sortKeys
+        .map(({ col, dir }) => ({ sv: columns.find((c) => c.key === col)?.sortValue, dir }))
+        .filter((s): s is { sv: (row: R) => SortValue; dir: SortDir } => s.sv != null);
+      if (levels.length > 0) {
+        list = [...list].sort((a, b) => {
+          for (const { sv, dir } of levels) {
+            const cmp = compareSort(sv(a), sv(b), dir);
+            if (cmp !== 0) return cmp;
+          }
+          return 0;
+        });
       }
     }
     return list;
-  }, [serverSide, rows, columns, debouncedSearch, activeColFilters, sortCol, sortDir]);
+  }, [serverSide, rows, columns, debouncedSearch, activeColFilters, sortKeys]);
 
   // Reset to page 1 when the filter/sort/pageSize view changes. Selection changes
   // are intentionally excluded: deselecting a row should not scroll the user back
@@ -345,7 +348,7 @@ export function DataTable<R>({
     if (!paginate || serverSide) return;
     setPage(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedSearch, debouncedColFilters, sortCol, sortDir, pageSize, paginate, serverSide]);
+  }, [debouncedSearch, debouncedColFilters, sortKeys, pageSize, paginate, serverSide]);
 
   // Jump to the selected row's page when a row is selected (selectedKey becomes
   // truthy or changes to a different key). Deselection (→ null) is a no-op here
@@ -382,10 +385,8 @@ export function DataTable<R>({
   );
   const viewSig = useMemo(
     () =>
-      `${resetKey ?? ''}|${pageSize}|${sortCol ?? ''}|${sortDir}|${debouncedSearch}|${JSON.stringify(
-        cleanedColFilters,
-      )}`,
-    [resetKey, pageSize, sortCol, sortDir, debouncedSearch, cleanedColFilters],
+      `${resetKey ?? ''}|${pageSize}|${JSON.stringify(sortKeys)}|${debouncedSearch}|${JSON.stringify(cleanedColFilters)}`,
+    [resetKey, pageSize, sortKeys, debouncedSearch, cleanedColFilters],
   );
   const prevViewSig = useRef(viewSig);
   useEffect(() => {
@@ -401,8 +402,7 @@ export function DataTable<R>({
     onQueryChange?.({
       page: p,
       pageSize,
-      sortCol,
-      sortDir,
+      sortKeys,
       search: debouncedSearch,
       colFilters: cleanedColFilters,
     });
@@ -434,11 +434,19 @@ export function DataTable<R>({
   const activeFilters = Object.values(colFiltersMap).filter(Boolean).length;
 
   const toggleSort = (key: string) => {
-    if (sortCol === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
-    else {
-      setSortCol(key);
-      setSortDir('asc');
-    }
+    setSortKeys((prev) => {
+      const idx = prev.findIndex((s) => s.col === key);
+      if (idx === -1) {
+        // Not yet in sort list: append as lowest-priority at asc.
+        return [...prev, { col: key, dir: 'asc' }];
+      }
+      if (prev[idx].dir === 'asc') {
+        // asc → desc (in-place, same priority).
+        return prev.map((s, i) => (i === idx ? { ...s, dir: 'desc' as SortDir } : s));
+      }
+      // desc → none: remove from list.
+      return prev.filter((_, i) => i !== idx);
+    });
   };
 
   // Stable identity so the memoized rows below don't re-render just because the
@@ -562,13 +570,22 @@ export function DataTable<R>({
                     }
                   >
                     {col.renderHeader ? (
-                      col.renderHeader({ sortCol, sortDir, toggleSort })
+                      col.renderHeader({ sortKeys, toggleSort })
                     ) : (
                       <>
                         {col.label}
-                        {sortCol === col.key && (
-                          <span className="ml-1 text-[10px]">{sortDir === 'asc' ? '↑' : '↓'}</span>
-                        )}
+                        {(() => {
+                          const idx = sortKeys.findIndex((s) => s.col === col.key);
+                          if (idx === -1) return null;
+                          return (
+                            <span className="ml-1 text-[10px]">
+                              {sortKeys.length > 1 && (
+                                <span className="opacity-50">{idx + 1}</span>
+                              )}
+                              {sortKeys[idx].dir === 'asc' ? '↑' : '↓'}
+                            </span>
+                          );
+                        })()}
                       </>
                     )}
                   </th>

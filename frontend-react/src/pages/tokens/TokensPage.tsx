@@ -43,8 +43,7 @@ const tokenRowKey = (r: TokenRecord) => r.mint_address;
 const INITIAL_QUERY: TableQuery = {
   page: 1,
   pageSize: 10,
-  sortCol: null,
-  sortDir: 'asc',
+  sortKeys: [],
   search: '',
   colFilters: {},
 };
@@ -80,8 +79,7 @@ export function TokensPage() {
     () => ({
       page: tableQuery.page,
       pageSize: tableQuery.pageSize,
-      sortCol: tableQuery.sortCol,
-      sortDir: tableQuery.sortDir,
+      sortKeys: tableQuery.sortKeys,
       search: tableQuery.search,
       colFilters: tableQuery.colFilters,
       filters,

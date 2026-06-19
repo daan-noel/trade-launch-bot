@@ -4,6 +4,9 @@ export type SortDir = 'asc' | 'desc';
 
 export type SortValue = number | string | null;
 
+/** One level in a multi-key sort (primary, secondary, …). */
+export type SortEntry = { col: string; dir: SortDir };
+
 /**
  * The full view-state a server-side DataTable emits when anything that affects
  * the result set changes (paging, sort, search, per-column filters). The parent
@@ -13,8 +16,8 @@ export type SortValue = number | string | null;
 export interface TableQuery {
   page: number;
   pageSize: number;
-  sortCol: string | null;
-  sortDir: SortDir;
+  /** Ordered sort keys (index 0 = primary). Empty = unsorted. */
+  sortKeys: SortEntry[];
   search: string;
   colFilters: Record<string, string>;
 }
@@ -23,12 +26,12 @@ export interface TableQuery {
  * Live sort state + the toggle action, handed to a column's `renderHeader` so a
  * custom header can drive the table's sort (e.g. a merged "metrics" cell whose
  * header offers one sort toggle per underlying field). `toggleSort(key)` cycles
- * asc/desc on that key exactly like a header click — and `key` may be any column
- * in the table, including a hidden (`defaultVisible:false`) sort-only column.
+ * the key through asc → desc → none (removed) exactly like a header click — and
+ * `key` may be any column in the table, including a hidden sort-only column.
  */
 export interface SortCtx {
-  sortCol: string | null;
-  sortDir: SortDir;
+  /** Ordered sort keys (index 0 = primary). Empty = unsorted. */
+  sortKeys: SortEntry[];
   toggleSort: (key: string) => void;
 }
 

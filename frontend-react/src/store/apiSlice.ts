@@ -4,7 +4,7 @@ import type { SerializedError } from '@reduxjs/toolkit';
 import { API_BASE } from 'services/config';
 import type { AppSettings } from 'services/api';
 import type { TokenFilters } from 'components/tokens/filters';
-import type { SortDir } from 'components/table/types';
+import type { SortEntry } from 'components/table/types';
 import { datetimeLocalToUtcWallClock } from 'utils/date';
 import type {
   GroupedSweepRunRecord,
@@ -93,8 +93,7 @@ const DATETIME_FILTER_BOUND = {
 export interface TokensPageArgs {
   page: number; // 1-based
   pageSize: number;
-  sortCol: string | null;
-  sortDir: SortDir;
+  sortKeys: SortEntry[];
   search: string;
   colFilters: Record<string, string>;
   filters: TokenFilters;
@@ -233,9 +232,9 @@ export const apiSlice = createApi({
         p.set('limit', String(a.pageSize));
         p.set('offset', String((a.page - 1) * a.pageSize));
         if (a.search) p.set('search', a.search);
-        if (a.sortCol) {
-          p.set('sort_col', a.sortCol);
-          p.set('sort_dir', a.sortDir);
+        if (a.sortKeys.length > 0) {
+          p.set('sort_col', a.sortKeys[0].col);
+          p.set('sort_dir', a.sortKeys[0].dir);
         }
         const cf = Object.entries(a.colFilters)
           .filter(([, v]) => v.trim())

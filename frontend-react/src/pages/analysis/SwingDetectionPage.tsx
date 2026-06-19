@@ -105,8 +105,7 @@ const SWING_CHAIN_SORT_COLS = new Set(['swing_pairs', 'max_seq_pairs', 'chain_co
 const INITIAL_QUERY: TableQuery = {
   page: 1,
   pageSize: 10,
-  sortCol: null,
-  sortDir: 'asc',
+  sortKeys: [],
   search: '',
   colFilters: {},
 };
@@ -315,15 +314,13 @@ export function SwingDetectionPage() {
   // Whether the table is currently ordered by a browser-derived chain column.
   // Only then are the run id + latency sent (and folded into the cache key), so
   // tweaking latency while sorting a normal column doesn't trigger a refetch.
-  const swingSortActive =
-    tableQuery.sortCol != null && SWING_CHAIN_SORT_COLS.has(tableQuery.sortCol);
+  const swingSortActive = tableQuery.sortKeys.some((s) => SWING_CHAIN_SORT_COLS.has(s.col));
 
   const queryArgs = useMemo(
     () => ({
       page: tableQuery.page,
       pageSize: tableQuery.pageSize,
-      sortCol: tableQuery.sortCol,
-      sortDir: tableQuery.sortDir,
+      sortKeys: tableQuery.sortKeys,
       search: tableQuery.search,
       colFilters: tableQuery.colFilters,
       filters: effectiveFilters,
@@ -594,7 +591,7 @@ export function SwingDetectionPage() {
       // shared list limit). Materialised once, then dropped.
       const sub = dispatch(
         apiSlice.endpoints.getTokensPage.initiate(
-          { ...queryArgs, page: 1, pageSize: TOKENS_LIST_LIMIT, sortCol: null, sortDir: 'asc' },
+          { ...queryArgs, page: 1, pageSize: TOKENS_LIST_LIMIT, sortKeys: [] },
           { forceRefetch: true },
         ),
       );

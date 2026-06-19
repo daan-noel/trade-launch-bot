@@ -103,7 +103,11 @@ export function setTableCols(tableId: string, cols: string[]): void {
 
 export interface TablePrefs {
   pageSize?: number;
+  /** Multi-key sort; index 0 = primary. */
+  sortKeys?: { col: string; dir: 'asc' | 'desc' }[];
+  /** @deprecated Legacy single-sort fields — read for backward compat only. */
   sortCol?: string | null;
+  /** @deprecated Legacy single-sort fields — read for backward compat only. */
   sortDir?: 'asc' | 'desc';
 }
 
