@@ -5,6 +5,7 @@ import { AmountCell, CurrentPriceCell } from 'components/tokens/priceCells';
 import { DateCell } from 'components/table/DateCell';
 import { cn } from 'lib/cn';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
+import { appendedTokenColumns } from 'components/tokens/sharedTokenColumns';
 
 /** Render an exit reason as a compact colored badge, shared by the live-position
  * and simulation-result tables. Falsy/unknown reasons (e.g. a still-open
@@ -33,6 +34,25 @@ export function exitReasonBadge(reason: string | null | undefined) {
       return <span className="text-text-dim">Open</span>;
   }
 }
+
+// Keys already present in each table — used to filter out duplicates from the
+// appended token-info columns.
+const POSITION_KEYS = new Set([
+  'mint', 'target_price', 'target_amount', 'target_time', 'target_tx',
+  'entry_price', 'entry_amount', 'entry_time', 'entry_tx',
+  'exit_price', 'exit_amount', 'exit_time', 'exit_tx',
+  'holding', 'pnl_pct', 'pnl_sol', 'status', 'exit_reason',
+]);
+const MATCHED_KEYS = new Set([
+  'symbol', 'mint', 'name', 'created',
+  // init_buy and cu_limit/cu_price are already shown under different keys
+  'init_buy', 'initial_buy', 'cu_limit', 'cu_price',
+]);
+const SIM_KEYS = new Set([
+  'symbol', 'mint', 'target_price', 'target_amount', 'target_time', 'target_tx',
+  'entry_price', 'entry_time', 'ath_price', 'exit_price', 'exit_time',
+  'holding', 'pnl_pct', 'pnl_sol', 'reason', 'trades',
+]);
 
 // Price/amount cells read the unit + USD rate from context themselves (see
 // priceCells), so these column arrays are referentially stable across a rate
@@ -236,6 +256,7 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
       sortValue: (r) => r.exit_reason ?? '',
       searchValue: (r) => r.exit_reason ?? '',
     },
+  ...appendedTokenColumns(POSITION_KEYS),
 ];
 
 export const matchedColumns: ColumnDef<MatchedTokenRecord>[] = [
@@ -304,6 +325,7 @@ export const matchedColumns: ColumnDef<MatchedTokenRecord>[] = [
     sortValue: (r) => r.cu_price,
     searchValue: (r) => String(r.cu_price ?? ''),
   },
+  ...appendedTokenColumns(MATCHED_KEYS),
 ];
 
 export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
@@ -482,4 +504,5 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
       sortValue: (r) => r.total_trades,
       searchValue: (r) => String(r.total_trades),
     },
+  ...appendedTokenColumns(SIM_KEYS),
 ];

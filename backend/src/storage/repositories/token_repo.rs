@@ -342,6 +342,34 @@ impl TokenRepo {
         Ok(out)
     }
 
+    /// Load the token-list rows (`tokens LEFT JOIN tokens_info`) for an explicit set
+    /// of mints. Used by `GET /api/tokens/batch` so strategy pages can enrich their
+    /// result tables with full token metadata. Empty input returns immediately;
+    /// results are in unspecified (DB) order.
+    pub async fn find_list_rows_for_mints(&self, mints: &[String]) -> anyhow::Result<Vec<TokenListRow>> {
+        if mints.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query_as::<_, TokenListRow>(
+            r#"
+            SELECT t.mint_address, t.creator_wallet, t.name, t.symbol,
+                   t.initial_supply_token, t.initial_buy_sol, t.initial_buy_instruction,
+                   t.cu_limit, t.cu_price, t.is_mayhem_mode, t.is_cashback_enabled,
+                   t.ix_labels, t.creation_tx_signature, t.created_at,
+                   i.ath_price, i.ath_timestamp, i.volume, i.market_cap, i.trade_count,
+                   i.last_trade_at, i.current_price, i.is_dead, i.is_migrated, i.last_synced_at,
+                   i.lifetime_secs
+              FROM tokens t
+              LEFT JOIN tokens_info i ON i.mint_address = t.mint_address
+             WHERE t.mint_address = ANY($1)
+            "#,
+        )
+        .bind(mints)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     /// Resolve display symbols for a specific set of mints (`mint = ANY($1)`), so a
     /// caller that only needs a handful of symbols (e.g. a paper run's positions)
     /// doesn't `SELECT *` the whole growing `tokens` table into memory. Returns a

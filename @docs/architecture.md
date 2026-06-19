@@ -40,6 +40,7 @@ Subsystem deep-dives: [ingest.md](ingest.md) · [strategies.md](strategies.md) �
 | Handler file | Owns |
 |---|---|
 | `handlers/tokens/tokens.rs` | `list_tokens`, `get_token`, `get_trades` |
+| `handlers/tokens/batch.rs` | `get_tokens_batch` (`GET /api/tokens/batch?mints=<comma-separated>`) — fetches up to 500 mints from `tokens LEFT JOIN tokens_info`, deduped; returns `Vec<TokenSummary>`. Used by strategy pages to enrich Matched/Simulated/Positions tables with token-info columns |
 | `handlers/tokens/creation_stats.rs` | `get_creation_stats` (`/api/tokens/creation-stats`) — token-creation-time bias aggregate (heatmap fold + absolute trend) for the Dashboard; reads `CreationStatsRepo`, shapes window/maturity/segment params (pure helpers unit-tested) |
 | `handlers/tokens/sync.rs` | `sync_token`, `preview_sync` (RPC backfill, gated by `SyncGate`) |
 | `handlers/tokens/analysis.rs` | `get_token_analysis`, `list_creators`, `get_creator`, `list_analysis_results` |

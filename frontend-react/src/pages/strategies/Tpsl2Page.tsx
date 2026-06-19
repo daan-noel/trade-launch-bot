@@ -41,7 +41,8 @@ import {
 } from 'services/api';
 import { connectPaperTestStream } from 'services/sse';
 import { useBackgroundJobActions } from 'context/BackgroundJobsContext';
-import { apiErrorMessage } from 'store/apiSlice';
+import { apiErrorMessage, useGetTokensByMintsQuery } from 'store/apiSlice';
+import { mergeTokenData } from 'components/tokens/sharedTokenColumns';
 import {
   fetchMatchedCached,
   fetchPaperResultCached,
@@ -59,6 +60,7 @@ import type {
   SimulatedTokenResult,
 } from 'types';
 import { cn } from 'lib/cn';
+import { computeRuleColorClasses } from 'lib/ruleColorGroups';
 
 // Module-level, referentially-stable rowKey fns: each only reads the row, so a
 // single shared identity lets DataTable's page/select effects (and the row
@@ -729,6 +731,27 @@ export function Tpsl2Page() {
   const posCols = positionColumns;
   const simCols = simColumns;
 
+  // Collect all unique mints from every result table and fetch their full token
+  // records in one batch request. The sorted join keeps the RTK cache key
+  // stable regardless of the collection order.
+  const allMints = useMemo(() => {
+    const s = new Set<string>();
+    matchedResult?.tokens.forEach((r) => s.add(r.mint));
+    simResult?.tokens.forEach((r) => s.add(r.mint));
+    positions.forEach((r) => s.add(r.mint));
+    paperResult?.data.tokens.forEach((r) => s.add(r.mint));
+    return [...s].sort();
+  }, [matchedResult, simResult, positions, paperResult]);
+
+  const { data: tokenBatch } = useGetTokensByMintsQuery(allMints, {
+    skip: allMints.length === 0,
+  });
+
+  const tokenMap = useMemo(
+    () => new Map((tokenBatch ?? []).map((t) => [t.mint_address, t])),
+    [tokenBatch],
+  );
+
   const openAdd = () => {
     setEditRule(null);
     setForm(emptyForm());
@@ -997,6 +1020,18 @@ export function Tpsl2Page() {
     [selectedRuleId, rules],
   );
 
+  const ruleColorMap = useMemo(() => computeRuleColorClasses(rules), [rules]);
+  const ruleCellGroupClassName = useCallback(
+    (group: string | undefined, r: RuleRecord) => {
+      const colors = ruleColorMap.get(r.id);
+      if (!colors) return undefined;
+      if (group === 'token_fingerprint') return colors.fp;
+      if (group === 'entry') return colors.entry || undefined;
+      return undefined;
+    },
+    [ruleColorMap],
+  );
+
   // Stable row-select handlers so the result tables' memoized rows survive an
   // unrelated page render (these closures are passed straight to DataTable).
   const onSelectPosition = useCallback(
@@ -1104,6 +1139,7 @@ export function Tpsl2Page() {
             rows={rules}
             rowKey={keyById}
             rowActions={ruleActions}
+            cellGroupClassName={ruleCellGroupClassName}
             selectedKey={selectedRuleId}
             onSelect={setSelectedRuleId}
             defaultPageSize={10}
@@ -1133,7 +1169,7 @@ export function Tpsl2Page() {
             {!positionsLoading && !positionsError && (
               <DataTable
                 columns={posCols}
-                rows={positions}
+                rows={mergeTokenData(positions, tokenMap)}
                 rowKey={keyById}
                 selectedKey={inspect?.table === 'positions' ? inspect.key : null}
                 onSelect={onSelectPosition}
@@ -1184,7 +1220,7 @@ export function Tpsl2Page() {
           ) : (
             <DataTable
               columns={matchedColumns}
-              rows={matchedResult.tokens}
+              rows={mergeTokenData(matchedResult.tokens, tokenMap)}
               rowKey={keyByMint}
               defaultPageSize={20}
               pageSizeOptions={[20, 50, 100]}
@@ -1222,7 +1258,7 @@ export function Tpsl2Page() {
             ) : (
               <DataTable
                 columns={simCols}
-                rows={simResult.tokens}
+                rows={mergeTokenData(simResult.tokens, tokenMap)}
                 rowKey={keyByMint}
                 selectedKey={inspect?.table === 'sim' ? inspect.key : null}
                 onSelect={onSelectSim}
@@ -1243,7 +1279,10 @@ export function Tpsl2Page() {
       {paperError && <InlineAlert variant="error">{paperError}</InlineAlert>}
       {paperResult && !paperLoading && (
         <PaperResultSection
-          data={paperResult.data}
+          data={{
+            ...paperResult.data,
+            tokens: mergeTokenData(paperResult.data.tokens, tokenMap),
+          }}
           price={price}
           simCols={simCols}
           selectedMint={inspect?.table === 'paper' ? inspect.key : null}

@@ -19,6 +19,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 "/tokens/creation-stats",
                 web::get().to(handlers::tokens::get_creation_stats),
             )
+            .route(
+                "/tokens/batch",
+                web::get().to(handlers::tokens::get_tokens_batch),
+            )
             .route("/tokens/{mint}", web::get().to(handlers::tokens::get_token))
             .route(
                 "/tokens/{mint}/trades",

@@ -207,7 +207,7 @@ export const apiSlice = createApi({
   baseQuery: fetchBaseQuery({ baseUrl: API_BASE }),
   keepUnusedDataFor: 300,
   refetchOnMountOrArgChange: false,
-  tagTypes: ['Settings', 'LiveMode', 'WalletHoldings', 'StrategyResult', 'StrategyPaper', 'Profiles', 'Cashback', 'GroupedSweep'],
+  tagTypes: ['Settings', 'LiveMode', 'WalletHoldings', 'StrategyResult', 'StrategyPaper', 'Profiles', 'Cashback', 'GroupedSweep', 'TokenBatch'],
   endpoints: (builder) => ({
     getTokens: builder.query<TokensResponse, TokensArgs>({
       query: ({ search, limit, offset }) => {
@@ -388,6 +388,15 @@ export const apiSlice = createApi({
       },
       keepUnusedDataFor: 120,
     }),
+    // Batch token lookup by mint list — used by strategy pages to enrich their
+    // result tables without extending the strategy response structs. Keyed by
+    // the sorted, comma-joined mint string so the same set of mints always hits
+    // the same cache entry regardless of the order they were collected in.
+    // `keepUnusedDataFor: 120` matches the per-token refresh cadence.
+    getTokensByMints: builder.query<TokenRecord[], string[]>({
+      query: (mints) => `/api/tokens/batch?mints=${[...mints].sort().join(',')}`,
+      keepUnusedDataFor: 120,
+    }),
     getTokenDetail: builder.query<TokenDetailRecord, string>({
       query: (mint) => `/api/tokens/${encodeURIComponent(mint)}`,
     }),
@@ -525,6 +534,7 @@ export const apiSlice = createApi({
 
 export const {
   useGetTokensQuery,
+  useGetTokensByMintsQuery,
   useGetTokensPageQuery,
   useGetCreationStatsQuery,
   useGetTokenDetailQuery,

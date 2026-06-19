@@ -121,6 +121,9 @@ interface DataTableProps<R> {
   /** Optional extra className(s) applied to each data row's `<tr>`. Useful for
    *  per-row highlights (e.g. marking entry/exit trades). */
   rowClassName?: (row: R) => string | undefined;
+  /** Optional extra className(s) applied to each data `<td>` based on its
+   *  column group key. Called once per visible cell; return undefined to skip. */
+  cellGroupClassName?: (group: string | undefined, row: R) => string | undefined;
 }
 
 export function DataTable<R>({
@@ -149,6 +152,7 @@ export function DataTable<R>({
   loading = false,
   resetKey,
   rowClassName,
+  cellGroupClassName,
 }: DataTableProps<R>) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => {
@@ -644,6 +648,7 @@ export function DataTable<R>({
                       rowDetail={rowDetail}
                       colCount={colCount}
                       rowClassName={rowClassName}
+                      cellGroupClassName={cellGroupClassName}
                     />
                   );
                 })
@@ -687,6 +692,7 @@ interface TableRowProps<R> {
   rowDetail?: (row: R) => ReactNode;
   colCount: number;
   rowClassName?: (row: R) => string | undefined;
+  cellGroupClassName?: (group: string | undefined, row: R) => string | undefined;
 }
 
 /**
@@ -711,6 +717,7 @@ function TableRowInner<R>({
   rowDetail,
   colCount,
   rowClassName,
+  cellGroupClassName,
 }: TableRowProps<R>) {
   return (
     <Fragment>
@@ -732,6 +739,7 @@ function TableRowInner<R>({
             className={cn(
               'border-b border-border px-2 py-1.5 text-center text-text',
               groupClasses[ci],
+              cellGroupClassName?.(col.group, row),
             )}
           >
             {col.render(row)}

@@ -118,6 +118,33 @@ export interface RulePositionRecord {
   exit_reason: string | null;
   created_at: string;
   updated_at: string;
+  // Token enrichment fields (populated by the batch endpoint; optional).
+  symbol?: string;
+  name?: string;
+  creator_address?: string;
+  initial_buy_sol?: number | null;
+  initial_supply_token?: number | null;
+  token_amount?: number | null;
+  max_sol_cost?: number | null;
+  spendable_sol_in?: number | null;
+  min_tokens_out?: number | null;
+  cu_limit?: number | null;
+  cu_price?: number | null;
+  is_mayhem_mode?: boolean;
+  is_cashback_enabled?: boolean;
+  create_tx_address?: string;
+  ix_labels_count?: number;
+  instruction_labels?: unknown;
+  trade_count?: number;
+  current_price?: number | null;
+  volume_sol_total?: number;
+  market_cap?: number | null;
+  ath_price?: number | null;
+  ath_timestamp?: string | null;
+  is_migrated?: boolean;
+  is_dead?: boolean;
+  last_trade_at?: string | null;
+  last_synced_at?: string | null;
 }
 
 export interface MatchedTokenRecord {
@@ -128,6 +155,29 @@ export interface MatchedTokenRecord {
   initial_buy_sol: number | null;
   cu_limit: number | null;
   cu_price: number | null;
+  // Token enrichment fields (populated by the batch endpoint; optional so the
+  // type stays compatible before the fetch resolves).
+  creator_address?: string;
+  initial_supply_token?: number | null;
+  token_amount?: number | null;
+  max_sol_cost?: number | null;
+  spendable_sol_in?: number | null;
+  min_tokens_out?: number | null;
+  is_mayhem_mode?: boolean;
+  is_cashback_enabled?: boolean;
+  create_tx_address?: string;
+  ix_labels_count?: number;
+  instruction_labels?: unknown;
+  trade_count?: number;
+  current_price?: number | null;
+  volume_sol_total?: number;
+  market_cap?: number | null;
+  ath_price?: number | null;
+  ath_timestamp?: string | null;
+  is_migrated?: boolean;
+  is_dead?: boolean;
+  last_trade_at?: string | null;
+  last_synced_at?: string | null;
 }
 
 export interface MatchedTokensResponse {
@@ -161,6 +211,31 @@ export interface SimulatedTokenResult {
   pnl_sol: number | null;
   exit_reason: string;
   total_trades: number;
+  // Token enrichment fields (populated by the batch endpoint; optional).
+  name?: string;
+  creator_address?: string;
+  created_at?: string;
+  initial_buy_sol?: number | null;
+  initial_supply_token?: number | null;
+  token_amount?: number | null;
+  max_sol_cost?: number | null;
+  spendable_sol_in?: number | null;
+  min_tokens_out?: number | null;
+  cu_limit?: number | null;
+  cu_price?: number | null;
+  is_mayhem_mode?: boolean;
+  is_cashback_enabled?: boolean;
+  create_tx_address?: string;
+  ix_labels_count?: number;
+  instruction_labels?: unknown;
+  trade_count?: number;
+  current_price?: number | null;
+  volume_sol_total?: number;
+  market_cap?: number | null;
+  is_migrated?: boolean;
+  is_dead?: boolean;
+  last_trade_at?: string | null;
+  last_synced_at?: string | null;
 }
 
 /** Metadata for one paper-test run (a single activate→finish cycle). */

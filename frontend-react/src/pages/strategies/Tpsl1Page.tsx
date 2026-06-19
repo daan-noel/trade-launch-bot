@@ -41,7 +41,8 @@ import {
 } from 'services/api';
 import { connectPaperTestStream } from 'services/sse';
 import { useBackgroundJobActions } from 'context/BackgroundJobsContext';
-import { apiErrorMessage } from 'store/apiSlice';
+import { apiErrorMessage, useGetTokensByMintsQuery } from 'store/apiSlice';
+import { mergeTokenData } from 'components/tokens/sharedTokenColumns';
 import {
   fetchMatchedCached,
   fetchPaperResultCached,
@@ -729,6 +730,24 @@ export function Tpsl1Page() {
   const posCols = positionColumns;
   const simCols = simColumns;
 
+  const allMints = useMemo(() => {
+    const s = new Set<string>();
+    matchedResult?.tokens.forEach((r) => s.add(r.mint));
+    simResult?.tokens.forEach((r) => s.add(r.mint));
+    positions.forEach((r) => s.add(r.mint));
+    paperResult?.data.tokens.forEach((r) => s.add(r.mint));
+    return [...s].sort();
+  }, [matchedResult, simResult, positions, paperResult]);
+
+  const { data: tokenBatch } = useGetTokensByMintsQuery(allMints, {
+    skip: allMints.length === 0,
+  });
+
+  const tokenMap = useMemo(
+    () => new Map((tokenBatch ?? []).map((t) => [t.mint_address, t])),
+    [tokenBatch],
+  );
+
   const openAdd = () => {
     setEditRule(null);
     setForm(emptyForm());
@@ -1133,7 +1152,7 @@ export function Tpsl1Page() {
             {!positionsLoading && !positionsError && (
               <DataTable
                 columns={posCols}
-                rows={positions}
+                rows={mergeTokenData(positions, tokenMap)}
                 rowKey={keyById}
                 selectedKey={inspect?.table === 'positions' ? inspect.key : null}
                 onSelect={onSelectPosition}
@@ -1184,7 +1203,7 @@ export function Tpsl1Page() {
           ) : (
             <DataTable
               columns={matchedColumns}
-              rows={matchedResult.tokens}
+              rows={mergeTokenData(matchedResult.tokens, tokenMap)}
               rowKey={keyByMint}
               defaultPageSize={20}
               pageSizeOptions={[20, 50, 100]}
@@ -1222,7 +1241,7 @@ export function Tpsl1Page() {
             ) : (
               <DataTable
                 columns={simCols}
-                rows={simResult.tokens}
+                rows={mergeTokenData(simResult.tokens, tokenMap)}
                 rowKey={keyByMint}
                 selectedKey={inspect?.table === 'sim' ? inspect.key : null}
                 onSelect={onSelectSim}
@@ -1243,7 +1262,10 @@ export function Tpsl1Page() {
       {paperError && <InlineAlert variant="error">{paperError}</InlineAlert>}
       {paperResult && !paperLoading && (
         <PaperResultSection
-          data={paperResult.data}
+          data={{
+            ...paperResult.data,
+            tokens: mergeTokenData(paperResult.data.tokens, tokenMap),
+          }}
           price={price}
           simCols={simCols}
           selectedMint={inspect?.table === 'paper' ? inspect.key : null}
