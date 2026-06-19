@@ -49,6 +49,7 @@ pub struct TokenListRow {
     pub creator_wallet: String,
     pub name: String,
     pub symbol: String,
+    pub bonding_curve_address: Option<String>,
     pub initial_supply_token: Option<i64>,
     pub initial_buy_sol: Option<f64>,
     pub initial_buy_instruction: Option<Json<Value>>,
@@ -298,6 +299,7 @@ impl TokenRepo {
         let rows = sqlx::query_as::<_, TokenListRow>(
             r#"
             SELECT t.mint_address, t.creator_wallet, t.name, t.symbol,
+                   t.bonding_curve_address,
                    t.initial_supply_token, t.initial_buy_sol, t.initial_buy_instruction,
                    t.cu_limit, t.cu_price, t.is_mayhem_mode, t.is_cashback_enabled,
                    t.ix_labels, t.creation_tx_signature, t.created_at,
@@ -353,6 +355,7 @@ impl TokenRepo {
         let rows = sqlx::query_as::<_, TokenListRow>(
             r#"
             SELECT t.mint_address, t.creator_wallet, t.name, t.symbol,
+                   t.bonding_curve_address,
                    t.initial_supply_token, t.initial_buy_sol, t.initial_buy_instruction,
                    t.cu_limit, t.cu_price, t.is_mayhem_mode, t.is_cashback_enabled,
                    t.ix_labels, t.creation_tx_signature, t.created_at,
@@ -368,6 +371,31 @@ impl TokenRepo {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
+    }
+
+    /// Single-mint detail lookup with `tokens_info` stats (LEFT JOIN). Used by
+    /// `GET /api/tokens/:mint` slow path so the detail modal shows real stats for
+    /// tokens that were evicted from the live cache.
+    pub async fn find_list_row_by_mint(&self, mint: &str) -> anyhow::Result<Option<TokenListRow>> {
+        let row = sqlx::query_as::<_, TokenListRow>(
+            r#"
+            SELECT t.mint_address, t.creator_wallet, t.name, t.symbol,
+                   t.bonding_curve_address,
+                   t.initial_supply_token, t.initial_buy_sol, t.initial_buy_instruction,
+                   t.cu_limit, t.cu_price, t.is_mayhem_mode, t.is_cashback_enabled,
+                   t.ix_labels, t.creation_tx_signature, t.created_at,
+                   i.ath_price, i.ath_timestamp, i.volume, i.market_cap, i.trade_count,
+                   i.last_trade_at, i.current_price, i.is_dead, i.is_migrated, i.last_synced_at,
+                   i.lifetime_secs
+              FROM tokens t
+              LEFT JOIN tokens_info i ON i.mint_address = t.mint_address
+             WHERE t.mint_address = $1
+            "#,
+        )
+        .bind(mint)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
     }
 
     /// Resolve display symbols for a specific set of mints (`mint = ANY($1)`), so a

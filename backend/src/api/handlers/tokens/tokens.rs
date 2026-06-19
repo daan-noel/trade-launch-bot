@@ -494,11 +494,10 @@ pub async fn get_token(state: web::Data<Arc<AppState>>, path: web::Path<String>)
         return HttpResponse::Ok().json(TokenDetail::from(entry.value()));
     }
 
-    // Slow path: token was created before this server session
+    // Slow path: token was created before this server session; join tokens_info for stats
     let repo = state.token_repo();
-    match repo.find_by_mint(&mint).await {
+    match repo.find_list_row_by_mint(&mint).await {
         Ok(Some(token)) => {
-            // Return a minimal detail (no live stats — token isn't tracked)
             HttpResponse::Ok().json(serde_json::json!({
                 "mint_address": token.mint_address,
                 "name": token.name,
@@ -515,20 +514,19 @@ pub async fn get_token(state: web::Data<Arc<AppState>>, path: web::Path<String>)
                 "cu_price": token.cu_price,
                 "is_mayhem_mode": token.is_mayhem_mode,
                 "is_cashback_enabled": token.is_cashback_enabled,
-                "instruction_labels": token.instruction_labels,
+                "instruction_labels": token.ix_labels,
                 "create_tx_address": token.creation_tx_signature,
                 "created_at": token.created_at,
-                "trade_count": null,
-                "volume_sol_total": null,
-                "market_cap": null,
-                "current_price": null,
-                "ath_price": null,
-                "ath_timestamp": null,
-                "is_migrated": false,
+                "trade_count": token.trade_count,
+                "volume_sol_total": token.volume,
+                "market_cap": token.market_cap,
+                "current_price": token.current_price,
+                "ath_price": token.ath_price,
+                "ath_timestamp": token.ath_timestamp,
+                "is_migrated": token.is_migrated.unwrap_or(false),
                 "unique_wallets": null,
-                "last_trade_at": null,
-                "last_synced_at": null,
-                "note": "token exists in DB but is not actively tracked this session"
+                "last_trade_at": token.last_trade_at,
+                "last_synced_at": token.last_synced_at,
             }))
         }
         Ok(None) => HttpResponse::NotFound().json(serde_json::json!({
