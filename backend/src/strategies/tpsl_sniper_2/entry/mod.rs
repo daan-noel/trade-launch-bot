@@ -2,7 +2,7 @@
 //! **at what fill**.
 //!
 //! Two concerns:
-//!   • criteria matching ([`token_matches_buy_rule`] / [`find_first_matching_buy_rule`])
+//!   • criteria matching ([`token_matches_buy_rule`] / [`find_all_matching_buy_rules`])
 //!     — does a token satisfy a rule's buy filters?
 //!   • fill resolution ([`find_scalp_entry`], in [`scalp`]) — the first trade
 //!     where every configured scalp gate holds is the entry.
@@ -77,10 +77,11 @@ pub fn token_criteria_satisfied(token: &Token, rule: &Tpsl2Rule) -> bool {
     true
 }
 
-/// The first active rule whose criteria the token satisfies, or `None`. A rule
-/// that configures no criterion is skipped with a warning rather than matching
-/// every token.
-pub fn find_first_matching_buy_rule(token: &Token, rules: &[Tpsl2Rule]) -> Option<Uuid> {
+/// All active rules whose criteria the token satisfies, in rule-list order. A
+/// rule that configures no criterion is skipped with a warning rather than
+/// matching every token.
+pub fn find_all_matching_buy_rules(token: &Token, rules: &[Tpsl2Rule]) -> Vec<Uuid> {
+    let mut matched = Vec::new();
     for rule in rules {
         if !rule.is_active {
             continue;
@@ -93,10 +94,10 @@ pub fn find_first_matching_buy_rule(token: &Token, rules: &[Tpsl2Rule]) -> Optio
             continue;
         }
         if token_matches_buy_rule(token, rule) {
-            return Some(rule.id);
+            matched.push(rule.id);
         }
     }
-    None
+    matched
 }
 
 /// Whether a rule sets at least one **token-level** entry criterion (used to
@@ -346,20 +347,21 @@ mod tests {
         let rule = rule_with_entry(None, None, None, json!([]), None, None, 10.0);
         let token = token_with(Some(1.0), Some(100_000), None, None, json!([]));
         assert!(!token_matches_buy_rule(&token, &rule));
-        assert_eq!(
-            find_first_matching_buy_rule(&token, std::slice::from_ref(&rule)),
-            None
-        );
+        assert!(find_all_matching_buy_rules(&token, std::slice::from_ref(&rule)).is_empty());
     }
 
     #[test]
-    fn find_first_matching_skips_inactive_and_returns_first_match() {
+    fn find_all_matching_skips_inactive_and_returns_all_matches() {
         let token = token_with(Some(1.0), None, None, None, json!([]));
         let mut inactive = rule_with_entry(Some(1.0), None, None, json!([]), None, None, 10.0);
         inactive.is_active = false;
-        let active = rule_with_entry(Some(1.0), None, None, json!([]), None, None, 10.0);
+        let active1 = rule_with_entry(Some(1.0), None, None, json!([]), None, None, 10.0);
+        let active2 = rule_with_entry(Some(1.0), None, None, json!([]), None, None, 10.0);
 
-        let rules = vec![inactive, active.clone()];
-        assert_eq!(find_first_matching_buy_rule(&token, &rules), Some(active.id));
+        let rules = vec![inactive, active1.clone(), active2.clone()];
+        assert_eq!(
+            find_all_matching_buy_rules(&token, &rules),
+            vec![active1.id, active2.id]
+        );
     }
 }

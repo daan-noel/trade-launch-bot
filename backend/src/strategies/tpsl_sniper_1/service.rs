@@ -135,154 +135,159 @@ impl Tpsl1StrategyService {
         }
 
         let handler = TPSL1StrategyHandler::new(rules);
-        if let Some(rule_id) = handler.check_buy_entry(&token) {
+        let rule_ids = handler.check_all_buy_entries(&token);
+        if rule_ids.is_empty() {
+            debug!("Token {mint} does not match any TPSL buy entry rule");
+            return;
+        }
+
+        for rule_id in rule_ids {
+            let Some(rule) = handler.get_rule(rule_id) else {
+                continue;
+            };
             info!("Token {mint} matches TPSL buy entry rule {rule_id}");
 
-            if let Some(rule) = handler.get_rule(rule_id) {
-                let is_paper = rule.trade_mode == "paper";
-                let max_concurrent_tokens = none_if_zero_u64(rule.p_max_concurrent_tokens).map(|v| v as usize);
-                let max_total_tokens =
-                    none_if_zero_u64(rule.p_max_total_tokens).map(|v| v as usize);
+            let is_paper = rule.trade_mode == "paper";
+            let max_concurrent_tokens = none_if_zero_u64(rule.p_max_concurrent_tokens).map(|v| v as usize);
+            let max_total_tokens =
+                none_if_zero_u64(rule.p_max_total_tokens).map(|v| v as usize);
 
-                // Paper rules trade inside a run; ensure one exists before the
-                // caps are checked (its counters are scoped to the run). A run is
-                // normally started on activation — this lazily starts one for a
-                // rule that became active without going through the API path.
-                let paper_run_id = if is_paper {
-                    Some(match self.runtime.current_paper_run(rule_id) {
-                        Some(r) => r.run_id,
-                        None => match self
-                            .runtime
-                            .start_paper_run(&self.pool, rule_id, none_if_zero_u64(rule.p_max_total_tokens))
-                            .await
-                        {
-                            Ok(r) => r.id,
-                            Err(err) => {
-                                warn!("Failed to start paper run for rule {rule_id}: {err}");
-                                return;
-                            }
-                        },
-                    })
-                } else {
-                    None
-                };
-
-                if let Some(cap) = max_concurrent_tokens {
-                    let current_holding = self.runtime.holding_count_by_rule(rule_id);
-                    if current_holding >= cap as i64 {
-                        debug!(
-                            "Rule {rule_id} reached max concurrent tokens \
-                             ({current_holding}/{cap}), skipping {mint}"
-                        );
-                        return;
-                    }
-                }
-
-                if let Some(total_max) = max_total_tokens {
-                    let total_traded = self.runtime.total_count_by_rule(rule_id);
-                    if total_traded >= total_max as i64 {
-                        debug!(
-                            "Rule {rule_id} reached max total tokens \
-                             ({total_traded}/{total_max}), skipping {mint}"
-                        );
-                        return;
-                    }
-                }
-
-                // A match: now it's worth owning the mint (moved into the spawned
-                // insert + buy/fill task below).
-                let mint = mint.to_string();
-                let mut position = Position::new(
-                    mint.clone(),
-                    self.trader.wallet_pubkey(),
-                    "TPSL1".to_string(),
-                    rule_id,
-                );
-                position.token_program_id = token.token_program_id.clone();
-                position.target_price = Some(0.0);
-                position.target_amount = Some(0.0);
-                position.target_tx = Some(String::new());
-                position.target_time = Some(token.created_at);
-
-                // Claim the cap slot + holding-index entry INLINE on the runner's
-                // select task, then spawn the slow DB insert + buy/fill off it — the
-                // same discipline `trigger_real_exit` uses for the sell side. The
-                // count bump is done inline (not in the spawn) so the next ping in a
-                // launch wave sees this token against the cap *before* its insert's DB
-                // RTT completes; otherwise a matched entry would head-of-line-block the
-                // next ping (possibly a TP/SL exit) for a round-trip. A 0-entry position
-                // is gated out of every exit path (`clock_entry_time` => None), so it
-                // can sit in the holding index until its entry fill lands without being
-                // mis-exited.
-                self.runtime.sync_position(None, &position);
-
-                let is_real = rule.trade_mode == "real";
-                let buy_amount = rule.buy_amount;
-                let creator = token.creator_wallet.clone();
-                let position_id = position.id;
-                let token_program_id = position
-                    .token_program_id
-                    .clone()
-                    .unwrap_or_else(|| crate::config::constants::TOKEN_PROGRAM_ID.to_string());
-                let paper_repo = self.paper_repo.clone();
-                let position_repo = self.position_repo.clone();
-                let trade_repo = self.trade_repo.clone();
-                let runtime = self.runtime.clone();
-                let token_cache = self.token_cache.clone();
-                let trader = self.trader.clone();
-                let trade_signals = self.trade_signals.clone();
-                tokio::spawn(async move {
-                    let insert_res = match paper_run_id {
-                        Some(run_id) => paper_repo.insert(&position, run_id).await,
-                        None => position_repo.insert(&position).await,
-                    };
-                    if let Err(err) = insert_res {
-                        warn!("Failed to create position for token {mint}: {err}");
-                        // Roll back the inline cap/holding-index claim.
-                        runtime.remove_position(&position);
-                        return;
-                    }
-                    info!("Created position {position_id} for token {mint} under rule {rule_id}");
-
-                    if is_real {
-                        super::execution::real::buy_until_filled_or_give_up(
-                            trader,
-                            mint.clone(),
-                            creator,
-                            token_program_id,
-                            buy_amount,
-                            position_id,
-                            position_repo.clone(),
-                            trade_repo.clone(),
-                            runtime.clone(),
-                            trade_signals,
-                            super::execution::real::BuyRetryCfg::production(),
-                        )
-                        .await;
-                        if let Ok(Some(pos)) = position_repo.find_by_id(position_id).await {
-                            if pos.entry_price.is_none() {
-                                let _ = position_repo.delete_position(position_id).await;
-                                runtime.remove_position(&pos);
-                                info!(
-                                    "[REAL] Removed position {} for mint {}: buy not found",
-                                    position_id, mint
-                                );
-                            }
+            // Paper rules trade inside a run; ensure one exists before the
+            // caps are checked (its counters are scoped to the run). A run is
+            // normally started on activation — this lazily starts one for a
+            // rule that became active without going through the API path.
+            let paper_run_id = if is_paper {
+                Some(match self.runtime.current_paper_run(rule_id) {
+                    Some(r) => r.run_id,
+                    None => match self
+                        .runtime
+                        .start_paper_run(&self.pool, rule_id, none_if_zero_u64(rule.p_max_total_tokens))
+                        .await
+                    {
+                        Ok(r) => r.id,
+                        Err(err) => {
+                            warn!("Failed to start paper run for rule {rule_id}: {err}");
+                            continue;
                         }
-                    } else if is_paper {
-                        super::execution::paper::spawn_entry_fill_poll(
-                            paper_repo,
-                            runtime,
-                            token_cache,
-                            mint,
-                            position_id,
-                            buy_amount,
-                        );
-                    }
-                });
+                    },
+                })
+            } else {
+                None
+            };
+
+            if let Some(cap) = max_concurrent_tokens {
+                let current_holding = self.runtime.holding_count_by_rule(rule_id);
+                if current_holding >= cap as i64 {
+                    debug!(
+                        "Rule {rule_id} reached max concurrent tokens \
+                         ({current_holding}/{cap}), skipping {mint}"
+                    );
+                    continue;
+                }
             }
-        } else {
-            debug!("Token {mint} does not match any TPSL buy entry rule");
+
+            if let Some(total_max) = max_total_tokens {
+                let total_traded = self.runtime.total_count_by_rule(rule_id);
+                if total_traded >= total_max as i64 {
+                    debug!(
+                        "Rule {rule_id} reached max total tokens \
+                         ({total_traded}/{total_max}), skipping {mint}"
+                    );
+                    continue;
+                }
+            }
+
+            // A match: now it's worth owning the mint (cloned per rule, moved
+            // into each spawned insert + buy/fill task below).
+            let mint = mint.to_string();
+            let mut position = Position::new(
+                mint.clone(),
+                self.trader.wallet_pubkey(),
+                "TPSL1".to_string(),
+                rule_id,
+            );
+            position.token_program_id = token.token_program_id.clone();
+            position.target_price = Some(0.0);
+            position.target_amount = Some(0.0);
+            position.target_tx = Some(String::new());
+            position.target_time = Some(token.created_at);
+
+            // Claim the cap slot + holding-index entry INLINE on the runner's
+            // select task, then spawn the slow DB insert + buy/fill off it — the
+            // same discipline `trigger_real_exit` uses for the sell side. The
+            // count bump is done inline (not in the spawn) so the next ping in a
+            // launch wave sees this token against the cap *before* its insert's DB
+            // RTT completes; otherwise a matched entry would head-of-line-block the
+            // next ping (possibly a TP/SL exit) for a round-trip. A 0-entry position
+            // is gated out of every exit path (`clock_entry_time` => None), so it
+            // can sit in the holding index until its entry fill lands without being
+            // mis-exited.
+            self.runtime.sync_position(None, &position);
+
+            let is_real = rule.trade_mode == "real";
+            let buy_amount = rule.buy_amount;
+            let creator = token.creator_wallet.clone();
+            let position_id = position.id;
+            let token_program_id = position
+                .token_program_id
+                .clone()
+                .unwrap_or_else(|| crate::config::constants::TOKEN_PROGRAM_ID.to_string());
+            let paper_repo = self.paper_repo.clone();
+            let position_repo = self.position_repo.clone();
+            let trade_repo = self.trade_repo.clone();
+            let runtime = self.runtime.clone();
+            let token_cache = self.token_cache.clone();
+            let trader = self.trader.clone();
+            let trade_signals = self.trade_signals.clone();
+            tokio::spawn(async move {
+                let insert_res = match paper_run_id {
+                    Some(run_id) => paper_repo.insert(&position, run_id).await,
+                    None => position_repo.insert(&position).await,
+                };
+                if let Err(err) = insert_res {
+                    warn!("Failed to create position for token {mint}: {err}");
+                    // Roll back the inline cap/holding-index claim.
+                    runtime.remove_position(&position);
+                    return;
+                }
+                info!("Created position {position_id} for token {mint} under rule {rule_id}");
+
+                if is_real {
+                    super::execution::real::buy_until_filled_or_give_up(
+                        trader,
+                        mint.clone(),
+                        creator,
+                        token_program_id,
+                        buy_amount,
+                        position_id,
+                        position_repo.clone(),
+                        trade_repo.clone(),
+                        runtime.clone(),
+                        trade_signals,
+                        super::execution::real::BuyRetryCfg::production(),
+                    )
+                    .await;
+                    if let Ok(Some(pos)) = position_repo.find_by_id(position_id).await {
+                        if pos.entry_price.is_none() {
+                            let _ = position_repo.delete_position(position_id).await;
+                            runtime.remove_position(&pos);
+                            info!(
+                                "[REAL] Removed position {} for mint {}: buy not found",
+                                position_id, mint
+                            );
+                        }
+                    }
+                } else if is_paper {
+                    super::execution::paper::spawn_entry_fill_poll(
+                        paper_repo,
+                        runtime,
+                        token_cache,
+                        mint,
+                        position_id,
+                        buy_amount,
+                    );
+                }
+            });
         }
     }
 

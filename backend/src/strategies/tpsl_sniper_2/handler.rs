@@ -18,9 +18,9 @@ impl TPSL2StrategyHandler {
         Self { rules }
     }
 
-    /// The first active rule whose buy criteria the token satisfies, or None.
-    pub fn check_buy_entry(&self, token: &Token) -> Option<Uuid> {
-        super::entry::find_first_matching_buy_rule(token, &self.rules)
+    /// All active rules whose buy criteria the token satisfies, in rule-list order.
+    pub fn check_all_buy_entries(&self, token: &Token) -> Vec<Uuid> {
+        super::entry::find_all_matching_buy_rules(token, &self.rules)
     }
 
     /// Get a specific rule by ID.
