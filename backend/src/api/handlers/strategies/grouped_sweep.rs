@@ -748,7 +748,18 @@ fn group_to_write(
         .get(g.best_combo_id as usize)
         .map(|m| m.n_fired as i64)
         .unwrap_or(0);
-    let results = g.metrics.iter().map(metrics_to_result).collect();
+    // Storage retention: persist only the metric-extreme survivors per group (plus
+    // best_combo). The engine already evaluated every combo, so this only trims
+    // INSERT rows/binds — no sweep-eval cost. Same pure fn the compaction probe
+    // uses, so existing and future data are selected identically.
+    let cfg = crate::sweep::retention::RetentionCfg::default();
+    let keep = crate::sweep::retention::retained_combo_ids(&g.metrics, g.best_combo_id, &cfg);
+    let results = g
+        .metrics
+        .iter()
+        .filter(|m| keep.contains(&m.combo_id))
+        .map(metrics_to_result)
+        .collect();
     GroupedSweepGroupWrite {
         group_index: group_index as i32,
         group_key: g.key.to_json(),

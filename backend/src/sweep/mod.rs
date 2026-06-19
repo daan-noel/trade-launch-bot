@@ -40,5 +40,6 @@ pub mod obs;
 pub mod progress;
 pub mod projection;
 pub mod registry;
+pub mod retention;
 pub mod strategies;
 pub mod strategy;

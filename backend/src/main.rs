@@ -256,8 +256,63 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
         }
         other => anyhow::bail!(
             "unknown probe '{other}'. Use: ladder | fanout | simulate-sell | holdings | \
-             cashback-status | claim-cashback [--execute]"
+             cashback-status | claim-cashback [--execute] | compact-sweeps [tpsl1|tpsl2]"
         ),
+    }
+    Ok(())
+}
+
+/// One-time storage retention of the existing grouped-sweep `_results` rows.
+/// `probe compact-sweeps [tpsl1|tpsl2]` (no arg = every strategy). For each group
+/// it runs the same [`sweep::retention::retained_combo_ids`] the write path uses,
+/// deletes the non-surviving combos in one statement, then `VACUUM (FULL)`s the
+/// table to physically reclaim disk. Offline-only — the `VACUUM` takes an
+/// `ACCESS EXCLUSIVE` lock. Idempotent: a second run finds the rows already
+/// pruned and deletes nothing.
+async fn run_compact_sweeps(db: &sqlx::PgPool, args: Vec<String>) -> anyhow::Result<()> {
+    use storage::repositories::grouped_sweep_repo::GroupedSweepRepo;
+    let cfg = sweep::retention::RetentionCfg::default();
+    // Worst-case retained rows/group (11 metrics × (top+bottom) values × cap); a
+    // group exceeding it signals a retention bug, so we flag it loudly.
+    let bound = 11 * (cfg.top_n + cfg.bottom_n) * cfg.cap_per_value;
+
+    let strategies: Vec<&str> = match args.first().map(String::as_str) {
+        Some(s) if !s.is_empty() => vec![s],
+        _ => sweep::registry::strategy_ids().to_vec(),
+    };
+
+    for sid in strategies {
+        let tables = sweep::registry::tables_for(sid)
+            .with_context(|| format!("unknown strategy '{sid}' (no grouped-sweep tables)"))?;
+        let repo = GroupedSweepRepo::new(db.clone(), tables);
+        let groups = repo.list_all_groups_for_compaction().await?;
+        println!("compact-sweeps [{sid}]: {} group(s) in {}", groups.len(), tables.results);
+
+        let (mut total_before, mut total_kept, mut max_kept) = (0u64, 0u64, 0usize);
+        for (group_id, best_combo_id) in &groups {
+            let metrics = repo.fetch_combo_metrics_for_group(*group_id).await?;
+            let before = metrics.len();
+            let keep = sweep::retention::retained_combo_ids(&metrics, *best_combo_id as u32, &cfg);
+            let keep_ids: Vec<i32> = keep.iter().map(|&id| id as i32).collect();
+            let deleted = repo.delete_combos_except(*group_id, &keep_ids).await?;
+            let kept = before as u64 - deleted;
+
+            total_before += before as u64;
+            total_kept += kept;
+            max_kept = max_kept.max(kept as usize);
+            if kept as usize > bound {
+                println!(
+                    "  ⚠️  group {group_id}: kept {kept} > bound {bound} — retention may be miscounting"
+                );
+            }
+        }
+        println!(
+            "  rows {total_before} -> {total_kept} (deleted {}, max kept/group {max_kept}, bound {bound})",
+            total_before - total_kept
+        );
+        println!("  VACUUM (FULL, ANALYZE) {} — reclaiming disk (ACCESS EXCLUSIVE)…", tables.results);
+        repo.vacuum_full_results().await?;
+        println!("  ✅ {sid} done");
     }
     Ok(())
 }
@@ -284,6 +339,17 @@ async fn main() -> anyhow::Result<()> {
         pump_program = constants::PUMP_FUN_PROGRAM_ID,
         "Configuration loaded"
     );
+
+    // Compaction probe: `probe compact-sweeps [tpsl1|tpsl2]` is DB-only (no trader
+    // / ingest / HTTP), so dispatch it here before the trader init's network calls.
+    // One-time storage retention of the existing grouped-sweep rows; see
+    // `run_compact_sweeps`.
+    if std::env::args().nth(1).as_deref() == Some("probe")
+        && std::env::args().nth(2).as_deref() == Some("compact-sweeps")
+    {
+        let db = storage::postgres::connect(&settings).await?;
+        return run_compact_sweeps(&db, std::env::args().skip(3).collect()).await;
+    }
 
     let trader_config = Arc::new(TraderConfig {
         rpc_url: settings.helius_rpc_url.clone(),

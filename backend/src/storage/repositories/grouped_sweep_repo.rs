@@ -25,6 +25,7 @@ use uuid::Uuid;
 use crate::models::grouped_sweep::{
     GroupedSweepGroupSummary, GroupedSweepGroupWrite, GroupedSweepResult, GroupedSweepRun,
 };
+use crate::sweep::aggregate::ComboMetrics;
 
 /// The per-strategy table triple a grouped sweep reads/writes. Field values come
 /// from fixed internal consts in [`crate::sweep::registry`], so the repo can
@@ -196,6 +197,60 @@ impl From<ResultDbRow> for GroupedSweepResult {
             n_exit_liquidity: r.n_exit_liquidity,
             n_exit_cohort: r.n_exit_cohort,
             n_exit_open: r.n_exit_open,
+        }
+    }
+}
+
+/// The slim projection the compaction probe reads per combo: `combo_id`,
+/// `n_closed`, and the 11 ranking metrics the retention filter inspects. Columns
+/// are `real`/`integer` post-`0007`; widened back to the `ComboMetrics` f64/u64
+/// shape the pure filter expects. Every other `ComboMetrics` field is zeroed —
+/// retention never reads them.
+#[derive(sqlx::FromRow)]
+struct RetentionRow {
+    combo_id: i32,
+    n_closed: i32,
+    win_rate: f32,
+    total_pnl_sol: f32,
+    expectancy_sol: f32,
+    score: Option<f32>,
+    profit_factor: Option<f32>,
+    median_pnl_pct: f32,
+    mean_pnl_pct: f32,
+    p90_pnl_pct: f32,
+    best_pnl_pct: f32,
+    worst_pnl_pct: f32,
+    std_pnl_pct: f32,
+}
+
+impl RetentionRow {
+    fn into_metrics(self) -> ComboMetrics {
+        ComboMetrics {
+            combo_id: self.combo_id as u32,
+            n_fired: 0,
+            n_open: 0,
+            n_closed: self.n_closed as u64,
+            win_rate: self.win_rate as f64,
+            total_pnl_sol: self.total_pnl_sol as f64,
+            mean_pnl_pct: self.mean_pnl_pct as f64,
+            median_pnl_pct: self.median_pnl_pct as f64,
+            p90_pnl_pct: self.p90_pnl_pct as f64,
+            best_pnl_pct: self.best_pnl_pct as f64,
+            worst_pnl_pct: self.worst_pnl_pct as f64,
+            std_pnl_pct: self.std_pnl_pct as f64,
+            profit_factor: self.profit_factor.map(|v| v as f64),
+            score: self.score.map(|v| v as f64),
+            expectancy_sol: self.expectancy_sol as f64,
+            avg_holding_secs: 0.0,
+            median_holding_secs: 0.0,
+            n_exit_take_profit: 0,
+            n_exit_stop_loss: 0,
+            n_exit_trailing: 0,
+            n_exit_stall: 0,
+            n_exit_time: 0,
+            n_exit_liquidity: 0,
+            n_exit_cohort: 0,
+            n_exit_open: 0,
         }
     }
 }
@@ -595,6 +650,72 @@ impl GroupedSweepRepo {
             .fetch_one(&self.pool)
             .await?;
         Ok(count)
+    }
+
+    // -----------------------------------------------------------------------
+    // Compaction (one-time storage retention of existing rows)
+    // -----------------------------------------------------------------------
+
+    /// Every group's `(id, best_combo_id)` across all runs — the work list for the
+    /// `compact-sweeps` probe. `best_combo_id` is always kept so the group summary
+    /// stays joinable.
+    pub async fn list_all_groups_for_compaction(&self) -> anyhow::Result<Vec<(Uuid, i32)>> {
+        let sql = format!("SELECT id, best_combo_id FROM {}", self.tables.groups);
+        let rows: Vec<(Uuid, i32)> = sqlx::query_as(&sql).fetch_all(&self.pool).await?;
+        Ok(rows)
+    }
+
+    /// The retention inputs for one group: every combo's id + `n_closed` + the 11
+    /// ranking metrics, mapped into [`ComboMetrics`] (unused fields zeroed — the
+    /// retention filter reads only these columns). Lets the compaction probe run
+    /// the exact same [`crate::sweep::retention::retained_combo_ids`] the write
+    /// path uses, so existing and future data are selected identically.
+    pub async fn fetch_combo_metrics_for_group(
+        &self,
+        group_id: Uuid,
+    ) -> anyhow::Result<Vec<ComboMetrics>> {
+        let sql = format!(
+            "SELECT combo_id, n_closed, win_rate, total_pnl_sol, expectancy_sol, score, \
+                    profit_factor, median_pnl_pct, mean_pnl_pct, p90_pnl_pct, best_pnl_pct, \
+                    worst_pnl_pct, std_pnl_pct \
+             FROM {} WHERE group_id = $1",
+            self.tables.results
+        );
+        let rows = sqlx::query_as::<_, RetentionRow>(&sql)
+            .bind(group_id)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(RetentionRow::into_metrics).collect())
+    }
+
+    /// Delete every combo row in `group_id` whose `combo_id` is not in `keep`.
+    /// `keep` is the bounded retention set (hundreds of ids), passed as an int
+    /// array so it's one round-trip. Returns the rows removed.
+    pub async fn delete_combos_except(
+        &self,
+        group_id: Uuid,
+        keep: &[i32],
+    ) -> anyhow::Result<u64> {
+        let sql = format!(
+            "DELETE FROM {} WHERE group_id = $1 AND combo_id <> ALL($2)",
+            self.tables.results
+        );
+        let res = sqlx::query(&sql)
+            .bind(group_id)
+            .bind(keep)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected())
+    }
+
+    /// Physically reclaim the disk freed by the per-group deletes. Plain `DELETE`
+    /// only marks tuples dead; `VACUUM (FULL)` rewrites the table. Takes an
+    /// `ACCESS EXCLUSIVE` lock — run only in the offline window. Cannot run inside
+    /// a transaction (sqlx executes it on its own connection).
+    pub async fn vacuum_full_results(&self) -> anyhow::Result<()> {
+        let sql = format!("VACUUM (FULL, ANALYZE) {}", self.tables.results);
+        sqlx::query(&sql).execute(&self.pool).await?;
+        Ok(())
     }
 
     /// One page of ranked combo rows for a group.
