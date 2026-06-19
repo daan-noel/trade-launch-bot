@@ -7,6 +7,7 @@ import { paramTip } from 'lib/tpslParamHelp';
 import { cn } from 'lib/cn';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
+import { IconButton } from 'components/ui/IconButton';
 
 /** Run + Analyze handler bags for the per-row controls. The page owns the
  *  lifecycle/result state; it passes both in through `RuleRowProvider` so the
@@ -160,6 +161,7 @@ export interface RuleAnalysisHandlers {
   simLoading: boolean;
   matchedLoading: boolean;
   paperLoading: boolean;
+  simActiveId: string | null;
   matchedActiveId: string | null;
   paperActiveId: string | null;
   onSimulate: (rule: RuleRecord) => void;
@@ -177,41 +179,41 @@ function AnalysisControls({ rule }: { rule: RuleRecord }) {
     e.stopPropagation();
     fn();
   };
+  const simActive = a.simActiveId === rule.id;
   const matchedActive = a.matchedActiveId === rule.id;
   const paperActive = a.paperActiveId === rule.id;
   return (
     <div className="flex items-center gap-1 justify-center">
-      <Button
-        variant="ghost"
-        size="xs"
+      <IconButton
         disabled={a.simLoading}
         onClick={stop(() => a.onSimulate(rule))}
+        active={simActive}
+        activeClassName="border-primary/70 bg-primary/20 text-primary shadow-[0_0_8px_rgba(19,206,175,0.35)]"
         className="text-primary"
         title="Simulate — backtest this rule over historical tokens"
       >
         🧪
-      </Button>
-      <Button
-        variant="ghost"
-        size="xs"
+      </IconButton>
+      <IconButton
         disabled={a.matchedLoading}
         onClick={stop(() => a.onMatched(rule))}
-        className={cn(matchedActive && 'border-[#9370db]/45 bg-[#9370db]/8 text-[#9370db]')}
+        active={matchedActive}
+        activeClassName="border-[#9370db]/70 bg-[#9370db]/20 text-[#9370db] shadow-[0_0_8px_rgba(147,112,219,0.35)]"
         title="Matched tokens — tokens in the DB that pass this rule's entry filter"
       >
         🎯
-      </Button>
+      </IconButton>
       {rule.trade_mode === 'paper' && (
-        <Button
-          variant="ghost"
-          size="xs"
+        <IconButton
           disabled={a.paperLoading}
           onClick={stop(() => a.onPaperResult(rule))}
-          className={cn('text-info', paperActive && 'border-info/45 bg-info/8')}
+          active={paperActive}
+          activeClassName="border-info/70 bg-info/20 text-info shadow-[0_0_8px_rgba(6,182,212,0.35)]"
+          className="text-info"
           title="Paper test result — positions from the latest paper run"
         >
           📄
-        </Button>
+        </IconButton>
       )}
     </div>
   );

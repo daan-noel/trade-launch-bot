@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode
 import { DataTable } from 'components/table/DataTable';
 import { Badge, type BadgeVariant } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
+import { IconButton } from 'components/ui/IconButton';
 import { Input } from 'components/ui/Input';
 import { InlineAlert, Modal } from 'components/ui/Modal';
 import {
@@ -506,9 +507,7 @@ const RuleActionsCell = memo(function RuleActionsCell({
   // intents read as separate groups. Icon-only — tooltips name each action.
   return (
     <div className="flex items-center justify-center gap-1">
-      <Button
-        variant="ghost"
-        size="xs"
+      <IconButton
         onClick={() => onEdit(rule)}
         title={
           rule.is_active || rule.open_positions > 0
@@ -518,19 +517,15 @@ const RuleActionsCell = memo(function RuleActionsCell({
         className="text-info"
       >
         ✎
-      </Button>
-      <Button
-        variant="ghost"
-        size="xs"
+      </IconButton>
+      <IconButton
         onClick={() => onDuplicate(rule)}
         title="Duplicate — open a new rule pre-filled from this one"
-        className="text-text-dim hover:text-text"
       >
         ⧉
-      </Button>
-      <Button
-        variant="ghost"
-        size="xs"
+      </IconButton>
+      <IconButton
+        variant="danger"
         disabled={rule.is_active || rule.open_positions > 0}
         onClick={() => onRequestDelete(rule.id)}
         title={
@@ -538,10 +533,9 @@ const RuleActionsCell = memo(function RuleActionsCell({
             ? 'Cannot delete a running rule or one with open positions'
             : 'Delete rule'
         }
-        className="text-red"
       >
         ✕
-      </Button>
+      </IconButton>
     </div>
   );
 });
@@ -580,6 +574,7 @@ export function Tpsl2Page() {
   const [deleteLoading, setDeleteLoading] = useState(false);
 
   const [simResult, setSimResult] = useState<{
+    ruleId: string;
     ruleName: string;
     tokens: SimulatedTokenResult[];
   } | null>(null);
@@ -861,7 +856,7 @@ export function Tpsl2Page() {
           invalidateStrategyResult(dispatch, { strategy: 'tpsl2', ruleId: rule.id });
           return;
         }
-        setSimResult({ ruleName: rule.rule_name, tokens });
+        setSimResult({ ruleId: rule.id, ruleName: rule.rule_name, tokens });
       } catch (e) {
         setSimError(apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0], 'Simulation failed'));
       } finally {
@@ -959,6 +954,7 @@ export function Tpsl2Page() {
       simLoading,
       matchedLoading,
       paperLoading,
+      simActiveId: simResult?.ruleId ?? null,
       matchedActiveId: matchedResult?.ruleId ?? null,
       paperActiveId: paperResult?.ruleId ?? null,
       onSimulate: handleSimulate,
@@ -969,6 +965,7 @@ export function Tpsl2Page() {
       simLoading,
       matchedLoading,
       paperLoading,
+      simResult,
       matchedResult,
       paperResult,
       handleSimulate,
