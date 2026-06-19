@@ -67,6 +67,34 @@ corpus (DB-range, once) ─► attach_fingerprints ─► partition by GroupKey
 | `strategies/tpsl2.rs` | TPSL2 `Strategy`/`ParamSpace`. `Tpsl2Params`/`Tpsl2Axes` (+ `Serialize`) sweep **all 15** rule knobs — TP/SL always-on, every other knob `Option` where `None` = unbounded/disabled (the default axis for the 10 lower-leverage knobs is a single `[None]`, so they don't expand the grid until the page supplies values). `AxesSpec` (page-editable grid; omitted/empty axis → default), `Tpsl2Axes::from_spec`/`combo_count`; `sample` builds the grid via a shared `combo_at(index)` mixed-radix decode (Grid = `0..combo_count`; `Random` draws **distinct** grid indices **without replacement** — `min(n, grid_size)` combos, logging when the grid is smaller than `n` instead of silently collapsing to duplicates (#9 hygiene); LHS = `lhs_index_plan` over the 15 axis lengths in declaration order), wrapping each into a `Tpsl2Combo { raw, rule }` whose `Tpsl2Rule` is **resolved once at sample time** (not cloned per `(combo×token)` in the hot loop). `prepare_token` returns `Tpsl2TokenState { cohort, cohort_bought }` — the launch cohort (`scalp_cohort`) plus its total-bought bag (the E5 denominator, computed only when `cohort_ratio` is swept), built **once per token** and shared across every entry *and* exit resolve; `resolve_entry` calls `entry::find_scalp_entry_with_cohort` (fed `state.cohort`) + `find_worst_case_paper_entry`; `resolve_exit` calls `exit::find_trade_driven_exit_with_cohort` on `&combo.rule` fed `state.cohort`/`state.cohort_bought` — so the E5 cohort `HashSet` + bag are **not** rebuilt per `(combo × token)` (#1 cohort-exit hoist), while the live fns' `&Tpsl2Rule` signatures stay unchanged, so decision parity is exact. `entry_key` = the 8 scalp-gate knobs (`Tpsl2EntryKey`). `order_for_entry_cache` stable-sorts the combo set by those 8 knobs so same-entry combos are contiguous (restores the engine's entry-cache hit rate under random/lhs/refine; #2). `refine` walks all 15 axes one at a time around each survivor (coordinate moves). See [strategies.md](strategies.md). |
 | `strategies/tpsl1.rs` | TPSL1 `Strategy`/`ParamSpace`. TPSL1 is the token-creation-filter strategy, so it has **no per-trade entry gates** and **no cohort exit** — its swept set is the **exit ladder only** (6 knobs: TP/SL + the optional trailing/time/stall/liquidity exits). `Tpsl1Params`/`Tpsl1Axes`/`AxesSpec` mirror tpsl2's shape over that smaller set. `sample` wraps each combo into a `Tpsl1Combo { raw, rule }` (rule resolved once at sample time, as tpsl2; grid / uniform `Random` / `lhs_index_plan`-driven LHS over its 6 axes). `resolve_entry` uses `tpsl_sniper_1::entry::find_entry_fill_in_trades(trades, 1)` (cap 1, matching `run_backtest`; the token-creation filter ran upstream during corpus selection) — entry is **param-free**, so `EntryKey = ()` and it resolves once per token (no per-token state either: `TokenState = ()`); `resolve_exit` calls `exit::find_trade_driven_exit` on `&combo.rule` — see [strategies.md](strategies.md). `refine` walks its 6 exit axes one at a time (coordinate moves). `params_json` emits the `exit_*` keys (a subset of tpsl2's). |
 
+## Combo column families (the per-combo result row)
+Every drill-in combo row splits into **three families** — useful for knowing what
+is a swept *input* vs. a measured *output*, and which family each column's storage
+lives in:
+
+- **Rule params** (the swept knob values; the strategy *input*). TPSL2 sweeps **all
+  15**; TPSL1 the **exit subset** (6). These are *identical for a given `combo_id`
+  across every group in a run*, so they are **deduped** into a per-run
+  `<strategy>_grouped_sweep_combos(run_id, combo_id, params)` dictionary
+  (migration `0007`) instead of being repeated on every `(group, combo)` results
+  row (was the dominant on-disk cost). Read back by JOINing on `(run_id, combo_id)`.
+  - Exit: `exit_take_profit`, `exit_stop_loss`, `exit_trailing_stop_pct`,
+    `exit_time_stop_secs`, `exit_stall_secs`, `exit_liquidity_drop_pct`,
+    `exit_cohort_ratio` (cohort = TPSL2 only).
+  - Entry (TPSL2 scalp gates only): `entry_min_age_secs`, `entry_min_alive_sol`,
+    `entry_min_organic_sol`, `entry_pullback_pct`, `entry_higher_low_secs`,
+    `entry_max_cohort_held`, `entry_min_liquidity_sol`, `entry_min_organic_liq`.
+- **Evaluate params** (the measured *ranking/scoring outputs*): `score`, `win_rate`,
+  `total_pnl_sol`, `expectancy_sol`, `profit_factor`, `median_pnl_pct`,
+  `mean_pnl_pct`, `p90_pnl_pct`, `best_pnl_pct`, `worst_pnl_pct`, `std_pnl_pct`.
+  Stored per `(group, combo)` on the results row; all the PnL/score floats are
+  `REAL` (f32 — display/ranking only, migration `0007`), kept f64 in-memory for the
+  fold/ranking precision.
+- **Extra-info params** (the remaining measured context): `combo_id`, `n_fired`,
+  `n_open`, `n_closed` (counts, `INTEGER`), `avg_holding_secs`,
+  `median_holding_secs`, and the exit-reason mix `n_exit_{take_profit,stop_loss,
+  trailing,stall,time,liquidity,cohort,open}`. Also per `(group, combo)`.
+
 ## Persistence (per-strategy tables) + API
 Tables are **separate per strategy** (`<strategy>_grouped_sweep_{runs,groups,results}`,
 see [database.md](database.md)). Both TPSL2's and TPSL1's identical-shape triples

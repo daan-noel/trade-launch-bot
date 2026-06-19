@@ -34,6 +34,10 @@ pub struct GroupedSweepTables {
     pub runs: &'static str,
     pub groups: &'static str,
     pub results: &'static str,
+    /// Per-run combo→`params` dictionary (migration `0007`): `params` is identical
+    /// for a `(run_id, combo_id)` across every group, so it's stored once here
+    /// instead of on every `(group, combo)` results row, and JOINed back on read.
+    pub combos: &'static str,
 }
 
 pub struct GroupedSweepRepo {
@@ -129,26 +133,30 @@ impl From<GroupDbRow> for GroupedSweepGroupSummary {
     }
 }
 
+// Storage types are narrowed (migration `0007`): the PnL/score floats are `real`
+// (f32) and the fired/open/closed counts are `integer` (i32). `params` is JOINed
+// in from the per-run `_combos` dictionary, not stored on this row. The `From`
+// impl below widens back to the model's f64/i64 so the API/JSON shape is unchanged.
 #[derive(sqlx::FromRow)]
 struct ResultDbRow {
     combo_id: i32,
     params: sqlx::types::Json<Value>,
-    n_fired: i64,
-    n_open: i64,
-    n_closed: i64,
-    win_rate: f64,
-    total_pnl_sol: f64,
-    mean_pnl_pct: f64,
-    median_pnl_pct: f64,
-    p90_pnl_pct: f64,
-    best_pnl_pct: f64,
-    worst_pnl_pct: f64,
-    std_pnl_pct: f64,
-    profit_factor: Option<f64>,
-    score: Option<f64>,
-    expectancy_sol: f64,
-    avg_holding_secs: f64,
-    median_holding_secs: f64,
+    n_fired: i32,
+    n_open: i32,
+    n_closed: i32,
+    win_rate: f32,
+    total_pnl_sol: f32,
+    mean_pnl_pct: f32,
+    median_pnl_pct: f32,
+    p90_pnl_pct: f32,
+    best_pnl_pct: f32,
+    worst_pnl_pct: f32,
+    std_pnl_pct: f32,
+    profit_factor: Option<f32>,
+    score: Option<f32>,
+    expectancy_sol: f32,
+    avg_holding_secs: f32,
+    median_holding_secs: f32,
     n_exit_take_profit: i32,
     n_exit_stop_loss: i32,
     n_exit_trailing: i32,
@@ -164,22 +172,22 @@ impl From<ResultDbRow> for GroupedSweepResult {
         Self {
             combo_id: r.combo_id,
             params: r.params.0,
-            n_fired: r.n_fired,
-            n_open: r.n_open,
-            n_closed: r.n_closed,
-            win_rate: r.win_rate,
-            total_pnl_sol: r.total_pnl_sol,
-            mean_pnl_pct: r.mean_pnl_pct,
-            median_pnl_pct: r.median_pnl_pct,
-            p90_pnl_pct: r.p90_pnl_pct,
-            best_pnl_pct: r.best_pnl_pct,
-            worst_pnl_pct: r.worst_pnl_pct,
-            std_pnl_pct: r.std_pnl_pct,
-            profit_factor: r.profit_factor,
-            score: r.score,
-            expectancy_sol: r.expectancy_sol,
-            avg_holding_secs: r.avg_holding_secs,
-            median_holding_secs: r.median_holding_secs,
+            n_fired: r.n_fired as i64,
+            n_open: r.n_open as i64,
+            n_closed: r.n_closed as i64,
+            win_rate: r.win_rate as f64,
+            total_pnl_sol: r.total_pnl_sol as f64,
+            mean_pnl_pct: r.mean_pnl_pct as f64,
+            median_pnl_pct: r.median_pnl_pct as f64,
+            p90_pnl_pct: r.p90_pnl_pct as f64,
+            best_pnl_pct: r.best_pnl_pct as f64,
+            worst_pnl_pct: r.worst_pnl_pct as f64,
+            std_pnl_pct: r.std_pnl_pct as f64,
+            profit_factor: r.profit_factor.map(|v| v as f64),
+            score: r.score.map(|v| v as f64),
+            expectancy_sol: r.expectancy_sol as f64,
+            avg_holding_secs: r.avg_holding_secs as f64,
+            median_holding_secs: r.median_holding_secs as f64,
             n_exit_take_profit: r.n_exit_take_profit,
             n_exit_stop_loss: r.n_exit_stop_loss,
             n_exit_trailing: r.n_exit_trailing,
@@ -269,6 +277,38 @@ impl GroupedSweepRepo {
         Ok(())
     }
 
+    /// Write the per-run combo→`params` dictionary once, up front (migration `0007`
+    /// dedup). `combo_params[i]` is the param JSON for `combo_id = i` — identical
+    /// across every group in the run, so it lives here instead of on every results
+    /// row and is JOINed back by [`list_results_paged`]. Bulk-inserted in chunks (3
+    /// binds/row); `ON CONFLICT DO NOTHING` keeps it idempotent if `begin` re-fires.
+    pub async fn insert_combos(
+        &self,
+        run_id: Uuid,
+        combo_params: &[Value],
+    ) -> anyhow::Result<()> {
+        if combo_params.is_empty() {
+            return Ok(());
+        }
+        let t = self.tables;
+        // 3 binds/row → 20k rows stays well under the 65535 bind-parameter ceiling.
+        for (b, chunk) in combo_params.chunks(20_000).enumerate() {
+            let offset = b * 20_000;
+            let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(format!(
+                "INSERT INTO {} (run_id, combo_id, params) ",
+                t.combos
+            ));
+            qb.push_values(chunk.iter().enumerate(), |mut bind, (i, p)| {
+                bind.push_bind(run_id)
+                    .push_bind((offset + i) as i32)
+                    .push_bind(sqlx::types::Json(p));
+            });
+            qb.push(" ON CONFLICT (run_id, combo_id) DO NOTHING");
+            qb.build().execute(&self.pool).await?;
+        }
+        Ok(())
+    }
+
     /// Persist one **completed** group (its summary + ranked combo rows) and bump
     /// the run's `groups_done`, all in one transaction — so whatever committed
     /// survives a crash. Called per group as the engine finalizes it, serialized
@@ -306,11 +346,13 @@ impl GroupedSweepRepo {
             .execute(&mut tx)
             .await?;
 
-        // 28 binds/row → chunk well under the 65535 param ceiling.
+        // No `params` here (deduped into `_combos`, written once per run by
+        // `insert_combos`); the narrowed columns are bound as i32/f32 to match the
+        // `0007` storage types. 27 binds/row → chunk well under the 65535 ceiling.
         for chunk in g.results.chunks(2000) {
             let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(format!(
                 "INSERT INTO {} \
-                 (run_id, group_id, combo_id, params, n_fired, n_open, n_closed, win_rate, \
+                 (run_id, group_id, combo_id, n_fired, n_open, n_closed, win_rate, \
                   total_pnl_sol, mean_pnl_pct, median_pnl_pct, p90_pnl_pct, best_pnl_pct, \
                   worst_pnl_pct, std_pnl_pct, profit_factor, score, expectancy_sol, \
                   avg_holding_secs, median_holding_secs, n_exit_take_profit, n_exit_stop_loss, \
@@ -321,23 +363,22 @@ impl GroupedSweepRepo {
                 b.push_bind(run_id)
                     .push_bind(group_id)
                     .push_bind(r.combo_id)
-                    .push_bind(sqlx::types::Json(&r.params))
-                    .push_bind(r.n_fired)
-                    .push_bind(r.n_open)
-                    .push_bind(r.n_closed)
-                    .push_bind(r.win_rate)
-                    .push_bind(r.total_pnl_sol)
-                    .push_bind(r.mean_pnl_pct)
-                    .push_bind(r.median_pnl_pct)
-                    .push_bind(r.p90_pnl_pct)
-                    .push_bind(r.best_pnl_pct)
-                    .push_bind(r.worst_pnl_pct)
-                    .push_bind(r.std_pnl_pct)
-                    .push_bind(r.profit_factor)
-                    .push_bind(r.score)
-                    .push_bind(r.expectancy_sol)
-                    .push_bind(r.avg_holding_secs)
-                    .push_bind(r.median_holding_secs)
+                    .push_bind(r.n_fired as i32)
+                    .push_bind(r.n_open as i32)
+                    .push_bind(r.n_closed as i32)
+                    .push_bind(r.win_rate as f32)
+                    .push_bind(r.total_pnl_sol as f32)
+                    .push_bind(r.mean_pnl_pct as f32)
+                    .push_bind(r.median_pnl_pct as f32)
+                    .push_bind(r.p90_pnl_pct as f32)
+                    .push_bind(r.best_pnl_pct as f32)
+                    .push_bind(r.worst_pnl_pct as f32)
+                    .push_bind(r.std_pnl_pct as f32)
+                    .push_bind(r.profit_factor.map(|v| v as f32))
+                    .push_bind(r.score.map(|v| v as f32))
+                    .push_bind(r.expectancy_sol as f32)
+                    .push_bind(r.avg_holding_secs as f32)
+                    .push_bind(r.median_holding_secs as f32)
                     .push_bind(r.n_exit_take_profit)
                     .push_bind(r.n_exit_stop_loss)
                     .push_bind(r.n_exit_trailing)
@@ -451,20 +492,21 @@ impl GroupedSweepRepo {
         Ok(row.and_then(|(mints,)| mints))
     }
 
-    /// Fetch the `params` JSON for one combo within a group. Returns `None` when
-    /// the `(group_id, combo_id)` pair is unknown.
+    /// Fetch the `params` JSON for one combo in a run, from the per-run `_combos`
+    /// dictionary (migration `0007` — `params` is run-level, not per-group).
+    /// Returns `None` when the `(run_id, combo_id)` pair is unknown.
     pub async fn get_combo_params(
         &self,
-        group_id: Uuid,
+        run_id: Uuid,
         combo_id: i32,
     ) -> anyhow::Result<Option<serde_json::Value>> {
         let sql = format!(
-            "SELECT params FROM {} WHERE group_id = $1 AND combo_id = $2 LIMIT 1",
-            self.tables.results
+            "SELECT params FROM {} WHERE run_id = $1 AND combo_id = $2",
+            self.tables.combos
         );
         let row: Option<(sqlx::types::Json<serde_json::Value>,)> =
             sqlx::query_as(&sql)
-                .bind(group_id)
+                .bind(run_id)
                 .bind(combo_id)
                 .fetch_optional(&self.pool)
                 .await?;
@@ -573,24 +615,29 @@ impl GroupedSweepRepo {
         sort_dir: &str,
         sort_param_key: Option<&str>,
     ) -> anyhow::Result<Vec<GroupedSweepResult>> {
+        // `params` lives on the per-run `_combos` dictionary (migration `0007`),
+        // JOINed back on `(run_id, combo_id)`. Order columns are table-qualified:
+        // metric columns are on the results row (`r`), `params` on the combos row (`c`).
         let order = if let Some(param_key) = sort_param_key {
             // Param column: extract from JSONB, cast to numeric.
             // `param_key` is pre-validated to be [a-z0-9_]+ by the handler.
-            format!("(params->>'{}')::numeric {} NULLS LAST", param_key, sort_dir)
+            format!("(c.params->>'{}')::numeric {} NULLS LAST", param_key, sort_dir)
         } else if let Some(col) = sort_col {
-            format!("{} {} NULLS LAST", col, sort_dir)
+            format!("r.{} {} NULLS LAST", col, sort_dir)
         } else {
-            "score DESC NULLS LAST".to_string()
+            "r.score DESC NULLS LAST".to_string()
         };
         let sql = format!(
-            "SELECT combo_id, params, n_fired, n_open, n_closed, win_rate, total_pnl_sol, \
-                    mean_pnl_pct, median_pnl_pct, p90_pnl_pct, best_pnl_pct, worst_pnl_pct, \
-                    std_pnl_pct, profit_factor, score, expectancy_sol, avg_holding_secs, \
-                    median_holding_secs, n_exit_take_profit, n_exit_stop_loss, n_exit_trailing, \
-                    n_exit_stall, n_exit_time, n_exit_liquidity, n_exit_cohort, n_exit_open \
-             FROM {} WHERE run_id = $1 AND group_id = $2 \
+            "SELECT r.combo_id, c.params, r.n_fired, r.n_open, r.n_closed, r.win_rate, \
+                    r.total_pnl_sol, r.mean_pnl_pct, r.median_pnl_pct, r.p90_pnl_pct, \
+                    r.best_pnl_pct, r.worst_pnl_pct, r.std_pnl_pct, r.profit_factor, r.score, \
+                    r.expectancy_sol, r.avg_holding_secs, r.median_holding_secs, \
+                    r.n_exit_take_profit, r.n_exit_stop_loss, r.n_exit_trailing, r.n_exit_stall, \
+                    r.n_exit_time, r.n_exit_liquidity, r.n_exit_cohort, r.n_exit_open \
+             FROM {} r JOIN {} c ON c.run_id = r.run_id AND c.combo_id = r.combo_id \
+             WHERE r.run_id = $1 AND r.group_id = $2 \
              ORDER BY {} LIMIT $3 OFFSET $4",
-            self.tables.results, order
+            self.tables.results, self.tables.combos, order
         );
         let rows = sqlx::query_as::<_, ResultDbRow>(&sql)
             .bind(run_id)

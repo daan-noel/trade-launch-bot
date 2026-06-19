@@ -90,6 +90,7 @@ const TPSL2_TABLES: GroupedSweepTables = GroupedSweepTables {
     runs: "tpsl2_grouped_sweep_runs",
     groups: "tpsl2_grouped_sweep_groups",
     results: "tpsl2_grouped_sweep_results",
+    combos: "tpsl2_grouped_sweep_combos",
 };
 
 /// TPSL1's own grouped-sweep tables (same shape as TPSL2's, separate per the
@@ -98,6 +99,7 @@ const TPSL1_TABLES: GroupedSweepTables = GroupedSweepTables {
     runs: "tpsl1_grouped_sweep_runs",
     groups: "tpsl1_grouped_sweep_groups",
     results: "tpsl1_grouped_sweep_results",
+    combos: "tpsl1_grouped_sweep_combos",
 };
 
 /// The DB table triple for a strategy's grouped sweeps, or `None` for an unknown

@@ -514,11 +514,18 @@ async fn run_grouped_sweep_job(
             let mut total_groups = 0i32;
             while let Some(msg) = rx.recv().await {
                 match msg {
-                    SweepWrite::Begin { group_count, combo_count } => {
+                    SweepWrite::Begin { group_count, combo_params } => {
                         total_groups = group_count;
-                        if let Err(e) = repo.update_run_counts(run_id, group_count, combo_count).await
+                        if let Err(e) = repo
+                            .update_run_counts(run_id, group_count, combo_params.len() as i32)
+                            .await
                         {
                             tracing::error!("grouped sweep: update_run_counts failed: {e}");
+                        }
+                        // Write the per-run combo→params dictionary once, up front
+                        // (0007 dedup) — every results row JOINs back to it.
+                        if let Err(e) = repo.insert_combos(run_id, &combo_params).await {
+                            tracing::error!("grouped sweep: insert_combos failed: {e}");
                         }
                         // Announce the saving phase so the frontend switches from
                         // the sweep bar to a fresh saving bar before any DB writes.
@@ -685,7 +692,12 @@ async fn run_grouped_sweep_job(
 /// fixed group/combo counts (one per run); `Group` carries one completed group's
 /// write unit. Boxed so the enum stays small despite the large group payload.
 enum SweepWrite {
-    Begin { group_count: i32, combo_count: i32 },
+    Begin {
+        group_count: i32,
+        /// The per-run combo→`params` dictionary (`combo_params[combo_id]`),
+        /// persisted once via `insert_combos` (migration `0007` dedup).
+        combo_params: Vec<serde_json::Value>,
+    },
     Group(Box<GroupedSweepGroupWrite>),
 }
 
@@ -702,10 +714,10 @@ struct HandlerSink {
 }
 
 impl GroupSink for HandlerSink {
-    fn begin(&self, group_count: usize, combo_count: usize) {
+    fn begin(&self, group_count: usize, combo_params: &[serde_json::Value]) {
         let _ = self.tx.send(SweepWrite::Begin {
             group_count: group_count as i32,
-            combo_count: combo_count as i32,
+            combo_params: combo_params.to_vec(),
         });
     }
 
@@ -736,11 +748,7 @@ fn group_to_write(
         .get(g.best_combo_id as usize)
         .map(|m| m.n_fired as i64)
         .unwrap_or(0);
-    let results = g
-        .metrics
-        .iter()
-        .map(|m| metrics_to_result(m, param_at(m.combo_id)))
-        .collect();
+    let results = g.metrics.iter().map(metrics_to_result).collect();
     GroupedSweepGroupWrite {
         group_index: group_index as i32,
         group_key: g.key.to_json(),
@@ -755,11 +763,14 @@ fn group_to_write(
     }
 }
 
-/// Map one combo's aggregated metrics + its param JSON into a persistable row.
-fn metrics_to_result(m: &ComboMetrics, params: serde_json::Value) -> GroupedSweepResult {
+/// Map one combo's aggregated metrics into a persistable row. `params` is **not**
+/// stored per row anymore (deduped into the per-run `_combos` dictionary, migration
+/// `0007`) — it's left `Null` here and JOINed back on read, so this skips the
+/// per-combo param-JSON clone the old signature did.
+fn metrics_to_result(m: &ComboMetrics) -> GroupedSweepResult {
     GroupedSweepResult {
         combo_id: m.combo_id as i32,
-        params,
+        params: serde_json::Value::Null,
         n_fired: m.n_fired as i64,
         n_open: m.n_open as i64,
         n_closed: m.n_closed as i64,
@@ -1062,8 +1073,9 @@ pub async fn list_token_results(
         }
     };
 
-    // Fetch the params JSON for the requested combo.
-    let params_json = match repo.get_combo_params(group_id, query.combo_id).await {
+    // Fetch the params JSON for the requested combo (from the per-run `_combos`
+    // dictionary — `params` is run-level, keyed by `(run_id, combo_id)`).
+    let params_json = match repo.get_combo_params(run_id, query.combo_id).await {
         Ok(Some(p)) => p,
         Ok(None) => {
             return HttpResponse::NotFound().json(serde_json::json!({"error": "combo not found"}))

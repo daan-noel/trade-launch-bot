@@ -115,8 +115,9 @@ pub trait GroupSink: Sync {
         true
     }
     /// Fired once before the first group, with the surviving group count and the
-    /// final per-group combo count.
-    fn begin(&self, _group_count: usize, _combo_count: usize) {}
+    /// final per-combo param JSON (`combo_params[combo_id]`) — the per-run combo
+    /// dictionary a sink persists once (so `params` isn't repeated per group).
+    fn begin(&self, _group_count: usize, _combo_params: &[Value]) {}
     /// Fired once per fully-folded group.
     fn group_done(&self, group_index: usize, group: &GroupResult, combo_params: &[Value]);
 }
@@ -218,7 +219,7 @@ pub fn run_grouped_sweep<S: Strategy>(
         Vec::new()
     };
     if emit {
-        sink.begin(surviving.len(), params.len());
+        sink.begin(surviving.len(), &combo_params);
     }
 
     // Phase 1 — large groups: intra-group parallel, one group at a time.
@@ -885,8 +886,8 @@ mod tests {
         groups: std::sync::Mutex<Vec<(usize, usize)>>, // (group_index, combo_params.len())
     }
     impl GroupSink for RecordingSink {
-        fn begin(&self, group_count: usize, combo_count: usize) {
-            self.begins.lock().unwrap().push((group_count, combo_count));
+        fn begin(&self, group_count: usize, combo_params: &[Value]) {
+            self.begins.lock().unwrap().push((group_count, combo_params.len()));
         }
         fn group_done(&self, group_index: usize, _g: &GroupResult, combo_params: &[Value]) {
             self.groups.lock().unwrap().push((group_index, combo_params.len()));
