@@ -407,6 +407,7 @@ fn sub_corpus(corpus: &Corpus, idx: &[usize]) -> Corpus {
     Corpus {
         tokens: idx.iter().map(|&i| corpus.tokens[i].clone()).collect(),
         hash: corpus.hash.clone(),
+        has_fingerprints: corpus.has_fingerprints,
     }
 }
 

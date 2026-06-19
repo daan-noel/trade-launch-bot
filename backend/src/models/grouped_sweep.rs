@@ -147,4 +147,8 @@ pub struct GroupedSweepGroupWrite {
     pub best_expectancy_sol: f64,
     pub best_params: Value,
     pub results: Vec<GroupedSweepResult>,
+    /// Option C: mint addresses of every token that fell into this group. Stored
+    /// in DB so `list_token_results` can load only these N tokens cold instead of
+    /// re-loading the entire corpus.
+    pub mints: Vec<String>,
 }

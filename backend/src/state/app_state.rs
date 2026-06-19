@@ -4,7 +4,7 @@ use std::sync::Arc;
 use dashmap::{DashMap, DashSet};
 use sqlx::PgPool;
 use uuid::Uuid;
-use tokio::sync::{broadcast, watch, Notify, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{broadcast, watch, Notify, OwnedSemaphorePermit, RwLock, Semaphore};
 
 use crate::api::handlers::system::SseFrame;
 use crate::models::ingest::SseEvent;
@@ -22,12 +22,25 @@ use crate::strategies::tpsl_sniper_1::Tpsl1RuntimeCache;
 use crate::strategies::tpsl_sniper_2::Tpsl2RuntimeCache;
 use crate::trader::PumpFunTrader;
 
+use crate::sweep::corpus::TokenTrades;
+
 use super::backtest_trade_cache::BacktestTradeCache;
 use super::job_progress::ProgressCell;
 use super::swing_run_cache::SwingRunCache;
 use super::token_cache::TokenCache;
 use super::token_list_cache::TokenListCache;
 use super::trade_signals::TradeSignals;
+
+/// Option A: the fully-loaded corpus (trades + fingerprints) from the most recent
+/// sweep run, keyed by its corpus hash. Lets `list_token_results` skip both the
+/// Parquet read and the `attach_fingerprints` DB queries on the warm path — the
+/// common case where a user drills into a combo right after running a sweep.
+pub struct SweepCorpusCache {
+    pub corpus_hash: String,
+    /// All tokens with fingerprints already attached, as `Arc<Vec<_>>` so
+    /// cloning into the handler is a refcount bump (no copy of the trade data).
+    pub tokens: Arc<Vec<TokenTrades>>,
+}
 
 /// Shared application state — passed to Actix handlers via `web::Data<AppState>`
 /// and injected into services.
@@ -104,6 +117,11 @@ pub struct AppState {
     /// Lets the server-side-paged tokens list sort by the chain columns and
     /// re-group on chain-latency changes without re-running detection.
     pub swing_runs: Arc<SwingRunCache>,
+    /// Option A: single-entry in-memory corpus cache. Written after each sweep
+    /// completes (trades + fingerprints in hand); read by `list_token_results` to
+    /// skip Parquet I/O and `attach_fingerprints` on the warm path. Single entry —
+    /// a new sweep overwrites the previous.
+    pub sweep_corpus_cache: Arc<RwLock<Option<SweepCorpusCache>>>,
 }
 
 /// Max concurrent token-sync backfills (each is RPC- and DB-heavy).
@@ -210,6 +228,7 @@ impl AppState {
             sim_progress: Arc::new(DashMap::new()),
             // Keep a few recent runs so re-runs / multiple tabs don't accumulate.
             swing_runs: Arc::new(SwingRunCache::new(3)),
+            sweep_corpus_cache: Arc::new(RwLock::new(None)),
         }
     }
 

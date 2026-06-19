@@ -287,8 +287,8 @@ impl GroupedSweepRepo {
         let group_sql = format!(
             "INSERT INTO {} \
              (id, run_id, group_index, group_key, token_count, fired_count, \
-              best_combo_id, best_score, best_expectancy_sol, best_params) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+              best_combo_id, best_score, best_expectancy_sol, best_params, mints) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
             t.groups
         );
         sqlx::query(&group_sql)
@@ -302,6 +302,7 @@ impl GroupedSweepRepo {
             .bind(g.best_score)
             .bind(g.best_expectancy_sol)
             .bind(sqlx::types::Json(&g.best_params))
+            .bind(&g.mints[..])
             .execute(&mut tx)
             .await?;
 
@@ -437,6 +438,17 @@ impl GroupedSweepRepo {
             .fetch_optional(&self.pool)
             .await?;
         Ok(row.map(GroupedSweepGroupSummary::from))
+    }
+
+    /// Option C: fetch the stored mint list for a group. Returns `None` when the
+    /// group is unknown or was created before migration 0006 (no mints column).
+    pub async fn get_group_mints(&self, group_id: Uuid) -> anyhow::Result<Option<Vec<String>>> {
+        let sql = format!("SELECT mints FROM {} WHERE id = $1", self.tables.groups);
+        let row: Option<(Option<Vec<String>>,)> = sqlx::query_as(&sql)
+            .bind(group_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.and_then(|(mints,)| mints))
     }
 
     /// Fetch the `params` JSON for one combo within a group. Returns `None` when

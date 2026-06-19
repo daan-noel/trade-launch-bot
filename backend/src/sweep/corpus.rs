@@ -132,6 +132,9 @@ pub struct Corpus {
     pub tokens: Vec<TokenTrades>,
     /// Stable hash of the selection's mints + per-token trade counts.
     pub hash: String,
+    /// True when token fingerprints were loaded from the Parquet cache (Option B).
+    /// Callers skip `attach_fingerprints` when this is set — no DB round-trip needed.
+    pub has_fingerprints: bool,
 }
 
 impl Corpus {
@@ -441,7 +444,7 @@ impl CorpusSource for CacheSource {
             }
         }
         let hash = corpus_hash(&tokens, sel.curve_only);
-        Ok(Corpus { tokens, hash })
+        Ok(Corpus { tokens, hash, has_fingerprints: false })
     }
 }
 
@@ -718,7 +721,7 @@ impl CorpusSource for DbSource {
             "corpus: loaded from DB"
         );
         let hash = corpus_hash(&tokens, sel.curve_only);
-        Ok(Corpus { tokens, hash })
+        Ok(Corpus { tokens, hash, has_fingerprints: false })
     }
 }
 
@@ -785,6 +788,25 @@ pub fn selection_is_cacheable(sel: &Selection, now: DateTime<Utc>) -> bool {
 /// read. An open/recent window is never cached (its trades still mutate); `fresh`
 /// forces a rebuild + cache rewrite even for a cacheable window.
 ///
+/// Option C: load trades for an explicit mint list directly from the DB —
+/// no Parquet cache, no full-corpus scan. Used by `list_token_results` when the
+/// full corpus is cold but the group's mints are stored in DB.
+pub async fn load_corpus_for_mints(
+    db: PgPool,
+    mints: Vec<String>,
+    curve_only: bool,
+    per_mint_cap: i64,
+) -> Result<Corpus> {
+    let sel = Selection {
+        mints: Some(mints),
+        per_mint_cap,
+        window: TradeWindow::LaunchWindow,
+        curve_only,
+        ..Default::default()
+    };
+    DbSource::new(db).load(&sel).await
+}
+
 /// Fingerprints are **not** cached here — the caller runs the cheap separate
 /// [`attach_fingerprints`] lookup after loading (the trade Parquet is
 /// fingerprint-free), so this works on both the cache-hit and DB paths.
@@ -847,13 +869,17 @@ pub async fn load_or_build<S: CorpusSource>(
 // Compact columnar Parquet (write + read)
 // ---------------------------------------------------------------------------
 
-/// The slim corpus-cache schema — exactly the [`SweepTrade`] fields plus the
-/// per-token `mint`/`symbol` and the `wallet` address (re-interned to a `u32` on
-/// read). `tx_signature` (Phase 1.2 — no sweep fn reads it), `venue` (a load-time
-/// filter), and `vtok`/`rtok` (read by no sweep fn) are intentionally dropped vs.
-/// the full `Trade`.
+/// Number of trade columns in the legacy schema (without fingerprints).
+const SCHEMA_TRADE_COLS: usize = 12;
+
+/// The slim corpus-cache schema — the [`SweepTrade`] fields plus per-token
+/// `mint`/`symbol`/`wallet`, then 9 fingerprint columns (Option B). The fp
+/// columns repeat the same value for every trade row of a token; Parquet
+/// dictionary-encodes them near-free. Old files (12 columns) are detected by
+/// column count and read without fp — backward-compatible.
 fn corpus_schema() -> Schema {
     Schema::new(vec![
+        // --- trade columns (12) ---
         Field::new("mint", DataType::Utf8, false),
         Field::new("symbol", DataType::Utf8, false),
         Field::new("wallet", DataType::Utf8, false),
@@ -866,6 +892,16 @@ fn corpus_schema() -> Schema {
         Field::new("leg_index", DataType::Int32, false),
         Field::new("vsol", DataType::Float64, true),
         Field::new("rsol", DataType::Float64, true),
+        // --- fingerprint columns (9) — repeated per trade row, same per token ---
+        Field::new("fp_creator_wallet", DataType::Utf8, true),
+        Field::new("fp_token_program_id", DataType::Utf8, true),
+        Field::new("fp_initial_buy_sol", DataType::Float64, true),
+        Field::new("fp_cu_limit", DataType::Int64, true),
+        Field::new("fp_cu_price", DataType::Int64, true),
+        Field::new("fp_is_cashback_enabled", DataType::Boolean, false),
+        Field::new("fp_max_sol_cost", DataType::Int64, true),
+        Field::new("fp_spendable_sol_in", DataType::Int64, true),
+        Field::new("fp_ix_labels", DataType::Utf8, true),
     ])
 }
 
@@ -891,6 +927,16 @@ pub fn write_corpus_parquet(corpus: &Corpus, path: &Path) -> Result<()> {
     let mut leg_index = Int32Builder::new();
     let mut vsol = Float64Builder::new();
     let mut rsol = Float64Builder::new();
+    // Option B: fingerprint columns (repeated per trade row, same value per token).
+    let mut fp_creator_wallet = StringBuilder::new();
+    let mut fp_token_program_id = StringBuilder::new();
+    let mut fp_initial_buy_sol = Float64Builder::new();
+    let mut fp_cu_limit = Int64Builder::new();
+    let mut fp_cu_price = Int64Builder::new();
+    let mut fp_is_cashback_enabled = BooleanBuilder::new();
+    let mut fp_max_sol_cost = Int64Builder::new();
+    let mut fp_spendable_sol_in = Int64Builder::new();
+    let mut fp_ix_labels = StringBuilder::new();
     let mut pending = 0usize;
 
     macro_rules! flush {
@@ -910,6 +956,15 @@ pub fn write_corpus_parquet(corpus: &Corpus, path: &Path) -> Result<()> {
                     Arc::new(leg_index.finish()),
                     Arc::new(vsol.finish()),
                     Arc::new(rsol.finish()),
+                    Arc::new(fp_creator_wallet.finish()),
+                    Arc::new(fp_token_program_id.finish()),
+                    Arc::new(fp_initial_buy_sol.finish()),
+                    Arc::new(fp_cu_limit.finish()),
+                    Arc::new(fp_cu_price.finish()),
+                    Arc::new(fp_is_cashback_enabled.finish()),
+                    Arc::new(fp_max_sol_cost.finish()),
+                    Arc::new(fp_spendable_sol_in.finish()),
+                    Arc::new(fp_ix_labels.finish()),
                 ],
             )?;
             writer.write(&batch)?;
@@ -917,6 +972,12 @@ pub fn write_corpus_parquet(corpus: &Corpus, path: &Path) -> Result<()> {
     }
 
     for token in &corpus.tokens {
+        let fp = &token.fp;
+        let ix_labels_json = if fp.ix_labels.is_empty() {
+            None
+        } else {
+            serde_json::to_string(&fp.ix_labels).ok()
+        };
         for t in token.trades.iter() {
             mint.append_value(&token.mint);
             symbol.append_value(&token.symbol);
@@ -931,6 +992,16 @@ pub fn write_corpus_parquet(corpus: &Corpus, path: &Path) -> Result<()> {
             leg_index.append_value(t.leg_index as i32);
             vsol.append_option(t.virtual_sol_reserves);
             rsol.append_option(t.real_sol_reserves);
+            // Fingerprint — same value for every trade of this token.
+            fp_creator_wallet.append_value(&fp.creator_wallet);
+            fp_token_program_id.append_option(fp.token_program_id.as_deref());
+            fp_initial_buy_sol.append_option(fp.initial_buy_sol);
+            fp_cu_limit.append_option(fp.cu_limit);
+            fp_cu_price.append_option(fp.cu_price);
+            fp_is_cashback_enabled.append_value(fp.is_cashback_enabled);
+            fp_max_sol_cost.append_option(fp.max_sol_cost);
+            fp_spendable_sol_in.append_option(fp.spendable_sol_in);
+            fp_ix_labels.append_option(ix_labels_json.as_deref());
             pending += 1;
         }
         if pending >= FLUSH_ROWS {
@@ -961,18 +1032,25 @@ fn opt_f64(arr: &Float64Array, i: usize) -> Option<f64> {
 /// tokens)` instead of `O(all tokens)`). `emit` returning `Err` aborts the scan
 /// (e.g. a cancelled sweep). [`read_corpus_parquet`] is the collect-into-`Vec`
 /// wrapper, so the existing round-trip test covers this path.
-pub fn stream_corpus_parquet<F>(path: &Path, mut emit: F) -> Result<()>
+///
+/// Returns `true` when the file contained Option-B fingerprint columns (the caller
+/// can then skip `attach_fingerprints`).
+pub fn stream_corpus_parquet<F>(path: &Path, mut emit: F) -> Result<bool>
 where
     F: FnMut(TokenTrades) -> Result<()>,
 {
     let file = std::fs::File::open(path)?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+    // Detect Option-B schema by column count: old files have SCHEMA_TRADE_COLS (12),
+    // new files have SCHEMA_TRADE_COLS + 9 fp columns (21).
+    let has_fp_cols = builder.schema().fields().len() > SCHEMA_TRADE_COLS;
     let reader = builder.build()?;
 
     let mut cur_mint: Option<String> = None;
     let mut cur_symbol = String::new();
     let mut cur_trades: Vec<SweepTrade> = Vec::new();
     let mut cur_interner = WalletInterner::default();
+    let mut cur_fp = TokenFingerprint::default();
 
     for batch in reader {
         let batch = batch?;
@@ -989,6 +1067,17 @@ where
         let vsol = col::<Float64Array>(&batch, 10)?;
         let rsol = col::<Float64Array>(&batch, 11)?;
 
+        // Option B: fingerprint columns present only in new-schema files.
+        let fp_creator_wallet   = has_fp_cols.then(|| col_str(&batch, 12)).transpose()?;
+        let fp_token_program_id = has_fp_cols.then(|| col_str(&batch, 13)).transpose()?;
+        let fp_initial_buy_sol  = has_fp_cols.then(|| col::<Float64Array>(&batch, 14)).transpose()?;
+        let fp_cu_limit         = has_fp_cols.then(|| col::<Int64Array>(&batch, 15)).transpose()?;
+        let fp_cu_price         = has_fp_cols.then(|| col::<Int64Array>(&batch, 16)).transpose()?;
+        let fp_cashback         = has_fp_cols.then(|| col::<BooleanArray>(&batch, 17)).transpose()?;
+        let fp_max_sol_cost     = has_fp_cols.then(|| col::<Int64Array>(&batch, 18)).transpose()?;
+        let fp_spendable_sol_in = has_fp_cols.then(|| col::<Int64Array>(&batch, 19)).transpose()?;
+        let fp_ix_labels        = has_fp_cols.then(|| col_str(&batch, 20)).transpose()?;
+
         for i in 0..batch.num_rows() {
             let m = mint.value(i);
             if cur_mint.as_deref() != Some(m) {
@@ -996,13 +1085,51 @@ where
                     emit(TokenTrades {
                         mint: prev,
                         symbol: std::mem::take(&mut cur_symbol),
-                        fp: TokenFingerprint::default(),
+                        fp: std::mem::take(&mut cur_fp),
                         trades: Arc::new(std::mem::take(&mut cur_trades)),
                         wallets: Arc::new(std::mem::take(&mut cur_interner).into_table()),
                     })?;
                 }
                 cur_mint = Some(m.to_string());
                 cur_symbol = symbol.value(i).to_string();
+                // Read fp from the first row of this token (same for all its rows).
+                if has_fp_cols {
+                    cur_fp = TokenFingerprint {
+                        creator_wallet: fp_creator_wallet
+                            .as_ref()
+                            .filter(|a| !a.is_null(i))
+                            .map(|a| a.value(i).to_string())
+                            .unwrap_or_default(),
+                        token_program_id: fp_token_program_id
+                            .as_ref()
+                            .filter(|a| !a.is_null(i))
+                            .map(|a| a.value(i).to_string()),
+                        initial_buy_sol: fp_initial_buy_sol
+                            .as_ref()
+                            .and_then(|a| if a.is_null(i) { None } else { Some(a.value(i)) }),
+                        cu_limit: fp_cu_limit
+                            .as_ref()
+                            .and_then(|a| if a.is_null(i) { None } else { Some(a.value(i)) }),
+                        cu_price: fp_cu_price
+                            .as_ref()
+                            .and_then(|a| if a.is_null(i) { None } else { Some(a.value(i)) }),
+                        is_cashback_enabled: fp_cashback
+                            .as_ref()
+                            .map(|a| a.value(i))
+                            .unwrap_or(false),
+                        max_sol_cost: fp_max_sol_cost
+                            .as_ref()
+                            .and_then(|a| if a.is_null(i) { None } else { Some(a.value(i)) }),
+                        spendable_sol_in: fp_spendable_sol_in
+                            .as_ref()
+                            .and_then(|a| if a.is_null(i) { None } else { Some(a.value(i)) }),
+                        ix_labels: fp_ix_labels
+                            .as_ref()
+                            .filter(|a| !a.is_null(i))
+                            .and_then(|a| serde_json::from_str(a.value(i)).ok())
+                            .unwrap_or_default(),
+                    };
+                }
             }
             let bt = DateTime::<Utc>::from_timestamp(block_time.value(i), 0).unwrap_or_else(Utc::now);
             cur_trades.push(SweepTrade {
@@ -1023,12 +1150,12 @@ where
         emit(TokenTrades {
             mint: prev,
             symbol: cur_symbol,
-            fp: TokenFingerprint::default(),
+            fp: cur_fp,
             trades: Arc::new(cur_trades),
             wallets: Arc::new(cur_interner.into_table()),
         })?;
     }
-    Ok(())
+    Ok(has_fp_cols)
 }
 
 /// Read a slim corpus Parquet back into [`Corpus`], re-grouping the
@@ -1038,7 +1165,7 @@ where
 /// wrapper over [`stream_corpus_parquet`].
 pub fn read_corpus_parquet(path: &Path) -> Result<Corpus> {
     let mut tokens: Vec<TokenTrades> = Vec::new();
-    stream_corpus_parquet(path, |tt| {
+    let has_fingerprints = stream_corpus_parquet(path, |tt| {
         tokens.push(tt);
         Ok(())
     })?;
@@ -1047,7 +1174,7 @@ pub fn read_corpus_parquet(path: &Path) -> Result<Corpus> {
         .and_then(|s| s.to_str())
         .unwrap_or("cached")
         .to_string();
-    Ok(Corpus { tokens, hash })
+    Ok(Corpus { tokens, hash, has_fingerprints })
 }
 
 fn col<'a, T: Array + 'static>(batch: &'a RecordBatch, i: usize) -> Result<&'a T> {
@@ -1133,6 +1260,7 @@ mod tests {
                 token("m2", "S2", &[trade("m2", "wA", 3.0, true)]),
             ],
             hash: "h".into(),
+            has_fingerprints: false,
         };
         let path = std::env::temp_dir().join(format!("corpus_rt_{}.parquet", std::process::id()));
         write_corpus_parquet(&corpus, &path).unwrap();
@@ -1166,6 +1294,7 @@ mod tests {
                 token("m3", "S3", &[trade("m3", "wC", 4.0, true)]),
             ],
             hash: "h".into(),
+            has_fingerprints: false,
         };
         let path =
             std::env::temp_dir().join(format!("corpus_stream_{}.parquet", std::process::id()));

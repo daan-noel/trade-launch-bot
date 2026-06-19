@@ -22,10 +22,13 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::models::grouped_sweep::{GroupedSweepGroupWrite, GroupedSweepResult, GroupedSweepRun};
-use crate::state::app_state::AppState;
+use crate::state::app_state::{AppState, SweepCorpusCache};
 use crate::storage::repositories::grouped_sweep_repo::{GroupedSweepRepo, GroupedSweepTables};
 use crate::sweep::aggregate::ComboMetrics;
-use crate::sweep::corpus::{attach_fingerprints, corpus_cache_dir, load_grouped_corpus, Selection};
+use crate::sweep::corpus::{
+    attach_fingerprints, corpus_cache_dir, load_corpus_for_mints, load_grouped_corpus,
+    read_corpus_parquet, sweep_per_mint_cap, Selection,
+};
 use crate::sweep::grouped_engine::{CoverageFloor, GroupResult, GroupSink};
 use crate::sweep::grouping::{group_key, normalize_label_vec, GroupField};
 use crate::sweep::registry;
@@ -508,10 +511,34 @@ async fn run_grouped_sweep_job(
             state.sweep_progress.clone(),
             "sweep",
         ));
+    // Option C: build group-key → mints map from the fully-filtered corpus so
+    // group_done can attach mint lists to each write unit without re-scanning.
+    let group_mints_map = {
+        let mut map: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for t in &corpus.tokens {
+            let key_str = group_key(&t.fp, &b.group_by).to_json().to_string();
+            map.entry(key_str).or_default().push(t.mint.clone());
+        }
+        Arc::new(map)
+    };
+
+    // Option A: stash the fully-loaded corpus (trades + fingerprints) in the
+    // in-memory cache so `list_token_results` calls right after the sweep skip
+    // all I/O. We clone the Vec here (cheap — trades are Arc, fp is a small
+    // struct) before the engine consumes the corpus.
+    {
+        let cached_tokens = Arc::new(corpus.tokens.clone());
+        let corpus_hash = corpus.hash.clone();
+        let mut cache = state.sweep_corpus_cache.write().await;
+        *cache = Some(SweepCorpusCache { corpus_hash, tokens: cached_tokens });
+    }
+
     // The sink hands each fully-folded group to the writer task. `run_grouped`
     // takes ownership, so it (and its sender) drop when the sweep ends — closing
     // the channel and letting the writer task finish.
-    let sink: Arc<dyn GroupSink + Send + Sync> = Arc::new(HandlerSink { tx });
+    let sink: Arc<dyn GroupSink + Send + Sync> =
+        Arc::new(HandlerSink { tx, group_mints: group_mints_map });
 
     let result = registry::run_grouped(
         &b.strategy_id,
@@ -612,6 +639,10 @@ enum SweepWrite {
 /// which only happens on shutdown.
 struct HandlerSink {
     tx: tokio::sync::mpsc::UnboundedSender<SweepWrite>,
+    /// Option C: maps serialized group-key JSON → mints for that group.
+    /// Built from the corpus before the sweep so the group_done callback can
+    /// attach mints to each write unit without touching the corpus again.
+    group_mints: Arc<std::collections::HashMap<String, Vec<String>>>,
 }
 
 impl GroupSink for HandlerSink {
@@ -623,7 +654,9 @@ impl GroupSink for HandlerSink {
     }
 
     fn group_done(&self, group_index: usize, group: &GroupResult, combo_params: &[serde_json::Value]) {
-        let write = group_to_write(group_index, group, combo_params);
+        let key_str = group.key.to_json().to_string();
+        let mints = self.group_mints.get(&key_str).cloned().unwrap_or_default();
+        let write = group_to_write(group_index, group, combo_params, mints);
         let _ = self.tx.send(SweepWrite::Group(Box::new(write)));
     }
 }
@@ -632,10 +665,12 @@ impl GroupSink for HandlerSink {
 /// engine's deterministic order (largest group first). `fired_count` is the best
 /// combo's `n_fired` — the sample size behind the group's headline pick.
 /// `combo_params[combo_id]` is each ranked combo's param JSON.
+/// `mints` is the Option-C mint list for this group (empty for old-schema writes).
 fn group_to_write(
     group_index: usize,
     g: &GroupResult,
     combo_params: &[serde_json::Value],
+    mints: Vec<String>,
 ) -> GroupedSweepGroupWrite {
     let param_at = |id: u32| -> serde_json::Value {
         combo_params.get(id as usize).cloned().unwrap_or(serde_json::Value::Null)
@@ -660,6 +695,7 @@ fn group_to_write(
         best_expectancy_sol: g.best_expectancy_sol,
         best_params: param_at(g.best_combo_id),
         results,
+        mints,
     }
 }
 
@@ -970,69 +1006,16 @@ pub async fn list_token_results(
         }
     };
 
-    // Build the same Selection the original sweep used.
-    let sel = Selection {
-        created_after: run.created_after,
-        created_before: run.created_before,
-        curve_only: run.curve_only,
-        token_cap: run.token_cap.map(|n| n as usize).unwrap_or(5_000),
-        window: crate::sweep::corpus::TradeWindow::LaunchWindow,
-        ..Default::default()
-    };
+    // -----------------------------------------------------------------------
+    // Load the group's token corpus — A → B → C cascade.
+    //
+    // A: in-memory cache (warm path — zero I/O).
+    // B: Parquet cache with embedded fingerprints (disk, no DB fingerprint query).
+    // C: targeted DB load using the stored group-mint list (cold + uncacheable).
+    // Fallback: full corpus load + attach_fingerprints (old groups without mints).
+    // -----------------------------------------------------------------------
 
-    // Load corpus (Parquet cache for settled windows).
-    let mut corpus = match load_grouped_corpus(state.db.clone(), &sel, &corpus_cache_dir(), false).await {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!("Failed to load corpus for token-results: {e}");
-            return HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "corpus load failed"}));
-        }
-    };
-    if let Err(e) = attach_fingerprints(&state.db, &mut corpus).await {
-        tracing::error!("Failed to attach fingerprints: {e}");
-        return HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": "fingerprint error"}));
-    }
-
-    // Re-apply the ix_labels_filter the sweep used.
-    if let Some(want) = run
-        .ix_labels_filter
-        .as_ref()
-        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
-        .filter(|f| !f.is_empty())
-        .map(|f| normalize_label_vec(f))
-    {
-        corpus.tokens.retain(|t| t.fp.ix_labels == want);
-    }
-
-    // Re-apply per-field value filters.
-    if let Some(filters) = run
-        .field_filters
-        .as_ref()
-        .and_then(|v| {
-            serde_json::from_value::<std::collections::HashMap<String, Vec<serde_json::Value>>>(
-                v.clone(),
-            )
-            .ok()
-        })
-    {
-        for (field_str, allowed) in &filters {
-            if allowed.is_empty() {
-                continue;
-            }
-            let field: GroupField = match serde_json::from_str(&format!("\"{field_str}\"")) {
-                Ok(f) => f,
-                Err(_) => continue,
-            };
-            if field == GroupField::IxLabels {
-                continue;
-            }
-            corpus.tokens.retain(|t| matches_field_filter(&t.fp, field, allowed));
-        }
-    }
-
-    // Parse the grouping fields so we can recompute each token's group_key.
+    // Parse grouping fields once — needed for re-keying on the A/B/fallback paths.
     let grouping_fields: Vec<GroupField> =
         match serde_json::from_value(run.grouping_spec.clone()) {
             Ok(f) => f,
@@ -1042,20 +1025,146 @@ pub async fn list_token_results(
                     .json(serde_json::json!({"error": "invalid grouping spec"}));
             }
         };
-
-    // Filter to tokens that belong to this group by recomputing their key.
     let target_key = group.group_key.clone();
-    corpus
-        .tokens
-        .retain(|t| group_key(&t.fp, &grouping_fields).to_json() == target_key);
 
-    if corpus.tokens.is_empty() {
+    // Helper: apply the run's ix_labels + field filters to an owned token vec.
+    let apply_filters = |mut tokens: Vec<crate::sweep::corpus::TokenTrades>| -> Vec<crate::sweep::corpus::TokenTrades> {
+        if let Some(want) = run
+            .ix_labels_filter
+            .as_ref()
+            .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+            .filter(|f| !f.is_empty())
+            .map(normalize_label_vec)
+        {
+            tokens.retain(|t| t.fp.ix_labels == want);
+        }
+        if let Some(filters) = run.field_filters.as_ref().and_then(|v| {
+            serde_json::from_value::<std::collections::HashMap<String, Vec<serde_json::Value>>>(
+                v.clone(),
+            )
+            .ok()
+        }) {
+            for (field_str, allowed) in &filters {
+                if allowed.is_empty() {
+                    continue;
+                }
+                let field: GroupField = match serde_json::from_str(&format!("\"{field_str}\"")) {
+                    Ok(f) => f,
+                    Err(_) => continue,
+                };
+                if field == GroupField::IxLabels {
+                    continue;
+                }
+                tokens.retain(|t| matches_field_filter(&t.fp, field, allowed));
+            }
+        }
+        tokens.retain(|t| group_key(&t.fp, &grouping_fields).to_json() == target_key);
+        tokens
+    };
+
+    // --- Option A: in-memory corpus cache ---
+    let tokens = {
+        let cache = state.sweep_corpus_cache.read().await;
+        if cache.as_ref().map(|c| c.corpus_hash.as_str()) == run.corpus_hash.as_deref() {
+            tracing::debug!("token-results: Option A cache hit");
+            Some(apply_filters((*cache.as_ref().unwrap().tokens).clone()))
+        } else {
+            None
+        }
+    };
+
+    let tokens = if let Some(t) = tokens {
+        t
+    } else {
+        // --- Option B: Parquet cache with embedded fp columns ---
+        let cache_key = crate::sweep::corpus::selection_cache_key(&Selection {
+            created_after: run.created_after,
+            created_before: run.created_before,
+            curve_only: run.curve_only,
+            token_cap: run.token_cap.map(|n| n as usize).unwrap_or(5_000),
+            window: crate::sweep::corpus::TradeWindow::LaunchWindow,
+            per_mint_cap: sweep_per_mint_cap(),
+            ..Default::default()
+        });
+        let parquet_path = corpus_cache_dir().join(format!("{cache_key}.parquet"));
+
+        let from_parquet: Option<Vec<crate::sweep::corpus::TokenTrades>> =
+            if parquet_path.exists() {
+                match read_corpus_parquet(&parquet_path) {
+                    Ok(c) if c.has_fingerprints => {
+                        tracing::debug!("token-results: Option B Parquet+fp hit");
+                        Some(apply_filters(c.tokens))
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+
+        if let Some(t) = from_parquet {
+            t
+        } else {
+            // --- Option C: targeted DB load via stored group mints ---
+            let group_mints = repo.get_group_mints(group_id).await.unwrap_or(None);
+
+            let mut corpus = if let Some(mints) = group_mints.filter(|m| !m.is_empty()) {
+                tracing::debug!(n = mints.len(), "token-results: Option C targeted mint load");
+                match load_corpus_for_mints(
+                    state.db.clone(),
+                    mints,
+                    run.curve_only,
+                    sweep_per_mint_cap(),
+                )
+                .await
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::error!("Failed to load corpus for token-results (mints): {e}");
+                        return HttpResponse::InternalServerError()
+                            .json(serde_json::json!({"error": "corpus load failed"}));
+                    }
+                }
+            } else {
+                // Fallback: full corpus load (old groups without stored mints,
+                // or uncacheable open windows).
+                tracing::debug!("token-results: full corpus fallback");
+                let sel = Selection {
+                    created_after: run.created_after,
+                    created_before: run.created_before,
+                    curve_only: run.curve_only,
+                    token_cap: run.token_cap.map(|n| n as usize).unwrap_or(5_000),
+                    window: crate::sweep::corpus::TradeWindow::LaunchWindow,
+                    ..Default::default()
+                };
+                match load_grouped_corpus(state.db.clone(), &sel, &corpus_cache_dir(), false)
+                    .await
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::error!("Failed to load corpus for token-results: {e}");
+                        return HttpResponse::InternalServerError()
+                            .json(serde_json::json!({"error": "corpus load failed"}));
+                    }
+                }
+            };
+
+            if !corpus.has_fingerprints {
+                if let Err(e) = attach_fingerprints(&state.db, &mut corpus).await {
+                    tracing::error!("Failed to attach fingerprints: {e}");
+                    return HttpResponse::InternalServerError()
+                        .json(serde_json::json!({"error": "fingerprint error"}));
+                }
+            }
+            apply_filters(corpus.tokens)
+        }
+    };
+
+    if tokens.is_empty() {
         return HttpResponse::Ok().json(serde_json::json!([]));
     }
 
     // Re-simulate on a blocking thread (CPU-bound but short: one combo × N tokens).
     let strategy_id = query.strategy_id.clone();
-    let tokens = corpus.tokens;
     let result = tokio::task::spawn_blocking(move || {
         registry::simulate_one_combo(&strategy_id, &tokens, &params_json)
     })
