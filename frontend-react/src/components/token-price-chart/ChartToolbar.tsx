@@ -302,44 +302,53 @@ export function ChartToolbar({
   const showStatusBadges = isMigrated != null;
 
   return (
-    <div>
-      <div
-        className="flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2"
-        style={{ borderColor: CHART_COLORS.border }}
-      >
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <div
-              className="min-w-0 truncate text-[13px] font-bold"
-              style={{ color: CHART_COLORS.panelText }}
-            >
-              {symbol}{' '}
-              <span className="font-normal" style={{ color: CHART_COLORS.panelTextDim }}>
-                · {groupMode === 'slot' ? 'slot' : interval} · {CHART_STYLE_LABELS[style]} · {tradeCount}{' '}
-                trades · {priceLabel}
-              </span>
-            </div>
-            {showStatusBadges && (
-              <div className="flex shrink-0 items-center gap-1.5">
-                <StatusBadge
-                  label={isMigrated ? 'Migrated ✓' : 'Bonding Curve'}
-                  color={isMigrated ? STATUS_BADGE_COLOR.migrated : STATUS_BADGE_COLOR.bonding}
-                />
-                {isMayhemMode && <StatusBadge label="Mayhem" color={STATUS_BADGE_COLOR.mayhem} />}
-                {isCashbackEnabled && (
-                  <StatusBadge label="Cashback" color={STATUS_BADGE_COLOR.cashback} />
-                )}
-              </div>
-            )}
-          </div>
+    <div
+      className="flex items-start gap-3 border-b px-3 py-2"
+      style={{ borderColor: CHART_COLORS.border }}
+    >
+      {/* Left: title, status badges, crosshair OHLCV */}
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <div
-            className="mt-0.5 h-[14px] overflow-hidden font-mono text-[11px] leading-[14px]"
-            aria-live="polite"
+            className="min-w-0 truncate text-[13px] font-bold"
+            style={{ color: CHART_COLORS.panelText }}
           >
-            {crosshairLine ?? <span className="invisible select-none" aria-hidden="true">—</span>}
+            {symbol}{' '}
+            <span className="font-normal" style={{ color: CHART_COLORS.panelTextDim }}>
+              · {groupMode === 'slot' ? 'slot' : interval} · {CHART_STYLE_LABELS[style]} · {tradeCount}{' '}
+              trades · {priceLabel}
+            </span>
           </div>
+          {showStatusBadges && (
+            <div className="flex shrink-0 items-center gap-1.5">
+              <StatusBadge
+                label={isMigrated ? 'Migrated ✓' : 'Bonding Curve'}
+                color={isMigrated ? STATUS_BADGE_COLOR.migrated : STATUS_BADGE_COLOR.bonding}
+              />
+              {isMayhemMode && <StatusBadge label="Mayhem" color={STATUS_BADGE_COLOR.mayhem} />}
+              {isCashbackEnabled && (
+                <StatusBadge label="Cashback" color={STATUS_BADGE_COLOR.cashback} />
+              )}
+            </div>
+          )}
         </div>
+        <div
+          className="mt-0.5 overflow-hidden font-mono text-[11px] leading-[14px]"
+          aria-live="polite"
+        >
+          {crosshairLine ?? (
+            <div aria-hidden="true" className="invisible select-none">
+              <div>—</div>
+              <div>—</div>
+              {style === 'candles' && <div>—</div>}
+            </div>
+          )}
+        </div>
+      </div>
 
+      {/* Right: two rows of controls, stacked and right-aligned */}
+      <div className="flex shrink-0 flex-col items-end gap-1.5">
+        {/* Row 1: grouping, interval, style, metric, markers, trim, ATH, migration */}
         <div className="flex flex-wrap items-center gap-2">
           <div
             className="flex rounded-md p-0.5"
@@ -506,96 +515,94 @@ export function ChartToolbar({
             </span>
           </label>
         </div>
-      </div>
 
-      <div
-        className="flex flex-wrap items-center gap-2 border-b px-3 py-1.5 justify-end"
-        style={{ borderColor: CHART_COLORS.border }}
-      >
-        <div
-          className={cn(
-            'flex items-center gap-0.5 rounded-md py-1 pl-2 pr-1 text-[11px] font-semibold',
-            !swingOverlayAvailable && 'cursor-not-allowed opacity-40',
-          )}
-          style={{ backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }}
-        >
-          <label
+        {/* Row 2: swing overlay, chain highlight, range select */}
+        <div className="flex flex-wrap items-center gap-2">
+          <div
             className={cn(
-              'flex cursor-pointer items-center gap-1.5',
-              !swingOverlayAvailable && 'cursor-not-allowed',
+              'flex items-center gap-0.5 rounded-md py-1 pl-2 pr-1 text-[11px] font-semibold',
+              !swingOverlayAvailable && 'cursor-not-allowed opacity-40',
             )}
-            title={
-              swingOverlayAvailable
-                ? 'Show swing detection path on chart'
-                : 'Run swing detection to overlay results'
-            }
+            style={{ backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }}
           >
-            <Checkbox
-              boxSize="sm"
-              checked={showSwingOverlay}
-              disabled={!swingOverlayAvailable}
-              onChange={(e) => onShowSwingOverlayChange(e.target.checked)}
-              className="accent-[#e879f9]"
-            />
-            <span
-              style={
-                showSwingOverlay && swingOverlayAvailable
-                  ? { color: CHART_COLORS.swingOverlay }
-                  : undefined
+            <label
+              className={cn(
+                'flex cursor-pointer items-center gap-1.5',
+                !swingOverlayAvailable && 'cursor-not-allowed',
+              )}
+              title={
+                swingOverlayAvailable
+                  ? 'Show swing detection path on chart'
+                  : 'Run swing detection to overlay results'
               }
             >
-              Swings
-            </span>
-          </label>
-          <Button
-            variant="subtle"
-            size="xs"
-            active={connectSwings}
-            disabled={!swingOverlayAvailable || !showSwingOverlay}
-            className="!min-h-0 shrink-0 border-0 bg-transparent px-1.5 py-0.5 normal-case tracking-normal hover:bg-white/6"
-            title={
-              swingOverlayAvailable
-                ? connectSwings
-                  ? 'Disconnect swing legs on chart'
-                  : 'Connect sequential swing legs on chart'
-                : 'Run swing detection to connect swings'
+              <Checkbox
+                boxSize="sm"
+                checked={showSwingOverlay}
+                disabled={!swingOverlayAvailable}
+                onChange={(e) => onShowSwingOverlayChange(e.target.checked)}
+                className="accent-[#e879f9]"
+              />
+              <span
+                style={
+                  showSwingOverlay && swingOverlayAvailable
+                    ? { color: CHART_COLORS.swingOverlay }
+                    : undefined
+                }
+              >
+                Swings
+              </span>
+            </label>
+            <Button
+              variant="subtle"
+              size="xs"
+              active={connectSwings}
+              disabled={!swingOverlayAvailable || !showSwingOverlay}
+              className="!min-h-0 shrink-0 border-0 bg-transparent px-1.5 py-0.5 normal-case tracking-normal hover:bg-white/6"
+              title={
+                swingOverlayAvailable
+                  ? connectSwings
+                    ? 'Disconnect swing legs on chart'
+                    : 'Connect sequential swing legs on chart'
+                  : 'Run swing detection to connect swings'
+              }
+              aria-label={
+                swingOverlayAvailable
+                  ? connectSwings
+                    ? 'Disconnect swing legs on chart'
+                    : 'Connect sequential swing legs on chart'
+                  : 'Run swing detection to connect swings'
+              }
+              onClick={() => onConnectSwingsChange(!connectSwings)}
+            >
+              <ConnectSwingsIcon connected={connectSwings} />
+            </Button>
+          </div>
+
+          <IconToggleButton
+            active={showChainHighlight}
+            disabled={!chainHighlightAvailable}
+            activeColor={CHART_COLORS.chainBandLabelBg}
+            onClick={() => onShowChainHighlightChange(!showChainHighlight)}
+            label="Toggle longest chain highlight"
+            tooltip={
+              chainHighlightAvailable
+                ? 'Longest chain highlight'
+                : 'Run swing detection to highlight the longest chain'
             }
-            aria-label={
-              swingOverlayAvailable
-                ? connectSwings
-                  ? 'Disconnect swing legs on chart'
-                  : 'Connect sequential swing legs on chart'
-                : 'Run swing detection to connect swings'
-            }
-            onClick={() => onConnectSwingsChange(!connectSwings)}
           >
-            <ConnectSwingsIcon connected={connectSwings} />
-          </Button>
+            <ChainLinkIcon />
+          </IconToggleButton>
+
+          <IconToggleButton
+            active={rangeSelectMode}
+            onClick={() => onRangeSelectModeChange(!rangeSelectMode)}
+            label="Toggle range-select mode"
+            tooltip="Drag to select a time range; hover its label for totals"
+          >
+            <RangeSelectIcon />
+          </IconToggleButton>
         </div>
-
-        <IconToggleButton
-          active={showChainHighlight}
-          disabled={!chainHighlightAvailable}
-          activeColor={CHART_COLORS.chainBandLabelBg}
-          onClick={() => onShowChainHighlightChange(!showChainHighlight)}
-          label="Toggle longest chain highlight"
-          tooltip={
-            chainHighlightAvailable
-              ? 'Longest chain highlight'
-              : 'Run swing detection to highlight the longest chain'
-          }
-        >
-          <ChainLinkIcon />
-        </IconToggleButton>
-
-        <IconToggleButton
-          active={rangeSelectMode}
-          onClick={() => onRangeSelectModeChange(!rangeSelectMode)}
-          label="Toggle range-select mode"
-          tooltip="Drag to select a time range; hover its label for totals"
-        >
-          <RangeSelectIcon />
-        </IconToggleButton>
       </div>
     </div>
   );

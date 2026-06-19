@@ -117,9 +117,9 @@ export function curveLiquiditySol(
 
 /** Pool or curve liquidity in SOL (2× quote/virtual SOL reserves). */
 export function tradeLiquiditySol(trade: ChartTrade): number | null {
-  const sol = trade.virtual_sol_reserves ?? trade.real_sol_reserves;
+  const sol = trade.real_sol_reserves;
   if (sol == null || sol <= 0) return null;
-  return sol * 2;
+  return sol;
 }
 
 /** FDV in SOL: total supply × spot price (GMGN-style MC). */

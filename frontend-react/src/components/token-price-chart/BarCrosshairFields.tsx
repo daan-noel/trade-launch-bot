@@ -70,31 +70,17 @@ export function BarCrosshairFields({
     if (layout === 'inline') {
       return (
         <>
-          <FieldPair
-            label="O"
-            value={formatPrice(crosshair.open)}
-            color={CHART_OHLC_COLORS.open}
-            layout={layout}
-          />{' '}
-          <FieldPair
-            label="H"
-            value={formatPrice(crosshair.high)}
-            color={CHART_OHLC_COLORS.high}
-            layout={layout}
-          />{' '}
-          <FieldPair
-            label="L"
-            value={formatPrice(crosshair.low)}
-            color={CHART_OHLC_COLORS.low}
-            layout={layout}
-          />{' '}
-          <FieldPair
-            label="C"
-            value={formatPrice(crosshair.close)}
-            color={CHART_OHLC_COLORS.close}
-            layout={layout}
-          />{' '}
-          {volLiq}
+          <div>
+            <FieldPair label="O" value={formatPrice(crosshair.open)} color={CHART_OHLC_COLORS.open} layout={layout} />
+            {' '}
+            <FieldPair label="C" value={formatPrice(crosshair.close)} color={CHART_OHLC_COLORS.close} layout={layout} />
+          </div>
+          <div>
+            <FieldPair label="H" value={formatPrice(crosshair.high)} color={CHART_OHLC_COLORS.high} layout={layout} />
+            {' '}
+            <FieldPair label="L" value={formatPrice(crosshair.low)} color={CHART_OHLC_COLORS.low} layout={layout} />
+          </div>
+          <div>{volLiq}</div>
         </>
       );
     }
@@ -143,13 +129,10 @@ export function BarCrosshairFields({
   if (layout === 'inline') {
     return (
       <>
-        <FieldPair
-          label="Price"
-          value={formatPrice(crosshair.close)}
-          color={CHART_OHLC_COLORS.price}
-          layout={layout}
-        />{' '}
-        {volLiq}
+        <div>
+          <FieldPair label="Price" value={formatPrice(crosshair.close)} color={CHART_OHLC_COLORS.price} layout={layout} />
+        </div>
+        <div>{volLiq}</div>
       </>
     );
   }
