@@ -13,8 +13,14 @@ use crate::config::constants::{
     BUY_EXACT_QUOTE_IN_DISCRIMINATOR, BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR,
     BUY_EXACT_SOL_IN_DISCRIMINATOR, BUY_V2_DISCRIMINATOR, COMPUTE_BUDGET_PROGRAM_ID,
     CREATE_INSTRUCTION_DISCRIMINATOR, CREATE_V2_INSTRUCTION_DISCRIMINATOR,
-    MIGRATE_INSTRUCTION_DISCRIMINATOR, MIGRATE_V2_INSTRUCTION_DISCRIMINATOR, PUMP_FUN_PROGRAM_ID,
-    SELL_DISCRIMINATOR, SYSTEM_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID,
+    MIGRATE_INSTRUCTION_DISCRIMINATOR, MIGRATE_V2_INSTRUCTION_DISCRIMINATOR,
+    PUMP_COLLECT_CREATOR_FEE_DISCRIMINATOR, PUMP_EXTEND_ACCOUNT_DISCRIMINATOR,
+    PUMP_FUN_PROGRAM_ID, PUMP_INITIALIZE_DISCRIMINATOR, PUMP_SET_PARAMS_DISCRIMINATOR,
+    PUMP_SWAP_CREATE_POOL_DISCRIMINATOR, PUMP_SWAP_DEPOSIT_DISCRIMINATOR,
+    PUMP_SWAP_DISABLE_DISCRIMINATOR, PUMP_SWAP_PROGRAM_ID,
+    PUMP_SWAP_UPDATE_ADMIN_DISCRIMINATOR, PUMP_SWAP_UPDATE_FEE_CONFIG_DISCRIMINATOR,
+    PUMP_WITHDRAW_DISCRIMINATOR, SELL_DISCRIMINATOR, SYSTEM_PROGRAM_ID, TOKEN_2022_PROGRAM_ID,
+    TOKEN_PROGRAM_ID,
 };
 
 use super::trade::DecodedTradeEvent;
@@ -216,8 +222,59 @@ pub(super) fn label_instruction(
             if d == MIGRATE_INSTRUCTION_DISCRIMINATOR {
                 return "Pump.Fun: Migrate".to_owned();
             }
+            // Admin / lifecycle
+            if d == PUMP_INITIALIZE_DISCRIMINATOR {
+                return "Pump.Fun: Initialize".to_owned();
+            }
+            if d == PUMP_SET_PARAMS_DISCRIMINATOR {
+                return "Pump.Fun: SetParams".to_owned();
+            }
+            if d == PUMP_WITHDRAW_DISCRIMINATOR {
+                return "Pump.Fun: Withdraw".to_owned();
+            }
+            if d == PUMP_EXTEND_ACCOUNT_DISCRIMINATOR {
+                return "Pump.Fun: ExtendAccount".to_owned();
+            }
+            if d == PUMP_COLLECT_CREATOR_FEE_DISCRIMINATOR {
+                return "Pump.Fun: CollectCreatorFee".to_owned();
+            }
         }
         return "Pump.Fun: Unknown".to_owned();
+    }
+
+    // ── PumpSwap (pump_amm) — 8-byte Anchor discriminator ────────────────────
+    if program_id == PUMP_SWAP_PROGRAM_ID {
+        if let Some(b) = data_bytes.filter(|b| b.len() >= 8) {
+            let d = &b[..8];
+            if d == BUY_DISCRIMINATOR {
+                return "PumpSwap: Buy".to_owned();
+            }
+            if d == SELL_DISCRIMINATOR {
+                return "PumpSwap: Sell".to_owned();
+            }
+            if d == PUMP_SWAP_CREATE_POOL_DISCRIMINATOR {
+                return "PumpSwap: CreatePool".to_owned();
+            }
+            if d == PUMP_SWAP_DEPOSIT_DISCRIMINATOR {
+                return "PumpSwap: Deposit".to_owned();
+            }
+            if d == PUMP_WITHDRAW_DISCRIMINATOR {
+                return "PumpSwap: Withdraw".to_owned();
+            }
+            if d == PUMP_INITIALIZE_DISCRIMINATOR {
+                return "PumpSwap: Initialize".to_owned();
+            }
+            if d == PUMP_SWAP_DISABLE_DISCRIMINATOR {
+                return "PumpSwap: Disable".to_owned();
+            }
+            if d == PUMP_SWAP_UPDATE_ADMIN_DISCRIMINATOR {
+                return "PumpSwap: UpdateAdmin".to_owned();
+            }
+            if d == PUMP_SWAP_UPDATE_FEE_CONFIG_DISCRIMINATOR {
+                return "PumpSwap: UpdateFeeConfig".to_owned();
+            }
+        }
+        return "PumpSwap: Unknown".to_owned();
     }
 
     // ── System Program — 4-byte u32 LE instruction discriminator ─────────────
@@ -403,6 +460,68 @@ mod tests {
         assert_eq!(
             label_instruction(TOKEN_PROGRAM_ID, Some("syncNative"), Some(&[250])),
             "Token Program: SyncNative"
+        );
+    }
+
+    /// Pump.fun admin / lifecycle instructions are now labelled instead of "Unknown".
+    #[test]
+    fn pump_admin_instructions_labeled() {
+        assert_eq!(
+            label_instruction(PUMP_FUN_PROGRAM_ID, None, Some(&PUMP_EXTEND_ACCOUNT_DISCRIMINATOR)),
+            "Pump.Fun: ExtendAccount"
+        );
+        assert_eq!(
+            label_instruction(PUMP_FUN_PROGRAM_ID, None, Some(&PUMP_WITHDRAW_DISCRIMINATOR)),
+            "Pump.Fun: Withdraw"
+        );
+        assert_eq!(
+            label_instruction(PUMP_FUN_PROGRAM_ID, None, Some(&PUMP_SET_PARAMS_DISCRIMINATOR)),
+            "Pump.Fun: SetParams"
+        );
+        assert_eq!(
+            label_instruction(PUMP_FUN_PROGRAM_ID, None, Some(&PUMP_INITIALIZE_DISCRIMINATOR)),
+            "Pump.Fun: Initialize"
+        );
+        assert_eq!(
+            label_instruction(
+                PUMP_FUN_PROGRAM_ID,
+                None,
+                Some(&PUMP_COLLECT_CREATOR_FEE_DISCRIMINATOR)
+            ),
+            "Pump.Fun: CollectCreatorFee"
+        );
+    }
+
+    /// PumpSwap instructions are decoded rather than falling through to "Unknown".
+    #[test]
+    fn pump_swap_instructions_labeled() {
+        assert_eq!(
+            label_instruction(PUMP_SWAP_PROGRAM_ID, None, Some(&BUY_DISCRIMINATOR)),
+            "PumpSwap: Buy"
+        );
+        assert_eq!(
+            label_instruction(PUMP_SWAP_PROGRAM_ID, None, Some(&SELL_DISCRIMINATOR)),
+            "PumpSwap: Sell"
+        );
+        assert_eq!(
+            label_instruction(
+                PUMP_SWAP_PROGRAM_ID,
+                None,
+                Some(&PUMP_SWAP_CREATE_POOL_DISCRIMINATOR)
+            ),
+            "PumpSwap: CreatePool"
+        );
+        assert_eq!(
+            label_instruction(
+                PUMP_SWAP_PROGRAM_ID,
+                None,
+                Some(&PUMP_SWAP_DEPOSIT_DISCRIMINATOR)
+            ),
+            "PumpSwap: Deposit"
+        );
+        assert_eq!(
+            label_instruction(PUMP_SWAP_PROGRAM_ID, None, Some(&[0xde, 0xad, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])),
+            "PumpSwap: Unknown"
         );
     }
 }

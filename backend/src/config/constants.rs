@@ -71,6 +71,42 @@ pub const BUY_V2_DISCRIMINATOR: [u8; 8] = [0xb8, 0x17, 0xee, 0x61, 0x67, 0xc5, 0
 pub const BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR: [u8; 8] =
     [0xc2, 0xab, 0x1c, 0x46, 0x68, 0x4d, 0x5b, 0x2f];
 
+// ── Pump.fun admin / lifecycle (bonding-curve program) ───────────────────────
+/// sha256("global:initialize")[..8]
+pub const PUMP_INITIALIZE_DISCRIMINATOR: [u8; 8] =
+    [0xaf, 0xaf, 0x6d, 0x1f, 0x0d, 0x98, 0x9b, 0xed];
+/// sha256("global:set_params")[..8]
+pub const PUMP_SET_PARAMS_DISCRIMINATOR: [u8; 8] =
+    [0x1b, 0xea, 0xb2, 0x34, 0x93, 0x02, 0xbb, 0x8d];
+/// sha256("global:withdraw")[..8] — admin fee withdrawal from bonding curve.
+pub const PUMP_WITHDRAW_DISCRIMINATOR: [u8; 8] =
+    [0xb7, 0x12, 0x46, 0x9c, 0x94, 0x6d, 0xa1, 0x22];
+/// sha256("global:extend_account")[..8] — extends bonding-curve account data.
+pub const PUMP_EXTEND_ACCOUNT_DISCRIMINATOR: [u8; 8] =
+    [0xea, 0x66, 0xc2, 0xcb, 0x96, 0x48, 0x3e, 0xe5];
+/// sha256("global:collect_creator_fee")[..8] — collects accumulated creator fees.
+pub const PUMP_COLLECT_CREATOR_FEE_DISCRIMINATOR: [u8; 8] =
+    [0x14, 0x16, 0x56, 0x7b, 0xc6, 0x1c, 0xdb, 0x84];
+
+// ── PumpSwap (pump_amm) instructions ──────────────────────────────────────────
+// NOTE: buy/sell discriminators are identical to the bonding-curve program —
+// program_id is what distinguishes them at the call site.
+/// sha256("global:create_pool")[..8]
+pub const PUMP_SWAP_CREATE_POOL_DISCRIMINATOR: [u8; 8] =
+    [0xe9, 0x92, 0xd1, 0x8e, 0xcf, 0x68, 0x40, 0xbc];
+/// sha256("global:deposit")[..8]
+pub const PUMP_SWAP_DEPOSIT_DISCRIMINATOR: [u8; 8] =
+    [0xf2, 0x23, 0xc6, 0x89, 0x52, 0xe1, 0xf2, 0xb6];
+/// sha256("global:disable")[..8]
+pub const PUMP_SWAP_DISABLE_DISCRIMINATOR: [u8; 8] =
+    [0xb9, 0xad, 0xbb, 0x5a, 0xd8, 0x0f, 0xee, 0xe9];
+/// sha256("global:update_admin")[..8]
+pub const PUMP_SWAP_UPDATE_ADMIN_DISCRIMINATOR: [u8; 8] =
+    [0xa1, 0xb0, 0x28, 0xd5, 0x3c, 0xb8, 0xb3, 0xe4];
+/// sha256("global:update_fee_config")[..8]
+pub const PUMP_SWAP_UPDATE_FEE_CONFIG_DISCRIMINATOR: [u8; 8] =
+    [0x68, 0xb8, 0x67, 0xf2, 0x58, 0x97, 0x6b, 0x14];
+
 // ── Trade slippage ───────────────────────────────────────────────────────────
 /// Default trade slippage tolerance in basis points (100 = 1%) when neither the
 /// request nor the persisted `AppSettings.slippage_bps` specifies one. 500 = 5%.
