@@ -88,6 +88,14 @@ pub struct StartGroupedSweepBody {
     /// never cached regardless. Default `false`.
     #[serde(default)]
     pub fresh: bool,
+    /// Per-field value filters — restrict the corpus to tokens whose fingerprint
+    /// value for the named field is in the allowed set. Map key = `GroupField`
+    /// serde tag (e.g. `"cu_price"`); value = JSON array of allowed numbers.
+    /// Empty array or absent key ⇒ no filter for that field. `"ix_labels"` is
+    /// skipped here (use `ix_labels_filter` instead). Applied post-fingerprint,
+    /// in-memory, so the unfiltered Parquet corpus cache is reused.
+    #[serde(default)]
+    pub field_filters: Option<std::collections::HashMap<String, Vec<serde_json::Value>>>,
 }
 
 fn default_min_tokens() -> usize {
@@ -312,6 +320,45 @@ async fn run_grouped_sweep_job(
             }));
         }
     }
+    // Optional per-field numeric filters — restrict the corpus to tokens whose
+    // fingerprint value for the named field is in the allowed set. Applied
+    // post-fingerprint, in-memory, reusing the unfiltered Parquet cache.
+    // Unknown keys and `ix_labels` (handled above) are skipped with a warning.
+    if let Some(filters) = &b.field_filters {
+        use crate::sweep::grouping::GroupField;
+        for (field_str, allowed) in filters {
+            if allowed.is_empty() {
+                continue;
+            }
+            let field: GroupField = match serde_json::from_str(&format!("\"{field_str}\"")) {
+                Ok(f) => f,
+                Err(_) => {
+                    tracing::warn!(key = %field_str, "grouped sweep: unknown field_filters key, skipping");
+                    continue;
+                }
+            };
+            if field == GroupField::IxLabels {
+                tracing::warn!("grouped sweep: ix_labels in field_filters — use ix_labels_filter instead, skipping");
+                continue;
+            }
+            let before = corpus.tokens.len();
+            corpus.tokens.retain(|t| matches_field_filter(&t.fp, field, allowed));
+            tracing::info!(
+                field = %field_str,
+                kept = corpus.tokens.len(),
+                dropped = before - corpus.tokens.len(),
+                "grouped sweep: field filter applied"
+            );
+            if corpus.tokens.is_empty() {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": format!(
+                        "no tokens match the '{field_str}' field filter — adjust the values or widen the selection"
+                    )
+                }));
+            }
+        }
+    }
+
     // Corpus is fully resident here — the Phase 0 baseline's first peak (every
     // streaming phase is judged against this RSS/seconds reading).
     tracing::info!(
@@ -720,4 +767,46 @@ fn bad_strategy(strategy_id: &str) -> HttpResponse {
             registry::strategy_ids()
         )
     }))
+}
+
+/// Return `true` if the token's fingerprint value for `field` is in `allowed`.
+/// `IxLabels` is handled by the `ix_labels_filter` path and never reaches here.
+/// `CreatorWallet` / `TokenProgramId` aren't offered in the frontend filter UI.
+fn matches_field_filter(
+    fp: &crate::sweep::grouping::TokenFingerprint,
+    field: crate::sweep::grouping::GroupField,
+    allowed: &[serde_json::Value],
+) -> bool {
+    use crate::sweep::grouping::GroupField::*;
+    match field {
+        CuLimit => {
+            let v = fp.cu_limit;
+            allowed.iter().any(|a| a.as_i64().map(|x| Some(x) == v).unwrap_or(false))
+        }
+        CuPrice => {
+            let v = fp.cu_price;
+            allowed.iter().any(|a| a.as_i64().map(|x| Some(x) == v).unwrap_or(false))
+        }
+        MaxSolCost => {
+            let v = fp.max_sol_cost;
+            allowed.iter().any(|a| a.as_i64().map(|x| Some(x) == v).unwrap_or(false))
+        }
+        SpendableSolIn => {
+            let v = fp.spendable_sol_in;
+            allowed.iter().any(|a| a.as_i64().map(|x| Some(x) == v).unwrap_or(false))
+        }
+        InitialBuySol => {
+            let v = fp.initial_buy_sol;
+            allowed.iter().any(|a| {
+                a.as_f64()
+                    .map(|x| v.map(|y| (x - y).abs() < 1e-9).unwrap_or(false))
+                    .unwrap_or(false)
+            })
+        }
+        IsCashbackEnabled => {
+            let v = fp.is_cashback_enabled;
+            allowed.iter().any(|a| a.as_bool().map(|b| b == v).unwrap_or(false))
+        }
+        CreatorWallet | TokenProgramId | IxLabels => false,
+    }
 }

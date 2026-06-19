@@ -20,8 +20,8 @@ export const GROUP_FIELDS = [
   'max_sol_cost',
   'spendable_sol_in',
   'initial_buy_sol',
-  'ix_labels',
   'is_cashback_enabled',
+  'ix_labels',
 ] as const;
 
 export type GroupField = (typeof GROUP_FIELDS)[number];
@@ -190,6 +190,12 @@ export interface GroupedSweepStartArgs {
    *  when grouping by `ix_labels` is OFF (the two are mutually exclusive: group
    *  by the label set, or pin a single set and sweep it). Omitted ⇒ no filter. */
   ix_labels_filter?: string[];
+  /** Per-field value filters: restrict the corpus to tokens whose fingerprint
+   *  value for the named field is in the allowed set. Map key = GroupField tag
+   *  (e.g. `"cu_price"`); value = allowed numbers. Empty map or omitted ⇒ no
+   *  filter. `"ix_labels"` is handled by `ix_labels_filter` above.
+   *  Applied post-fingerprint, in-memory, alongside `ix_labels_filter`. */
+  field_filters?: Record<string, (number | boolean)[]>;
   min_tokens?: number;
   /** `grid` | `random:N` | `lhs:N`. */
   method?: string;
