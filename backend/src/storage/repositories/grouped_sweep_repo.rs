@@ -407,6 +407,58 @@ impl GroupedSweepRepo {
         Ok(res.rows_affected())
     }
 
+    /// Look up a single run by id. Returns `None` when the id is unknown.
+    pub async fn get_run(&self, run_id: Uuid) -> anyhow::Result<Option<GroupedSweepRun>> {
+        let sql = format!(
+            "SELECT id, strategy_id, source, method, created_after, created_before, \
+                    curve_only, grouping_spec, axes_spec, min_tokens, token_count, group_count, \
+                    combo_count, corpus_hash, created_at, status, groups_done, \
+                    ix_labels_filter, field_filters, token_cap, max_combos, label \
+             FROM {} WHERE id = $1",
+            self.tables.runs
+        );
+        let row = sqlx::query_as::<_, RunDbRow>(&sql)
+            .bind(run_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(GroupedSweepRun::from))
+    }
+
+    /// Look up a single group by id. Returns `None` when the id is unknown.
+    pub async fn get_group(&self, group_id: Uuid) -> anyhow::Result<Option<GroupedSweepGroupSummary>> {
+        let sql = format!(
+            "SELECT id, group_index, group_key, token_count, fired_count, \
+                    best_combo_id, best_score, best_expectancy_sol, best_params \
+             FROM {} WHERE id = $1",
+            self.tables.groups
+        );
+        let row = sqlx::query_as::<_, GroupDbRow>(&sql)
+            .bind(group_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(GroupedSweepGroupSummary::from))
+    }
+
+    /// Fetch the `params` JSON for one combo within a group. Returns `None` when
+    /// the `(group_id, combo_id)` pair is unknown.
+    pub async fn get_combo_params(
+        &self,
+        group_id: Uuid,
+        combo_id: i32,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        let sql = format!(
+            "SELECT params FROM {} WHERE group_id = $1 AND combo_id = $2 LIMIT 1",
+            self.tables.results
+        );
+        let row: Option<(sqlx::types::Json<serde_json::Value>,)> =
+            sqlx::query_as(&sql)
+                .bind(group_id)
+                .bind(combo_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|(j,)| j.0))
+    }
+
     /// Runs newest first, bounded by `limit`. (The table is already per-strategy.)
     pub async fn list_runs(&self, limit: i64) -> anyhow::Result<Vec<GroupedSweepRun>> {
         let sql = format!(

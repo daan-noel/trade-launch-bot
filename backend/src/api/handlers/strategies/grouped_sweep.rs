@@ -27,7 +27,7 @@ use crate::storage::repositories::grouped_sweep_repo::{GroupedSweepRepo, Grouped
 use crate::sweep::aggregate::ComboMetrics;
 use crate::sweep::corpus::{attach_fingerprints, corpus_cache_dir, load_grouped_corpus, Selection};
 use crate::sweep::grouped_engine::{CoverageFloor, GroupResult, GroupSink};
-use crate::sweep::grouping::GroupField;
+use crate::sweep::grouping::{group_key, normalize_label_vec, GroupField};
 use crate::sweep::registry;
 use crate::sweep::strategy::parse_method;
 
@@ -899,6 +899,179 @@ pub async fn prune_runs(
         Err(e) => {
             tracing::error!("DB error pruning grouped sweep runs: {e}");
             HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Token-results drill-in (re-simulate one combo on its group's corpus slice)
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+pub struct TokenResultsQuery {
+    pub strategy_id: String,
+    pub combo_id: i32,
+}
+
+/// `GET /api/strategies/sweeps/{run_id}/groups/{group_id}/token-results`
+///
+/// Re-simulates a single stored combo against the tokens that belong to the
+/// given group and returns per-token PnL / exit / holding-time. The corpus is
+/// loaded from the Parquet cache (near-instant for settled windows) so this
+/// endpoint is cheap to call on repeat.
+pub async fn list_token_results(
+    state: web::Data<Arc<AppState>>,
+    path: web::Path<(Uuid, Uuid)>,
+    query: web::Query<TokenResultsQuery>,
+) -> impl Responder {
+    let tables = match registry::tables_for(&query.strategy_id) {
+        Some(t) => t,
+        None => return bad_strategy(&query.strategy_id),
+    };
+    let (run_id, group_id) = path.into_inner();
+    let repo = GroupedSweepRepo::new(state.db.clone(), tables);
+
+    // Load the run header for the selection params.
+    let run = match repo.get_run(run_id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return HttpResponse::NotFound().json(serde_json::json!({"error": "run not found"}))
+        }
+        Err(e) => {
+            tracing::error!("DB error fetching grouped sweep run: {e}");
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "database error"}));
+        }
+    };
+
+    // Load the group header for its stored group_key.
+    let group = match repo.get_group(group_id).await {
+        Ok(Some(g)) => g,
+        Ok(None) => {
+            return HttpResponse::NotFound().json(serde_json::json!({"error": "group not found"}))
+        }
+        Err(e) => {
+            tracing::error!("DB error fetching grouped sweep group: {e}");
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "database error"}));
+        }
+    };
+
+    // Fetch the params JSON for the requested combo.
+    let params_json = match repo.get_combo_params(group_id, query.combo_id).await {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return HttpResponse::NotFound().json(serde_json::json!({"error": "combo not found"}))
+        }
+        Err(e) => {
+            tracing::error!("DB error fetching combo params: {e}");
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "database error"}));
+        }
+    };
+
+    // Build the same Selection the original sweep used.
+    let sel = Selection {
+        created_after: run.created_after,
+        created_before: run.created_before,
+        curve_only: run.curve_only,
+        token_cap: run.token_cap.map(|n| n as usize).unwrap_or(5_000),
+        window: crate::sweep::corpus::TradeWindow::LaunchWindow,
+        ..Default::default()
+    };
+
+    // Load corpus (Parquet cache for settled windows).
+    let mut corpus = match load_grouped_corpus(state.db.clone(), &sel, &corpus_cache_dir(), false).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("Failed to load corpus for token-results: {e}");
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "corpus load failed"}));
+        }
+    };
+    if let Err(e) = attach_fingerprints(&state.db, &mut corpus).await {
+        tracing::error!("Failed to attach fingerprints: {e}");
+        return HttpResponse::InternalServerError()
+            .json(serde_json::json!({"error": "fingerprint error"}));
+    }
+
+    // Re-apply the ix_labels_filter the sweep used.
+    if let Some(want) = run
+        .ix_labels_filter
+        .as_ref()
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+        .filter(|f| !f.is_empty())
+        .map(|f| normalize_label_vec(f))
+    {
+        corpus.tokens.retain(|t| t.fp.ix_labels == want);
+    }
+
+    // Re-apply per-field value filters.
+    if let Some(filters) = run
+        .field_filters
+        .as_ref()
+        .and_then(|v| {
+            serde_json::from_value::<std::collections::HashMap<String, Vec<serde_json::Value>>>(
+                v.clone(),
+            )
+            .ok()
+        })
+    {
+        for (field_str, allowed) in &filters {
+            if allowed.is_empty() {
+                continue;
+            }
+            let field: GroupField = match serde_json::from_str(&format!("\"{field_str}\"")) {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            if field == GroupField::IxLabels {
+                continue;
+            }
+            corpus.tokens.retain(|t| matches_field_filter(&t.fp, field, allowed));
+        }
+    }
+
+    // Parse the grouping fields so we can recompute each token's group_key.
+    let grouping_fields: Vec<GroupField> =
+        match serde_json::from_value(run.grouping_spec.clone()) {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::error!("Bad grouping_spec in run: {e}");
+                return HttpResponse::InternalServerError()
+                    .json(serde_json::json!({"error": "invalid grouping spec"}));
+            }
+        };
+
+    // Filter to tokens that belong to this group by recomputing their key.
+    let target_key = group.group_key.clone();
+    corpus
+        .tokens
+        .retain(|t| group_key(&t.fp, &grouping_fields).to_json() == target_key);
+
+    if corpus.tokens.is_empty() {
+        return HttpResponse::Ok().json(serde_json::json!([]));
+    }
+
+    // Re-simulate on a blocking thread (CPU-bound but short: one combo × N tokens).
+    let strategy_id = query.strategy_id.clone();
+    let tokens = corpus.tokens;
+    let result = tokio::task::spawn_blocking(move || {
+        registry::simulate_one_combo(&strategy_id, &tokens, &params_json)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(rows)) => HttpResponse::Ok().json(rows),
+        Ok(Err(e)) => {
+            tracing::error!("Single-combo simulation failed: {e}");
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": format!("simulation failed: {e}")}))
+        }
+        Err(e) => {
+            tracing::error!("spawn_blocking panicked: {e}");
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "internal error"}))
         }
     }
 }

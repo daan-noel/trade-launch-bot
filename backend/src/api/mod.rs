@@ -320,6 +320,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 "/strategies/sweeps/{run_id}/groups/{group_id}/results",
                 web::get().to(handlers::strategies::grouped_sweep::list_results),
             )
+            .route(
+                "/strategies/sweeps/{run_id}/groups/{group_id}/token-results",
+                web::get().to(handlers::strategies::grouped_sweep::list_token_results),
+            )
             // On-chain Solana queries — bypass local DB entirely
             .route(
                 "/solana/wallet/tokens",

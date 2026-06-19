@@ -227,6 +227,39 @@ impl Tpsl1Strategy {
         r.p_exit_liquidity_drop_pct = p.liquidity_drop_pct;
         r
     }
+
+    /// Minimal strategy for re-simulating a single stored combo.
+    pub fn for_replay(base: Tpsl1Rule) -> Self {
+        Self { base, axes: Tpsl1Axes::default(), costs: CostModel::pumpfun_default() }
+    }
+
+    /// Reconstruct a combo from the `params_json` stored in the results table.
+    /// JSON keys match [`Strategy::params_json`]'s `"exit_*"` output.
+    pub fn combo_from_params_json(&self, v: &serde_json::Value) -> anyhow::Result<Tpsl1Combo> {
+        fn opt_f(v: &serde_json::Value, k: &str) -> Option<f64> {
+            v.get(k).and_then(|x| x.as_f64())
+        }
+        fn opt_u(v: &serde_json::Value, k: &str) -> Option<u64> {
+            v.get(k).and_then(|x| x.as_u64())
+        }
+        let take_profit = v
+            .get("exit_take_profit")
+            .and_then(|x| x.as_f64())
+            .ok_or_else(|| anyhow::anyhow!("params_json missing 'exit_take_profit'"))?;
+        let stop_loss = v
+            .get("exit_stop_loss")
+            .and_then(|x| x.as_f64())
+            .ok_or_else(|| anyhow::anyhow!("params_json missing 'exit_stop_loss'"))?;
+        let raw = Tpsl1Params {
+            take_profit,
+            stop_loss,
+            trailing_stop_pct: opt_f(v, "exit_trailing_stop_pct"),
+            time_stop_secs: opt_u(v, "exit_time_stop_secs"),
+            stall_secs: opt_u(v, "exit_stall_secs"),
+            liquidity_drop_pct: opt_f(v, "exit_liquidity_drop_pct"),
+        };
+        Ok(self.combo(raw))
+    }
 }
 
 impl ParamSpace for Tpsl1Strategy {

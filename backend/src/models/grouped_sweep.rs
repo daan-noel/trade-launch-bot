@@ -119,6 +119,22 @@ pub struct GroupedSweepResult {
     pub n_exit_open: i32,
 }
 
+/// Per-token outcome when a single combo is re-simulated on a group's corpus
+/// slice. Returned by the `GET …/token-results` drill-in endpoint.
+#[derive(Debug, Clone, Serialize)]
+pub struct ComboTokenResult {
+    pub mint: String,
+    pub symbol: String,
+    pub fired: bool,
+    pub pnl_sol: f32,
+    pub pnl_pct: f32,
+    pub holding_secs: i64,
+    /// Exit reason string: `"TakeProfit"`, `"StopLoss"`, `"TrailingStop"`,
+    /// `"Stall"`, `"TimeStop"`, `"LiquidityExit"`, `"CohortExit"`,
+    /// `"Open"` (still open at end of history), or `"NoEntry"`.
+    pub exit: String,
+}
+
 /// A group plus its ranked combo rows, handed to the repo's `save_run` as the
 /// write unit (the repo links them via a freshly-minted group id).
 pub struct GroupedSweepGroupWrite {

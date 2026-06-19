@@ -189,6 +189,19 @@ export interface GroupedSweepGroupRecord {
 /** Drill-in combo rows reuse the flat sweep-result shape (same metric set). */
 export type GroupedSweepResultRecord = SweepResultRecord;
 
+/** Per-token outcome for a single re-simulated combo (the token-results drill-in). */
+export interface ComboTokenResult {
+  mint: string;
+  symbol: string;
+  fired: boolean;
+  pnl_sol: number;
+  pnl_pct: number;
+  holding_secs: number;
+  /** `"TakeProfit"` | `"StopLoss"` | `"TrailingStop"` | `"Stall"` |
+   *  `"TimeStop"` | `"LiquidityExit"` | `"CohortExit"` | `"Open"` | `"NoEntry"` */
+  exit: string;
+}
+
 // --- start request ----------------------------------------------------------
 
 export interface GroupedSweepStartArgs {

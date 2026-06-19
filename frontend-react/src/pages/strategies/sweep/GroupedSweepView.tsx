@@ -17,17 +17,19 @@ import {
   type AxisDef,
   type GroupedSweepStartArgs,
   type GroupedSweepRunRecord,
+  type ComboTokenResult,
 } from 'components/sweep/groupedTypes';
 import {
   apiErrorMessage,
   useGetGroupedSweepRunsQuery,
   useGetGroupedSweepGroupsQuery,
+  useGetComboTokenResultsQuery,
   useStartGroupedSweepMutation,
   useDeleteGroupedSweepRunMutation,
   usePruneGroupedSweepsMutation,
 } from 'store/apiSlice';
 import { useStreamedSweepResults, COMBO_PAGE_SIZE } from 'hooks/useStreamedSweepResults';
-import type { TableQuery } from 'components/table/types';
+import type { ColumnDef, TableQuery } from 'components/table/types';
 
 /** The grouped-sweep view is strategy-agnostic — the API/data layer and column
  *  builders are all driven by `strategyId` + a swept-param-key list. Each
@@ -88,6 +90,12 @@ export function GroupedSweepView({
   useEffect(() => {
     setActiveGroupId(null);
   }, [activeRunId]);
+
+  const [activeComboId, setActiveComboId] = useState<number | null>(null);
+  // A new group invalidates the drilled-in combo.
+  useEffect(() => {
+    setActiveComboId(null);
+  }, [activeGroupId]);
 
   const [startSweep, startState] = useStartGroupedSweepMutation();
   const startErr = apiErrorMessage(startState.error, 'Failed to start sweep');
@@ -192,6 +200,99 @@ export function GroupedSweepView({
   const comboColumns = useMemo(
     () => buildSweepColumns(paramKeys, paramColors),
     [paramKeys, paramColors],
+  );
+
+  const tokenResultsQuery = useGetComboTokenResultsQuery(
+    {
+      strategyId,
+      runId: activeRunId ?? '',
+      groupId: activeGroupId ?? '',
+      comboId: activeComboId ?? 0,
+    },
+    { skip: !activeRunId || !activeGroupId || activeComboId === null },
+  );
+  const tokenResults = tokenResultsQuery.data ?? [];
+  const tokenResultsErr = apiErrorMessage(tokenResultsQuery.error, 'Failed to load token results');
+
+  const tokenColumns = useMemo<ColumnDef<ComboTokenResult>[]>(
+    () => [
+      {
+        key: 'symbol',
+        label: 'Symbol',
+        render: (r) => <span className="font-mono text-xs">{r.symbol || '—'}</span>,
+        searchValue: (r) => r.symbol,
+        sortValue: (r) => r.symbol,
+        sortable: true,
+      },
+      {
+        key: 'mint',
+        label: 'Mint',
+        render: (r) => (
+          <span className="font-mono text-xs text-text-dim" title={r.mint}>
+            {r.mint.slice(0, 8)}…{r.mint.slice(-4)}
+          </span>
+        ),
+        searchValue: (r) => r.mint,
+        sortable: false,
+      },
+      {
+        key: 'fired',
+        label: 'Fired',
+        render: (r) => (
+          <span className={r.fired ? 'text-success' : 'text-text-dim'}>
+            {r.fired ? 'Yes' : 'No'}
+          </span>
+        ),
+        searchValue: (r) => (r.fired ? 'yes' : 'no'),
+        sortValue: (r) => (r.fired ? 1 : 0),
+        sortable: true,
+      },
+      {
+        key: 'pnl_sol',
+        label: 'PnL (SOL)',
+        render: (r) => (
+          <span className={r.pnl_sol > 0 ? 'text-success' : r.pnl_sol < 0 ? 'text-danger' : 'text-text-dim'}>
+            {r.fired ? r.pnl_sol.toFixed(4) : '—'}
+          </span>
+        ),
+        searchValue: () => '',
+        sortValue: (r) => r.pnl_sol,
+        sortable: true,
+      },
+      {
+        key: 'pnl_pct',
+        label: 'PnL %',
+        render: (r) => (
+          <span className={r.pnl_pct > 0 ? 'text-success' : r.pnl_pct < 0 ? 'text-danger' : 'text-text-dim'}>
+            {r.fired ? `${r.pnl_pct.toFixed(1)}%` : '—'}
+          </span>
+        ),
+        searchValue: () => '',
+        sortValue: (r) => r.pnl_pct,
+        sortable: true,
+      },
+      {
+        key: 'holding_secs',
+        label: 'Hold (s)',
+        render: (r) => (
+          <span className="text-text-dim">
+            {r.fired ? r.holding_secs : '—'}
+          </span>
+        ),
+        searchValue: () => '',
+        sortValue: (r) => r.holding_secs,
+        sortable: true,
+      },
+      {
+        key: 'exit',
+        label: 'Exit',
+        render: (r) => <span className="font-mono text-xs">{r.exit}</span>,
+        searchValue: (r) => r.exit,
+        sortValue: (r) => r.exit,
+        sortable: true,
+      },
+    ],
+    [],
   );
 
   const runsErr = apiErrorMessage(runsQuery.error, 'Failed to load sweep runs');
@@ -364,7 +465,9 @@ export function GroupedSweepView({
                 searchable={false}
                 colFilters={false}
                 colToggle
-                selectable={false}
+                selectable
+                selectedKey={activeComboId !== null ? String(activeComboId) : null}
+                onSelect={(key) => setActiveComboId(key !== null ? Number(key) : null)}
                 serverSide
                 serverTotal={resultsTotal}
                 onQueryChange={onComboQueryChange}
@@ -375,6 +478,46 @@ export function GroupedSweepView({
                 loading={resultsLoading}
                 emptyMessage="No combo results for this group."
               />
+
+              {activeComboId !== null && (
+                <div className="mt-10">
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
+                    <h3 className="text-sm font-bold text-secondary">Tokens for combo #{activeComboId}</h3>
+                    <span className="text-xs text-text-dim">
+                      {tokenResultsQuery.isFetching
+                        ? 'Simulating…'
+                        : `${tokenResults.length} tokens`}
+                    </span>
+                    <button
+                      className="ml-auto text-xs text-text-dim hover:text-primary"
+                      onClick={() => setActiveComboId(null)}
+                    >
+                      ✕ Close
+                    </button>
+                  </div>
+
+                  {tokenResultsErr && (
+                    <InlineAlert variant="error">{tokenResultsErr}</InlineAlert>
+                  )}
+
+                  <DataTable
+                    columns={tokenColumns}
+                    rows={tokenResults}
+                    rowKey={(r) => r.mint}
+                    searchable
+                    colFilters={false}
+                    colToggle={false}
+                    selectable={false}
+                    defaultSort={{ col: 'pnl_sol', dir: 'desc' }}
+                    defaultPageSize={25}
+                    pageSizeOptions={[25, 50, 100]}
+                    tableId={`${strategyId}_combo_tokens`}
+                    resetKey={String(activeComboId)}
+                    loading={tokenResultsQuery.isFetching}
+                    emptyMessage="No token results for this combo."
+                  />
+                </div>
+              )}
             </div>
           )}
 

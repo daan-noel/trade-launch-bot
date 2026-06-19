@@ -11,6 +11,7 @@ import type {
   GroupedSweepGroupRecord,
   GroupedSweepResultRecord,
   GroupedSweepStartArgs,
+  ComboTokenResult,
 } from 'components/sweep/groupedTypes';
 import type {
   CreationStatsArgs,
@@ -333,6 +334,14 @@ export const apiSlice = createApi({
         `/api/strategies/sweeps/${encodeURIComponent(runId)}/groups/${encodeURIComponent(groupId)}/results?strategy_id=${encodeURIComponent(strategyId)}`,
       keepUnusedDataFor: 120,
     }),
+    getComboTokenResults: builder.query<
+      ComboTokenResult[],
+      { strategyId: string; runId: string; groupId: string; comboId: number }
+    >({
+      query: ({ strategyId, runId, groupId, comboId }) =>
+        `/api/strategies/sweeps/${encodeURIComponent(runId)}/groups/${encodeURIComponent(groupId)}/token-results?strategy_id=${encodeURIComponent(strategyId)}&combo_id=${comboId}`,
+      keepUnusedDataFor: 60,
+    }),
     // Trigger a grouped DB-range sweep (single-flight on the backend — a 409 means
     // a sweep is already running). Invalidating `GroupedSweep` refetches the runs.
     // A user-cancelled sweep resolves to `{ cancelled, run_id, groups_done }` — the
@@ -557,6 +566,7 @@ export const {
   useGetGroupedSweepRunsQuery,
   useGetGroupedSweepGroupsQuery,
   useGetGroupedSweepResultsQuery,
+  useGetComboTokenResultsQuery,
   useStartGroupedSweepMutation,
   useDeleteGroupedSweepRunMutation,
   useRenameGroupedSweepRunMutation,

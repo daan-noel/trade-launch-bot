@@ -353,6 +353,55 @@ impl Tpsl2Strategy {
         r.p_entry_min_organic_liq = p.entry_min_organic_liq;
         r
     }
+
+    /// Minimal strategy for re-simulating a single stored combo. `sweeps_cohort_exit`
+    /// must be `true` if the combo uses the cohort-dump exit (`exit_cohort_ratio != null`)
+    /// so that `prepare_token` computes the required `cohort_bought` bag.
+    pub fn for_replay(base: Tpsl2Rule, sweeps_cohort_exit: bool) -> Self {
+        Self {
+            base,
+            axes: Tpsl2Axes::default(),
+            costs: CostModel::pumpfun_default(),
+            sweeps_cohort_exit,
+        }
+    }
+
+    /// Reconstruct a combo from the `params_json` stored in the results table.
+    /// JSON keys match [`Strategy::params_json`]'s `"exit_*"` / `"entry_*"` output.
+    pub fn combo_from_params_json(&self, v: &serde_json::Value) -> anyhow::Result<Tpsl2Combo> {
+        fn opt_f(v: &serde_json::Value, k: &str) -> Option<f64> {
+            v.get(k).and_then(|x| x.as_f64())
+        }
+        fn opt_u(v: &serde_json::Value, k: &str) -> Option<u64> {
+            v.get(k).and_then(|x| x.as_u64())
+        }
+        let take_profit = v
+            .get("exit_take_profit")
+            .and_then(|x| x.as_f64())
+            .ok_or_else(|| anyhow::anyhow!("params_json missing 'exit_take_profit'"))?;
+        let stop_loss = v
+            .get("exit_stop_loss")
+            .and_then(|x| x.as_f64())
+            .ok_or_else(|| anyhow::anyhow!("params_json missing 'exit_stop_loss'"))?;
+        let raw = Tpsl2Params {
+            take_profit,
+            stop_loss,
+            trailing_stop_pct: opt_f(v, "exit_trailing_stop_pct"),
+            time_stop_secs: opt_u(v, "exit_time_stop_secs"),
+            stall_secs: opt_u(v, "exit_stall_secs"),
+            liquidity_drop_pct: opt_f(v, "exit_liquidity_drop_pct"),
+            cohort_ratio: opt_f(v, "exit_cohort_ratio"),
+            entry_min_age_secs: opt_u(v, "entry_min_age_secs"),
+            entry_min_alive_sol: opt_f(v, "entry_min_alive_sol"),
+            entry_min_organic_sol: opt_f(v, "entry_min_organic_sol"),
+            entry_pullback_pct: opt_f(v, "entry_pullback_pct"),
+            entry_higher_low_secs: opt_u(v, "entry_higher_low_secs"),
+            entry_max_cohort_held: opt_f(v, "entry_max_cohort_held"),
+            entry_min_liquidity_sol: opt_f(v, "entry_min_liquidity_sol"),
+            entry_min_organic_liq: opt_f(v, "entry_min_organic_liq"),
+        };
+        Ok(self.combo(raw))
+    }
 }
 
 impl ParamSpace for Tpsl2Strategy {

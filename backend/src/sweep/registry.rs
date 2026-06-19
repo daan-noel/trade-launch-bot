@@ -13,9 +13,11 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 
+use crate::models::grouped_sweep::ComboTokenResult;
 use crate::models::{Tpsl1Rule, Tpsl2Rule};
 use crate::storage::repositories::grouped_sweep_repo::GroupedSweepTables;
-use crate::sweep::corpus::Corpus;
+use crate::sweep::corpus::{Corpus, TokenTrades};
+use crate::sweep::engine::fill_outcomes;
 use crate::sweep::grouped_engine::{run_grouped_with_refine, CoverageFloor, GroupResult, GroupSink};
 use crate::sweep::grouping::GroupField;
 use crate::sweep::progress::SweepObserver;
@@ -23,7 +25,15 @@ use crate::sweep::strategies::tpsl1::{
     AxesSpec as Tpsl1AxesSpec, Tpsl1Axes, Tpsl1Strategy,
 };
 use crate::sweep::strategies::tpsl2::{AxesSpec, Tpsl2Axes, Tpsl2Strategy};
-use crate::sweep::strategy::{ParamSpace, RefineSpec, Strategy, SweepMethod};
+use crate::sweep::strategy::{ExitCode, ParamSpace, RefineSpec, SweepMethod};
+
+/// Minimal no-op observer for single-combo re-simulation (no progress to report).
+struct Noop;
+impl SweepObserver for Noop {
+    fn set_total(&self, _: usize) {}
+    fn token_done(&self) {}
+    fn cancelled(&self) -> bool { false }
+}
 
 /// Default cap on the param combos a single grouped sweep evaluates **per group**.
 /// Bounds the `groups × combos × tokens` work; the handler rejects a full grid
@@ -427,6 +437,103 @@ async fn sweep_tpsl1(
     .await??;
 
     Ok(GroupedSweepOutput { combo_count, axes_json, groups })
+}
+
+// ---------------------------------------------------------------------------
+// Single-combo re-simulation (for the token-results drill-in endpoint)
+// ---------------------------------------------------------------------------
+
+/// Re-simulate a single stored combo on a pre-filtered token slice.
+///
+/// Runs sequentially (no rayon): one combo per token is O(tokens) trivially cheap,
+/// far less than the DB round-trips that preceded it. Returns one result per token,
+/// always including non-fired tokens so the caller can display the full group slice.
+pub fn simulate_one_combo(
+    strategy_id: &str,
+    tokens: &[TokenTrades],
+    params_json: &Value,
+) -> Result<Vec<ComboTokenResult>> {
+    match strategy_id {
+        "tpsl2" => simulate_tpsl2_one_combo(tokens, params_json),
+        "tpsl1" => simulate_tpsl1_one_combo(tokens, params_json),
+        other => bail!(
+            "strategy '{other}' has no single-combo simulation (supported: {:?})",
+            strategy_ids()
+        ),
+    }
+}
+
+fn exit_label(code: ExitCode) -> &'static str {
+    match code {
+        ExitCode::NoEntry => "NoEntry",
+        ExitCode::Open => "Open",
+        ExitCode::TakeProfit => "TakeProfit",
+        ExitCode::StopLoss => "StopLoss",
+        ExitCode::TrailingStop => "TrailingStop",
+        ExitCode::Stall => "Stall",
+        ExitCode::TimeStop => "TimeStop",
+        ExitCode::LiquidityExit => "LiquidityExit",
+        ExitCode::CohortExit => "CohortExit",
+    }
+}
+
+fn simulate_tpsl2_one_combo(
+    tokens: &[TokenTrades],
+    params_json: &Value,
+) -> Result<Vec<ComboTokenResult>> {
+    let has_cohort = params_json.get("exit_cohort_ratio").and_then(|v| v.as_f64()).is_some();
+    let strategy = Tpsl2Strategy::for_replay(sweep_base_rule_tpsl2(), has_cohort);
+    let combo = strategy.combo_from_params_json(params_json)?;
+    let params = std::slice::from_ref(&combo);
+    let noop = Noop;
+    let mut results = Vec::with_capacity(tokens.len());
+    for tt in tokens {
+        let mut outs = Vec::with_capacity(1);
+        let _ = fill_outcomes(&strategy, params, &tt.trades, &noop, &mut outs);
+        let o = outs
+            .into_iter()
+            .next()
+            .unwrap_or_else(crate::sweep::strategy::TokenOutcome::no_entry);
+        results.push(ComboTokenResult {
+            mint: tt.mint.clone(),
+            symbol: tt.symbol.clone(),
+            fired: o.fired,
+            pnl_sol: o.pnl_sol,
+            pnl_pct: o.pnl_percent,
+            holding_secs: o.holding_secs,
+            exit: exit_label(o.exit).to_string(),
+        });
+    }
+    Ok(results)
+}
+
+fn simulate_tpsl1_one_combo(
+    tokens: &[TokenTrades],
+    params_json: &Value,
+) -> Result<Vec<ComboTokenResult>> {
+    let strategy = Tpsl1Strategy::for_replay(sweep_base_rule_tpsl1());
+    let combo = strategy.combo_from_params_json(params_json)?;
+    let params = std::slice::from_ref(&combo);
+    let noop = Noop;
+    let mut results = Vec::with_capacity(tokens.len());
+    for tt in tokens {
+        let mut outs = Vec::with_capacity(1);
+        let _ = fill_outcomes(&strategy, params, &tt.trades, &noop, &mut outs);
+        let o = outs
+            .into_iter()
+            .next()
+            .unwrap_or_else(crate::sweep::strategy::TokenOutcome::no_entry);
+        results.push(ComboTokenResult {
+            mint: tt.mint.clone(),
+            symbol: tt.symbol.clone(),
+            fired: o.fired,
+            pnl_sol: o.pnl_sol,
+            pnl_pct: o.pnl_percent,
+            holding_secs: o.holding_secs,
+            exit: exit_label(o.exit).to_string(),
+        });
+    }
+    Ok(results)
 }
 
 /// Synthetic TPSL1 base rule the swept params overlay. As with TPSL2, only
