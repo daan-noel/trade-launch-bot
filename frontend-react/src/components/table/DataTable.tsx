@@ -518,26 +518,43 @@ export function DataTable<R>({
         )}
       </div>
 
-      {colToggle && showColPanel && (
-        <div className="mb-2 flex flex-wrap gap-3 rounded-lg border border-white/7 bg-white/2 p-3">
-          {columns.map((col) => (
-            <label key={col.key} className="flex cursor-pointer items-center gap-2 text-xs text-text">
-              <Checkbox
-                checked={visibleCols.has(col.key)}
-                onChange={(e) => {
-                  setVisibleCols((prev) => {
-                    const next = new Set(prev);
-                    if (e.target.checked) next.add(col.key);
-                    else next.delete(col.key);
-                    return next;
-                  });
-                }}
-              />
-              {col.label}
-            </label>
-          ))}
-        </div>
-      )}
+      {colToggle && showColPanel && (() => {
+        const grouped: { group: string; cols: typeof columns }[] = [];
+        for (const col of columns) {
+          const g = col.group ?? '';
+          const last = grouped[grouped.length - 1];
+          if (last && last.group === g) last.cols.push(col);
+          else grouped.push({ group: g, cols: [col] });
+        }
+        const toggleCol = (key: string, checked: boolean) =>
+          setVisibleCols((prev) => {
+            const next = new Set(prev);
+            if (checked) next.add(key); else next.delete(key);
+            return next;
+          });
+        return (
+          <div className="mb-2 flex flex-col gap-2 rounded-lg border border-white/7 bg-white/2 p-3">
+            {grouped.map(({ group, cols }) => (
+              <div key={group} className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                {group && (
+                  <span className="w-20 shrink-0 text-[10px] font-bold uppercase tracking-wider text-secondary">
+                    {group}
+                  </span>
+                )}
+                {cols.map((col) => (
+                  <label key={col.key} className="flex cursor-pointer items-center gap-2 text-xs text-text">
+                    <Checkbox
+                      checked={visibleCols.has(col.key)}
+                      onChange={(e) => toggleCol(col.key, e.target.checked)}
+                    />
+                    {col.label}
+                  </label>
+                ))}
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       <div className="overflow-hidden rounded-lg shadow-[0_2px_12px_rgba(0,0,0,0.4),0_8px_32px_rgba(0,0,0,0.3)]">
         <div className="overflow-x-auto border border-primary rounded-lg">
