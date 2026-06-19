@@ -99,7 +99,7 @@ function AddressDisplayBase({
   display,
   truncateLen = 10,
   className,
-  stopPropagation = false,
+  stopPropagation = true,
   mode = 'default',
 }: AddressDisplayProps) {
   const isFull = mode === 'full';
