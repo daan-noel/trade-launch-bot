@@ -11,6 +11,7 @@ import {
   GROUP_FIELD_LABELS,
   type AxisDef,
   type GroupField,
+  type GroupedSweepRunRecord,
   type GroupedSweepStartArgs,
 } from './groupedTypes';
 
@@ -31,6 +32,12 @@ interface SweepConfigFormProps {
   storageKey: string;
   running: boolean;
   onRun: (args: GroupedSweepStartArgs) => void;
+  /** Re-run: when this nonce increments (and a `reuseRun` is set), the form
+   *  replaces its config with that run's stored settings. Keyed on the nonce
+   *  (not the run) so a background refetch of the same run doesn't clobber edits. */
+  reuseNonce?: number;
+  /** The run whose config to apply when `reuseNonce` bumps. */
+  reuseRun?: GroupedSweepRunRecord | null;
 }
 
 function Field({
@@ -152,6 +159,75 @@ function defaultSweepConfig(axes: AxisDef[]): SweepConfig {
   };
 }
 
+/** datetime-local string ("YYYY-MM-DDTHH:MM") from an RFC3339 UTC instant.
+ *  Mirrors `toUtc` (which reads the input as UTC), so a re-run round-trips. */
+function isoToLocalInput(iso: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+}
+
+/** Parse a stored `method` tag back into the form's method controls. `lhs:N`
+ *  has no form control, so it maps to `random:N` (the closest editable shape). */
+function parseMethodTag(method: string): Pick<SweepConfig, 'methodKind' | 'randomN' | 'refineTopK'> {
+  const m = method.trim();
+  if (m.startsWith('refine:')) {
+    const [, n, k] = m.split(':');
+    return { methodKind: 'refine', randomN: Math.max(1, Number(n) || 500), refineTopK: Math.max(1, Number(k) || 3) };
+  }
+  if (m.startsWith('random:') || m.startsWith('lhs:')) {
+    const [, n] = m.split(':');
+    return { methodKind: 'random', randomN: Math.max(1, Number(n) || 500), refineTopK: 3 };
+  }
+  return { methodKind: 'grid', randomN: 500, refineTopK: 3 };
+}
+
+/** Map a saved run record into the form's editable config (re-run). Falls back to
+ *  `defaults` for anything the run didn't store (legacy rows). */
+function runToConfig(run: GroupedSweepRunRecord, axes: AxisDef[], defaults: SweepConfig): SweepConfig {
+  const { methodKind, randomN, refineTopK } = parseMethodTag(run.method);
+  // axes_spec → editable text per axis; default text for any axis it omits.
+  const axesText = { ...defaultAxesText(axes) };
+  const spec = run.axes_spec as Record<string, (number | null)[]> | null | undefined;
+  if (spec) {
+    for (const a of axes) {
+      const vals = spec[a.key];
+      if (Array.isArray(vals)) axesText[a.key] = axisToText(vals);
+    }
+  }
+  // field_filters → per-field comma text + the cashback enum.
+  const fieldFiltersText: Record<string, string> = {};
+  let cashbackFilter: SweepConfig['cashbackFilter'] = 'all';
+  for (const [field, vals] of Object.entries(run.field_filters ?? {})) {
+    if (field === 'is_cashback_enabled') {
+      const v = vals[0];
+      cashbackFilter = v === true ? 'true' : v === false ? 'false' : 'all';
+    } else if (field !== 'ix_labels') {
+      fieldFiltersText[field] = vals.join(', ');
+    }
+  }
+  return {
+    ...defaults,
+    createdAfter: isoToLocalInput(run.created_after),
+    createdBefore: isoToLocalInput(run.created_before),
+    groupBy: run.grouping_spec,
+    ixLabelsFilter:
+      run.ix_labels_filter && run.ix_labels_filter.length > 0 ? JSON.stringify(run.ix_labels_filter) : '',
+    cashbackFilter,
+    fieldFiltersText,
+    axesText,
+    methodKind,
+    randomN,
+    refineTopK,
+    minTokens: run.min_tokens,
+    tokenCap: run.token_cap ?? defaults.tokenCap,
+    maxCombos: run.max_combos ?? defaults.maxCombos,
+    curveOnly: run.curve_only,
+  };
+}
+
 /** Parse an axis text box → candidate values. For nullable axes, `off/null/none/-`
  *  (or an empty token) becomes `null`; non-nullable axes drop those. NaN dropped. */
 function parseAxis(text: string, nullable: boolean): (number | null)[] {
@@ -245,12 +321,29 @@ function groupByCheckboxTooltip(field: GroupField, isGrouped: boolean): string {
   return `Click to group by ${label}.\nChecked → tokens split into separate groups (one per distinct value), swept independently.\nUnchecked → this field is ignored for grouping (all values mixed together).\n\nYou can still filter to specific values using the input on the right.`;
 }
 
-export function SweepConfigForm({ strategyId, axes, storageKey, running, onRun }: SweepConfigFormProps) {
+export function SweepConfigForm({
+  strategyId,
+  axes,
+  storageKey,
+  running,
+  onRun,
+  reuseNonce,
+  reuseRun,
+}: SweepConfigFormProps) {
   // Defaults depend on this strategy's axes, so memoize per axis list.
   const DEFAULT_SWEEP_CONFIG = useMemo(() => defaultSweepConfig(axes), [axes]);
   // Whole form persisted as one object; merge over defaults so a future-added
   // field is never `undefined` when reading an older stored shape.
   const [stored, setConfig] = useLocalStorage<SweepConfig>(storageKey, DEFAULT_SWEEP_CONFIG);
+
+  // Re-run: replace the form with a saved run's stored config when the nonce
+  // bumps. Keyed only on the nonce so a background refetch of `reuseRun` (same
+  // run, new object identity) never silently clobbers the user's edits.
+  useEffect(() => {
+    if (!reuseNonce || !reuseRun) return;
+    setConfig(() => runToConfig(reuseRun, axes, DEFAULT_SWEEP_CONFIG));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reuseNonce]);
   const config = { ...DEFAULT_SWEEP_CONFIG, ...stored };
   const {
     createdAfter,

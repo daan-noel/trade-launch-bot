@@ -33,6 +33,23 @@ pub struct GroupedSweepRun {
     pub combo_count: i32,
     pub corpus_hash: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// The exact-set instruction-label corpus filter the run used, as the JSON
+    /// array the request sent (`None` = no filter / grouped by `ix_labels`).
+    /// Persisted so the history panel can show what the sweep was pinned to and
+    /// the re-run can restore it.
+    pub ix_labels_filter: Option<Value>,
+    /// Per-field value filters the corpus was pinned to (`{"cu_price":[1000],…}`);
+    /// `None` = no field filter. Stored verbatim for display + re-run.
+    pub field_filters: Option<Value>,
+    /// The per-run token cap the form submitted (`None` = legacy / backend
+    /// default). Distinct from the realized `token_count`.
+    pub token_cap: Option<i32>,
+    /// The per-group combo-cap override the form submitted (`None` = backend
+    /// default). Distinct from the realized `combo_count`.
+    pub max_combos: Option<i32>,
+    /// Optional user-given name for the run (`None` = unnamed → UI falls back to
+    /// timestamp + grouping hint). Editable via the rename endpoint.
+    pub label: Option<String>,
     /// Lifecycle: `running` (in flight), `completed` (full sweep), or
     /// `cancelled` (cancelled / crash-recovered → only `groups_done` groups
     /// present). Phase 4 partial persistence — a `cancelled` run is honest about

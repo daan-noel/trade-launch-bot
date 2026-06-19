@@ -400,6 +400,23 @@ async fn run_grouped_sweep_job(
         created_at: Utc::now(),
         status: "running".to_string(),
         groups_done: 0,
+        // Persist the corpus filters + cap knobs exactly as submitted, so the
+        // history panel can show what the run was for and a re-run can restore it.
+        // Only store an active (non-empty) ix_labels filter; an empty/omitted one
+        // means "no filter" and reads back as NULL.
+        ix_labels_filter: b
+            .ix_labels_filter
+            .as_ref()
+            .filter(|f| !f.is_empty())
+            .and_then(|f| serde_json::to_value(f).ok()),
+        field_filters: b
+            .field_filters
+            .as_ref()
+            .filter(|f| !f.is_empty())
+            .and_then(|f| serde_json::to_value(f).ok()),
+        token_cap: Some(b.token_cap as i32),
+        max_combos: b.max_combos.map(|v| v as i32),
+        label: None,
     };
     let repo = GroupedSweepRepo::new(state.db.clone(), tables);
     if let Err(e) = repo.insert_run(&run).await {
@@ -763,6 +780,41 @@ pub async fn delete_run(
         Ok(n) => HttpResponse::Ok().json(serde_json::json!({"deleted": n})),
         Err(e) => {
             tracing::error!("DB error deleting grouped sweep run: {e}");
+            HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}))
+        }
+    }
+}
+
+/// Body for [`rename_run`]. A blank/whitespace-only label clears the name
+/// (stored as NULL → the UI falls back to the timestamp + grouping hint).
+#[derive(serde::Deserialize)]
+pub struct RenameBody {
+    pub label: String,
+}
+
+/// `PATCH /api/strategies/sweeps/{run_id}?strategy_id=tpsl2` — set or clear a
+/// run's user-given name. 404 if the id isn't found.
+pub async fn rename_run(
+    state: web::Data<Arc<AppState>>,
+    path: web::Path<Uuid>,
+    query: web::Query<StrategyQuery>,
+    body: web::Json<RenameBody>,
+) -> impl Responder {
+    let tables = match registry::tables_for(&query.strategy_id) {
+        Some(t) => t,
+        None => return bad_strategy(&query.strategy_id),
+    };
+    let run_id = path.into_inner();
+    let trimmed = body.label.trim();
+    let label = (!trimmed.is_empty()).then_some(trimmed);
+    match GroupedSweepRepo::new(state.db.clone(), tables)
+        .update_label(run_id, label)
+        .await
+    {
+        Ok(0) => HttpResponse::NotFound().json(serde_json::json!({"error": "run not found"})),
+        Ok(_) => HttpResponse::Ok().json(serde_json::json!({"label": label})),
+        Err(e) => {
+            tracing::error!("DB error renaming grouped sweep run: {e}");
             HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}))
         }
     }

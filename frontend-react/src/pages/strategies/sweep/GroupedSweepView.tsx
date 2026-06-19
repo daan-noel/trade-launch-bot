@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { STORAGE_KEYS } from 'lib/storage';
 import { DataTable } from 'components/table/DataTable';
@@ -10,6 +10,7 @@ import { buildSweepColumns } from 'components/sweep/sweepColumns';
 import { buildGroupColumns } from 'components/sweep/groupColumns';
 import { computeParamColumnColors } from 'lib/sweepParamColors';
 import { SweepConfigForm } from 'components/sweep/SweepConfigForm';
+import { SelectedSweepHistory } from 'components/sweep/SelectedSweepHistory';
 import {
   type AxisDef,
   type GroupedSweepStartArgs,
@@ -107,6 +108,12 @@ export function GroupedSweepView({
   // "older than" cutoff for the prune control (a yyyy-mm-dd date).
   const [pruneBefore, setPruneBefore] = useState('');
 
+  // Re-run: bumping this nonce makes the config form adopt the selected run's
+  // stored settings; `formRef` scrolls it back into view so the user can review
+  // before clicking Run (re-run never auto-fires — a sweep is expensive).
+  const [reuseNonce, setReuseNonce] = useState(0);
+  const formRef = useRef<HTMLDivElement>(null);
+
   async function onDeleteRun() {
     if (!activeRunId) return;
     if (!window.confirm('Delete this sweep run and all its groups/results?')) return;
@@ -188,13 +195,17 @@ export function GroupedSweepView({
         </Badge>
       </div>
 
-      <SweepConfigForm
-        strategyId={strategyId}
-        axes={axes}
-        storageKey={storageKey}
-        running={sweepRunning}
-        onRun={run}
-      />
+      <div ref={formRef}>
+        <SweepConfigForm
+          strategyId={strategyId}
+          axes={axes}
+          storageKey={storageKey}
+          running={sweepRunning}
+          onRun={run}
+          reuseNonce={reuseNonce}
+          reuseRun={activeRun}
+        />
+      </div>
 
       {startErr && <InlineAlert variant="error">{startErr}</InlineAlert>}
       {runsQuery.isLoading && <p className="text-text-dim">Loading sweep runs…</p>}
@@ -222,6 +233,7 @@ export function GroupedSweepView({
             >
               {runs.map((r) => (
                 <option key={r.id} value={r.id}>
+                  {r.label ? `${r.label} · ` : ''}
                   {new Date(r.created_at).toLocaleString()} · {r.method} ·{' '}
                   {r.grouping_spec.length ? r.grouping_spec.join('+') : 'ALL'} ·{' '}
                   {r.token_count} tokens · {runGroupsLabel(r)} × {r.combo_count} combos
@@ -262,6 +274,17 @@ export function GroupedSweepView({
 
           {deleteErr && <InlineAlert variant="error">{deleteErr}</InlineAlert>}
           {groupsErr && <InlineAlert variant="error">{groupsErr}</InlineAlert>}
+
+          {activeRun && (
+            <SelectedSweepHistory
+              strategyId={strategyId}
+              run={activeRun}
+              onReuse={() => {
+                setReuseNonce((n) => n + 1);
+                formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }}
+            />
+          )}
 
           {activeRun && activeRun.status !== 'completed' && (
             <InlineAlert variant="warning">

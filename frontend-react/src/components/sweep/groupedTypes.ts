@@ -153,6 +153,20 @@ export interface GroupedSweepRunRecord {
   status: 'running' | 'completed' | 'cancelled';
   /** Groups persisted so far; equals `group_count` for a `completed` run. */
   groups_done: number;
+  /** The exact-set instruction-label corpus filter the run used (the JSON array
+   *  the form submitted), or `null` when unfiltered / grouped by `ix_labels`. */
+  ix_labels_filter: string[] | null;
+  /** Per-field value filters the corpus was pinned to (`{"cu_price":[1000],…}`),
+   *  or `null` when none. Values are numbers or booleans (cashback). */
+  field_filters: Record<string, (number | boolean)[]> | null;
+  /** The per-run token cap submitted (distinct from realized `token_count`);
+   *  `null` for legacy runs. */
+  token_cap: number | null;
+  /** The per-group combo-cap override submitted (distinct from realized
+   *  `combo_count`); `null` ⇒ backend default. */
+  max_combos: number | null;
+  /** Optional user-given name; `null` = unnamed (UI falls back to timestamp). */
+  label: string | null;
 }
 
 /** One group's summary row: its fingerprint key, sample size, and winning combo. */

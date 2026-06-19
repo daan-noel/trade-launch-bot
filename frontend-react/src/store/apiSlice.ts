@@ -360,6 +360,19 @@ export const apiSlice = createApi({
       }),
       invalidatesTags: ['GroupedSweep'],
     }),
+    // Rename one run (set/clear its label). A blank label clears the name.
+    // Refetches the runs list so the picker + history panel show the new name.
+    renameGroupedSweepRun: builder.mutation<
+      { label: string | null },
+      { strategyId: string; runId: string; label: string }
+    >({
+      query: ({ strategyId, runId, label }) => ({
+        url: `/api/strategies/sweeps/${encodeURIComponent(runId)}?strategy_id=${encodeURIComponent(strategyId)}`,
+        method: 'PATCH',
+        body: { label },
+      }),
+      invalidatesTags: ['GroupedSweep'],
+    }),
     // Prune all runs created strictly before `before` (ISO timestamp). `before`
     // is required server-side so this can't wipe the whole history by accident.
     pruneGroupedSweeps: builder.mutation<
@@ -546,6 +559,7 @@ export const {
   useGetGroupedSweepResultsQuery,
   useStartGroupedSweepMutation,
   useDeleteGroupedSweepRunMutation,
+  useRenameGroupedSweepRunMutation,
   usePruneGroupedSweepsMutation,
   useGetWalletHoldingsQuery,
   useGetWalletPricesQuery,

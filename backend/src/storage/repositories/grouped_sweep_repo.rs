@@ -64,6 +64,11 @@ struct RunDbRow {
     created_at: DateTime<Utc>,
     status: String,
     groups_done: i32,
+    ix_labels_filter: Option<sqlx::types::Json<Value>>,
+    field_filters: Option<sqlx::types::Json<Value>>,
+    token_cap: Option<i32>,
+    max_combos: Option<i32>,
+    label: Option<String>,
 }
 
 impl From<RunDbRow> for GroupedSweepRun {
@@ -86,6 +91,11 @@ impl From<RunDbRow> for GroupedSweepRun {
             created_at: r.created_at,
             status: r.status,
             groups_done: r.groups_done,
+            ix_labels_filter: r.ix_labels_filter.map(|j| j.0),
+            field_filters: r.field_filters.map(|j| j.0),
+            token_cap: r.token_cap,
+            max_combos: r.max_combos,
+            label: r.label,
         }
     }
 }
@@ -202,8 +212,10 @@ impl GroupedSweepRepo {
             "INSERT INTO {} \
              (id, strategy_id, source, method, created_after, created_before, \
               curve_only, grouping_spec, axes_spec, min_tokens, token_count, group_count, \
-              combo_count, corpus_hash, created_at, status, groups_done) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)",
+              combo_count, corpus_hash, created_at, status, groups_done, \
+              ix_labels_filter, field_filters, token_cap, max_combos, label) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,\
+                     $18,$19,$20,$21,$22)",
             self.tables.runs
         );
         sqlx::query(&run_sql)
@@ -224,6 +236,11 @@ impl GroupedSweepRepo {
             .bind(run.created_at)
             .bind(&run.status)
             .bind(run.groups_done)
+            .bind(run.ix_labels_filter.as_ref().map(sqlx::types::Json))
+            .bind(run.field_filters.as_ref().map(sqlx::types::Json))
+            .bind(run.token_cap)
+            .bind(run.max_combos)
+            .bind(&run.label)
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -395,7 +412,8 @@ impl GroupedSweepRepo {
         let sql = format!(
             "SELECT id, strategy_id, source, method, created_after, created_before, \
                     curve_only, grouping_spec, axes_spec, min_tokens, token_count, group_count, \
-                    combo_count, corpus_hash, created_at, status, groups_done \
+                    combo_count, corpus_hash, created_at, status, groups_done, \
+                    ix_labels_filter, field_filters, token_cap, max_combos, label \
              FROM {} ORDER BY created_at DESC LIMIT $1",
             self.tables.runs
         );
@@ -404,6 +422,22 @@ impl GroupedSweepRepo {
             .fetch_all(&self.pool)
             .await?;
         Ok(rows.into_iter().map(GroupedSweepRun::from).collect())
+    }
+
+    /// Rename a run (or clear its name with `None`). Returns the number of rows
+    /// updated (0 = unknown id, so the handler can 404).
+    pub async fn update_label(
+        &self,
+        run_id: Uuid,
+        label: Option<&str>,
+    ) -> anyhow::Result<u64> {
+        let sql = format!("UPDATE {} SET label = $2 WHERE id = $1", self.tables.runs);
+        let res = sqlx::query(&sql)
+            .bind(run_id)
+            .bind(label)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected())
     }
 
     /// Delete one run (groups + results cascade via FK `ON DELETE CASCADE`).

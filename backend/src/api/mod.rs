@@ -307,6 +307,11 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 "/strategies/sweeps/{run_id}",
                 web::delete().to(handlers::strategies::grouped_sweep::delete_run),
             )
+            // Rename one run (set/clear its label).
+            .route(
+                "/strategies/sweeps/{run_id}",
+                web::patch().to(handlers::strategies::grouped_sweep::rename_run),
+            )
             .route(
                 "/strategies/sweeps/{run_id}/groups",
                 web::get().to(handlers::strategies::grouped_sweep::list_groups),
