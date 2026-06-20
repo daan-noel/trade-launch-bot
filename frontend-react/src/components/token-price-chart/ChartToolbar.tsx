@@ -11,7 +11,7 @@ import {
 import { BarCrosshairFields } from './BarCrosshairFields';
 import { Button } from 'components/ui/Button';
 import { Checkbox } from 'components/ui/Checkbox';
-import { cn } from './cn';
+import { cn } from 'lib/cn';
 import type { ChartMetric, ChartStyle, ChartToolbarProps } from './types';
 
 const CHART_METRICS: ChartMetric[] = ['price', 'mc'];

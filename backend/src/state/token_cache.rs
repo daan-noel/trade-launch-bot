@@ -65,10 +65,6 @@ pub struct CachedTrade {
     /// Token-local interned wallet id (index into `TokenState::interner`'s table).
     pub wallet: u32,
     pub is_buy: bool,
-    /// `true` for a bonding-curve leg, `false` for a post-migration AMM leg. A
-    /// 1-byte stand-in for the dropped `venue` String — the only `venue` use off
-    /// the cache is the sweep corpus's `curve_only` filter (`CacheSource`).
-    pub is_curve: bool,
     pub sol_amount: f64,
     pub token_amount: f64,
     pub price_per_token: f64,
@@ -89,7 +85,6 @@ impl CachedTrade {
         Self {
             wallet,
             is_buy: matches!(t.trade_type, TradeType::Buy),
-            is_curve: t.venue == "curve",
             sol_amount: t.sol_amount,
             token_amount: t.token_amount,
             price_per_token: t.price_per_token,
@@ -264,22 +259,6 @@ impl TokenState {
     pub fn intern_trade(&mut self, trade: &Trade) -> CachedTrade {
         let wallet = self.interner.intern(&trade.wallet_address);
         CachedTrade::from_trade(trade, wallet)
-    }
-
-    /// Clone this token's `u32 → address` wallet table — for the sweep cache corpus
-    /// source, which projects the retained `CachedTrade`s into `SweepTrade`s reusing
-    /// these exact ids (no re-hash) and needs the table to write addresses back.
-    pub fn wallet_table(&self) -> Vec<Box<str>> {
-        self.interner.clone_table()
-    }
-
-    /// The token's launch price (initial buy SOL ÷ initial supply), if both are
-    /// known. This is the baseline the dead-token price signal compares against.
-    pub fn initial_price(&self) -> Option<f64> {
-        self.token
-            .initial_buy_sol
-            .zip(self.token.initial_supply_token)
-            .and_then(|(buy, supply)| (supply > 0).then(|| buy / supply as f64))
     }
 
     /// Whether this token looks **dead** at `now`: nobody cares anymore.
@@ -861,11 +840,9 @@ mod tests {
         // The cache wallet is an interned `u32`; the interner table maps it back to
         // the source `Trade`'s wallet address.
         assert_eq!(*c.wallet(), wallet_id);
-        assert_eq!(&*interner.clone_table()[wallet_id as usize], t.wallet());
+        assert_eq!(&*interner.into_table()[wallet_id as usize], t.wallet());
         // The cache row carries no signature (Phase B step 1): `tx_signature()` is
         // always `""`, regardless of the source `Trade`'s sig.
         assert_eq!(c.tx_signature(), "");
-        // `is_curve` stands in for the dropped `venue` String (here an AMM leg).
-        assert!(!c.is_curve);
     }
 }

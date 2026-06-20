@@ -168,6 +168,7 @@ impl SyncGate {
     }
 
     /// Currently free concurrency permits (test/observability helper).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn available_permits(&self) -> usize {
         self.permits.available_permits()
     }
@@ -244,10 +245,6 @@ impl AppState {
         self.settings.borrow().clone()
     }
 
-    pub fn set_settings(&self, settings: AppSettings) {
-        let _ = self.settings.send(settings);
-    }
-
     /// Atomically apply `f` to the in-memory settings snapshot. Uses the watch
     /// channel's `send_modify` so the read-modify-write happens under the
     /// channel lock — a concurrent settings POST (or one racing `set_live`)
@@ -257,16 +254,8 @@ impl AppState {
         self.settings.send_modify(f);
     }
 
-    pub fn set_sol_price(&self, price: Option<f64>) {
-        let _ = self.sol_price.send(price);
-    }
-
     pub fn latest_sol_price(&self) -> Option<f64> {
         *self.sol_price.borrow()
-    }
-
-    pub fn subscribe_sol_price(&self) -> watch::Receiver<Option<f64>> {
-        self.sol_price.subscribe()
     }
 
     // --- Repository accessors -------------------------------------------------

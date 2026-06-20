@@ -92,16 +92,6 @@ impl WalletRepo {
         Ok(row.map(Wallet::from))
     }
 
-    pub async fn find_by_address(&self, address: &str) -> anyhow::Result<Option<Wallet>> {
-        let row = sqlx::query_as::<_, WalletRow>(&format!(
-            "SELECT {WALLET_COLS} FROM wallets WHERE address=$1"
-        ))
-            .bind(address)
-            .fetch_optional(&self.pool)
-            .await?;
-        Ok(row.map(Wallet::from))
-    }
-
     pub async fn list_by_profile(&self, profile_id: Uuid) -> anyhow::Result<Vec<Wallet>> {
         let rows = sqlx::query_as::<_, WalletRow>(&format!(
             "SELECT {WALLET_COLS} FROM wallets WHERE profile_id=$1 ORDER BY created_at ASC"
@@ -126,17 +116,7 @@ impl WalletRepo {
         Ok(rows.into_iter().map(Wallet::from).collect())
     }
 
-    /// Touch last_seen_at for a known address. Silently no-ops if address is not in the table.
-    pub async fn touch_last_seen(&self, address: &str, now: DateTime<Utc>) -> anyhow::Result<()> {
-        sqlx::query("UPDATE wallets SET last_seen_at=$1 WHERE address=$2")
-            .bind(now)
-            .bind(address)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    /// Bulk version of [`touch_last_seen`] — stamps `now` on every listed address
+    /// Stamps `now` on `last_seen_at` for every listed address
     /// in one `UPDATE … WHERE address = ANY($2)`. The live ingest DB-writer uses
     /// this to collapse a flush's wallet touches (a hot wallet can appear dozens
     /// of times) into a single statement.

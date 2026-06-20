@@ -67,7 +67,9 @@ pub(crate) fn fill_outcomes<S: Strategy>(
     Ok(())
 }
 
-/// Headline counts for a completed sweep.
+/// Headline counts for a completed sweep. Read by the engine's correctness tests
+/// (row/fired counts); production callers discard it.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug)]
 pub struct SweepStats {
     pub tokens: usize,
@@ -274,9 +276,6 @@ mod tests {
         type Entry = bool;
         type EntryKey = ();
         type TokenState = ();
-        fn id(&self) -> &'static str {
-            "mock"
-        }
         fn entry_key(&self, _p: &f64) {}
         fn prepare_token(&self, _trades: &[SweepTrade]) {}
         fn resolve_entry(&self, trades: &[SweepTrade], _state: &(), _p: &f64) -> bool {
@@ -367,9 +366,6 @@ mod tests {
         type Entry = i64;
         type EntryKey = i64;
         type TokenState = ();
-        fn id(&self) -> &'static str {
-            "entry-mock"
-        }
         fn entry_key(&self, p: &(i64, f64)) -> i64 {
             p.0
         }

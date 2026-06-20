@@ -1,5 +1,5 @@
 import { CHART_COLORS } from './constants';
-import { cn } from './cn';
+import { cn } from 'lib/cn';
 import type { ChartSwingTooltipState } from './types';
 import { formatDecimalTrim, formatDurationMs } from 'utils/format';
 import { useTimezone } from 'context/TimezoneContext';

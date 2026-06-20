@@ -80,34 +80,6 @@ impl AnalysisRepo {
         Self { pool }
     }
 
-    /// Upsert an analysis result for a (token, analyzer) pair.
-    /// Re-running the same analyzer on the same token replaces the previous result.
-    pub async fn upsert_result(&self, result: &AnalysisResult) -> anyhow::Result<()> {
-        let indicators_json = serde_json::to_value(&result.indicators)?;
-
-        sqlx::query(
-            r#"
-            INSERT INTO tokens_analysis
-                (id, mint_address, analyzer_name, score, indicators, computed_at)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (mint_address, analyzer_name) DO UPDATE
-                SET score       = EXCLUDED.score,
-                    indicators  = EXCLUDED.indicators,
-                    computed_at = EXCLUDED.computed_at
-            "#,
-        )
-        .bind(result.id)
-        .bind(&result.mint_address)
-        .bind(&result.analyzer_name)
-        .bind(result.score)
-        .bind(sqlx::types::Json(&indicators_json))
-        .bind(result.computed_at)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
     /// All analyzer results for a token.
     pub async fn find_by_mint(&self, mint: &str) -> anyhow::Result<Vec<AnalysisResult>> {
         let rows = sqlx::query_as::<_, AnalysisResultDbRow>(
@@ -118,37 +90,6 @@ impl AnalysisRepo {
         .await?;
 
         Ok(rows.into_iter().map(AnalysisResult::from).collect())
-    }
-
-    /// Upsert a creator profile. Called after the creator analyzer runs.
-    pub async fn upsert_creator_profile(&self, profile: &CreatorProfile) -> anyhow::Result<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO creator_profiles
-                (id, wallet_address, tokens_created, total_volume_sol,
-                 suspiciousness_score, wash_trade_score, last_analyzed_at, indicators)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            ON CONFLICT (wallet_address) DO UPDATE
-                SET tokens_created       = EXCLUDED.tokens_created,
-                    total_volume_sol     = EXCLUDED.total_volume_sol,
-                    suspiciousness_score = EXCLUDED.suspiciousness_score,
-                    wash_trade_score     = EXCLUDED.wash_trade_score,
-                    last_analyzed_at     = EXCLUDED.last_analyzed_at,
-                    indicators           = EXCLUDED.indicators
-            "#,
-        )
-        .bind(profile.id)
-        .bind(&profile.wallet_address)
-        .bind(profile.tokens_created)
-        .bind(profile.total_volume_sol)
-        .bind(profile.suspiciousness_score)
-        .bind(profile.wash_trade_score)
-        .bind(profile.last_analyzed_at)
-        .bind(sqlx::types::Json(&profile.indicators))
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
     }
 
     pub async fn find_creator_profile(

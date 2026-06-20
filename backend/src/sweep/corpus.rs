@@ -2,10 +2,8 @@
 //! per-token trade histories the sweep can call `simulate` over many times
 //! without ever touching the DB in the loop.
 //!
-//! Two `CorpusSource` impls behind one trait:
-//!   - [`CacheSource`] — the hot/recent window from the live `TokenCache`,
-//!     refcount-cloned (`Arc`), no DB.
-//!   - [`DbSource`]    — the historical / cache-miss tail via a chunked batch
+//! The [`CorpusSource`] trait has one impl:
+//!   - [`DbSource`] — the historical / cache-miss tail via a chunked batch
 //!     query (one round-trip per mint chunk, per-mint capped via a `ROW_NUMBER`
 //!     window), replacing any per-token N+1 loop.
 //!
@@ -36,7 +34,6 @@ use parquet::arrow::ArrowWriter;
 use sqlx::PgPool;
 
 use crate::models::trade::{Trade, TradeRow};
-use crate::state::token_cache::{CachedTrade, TokenCache};
 use crate::storage::repositories::trade_repo::TradeSlimRow;
 use crate::sweep::grouping::{extract_lamports, normalize_labels, TokenFingerprint};
 use crate::sweep::projection::{project_trades, SweepTrade, WalletInterner};
@@ -82,49 +79,6 @@ impl TokenTrades {
         }
     }
 
-    /// Project the live cache's already-interned [`CachedTrade`]s (`Wallet = u32`)
-    /// into the sweep buffer **without re-hashing** any wallet: the cache row's `u32`
-    /// is already a token-local dense id, so it is copied straight across and the
-    /// token's own `u32 → address` table ([`TokenState::wallet_table`]) becomes the
-    /// `wallets` table. This is the cache corpus source's path — distinct from
-    /// [`from_trades`](Self::from_trades), which interns a `String`-walleted source
-    /// (the DB `Trade`). Apply `curve_only` before calling (filter the iterator).
-    ///
-    /// [`TokenState::wallet_table`]: crate::state::token_cache::TokenState::wallet_table
-    pub fn from_cached<'a>(
-        mint: String,
-        symbol: String,
-        fp: TokenFingerprint,
-        trades: impl IntoIterator<Item = &'a CachedTrade>,
-        wallets: Vec<Box<str>>,
-    ) -> Self {
-        let rows: Vec<SweepTrade> = trades.into_iter().map(sweep_trade_from_cached).collect();
-        Self {
-            mint,
-            symbol,
-            fp,
-            trades: Arc::new(rows),
-            wallets: Arc::new(wallets),
-        }
-    }
-}
-
-/// Copy a slim live-cache [`CachedTrade`] into a [`SweepTrade`], preserving its
-/// already-interned token-local `u32` wallet id (no re-hash — see
-/// [`TokenTrades::from_cached`]).
-fn sweep_trade_from_cached(t: &CachedTrade) -> SweepTrade {
-    SweepTrade {
-        block_time: t.block_time,
-        sol_amount: t.sol_amount,
-        token_amount: t.token_amount,
-        price_per_token: t.price_per_token,
-        virtual_sol_reserves: t.virtual_sol_reserves,
-        real_sol_reserves: t.real_sol_reserves,
-        slot: t.slot,
-        wallet: t.wallet,
-        leg_index: t.leg_index,
-        is_buy: t.is_buy,
-    }
 }
 
 /// The whole loaded population plus the hash that keys its Parquet cache.
@@ -369,83 +323,6 @@ fn corpus_hash(tokens: &[TokenTrades], curve_only: bool) -> String {
         n.hash(&mut h);
     }
     format!("{:016x}", h.finish())
-}
-
-// ---------------------------------------------------------------------------
-// Cache source
-// ---------------------------------------------------------------------------
-
-/// Loads the hot/recent window straight from the live `TokenCache` — zero DB,
-/// refcount-clone of each token's shared trade buffer.
-pub struct CacheSource {
-    cache: Arc<TokenCache>,
-}
-
-impl CacheSource {
-    pub fn new(cache: Arc<TokenCache>) -> Self {
-        Self { cache }
-    }
-}
-
-#[async_trait]
-impl CorpusSource for CacheSource {
-    async fn load(&self, sel: &Selection) -> Result<Corpus> {
-        let allow: Option<std::collections::HashSet<&String>> =
-            sel.mints.as_ref().map(|m| m.iter().collect());
-
-        let mut tokens: Vec<TokenTrades> = Vec::new();
-        for entry in self.cache.iter() {
-            let st = entry.value();
-            if st.token.is_mayhem_mode {
-                continue;
-            }
-            if let Some(after) = sel.created_after {
-                if st.token.created_at < after {
-                    continue;
-                }
-            }
-            if let Some(before) = sel.created_before {
-                if st.token.created_at >= before {
-                    continue;
-                }
-            }
-            if let Some(allow) = &allow {
-                if !allow.contains(&st.token.mint_address) {
-                    continue;
-                }
-            }
-            // The cache holds the decoded token, so fill the grouping fingerprint
-            // here for free (the DB source defers it to `attach_fingerprints`).
-            let fp = TokenFingerprint::from_token(&st.token);
-            let mint = st.token.mint_address.clone();
-            let symbol = st.token.symbol.clone();
-            // Project the slim cache rows to the sweep buffer under the shard guard.
-            // (We no longer refcount-clone the live `Arc<Vec<CachedTrade>>`: the sweep
-            // walks `SweepTrade`, so the corpus is projected once here — a load-time
-            // cost, not the live hot path.) The cache row's wallet is already an
-            // interned token-local `u32`, so it copies straight across reusing the
-            // token's `wallet_table` (no re-hash — Phase B step 2). `curve_only`
-            // filters on the 1-byte `is_curve` flag before projection.
-            let wallets = st.wallet_table();
-            let tt = if sel.curve_only {
-                TokenTrades::from_cached(mint, symbol, fp, st.trades.iter().filter(|t| t.is_curve), wallets)
-            } else {
-                TokenTrades::from_cached(mint, symbol, fp, st.trades.iter(), wallets)
-            };
-            if !tt.trades.is_empty() {
-                tokens.push(tt);
-            }
-            if tokens.len() >= sel.token_cap {
-                tracing::warn!(
-                    cap = sel.token_cap,
-                    "corpus: cache token_cap reached — population clipped (not truncated silently)"
-                );
-                break;
-            }
-        }
-        let hash = corpus_hash(&tokens, sel.curve_only);
-        Ok(Corpus { tokens, hash, has_fingerprints: false })
-    }
 }
 
 // ---------------------------------------------------------------------------

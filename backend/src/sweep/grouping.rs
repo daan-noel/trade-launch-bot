@@ -18,7 +18,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::models::token::Token;
 
 /// Sentinel rendered for a missing (`None`/empty) field value, so tokens that
 /// lack the field form their own group instead of colliding with `0`/`""`.
@@ -41,28 +40,6 @@ pub struct TokenFingerprint {
     pub spendable_sol_in: Option<i64>,
     /// Creation instruction-label set, sorted + deduped for a stable key.
     pub ix_labels: Vec<String>,
-}
-
-impl TokenFingerprint {
-    /// Build a fingerprint from a full [`Token`] (the cache-source path, which
-    /// holds the decoded token). The DB-source path builds the same struct from
-    /// a slim SQL projection — both share [`extract_lamports`]/[`normalize_labels`].
-    pub fn from_token(t: &Token) -> Self {
-        Self {
-            creator_wallet: t.creator_wallet.clone(),
-            token_program_id: t.token_program_id.clone(),
-            initial_buy_sol: t.initial_buy_sol,
-            cu_limit: t.cu_limit.map(|v| v as i64),
-            cu_price: t.cu_price.map(|v| v as i64),
-            is_cashback_enabled: t.is_cashback_enabled,
-            max_sol_cost: extract_lamports(t.initial_buy_instruction.as_ref(), "max_sol_cost"),
-            spendable_sol_in: extract_lamports(
-                t.initial_buy_instruction.as_ref(),
-                "spendable_sol_in",
-            ),
-            ix_labels: normalize_labels(&t.instruction_labels),
-        }
-    }
 }
 
 /// Read a lamports value (u64 number or numeric string) from a creation

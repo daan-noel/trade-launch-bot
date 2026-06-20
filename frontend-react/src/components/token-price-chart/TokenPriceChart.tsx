@@ -37,7 +37,7 @@ import { ChartRangeSlider } from './ChartRangeSlider';
 import { ChartToolbar } from './ChartToolbar';
 import { createChartTimeFormatters } from './chartTimezone';
 import { useTimezone } from 'context/TimezoneContext';
-import { cn } from './cn';
+import { cn } from 'lib/cn';
 import {
   CANDLE_SERIES_OPTIONS,
   CHART_COLORS,

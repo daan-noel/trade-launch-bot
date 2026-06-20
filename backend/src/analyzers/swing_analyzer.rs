@@ -164,14 +164,10 @@ enum Side {
 
 struct Tx {
     timestamp_ms: i64,
-    slot: u64,
-    position: u32,
     side: Side,
     sol_amount: f64,
     /// Post-trade curve spot (`virtual_sol / virtual_token`), used for `end_price`.
     price: f64,
-    /// Execution price `sol_amount / token_amount`.
-    execution_price: f64,
     /// Curve spot immediately BEFORE this trade (the previous trade's post-trade
     /// spot, since the curve is unchanged between trades). Used for `start_price`.
     pre_spot: f64,
@@ -363,15 +359,12 @@ fn sanitize_and_order(trades: &[Trade]) -> Vec<Tx> {
             prev_post_spot = Some(post_spot);
             Tx {
                 timestamp_ms: t.block_time.timestamp_millis(),
-                slot: t.slot,
-                position: t.leg_index,
                 side: match t.trade_type {
                     TradeType::Buy => Side::Buy,
                     TradeType::Sell => Side::Sell,
                 },
                 sol_amount: t.sol_amount,
                 price: post_spot,
-                execution_price,
                 pre_spot,
             }
         })

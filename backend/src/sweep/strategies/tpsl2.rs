@@ -589,10 +589,6 @@ impl Strategy for Tpsl2Strategy {
     /// each `find_trade_driven_exit` E5 precompute (#1).
     type TokenState = Tpsl2TokenState;
 
-    fn id(&self) -> &'static str {
-        "tpsl2"
-    }
-
     fn entry_key(&self, params: &Tpsl2Combo) -> Tpsl2EntryKey {
         let p = &params.raw;
         Tpsl2EntryKey {

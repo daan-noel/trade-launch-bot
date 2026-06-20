@@ -391,9 +391,6 @@ pub trait Strategy: ParamSpace + Send + Sync {
     /// with no such state sets this to `()`.
     type TokenState;
 
-    /// Stable id stored alongside every combo (e.g. `"tpsl2"`).
-    fn id(&self) -> &'static str;
-
     /// The entry-param signature of a combo. Combos sharing it share an entry.
     fn entry_key(&self, params: &Self::Params) -> Self::EntryKey;
 

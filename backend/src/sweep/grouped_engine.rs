@@ -575,9 +575,6 @@ mod tests {
         type Entry = bool;
         type EntryKey = ();
         type TokenState = ();
-        fn id(&self) -> &'static str {
-            "mock"
-        }
         fn entry_key(&self, _p: &f64) {}
         fn prepare_token(&self, _trades: &[SweepTrade]) {}
         fn resolve_entry(&self, trades: &[SweepTrade], _state: &(), _p: &f64) -> bool {

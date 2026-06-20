@@ -382,10 +382,6 @@ impl Strategy for Tpsl1Strategy {
     // No param-independent per-token state to hoist (TPSL1 has no cohort gate).
     type TokenState = ();
 
-    fn id(&self) -> &'static str {
-        "tpsl1"
-    }
-
     fn entry_key(&self, _params: &Tpsl1Combo) {}
 
     fn prepare_token(&self, _trades: &[SweepTrade]) {}

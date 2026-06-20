@@ -17,24 +17,6 @@ pub struct AnalysisResult {
     pub computed_at: DateTime<Utc>,
 }
 
-impl AnalysisResult {
-    pub fn new(
-        mint_address: String,
-        analyzer_name: String,
-        score: f64,
-        indicators: Vec<String>,
-    ) -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            mint_address,
-            analyzer_name,
-            score,
-            indicators,
-            computed_at: Utc::now(),
-        }
-    }
-}
-
 /// Aggregated reputation profile for a creator wallet.
 /// Upserted each time the creator analyzer runs.
 #[derive(Debug, Clone, Serialize, Deserialize)]

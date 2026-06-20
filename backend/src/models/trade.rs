@@ -68,6 +68,7 @@ impl Trade {
     }
 
     /// PumpSwap pool spot from post-swap reserves (`real_sol / real_token`).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn pool_spot_price(&self) -> Option<f64> {
         match (self.real_sol_reserves, self.real_token_reserves) {
             (Some(sol), Some(tok)) if tok > 0.0 => Some(sol / tok),
@@ -76,6 +77,7 @@ impl Trade {
     }
 
     /// GMGN-style chart spot: curve virtual reserves, pool reserves, then execution.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn chart_spot_price(&self) -> Option<f64> {
         self.curve_spot_price()
             .or_else(|| self.pool_spot_price())

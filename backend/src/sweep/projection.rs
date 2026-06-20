@@ -94,8 +94,7 @@ impl TradeRow for SweepTrade {
 /// The sweep discards the map once a token is projected (keeping only the table for
 /// the Parquet write). The **live token cache** keeps a `WalletInterner` resident on
 /// each `TokenState` so it can intern every appended trade's wallet to a `u32` (Phase
-/// B step 2) — hence `Clone` (the state derives it) and `clone_table` (the cache
-/// corpus source re-uses the table without consuming the live interner).
+/// B step 2) — hence `Clone` (the state derives it).
 #[derive(Default, Clone)]
 pub struct WalletInterner {
     by_addr: HashMap<String, u32>,
@@ -117,28 +116,12 @@ impl WalletInterner {
     pub fn into_table(self) -> Vec<Box<str>> {
         self.table
     }
-
-    /// A copy of the `u32 → address` table without consuming the interner — for the
-    /// live cache's corpus source, which must keep interning new trades afterwards.
-    pub fn clone_table(&self) -> Vec<Box<str>> {
-        self.table.clone()
-    }
-
-    /// Number of distinct wallets interned so far.
-    pub fn len(&self) -> usize {
-        self.table.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.table.is_empty()
-    }
 }
 
 /// Project a token's chronological trade slice into the slim sweep rows plus the
 /// interned `u32 → wallet` table. Generic over any [`TradeRow`] whose `Wallet` is a
-/// `String`, so it projects either the DB-loaded full [`Trade`] (DB corpus source)
-/// or the live cache's slim `CachedTrade` (cache corpus source) field-for-field; no
-/// decision data is lost.
+/// `String`, so it projects the DB-loaded full [`Trade`] (DB corpus source)
+/// field-for-field; no decision data is lost.
 pub fn project_trades<T: TradeRow<Wallet = String>>(
     trades: &[T],
 ) -> (Vec<SweepTrade>, Vec<Box<str>>) {

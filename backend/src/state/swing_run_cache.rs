@@ -15,7 +15,6 @@
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
@@ -26,15 +25,12 @@ use crate::analyzers::swing_analyzer::SwingLeg;
 /// batch chunks of a single run insert their mints without contending on a lock.
 pub struct SwingRun {
     pub mints: DashMap<String, Vec<SwingLeg>>,
-    /// Creation instant, used only for eviction ordering.
-    created_at: Instant,
 }
 
 impl SwingRun {
     fn new() -> Self {
         Self {
             mints: DashMap::new(),
-            created_at: Instant::now(),
         }
     }
 }

@@ -505,17 +505,8 @@ impl Tpsl2PaperTradingRepo {
         rows.into_iter().map(Position::try_from).collect()
     }
 
-    /// Number of positions recorded in a run (the per-run total-cap counter).
-    pub async fn count_by_run(&self, run_id: Uuid) -> anyhow::Result<i64> {
-        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tpsl2_paper_positions WHERE run_id = $1")
-            .bind(run_id)
-            .fetch_one(&self.pool)
-            .await?;
-        Ok(n)
-    }
-
     /// Position counts for every run in a single GROUP BY, so the cache load can
-    /// look counts up by run id instead of issuing one `count_by_run` per run
+    /// look counts up by run id instead of issuing one count-per-run query
     /// (the previous N+1). Runs with zero positions are absent from the map.
     pub async fn count_by_run_all(&self) -> anyhow::Result<std::collections::HashMap<Uuid, i64>> {
         let rows: Vec<(Uuid, i64)> = sqlx::query_as(
