@@ -61,7 +61,6 @@ pub const JITO_TIP_ACCOUNTS: &[&str] = &[
     "2q5pghRs6arqVjRvT5gfgWfWcHWmw1ZuCzphgd5KfWGJ",
     "5VY91ws6B2hMmBFRsXkoAAdsPHBJwRfBht4DXox3xkwn",
     "4vieeGHPYPG2MmyPRcYjdiDmmhN3ww7hsFNap8pVN3Ey",
-    "D1Mc6j9xQWgR1o1Z7yU5nVVXFQiAYx7FG9AW1aVfwrUM",
     "4ACfpUFoaSD9bfPdeu6DBt89gB6ENTeHBXCAi87NhDEE",
 ];
 
