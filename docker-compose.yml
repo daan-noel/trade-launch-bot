@@ -30,6 +30,10 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     restart: unless-stopped
+    # tini as PID 1: forwards SIGTERM to the binary (the kernel ignores SIGTERM for
+    # PID 1 with no handler), so `docker stop`/redeploy kills it promptly instead of
+    # waiting the 10s grace period then SIGKILL mid-trade.
+    init: true
     env_file: .env
     environment:
       # These OVERRIDE anything in .env (compose `environment` wins over env_file):
