@@ -40,7 +40,7 @@ import {
   stopTpsl1Rule,
   updateTpsl1Rule,
 } from 'services/api';
-import { connectPaperTestStream } from 'services/sse';
+import { connectPaperTestStream, connectTpslPositionsChanged } from 'services/sse';
 import { useBackgroundJobActions } from 'context/BackgroundJobsContext';
 import { apiErrorMessage, useGetTokensByMintsQuery } from 'store/apiSlice';
 import { mergeTokenData } from 'components/tokens/sharedTokenColumns';
@@ -299,6 +299,43 @@ function inspectFromPosition(r: RulePositionRecord): InspectTarget {
     exitPrice: r.exit_price,
     exitTx: r.exit_tx,
     exitLabel: r.status && r.status !== 'Open' ? r.status : null,
+  };
+}
+
+/** Map a live position row into the sim-shaped result the shared `SimSummaryCard`
+ *  aggregates, so the Positions section shows the same KPI / TP-SL / PnL summary
+ *  as the paper-test and simulation views. Mirrors the backend
+ *  `paper_position_to_sim_result`: still-open rows read as `"Open"`; PnL in SOL is
+ *  the entry-allocated SOL scaled by the realized PnL %. */
+function positionToSimResult(p: RulePositionRecord): SimulatedTokenResult {
+  const pnlPercent = p.pnl_percent;
+  const pnlSol = pnlPercent != null ? p.entry_amount * (pnlPercent / 100) : null;
+  const holdingSecs =
+    p.entry_time && p.exit_time
+      ? Math.round((new Date(p.exit_time).getTime() - new Date(p.entry_time).getTime()) / 1000)
+      : null;
+  const athPrice =
+    p.exit_price != null ? Math.max(p.exit_price, p.entry_price) : p.entry_price;
+  return {
+    mint: p.mint,
+    symbol: p.symbol ?? '',
+    target_price: p.target_price,
+    target_amount: p.target_amount,
+    target_time: p.target_time,
+    target_tx: p.target_tx,
+    entry_price: p.entry_price,
+    ath_price: athPrice,
+    entry_amount: p.entry_amount,
+    entry_tx: p.entry_tx,
+    entry_time: p.entry_time ?? p.created_at,
+    exit_price: p.exit_price,
+    exit_tx: p.exit_tx,
+    exit_time: p.exit_time,
+    holding_secs: holdingSecs,
+    pnl_percent: pnlPercent,
+    pnl_sol: pnlSol,
+    exit_reason: p.exit_reason ?? 'Open',
+    total_trades: 0,
   };
 }
 
@@ -634,6 +671,30 @@ export function Tpsl1Page() {
     });
     return () => es.close();
   }, [loadRules, dispatch]);
+
+  // Keep the open paper-result view live while its run is in progress: every
+  // position open/close emits `tpsl_positions_changed`, so (debounced, to
+  // coalesce fill bursts) force-refetch the result for the open rule. Without
+  // this the summary card froze at open-time and only refreshed when the run
+  // finished. Notify over poll, one refetch per debounce window.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const handle = connectTpslPositionsChanged('tpsl1', (ruleId) => {
+      if (ruleId !== openPaperRuleId.current || timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        const id = openPaperRuleId.current;
+        if (!id) return;
+        fetchPaperResultCached(dispatch, { strategy: 'tpsl1', ruleId: id }, true)
+          .then((data) => setPaperResult({ ruleId: id, data }))
+          .catch(() => {});
+      }, 800);
+    });
+    return () => {
+      if (timer) clearTimeout(timer);
+      handle.close();
+    };
+  }, [dispatch]);
 
   useEffect(() => {
     if (!paperNotice) return;
@@ -1014,6 +1075,14 @@ export function Tpsl1Page() {
     [selectedRuleId, rules],
   );
 
+  // Sim-shaped view of the live positions, feeding the Positions summary card.
+  // Memoized so the ~10 aggregate passes (and the card) only recompute when the
+  // position list actually changes, not on every SOL/USD price tick.
+  const positionSummaryTokens = useMemo(
+    () => positions.map(positionToSimResult),
+    [positions],
+  );
+
   // Stable row-select handlers so the result tables' memoized rows survive an
   // unrelated page render (these closures are passed straight to DataTable).
   const onSelectPosition = useCallback(
@@ -1147,6 +1216,14 @@ export function Tpsl1Page() {
             />
             {positionsLoading && <p className="text-text-dim">Loading positions…</p>}
             {positionsError && <InlineAlert variant="error">{positionsError}</InlineAlert>}
+            {!positionsLoading && !positionsError && positions.length > 0 && (
+              <SimSummaryCard
+                title="Positions Summary"
+                ruleName={selectedRuleName ?? ''}
+                tokens={positionSummaryTokens}
+                price={price}
+              />
+            )}
             {!positionsLoading && !positionsError && (
               <DataTable
                 columns={posCols}

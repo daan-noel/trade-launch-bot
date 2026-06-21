@@ -19,7 +19,9 @@ interface SimSummaryCardProps {
   ruleName: string;
   tokens: SimulatedTokenResult[];
   price: ReturnType<typeof usePriceDisplay>;
-  onClose: () => void;
+  /** Dismiss handler. Omit to render the card without a ✕ (e.g. when it's an
+   *  intrinsic part of a section, like the live Positions summary). */
+  onClose?: () => void;
   /** Card heading; defaults to "Simulation Results". */
   title?: string;
 }
@@ -191,13 +193,15 @@ export function SimSummaryCard({
         <h3 className="text-sm font-bold text-text">{title}</h3>
         <span className="truncate font-mono text-[11px] text-text-dim">{ruleName}</span>
         <span className="flex-1" />
-        <button
-          type="button"
-          onClick={onClose}
-          className="text-text-dim transition hover:text-text"
-        >
-          ✕
-        </button>
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-text-dim transition hover:text-text"
+          >
+            ✕
+          </button>
+        )}
       </div>
 
       <div className="flex flex-wrap gap-x-10 gap-y-4">
