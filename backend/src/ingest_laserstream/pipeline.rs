@@ -370,12 +370,12 @@ impl IngestPipeline {
             return;
         }
 
-        info!(
-            name = %e.token.name,
-            symbol = %e.token.symbol,
-            mint = %mint,
-            "New token tracked"
-        );
+        // info!(
+        //     name = %e.token.name,
+        //     symbol = %e.token.symbol,
+        //     mint = %mint,
+        //     "New token tracked"
+        // );
 
         let creator = e.token.creator_wallet.clone();
         self.enqueue_db(DbWriteOp::Token(e.token.clone())).await;
@@ -403,12 +403,12 @@ impl IngestPipeline {
             return;
         }
 
-        debug!(
-            mint = %mint,
-            wallet = %wallet,
-            kind = ?e.trade.trade_type,
-            "Trade applied"
-        );
+        // debug!(
+        //     mint = %mint,
+        //     wallet = %wallet,
+        //     kind = ?e.trade.trade_type,
+        //     "Trade applied"
+        // );
 
         // Capture the Copy reserve/venue/SSE facts before the trade is moved into
         // the token-state aggregate below, so the (label-JSON-carrying) Trade is
