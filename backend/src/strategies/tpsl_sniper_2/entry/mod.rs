@@ -17,6 +17,7 @@ use tracing::warn;
 use uuid::Uuid;
 
 use super::util::{none_if_zero_f64, none_if_zero_u64};
+use crate::config::constants::LAMPORTS_PER_SOL;
 use crate::models::{Tpsl2Rule, Token};
 
 mod scalp;
@@ -24,8 +25,6 @@ pub use scalp::{
     find_scalp_entry, find_scalp_entry_with_cohort_indexed, find_worst_case_paper_entry,
     find_worst_case_paper_entry_at, rule_configures_any_scalp_gate, scalp_cohort,
 };
-
-const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 
 /// The result of testing one entry criterion against a token.
 enum CriterionOutcome {
@@ -207,7 +206,7 @@ fn instruction_arg_as_sol(token: &Token, key: &str) -> Option<f64> {
         v.as_u64()
             .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
     })?;
-    Some(lamports as f64 / LAMPORTS_PER_SOL)
+    Some(lamports as f64 / LAMPORTS_PER_SOL as f64)
 }
 
 // ── Fill resolution ──────────────────────────────────────────────────────────

@@ -6,11 +6,8 @@ use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 use tracing::warn;
 
+use crate::config::constants::WSOL_MINT;
 use crate::services::http;
-
-/// Wrapped-SOL mint — used to read a SOL/USD price from Jupiter as a fallback
-/// when the primary (CoinGecko) source is down or rate-limited.
-pub const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
 
 /// Bounded retry on transient failures (network error, 5xx, 429): a single
 /// transient blip shouldn't drop a price refresh on the floor. Mirrors the
