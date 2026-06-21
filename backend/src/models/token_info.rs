@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -25,6 +24,8 @@ pub struct TokenInfo {
 }
 
 impl TokenInfo {
+    // Only constructed by `seed.rs` tests; production builds rows via the repo.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(
         mint_address: String,
         ath_price: Option<f64>,

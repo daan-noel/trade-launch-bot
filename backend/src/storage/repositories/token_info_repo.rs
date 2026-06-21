@@ -110,7 +110,6 @@ impl TokenInfoRepo {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub async fn find_by_mint(&self, mint: &str) -> anyhow::Result<Option<TokenInfo>> {
         let row = sqlx::query_as::<_, (Uuid, String, Option<f64>, Option<DateTime<Utc>>, Option<i64>, f64, Option<f64>, i64, Option<DateTime<Utc>>, Option<f64>, bool, bool, DateTime<Utc>, DateTime<Utc>, Option<DateTime<Utc>>)>(
             "SELECT id, mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_dead, is_migrated, created_at, updated_at, last_synced_at FROM tokens_info WHERE mint_address = $1",

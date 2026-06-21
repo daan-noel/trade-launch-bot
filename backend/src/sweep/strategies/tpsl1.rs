@@ -193,6 +193,9 @@ impl Tpsl1Strategy {
     /// lengths (the low-order digit is `take_profit`, matching the LHS plan's
     /// column order). Shared by the full-grid and the random (without-replacement)
     /// samplers so the two index the **same** grid identically.
+    // The `take` macro advances `rem` after every axis, including the last whose
+    // result is never re-read — an intentional dead store, not a bug.
+    #[allow(unused_assignments)]
     fn combo_at(&self, index: u128) -> Tpsl1Combo {
         let a = &self.axes;
         let mut rem = index;
@@ -265,6 +268,9 @@ impl Tpsl1Strategy {
 impl ParamSpace for Tpsl1Strategy {
     type Params = Tpsl1Combo;
 
+    // The LHS `take` macro advances `col` after every axis, including the last
+    // whose result is never re-read — an intentional dead store, not a bug.
+    #[allow(unused_assignments)]
     fn sample(&self, method: SweepMethod) -> Vec<Tpsl1Combo> {
         let a = &self.axes;
         match method {

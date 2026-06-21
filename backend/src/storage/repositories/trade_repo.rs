@@ -478,20 +478,6 @@ impl TradeRepo {
         rows.into_iter().map(Trade::try_from).collect()
     }
 
-    /// Count trades by a specific wallet on a specific token.
-    #[allow(dead_code)]
-    pub async fn count_by_wallet_and_mint(&self, wallet: &str, mint: &str) -> anyhow::Result<i64> {
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(1) FROM trades WHERE wallet_address = $1 AND mint_address = $2",
-        )
-        .bind(wallet)
-        .bind(mint)
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(count)
-    }
-
     pub async fn net_token_amount_by_wallet_and_mint(
         &self,
         wallet: &str,

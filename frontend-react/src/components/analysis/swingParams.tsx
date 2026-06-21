@@ -35,7 +35,7 @@ export const SWING_PARAM_INT_KEYS = new Set<keyof SwingParams>([
   'max_leg_duration_ms',
 ]);
 
-export const SWING_PARAM_KEYS = Object.keys(DEFAULT_SWING_PARAMS) as (keyof SwingParams)[];
+const SWING_PARAM_KEYS = Object.keys(DEFAULT_SWING_PARAMS) as (keyof SwingParams)[];
 
 /** Editable form shape: fields may be empty while the user is typing. */
 export type SwingParamsForm = { [K in keyof SwingParams]: number | '' };
@@ -70,7 +70,7 @@ export const swingParamLabelClassName =
 /** Per-field tooltip copy. Keyed by the field's representative (left) {@link SwingParams}
  *  key — paired SOL/% and min/max cells share one entry whose body covers both sides.
  *  Looked up automatically by {@link SwingRangeField} and the Big-tx field. */
-export const SWING_PARAM_HELP: Partial<Record<keyof SwingParams, { title: string; body: string }>> = {
+const SWING_PARAM_HELP: Partial<Record<keyof SwingParams, { title: string; body: string }>> = {
   high_to_low_threshold_sol: {
     title: 'High → low reversal',
     body:
@@ -136,7 +136,7 @@ interface SwingParamsGridProps {
 const swingRangeInputClassName = 'min-w-0 font-normal normal-case tracking-normal';
 
 /** One side of a {@link RangeInputs} pair: its current value and how to update it. */
-export interface RangeInputSide {
+interface RangeInputSide {
   value: number | '';
   onChange: (raw: string) => void;
   placeholder?: string;

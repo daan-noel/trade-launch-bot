@@ -211,16 +211,6 @@ impl TokenRepo {
         Ok(row.map(Token::from))
     }
 
-    #[allow(dead_code)]
-    pub async fn exists(&self, mint: &str) -> anyhow::Result<bool> {
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(1) FROM tokens WHERE mint_address = $1")
-            .bind(mint)
-            .fetch_one(&self.pool)
-            .await?;
-
-        Ok(count > 0)
-    }
-
     /// Load the most-recent tokens created since `since` for cache seeding on
     /// startup, capped at `limit`. Bounded on *both* axes — recency window and row
     /// cap — rather than an unbounded full-table scan over the continuously growing
