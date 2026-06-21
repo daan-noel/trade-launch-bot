@@ -24,6 +24,11 @@ pub struct Settings {
     // --- Timing ---
     /// How long to wait before reconnecting after a stream drop.
     pub reconnect_interval: Duration,
+    /// Liveness watchdog: if ingest makes no forward progress for this long while
+    /// live mode is on, the process force-exits so the supervisor restarts a wedged
+    /// ingest (a downstream `.await` deadlock the in-stream watchdog can't see). The
+    /// pump.fun firehose never goes this quiet, so only a real stall trips it.
+    pub ingest_stall_timeout: Duration,
 
     // --- Database ---
     pub database_url: String,
@@ -62,6 +67,13 @@ impl Settings {
             wallet_private_key: required("WALLET_PRIVATE_KEY")?,
             nonce_accounts: parse_required_list("NONCE_ACCOUNTS")?,
             reconnect_interval: Duration::from_millis(env_parse("RECONNECT_INTERVAL", 10_000)?),
+            // Floor at 30s so a typo can't set a trigger-happy timeout that restarts
+            // the process on a normal burst lull.
+            ingest_stall_timeout: Duration::from_secs(env_parse_min(
+                "INGEST_STALL_TIMEOUT_SECS",
+                120u64,
+                30,
+            )?),
             database_url: required("DATABASE_URL")?,
             db_max_connections: env_parse_min("DB_MAX_CONNECTIONS", 20u32, 1)?,
             db_min_connections: env_parse("DB_MIN_CONNECTIONS", 2u32)?,

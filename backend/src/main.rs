@@ -483,6 +483,18 @@ async fn main() -> anyhow::Result<()> {
         let pool_index = pipeline.pool_index();
         let pools_changed = pipeline.pools_changed();
 
+        // End-to-end ingest liveness: the client stamps this on every tx it forwards
+        // to the pipeline; a dedicated OS-thread watchdog force-exits the process if
+        // it goes stale while live, so a downstream `.await` deadlock that the
+        // in-stream watchdog and task supervision both miss self-heals via restart.
+        let heartbeat = state::ingest_health::IngestHeartbeat::new();
+        state::ingest_health::spawn_watchdog(
+            heartbeat.clone(),
+            live_tx.subscribe(),
+            settings.ingest_stall_timeout,
+            std::time::Duration::from_secs(15),
+        );
+
         let producer_task = tokio::spawn(ingest_laserstream::client::run(
             settings.helius_laserstream_url.clone(),
             settings.helius_api_key.clone(),
@@ -492,6 +504,7 @@ async fn main() -> anyhow::Result<()> {
             pool_index.clone(),
             pools_changed.clone(),
             settings.reconnect_interval,
+            heartbeat,
         ));
 
         tokio::spawn(ingest_laserstream::pipeline::run_pool_subscription_refresh(

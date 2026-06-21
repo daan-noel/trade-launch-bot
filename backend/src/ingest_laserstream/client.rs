@@ -25,6 +25,7 @@ use tonic::{Request, Status};
 use tracing::{error, info, warn};
 
 use crate::config::constants::PUMP_SWAP_PROGRAM_ID;
+use crate::state::ingest_health::IngestHeartbeat;
 
 use super::decoder::TxRelevance;
 use super::proto::geyser::geyser_client::GeyserClient;
@@ -53,6 +54,14 @@ const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// How often the idle watchdog wakes to check the silence gap. A fraction of
 /// `STREAM_IDLE_TIMEOUT` so detection latency is bounded to roughly one tick.
 const STREAM_IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(15);
+/// Hard cap on how long the client will block handing a tx to the pipeline. A
+/// healthy pipeline drains in microseconds; a stall this long means a downstream
+/// consumer (DbWriter / StrategyRunner) wedged on an `.await`, so we tear the stream
+/// down rather than park forever on `send().await` — a park here sits OUTSIDE the
+/// `select!`, so the idle watchdog could never fire and ingest would freeze with no
+/// log. Returning unblocks the task; the process liveness watchdog handles a wedge
+/// that survives the reconnect.
+const PIPELINE_SEND_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Add 0..50% jitter to a reconnect delay to decorrelate reconnect storms.
 /// Derives the jitter from wall-clock subsecond nanos (no rng dependency).
@@ -183,6 +192,7 @@ pub async fn run(
     pool_index: Arc<DashMap<String, String>>,
     pools_changed: Arc<Notify>,
     reconnect_interval: Duration,
+    heartbeat: IngestHeartbeat,
 ) {
     // Slot to replay from on the next (re)connect; `None` = live subscription.
     let mut from_slot: Option<u64> = None;
@@ -208,6 +218,7 @@ pub async fn run(
             &pools_changed,
             from_slot,
             &last_slot,
+            &heartbeat,
         )
         .await;
 
@@ -255,6 +266,7 @@ async fn run_once(
     pools_changed: &Notify,
     from_slot: Option<u64>,
     last_slot: &AtomicU64,
+    heartbeat: &IngestHeartbeat,
 ) -> anyhow::Result<()> {
     match from_slot {
         Some(slot) => info!("LaserStream: connecting to {laserstream_url} (replay from slot {slot})"),
@@ -293,16 +305,44 @@ async fn run_once(
                 match msg {
                     Ok(Some(update)) => {
                         if let Some(UpdateOneof::Transaction(tx)) = update.update_oneof {
-                            last_update = tokio::time::Instant::now();
-                            last_slot.fetch_max(tx.slot, Ordering::Relaxed);
+                            // Reset the idle watchdog only when the chain actually
+                            // ADVANCES: `fetch_max` returns the prior high-water slot,
+                            // so a stream stuck replaying or repeating a slot makes no
+                            // progress and is still allowed to trip the timeout.
+                            if tx.slot > last_slot.fetch_max(tx.slot, Ordering::Relaxed) {
+                                last_update = tokio::time::Instant::now();
+                            }
                             // Cheap protobuf-log pre-filter: forward only txs the
                             // decoder would keep (curve or AMM program in the logs),
                             // tagged with the verdict so the decoder skips re-scanning.
                             // No Value build here anymore (Tier B).
                             if let Some(relevance) = classify_tx(&tx, pump_program_id) {
-                                if update_tx.send((Arc::new(tx), relevance)).await.is_err() {
-                                    info!("LaserStream: pipeline receiver dropped — stopping");
-                                    return Ok(());
+                                // Bounded send: a downstream stall must surface as a
+                                // reconnect, never an invisible infinite park. Parking
+                                // on `send().await` sits OUTSIDE this `select!`, so the
+                                // idle watchdog above could never fire — the exact
+                                // silent-freeze failure mode. A successful send is real
+                                // end-to-end progress, so stamp the liveness heartbeat
+                                // the process watchdog reads.
+                                match update_tx
+                                    .send_timeout((Arc::new(tx), relevance), PIPELINE_SEND_TIMEOUT)
+                                    .await
+                                {
+                                    Ok(()) => heartbeat.stamp(),
+                                    Err(mpsc::error::SendTimeoutError::Timeout(_)) => {
+                                        warn!(
+                                            "LaserStream: pipeline backpressured for \
+                                             {PIPELINE_SEND_TIMEOUT:?} — forcing reconnect \
+                                             (downstream stalled)"
+                                        );
+                                        return Err(anyhow::anyhow!(
+                                            "pipeline backpressure exceeded {PIPELINE_SEND_TIMEOUT:?}"
+                                        ));
+                                    }
+                                    Err(mpsc::error::SendTimeoutError::Closed(_)) => {
+                                        info!("LaserStream: pipeline receiver dropped — stopping");
+                                        return Ok(());
+                                    }
                                 }
                             }
                         }
