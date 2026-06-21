@@ -309,13 +309,18 @@ function inspectFromPosition(r: RulePositionRecord): InspectTarget {
  *  the entry-allocated SOL scaled by the realized PnL %. */
 function positionToSimResult(p: RulePositionRecord): SimulatedTokenResult {
   const pnlPercent = p.pnl_percent;
-  const pnlSol = pnlPercent != null ? p.entry_token_amount * (pnlPercent / 100) : null;
+  // Armed-but-unfilled positions carry null entry_*; normalize to 0 so the
+  // sim-shaped result stays non-null. They contribute 0 to entry/PnL totals and
+  // simply read as an Open row in the summary.
+  const entryPrice = p.entry_price ?? 0;
+  const entryTokens = p.entry_token_amount ?? 0;
+  const pnlSol = pnlPercent != null ? entryTokens * (pnlPercent / 100) : null;
   const holdingSecs =
     p.entry_time && p.exit_time
       ? Math.round((new Date(p.exit_time).getTime() - new Date(p.entry_time).getTime()) / 1000)
       : null;
   const athPrice =
-    p.exit_price != null ? Math.max(p.exit_price, p.entry_price) : p.entry_price;
+    p.exit_price != null ? Math.max(p.exit_price, entryPrice) : entryPrice;
   return {
     mint: p.mint,
     symbol: p.symbol ?? '',
@@ -323,9 +328,9 @@ function positionToSimResult(p: RulePositionRecord): SimulatedTokenResult {
     target_token_amount: p.target_token_amount,
     target_time: p.target_time,
     target_tx: p.target_tx,
-    entry_price: p.entry_price,
+    entry_price: entryPrice,
     ath_price: athPrice,
-    entry_token_amount: p.entry_token_amount,
+    entry_token_amount: entryTokens,
     entry_tx: p.entry_tx,
     entry_time: p.entry_time ?? p.created_at,
     exit_price: p.exit_price,

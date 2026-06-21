@@ -149,7 +149,8 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
       tooltip: 'Tokens bought at entry.',
       group: 'entry',
       sortable: true,
-      render: (r) => formatDecimalTrim(r.entry_token_amount, 3),
+      render: (r) =>
+        r.entry_token_amount != null ? formatDecimalTrim(r.entry_token_amount, 3) : '—',
       sortValue: (r) => r.entry_token_amount,
       searchValue: (r) => String(r.entry_token_amount ?? ''),
     },

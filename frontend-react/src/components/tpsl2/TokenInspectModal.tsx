@@ -12,7 +12,8 @@ export interface InspectTarget {
   mint: string;
   symbol?: string | null;
   entryTime: string | null;
-  entryPrice: number;
+  /** null for an armed position whose entry hasn't filled yet. */
+  entryPrice: number | null;
   entryTx?: string | null;
   exitTime: string | null;
   exitPrice: number | null;
@@ -23,7 +24,7 @@ export interface InspectTarget {
 
 function buildEventMarkers(target: InspectTarget): ChartEventMarker[] {
   const markers: ChartEventMarker[] = [];
-  if (target.entryTime != null) {
+  if (target.entryTime != null && target.entryPrice != null) {
     markers.push({
       kind: 'entry',
       time: target.entryTime,

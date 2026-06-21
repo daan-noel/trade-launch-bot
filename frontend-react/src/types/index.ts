@@ -102,9 +102,13 @@ export interface RulePositionRecord {
   target_token_amount: number | null;
   target_time: string | null;
   target_tx: string | null;
-  entry_price: number;
-  /** Tokens bought at entry; SOL derived as `entry_price × entry_token_amount`. */
-  entry_token_amount: number;
+  /** Entry-fill price. null while the position is armed (target set) but the
+   *  entry trade hasn't filled yet — the DB columns are nullable, so every
+   *  render/computation must null-guard. */
+  entry_price: number | null;
+  /** Tokens bought at entry; SOL derived as `entry_price × entry_token_amount`.
+   *  null until the entry fills (see `entry_price`). */
+  entry_token_amount: number | null;
   entry_time: string | null;
   entry_tx: string;
   exit_price: number | null;
