@@ -656,6 +656,7 @@ mod tests {
                 token("c", "devB"),
             ],
             hash: "h".into(),
+            has_fingerprints: false,
         }
     }
 
@@ -702,7 +703,7 @@ mod tests {
             (0..big).map(|i| token(&format!("a{i}"), "devA")).collect();
         tokens.push(token("b0", "devB"));
         tokens.push(token("b1", "devB"));
-        let corpus = Corpus { tokens, hash: "h".into() };
+        let corpus = Corpus { tokens, hash: "h".into(), has_fingerprints: false };
 
         let params = Mock.sample(SweepMethod::Grid);
         let groups = run_grouped_sweep(

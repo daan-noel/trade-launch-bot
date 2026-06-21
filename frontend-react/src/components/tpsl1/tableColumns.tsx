@@ -104,7 +104,7 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
       label: 'Holding',
       group: 'pnl',
       render: (r) =>
-        r.exit_amount != null ? formatDecimalTrim(r.exit_amount, 3) : '—',
+        r.exit_token_amount != null ? formatDecimalTrim(r.exit_token_amount, 3) : '—',
       searchValue: () => '',
     },
     {
@@ -130,7 +130,7 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
       group: 'pnl',
       render: (r) => {
         if (r.exit_price == null) return <span className="text-text-dim">—</span>;
-        const amt = r.exit_amount ?? 0;
+        const amt = r.exit_token_amount ?? 0;
         const positive = (r.pnl_percent ?? 0) >= 0;
         return (
           <span className={cn('font-bold', positive ? 'text-green' : 'text-red')}>

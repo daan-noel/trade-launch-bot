@@ -215,9 +215,10 @@ fn instruction_arg_as_sol(token: &Token, key: &str) -> Option<f64> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EntryFill {
     pub price: f64,
-    /// SOL amount of the resolving trade — carried so the target (trigger-trade)
+    /// Token amount of the resolving trade — carried so the target (trigger-trade)
     /// snapshot can persist the trade's own size, not just its price/tx/time.
-    pub amount_sol: f64,
+    /// SOL is never stored; it's derived at display as `price × amount_tokens`.
+    pub amount_tokens: f64,
     pub tx_signature: String,
     pub block_time: DateTime<Utc>,
 }

@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use super::super::util::none_if_zero_u64;
 use super::super::Tpsl2RuntimeCache;
+use crate::config::constants::EXIT_SLIPPAGE_SLOTS;
 use crate::models::ingest::SseEvent;
 use crate::state::token_cache::CachedTrade;
 use crate::models::{Position, PositionStatus, Tpsl2Rule};
@@ -117,7 +118,7 @@ pub(crate) fn spawn_entry_fill_poll(
                         .update_target(
                             position_id,
                             target_fill.price,
-                            target_fill.amount_sol,
+                            target_fill.amount_tokens,
                             target_fill.block_time,
                             &target_tx,
                         )
@@ -125,8 +126,13 @@ pub(crate) fn spawn_entry_fill_poll(
                     {
                         warn!("[PAPER] Failed to record target for position {position_id}: {err}");
                     }
+                    // Paper entry size is the token count `buy_amount / entry_price`
+                    // (SOL is derived at display); guard a 0 price so we never divide
+                    // by ~0. The worst-case entry's own token amount is not used here.
+                    let entry_token_amount =
+                        if entry.price > 0.0 { buy_amount / entry.price } else { 0.0 };
                     if let Ok(current) = paper_repo
-                        .update_entry(position_id, &entry_tx, buy_amount, entry.price, entry.block_time)
+                        .update_entry(position_id, &entry_tx, entry_token_amount, entry.price, entry.block_time)
                         .await
                     {
                         runtime.sync_position(Some(&prev), &current);
@@ -192,6 +198,13 @@ pub(crate) fn spawn_exit_fill_poll(
         // Skip the O(n) exit-fill walk on ticks where no new trade landed for the
         // mint (count is monotonic; `None` forces the first walk).
         let mut last_count: Option<u64> = None;
+        // Worst-case fill modelling (#1): once the ladder first fires at slot S, the
+        // recorded fill is the lowest price over [S, S + EXIT_SLIPPAGE_SLOTS]. We must
+        // NOT record on the first match — slots S+1/S+2 may not be indexed yet — so we
+        // keep re-walking as trades arrive (the windowed min only drops) until a trade
+        // past the window lands, or the poll window elapses, then record the lowest fill.
+        let mut fired: Option<(super::super::exit::ExitFill, u64)> = None;
+        let mut max_slot_seen: u64 = 0;
         let start = std::time::Instant::now();
         while start.elapsed() < Duration::from_secs(super::PAPER_EXIT_POLL_WINDOW_SECS) {
             // Confirm the fill from the in-memory cache window (kept current by the
@@ -201,61 +214,81 @@ pub(crate) fn spawn_exit_fill_poll(
                 cache_trades(&token_cache, &mint).filter(|(_, c)| last_count != Some(*c))
             {
                 last_count = Some(trade_count);
+                if let Some(s) = trades.iter().map(|t| t.slot).max() {
+                    max_slot_seen = max_slot_seen.max(s);
+                }
                 // The entry block time is the one persisted with `entry_price` at
                 // entry recording (`entry_time_db`). The cache row no longer carries a
                 // signature (Phase B step 1), so there's nothing to match it against;
                 // the persisted entry time is the same value the old sig lookup
                 // recovered. `Utc::now()` only as a last-resort if it's somehow unset.
                 let entry_block_time = entry_time_db.unwrap_or_else(chrono::Utc::now);
-                if let Some(fill) =
-                    super::super::exit::find_trade_driven_exit(&trades, entry_block_time, entry_price, &rule)
-                {
-                    // Recover the real tx_signature from the DB (cache stripped it).
-                    let exit_tx = trade_repo::find_tx_by_fill(&pool, &mint, fill.block_time, fill.price)
-                        .await
-                        .unwrap_or_default()
-                        .unwrap_or_default();
-                    if let Ok(Some(prev)) = paper_repo.find_by_id(position_id).await {
-                        // `update_exit` returns the updated row (RETURNING), so we
-                        // sync runtime state directly without a read-back.
-                        if let Ok(current) = paper_repo
-                            .update_exit(
-                                position_id,
-                                &exit_tx,
-                                fill.price,
-                                fill.block_time,
-                                fill.reason.as_str(),
-                            )
-                            .await
-                        {
-                            runtime.sync_position(Some(&prev), &current);
-                        }
+                // Re-walk over the latest window; the windowed worst-case fill only
+                // drops as the slippage-window slots land, so always take the freshest.
+                if let Some(windowed) = super::super::exit::find_trade_driven_exit_with_slot(
+                    &trades,
+                    entry_block_time,
+                    entry_price,
+                    &rule,
+                ) {
+                    fired = Some(windowed);
+                }
+                // The slippage window is fully indexed once a trade past it lands.
+                if let Some((_, fire_slot)) = fired {
+                    if max_slot_seen > fire_slot + EXIT_SLIPPAGE_SLOTS {
+                        break;
                     }
-                    info!(
-                        "[PAPER] Set exit for position {}: {} (tx: {}, reason: {})",
-                        position_id, fill.price, exit_tx, fill.reason
-                    );
-                    found = true;
-                    break;
                 }
             }
             sleep(Duration::from_millis(super::PAPER_EXIT_POLL_INTERVAL_MS)).await;
         }
+        if let Some((fill, _)) = fired {
+            // Recover the real tx_signature from the DB (cache stripped it).
+            let exit_tx = trade_repo::find_tx_by_fill(&pool, &mint, fill.block_time, fill.price)
+                .await
+                .unwrap_or_default()
+                .unwrap_or_default();
+            if let Ok(Some(prev)) = paper_repo.find_by_id(position_id).await {
+                // `update_exit` returns the updated row (RETURNING), so we sync
+                // runtime state directly without a read-back. Full-bag exit: the exit
+                // token amount is the entry token count.
+                if let Ok(current) = paper_repo
+                    .update_exit(
+                        position_id,
+                        &exit_tx,
+                        fill.price,
+                        fill.block_time,
+                        fill.reason.as_str(),
+                        prev.entry_token_amount.unwrap_or(0.0),
+                    )
+                    .await
+                {
+                    runtime.sync_position(Some(&prev), &current);
+                }
+            }
+            info!(
+                "[PAPER] Set exit for position {}: {} (tx: {}, reason: {})",
+                position_id, fill.price, exit_tx, fill.reason
+            );
+            found = true;
+        }
         if !found {
-            // No confirming exit trade was indexed within the poll window. Per the
-            // terminal-failure design this is the end of the line — mark ExitFailed
-            // rather than reverting to Holding. The exit price only ever comes from a
-            // real indexed trade via `find_trade_driven_exit`, so there is nothing to fill.
+            // No confirming exit trade was indexed within the poll window. A paper
+            // exit that can't fill is booked as a worst-case TOTAL LOSS (#3): record
+            // exit_price = 0 (⇒ −100% PnL) rather than the hypothetical trigger price,
+            // so paper stays a worst-case-faithful proxy. Status stays terminal
+            // ExitFailed with the trigger reason; never reverts to Holding.
             if let Ok(Some(prev)) = paper_repo.find_by_id(position_id).await {
                 let _ = paper_repo
-                    .mark_exit_failed(position_id, trigger_price, trigger_time, &trigger_reason)
+                    .mark_exit_failed(position_id, 0.0, trigger_time, &trigger_reason)
                     .await;
                 if let Ok(Some(current)) = paper_repo.find_by_id(position_id).await {
                     runtime.sync_position(Some(&prev), &current);
                 }
             }
             info!(
-                "[PAPER] No exit fill indexed; marked position {} ExitFailed at {}",
+                "[PAPER] No exit fill indexed; marked position {} ExitFailed as total loss \
+                 (exit_price=0; hypothetical trigger was {})",
                 position_id, trigger_price
             );
         }
@@ -300,15 +333,17 @@ pub(crate) async fn record_time_exit(
         .unwrap_or_default()
         .unwrap_or_default();
     let prev = position.clone();
+    // Full-bag exit: the exit token amount is the entry token count.
+    let exit_token_amount = position.entry_token_amount.unwrap_or(0.0);
     if let Err(err) = paper_repo
-        .update_exit(position.id, &exit_tx, exit_price, exit_time, &reason)
+        .update_exit(position.id, &exit_tx, exit_price, exit_time, &reason, exit_token_amount)
         .await
     {
         warn!(position_id = %position.id, "Failed to record paper time exit: {err}");
         return;
     }
     // Reflect the close in the snapshot synced to the runtime cache.
-    position.close(exit_price, exit_tx, position.entry_amount.unwrap_or(0.0), exit_time);
+    position.close(exit_price, exit_tx, exit_token_amount, exit_time);
     position.exit_reason = Some(reason);
     runtime.sync_position(Some(&prev), &position);
     info!(

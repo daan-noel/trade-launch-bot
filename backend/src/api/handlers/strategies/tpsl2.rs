@@ -1071,8 +1071,12 @@ pub(crate) fn paper_position_to_sim_result(
     let exit_reason = p
         .exit_reason_or_derived()
         .unwrap_or_else(|| "Open".to_string());
-    // entry_amount is the SOL allocated per buy, so PnL in SOL is direct.
-    let pnl_sol = pnl_percent.and_then(|pct| p.entry_amount.map(|a| a * (pct / 100.0)));
+    // entry_token_amount is the token count bought; SOL invested = entry_price ×
+    // tokens, so PnL in SOL = (entry_price × entry_token_amount) × pct/100.
+    let pnl_sol = pnl_percent.and_then(|pct| match (p.entry_price, p.entry_token_amount) {
+        (Some(price), Some(tokens)) => Some(price * tokens * (pct / 100.0)),
+        _ => None,
+    });
     let holding_secs = match (p.entry_time, p.exit_time) {
         (Some(e), Some(x)) => Some((x - e).num_seconds()),
         _ => None,
@@ -1085,13 +1089,13 @@ pub(crate) fn paper_position_to_sim_result(
     BacktestTokenResult {
         symbol: symbols.get(&p.mint).cloned().unwrap_or_default(),
         target_price: p.target_price,
-        target_amount: p.target_amount,
+        target_token_amount: p.target_token_amount,
         target_time: p.target_time,
         target_tx: p.target_tx,
         mint: p.mint,
         entry_price: p.entry_price.unwrap_or(0.0),
         ath_price,
-        entry_amount: p.entry_amount.unwrap_or(0.0),
+        entry_token_amount: p.entry_token_amount.unwrap_or(0.0),
         entry_tx: p.entry_tx,
         entry_time: p.entry_time.unwrap_or(p.created_at),
         exit_price: p.exit_price,
@@ -1120,7 +1124,7 @@ mod tests {
         );
         p.entry_price = Some(entry);
         p.entry_tx = "etx".into();
-        p.entry_amount = Some(0.05);
+        p.entry_token_amount = Some(0.05);
         p.entry_time = Some(Utc::now());
         p.close(exit, "xtx".into(), 0.05, Utc::now());
         p
@@ -1158,7 +1162,7 @@ mod tests {
         );
         p.entry_price = Some(1.0);
         p.entry_tx = "etx".into();
-        p.entry_amount = Some(0.05);
+        p.entry_token_amount = Some(0.05);
         p.entry_time = Some(Utc::now());
         let r = paper_position_to_sim_result(p, &HashMap::new());
         assert_eq!(r.exit_reason, "Open");

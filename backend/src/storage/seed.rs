@@ -540,7 +540,7 @@ mod tests {
         for (mint, status) in [(&open_mint, "Holding"), (&settled_mint, "End")] {
             sqlx::query(
                 "INSERT INTO tpsl1_real_positions
-                   (mint, wallet, entry_price, entry_amount, entry_tx, status, strategy, rule_id)
+                   (mint, wallet, entry_price, entry_token_amount, entry_tx, status, strategy, rule_id)
                  VALUES ($1, $2, 0.001, 1000.0, $3, $4, 'tpsl1', $5)",
             )
             .bind(mint)

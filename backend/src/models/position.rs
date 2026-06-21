@@ -17,17 +17,18 @@ pub struct Position {
     /// this position, distinct from the actual `entry_*` fill. Set later via
     /// [`Position::set_target`], not at construction; `None` until armed (and for
     /// legacy rows / paths that never arm, e.g. backtest). `target_price` is the
-    /// trigger trade's price, `target_amount` its SOL amount, `target_time` its
-    /// block time, `target_tx` its signature. The gap vs. `entry_*` is derived
-    /// later, not stored.
+    /// trigger trade's price, `target_token_amount` its **token** count,
+    /// `target_time` its block time, `target_tx` its signature. SOL is never
+    /// stored — derived at display as `price × tokens`. The gap vs. `entry_*` is
+    /// derived later, not stored.
     pub target_price: Option<f64>,
-    pub target_amount: Option<f64>,
+    pub target_token_amount: Option<f64>,
     pub target_time: Option<DateTime<Utc>>,
     pub target_tx: Option<String>,
     /// Entry price (SOL per token) when the position was opened.
     pub entry_price: Option<f64>,
     /// Amount of tokens bought at entry.
-    pub entry_amount: Option<f64>,
+    pub entry_token_amount: Option<f64>,
     /// On-chain block time of the confirmed buy trade.
     pub entry_time: Option<DateTime<Utc>>,
     /// Transaction signature of the buy transaction.
@@ -35,7 +36,7 @@ pub struct Position {
     /// Exit price (SOL per token) when the position was closed.
     pub exit_price: Option<f64>,
     /// Amount of tokens sold at exit.
-    pub exit_amount: Option<f64>,
+    pub exit_token_amount: Option<f64>,
     /// On-chain block time of the confirmed sell trade.
     pub exit_time: Option<DateTime<Utc>>,
     /// Transaction signature of the sell transaction.
@@ -107,15 +108,15 @@ impl Position {
             wallet,
             token_program_id: None,
             target_price: None,
-            target_amount: None,
+            target_token_amount: None,
             target_time: None,
             target_tx: None,
             entry_price: None,
-            entry_amount: None,
+            entry_token_amount: None,
             entry_time: None,
             entry_tx: String::new(),
             exit_price: None,
-            exit_amount: None,
+            exit_token_amount: None,
             exit_time: None,
             exit_tx: None,
             status: PositionStatus::Holding,
@@ -143,7 +144,7 @@ impl Position {
         tx: String,
     ) {
         self.target_price = Some(price);
-        self.target_amount = Some(amount);
+        self.target_token_amount = Some(amount);
         self.target_time = Some(time);
         self.target_tx = Some(tx);
         self.updated_at = Utc::now();
@@ -168,10 +169,10 @@ impl Position {
     }
 
     /// Close the position with an exit trade.
-    pub fn close(&mut self, exit_price: f64, exit_tx: String, exit_amount: f64, exit_time: DateTime<Utc>) {
+    pub fn close(&mut self, exit_price: f64, exit_tx: String, exit_token_amount: f64, exit_time: DateTime<Utc>) {
         self.exit_price = Some(exit_price);
         self.exit_tx = Some(exit_tx);
-        self.exit_amount = Some(exit_amount);
+        self.exit_token_amount = Some(exit_token_amount);
         self.exit_time = Some(exit_time);
         self.status = PositionStatus::End;
         self.updated_at = Utc::now();

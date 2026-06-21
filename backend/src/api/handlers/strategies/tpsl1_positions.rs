@@ -30,8 +30,8 @@ pub struct PositionResponse {
     pub status: String,
     pub strategy: String,
     pub rule_id: Uuid,
-    pub entry_amount: Option<f64>,
-    pub exit_amount: Option<f64>,
+    pub entry_token_amount: Option<f64>,
+    pub exit_token_amount: Option<f64>,
     pub pnl_percent: Option<f64>,
     pub entry_time: Option<DateTime<Utc>>,
     pub exit_time: Option<DateTime<Utc>>,
@@ -57,8 +57,8 @@ impl From<Position> for PositionResponse {
             status: p.status.to_string(),
             strategy: p.strategy,
             rule_id: p.rule_id,
-            entry_amount: p.entry_amount,
-            exit_amount: p.exit_amount,
+            entry_token_amount: p.entry_token_amount,
+            exit_token_amount: p.exit_token_amount,
             pnl_percent,
             entry_time: p.entry_time,
             exit_time: p.exit_time,
@@ -321,7 +321,7 @@ mod tests {
         );
         open.entry_price = Some(0.001);
         open.entry_tx = unique("tx-");
-        open.entry_amount = Some(0.05);
+        open.entry_token_amount = Some(0.05);
         open.entry_time = Some(Utc::now());
 
         let mut win = Position::new(
@@ -332,7 +332,7 @@ mod tests {
         );
         win.entry_price = Some(0.001);
         win.entry_tx = unique("tx-");
-        win.entry_amount = Some(0.05);
+        win.entry_token_amount = Some(0.05);
         win.entry_time = Some(Utc::now());
         win.close(0.0015, unique("xtx-"), 0.075, Utc::now());
 
@@ -344,7 +344,7 @@ mod tests {
         );
         loss.entry_price = Some(0.001);
         loss.entry_tx = unique("tx-");
-        loss.entry_amount = Some(0.05);
+        loss.entry_token_amount = Some(0.05);
         loss.entry_time = Some(Utc::now());
         loss.close(0.0008, unique("xtx-"), 0.04, Utc::now());
 

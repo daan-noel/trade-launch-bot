@@ -19,7 +19,7 @@
 
 use chrono::{DateTime, Duration, Utc};
 
-use crate::config::constants::EARLY_COHORT_SLOT_WINDOW;
+use crate::config::constants::{EARLY_COHORT_SLOT_WINDOW, EXIT_SLIPPAGE_SLOTS};
 use crate::models::trade::{Trade, TradeRow};
 use crate::models::{Position, PositionStatus, Tpsl2Rule};
 
@@ -501,6 +501,20 @@ pub fn find_trade_driven_exit<T: TradeRow>(
     entry_price: f64,
     rule: &Tpsl2Rule,
 ) -> Option<ExitFill> {
+    find_trade_driven_exit_with_slot(trades, entry_time, entry_price, rule).map(|(fill, _)| fill)
+}
+
+/// [`find_trade_driven_exit`] that also returns the **firing slot** `S` — the slot
+/// of the trade the ladder fired on (distinct from the recorded fill's slot, which
+/// can be up to `EXIT_SLIPPAGE_SLOTS` later). The live paper poll uses this to know
+/// when the slippage window has fully indexed before recording the fill; the plain
+/// wrapper above drops it, so backtest/sweep behavior is unchanged.
+pub fn find_trade_driven_exit_with_slot<T: TradeRow>(
+    trades: &[T],
+    entry_time: DateTime<Utc>,
+    entry_price: f64,
+    rule: &Tpsl2Rule,
+) -> Option<(ExitFill, u64)> {
     if entry_price <= 0.0 {
         return None;
     }
@@ -540,7 +554,7 @@ pub fn find_trade_driven_exit_with_cohort<T: TradeRow>(
     }
     let params = LadderParams::from_rule(rule);
     let precomp = params.cohort_exit_ratio.map(|_| (cohort, cohort_bought));
-    run_exit_walk(trades, entry_time, entry_price, &params, precomp)
+    run_exit_walk(trades, entry_time, entry_price, &params, precomp).map(|(fill, _)| fill)
 }
 
 /// The shared post-entry walk behind both [`find_trade_driven_exit`] and
@@ -554,7 +568,7 @@ fn run_exit_walk<T: TradeRow>(
     entry_price: f64,
     params: &LadderParams,
     cohort_precomp: Option<(&std::collections::HashSet<T::Wallet>, f64)>,
-) -> Option<ExitFill> {
+) -> Option<(ExitFill, u64)> {
     let (cohort, cohort_bought, mut cohort_net) = match cohort_precomp {
         Some((cohort, bought)) => {
             let net_at_entry: f64 = trades
@@ -569,51 +583,63 @@ fn run_exit_walk<T: TradeRow>(
 
     let mut state = ExitWalkState::starting_at(entry_price, entry_time);
 
-    // Single pass over the post-entry trades — no intermediate `Vec<&Trade>`, and
-    // the firing block's lowest-price fill is folded in here rather than re-scanned
-    // with a second `.filter(slot==).min_by(price)` pass (#5). Trades are slot/time
-    // sorted upstream, so each slot's post-entry rows are contiguous: `slot_min`
-    // tracks the running lowest-price trade in the current slot. Once the ladder
-    // fires we stop evaluating it but keep extending `slot_min` until the slot ends,
-    // so the recorded fill is the whole block's min — byte-identical to the old
-    // `min_by` over `{block_time > entry, slot == firing_slot}` (`<` keeps the first
-    // on ties / NaN, exactly as `min_by`).
+    // Single pass over the post-entry trades. Trigger detection is unchanged — the
+    // first trade where the ladder fires decides the exit `reason` and the firing
+    // slot `S`. The recorded *fill*, though, is the **lowest price over slots
+    // `S ..= S + EXIT_SLIPPAGE_SLOTS`** (worst-case sell latency — a real sell lands a
+    // slot or two after the trigger), not just the firing block. `fill_min` tracks the
+    // running lowest-price trade (strict `<` ⇒ first wins on ties / NaN, matching the
+    // old `min_by`): before firing it resets per slot (so a firing slot starts from
+    // its own trades), after firing it accumulates across the whole window. We
+    // finalize when a trade past the window lands or history ends.
     let mut cur_slot: Option<u64> = None;
-    let mut slot_min: Option<&T> = None;
+    let mut fill_min: Option<&T> = None;
     let mut pending: Option<ExitReason> = None;
+    let mut fire_slot: u64 = 0;
 
-    for t in trades.iter().filter(|t| t.block_time() > entry_time) {
-        let slot = t.slot();
-        if cur_slot != Some(slot) {
-            // Slot boundary: a pending exit's block is now fully scanned → fill it.
-            if let Some(reason) = pending {
-                let et = slot_min.expect("firing slot has at least the firing trade");
-                return Some(ExitFill {
-                    price: et.price_per_token(),
-                    tx_signature: et.tx_signature().to_string(),
-                    block_time: et.block_time(),
-                    reason,
-                });
-            }
-            cur_slot = Some(slot);
-            slot_min = None;
-        }
-        // Lowest-price trade in this slot (strict `<` ⇒ first wins on ties, matching
-        // `min_by`'s first-minimum and `unwrap_or(Equal)` NaN handling).
-        let is_new_min = slot_min.is_none_or(|m| {
+    let is_lower = |t: &T, cur: Option<&T>| {
+        cur.is_none_or(|m| {
             t.price_per_token()
                 .partial_cmp(&m.price_per_token())
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .is_lt()
-        });
-        if is_new_min {
-            slot_min = Some(t);
+        })
+    };
+
+    for t in trades.iter().filter(|t| t.block_time() > entry_time) {
+        let slot = t.slot();
+
+        // Already fired: keep folding the lowest-price fill across the slippage window
+        // [S, S + EXIT_SLIPPAGE_SLOTS]; a trade past it finalizes the fill. The ladder
+        // is not re-evaluated (first fire wins).
+        if let Some(reason) = pending {
+            if slot > fire_slot + EXIT_SLIPPAGE_SLOTS {
+                let et = fill_min.expect("firing slot has at least the firing trade");
+                return Some((
+                    ExitFill {
+                        price: et.price_per_token(),
+                        tx_signature: et.tx_signature().to_string(),
+                        block_time: et.block_time(),
+                        reason,
+                    },
+                    fire_slot,
+                ));
+            }
+            if is_lower(t, fill_min) {
+                fill_min = Some(t);
+            }
+            continue;
         }
 
-        // Already fired: keep extending `slot_min` over the rest of the block, but
-        // don't re-evaluate the ladder (first fire wins).
-        if pending.is_some() {
-            continue;
+        // Not yet fired: reset the running min at each new slot so a firing slot's
+        // fill spans only its own trades (the window past it is folded above once we
+        // fire).
+        if cur_slot != Some(slot) {
+            cur_slot = Some(slot);
+            fill_min = None;
+        }
+        if is_lower(t, fill_min) {
+            fill_min = Some(t);
         }
 
         state.update_with_trade(t);
@@ -629,18 +655,22 @@ fn run_exit_walk<T: TradeRow>(
         let cohort_arg = cohort.as_ref().map(|_| (cohort_bought, cohort_net));
         if let Some(reason) = ladder_reason(&state, t, entry_time, entry_price, params, cohort_arg) {
             pending = Some(reason);
+            fire_slot = slot;
         }
     }
 
-    // History ended while a pending exit's block was still the last slot.
+    // History ended while a pending exit's window was still open.
     pending.map(|reason| {
-        let et = slot_min.expect("firing slot has at least the firing trade");
-        ExitFill {
-            price: et.price_per_token(),
-            tx_signature: et.tx_signature().to_string(),
-            block_time: et.block_time(),
-            reason,
-        }
+        let et = fill_min.expect("firing slot has at least the firing trade");
+        (
+            ExitFill {
+                price: et.price_per_token(),
+                tx_signature: et.tx_signature().to_string(),
+                block_time: et.block_time(),
+                reason,
+            },
+            fire_slot,
+        )
     })
 }
 
@@ -798,7 +828,7 @@ mod tests {
         let mut p = Position::new("mint".into(), "wallet".into(), "TPSL2".into(), rule_id);
         p.entry_price = Some(entry_price);
         p.entry_tx = "entry-sig".into();
-        p.entry_amount = Some(1.0);
+        p.entry_token_amount = Some(1.0);
         p.entry_time = Some(base_time());
         p
     }
@@ -898,6 +928,24 @@ mod tests {
         let legacy = legacy_fixed_take_profit_stop_loss(&trades, base_time(), 1.0, rule.p_exit_take_profit, rule.p_exit_stop_loss);
         let walked = find_trade_driven_exit(&trades, base_time(), 1.0, &rule);
         assert_eq!(legacy, walked);
+    }
+
+    #[test]
+    fn exit_fill_is_worst_price_over_slippage_window() {
+        // SL fires at slot 3 (price 0.7, −30%). The recorded fill is the LOWEST price
+        // over slots [S, S + EXIT_SLIPPAGE_SLOTS] = [3, 5]: 0.6 at slot 4. A lower
+        // price in slot 6 is outside the window and must be ignored. The firing
+        // reason/trigger are unchanged — only the recorded fill row.
+        let trades = vec![buy(0.7, 3, 10), buy(0.6, 4, 11), buy(0.9, 5, 12), buy(0.5, 6, 13)];
+        let rule = rule_with(1000.0, 20.0, None, None, None, None);
+        let exit = find_trade_driven_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
+        assert_eq!(exit.reason, ExitReason::StopLoss);
+        assert!((exit.price - 0.6).abs() < 1e-9, "windowed worst-case fill, got {}", exit.price);
+        assert_eq!(exit.block_time, base_time() + Duration::seconds(11));
+        // The firing slot the live poll waits the window out from is S = 3.
+        let (_, fire_slot) =
+            find_trade_driven_exit_with_slot(&trades, base_time(), 1.0, &rule).unwrap();
+        assert_eq!(fire_slot, 3);
     }
 
     fn flat_series() -> Vec<Trade> {
@@ -1093,7 +1141,7 @@ mod tests {
     fn walk(pos: &Position, trades: &[Trade]) -> ExitWalkState {
         ExitWalkState::rebuild_from_trades(
             trades,
-            pos.entry_price,
+            pos.entry_price.unwrap_or(0.0),
             pos.entry_time.unwrap_or_else(base_time),
         )
     }

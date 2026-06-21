@@ -32,7 +32,7 @@ pub struct BacktestTokenResult {
     pub entry_price: f64,
     /// All-time-high price across every one of the token's trades.
     pub ath_price: f64,
-    pub entry_amount: f64,
+    pub entry_token_amount: f64,
     pub entry_tx: String,
     pub entry_time: DateTime<Utc>,
     pub exit_price: Option<f64>,
@@ -259,7 +259,7 @@ pub async fn run_backtest(
                     symbol: token.symbol.clone(),
                     entry_price,
                     ath_price,
-                    entry_amount: rule.buy_amount,
+                    entry_token_amount: rule.buy_amount,
                     entry_tx,
                     entry_time,
                     exit_price,

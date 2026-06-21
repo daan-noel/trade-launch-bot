@@ -65,8 +65,8 @@ struct PaperPositionDbRow {
     status: String,
     strategy: String,
     rule_id: Uuid,
-    entry_amount: Option<f64>,
-    exit_amount: Option<f64>,
+    entry_token_amount: Option<f64>,
+    exit_token_amount: Option<f64>,
     entry_time: Option<DateTime<Utc>>,
     exit_time: Option<DateTime<Utc>>,
     exit_reason: Option<String>,
@@ -97,14 +97,14 @@ impl TryFrom<PaperPositionDbRow> for Position {
             status,
             strategy: r.strategy,
             rule_id: r.rule_id,
-            entry_amount: r.entry_amount,
-            exit_amount: r.exit_amount,
+            entry_token_amount: r.entry_token_amount,
+            exit_token_amount: r.exit_token_amount,
             entry_time: r.entry_time,
             exit_time: r.exit_time,
             exit_reason: r.exit_reason,
             // TPSL1 has no target (trigger-trade) columns — TPSL2-only feature.
             target_price: None,
-            target_amount: None,
+            target_token_amount: None,
             target_time: None,
             target_tx: None,
             created_at: r.created_at,
@@ -123,7 +123,7 @@ fn position_status_str(s: PositionStatus) -> &'static str {
 }
 
 const POSITION_COLS: &str = "id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, \
-     exit_tx, status, strategy, rule_id, entry_amount, exit_amount, entry_time, exit_time, \
+     exit_tx, status, strategy, rule_id, entry_token_amount, exit_token_amount, entry_time, exit_time, \
      exit_reason, created_at, updated_at";
 
 // ---------------------------------------------------------------------------
@@ -282,7 +282,7 @@ impl Tpsl1PaperTradingRepo {
             r#"
             INSERT INTO tpsl1_paper_positions
                 (id, run_id, mint, wallet, token_program_id, entry_price, exit_price, entry_tx, exit_tx,
-                 status, strategy, rule_id, entry_amount, exit_amount,
+                 status, strategy, rule_id, entry_token_amount, exit_token_amount,
                  entry_time, exit_time, exit_reason, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
             "#,
@@ -299,8 +299,8 @@ impl Tpsl1PaperTradingRepo {
         .bind(position_status_str(position.status))
         .bind(&position.strategy)
         .bind(position.rule_id)
-        .bind(position.entry_amount)
-        .bind(position.exit_amount)
+        .bind(position.entry_token_amount)
+        .bind(position.exit_token_amount)
         .bind(position.entry_time)
         .bind(position.exit_time)
         .bind(position.exit_reason.as_ref())
@@ -319,21 +319,21 @@ impl Tpsl1PaperTradingRepo {
         &self,
         position_id: Uuid,
         entry_tx: &str,
-        entry_amount: f64,
+        entry_token_amount: f64,
         entry_price: f64,
         entry_time: DateTime<Utc>,
     ) -> anyhow::Result<Position> {
         let row = sqlx::query_as::<_, PaperPositionDbRow>(&format!(
             r#"
             UPDATE tpsl1_paper_positions
-            SET entry_tx = $2, entry_amount = $3, entry_price = $4, entry_time = $5, updated_at = $6
+            SET entry_tx = $2, entry_token_amount = $3, entry_price = $4, entry_time = $5, updated_at = $6
             WHERE id = $1
             RETURNING {POSITION_COLS}
             "#
         ))
         .bind(position_id)
         .bind(entry_tx)
-        .bind(entry_amount)
+        .bind(entry_token_amount)
         .bind(entry_price)
         .bind(entry_time)
         .bind(Utc::now())
@@ -379,7 +379,7 @@ impl Tpsl1PaperTradingRepo {
         sqlx::query(
             r#"
             UPDATE tpsl1_paper_positions
-            SET exit_price = $1, exit_tx = $2, status = $3, exit_amount = $4,
+            SET exit_price = $1, exit_tx = $2, status = $3, exit_token_amount = $4,
                 exit_time = $5, updated_at = $6
             WHERE id = $7
             "#,
@@ -387,7 +387,7 @@ impl Tpsl1PaperTradingRepo {
         .bind(position.exit_price)
         .bind(&position.exit_tx)
         .bind(position_status_str(position.status))
-        .bind(position.exit_amount)
+        .bind(position.exit_token_amount)
         .bind(position.exit_time)
         .bind(Utc::now())
         .bind(position.id)

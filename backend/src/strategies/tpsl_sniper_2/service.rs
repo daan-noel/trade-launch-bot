@@ -208,7 +208,7 @@ impl Tpsl2StrategyService {
             );
             position.token_program_id = token.token_program_id.clone();
             position.target_price = Some(0.0);
-            position.target_amount = Some(0.0);
+            position.target_token_amount = Some(0.0);
             position.target_tx = Some(String::new());
             position.target_time = Some(token.created_at);
 
@@ -287,7 +287,7 @@ impl Tpsl2StrategyService {
                             .update_target(
                                 position_id,
                                 target.price,
-                                target.amount_sol,
+                                target.amount_tokens,
                                 target.block_time,
                                 &target.tx_signature,
                             )

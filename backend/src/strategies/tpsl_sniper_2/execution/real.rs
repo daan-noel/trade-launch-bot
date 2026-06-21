@@ -411,7 +411,7 @@ pub(crate) async fn sell_and_close_position(
     exit_reason: String,
 ) {
     let mint = position.mint.clone();
-    let amount = position.entry_amount.unwrap_or(0.0) as u64;
+    let amount = position.entry_token_amount.unwrap_or(0.0) as u64;
     let base_token_program = position
         .token_program_id
         .clone()
@@ -472,11 +472,11 @@ pub(crate) async fn sell_and_close_position(
     }
 
     if let Some(last_sell) = last_sell {
-        let exit_amount = last_sell.token_amount;
+        let exit_token_amount = last_sell.token_amount;
         position.close(
             last_sell.price_per_token,
             last_sell.tx_signature.clone(),
-            exit_amount,
+            exit_token_amount,
             last_sell.block_time,
         );
         position.exit_reason = Some(exit_reason.clone());
@@ -1012,7 +1012,7 @@ mod tests {
             Uuid::new_v4(),
         );
         position.entry_tx = unique("create-");
-        position.entry_amount = 0.001;
+        position.entry_token_amount = Some(0.001);
         position_repo.insert(&position).await.expect("insert position");
         runtime.sync_position(None, &position);
         (position, position_repo, trade_repo, runtime)
@@ -1065,7 +1065,7 @@ mod tests {
         run_buy(fake.clone(), &mint, &position, &position_repo, &trade_repo, &runtime).await;
 
         let updated = position_repo.find_by_id(position.id).await.unwrap().unwrap();
-        assert!(updated.entry_price > 0.0, "entry recorded from the on-chain fill");
+        assert!(updated.entry_price.unwrap_or(0.0) > 0.0, "entry recorded from the on-chain fill");
         assert_eq!(fake.send_count(), 1, "exactly one buy sent");
         cleanup(&pool, &mint, position.id).await;
     }
@@ -1083,7 +1083,7 @@ mod tests {
         run_buy(fake.clone(), &mint, &position, &position_repo, &trade_repo, &runtime).await;
 
         let updated = position_repo.find_by_id(position.id).await.unwrap().unwrap();
-        assert!(updated.entry_price > 0.0, "adopted the pre-existing fill");
+        assert!(updated.entry_price.unwrap_or(0.0) > 0.0, "adopted the pre-existing fill");
         assert_eq!(fake.send_count(), 0, "guard adopted the fill — no buy sent (no double-buy)");
         cleanup(&pool, &mint, position.id).await;
     }
@@ -1104,7 +1104,7 @@ mod tests {
         run_buy(fake.clone(), &mint, &position, &position_repo, &trade_repo, &runtime).await;
 
         let updated = position_repo.find_by_id(position.id).await.unwrap().unwrap();
-        assert!(updated.entry_price > 0.0, "entry recorded after the re-send filled");
+        assert!(updated.entry_price.unwrap_or(0.0) > 0.0, "entry recorded after the re-send filled");
         assert_eq!(fake.send_count(), 2, "reverted buy was re-sent exactly once");
         cleanup(&pool, &mint, position.id).await;
     }
@@ -1122,7 +1122,7 @@ mod tests {
         run_buy(fake.clone(), &mint, &position, &position_repo, &trade_repo, &runtime).await;
 
         let updated = position_repo.find_by_id(position.id).await.unwrap().unwrap();
-        assert_eq!(updated.entry_price, 0.0, "no entry recorded");
+        assert_eq!(updated.entry_price.unwrap_or(0.0), 0.0, "no entry recorded");
         assert_eq!(fake.send_count(), 1, "pending tx must NOT be re-sent (double-buy guard)");
         cleanup(&pool, &mint, position.id).await;
     }
@@ -1140,7 +1140,7 @@ mod tests {
         run_buy(fake.clone(), &mint, &position, &position_repo, &trade_repo, &runtime).await;
 
         let updated = position_repo.find_by_id(position.id).await.unwrap().unwrap();
-        assert_eq!(updated.entry_price, 0.0, "no entry recorded");
+        assert_eq!(updated.entry_price.unwrap_or(0.0), 0.0, "no entry recorded");
         assert_eq!(fake.send_count(), 1, "status-check error must NOT trigger a re-send");
         cleanup(&pool, &mint, position.id).await;
     }
@@ -1162,7 +1162,7 @@ mod tests {
         run_buy(fake.clone(), &mint, &position, &position_repo, &trade_repo, &runtime).await;
 
         let updated = position_repo.find_by_id(position.id).await.unwrap().unwrap();
-        assert!(updated.entry_price > 0.0, "entry recorded after the indexer caught up");
+        assert!(updated.entry_price.unwrap_or(0.0) > 0.0, "entry recorded after the indexer caught up");
         assert_eq!(fake.send_count(), 1, "landed tx must NOT be re-sent (double-buy guard)");
         cleanup(&pool, &mint, position.id).await;
     }

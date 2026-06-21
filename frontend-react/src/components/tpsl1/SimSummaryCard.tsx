@@ -52,10 +52,10 @@ export function SimSummaryCard({
     const lossCount = closedCount - winCount;
     const winRate = closedCount > 0 ? (winCount / closedCount) * 100 : 0;
 
-    const totalEntry = tokens.reduce((s, t) => s + t.entry_amount, 0);
+    const totalEntry = tokens.reduce((s, t) => s + t.entry_token_amount, 0);
     const totalHolding = tokens
       .filter((t) => t.exit_reason === 'Open')
-      .reduce((s, t) => s + t.entry_amount, 0);
+      .reduce((s, t) => s + t.entry_token_amount, 0);
     const totalGains = closed
       .filter((t) => (t.pnl_sol ?? 0) >= 0)
       .reduce((s, t) => s + (t.pnl_sol ?? 0), 0);

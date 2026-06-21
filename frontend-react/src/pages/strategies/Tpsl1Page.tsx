@@ -309,7 +309,7 @@ function inspectFromPosition(r: RulePositionRecord): InspectTarget {
  *  the entry-allocated SOL scaled by the realized PnL %. */
 function positionToSimResult(p: RulePositionRecord): SimulatedTokenResult {
   const pnlPercent = p.pnl_percent;
-  const pnlSol = pnlPercent != null ? p.entry_amount * (pnlPercent / 100) : null;
+  const pnlSol = pnlPercent != null ? p.entry_token_amount * (pnlPercent / 100) : null;
   const holdingSecs =
     p.entry_time && p.exit_time
       ? Math.round((new Date(p.exit_time).getTime() - new Date(p.entry_time).getTime()) / 1000)
@@ -320,12 +320,12 @@ function positionToSimResult(p: RulePositionRecord): SimulatedTokenResult {
     mint: p.mint,
     symbol: p.symbol ?? '',
     target_price: p.target_price,
-    target_amount: p.target_amount,
+    target_token_amount: p.target_token_amount,
     target_time: p.target_time,
     target_tx: p.target_tx,
     entry_price: p.entry_price,
     ath_price: athPrice,
-    entry_amount: p.entry_amount,
+    entry_token_amount: p.entry_token_amount,
     entry_tx: p.entry_tx,
     entry_time: p.entry_time ?? p.created_at,
     exit_price: p.exit_price,

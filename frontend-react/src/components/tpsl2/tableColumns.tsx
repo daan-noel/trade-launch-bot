@@ -35,12 +35,17 @@ export function exitReasonBadge(reason: string | null | undefined) {
   }
 }
 
+/** Derive SOL from a price and a token count — the bot stores TOKEN amounts; SOL
+ * is never persisted, only shown. null when either input is missing. */
+const solOf = (price?: number | null, tokens?: number | null): number | null =>
+  price != null && tokens != null ? price * tokens : null;
+
 // Keys already present in each table — used to filter out duplicates from the
 // appended token-info columns.
 const POSITION_KEYS = new Set([
-  'mint', 'target_price', 'target_amount', 'target_time', 'target_tx',
-  'entry_price', 'entry_amount', 'entry_time', 'entry_tx',
-  'exit_price', 'exit_amount', 'exit_time', 'exit_tx',
+  'mint', 'target_price', 'target_tokens', 'target_sol', 'target_time', 'target_tx',
+  'entry_price', 'entry_tokens', 'entry_sol', 'entry_time', 'entry_tx',
+  'exit_price', 'exit_tokens', 'exit_sol', 'exit_time', 'exit_tx',
   'holding', 'pnl_pct', 'pnl_sol', 'status', 'exit_reason',
 ]);
 const MATCHED_KEYS = new Set([
@@ -49,8 +54,8 @@ const MATCHED_KEYS = new Set([
   'init_buy', 'initial_buy', 'cu_limit', 'cu_price',
 ]);
 const SIM_KEYS = new Set([
-  'symbol', 'mint', 'target_price', 'target_amount', 'target_time', 'target_tx',
-  'entry_price', 'entry_time', 'ath_price', 'exit_price', 'exit_time',
+  'symbol', 'mint', 'target_price', 'target_tokens', 'target_sol', 'target_time', 'target_tx',
+  'entry_price', 'entry_tokens', 'entry_sol', 'entry_time', 'ath_price', 'exit_price', 'exit_time',
   'holding', 'pnl_pct', 'pnl_sol', 'reason', 'trades',
 ]);
 
@@ -84,14 +89,28 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
       searchValue: (r) => String(r.target_price ?? ''),
     },
     {
-      key: 'target_amount',
-      label: 'Target Size',
-      tooltip: 'SOL size of the trigger trade.',
+      key: 'target_tokens',
+      label: 'Target Tokens',
+      tooltip: 'Token count of the trigger trade.',
       group: 'target',
       sortable: true,
-      render: (r) => (r.target_amount != null ? <AmountCell sol={r.target_amount} /> : '—'),
-      sortValue: (r) => r.target_amount,
-      searchValue: (r) => String(r.target_amount ?? ''),
+      render: (r) =>
+        r.target_token_amount != null ? formatDecimalTrim(r.target_token_amount, 3) : '—',
+      sortValue: (r) => r.target_token_amount,
+      searchValue: (r) => String(r.target_token_amount ?? ''),
+    },
+    {
+      key: 'target_sol',
+      label: 'Target Size',
+      tooltip: 'SOL size of the trigger trade (price × tokens).',
+      group: 'target',
+      sortable: true,
+      render: (r) => {
+        const sol = solOf(r.target_price, r.target_token_amount);
+        return sol != null ? <AmountCell sol={sol} /> : '—';
+      },
+      sortValue: (r) => solOf(r.target_price, r.target_token_amount),
+      searchValue: (r) => String(solOf(r.target_price, r.target_token_amount) ?? ''),
     },
     {
       key: 'target_time',
@@ -125,13 +144,27 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
       searchValue: (r) => String(r.entry_price),
     },
     {
-      key: 'entry_amount',
-      label: 'Entry Size',
+      key: 'entry_tokens',
+      label: 'Entry Tokens',
+      tooltip: 'Tokens bought at entry.',
       group: 'entry',
       sortable: true,
-      render: (r) => <AmountCell sol={r.entry_amount} />,
-      sortValue: (r) => r.entry_amount,
-      searchValue: (r) => String(r.entry_amount ?? ''),
+      render: (r) => formatDecimalTrim(r.entry_token_amount, 3),
+      sortValue: (r) => r.entry_token_amount,
+      searchValue: (r) => String(r.entry_token_amount ?? ''),
+    },
+    {
+      key: 'entry_sol',
+      label: 'Entry Size',
+      tooltip: 'SOL spent at entry (entry price × tokens).',
+      group: 'entry',
+      sortable: true,
+      render: (r) => {
+        const sol = solOf(r.entry_price, r.entry_token_amount);
+        return sol != null ? <AmountCell sol={sol} /> : '—';
+      },
+      sortValue: (r) => solOf(r.entry_price, r.entry_token_amount),
+      searchValue: (r) => String(solOf(r.entry_price, r.entry_token_amount) ?? ''),
     },
     {
       key: 'entry_time',
@@ -164,13 +197,28 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
       searchValue: (r) => String(r.exit_price ?? ''),
     },
     {
-      key: 'exit_amount',
-      label: 'Exit Size',
+      key: 'exit_tokens',
+      label: 'Exit Tokens',
+      tooltip: 'Tokens sold at exit.',
       group: 'exit',
       sortable: true,
-      render: (r) => (r.exit_amount != null ? <AmountCell sol={r.exit_amount} /> : '—'),
-      sortValue: (r) => r.exit_amount,
-      searchValue: (r) => String(r.exit_amount ?? ''),
+      render: (r) =>
+        r.exit_token_amount != null ? formatDecimalTrim(r.exit_token_amount, 3) : '—',
+      sortValue: (r) => r.exit_token_amount,
+      searchValue: (r) => String(r.exit_token_amount ?? ''),
+    },
+    {
+      key: 'exit_sol',
+      label: 'Exit Size',
+      tooltip: 'SOL received at exit (exit price × tokens).',
+      group: 'exit',
+      sortable: true,
+      render: (r) => {
+        const sol = solOf(r.exit_price, r.exit_token_amount);
+        return sol != null ? <AmountCell sol={sol} /> : '—';
+      },
+      sortValue: (r) => solOf(r.exit_price, r.exit_token_amount),
+      searchValue: (r) => String(solOf(r.exit_price, r.exit_token_amount) ?? ''),
     },
     {
       key: 'exit_time',
@@ -198,7 +246,7 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
       label: 'Holding',
       group: 'pnl',
       render: (r) =>
-        r.exit_amount != null ? formatDecimalTrim(r.exit_amount, 3) : '—',
+        r.exit_token_amount != null ? formatDecimalTrim(r.exit_token_amount, 3) : '—',
       searchValue: () => '',
     },
     {
@@ -223,12 +271,15 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
       label: 'PnL',
       group: 'pnl',
       render: (r) => {
-        if (r.exit_price == null) return <span className="text-text-dim">—</span>;
-        const amt = r.exit_amount ?? 0;
-        const positive = (r.pnl_percent ?? 0) >= 0;
+        if (r.exit_price == null || r.pnl_percent == null)
+          return <span className="text-text-dim">—</span>;
+        // Realized PnL in SOL = entry notional (entry_price × tokens) × pnl%.
+        const entrySol = solOf(r.entry_price, r.entry_token_amount) ?? 0;
+        const pnl = entrySol * (r.pnl_percent / 100);
+        const positive = r.pnl_percent >= 0;
         return (
           <span className={cn('font-bold', positive ? 'text-green' : 'text-red')}>
-            <AmountCell sol={amt} />
+            <AmountCell sol={pnl} />
           </span>
         );
       },
@@ -362,14 +413,28 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
       searchValue: (r) => String(r.target_price ?? ''),
     },
     {
-      key: 'target_amount',
-      label: 'Target Size',
-      tooltip: 'SOL size of the trigger trade.',
+      key: 'target_tokens',
+      label: 'Target Tokens',
+      tooltip: 'Token count of the trigger trade.',
       group: 'target',
       sortable: true,
-      render: (r) => (r.target_amount != null ? <AmountCell sol={r.target_amount} /> : '—'),
-      sortValue: (r) => r.target_amount,
-      searchValue: (r) => String(r.target_amount ?? ''),
+      render: (r) =>
+        r.target_token_amount != null ? formatDecimalTrim(r.target_token_amount, 3) : '—',
+      sortValue: (r) => r.target_token_amount,
+      searchValue: (r) => String(r.target_token_amount ?? ''),
+    },
+    {
+      key: 'target_sol',
+      label: 'Target Size',
+      tooltip: 'SOL size of the trigger trade (price × tokens).',
+      group: 'target',
+      sortable: true,
+      render: (r) => {
+        const sol = solOf(r.target_price, r.target_token_amount);
+        return sol != null ? <AmountCell sol={sol} /> : '—';
+      },
+      sortValue: (r) => solOf(r.target_price, r.target_token_amount),
+      searchValue: (r) => String(solOf(r.target_price, r.target_token_amount) ?? ''),
     },
     {
       key: 'target_time',

@@ -98,15 +98,18 @@ export interface RulePositionRecord {
    * this position, distinct from the actual entry fill. null until armed. The
    * gap vs. the entry_* fields is derived client-side, not stored. */
   target_price: number | null;
-  target_amount: number | null;
+  /** Trigger trade's TOKEN count; SOL derived as `target_price × target_token_amount`. */
+  target_token_amount: number | null;
   target_time: string | null;
   target_tx: string | null;
   entry_price: number;
-  entry_amount: number;
+  /** Tokens bought at entry; SOL derived as `entry_price × entry_token_amount`. */
+  entry_token_amount: number;
   entry_time: string | null;
   entry_tx: string;
   exit_price: number | null;
-  exit_amount: number | null;
+  /** Tokens sold at exit; SOL derived as `exit_price × exit_token_amount`. */
+  exit_token_amount: number | null;
   exit_time: string | null;
   exit_tx: string | null;
   pnl_percent: number | null;
@@ -195,12 +198,14 @@ export interface SimulatedTokenResult {
    * from the worst-case `entry_*` fill. The gap is the modeled adverse
    * slippage. null only for legacy paper rows that never recorded a target. */
   target_price: number | null;
-  target_amount: number | null;
+  /** Trigger trade's TOKEN count; SOL derived as `target_price × target_token_amount`. */
+  target_token_amount: number | null;
   target_time: string | null;
   target_tx: string | null;
   entry_price: number;
   ath_price: number;
-  entry_amount: number;
+  /** Tokens bought at entry; SOL derived as `entry_price × entry_token_amount`. */
+  entry_token_amount: number;
   entry_tx: string;
   entry_time: string;
   exit_price: number | null;

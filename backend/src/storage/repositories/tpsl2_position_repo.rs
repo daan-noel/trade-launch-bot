@@ -37,15 +37,15 @@ struct PositionDbRow {
     wallet: String,
     token_program_id: Option<String>,
     target_price: Option<f64>,
-    target_amount: Option<f64>,
+    target_token_amount: Option<f64>,
     target_time: Option<DateTime<Utc>>,
     target_tx: Option<String>,
     entry_price: Option<f64>,
-    entry_amount: Option<f64>,
+    entry_token_amount: Option<f64>,
     entry_time: Option<DateTime<Utc>>,
     entry_tx: String,
     exit_price: Option<f64>,
-    exit_amount: Option<f64>,
+    exit_token_amount: Option<f64>,
     exit_time: Option<DateTime<Utc>>,
     exit_tx: Option<String>,
     status: String,
@@ -74,15 +74,15 @@ impl TryFrom<PositionDbRow> for Position {
             wallet: r.wallet,
             token_program_id: r.token_program_id,
             target_price: r.target_price,
-            target_amount: r.target_amount,
+            target_token_amount: r.target_token_amount,
             target_time: r.target_time,
             target_tx: r.target_tx,
             entry_price: r.entry_price,
-            entry_amount: r.entry_amount,
+            entry_token_amount: r.entry_token_amount,
             entry_time: r.entry_time,
             entry_tx: r.entry_tx,
             exit_price: r.exit_price,
-            exit_amount: r.exit_amount,
+            exit_token_amount: r.exit_token_amount,
             exit_time: r.exit_time,
             exit_tx: r.exit_tx,
             status,
@@ -108,9 +108,9 @@ fn position_status_str(s: PositionStatus) -> &'static str {
 /// SELECT/RETURNING so the row layout stays in one place: identity →
 /// target_* → entry_* → exit_* → state. Mirrors the table's physical order.
 const POSITION_COLS: &str = "id, mint, wallet, token_program_id, \
-     target_price, target_amount, target_time, target_tx, \
-     entry_price, entry_amount, entry_time, entry_tx, \
-     exit_price, exit_amount, exit_time, exit_tx, \
+     target_price, target_token_amount, target_time, target_tx, \
+     entry_price, entry_token_amount, entry_time, entry_tx, \
+     exit_price, exit_token_amount, exit_time, exit_tx, \
      status, strategy, rule_id, exit_reason, created_at, updated_at";
 
 // ---------------------------------------------------------------------------
@@ -122,7 +122,7 @@ impl Tpsl2PositionRepo {
         Self { pool }
     }
 
-    /// Update entry fields for an existing position (entry_tx, entry_amount, entry_price, entry_time).
+    /// Update entry fields for an existing position (entry_tx, entry_token_amount, entry_price, entry_time).
     /// Update entry fields and return the updated row in one round-trip. The
     /// `RETURNING *` lets the caller use the fresh `Position` directly instead of
     /// issuing a follow-up `find_by_id` to read back what it just wrote.
@@ -130,21 +130,21 @@ impl Tpsl2PositionRepo {
         &self,
         position_id: Uuid,
         entry_tx: &str,
-        entry_amount: f64,
+        entry_token_amount: f64,
         entry_price: f64,
         entry_time: DateTime<Utc>,
     ) -> anyhow::Result<Position> {
         let row = sqlx::query_as::<_, PositionDbRow>(&format!(
             r#"
             UPDATE tpsl2_real_positions
-            SET entry_tx = $2, entry_amount = $3, entry_price = $4, entry_time = $5, updated_at = $6
+            SET entry_tx = $2, entry_token_amount = $3, entry_price = $4, entry_time = $5, updated_at = $6
             WHERE id = $1
             RETURNING {POSITION_COLS}
             "#
         ))
         .bind(position_id)
         .bind(entry_tx)
-        .bind(entry_amount)
+        .bind(entry_token_amount)
         .bind(entry_price)
         .bind(entry_time)
         .bind(Utc::now())
@@ -163,21 +163,21 @@ impl Tpsl2PositionRepo {
         &self,
         position_id: Uuid,
         target_price: f64,
-        target_amount: f64,
+        target_token_amount: f64,
         target_time: DateTime<Utc>,
         target_tx: &str,
     ) -> anyhow::Result<Position> {
         let row = sqlx::query_as::<_, PositionDbRow>(&format!(
             r#"
             UPDATE tpsl2_real_positions
-            SET target_price = $2, target_amount = $3, target_time = $4, target_tx = $5, updated_at = $6
+            SET target_price = $2, target_token_amount = $3, target_time = $4, target_tx = $5, updated_at = $6
             WHERE id = $1
             RETURNING {POSITION_COLS}
             "#
         ))
         .bind(position_id)
         .bind(target_price)
-        .bind(target_amount)
+        .bind(target_token_amount)
         .bind(target_time)
         .bind(target_tx)
         .bind(Utc::now())
@@ -193,9 +193,9 @@ impl Tpsl2PositionRepo {
             r#"
             INSERT INTO tpsl2_real_positions
                 (id, mint, wallet, token_program_id,
-                 target_price, target_amount, target_time, target_tx,
-                 entry_price, entry_amount, entry_time, entry_tx,
-                 exit_price, exit_amount, exit_time, exit_tx,
+                 target_price, target_token_amount, target_time, target_tx,
+                 entry_price, entry_token_amount, entry_time, entry_tx,
+                 exit_price, exit_token_amount, exit_time, exit_tx,
                  status, strategy, rule_id, exit_reason, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
             "#,
@@ -205,15 +205,15 @@ impl Tpsl2PositionRepo {
         .bind(&position.wallet)
         .bind(position.token_program_id.as_ref())
         .bind(position.target_price)
-        .bind(position.target_amount)
+        .bind(position.target_token_amount)
         .bind(position.target_time)
         .bind(position.target_tx.as_ref())
         .bind(position.entry_price)
-        .bind(position.entry_amount)
+        .bind(position.entry_token_amount)
         .bind(position.entry_time)
         .bind(&position.entry_tx)
         .bind(position.exit_price)
-        .bind(position.exit_amount)
+        .bind(position.exit_token_amount)
         .bind(position.exit_time)
         .bind(&position.exit_tx)
         .bind(position_status_str(position.status))
@@ -233,7 +233,7 @@ impl Tpsl2PositionRepo {
         sqlx::query(
             r#"
             UPDATE tpsl2_real_positions
-            SET exit_price = $1, exit_tx = $2, status = $3, exit_amount = $4,
+            SET exit_price = $1, exit_tx = $2, status = $3, exit_token_amount = $4,
                 exit_time = $5, exit_reason = $6, updated_at = $7
             WHERE id = $8
             "#,
@@ -241,7 +241,7 @@ impl Tpsl2PositionRepo {
         .bind(position.exit_price)
         .bind(&position.exit_tx)
         .bind(position_status_str(position.status))
-        .bind(position.exit_amount)
+        .bind(position.exit_token_amount)
         .bind(position.exit_time)
         .bind(position.exit_reason.as_ref())
         .bind(Utc::now())

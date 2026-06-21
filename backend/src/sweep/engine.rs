@@ -339,6 +339,7 @@ mod tests {
         let corpus = Corpus {
             tokens: vec![token("a", 4), token("b", 4)],
             hash: "h".into(),
+            has_fingerprints: false,
         };
         let (stats, metrics) =
             run_sweep(&Mock, &params, &corpus, &AlwaysCancelled, params.len()).unwrap();
@@ -396,6 +397,7 @@ mod tests {
         let corpus = Corpus {
             tokens: vec![token("a", 1)],
             hash: "h".into(),
+            has_fingerprints: false,
         };
         let (_stats, metrics) =
             run_sweep(&EntryMock, &params, &corpus, &crate::sweep::progress::NoopObserver, params.len())
@@ -416,6 +418,7 @@ mod tests {
         let corpus = Corpus {
             tokens: vec![token("a", 2), token("b", 1)],
             hash: "h".into(),
+            has_fingerprints: false,
         };
         let params = Mock.sample(SweepMethod::Grid);
         let (stats, metrics) =
@@ -440,6 +443,7 @@ mod tests {
         let corpus = Corpus {
             tokens: vec![token("a", 3), token("b", 2), token("c", 4)],
             hash: "h".into(),
+            has_fingerprints: false,
         };
         let params = Mock.sample(SweepMethod::Grid); // 3 combos
         let obs = crate::sweep::progress::NoopObserver;

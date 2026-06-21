@@ -439,7 +439,7 @@ pub fn find_scalp_entry_with_cohort_indexed<T: TradeRow>(
             i,
             EntryFill {
                 price: t.price_per_token(),
-                amount_sol: sol_amount,
+                amount_tokens: t.token_amount(),
                 tx_signature: t.tx_signature().to_string(),
                 block_time,
             },
@@ -459,8 +459,9 @@ pub fn find_scalp_entry_with_cohort_indexed<T: TradeRow>(
 ///     `(slot, leg_index)`;
 ///   • empty pool → fall back to the trigger itself (entry == target).
 ///
-/// `amount_sol` of the returned entry is always the TRIGGER trade's `sol_amount`
-/// (the size we would have filled), not the adverse trade's. If `target_tx` is
+/// `amount_tokens` of the returned entry is the producing trade's own token count
+/// (it isn't used for paper position sizing — entry size is `buy_amount / price`).
+/// If `target_tx` is
 /// absent from `trades` (shouldn't happen — it was just resolved from this slice)
 /// the trigger can't be located, so the first usable trade is returned as a safe
 /// degenerate fallback.
@@ -479,13 +480,13 @@ pub fn find_worst_case_paper_entry<T: TradeRow>(trades: &[T], target_tx: &str) -
                 .find(|t| t.price_per_token() > 0.0 && !Trade::is_dust(t.sol_amount()))
                 .map(|t| EntryFill {
                     price: t.price_per_token(),
-                    amount_sol: t.sol_amount(),
+                    amount_tokens: t.token_amount(),
                     tx_signature: t.tx_signature().to_string(),
                     block_time: t.block_time(),
                 })
                 .unwrap_or(EntryFill {
                     price: 0.0,
-                    amount_sol: 0.0,
+                    amount_tokens: 0.0,
                     tx_signature: target_tx.to_string(),
                     block_time: trades.first().map(|t| t.block_time()).unwrap_or_else(Utc::now),
                 })
@@ -505,15 +506,14 @@ pub fn find_worst_case_paper_entry<T: TradeRow>(trades: &[T], target_tx: &str) -
 ///
 /// [`SweepTrade`]: crate::sweep::projection::SweepTrade
 pub fn find_worst_case_paper_entry_at<T: TradeRow>(trades: &[T], target_idx: usize) -> EntryFill {
-    let entry_from = |t: &T, amount_sol: f64| EntryFill {
+    let entry_from = |t: &T| EntryFill {
         price: t.price_per_token(),
-        amount_sol,
+        amount_tokens: t.token_amount(),
         tx_signature: t.tx_signature().to_string(),
         block_time: t.block_time(),
     };
 
     let target = &trades[target_idx];
-    let trigger_sol = target.sol_amount();
     let target_slot = target.slot();
     let target_key = (target_slot, target.leg_index());
 
@@ -533,10 +533,11 @@ pub fn find_worst_case_paper_entry_at<T: TradeRow>(trades: &[T], target_idx: usi
         });
 
     // Worst-case adverse trade if any, else fall back to the trigger itself.
-    // Either way `amount_sol` is the trigger trade's SOL.
+    // `amount_tokens` is the producing trade's own token count (not used for
+    // paper sizing — that's `buy_amount / entry_price`).
     worst
-        .map(|t| entry_from(t, trigger_sol))
-        .unwrap_or_else(|| entry_from(target, trigger_sol))
+        .map(entry_from)
+        .unwrap_or_else(|| entry_from(target))
 }
 
 #[cfg(test)]
@@ -693,7 +694,7 @@ mod tests {
             }
             return Some(EntryFill {
                 price: cand.price_per_token,
-                amount_sol: cand.sol_amount,
+                amount_tokens: cand.token_amount,
                 tx_signature: cand.tx_signature.clone(),
                 block_time: cand.block_time,
             });
@@ -854,8 +855,8 @@ mod tests {
         let entry = find_worst_case_paper_entry(&trades, &trigger.tx_signature);
         assert_eq!(entry.tx_signature, "sig-100-2");
         assert_eq!(entry.price, 1.5);
-        // amount_sol is the TRIGGER's sol, not the adverse trade's.
-        assert_eq!(entry.amount_sol, trigger.sol_amount);
+        // amount_tokens is the producing (adverse) trade's own token count.
+        assert_eq!(entry.amount_tokens, trigger.token_amount);
     }
 
     #[test]
@@ -907,6 +908,6 @@ mod tests {
         let entry = find_worst_case_paper_entry(&trades, &trigger.tx_signature);
         assert_eq!(entry.tx_signature, trigger.tx_signature);
         assert_eq!(entry.price, trigger.price_per_token);
-        assert_eq!(entry.amount_sol, trigger.sol_amount);
+        assert_eq!(entry.amount_tokens, trigger.token_amount);
     }
 }

@@ -32,6 +32,10 @@ pub const MAX_MANUAL_BUY_SOL: f64 = 5.0;
 /// cluster across the tpsl2 entry gates and the cohort-dump exit — see `cohort.rs`.
 pub const EARLY_COHORT_SLOT_WINDOW: i64 = 150;
 
+/// Worst-case paper/backtest exit models sell latency: the fill is the lowest price
+/// over the firing slot plus this many following slots (real sells lag the trigger).
+pub const EXIT_SLIPPAGE_SLOTS: u64 = 2;
+
 // ── Dead-token detection ─────────────────────────────────────────────────────
 // A token is "dead" when BOTH conditions hold simultaneously:
 //   1. Real SOL reserves are below `DEAD_MAX_LIQUIDITY_SOL` — liquidity is gone.

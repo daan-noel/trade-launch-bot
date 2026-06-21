@@ -34,13 +34,15 @@ pub struct BacktestTokenResult {
     /// between the two is the modeled adverse slippage (mirrors live/paper).
     /// `None` only for legacy paper rows that never recorded a target.
     pub target_price: Option<f64>,
-    pub target_amount: Option<f64>,
+    /// Trigger trade's **token** count (SOL derived at display as `price × tokens`).
+    pub target_token_amount: Option<f64>,
     pub target_time: Option<DateTime<Utc>>,
     pub target_tx: Option<String>,
     pub entry_price: f64,
     /// All-time-high price across every one of the token's trades.
     pub ath_price: f64,
-    pub entry_amount: f64,
+    /// Tokens bought at entry (`buy_amount / entry_price`); SOL derived at display.
+    pub entry_token_amount: f64,
     pub entry_tx: String,
     pub entry_time: DateTime<Utc>,
     pub exit_price: Option<f64>,
@@ -260,7 +262,7 @@ pub async fn run_backtest(
                     return None;
                 }
                 let target_price = target.price;
-                let target_amount = target.amount_sol;
+                let target_token_amount = target.amount_tokens;
                 let target_time = target.block_time;
                 let target_tx = target.tx_signature;
                 let entry_price = entry_fill.price;
@@ -300,12 +302,15 @@ pub async fn run_backtest(
                     mint: token.mint_address.clone(),
                     symbol: token.symbol.clone(),
                     target_price: Some(target_price),
-                    target_amount: Some(target_amount),
+                    target_token_amount: Some(target_token_amount),
                     target_time: Some(target_time),
                     target_tx: Some(target_tx),
                     entry_price,
                     ath_price,
-                    entry_amount: rule.buy_amount,
+                    // Token count `buy_amount / entry_price` (entry_price > 0 here —
+                    // a 0-priced fill was dropped above). pnl_sol math is unchanged
+                    // because `buy_amount × pct == (buy_amount/entry)×exit − buy_amount`.
+                    entry_token_amount: rule.buy_amount / entry_price,
                     entry_tx,
                     entry_time,
                     exit_price,

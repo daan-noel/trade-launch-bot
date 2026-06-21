@@ -551,7 +551,7 @@ mod tests {
         let mut p = Position::new("mint".into(), "wallet".into(), "TPSL1".into(), rule_id);
         p.entry_price = Some(entry_price);
         p.entry_tx = "entry-sig".into();
-        p.entry_amount = Some(1.0);
+        p.entry_token_amount = Some(1.0);
         p.entry_time = Some(base_time());
         p
     }
@@ -767,7 +767,7 @@ mod tests {
     fn walk(pos: &Position, trades: &[Trade]) -> ExitWalkState {
         ExitWalkState::rebuild_from_trades(
             trades,
-            pos.entry_price,
+            pos.entry_price.unwrap_or(0.0),
             pos.entry_time.unwrap_or_else(base_time),
         )
     }
