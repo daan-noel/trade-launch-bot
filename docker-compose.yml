@@ -19,6 +19,10 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-meme_bot}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # Publish postgres so an external client (e.g. Navicat) can connect.
+    # Override the host port via POSTGRES_HOST_PORT in .env if 5432 is taken.
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5555"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-meme_bot}"]
       interval: 5s
