@@ -88,7 +88,11 @@ fn parse_wallet_keypair(base58_key: &str) -> anyhow::Result<Keypair> {
 ///   probe ladder [levels]                      — Jito tip escalation ladder
 ///                                                (read-only, zero SOL)
 ///   probe fanout [lamports] [--tip] [--confirm] — fan-out self-transfer to all
-///                                                sender endpoints (base fee only)
+///                                                sender endpoints (base fee only;
+///                                                senders require --tip to accept)
+///   probe check-nonces                         — read-only audit that every
+///                                                configured nonce account's
+///                                                authority is the wallet (zero SOL)
 ///   probe simulate-sell <mint> [amount] [slippage_bps] [--cashback]
 ///                                              — simulate a real curve sell
 ///                                                against live state (zero SOL)
@@ -136,6 +140,29 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
                 (Some(ms), Some(Err(e))) => println!("  confirm failed in {ms}ms: {e}"),
                 _ => {}
             }
+        }
+        "check-nonces" => {
+            // Read-only audit of the FULL nonce pool: confirms every configured
+            // nonce account's authority is the current wallet (so a re-auth
+            // landed everywhere, not just on the slots a fan-out probe used).
+            let wallet = trader.wallet_pubkey();
+            let checks = trader.check_nonce_authorities().await;
+            println!("Nonce authorization audit — wallet {wallet}:");
+            let mut ok = 0usize;
+            for c in &checks {
+                match (&c.error, c.matches_wallet, c.authority) {
+                    (Some(e), _, _) => println!("  ❌ {}  ERROR: {e}", c.pubkey),
+                    (None, true, _) => {
+                        ok += 1;
+                        println!("  ✅ {}  authority == wallet", c.pubkey);
+                    }
+                    (None, false, Some(auth)) => {
+                        println!("  ❌ {}  authority = {auth}  (NOT the wallet)", c.pubkey)
+                    }
+                    (None, false, None) => println!("  ❌ {}  not an initialized nonce", c.pubkey),
+                }
+            }
+            println!("  {ok}/{} nonce accounts authorized to the wallet", checks.len());
         }
         "holdings" => {
             let holdings = trader.get_all_token_accounts().await?;

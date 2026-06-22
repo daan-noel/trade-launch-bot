@@ -15,11 +15,26 @@ use crate::constants::{
 };
 use anyhow::{Context, Result};
 use solana_client::nonce_utils;
+use solana_sdk::signature::Signer;
 use solana_sdk::{hash::Hash, nonce::State, pubkey::Pubkey};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{info, warn};
+
+/// Read-only audit result for one configured nonce account.
+pub struct NonceAuthCheck {
+    pub pubkey: Pubkey,
+    /// `false` if the account is missing or not an initialized nonce account.
+    pub initialized: bool,
+    /// The nonce-authority stored on-chain, if the account is an initialized nonce.
+    pub authority: Option<Pubkey>,
+    /// `true` iff `authority == trading wallet` — i.e. this slot can be advanced
+    /// by a tx signed with the current wallet key.
+    pub matches_wallet: bool,
+    /// Populated when the RPC read or state decode failed.
+    pub error: Option<String>,
+}
 
 impl PumpFunTrader {
     /// Acquire the next available nonce slot (round-robin, spin-wait if all busy).
@@ -162,6 +177,54 @@ impl PumpFunTrader {
             // the next free slot — no worse than the old fixed-sleep poll.
             available.notify_one();
         });
+    }
+
+    /// Read-only audit of **every** configured nonce account: fetch each on-chain,
+    /// decode its state, and report whether its stored authority is the current
+    /// trading wallet. Zero SOL, no tx. Unlike a fan-out probe (which only
+    /// exercises whichever slots round-robin hands out), this covers the full
+    /// pool — so a re-authorization can be confirmed to have landed on all of
+    /// them. A mismatched authority means a durable-nonce tx on that slot would
+    /// fail `advance_nonce_account`.
+    pub async fn check_nonce_authorities(&self) -> Vec<NonceAuthCheck> {
+        let wallet = self.config.keypair.pubkey();
+        let mut out = Vec::with_capacity(self.nonce_pubkeys.len());
+        for pk in &self.nonce_pubkeys {
+            let check = match self.rpc.get_account(pk).await {
+                Ok(account) => match nonce_utils::state_from_account(&account) {
+                    Ok(State::Initialized(data)) => NonceAuthCheck {
+                        pubkey: *pk,
+                        initialized: true,
+                        authority: Some(data.authority),
+                        matches_wallet: data.authority == wallet,
+                        error: None,
+                    },
+                    Ok(_) => NonceAuthCheck {
+                        pubkey: *pk,
+                        initialized: false,
+                        authority: None,
+                        matches_wallet: false,
+                        error: Some("account is not an initialized nonce".to_string()),
+                    },
+                    Err(e) => NonceAuthCheck {
+                        pubkey: *pk,
+                        initialized: false,
+                        authority: None,
+                        matches_wallet: false,
+                        error: Some(format!("decode nonce state: {e}")),
+                    },
+                },
+                Err(e) => NonceAuthCheck {
+                    pubkey: *pk,
+                    initialized: false,
+                    authority: None,
+                    matches_wallet: false,
+                    error: Some(format!("get_account: {e}")),
+                },
+            };
+            out.push(check);
+        }
+        out
     }
 
     pub async fn fetch_nonce_hash_async(&self, pubkey: &Pubkey) -> Result<Hash> {

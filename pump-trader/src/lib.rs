@@ -16,5 +16,5 @@ mod trader;
 
 pub use trader::claim::{ClaimOutcome, PotStatus};
 pub use trader::probe::{EndpointResult, FanoutReport};
-pub use trader::{AccountDelta, PumpFunTrader, SigStatus, SimOutcome, TraderConfig};
+pub use trader::{AccountDelta, NonceAuthCheck, PumpFunTrader, SigStatus, SimOutcome, TraderConfig};
 pub use types::{BuyRouting, TokenBalance, TokenProgram, WalletHolding};

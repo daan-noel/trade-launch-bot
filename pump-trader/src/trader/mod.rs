@@ -48,6 +48,7 @@ use dashmap::DashMap;
 use jito_tip::JitoTipCache;
 use reserves::ReserveCache;
 
+pub use nonce::NonceAuthCheck;
 pub use sim::{AccountDelta, SimOutcome};
 pub use tx::SigStatus;
 
