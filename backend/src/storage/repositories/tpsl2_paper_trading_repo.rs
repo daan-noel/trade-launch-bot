@@ -580,14 +580,19 @@ impl Tpsl2PaperTradingRepo {
     }
 
     /// Delete orphaned **unentered** Holding positions older than the cutoff: rows
-    /// with no recorded fill (`entry_price <= 0`) that have outlived any plausible
-    /// arming window. The `spawn_entry_fill_poll` task normally enters or deletes
-    /// such a row within its arming window, but that task lives only in memory — a
-    /// backend restart or paper-run resume reloads the row from the DB without
-    /// re-arming it, leaving a zombie that is never entered (no poll), never exited
-    /// (the clock sweep skips `entry_price <= 0`), and never deleted. This reaps
-    /// them. The cutoff must exceed the largest real arming window so a live poll
-    /// is never raced. Returns rows deleted.
+    /// with no recorded fill (`entry_price IS NULL`, or `<= 0` for legacy rows) that
+    /// have outlived any plausible arming window. The `spawn_entry_fill_poll` task
+    /// normally enters or deletes such a row within its arming window, but that task
+    /// lives only in memory — a backend restart or paper-run resume reloads the row
+    /// from the DB without re-arming it, leaving a zombie that is never entered (no
+    /// poll), never exited (the clock sweep skips unentered rows), and never deleted.
+    /// This reaps them. The cutoff must exceed the largest real arming window so a
+    /// live poll is never raced. Returns rows deleted.
+    ///
+    /// NOTE: the predicate must match `NULL` explicitly — unentered rows are inserted
+    /// with `entry_price = NULL`, and `NULL <= 0` is `NULL` (not true) in SQL, so a
+    /// bare `<= 0` test silently skips every orphan (mirrors the real-side reaper,
+    /// which tests `entry_price IS NULL`).
     pub async fn delete_stale_unentered(
         &self,
         stale_after: std::time::Duration,
@@ -596,7 +601,7 @@ impl Tpsl2PaperTradingRepo {
         let result = sqlx::query(
             r#"
             DELETE FROM tpsl2_paper_positions
-            WHERE status = 'PendingEntry' AND entry_price <= 0 AND created_at < $1
+            WHERE status = 'PendingEntry' AND (entry_price IS NULL OR entry_price <= 0) AND created_at < $1
             "#,
         )
         .bind(cutoff)

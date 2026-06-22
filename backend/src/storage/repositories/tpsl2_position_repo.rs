@@ -372,13 +372,14 @@ impl Tpsl2PositionRepo {
         Ok(result.rows_affected())
     }
 
-    /// Delete real positions left **Holding with no entry fill** (`entry_price IS
-    /// NULL`) past the timeout. The in-process arming/buy task deletes its own
-    /// unentered row when the scalp signal never fires or the buy isn't found
-    /// (`on_token_created`), so under normal operation nothing reaches here. But
-    /// that cleanup lives **inside** the spawned task — if the process restarts or
-    /// the task panics mid-arming, the row is reloaded as `Holding` with no arming
-    /// task, no buy, and (being 0-entry) gated out of every exit path: a permanent
+    /// Delete real positions left **PendingEntry with no entry fill** (`entry_price
+    /// IS NULL`) past the timeout — they never reached `Holding` because the buy fill
+    /// (which calls `mark_entered`) never landed. The in-process arming/buy task
+    /// deletes its own unentered row when the scalp signal never fires or the buy
+    /// isn't found (`on_token_created`), so under normal operation nothing reaches
+    /// here. But that cleanup lives **inside** the spawned task — if the process
+    /// restarts or the task panics mid-arming, the row is reloaded as `PendingEntry`
+    /// with no arming task, no buy, and (being 0-entry) gated out of every exit path: a permanent
     /// zombie that also pins its dead token in `token_cache` (`is_held`). This is
     /// the real-side mirror of the paper reaper. `stale_after` must comfortably
     /// exceed the largest arming window (`UNENTERED_STALE_MS`) so it only ever
@@ -673,13 +674,14 @@ mod tests {
         let repo = Tpsl2PositionRepo::new(pool.clone());
         let mint = unique("M");
 
-        // Four rows: a freshly-armed unentered Holding (arming still in flight), an
-        // aged unentered Holding (orphaned zombie — restart/panic lost its task), an
-        // aged but ENTERED Holding (a live bag — must survive), and an aged unentered
-        // End (already settled). Only the aged 0-entry Holding is a zombie.
-        let fresh = seed_position(&repo, &mint, PositionStatus::Holding, Duration::ZERO, false).await;
+        // Four rows: a freshly-armed unentered PendingEntry (arming still in flight),
+        // an aged unentered PendingEntry (orphaned zombie — restart/panic lost its
+        // task), an aged ENTERED Holding (a live bag — must survive), and an aged
+        // unentered End (already settled). Only the aged 0-entry PendingEntry is a
+        // zombie: the fill never landed, so it never advanced past PendingEntry.
+        let fresh = seed_position(&repo, &mint, PositionStatus::PendingEntry, Duration::ZERO, false).await;
         let zombie =
-            seed_position(&repo, &mint, PositionStatus::Holding, Duration::from_secs(3600), false).await;
+            seed_position(&repo, &mint, PositionStatus::PendingEntry, Duration::from_secs(3600), false).await;
         let entered =
             seed_position(&repo, &mint, PositionStatus::Holding, Duration::from_secs(3600), true).await;
         let ended =
@@ -689,7 +691,7 @@ mod tests {
             .delete_stale_unentered(Duration::from_secs(600))
             .await
             .expect("reap stale unentered");
-        assert_eq!(reaped, 1, "exactly the aged 0-entry Holding is deleted");
+        assert_eq!(reaped, 1, "exactly the aged 0-entry PendingEntry is deleted");
 
         assert!(repo.find_by_id(zombie).await.unwrap().is_none(), "zombie deleted");
         assert!(repo.find_by_id(fresh).await.unwrap().is_some(), "fresh arming row survives");
