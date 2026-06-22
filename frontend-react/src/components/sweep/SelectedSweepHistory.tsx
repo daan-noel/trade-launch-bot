@@ -45,11 +45,16 @@ function fieldFilterLines(filters: Record<string, (number | boolean)[]>): string
 export interface SelectedSweepHistoryProps {
   strategyId: string;
   run: GroupedSweepRunRecord;
+  /** Tokens covered by the **persisted** groups (Σ group `token_count`) — for a
+   *  partial run this is below the run's total `token_count`, so the Population row
+   *  shows it as `done/total`. `null` when the groups aren't loaded yet (or the run
+   *  is complete, where it equals `token_count` and the plain total is shown). */
+  tokensDone?: number | null;
   /** Push this run's stored config back into the sweep form (re-run). */
   onReuse: () => void;
 }
 
-export function SelectedSweepHistory({ strategyId, run, onReuse }: SelectedSweepHistoryProps) {
+export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: SelectedSweepHistoryProps) {
   const [rename, renameState] = useRenameGroupedSweepRunMutation();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
@@ -137,7 +142,10 @@ export function SelectedSweepHistory({ strategyId, run, onReuse }: SelectedSweep
         <Row label="Grouping">{grouping}</Row>
         <Row label="Method">{run.method}</Row>
         <Row label="Population">
-          {run.token_count} tokens · {run.groups_done}/{run.group_count} groups · {run.combo_count} combos
+          {run.status !== 'completed' && tokensDone != null
+            ? `${tokensDone}/${run.token_count}`
+            : run.token_count}{' '}
+          tokens · {run.groups_done}/{run.group_count} groups · {run.combo_count} combos
         </Row>
         <Row label="Caps / gates">
           min {run.min_tokens} tok/grp · token cap {run.token_cap ?? '—'} · max combos{' '}

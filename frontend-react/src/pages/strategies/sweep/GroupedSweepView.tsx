@@ -170,6 +170,14 @@ export function GroupedSweepView({
   const groups = groupsQuery.data ?? [];
   const activeGroup = groups.find((g) => g.id === activeGroupId) ?? null;
   const activeRun = runs.find((r) => r.id === activeRunId) ?? null;
+  // Tokens covered by the persisted groups (Σ group token_count). For a partial
+  // run this is below the run's total token_count; the history Population row shows
+  // it as done/total. `null` while groups are still loading so the row falls back
+  // to the plain total instead of flashing "0/total".
+  const tokensDone = useMemo(
+    () => (groups.length ? groups.reduce((sum, g) => sum + g.token_count, 0) : null),
+    [groups],
+  );
 
   // Server-side pagination state for the combo table. `onComboQueryChange` is
   // stable (useCallback) so DataTable's onQueryChange prop identity doesn't
@@ -401,6 +409,7 @@ export function GroupedSweepView({
               <SelectedSweepHistory
                 strategyId={strategyId}
                 run={activeRun}
+                tokensDone={tokensDone}
                 onReuse={() => {
                   setReuseNonce((n) => n + 1);
                   formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
