@@ -14,7 +14,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::super::util::none_if_zero_u64;
-use super::super::Tpsl2RuntimeCache;
+use super::super::{ExitGuard, Tpsl2RuntimeCache};
 use crate::config::constants::EXIT_SLIPPAGE_SLOTS;
 use crate::models::ingest::SseEvent;
 use crate::state::token_cache::CachedTrade;
@@ -187,9 +187,14 @@ pub(crate) fn spawn_exit_fill_poll(
     trigger_price: f64,
     trigger_time: DateTime<Utc>,
     trigger_reason: String,
+    // RAII exit claim — held for the poll's lifetime so the `exiting` slot frees
+    // when this task ends OR panics (the caller claimed it before spawning).
+    guard: ExitGuard,
 ) {
     let poll_sem = runtime.paper_poll_sem();
     tokio::spawn(async move {
+        // Held until this task ends or unwinds on panic.
+        let _guard = guard;
         // Bound concurrent fill-poll tasks; held for the task's lifetime.
         let _permit = poll_sem.acquire_owned().await;
         let rule_id = rule.id;
@@ -303,10 +308,8 @@ pub(crate) fn spawn_exit_fill_poll(
                 .await;
             }
         }
-
-        // Release the shared exit claim now the fill-poll is done (the caller
-        // claimed it before spawning to bound this to one task per position).
-        runtime.end_exit(position_id);
+        // `_guard` drops here, releasing the shared exit claim (the caller claimed
+        // it before spawning to bound this to one task per position).
     });
 }
 

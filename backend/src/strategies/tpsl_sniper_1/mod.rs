@@ -27,5 +27,5 @@ mod util;
 pub use backtest::run_backtest;
 pub use handler::TPSL1StrategyHandler;
 pub use lifecycle::{activate_rule, pause_rule, stop_and_close_rule, PaperActivation};
-pub use runtime_cache::Tpsl1RuntimeCache;
+pub use runtime_cache::{ExitGuard, Tpsl1RuntimeCache};
 pub use service::Tpsl1StrategyService;

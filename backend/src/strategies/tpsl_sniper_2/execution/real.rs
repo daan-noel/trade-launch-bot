@@ -17,7 +17,7 @@ use crate::models::{Position, Tpsl2Rule};
 use crate::state::token_cache::TokenCache;
 use crate::state::trade_signals::TradeSignals;
 use crate::storage::repositories::{tpsl2_position_repo::Tpsl2PositionRepo, trade_repo::TradeRepo};
-use crate::trader::PumpFunTrader;
+use crate::trader::{PumpFunTrader, SigStatus};
 
 /// Decision for a snipe buy that was sent but whose fill never appeared in the
 /// WS/DB feed within the poll window. Centralizing it keeps the **double-buy
@@ -512,33 +512,72 @@ enum SellOutcome {
     Failed,
 }
 
+/// pump.fun bonding-curve `TooLittleSolReceived` (Anchor error 6003) — the
+/// sell-side slippage floor: the price moved past `min_out` between build and
+/// land. Retryable (re-quote and resend).
+const CURVE_TOO_LITTLE_SOL_RECEIVED: u32 = 6003;
+/// PumpSwap AMM `ExceededSlippage` (Anchor error 6004) — the AMM-side slippage
+/// floor. Retryable, same as the curve case.
+const AMM_EXCEEDED_SLIPPAGE: u32 = 6004;
+
 /// After a feed-confirm sell's poll window elapses without the balance clearing,
-/// one `signature_state` check decides whether re-sending is worth the fee.
-/// A landed-and-reverted sell (the TPSL path drives min_out=1, so a revert is
-/// structural — already-sold / empty-or-wrong token account / migrated) can never
-/// clear on the SAME venue and re-pays base+priority fee on every retry — the
-/// feed-path analogue of `sell_token`'s `OnChainRevert` budget guard. The one
-/// exception: the token migrated mid-exit, so the next attempt re-routes to the
-/// other venue (curve↔AMM), which can still succeed — keep going. Anything else
-/// (didn't land / status unknown) costs nothing to re-send, so retry. Pure so the
-/// fee-guard decision is unit-tested without a live chain.
+/// one `signature_state_detailed` check decides whether re-sending is worth the
+/// fee. A landed-and-reverted sell collapses two very different causes into one
+/// signal, so we read the on-chain **program error code** to tell them apart:
+///
+/// - **Slippage-floor rejection** (curve `TooLittleSolReceived` / AMM
+///   `ExceededSlippage`) — the price moved past `min_out`. Retryable: the next
+///   attempt re-quotes and can clear.
+/// - **Structural revert** (already-sold / empty-or-wrong account / migrated) or
+///   an **unknown** code — can never clear on the SAME venue and re-pays
+///   base+priority fee on every retry, so stop (the feed-path analogue of
+///   `sell_token`'s `OnChainRevert` budget guard). Unknown stays conservative
+///   (stop) and the caller logs the raw code so unmapped reasons surface.
+///
+/// The one cross-cutting exception: the token migrated mid-exit, so the next
+/// attempt re-routes to the other venue (curve↔AMM) — keep going regardless of
+/// the code. A send that didn't land / whose status is unknown costs nothing to
+/// re-send, so retry. Pure so the fee-guard decision is unit-tested without a
+/// live chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SellRetryDecision {
-    /// Re-send the remainder (escalated tip) — the prior send cost nothing, or the
-    /// route will change on the next attempt.
+    /// Re-send the remainder (escalated tip) — the prior send cost nothing, the
+    /// route will change on the next attempt, or it reverted on the slippage floor.
     Retry,
-    /// Stop: the send landed-and-reverted on a venue the next attempt would reuse,
-    /// so a blind re-send only re-pays fees. Caller marks the position ExitFailed.
+    /// Stop: the send landed-and-reverted (structural / unknown) on a venue the
+    /// next attempt would reuse, so a blind re-send only re-pays fees. Caller marks
+    /// the position ExitFailed.
     StopFeeBurn,
 }
 
+/// Map a landed-and-reverted sell to a retry decision using the on-chain error
+/// code, not a `min_out=1` assumption. `used_migrated` is the venue the sent tx
+/// used (true = AMM, false = curve); `now_migrated` is the venue the next attempt
+/// would use, so a mid-exit migration (`used_migrated != now_migrated`) always
+/// retries on the re-routed venue.
 fn classify_sell_revert<E>(
-    state: &Result<Option<bool>, E>,
+    state: &Result<SigStatus, E>,
     used_migrated: bool,
     now_migrated: bool,
 ) -> SellRetryDecision {
     match state {
-        Ok(Some(false)) if used_migrated == now_migrated => SellRetryDecision::StopFeeBurn,
+        // Landed + reverted on a venue the retry would reuse: only the venue's
+        // slippage-floor code is retryable; structural/unknown codes stop.
+        Ok(SigStatus::Reverted { custom }) if used_migrated == now_migrated => {
+            let slippage_code = if used_migrated {
+                AMM_EXCEEDED_SLIPPAGE
+            } else {
+                CURVE_TOO_LITTLE_SOL_RECEIVED
+            };
+            if *custom == Some(slippage_code) {
+                SellRetryDecision::Retry
+            } else {
+                SellRetryDecision::StopFeeBurn
+            }
+        }
+        // Route changed (migration mid-exit), didn't land / pending, status error,
+        // or a landed-success with no balance change → re-send costs nothing or can
+        // succeed on the new route.
         _ => SellRetryDecision::Retry,
     }
 }
@@ -750,13 +789,19 @@ async fn sell_until_balance_cleared(
                     // still succeed — so only stop when the route wouldn't change.
                     let now_migrated =
                         cache.get(&mint).map(|e| e.is_migrated).unwrap_or(is_migrated);
-                    let state = trader.signature_state(&sig).await;
+                    let state = trader.signature_state_detailed(&sig).await;
                     if classify_sell_revert(&state, is_migrated, now_migrated)
                         == SellRetryDecision::StopFeeBurn
                     {
-                        warn!(mint = %mint, attempt, sig = %sig,
-                            "sell reverted on-chain on a route the retry would reuse; \
-                             stopping (a blind re-send would only re-pay fees)");
+                        // Surface the raw program error so an unmapped (non-slippage)
+                        // revert reason is visible, not silently swallowed.
+                        let raw_code = match &state {
+                            Ok(SigStatus::Reverted { custom }) => *custom,
+                            _ => None,
+                        };
+                        warn!(mint = %mint, attempt, sig = %sig, raw_error_code = ?raw_code,
+                            "sell reverted on-chain (structural/unknown) on a route the retry \
+                             would reuse; stopping (a blind re-send would only re-pay fees)");
                         return SellOutcome::Failed;
                     }
                     warn!(mint = %mint, attempt, remaining = remaining_amount,
@@ -822,30 +867,83 @@ mod tests {
 
     // --- Sell-side fee guard (classify_sell_revert) ---------------------------
 
-    fn revert(used_migrated: bool, now_migrated: bool) -> SellRetryDecision {
-        classify_sell_revert(&Ok::<_, &'static str>(Some(false)), used_migrated, now_migrated)
+    /// A landed-and-reverted sell carrying program error `custom`.
+    fn reverted(custom: Option<u32>) -> Result<SigStatus, &'static str> {
+        Ok(SigStatus::Reverted { custom })
     }
 
     #[test]
-    fn landed_revert_same_route_stops_fee_burn() {
-        // Reverted on the venue the retry would reuse → stop re-paying fees.
-        assert_eq!(revert(false, false), SellRetryDecision::StopFeeBurn);
-        assert_eq!(revert(true, true), SellRetryDecision::StopFeeBurn);
+    fn structural_revert_same_route_stops_fee_burn() {
+        // A non-slippage (structural / unknown) revert on the venue the retry would
+        // reuse → stop re-paying fees.
+        let structural = reverted(Some(6022)); // e.g. curve SellZeroAmount
+        assert_eq!(
+            classify_sell_revert(&structural, false, false),
+            SellRetryDecision::StopFeeBurn
+        );
+        assert_eq!(
+            classify_sell_revert(&structural, true, true),
+            SellRetryDecision::StopFeeBurn
+        );
+    }
+
+    #[test]
+    fn unknown_code_revert_stops_conservatively() {
+        // No custom code (non-Anchor failure) or an unmapped code → stay
+        // conservative and stop on a stable route.
+        assert_eq!(
+            classify_sell_revert(&reverted(None), false, false),
+            SellRetryDecision::StopFeeBurn
+        );
+    }
+
+    #[test]
+    fn slippage_revert_retries_to_requote() {
+        // Curve slippage floor (6003) on the curve route, AMM slippage (6004) on the
+        // AMM route → price moved, re-quote and resend.
+        assert_eq!(
+            classify_sell_revert(&reverted(Some(CURVE_TOO_LITTLE_SOL_RECEIVED)), false, false),
+            SellRetryDecision::Retry
+        );
+        assert_eq!(
+            classify_sell_revert(&reverted(Some(AMM_EXCEEDED_SLIPPAGE)), true, true),
+            SellRetryDecision::Retry
+        );
+    }
+
+    #[test]
+    fn slippage_code_for_wrong_venue_is_not_treated_as_slippage() {
+        // The AMM slippage code on the curve route (or vice versa) is not the
+        // venue's slippage floor → treated as structural, stop.
+        assert_eq!(
+            classify_sell_revert(&reverted(Some(AMM_EXCEEDED_SLIPPAGE)), false, false),
+            SellRetryDecision::StopFeeBurn
+        );
+        assert_eq!(
+            classify_sell_revert(&reverted(Some(CURVE_TOO_LITTLE_SOL_RECEIVED)), true, true),
+            SellRetryDecision::StopFeeBurn
+        );
     }
 
     #[test]
     fn landed_revert_after_migration_retries_new_route() {
         // Sold on the curve but the token migrated mid-exit (now AMM), or vice
-        // versa → the next attempt re-routes, so don't stop.
-        assert_eq!(revert(false, true), SellRetryDecision::Retry);
-        assert_eq!(revert(true, false), SellRetryDecision::Retry);
+        // versa → the next attempt re-routes, so don't stop (even structural).
+        assert_eq!(
+            classify_sell_revert(&reverted(Some(6022)), false, true),
+            SellRetryDecision::Retry
+        );
+        assert_eq!(
+            classify_sell_revert(&reverted(Some(6022)), true, false),
+            SellRetryDecision::Retry
+        );
     }
 
     #[test]
     fn unlanded_or_unknown_sell_retries() {
         // A sell that didn't land (or whose status we can't read) cost nothing —
         // re-send with an escalated tip.
-        let states: [Result<Option<bool>, &'static str>; 2] = [Ok(None), Err("rpc down")];
+        let states: [Result<SigStatus, &'static str>; 2] = [Ok(SigStatus::Pending), Err("rpc down")];
         for state in states {
             assert_eq!(classify_sell_revert(&state, false, false), SellRetryDecision::Retry);
         }
@@ -853,7 +951,7 @@ mod tests {
 
     #[test]
     fn landed_successful_sell_retries_to_chase_remainder() {
-        let state: Result<Option<bool>, &'static str> = Ok(Some(true));
+        let state: Result<SigStatus, &'static str> = Ok(SigStatus::Succeeded);
         assert_eq!(classify_sell_revert(&state, false, false), SellRetryDecision::Retry);
     }
 

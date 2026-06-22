@@ -18,6 +18,12 @@ use super::{TPSL2StrategyHandler, Tpsl2RuntimeCache};
 use crate::trader::PumpFunTrader;
 use super::util::none_if_zero_u64;
 
+/// Exit reason stamped on a position re-driven out of an orphaned `ExitPending`
+/// state (its original trigger reason wasn't persisted), so the recovered close
+/// is distinguishable in the history.
+const EXIT_PENDING_RECOVERY_REASON: &str = "ExitPendingRecovery";
+
+#[derive(Clone)]
 pub struct Tpsl2StrategyService {
     pool: PgPool,
     position_repo: Tpsl2PositionRepo,
@@ -72,6 +78,10 @@ impl Tpsl2StrategyService {
         let paper_repo = self.paper_repo.clone();
         let runtime = self.runtime.clone();
         let pool = self.pool.clone();
+        // The reaper re-drives orphaned ExitPending sells (panic / crash recovery)
+        // before the stale-fail pass below would terminally fail them. It needs the
+        // full service (trader, caches, repos), so clone it into the task.
+        let service = self.clone();
         tokio::spawn(async move {
             let stale = Duration::from_millis(Tpsl2StrategyService::EXIT_PENDING_STALE_MS);
             let unentered_stale =
@@ -80,7 +90,15 @@ impl Tpsl2StrategyService {
                 Tpsl2StrategyService::EXIT_PENDING_CLEANUP_INTERVAL_MS,
             ));
             loop {
+                // First tick is immediate, so this also performs the boot-time
+                // ExitPending recovery (1A-2) for the process-crash+restart case;
+                // subsequent ticks are the in-process reaper (1A-4) that recovers a
+                // single panicked sell task without a restart. Re-drive runs BEFORE
+                // the stale-fail pass so a recoverable bag is re-attempted, not
+                // failed; the atomic exit-guard claim prevents double-driving an
+                // exit that's still legitimately in flight.
                 interval.tick().await;
+                service.redrive_orphaned_exit_pending().await;
                 let mut failed_total: u64 = 0;
                 let mut changed = false;
                 match cleanup_repo.fail_stale_exit_pending(stale).await {
@@ -424,10 +442,11 @@ impl Tpsl2StrategyService {
 
             if rule.trade_mode == "paper" {
                 // Claim the exit; if one is already in flight for this position
-                // skip (don't spawn a second fill-poll). Released by the poll task.
-                if !self.runtime.try_begin_exit(position.id) {
+                // skip (don't spawn a second fill-poll). The RAII guard frees the
+                // slot when the poll task ends OR panics.
+                let Some(guard) = self.runtime.try_begin_exit(position.id) else {
                     continue;
-                }
+                };
                 let prev = position.clone();
                 position.mark_exit_pending();
                 if let Err(err) = self.paper_repo.update(&position).await {
@@ -435,11 +454,11 @@ impl Tpsl2StrategyService {
                         "Failed to mark position {} as ExitPending: {err}",
                         position.id
                     );
-                    // The write failed, so the position is still Holding. Release
-                    // the claim and skip the spawn — otherwise the next ping/sweep
-                    // re-fires the ladder and spawns another poll, an unbounded
-                    // task storm under a dump that saturates `paper_poll_sem`.
-                    self.runtime.end_exit(position.id);
+                    // The write failed, so the position is still Holding. Dropping
+                    // `guard` here releases the claim and skips the spawn —
+                    // otherwise the next ping/sweep re-fires the ladder and spawns
+                    // another poll, an unbounded task storm under a dump that
+                    // saturates `paper_poll_sem`.
                     continue;
                 }
                 self.runtime.sync_position(Some(&prev), &position);
@@ -459,6 +478,7 @@ impl Tpsl2StrategyService {
                     exit_price,
                     Utc::now(),
                     exit_reason.to_string(),
+                    guard,
                 );
             } else if rule.trade_mode == "real" {
                 self.trigger_real_exit(
@@ -599,9 +619,9 @@ impl Tpsl2StrategyService {
     ) {
         // Claim the position via the shared exit guard; bail if a sell is already
         // in flight for it (from the ladder OR the manual Stop&Close lifecycle).
-        if !self.runtime.try_begin_exit(position.id) {
+        let Some(guard) = self.runtime.try_begin_exit(position.id) else {
             return;
-        }
+        };
 
         let prev = position.clone();
         position.mark_exit_pending();
@@ -616,15 +636,33 @@ impl Tpsl2StrategyService {
                 "[REAL] Position marked ExitPending");
         }
 
-        let position_id = position.id;
+        self.spawn_real_sell(position, trigger_price, trigger_time, reason, guard);
+    }
+
+    /// Spawn the slow sell pass off the runner's task, holding the RAII exit
+    /// `guard` for its lifetime (the guard frees the `exiting` slot when the task
+    /// ends OR panics — so a panic can no longer wedge the slot). Shared by the
+    /// ladder/time exit (`trigger_real_exit`, which marks ExitPending first) and
+    /// the ExitPending reaper (`redrive_orphaned_exit_pending`, where the position
+    /// is already ExitPending). `trigger_price`/`trigger_time` are the hypothetical
+    /// exit recorded if the sell never confirms.
+    fn spawn_real_sell(
+        &self,
+        position: Position,
+        trigger_price: f64,
+        trigger_time: DateTime<Utc>,
+        reason: String,
+        guard: super::ExitGuard,
+    ) {
         let trader = self.trader.clone();
         let position_repo = self.position_repo.clone();
         let trade_repo = self.trade_repo.clone();
         let runtime = self.runtime.clone();
-        let exit_guard = self.runtime.clone();
         let token_cache = self.token_cache.clone();
         let trade_signals = self.trade_signals.clone();
         tokio::spawn(async move {
+            // Held until the sell completes or the task unwinds on panic.
+            let _guard = guard;
             super::execution::real::sell_and_close_position(
                 trader,
                 position,
@@ -638,7 +676,50 @@ impl Tpsl2StrategyService {
                 reason,
             )
             .await;
-            exit_guard.end_exit(position_id);
         });
+    }
+
+    /// Re-drive real positions stranded in `ExitPending` whose exit guard is **not**
+    /// currently held — i.e. their sell task panicked (no process restart) or the
+    /// process crashed mid-exit and restarted (the holding cache only loads
+    /// `Holding`, so these are invisible to the trade/time ladder and nothing else
+    /// would ever re-attempt their sell). Runs at boot (the reaper's first,
+    /// immediate tick) and on the maintenance cadence thereafter.
+    ///
+    /// The atomic `try_begin_exit` claim **is** the double-sell interlock: if a
+    /// legitimate sell is still in flight its guard is held, the claim returns
+    /// `None`, and we skip; only a position with no live exit is re-driven. A
+    /// position that never recorded an entry fill can't be sold, so it is left for
+    /// the stale-ExitPending reaper to terminally fail.
+    async fn redrive_orphaned_exit_pending(&self) {
+        let pending = match self.position_repo.find_all_exit_pending().await {
+            Ok(p) => p,
+            Err(err) => {
+                warn!("Failed to load ExitPending positions for recovery: {err}");
+                return;
+            }
+        };
+        for position in pending {
+            if position.entry_price.is_none() {
+                continue;
+            }
+            // Atomic claim doubles as the in-flight check — skip if a sell is live.
+            let Some(guard) = self.runtime.try_begin_exit(position.id) else {
+                continue;
+            };
+            let trigger_price = self
+                .token_cache
+                .get(&position.mint)
+                .and_then(|e| e.value().current_price)
+                .or(position.entry_price)
+                .unwrap_or(0.0);
+            let reason = position
+                .exit_reason
+                .clone()
+                .unwrap_or_else(|| EXIT_PENDING_RECOVERY_REASON.to_string());
+            info!(position_id = %position.id, mint = %position.mint,
+                "[REAL] Re-driving orphaned ExitPending sell");
+            self.spawn_real_sell(position, trigger_price, Utc::now(), reason, guard);
+        }
     }
 }

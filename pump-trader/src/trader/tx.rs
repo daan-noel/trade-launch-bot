@@ -17,11 +17,11 @@ use solana_client::rpc_config::RpcSimulateTransactionConfig;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
     hash::Hash,
-    instruction::Instruction,
+    instruction::{Instruction, InstructionError},
     message::Message,
     signature::{Keypair, Signature, Signer},
     pubkey::Pubkey,
-    transaction::Transaction,
+    transaction::{Transaction, TransactionError},
 };
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -255,12 +255,56 @@ impl PumpFunTrader {
     ///   `Ok(Some(false))` — landed but failed on-chain (reverted)
     ///   `Ok(None)`        — not yet visible (still pending, or dropped)
     pub async fn signature_state(&self, signature: &str) -> Result<Option<bool>> {
+        Ok(match self.signature_state_detailed(signature).await? {
+            SigStatus::Succeeded => Some(true),
+            SigStatus::Reverted { .. } => Some(false),
+            SigStatus::Pending => None,
+        })
+    }
+
+    /// One-shot signature status that, for a landed-and-reverted tx, also surfaces
+    /// the on-chain program error code. Lets the sell-confirm path tell a
+    /// slippage-floor revert (price moved past `min_out` → retryable, re-quote and
+    /// resend) apart from a structural revert (already-sold / empty account /
+    /// wrong venue → not retryable, don't burn fees) — a distinction the bare
+    /// landed-bool of [`signature_state`] collapses. The custom code is the
+    /// program's Anchor error (e.g. curve `TooLittleSolReceived` = 6003, AMM
+    /// `ExceededSlippage` = 6004); `None` when the failure was not an
+    /// `InstructionError::Custom`.
+    pub async fn signature_state_detailed(&self, signature: &str) -> Result<SigStatus> {
         let sig = Signature::from_str(signature)?;
         Ok(match self.rpc.get_signature_status(&sig).await? {
-            Some(Ok(())) => Some(true),
-            Some(Err(_)) => Some(false),
-            None => None,
+            Some(Ok(())) => SigStatus::Succeeded,
+            Some(Err(err)) => SigStatus::Reverted {
+                custom: custom_error_code(&err),
+            },
+            None => SigStatus::Pending,
         })
+    }
+}
+
+/// Outcome of a one-shot signature status check that, unlike a bare landed-bool,
+/// preserves the on-chain program error for a reverted tx so callers can
+/// distinguish slippage reverts from structural ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SigStatus {
+    /// Landed and succeeded.
+    Succeeded,
+    /// Landed but reverted on-chain. `custom` is the program's custom (Anchor)
+    /// error code when the failure was an `InstructionError::Custom(code)`, else
+    /// `None` (a non-custom failure such as insufficient funds / account error).
+    Reverted { custom: Option<u32> },
+    /// Not yet visible — still pending, or dropped.
+    Pending,
+}
+
+/// Extract the program's custom error code from a failed-tx `TransactionError`,
+/// if the failure was an `InstructionError::Custom(code)`. Other failure shapes
+/// (account-not-found, insufficient funds, …) carry no Anchor code → `None`.
+fn custom_error_code(err: &TransactionError) -> Option<u32> {
+    match err {
+        TransactionError::InstructionError(_, InstructionError::Custom(code)) => Some(*code),
+        _ => None,
     }
 }
 

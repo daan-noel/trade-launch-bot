@@ -27,41 +27,6 @@
 
 *(ship all of this before putting real SOL in)*
 
-## 1A. Reliability fixes
-
-**The core problem:** the exit (sell) runs in a fire-and-forget `tokio::spawn` task, and the "I'm exiting this position" guard (`end_exit`) is released only *after* the sell finishes (`service.rs`, after the `sell_and_close_position(...).await`). If the task panics mid-sell:
-
-- a panicking spawned task **does not crash the process** — it dies silently, so there is no restart to recover from;
-- the guard `end_exit` line never runs → the position's `exiting` slot stays locked forever;
-- the position is left `ExitPending` (no longer `Holding`), so strategy eval will never re-trigger its exit;
-- the bag is stranded with **nothing in-process** that will ever re-drive it.
-
-So three distinct fixes are needed — guard release, in-process re-drive, and boot re-drive — they do not substitute for each other.
-
-| Fix | What | Files |
-|-----|------|-------|
-| **1A-1 RAII guard release** | Make the `exiting` guard free itself automatically (an RAII `Drop` guard returned by `try_begin_exit`), so a panic/early-return can't wedge the `exiting` slot permanently. **Note:** this only frees the *slot* — it does **not** re-drive the sell. A panicked exit leaves the position `ExitPending`; 1A-4 (in-process) and 1A-2 (boot) are what actually re-attempt it. | `runtime_cache.rs` (`exiting` set, `try_begin_exit`/`end_exit`), `service.rs` (`trigger_real_exit`) — both clones |
-| **1A-2 ExitPending recovery on boot** | On startup, load positions stuck in `ExitPending` (today only `Holding` is loaded) and re-drive their sell. Covers the **full-process-crash + restart** case (Docker auto-restarts). Does **not** cover a single spawned-task panic, since that doesn't restart the process — see 1A-4. | `runtime_cache.rs` (`load_from_db`), position repo (`find_all_exit_pending`), `service.rs` (re-arm on boot) — both clones |
-| **1A-4 In-process ExitPending reaper** | A periodic sweep (off the hot path, e.g. on the existing maintenance/poll cadence) that finds `ExitPending` positions **whose `exiting` guard is not currently held** and re-arms their exit. This is what recovers a position after a *task* panic (no restart). Guard-not-held is the safety interlock that prevents double-driving an exit that's still in flight. | `runtime_cache.rs` (query held-vs-pending), `service.rs` (re-arm), `main.rs` or maintenance task (cadence) — both clones |
-| **1A-3 Sell-revert reclassify by error code** | [detail below — distinguish slippage-floor reverts from structural reverts using the on-chain program error, not a `min_out=1` assumption] | `execution/real.rs` (`classify_sell_revert` + caller) — both clones |
-
-### 1A-3 detail — classify a sell revert by its on-chain error, not by `min_out`
-
-**Current code:** `classify_sell_revert(state, used_migrated, now_migrated)` returns `StopFeeBurn` on `Ok(Some(false))` (tx landed *and* reverted) whenever the route is stable (`used_migrated == now_migrated`), else `Retry`. The comment justifies this with "TPSL drives min_out=1 → a revert is structural." That assumption is **already false for AMM** (`None` → 5% default floor) and becomes false for curve too once 1B passes `Some(slippage_bps)`.
-
-**The real problem:** a landed-and-reverted sell collapses two *different* causes into the same `Some(false)` signal:
-
-- **Slippage-floor rejection** — price moved past `min_out` between build and land. **Retryable** (re-quote and resend).
-- **Structural revert** — already-sold / empty ATA / account-not-initialized / wrong venue after migration. **Not retryable** (stop, don't burn fees).
-
-You cannot tell these apart from the landed bool alone — you must read the **program error** out of the failed tx.
-
-**Fix:**
-
-1. Thread the revert reason through. Replace the bare landed-bool with a small classification the sell attempt extracts from the failed tx's program error / custom error code (curve `SlippageExceeded`/`TooLittleSolReceived`, AMM `ExceededSlippage` → `Slippage`; account/balance/uninitialized → `Structural`; anything else → `Unknown`).
-2. `classify_sell_revert` maps: `Slippage → Retry`, `Structural → StopFeeBurn`, `Unknown` on a stable route → `StopFeeBurn` (stay conservative on fee burn) **and log the raw code** so unmapped reasons surface.
-3. Drop the `min_out=1` premise from the comment; the decision is now venue-agnostic and error-code-driven, matching the fact that both venues now carry real slippage protection.
-
 ## 1B. Wire slippage into strategy trades
 
 **Problem:** strategy buy/sell currently pass `None` for slippage → curve trades accept *any* price (`min_out=1`, zero protection); only AMM gets the 5% default. The `trade.slippage_bps` setting you already have is only used by the **manual** buy/sell buttons.

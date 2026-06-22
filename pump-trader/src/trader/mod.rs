@@ -47,6 +47,8 @@ use dashmap::DashMap;
 use jito_tip::JitoTipCache;
 use reserves::ReserveCache;
 
+pub use tx::SigStatus;
+
 use crate::constants::{
     EVENT_AUTHORITY, FEE_PROGRAM_ID, JITO_TIP_ACCOUNTS, PUMP_FUN_PROGRAM_ID,
     PUMP_PROGRAM_UPGRADE_FEE_RECIPIENT, PUMP_SWAP_PROGRAM_ID, TOKEN_2022_ACCOUNT_SPACE,
