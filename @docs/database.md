@@ -2,6 +2,15 @@
 
 sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`. Migrations in `backend/migrations/` (`0001_init.sql` = consolidated baseline; add `00NN_*.sql`). Runner: `sqlx::migrate!("./migrations")` in `storage/postgres.rs`, invoked from `main.rs`.
 
+## Connection pools
+
+`storage/postgres.rs` builds **two isolated `PgPool`s** (shared `build_pool` helper) so an ingest/strategy write storm can't exhaust the connections the dashboard needs ("pool timed out while waiting for an open connection"):
+
+- `connect()` → **hot-path pool** (`DB_MAX_CONNECTIONS`, default 64), runs migrations. Used by ingest `DbWriter`, `StrategyRunner`, maintenance, seed, background caches.
+- `connect_api_pool()` → **API pool** (`DB_API_MAX_CONNECTIONS`, default 32), no migrations. Held as `AppState.db`; backs only the HTTP handlers (list/detail, sweeps).
+
+Both apply `DB_IDLE_TX_TIMEOUT_SECS` as `idle_in_transaction_session_timeout` (default 30s; 0 disables) — the safe pool-drain guard: it kills a connection holding an *open, idle* transaction, never one running a long active query (e.g. a sweep corpus scan). Server-side ceiling is `POSTGRES_MAX_CONNECTIONS` (docker-compose, default 300); keep `DB_MAX + DB_API_MAX` below it with headroom for the superuser reserve + external clients. The position/trade list queries are already served by composite indexes (`idx_*_positions_{strategy,rule,…}_created`, `idx_trades_wallet_mint_sig`, …), so list-endpoint slowness is connection contention, not missing indexes.
+
 ## Migrations
 
 | File | Content |

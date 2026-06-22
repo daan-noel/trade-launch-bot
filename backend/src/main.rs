@@ -682,11 +682,17 @@ async fn main() -> anyhow::Result<()> {
         ));
     }
 
+    // Dedicated API connection pool, isolated from the hot-path `db` pool above so
+    // an ingest/strategy write storm can't exhaust the connections the dashboard
+    // needs to respond (the "pool timed out" symptom). Only the HTTP handlers draw
+    // from it; ingest/strategy/maintenance/seed all stay on `db`.
+    let api_db = storage::postgres::connect_api_pool(&settings).await?;
+
     // Built after the transport branch so AppState shares the active pipeline's
     // pool→mint index and migration signal with the HTTP handlers (a token sync
     // registers a migrated token's pool so live ingest subscribes immediately).
     let app_state = Arc::new(state::AppState::new(
-        db.clone(),
+        api_db,
         settings.helius_rpc_url.clone(),
         settings.helius_laserstream_url.clone(),
         settings.helius_api_key.clone(),
