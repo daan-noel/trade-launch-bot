@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use crate::config::constants::{SLIPPAGE_MAX_BPS, SLIPPAGE_MIN_BPS};
 use crate::state::app_state::AppState;
+use crate::state::ingest_health::{
+    WATCHDOG_CHECK_INTERVAL_FLOOR_SECS, WATCHDOG_STALL_TIMEOUT_FLOOR_SECS,
+};
 use crate::storage::repositories::settings_repo::keys;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -75,6 +78,13 @@ pub struct UpdateSettingsRequest {
     pub slippage_bps: Option<u64>,
     /// Persist raw transaction blobs. Present = flip the ingest raw-persist toggle.
     pub persist_raw: Option<bool>,
+    /// Master switch for the ingest liveness watchdog.
+    pub watchdog_enabled: Option<bool>,
+    /// Watchdog stall window (seconds); floored at `WATCHDOG_STALL_TIMEOUT_FLOOR_SECS`.
+    pub watchdog_stall_timeout_secs: Option<u64>,
+    /// Watchdog check cadence (seconds); floored at `WATCHDOG_CHECK_INTERVAL_FLOOR_SECS`
+    /// and capped at the (effective) stall window so a stall can't slip a full cycle.
+    pub watchdog_check_interval_secs: Option<u64>,
 }
 
 pub async fn get_settings(state: web::Data<Arc<AppState>>) -> impl Responder {
@@ -92,6 +102,9 @@ pub async fn update_settings(
         price_unit,
         slippage_bps,
         persist_raw,
+        watchdog_enabled,
+        watchdog_stall_timeout_secs,
+        watchdog_check_interval_secs,
     } = req.into_inner();
 
     if let Some(pu) = &price_unit {
@@ -104,6 +117,17 @@ pub async fn update_settings(
 
     // Clamp before both the DB row and the in-memory view see the value.
     let slippage_clamped = slippage_bps.map(|v| v.clamp(SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS));
+
+    // Watchdog clamps: floor the stall window (a too-short window restarts the
+    // process on a normal lull), then floor the check cadence and cap it at the
+    // *effective* window (incoming value or, if absent, the current one) so the
+    // poll can never be as coarse as the stall window itself.
+    let timeout_clamped =
+        watchdog_stall_timeout_secs.map(|v| v.max(WATCHDOG_STALL_TIMEOUT_FLOOR_SECS));
+    let effective_timeout =
+        timeout_clamped.unwrap_or_else(|| state.settings().watchdog_stall_timeout_secs);
+    let check_clamped = watchdog_check_interval_secs
+        .map(|v| v.clamp(WATCHDOG_CHECK_INTERVAL_FLOOR_SECS, effective_timeout));
 
     // Build the per-key upserts for the fields the request actually sent. Each
     // setting is its own row, so this only touches the mentioned keys.
@@ -125,6 +149,15 @@ pub async fn update_settings(
     }
     if let Some(v) = persist_raw {
         entries.push((keys::PERSIST_RAW.key, json!(v)));
+    }
+    if let Some(v) = watchdog_enabled {
+        entries.push((keys::WATCHDOG_ENABLED.key, json!(v)));
+    }
+    if let Some(v) = timeout_clamped {
+        entries.push((keys::WATCHDOG_STALL_TIMEOUT_SECS.key, json!(v)));
+    }
+    if let Some(v) = check_clamped {
+        entries.push((keys::WATCHDOG_CHECK_INTERVAL_SECS.key, json!(v)));
     }
 
     // Persist (one transaction) first; only publish to the watch channel if the
@@ -160,6 +193,15 @@ pub async fn update_settings(
         }
         if let Some(v) = persist_raw {
             s.persist_raw = v;
+        }
+        if let Some(v) = watchdog_enabled {
+            s.watchdog_enabled = v;
+        }
+        if let Some(v) = timeout_clamped {
+            s.watchdog_stall_timeout_secs = v;
+        }
+        if let Some(v) = check_clamped {
+            s.watchdog_check_interval_secs = v;
         }
         updated = Some(s.clone());
     });

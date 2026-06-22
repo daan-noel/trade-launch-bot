@@ -574,7 +574,18 @@ async fn main() -> anyhow::Result<()> {
     // Load the persisted settings document and hold it in a watch channel as the
     // in-memory source of truth, so a policy set in a previous run is in force
     // before the first event arrives.
-    let app_settings = storage::repositories::settings_repo::SettingsRepo::new(db.clone())
+    let settings_repo = storage::repositories::settings_repo::SettingsRepo::new(db.clone());
+    // Back-compat: seed the watchdog stall window from the env default on a fresh
+    // DB so a previously-tuned `INGEST_STALL_TIMEOUT_SECS` carries over. ON CONFLICT
+    // DO NOTHING means an operator's UI-set value is never overwritten.
+    settings_repo
+        .seed_if_absent(&[(
+            storage::repositories::settings_repo::keys::WATCHDOG_STALL_TIMEOUT_SECS.key,
+            serde_json::json!(settings.ingest_stall_timeout.as_secs()),
+        )])
+        .await
+        .context("Failed to seed watchdog default")?;
+    let app_settings = settings_repo
         .load_all()
         .await
         .context("Failed to load app settings")?;
@@ -647,8 +658,7 @@ async fn main() -> anyhow::Result<()> {
         state::ingest_health::spawn_watchdog(
             heartbeat.clone(),
             live_tx.subscribe(),
-            settings.ingest_stall_timeout,
-            std::time::Duration::from_secs(15),
+            settings_tx.subscribe(),
         );
 
         let producer_task = tokio::spawn(ingest_laserstream::client::run(

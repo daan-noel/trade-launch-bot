@@ -40,6 +40,17 @@ pub mod keys {
     pub const SLIPPAGE_BPS: Setting<Option<u64>> = Setting::new("trade.slippage_bps", || None);
     pub const LIVE: Setting<bool> = Setting::new("ingest.live", || false);
     pub const PERSIST_RAW: Setting<bool> = Setting::new("ingest.persist_raw", || false);
+    /// Master switch for the ingest liveness watchdog. When off, the watchdog
+    /// holds fire (never restarts the process) regardless of stall. Default on.
+    pub const WATCHDOG_ENABLED: Setting<bool> = Setting::new("ingest.watchdog_enabled", || true);
+    /// Stall window (seconds): no ingest forward progress for this long while
+    /// live trips the watchdog. Floored server-side (see `ingest_health`). Seeded
+    /// from `INGEST_STALL_TIMEOUT_SECS` on a fresh DB; the UI value wins after.
+    pub const WATCHDOG_STALL_TIMEOUT_SECS: Setting<u64> =
+        Setting::new("ingest.watchdog_stall_timeout_secs", || 120);
+    /// How often (seconds) the watchdog wakes to check the stall window.
+    pub const WATCHDOG_CHECK_INTERVAL_SECS: Setting<u64> =
+        Setting::new("ingest.watchdog_check_interval_secs", || 15);
 }
 
 /// Global, server-wide settings — the assembled, strongly-typed view of the
@@ -71,6 +82,14 @@ pub struct AppSettings {
     /// pipeline skips the raw-blob enqueue (trades/metrics are still recorded) to
     /// curb DB growth. Default off.
     pub persist_raw: bool,
+    /// Master switch for the ingest liveness watchdog. When off, the watchdog
+    /// never force-exits the process on a stall. Default on.
+    pub watchdog_enabled: bool,
+    /// Stall window in seconds: no ingest forward progress for this long while
+    /// live trips the watchdog. Clamped server-side to a safe floor on write.
+    pub watchdog_stall_timeout_secs: u64,
+    /// How often the watchdog wakes (seconds) to check the stall window.
+    pub watchdog_check_interval_secs: u64,
 }
 
 impl Default for AppSettings {
@@ -93,6 +112,9 @@ impl AppSettings {
             slippage_bps: pick(map, &keys::SLIPPAGE_BPS),
             live: pick(map, &keys::LIVE),
             persist_raw: pick(map, &keys::PERSIST_RAW),
+            watchdog_enabled: pick(map, &keys::WATCHDOG_ENABLED),
+            watchdog_stall_timeout_secs: pick(map, &keys::WATCHDOG_STALL_TIMEOUT_SECS),
+            watchdog_check_interval_secs: pick(map, &keys::WATCHDOG_CHECK_INTERVAL_SECS),
         }
     }
 }
@@ -147,6 +169,31 @@ impl SettingsRepo {
         self.set_many(&[(setting.key, value)]).await
     }
 
+    /// Insert setting rows only if their key is absent (`ON CONFLICT DO NOTHING`).
+    /// Used at startup to seed a default into a fresh DB without ever clobbering a
+    /// value an operator has already set via the API.
+    pub async fn seed_if_absent(&self, entries: &[(&str, Value)]) -> anyhow::Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin().await?;
+        for (key, value) in entries {
+            sqlx::query(
+                r#"
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES ($1, $2, now())
+                ON CONFLICT (key) DO NOTHING
+                "#,
+            )
+            .bind(key)
+            .bind(value)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Atomically upsert several setting rows in one transaction. Used by partial
     /// updates that touch multiple keys at once; each key is its own row, so this
     /// never clobbers settings the request didn't mention.
@@ -191,6 +238,10 @@ mod tests {
         assert_eq!(settings.timezone, None);
         assert_eq!(settings.price_unit, None);
         assert_eq!(settings.slippage_bps, None);
+        // Watchdog on by default, with the standard window/cadence.
+        assert!(settings.watchdog_enabled);
+        assert_eq!(settings.watchdog_stall_timeout_secs, 120);
+        assert_eq!(settings.watchdog_check_interval_secs, 15);
     }
 
     #[test]

@@ -33,6 +33,12 @@ export interface AppSettings {
   price_unit: 'SOL' | 'USD' | null;
   /** Default trade slippage in basis points (100 = 1%); null = use server default. */
   slippage_bps: number | null;
+  /** Master switch for the ingest liveness watchdog (process-restart on stall). */
+  watchdog_enabled: boolean;
+  /** Stall window in seconds before the watchdog restarts a wedged ingest. */
+  watchdog_stall_timeout_secs: number;
+  /** How often (seconds) the watchdog checks the stall window. */
+  watchdog_check_interval_secs: number;
 }
 
 export async function fetchTokens(

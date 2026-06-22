@@ -33,12 +33,39 @@ export function SettingsPage() {
   // Slippage edited as a percent string, committed on blur. Synced from the
   // persisted bps value whenever it changes.
   const [slipText, setSlipText] = useState('');
+  // Watchdog timing edited as second strings, committed on blur. The server
+  // clamps to its floors and returns the applied value, which re-syncs these.
+  const [stallText, setStallText] = useState('');
+  const [intervalText, setIntervalText] = useState('');
 
   useEffect(() => {
     setSlipText(
       settings && settings.slippage_bps != null ? String(settings.slippage_bps / 100) : '',
     );
   }, [settings?.slippage_bps]);
+
+  useEffect(() => {
+    if (settings) setStallText(String(settings.watchdog_stall_timeout_secs));
+  }, [settings?.watchdog_stall_timeout_secs]);
+
+  useEffect(() => {
+    if (settings) setIntervalText(String(settings.watchdog_check_interval_secs));
+  }, [settings?.watchdog_check_interval_secs]);
+
+  function commitWatchdogSecs(
+    text: string,
+    current: number | undefined,
+    field: 'watchdog_stall_timeout_secs' | 'watchdog_check_interval_secs',
+  ) {
+    const raw = text.trim();
+    if (raw === '') return;
+    const secs = parseInt(raw, 10);
+    if (!Number.isInteger(secs) || secs <= 0) {
+      setError('Watchdog times must be a positive number of seconds');
+      return;
+    }
+    if (secs !== current) update({ [field]: secs });
+  }
 
   function commitSlippage() {
     if (!settings) return;
@@ -140,6 +167,83 @@ export function SettingsPage() {
               }}
             />
           </label>
+        ) : null}
+      </section>
+
+      <section className="mt-4 max-w-2xl rounded-xl border border-white/8 bg-bg-panel p-4">
+        <h3 className="text-sm font-semibold text-text">Ingest watchdog</h3>
+        <p className="mt-0.5 mb-3.5 text-xs text-text-dim">
+          Restarts the process when live ingest makes no forward progress for the stall
+          window — recovers a silently wedged stream the in-stream checks can't see. Only
+          fires while live mode is on.
+        </p>
+
+        {loading ? (
+          <p className="text-xs text-text-dim">Loading…</p>
+        ) : settings ? (
+          <div className="flex flex-col gap-2.5">
+            <ToggleRow
+              title="Enable watchdog"
+              description="When off, a stalled ingest is never auto-restarted. Leave on in production; turn off only when debugging so a breakpoint-paused process isn't killed."
+              checked={settings.watchdog_enabled}
+              disabled={saving}
+              onChange={(watchdog_enabled) => update({ watchdog_enabled })}
+            />
+            <div className="flex flex-wrap gap-4">
+              <label className="flex max-w-[220px] flex-col gap-1.5">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
+                  Stall timeout (s)
+                </span>
+                <Input
+                  type="number"
+                  fieldSize="md"
+                  min={30}
+                  step={1}
+                  value={stallText}
+                  disabled={saving || !settings.watchdog_enabled}
+                  onChange={(e) => setStallText(e.target.value)}
+                  onBlur={() =>
+                    commitWatchdogSecs(
+                      stallText,
+                      settings.watchdog_stall_timeout_secs,
+                      'watchdog_stall_timeout_secs',
+                    )
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                  }}
+                />
+              </label>
+              <label className="flex max-w-[220px] flex-col gap-1.5">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
+                  Check interval (s)
+                </span>
+                <Input
+                  type="number"
+                  fieldSize="md"
+                  min={5}
+                  step={1}
+                  value={intervalText}
+                  disabled={saving || !settings.watchdog_enabled}
+                  onChange={(e) => setIntervalText(e.target.value)}
+                  onBlur={() =>
+                    commitWatchdogSecs(
+                      intervalText,
+                      settings.watchdog_check_interval_secs,
+                      'watchdog_check_interval_secs',
+                    )
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                  }}
+                />
+              </label>
+            </div>
+            <p className="text-[11px] text-text-dim">
+              Server floors: timeout ≥ 30s, interval ≥ 5s (and ≤ timeout). Out-of-range
+              values are clamped on save.
+            </p>
+          </div>
         ) : null}
       </section>
     </div>

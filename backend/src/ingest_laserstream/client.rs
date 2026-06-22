@@ -50,17 +50,18 @@ const POOL_RESUBSCRIBE_DEBOUNCE: Duration = Duration::from_millis(250);
 /// with no log (only a manual restart recovers it). Pump.fun's firehose never
 /// pauses this long, so a gap this size means a dead stream: tear it down so the
 /// outer loop reconnects (replaying from `last_slot`, so no data is lost).
-const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
-/// How often the idle watchdog wakes to check the silence gap. A fraction of
-/// `STREAM_IDLE_TIMEOUT` so detection latency is bounded to roughly one tick.
-const STREAM_IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(15);
+const STREAM_RECONNECT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How often the idle-reconnect timer wakes to check the silence gap. A fraction
+/// of `STREAM_RECONNECT_IDLE_TIMEOUT` so detection latency is bounded to roughly
+/// one tick.
+const STREAM_RECONNECT_IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(15);
 /// Hard cap on how long the client will block handing a tx to the pipeline. A
 /// healthy pipeline drains in microseconds; a stall this long means a downstream
 /// consumer (DbWriter / StrategyRunner) wedged on an `.await`, so we tear the stream
 /// down rather than park forever on `send().await` — a park here sits OUTSIDE the
-/// `select!`, so the idle watchdog could never fire and ingest would freeze with no
-/// log. Returning unblocks the task; the process liveness watchdog handles a wedge
-/// that survives the reconnect.
+/// `select!`, so the idle-reconnect timer could never fire and ingest would freeze
+/// with no log. Returning unblocks the task; the process liveness watchdog handles a
+/// wedge that survives the reconnect.
 const PIPELINE_SEND_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Add 0..50% jitter to a reconnect delay to decorrelate reconnect storms.
@@ -290,13 +291,13 @@ async fn run_once(
         pool_index.len()
     );
 
-    // Idle watchdog: stamp the last time a transaction update arrived, and a timer
-    // that periodically checks the silence gap. If it grows past
-    // `STREAM_IDLE_TIMEOUT` the stream has stalled silently — return an error so
-    // the caller reconnects. Resets on transaction updates only (not keepalive
-    // pings), so a stream that pings but stops delivering txs is still caught.
+    // Idle-reconnect timer: stamp the last time a transaction update arrived, and a
+    // timer that periodically checks the silence gap. If it grows past
+    // `STREAM_RECONNECT_IDLE_TIMEOUT` the stream has stalled silently — return an
+    // error so the caller reconnects. Resets on transaction updates only (not
+    // keepalive pings), so a stream that pings but stops delivering txs is still caught.
     let mut last_update = tokio::time::Instant::now();
-    let mut idle_check = tokio::time::interval(STREAM_IDLE_CHECK_INTERVAL);
+    let mut idle_check = tokio::time::interval(STREAM_RECONNECT_IDLE_CHECK_INTERVAL);
     idle_check.tick().await; // consume the immediate first tick
 
     loop {
@@ -305,7 +306,7 @@ async fn run_once(
                 match msg {
                     Ok(Some(update)) => {
                         if let Some(UpdateOneof::Transaction(tx)) = update.update_oneof {
-                            // Reset the idle watchdog only when the chain actually
+                            // Reset the idle-reconnect timer only when the chain actually
                             // ADVANCES: `fetch_max` returns the prior high-water slot,
                             // so a stream stuck replaying or repeating a slot makes no
                             // progress and is still allowed to trip the timeout.
@@ -320,7 +321,7 @@ async fn run_once(
                                 // Bounded send: a downstream stall must surface as a
                                 // reconnect, never an invisible infinite park. Parking
                                 // on `send().await` sits OUTSIDE this `select!`, so the
-                                // idle watchdog above could never fire — the exact
+                                // idle-reconnect timer above could never fire — the exact
                                 // silent-freeze failure mode. A successful send is real
                                 // end-to-end progress, so stamp the liveness heartbeat
                                 // the process watchdog reads.
@@ -390,12 +391,12 @@ async fn run_once(
                 }
             }
 
-            // Idle watchdog tick — if no transaction has arrived within
-            // `STREAM_IDLE_TIMEOUT`, the stream stalled silently (no error/close).
-            // Return an error so `run` reconnects and replays from `last_slot`.
+            // Idle-reconnect tick — if no transaction has arrived within
+            // `STREAM_RECONNECT_IDLE_TIMEOUT`, the stream stalled silently (no
+            // error/close). Return an error so `run` reconnects and replays from `last_slot`.
             _ = idle_check.tick() => {
                 let idle = last_update.elapsed();
-                if idle >= STREAM_IDLE_TIMEOUT {
+                if idle >= STREAM_RECONNECT_IDLE_TIMEOUT {
                     warn!("LaserStream: no transaction update for {idle:?} — forcing reconnect");
                     return Err(anyhow::anyhow!("stream idle for {idle:?}"));
                 }

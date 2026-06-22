@@ -55,7 +55,7 @@ Both apply `DB_IDLE_TX_TIMEOUT_SECS` as `idle_in_transaction_session_timeout` (d
 - `wallet_profiles` — name, type(`mine`/`trader`/`whale`/`dev`), tag_ids(UUID[]).
 - `wallets` — profile_id (FK CASCADE), address UNIQUE, is_tracked, comment, last_seen_at.
 - `wallet_profile_tags` — name UNIQUE, color, comment (seeded with ~20 labels).
-- `app_settings` — PK `key`, value(JSONB), updated_at. Keys: `ingest.{track_mayhem,track_post_migration,live,persist_raw}`, `ui.{timezone,price_unit}`, `trade.slippage_bps`. New setting = new row (migration-free).
+- `app_settings` — PK `key`, value(JSONB), updated_at. Keys: `ingest.{track_mayhem,track_post_migration,live,persist_raw,watchdog_enabled,watchdog_stall_timeout_secs,watchdog_check_interval_secs}`, `ui.{timezone,price_unit}`, `trade.slippage_bps`. New setting = new row (migration-free). `seed_if_absent` (`ON CONFLICT DO NOTHING`) seeds env-derived defaults on first boot without clobbering UI-set values.
 
 ## Repositories (`storage/repositories/`)
 
