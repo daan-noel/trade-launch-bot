@@ -295,6 +295,80 @@ impl PumpFunTrader {
         self.simulate_ixs(ixs, &payer, &[payer, user_token_account])
             .await
     }
+
+    /// Layer 1 — simulate the real PumpSwap **AMM** buy of a migrated token,
+    /// spending `sol_amount` SOL. Reuses `build_amm_buy_ixs` (pool/config/reserve
+    /// reads + slippage floor + WSOL wrap/unwrap) and assembles the same
+    /// CU-budget + tip envelope `amm_buy` sends, so the dry-run exercises the
+    /// pump_amm program — including the trailing buyback-fee recipient
+    /// (`amm_buyback_fee_recipient`) — exactly as production would. Deltas report
+    /// SOL spent (payer) and base tokens received (base ATA). `base_token_program_id`
+    /// is the token's SPL program (legacy/2022), resolved by the caller.
+    pub async fn simulate_amm_buy(
+        &self,
+        token_mint: &str,
+        base_token_program_id: &str,
+        sol_amount: f64,
+        pool_override: Option<&str>,
+        slippage_bps: Option<u64>,
+    ) -> Result<SimOutcome> {
+        let user = self.config.keypair.pubkey();
+        let (core_ixs, user_base) = self
+            .build_amm_buy_ixs(
+                token_mint,
+                base_token_program_id,
+                sol_amount,
+                pool_override,
+                slippage_bps,
+                &user,
+            )
+            .await?;
+        // Mirror `amm_buy`'s tx assembly (CU budget + core swap + level-0 tip) so
+        // the simulated bytes match the live send.
+        let mut ixs = Vec::with_capacity(core_ixs.len() + self.cu_ixs_amm.len() + 1);
+        ixs.extend_from_slice(&self.cu_ixs_amm);
+        ixs.extend(core_ixs);
+        ixs.push(self.jito_tip_ix(0));
+        self.simulate_ixs(ixs, &user, &[user, user_base]).await
+    }
+
+    /// Layer 1 — simulate the real PumpSwap **AMM** sell of `token_amount` raw
+    /// base units. Reuses `build_amm_sell_ixs`, requires the wallet to actually
+    /// hold the token (resolution bails otherwise, like the curve sell sim), and
+    /// reports SOL received (payer, after the WSOL proceeds unwrap+close) and
+    /// tokens sold (base account). Exercises the pump_amm buyback-fee recipient.
+    pub async fn simulate_amm_sell(
+        &self,
+        token_mint: &str,
+        token_amount: u64,
+        base_token_program_id: &str,
+        pool_override: Option<&str>,
+        token_account_override: Option<&str>,
+        slippage_bps: Option<u64>,
+    ) -> Result<SimOutcome> {
+        let user = self.config.keypair.pubkey();
+        let core_ixs = self
+            .build_amm_sell_ixs(
+                token_mint,
+                token_amount,
+                base_token_program_id,
+                pool_override,
+                token_account_override,
+                slippage_bps,
+                &user,
+            )
+            .await?;
+        let mut ixs = Vec::with_capacity(core_ixs.len() + self.cu_ixs_amm.len() + 1);
+        ixs.extend_from_slice(&self.cu_ixs_amm);
+        ixs.extend(core_ixs);
+        ixs.push(self.jito_tip_ix(0));
+        // The base account whose token delta we track (cache-first resolve, same
+        // source the builder used). Off the hot path, so the extra resolve is fine.
+        let user_base = self
+            .resolve_user_base_account(token_mint, token_account_override)
+            .await?;
+        self.simulate_ixs(ixs, &user, &[user, user_base]).await
+    }
 }
 
 /// Decode a `UiAccountData` payload into raw bytes. Handles the base64 encoding

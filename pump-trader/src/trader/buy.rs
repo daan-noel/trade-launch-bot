@@ -319,7 +319,7 @@ impl PumpFunTrader {
                 AccountMeta::new_readonly(global.fee_config, false),
                 AccountMeta::new_readonly(self.fee_program, false),
                 AccountMeta::new_readonly(pdas.bonding_curve_v2, false),
-                AccountMeta::new(self.upgrade_fee_recipient, false),
+                AccountMeta::new(self.curve_fee_recipient, false),
             ],
             data: buy_data,
         });

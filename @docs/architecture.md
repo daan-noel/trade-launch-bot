@@ -15,7 +15,7 @@ Subsystem deep-dives: [ingest.md](ingest.md) · [strategies.md](strategies.md) �
 
 - `require_bearer_auth()` — Actix middleware, **fail-closed**: mutating verbs (POST/PUT/DELETE/PATCH) require a matching `Authorization: Bearer <API_AUTH_TOKEN>`; GET/OPTIONS always pass. `API_AUTH_TOKEN` is **required** at startup (`Settings::from_env` rejects missing/empty), so a forgotten token blocks trades instead of exposing them. The browser path supplies the bearer via the proxy (nginx `proxy_set_header Authorization` in prod, the Vite dev proxy in dev) — the token stays server-side, never in the bundle.
 - `parse_wallet_keypair()` — base58 → `Keypair`.
-- `run_probe()` — one-shot `probe` subcommands (ladder/fanout/simulate-buy/simulate-sell/holdings), run before DB/ingest, then exit.
+- `run_probe()` — one-shot `probe` subcommands (ladder/fanout/simulate-buy/simulate-sell/simulate-amm-buy/simulate-amm-sell/holdings), run before DB/ingest, then exit.
 
 **Long-lived tasks:** ingest gRPC producer → ingest pipeline → DbWriter · StrategyRunner · SOL price poller · pool-subscription refresh · token-cache eviction · token-list DB-base refresh · partition maintenance · optional HTTP server.
 

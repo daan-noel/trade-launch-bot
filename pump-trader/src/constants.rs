@@ -45,10 +45,25 @@ pub const CLAIM_CASHBACK_V2_DISC: [u8; 8] = [122, 243, 204, 65, 94, 116, 29, 55]
 /// Only present when the pool's `is_cashback_coin` flag is set.
 pub const PUMP_AMM_CASHBACK_GLOBAL: &str = "5817UmPM7KLKu2mSQVsXMJ7X2rr3PtEb3j4EioyoJgd1";
 
-/// Buyback fee recipient appended to every PumpSwap swap (the deployed program
-/// is newer than its published IDL). This is `buyback_fee_recipients[0]` from
-/// the on-chain global config; the program accepts any whitelist member.
-pub const PUMP_PROGRAM_UPGRADE_FEE_RECIPIENT: &str = "5YxQFdt3Tr9zJLvkFccqXVUwhdTWJQc1fFg2YPbxvxeD";
+/// Slot-[17] fee recipient the **curve** (pump.fun program) buy/sell paths must
+/// send. The deployed program is newer than its published IDL and checks this
+/// account *exactly* — `fee_recipient.rs:19` reverts `Custom(6000) =
+/// NotAuthorized` on any mismatch. pump.fun rotated it in a program upgrade; the
+/// pre-upgrade value (`5YxQFdt3…`) now reverts. Post-upgrade value verified
+/// 2026-06-22 against a live 18-account curve buy (`4roGuTpp…`) and a passing
+/// zero-SOL `simulate-buy`. NOT interchangeable with the AMM recipient below —
+/// the curve wants this exact account, the AMM accepts any whitelist member.
+pub const PUMP_CURVE_FEE_RECIPIENT: &str = "A7hAgCzFw14fejgCp387JUJRMNyz4j89JKnhtKU8piqW";
+
+/// Trailing buyback-fee recipient the **AMM** (pump_amm `pAMMBay…`) swap paths
+/// append (the deployed program is newer than its published IDL). This is a
+/// *different* program from the curve with *different* semantics: the recipient
+/// rotates across a whitelist and the program accepts any member, so we send
+/// `buyback_fee_recipients[0]`. Verified 2026-06-22 still a live whitelist
+/// member (live pump_amm swap `6779XKXc…` used this exact account; sibling swaps
+/// rotated through `5eHhjP8J…`/`5cjcW9wE…`). Do NOT replace with the curve's
+/// `A7hAgCz…`, which is not an AMM whitelist member.
+pub const PUMP_AMM_BUYBACK_FEE_RECIPIENT: &str = "5YxQFdt3Tr9zJLvkFccqXVUwhdTWJQc1fFg2YPbxvxeD";
 
 /// Jito tip accounts (mainnet); one is chosen at random per trader instance.
 pub const JITO_TIP_ACCOUNTS: &[&str] = &[

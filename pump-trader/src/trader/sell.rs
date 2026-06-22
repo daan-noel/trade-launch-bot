@@ -452,7 +452,7 @@ impl PumpFunTrader {
         }
 
         accounts.push(AccountMeta::new_readonly(pdas.bonding_curve_v2, false));
-        accounts.push(AccountMeta::new(self.upgrade_fee_recipient, false));
+        accounts.push(AccountMeta::new(self.curve_fee_recipient, false));
 
         ixs.push(Instruction {
             program_id: self.pump_program,

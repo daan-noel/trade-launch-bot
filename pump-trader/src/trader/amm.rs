@@ -228,8 +228,11 @@ impl PumpFunTrader {
     // Instruction builders
     // -----------------------------------------------------------------------
 
+    /// `pub(super)` so the simulation engine (`sim.rs`) builds the byte-identical
+    /// AMM buy ix set the live `amm_buy` sends — no copy that can drift. Returns
+    /// the core swap ixs (no CU budget / tip) plus the user's base ATA.
     #[allow(clippy::too_many_arguments)]
-    async fn build_amm_buy_ixs(
+    pub(super) async fn build_amm_buy_ixs(
         &self,
         token_mint: &str,
         base_token_program_id: &str,
@@ -314,8 +317,10 @@ impl PumpFunTrader {
         Ok((ixs, user_base))
     }
 
+    /// `pub(super)` for the same reason as [`Self::build_amm_buy_ixs`]: the sim
+    /// engine reuses this exact builder so the dry-run matches the live sell.
     #[allow(clippy::too_many_arguments)]
-    async fn build_amm_sell_ixs(
+    pub(super) async fn build_amm_sell_ixs(
         &self,
         token_mint: &str,
         token_amount: u64,
@@ -483,7 +488,7 @@ impl PumpFunTrader {
         // and that recipient's WSOL ATA (writable). Verified against live
         // on-chain swaps. The recipient rotates across a whitelist; we use
         // buyback_fee_recipients[0], which the program accepts.
-        let fee_recipient = self.upgrade_fee_recipient;
+        let fee_recipient = self.amm_buyback_fee_recipient;
         let fee_recipient_wsol = get_associated_token_address_with_program_id(
             &fee_recipient,
             &self.wsol_mint,
@@ -752,7 +757,7 @@ impl PumpFunTrader {
     }
 
     /// override → cache → on-chain lookup (mirrors `sell_token`).
-    async fn resolve_user_base_account(
+    pub(super) async fn resolve_user_base_account(
         &self,
         token_mint: &str,
         token_account_override: Option<&str>,

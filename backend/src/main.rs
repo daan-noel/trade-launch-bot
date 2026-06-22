@@ -95,6 +95,12 @@ fn parse_wallet_keypair(base58_key: &str) -> anyhow::Result<Keypair> {
 ///   probe simulate-buy <mint> <sol> [slippage_bps]
 ///                                              — simulate a real curve buy
 ///                                                against live state (zero SOL)
+///   probe simulate-amm-buy <mint> <sol> [slippage_bps]
+///                                              — simulate a real PumpSwap AMM buy
+///                                                of a migrated token (zero SOL)
+///   probe simulate-amm-sell <mint> [amount] [slippage_bps]
+///                                              — simulate a real PumpSwap AMM sell
+///                                                of a migrated token (zero SOL)
 async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<()> {
     const LPS: f64 = pump_trader::constants::LAMPORTS_PER_SOL as f64;
     match args.first().map(String::as_str).unwrap_or("") {
@@ -199,6 +205,76 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
             let outcome = trader.simulate_curve_buy(mint, sol, slippage_bps).await?;
             print_sim_outcome(&outcome);
         }
+        "simulate-amm-buy" => {
+            let mint = args
+                .get(1)
+                .context("usage: probe simulate-amm-buy <mint> <sol> [slippage_bps]")?;
+            let positional: Vec<&String> =
+                args.iter().skip(2).filter(|s| !s.starts_with("--")).collect();
+            let sol: f64 = positional
+                .first()
+                .context("usage: probe simulate-amm-buy <mint> <sol> [slippage_bps]")?
+                .parse()
+                .context("sol must be a float")?;
+            let slippage_bps: Option<u64> = match positional.get(1) {
+                Some(s) => Some(s.parse().context("slippage_bps must be a u64")?),
+                None => None,
+            };
+            // Resolve the token's SPL program (legacy/2022) on-chain — same source
+            // the live AMM buy uses. Warn (don't block) if the mint isn't migrated:
+            // the sim itself is the source of truth, and a non-AMM mint just reverts.
+            let routing = trader.resolve_buy_routing(mint).await?;
+            if !routing.is_migrated {
+                println!("⚠️  {mint} resolves as NOT migrated — use `simulate-buy` for a curve buy.");
+            }
+            println!(
+                "Simulating AMM BUY — {sol} SOL, token_program={}, slippage_bps: {slippage_bps:?}",
+                routing.token_program_id
+            );
+            let outcome = trader
+                .simulate_amm_buy(mint, &routing.token_program_id, sol, None, slippage_bps)
+                .await?;
+            print_sim_outcome(&outcome);
+        }
+        "simulate-amm-sell" => {
+            let mint = args
+                .get(1)
+                .context("usage: probe simulate-amm-sell <mint> [amount] [slippage_bps]")?;
+            let positional: Vec<&String> =
+                args.iter().skip(2).filter(|s| !s.starts_with("--")).collect();
+            let routing = trader.resolve_buy_routing(mint).await?;
+            if !routing.is_migrated {
+                println!("⚠️  {mint} resolves as NOT migrated — use `simulate-sell` for a curve sell.");
+            }
+            // Amount defaults to the wallet's full on-chain balance (mirrors a real
+            // full exit), same as the curve `simulate-sell`.
+            let amount: u64 = match positional.first() {
+                Some(s) => s.parse().context("amount must be a u64 (raw base units)")?,
+                None => {
+                    let bal = trader.get_token_balance(&trader.wallet_pubkey(), mint).await?;
+                    println!(
+                        "No amount given — using on-chain balance: {} raw ({} UI)",
+                        bal.amount, bal.ui_amount
+                    );
+                    if bal.amount == 0 {
+                        anyhow::bail!("wallet holds 0 of {mint} — nothing to simulate");
+                    }
+                    bal.amount
+                }
+            };
+            let slippage_bps: Option<u64> = match positional.get(1) {
+                Some(s) => Some(s.parse().context("slippage_bps must be a u64")?),
+                None => None,
+            };
+            println!(
+                "Simulating AMM SELL — token_program={}, slippage_bps: {slippage_bps:?}",
+                routing.token_program_id
+            );
+            let outcome = trader
+                .simulate_amm_sell(mint, amount, &routing.token_program_id, None, None, slippage_bps)
+                .await?;
+            print_sim_outcome(&outcome);
+        }
         "cashback-status" => {
             let pots = trader.cashback_status().await?;
             println!("Cashback status (read-only):");
@@ -274,7 +350,8 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
         }
         other => anyhow::bail!(
             "unknown probe '{other}'. Use: ladder | fanout | simulate-buy | simulate-sell | \
-             holdings | cashback-status | claim-cashback [--execute] | compact-sweeps [tpsl1|tpsl2]"
+             simulate-amm-buy | simulate-amm-sell | holdings | cashback-status | \
+             claim-cashback [--execute] | compact-sweeps [tpsl1|tpsl2]"
         ),
     }
     Ok(())

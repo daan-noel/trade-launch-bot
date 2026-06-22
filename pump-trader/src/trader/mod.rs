@@ -52,8 +52,8 @@ pub use sim::{AccountDelta, SimOutcome};
 pub use tx::SigStatus;
 
 use crate::constants::{
-    EVENT_AUTHORITY, FEE_PROGRAM_ID, JITO_TIP_ACCOUNTS, PUMP_FUN_PROGRAM_ID,
-    PUMP_PROGRAM_UPGRADE_FEE_RECIPIENT, PUMP_SWAP_PROGRAM_ID, TOKEN_2022_ACCOUNT_SPACE,
+    EVENT_AUTHORITY, FEE_PROGRAM_ID, JITO_TIP_ACCOUNTS, PUMP_AMM_BUYBACK_FEE_RECIPIENT,
+    PUMP_CURVE_FEE_RECIPIENT, PUMP_FUN_PROGRAM_ID, PUMP_SWAP_PROGRAM_ID, TOKEN_2022_ACCOUNT_SPACE,
     TOKEN_ACCOUNT_RENT_PLACEHOLDER, TOKEN_ACCOUNT_SPACE, TOKEN_PROGRAM_ID, WSOL_MINT,
 };
 use rand::seq::SliceRandom;
@@ -253,7 +253,11 @@ pub struct PumpFunTrader {
     system_program: Pubkey,
     event_authority: Pubkey,
     fee_program: Pubkey,
-    upgrade_fee_recipient: Pubkey,
+    /// Exact slot-[17] fee recipient for curve buy/sell (pump.fun program).
+    curve_fee_recipient: Pubkey,
+    /// Trailing buyback-fee recipient for AMM swaps (pump_amm program); a
+    /// whitelist member, distinct from `curve_fee_recipient`.
+    amm_buyback_fee_recipient: Pubkey,
 
     // PumpSwap AMM (migrated tokens)
     pump_swap_program: Pubkey,
@@ -374,7 +378,8 @@ impl PumpFunTrader {
             system_program: system_program::id(),
             event_authority: Pubkey::from_str(EVENT_AUTHORITY).unwrap(),
             fee_program,
-            upgrade_fee_recipient: Pubkey::from_str(PUMP_PROGRAM_UPGRADE_FEE_RECIPIENT).unwrap(),
+            curve_fee_recipient: Pubkey::from_str(PUMP_CURVE_FEE_RECIPIENT).unwrap(),
+            amm_buyback_fee_recipient: Pubkey::from_str(PUMP_AMM_BUYBACK_FEE_RECIPIENT).unwrap(),
             pump_swap_program,
             wsol_mint: Pubkey::from_str(WSOL_MINT).unwrap(),
             amm_global_config_pda,
