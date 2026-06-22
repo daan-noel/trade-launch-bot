@@ -79,6 +79,12 @@ impl Tpsl2StrategyService {
     const EXIT_PENDING_CLEANUP_INTERVAL_MS: u64 = 60_000;
     const EXIT_PENDING_STALE_MS: u64 = 300_000;
 
+    /// Age past which a `BuySubmitted` position the recovery reaper still can't
+    /// resolve (no fill indexed, no confirmed revert) is flagged for manual review.
+    /// It is **never** auto-deleted — a durable-nonce buy may have landed but not
+    /// indexed, so the tokens could be real. Comfortably exceeds the buy window.
+    const BUY_SUBMITTED_REVIEW_MS: u64 = 600_000;
+
     /// Age past which an unentered (0-entry) Holding paper position is reaped as an
     /// orphan. Must comfortably exceed the largest real arming window
     /// (`SCALP_ARMING_BASE_SECS` + the rule's time gates, at most a few minutes) so
@@ -114,6 +120,12 @@ impl Tpsl2StrategyService {
                 // exit that's still legitimately in flight.
                 interval.tick().await;
                 service.redrive_orphaned_exit_pending().await;
+                // Buy-side recovery: adopt/wait/drop positions stranded in
+                // `BuySubmitted` (crash/restart in the send→record gap, or a
+                // panicked buy task). Runs BEFORE the stale/unentered passes; it
+                // never deletes a row that might own tokens, so an unresolvable one
+                // is just left + flagged, not reaped.
+                service.redrive_orphaned_buy_submitted().await;
                 let mut failed_total: u64 = 0;
                 let mut changed = false;
                 match cleanup_repo.fail_stale_exit_pending(stale).await {
@@ -297,6 +309,11 @@ impl Tpsl2StrategyService {
                 info!("Created position {position_id} for token {mint} under rule {rule_id}");
 
                 if is_real {
+                    // Claim the entry slot for the whole real branch (arming +
+                    // buy) — the buy-side twin of the sell's ExitGuard. While held,
+                    // the buy-recovery reaper skips this position; the RAII guard
+                    // frees the slot when this task ends OR panics.
+                    let _entry_guard = runtime.try_begin_entry(position_id);
                     // Arm on the scalp entry signal before sending any buy: real
                     // mode waits for the first trade where every configured gate
                     // holds (shared `find_scalp_entry`), so live entries honor
@@ -761,6 +778,107 @@ impl Tpsl2StrategyService {
             info!(position_id = %position.id, mint = %position.mint,
                 "[REAL] Re-driving orphaned ExitPending sell");
             self.spawn_real_sell(position, trigger_price, Utc::now(), reason, guard);
+        }
+    }
+
+    /// Recover real positions stranded in `BuySubmitted` — a buy was signed/sent
+    /// (so tokens may exist on-chain) but its fill was never recorded, because the
+    /// process crashed/restarted in the send→record gap or the buy task panicked.
+    /// The holding cache reloads them, but nothing on the live path re-drives a buy
+    /// whose task is gone. Runs at boot (the reaper's first, immediate tick) and on
+    /// the maintenance cadence thereafter, BEFORE the stale/unentered passes.
+    ///
+    /// **Never re-sends and never blindly deletes** — a durable-nonce buy can still
+    /// land after reboot, so re-firing would double-buy (the buy path's core
+    /// invariant). For each row, by its persisted `submitted_buy_signatures`:
+    /// - **Adopt** — a sig is already in the trade feed → record the entry →
+    ///   `Holding` (reuses `adopt_existing_fill_if_present`, per-signature attributed).
+    /// - **Drop** — *every* sig is a confirmed on-chain revert → bought nothing →
+    ///   delete the unentered row (safe, no tokens).
+    /// - **Wait** — any sig landed-but-unindexed / pending / unknown → leave it
+    ///   `BuySubmitted` for the next tick; flag for manual review past a max age.
+    ///
+    /// The atomic `try_begin_entry` claim **is** the interlock: a live buy task
+    /// holds the entry guard → the claim returns `None` → skip (the buy is
+    /// genuinely in flight). After a crash the `entering` set is empty, so every
+    /// reloaded row is claimable and recovered.
+    async fn redrive_orphaned_buy_submitted(&self) {
+        let submitted = match self.position_repo.find_all_buy_submitted().await {
+            Ok(p) => p,
+            Err(err) => {
+                warn!("Failed to load BuySubmitted positions for recovery: {err}");
+                return;
+            }
+        };
+        let wallet = self.trader.wallet_pubkey();
+        for position in submitted {
+            // Atomic claim doubles as the in-flight check — skip if a buy is live.
+            let Some(_guard) = self.runtime.try_begin_entry(position.id) else {
+                continue;
+            };
+
+            // 1. Adopt: a submitted sig is already indexed → record the entry.
+            if super::execution::real::adopt_existing_fill_if_present(
+                &position.mint,
+                &wallet,
+                position.id,
+                &self.position_repo,
+                &self.trade_repo,
+                &self.runtime,
+                &position.submitted_buy_signatures,
+            )
+            .await
+            {
+                info!(position_id = %position.id, mint = %position.mint,
+                    "[REAL] Recovered BuySubmitted position: adopted on-chain fill");
+                continue;
+            }
+
+            // 2. No fill found. A row with no persisted signature can't be checked
+            //    (shouldn't happen — `mark_buy_submitted` always appends) — wait,
+            //    never delete (tokens might exist).
+            if position.submitted_buy_signatures.is_empty() {
+                warn!(position_id = %position.id, mint = %position.mint,
+                    "BuySubmitted position has no submitted signatures — leaving for review");
+                continue;
+            }
+
+            // 3. Classify each submitted signature on-chain. Drop ONLY if EVERY one
+            //    is a confirmed revert (bought nothing); otherwise wait — a single
+            //    landed/pending/unknown sig means tokens may exist or the tx may
+            //    still land, so deleting would orphan real tokens.
+            let mut all_reverted = true;
+            for sig in &position.submitted_buy_signatures {
+                let status = self.trader.signature_state(sig).await;
+                if super::execution::real::classify_submitted_buy(&status)
+                    == super::execution::real::BuyRecoveryVerdict::Wait
+                {
+                    all_reverted = false;
+                    break;
+                }
+            }
+
+            if all_reverted {
+                match self.position_repo.delete_position(position.id).await {
+                    Ok(()) => {
+                        self.runtime.remove_position(&position);
+                        info!(position_id = %position.id, mint = %position.mint,
+                            "[REAL] Dropped reverted BuySubmitted position (every buy reverted; no tokens)");
+                    }
+                    Err(err) => warn!(position_id = %position.id,
+                        "Failed to drop reverted BuySubmitted position: {err}"),
+                }
+            } else {
+                // Tokens may exist or a durable-nonce tx may still land — wait. Flag
+                // for manual review once stuck well past any plausible window.
+                let age = Utc::now().signed_duration_since(position.updated_at);
+                if age > chrono::Duration::milliseconds(Self::BUY_SUBMITTED_REVIEW_MS as i64) {
+                    warn!(position_id = %position.id, mint = %position.mint,
+                        "BuySubmitted position unresolved past the review window — needs manual \
+                         review (a buy may have landed but never indexed); NOT auto-deleting");
+                }
+            }
+            // `_guard` drops here, freeing the entry slot for the next tick.
         }
     }
 }

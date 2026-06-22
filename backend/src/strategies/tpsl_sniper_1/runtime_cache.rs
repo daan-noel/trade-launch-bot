@@ -82,6 +82,24 @@ impl Drop for ExitGuard {
     }
 }
 
+/// RAII claim on an in-flight **entry** (a real snipe buy in progress). The exact
+/// mirror of [`ExitGuard`] for the buy side: while held, `position_id` stays in
+/// the `entering` set, so the buy-recovery reaper (`redrive_orphaned_buy_submitted`)
+/// skips a position whose live buy task is still running. Dropping it — on normal
+/// return, early return, OR a panic that unwinds the buy task — frees the slot, so
+/// after a crash the set is empty and the reaper can claim and recover. Returned by
+/// [`Tpsl1RuntimeCache::try_begin_entry`]; move it into the spawned buy task.
+pub struct EntryGuard {
+    entering: Arc<DashSet<Uuid>>,
+    position_id: Uuid,
+}
+
+impl Drop for EntryGuard {
+    fn drop(&mut self) {
+        self.entering.remove(&self.position_id);
+    }
+}
+
 /// In-memory TPSL state for the strategy hot path (rules + open positions + rule counters).
 ///
 /// Counters are mode-aware: for real rules `total_count_by_rule` is all-time
@@ -127,6 +145,14 @@ pub struct Tpsl1RuntimeCache {
     /// and bounds the paper fill-poll to one task per position (no re-spawn storm
     /// when an ExitPending DB write fails and leaves the position Holding).
     exiting: Arc<DashSet<Uuid>>,
+    /// Positions with a real snipe **buy** currently in flight — the buy-side twin
+    /// of `exiting`. The live buy task claims its slot for the buy's lifetime; the
+    /// buy-recovery reaper (`redrive_orphaned_buy_submitted`) claims via
+    /// [`try_begin_entry`] to decide whether a `BuySubmitted` row is orphaned (no
+    /// live task → claimable → recover) or genuinely in flight (claim refused →
+    /// skip). After a crash the set is empty, so every reloaded `BuySubmitted` row
+    /// is recoverable. The RAII guard frees the slot on drop incl. a panic.
+    entering: Arc<DashSet<Uuid>>,
     /// Cold-lane broadcast — every position transition emits a `TpslPositionsChanged`
     /// signal so SSE clients refetch the affected rule's positions in real time
     /// instead of polling.
@@ -150,6 +176,7 @@ impl Tpsl1RuntimeCache {
             time_exit_holding: Arc::new(DashMap::new()),
             paper_poll_sem: Arc::new(Semaphore::new(PAPER_POLL_CONCURRENCY)),
             exiting: Arc::new(DashSet::new()),
+            entering: Arc::new(DashSet::new()),
             sse_tx,
         }
     }
@@ -183,6 +210,31 @@ impl Tpsl1RuntimeCache {
     #[cfg(test)]
     pub fn is_exiting(&self, position_id: Uuid) -> bool {
         self.exiting.contains(&position_id)
+    }
+
+    /// Claim `position_id` for an in-flight entry (a real snipe buy). Returns
+    /// `Some(EntryGuard)` if newly claimed — hold it for the whole buy; returns
+    /// `None` if a buy is already running for it, in which case the caller MUST
+    /// skip. The atomic claim doubles as the in-flight check for the buy-recovery
+    /// reaper (a live buy task holds the guard → reaper's claim returns `None` →
+    /// skip), exactly mirroring `try_begin_exit`. The guard frees the slot on
+    /// drop, so a panicked buy task can't wedge the slot forever.
+    pub fn try_begin_entry(&self, position_id: Uuid) -> Option<EntryGuard> {
+        if self.entering.insert(position_id) {
+            Some(EntryGuard {
+                entering: self.entering.clone(),
+                position_id,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Whether a buy is currently in flight for `position_id` (its entry guard is
+    /// held). Diagnostic/test only — the reaper claims via [`try_begin_entry`].
+    #[cfg(test)]
+    pub fn is_entering(&self, position_id: Uuid) -> bool {
+        self.entering.contains(&position_id)
     }
 
     pub async fn load_from_db(&self, pool: &PgPool) -> anyhow::Result<()> {
@@ -654,8 +706,8 @@ impl Tpsl1RuntimeCache {
         let prev_in_holding_index = prev.map(|p| p.is_in_holding_index()).unwrap_or(false);
         let curr_in_holding_index = current.is_in_holding_index();
 
-        // Holding index: PendingEntry and Holding both belong (exit-gating relies
-        // on this; the fill-adopt path needs to find the pending row by mint).
+        // Holding index: Arming, BuySubmitted, and Holding all belong (exit-gating
+        // relies on this; the fill-adopt path needs to find the pre-fill row by mint).
         if prev_in_holding_index {
             self.remove_from_holding_index(prev.unwrap());
             if !curr_in_holding_index {
@@ -676,8 +728,8 @@ impl Tpsl1RuntimeCache {
             self.adjust_total_count(current.rule_id, 1);
         }
 
-        // holding_count: entered positions in Holding (not PendingEntry — those
-        // haven't deployed SOL yet and must not count toward the cap).
+        // holding_count: entered positions in Holding (not Arming/BuySubmitted —
+        // those haven't deployed SOL yet and must not count toward the cap).
         let prev_holding_entered = prev
             .map(|p| p.entry_price.is_some() && p.status == PositionStatus::Holding)
             .unwrap_or(false);
@@ -905,6 +957,23 @@ mod tests {
         assert!(cache.try_begin_exit(id).is_some(), "re-claimable after release");
     }
 
+    /// The entry guard mirrors the exit guard: it gates a second claim while held
+    /// and frees the `entering` slot on drop (incl. a panic), so the buy-recovery
+    /// reaper skips a live buy but can re-claim after a crash.
+    #[test]
+    fn entry_guard_frees_slot_on_drop() {
+        let cache = cache();
+        let id = Uuid::new_v4();
+
+        let guard = cache.try_begin_entry(id).expect("first claim succeeds");
+        assert!(cache.is_entering(id));
+        assert!(cache.try_begin_entry(id).is_none(), "double-claim refused");
+
+        drop(guard);
+        assert!(!cache.is_entering(id), "slot freed on drop");
+        assert!(cache.try_begin_entry(id).is_some(), "re-claimable after release");
+    }
+
     /// A spawned task that panics while holding the guard still frees the slot
     /// (Drop runs on unwind), so a panicked sell can't wedge the position forever.
     #[tokio::test]
@@ -929,12 +998,17 @@ mod tests {
     fn inline_claims_accumulate_for_cap_visibility() {
         let cache = cache();
         let rule_id = Uuid::new_v4();
+        // Entered positions are Holding with an entry_price (the realistic post-fill
+        // state — update_entry sets both atomically); the cap counters gate on
+        // exactly that pair.
         let mut a = holding_position(rule_id);
         a.mint = "MintA".to_string();
         a.entry_price = Some(0.001);
+        a.mark_entry_filled();
         let mut b = holding_position(rule_id);
         b.mint = "MintB".to_string();
         b.entry_price = Some(0.001);
+        b.mark_entry_filled();
 
         cache.sync_position(None, &a);
         cache.sync_position(None, &b);

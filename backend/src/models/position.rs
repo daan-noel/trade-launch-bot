@@ -49,9 +49,21 @@ pub struct Position {
     /// against `entry_token_amount`, so concurrent positions never confirm against
     /// each other's sells. Empty until at least one sell lands.
     pub exit_tx_signatures: Vec<String>,
-    /// "Holding" — owns tokens, exit not yet triggered | "ExitPending" — exit
-    /// triggered, sell/confirmation in flight | "End" — exited cleanly |
-    /// "ExitFailed" — terminal: the exit attempt ran and failed.
+    /// Signature(s) of every snipe buy this position **submitted** (one per
+    /// attempt; the buy loop can send up to `BUY_MAX_ATTEMPTS` times). Written
+    /// the instant a send returns — *before* the fill is confirmed — so that a
+    /// crash/restart in the send→record gap can recover the entry by checking
+    /// these signatures against the trade feed (`BuySubmitted` recovery reaper).
+    /// Empty until the first buy is sent; real positions only (paper sends no
+    /// buys). Distinct from `entry_tx_signatures`, which records only the *fill*.
+    pub submitted_buy_signatures: Vec<String>,
+    /// "Arming" — matched a rule, watching the live feed for the scalp trigger;
+    /// no buy sent, no SOL committed (reapable) | "BuySubmitted" — buy
+    /// signed/sent, awaiting the fill; tokens may exist on-chain (must be
+    /// recovered, never reaped) | "Holding" — owns tokens, exit not yet
+    /// triggered | "ExitPending" — exit triggered, sell/confirmation in flight |
+    /// "End" — exited cleanly | "ExitFailed" — terminal: the exit attempt ran
+    /// and failed.
     pub status: PositionStatus,
     /// Strategy name (e.g., "TPSL1" or "TPSL2").
     pub strategy: String,
@@ -69,10 +81,21 @@ pub struct Position {
 #[serde(rename_all = "PascalCase")]
 pub enum PositionStatus {
     Holding,
-    /// Created before the buy fill lands. Transitions to `Holding` via
-    /// `update_entry` once the on-chain fill is adopted. Not counted toward
-    /// the per-rule cap and excluded from frontend summary tallies.
-    PendingEntry,
+    /// Matched a rule and watching the live feed for the scalp entry trigger
+    /// (`await_scalp_entry_signal`) — **no buy sent, no SOL committed**. The
+    /// initial state of every position (`Position::new`). In the holding index
+    /// (so by-mint lookups find it) but not counted toward the per-rule cap;
+    /// excluded from frontend summary tallies. Safe to reap as an orphan once
+    /// stale — nothing was bought. (Was `PendingEntry`.)
+    Arming,
+    /// A buy has been **signed and sent**, but its fill is not yet recorded —
+    /// tokens may already exist on-chain. Reached from `Arming` via
+    /// [`Position::mark_buy_submitted`] the instant a send returns. Transitions
+    /// to `Holding` via `update_entry` once the on-chain fill is adopted. In the
+    /// holding index but not counted toward the cap (no entry yet). **Never
+    /// reaped** — owned by the buy-recovery reaper, which adopts/waits/drops per
+    /// its persisted `submitted_buy_signatures`.
+    BuySubmitted,
     ExitPending,
     End,
     /// Terminal: the exit attempt completed and failed (real: sell retries
@@ -85,7 +108,8 @@ impl std::fmt::Display for PositionStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Holding => write!(f, "Holding"),
-            Self::PendingEntry => write!(f, "PendingEntry"),
+            Self::Arming => write!(f, "Arming"),
+            Self::BuySubmitted => write!(f, "BuySubmitted"),
             Self::ExitPending => write!(f, "ExitPending"),
             Self::End => write!(f, "End"),
             Self::ExitFailed => write!(f, "ExitFailed"),
@@ -99,7 +123,8 @@ impl std::str::FromStr for PositionStatus {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "Holding" => Ok(Self::Holding),
-            "PendingEntry" => Ok(Self::PendingEntry),
+            "Arming" => Ok(Self::Arming),
+            "BuySubmitted" => Ok(Self::BuySubmitted),
             "ExitPending" => Ok(Self::ExitPending),
             "End" => Ok(Self::End),
             "ExitFailed" => Ok(Self::ExitFailed),
@@ -129,11 +154,12 @@ impl Position {
             entry_token_amount: None,
             entry_time: None,
             entry_tx_signatures: Vec::new(),
+            submitted_buy_signatures: Vec::new(),
             exit_price: None,
             exit_token_amount: None,
             exit_time: None,
             exit_tx_signatures: Vec::new(),
-            status: PositionStatus::PendingEntry,
+            status: PositionStatus::Arming,
             strategy,
             rule_id,
             exit_reason: None,
@@ -161,6 +187,19 @@ impl Position {
         self.target_token_amount = Some(amount);
         self.target_time = Some(time);
         self.target_tx = Some(tx);
+        self.updated_at = Utc::now();
+    }
+
+    /// Record a submitted snipe-buy signature and flip the status to
+    /// `BuySubmitted` (the durable "buy in flight" marker). Appends to
+    /// `submitted_buy_signatures` so every attempt is recoverable. In-memory
+    /// mutator parallel to the repo's `mark_buy_submitted`; idempotent on the
+    /// status (re-marking an already-`BuySubmitted` position just appends the
+    /// new attempt's signature).
+    #[allow(dead_code)]
+    pub fn mark_buy_submitted(&mut self, signature: String) {
+        self.submitted_buy_signatures.push(signature);
+        self.status = PositionStatus::BuySubmitted;
         self.updated_at = Utc::now();
     }
 
@@ -215,7 +254,10 @@ impl Position {
     /// fully entered but not yet exiting). Used by the runtime cache and the
     /// exit guard to decide if a position is visible to the strategy hot path.
     pub fn is_in_holding_index(&self) -> bool {
-        matches!(self.status, PositionStatus::Holding | PositionStatus::PendingEntry)
+        matches!(
+            self.status,
+            PositionStatus::Holding | PositionStatus::Arming | PositionStatus::BuySubmitted
+        )
     }
 
     /// Calculate profit/loss percentage.
@@ -247,8 +289,8 @@ impl Position {
     /// Whether this position is terminally closed *with money deployed* — an
     /// entered position that reached `End` (clean exit) or `ExitFailed`. The
     /// per-rule performance stats accumulate exactly on the transition into this
-    /// state. `PendingEntry`/`Holding`/`ExitPending` are not closed; an unentered
-    /// row (no `entry_price`) is never counted.
+    /// state. `Arming`/`BuySubmitted`/`Holding`/`ExitPending` are not closed; an
+    /// unentered row (no `entry_price`) is never counted.
     pub fn is_closed(&self) -> bool {
         self.entry_price.is_some()
             && matches!(self.status, PositionStatus::End | PositionStatus::ExitFailed)
@@ -280,7 +322,10 @@ impl Position {
                 .to_string(),
             ),
             PositionStatus::ExitFailed => Some("ExitFailed".to_string()),
-            PositionStatus::Holding | PositionStatus::PendingEntry | PositionStatus::ExitPending => None,
+            PositionStatus::Holding
+            | PositionStatus::Arming
+            | PositionStatus::BuySubmitted
+            | PositionStatus::ExitPending => None,
         }
     }
 }
@@ -295,28 +340,44 @@ mod tests {
     }
 
     #[test]
-    fn new_position_starts_pending_entry() {
+    fn new_position_starts_arming() {
         let p = make_position();
-        assert_eq!(p.status, PositionStatus::PendingEntry);
+        assert_eq!(p.status, PositionStatus::Arming);
     }
 
     #[test]
-    fn pending_entry_round_trips_display_fromstr() {
-        let s = PositionStatus::PendingEntry.to_string();
-        assert_eq!(s, "PendingEntry");
-        assert_eq!(s.parse::<PositionStatus>().unwrap(), PositionStatus::PendingEntry);
+    fn statuses_round_trip_display_fromstr() {
+        for status in [PositionStatus::Arming, PositionStatus::BuySubmitted] {
+            let s = status.to_string();
+            assert_eq!(s.parse::<PositionStatus>().unwrap(), status);
+        }
+        assert_eq!(PositionStatus::Arming.to_string(), "Arming");
+        assert_eq!(PositionStatus::BuySubmitted.to_string(), "BuySubmitted");
     }
 
     #[test]
-    fn exit_reason_is_none_for_pending_entry() {
+    fn exit_reason_is_none_for_arming() {
         let p = make_position();
         assert!(p.exit_reason_or_derived().is_none());
     }
 
     #[test]
+    fn mark_buy_submitted_appends_sig_and_flips_status() {
+        let mut p = make_position();
+        assert_eq!(p.status, PositionStatus::Arming);
+        p.mark_buy_submitted("sig-1".into());
+        assert_eq!(p.status, PositionStatus::BuySubmitted);
+        assert_eq!(p.submitted_buy_signatures, vec!["sig-1".to_string()]);
+        // A second send (retry) just appends — still BuySubmitted, still in index.
+        p.mark_buy_submitted("sig-2".into());
+        assert_eq!(p.submitted_buy_signatures, vec!["sig-1".to_string(), "sig-2".to_string()]);
+        assert!(p.is_in_holding_index());
+    }
+
+    #[test]
     fn mark_entry_filled_transitions_to_holding() {
         let mut p = make_position();
-        assert_eq!(p.status, PositionStatus::PendingEntry);
+        assert_eq!(p.status, PositionStatus::Arming);
         p.mark_entry_filled();
         assert_eq!(p.status, PositionStatus::Holding);
     }
@@ -368,7 +429,7 @@ mod tests {
     /// An un-entered or still-open position is neither closed nor priced.
     #[test]
     fn open_and_unentered_positions_are_not_closed() {
-        let pending = make_position(); // PendingEntry, no entry
+        let pending = make_position(); // Arming, no entry
         assert!(!pending.is_closed());
         assert_eq!(pending.pnl_sol(), None);
 
@@ -381,9 +442,11 @@ mod tests {
     }
 
     #[test]
-    fn is_in_holding_index_covers_both_pre_fill_statuses() {
+    fn is_in_holding_index_covers_all_pre_fill_statuses() {
         let mut p = make_position();
-        assert!(p.is_in_holding_index(), "PendingEntry is in holding index");
+        assert!(p.is_in_holding_index(), "Arming is in holding index");
+        p.mark_buy_submitted("sig".into());
+        assert!(p.is_in_holding_index(), "BuySubmitted is in holding index");
         p.mark_entry_filled();
         assert!(p.is_in_holding_index(), "Holding is in holding index");
         p.mark_exit_pending();

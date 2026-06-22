@@ -49,6 +49,8 @@ struct PositionDbRow {
     exit_token_amount: Option<f64>,
     exit_time: Option<DateTime<Utc>>,
     exit_tx_signatures: Json<Vec<String>>,
+    // TEXT[] (not JSONB) — the durable per-attempt buy-submission marker.
+    submitted_buy_signatures: Vec<String>,
     status: String,
     strategy: String,
     rule_id: Uuid,
@@ -63,7 +65,8 @@ impl TryFrom<PositionDbRow> for Position {
     fn try_from(r: PositionDbRow) -> Result<Self, Self::Error> {
         let status = match r.status.as_str() {
             "Holding" => PositionStatus::Holding,
-            "PendingEntry" => PositionStatus::PendingEntry,
+            "Arming" => PositionStatus::Arming,
+            "BuySubmitted" => PositionStatus::BuySubmitted,
             "ExitPending" => PositionStatus::ExitPending,
             "End" => PositionStatus::End,
             "ExitFailed" => PositionStatus::ExitFailed,
@@ -87,6 +90,7 @@ impl TryFrom<PositionDbRow> for Position {
             exit_token_amount: r.exit_token_amount,
             exit_time: r.exit_time,
             exit_tx_signatures: r.exit_tx_signatures.0,
+            submitted_buy_signatures: r.submitted_buy_signatures,
             status,
             strategy: r.strategy,
             rule_id: r.rule_id,
@@ -100,7 +104,8 @@ impl TryFrom<PositionDbRow> for Position {
 fn position_status_str(s: PositionStatus) -> &'static str {
     match s {
         PositionStatus::Holding => "Holding",
-        PositionStatus::PendingEntry => "PendingEntry",
+        PositionStatus::Arming => "Arming",
+        PositionStatus::BuySubmitted => "BuySubmitted",
         PositionStatus::ExitPending => "ExitPending",
         PositionStatus::End => "End",
         PositionStatus::ExitFailed => "ExitFailed",
@@ -113,7 +118,7 @@ fn position_status_str(s: PositionStatus) -> &'static str {
 const POSITION_COLS: &str = "id, mint, wallet, token_program_id, \
      target_price, target_token_amount, target_time, target_tx, \
      entry_price, entry_token_amount, entry_time, entry_tx_signatures, \
-     exit_price, exit_token_amount, exit_time, exit_tx_signatures, \
+     exit_price, exit_token_amount, exit_time, exit_tx_signatures, submitted_buy_signatures, \
      status, strategy, rule_id, exit_reason, created_at, updated_at";
 
 // ---------------------------------------------------------------------------
@@ -191,6 +196,58 @@ impl Tpsl2PositionRepo {
         Position::try_from(row)
     }
 
+    /// Record a submitted snipe-buy signature and flip the row to `BuySubmitted`
+    /// (the durable "buy in flight" marker). Appends `signature` to
+    /// `submitted_buy_signatures` so every attempt is recoverable, and returns the
+    /// updated row so the caller can sync the runtime cache off it. Guarded by
+    /// `entry_price IS NULL` so a concurrent fill that already advanced the row to
+    /// `Holding` is never clobbered back to `BuySubmitted`; returns `None` in that
+    /// (benign) case.
+    pub async fn mark_buy_submitted(
+        &self,
+        position_id: Uuid,
+        signature: &str,
+    ) -> anyhow::Result<Option<Position>> {
+        let row = sqlx::query_as::<_, PositionDbRow>(&format!(
+            r#"
+            UPDATE tpsl2_real_positions
+            SET status = 'BuySubmitted',
+                submitted_buy_signatures = array_append(submitted_buy_signatures, $2),
+                updated_at = $3
+            WHERE id = $1 AND entry_price IS NULL
+            RETURNING {POSITION_COLS}
+            "#
+        ))
+        .bind(position_id)
+        .bind(signature)
+        .bind(Utc::now())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(Position::try_from).transpose()
+    }
+
+    /// All positions stuck in `BuySubmitted` — for the buy-recovery reaper, which
+    /// checks each row's persisted signatures against the trade feed/chain and
+    /// adopts/waits/drops accordingly (the holding cache reloads them, but nothing
+    /// on the live path re-drives a buy whose task was lost to a crash/restart).
+    /// Small result set under normal operation; index-served by the partial
+    /// `idx_tpsl2_real_positions_buy_submitted`.
+    pub async fn find_all_buy_submitted(&self) -> anyhow::Result<Vec<Position>> {
+        let rows = sqlx::query_as::<_, PositionDbRow>(&format!(
+            r#"
+            SELECT {POSITION_COLS}
+            FROM tpsl2_real_positions
+            WHERE status = 'BuySubmitted'
+            ORDER BY updated_at ASC
+            "#
+        ))
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(Position::try_from).collect()
+    }
+
     /// Create a new position.
     pub async fn insert(&self, position: &Position) -> anyhow::Result<()> {
         sqlx::query(
@@ -199,9 +256,9 @@ impl Tpsl2PositionRepo {
                 (id, mint, wallet, token_program_id,
                  target_price, target_token_amount, target_time, target_tx,
                  entry_price, entry_token_amount, entry_time, entry_tx_signatures,
-                 exit_price, exit_token_amount, exit_time, exit_tx_signatures,
+                 exit_price, exit_token_amount, exit_time, exit_tx_signatures, submitted_buy_signatures,
                  status, strategy, rule_id, exit_reason, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
             "#,
         )
         .bind(position.id)
@@ -220,6 +277,7 @@ impl Tpsl2PositionRepo {
         .bind(position.exit_token_amount)
         .bind(position.exit_time)
         .bind(Json(&position.exit_tx_signatures))
+        .bind(&position.submitted_buy_signatures)
         .bind(position_status_str(position.status))
         .bind(&position.strategy)
         .bind(position.rule_id)
@@ -267,7 +325,7 @@ impl Tpsl2PositionRepo {
             r#"
             SELECT {POSITION_COLS}
             FROM tpsl2_real_positions
-            WHERE mint = $1 AND status IN ('Holding','PendingEntry')
+            WHERE mint = $1 AND status IN ('Holding','Arming','BuySubmitted')
             ORDER BY created_at DESC
             LIMIT $2 OFFSET $3
             "#
@@ -292,7 +350,7 @@ impl Tpsl2PositionRepo {
             r#"
             SELECT {POSITION_COLS}
             FROM tpsl2_real_positions
-            WHERE wallet = $1 AND status IN ('Holding','PendingEntry')
+            WHERE wallet = $1 AND status IN ('Holding','Arming','BuySubmitted')
             ORDER BY created_at DESC
             LIMIT $2 OFFSET $3
             "#
@@ -372,19 +430,23 @@ impl Tpsl2PositionRepo {
         Ok(result.rows_affected())
     }
 
-    /// Delete real positions left **PendingEntry with no entry fill** (`entry_price
-    /// IS NULL`) past the timeout — they never reached `Holding` because the buy fill
-    /// (which calls `mark_entered`) never landed. The in-process arming/buy task
-    /// deletes its own unentered row when the scalp signal never fires or the buy
-    /// isn't found (`on_token_created`), so under normal operation nothing reaches
+    /// Delete real positions left **`Arming` with no entry fill** (`entry_price
+    /// IS NULL`) past the timeout — they matched a rule and were watching for the
+    /// scalp trigger but **never sent a buy** (no SOL committed, no tokens), so
+    /// they're safe to drop. Scoped to `Arming` **only**: a `BuySubmitted` row may
+    /// have tokens on-chain and is owned by the buy-recovery reaper
+    /// (`redrive_orphaned_buy_submitted`), which adopts/waits/drops per its
+    /// persisted signatures — this pass must never delete it.
+    ///
+    /// The in-process arming task deletes its own unentered row when the signal
+    /// never fires (`on_token_created`), so under normal operation nothing reaches
     /// here. But that cleanup lives **inside** the spawned task — if the process
-    /// restarts or the task panics mid-arming, the row is reloaded as `PendingEntry`
-    /// with no arming task, no buy, and (being 0-entry) gated out of every exit path: a permanent
+    /// restarts or the task panics mid-arming, the row is reloaded as `Arming`
+    /// with no task and (being 0-entry) gated out of every exit path: a permanent
     /// zombie that also pins its dead token in `token_cache` (`is_held`). This is
     /// the real-side mirror of the paper reaper. `stale_after` must comfortably
     /// exceed the largest arming window (`UNENTERED_STALE_MS`) so it only ever
-    /// catches orphans, never a wait still legitimately in flight. Returns rows
-    /// deleted.
+    /// catches orphans. Returns rows deleted.
     pub async fn delete_stale_unentered(
         &self,
         stale_after: std::time::Duration,
@@ -393,7 +455,7 @@ impl Tpsl2PositionRepo {
         let result = sqlx::query(
             r#"
             DELETE FROM tpsl2_real_positions
-            WHERE status = 'PendingEntry' AND entry_price IS NULL AND created_at < $1
+            WHERE status = 'Arming' AND entry_price IS NULL AND created_at < $1
             "#,
         )
         .bind(cutoff)
@@ -453,7 +515,7 @@ impl Tpsl2PositionRepo {
             r#"
             SELECT {POSITION_COLS}
             FROM tpsl2_real_positions
-            WHERE status IN ('Holding','PendingEntry')
+            WHERE status IN ('Holding','Arming','BuySubmitted')
             ORDER BY created_at DESC
             "#
         ))
@@ -473,7 +535,7 @@ impl Tpsl2PositionRepo {
         // degrades toward a full scan as the table grows.
         let rows: Vec<(String,)> = sqlx::query_as(
             "SELECT DISTINCT mint FROM tpsl2_real_positions \
-             WHERE status IN ('Holding', 'PendingEntry', 'ExitPending', 'ExitFailed')",
+             WHERE status IN ('Holding', 'Arming', 'BuySubmitted', 'ExitPending', 'ExitFailed')",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -674,29 +736,65 @@ mod tests {
         let repo = Tpsl2PositionRepo::new(pool.clone());
         let mint = unique("M");
 
-        // Four rows: a freshly-armed unentered PendingEntry (arming still in flight),
-        // an aged unentered PendingEntry (orphaned zombie — restart/panic lost its
-        // task), an aged ENTERED Holding (a live bag — must survive), and an aged
-        // unentered End (already settled). Only the aged 0-entry PendingEntry is a
-        // zombie: the fill never landed, so it never advanced past PendingEntry.
-        let fresh = seed_position(&repo, &mint, PositionStatus::PendingEntry, Duration::ZERO, false).await;
+        // Five rows: a freshly-armed unentered Arming (arming still in flight), an
+        // aged unentered Arming (orphaned zombie — restart/panic lost its task), an
+        // aged ENTERED Holding (a live bag — must survive), an aged unentered End
+        // (already settled), and an aged unentered BuySubmitted (a buy in flight —
+        // tokens may exist, owned by the buy-recovery reaper, must NOT be reaped).
+        // Only the aged 0-entry Arming is a zombie: it never sent a buy.
+        let fresh = seed_position(&repo, &mint, PositionStatus::Arming, Duration::ZERO, false).await;
         let zombie =
-            seed_position(&repo, &mint, PositionStatus::PendingEntry, Duration::from_secs(3600), false).await;
+            seed_position(&repo, &mint, PositionStatus::Arming, Duration::from_secs(3600), false).await;
         let entered =
             seed_position(&repo, &mint, PositionStatus::Holding, Duration::from_secs(3600), true).await;
         let ended =
             seed_position(&repo, &mint, PositionStatus::End, Duration::from_secs(3600), false).await;
+        let buy_submitted =
+            seed_position(&repo, &mint, PositionStatus::BuySubmitted, Duration::from_secs(3600), false).await;
 
         let reaped = repo
             .delete_stale_unentered(Duration::from_secs(600))
             .await
             .expect("reap stale unentered");
-        assert_eq!(reaped, 1, "exactly the aged 0-entry PendingEntry is deleted");
+        assert_eq!(reaped, 1, "exactly the aged 0-entry Arming is deleted");
 
         assert!(repo.find_by_id(zombie).await.unwrap().is_none(), "zombie deleted");
         assert!(repo.find_by_id(fresh).await.unwrap().is_some(), "fresh arming row survives");
         assert!(repo.find_by_id(entered).await.unwrap().is_some(), "entered bag survives");
         assert!(repo.find_by_id(ended).await.unwrap().is_some(), "settled row survives");
+        assert!(
+            repo.find_by_id(buy_submitted).await.unwrap().is_some(),
+            "BuySubmitted row is NEVER reaped (tokens may exist on-chain)"
+        );
+
+        cleanup(&pool, &mint).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
+    async fn mark_buy_submitted_appends_sig_and_find_all_surfaces_it() {
+        let Some(pool) = test_pool().await else { return };
+        let repo = Tpsl2PositionRepo::new(pool.clone());
+        let mint = unique("M");
+
+        let id = seed_position(&repo, &mint, PositionStatus::Arming, Duration::ZERO, false).await;
+
+        let updated = repo.mark_buy_submitted(id, "sig-1").await.unwrap().expect("row updated");
+        assert_eq!(updated.status, PositionStatus::BuySubmitted);
+        assert_eq!(updated.submitted_buy_signatures, vec!["sig-1".to_string()]);
+
+        let updated = repo.mark_buy_submitted(id, "sig-2").await.unwrap().expect("row updated");
+        assert_eq!(updated.submitted_buy_signatures, vec!["sig-1".to_string(), "sig-2".to_string()]);
+
+        let surfaced: Vec<_> = repo
+            .find_all_buy_submitted()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|p| p.mint == mint)
+            .collect();
+        assert_eq!(surfaced.len(), 1);
+        assert_eq!(surfaced[0].id, id);
 
         cleanup(&pool, &mint).await;
     }

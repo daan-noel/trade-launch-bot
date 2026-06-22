@@ -85,7 +85,8 @@ impl TryFrom<PaperPositionDbRow> for Position {
     fn try_from(r: PaperPositionDbRow) -> Result<Self, Self::Error> {
         let status = match r.status.as_str() {
             "Holding" => PositionStatus::Holding,
-            "PendingEntry" => PositionStatus::PendingEntry,
+            "Arming" => PositionStatus::Arming,
+            "BuySubmitted" => PositionStatus::BuySubmitted,
             "ExitPending" => PositionStatus::ExitPending,
             "End" => PositionStatus::End,
             "ExitFailed" => PositionStatus::ExitFailed,
@@ -108,6 +109,8 @@ impl TryFrom<PaperPositionDbRow> for Position {
             exit_token_amount: r.exit_token_amount,
             exit_time: r.exit_time,
             exit_tx_signatures: r.exit_tx_signatures.0,
+            // Paper sends no buys — always empty (real-only durable marker).
+            submitted_buy_signatures: Vec::new(),
             status,
             strategy: r.strategy,
             rule_id: r.rule_id,
@@ -121,7 +124,8 @@ impl TryFrom<PaperPositionDbRow> for Position {
 fn position_status_str(s: PositionStatus) -> &'static str {
     match s {
         PositionStatus::Holding => "Holding",
-        PositionStatus::PendingEntry => "PendingEntry",
+        PositionStatus::Arming => "Arming",
+        PositionStatus::BuySubmitted => "BuySubmitted",
         PositionStatus::ExitPending => "ExitPending",
         PositionStatus::End => "End",
         PositionStatus::ExitFailed => "ExitFailed",
@@ -511,7 +515,7 @@ impl Tpsl2PaperTradingRepo {
     /// All Holding paper positions across every (current) run — warms the cache.
     pub async fn find_all_holding(&self) -> anyhow::Result<Vec<Position>> {
         let rows = sqlx::query_as::<_, PaperPositionDbRow>(&format!(
-            "SELECT {POSITION_COLS} FROM tpsl2_paper_positions WHERE status IN ('Holding','PendingEntry') ORDER BY created_at DESC"
+            "SELECT {POSITION_COLS} FROM tpsl2_paper_positions WHERE status IN ('Holding','Arming','BuySubmitted') ORDER BY created_at DESC"
         ))
         .fetch_all(&self.pool)
         .await?;
@@ -608,7 +612,7 @@ impl Tpsl2PaperTradingRepo {
         let result = sqlx::query(
             r#"
             DELETE FROM tpsl2_paper_positions
-            WHERE status = 'PendingEntry' AND (entry_price IS NULL OR entry_price <= 0) AND created_at < $1
+            WHERE status = 'Arming' AND (entry_price IS NULL OR entry_price <= 0) AND created_at < $1
             "#,
         )
         .bind(cutoff)

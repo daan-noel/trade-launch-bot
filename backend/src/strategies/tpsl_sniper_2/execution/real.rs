@@ -48,6 +48,34 @@ fn classify_silent_send<E>(status: &Result<Option<bool>, E>) -> SilentSendOutcom
     }
 }
 
+/// Recovery verdict for a `BuySubmitted` position whose submitted buy did **not**
+/// turn up in the trade feed — used by the boot/periodic buy-recovery reaper
+/// (`redrive_orphaned_buy_submitted`). The buy-side mirror of
+/// [`classify_silent_send`], but the reaper **never re-sends** (a durable-nonce
+/// buy can still land after reboot, so re-firing would double-buy), so the only
+/// actions are drop-or-wait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BuyRecoveryVerdict {
+    /// Tx reverted on-chain → bought nothing → safe to delete the unentered row.
+    Drop,
+    /// Landed-but-unindexed, pending/dropped, or status unknown → tokens may
+    /// exist or the tx may still land → leave `BuySubmitted` and re-check next
+    /// tick. **Never** auto-delete here — that would orphan real tokens.
+    Wait,
+}
+
+/// Classify one submitted buy signature's on-chain status for recovery. Pure +
+/// generic over the error type so the adopt/wait/drop decision is unit-tested
+/// without a live chain. Only a **proven revert** drops; everything else waits.
+pub(crate) fn classify_submitted_buy<E>(status: &Result<Option<bool>, E>) -> BuyRecoveryVerdict {
+    match status {
+        Ok(Some(false)) => BuyRecoveryVerdict::Drop,
+        // Landed (indexer-lagging), pending (durable-nonce tx can still land), or
+        // a status-check error → conservatively wait; deleting could strand tokens.
+        Ok(Some(true)) | Ok(None) | Err(_) => BuyRecoveryVerdict::Wait,
+    }
+}
+
 /// Convert the token cache's in-memory virtual reserves — token side in raw
 /// units, SOL side in SOL (the decoder divides lamports by 1e9) — into the
 /// `(virtual_token, virtual_quote=lamports)` pair the snipe buy's slippage
@@ -298,6 +326,21 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
         };
         // Track our own submitted signature so the fill is attributed to THIS buy.
         sent_sigs.push(signature.clone());
+        // Write-ahead durable marker (persist-after-send, Phase 1): record this
+        // signature + flip the row to `BuySubmitted` the instant the send returns,
+        // BEFORE polling for the fill. A crash/restart in the send→record gap can
+        // then recover the entry by checking this signature against the feed
+        // (`redrive_orphaned_buy_submitted`); without it the row would look like a
+        // never-bought `Arming` orphan and get reaped while tokens sit in the
+        // wallet. Off the ingest hot path (spawned buy task) and does not delay the
+        // fill poll. Best-effort: the sig already lives in `sent_sigs` for THIS
+        // process, so a failed persist only loses the cross-restart marker.
+        match position_repo.mark_buy_submitted(position_id, &signature).await {
+            Ok(Some(updated)) => runtime.sync_position(None, &updated),
+            Ok(None) => {} // already advanced to Holding concurrently — nothing to mark
+            Err(err) => warn!(mint = %mint, sig = %signature,
+                "failed to persist BuySubmitted marker (continuing): {err}"),
+        }
         info!(mint = %mint, attempt, sig = %signature,
             "buy submitted (no RPC confirm); polling WS feed for fill");
 
@@ -406,7 +449,7 @@ async fn poll_feed_until_entry_fill(
 /// summed from that signature's legs) and return true; otherwise return false
 /// without sleeping. Per-signature attribution: we adopt only a fill the bot itself
 /// submitted, so a concurrent same-token position never adopts the other's buy.
-async fn adopt_existing_fill_if_present(
+pub(crate) async fn adopt_existing_fill_if_present(
     mint: &str,
     wallet: &str,
     position_id: Uuid,
@@ -949,6 +992,24 @@ mod tests {
         // The double-buy invariant: only a proven on-chain revert may re-send.
         for status in [Ok(Some(true)), Ok(None), Err("x")] {
             assert_ne!(outcome(status), SilentSendOutcome::Resend);
+        }
+    }
+
+    // --- Buy-recovery verdict (classify_submitted_buy) -----------------------
+
+    fn recover(status: Result<Option<bool>, &'static str>) -> BuyRecoveryVerdict {
+        classify_submitted_buy(&status)
+    }
+
+    #[test]
+    fn only_a_confirmed_revert_drops_a_buy_submitted_row() {
+        assert_eq!(recover(Ok(Some(false))), BuyRecoveryVerdict::Drop);
+    }
+
+    #[test]
+    fn landed_pending_or_unknown_buy_waits_never_drops() {
+        for status in [Ok(Some(true)), Ok(None), Err("rpc down")] {
+            assert_eq!(recover(status), BuyRecoveryVerdict::Wait);
         }
     }
 

@@ -1148,19 +1148,21 @@ export function Tpsl2Page() {
   const [showPending, setShowPending] = useState(false);
 
   // Sim-shaped view of the live positions, feeding the Positions summary card.
-  // Exclude PendingEntry rows — they haven't filled yet and skew W/L/open tallies.
+  // Exclude pre-fill rows (Arming = watching for the entry trigger; BuySubmitted =
+  // buy in flight) — they haven't filled yet and skew W/L/open tallies.
+  const isPreFill = (s: string) => s === 'Arming' || s === 'BuySubmitted';
   const positionSummaryTokens = useMemo(
-    () => positions.filter((p) => p.status !== 'PendingEntry').map(positionToSimResult),
+    () => positions.filter((p) => !isPreFill(p.status)).map(positionToSimResult),
     [positions],
   );
 
   const pendingCount = useMemo(
-    () => positions.filter((p) => p.status === 'PendingEntry').length,
+    () => positions.filter((p) => isPreFill(p.status)).length,
     [positions],
   );
 
   const visiblePositions = useMemo(
-    () => (showPending ? positions : positions.filter((p) => p.status !== 'PendingEntry')),
+    () => (showPending ? positions : positions.filter((p) => !isPreFill(p.status))),
     [positions, showPending],
   );
 
