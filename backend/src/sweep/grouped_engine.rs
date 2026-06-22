@@ -81,6 +81,11 @@ impl CoverageFloor {
 pub struct GroupResult {
     pub key: GroupKey,
     pub token_count: usize,
+    /// The per-combo ranked metrics. **Emptied after a [`GroupSink`] persists the
+    /// group** (see [`free_persisted_metrics`]) — so on the persisted path only the
+    /// headline fields below survive into the returned vector; read `metrics` inside
+    /// the sink's `group_done`, not after the sweep. Populated throughout when no
+    /// sink consumes the group (the coarse refine pass / tests using `NoopSink`).
     pub metrics: Vec<ComboMetrics>,
     /// Combo id maximising the robust realized `score` among combos clearing the
     /// coverage floor (see [`best_combo`]).
@@ -236,10 +241,11 @@ pub fn run_grouped_sweep<S: Strategy>(
         if observer.cancelled() {
             bail!("sweep cancelled");
         }
-        let gr = make_group_result(key.clone(), idx.len(), metrics, coverage);
+        let mut gr = make_group_result(key.clone(), idx.len(), metrics, coverage);
         // Emit a fully-folded group for incremental persistence before storing it.
         if emit {
             sink.group_done(pos, &gr, &combo_params);
+            free_persisted_metrics(&mut gr);
         }
         results[pos] = Some(gr);
     }
@@ -256,13 +262,14 @@ pub fn run_grouped_sweep<S: Strategy>(
         .par_iter()
         .map(|&(pos, key, idx)| {
             let metrics = sweep_group_serial(strategy, params, corpus, idx, observer, batch)?;
-            let gr = make_group_result(key.clone(), idx.len(), metrics, coverage);
+            let mut gr = make_group_result(key.clone(), idx.len(), metrics, coverage);
             // `sweep_group_serial` bails on cancel, so reaching here means a
             // fully-folded group — safe to emit for incremental persistence.
             // Called from rayon workers, so out of order; `pos` carries the
             // deterministic group_index.
             if emit {
                 sink.group_done(pos, &gr, &combo_params);
+                free_persisted_metrics(&mut gr);
             }
             Ok((pos, gr))
         })
@@ -457,6 +464,21 @@ fn sweep_group_serial<S: Strategy>(
         );
     }
     Ok(metrics)
+}
+
+/// Drop a group's per-combo `metrics` once a [`GroupSink`] has persisted them.
+///
+/// This is what makes the driver's bounded-memory claim true: groups stream out to
+/// the sink one at a time, so retaining every emitted group's full `Vec<ComboMetrics>`
+/// in the returned vector would hold the whole sweep's combos × groups resident — at
+/// a large combo set (a `random:N`/`refine` run near `HARD_MAX_COMBOS`) that's GBs,
+/// and was OOM-aborting the process even though every group was already on disk. The
+/// sole post-sweep reader of the returned groups (the handler) only wants `.len()`,
+/// so the heavy field is freed here; the small headline fields (`token_count`,
+/// `best_*`) stay. Only called on the emit path — the coarse refine pass uses
+/// `NoopSink` (no emit) and keeps its metrics for `top_combo_ids`.
+fn free_persisted_metrics(gr: &mut GroupResult) {
+    gr.metrics = Vec::new();
 }
 
 /// Assemble a [`GroupResult`] from a group's ranked metrics + the coverage floor.

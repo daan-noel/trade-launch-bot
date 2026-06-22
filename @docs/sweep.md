@@ -301,6 +301,16 @@ pure metadata, no extra groups/results fetch.
   not a full fold-time partition, which would keep `groups × combos × ComboAgg`
   resident (tens of GB at default ~1k groups × 5k combos). Quantile counts are
   integers ⇒ median/p90 are fold-order-independent.
+  A group's finalised `Vec<ComboMetrics>` is also **freed right after the
+  `GroupSink` persists it** (`free_persisted_metrics`): groups stream to the sink
+  one at a time, so retaining every emitted group's full per-combo metrics in the
+  returned `Vec<GroupResult>` would hold `groups × combos × ComboMetrics` resident
+  — GBs at a large combo set (a `random:N`/`refine` run near `HARD_MAX_COMBOS`),
+  which OOM-aborted the process even though every group was already on disk. The
+  only post-sweep reader (the handler) just wants `groups.len()`, so the heavy
+  field is dropped and the headline fields (`token_count`, `best_*`) stay. The
+  coarse refine pass uses `NoopSink` (no emit) and keeps its metrics for
+  `top_combo_ids`.
 - DB per-mint cap keeps the **launch window** by default (`Selection.window =
   TradeWindow::LaunchWindow`, earliest-first `ROW_NUMBER`), not the newest N — so a
   high-volume token's first minutes (what `find_scalp_entry` decides on) are always
