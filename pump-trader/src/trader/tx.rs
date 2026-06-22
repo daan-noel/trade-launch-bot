@@ -301,7 +301,7 @@ pub enum SigStatus {
 /// Extract the program's custom error code from a failed-tx `TransactionError`,
 /// if the failure was an `InstructionError::Custom(code)`. Other failure shapes
 /// (account-not-found, insufficient funds, …) carry no Anchor code → `None`.
-fn custom_error_code(err: &TransactionError) -> Option<u32> {
+pub(super) fn custom_error_code(err: &TransactionError) -> Option<u32> {
     match err {
         TransactionError::InstructionError(_, InstructionError::Custom(code)) => Some(*code),
         _ => None,

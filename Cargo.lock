@@ -3765,6 +3765,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "solana-account-decoder",
  "solana-client",
  "solana-sdk",
  "spl-associated-token-account",

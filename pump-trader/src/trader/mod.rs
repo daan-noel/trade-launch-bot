@@ -40,6 +40,7 @@ pub mod probe;
 mod query;
 mod reserves;
 mod sell;
+pub mod sim;
 mod tx;
 
 use blockhash::BlockhashCache;
@@ -47,6 +48,7 @@ use dashmap::DashMap;
 use jito_tip::JitoTipCache;
 use reserves::ReserveCache;
 
+pub use sim::{AccountDelta, SimOutcome};
 pub use tx::SigStatus;
 
 use crate::constants::{

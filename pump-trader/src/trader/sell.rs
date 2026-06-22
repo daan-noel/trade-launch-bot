@@ -329,31 +329,17 @@ impl PumpFunTrader {
         // keeps the legacy min_out=1 (snipe path, no extra RPC); `Some` reads the
         // curve's virtual reserves for a conservative lower bound, falling back to
         // 1 if the read fails so slippage never blocks a sell.
-        let min_sol_output: u64 = match slippage_bps {
-            Some(slip) => match self.curve_reserves(token_mint, &pdas.bonding_curve).await {
-                Ok((vt, vq)) => {
-                    // Saturating throughout on untrusted reserve reads; a zero
-                    // denominator falls back to the unprotected min_out=1.
-                    let denom = vt.saturating_add(token_amount as u128);
-                    if denom == 0 {
-                        1
-                    } else {
-                        let gross = vq.saturating_mul(token_amount as u128) / denom;
-                        let net =
-                            gross.saturating_mul(10_000u128.saturating_sub(CURVE_FEE_BUFFER_BPS))
-                                / 10_000;
-                        ((net.saturating_mul(10_000u128.saturating_sub(slip as u128)) / 10_000)
-                            as u64)
-                            .max(1)
-                    }
-                }
+        let reserves: Option<(u128, u128)> = match slippage_bps {
+            Some(_) => match self.curve_reserves(token_mint, &pdas.bonding_curve).await {
+                Ok(r) => Some(r),
                 Err(e) => {
                     warn!("curve sell slippage: reserve read failed ({e}); using min_out=1");
-                    1
+                    None
                 }
             },
-            None => 1,
+            None => None,
         };
+        let min_sol_output = compute_curve_sell_min_out(token_amount, slippage_bps, reserves);
 
         let ixs = self.build_curve_sell_ixs(
             &mint,
@@ -481,8 +467,40 @@ impl PumpFunTrader {
     }
 }
 
+/// Curve-sell slippage floor: the minimum lamports the `sell` must return or
+/// revert. Pure (no RPC) so both the live sell path and the simulate path derive
+/// the floor identically (mirrors [`super::buy::compute_curve_buy_min_out`]).
+/// `None` slippage (or a missing/zero reserve read) yields `1` — no protection —
+/// so slippage never blocks a sell. `reserves` is the curve's virtual
+/// `(token, quote=lamports)` reserves; the math mirrors the on-chain
+/// constant-product fill, net of the curve fee buffer.
+pub(super) fn compute_curve_sell_min_out(
+    token_amount: u64,
+    slippage_bps: Option<u64>,
+    reserves: Option<(u128, u128)>,
+) -> u64 {
+    match (slippage_bps, reserves) {
+        (Some(slip), Some((vt, vq))) => {
+            // Saturating throughout on untrusted reserve reads; a zero
+            // denominator falls back to the unprotected min_out=1.
+            let denom = vt.saturating_add(token_amount as u128);
+            if denom == 0 {
+                1
+            } else {
+                let gross = vq.saturating_mul(token_amount as u128) / denom;
+                let net = gross.saturating_mul(10_000u128.saturating_sub(CURVE_FEE_BUFFER_BPS))
+                    / 10_000;
+                ((net.saturating_mul(10_000u128.saturating_sub(slip as u128)) / 10_000) as u64)
+                    .max(1)
+            }
+        }
+        _ => 1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::compute_curve_sell_min_out;
     use crate::trader::{GlobalAccount, PumpFunTrader, TokenPDAs, TraderConfig};
     use solana_sdk::{
         message::Message, pubkey::Pubkey, signature::Keypair, signature::Signer,
@@ -514,6 +532,22 @@ mod tests {
             solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_price(1),
         ];
         t
+    }
+
+    #[test]
+    fn sell_min_out_is_unprotected_without_slippage_or_reserves() {
+        assert_eq!(compute_curve_sell_min_out(1_000_000, None, Some((1_000, 2_000))), 1);
+        assert_eq!(compute_curve_sell_min_out(1_000_000, Some(500), None), 1);
+        assert_eq!(compute_curve_sell_min_out(1_000_000, Some(500), Some((0, 0))), 1);
+    }
+
+    #[test]
+    fn sell_tighter_slippage_raises_the_floor() {
+        let reserves = Some((1_000_000_000u128, 30_000_000u128));
+        let loose = compute_curve_sell_min_out(1_000_000, Some(5_000), reserves); // 50%
+        let tight = compute_curve_sell_min_out(1_000_000, Some(100), reserves); // 1%
+        assert!(tight >= loose, "tighter slippage must demand at least as many lamports");
+        assert!(loose >= 1 && tight >= 1, "floor is always >= 1");
     }
 
     /// Worst-case PDAs for tx size: cashback-enabled (adds the

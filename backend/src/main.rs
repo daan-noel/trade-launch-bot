@@ -89,9 +89,12 @@ fn parse_wallet_keypair(base58_key: &str) -> anyhow::Result<Keypair> {
 ///                                                (read-only, zero SOL)
 ///   probe fanout [lamports] [--tip] [--confirm] — fan-out self-transfer to all
 ///                                                sender endpoints (base fee only)
-///   probe simulate-sell <mint> <amount> [--cashback]
+///   probe simulate-sell <mint> [amount] [slippage_bps] [--cashback]
 ///                                              — simulate a real curve sell
-///                                                (zero SOL)
+///                                                against live state (zero SOL)
+///   probe simulate-buy <mint> <sol> [slippage_bps]
+///                                              — simulate a real curve buy
+///                                                against live state (zero SOL)
 async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<()> {
     const LPS: f64 = pump_trader::constants::LAMPORTS_PER_SOL as f64;
     match args.first().map(String::as_str).unwrap_or("") {
@@ -145,10 +148,14 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
         "simulate-sell" => {
             let mint = args
                 .get(1)
-                .context("usage: probe simulate-sell <mint> [amount] [--cashback]")?;
-            // Amount (raw base units) is optional: default to the wallet's full
-            // on-chain balance of the mint so the sim mirrors a real full exit.
-            let amount: u64 = match args.get(2).filter(|s| !s.starts_with("--")) {
+                .context("usage: probe simulate-sell <mint> [amount] [slippage_bps] [--cashback]")?;
+            // Positional numeric args after the mint: [0] = amount (raw base
+            // units), [1] = slippage_bps. Both optional; `--flags` are skipped.
+            let positional: Vec<&String> =
+                args.iter().skip(2).filter(|s| !s.starts_with("--")).collect();
+            // Amount defaults to the wallet's full on-chain balance so the sim
+            // mirrors a real full exit.
+            let amount: u64 = match positional.first() {
                 Some(s) => s.parse().context("amount must be a u64 (raw base units)")?,
                 None => {
                     let bal = trader.get_token_balance(&trader.wallet_pubkey(), mint).await?;
@@ -162,24 +169,35 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
                     bal.amount
                 }
             };
+            let slippage_bps: Option<u64> = match positional.get(1) {
+                Some(s) => Some(s.parse().context("slippage_bps must be a u64")?),
+                None => None,
+            };
             let is_cashback = args.iter().any(|a| a == "--cashback");
-            let report = trader
-                .probe_simulate_curve_sell(mint, amount, is_cashback, 0)
+            println!("Simulating curve SELL — slippage_bps: {slippage_bps:?}");
+            let outcome = trader
+                .simulate_curve_sell(mint, amount, slippage_bps, is_cashback)
                 .await?;
-            match &report.err {
-                None => println!(
-                    "✅ simulation passed — CU consumed: {:?}",
-                    report.units_consumed
-                ),
-                Some(e) => println!(
-                    "❌ simulation reverted: {e}\n   CU consumed: {:?}",
-                    report.units_consumed
-                ),
-            }
-            println!("--- logs ---");
-            for line in &report.logs {
-                println!("  {line}");
-            }
+            print_sim_outcome(&outcome);
+        }
+        "simulate-buy" => {
+            let mint = args
+                .get(1)
+                .context("usage: probe simulate-buy <mint> <sol> [slippage_bps]")?;
+            let positional: Vec<&String> =
+                args.iter().skip(2).filter(|s| !s.starts_with("--")).collect();
+            let sol: f64 = positional
+                .first()
+                .context("usage: probe simulate-buy <mint> <sol> [slippage_bps]")?
+                .parse()
+                .context("sol must be a float")?;
+            let slippage_bps: Option<u64> = match positional.get(1) {
+                Some(s) => Some(s.parse().context("slippage_bps must be a u64")?),
+                None => None,
+            };
+            println!("Simulating curve BUY — {sol} SOL, slippage_bps: {slippage_bps:?}");
+            let outcome = trader.simulate_curve_buy(mint, sol, slippage_bps).await?;
+            print_sim_outcome(&outcome);
         }
         "cashback-status" => {
             let pots = trader.cashback_status().await?;
@@ -255,11 +273,45 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
             }
         }
         other => anyhow::bail!(
-            "unknown probe '{other}'. Use: ladder | fanout | simulate-sell | holdings | \
-             cashback-status | claim-cashback [--execute] | compact-sweeps [tpsl1|tpsl2]"
+            "unknown probe '{other}'. Use: ladder | fanout | simulate-buy | simulate-sell | \
+             holdings | cashback-status | claim-cashback [--execute] | compact-sweeps [tpsl1|tpsl2]"
         ),
     }
     Ok(())
+}
+
+/// Print a [`SimOutcome`] from the curve buy/sell simulation engine: pass/revert
+/// line (with the custom program error code on a revert), per-account SOL/token
+/// deltas, then the program logs.
+fn print_sim_outcome(o: &pump_trader::SimOutcome) {
+    const LPS: f64 = pump_trader::constants::LAMPORTS_PER_SOL as f64;
+    if o.success {
+        println!("✅ simulation passed — CU consumed: {:?}", o.units_consumed);
+    } else {
+        println!(
+            "❌ simulation reverted: {}\n   custom error: {:?} | CU consumed: {:?}",
+            o.err.as_deref().unwrap_or("?"),
+            o.custom_error,
+            o.units_consumed
+        );
+    }
+    for d in &o.accounts {
+        let sol = d.lamports_delta() as f64 / LPS;
+        match d.token_delta() {
+            Some(t) => println!(
+                "  {}  SOL Δ {:+.9} ({:+} lamports)  token Δ {:+}",
+                d.pubkey, sol, d.lamports_delta(), t
+            ),
+            None => println!(
+                "  {}  SOL Δ {:+.9} ({:+} lamports)",
+                d.pubkey, sol, d.lamports_delta()
+            ),
+        }
+    }
+    println!("--- logs ---");
+    for line in &o.logs {
+        println!("  {line}");
+    }
 }
 
 /// One-time storage retention of the existing grouped-sweep `_results` rows.

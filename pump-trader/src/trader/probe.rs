@@ -13,17 +13,17 @@
 //                                 one's latency + acceptance. Costs only base fee
 //                                 on the single landed tx (+ tip if requested);
 //                                 the lamports return to the same wallet.
-//   probe_simulate_curve_sell   — build the real curve-sell tx and simulate it
-//                                 (accounts / data / CU). Zero SOL.
+//
+// Curve buy/sell simulation lives in `sim.rs` as the reusable engine
+// (`simulate_curve_buy` / `simulate_curve_sell`); the `simulate-buy` /
+// `simulate-sell` probe subcommands call it directly.
 // ============================================================
 
 use super::jito_tip::refresh_tip_floor;
 use super::PumpFunTrader;
 use crate::constants::CONFIRM_MAX_RETRIES;
 use anyhow::{Context, Result};
-use solana_sdk::pubkey::Pubkey;
 use solana_sdk::{signature::Signer, system_instruction};
-use std::str::FromStr;
 use std::time::Instant;
 
 /// One sender endpoint's outcome in a fan-out probe.
@@ -41,14 +41,6 @@ pub struct FanoutReport {
     pub confirm_ms: Option<u128>,
     /// Confirmation outcome (`Ok(())` = confirmed) if attempted.
     pub confirmed: Option<Result<(), String>>,
-}
-
-/// Result of a simulate probe.
-pub struct SimReport {
-    /// `Some(message)` if the tx would revert in simulation, `None` if it passes.
-    pub err: Option<String>,
-    pub units_consumed: Option<u64>,
-    pub logs: Vec<String>,
 }
 
 impl PumpFunTrader {
@@ -131,56 +123,4 @@ impl PumpFunTrader {
         })
     }
 
-    /// Build the real curve-sell tx for `token_mint`/`token_amount` (min_out=1,
-    /// tip level `tip_level`) and simulate it — zero SOL. Validates the account
-    /// list, instruction data, and CU consumption. Requires the wallet to hold
-    /// the token (simulating a sell of a balance you don't have reverts too).
-    pub async fn probe_simulate_curve_sell(
-        &self,
-        token_mint: &str,
-        token_amount: u64,
-        is_cashback: bool,
-        tip_level: u8,
-    ) -> Result<SimReport> {
-        if !self.token_pdas.contains_key(token_mint) {
-            self.get_creator_from_mint_pda(token_mint).await?;
-        }
-        if self.resolve_cached_token_account(token_mint).await?.is_none() {
-            anyhow::bail!("No token account cached/found for mint {token_mint}");
-        }
-
-        let mint = Pubkey::from_str(token_mint)?;
-        let pdas = self
-            .token_pdas
-            .get(token_mint)
-            .map(|r| *r)
-            .context("PDAs not cached")?;
-        let user_token_account = self
-            .user_token_accounts
-            .get(token_mint)
-            .map(|r| *r)
-            .context("token account not cached")?;
-
-        let ixs = self.build_curve_sell_ixs(
-            &mint,
-            &pdas,
-            &user_token_account,
-            token_amount,
-            1,
-            is_cashback,
-            tip_level,
-        )?;
-
-        // Recent-blockhash tx + node-side blockhash replacement: the sell ix set
-        // is identical to the production nonce tx (only the nonce-advance prefix
-        // differs, irrelevant to ix validity), and this avoids depending on live
-        // nonce-account state for a pure correctness check.
-        let tx = self.build_recent_tx(ixs, &self.config.keypair).await?;
-        let (units_consumed, err, logs) = self.simulate_transaction(&tx).await?;
-        Ok(SimReport {
-            err,
-            units_consumed,
-            logs,
-        })
-    }
 }

@@ -43,6 +43,9 @@ reqwest = { version = "0.11", default-features = false, features = ["json", "rus
 # Solana on-chain transaction construction and RPC
 solana-client = "1.17.27"
 solana-sdk = "1.17.27"
+# Decode the post-execution account states simulateTransaction returns (the
+# `accounts` field) into balances/token amounts for the simulation engine.
+solana-account-decoder = "1.17.27"
 
 # Token program account-initialization helpers (versions pinned to match solana 1.17)
 spl-associated-token-account = "2.2"

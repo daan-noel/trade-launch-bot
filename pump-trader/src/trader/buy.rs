@@ -102,7 +102,9 @@ impl PumpFunTrader {
         let keypair = &self.config.keypair;
 
         async {
-            let global = self.global_account.as_ref().context("Not initialized")?;
+            // Fail fast if the trader isn't initialized (the buy ix builder needs
+            // the global account); the actual read happens inside the builder.
+            anyhow::ensure!(self.global_account.is_some(), "Not initialized");
 
             let token_program_pk = token_program.pubkey();
             // Cache keys are the mint's base58 string; compute it once.
@@ -112,10 +114,11 @@ impl PumpFunTrader {
             // query path). `Pubkey` is `Copy`, so the locals below are copies and
             // `pdas` is still moved into the cache.
             let pdas = self.derive_token_pdas(mint, creator_pubkey, &token_program_pk, false);
+            // `bonding_curve` is read below for the manual-path slippage reserve
+            // read; the rest of the curve PDAs are consumed inside
+            // `build_curve_buy_ixs` straight off `pdas` (it's `Copy`, so the insert
+            // below doesn't move it away).
             let bonding_curve = pdas.bonding_curve;
-            let bonding_curve_v2 = pdas.bonding_curve_v2;
-            let assoc_bonding_curve = pdas.associated_bonding_curve;
-            let creator_vault = pdas.creator_vault;
 
             self.token_pdas.insert(mint_str.clone(), pdas);
 
@@ -165,12 +168,15 @@ impl PumpFunTrader {
             self.user_token_accounts
                 .insert(mint_str.clone(), user_token_account);
 
-            let mut ixs = Vec::with_capacity(6);
-            ixs.extend_from_slice(&self.cu_ixs_curve_buy);
-
+            // Account-creation prefix: when the wallet held no token account, the
+            // just-acquired template carries the create-with-seed + initialize ixs
+            // that must run before the buy. Empty on a re-buy (ATA already exists).
+            // Built here (not in `build_curve_buy_ixs`) because only the live buy
+            // path consumes a pooled template; the simulate path mints its own ATA.
+            let mut account_creation_ixs: Vec<Instruction> = Vec::new();
             if let Some(template) = template_opt {
                 // FIX: use the same template we already acquired above
-                ixs.push(template.create_with_seed_ix);
+                account_creation_ixs.push(template.create_with_seed_ix);
 
                 let init_ix = match token_program {
                     TokenProgram::Legacy => spl_token::instruction::initialize_account3(
@@ -186,7 +192,7 @@ impl PumpFunTrader {
                         &keypair.pubkey(),
                     )?,
                 };
-                ixs.push(init_ix);
+                account_creation_ixs.push(init_ix);
             }
 
             // `buy_exact_sol_in(spendable_quote_in, min_tokens_out)`: slippage
@@ -214,61 +220,19 @@ impl PumpFunTrader {
                 }
                 (Some(_), None) => None,
             };
-            let min_tokens_out: u64 = match (slippage_bps, reserves) {
-                (Some(slip), Some((vt, vq))) => {
-                    let net = (buy_lamports as u128)
-                        .saturating_mul(10_000u128.saturating_sub(CURVE_FEE_BUFFER_BPS))
-                        / 10_000;
-                    // Saturating throughout on untrusted reserve reads; a zero
-                    // denominator (both reserves read as 0) falls back to the
-                    // unprotected min_out=1 rather than panicking.
-                    let denom = vq.saturating_add(net);
-                    if denom == 0 {
-                        1
-                    } else {
-                        let expected = vt.saturating_mul(net) / denom;
-                        ((expected.saturating_mul(10_000u128.saturating_sub(slip as u128)) / 10_000)
-                            as u64)
-                            .max(1)
-                    }
-                }
-                _ => 1,
-            };
+            let min_tokens_out = compute_curve_buy_min_out(buy_lamports, slippage_bps, reserves);
 
-            // 8-byte discriminator + two u64 args: size up front so the two
-            // extends below don't reallocate on the buy hot path.
-            let mut buy_data = Vec::with_capacity(24);
-            buy_data.extend_from_slice(&[0x38, 0xfc, 0x74, 0x08, 0x9e, 0xdf, 0xcd, 0x5f]);
-            buy_data.extend_from_slice(&buy_lamports.to_le_bytes());
-            buy_data.extend_from_slice(&min_tokens_out.to_le_bytes());
-            ixs.push(Instruction {
-                program_id: self.pump_program,
-                accounts: vec![
-                    AccountMeta::new_readonly(global.global_pda, false),
-                    AccountMeta::new(global.fee_recipient, false),
-                    AccountMeta::new(*mint, false),
-                    AccountMeta::new(bonding_curve, false),
-                    AccountMeta::new(assoc_bonding_curve, false),
-                    AccountMeta::new(user_token_account, false),
-                    AccountMeta::new(keypair.pubkey(), true),
-                    AccountMeta::new_readonly(self.system_program, false),
-                    AccountMeta::new_readonly(token_program_pk, false),
-                    AccountMeta::new(creator_vault, false),
-                    AccountMeta::new_readonly(self.event_authority, false),
-                    AccountMeta::new_readonly(self.pump_program, false),
-                    AccountMeta::new(global.global_volume_accumulator, false),
-                    AccountMeta::new(global.user_volume_accumulator, false),
-                    AccountMeta::new_readonly(global.fee_config, false),
-                    AccountMeta::new_readonly(self.fee_program, false),
-                    AccountMeta::new_readonly(bonding_curve_v2, false),
-                    AccountMeta::new(self.upgrade_fee_recipient, false),
-                ],
-                data: buy_data,
-            });
-
-            // Buys are a single shot (the snipe re-send only fires on a revert,
-            // which a bigger tip can't fix), so always the level-0 tip.
-            ixs.push(self.jito_tip_ix(0));
+            // Assemble the curve-buy ix set (compute budget + account creation +
+            // `buy` + Jito tip) through the shared builder, so the simulate path
+            // sends the byte-identical buy instruction the live path does.
+            let ixs = self.build_curve_buy_ixs(
+                mint,
+                &pdas,
+                &user_token_account,
+                account_creation_ixs,
+                buy_lamports,
+                min_tokens_out,
+            )?;
 
             // Acquire the nonce only now — after PDA derivation, the ATA-exists
             // RPC, template acquisition, and the slippage reserve read above — so
@@ -303,5 +267,123 @@ impl PumpFunTrader {
             sent
         }
         .await
+    }
+
+    /// Assemble the curve-buy instruction set (compute budget + optional
+    /// account-creation prefix + `buy_exact_sol_in` + Jito tip) for a known
+    /// mint/account. Pure tx construction — no RPC, no signing — extracted from
+    /// `buy_token_inner` so the simulate path builds the *identical* buy
+    /// instruction the live path sends (mirrors [`Self::build_curve_sell_ixs`]).
+    /// `account_creation_ixs` is the create-with-seed + initialize prefix on a
+    /// first buy (empty on a re-buy); `min_tokens_out` is the slippage floor
+    /// (1 = no protection). The buy is always a single shot, so the tip is fixed
+    /// at level 0.
+    pub(super) fn build_curve_buy_ixs(
+        &self,
+        mint: &Pubkey,
+        pdas: &super::TokenPDAs,
+        user_token_account: &Pubkey,
+        account_creation_ixs: Vec<Instruction>,
+        buy_lamports: u64,
+        min_tokens_out: u64,
+    ) -> Result<Vec<Instruction>> {
+        let global = self.global_account.as_ref().context("Not initialized")?;
+
+        let mut ixs = Vec::with_capacity(6);
+        ixs.extend_from_slice(&self.cu_ixs_curve_buy);
+        ixs.extend(account_creation_ixs);
+
+        // 8-byte discriminator + two u64 args: size up front so the two
+        // extends below don't reallocate on the buy hot path.
+        let mut buy_data = Vec::with_capacity(24);
+        buy_data.extend_from_slice(&[0x38, 0xfc, 0x74, 0x08, 0x9e, 0xdf, 0xcd, 0x5f]);
+        buy_data.extend_from_slice(&buy_lamports.to_le_bytes());
+        buy_data.extend_from_slice(&min_tokens_out.to_le_bytes());
+        ixs.push(Instruction {
+            program_id: self.pump_program,
+            accounts: vec![
+                AccountMeta::new_readonly(global.global_pda, false),
+                AccountMeta::new(global.fee_recipient, false),
+                AccountMeta::new(*mint, false),
+                AccountMeta::new(pdas.bonding_curve, false),
+                AccountMeta::new(pdas.associated_bonding_curve, false),
+                AccountMeta::new(*user_token_account, false),
+                AccountMeta::new(self.config.keypair.pubkey(), true),
+                AccountMeta::new_readonly(self.system_program, false),
+                AccountMeta::new_readonly(pdas.token_program, false),
+                AccountMeta::new(pdas.creator_vault, false),
+                AccountMeta::new_readonly(self.event_authority, false),
+                AccountMeta::new_readonly(self.pump_program, false),
+                AccountMeta::new(global.global_volume_accumulator, false),
+                AccountMeta::new(global.user_volume_accumulator, false),
+                AccountMeta::new_readonly(global.fee_config, false),
+                AccountMeta::new_readonly(self.fee_program, false),
+                AccountMeta::new_readonly(pdas.bonding_curve_v2, false),
+                AccountMeta::new(self.upgrade_fee_recipient, false),
+            ],
+            data: buy_data,
+        });
+
+        // Buys are a single shot (the snipe re-send only fires on a revert,
+        // which a bigger tip can't fix), so always the level-0 tip.
+        ixs.push(self.jito_tip_ix(0));
+
+        Ok(ixs)
+    }
+}
+
+/// Curve-buy slippage floor: the minimum tokens the `buy` must return or revert.
+/// Pure (no RPC) so both the live buy path and the simulate path derive the floor
+/// identically. `None` slippage (or missing/zero reserves) yields `1` — no
+/// protection — rather than blocking on a reserve read. `reserves` is the curve's
+/// virtual `(token, quote=lamports)` reserves; the math mirrors the on-chain
+/// constant-product fill, net of the curve fee buffer.
+pub(super) fn compute_curve_buy_min_out(
+    buy_lamports: u64,
+    slippage_bps: Option<u64>,
+    reserves: Option<(u128, u128)>,
+) -> u64 {
+    match (slippage_bps, reserves) {
+        (Some(slip), Some((vt, vq))) => {
+            let net = (buy_lamports as u128)
+                .saturating_mul(10_000u128.saturating_sub(CURVE_FEE_BUFFER_BPS))
+                / 10_000;
+            // Saturating throughout on untrusted reserve reads; a zero
+            // denominator (both reserves read as 0) falls back to the
+            // unprotected min_out=1 rather than panicking.
+            let denom = vq.saturating_add(net);
+            if denom == 0 {
+                1
+            } else {
+                let expected = vt.saturating_mul(net) / denom;
+                ((expected.saturating_mul(10_000u128.saturating_sub(slip as u128)) / 10_000) as u64)
+                    .max(1)
+            }
+        }
+        _ => 1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compute_curve_buy_min_out;
+
+    #[test]
+    fn min_out_is_unprotected_without_slippage_or_reserves() {
+        // No slippage tolerance → no floor.
+        assert_eq!(compute_curve_buy_min_out(1_000_000, None, Some((1_000, 2_000))), 1);
+        // Slippage set but no reserves in hand → no floor (never blocks the buy).
+        assert_eq!(compute_curve_buy_min_out(1_000_000, Some(500), None), 1);
+        // Zero reserves (degenerate read) → no floor rather than a panic.
+        assert_eq!(compute_curve_buy_min_out(1_000_000, Some(500), Some((0, 0))), 1);
+    }
+
+    #[test]
+    fn tighter_slippage_raises_the_floor() {
+        let reserves = Some((1_000_000_000u128, 30_000_000u128));
+        let loose = compute_curve_buy_min_out(1_000_000, Some(5_000), reserves); // 50%
+        let tight = compute_curve_buy_min_out(1_000_000, Some(100), reserves); // 1%
+        assert!(tight >= loose, "tighter slippage must demand at least as many tokens");
+        assert!(loose >= 1 && tight >= 1, "floor is always >= 1");
     }
 }
