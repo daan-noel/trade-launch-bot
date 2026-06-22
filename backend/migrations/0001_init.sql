@@ -18,6 +18,17 @@
 --   * tokens_info uses `is_dead` directly (the `is_rugged` -> `is_dead` rename is
 --     folded in), and carries its id PRIMARY KEY / mint_address UNIQUE from the
 --     start (the later constraint-restore migration is a no-op on a fresh DB).
+--   * tokens_info has `lifetime_secs` from the start.
+--   * grouped_sweep_runs tables have status/groups_done lifecycle columns and the
+--     full history metadata (ix_labels_filter, field_filters, token_cap, max_combos,
+--     label) from the start.
+--   * grouped_sweep_groups tables have `mints TEXT[]` from the start.
+--   * grouped_sweep_results tables use INTEGER counts and REAL floats; `params` is
+--     in the separate *_grouped_sweep_combos dictionary table.
+--   * All four position tables use `entry_tx_signatures`/`exit_tx_signatures` JSONB
+--     arrays instead of single entry_tx/exit_tx TEXT columns; amount columns are
+--     named *_token_amount; entry_price/entry_token_amount are nullable; status
+--     includes 'PendingEntry'.
 -- Data-only migrations (percent rescales, source relabels) leave no schema trace
 -- and are intentionally omitted. Tables are ordered so foreign-key targets are
 -- created before their referrers.
@@ -115,6 +126,10 @@ CREATE INDEX IF NOT EXISTS idx_trades_wallet_mint   ON trades(wallet_address, mi
 -- Chronological-by-slot ordering within a single mint (multi-leg aware), without
 -- needing a venue predicate (which idx_trades_mint_venue_slot would require).
 CREATE INDEX IF NOT EXISTS idx_trades_mint_slot_leg ON trades(mint_address, slot, leg_index);
+-- Hot-path index: find_fill_by_signature and per-signature sell-confirm filter
+-- trades by (wallet, mint, tx_signature) — without this a seq scan hits every row.
+CREATE INDEX IF NOT EXISTS idx_trades_wallet_mint_sig
+    ON trades (wallet_address, mint_address, tx_signature);
 
 -- Daily partition helpers (one calendar day each), analogous to the
 -- raw_transactions fns.
@@ -226,6 +241,10 @@ END $$;
 --   last_synced_amm_sig    — same, for post-migration PumpSwap (AMM) signatures.
 --   last_synced_*_slot     — slot of the newest signature per venue, so a
 --                            LaserStream-replay Fetch New can resume by slot.
+--   lifetime_secs          — seconds from token creation to the last meaningful
+--                            trade (sol_amount >= DEAD_MEANINGFUL_TRADE_SOL).
+--                            Populated only when is_dead = true; NULL means alive
+--                            or no meaningful trade yet.
 -- -------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tokens_info (
     id                     UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -245,6 +264,7 @@ CREATE TABLE IF NOT EXISTS tokens_info (
     last_synced_amm_sig    TEXT,
     last_synced_curve_slot BIGINT,
     last_synced_amm_slot   BIGINT,
+    lifetime_secs          BIGINT,
     created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -332,29 +352,34 @@ CREATE INDEX IF NOT EXISTS idx_tpsl1_strategy_rules_active ON tpsl1_strategy_rul
 
 -- -------------------------------------------------------------------------
 -- tpsl1_real_positions
---   status      — Holding / ExitPending / End / ExitFailed.
---   exit_reason — TakeProfit / StopLoss / TrailingStop / Stall / TimeStop /
---                 LiquidityExit (NULL until the position exits).
+--   status              — PendingEntry / Holding / ExitPending / End / ExitFailed.
+--   exit_reason         — TakeProfit / StopLoss / TrailingStop / Stall / TimeStop /
+--                         LiquidityExit (NULL until the position exits).
+--   entry_price         — NULL until the actual buy fill lands (PendingEntry state).
+--   entry_token_amount  — NULL until the actual buy fill lands.
+--   entry_tx_signatures — JSONB array of entry fill tx signatures (single-leg = 1
+--                         element; empty array = unentered / recovery fallback).
+--   exit_tx_signatures  — JSONB array of exit tx signatures.
 -- -------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tpsl1_real_positions (
-    id                  UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
-    mint                TEXT        NOT NULL,
-    wallet              TEXT        NOT NULL,
-    token_program_id    TEXT,
-    entry_price         DOUBLE PRECISION NOT NULL,
-    entry_amount        DOUBLE PRECISION NOT NULL,
-    entry_time          TIMESTAMPTZ,
-    entry_tx            TEXT        NOT NULL UNIQUE,
-    exit_price          DOUBLE PRECISION,
-    exit_amount         DOUBLE PRECISION,
-    exit_time           TIMESTAMPTZ,
-    exit_tx             TEXT        UNIQUE,
-    status              TEXT        NOT NULL CHECK (status IN ('Holding', 'ExitPending', 'End', 'ExitFailed')),
-    strategy            TEXT        NOT NULL,
-    rule_id             UUID        NOT NULL,
-    exit_reason         TEXT,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    id                      UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    mint                    TEXT        NOT NULL,
+    wallet                  TEXT        NOT NULL,
+    token_program_id        TEXT,
+    entry_price             DOUBLE PRECISION,
+    entry_token_amount      DOUBLE PRECISION,
+    entry_time              TIMESTAMPTZ,
+    entry_tx_signatures     JSONB       NOT NULL DEFAULT '[]',
+    exit_price              DOUBLE PRECISION,
+    exit_token_amount       DOUBLE PRECISION,
+    exit_time               TIMESTAMPTZ,
+    exit_tx_signatures      JSONB       NOT NULL DEFAULT '[]',
+    status                  TEXT        NOT NULL CHECK (status IN ('Holding', 'PendingEntry', 'ExitPending', 'End', 'ExitFailed')),
+    strategy                TEXT        NOT NULL,
+    rule_id                 UUID        NOT NULL,
+    exit_reason             TEXT,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     FOREIGN KEY (rule_id) REFERENCES tpsl1_strategy_rules(id) ON DELETE SET NULL
 );
@@ -371,6 +396,13 @@ CREATE INDEX IF NOT EXISTS idx_tpsl1_positions_strategy_created     ON tpsl1_rea
 CREATE INDEX IF NOT EXISTS idx_tpsl1_positions_rule_created         ON tpsl1_real_positions(rule_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tpsl1_positions_mint_status_created  ON tpsl1_real_positions(mint, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tpsl1_positions_wallet_status_created ON tpsl1_real_positions(wallet, status, created_at DESC);
+-- Unique backstops on the first tx signature leg (skips empty-array / unentered rows).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tpsl1_real_positions_entry_sig0
+    ON tpsl1_real_positions ((entry_tx_signatures->>0))
+    WHERE jsonb_array_length(entry_tx_signatures) > 0;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tpsl1_real_positions_exit_sig0
+    ON tpsl1_real_positions ((exit_tx_signatures->>0))
+    WHERE jsonb_array_length(exit_tx_signatures) > 0;
 
 -- -------------------------------------------------------------------------
 -- tpsl1_paper_test_run
@@ -397,31 +429,30 @@ CREATE INDEX IF NOT EXISTS idx_tpsl1_paper_test_run_rule ON tpsl1_paper_test_run
 
 -- -------------------------------------------------------------------------
 -- tpsl1_paper_positions
--- Mirrors tpsl1_real_positions (minus the UNIQUE constraints on entry_tx /
--- exit_tx — a paper position is seeded with the token's creation tx and the same
--- token may be traded again in a later run) plus a run_id binding each position
--- to its run.
+-- Mirrors tpsl1_real_positions (minus uniqueness on signature arrays — a paper
+-- position is seeded with the token's creation tx and the same token may be
+-- traded again in a later run) plus a run_id binding each position to its run.
 -- -------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tpsl1_paper_positions (
-    id                  UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
-    run_id              UUID        NOT NULL REFERENCES tpsl1_paper_test_run(id) ON DELETE CASCADE,
-    mint                TEXT        NOT NULL,
-    wallet              TEXT        NOT NULL,
-    token_program_id    TEXT,
-    entry_price         DOUBLE PRECISION NOT NULL,
-    entry_amount        DOUBLE PRECISION NOT NULL,
-    entry_time          TIMESTAMPTZ,
-    entry_tx            TEXT        NOT NULL,
-    exit_price          DOUBLE PRECISION,
-    exit_amount         DOUBLE PRECISION,
-    exit_time           TIMESTAMPTZ,
-    exit_tx             TEXT,
-    status              TEXT        NOT NULL CHECK (status IN ('Holding', 'ExitPending', 'End', 'ExitFailed')),
-    strategy            TEXT        NOT NULL,
-    rule_id             UUID        NOT NULL,
-    exit_reason         TEXT,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+    id                      UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    run_id                  UUID        NOT NULL REFERENCES tpsl1_paper_test_run(id) ON DELETE CASCADE,
+    mint                    TEXT        NOT NULL,
+    wallet                  TEXT        NOT NULL,
+    token_program_id        TEXT,
+    entry_price             DOUBLE PRECISION,
+    entry_token_amount      DOUBLE PRECISION,
+    entry_time              TIMESTAMPTZ,
+    entry_tx_signatures     JSONB       NOT NULL DEFAULT '[]',
+    exit_price              DOUBLE PRECISION,
+    exit_token_amount       DOUBLE PRECISION,
+    exit_time               TIMESTAMPTZ,
+    exit_tx_signatures      JSONB       NOT NULL DEFAULT '[]',
+    status                  TEXT        NOT NULL CHECK (status IN ('Holding', 'PendingEntry', 'ExitPending', 'End', 'ExitFailed')),
+    strategy                TEXT        NOT NULL,
+    rule_id                 UUID        NOT NULL,
+    exit_reason             TEXT,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_tpsl1_paper_positions_run         ON tpsl1_paper_positions(run_id);
@@ -492,30 +523,32 @@ CREATE INDEX IF NOT EXISTS idx_tpsl2_strategy_rules_active ON tpsl2_strategy_rul
 --   nullable; target_tx is intentionally NOT unique (the trigger can repeat
 --   across positions). Physical column order is target_*/entry_*/exit_* to match
 --   the Rust struct, JSON response, and frontend table.
+--   target_token_amount / entry_token_amount / exit_token_amount hold TOKEN counts
+--   (not SOL); SOL cost is derived as price × token_amount at display time.
 -- -------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tpsl2_real_positions (
-    id                  UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
-    mint                TEXT        NOT NULL,
-    wallet              TEXT        NOT NULL,
-    token_program_id    TEXT,
-    target_price        DOUBLE PRECISION,
-    target_amount       DOUBLE PRECISION,
-    target_time         TIMESTAMPTZ,
-    target_tx           TEXT,
-    entry_price         DOUBLE PRECISION NOT NULL,
-    entry_amount        DOUBLE PRECISION NOT NULL,
-    entry_time          TIMESTAMPTZ,
-    entry_tx            TEXT        NOT NULL UNIQUE,
-    exit_price          DOUBLE PRECISION,
-    exit_amount         DOUBLE PRECISION,
-    exit_time           TIMESTAMPTZ,
-    exit_tx             TEXT        UNIQUE,
-    status              TEXT        NOT NULL CHECK (status IN ('Holding', 'ExitPending', 'End', 'ExitFailed')),
-    strategy            TEXT        NOT NULL,
-    rule_id             UUID        NOT NULL,
-    exit_reason         TEXT,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    id                      UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    mint                    TEXT        NOT NULL,
+    wallet                  TEXT        NOT NULL,
+    token_program_id        TEXT,
+    target_price            DOUBLE PRECISION,
+    target_token_amount     DOUBLE PRECISION,
+    target_time             TIMESTAMPTZ,
+    target_tx               TEXT,
+    entry_price             DOUBLE PRECISION,
+    entry_token_amount      DOUBLE PRECISION,
+    entry_time              TIMESTAMPTZ,
+    entry_tx_signatures     JSONB       NOT NULL DEFAULT '[]',
+    exit_price              DOUBLE PRECISION,
+    exit_token_amount       DOUBLE PRECISION,
+    exit_time               TIMESTAMPTZ,
+    exit_tx_signatures      JSONB       NOT NULL DEFAULT '[]',
+    status                  TEXT        NOT NULL CHECK (status IN ('Holding', 'PendingEntry', 'ExitPending', 'End', 'ExitFailed')),
+    strategy                TEXT        NOT NULL,
+    rule_id                 UUID        NOT NULL,
+    exit_reason             TEXT,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     FOREIGN KEY (rule_id) REFERENCES tpsl2_strategy_rules(id) ON DELETE SET NULL
 );
@@ -532,6 +565,13 @@ CREATE INDEX IF NOT EXISTS idx_tpsl2_positions_strategy_created     ON tpsl2_rea
 CREATE INDEX IF NOT EXISTS idx_tpsl2_positions_rule_created         ON tpsl2_real_positions(rule_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tpsl2_positions_mint_status_created  ON tpsl2_real_positions(mint, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tpsl2_positions_wallet_status_created ON tpsl2_real_positions(wallet, status, created_at DESC);
+-- Unique backstops on the first tx signature leg (skips empty-array / unentered rows).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tpsl2_real_positions_entry_sig0
+    ON tpsl2_real_positions ((entry_tx_signatures->>0))
+    WHERE jsonb_array_length(entry_tx_signatures) > 0;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tpsl2_real_positions_exit_sig0
+    ON tpsl2_real_positions ((exit_tx_signatures->>0))
+    WHERE jsonb_array_length(exit_tx_signatures) > 0;
 
 -- -------------------------------------------------------------------------
 -- tpsl2_paper_test_run  (clone of tpsl1_paper_test_run)
@@ -554,29 +594,29 @@ CREATE INDEX IF NOT EXISTS idx_tpsl2_paper_test_run_rule ON tpsl2_paper_test_run
 --   See tpsl2_real_positions for the target_* semantics and column ordering.
 -- -------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tpsl2_paper_positions (
-    id                  UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
-    run_id              UUID        NOT NULL REFERENCES tpsl2_paper_test_run(id) ON DELETE CASCADE,
-    mint                TEXT        NOT NULL,
-    wallet              TEXT        NOT NULL,
-    token_program_id    TEXT,
-    target_price        DOUBLE PRECISION,
-    target_amount       DOUBLE PRECISION,
-    target_time         TIMESTAMPTZ,
-    target_tx           TEXT,
-    entry_price         DOUBLE PRECISION NOT NULL,
-    entry_amount        DOUBLE PRECISION NOT NULL,
-    entry_time          TIMESTAMPTZ,
-    entry_tx            TEXT        NOT NULL,
-    exit_price          DOUBLE PRECISION,
-    exit_amount         DOUBLE PRECISION,
-    exit_time           TIMESTAMPTZ,
-    exit_tx             TEXT,
-    status              TEXT        NOT NULL CHECK (status IN ('Holding', 'ExitPending', 'End', 'ExitFailed')),
-    strategy            TEXT        NOT NULL,
-    rule_id             UUID        NOT NULL,
-    exit_reason         TEXT,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+    id                      UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    run_id                  UUID        NOT NULL REFERENCES tpsl2_paper_test_run(id) ON DELETE CASCADE,
+    mint                    TEXT        NOT NULL,
+    wallet                  TEXT        NOT NULL,
+    token_program_id        TEXT,
+    target_price            DOUBLE PRECISION,
+    target_token_amount     DOUBLE PRECISION,
+    target_time             TIMESTAMPTZ,
+    target_tx               TEXT,
+    entry_price             DOUBLE PRECISION,
+    entry_token_amount      DOUBLE PRECISION,
+    entry_time              TIMESTAMPTZ,
+    entry_tx_signatures     JSONB       NOT NULL DEFAULT '[]',
+    exit_price              DOUBLE PRECISION,
+    exit_token_amount       DOUBLE PRECISION,
+    exit_time               TIMESTAMPTZ,
+    exit_tx_signatures      JSONB       NOT NULL DEFAULT '[]',
+    status                  TEXT        NOT NULL CHECK (status IN ('Holding', 'PendingEntry', 'ExitPending', 'End', 'ExitFailed')),
+    strategy                TEXT        NOT NULL,
+    rule_id                 UUID        NOT NULL,
+    exit_reason             TEXT,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_tpsl2_paper_positions_run         ON tpsl2_paper_positions(run_id);
@@ -596,28 +636,47 @@ CREATE INDEX IF NOT EXISTS idx_tpsl2_paper_positions_rule        ON tpsl2_paper_
 -- and the registry maps `strategy_id` → this triple. A new strategy (e.g. swing)
 -- adds its own `swing_grouped_sweep_*` tables — no shared/generic table reused.
 --
--- TPSL2's triple:
---   tpsl2_grouped_sweep_runs    — one row per sweep invocation
---   tpsl2_grouped_sweep_groups  — one row per surviving fingerprint group
---   tpsl2_grouped_sweep_results — one row per (group, param-combo)
+-- Per strategy there are four tables:
+--   *_grouped_sweep_runs    — one row per sweep invocation
+--   *_grouped_sweep_groups  — one row per surviving fingerprint group
+--   *_grouped_sweep_combos  — one row per (run, combo_id): the deduped params dict
+--   *_grouped_sweep_results — one row per (group, combo): metrics only (no params)
+--
+-- The params JSON that was formerly stored on every results row is now stored
+-- once per (run, combo_id) in the combos table, saving `group_count`× redundancy.
+-- Results use INTEGER counts and REAL floats (display-only precision, 4 B each).
 -- =========================================================================
 
+-- ---------------------------------------------------------------------------
+-- TPSL2 grouped sweep tables
+-- ---------------------------------------------------------------------------
+
 CREATE TABLE IF NOT EXISTS tpsl2_grouped_sweep_runs (
-    id              UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
-    strategy_id     TEXT        NOT NULL,          -- 'tpsl2' (traceability)
-    source          TEXT        NOT NULL,          -- 'db' (DB-range corpus)
-    method          TEXT        NOT NULL,          -- 'grid' | 'random' | 'lhs'
-    created_after   TIMESTAMPTZ,                   -- selection lower bound (incl.)
-    created_before  TIMESTAMPTZ,                   -- selection upper bound (excl.)
-    curve_only      BOOLEAN     NOT NULL DEFAULT FALSE,
-    grouping_spec   JSONB       NOT NULL,          -- ["creator_wallet", …]
-    axes_spec       JSONB       NOT NULL,          -- resolved param axes
-    min_tokens      INTEGER     NOT NULL,          -- groups below this are dropped
-    token_count     INTEGER     NOT NULL,          -- corpus size after selection
-    group_count     INTEGER     NOT NULL,          -- surviving groups swept
-    combo_count     INTEGER     NOT NULL,          -- combos per group
-    corpus_hash     TEXT,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    id               UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    strategy_id      TEXT        NOT NULL,          -- 'tpsl2' (traceability)
+    source           TEXT        NOT NULL,          -- 'db' (DB-range corpus)
+    method           TEXT        NOT NULL,          -- 'grid' | 'random' | 'lhs'
+    created_after    TIMESTAMPTZ,                   -- selection lower bound (incl.)
+    created_before   TIMESTAMPTZ,                   -- selection upper bound (excl.)
+    curve_only       BOOLEAN     NOT NULL DEFAULT FALSE,
+    grouping_spec    JSONB       NOT NULL,          -- ["creator_wallet", …]
+    axes_spec        JSONB       NOT NULL,          -- resolved param axes
+    min_tokens       INTEGER     NOT NULL,          -- groups below this are dropped
+    token_count      INTEGER     NOT NULL,          -- corpus size after selection
+    group_count      INTEGER     NOT NULL,          -- surviving groups swept
+    combo_count      INTEGER     NOT NULL,          -- combos per group
+    corpus_hash      TEXT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- Incremental persistence lifecycle.
+    status           TEXT        NOT NULL DEFAULT 'completed'
+                         CHECK (status IN ('running', 'completed', 'cancelled')),
+    groups_done      INTEGER     NOT NULL DEFAULT 0,  -- bumped per append_group
+    -- Full launch config for history / re-run.
+    ix_labels_filter JSONB,                        -- exact ix-label set (NULL = none)
+    field_filters    JSONB,                        -- per-field value filters (NULL = none)
+    token_cap        INTEGER,                      -- per-run token cap (NULL = backend default)
+    max_combos       INTEGER,                      -- per-group combo cap (NULL = backend default)
+    label            TEXT                          -- user-given name (NULL = unnamed)
 );
 
 CREATE INDEX IF NOT EXISTS idx_tpsl2_grouped_sweep_runs_created
@@ -629,45 +688,54 @@ CREATE TABLE IF NOT EXISTS tpsl2_grouped_sweep_groups (
     group_index         INTEGER     NOT NULL,      -- deterministic order (largest first)
     group_key           JSONB       NOT NULL,      -- {"creator_wallet":"…", …}; {} = ALL
     token_count         INTEGER     NOT NULL,
-    fired_count         BIGINT      NOT NULL,       -- best combo's n_fired (sample size)
+    fired_count         BIGINT      NOT NULL,      -- best combo's n_fired (sample size)
     best_combo_id       INTEGER     NOT NULL,
     best_expectancy_sol DOUBLE PRECISION NOT NULL,
     -- Robust realized rank (μ−Z·σ/√n over closed trades, coverage-gated): the
     -- same metric the drill-in combo table sorts by. NULL when the winning combo
     -- has < 2 closed trades (no score).
     best_score          DOUBLE PRECISION,
-    best_params         JSONB       NOT NULL
+    best_params         JSONB       NOT NULL,
+    mints               TEXT[]                    -- token mints in this group (NULL = legacy)
 );
 
 CREATE INDEX IF NOT EXISTS idx_tpsl2_grouped_sweep_groups_run
     ON tpsl2_grouped_sweep_groups(run_id, group_index);
 
+-- Deduped params dictionary: one row per (run, combo_id) instead of repeating
+-- params on every results row.
+CREATE TABLE IF NOT EXISTS tpsl2_grouped_sweep_combos (
+    run_id   UUID    NOT NULL REFERENCES tpsl2_grouped_sweep_runs(id) ON DELETE CASCADE,
+    combo_id INTEGER NOT NULL,
+    params   JSONB   NOT NULL,
+    PRIMARY KEY (run_id, combo_id)
+);
+
 CREATE TABLE IF NOT EXISTS tpsl2_grouped_sweep_results (
     id                  UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
     run_id              UUID        NOT NULL REFERENCES tpsl2_grouped_sweep_runs(id) ON DELETE CASCADE,
     group_id            UUID        NOT NULL REFERENCES tpsl2_grouped_sweep_groups(id) ON DELETE CASCADE,
-    combo_id            INTEGER     NOT NULL,
-    params              JSONB       NOT NULL,       -- the swept knob values
+    combo_id            INTEGER     NOT NULL,   -- join to tpsl2_grouped_sweep_combos for params
 
-    -- counts
-    n_fired             BIGINT      NOT NULL,
-    n_open              BIGINT      NOT NULL,
-    n_closed            BIGINT      NOT NULL,
+    -- counts (INTEGER: bounded by corpus size, well under 2.1 B)
+    n_fired             INTEGER     NOT NULL,
+    n_open              INTEGER     NOT NULL,
+    n_closed            INTEGER     NOT NULL,
 
-    -- profitability / success
-    win_rate            DOUBLE PRECISION NOT NULL,
-    total_pnl_sol       DOUBLE PRECISION NOT NULL,
-    mean_pnl_pct        DOUBLE PRECISION NOT NULL,
-    median_pnl_pct      DOUBLE PRECISION NOT NULL,
-    p90_pnl_pct         DOUBLE PRECISION NOT NULL,
-    best_pnl_pct        DOUBLE PRECISION NOT NULL,
-    worst_pnl_pct       DOUBLE PRECISION NOT NULL,
-    std_pnl_pct         DOUBLE PRECISION NOT NULL DEFAULT 0,  -- stddev of realized pnl%
-    profit_factor       DOUBLE PRECISION,           -- NULL = no losing trades (∞)
-    score               DOUBLE PRECISION,           -- robust rank μ−z·σ/√n; NULL = n_closed<2
-    expectancy_sol      DOUBLE PRECISION NOT NULL,
-    avg_holding_secs    DOUBLE PRECISION NOT NULL,
-    median_holding_secs DOUBLE PRECISION NOT NULL,
+    -- profitability / success (REAL: display-only, ~7 sig digits is sufficient)
+    win_rate            REAL        NOT NULL,
+    total_pnl_sol       REAL        NOT NULL,
+    mean_pnl_pct        REAL        NOT NULL,
+    median_pnl_pct      REAL        NOT NULL,
+    p90_pnl_pct         REAL        NOT NULL,
+    best_pnl_pct        REAL        NOT NULL,
+    worst_pnl_pct       REAL        NOT NULL,
+    std_pnl_pct         REAL        NOT NULL DEFAULT 0,
+    profit_factor       REAL,                  -- NULL = no losing trades (∞)
+    score               REAL,                  -- robust rank μ−z·σ/√n; NULL = n_closed<2
+    expectancy_sol      REAL        NOT NULL,
+    avg_holding_secs    REAL        NOT NULL,
+    median_holding_secs REAL        NOT NULL,
 
     -- exit-reason mix: per-reason trade counts (how closed trades terminated),
     -- NOT param values. `n_` marks them as counts, distinct from the
@@ -685,39 +753,44 @@ CREATE TABLE IF NOT EXISTS tpsl2_grouped_sweep_results (
 CREATE INDEX IF NOT EXISTS idx_tpsl2_grouped_sweep_results_group
     ON tpsl2_grouped_sweep_results(group_id, combo_id);
 
--- =========================================================================
--- TPSL1 grouped param-sweep tables
+-- ---------------------------------------------------------------------------
+-- TPSL1 grouped sweep tables
 --
--- Same shape as TPSL2's triple (the grouped-sweep repo is table-name-driven and
--- the registry maps `strategy_id` → this triple), but separate per the
+-- Same shape as TPSL2's quartet (the grouped-sweep repo is table-name-driven and
+-- the registry maps `strategy_id` → this quartet), but separate per the
 -- per-strategy-tables design. TPSL1 sweeps the exit ladder only (TP/SL plus the
 -- optional trailing/time/stall/liquidity exits); it has no scalp entry gates and
 -- no cohort-dump exit, so its `params` JSON carries fewer keys and the
 -- `n_exit_cohort` count is always 0 — the column is kept for schema parity so the
 -- generic repo can write every strategy's rows the same way.
---
--- TPSL1's triple:
---   tpsl1_grouped_sweep_runs    — one row per sweep invocation
---   tpsl1_grouped_sweep_groups  — one row per surviving fingerprint group
---   tpsl1_grouped_sweep_results — one row per (group, param-combo)
--- =========================================================================
+-- ---------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS tpsl1_grouped_sweep_runs (
-    id              UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
-    strategy_id     TEXT        NOT NULL,          -- 'tpsl1' (traceability)
-    source          TEXT        NOT NULL,          -- 'db' (DB-range corpus)
-    method          TEXT        NOT NULL,          -- 'grid' | 'random' | 'lhs'
-    created_after   TIMESTAMPTZ,                   -- selection lower bound (incl.)
-    created_before  TIMESTAMPTZ,                   -- selection upper bound (excl.)
-    curve_only      BOOLEAN     NOT NULL DEFAULT FALSE,
-    grouping_spec   JSONB       NOT NULL,          -- ["cu_price", …]
-    axes_spec       JSONB       NOT NULL,          -- resolved param axes
-    min_tokens      INTEGER     NOT NULL,          -- groups below this are dropped
-    token_count     INTEGER     NOT NULL,          -- corpus size after selection
-    group_count     INTEGER     NOT NULL,          -- surviving groups swept
-    combo_count     INTEGER     NOT NULL,          -- combos per group
-    corpus_hash     TEXT,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    id               UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    strategy_id      TEXT        NOT NULL,          -- 'tpsl1' (traceability)
+    source           TEXT        NOT NULL,          -- 'db' (DB-range corpus)
+    method           TEXT        NOT NULL,          -- 'grid' | 'random' | 'lhs'
+    created_after    TIMESTAMPTZ,                   -- selection lower bound (incl.)
+    created_before   TIMESTAMPTZ,                   -- selection upper bound (excl.)
+    curve_only       BOOLEAN     NOT NULL DEFAULT FALSE,
+    grouping_spec    JSONB       NOT NULL,          -- ["cu_price", …]
+    axes_spec        JSONB       NOT NULL,          -- resolved param axes
+    min_tokens       INTEGER     NOT NULL,          -- groups below this are dropped
+    token_count      INTEGER     NOT NULL,          -- corpus size after selection
+    group_count      INTEGER     NOT NULL,          -- surviving groups swept
+    combo_count      INTEGER     NOT NULL,          -- combos per group
+    corpus_hash      TEXT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- Incremental persistence lifecycle.
+    status           TEXT        NOT NULL DEFAULT 'completed'
+                         CHECK (status IN ('running', 'completed', 'cancelled')),
+    groups_done      INTEGER     NOT NULL DEFAULT 0,
+    -- Full launch config for history / re-run.
+    ix_labels_filter JSONB,
+    field_filters    JSONB,
+    token_cap        INTEGER,
+    max_combos       INTEGER,
+    label            TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_tpsl1_grouped_sweep_runs_created
@@ -729,45 +802,53 @@ CREATE TABLE IF NOT EXISTS tpsl1_grouped_sweep_groups (
     group_index         INTEGER     NOT NULL,      -- deterministic order (largest first)
     group_key           JSONB       NOT NULL,      -- {"cu_price":"…", …}; {} = ALL
     token_count         INTEGER     NOT NULL,
-    fired_count         BIGINT      NOT NULL,       -- best combo's n_fired (sample size)
+    fired_count         BIGINT      NOT NULL,      -- best combo's n_fired (sample size)
     best_combo_id       INTEGER     NOT NULL,
     best_expectancy_sol DOUBLE PRECISION NOT NULL,
     -- Robust realized rank (μ−Z·σ/√n over closed trades, coverage-gated): the
     -- same metric the drill-in combo table sorts by. NULL when the winning combo
     -- has < 2 closed trades (no score).
     best_score          DOUBLE PRECISION,
-    best_params         JSONB       NOT NULL
+    best_params         JSONB       NOT NULL,
+    mints               TEXT[]                    -- token mints in this group (NULL = legacy)
 );
 
 CREATE INDEX IF NOT EXISTS idx_tpsl1_grouped_sweep_groups_run
     ON tpsl1_grouped_sweep_groups(run_id, group_index);
 
+-- Deduped params dictionary: one row per (run, combo_id).
+CREATE TABLE IF NOT EXISTS tpsl1_grouped_sweep_combos (
+    run_id   UUID    NOT NULL REFERENCES tpsl1_grouped_sweep_runs(id) ON DELETE CASCADE,
+    combo_id INTEGER NOT NULL,
+    params   JSONB   NOT NULL,
+    PRIMARY KEY (run_id, combo_id)
+);
+
 CREATE TABLE IF NOT EXISTS tpsl1_grouped_sweep_results (
     id                  UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
     run_id              UUID        NOT NULL REFERENCES tpsl1_grouped_sweep_runs(id) ON DELETE CASCADE,
     group_id            UUID        NOT NULL REFERENCES tpsl1_grouped_sweep_groups(id) ON DELETE CASCADE,
-    combo_id            INTEGER     NOT NULL,
-    params              JSONB       NOT NULL,       -- the swept knob values
+    combo_id            INTEGER     NOT NULL,   -- join to tpsl1_grouped_sweep_combos for params
 
     -- counts
-    n_fired             BIGINT      NOT NULL,
-    n_open              BIGINT      NOT NULL,
-    n_closed            BIGINT      NOT NULL,
+    n_fired             INTEGER     NOT NULL,
+    n_open              INTEGER     NOT NULL,
+    n_closed            INTEGER     NOT NULL,
 
     -- profitability / success
-    win_rate            DOUBLE PRECISION NOT NULL,
-    total_pnl_sol       DOUBLE PRECISION NOT NULL,
-    mean_pnl_pct        DOUBLE PRECISION NOT NULL,
-    median_pnl_pct      DOUBLE PRECISION NOT NULL,
-    p90_pnl_pct         DOUBLE PRECISION NOT NULL,
-    best_pnl_pct        DOUBLE PRECISION NOT NULL,
-    worst_pnl_pct       DOUBLE PRECISION NOT NULL,
-    std_pnl_pct         DOUBLE PRECISION NOT NULL DEFAULT 0,  -- stddev of realized pnl%
-    profit_factor       DOUBLE PRECISION,           -- NULL = no losing trades (∞)
-    score               DOUBLE PRECISION,           -- robust rank μ−z·σ/√n; NULL = n_closed<2
-    expectancy_sol      DOUBLE PRECISION NOT NULL,
-    avg_holding_secs    DOUBLE PRECISION NOT NULL,
-    median_holding_secs DOUBLE PRECISION NOT NULL,
+    win_rate            REAL        NOT NULL,
+    total_pnl_sol       REAL        NOT NULL,
+    mean_pnl_pct        REAL        NOT NULL,
+    median_pnl_pct      REAL        NOT NULL,
+    p90_pnl_pct         REAL        NOT NULL,
+    best_pnl_pct        REAL        NOT NULL,
+    worst_pnl_pct       REAL        NOT NULL,
+    std_pnl_pct         REAL        NOT NULL DEFAULT 0,
+    profit_factor       REAL,
+    score               REAL,
+    expectancy_sol      REAL        NOT NULL,
+    avg_holding_secs    REAL        NOT NULL,
+    median_holding_secs REAL        NOT NULL,
 
     -- exit-reason mix: per-reason trade counts (how closed trades terminated).
     -- `n_exit_cohort` stays 0 for TPSL1 (no cohort-dump exit) — kept for schema
