@@ -1135,6 +1135,15 @@ export function Tpsl2Page() {
     [selectedRuleId, rules],
   );
 
+  // Positions belong to the Real Trading table only — render them under it and
+  // never under Paper Trading. Selecting a paper rule shows no positions table.
+  const isRealRuleSelected = useMemo(
+    () =>
+      selectedRuleId != null &&
+      rules.some((r) => r.id === selectedRuleId && r.trade_mode === 'real'),
+    [selectedRuleId, rules],
+  );
+
   const [showPending, setShowPending] = useState(false);
 
   // Sim-shaped view of the live positions, feeding the Positions summary card.
@@ -1306,6 +1315,59 @@ export function Tpsl2Page() {
               />
             </Accordion>
           )}
+
+          {isRealRuleSelected && (
+            <>
+              <SectionDivider />
+              <section>
+                <SectionHeading
+                  title="Positions"
+                  marker="bg-info"
+                  badge="info"
+                  count={
+                    positionsLoading || positionsError ? undefined : visiblePositions.length
+                  }
+                  subtitle={selectedRuleName ?? undefined}
+                  action={
+                    pendingCount > 0 ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowPending((v) => !v)}
+                        className="text-[11px] text-text-dim transition hover:text-text"
+                      >
+                        {showPending ? 'Hide' : 'Show'} pending entry ({pendingCount})
+                      </button>
+                    ) : undefined
+                  }
+                />
+                {positionsLoading && <p className="text-text-dim">Loading positions…</p>}
+                {positionsError && <InlineAlert variant="error">{positionsError}</InlineAlert>}
+                {!positionsLoading && !positionsError && positionSummaryTokens.length > 0 && (
+                  <SimSummaryCard
+                    title="Positions Summary"
+                    ruleName={selectedRuleName ?? ''}
+                    tokens={positionSummaryTokens}
+                    price={price}
+                  />
+                )}
+                {!positionsLoading && !positionsError && (
+                  <DataTable
+                    columns={posCols}
+                    rows={mergeTokenData(visiblePositions, tokenMap)}
+                    rowKey={keyById}
+                    selectedKey={inspect?.table === 'positions' ? inspect.key : null}
+                    onSelect={onSelectPosition}
+                    defaultPageSize={20}
+                    pageSizeOptions={[20, 50, 100]}
+                    colFilters
+                    colToggle
+                    emptyMessage="No positions for this rule."
+                  />
+                )}
+              </section>
+            </>
+          )}
+
           <Accordion
             bordered={false}
             header={
@@ -1336,56 +1398,6 @@ export function Tpsl2Page() {
             />
           </Accordion>
         </RuleRowProvider>
-      )}
-
-      {selectedRuleId && (
-        <>
-          <SectionDivider />
-          <section>
-            <SectionHeading
-              title="Positions"
-              marker="bg-info"
-              badge="info"
-              count={positionsLoading || positionsError ? undefined : visiblePositions.length}
-              subtitle={selectedRuleName ?? undefined}
-              action={
-                pendingCount > 0 ? (
-                  <button
-                    type="button"
-                    onClick={() => setShowPending((v) => !v)}
-                    className="text-[11px] text-text-dim transition hover:text-text"
-                  >
-                    {showPending ? 'Hide' : 'Show'} pending entry ({pendingCount})
-                  </button>
-                ) : undefined
-              }
-            />
-            {positionsLoading && <p className="text-text-dim">Loading positions…</p>}
-            {positionsError && <InlineAlert variant="error">{positionsError}</InlineAlert>}
-            {!positionsLoading && !positionsError && positionSummaryTokens.length > 0 && (
-              <SimSummaryCard
-                title="Positions Summary"
-                ruleName={selectedRuleName ?? ''}
-                tokens={positionSummaryTokens}
-                price={price}
-              />
-            )}
-            {!positionsLoading && !positionsError && (
-              <DataTable
-                columns={posCols}
-                rows={mergeTokenData(visiblePositions, tokenMap)}
-                rowKey={keyById}
-                selectedKey={inspect?.table === 'positions' ? inspect.key : null}
-                onSelect={onSelectPosition}
-                defaultPageSize={20}
-                pageSizeOptions={[20, 50, 100]}
-                colFilters
-                colToggle
-                emptyMessage="No positions for this rule."
-              />
-            )}
-          </section>
-        </>
       )}
 
       {(matchedLoading || matchedError || matchedResult) && <SectionDivider />}
