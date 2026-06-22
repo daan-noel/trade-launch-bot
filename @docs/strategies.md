@@ -63,6 +63,7 @@ The single `select!` loop **serializes** all position transitions across both st
 
 - `rule.trade_mode` selects path; same service, branches at execute. Real counters are all-time; paper counters are scoped to the current run.
 - Entry recorded only from an **indexed** trade (no synthetic create-time fill), real and paper alike.
+- A rule is **one mode at a time**, so cached per-rule stats (`runtime_cache.rs` `total_count_by_rule` / `closed_stats_by_rule`) reflect only the current mode: `load_from_db` attributes paper-run stats **only to rules still in paper mode** (a stopped-but-undeleted paper run never paints stats onto a rule since flipped to real). A `trade_mode` change in `update_tpsl_rule` therefore calls `load_from_db` (full stats recompute) instead of `reload_rules` (rule-list swap only), so the rules table shows fresh real (empty) stats immediately.
 
 ## Persistence (see [database.md](database.md))
 

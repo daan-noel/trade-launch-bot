@@ -579,6 +579,13 @@ pub async fn update_tpsl_rule(
             // owned by the dedicated lifecycle endpoints (`activate`/`pause`/
             // `stop`) so the paper-run side effects can't drift. This PUT only
             // edits rule fields.
+            // Switching real<->paper changes which table this rule's stats come
+            // from, so the cached per-rule counters must be fully recomputed
+            // (`reload_rules` only swaps the rule list, leaving stale stats).
+            let mode_changed = req
+                .trade_mode
+                .as_ref()
+                .is_some_and(|m| *m != rule.trade_mode);
             if let Some(trade_mode) = &req.trade_mode {
                 rule.trade_mode = trade_mode.clone();
             }
@@ -595,7 +602,12 @@ pub async fn update_tpsl_rule(
 
             match repo.update(&rule).await {
                 Ok(_) => {
-                    if let Err(e) = app_state.tpsl2_cache.reload_rules(&app_state.db).await {
+                    let reload = if mode_changed {
+                        app_state.tpsl2_cache.load_from_db(&app_state.db).await
+                    } else {
+                        app_state.tpsl2_cache.reload_rules(&app_state.db).await
+                    };
+                    if let Err(e) = reload {
                         tracing::warn!("TPSL rule cache reload after update failed: {e}");
                     }
                     emit_rules_changed(&app_state);

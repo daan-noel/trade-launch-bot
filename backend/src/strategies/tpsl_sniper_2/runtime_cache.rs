@@ -224,6 +224,12 @@ impl Tpsl2RuntimeCache {
         let counts_by_run = paper_repo.count_by_run_all().await?;
         let stats_by_run = paper_repo.closed_stats_by_run_all().await?;
         for run in paper_repo.find_all_runs().await? {
+            // A rule is one mode at a time: once it's flipped to real, its old
+            // (stopped-but-undeleted) paper runs must not paint stats onto it.
+            // Only attribute paper-run results to rules still in paper mode.
+            if !paper_ids.contains(&run.rule_id) {
+                continue;
+            }
             let count = counts_by_run.get(&run.id).copied().unwrap_or(0);
             if count > 0 {
                 self.total_count_by_rule.insert(run.rule_id, count);
