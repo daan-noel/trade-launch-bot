@@ -46,7 +46,7 @@ impl PumpFunTrader {
                 "params": [
                     wallet.clone(),
                     { "programId": prog },
-                    { "encoding": "jsonParsed" }
+                    { "encoding": "jsonParsed", "commitment": "confirmed" }
                 ]
             })
         };
@@ -141,7 +141,7 @@ impl PumpFunTrader {
             "params": [
                 wallet,
                 { "mint": mint },
-                { "encoding": "jsonParsed" }
+                { "encoding": "jsonParsed", "commitment": "confirmed" }
             ]
         });
 
