@@ -201,7 +201,11 @@ both `_runs` tables (Phase 4 partial persistence). The repo is generic and
   - `GET …/sweeps?strategy_id=&limit=` (runs), `GET …/sweeps/{run_id}/groups`
     (group summaries, best robust `score` first — `ORDER BY best_score DESC NULLS
     LAST`), `GET
-    …/sweeps/{run_id}/groups/{group_id}/results` (a group's ranked combo rows).
+    …/sweeps/{run_id}/groups/{group_id}/results` (a group's ranked combo rows;
+    paged via `page`/`limit`, sorted via the multi-key `sort=col:dir,col:dir,…`
+    param — `build_order_by` resolves each level through `resolve_sort` (direct
+    metric col or `p_<param>` JSONB expr) and appends a stable `combo_id` tiebreak;
+    legacy single `sort_col`/`sort_dir` still accepted; default `score DESC`).
     All GETs take `strategy_id` to resolve the table set.
 
 ## Frontend

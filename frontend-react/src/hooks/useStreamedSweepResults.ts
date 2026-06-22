@@ -55,10 +55,13 @@ export function useStreamedSweepResults(
     setLoading(true);
     setError(null);
 
-    const primary = sortKeys[0];
-    const sortParams = primary
-      ? `&sort_col=${encodeURIComponent(primary.col)}&sort_dir=${primary.dir}`
-      : '';
+    // Multi-key sort: ordered `col:dir,…` list (index 0 = primary). The backend
+    // applies every level in order with a stable tiebreak; sending only the
+    // primary would silently drop the secondary keys the user picked.
+    const sortParams =
+      sortKeys.length > 0
+        ? `&sort=${encodeURIComponent(sortKeys.map((s) => `${s.col}:${s.dir}`).join(','))}`
+        : '';
     const url =
       `/api/strategies/sweeps/${encodeURIComponent(runId)}` +
       `/groups/${encodeURIComponent(groupId)}` +

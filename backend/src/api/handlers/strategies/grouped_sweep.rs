@@ -151,20 +151,75 @@ pub struct ResultsQuery {
     /// Rows per page, clamped to 1–1000 (default 200).
     #[serde(default)]
     pub limit: Option<i64>,
-    /// Frontend column key to sort by (e.g. `"score"`, `"n_fired"`,
-    /// `"p_exit_take_profit"`). Omit to keep the default `score DESC`.
+    /// Multi-key sort: an ordered, comma-joined `col:dir` list (index 0 = primary),
+    /// e.g. `sort=n_fired:desc,win_rate:desc`. Each column is a frontend key
+    /// (`"score"`, `"n_fired"`, `"p_exit_take_profit"`, …). This is the current
+    /// wire format; `sort_col`/`sort_dir` below are the legacy single-key fallback.
+    #[serde(default)]
+    pub sort: Option<String>,
+    /// Legacy single sort column. Omit to keep the default `score DESC`.
     #[serde(default)]
     pub sort_col: Option<String>,
-    /// `"asc"` or `"desc"` (default `"desc"`).
+    /// Legacy `"asc"` or `"desc"` (default `"desc"`).
     #[serde(default)]
     pub sort_dir: Option<String>,
 }
 
 /// Validated sort spec derived from `ResultsQuery`.
 enum SortSpec {
-    Default,
     DirectCol { col: &'static str, dir: &'static str },
     ParamKey { key: String, dir: &'static str },
+}
+
+impl SortSpec {
+    /// SQL `ORDER BY` fragment for this level (table-qualified, `NULLS LAST`).
+    /// Every column/expression is allowlisted in `resolve_sort`, so the result
+    /// is injection-safe.
+    fn order_fragment(&self) -> String {
+        match self {
+            SortSpec::DirectCol { col, dir } => format!("r.{} {} NULLS LAST", col, dir),
+            SortSpec::ParamKey { key, dir } => {
+                format!("(c.params->>'{}')::numeric {} NULLS LAST", key, dir)
+            }
+        }
+    }
+}
+
+/// Build the full `ORDER BY` body from the frontend sort params. Prefers the
+/// multi-key `sort=col:dir,…` list; falls back to the legacy single
+/// `sort_col`/`sort_dir`. Unresolvable levels are dropped. A stable
+/// `r.combo_id ASC` tiebreak is always appended so equal rows keep a
+/// deterministic order across pages/refetches. Empty ⇒ caller's default.
+fn build_order_by(query: &ResultsQuery) -> String {
+    order_by_from(
+        query.sort.as_deref(),
+        query.sort_col.as_deref(),
+        query.sort_dir.as_deref(),
+    )
+}
+
+/// Core of [`build_order_by`], split out so it's unit-testable without building
+/// the full `ResultsQuery`.
+fn order_by_from(sort: Option<&str>, sort_col: Option<&str>, sort_dir: Option<&str>) -> String {
+    let mut levels: Vec<String> = Vec::new();
+    if let Some(spec) = sort.filter(|s| !s.is_empty()) {
+        for entry in spec.split(',') {
+            let (col, dir) = entry.split_once(':').unwrap_or((entry, "desc"));
+            if let Some(s) = resolve_sort(col.trim(), dir.trim()) {
+                levels.push(s.order_fragment());
+            }
+        }
+    } else if let Some(col) = sort_col {
+        let dir = sort_dir.unwrap_or("desc");
+        if let Some(s) = resolve_sort(col, dir) {
+            levels.push(s.order_fragment());
+        }
+    }
+    if levels.is_empty() {
+        return String::new();
+    }
+    levels.push("r.combo_id ASC".to_string());
+    levels.join(", ")
 }
 
 /// Allowlist of direct DB columns the frontend may sort by (maps frontend key
@@ -873,18 +928,7 @@ pub async fn list_results(
     let limit = query.limit.unwrap_or(200).clamp(1, 1000);
     let offset = page * limit;
 
-    let sort_spec = match (&query.sort_col, &query.sort_dir) {
-        (Some(col), dir) => {
-            let dir_str = dir.as_deref().unwrap_or("desc");
-            resolve_sort(col, dir_str).unwrap_or(SortSpec::Default)
-        }
-        _ => SortSpec::Default,
-    };
-    let (sort_col, sort_dir, sort_param_key): (Option<&str>, &str, Option<&str>) = match &sort_spec {
-        SortSpec::Default => (None, "DESC", None),
-        SortSpec::DirectCol { col, dir } => (Some(col), dir, None),
-        SortSpec::ParamKey { key, dir } => (None, dir, Some(key.as_str())),
-    };
+    let order_by = build_order_by(&query);
 
     let repo = GroupedSweepRepo::new(state.db.clone(), tables);
 
@@ -897,7 +941,7 @@ pub async fn list_results(
         }
     };
 
-    let results = match repo.list_results_paged(run_id, group_id, limit, offset, sort_col, sort_dir, sort_param_key).await {
+    let results = match repo.list_results_paged(run_id, group_id, limit, offset, &order_by).await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("DB error listing grouped sweep results: {e}");
@@ -1326,5 +1370,52 @@ fn matches_field_filter(
             allowed.iter().any(|a| a.as_bool().map(|b| b == v).unwrap_or(false))
         }
         CreatorWallet | TokenProgramId | IxLabels => false,
+    }
+}
+
+#[cfg(test)]
+mod order_by_tests {
+    use super::order_by_from;
+
+    #[test]
+    fn multi_key_builds_all_levels_with_stable_tiebreak() {
+        // The reported bug: the secondary key never reached SQL, so rows tied on
+        // the primary (all FIRED = 6) fell back to heap order. Both levels must
+        // appear, in order, followed by the stable `combo_id` tiebreak.
+        let order = order_by_from(Some("n_fired:desc,win_rate:desc"), None, None);
+        assert_eq!(
+            order,
+            "r.n_fired DESC NULLS LAST, r.win_rate DESC NULLS LAST, r.combo_id ASC"
+        );
+    }
+
+    #[test]
+    fn param_column_level_uses_jsonb_expression() {
+        let order = order_by_from(Some("p_exit_take_profit:asc,score:desc"), None, None);
+        assert_eq!(
+            order,
+            "(c.params->>'exit_take_profit')::numeric ASC NULLS LAST, \
+             r.score DESC NULLS LAST, r.combo_id ASC"
+        );
+    }
+
+    #[test]
+    fn unknown_levels_are_dropped() {
+        let order = order_by_from(Some("bogus:desc,n_closed:asc"), None, None);
+        assert_eq!(order, "r.n_closed ASC NULLS LAST, r.combo_id ASC");
+        // All-unknown → empty (repo applies its score default).
+        assert!(order_by_from(Some("bogus:desc"), None, None).is_empty());
+    }
+
+    #[test]
+    fn legacy_single_pair_fallback() {
+        let order = order_by_from(None, Some("win_rate"), Some("asc"));
+        assert_eq!(order, "r.win_rate ASC NULLS LAST, r.combo_id ASC");
+    }
+
+    #[test]
+    fn empty_sort_yields_empty_default() {
+        assert!(order_by_from(None, None, None).is_empty());
+        assert!(order_by_from(Some(""), None, None).is_empty());
     }
 }

@@ -9,7 +9,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::{
-    analyzers::swing_analyzer::compute_chain_stats,
+    analyzers::swing_analyzer::{compute_chain_stats, ChainStats},
     state::{app_state::AppState, token_cache::TokenState},
 };
 
@@ -274,14 +274,18 @@ pub struct PaginationParams {
     /// DataTable global search box.
     pub search: Option<String>,
 
-    // Column sort (DataTable header click).
+    // Multi-key column sort (DataTable header clicks). `sort` is the current
+    // wire format: an ordered, comma-joined `col:dir` list (index 0 = primary),
+    // e.g. `sort=trade_count:desc,symbol:asc`. `sort_col`/`sort_dir` are the
+    // legacy single-key params, still accepted as a 1-level fallback.
+    pub sort: Option<String>,
     pub sort_col: Option<String>,
     pub sort_dir: Option<String>,
 
     /// Per-column filters, `;`-joined `colKey:rawExpr` entries.
     pub cf: Option<String>,
 
-    // Swing chain sort: when `sort_col` is one of the chain columns
+    // Swing chain sort: when any sort level is a chain column
     // (`swing_pairs` / `max_seq_pairs` / `chain_count`), the order key is computed
     // from the raw legs stashed under `swing_run_id` (the last "Swing Detection
     // All" run), grouped at `swing_chain_latency_ms`. Absent ⇒ those columns sort
@@ -401,32 +405,36 @@ pub async fn list_tokens(
             snapshot.tracked_filtered_count(|t| q.matches(t, now))
         };
 
-        // Sorting a chain column? Compute each matched mint's key from the raw
-        // legs stashed under the run, grouped at the requested latency. Cheap
-        // (a handful of legs per mint) and only over the filtered set. Mints the
-        // run never analysed are simply absent → they sort last.
-        let swing_keys: Option<HashMap<String, f64>> = match &q.sort_col {
-            Some(col) if is_swing_sort_col(col) => q
-                .swing_run_id
-                .as_deref()
-                .and_then(|id| state.swing_runs.get(id))
-                .map(|run| {
-                    let mut keys = HashMap::with_capacity(matched.len());
-                    for &t in &matched {
-                        if let Some(swings) = run.mints.get(&t.mint_address) {
-                            let stats =
-                                compute_chain_stats(swings.value(), q.swing_chain_latency_ms);
-                            keys.insert(t.mint_address.clone(), swing_sort_value(col, &stats));
+        // Any chain column among the sort levels? Compute each matched mint's
+        // chain stats once from the raw legs stashed under the run, grouped at the
+        // requested latency. Cheap (a handful of legs per mint) and only over the
+        // filtered set. Mints the run never analysed are simply absent → they sort
+        // last. A single stats map serves every chain level (each reads a different
+        // field via `swing_sort_value`).
+        let swing_stats: Option<HashMap<String, ChainStats>> =
+            if q.sort_levels.iter().any(|(col, _)| is_swing_sort_col(col)) {
+                q.swing_run_id
+                    .as_deref()
+                    .and_then(|id| state.swing_runs.get(id))
+                    .map(|run| {
+                        let mut stats = HashMap::with_capacity(matched.len());
+                        for &t in &matched {
+                            if let Some(swings) = run.mints.get(&t.mint_address) {
+                                stats.insert(
+                                    t.mint_address.clone(),
+                                    compute_chain_stats(swings.value(), q.swing_chain_latency_ms),
+                                );
+                            }
                         }
-                    }
-                    keys
-                }),
-            _ => None,
-        };
+                        stats
+                    })
+            } else {
+                None
+            };
 
         // The snapshot is already newest-first, so the default view needs no sort;
-        // only an explicit sort column re-orders (sorting precedes paging).
-        q.sort_refs(&mut matched, swing_keys.as_ref());
+        // only explicit sort levels re-order (sorting precedes paging).
+        q.sort_refs(&mut matched, swing_stats.as_ref());
 
         let limit = limit_q.max(1).min(50_000) as usize;
         let offset = offset_q.max(0) as usize;
@@ -681,6 +689,41 @@ fn is_swing_sort_col(col: &str) -> bool {
     SWING_SORT_COLS.contains(&col)
 }
 
+/// Parse the DataTable sort into validated `(column, descending)` levels, index
+/// 0 = primary. Prefers the multi-key `sort=col:dir,col:dir` param; falls back
+/// to the legacy single `sort_col`/`sort_dir` pair. Unknown columns are dropped
+/// (not fatal), so a stale client never breaks the listing.
+fn parse_sort_levels(q: &PaginationParams) -> Vec<(String, bool)> {
+    sort_levels_from(q.sort.as_deref(), q.sort_col.as_deref(), q.sort_dir.as_deref())
+}
+
+/// Core of [`parse_sort_levels`], split out so it's unit-testable without
+/// building the ~60-field `PaginationParams`.
+fn sort_levels_from(
+    sort: Option<&str>,
+    sort_col: Option<&str>,
+    sort_dir: Option<&str>,
+) -> Vec<(String, bool)> {
+    if let Some(spec) = sort.filter(|s| !s.is_empty()) {
+        return spec
+            .split(',')
+            .filter_map(|entry| {
+                let (col, dir) = entry.split_once(':').unwrap_or((entry, "asc"));
+                let col = col.trim();
+                if !SORTABLE_COLS.contains(&col) {
+                    return None;
+                }
+                Some((col.to_string(), dir.trim().eq_ignore_ascii_case("desc")))
+            })
+            .collect();
+    }
+    // Legacy single-pair fallback.
+    match sort_col.filter(|s| SORTABLE_COLS.contains(s)) {
+        Some(col) => vec![(col.to_string(), sort_dir == Some("desc"))],
+        None => Vec::new(),
+    }
+}
+
 /// Pick a chain stat as the numeric sort key for a swing column.
 fn swing_sort_value(col: &str, s: &crate::analyzers::swing_analyzer::ChainStats) -> f64 {
     match col {
@@ -694,8 +737,9 @@ fn swing_sort_value(col: &str, s: &crate::analyzers::swing_analyzer::ChainStats)
 /// Parsed query: global filters + search + per-column filters + sort.
 struct TokenQuery {
     search: String,
-    sort_col: Option<String>,
-    sort_desc: bool,
+    /// Ordered sort levels `(column, descending)`; index 0 is the primary key.
+    /// Empty ⇒ keep the snapshot's default (newest-first) order.
+    sort_levels: Vec<(String, bool)>,
     /// (column key, raw expression)
     col_filters: Vec<(String, String)>,
     /// global filter values keyed by TokenFilters field name (non-empty only)
@@ -775,11 +819,7 @@ impl TokenQuery {
 
         Self {
             search: q.search.clone().unwrap_or_default(),
-            sort_col: q
-                .sort_col
-                .clone()
-                .filter(|s| SORTABLE_COLS.contains(&s.as_str())),
-            sort_desc: q.sort_dir.as_deref() == Some("desc"),
+            sort_levels: parse_sort_levels(q),
             col_filters: q.cf.as_deref().map(parse_col_filters).unwrap_or_default(),
             f,
             swing_run_id: q.swing_run_id.clone().filter(|s| !s.is_empty()),
@@ -954,27 +994,51 @@ impl TokenQuery {
     /// than on every comparison (the old comparator re-derived it — and re-allocated
     /// date strings — O(n log n) times).
     ///
-    /// `swing_keys` (when sorting a chain column) supplies each mint's precomputed
-    /// numeric key; mints absent from it sort last (matching the dash the frontend
-    /// renders for un-analysed tokens). For normal columns it's `None` and the key
-    /// comes from the `TokenSummary` field via `sort_key`.
+    /// `swing_stats` (when any sort level is a chain column) supplies each mint's
+    /// precomputed chain stats; a chain level reads its field via `swing_sort_value`,
+    /// and mints absent from the map sort last (matching the dash the frontend
+    /// renders for un-analysed tokens). Normal levels key off the `TokenSummary`
+    /// field via `sort_key`.
+    ///
+    /// Multi-level: each row's full key vector is computed ONCE (decorate-sort-
+    /// undecorate), then levels compare in priority order, returning on the first
+    /// non-equal level. `mint_address` is the final, stable tiebreak so equal rows
+    /// keep a deterministic order across pages and refetches.
     fn sort_refs<'a>(
         &self,
         rows: &mut [&'a TokenSummary],
-        swing_keys: Option<&HashMap<String, f64>>,
+        swing_stats: Option<&HashMap<String, ChainStats>>,
     ) {
-        let Some(col) = &self.sort_col else {
+        if self.sort_levels.is_empty() {
             return;
+        }
+        let level_key = |col: &str, t: &TokenSummary| -> SortKey {
+            if is_swing_sort_col(col) {
+                SortKey::Num(
+                    swing_stats
+                        .and_then(|m| m.get(&t.mint_address))
+                        .map(|s| swing_sort_value(col, s)),
+                )
+            } else {
+                sort_key(col, t)
+            }
         };
-        let desc = self.sort_desc;
-        let mut keyed: Vec<(SortKey, &'a TokenSummary)> = match swing_keys {
-            Some(keys) => rows
-                .iter()
-                .map(|&t| (SortKey::Num(keys.get(&t.mint_address).copied()), t))
-                .collect(),
-            None => rows.iter().map(|&t| (sort_key(col, t), t)).collect(),
-        };
-        keyed.sort_by(|a, b| cmp_keys(&a.0, &b.0, desc));
+        let mut keyed: Vec<(Vec<SortKey>, &'a TokenSummary)> = rows
+            .iter()
+            .map(|&t| {
+                let keys = self.sort_levels.iter().map(|(col, _)| level_key(col, t)).collect();
+                (keys, t)
+            })
+            .collect();
+        keyed.sort_by(|a, b| {
+            for (i, (_, desc)) in self.sort_levels.iter().enumerate() {
+                let ord = cmp_keys(&a.0[i], &b.0[i], *desc);
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
+            a.1.mint_address.cmp(&b.1.mint_address)
+        });
         for (slot, (_, t)) in rows.iter_mut().zip(keyed) {
             *slot = t;
         }
@@ -1458,5 +1522,48 @@ fn cmp_keys(a: &SortKey, b: &SortKey, desc: bool) -> Ordering {
         base.reverse()
     } else {
         base
+    }
+}
+
+#[cfg(test)]
+mod sort_tests {
+    use super::sort_levels_from;
+
+    #[test]
+    fn multi_key_preserves_order_and_dir() {
+        // The reported bug: secondary key was dropped. Both levels must survive,
+        // in order, with per-level direction.
+        let levels = sort_levels_from(Some("trade_count:desc,symbol:asc"), None, None);
+        assert_eq!(
+            levels,
+            vec![("trade_count".to_string(), true), ("symbol".to_string(), false)]
+        );
+    }
+
+    #[test]
+    fn unknown_columns_are_dropped_not_fatal() {
+        let levels = sort_levels_from(Some("bogus:desc,trade_count:asc"), None, None);
+        assert_eq!(levels, vec![("trade_count".to_string(), false)]);
+    }
+
+    #[test]
+    fn missing_dir_defaults_to_asc() {
+        let levels = sort_levels_from(Some("symbol"), None, None);
+        assert_eq!(levels, vec![("symbol".to_string(), false)]);
+    }
+
+    #[test]
+    fn legacy_single_pair_fallback() {
+        // Old clients / bookmarked URLs without the `sort=` param still work.
+        let levels = sort_levels_from(None, Some("market_cap"), Some("desc"));
+        assert_eq!(levels, vec![("market_cap".to_string(), true)]);
+        // Unknown legacy column → no sort.
+        assert!(sort_levels_from(None, Some("bogus"), Some("desc")).is_empty());
+    }
+
+    #[test]
+    fn empty_sort_is_no_op() {
+        assert!(sort_levels_from(Some(""), None, None).is_empty());
+        assert!(sort_levels_from(None, None, None).is_empty());
     }
 }

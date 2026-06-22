@@ -233,9 +233,10 @@ export const apiSlice = createApi({
         p.set('limit', String(a.pageSize));
         p.set('offset', String((a.page - 1) * a.pageSize));
         if (a.search) p.set('search', a.search);
+        // Multi-key sort: ordered `col:dir,…` list (index 0 = primary). The
+        // backend applies every level in order with a stable tiebreak.
         if (a.sortKeys.length > 0) {
-          p.set('sort_col', a.sortKeys[0].col);
-          p.set('sort_dir', a.sortKeys[0].dir);
+          p.set('sort', a.sortKeys.map((s) => `${s.col}:${s.dir}`).join(','));
         }
         const cf = Object.entries(a.colFilters)
           .filter(([, v]) => v.trim())

@@ -720,10 +720,10 @@ impl GroupedSweepRepo {
 
     /// One page of ranked combo rows for a group.
     ///
-    /// `sort_col` / `sort_dir` come from the frontend `TableQuery`. Both are
-    /// validated before this call: `sort_col` is either a known direct column
-    /// name or `None` (falls back to `score DESC NULLS LAST`); `sort_dir` is
-    /// `"asc"` or `"desc"`.
+    /// `order_by` is the full, pre-validated `ORDER BY` body (one or more
+    /// comma-joined sort levels plus a stable tiebreak) built by the handler from
+    /// the frontend `TableQuery` — every column name/expression is allowlisted
+    /// there, so it is safe to interpolate. Empty falls back to `score DESC`.
     ///
     /// `limit`/`offset` are already validated by the caller.
     pub async fn list_results_paged(
@@ -732,21 +732,15 @@ impl GroupedSweepRepo {
         group_id: Uuid,
         limit: i64,
         offset: i64,
-        sort_col: Option<&str>,
-        sort_dir: &str,
-        sort_param_key: Option<&str>,
+        order_by: &str,
     ) -> anyhow::Result<Vec<GroupedSweepResult>> {
         // `params` lives on the per-run `_combos` dictionary (migration `0007`),
         // JOINed back on `(run_id, combo_id)`. Order columns are table-qualified:
         // metric columns are on the results row (`r`), `params` on the combos row (`c`).
-        let order = if let Some(param_key) = sort_param_key {
-            // Param column: extract from JSONB, cast to numeric.
-            // `param_key` is pre-validated to be [a-z0-9_]+ by the handler.
-            format!("(c.params->>'{}')::numeric {} NULLS LAST", param_key, sort_dir)
-        } else if let Some(col) = sort_col {
-            format!("r.{} {} NULLS LAST", col, sort_dir)
+        let order = if order_by.is_empty() {
+            "r.score DESC NULLS LAST, r.combo_id ASC".to_string()
         } else {
-            "r.score DESC NULLS LAST".to_string()
+            order_by.to_string()
         };
         let sql = format!(
             "SELECT r.combo_id, c.params, r.n_fired, r.n_open, r.n_closed, r.win_rate, \
