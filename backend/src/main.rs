@@ -503,8 +503,8 @@ async fn main() -> anyhow::Result<()> {
     if std::env::args().nth(1).as_deref() == Some("probe")
         && std::env::args().nth(2).as_deref() == Some("compact-sweeps")
     {
-        let db = storage::postgres::connect(&settings).await?;
-        return run_compact_sweeps(&db, std::env::args().skip(3).collect()).await;
+        let pools = storage::postgres::connect(&settings).await?;
+        return run_compact_sweeps(&pools.hot, std::env::args().skip(3).collect()).await;
     }
 
     let trader_config = Arc::new(TraderConfig {
@@ -529,8 +529,15 @@ async fn main() -> anyhow::Result<()> {
         return run_probe(&trader, std::env::args().skip(2).collect()).await;
     }
 
-    // Database — connect and run migrations
-    let db = storage::postgres::connect(&settings).await?;
+    // Database — connect the three workload-isolated pools and run migrations. `db`
+    // (hot) backs ingest/strategy/maintenance/seed/caches; `api_db` backs the fast
+    // HTTP handlers; `batch_db` backs the long DB-heavy jobs (sweeps + backtests) so
+    // they can't starve the dashboard reads.
+    let storage::postgres::DbPools {
+        hot: db,
+        api: api_db,
+        batch: batch_db,
+    } = storage::postgres::connect(&settings).await?;
 
     // Crash recovery (Phase 4): a killed process can leave a grouped sweep stuck at
     // `status = 'running'`. The single-flight gate allows one sweep at a time and
@@ -719,17 +726,14 @@ async fn main() -> anyhow::Result<()> {
         ));
     }
 
-    // Dedicated API connection pool, isolated from the hot-path `db` pool above so
-    // an ingest/strategy write storm can't exhaust the connections the dashboard
-    // needs to respond (the "pool timed out" symptom). Only the HTTP handlers draw
-    // from it; ingest/strategy/maintenance/seed all stay on `db`.
-    let api_db = storage::postgres::connect_api_pool(&settings).await?;
-
     // Built after the transport branch so AppState shares the active pipeline's
     // pool→mint index and migration signal with the HTTP handlers (a token sync
     // registers a migrated token's pool so live ingest subscribes immediately).
+    // `api_db` backs the fast handlers; `batch_db` backs the heavy sweep/backtest
+    // jobs — both connected up front alongside the hot-path `db`.
     let app_state = Arc::new(state::AppState::new(
         api_db,
+        batch_db,
         settings.helius_rpc_url.clone(),
         settings.helius_laserstream_url.clone(),
         settings.helius_api_key.clone(),

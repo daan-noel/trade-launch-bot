@@ -45,7 +45,13 @@ pub struct SweepCorpusCache {
 /// Shared application state — passed to Actix handlers via `web::Data<AppState>`
 /// and injected into services.
 pub struct AppState {
+    /// **API** pool — fast dashboard handlers (list/detail/count reads, settings,
+    /// mutations). Use this for every cheap, latency-sensitive handler query.
     pub db: PgPool,
+    /// **Batch** pool — long, DB-heavy jobs only (grouped sweep corpus load +
+    /// per-group writer, tpsl backtests). Routed here so they can't starve the
+    /// dashboard reads on `db`. See [`crate::storage::postgres::DbPools`].
+    pub batch_db: PgPool,
     pub helius_rpc_url: String,
     /// LaserStream gRPC endpoint + API key, used by the token-sync replay fast
     /// path (Fetch New). Empty URL ⇒ replay disabled, RPC path only.
@@ -178,6 +184,7 @@ impl AppState {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         db: PgPool,
+        batch_db: PgPool,
         helius_rpc_url: String,
         helius_laserstream_url: String,
         helius_api_key: String,
@@ -203,6 +210,7 @@ impl AppState {
         let (sse_frame_tx, _) = broadcast::channel(512);
         Self {
             db,
+            batch_db,
             helius_rpc_url,
             helius_laserstream_url,
             helius_api_key,

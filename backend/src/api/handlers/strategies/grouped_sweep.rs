@@ -348,7 +348,7 @@ async fn run_grouped_sweep_job(
     // load; an open/recent window always loads fresh. Fingerprints are attached
     // separately below (the trade cache is fingerprint-free) so caching trades
     // doesn't complicate grouping.
-    let mut corpus = match load_grouped_corpus(state.db.clone(), &sel, &corpus_cache_dir(), b.fresh)
+    let mut corpus = match load_grouped_corpus(state.batch_db.clone(), &sel, &corpus_cache_dir(), b.fresh)
         .await
     {
         Ok(c) => c,
@@ -362,7 +362,7 @@ async fn run_grouped_sweep_job(
         return HttpResponse::BadRequest()
             .json(serde_json::json!({"error": "no tokens in that date range — widen the selection"}));
     }
-    if let Err(e) = attach_fingerprints(&state.db, &mut corpus).await {
+    if let Err(e) = attach_fingerprints(&state.batch_db, &mut corpus).await {
         tracing::error!("grouped sweep: attach_fingerprints failed: {e}");
         return HttpResponse::InternalServerError()
             .json(serde_json::json!({"error": e.to_string()}));
@@ -490,7 +490,7 @@ async fn run_grouped_sweep_job(
         max_combos: b.max_combos.map(|v| v as i32),
         label: None,
     };
-    let repo = GroupedSweepRepo::new(state.db.clone(), tables);
+    let repo = GroupedSweepRepo::new(state.batch_db.clone(), tables);
     if let Err(e) = repo.insert_run(&run).await {
         tracing::error!("grouped sweep: insert_run failed: {e}");
         return HttpResponse::InternalServerError()
@@ -505,7 +505,7 @@ async fn run_grouped_sweep_job(
     // engine callback never blocks a rayon worker.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SweepWrite>();
     let writer = {
-        let db = state.db.clone();
+        let db = state.batch_db.clone();
         let writer_sse_tx = state.sse_tx.clone();
         let writer_strategy_id = b.strategy_id.clone();
         actix_web::rt::spawn(async move {
@@ -1202,7 +1202,7 @@ pub async fn list_token_results(
             let mut corpus = if let Some(mints) = group_mints.filter(|m| !m.is_empty()) {
                 tracing::debug!(n = mints.len(), "token-results: Option C targeted mint load");
                 match load_corpus_for_mints(
-                    state.db.clone(),
+                    state.batch_db.clone(),
                     mints,
                     run.curve_only,
                     sweep_per_mint_cap(),
@@ -1228,7 +1228,7 @@ pub async fn list_token_results(
                     window: crate::sweep::corpus::TradeWindow::LaunchWindow,
                     ..Default::default()
                 };
-                match load_grouped_corpus(state.db.clone(), &sel, &corpus_cache_dir(), false)
+                match load_grouped_corpus(state.batch_db.clone(), &sel, &corpus_cache_dir(), false)
                     .await
                 {
                     Ok(c) => c,
@@ -1241,7 +1241,7 @@ pub async fn list_token_results(
             };
 
             if !corpus.has_fingerprints {
-                if let Err(e) = attach_fingerprints(&state.db, &mut corpus).await {
+                if let Err(e) = attach_fingerprints(&state.batch_db, &mut corpus).await {
                     tracing::error!("Failed to attach fingerprints: {e}");
                     return HttpResponse::InternalServerError()
                         .json(serde_json::json!({"error": "fingerprint error"}));

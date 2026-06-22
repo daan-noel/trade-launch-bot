@@ -13,11 +13,11 @@ services:
   postgres:
     image: postgres:16
     restart: unless-stopped
-    # Raise the server-side connection ceiling well above the two app pools
-    # (DB_MAX_CONNECTIONS + DB_API_MAX_CONNECTIONS) plus headroom for external
-    # clients (Navicat) and the superuser reserve. The default of 100 is the real
-    # cap behind "pool timed out"; lift it here so the larger pools have room.
-    # shared_buffers bumped modestly so the extra backends have cache to work with.
+    # Raise the server-side connection ceiling well above the three app pools
+    # (DB_MAX_CONNECTIONS + DB_API_MAX_CONNECTIONS + DB_BATCH_MAX_CONNECTIONS) plus
+    # headroom for external clients (Navicat) and the superuser reserve. The default
+    # of 100 is the real cap behind "pool timed out"; lift it here so the pools have
+    # room. shared_buffers bumped modestly so the extra backends have cache to work with.
     command:
       - "postgres"
       - "-c"

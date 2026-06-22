@@ -32,35 +32,23 @@ pub struct Settings {
 
     // --- Database ---
     pub database_url: String,
-    /// **Hot-path** Postgres pool sizing — backs ingest (`DbWriter`),
-    /// `StrategyRunner`, maintenance, seeding and the background caches. Kept
-    /// separate from the API pool so an ingest/strategy write storm can't starve
-    /// dashboard reads (and vice-versa). Defaults suit a busy ingest workload;
-    /// override via env when the database has more or less headroom.
+    /// **Hot-path** pool — ingest (`DbWriter`), `StrategyRunner`, maintenance,
+    /// seeding and the background caches. One of three workload-isolated pools (see
+    /// [`crate::storage::postgres::DbPools`]) so a write storm here can't starve the
+    /// dashboard or the batch jobs.
     pub db_max_connections: u32,
     pub db_min_connections: u32,
-    /// **API** Postgres pool sizing — backs only the HTTP request handlers
-    /// (list/detail endpoints, sweeps). Isolated from `db_max_connections` so the
-    /// relentless ingest/strategy traffic can't exhaust the connections the
-    /// dashboard needs to respond.
+    /// **API** pool — fast HTTP handlers (dashboard list/detail/count reads,
+    /// settings, mutations). Isolated from the hot path so ingest/strategy traffic
+    /// can't exhaust the connections the dashboard needs to respond.
     pub db_api_max_connections: u32,
     pub db_api_min_connections: u32,
-    /// The Postgres server's `max_connections` (mirrors `POSTGRES_MAX_CONNECTIONS`
-    /// in docker-compose). Used only to fail-fast at startup if the two app pools
-    /// plus `db_connection_reserve` would overcommit the server — a misconfig that
-    /// otherwise surfaces as opaque "too many clients already" errors under load.
-    pub db_server_max_connections: u32,
-    /// Connections to leave free on the server for the superuser reserve
-    /// (`superuser_reserved_connections`, default 3) and external clients (Navicat,
-    /// psql). The startup check requires `db_max + db_api_max + reserve <= server`.
-    pub db_connection_reserve: u32,
+    /// **Batch** pool — long, DB-heavy jobs (grouped sweeps' corpus load + per-group
+    /// writer, tpsl backtests). Isolated so a sweep can't starve the dashboard reads
+    /// it used to share a pool with (the "pool timed out" regression).
+    pub db_batch_max_connections: u32,
+    pub db_batch_min_connections: u32,
     pub db_acquire_timeout: Duration,
-    /// `idle_in_transaction_session_timeout` applied to every pooled connection.
-    /// Bounds the one failure mode that actually drains a pool — a leaked/stuck
-    /// *open* transaction pinning its slot forever. `0` disables it. Safe for
-    /// long-running *active* queries (e.g. sweep corpus scans): it only fires on a
-    /// transaction left idle, never on one doing work.
-    pub db_idle_tx_timeout: Duration,
 
     // --- Server ---
     pub host: String,
@@ -103,10 +91,9 @@ impl Settings {
             db_min_connections: env_parse("DB_MIN_CONNECTIONS", 4u32)?,
             db_api_max_connections: env_parse_min("DB_API_MAX_CONNECTIONS", 32u32, 1)?,
             db_api_min_connections: env_parse("DB_API_MIN_CONNECTIONS", 2u32)?,
-            db_server_max_connections: env_parse_min("POSTGRES_MAX_CONNECTIONS", 300u32, 1)?,
-            db_connection_reserve: env_parse("DB_CONNECTION_RESERVE", 20u32)?,
+            db_batch_max_connections: env_parse_min("DB_BATCH_MAX_CONNECTIONS", 16u32, 1)?,
+            db_batch_min_connections: env_parse("DB_BATCH_MIN_CONNECTIONS", 2u32)?,
             db_acquire_timeout: Duration::from_secs(env_parse("DB_ACQUIRE_TIMEOUT_SECS", 10u64)?),
-            db_idle_tx_timeout: Duration::from_secs(env_parse("DB_IDLE_TX_TIMEOUT_SECS", 30u64)?),
             host: env_or("HOST", "127.0.0.1"),
             port: env_parse("PORT", 8081)?,
             // Route through the erroring parse: a typo (e.g. `HTTP_ENABLED=ture`)
@@ -117,47 +104,8 @@ impl Settings {
             api_auth_token: Some(required_non_empty("API_AUTH_TOKEN")?),
         };
 
-        settings.validate_pool_sizing()?;
         Ok(settings)
     }
-
-    /// Fail fast if the two app pools (plus the superuser/external reserve) would
-    /// overcommit the Postgres server's `max_connections`. Without this, an env
-    /// edit that pushes `DB_MAX_CONNECTIONS + DB_API_MAX_CONNECTIONS` past the
-    /// server ceiling surfaces only later, as opaque "too many clients already"
-    /// errors once load drives both pools toward their max. `POSTGRES_MAX_CONNECTIONS`
-    /// here mirrors the value docker-compose passes to the postgres container, so the
-    /// check is meaningful under compose; tune `DB_CONNECTION_RESERVE` (or set
-    /// `POSTGRES_MAX_CONNECTIONS`) when running against a differently-sized server.
-    fn validate_pool_sizing(&self) -> anyhow::Result<()> {
-        check_pool_budget(
-            self.db_max_connections,
-            self.db_api_max_connections,
-            self.db_server_max_connections,
-            self.db_connection_reserve,
-        )
-    }
-}
-
-/// Pure pool-budget check (testable without building a full `Settings`): the two
-/// app pools plus the reserve must fit inside the server's `max_connections`.
-fn check_pool_budget(
-    db_max: u32,
-    db_api_max: u32,
-    server_max: u32,
-    reserve: u32,
-) -> anyhow::Result<()> {
-    let requested = db_max + db_api_max;
-    let budget = server_max.saturating_sub(reserve);
-    anyhow::ensure!(
-        requested <= budget,
-        "DB pool sizing overcommits Postgres: DB_MAX_CONNECTIONS ({db_max}) + \
-         DB_API_MAX_CONNECTIONS ({db_api_max}) = {requested} exceeds the available \
-         budget of {budget} (POSTGRES_MAX_CONNECTIONS {server_max} − \
-         DB_CONNECTION_RESERVE {reserve}). Lower the pool sizes or raise \
-         POSTGRES_MAX_CONNECTIONS.",
-    );
-    Ok(())
 }
 
 /// Helius Sender endpoints, newest-form first. Prefer the plural
@@ -245,30 +193,3 @@ where
     Ok(val)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::check_pool_budget;
-
-    #[test]
-    fn pool_budget_accepts_sizing_within_server_ceiling() {
-        // 150 + 80 + 20 reserve = 250 <= 300 → ok.
-        assert!(check_pool_budget(150, 80, 300, 20).is_ok());
-        // Exactly fills the budget (230 == 300 - 70) → ok (boundary inclusive).
-        assert!(check_pool_budget(150, 80, 300, 70).is_ok());
-    }
-
-    #[test]
-    fn pool_budget_rejects_overcommit() {
-        // 150 + 80 = 230 > 300 - 80 = 220 → rejected.
-        assert!(check_pool_budget(150, 80, 300, 80).is_err());
-        // Classic footgun: defaults left at 150/80 against a native Postgres
-        // still at max_connections=100.
-        assert!(check_pool_budget(150, 80, 100, 20).is_err());
-    }
-
-    #[test]
-    fn pool_budget_reserve_larger_than_server_saturates_not_panics() {
-        // reserve > server_max must not underflow; budget floors at 0 → rejected.
-        assert!(check_pool_budget(1, 1, 10, 50).is_err());
-    }
-}

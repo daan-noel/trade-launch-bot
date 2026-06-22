@@ -4,12 +4,13 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 
 ## Connection pools
 
-`storage/postgres.rs` builds **two isolated `PgPool`s** (shared `build_pool` helper) so an ingest/strategy write storm can't exhaust the connections the dashboard needs ("pool timed out while waiting for an open connection"):
+`storage/postgres.rs::connect()` builds **three workload-isolated `PgPool`s** (shared `build_pool` helper), returned as `DbPools { hot, api, batch }`, so no class of work can exhaust another's connections ("pool timed out while waiting for an open connection"):
 
-- `connect()` → **hot-path pool** (`DB_MAX_CONNECTIONS`, default 64), runs migrations. Used by ingest `DbWriter`, `StrategyRunner`, maintenance, seed, background caches.
-- `connect_api_pool()` → **API pool** (`DB_API_MAX_CONNECTIONS`, default 32), no migrations. Held as `AppState.db`; backs only the HTTP handlers (list/detail, sweeps).
+- **hot** (`DB_MAX_CONNECTIONS`, default 64) — runs migrations once. Used by ingest `DbWriter`, `StrategyRunner`, maintenance, seed, background caches. In `main.rs` this is `db`.
+- **api** (`DB_API_MAX_CONNECTIONS`, default 32) — held as `AppState.db`; backs only the fast HTTP handlers (list/detail/count reads, settings, mutations).
+- **batch** (`DB_BATCH_MAX_CONNECTIONS`, default 16) — held as `AppState.batch_db`; backs only the long DB-heavy jobs: grouped sweeps' corpus load + per-group writer, and tpsl1/tpsl2 backtests (whole-table token scan + batched trade fetches). Keeps a running sweep/backtest off the dashboard's connections — the regression fixed here, when sweeps shared the API pool.
 
-Both apply `DB_IDLE_TX_TIMEOUT_SECS` as `idle_in_transaction_session_timeout` (default 30s; 0 disables) — the safe pool-drain guard: it kills a connection holding an *open, idle* transaction, never one running a long active query (e.g. a sweep corpus scan). Server-side ceiling is `POSTGRES_MAX_CONNECTIONS` (docker-compose, default 300); keep `DB_MAX + DB_API_MAX` below it with headroom for the superuser reserve + external clients. The position/trade list queries are already served by composite indexes (`idx_*_positions_{strategy,rule,…}_created`, `idx_trades_wallet_mint_sig`, …), so list-endpoint slowness is connection contention, not missing indexes.
+Per-handler rule: a sweep/backtest's heavy corpus/trade queries use `batch_db`; its cheap metadata reads (run/group headers, list/count) stay on `db`. Server-side ceiling is `POSTGRES_MAX_CONNECTIONS` (docker-compose, default 300); keep `DB_MAX + DB_API_MAX + DB_BATCH_MAX` comfortably below it with headroom for the superuser reserve + external clients. The position/trade list queries are already served by composite indexes (`idx_*_positions_{strategy,rule,…}_created`, `idx_trades_wallet_mint_sig`, …), so list-endpoint slowness is connection contention, not missing indexes.
 
 ## Migrations
 

@@ -12,6 +12,7 @@ use crate::models::Token;
 use crate::state::app_state::AppState;
 use crate::strategies::sim_progress::SimProgress;
 use crate::storage::repositories::tpsl2_strategy_rule_repo::Tpsl2StrategyRuleRepo;
+use crate::storage::repositories::token_repo::TokenRepo;
 use crate::storage::repositories::trade_repo::TradeRepo;
 
 /// Candidate mints fetched per batched `trades` query. One round-trip pulls a
@@ -141,7 +142,9 @@ pub async fn run_backtest(
     // Token-level pre-filter: every *configured* token criterion must hold. A
     // scalp rule may set none (its gating happens on the trade stream), so this is
     // the vacuous-true variant rather than `token_matches_buy_rule`.
-    let repo = app_state.token_repo();
+    // Heavy DB work (the whole-table token scan + the batched trade fetches below)
+    // runs on the dedicated batch pool so a backtest can't starve dashboard reads.
+    let repo = TokenRepo::new(app_state.batch_db.clone());
     let tokens: Vec<Token> = crate::strategies::analysis::collect_matching_tokens(
         &repo,
         since,
@@ -154,9 +157,9 @@ pub async fn run_backtest(
     // Resolve each candidate's entry/exit from its trade history. The history is
     // fetched in batched chunks — one query per `BACKTEST_FETCH_CHUNK` mints
     // (`find_by_mints_all`) instead of one query per token — and only a few chunk
-    // queries run concurrently so the backtest leaves the ingest-shared PgPool
-    // headroom (old code held 16 of ~20 connections; this holds ~3). The slow
-    // part is the trade fetch, so one `tick()` per resolved candidate tracks real
+    // queries run concurrently. Combined with the dedicated `batch_db` pool this
+    // keeps the backtest off the dashboard's and ingest's connections entirely. The
+    // slow part is the trade fetch, so one `tick()` per resolved candidate tracks real
     // progress; chunks tick every candidate (even on fetch error) so the bar
     // always reaches `total`.
     let progress = Arc::new(SimProgress::new(
@@ -172,7 +175,7 @@ pub async fn run_backtest(
     let per_chunk: Vec<_> = chunks
         .into_iter()
         .map(|chunk| {
-            let trade_repo = TradeRepo::new(app_state.db.clone());
+            let trade_repo = TradeRepo::new(app_state.batch_db.clone());
             let rule = rule.clone();
             let progress = progress.clone();
             let token_cache = app_state.token_cache.clone();
