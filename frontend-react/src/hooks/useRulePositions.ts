@@ -79,7 +79,12 @@ export function useRulePositions(
         const msg = e instanceof Error ? e.message : 'Failed to load positions';
         if (!silent || ++failures.current >= MAX_SILENT_FAILURES) setError(msg);
       } finally {
-        if (!silent && !ctrl.signal.aborted) setLoading(false);
+        // Clear the spinner only when THIS request is still the latest one.
+        // A superseded (aborted) request must not touch it: the old guard
+        // (`!ctrl.signal.aborted`) skipped the clear entirely when a silent
+        // reconcile/poll aborted the initial non-silent load, leaving `loading`
+        // stuck true forever. The newest load — silent or not — owns the flag.
+        if (inflight.current === ctrl) setLoading(false);
       }
     },
     [fetchPositions],
@@ -129,7 +134,18 @@ export function useRulePositions(
   // the table always lands on the terminal state. Fires once per settle, not on a
   // timer — cheap, and the only fetch this hook makes after the initial load.
   const wasSettled = useRef(settled);
+  const reconcileRuleId = useRef<string | null>(null);
   useEffect(() => {
+    // Only reconcile on an in-place transition to settled for the SAME rule —
+    // not when the selection changes to an already-settled rule. The select
+    // effect's initial fetch already covers a fresh selection; treating it as a
+    // transition would fire a redundant silent load that aborts that initial
+    // (non-silent) fetch. On selection change just (re)prime the baseline.
+    if (selectedRuleId !== reconcileRuleId.current) {
+      reconcileRuleId.current = selectedRuleId;
+      wasSettled.current = settled;
+      return;
+    }
     if (settled && !wasSettled.current && selectedRuleId) void load(selectedRuleId, true);
     wasSettled.current = settled;
   }, [settled, selectedRuleId, load]);
