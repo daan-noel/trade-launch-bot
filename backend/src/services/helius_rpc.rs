@@ -139,7 +139,7 @@ impl HeliusRpc {
         let result = self
             .call(
                 "getAccountInfo",
-                json!([address, { "encoding": "base64" }]),
+                json!([address, { "encoding": "base64", "commitment": "confirmed" }]),
             )
             .await?;
         // getAccountInfo wraps the account in `{ context, value }`, with `value`
