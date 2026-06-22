@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { DataTable } from 'components/table/DataTable';
+import { Accordion } from 'components/ui/Accordion';
 import { Badge, type BadgeVariant } from 'components/ui/Badge';
 import { SectionDivider } from 'components/ui/SectionDivider';
 import { Button } from 'components/ui/Button';
@@ -112,6 +113,34 @@ function SectionHeading({
           {action}
         </>
       )}
+    </div>
+  );
+}
+
+/** Inline (margin-free) variant of the section heading, sized to sit inside an
+ *  Accordion's custom header row — the marker bar + title + count badge +
+ *  subtitle, with the Accordion supplying the chevron toggle. */
+function RuleTableHeader({
+  title,
+  count,
+  marker,
+  badge,
+  subtitle,
+}: {
+  title: string;
+  count: number;
+  marker: string;
+  badge: BadgeVariant;
+  subtitle: string;
+}) {
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-2.5">
+      <span className={cn('h-4 w-1 rounded-full', marker)} />
+      <h3 className="text-sm font-bold text-text">{title}</h3>
+      <Badge variant={badge} size="sm" className="font-mono font-normal">
+        {count}
+      </Badge>
+      <span className="truncate font-mono text-[11px] text-text-dim">{subtitle}</span>
     </div>
   );
 }
@@ -1082,6 +1111,12 @@ export function Tpsl1Page() {
 
   const [showPending, setShowPending] = useState(false);
 
+  // Split the single rule list into real vs paper so each renders in its own
+  // table (real on top, flagged as live). Pure client-side partition of the
+  // already-fetched rows — no extra fetch, same RuleRecord objects.
+  const realRules = useMemo(() => rules.filter((r) => r.trade_mode === 'real'), [rules]);
+  const paperRules = useMemo(() => rules.filter((r) => r.trade_mode !== 'real'), [rules]);
+
   // Sim-shaped view of the live positions, feeding the Positions summary card.
   // Exclude PendingEntry rows — they haven't filled yet and skew W/L/open tallies.
   const positionSummaryTokens = useMemo(
@@ -1201,21 +1236,65 @@ export function Tpsl1Page() {
 
       {!loading && !error && (
         <RuleRowProvider value={rowContext}>
-          <DataTable
-            columns={ruleColumns}
-            rows={rules}
-            rowKey={keyById}
-            rowActions={ruleActions}
-            selectedKey={selectedRuleId}
-            onSelect={setSelectedRuleId}
-            defaultPageSize={10}
-            pageSizeOptions={[10, 25, 50]}
-            searchable
-            colFilters
-            colToggle
-            tableId="tpsl1_rules"
-            emptyMessage="No rules found"
-          />
+          {realRules.length > 0 && (
+            <Accordion
+              className="mb-4"
+              bordered={false}
+              header={
+                <RuleTableHeader
+                  title="Real Trading"
+                  marker="bg-red"
+                  badge="danger"
+                  count={realRules.length}
+                  subtitle="Live on-chain — buys & sells execute for real"
+                />
+              }
+            >
+              <DataTable
+                columns={ruleColumns}
+                rows={realRules}
+                rowKey={keyById}
+                rowActions={ruleActions}
+                selectedKey={selectedRuleId}
+                onSelect={setSelectedRuleId}
+                defaultPageSize={10}
+                pageSizeOptions={[10, 25, 50]}
+                searchable
+                colFilters
+                colToggle
+                tableId="tpsl1_rules_real"
+                emptyMessage="No real rules"
+              />
+            </Accordion>
+          )}
+          <Accordion
+            bordered={false}
+            header={
+              <RuleTableHeader
+                title="Paper Trading"
+                marker="bg-info"
+                badge="info"
+                count={paperRules.length}
+                subtitle="Simulated — no on-chain execution"
+              />
+            }
+          >
+            <DataTable
+              columns={ruleColumns}
+              rows={paperRules}
+              rowKey={keyById}
+              rowActions={ruleActions}
+              selectedKey={selectedRuleId}
+              onSelect={setSelectedRuleId}
+              defaultPageSize={10}
+              pageSizeOptions={[10, 25, 50]}
+              searchable
+              colFilters
+              colToggle
+              tableId="tpsl1_rules_paper"
+              emptyMessage="No paper rules"
+            />
+          </Accordion>
         </RuleRowProvider>
       )}
 
