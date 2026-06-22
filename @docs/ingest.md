@@ -55,6 +55,8 @@ Layout: the `decode_protobuf` orchestration lives in `grpc/`; everything source-
 | `grpc/trade.rs` | protobuf-native trade helpers: `decode_trade_events_from_inner_pb`, `compute_token_change_pb`, `decode_trade_from_balances_pb` (typed `scb::TokenBalance` lists) |
 
 > **Shared leaves.** The root leaves (Borsh decoders incl. `RawTradeEvent`/`from_raw`, `classify_pump_ix`, `label_instruction`, `determine_instruction_type`, `build_amm_trade`, `compute_sol_change`, `decode_create`, `decode_migrate`) are source-agnostic, consumed by `grpc/` for both curve and AMM-live decode and (via the same `decode_protobuf` call) by token_sync.
+>
+> **Event ordering (create+buy).** `decode_protobuf` stable-sorts the returned `events` so `TokenCreated` (then `CreatorActivityDetected`) precede `TradeExecuted` for the same tx. The decoded-TradeEvent loop pushes the dev buy *before* `decode_create`, but `pipeline::on_trade_executed` drops any trade whose mint isn't yet in `token_cache` — without the sort the genesis dev buy is silently lost. No-op for pure-trade txs.
 
 ## Codegen — `generated/` + `proto/`
 

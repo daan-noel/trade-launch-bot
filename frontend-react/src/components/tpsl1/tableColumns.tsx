@@ -146,6 +146,7 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
       group: 'state',
       sortable: true,
       render: (r) => {
+        if (r.status === 'PendingEntry') return <span className="italic text-text-dim">Pending</span>;
         if (r.status === 'TakeProfit') return <span className="font-bold text-green">TP</span>;
         if (r.status === 'StopLoss') return <span className="font-bold text-red">SL</span>;
         return <span className="text-text-dim">{r.status}</span>;

@@ -478,7 +478,9 @@ pub fn should_position_exit_on_clock(
 /// evaluating it would divide by ~0 and fire a phantom TakeProfit, flapping the
 /// position ExitPending→Holding. Returns the entry time once those hold.
 pub fn clock_entry_time(position: &Position) -> Option<DateTime<Utc>> {
-    if position.status != PositionStatus::Holding || position.entry_price.is_none() {
+    if (position.status != PositionStatus::Holding && position.status != PositionStatus::PendingEntry)
+        || position.entry_price.is_none()
+    {
         return None;
     }
     position.entry_time

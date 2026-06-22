@@ -568,18 +568,19 @@ impl Tpsl2RuntimeCache {
 
     /// Call after DB writes that change position status or create/delete a position.
     pub fn sync_position(&self, prev: Option<&Position>, current: &Position) {
-        // Holding index: all positions tracked regardless of entry (exit-gating
-        // relies on this for unentered positions too).
-        if let Some(p) = prev {
-            if p.status == PositionStatus::Holding {
-                self.remove_from_holding_index(p);
-                if current.status != PositionStatus::Holding {
-                    // Position is leaving Holding — its memoized exit state is dead.
-                    self.exit_state_by_position.remove(&p.id);
-                }
+        let prev_in_holding_index = prev.map(|p| p.is_in_holding_index()).unwrap_or(false);
+        let curr_in_holding_index = current.is_in_holding_index();
+
+        // Holding index: PendingEntry and Holding both belong (exit-gating relies
+        // on this; the fill-adopt path needs to find the pending row by mint).
+        if prev_in_holding_index {
+            self.remove_from_holding_index(prev.unwrap());
+            if !curr_in_holding_index {
+                // Position is leaving the holding index — memoized exit state is dead.
+                self.exit_state_by_position.remove(&prev.unwrap().id);
             }
         }
-        if current.status == PositionStatus::Holding {
+        if curr_in_holding_index {
             self.upsert_in_holding_index(current);
         }
 
@@ -592,7 +593,8 @@ impl Tpsl2RuntimeCache {
             self.adjust_total_count(current.rule_id, 1);
         }
 
-        // holding_count: entered positions currently in Holding status.
+        // holding_count: entered positions in Holding (not PendingEntry — those
+        // haven't deployed SOL yet and must not count toward the cap).
         let prev_holding_entered = prev
             .map(|p| p.entry_price.is_some() && p.status == PositionStatus::Holding)
             .unwrap_or(false);
@@ -612,7 +614,7 @@ impl Tpsl2RuntimeCache {
     }
 
     pub fn remove_position(&self, position: &Position) {
-        if position.status == PositionStatus::Holding {
+        if position.is_in_holding_index() {
             self.remove_from_holding_index(position);
         }
         self.time_exit_holding.remove(&position.id);

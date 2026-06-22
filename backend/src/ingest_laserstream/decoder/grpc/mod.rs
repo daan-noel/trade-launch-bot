@@ -386,6 +386,14 @@ impl HeliusDecoder {
             }
         }
 
+        // TokenCreated must precede TradeExecuted for the same mint so the
+        // pipeline's `token_cache` gate doesn't drop the dev buy on create+buy txs.
+        events.sort_by_key(|e| match e {
+            InternalEvent::TokenCreated(_) => 0,
+            InternalEvent::CreatorActivityDetected(_) => 1,
+            _ => 2,
+        });
+
         DecodeOutput::Transaction { raw_tx, events }
     }
 
@@ -989,6 +997,22 @@ mod tests {
             trade.instruction_labels.is_array(),
             "trade labels: {:?}",
             trade.instruction_labels
+        );
+
+        // Ordering: TokenCreated must precede the dev-buy TradeExecuted, else
+        // pipeline::on_trade_executed drops the buy (mint not yet in token_cache)
+        // and the genesis candle is lost from the chart.
+        let created_idx = events
+            .iter()
+            .position(|e| matches!(e, InternalEvent::TokenCreated(_)))
+            .expect("expected a TokenCreated event");
+        let trade_idx = events
+            .iter()
+            .position(|e| matches!(e, InternalEvent::TradeExecuted(_)))
+            .expect("expected a TradeExecuted event");
+        assert!(
+            created_idx < trade_idx,
+            "TokenCreated (idx {created_idx}) must come before the dev buy (idx {trade_idx})"
         );
     }
 

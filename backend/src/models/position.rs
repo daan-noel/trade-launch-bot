@@ -69,6 +69,10 @@ pub struct Position {
 #[serde(rename_all = "PascalCase")]
 pub enum PositionStatus {
     Holding,
+    /// Created before the buy fill lands. Transitions to `Holding` via
+    /// `update_entry` once the on-chain fill is adopted. Not counted toward
+    /// the per-rule cap and excluded from frontend summary tallies.
+    PendingEntry,
     ExitPending,
     End,
     /// Terminal: the exit attempt completed and failed (real: sell retries
@@ -81,6 +85,7 @@ impl std::fmt::Display for PositionStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Holding => write!(f, "Holding"),
+            Self::PendingEntry => write!(f, "PendingEntry"),
             Self::ExitPending => write!(f, "ExitPending"),
             Self::End => write!(f, "End"),
             Self::ExitFailed => write!(f, "ExitFailed"),
@@ -94,6 +99,7 @@ impl std::str::FromStr for PositionStatus {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "Holding" => Ok(Self::Holding),
+            "PendingEntry" => Ok(Self::PendingEntry),
             "ExitPending" => Ok(Self::ExitPending),
             "End" => Ok(Self::End),
             "ExitFailed" => Ok(Self::ExitFailed),
@@ -127,7 +133,7 @@ impl Position {
             exit_token_amount: None,
             exit_time: None,
             exit_tx_signatures: Vec::new(),
-            status: PositionStatus::Holding,
+            status: PositionStatus::PendingEntry,
             strategy,
             rule_id,
             exit_reason: None,
@@ -180,6 +186,16 @@ impl Position {
     /// signature(s) of this position's OWN sell leg(s) that cleared the balance
     /// (one for a single-shot sell; several when the sell-confirm loop retried /
     /// re-routed across migration).
+    /// Flip status from PendingEntry to Holding when the on-chain fill is
+    /// confirmed in-memory (the repo `update_entry` does the same atomically
+    /// in the DB; this helper keeps the in-memory `Position` consistent so
+    /// callers can mutate the value before handing it back to the cache).
+    #[allow(dead_code)]
+    pub fn mark_entry_filled(&mut self) {
+        self.status = PositionStatus::Holding;
+        self.updated_at = chrono::Utc::now();
+    }
+
     pub fn close(
         &mut self,
         exit_price: f64,
@@ -193,6 +209,13 @@ impl Position {
         self.exit_time = Some(exit_time);
         self.status = PositionStatus::End;
         self.updated_at = Utc::now();
+    }
+
+    /// Whether this position is in the "holding index" (either awaiting fill or
+    /// fully entered but not yet exiting). Used by the runtime cache and the
+    /// exit guard to decide if a position is visible to the strategy hot path.
+    pub fn is_in_holding_index(&self) -> bool {
+        matches!(self.status, PositionStatus::Holding | PositionStatus::PendingEntry)
     }
 
     /// Calculate profit/loss percentage.
@@ -223,7 +246,54 @@ impl Position {
                 .to_string(),
             ),
             PositionStatus::ExitFailed => Some("ExitFailed".to_string()),
-            PositionStatus::Holding | PositionStatus::ExitPending => None,
+            PositionStatus::Holding | PositionStatus::PendingEntry | PositionStatus::ExitPending => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn make_position() -> Position {
+        Position::new("mint".into(), "wallet".into(), "TPSL1".into(), Uuid::new_v4())
+    }
+
+    #[test]
+    fn new_position_starts_pending_entry() {
+        let p = make_position();
+        assert_eq!(p.status, PositionStatus::PendingEntry);
+    }
+
+    #[test]
+    fn pending_entry_round_trips_display_fromstr() {
+        let s = PositionStatus::PendingEntry.to_string();
+        assert_eq!(s, "PendingEntry");
+        assert_eq!(s.parse::<PositionStatus>().unwrap(), PositionStatus::PendingEntry);
+    }
+
+    #[test]
+    fn exit_reason_is_none_for_pending_entry() {
+        let p = make_position();
+        assert!(p.exit_reason_or_derived().is_none());
+    }
+
+    #[test]
+    fn mark_entry_filled_transitions_to_holding() {
+        let mut p = make_position();
+        assert_eq!(p.status, PositionStatus::PendingEntry);
+        p.mark_entry_filled();
+        assert_eq!(p.status, PositionStatus::Holding);
+    }
+
+    #[test]
+    fn is_in_holding_index_covers_both_pre_fill_statuses() {
+        let mut p = make_position();
+        assert!(p.is_in_holding_index(), "PendingEntry is in holding index");
+        p.mark_entry_filled();
+        assert!(p.is_in_holding_index(), "Holding is in holding index");
+        p.mark_exit_pending();
+        assert!(!p.is_in_holding_index(), "ExitPending is NOT in holding index");
     }
 }

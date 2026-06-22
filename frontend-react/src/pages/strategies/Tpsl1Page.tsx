@@ -1080,12 +1080,23 @@ export function Tpsl1Page() {
     [selectedRuleId, rules],
   );
 
+  const [showPending, setShowPending] = useState(false);
+
   // Sim-shaped view of the live positions, feeding the Positions summary card.
-  // Memoized so the ~10 aggregate passes (and the card) only recompute when the
-  // position list actually changes, not on every SOL/USD price tick.
+  // Exclude PendingEntry rows — they haven't filled yet and skew W/L/open tallies.
   const positionSummaryTokens = useMemo(
-    () => positions.map(positionToSimResult),
+    () => positions.filter((p) => p.status !== 'PendingEntry').map(positionToSimResult),
     [positions],
+  );
+
+  const pendingCount = useMemo(
+    () => positions.filter((p) => p.status === 'PendingEntry').length,
+    [positions],
+  );
+
+  const visiblePositions = useMemo(
+    () => (showPending ? positions : positions.filter((p) => p.status !== 'PendingEntry')),
+    [positions, showPending],
   );
 
   // Stable row-select handlers so the result tables' memoized rows survive an
@@ -1216,12 +1227,23 @@ export function Tpsl1Page() {
               title="Positions"
               marker="bg-info"
               badge="info"
-              count={positionsLoading || positionsError ? undefined : positions.length}
+              count={positionsLoading || positionsError ? undefined : visiblePositions.length}
               subtitle={selectedRuleName ?? undefined}
+              action={
+                pendingCount > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowPending((v) => !v)}
+                    className="text-[11px] text-text-dim transition hover:text-text"
+                  >
+                    {showPending ? 'Hide' : 'Show'} pending entry ({pendingCount})
+                  </button>
+                ) : undefined
+              }
             />
             {positionsLoading && <p className="text-text-dim">Loading positions…</p>}
             {positionsError && <InlineAlert variant="error">{positionsError}</InlineAlert>}
-            {!positionsLoading && !positionsError && positions.length > 0 && (
+            {!positionsLoading && !positionsError && positionSummaryTokens.length > 0 && (
               <SimSummaryCard
                 title="Positions Summary"
                 ruleName={selectedRuleName ?? ''}
@@ -1232,7 +1254,7 @@ export function Tpsl1Page() {
             {!positionsLoading && !positionsError && (
               <DataTable
                 columns={posCols}
-                rows={mergeTokenData(positions, tokenMap)}
+                rows={mergeTokenData(visiblePositions, tokenMap)}
                 rowKey={keyById}
                 selectedKey={inspect?.table === 'positions' ? inspect.key : null}
                 onSelect={onSelectPosition}

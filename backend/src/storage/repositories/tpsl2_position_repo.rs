@@ -63,6 +63,7 @@ impl TryFrom<PositionDbRow> for Position {
     fn try_from(r: PositionDbRow) -> Result<Self, Self::Error> {
         let status = match r.status.as_str() {
             "Holding" => PositionStatus::Holding,
+            "PendingEntry" => PositionStatus::PendingEntry,
             "ExitPending" => PositionStatus::ExitPending,
             "End" => PositionStatus::End,
             "ExitFailed" => PositionStatus::ExitFailed,
@@ -99,6 +100,7 @@ impl TryFrom<PositionDbRow> for Position {
 fn position_status_str(s: PositionStatus) -> &'static str {
     match s {
         PositionStatus::Holding => "Holding",
+        PositionStatus::PendingEntry => "PendingEntry",
         PositionStatus::ExitPending => "ExitPending",
         PositionStatus::End => "End",
         PositionStatus::ExitFailed => "ExitFailed",
@@ -138,7 +140,8 @@ impl Tpsl2PositionRepo {
         let row = sqlx::query_as::<_, PositionDbRow>(&format!(
             r#"
             UPDATE tpsl2_real_positions
-            SET entry_tx_signatures = $2, entry_token_amount = $3, entry_price = $4, entry_time = $5, updated_at = $6
+            SET entry_tx_signatures = $2, entry_token_amount = $3, entry_price = $4, entry_time = $5,
+                status = 'Holding', updated_at = $6
             WHERE id = $1
             RETURNING {POSITION_COLS}
             "#
@@ -264,7 +267,7 @@ impl Tpsl2PositionRepo {
             r#"
             SELECT {POSITION_COLS}
             FROM tpsl2_real_positions
-            WHERE mint = $1 AND status = 'Holding'
+            WHERE mint = $1 AND status IN ('Holding','PendingEntry')
             ORDER BY created_at DESC
             LIMIT $2 OFFSET $3
             "#
@@ -289,7 +292,7 @@ impl Tpsl2PositionRepo {
             r#"
             SELECT {POSITION_COLS}
             FROM tpsl2_real_positions
-            WHERE wallet = $1 AND status = 'Holding'
+            WHERE wallet = $1 AND status IN ('Holding','PendingEntry')
             ORDER BY created_at DESC
             LIMIT $2 OFFSET $3
             "#
@@ -389,7 +392,7 @@ impl Tpsl2PositionRepo {
         let result = sqlx::query(
             r#"
             DELETE FROM tpsl2_real_positions
-            WHERE status = 'Holding' AND entry_price IS NULL AND created_at < $1
+            WHERE status = 'PendingEntry' AND entry_price IS NULL AND created_at < $1
             "#,
         )
         .bind(cutoff)
@@ -449,7 +452,7 @@ impl Tpsl2PositionRepo {
             r#"
             SELECT {POSITION_COLS}
             FROM tpsl2_real_positions
-            WHERE status = 'Holding'
+            WHERE status IN ('Holding','PendingEntry')
             ORDER BY created_at DESC
             "#
         ))
@@ -469,7 +472,7 @@ impl Tpsl2PositionRepo {
         // degrades toward a full scan as the table grows.
         let rows: Vec<(String,)> = sqlx::query_as(
             "SELECT DISTINCT mint FROM tpsl2_real_positions \
-             WHERE status IN ('Holding', 'ExitPending', 'ExitFailed')",
+             WHERE status IN ('Holding', 'PendingEntry', 'ExitPending', 'ExitFailed')",
         )
         .fetch_all(&self.pool)
         .await?;
