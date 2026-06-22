@@ -3,23 +3,28 @@
 sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`. Migrations in `backend/migrations/` (`0001_init.sql` = consolidated baseline; add `00NN_*.sql`). Runner: `sqlx::migrate!("./migrations")` in `storage/postgres.rs`, invoked from `main.rs`.
 
 ## Migrations
+
 | File | Content |
-|---|---|
+| --- | --- |
 | `0004_tokens_info_constraints.sql` | Idempotent backfill of `tokens_info`'s PK (`id`) + UNIQUE (`mint_address`) — declared in 0001 but **missing on long-lived live DBs** that predate the squash (only NOT NULLs survived), which broke every `ON CONFLICT (mint_address)` upsert ("no unique or exclusion constraint matching the ON CONFLICT specification"). `DO $$`-guarded ⇒ no-op on a fresh DB that already has them from 0001. |
 | `0001_init.sql` | **single squashed migration = the full final schema** (the entire historical chain folded into one file — `0001_init` is now the *only* migration file). All tables/indexes (incl. perf + composite `(filter, created_at DESC)` position indexes), `uuid-ossp`, **partitioned `trades`** (daily RANGE on block_time, ~1mo retention; PK `(block_time,id)`, unique `(tx_signature,leg_index,block_time)`, fns `ensure_trades_partition`/`drop_trades_partition`) built directly (no copy-migration), partitioned `raw_transactions` + partition fns (`source` = `live`/`sync`), `tpsl2_{real,paper}_positions` with `target_*` columns in `target_*`/`entry_*`/`exit_*` order, **both** strategies' **grouped** param-sweep triples `tpsl{1,2}_grouped_sweep_{runs,groups,results}` (the legacy *flat* `tpsl2_sweep_*` tables were created-then-dropped in the old chain and are omitted entirely), the `app_settings` key-value store, and seed tags. Data-only steps (percent rescale, source relabel) leave no schema trace and were dropped. **Squash applies to fresh DBs only — an existing DB that already ran the old chain fails the sqlx checksum check (drop & recreate, or clear `_sqlx_migrations`, to re-init).** Grouped-sweep table details: `tpsl2_grouped_sweep_runs` (one per run; strategy_id, rule_id, source, method, created_after/before, curve_only, grouping_spec/axes_spec JSONB, min_tokens, token/group/combo counts, corpus_hash) → `tpsl2_grouped_sweep_groups` (one per surviving fingerprint group; group_index, group_key JSONB, token/fired counts, best_combo_id, best_expectancy_sol, best_params JSONB; FK CASCADE) → `tpsl2_grouped_sweep_results` (one per (group, combo); FK CASCADE to both; per-combo metric column set + `group_id`). A new strategy adds its own `<strategy>_grouped_sweep_*` triple. See [sweep.md](sweep.md). |
 
 ## Tables
+
 **Core trading**
+
 - `tokens` — `mint_address` UNIQUE, creator_wallet, name/symbol, bonding_curve_address, initial_supply_token, initial_buy_sol, cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, token_program_id, initial_buy_instruction/ix_labels (JSONB), creation_tx_signature, created_at. Idx: creator, created_at, mayhem, token_program, cashback.
 - `trades` *(PARTITIONED)* — mint_address, wallet_address, trade_type(`buy`/`sell`), sol_amount, token_amount, price_per_token, tx_signature, slot, block_time, virtual/real sol+token reserves, ix_type, ix_labels(JSONB), leg_index, received_at, venue(`curve`/`amm`). PK (block_time,id). RANGE-by-day on block_time, ~1mo retention +2d forward; fns `ensure_trades_partition`/`drop_trades_partition`. **UNIQUE(tx_signature, leg_index, block_time)** (block_time in the key because the partition col must be; deterministic per tx ⇒ dedup still exact). Idx: mint, wallet, block_time, (mint,block_time), (mint,venue,slot), (wallet,mint), (mint,slot,leg_index). **This table = the LaserStream feed.**
 - `raw_transactions` *(PARTITIONED)* — id, signature, slot, block_time, raw_data(JSONB), received_at, source(`live`/`sync`). PK (received_at,id). RANGE-by-day on received_at, ~1mo retention +2d forward; fns `ensure_raw_partition`/`drop_raw_partition`. No UNIQUE (dupes tolerated). `source='live'` = real-time LaserStream ingest; `source='sync'` = token_sync backfill (both "Fetch All" via gTFA and "Fetch New" via LaserStream replay). Both persist the full Helius blob — kept for later analysis/replay.
 
 **Token analysis**
+
 - `tokens_info` — `mint_address` UNIQUE, ath_price/ts, age, volume, market_cap, trade_count, last_trade_at, current_price, is_dead (cheap in-memory verdict — liquidity gone + price≈launch + dust-only volume; see `TokenState::is_dead`), is_migrated, per-venue sync watermarks (`last_synced_{curve,amm}_{sig,slot}`), created/updated_at. *(0002 renamed `is_rugged`→`is_dead`.)*
 - `tokens_analysis` — mint_address, analyzer_name, score, indicators(JSONB), computed_at. UNIQUE(mint_address, analyzer_name).
 - `creator_profiles` — wallet_address UNIQUE, tokens_created, total_volume_sol, suspiciousness_score, wash_trade_score, indicators(JSONB), last_analyzed_at.
 
 **TPSL strategy** (tpsl2 mirrors tpsl1 + extra scalp gate columns)
+
 - `tpsl1_strategy_rules` — rule_name, entry params `p_token_*`, caps `p_max_{concurrent,total}_tokens`, exit params `p_exit_*` (trailing_stop_pct, time_stop_secs, stall_secs, liquidity_drop_pct, take_profit, stop_loss), buy_amount, tolerance_pct, trade_mode(`paper`/`real`), is_active.
 - `tpsl1_real_positions` — mint, wallet, token_program_id, entry_{price,token_amount,time,tx}, exit_{price,token_amount,time,tx}, status(`Holding`/`ExitPending`/`End`/`ExitFailed`), strategy, rule_id (FK→rules, SET NULL), exit_reason. The `*_token_amount` columns hold **token counts** (renamed from `*_amount` by migration 0008; SOL is derived at display as `price × tokens`). entry_tx/exit_tx UNIQUE. Idx: mint, wallet, status, rule_id, (mint,status), token_program_id, (strategy,created_at DESC), (rule_id,created_at DESC), (mint,status,created_at DESC), (wallet,status,created_at DESC). (tpsl2 mirrors these.)
 - `tpsl1_paper_test_run` — rule_id (FK CASCADE), run_seq, status(`Running`/`Finished`/`Stopped`), max_total_tokens, started/finished_at. UNIQUE(rule_id, run_seq); one live run per rule.
@@ -28,6 +33,7 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 - `tpsl2_{real,paper}_positions` also carry `target_{price,token_amount,time,tx}` (nullable): the scalp-entry **trigger trade** that armed the position, distinct from the actual `entry_*` fill. `target_token_amount` is the trigger trade's token count (renamed from `target_amount` by migration 0008; SOL derived at display). Physical column order is `target_*` → `entry_*` → `exit_*`, mirrored by the Rust row struct, `PositionResponse`, and the frontend table. Real: target tx ≠ entry tx (a true slippage/latency gap). Paper: entry is the worst-case adverse fill in the trigger's block/next block, so target ≠ entry except in the fallback case. Gap derived later, not stored.
 
 **Grouped param-sweep** (per-strategy tables; generic table-name-driven repo; see [sweep.md](sweep.md))
+
 - `tpsl2_grouped_sweep_runs` — strategy_id, source(`db`), method, created_after/before, curve_only, grouping_spec(JSONB GroupField[]), axes_spec(JSONB resolved axes), min_tokens, token_count, group_count, combo_count, corpus_hash, created_at, **status** (`running`/`completed`/`cancelled`, CHECK), **groups_done** (both `0002`, Phase 4 partial persistence — a run is written `running` up front, groups appended incrementally bump `groups_done`, then status is finalized; an orphaned `running` row is reconciled to `cancelled` at boot). Plus the **history-metadata** columns (`0005`, all nullable): **ix_labels_filter**/**field_filters** (JSONB — the corpus filters the run used, stored verbatim from the request so the history panel + re-run can read them), **token_cap**/**max_combos** (the submitted caps, distinct from the realized `token_count`/`combo_count`), **label** (optional user-given name, set via `PATCH …/sweeps/{run_id}`). Idx: (created_at DESC). (The sweep synthesizes its base rule in-process; no rule_id is stored.)
 - `tpsl2_grouped_sweep_groups` — run_id (FK CASCADE), group_index (deterministic, largest-first), group_key(JSONB exact-value fingerprint; `{}`=ALL), token_count, fired_count (best combo's n_fired), best_combo_id, best_expectancy_sol, best_params(JSONB). Idx: (run_id, group_index).
 - `tpsl2_grouped_sweep_combos` (`0007`) — per-run combo→`params` **dictionary**: run_id (FK CASCADE), combo_id, params(JSONB), PK (run_id, combo_id). `params` is identical for a `(run_id, combo_id)` across every group (the combo set is fixed before the first group folds), so it lives here **once** instead of on every `(group, combo)` results row (was `group_count`× redundant — the dominant on-disk cost). Written up front by `insert_combos`; JOINed back on read by `list_results_paged`; `get_combo_params(run_id, combo_id)` reads it for the token-results drill-in.
@@ -35,14 +41,16 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 - `tpsl1_grouped_sweep_{runs,groups,results,combos}` (triple in `0001_init`, `_combos` in `0007`) — **identical shape** to the tpsl2 set above (same generic repo writes both). TPSL1 sweeps the exit ladder only, so `params`/`best_params`/`axes_spec` carry fewer keys and `n_exit_cohort` is always 0 (column kept for schema parity with the generic INSERT).
 
 **Wallets / settings**
+
 - `wallet_profiles` — name, type(`mine`/`trader`/`whale`/`dev`), tag_ids(UUID[]).
 - `wallets` — profile_id (FK CASCADE), address UNIQUE, is_tracked, comment, last_seen_at.
 - `wallet_profile_tags` — name UNIQUE, color, comment (seeded with ~20 labels).
 - `app_settings` — PK `key`, value(JSONB), updated_at. Keys: `ingest.{track_mayhem,track_post_migration,live,persist_raw}`, `ui.{timezone,price_unit}`, `trade.slippage_bps`. New setting = new row (migration-free).
 
 ## Repositories (`storage/repositories/`)
+
 | File | Table(s) | Notable fns |
-|---|---|---|
+| --- | --- | --- |
 | `token_repo.rs` | tokens (+tokens_info) | insert, upsert, find_by_mint, exists, find_all, find_symbols_for (mint=ANY, bounded), find_recent_active(limit, since) (activity-windowed + capped cold-start seed), find_by_mints (mint=ANY, chunked — seeds unsettled-position mints outside the window), find_list_rows(limit, since) (`tokens LEFT JOIN tokens_info`, windowed+capped, newest-first → `TokenListRow`; backs the DB base of the `GET /api/tokens` snapshot so the list reflects the whole seeded universe incl. cache-evicted mints. `active_lifetime_secs` is NOT persisted — `tokens_info.age` is wall-clock age — so DB-sourced rows carry it `None`), find_page_before(cursor, limit, since, until) — **keyset** page over the whole `tokens` table, newest-first by `(created_at, mint_address) DESC` (stable tiebreak, no `OFFSET` cost on deep pages); `cursor=None` starts at newest, optional `[since, until)` creation-time clip; all predicates ride `idx_tokens_created_at`. Backs the tpsl analysis scans (matched/simulate) via `strategies::analysis::collect_matching_tokens`, which loops pages keeping only the sparse matches resident — the whole (windowed) table is never loaded |
 | `trade_repo.rs` | trades (+tokens_info) | insert(_many), latest_signature, find_by_mint_all, find_by_mints_all (batched per-mint groups for the backtest — fewer round-trips/conns), find_by_mint_paged, net_token_amount_by_wallet_and_mint, for_each_seed_mint(mints, cap, f) — cold-start cache seed in ONE windowed scan (`mint=ANY`, chunked): newest `cap` trades/mint + lifetime count/volume & newest price/reserves carried as window aggregates (`SeedAgg`), grouped per mint while streaming |
 | `transaction_repo.rs` | raw_transactions | insert(_many), find_by_signature, exists |
@@ -56,12 +64,14 @@ sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`.
 | `wallet_profile_tag_repo.rs` | wallet_profile_tags | list, find_by_ids, insert/update/delete |
 | `tpsl1_strategy_rule_repo.rs` / `tpsl2_*` | tpsl{1,2}_strategy_rules | insert, find_all, find_by_id, update, delete |
 | `tpsl1_position_repo.rs` / `tpsl2_*` | tpsl{1,2}_real_positions | update_entry(RETURNING), update_target(RETURNING; tpsl2 only — trigger-trade snapshot), insert, update, find_holding_by_{mint,wallet}(limit,offset), find_by_rule(limit,offset), find_by_strategy(limit,offset) — all HTTP list reads are page-bounded; find_all_holding (unbounded, cache warm-up only), find_all_exit_pending (unbounded; ExitPending-recovery reaper — re-drives stranded sells, see strategies.md 1A-2/1A-4), distinct_unsettled_mints (positive `status IN ('Holding','ExitPending','ExitFailed')` — index-servable, not a negated `status <> 'End'`; cache seed always tracks open-position mints), count_all_by_rule, fail_stale_exit_pending, delete_position |
-| `tpsl1_paper_trading_repo.rs` / `tpsl2_*` | tpsl{1,2}_paper_{test_run,positions} | start/current/resume/mark run; `clear_runs` (delete all runs for a rule → CASCADE positions; backs "Clear results"); position insert/update_entry/update_target(tpsl2)/update_exit/mark_exit_failed; count_by_run_all, delete_stale_unentered |
+| `tpsl1_paper_trading_repo.rs` / `tpsl2_*` | tpsl{1,2}*paper*{test_run,positions} | start/current/resume/mark run; `clear_runs` (delete all runs for a rule → CASCADE positions; backs "Clear results"); position insert/update_entry/update_target(tpsl2)/update_exit/mark_exit_failed; count_by_run_all, delete_stale_unentered |
 
 ## Rules
+
 - **Always bound queries** — paginate / time-window / stream. Never `SELECT *` full `trades`/`raw_transactions` into memory.
 - Server-side filter/sort/paginate in the repo; don't fetch-all-then-slice.
 - New high-volume tables → follow the `raw_transactions` partition+retention pattern via `ingest_laserstream/maintenance.rs`.
 
 ## sqlx patterns
+
 `query`/`query_as::<_,T>`/`query_scalar` + `.bind()`; `#[derive(sqlx::FromRow)]`; `sqlx::types::Json<T>` for JSONB; `QueryBuilder::push_values` for bulk; `pool.begin()`→`tx.commit()` for transactions.

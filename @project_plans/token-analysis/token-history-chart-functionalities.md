@@ -8,6 +8,7 @@
 > Reuse this file as a prompt to extend or re-implement the chart UI.
 >
 > **Key files** (all under `frontend-react/src/components/token-price-chart/`)
+>
 > - Main component: [`TokenPriceChart.tsx`](../../frontend-react/src/components/token-price-chart/TokenPriceChart.tsx)
 > - Toolbar: [`ChartToolbar.tsx`](../../frontend-react/src/components/token-price-chart/ChartToolbar.tsx)
 > - Bottom zoom/pan slider: [`ChartRangeSlider.tsx`](../../frontend-react/src/components/token-price-chart/ChartRangeSlider.tsx)
@@ -46,7 +47,7 @@ The chart aggregates trades two ways, chosen by the **`groupMode`** toggle (`'ti
 `'slot'`):
 
 | Mode | Bucket key | Aggregator | Notes |
-|------|-----------|-----------|-------|
+| ------ | ----------- | ----------- | ------- |
 | **Time** (default) | `floor(block_time_sec / intervalSec) * intervalSec` | `aggregateTradesToBars` | interval selector active |
 | **Slot** | the raw Solana `slot` number | `aggregateTradesToBarsBySlot` | interval selector **disabled**; one bar ≈ one block (~400 ms) |
 
@@ -63,6 +64,7 @@ The chart aggregates trades two ways, chosen by the **`groupMode`** toggle (`'ti
 ## 3. Series style & metric
 
 ### 3a. Chart style (`style`: `'candles'` | `'line'`)
+
 Toggled by the candle/line icon group in the toolbar (`handleStyleChange`, persisted).
 
 - **Candles** (default): `CandlestickSeries` with `CANDLE_SERIES_OPTIONS`. Selected /
@@ -70,6 +72,7 @@ Toggled by the candle/line icon group in the toolbar (`handleStyleChange`, persi
 - **Line**: `LineSeries` (`LINE_SERIES_OPTIONS`) drawing the close price as a continuous teal line.
 
 ### 3b. Metric (`metric`: `'price'` | `'mc'`)
+
 Only rendered when the parent passes an `onMetricChange` callback.
 
 - **Price** — spot SOL/token.
@@ -79,6 +82,7 @@ The metric is a **parent-controlled** prop (the chart calls `onMetricChange`), a
 the Y-axis, the swing-overlay prices, and every price formatter.
 
 ### 3c. Price unit & formatting
+
 `priceUnit` (`'SOL'` | `'USD'`) + `toValue()` converter + `priceLabel` come from the parent.
 `createChartPriceFormatter(priceUnit)` (`constants.ts`) prefixes values with **◎** (SOL) or
 **$** (USD) and is applied to right-axis labels and all tooltips.
@@ -92,7 +96,7 @@ pill groups (group mode, interval, style, metric) and the marker/line toggles. *
 (right-aligned): the swing/chain/range controls.
 
 | Control | Type | Effect | Persisted? |
-|---------|------|--------|:---------:|
+| --------- | ------ | -------- | :---------: |
 | **Time / Slot** | pill group | `groupMode` (§2) | ✓ |
 | **1s/30s/1m/5m** | pill group | `intervalSec`; disabled in slot mode | ✓ |
 | **Candles / Line** | icon group | `style` (§3a) | ✓ |
@@ -179,6 +183,7 @@ price chart. Geometry comes from `swingOverlay.ts`; the algorithm that produces 
 `swing-detection-logic.md`.
 
 ### 8a. Segment modes (`segmentMode`)
+
 Driven by the **Connect** button (`connectSwings`) and whether a visibility filter is active:
 
 - **`connected`** — one continuous reversal path (first leg's start, then each leg's end),
@@ -189,16 +194,19 @@ Driven by the **Connect** button (`connectSwings`) and whether a visibility filt
   a false line.
 
 ### 8b. Colors & series
+
 Swing-high = cyan (`#0eb5ff`), swing-low = magenta (`#e879f9`), 3 px lines with no crosshair
 markers / price line. Each leg's stable key is
 `swingLegKey(leg) = \`${type}-${start_at}-${end_at}\``.
 
 ### 8c. Selecting a leg
+
 Clicking the swing path resolves the leg under the pointer
 (`resolveSwingLegAtChartInteraction`) and toggles selection via `onSwingLegClick` /
 `selectedSwingLegKey`. The selected leg's bars are highlighted on the main series.
 
 ### 8d. Leg tooltip
+
 Hovering the swing path shows `SwingCrosshairTooltip`: a colored badge (`SWING HIGH` / `SWING
 LOW`) + duration, start/end time & price, Δ%, inflow/outflow/net flow, and trade count.
 
@@ -232,7 +240,7 @@ trades are marked with a colored **circle** drawn by `WalletMarkersPlugin`
   the first letter of the profile/wallet name, and uses a green (buy) / red (sell) border.
 - Hovering a circle (`containsPoint`, distance < radius) opens `WalletMarkersTooltip`, listing
   each wallet at that bar: profile name / shortened address, optional tags, and buy/sell counts
-  + total SOL. The per-bar summary comes from `buildWalletBarActivityMap`
+  - total SOL. The per-bar summary comes from `buildWalletBarActivityMap`
   (`WalletBarActivity`: counts + buy/sell SOL per wallet per bar).
 
 ---
@@ -259,6 +267,7 @@ Vol/Liq; for line, Price + Vol/Liq. `BarFlowFields` renders the flow variant (Ne
 ## 12. Zoom, pan & the bottom range slider
 
 ### 12a. Viewport preservation (`chartViewport.ts`)
+
 Because bars are rebuilt whenever interval/group/metric/trades change, the chart must not
 "jump" back to fit-content on every update. The helpers:
 
@@ -270,6 +279,7 @@ Because bars are rebuilt whenever interval/group/metric/trades change, the chart
   correctly. On first mount the chart `fitContent()`s once, then preserves the user's view.
 
 ### 12b. Bottom range slider (`ChartRangeSlider.tsx`)
+
 Shown when there is more than one bar. It's a miniature scrollbar over the full data span with
 a teal "window" marking the visible range. Three drag modes:
 

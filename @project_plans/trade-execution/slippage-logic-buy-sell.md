@@ -5,7 +5,7 @@
 The trader has two venues, each with its own slippage handling:
 
 | | **Bonding curve** (pre-migration) | **PumpSwap AMM** (post-migration) |
-|---|---|---|
+| --- | --- | --- |
 | Buy | `buy.rs` (~159-174) | `amm.rs` (~203-207) |
 | Sell | `sell.rs` (~211-224) | `amm.rs` (~276-278) |
 

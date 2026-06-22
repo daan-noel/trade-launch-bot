@@ -33,7 +33,7 @@ These fire **once**, at token creation, before any trade prints.
 All configured params must pass. A rule with zero configured params never matches (safety guard).
 
 | Param | What it checks | Match rule |
-|---|---|---|
+| --- | --- | --- |
 | `p_token_initial_buy_sol` | SOL size of the token's very first buy | within `tolerance_pct`% band |
 | `p_token_cu_limit` | Compute unit limit on the creation tx | exact |
 | `p_token_cu_price` | Compute unit price on the creation tx | exact |
@@ -244,7 +244,7 @@ Can also fire during silence via the clock sweep.
 ## Two Exit Triggers: Trade vs Clock
 
 | Trigger | What fires it | Which rules |
-|---|---|---|
+| --- | --- | --- |
 | **Trade-driven** | new trade prints on the mint | ALL 7 rules |
 | **Clock-driven (1s sweep)** | wall clock, even in silence | Stall (E3) + TimeStop (E2) only |
 
@@ -257,6 +257,7 @@ Price-based rules (CohortExit, LiquidityExit, StopLoss, TakeProfit, TrailingStop
 All `p_*_pct` and ratio params are stored as **whole percent** (0–100), not fractions (0–1).
 
 The comparison sites divide by 100 before comparing:
+
 - `p_exit_stop_loss = 20` means `−20%` → checked as `price ≤ entry_price * (1 − 20/100)`
 - `p_entry_max_cohort_held = 30` means `≤30%` held → checked as `ratio ≤ 30/100`
 - `p_exit_cohort_ratio = 5` means `≤5%` remaining → checked as `net ≤ bought * 5/100`

@@ -5,6 +5,7 @@
 > Reuse this file as a prompt to re-implement or extend the feature.
 >
 > **Key files**
+>
 > - Backend algorithm: [`backend/src/analyzers/swing_analyzer.rs`](../../backend/src/analyzers/swing_analyzer.rs)
 > - API handlers: [`backend/src/api/handlers/tokens/swing.rs`](../../backend/src/api/handlers/tokens/swing.rs)
 > - Params UI / form coercion: [`frontend-react/src/components/analysis/swingParams.tsx`](../../frontend-react/src/components/analysis/swingParams.tsx)
@@ -54,6 +55,7 @@ JSON response → Redux (swingResult / swingAllResults) → chart overlay + resu
 ```
 
 Client-side, **two more passes** run on the returned ledger (they never re-hit the backend):
+
 - **Visibility filter** (`swingFilter.ts`) — narrows which legs are *displayed*.
 - **Chain stats** (`swingChains.ts`) — groups high→low pairs into "chains" for the table columns
   and the longest-chain chart highlight.
@@ -66,6 +68,7 @@ Each DB `Trade` is mapped to an internal `Tx`. Before scanning:
 
 - **Skip** any trade with `sol_amount <= 0`.
 - **Sort canonically** (stable tie-breaks):
+
   ```
   block_time (timestamp_ms)  ASC      ← primary, also the sole source of duration_ms
   slot                       ASC      ← tie-break
@@ -192,6 +195,7 @@ SELL ⇒ seed `current_low`, phase `SwingLow`.
 and only the accumulated net-flow threshold governs.
 
 ### SwingHigh
+
 - **BUY** → `apply_buy`: `inflow += sol`, `end_at/end_price = tx`, `trade_count++`,
   `consider_pivot` (advance the leg's max-spot extreme; record this tx if it's a big tx).
 - **SELL** → open `temp_low` seeded from this SELL (`outflow = sol`, counts immediately),
@@ -201,6 +205,7 @@ and only the accumulated net-flow threshold governs.
   phase → `SwingLow`).
 
 ### TempSwingLow
+
 - **SELL** → `temp.outflow += sol`. If `>= threshold` **or** `is_big(tx)` ⇒ **confirm**:
   push `current_high`, `temp` → `current_low`, phase → `SwingLow`.
 - **BUY** (threshold not reached) → **merge-back**: fold temp's SELLs into the high
@@ -208,18 +213,22 @@ and only the accumulated net-flow threshold governs.
   untouched — they track the last BUY), phase → `SwingHigh`, then `apply_buy(tx)` once.
 
 ### SwingLow (mirror of SwingHigh)
+
 - **SELL** → `apply_sell`: `outflow += sol`, `end_at/end_price = tx`, `trade_count++`.
 - **BUY** → open `temp_high` (`inflow = sol`, counts immediately), freeze `low→high`
   threshold off `current_low.net_flow` (abs), phase → `TempSwingHigh`; immediate-confirm check.
 
 ### TempSwingHigh (mirror of TempSwingLow)
+
 - **BUY** → `temp.inflow += sol`. If `>= threshold` ⇒ **confirm**: push `current_low`,
   `temp` → `current_high`, phase → `SwingHigh`.
 - **SELL** → **merge-back** into the low (`low.inflow += temp.inflow`, `trade_count +=`),
   phase → `SwingLow`, then `apply_sell(tx)` once.
 
 ### End of history (flush)
+
 Unlike the old spec (which discarded trailing legs), the implementation **keeps** them:
+
 - `SwingHigh` / `SwingLow`: push the active leg.
 - `TempSwingLow` / `TempSwingHigh`: push the active leg **and** the open temp leg.
 
@@ -228,7 +237,9 @@ So the raw ledger can end with an unconfirmed/temp leg. Net flow is recomputed a
 end_at - start_at`.
 
 ### Terminal pivot (`pivot_end_*`) — charting anchor, never affects stats
+
 Each `LegAcc` tracks two extra cursors that **do not** touch any stat or filter:
+
 - `extreme_*` — the leg's price extreme: **max** post-spot for a high, **min** for a low,
   updated on every same-side tx via `consider_pivot`.
 - `last_big_*` — timestamp/price of the **last** same-side tx with `sol_amount >= big_tx_sol`
@@ -363,6 +374,7 @@ into one swing high (plus, at most, a trailing temp low at flush).
 ## 9. Client-side post-passes (display only — no re-fetch)
 
 ### 9a. Visibility filter (`swingFilter.ts`)
+
 Narrows which already-detected legs are *shown* in the table/chart. Independent of the
 backend quality filter. `0` on any numeric bound = ignore it. Criteria:
 `leg_type` (`all|swing_high|swing_low`), min/max `duration_ms`, `trades`, `volume_sol`
@@ -370,6 +382,7 @@ backend quality filter. `0` on any numeric bound = ignore it. Criteria:
 `change_pct = (end_price - start_price) / start_price * 100`.
 
 ### 9b. Chain of swings (`swingChains.ts`)
+
 A **swing pair** = a `swing_high` immediately followed by a `swing_low` (one up-then-down
 cycle); unpaired legs are skipped. Two consecutive pairs are **linked** when the idle gap
 `next.startAt − current.endAt <= chainLatencyMs` (default **60 000 ms**). A **chain** is a
@@ -379,6 +392,7 @@ maximal run of **≥ 2 linked pairs** (an isolated pair is not a chain). Produce
 re-groups instantly without re-running detection.
 
 **Chain example** (`chainLatencyMs = 60000`):
+
 ```
 pairs (startAt→endAt, ms):  P1 0→10k   P2 50k→70k   P3 130k→150k   P4 155k→160k
 gaps:  P1→P2 = 50k-10k = 40k  ≤60k  link
@@ -394,13 +408,14 @@ result: totalPairCount=4, chainCount=1, maxSequentialPairCount=4,
 
 `swingOverlay.ts` turns the ledger into chart geometry. Three `segmentMode`s drive the
 `TokenPriceChart` `swingOverlay` prop:
+
 - `connected` — one continuous reversal path (first leg's start, then each leg's end),
   colored per leg (`swingHigh`/`swingLow`). Default when "connect swings" is on.
 - `perLeg` — one isolated start→end segment per leg. Used when connect is off.
 - `connectedSequential` — connected only within runs of legs that are adjacent in the full
   ledger (used when a visibility filter is active, so gaps aren't bridged).
 
-A leg's stable key is `swingLegKey(leg) = `${type}-${start_at}-${end_at}``. Times resolve to
+A leg's stable key is `swingLegKey(leg) =`${type}-${start_at}-${end_at}``. Times resolve to
 seconds in time mode, or to the nearest trade's slot in slot mode. The longest chain (9b) is
 passed as `highlightChain` and drawn as a background band.
 
@@ -423,4 +438,5 @@ passed as `highlightChain` and drawn as a background band.
    per-leg-type delta-% and net-flow/s bounds pick the matching `swing_high_*`/`swing_low_*` set,
    and net-flow/s is skipped for 0-duration legs.
 8. Everything in **SOL**; `net_flow > 0` ⇒ high, `< 0` ⇒ low.
+
 ```

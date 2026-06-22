@@ -46,7 +46,7 @@ The remaining sections below are the original design rationale; the inline
 ## The 3 shapes — buy only the 3rd
 
 | shape | looks like | action |
-|---|---|---|
+| --- | --- | --- |
 | **Spike-and-die** | pumps once, dead in 10s–2m | **skip** |
 | **Bot-eater** | flat plateau at the top, then ONE giant dump | **skip** |
 | **Real continuation** | pumps, dips, climbs again on real buying | **BUY** |
@@ -115,7 +115,7 @@ Reuses the rug-detection cohort window (`EARLY_COHORT_SLOT_WINDOW = 150`) so the
 ## Starting param values (scalp — supersede the launch-sniper snapshot)
 
 | param | start | note |
-|---|---|---|
+| --- | --- | --- |
 | `p_min_age_secs` | 8–15s | skip the launch spike |
 | `take_profit` | ~20% | bank the small leg (was 60) |
 | `stop_loss` | 25–30% | survive normal chop |

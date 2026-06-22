@@ -14,7 +14,7 @@ deployed stack still works without ever putting the secret in the browser.
 ## The two-layer defense
 
 | Layer | Gate | Stops |
-|---|---|---|
+| --- | --- | --- |
 | nginx Basic-Auth | username + password login (`.htpasswd`) | random internet traffic |
 | backend bearer (fail-closed) | `Authorization: Bearer <API_AUTH_TOKEN>` | anything reaching the backend without nginx's injected token |
 
@@ -34,7 +34,7 @@ backend (nginx in prod, the Vite dev proxy in dev) injects the bearer
 ## Code pieces (source of truth)
 
 | Concern | Location |
-|---|---|
+| --- | --- |
 | Fail-closed middleware | `backend/src/main.rs` — `require_bearer_auth` |
 | Token required at startup | `backend/src/config/settings.rs` — `required_non_empty("API_AUTH_TOKEN")` |
 | Prod bearer injection | `nginx/default.conf.template` — `proxy_set_header Authorization "Bearer ${API_AUTH_TOKEN}"` |

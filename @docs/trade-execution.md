@@ -4,20 +4,23 @@ File-level map of `pump-trader/` (crate `pump_trader`; has `lib.rs` + real unit 
 Logic explainer: `@project_plans/trade-execution/slippage-logic-buy-sell.md`.
 
 ## Public surface (`src/lib.rs`)
+
 `PumpFunTrader`, `TraderConfig`, `WalletHolding`, `BuyRouting`, `TokenBalance`, `TokenProgram{Legacy,Token2022}`; probe types `EndpointResult`, `FanoutReport`, `SimReport`; cashback types `PotStatus`, `ClaimOutcome`.
 
 `TraderConfig` fields: `rpc_url: String`, `helius_sender_urls: Vec<String>` (fan-out targets), `keypair: Keypair`, `nonce_accounts: Vec<String>` (round-robin).
 
 ## Modules — `src/`
+
 | File | Key items | Responsibility |
-|---|---|---|
+| --- | --- | --- |
 | `lib.rs` | re-exports | public facade |
 | `types.rs` | `TokenProgram`, `WalletHolding`, `BuyRouting`, `TokenBalance`, `CurveFacts` | type defs |
 | `constants.rs` | program IDs, CU limits (curve buy 150k / sell 100k / AMM 180k), `MIN/MAX_JITO_TIP_SOL`, `JITO_TIP_PERCENTILE`, cache-refresh intervals, slippage/fee-buffer bps, `MAX_BUY_SOL` (per-trade buy sanity ceiling) | protocol + tuning consts |
 
 ### `src/trader/`
+
 | File | Key items | Responsibility |
-|---|---|---|
+| --- | --- | --- |
 | `mod.rs` | `PumpFunTrader`, `new()`, `initialize()`, `wallet_pubkey()`, `update_live_reserves()`, `rpc_url()`; `buy_lamports_checked` (private) | struct + construction; holds RPC/HTTP clients + all caches. `buy_lamports_checked` validates a caller's `sol_amount` (finite, >0, ≤`MAX_BUY_SOL`, non-zero lamports) → the shared guard used by every buy entry. **Unit tests** |
 | `buy.rs` | `buy_token` (confirmed, optional ATA check), `buy_token_snipe` (skips ATA-check RPC + RPC confirm, returns sig; caller confirms via feed) | bonding-curve buys, level-0 Jito tip, recent blockhash |
 | `sell.rs` | `sell_token` (retry wrapper, ≤ `MAX_SELL_ATTEMPTS`, fresh nonce each), `sell_token_once(... tip_level, confirm) -> Option<String>`, `close_token_account(token_mint, token_account_override)` | durable-nonce curve sells, per-attempt Jito tip escalation, `OnChainRevert` budget guard. `sell_token_once`/`amm_sell` **return the submitted signature** (`Some(sig)`) so a feed-confirm caller (`confirm==false`, the TPSL exit loop) can run an off-path `signature_state_detailed` check after *its own* poll window — the RPC-confirm `OnChainRevert` guard never fires on that path, so the caller needs the sig to detect a landed-and-reverted sell, read its **program error code** (`SigStatus`), and tell a retryable slippage-floor revert from a structural one before re-paying base+priority fees (see `@docs/strategies.md` `classify_sell_revert`). `close_token_account` is the **off-hot-path** standalone rent reclaim (~0.002 SOL): resolves the token account (override→cache→one scan), routes a lone `close_account` by cached `token_program` (legacy/2022), builds it on a **recent blockhash** (`build_recent_tx`, no nonce slot), **no Jito tip**, sends via the RPC `send_transaction` (preflight **on**, fire-and-forget, no confirm) — preflight rejects a still-funded account in sim so no landed-revert fee |
@@ -34,6 +37,7 @@ Logic explainer: `@project_plans/trade-execution/slippage-logic-buy-sell.md`.
 | `claim.rs` | `cashback_status` (read-only), `claim_cashback(execute)`, `build_claim_ixs`/`claim_pots`/`stable_claim_pot` (private) | off-hot-path cashback sweep. Two WSOL pots — **curve** (pump_program UVA) + **amm** (pump_swap UVA), different PDAs — plus a **curve stable** pot (separate quote mint = `Global.whitelisted_quote_mints[0]`, parsed at init). Claimable read straight from `UserVolumeAccumulator`: WSOL = `cashback_earned − total_cashback_claimed`; stable = `stable_cashback_earned − total_stable_cashback_claimed` (curve only). Claim = `[create-idempotent(user quote ATA), sync_user_volume_accumulator, claim_cashback(_v2 on curve), close(unwrap → native SOL, WSOL only)]` on a **recent blockhash, no nonce, no Jito tip**. The same `claim_cashback_v2` instruction claims either pot — the `quote_mint` selects WSOL vs stable; the stable claim reads the mint's token program on-chain, skips the close (stays an SPL balance), and is skipped entirely when no stable mint is configured. Curve uses `claim_cashback_v2` (adds the associated-token-program acct); AMM uses `claim_cashback`. `claim` is permissionless (`user` not a signer; fee-payer signs). **Unit test** (tx-size, incl. stable variant) |
 
 ## Key behaviors
+
 - **Helius Sender** already dual-routes (Jito + SWQOS) internally, 0 credits. Client-side multi-endpoint fan-out adds *geographic* redundancy, not extra Jito exposure. Endpoints from `HELIUS_FAST_SENDER_URLS` (CSV) or `HELIUS_FAST_SENDER_URL`.
 - A tx that never lands costs nothing → tip escalation only ever costs more once it wins.
 - **Buy-amount guard:** every buy entry (`buy_token`/`buy_token_snipe` via `buy_token_inner`, and `amm_buy`) runs the caller's `sol_amount` through `buy_lamports_checked` before building a tx — rejecting NaN/∞, ≤0, `> MAX_BUY_SOL`, and sub-dust amounts that round to 0 lamports. This is the crate's backstop; the backend's `manual_buy` handler also rejects bad input up front and caps at the operator-facing `MAX_MANUAL_BUY_SOL`.
@@ -42,4 +46,5 @@ Logic explainer: `@project_plans/trade-execution/slippage-logic-buy-sell.md`.
 - `initialize()` warms the HTTP keep-alive pool (`getHealth` to each sender + RPC) so the first trade skips the TLS handshake; the reqwest client sets `tcp_nodelay(true)` + a 90 s `pool_idle_timeout`.
 
 ## Unit tests
+
 `cargo test -p pump-trader` (e.g. `jito_tip`, `fan_out_returns_success_despite_a_failing_endpoint`, reserves).

@@ -35,7 +35,7 @@
 ## 1. Market state — the numbers
 
 | Metric | 2025 peak | Mid-2026 (now) | Δ |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Tokens created / day | ~30k+ | **~17–20k** (user-reported ~20k; sources 17.3k–30k) | ↓ |
 | Tokens **defunct** / day | — | **~9.9k** (≈95% daily turnover) | ↑ |
 | **Mayhem-Mode** launches / day | 0 (didn't exist) | **>10k** (~half of launches; up from +500 in launch week) | ↑↑↑ |
@@ -59,6 +59,7 @@ the creation block by deployer-funded wallets. A $50 buy on a freshly-graduated 
 ## 2. What changed since the last research pass
 
 ### 2a. Mayhem Mode — the new dominant token type *(highest impact)*
+
 - **Mechanics:** opt-in at creation only (immutable). AI agent mints **+1B → 2B total supply**, then for
   **24h** does a random walk: buys and sells with ~equal probability, but **sells average slightly larger
   → structural net-sell drift**. After 24h, unsold/agent tokens are **burned**.
@@ -75,19 +76,23 @@ the creation block by deployer-funded wallets. A $50 buy on a freshly-graduated 
   - The chop will **whipsaw tight stops** out before any real move.
 
 ### 2b. Faster death, higher mortality
+
 Median time-to-death ~25 min; 15% die on day 1; drain is 30–90s. The old sim's "5-day average win" was
 scoring AMM survivors, not the sniper edge. Everything lives in the **first seconds-to-minutes**.
 
 ### 2c. Fewer traders, thinner liquidity
+
 Users −82%, volume −85%, revenue −80%. Thin books mean **your own exit moves price against you** — the
 liquidity-death exit may not even fill at the quoted price. Size positions down.
 
 ### 2d. Smarter devs / bundling escalation
+
 Bundlers now run **randomized buy/sell cycles to fake organic 24/7 volume** and **split a 40% position
 across 40 wallets** to look like healthy distribution. → buyer-count and volume are noise; the durable
 tells remain **slot concentration + retained supply + genuine later/outside buying**.
 
 ### 2e. Fee/incentive changes (real-mode realism)
+
 Creator-fee overhaul + cashback in 2026 (Dynamic Fees V1 was "too easy to launch, too hard to trade").
 Fixed costs persist: **0.02 SOL creation fee, Jito tip per bundle, ~0.000005 SOL/sig**, plus priority fees.
 Sniping is still a fee auction (>50% buy in block 0). Model these in paper or paper will lie.
@@ -117,7 +122,7 @@ These map to the **currently-implemented** columns (`strategy_tpsl_rule.rs`). Ex
 already correct: **LiquidityExit → StopLoss → TakeProfit → TrailingStop → Stall → TimeStop**.
 
 | Param (column) | **Value (legacy-only)** | Why |
-|---|---|---|
+| --- | --- | --- |
 | `p_liquidity_drop_pct` (E4) | **30%** | Drain is 30–90s; this is now the *primary* rug-catcher, reacts inside the drain window price stops miss. |
 | `stop_loss` | **40%** | Survive normal 50–500% chop without being whipsawed out. |
 | `take_profit` | **60%** | Bank the common first leg (92% of ≥30-swap tokens dump). Raise to ~150% only if you want to chase runners and lean on the trailing stop. |

@@ -4,11 +4,13 @@ File-level map of `backend/src/ingest_laserstream/`. Helius LaserStream (Yellows
 Logic explainer: `@project_plans/ingest/laserstream-workflow.md`, `@project_plans/ingest/token_sync-workflow.md`.
 
 ## Data flow
+
 ```
 client.rs (gRPC, cheap log pre-filter + classify)  --(Arc<SubscribeUpdateTransaction>, TxRelevance)-->
 pipeline.rs (decode_relevant_pb + TokenCache update + fan-out)  -->  { db_tx, strategy_tx, sse_tx }
 db_writer.rs (builds the Helius blob off-thread via build_raw_blob)  --batched-->  Postgres  -->  TradeSignals.notify(wallet,mint)
 ```
+
 Channels: `update_tx` cap 1024 (`(Arc<SubscribeUpdateTransaction>, TxRelevance)`) · `db_tx` cap 4096 (`DbWriteOp`) · `strategy_tx` cap 512 (`StrategyPing`) · `sse_tx` broadcast (`SseEvent`). Pipeline enqueues with `send().await` (real backpressure — never silently drops); the client→pipeline hop uses `send_timeout` (30s) so a downstream wedge surfaces as a reconnect, not an invisible park.
 
 **Liveness watchdog (silent-freeze guard).** The ingest chain is bounded channels joined by `send().await`, so a downstream `.await` deadlock (hung DB socket, stuck lock) backpressures up until the client parks on `update_tx.send()` — *outside* its `select!`, where the in-stream idle watchdog can't fire — and the `main` task-supervision `select!` only catches a task that *returns/panics*, never one deadlocked. That gap caused recurring multi-hour total freezes (tokens+trades stop at the same instant, no log, only a manual restart recovers). `state/ingest_health.rs` closes it: the client stamps `IngestHeartbeat` on every successful forward; a dedicated **OS thread** (not a tokio task — a starved runtime mustn't freeze the watchdog) force-exits the process (`exit(1)`) if the heartbeat is stale past `INGEST_STALL_TIMEOUT_SECS` (default 120) while live mode is on, so the supervisor restarts a wedged ingest. Gated on the live toggle (paused = expected silence) and reset on the off→on edge.
@@ -16,8 +18,9 @@ Channels: `update_tx` cap 1024 (`(Arc<SubscribeUpdateTransaction>, TxRelevance)`
 > **Tier B — protobuf-native ingest decode.** The hot path no longer builds the heap-heavy Helius `Value` per tx. `client.rs` only **pre-filters + classifies** (one cheap `log_messages` scan, curve-priority → `TxRelevance::{Curve,Amm}`) and forwards the typed protobuf (shared via `Arc`) **with that verdict**; `pipeline.rs` decodes it directly with `decoder::grpc::decode_relevant_pb`, which **reuses the client's verdict instead of re-scanning the logs**. The persisted Helius-shaped blob is synthesised **off-thread in the DbWriter** (`adapter::build_raw_blob`), only for txs we actually persist. `decode_protobuf` (self-classifying entry, used by token_sync RPC + replay + tests) and `decode_relevant_pb` (verdict-forwarded, live hot path) share one curve/AMM decode body: token_sync lowers its base64 results to `SubscribeUpdateTransaction` via `adapter_rpc::rpc_to_protobuf` and decodes through the same path — the old `Value` decode path (`update_tx_to_value` → `decode_result`, `decoder/json/`) has been deleted.
 
 ## Files
+
 | File | Key items | Responsibility |
-|---|---|---|
+| --- | --- | --- |
 | `client.rs` | `LaserStreamClient`, `XTokenInterceptor`, `connect()`, `build_subscribe_request()`, `run()`, `run_once()`, `classify_tx()` | gRPC producer: TLS+`x-token` auth, reconnect w/ backoff (max 30s), replay from `last_slot`, re-subscribe on `pools_changed` (250ms debounce). 64MB max msg. **In-stream idle watchdog** (`STREAM_IDLE_TIMEOUT` 60s, checked every 15s): a silently-stalled stream (server-side stall / dropped subscription / delivery throttle that sends neither error nor FIN) leaves `stream.message()` blocked forever — HTTP/2 keepalive masks it — freezing ingest with no log. The watchdog stamps `last_update` only when the high-water **slot advances** (`last_slot.fetch_max`), so a stream stuck *replaying/repeating* a slot still trips it, and returns an error past the timeout into the normal reconnect+replay path. **Backpressure guard:** forwarding uses `update_tx.send_timeout(PIPELINE_SEND_TIMEOUT=30s)` — a park on a plain `send().await` would sit *outside* the `select!`, so the idle watchdog could never fire (the silent-freeze failure mode); on timeout it returns an error to reconnect instead of parking forever. A **successful** send stamps the shared `IngestHeartbeat` (end-to-end liveness; see `state/ingest_health.rs`). Per-tx work is otherwise only the cheap `classify_tx` log scan (curve-priority → `Option<TxRelevance>`, mirroring the decoder); forwards `(Arc<SubscribeUpdateTransaction>, TxRelevance)` so the decoder skips re-scanning (no `Value` build). |
 | `adapter.rs` | `build_raw_blob()`, `compiled_ix()`, `inner_ix()`, `token_balances()` | Protobuf → Helius JSON blob (the persisted `raw_data`). `build_raw_blob` runs off-thread in the DbWriter for real-time (`source='live'`) txs and inline in token_sync for backfilled (`source='sync'`) txs, so blobs are byte-consistent across sources. Account-key order: static ++ loaded_writable ++ loaded_readonly. |
 | `adapter_rpc.rs` | `rpc_to_protobuf()`, `meta_from_json()` | **Inverse of `adapter.rs`** (RPC → protobuf): how token_sync runs the protobuf decoder instead of the `Value` path. Lowers an `encoding="base64"` `getTransaction`/gTFA result (`wrap_transaction_result` shape) to `SubscribeUpdateTransaction`: base64 → `bincode` `VersionedTransaction` → `scb::Message`; JSON `meta` → `scb::TransactionStatusMeta` (incl. `loadedAddresses`). Base64 (not `jsonParsed`) is required — jsonParsed pre-parses Compute-Budget/System/Token ixs, dropping the raw `data` `decode_protobuf` needs. Wired into `services/token_sync.rs` (all RPC fetches `encoding=base64`; replay supplies native protobuf); verified live by the `--ignored` `gtfa_base64_decodes_via_protobuf` harness. The old `Value` decode path (`decoder/json/`, `decode_result`, `update_tx_to_value`) has been **deleted** — `decode_protobuf` is now the sole decoder. |
@@ -27,9 +30,11 @@ Channels: `update_tx` cap 1024 (`(Arc<SubscribeUpdateTransaction>, TxRelevance)`
 | `mod.rs` | re-exports + `proto` | module wiring |
 
 ### `DbWriteOp` variants
+
 `Raw(RawBlobJob)` (typed protobuf + ingest scalars; blob built at flush) · `Token(Token)` · `Wallet(String)` (touch last_seen) · `Trade(Trade)` · `Metrics(TokenMetricsWrite)` · `Migration{mint}`.
 
 ### Pipeline event handlers
+
 `on_token_created` (Token+Wallet+Metrics+ping+SSE) · `on_trade_executed` (Trade+Wallet+Metrics + feed trader reserves + pre-warm AMM + ping + SSE) · `on_token_migrated` (register pool + Migration op + ping) · `on_creator_activity` (ping) · `on_liquidity` (SSE only).
 
 > `on_trade_executed` moves `Trade.instruction_labels` **out** of the in-memory Trade (leaving `Null`) and attaches it only to the cloned DB copy — so the per-trade label JSON array is deep-copied zero times (the DB copy keeps the labels for the trades API; the capped in-memory ring and strategy/exit logic read only Token-level labels). The trade is then applied to `TokenState`, the metrics (including the `is_dead` verdict) built, and the first-AMM-trade pool-prewarm check-and-set resolved — all under a **single** `get_mut` guard (one shard write-lock per trade, not two).
@@ -41,7 +46,7 @@ Channels: `update_tx` cap 1024 (`(Arc<SubscribeUpdateTransaction>, TxRelevance)`
 Layout: the `decode_protobuf` orchestration lives in `grpc/`; everything source-agnostic stays at the `decoder/` root. Both live ingest and token_sync feed `decode_protobuf` — token_sync lowers its base64 RPC results to `SubscribeUpdateTransaction` first (see `adapter_rpc.rs`).
 
 | File | Key items |
-|---|---|
+| --- | --- |
 | `mod.rs` (root, shared) | `HeliusDecoder` (`new`, `with_pool_index`, `decode_migrate`), `DecodeOutput{Transaction,Ignored}`, `TxRelevance{Curve,Amm}` (the client's log-gate verdict), module wiring. `new` `expect`s a valid-base58 `pump_program_id` (startup invariant — a bad id would silently fail every raw-byte key match). `decode_protobuf`/`decode_relevant_pb` live in `grpc/` but are `HeliusDecoder` methods (call sites unchanged). |
 | `trade.rs` (root, shared) | `decode_trade_events_from_logs`, `decode_pump_swap_trades_from_logs`, `build_amm_trade`, `compute_sol_change`; the Borsh `RawTradeEvent`/`DecodedTradeEvent` (+`from_raw`) machinery and `DecodedAmmTrade` reused by both inner-ix decoders (lamports→SOL normalize) |
 | `instructions.rs` (root, shared) | `InstructionKind{Create,Buy,Sell,Migrate,Unknown}`, `determine_instruction_type`, and the leaves `classify_pump_ix`, `extract_compute_budget`, `label_instruction(program_id, parsed_type, data)` (protobuf passes `parsed_type=None`) |
@@ -52,9 +57,11 @@ Layout: the `decode_protobuf` orchestration lives in `grpc/`; everything source-
 > **Shared leaves.** The root leaves (Borsh decoders incl. `RawTradeEvent`/`from_raw`, `classify_pump_ix`, `label_instruction`, `determine_instruction_type`, `build_amm_trade`, `compute_sol_change`, `decode_create`, `decode_migrate`) are source-agnostic, consumed by `grpc/` for both curve and AMM-live decode and (via the same `decode_protobuf` call) by token_sync.
 
 ## Codegen — `generated/` + `proto/`
+
 - Committed prost/tonic bindings (**no build-time `protoc`**): `generated/geyser.rs`, `generated/solana.storage.confirmed_block.rs`, `generated/mod.rs`.
 - `.proto` sources in `proto/` (`geyser.proto` w/ local `from_slot=11`, `solana-storage.proto`). Regen only when `.proto` changes — see `proto/README.md` (Docker-based).
 
 ## Notes for edits
+
 - **`trades` table = this feed.** TPSL exit loop confirms fills by polling `trades` (gRPC feed), not a separate RPC — account for index lag.
 - No blocking I/O / `.await`-on-lock / unbounded alloc per event in `pipeline.rs`; DB+SSE go through channels, never inline.

@@ -10,7 +10,7 @@ See also: [laserstream-workflow.md](./laserstream-workflow.md).
 ## Module layout
 
 | File | Purpose |
-|------|---------|
+| ------ | --------- |
 | [services/token_sync.rs](../../backend/src/services/token_sync.rs) | Orchestration: `run_token_sync`, `preview_sync`, `sync_amm_trades`, `persist_backfill` |
 | [api/handlers/tokens/sync.rs](../../backend/src/api/handlers/tokens/sync.rs) | HTTP handlers for `POST /api/token/sync` and `/sync/preview` |
 | [services/helius_rpc.rs](../../backend/src/services/helius_rpc.rs) | `getSignaturesForAddress`, `getTransaction`, `getTransactionsForAddress` (gTFA) |
@@ -124,7 +124,7 @@ Stored in `tokens_info`: `last_synced_at`, `last_synced_curve_sig/slot`, `last_s
 ## Tuning constants ([token_sync.rs](../../backend/src/services/token_sync.rs))
 
 | Constant | Value | Purpose |
-|----------|-------|---------|
+| ---------- | ------- | --------- |
 | `TX_BATCH_SIZE` | 100 | Signatures per JSON-RPC batch |
 | `TX_BATCH_CONCURRENCY` | 5 | Concurrent in-flight batches |
 | `GTFA_PAGE_LIMIT` | 1000 | gTFA full-mode page size |

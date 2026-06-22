@@ -8,6 +8,7 @@ page). The `Strategy` impls are `sweep/strategies/tpsl2.rs` and
 `sweep/strategies/tpsl1.rs` (below) — both wired through the same generic stack.
 
 ## Core idea
+
 A backtest is a pure fn `simulate(trades, params) -> TokenOutcome`. A sweep loads
 the corpus **once**, calls `simulate` over combos × tokens in memory (no DB in the
 loop), then **folds** the per-(combo, token) outcomes into one ranked metrics row
@@ -15,6 +16,7 @@ per combo. The engine/aggregate/grouping layers only ever see `TokenOutcome`, so
 they are strategy-blind: a new strategy adds only a `Strategy`/`ParamSpace` impl.
 
 Two sweep shapes share this stack:
+
 - **Flat sweep** (`run_sweep`) — one global ranked table over the whole corpus.
   No longer exposed standalone; it is the per-group primitive the grouped sweep
   calls.
@@ -52,7 +54,7 @@ corpus (DB-range, once) ─► attach_fingerprints ─► partition by GroupKey
 ## `backend/src/sweep/` (generic)
 
 | File | Owns |
-|---|---|
+| --- | --- |
 | `mod.rs` | Module map + parity note. |
 | `strategy.rs` | `Strategy` + `ParamSpace` traits. **Coarse→refine:** `ParamSpace::refine(survivors) -> Vec<Params>` (default empty) returns a **coordinate-move neighborhood** — each survivor with one axis moved to its adjacent candidate (`neighbor_indices`), holding the others fixed (≤ 2× multi-valued-axes neighbors/survivor, linear in axes); both tpsl impls build it via `index_of` (generic lookup so float axes dodge `clippy::float_cmp`). `RefineSpec { top_k }` + `parse_method(s) -> (SweepMethod, Option<RefineSpec>)` parse `refine:N[:K]` into a coarse LHS:N pass + a per-group top-`K` refine (`K` default 3). Plus the original `Strategy` `Strategy` is **factored into entry then exit** (not one `simulate`): assoc types `Entry`/`EntryKey: PartialEq`/`TokenState`, and `entry_key(&Params) -> EntryKey` / `prepare_token(&[SweepTrade]) -> TokenState` / `resolve_entry(&[SweepTrade], &TokenState, &Params) -> Entry` / `resolve_exit(&[SweepTrade], &Entry, &Params) -> TokenOutcome`. The engine resolves the (expensive) entry **once per distinct `entry_key` per token** and reuses it across that key's exit sub-grid (sound because the resolved entry depends only on the entry params, never the exit ladder). A param-free/inseparable entry sets `EntryKey = ()` so it resolves once per token. `order_for_entry_cache(&mut [Params])` (default no-op) lets a strategy reorder the final combo set so same-`entry_key` combos are contiguous — the grouped driver calls it once on the shared combo vec before the per-group sweeps, restoring the single-slot entry cache's hit rate under random/lhs/refine orderings (a full Grid is already entry-contiguous); tpsl2 stable-sorts by its 8 scalp knobs. `prepare_token` computes param-independent per-token state **once** before the combo loop (tpsl2's launch cohort; `TokenState = ()` when there's none) and threads it into every `resolve_entry`. All take the slim `&[SweepTrade]` projection (not `Trade`). `TokenOutcome` (`Copy`, no String), `ExitCode`, `SweepMethod` (Grid / `Random{n,seed}` / `LatinHypercube{n,seed}`), the shared `lhs_index_plan(rng,n,axis_lens) -> Vec<Vec<usize>>` (a **real** discrete LHS: per-axis balanced strata `⌊n/len⌋–⌈n/len⌉`, each column independently shuffled so axes decorrelate — what `Random`'s uniform draw only balances in expectation; both strategies' `sample` use it for the LHS arm), and the cost layer: frictionless `round_trip` (test baseline) + `CostModel`/`CostModel::pumpfun_default` + `round_trip_with_costs` (the single price gate every `resolve_exit` uses). |
 | `projection.rs` | `SweepTrade` — the slim per-trade row the hot loop walks (only the `TradeRow` fields; wallet interned to a token-local `u32`; **no** `tx_signature` — Phase 1.2 dropped it, ~halving the row, since the only sweep consumer (the worst-case-entry trigger match) is now index-based; `TradeRow::tx_signature` returns `""` for the sweep row). ~3× smaller than `Trade`, so cohort membership is `u32`-keyed not String-keyed. `project_trades<T: TradeRow<Wallet = String>>(&[T]) -> (Vec<SweepTrade>, Vec<Box<str>>)` interns wallets per token via `WalletInterner` — it projects any `String`-walleted source (the DB-loaded full `Trade`). `WalletInterner` lives here but is also reused resident on each live `TokenState` (which interns its `CachedTrade`s to `u32` itself — Phase B step 2 — hence `WalletInterner: Clone`). The shared entry/exit/cohort fns are generic over `TradeRow` (defined in `models/trade.rs`), so they run over **either** the live `Trade` or `SweepTrade` with one implementation — decision parity preserved, live path unchanged. The tpsl2 entry uses `find_scalp_entry_with_cohort_indexed` + `find_worst_case_paper_entry_at` (both in `entry/scalp.rs`) so the trigger never round-trips through a signature string; the live/backtest paths keep the signature-keyed wrappers (`find_scalp_entry_with_cohort` / `find_worst_case_paper_entry`), unchanged. |
@@ -69,6 +71,7 @@ corpus (DB-range, once) ─► attach_fingerprints ─► partition by GroupKey
 | `strategies/tpsl1.rs` | TPSL1 `Strategy`/`ParamSpace`. TPSL1 is the token-creation-filter strategy, so it has **no per-trade entry gates** and **no cohort exit** — its swept set is the **exit ladder only** (6 knobs: TP/SL + the optional trailing/time/stall/liquidity exits). `Tpsl1Params`/`Tpsl1Axes`/`AxesSpec` mirror tpsl2's shape over that smaller set. `sample` wraps each combo into a `Tpsl1Combo { raw, rule }` (rule resolved once at sample time, as tpsl2; grid / uniform `Random` / `lhs_index_plan`-driven LHS over its 6 axes). `resolve_entry` uses `tpsl_sniper_1::entry::find_entry_fill_in_trades(trades, 1)` (cap 1, matching `run_backtest`; the token-creation filter ran upstream during corpus selection) — entry is **param-free**, so `EntryKey = ()` and it resolves once per token (no per-token state either: `TokenState = ()`); `resolve_exit` calls `exit::find_trade_driven_exit` on `&combo.rule` — see [strategies.md](strategies.md). `refine` walks its 6 exit axes one at a time (coordinate moves). `params_json` emits the `exit_*` keys (a subset of tpsl2's). |
 
 ## Combo column families (the per-combo result row)
+
 Every drill-in combo row splits into **three families** — useful for knowing what
 is a swept *input* vs. a measured *output*, and which family each column's storage
 lives in:
@@ -99,6 +102,7 @@ lives in:
   trailing,stall,time,liquidity,cohort,open}`. Also per `(group, combo)`.
 
 ## Persistence (per-strategy tables) + API
+
 Tables are **separate per strategy** (`<strategy>_grouped_sweep_{runs,groups,results}`,
 see [database.md](database.md)). Both TPSL2's and TPSL1's identical-shape triples
 live in `0001_init` (TPSL1's `n_exit_cohort` column stays 0 — kept for schema
@@ -201,6 +205,7 @@ both `_runs` tables (Phase 4 partial persistence). The repo is generic and
     All GETs take `strategy_id` to resolve the table set.
 
 ## Frontend
+
 See [frontend.md](frontend.md). `pages/strategies/GroupedSweepPage.tsx` +
 `components/sweep/{SweepConfigForm,groupColumns,groupedTypes}` + RTK `GroupedSweep`
 hooks. The page is a generic `GroupedSweepView` parameterized by
@@ -262,6 +267,7 @@ auto-fires (a sweep is expensive). All of this reads the existing runs query —
 pure metadata, no extra groups/results fetch.
 
 ## Invariants
+
 - The hot loop is strategy-blind and walks the slim, wallet-interned `SweepTrade`
   projection built once per token at load (not `Trade`); the shared entry/exit/
   cohort fns are generic over `TradeRow` so the *same* code serves the live path
@@ -385,6 +391,6 @@ pure metadata, no extra groups/results fetch.
   stays full (it's tiny — one row/combo/run); only the `_results` rows are trimmed,
   and the read-path JOIN naturally shows only survivors.
 - **Adding a strategy** = `strategies/<x>.rs` (`Strategy`+`ParamSpace`+`AxesSpec`)
-  + a `registry.rs` arm (table triple + dispatch) + a `<x>_grouped_sweep_*`
+  - a `registry.rs` arm (table triple + dispatch) + a `<x>_grouped_sweep_*`
   migration + (frontend) a param-key list / axes defs. Engine, grouping, repo,
   handler, and page are reused.

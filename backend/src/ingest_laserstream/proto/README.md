@@ -19,6 +19,7 @@ Codegen runs once in a Linux container (so the host needs nothing but Docker).
    workspace so it doesn't join it):
 
    `Cargo.toml`
+
    ```toml
    [package]
    name = "protogen"
@@ -32,6 +33,7 @@ Codegen runs once in a Linux container (so the host needs nothing but Docker).
    ```
 
    `src/main.rs`
+
    ```rust
    fn main() -> Result<(), Box<dyn std::error::Error>> {
        let mut config = prost_build::Config::new();
@@ -46,6 +48,7 @@ Codegen runs once in a Linux container (so the host needs nothing but Docker).
    ```
 
 2. Run the generator (PowerShell; adjust the repo path if needed):
+
    ```powershell
    docker run --rm -e CARGO_TARGET_DIR=/tmp/target `
      -v "C:\Users\X\protogen:/gen" `
