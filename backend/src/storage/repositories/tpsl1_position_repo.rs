@@ -328,6 +328,34 @@ impl Tpsl1PositionRepo {
         Ok(result.rows_affected())
     }
 
+    /// Delete real positions left **Holding with no entry fill** (`entry_price IS
+    /// NULL`) past the timeout. The in-process buy task deletes its own unentered
+    /// row when the buy isn't found (`on_token_created`), so under normal operation
+    /// nothing reaches here. But that cleanup lives **inside** the spawned task — if
+    /// the process restarts or the task panics mid-buy, the row is reloaded as
+    /// `Holding` with no buy task and (being 0-entry) gated out of every exit path:
+    /// a permanent zombie that also pins its dead token in `token_cache`
+    /// (`is_held`). This is the real-side mirror of the paper reaper. `stale_after`
+    /// must comfortably exceed the buy-retry window (`UNENTERED_STALE_MS`) so it
+    /// only ever catches orphans, never a buy still legitimately in flight. Returns
+    /// rows deleted.
+    pub async fn delete_stale_unentered(
+        &self,
+        stale_after: std::time::Duration,
+    ) -> anyhow::Result<u64> {
+        let cutoff = Utc::now() - chrono::Duration::from_std(stale_after)?;
+        let result = sqlx::query(
+            r#"
+            DELETE FROM tpsl1_real_positions
+            WHERE status = 'Holding' AND entry_price IS NULL AND created_at < $1
+            "#,
+        )
+        .bind(cutoff)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     /// Get positions by strategy (page-bounded, newest first). Grows unbounded
     /// otherwise — this is the HTTP list view, so always paginate.
     pub async fn find_by_strategy(
@@ -564,6 +592,39 @@ mod tests {
             "fresh row left ExitPending for the reaper to re-drive"
         );
         assert_eq!(stale_row.status, PositionStatus::ExitFailed, "aged row terminally failed");
+
+        cleanup(&pool, &mint).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
+    async fn delete_stale_unentered_reaps_only_aged_zero_entry_holdings() {
+        let Some(pool) = test_pool().await else { return };
+        let repo = Tpsl1PositionRepo::new(pool.clone());
+        let mint = unique("M");
+
+        // Four rows: a freshly-created unentered Holding (buy still in flight), an
+        // aged unentered Holding (orphaned zombie — restart/panic lost its task), an
+        // aged but ENTERED Holding (a live bag — must survive), and an aged unentered
+        // End (already settled). Only the aged 0-entry Holding is a zombie.
+        let fresh = seed_position(&repo, &mint, PositionStatus::Holding, Duration::ZERO, false).await;
+        let zombie =
+            seed_position(&repo, &mint, PositionStatus::Holding, Duration::from_secs(3600), false).await;
+        let entered =
+            seed_position(&repo, &mint, PositionStatus::Holding, Duration::from_secs(3600), true).await;
+        let ended =
+            seed_position(&repo, &mint, PositionStatus::End, Duration::from_secs(3600), false).await;
+
+        let reaped = repo
+            .delete_stale_unentered(Duration::from_secs(600))
+            .await
+            .expect("reap stale unentered");
+        assert_eq!(reaped, 1, "exactly the aged 0-entry Holding is deleted");
+
+        assert!(repo.find_by_id(zombie).await.unwrap().is_none(), "zombie deleted");
+        assert!(repo.find_by_id(fresh).await.unwrap().is_some(), "fresh buy row survives");
+        assert!(repo.find_by_id(entered).await.unwrap().is_some(), "entered bag survives");
+        assert!(repo.find_by_id(ended).await.unwrap().is_some(), "settled row survives");
 
         cleanup(&pool, &mint).await;
     }

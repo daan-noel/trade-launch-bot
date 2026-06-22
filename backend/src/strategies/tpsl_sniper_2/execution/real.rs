@@ -205,14 +205,22 @@ pub(crate) async fn await_scalp_entry_signal(
         // the WS pipeline for every wallet's trades) instead of an unbounded
         // `find_by_mint_all` DB scan.
         if let Some(entry) = token_cache.get(mint) {
-            let trade_count = entry.value().trade_count;
+            let state = entry.value();
+            let trade_count = state.trade_count;
             if last_count != Some(trade_count) {
                 last_count = Some(trade_count);
-                if let Some(fill) =
-                    super::super::entry::find_scalp_entry(&entry.value().trades, rule)
-                {
+                if let Some(fill) = super::super::entry::find_scalp_entry(&state.trades, rule) {
                     return Some(fill);
                 }
+            }
+            // The token died before the signal formed: a dead token draws no more
+            // meaningful trades, so the scalp entry can never fire — stop waiting
+            // out the rest of the arming window. Returning `None` now lets the
+            // caller drop the unentered position promptly (and unpin the dead token
+            // from `token_cache`) instead of holding it for up to a full minute.
+            if state.is_dead(Utc::now()) {
+                debug!(mint = %mint, "scalp arming aborted: token died before entry signal");
+                return None;
             }
         }
 

@@ -128,16 +128,23 @@ impl Tpsl2StrategyService {
                     info!("Marked {failed_total} stale (orphaned) ExitPending positions ExitFailed");
                     changed = true;
                 }
-                // Reap orphaned unentered paper positions whose in-memory arming
-                // task was lost to a restart/resume (never entered, exited, or
-                // deleted otherwise).
+                // Reap orphaned unentered positions (real + paper) whose in-memory
+                // arming/buy task was lost to a restart/resume (never entered,
+                // exited, or deleted otherwise). Without the real pass these
+                // 0-entry Holding rows linger forever — gated out of every exit
+                // path AND pinning their dead token in `token_cache` (`is_held`).
+                let mut reaped_unentered: u64 = 0;
+                match cleanup_repo.delete_stale_unentered(unentered_stale).await {
+                    Ok(n) => reaped_unentered += n,
+                    Err(err) => warn!("Failed to reap orphaned unentered real positions: {err}"),
+                }
                 match paper_repo.delete_stale_unentered(unentered_stale).await {
-                    Ok(n) if n > 0 => {
-                        info!("Reaped {n} orphaned unentered paper positions");
-                        changed = true;
-                    }
-                    Ok(_) => {}
+                    Ok(n) => reaped_unentered += n,
                     Err(err) => warn!("Failed to reap orphaned unentered paper positions: {err}"),
+                }
+                if reaped_unentered > 0 {
+                    info!("Reaped {reaped_unentered} orphaned unentered positions");
+                    changed = true;
                 }
                 if changed {
                     if let Err(err) = runtime.reload_holding(&pool).await {
