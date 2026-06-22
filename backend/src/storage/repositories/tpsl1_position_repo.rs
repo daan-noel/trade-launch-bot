@@ -428,3 +428,143 @@ impl Tpsl1PositionRepo {
         Ok(rows)
     }
 }
+
+// ---------------------------------------------------------------------------
+// ExitPending recovery selection — what the boot/reaper re-drive (`redrive_
+// orphaned_exit_pending`) and the stale-failer act on. `find_all_exit_pending`
+// must surface exactly the orphaned-mid-exit rows (so a panicked/crashed sell
+// is re-armed), and `fail_stale_exit_pending` must terminally fail ONLY the
+// rows older than the timeout (re-arming a half-done real exit risks a
+// double-sell). DB-integration, so `#[ignore]`d; run against a local Postgres:
+//   $env:DATABASE_URL = "postgres://postgres:1220@localhost:5432/meme_bot"
+//   cargo test --bin backend tpsl1_position_repo:: -- --ignored --nocapture
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::Position;
+    use sqlx::postgres::PgPoolOptions;
+    use std::time::Duration;
+
+    async fn test_pool() -> Option<PgPool> {
+        let url = std::env::var("DATABASE_URL").ok()?;
+        PgPoolOptions::new().max_connections(2).connect(&url).await.ok()
+    }
+
+    fn unique(prefix: &str) -> String {
+        format!("{prefix}{}", Uuid::new_v4().simple())
+    }
+
+    /// Insert a position with the given status, age (`updated_at = now − age`), and
+    /// whether it recorded an entry — under its own FK-satisfying rule. Returns the
+    /// row id.
+    async fn seed_position(
+        repo: &Tpsl1PositionRepo,
+        mint: &str,
+        status: PositionStatus,
+        age: Duration,
+        entered: bool,
+    ) -> Uuid {
+        let mut pos = Position::new(mint.to_string(), unique("W"), "TPSL1".to_string(), Uuid::new_v4());
+        pos.status = status;
+        if entered {
+            pos.entry_price = Some(0.001);
+            pos.entry_token_amount = Some(1000.0);
+        }
+        let stamp = Utc::now() - chrono::Duration::from_std(age).unwrap();
+        pos.created_at = stamp;
+        pos.updated_at = stamp;
+        // FK: the position references a strategy rule (rule_id NOT NULL + FK).
+        sqlx::query(
+            "INSERT INTO tpsl1_strategy_rules (id, rule_name, buy_amount, p_exit_take_profit, p_exit_stop_loss) \
+             VALUES ($1, $2, 0.1, 1.5, 0.5)",
+        )
+        .bind(pos.rule_id)
+        .bind(unique("rule-"))
+        .execute(&repo.pool)
+        .await
+        .expect("insert rule");
+        repo.insert(&pos).await.expect("insert position");
+        pos.id
+    }
+
+    async fn cleanup(pool: &PgPool, mint: &str) {
+        let _ = sqlx::query(
+            "DELETE FROM tpsl1_strategy_rules WHERE id IN \
+             (SELECT rule_id FROM tpsl1_real_positions WHERE mint = $1)",
+        )
+        .bind(mint)
+        .execute(pool)
+        .await;
+        let _ = sqlx::query("DELETE FROM tpsl1_real_positions WHERE mint = $1")
+            .bind(mint)
+            .execute(pool)
+            .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
+    async fn find_all_exit_pending_surfaces_only_orphaned_exits() {
+        let Some(pool) = test_pool().await else { return };
+        let repo = Tpsl1PositionRepo::new(pool.clone());
+        let mint = unique("M");
+
+        // A live Holding, a cleanly-ended exit, and one stranded in ExitPending —
+        // only the last is invisible to the holding cache and needs re-driving.
+        seed_position(&repo, &mint, PositionStatus::Holding, Duration::ZERO, true).await;
+        seed_position(&repo, &mint, PositionStatus::End, Duration::ZERO, true).await;
+        let pending_id =
+            seed_position(&repo, &mint, PositionStatus::ExitPending, Duration::ZERO, true).await;
+
+        let pending: Vec<_> = repo
+            .find_all_exit_pending()
+            .await
+            .expect("query")
+            .into_iter()
+            .filter(|p| p.mint == mint)
+            .collect();
+        assert_eq!(pending.len(), 1, "only the ExitPending row is surfaced");
+        assert_eq!(pending[0].id, pending_id);
+        assert!(pending[0].entry_price.is_some(), "carries the entry the reaper needs to sell");
+
+        cleanup(&pool, &mint).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
+    async fn fail_stale_exit_pending_terminates_only_aged_rows() {
+        let Some(pool) = test_pool().await else { return };
+        let repo = Tpsl1PositionRepo::new(pool.clone());
+        let mint = unique("M");
+
+        // Fresh ExitPending (sell likely still in flight) vs. one aged past the
+        // timeout (orphaned). The reaper re-drives the fresh one; the stale-failer
+        // terminally fails only the aged one — re-arming it risks a double-sell.
+        let fresh = seed_position(&repo, &mint, PositionStatus::ExitPending, Duration::ZERO, true).await;
+        let stale = seed_position(
+            &repo,
+            &mint,
+            PositionStatus::ExitPending,
+            Duration::from_secs(3600),
+            true,
+        )
+        .await;
+
+        let failed = repo
+            .fail_stale_exit_pending(Duration::from_secs(600))
+            .await
+            .expect("fail stale");
+        assert_eq!(failed, 1, "exactly the aged ExitPending row is failed");
+
+        let fresh_row = repo.find_by_id(fresh).await.unwrap().unwrap();
+        let stale_row = repo.find_by_id(stale).await.unwrap().unwrap();
+        assert_eq!(
+            fresh_row.status,
+            PositionStatus::ExitPending,
+            "fresh row left ExitPending for the reaper to re-drive"
+        );
+        assert_eq!(stale_row.status, PositionStatus::ExitFailed, "aged row terminally failed");
+
+        cleanup(&pool, &mint).await;
+    }
+}

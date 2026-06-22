@@ -747,3 +747,137 @@ pub struct SeedAgg {
     pub current_reserves: Option<f64>,
     pub newest_price: Option<f64>,
 }
+
+// ---------------------------------------------------------------------------
+// Per-signature attribution primitives (`find_fill_by_signature` /
+// `sum_legs_by_signatures`) — the heart of decision #2 (two positions on the
+// same token must each confirm against their OWN fills, never the shared
+// `(wallet, mint)` balance). DB-integration, so `#[ignore]`d like the other
+// DB tests; run against a local Postgres:
+//   $env:DATABASE_URL = "postgres://postgres:1220@localhost:5432/meme_bot"
+//   cargo test --bin backend trade_repo:: -- --ignored --nocapture
+// Each test uses unique mint/wallet ids and deletes the rows it created.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::postgres::PgPoolOptions;
+
+    async fn test_pool() -> Option<PgPool> {
+        let url = std::env::var("DATABASE_URL").ok()?;
+        PgPoolOptions::new().max_connections(2).connect(&url).await.ok()
+    }
+
+    fn unique(prefix: &str) -> String {
+        format!("{prefix}{}", Uuid::new_v4().simple())
+    }
+
+    /// Insert one trade leg under `sig`/`leg_index` for `(wallet, mint, side)`.
+    /// `(tx_signature, leg_index, block_time)` is the conflict target, so distinct
+    /// legs of one tx differ only by `leg_index`.
+    async fn insert_leg(
+        repo: &TradeRepo,
+        wallet: &str,
+        mint: &str,
+        side: TradeType,
+        sig: &str,
+        leg_index: u32,
+        sol: f64,
+        tokens: f64,
+    ) {
+        let mut trade = Trade::new(
+            mint.to_string(),
+            wallet.to_string(),
+            side,
+            sol,
+            tokens,
+            sig.to_string(),
+            100,
+            Utc::now(),
+        );
+        trade.leg_index = leg_index;
+        repo.insert(&trade).await.expect("insert leg");
+    }
+
+    async fn cleanup(pool: &PgPool, mint: &str) {
+        let _ = sqlx::query("DELETE FROM trades WHERE mint_address = $1")
+            .bind(mint)
+            .execute(pool)
+            .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
+    async fn find_fill_by_signature_sums_multi_leg() {
+        let Some(pool) = test_pool().await else { return };
+        let repo = TradeRepo::new(pool.clone());
+        let (wallet, mint, sig) = (unique("W"), unique("M"), unique("buysig-"));
+
+        // One buy that landed as two legs (e.g. a split route) under one signature.
+        insert_leg(&repo, &wallet, &mint, TradeType::Buy, &sig, 0, 0.6, 600.0).await;
+        insert_leg(&repo, &wallet, &mint, TradeType::Buy, &sig, 1, 0.4, 400.0).await;
+        // A foreign buy on the SAME (wallet, mint) under a different signature —
+        // a concurrent same-token position's fill (decision #2). Must NOT leak in.
+        insert_leg(&repo, &wallet, &mint, TradeType::Buy, &unique("foreign-"), 0, 9.9, 9999.0).await;
+
+        let legs = repo
+            .find_fill_by_signature(&wallet, &mint, &sig)
+            .await
+            .expect("query")
+            .expect("the signature's legs are summed, not None");
+        assert!((legs.token_amount - 1000.0).abs() < 1e-6, "Σtokens across both legs");
+        assert!((legs.sol_amount - 1.0).abs() < 1e-6, "Σsol across both legs");
+        // Weighted-average price = Σsol / Σtokens, not a per-leg price.
+        assert!((legs.price_per_token() - 0.001).abs() < 1e-9, "weighted-avg fill price");
+
+        cleanup(&pool, &mint).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
+    async fn sum_legs_by_signatures_isolates_own_sells_and_short_circuits_empty() {
+        let Some(pool) = test_pool().await else { return };
+        let repo = TradeRepo::new(pool.clone());
+        let (wallet, mint) = (unique("W"), unique("M"));
+        let (mine_a, mine_b, theirs) = (unique("sellA-"), unique("sellB-"), unique("sellX-"));
+
+        // This position's exit landed across two sell signatures…
+        insert_leg(&repo, &wallet, &mint, TradeType::Sell, &mine_a, 0, 0.3, 300.0).await;
+        insert_leg(&repo, &wallet, &mint, TradeType::Sell, &mine_b, 0, 0.2, 200.0).await;
+        // …while a concurrent same-token position sold under its own signature.
+        insert_leg(&repo, &wallet, &mint, TradeType::Sell, &theirs, 0, 5.0, 5000.0).await;
+
+        // Empty signature set short-circuits to None (never a full-table scan).
+        assert!(
+            repo.sum_legs_by_signatures(&wallet, &mint, &[], TradeType::Sell)
+                .await
+                .expect("query")
+                .is_none(),
+            "empty signatures ⇒ None"
+        );
+
+        let legs = repo
+            .sum_legs_by_signatures(
+                &wallet,
+                &mint,
+                &[mine_a.clone(), mine_b.clone()],
+                TradeType::Sell,
+            )
+            .await
+            .expect("query")
+            .expect("own sell legs summed");
+        assert!((legs.token_amount - 500.0).abs() < 1e-6, "only THIS position's sells summed");
+        assert!((legs.sol_amount - 0.5).abs() < 1e-6, "concurrent position's sell excluded");
+
+        // Side filter holds: no Buy legs exist, so a Buy query over the sell sigs is None.
+        assert!(
+            repo.sum_legs_by_signatures(&wallet, &mint, &[mine_a, mine_b], TradeType::Buy)
+                .await
+                .expect("query")
+                .is_none(),
+            "trade_type filter excludes the sell legs"
+        );
+
+        cleanup(&pool, &mint).await;
+    }
+}
