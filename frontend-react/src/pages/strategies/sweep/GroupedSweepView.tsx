@@ -150,14 +150,14 @@ export function GroupedSweepView({
     // SSE frame (which only arrives once the backend finishes corpus selection).
     markStarting('sweep', 'sweep', 'Grouped sweep');
     try {
-      const created = await startSweep(args).unwrap();
-      if ('cancelled' in created) {
-        // Cancelled mid-sweep — the groups that finished are kept as a partial
-        // run; jump to it (if any persisted) so the user sees what completed.
-        if (created.groups_done > 0) setSelectedRunId(created.run_id);
-        return;
-      }
-      setSelectedRunId(created.id); // jump to the fresh run
+      // The backend returns as soon as the run is admitted (`202 { run_id }`)
+      // instead of holding this request open for the whole sweep — that keeps a
+      // later Cancel POST from queueing behind it on the browser's per-host
+      // connection cap. Jump straight to the new run; it fills in live via the
+      // per-group writes + SSE progress, and `connectSweepFinished` refreshes the
+      // runs list on completion/cancel.
+      const { run_id } = await startSweep(args).unwrap();
+      setSelectedRunId(run_id);
     } catch {
       // Surfaced via startState.error (e.g. 409 = one already running).
     }

@@ -161,11 +161,22 @@ both `_runs` tables (Phase 4 partial persistence). The repo is generic and
     — resolves
     tables, claims the **single-flight** gate (`AppState.sweep_running`; one
     CPU-heavy sweep at a time, 409 if busy), then **detaches the run via
-    `actix_web::rt::spawn`** (`run_grouped_sweep_job`) and awaits it for the
-    response. Detaching is essential: a browser refresh / SPA nav aborts the POST,
-    so if the run lived in the request future Actix would drop it mid-sweep — the
-    `Gate` would fire (`sweep_running`→false, progress reset) and `/api/jobs/status`
-    recovery would find nothing. The spawned job loads the corpus via
+    `actix_web::rt::spawn`** (`run_grouped_sweep_job`). Detaching is essential: a
+    browser refresh / SPA nav aborts the POST, so if the run lived in the request
+    future Actix would drop it mid-sweep — the `Gate` would fire
+    (`sweep_running`→false, progress reset) and `/api/jobs/status` recovery would
+    find nothing. **The POST returns as soon as the run is *admitted* — not when
+    the sweep finishes:** the job reports its early result over a `oneshot`
+    (`early_tx`) — a pre-fold validation error (no tokens, bad filter, …) or
+    `202 {run_id, status:"started"}` once the run header is `insert_run`'d — and the
+    handler returns that; the fold then runs detached. This frees the POST
+    connection before the multi-minute fold. **Why it matters:** holding it open
+    kept one of the browser's ~6 per-host HTTP/1.1 connections busy for the whole
+    run, so a concurrent `POST .../sweeps/cancel` could sit queued in the browser
+    until the sweep ended — making cancel look like a no-op. Post-admission outcomes
+    (done / cancel / config-error) are surfaced via the DB run status + the
+    `SweepFinished` SSE frame, not the (now `()`-returning) job. The spawned job
+    loads the corpus via
     `load_grouped_corpus` (selection-keyed Parquet cache for a closed/settled window,
     else a fresh DB load; `fresh=true` forces a rebuild) + `attach_fingerprints`,
     runs via `registry::run_grouped` with two phase-tagged observers:
@@ -182,11 +193,15 @@ both `_runs` tables (Phase 4 partial persistence). The repo is generic and
     passes a `HandlerSink` into `run_grouped`; the engine's per-group emits flow
     over an unbounded channel into that one task (`append_group` per group — serialized
     so concurrent small-group folds don't race the connection), so a cancel/crash
-    keeps whatever already committed. On success → `finalize_completed` (terminal
-    counts + resolved axes); on **cooperative cancel** → `mark_cancelled` and
-    return `{cancelled, run_id, groups_done}` (the partial groups are KEPT); on a
-    pre-sweep config error (no groups) → `delete_run` (drop the empty placeholder).
-    A crash leaves `status='running'`, reconciled to `cancelled` at next boot
+    keeps whatever already committed. These are all reached **after** the POST has
+    already returned `202 {run_id}`, so each just stamps DB state + lets the `Gate`
+    emit `SweepFinished` (the client reacts to that, not a response body): on success
+    → `finalize_completed` (terminal counts + resolved axes); on **cooperative
+    cancel** → `mark_cancelled` (the partial groups are KEPT, `status='cancelled'`);
+    on a post-admission config error (bad axes / over-cap grid, no groups) →
+    `delete_run` (drop the empty placeholder — the client briefly navigated to it,
+    then the `SweepFinished` runs-list refresh drops back to the newest run). A crash
+    leaves `status='running'`, reconciled to `cancelled` at next boot
     (`reconcile_orphaned_runs`).
   - `POST /api/strategies/sweeps/cancel` (`cancel_grouped_sweep`) — flips
     `AppState.sweep_cancel`; the engine polls it and bails. No-op if idle.
@@ -256,8 +271,10 @@ Run-picker row also carries **Delete run** (current run) + **Clear runs before
 label shows `running N/total` or `partial N/total groups` for a non-`completed`
 run (`runGroupsLabel`), and a `warning` `InlineAlert` banner above the group table
 flags an in-progress/cancelled run so a partial set is never mistaken for a full
-sweep; on cancel the view jumps to the persisted partial run (`run_id`) when any
-groups finished. **Sweep history management (`0005`):** below the run picker,
+sweep. **`run()` jumps to the new run the moment start returns** (`202 {run_id}`,
+not when the sweep ends) and watches it fill in live via per-group writes + SSE; a
+cancel just leaves that same (now `cancelled`/partial) run selected, refreshed by
+the `SweepFinished` runs-list invalidation. **Sweep history management (`0005`):** below the run picker,
 `components/sweep/SelectedSweepHistory` renders a read-only summary of the
 selected run's full launch config — token range, grouping, method, caps, field
 filters, and the `ix_labels_filter` as a pretty multi-line JSON block (the result

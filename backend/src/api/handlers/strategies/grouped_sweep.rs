@@ -301,20 +301,24 @@ pub async fn start_grouped_sweep(
     }
 
     // Detach the run so a client disconnect (browser refresh / SPA navigation)
-    // can't drop the request future mid-sweep. The job — its `sweep_running` +
-    // progress snapshot and the persist step — must outlive the HTTP request so
-    // `GET /api/jobs/status` can recover the in-flight bar after a reload (the
-    // whole point of the global progress indicator). `rt::spawn` keeps it on the
-    // worker (no `Send` bound, unlike `tokio::spawn`); awaiting the handle returns
-    // the same response when the client stays connected, and dropping it on
-    // disconnect never cancels the task.
+    // can't drop the request future mid-sweep, AND so this POST returns as soon as
+    // the run is admitted (run header persisted) instead of being held open for the
+    // whole multi-minute sweep. Holding it open kept one of the browser's ~6
+    // per-host HTTP/1.1 connections busy for the entire run, which could leave a
+    // concurrent `POST .../sweeps/cancel` queued in the browser until the sweep
+    // ended — so the cancel button appeared to do nothing. The job reports its
+    // early result (admitted + `run_id`, or a pre-fold validation error) through
+    // `early_tx`; the fold then runs detached, recoverable via `GET /api/jobs/status`
+    // and SSE. `rt::spawn` keeps it on the worker (no `Send` bound, unlike
+    // `tokio::spawn`); we drop the handle — dropping an `rt::spawn` task never
+    // cancels it.
     let state = state.get_ref().clone();
-    actix_web::rt::spawn(run_grouped_sweep_job(state, b, tables))
-        .await
-        .unwrap_or_else(|_| {
-            HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "sweep task ended unexpectedly"}))
-        })
+    let (early_tx, early_rx) = tokio::sync::oneshot::channel::<HttpResponse>();
+    actix_web::rt::spawn(run_grouped_sweep_job(state, b, tables, early_tx));
+    early_rx.await.unwrap_or_else(|_| {
+        HttpResponse::InternalServerError()
+            .json(serde_json::json!({"error": "sweep task ended before reporting status"}))
+    })
 }
 
 /// The detached body of a grouped sweep, spawned by [`start_grouped_sweep`] so
@@ -323,11 +327,20 @@ pub async fn start_grouped_sweep(
 /// `SweepFinished` (via `Gate`), loads the corpus, runs the engine, and persists
 /// run → groups → results. Assumes `sweep_running` was already claimed by the
 /// caller.
+///
+/// Reports its *early* result through `early_tx` — a pre-fold validation error
+/// (bad range, no tokens, …) or the admitted run's `run_id` once the run header is
+/// persisted — then runs the (multi-minute) fold detached. The caller returns that
+/// early result immediately so the POST connection is freed before the fold,
+/// keeping a concurrent cancel from queueing behind it (see [`start_grouped_sweep`]).
+/// Post-admission outcomes (done / cancel / error) are surfaced via the DB run
+/// status + the `SweepFinished` SSE frame, not this function's (now `()`) return.
 async fn run_grouped_sweep_job(
     state: Arc<AppState>,
     b: StartGroupedSweepBody,
     tables: GroupedSweepTables,
-) -> HttpResponse {
+    early_tx: tokio::sync::oneshot::Sender<HttpResponse>,
+) {
     // Releases the single-flight gate, resets the progress snapshot, and
     // broadcasts the terminal `SweepFinished` frame on EVERY exit path (done /
     // cancel / config-error / db-error) — putting the emit in Drop means no
@@ -409,18 +422,21 @@ async fn run_grouped_sweep_job(
         Ok(c) => c,
         Err(e) => {
             tracing::error!("grouped sweep: corpus load failed: {e}");
-            return HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": e.to_string()}));
+            let _ = early_tx.send(HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": e.to_string()})));
+            return;
         }
     };
     if corpus.tokens.is_empty() {
-        return HttpResponse::BadRequest()
-            .json(serde_json::json!({"error": "no tokens in that date range — widen the selection"}));
+        let _ = early_tx.send(HttpResponse::BadRequest()
+            .json(serde_json::json!({"error": "no tokens in that date range — widen the selection"})));
+        return;
     }
     if let Err(e) = attach_fingerprints(&state.batch_db, &mut corpus).await {
         tracing::error!("grouped sweep: attach_fingerprints failed: {e}");
-        return HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": e.to_string()}));
+        let _ = early_tx.send(HttpResponse::InternalServerError()
+            .json(serde_json::json!({"error": e.to_string()})));
+        return;
     }
     // Optional exact-set ix_labels filter (applied post-fingerprint, in-memory so
     // the unfiltered Parquet corpus cache is reused across filter values): keep only
@@ -442,9 +458,10 @@ async fn run_grouped_sweep_job(
             "grouped sweep: ix_labels exact-set filter applied"
         );
         if corpus.tokens.is_empty() {
-            return HttpResponse::BadRequest().json(serde_json::json!({
+            let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({
                 "error": "no tokens match that instruction-label filter — adjust the labels or widen the selection"
-            }));
+            })));
+            return;
         }
     }
     // Optional per-field numeric filters — restrict the corpus to tokens whose
@@ -477,11 +494,12 @@ async fn run_grouped_sweep_job(
                 "grouped sweep: field filter applied"
             );
             if corpus.tokens.is_empty() {
-                return HttpResponse::BadRequest().json(serde_json::json!({
+                let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({
                     "error": format!(
                         "no tokens match the '{field_str}' field filter — adjust the values or widen the selection"
                     )
-                }));
+                })));
+                return;
             }
         }
     }
@@ -509,7 +527,7 @@ async fn run_grouped_sweep_job(
     // until `finalize_completed` swaps in the resolved set. Counts/status/axes are
     // re-stamped at the terminal step.
     let run_id = Uuid::new_v4();
-    let mut run = GroupedSweepRun {
+    let run = GroupedSweepRun {
         id: run_id,
         strategy_id: b.strategy_id.clone(),
         source: "db".to_string(),
@@ -548,9 +566,23 @@ async fn run_grouped_sweep_job(
     let repo = GroupedSweepRepo::new(state.batch_db.clone(), tables);
     if let Err(e) = repo.insert_run(&run).await {
         tracing::error!("grouped sweep: insert_run failed: {e}");
-        return HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": e.to_string()}));
+        let _ = early_tx.send(HttpResponse::InternalServerError()
+            .json(serde_json::json!({"error": e.to_string()})));
+        return;
     }
+
+    // The run is admitted and its header is persisted — report "started" so the
+    // POST returns NOW and the fold below runs detached (see `start_grouped_sweep`
+    // for why holding the connection open blocked cancels). `run_id` lets the
+    // client jump straight to the run, which fills in live via the per-group writes
+    // + SSE progress frames; the terminal state arrives over the `SweepFinished`
+    // SSE frame. A pre-fold config error (bad axes / over-cap grid) below now drops
+    // this admitted run instead of returning a 400 — a rare trade for never holding
+    // the connection across the fold.
+    let _ = early_tx.send(HttpResponse::Accepted().json(serde_json::json!({
+        "run_id": run_id,
+        "status": "started",
+    })));
 
     // Single DB-writer task: the engine's per-group emits (which arrive out of
     // order from the cross-group small-group phase) are serialized through one
@@ -689,25 +721,27 @@ async fn run_grouped_sweep_job(
                 if let Err(e) = repo.mark_cancelled(run_id).await {
                     tracing::error!("grouped sweep: mark_cancelled failed: {e}");
                 }
-                return HttpResponse::Ok().json(serde_json::json!({
-                    "cancelled": true,
-                    "run_id": run_id,
-                    "groups_done": groups_done,
-                }));
+                // The client already holds `run_id` (admitted at start); the
+                // partial run + its `cancelled` status reach it via the runs-list
+                // refresh on the `SweepFinished` SSE frame.
+                return;
             }
             // Config errors (bad axes / over-cap grid) fail before any group
             // folds, leaving an empty placeholder run — drop it so it doesn't
-            // litter the picker as a 0-group cancelled run.
+            // litter the picker as a 0-group cancelled run. (The client briefly
+            // navigated to this now-deleted run; the runs-list refresh on
+            // `SweepFinished` drops it back to the newest surviving run.)
             tracing::error!("grouped sweep failed: {e}");
             if let Err(del) = repo.delete_run(run_id).await {
                 tracing::error!("grouped sweep: cleanup of failed run failed: {del}");
             }
-            return HttpResponse::BadRequest().json(serde_json::json!({"error": e.to_string()}));
+            return;
         }
     };
 
     // Full success — stamp the terminal status, authoritative counts, and the
-    // resolved axes (only known now).
+    // resolved axes (only known now). The client picks the finalized run up via
+    // the runs-list refresh on the `SweepFinished` SSE frame.
     if let Err(e) = repo
         .finalize_completed(
             run_id,
@@ -718,29 +752,20 @@ async fn run_grouped_sweep_job(
         .await
     {
         tracing::error!("grouped sweep: finalize failed: {e}");
-        return HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": e.to_string()}));
+        return;
     }
 
-    // Reflect the finalized state in the response body the client gets back.
-    run.axes_spec = output.axes_json.clone();
-    run.group_count = output.groups.len() as i32;
-    run.combo_count = output.combo_count as i32;
-    run.groups_done = groups_done;
-    run.status = "completed".to_string();
-
     tracing::info!(
-        run_id = %run.id,
+        run_id = %run_id,
         strategy = %run.strategy_id,
         tokens = run.token_count,
-        groups = run.group_count,
-        combos = run.combo_count,
+        groups = output.groups.len(),
+        combos = output.combo_count,
         rss_mb = crate::sweep::obs::process_rss_mb(),
         elapsed_s = clock.elapsed_secs(),
         milestone = "done",
         "grouped sweep: done"
     );
-    HttpResponse::Ok().json(run)
 }
 
 /// Message to the single per-run DB-writer task. `Begin` carries the engine's
@@ -983,11 +1008,13 @@ pub async fn list_results(
 
 /// `POST /api/strategies/sweeps/cancel` — request cancellation of the in-flight
 /// grouped sweep. Cooperative: flips the shared cancel flag, which the engine
-/// polls between groups / in the per-token loop and bails on (the in-flight
-/// `start_grouped_sweep` request then returns `{cancelled: true}`). A no-op when
-/// no sweep is running.
+/// polls between groups / in the per-token loop and bails on (the run then ends as
+/// a partial `cancelled` run, announced via the `SweepFinished` SSE frame). A no-op
+/// when no sweep is running. Logs every hit so the request reaching the backend is
+/// positively confirmable in the log (vs. a cancel stuck queued in the browser).
 pub async fn cancel_grouped_sweep(state: web::Data<Arc<AppState>>) -> impl Responder {
     let running = state.sweep_running.load(Ordering::Acquire);
+    tracing::info!(running, "grouped sweep: cancel requested");
     if running {
         state.sweep_cancel.store(true, Ordering::Release);
     }

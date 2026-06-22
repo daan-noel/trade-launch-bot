@@ -345,11 +345,13 @@ export const apiSlice = createApi({
     }),
     // Trigger a grouped DB-range sweep (single-flight on the backend — a 409 means
     // a sweep is already running). Invalidating `GroupedSweep` refetches the runs.
-    // A user-cancelled sweep resolves to `{ cancelled, run_id, groups_done }` — the
-    // groups that finished before the cancel ARE persisted (Phase 4 partial
-    // persistence) as a `cancelled` run, so `run_id` points at that partial run.
+    // Returns AS SOON AS the run is admitted (`202 { run_id }`) rather than holding
+    // the request open for the whole sweep — that prevented a concurrent cancel POST
+    // from queueing behind it on the browser's per-host connection cap. The run then
+    // fills in live via per-group writes + SSE; its terminal state (done / cancelled)
+    // arrives over the `SweepFinished` SSE frame, which refetches `GroupedSweep`.
     startGroupedSweep: builder.mutation<
-      GroupedSweepRunRecord | { cancelled: true; run_id: string; groups_done: number },
+      { run_id: string; status: string },
       GroupedSweepStartArgs
     >({
       query: (body) => ({
