@@ -24,6 +24,22 @@ pub struct PaperRunRef {
     pub run_id: Uuid,
 }
 
+/// RAII claim on an in-flight exit. While held, `position_id` stays in the
+/// `exiting` set (the no-double-sell guard); dropping it — on normal return,
+/// early return, OR a panic that unwinds the holding task — frees the slot
+/// automatically. Returned by [`Tpsl1RuntimeCache::try_begin_exit`]; move it into
+/// the spawned sell/fill-poll task so the claim lives exactly as long as the exit.
+pub struct ExitGuard {
+    exiting: Arc<DashSet<Uuid>>,
+    position_id: Uuid,
+}
+
+impl Drop for ExitGuard {
+    fn drop(&mut self) {
+        self.exiting.remove(&self.position_id);
+    }
+}
+
 /// In-memory TPSL state for the strategy hot path (rules + open positions + rule counters).
 ///
 /// Counters are mode-aware: for real rules `total_count_by_rule` is all-time
@@ -96,15 +112,29 @@ impl Tpsl1RuntimeCache {
     }
 
     /// Claim `position_id` for an in-flight exit (real sell or paper fill-poll).
-    /// Returns `true` if newly claimed, `false` if an exit is already running for
-    /// it — in which case the caller MUST skip (the no-double-sell invariant).
-    pub fn try_begin_exit(&self, position_id: Uuid) -> bool {
-        self.exiting.insert(position_id)
+    /// Returns `Some(ExitGuard)` if newly claimed — hold it for the whole exit;
+    /// returns `None` if an exit is already running for it, in which case the
+    /// caller MUST skip (the no-double-sell invariant). The guard frees the slot
+    /// on drop, so a spawned sell/fill-poll task that **panics** mid-exit can no
+    /// longer wedge the `exiting` slot permanently (the old manual `end_exit`
+    /// release never ran on a panic, stranding the position forever).
+    pub fn try_begin_exit(&self, position_id: Uuid) -> Option<ExitGuard> {
+        if self.exiting.insert(position_id) {
+            Some(ExitGuard {
+                exiting: self.exiting.clone(),
+                position_id,
+            })
+        } else {
+            None
+        }
     }
 
-    /// Release an exit claim once the sell loop / fill-poll finishes.
-    pub fn end_exit(&self, position_id: Uuid) {
-        self.exiting.remove(&position_id);
+    /// Whether an exit is currently in flight for `position_id` (its guard is
+    /// held). The ExitPending reaper uses this only diagnostically — it claims via
+    /// [`try_begin_exit`] (atomic) to decide whether to re-drive, never this.
+    #[cfg(test)]
+    pub fn is_exiting(&self, position_id: Uuid) -> bool {
+        self.exiting.contains(&position_id)
     }
 
     pub async fn load_from_db(&self, pool: &PgPool) -> anyhow::Result<()> {
@@ -230,7 +260,10 @@ impl Tpsl1RuntimeCache {
         let mut holding_by_rule: HashMap<Uuid, i64> = HashMap::new();
 
         for pos in positions {
-            *holding_by_rule.entry(pos.rule_id).or_insert(0) += 1;
+            // holding_count tracks only entered positions (cap enforcement).
+            if pos.entry_price.is_some() {
+                *holding_by_rule.entry(pos.rule_id).or_insert(0) += 1;
+            }
             by_mint.entry(pos.mint.clone()).or_default().push(Arc::new(pos));
         }
 
@@ -532,26 +565,39 @@ impl Tpsl1RuntimeCache {
 
     /// Call after DB writes that change position status or create/delete a position.
     pub fn sync_position(&self, prev: Option<&Position>, current: &Position) {
+        // Holding index: all positions tracked regardless of entry (exit-gating
+        // relies on this for unentered positions too).
         if let Some(p) = prev {
             if p.status == PositionStatus::Holding {
                 self.remove_from_holding_index(p);
                 if current.status != PositionStatus::Holding {
-                    self.adjust_holding_count(p.rule_id, -1);
                     // Position is leaving Holding — its memoized exit state is dead.
                     self.exit_state_by_position.remove(&p.id);
                 }
             }
         }
-
         if current.status == PositionStatus::Holding {
             self.upsert_in_holding_index(current);
-            if prev.map(|p| p.status != PositionStatus::Holding).unwrap_or(true) {
-                self.adjust_holding_count(current.rule_id, 1);
-            }
         }
 
-        if prev.is_none() {
+        // Cap counters: only positions that have a real entry (SOL deployed) count.
+        let prev_entered = prev.map(|p| p.entry_price.is_some()).unwrap_or(false);
+        let curr_entered = current.entry_price.is_some();
+
+        // total_count: increment exactly once when a position first gets a real entry.
+        if curr_entered && !prev_entered {
             self.adjust_total_count(current.rule_id, 1);
+        }
+
+        // holding_count: entered positions currently in Holding status.
+        let prev_holding_entered = prev
+            .map(|p| p.entry_price.is_some() && p.status == PositionStatus::Holding)
+            .unwrap_or(false);
+        let curr_holding_entered = curr_entered && current.status == PositionStatus::Holding;
+        if curr_holding_entered && !prev_holding_entered {
+            self.adjust_holding_count(current.rule_id, 1);
+        } else if prev_holding_entered && !curr_holding_entered {
+            self.adjust_holding_count(current.rule_id, -1);
         }
 
         // Cold-lane signal: the position table + the rule's open-count badge are
@@ -565,11 +611,16 @@ impl Tpsl1RuntimeCache {
     pub fn remove_position(&self, position: &Position) {
         if position.status == PositionStatus::Holding {
             self.remove_from_holding_index(position);
-            self.adjust_holding_count(position.rule_id, -1);
         }
         self.time_exit_holding.remove(&position.id);
         self.exit_state_by_position.remove(&position.id);
-        self.adjust_total_count(position.rule_id, -1);
+        // Only adjust cap counters if the position had a real entry.
+        if position.entry_price.is_some() {
+            if position.status == PositionStatus::Holding {
+                self.adjust_holding_count(position.rule_id, -1);
+            }
+            self.adjust_total_count(position.rule_id, -1);
+        }
     }
 
     fn upsert_in_holding_index(&self, position: &Position) {
@@ -663,6 +714,40 @@ mod tests {
         assert_eq!(cache.holding_count_by_rule(rule_id), 0);
         assert_eq!(cache.total_count_by_rule(rule_id), 0);
         assert!(cache.holding_by_mint(&pos.mint).is_empty());
+    }
+
+    /// The RAII exit guard frees the `exiting` slot when dropped — including the
+    /// early-return / panic-unwind case the old manual `end_exit` never covered.
+    #[test]
+    fn exit_guard_frees_slot_on_drop() {
+        let cache = cache();
+        let id = Uuid::new_v4();
+
+        let guard = cache.try_begin_exit(id).expect("first claim succeeds");
+        assert!(cache.is_exiting(id));
+        // A second claim while the first guard is held must be refused.
+        assert!(cache.try_begin_exit(id).is_none(), "double-claim refused");
+
+        drop(guard);
+        assert!(!cache.is_exiting(id), "slot freed on drop");
+        // Freed — claimable again.
+        assert!(cache.try_begin_exit(id).is_some(), "re-claimable after release");
+    }
+
+    /// A spawned task that panics while holding the guard still frees the slot
+    /// (Drop runs on unwind), so a panicked sell can't wedge the position forever.
+    #[tokio::test]
+    async fn exit_guard_frees_slot_when_holding_task_panics() {
+        let cache = cache();
+        let id = Uuid::new_v4();
+        let guard = cache.try_begin_exit(id).expect("claim");
+
+        let handle = tokio::spawn(async move {
+            let _g = guard; // moved in; dropped on unwind
+            panic!("sell task blew up mid-exit");
+        });
+        assert!(handle.await.is_err(), "task panicked");
+        assert!(!cache.is_exiting(id), "guard freed the slot on panic unwind");
     }
 
     /// During a launch wave the count bump must be visible synchronously: a second

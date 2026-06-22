@@ -355,6 +355,27 @@ impl Tpsl1PositionRepo {
         rows.into_iter().map(Position::try_from).collect()
     }
 
+    /// All positions stuck in ExitPending — for the exit-recovery reaper, which
+    /// re-drives a sell whose task panicked or was lost to a process restart (the
+    /// holding cache only loads `Holding`, so these are otherwise invisible). Small
+    /// result set under normal operation; index-served by the `status` predicate.
+    pub async fn find_all_exit_pending(&self) -> anyhow::Result<Vec<Position>> {
+        let rows = sqlx::query_as::<_, PositionDbRow>(
+            r#"
+            SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
+                   status, strategy, rule_id, entry_token_amount, exit_token_amount,
+                   entry_time, exit_time, exit_reason, created_at, updated_at
+            FROM tpsl1_real_positions
+            WHERE status = 'ExitPending'
+            ORDER BY updated_at ASC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(Position::try_from).collect()
+    }
+
     /// All positions with status Holding (for TPSL runtime cache warm-up).
     pub async fn find_all_holding(&self) -> anyhow::Result<Vec<Position>> {
         let rows = sqlx::query_as::<_, PositionDbRow>(
@@ -396,6 +417,7 @@ impl Tpsl1PositionRepo {
             r#"
             SELECT rule_id, COUNT(*)::bigint
             FROM tpsl1_real_positions
+            WHERE entry_price IS NOT NULL
             GROUP BY rule_id
             "#,
         )

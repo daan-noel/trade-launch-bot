@@ -512,7 +512,7 @@ impl Tpsl2PaperTradingRepo {
     /// (the previous N+1). Runs with zero positions are absent from the map.
     pub async fn count_by_run_all(&self) -> anyhow::Result<std::collections::HashMap<Uuid, i64>> {
         let rows: Vec<(Uuid, i64)> = sqlx::query_as(
-            "SELECT run_id, COUNT(*) FROM tpsl2_paper_positions GROUP BY run_id",
+            "SELECT run_id, COUNT(*) FROM tpsl2_paper_positions WHERE entry_price IS NOT NULL GROUP BY run_id",
         )
         .fetch_all(&self.pool)
         .await?;
