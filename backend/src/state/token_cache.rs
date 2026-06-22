@@ -184,6 +184,11 @@ pub struct TokenState {
     pub initial_virtual_token_reserves: Option<f64>,
     /// Latest virtual token reserves snapshot.
     pub current_virtual_token_reserves: Option<f64>,
+    /// Latest virtual **SOL** reserves snapshot (in SOL, as the decoder stores it —
+    /// lamports ÷ 1e9). Maintained newest-by-block_time alongside
+    /// `current_virtual_token_reserves` so the strategy snipe buy can derive a
+    /// slippage `min_out` from the in-memory curve price without an inline RPC.
+    pub current_virtual_sol_reserves: Option<f64>,
     /// Latest known **real** SOL reserves — the dead-token liquidity signal
     /// (`is_dead` Signal 1). Maintained from the chronologically newest trade that
     /// carries a snapshot, NOT `trades.last()`, so a lag-inverted older trade
@@ -240,6 +245,7 @@ impl TokenState {
             last_meaningful_trade_at: None,
             initial_virtual_token_reserves: None,
             current_virtual_token_reserves: None,
+            current_virtual_sol_reserves: None,
             current_real_sol_reserves: None,
             market_cap: None,
             current_price: initial_price,
@@ -384,6 +390,12 @@ impl TokenState {
                 self.initial_virtual_token_reserves = Some(INITIAL_VIRTUAL_TOKEN_RESERVES);
             }
             self.current_virtual_token_reserves = Some(current);
+        }
+        // Newest virtual SOL reserves, maintained in lockstep with the token side
+        // above (same newest-by-block_time guard) so the snipe buy's slippage
+        // min_out reads a consistent (token, sol) reserve pair from memory.
+        if let Some(vsol) = trade.virtual_sol_reserves() {
+            self.current_virtual_sol_reserves = Some(vsol);
         }
         // Newest known real SOL reserves for the dead-token liquidity signal. Only
         // overwrite when this trade carries a snapshot, so a reserve-less newest

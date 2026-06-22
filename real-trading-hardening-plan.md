@@ -27,19 +27,6 @@
 
 *(ship all of this before putting real SOL in)*
 
-## 1B. Wire slippage into strategy trades
-
-**Problem:** strategy buy/sell currently pass `None` for slippage → curve trades accept *any* price (`min_out=1`, zero protection); only AMM gets the 5% default. The `trade.slippage_bps` setting you already have is only used by the **manual** buy/sell buttons.
-
-- Resolve slippage from `app_state.settings().slippage_bps` (fallback `DEFAULT_SLIPPAGE_BPS = 500`), reusing the existing `resolve_slippage` logic in `api/handlers/trading/solana.rs` (extract a shared helper).
-- **Sell side:** pass `Some(slippage_bps)` into `sell_token_once(...)` / `amm_sell(...)` — clear win, do this.
-- **Buy side:** pass `Some(slippage_bps)` into `buy_token_snipe(...)`, computing `min_out` from the price the **triggering trade event already carries** — no chain, no inline network call.
-  - Curve-buy `min_out` needs current price (`virtual_sol / virtual_token`). On the snipe path that price is **already in hand**: the trade that fired the entry signal carries `virtual_sol_reserves` / `virtual_token_reserves` (`models/trade.rs`, populated by the decoder at ingest). Thread those straight into the buy.
-  - ⚠️ **Do not** call `curve_reserves` / `curve_virtual_reserves` (RPC) inline before tx build — that's a network round-trip on the hot path, a sell-confirm-class budget violation. The old multi-tier chain (`reserve_cache → genesis → RPC`) is **wrong for this path**: step 1 always hits for snipe-on-trade, so the genesis tier is unreachable (and isn't wired into `curve_reserves` today anyway) and the RPC tier is exactly the latency we're avoiding.
-  - **Single fallback:** if (and only if) the event somehow lacks reserves — structurally near-impossible for snipe-on-trade — fall back to `min_out=1` (no protection). `min_out` is optional slippage protection ("buy, but abort if the fill is worse than X"), **never** required for the buy to function, so a missing read must never block or delay the snipe.
-  - Scope: this supersedes the cache→RPC chain in `curve_reserves` **only for the strategy snipe buy**. That existing chain stays for any non-snipe caller that has no triggering event.
-- No DB change — uses the existing setting; the Settings page already edits it.
-
 ## 1C. Per-signature attribution *(enables concurrent same-token positions safely)*
 
 **Problem (in plain terms):** with one wallet, both the entry and the exit are recovered from the shared `trades` feed keyed only by *(wallet, mint)*:

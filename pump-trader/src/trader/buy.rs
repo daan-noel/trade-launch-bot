@@ -33,7 +33,9 @@ impl PumpFunTrader {
         sol_amount: f64,
         slippage_bps: Option<u64>,
     ) -> Result<bool> {
-        self.buy_token_inner(mint, creator, token_program, sol_amount, slippage_bps, false, false)
+        // Manual buy: no triggering-event reserves in hand, so `buy_token_inner`
+        // reads the curve on-chain for the slippage floor (snipe_reserves = None).
+        self.buy_token_inner(mint, creator, token_program, sol_amount, slippage_bps, None, false, false)
             .await
             .map(|_sig| true)
     }
@@ -49,6 +51,12 @@ impl PumpFunTrader {
     /// Returns the submitted transaction signature *without* blocking on RPC
     /// confirmation — the caller confirms via the WS/DB trade feed and may use
     /// `signature_state` to classify a send that the feed never surfaces.
+    ///
+    /// `reserves` is the curve's virtual `(token, quote=lamports)` reserves the
+    /// caller already has in hand from the triggering trade event — threaded
+    /// straight into the slippage `min_out` so this hot path never makes an inline
+    /// reserve RPC. `None` (no snapshot available) yields `min_out=1` (no
+    /// protection) rather than blocking the snipe on a network read.
     pub async fn buy_token_snipe(
         &self,
         token_mint: &str,
@@ -56,16 +64,20 @@ impl PumpFunTrader {
         token_program_id: &str,
         sol_amount: f64,
         slippage_bps: Option<u64>,
+        reserves: Option<(u128, u128)>,
     ) -> Result<String> {
         // Parse the feed/DB strings once here (the snipe path's only source is
         // strings); `buy_token_inner` then works purely in parsed forms.
         let mint = Pubkey::from_str(token_mint)?;
         let creator_pubkey = Pubkey::from_str(creator)?;
         let token_program = TokenProgram::from_id(token_program_id);
-        self.buy_token_inner(&mint, &creator_pubkey, token_program, sol_amount, slippage_bps, true, true)
+        self.buy_token_inner(&mint, &creator_pubkey, token_program, sol_amount, slippage_bps, reserves, true, true)
             .await
     }
 
+    // Trade-path fn — the buy needs every routing/slippage/skip input threaded in;
+    // `too_many_arguments` is allowed by design (see CLAUDE.md), like the sell path.
+    #[allow(clippy::too_many_arguments)]
     async fn buy_token_inner(
         &self,
         mint: &Pubkey,
@@ -73,6 +85,10 @@ impl PumpFunTrader {
         token_program: TokenProgram,
         sol_amount: f64,
         slippage_bps: Option<u64>,
+        // Caller-supplied virtual `(token, quote=lamports)` reserves for the
+        // slippage floor — `Some` on the snipe path (from the triggering event),
+        // `None` on the manual path (read the curve on-chain below).
+        snipe_reserves: Option<(u128, u128)>,
         skip_ata_check: bool,
         skip_confirm: bool,
     ) -> Result<String> {
@@ -174,36 +190,49 @@ impl PumpFunTrader {
             }
 
             // `buy_exact_sol_in(spendable_quote_in, min_tokens_out)`: slippage
-            // floor on tokens received. `None` keeps the legacy min_out=1 (no
-            // protection) and skips the reserve read — the latency-critical snipe
-            // path. `Some` reads the curve's virtual reserves and sets a
-            // conservative lower bound; a failed read falls back to 1 so slippage
-            // never blocks a buy.
-            let min_tokens_out: u64 = match slippage_bps {
-                Some(slip) => match self.curve_reserves(&mint_str, &bonding_curve).await {
-                    Ok((vt, vq)) => {
-                        let net = (buy_lamports as u128)
-                            .saturating_mul(10_000u128.saturating_sub(CURVE_FEE_BUFFER_BPS))
-                            / 10_000;
-                        // Saturating throughout on untrusted reserve reads; a zero
-                        // denominator (both reserves read as 0) falls back to the
-                        // unprotected min_out=1 rather than panicking.
-                        let denom = vq.saturating_add(net);
-                        if denom == 0 {
-                            1
-                        } else {
-                            let expected = vt.saturating_mul(net) / denom;
-                            ((expected.saturating_mul(10_000u128.saturating_sub(slip as u128))
-                                / 10_000) as u64)
-                                .max(1)
+            // floor on tokens received. `None` slippage keeps the legacy min_out=1
+            // (no protection) and never touches reserves. With a slippage tolerance,
+            // the reserve source is:
+            //   - the snipe path's caller-supplied `snipe_reserves` (the triggering
+            //     event's virtual reserves) — NO inline RPC on the hot path;
+            //   - the manual path reads the curve on-chain (`curve_reserves`);
+            //   - a snipe with no snapshot in hand falls back to min_out=1 rather
+            //     than an inline reserve RPC, so a missing read never blocks the buy.
+            let reserves: Option<(u128, u128)> = match (slippage_bps, snipe_reserves) {
+                (None, _) => None,
+                (Some(_), Some(r)) => Some(r),
+                // Manual path only: read the curve on-chain. The snipe path
+                // (skip_ata_check) deliberately never reads here.
+                (Some(_), None) if !skip_ata_check => {
+                    match self.curve_reserves(&mint_str, &bonding_curve).await {
+                        Ok(r) => Some(r),
+                        Err(e) => {
+                            warn!("curve buy slippage: reserve read failed ({e}); using min_out=1");
+                            None
                         }
                     }
-                    Err(e) => {
-                        warn!("curve buy slippage: reserve read failed ({e}); using min_out=1");
+                }
+                (Some(_), None) => None,
+            };
+            let min_tokens_out: u64 = match (slippage_bps, reserves) {
+                (Some(slip), Some((vt, vq))) => {
+                    let net = (buy_lamports as u128)
+                        .saturating_mul(10_000u128.saturating_sub(CURVE_FEE_BUFFER_BPS))
+                        / 10_000;
+                    // Saturating throughout on untrusted reserve reads; a zero
+                    // denominator (both reserves read as 0) falls back to the
+                    // unprotected min_out=1 rather than panicking.
+                    let denom = vq.saturating_add(net);
+                    if denom == 0 {
                         1
+                    } else {
+                        let expected = vt.saturating_mul(net) / denom;
+                        ((expected.saturating_mul(10_000u128.saturating_sub(slip as u128)) / 10_000)
+                            as u64)
+                            .max(1)
                     }
-                },
-                None => 1,
+                }
+                _ => 1,
             };
 
             // 8-byte discriminator + two u64 args: size up front so the two

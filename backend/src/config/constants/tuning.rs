@@ -16,6 +16,20 @@ pub const SLIPPAGE_MAX_BPS: u64 = 5_000;
 /// so an explicit sub-floor value is raised to this minimum. 10 bps = 0.1%.
 pub const SLIPPAGE_MIN_BPS: u64 = 10;
 
+/// Resolve the effective slippage (bps) for a trade from the two configured
+/// sources, clamped to the hard `[SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS]` range:
+/// per-request override → persisted global default (`AppSettings.slippage_bps`)
+/// → built-in `DEFAULT_SLIPPAGE_BPS`. Shared by the manual buy/sell handlers
+/// (which pass a per-request `request`) and the strategy snipe/exit paths (which
+/// pass `None`, taking the persisted default). The clamp guarantees a non-zero
+/// floor so a `0` setting can't force a guaranteed revert.
+pub fn resolve_slippage_bps(setting: Option<u64>, request: Option<u64>) -> u64 {
+    request
+        .or(setting)
+        .unwrap_or(DEFAULT_SLIPPAGE_BPS)
+        .clamp(SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS)
+}
+
 /// Per-trade SOL ceiling on the manual buy API (`POST /api/solana/wallet/buy`).
 /// A fat-finger ("buy 1000 SOL") or hostile value is rejected with a 400 before
 /// any on-chain work. The `pump_trader` crate enforces its own `MAX_BUY_SOL`

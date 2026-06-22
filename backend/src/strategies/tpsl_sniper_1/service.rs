@@ -3,13 +3,15 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use tracing::{debug, info, warn};
 
+use crate::config::constants::resolve_slippage_bps;
 use crate::models::ingest::SseEvent;
 use crate::models::Position;
 use crate::state::token_cache::TokenCache;
 use crate::state::trade_signals::TradeSignals;
+use crate::storage::repositories::settings_repo::AppSettings;
 use crate::storage::repositories::{
     tpsl1_paper_trading_repo::Tpsl1PaperTradingRepo, tpsl1_position_repo::Tpsl1PositionRepo,
     trade_repo::TradeRepo,
@@ -37,6 +39,9 @@ pub struct Tpsl1StrategyService {
     sse_tx: broadcast::Sender<SseEvent>,
     /// Persisted-trade wakeup hub for the snipe buy confirm loop.
     trade_signals: Arc<TradeSignals>,
+    /// Live view of the persisted settings document; read for the effective
+    /// trade slippage (1B) at each real buy/sell without a DB round-trip.
+    settings: watch::Receiver<AppSettings>,
 }
 
 impl Tpsl1StrategyService {
@@ -47,6 +52,7 @@ impl Tpsl1StrategyService {
         token_cache: Arc<TokenCache>,
         sse_tx: broadcast::Sender<SseEvent>,
         trade_signals: Arc<TradeSignals>,
+        settings: watch::Receiver<AppSettings>,
     ) -> Self {
         Self {
             position_repo: Tpsl1PositionRepo::new(pool.clone()),
@@ -58,7 +64,16 @@ impl Tpsl1StrategyService {
             token_cache,
             sse_tx,
             trade_signals,
+            settings,
         }
+    }
+
+    /// Effective slippage (bps) for this strategy's real trades: the persisted
+    /// global default, clamped to the hard range. No per-rule override yet (1B);
+    /// a future per-rule value would be passed as the `request` arg. Reads the
+    /// watch snapshot without holding the borrow across an await.
+    fn slippage_bps(&self) -> u64 {
+        resolve_slippage_bps(self.settings.borrow().slippage_bps, None)
     }
 
     const EXIT_PENDING_CLEANUP_INTERVAL_MS: u64 = 60_000;
@@ -243,6 +258,9 @@ impl Tpsl1StrategyService {
             self.runtime.sync_position(None, &position);
 
             let is_real = rule.trade_mode == "real";
+            // Resolve slippage before the spawn (the watch borrow isn't held
+            // across an await); reserves are read inside the task at buy time.
+            let slippage_bps = self.slippage_bps();
             let buy_amount = rule.buy_amount;
             let creator = token.creator_wallet.clone();
             let position_id = position.id;
@@ -271,6 +289,16 @@ impl Tpsl1StrategyService {
                 info!("Created position {position_id} for token {mint} under rule {rule_id}");
 
                 if is_real {
+                    // Derive the slippage min_out from the curve's in-memory virtual
+                    // reserves (set by the WS feed); `None` when no snapshot exists
+                    // yet ⇒ min_out=1, never an inline RPC on the snipe path.
+                    let reserves = token_cache.get(&mint).and_then(|e| {
+                        let st = e.value();
+                        super::execution::real::snipe_reserves_from_cache(
+                            st.current_virtual_token_reserves,
+                            st.current_virtual_sol_reserves,
+                        )
+                    });
                     super::execution::real::buy_until_filled_or_give_up(
                         trader,
                         mint.clone(),
@@ -283,6 +311,8 @@ impl Tpsl1StrategyService {
                         runtime.clone(),
                         trade_signals,
                         super::execution::real::BuyRetryCfg::production(),
+                        Some(slippage_bps),
+                        reserves,
                     )
                     .await;
                     if let Ok(Some(pos)) = position_repo.find_by_id(position_id).await {
@@ -607,6 +637,8 @@ impl Tpsl1StrategyService {
         let runtime = self.runtime.clone();
         let token_cache = self.token_cache.clone();
         let trade_signals = self.trade_signals.clone();
+        // Resolve slippage before the spawn (watch borrow not held across await).
+        let slippage_bps = self.slippage_bps();
         tokio::spawn(async move {
             // Held until the sell completes or the task unwinds on panic.
             let _guard = guard;
@@ -621,6 +653,7 @@ impl Tpsl1StrategyService {
                 trigger_price,
                 trigger_time,
                 reason,
+                slippage_bps,
             )
             .await;
         });

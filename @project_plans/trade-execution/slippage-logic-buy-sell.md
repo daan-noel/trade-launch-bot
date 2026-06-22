@@ -26,17 +26,24 @@ deliberate — it's the latency-critical snipe path.
 `buy_exact_sol_in(spendable, min_tokens_out)` instruction:
 
 - `None` → `min_out = 1` (effectively "fill at any price"), and **skips the
-  reserve read** entirely. This is what `buy_token_snipe` uses to avoid an RPC
-  round-trip on a fresh-token snipe.
-- `Some(slip)` → reads the curve's virtual reserves via `curve_reserves`,
-  computes expected tokens with the constant-product formula, then haircuts by
-  slippage:
+  reserve read** entirely.
+- `Some(slip)` → computes expected tokens with the constant-product formula, then
+  haircuts by slippage:
 
   ```
   net      = buy_lamports * (10000 - CURVE_FEE_BUFFER_BPS) / 10000
   expected = vt * net / (vq + net)               // tokens out at current reserves
   min_out  = expected * (10000 - slip) / 10000   (floored at 1)
   ```
+
+  The reserve source for `(vt, vq)` depends on the caller (`buy_token_inner`'s
+  `snipe_reserves: Option<(u128,u128)>` arg):
+  - **Snipe path** (`buy_token_snipe`, 1B): the strategy passes the triggering
+    event's virtual `(token, quote=lamports)` reserves — read from the in-memory
+    `token_cache`, **not** an inline RPC. A snipe with no snapshot in hand falls
+    back to `min_out = 1` (still no inline read) rather than blocking the buy.
+  - **Manual path** (`buy_token`): no event reserves in hand, so it reads the
+    curve on-chain via `curve_reserves` (the WS-cache-then-RPC fast path).
 
 **Sell** (`sell.rs:190`) is the mirror image, setting `min_sol_output` in
 `sell(amount, min_sol_output)`:

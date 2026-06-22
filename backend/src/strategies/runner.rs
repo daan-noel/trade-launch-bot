@@ -2,12 +2,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::PgPool;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 use tracing::info;
 
 use crate::{
     models::ingest::{IngestKind, SseEvent, StrategyPing},
     state::{token_cache::TokenCache, trade_signals::TradeSignals},
+    storage::repositories::settings_repo::AppSettings,
     trader::PumpFunTrader,
 };
 
@@ -30,6 +31,7 @@ impl StrategyRunner {
         tpsl2_cache: Arc<Tpsl2RuntimeCache>,
         sse_tx: broadcast::Sender<SseEvent>,
         trade_signals: Arc<TradeSignals>,
+        settings: watch::Receiver<AppSettings>,
     ) -> Self {
         let tpsl1 = Tpsl1StrategyService::new(
             pool.clone(),
@@ -38,6 +40,7 @@ impl StrategyRunner {
             token_cache.clone(),
             sse_tx.clone(),
             trade_signals.clone(),
+            settings.clone(),
         );
         tpsl1.spawn_background_tasks();
         let tpsl2 = Tpsl2StrategyService::new(
@@ -47,6 +50,7 @@ impl StrategyRunner {
             token_cache.clone(),
             sse_tx,
             trade_signals,
+            settings,
         );
         tpsl2.spawn_background_tasks();
         Self { token_cache, tpsl1, tpsl2 }

@@ -591,6 +591,7 @@ async fn main() -> anyhow::Result<()> {
         tpsl2_cache,
         sse_tx.clone(),
         trade_signals.clone(),
+        settings_tx.subscribe(),
     );
     let strategy_task = tokio::spawn(strategy_runner.run(strategy_rx));
 

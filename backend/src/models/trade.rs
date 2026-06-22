@@ -277,7 +277,7 @@ mod tests {
         amm.real_token_reserves = Some(250.0);
         assert!((amm.chart_spot_price().unwrap() - 0.1).abs() < 1e-12);
 
-        let mut bare = Trade::new(
+        let bare = Trade::new(
             "mint".into(),
             "user".into(),
             TradeType::Buy,

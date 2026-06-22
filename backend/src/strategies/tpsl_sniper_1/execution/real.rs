@@ -44,6 +44,25 @@ fn classify_silent_send<E>(status: &Result<Option<bool>, E>) -> SilentSendOutcom
     }
 }
 
+/// Convert the token cache's in-memory virtual reserves — token side in raw
+/// units, SOL side in SOL (the decoder divides lamports by 1e9) — into the
+/// `(virtual_token, virtual_quote=lamports)` pair the snipe buy's slippage
+/// `min_out` expects. Returns `None` when either snapshot is missing or
+/// non-positive, so the buy proceeds unprotected (`min_out=1`) rather than
+/// blocking on an inline reserve RPC (the latency budget forbids it on this path).
+pub(crate) fn snipe_reserves_from_cache(
+    virtual_token_reserves: Option<f64>,
+    virtual_sol_reserves: Option<f64>,
+) -> Option<(u128, u128)> {
+    let vt = virtual_token_reserves?;
+    let vsol = virtual_sol_reserves?;
+    if vt <= 0.0 || vsol <= 0.0 {
+        return None;
+    }
+    let vq_lamports = vsol * pump_trader::constants::LAMPORTS_PER_SOL as f64;
+    Some((vt as u128, vq_lamports as u128))
+}
+
 /// Off-chain dependency of the snipe buy flow: send a buy (no RPC confirm) and
 /// classify a sent signature. A trait so `buy_until_filled_or_give_up` can be
 /// driven by a scripted fake in tests instead of a live chain.
@@ -56,6 +75,8 @@ pub(crate) trait SnipeExecutor: Send + Sync {
         creator: &str,
         token_program_id: &str,
         amount: f64,
+        slippage_bps: Option<u64>,
+        reserves: Option<(u128, u128)>,
     ) -> anyhow::Result<String>;
     async fn check_signature(&self, signature: &str) -> anyhow::Result<Option<bool>>;
 }
@@ -71,9 +92,13 @@ impl SnipeExecutor for PumpFunTrader {
         creator: &str,
         token_program_id: &str,
         amount: f64,
+        slippage_bps: Option<u64>,
+        reserves: Option<(u128, u128)>,
     ) -> anyhow::Result<String> {
-        // Snipe slippage is `None` (min_out=1) — see `buy_token_snipe`.
-        self.buy_token_snipe(mint, creator, token_program_id, amount, None)
+        // Slippage min_out is derived from the triggering event's reserves
+        // (threaded in, no RPC); a missing snapshot yields min_out=1 inside
+        // `buy_token_snipe` — never an inline reserve read on the hot path.
+        self.buy_token_snipe(mint, creator, token_program_id, amount, slippage_bps, reserves)
             .await
     }
     async fn check_signature(&self, signature: &str) -> anyhow::Result<Option<bool>> {
@@ -106,6 +131,7 @@ impl BuyRetryCfg {
 /// Snipe-buy `mint` and record the entry fill on first sight in the WS feed,
 /// retrying per `cfg`. Honors the double-buy invariant: only a confirmed
 /// on-chain revert re-sends.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
     trader: Arc<E>,
     mint: String,
@@ -118,6 +144,11 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
     runtime: Arc<Tpsl1RuntimeCache>,
     trade_signals: Arc<TradeSignals>,
     cfg: BuyRetryCfg,
+    // Effective slippage for the buy and the triggering event's curve reserves
+    // (token, quote=lamports). `reserves = None` ⇒ min_out=1 (no RPC); see
+    // `send_snipe_buy` / `buy_token_snipe`.
+    slippage_bps: Option<u64>,
+    reserves: Option<(u128, u128)>,
 ) {
     let wallet = trader.wallet();
     let max_attempts = cfg.max_attempts;
@@ -136,7 +167,7 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
         // is the sole confirmation and the entry-price source. `buy_token_snipe`
         // returns the submitted signature so a silent feed can be classified.
         let signature = match trader
-            .send_snipe_buy(&mint, &creator, &token_program_id, buy_amount)
+            .send_snipe_buy(&mint, &creator, &token_program_id, buy_amount, slippage_bps, reserves)
             .await
         {
             Ok(sig) => sig,
@@ -300,6 +331,7 @@ async fn adopt_existing_fill_if_present(
 /// and, on a confirmed clear, close it; otherwise mark it ExitFailed at the
 /// trigger price. `trigger_price`/`trigger_time` are the hypothetical exit
 /// recorded if the sell never confirms; `exit_reason` is persisted either way.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn sell_and_close_position(
     trader: Arc<PumpFunTrader>,
     mut position: Position,
@@ -311,6 +343,7 @@ pub(crate) async fn sell_and_close_position(
     trigger_price: f64,
     trigger_time: DateTime<Utc>,
     exit_reason: String,
+    slippage_bps: u64,
 ) {
     let mint = position.mint.clone();
     let amount = position.entry_token_amount.unwrap_or(0.0) as u64;
@@ -335,6 +368,7 @@ pub(crate) async fn sell_and_close_position(
         cache,
         trade_signals,
         base_token_program,
+        slippage_bps,
     )
     .await
     {
@@ -485,6 +519,7 @@ fn classify_sell_revert<E>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn sell_until_balance_cleared(
     trader: Arc<PumpFunTrader>,
     mint: String,
@@ -493,6 +528,7 @@ async fn sell_until_balance_cleared(
     cache: &TokenCache,
     trade_signals: Arc<TradeSignals>,
     base_token_program: String,
+    slippage_bps: u64,
 ) -> SellOutcome {
     let mut attempt = 0usize;
     let max_attempts = super::SELL_MAX_ATTEMPTS;
@@ -556,14 +592,14 @@ async fn sell_until_balance_cleared(
                         &base_token_program,
                         None,
                         token_account_override.as_deref(),
-                        None,
+                        Some(slippage_bps),
                         tip_level,
                         false,
                     )
                     .await
             } else {
                 trader
-                    .sell_token_once(&mint, amount, None, is_cashback, token_account_override.as_deref(), None, tip_level, false)
+                    .sell_token_once(&mint, amount, None, is_cashback, token_account_override.as_deref(), Some(slippage_bps), tip_level, false)
                     .await
             }
         };
@@ -675,10 +711,11 @@ async fn sell_until_balance_cleared(
                 // Not cleared within the window. A partial fill (balance dropped)
                 // just leaves a smaller remainder to chase. But an *unchanged*
                 // balance means this send cleared nothing, and a blind retry
-                // re-pays base+priority fee. Before retrying, classify the sent tx:
-                // a landed-and-reverted sell (TPSL drives min_out=1 → a revert is
-                // structural: already-sold / empty account / migrated) can never
-                // clear on the same venue, so stop. This is the feed-path analogue
+                // re-pays base+priority fee. Before retrying, classify the sent tx
+                // by its on-chain error code (`classify_sell_revert`): a slippage-
+                // floor revert re-quotes and retries, while a structural revert
+                // (already-sold / empty account / migrated) can never clear on the
+                // same venue, so stop. This is the feed-path analogue
                 // of `sell_token`'s `OnChainRevert` budget guard — ONE off-path
                 // signature-state RPC, fired only after a failed poll window (never
                 // a hot-path poll) and only when no progress was made.
@@ -858,6 +895,28 @@ mod tests {
         assert_eq!(classify_sell_revert(&state, false, false), SellRetryDecision::Retry);
     }
 
+    // --- Snipe slippage reserve source (snipe_reserves_from_cache) -----------
+
+    #[test]
+    fn snipe_reserves_convert_sol_to_lamports() {
+        // Token side passes through raw; SOL side is scaled to lamports (× 1e9),
+        // matching the (vt raw, vq lamports) units `buy_token_inner` expects.
+        assert_eq!(
+            snipe_reserves_from_cache(Some(1_000.0), Some(2.0)),
+            Some((1_000u128, 2_000_000_000u128))
+        );
+    }
+
+    #[test]
+    fn snipe_reserves_none_when_either_snapshot_missing_or_nonpositive() {
+        // A missing or non-positive snapshot ⇒ None ⇒ the buy proceeds with
+        // min_out=1 (no inline RPC), never blocking the snipe.
+        assert_eq!(snipe_reserves_from_cache(None, Some(2.0)), None);
+        assert_eq!(snipe_reserves_from_cache(Some(1_000.0), None), None);
+        assert_eq!(snipe_reserves_from_cache(Some(0.0), Some(2.0)), None);
+        assert_eq!(snipe_reserves_from_cache(Some(1_000.0), Some(0.0)), None);
+    }
+
     // -------------------------------------------------------------------------
     // Full-flow integration tests for `buy_until_filled_or_give_up`, driven by a
     // scripted fake executor against a real local Postgres. `#[ignore]` like the
@@ -952,6 +1011,8 @@ mod tests {
             _creator: &str,
             _token_program_id: &str,
             _amount: f64,
+            _slippage_bps: Option<u64>,
+            _reserves: Option<(u128, u128)>,
         ) -> anyhow::Result<String> {
             let n = self.sends.fetch_add(1, Ordering::SeqCst) + 1;
             if self.fill_on_send == Some(n) {
@@ -1050,6 +1111,8 @@ mod tests {
             runtime.clone(),
             Arc::new(TradeSignals::new()),
             test_cfg(),
+            None,
+            None,
         )
         .await;
     }
