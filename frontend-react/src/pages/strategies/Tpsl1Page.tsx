@@ -1132,14 +1132,15 @@ export function Tpsl1Page() {
     [selectedRuleId, rules],
   );
 
-  // Positions belong to the Real Trading table only — render them under it and
-  // never under Paper Trading. Selecting a paper rule shows no positions table.
-  const isRealRuleSelected = useMemo(
-    () =>
-      selectedRuleId != null &&
-      rules.some((r) => r.id === selectedRuleId && r.trade_mode === 'real'),
+  // Which table owns the selected rule — the Positions section renders directly
+  // under that table (real positions below the Real table, paper positions below
+  // the Paper table) so it stays visually attached to the rule it belongs to.
+  const selectedRuleMode = useMemo(
+    () => rules.find((r) => r.id === selectedRuleId)?.trade_mode ?? null,
     [selectedRuleId, rules],
   );
+  const isRealRuleSelected = selectedRuleMode === 'real';
+  const isPaperRuleSelected = selectedRuleId != null && selectedRuleMode != null && !isRealRuleSelected;
 
   const [showPending, setShowPending] = useState(false);
 
@@ -1189,6 +1190,59 @@ export function Tpsl1Page() {
   const onSelectPaperToken = useCallback((row: SimulatedTokenResult | null) => {
     setInspect(row ? { table: 'paper', key: row.mint, target: inspectFromSim(row) } : null);
   }, []);
+
+  // Positions for the selected rule. Built once and rendered under whichever
+  // table owns the rule (real → below Real table, paper → below Paper table).
+  // Only one of isReal/isPaperRuleSelected is true at a time, so it renders once.
+  const positionsSection = (
+    <>
+      <SectionDivider />
+      <section>
+        <SectionHeading
+          title="Positions"
+          marker="bg-info"
+          badge="info"
+          count={positionsLoading || positionsError ? undefined : visiblePositions.length}
+          subtitle={selectedRuleName ?? undefined}
+          action={
+            pendingCount > 0 ? (
+              <button
+                type="button"
+                onClick={() => setShowPending((v) => !v)}
+                className="text-[11px] text-text-dim transition hover:text-text"
+              >
+                {showPending ? 'Hide' : 'Show'} pending entry ({pendingCount})
+              </button>
+            ) : undefined
+          }
+        />
+        {positionsLoading && <p className="text-text-dim">Loading positions…</p>}
+        {positionsError && <InlineAlert variant="error">{positionsError}</InlineAlert>}
+        {!positionsLoading && !positionsError && positionSummaryTokens.length > 0 && (
+          <SimSummaryCard
+            title="Positions Summary"
+            ruleName={selectedRuleName ?? ''}
+            tokens={positionSummaryTokens}
+            price={price}
+          />
+        )}
+        {!positionsLoading && !positionsError && (
+          <DataTable
+            columns={posCols}
+            rows={mergeTokenData(visiblePositions, tokenMap)}
+            rowKey={keyById}
+            selectedKey={inspect?.table === 'positions' ? inspect.key : null}
+            onSelect={onSelectPosition}
+            defaultPageSize={20}
+            pageSizeOptions={[20, 50, 100]}
+            colFilters
+            colToggle
+            emptyMessage="No positions for this rule."
+          />
+        )}
+      </section>
+    </>
+  );
 
   return (
     <div>
@@ -1300,57 +1354,9 @@ export function Tpsl1Page() {
             </Accordion>
           )}
 
-          {isRealRuleSelected && (
-            <>
-              <SectionDivider />
-              <section>
-                <SectionHeading
-                  title="Positions"
-                  marker="bg-info"
-                  badge="info"
-                  count={
-                    positionsLoading || positionsError ? undefined : visiblePositions.length
-                  }
-                  subtitle={selectedRuleName ?? undefined}
-                  action={
-                    pendingCount > 0 ? (
-                      <button
-                        type="button"
-                        onClick={() => setShowPending((v) => !v)}
-                        className="text-[11px] text-text-dim transition hover:text-text"
-                      >
-                        {showPending ? 'Hide' : 'Show'} pending entry ({pendingCount})
-                      </button>
-                    ) : undefined
-                  }
-                />
-                {positionsLoading && <p className="text-text-dim">Loading positions…</p>}
-                {positionsError && <InlineAlert variant="error">{positionsError}</InlineAlert>}
-                {!positionsLoading && !positionsError && positionSummaryTokens.length > 0 && (
-                  <SimSummaryCard
-                    title="Positions Summary"
-                    ruleName={selectedRuleName ?? ''}
-                    tokens={positionSummaryTokens}
-                    price={price}
-                  />
-                )}
-                {!positionsLoading && !positionsError && (
-                  <DataTable
-                    columns={posCols}
-                    rows={mergeTokenData(visiblePositions, tokenMap)}
-                    rowKey={keyById}
-                    selectedKey={inspect?.table === 'positions' ? inspect.key : null}
-                    onSelect={onSelectPosition}
-                    defaultPageSize={20}
-                    pageSizeOptions={[20, 50, 100]}
-                    colFilters
-                    colToggle
-                    emptyMessage="No positions for this rule."
-                  />
-                )}
-              </section>
-            </>
-          )}
+          {isRealRuleSelected && positionsSection}
+
+          {realRules.length > 0 && <SectionDivider gap="xl" />}
 
           <Accordion
             bordered={false}
@@ -1380,6 +1386,8 @@ export function Tpsl1Page() {
               emptyMessage="No paper rules"
             />
           </Accordion>
+
+          {isPaperRuleSelected && positionsSection}
         </RuleRowProvider>
       )}
 
