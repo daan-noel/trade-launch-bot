@@ -164,6 +164,18 @@ export interface RulePositionRecord {
   last_synced_at?: string | null;
 }
 
+/** Payload of the `tpsl_positions_changed` SSE event. The backend ships the
+ *  changed row + the rule's live cap counters so the client patches one row + the
+ *  badge in place instead of refetching. `position` is present even on removal (so
+ *  the client knows which row to drop); `removed` distinguishes the two. */
+export interface TpslPositionDelta {
+  ruleId: string;
+  position: RulePositionRecord | null;
+  removed: boolean;
+  openPositions: number;
+  totalPositions: number;
+}
+
 export interface MatchedTokenRecord {
   mint: string;
   symbol: string;

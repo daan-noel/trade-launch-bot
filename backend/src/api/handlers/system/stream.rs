@@ -5,7 +5,10 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
-use crate::{models::ingest::SseEvent, state::app_state::AppState};
+use crate::{
+    api::handlers::strategies::tpsl2_positions::PositionResponse, models::ingest::SseEvent,
+    state::app_state::AppState,
+};
 
 #[derive(Deserialize)]
 pub struct StreamQuery {
@@ -163,12 +166,32 @@ fn render_sse_frame(event: &SseEvent, state: &AppState) -> SseFrame {
             // Not mint-scoped: a list-level signal delivered to every subscriber.
             (None, "tpsl_rules_changed", json!({ "strategy": strategy }))
         }
-        SseEvent::TpslPositionsChanged { strategy, rule_id } => {
-            // Not mint-scoped: scoped to the owning rule, not a token.
+        SseEvent::TpslPositionsChanged {
+            strategy,
+            rule_id,
+            position,
+            removed,
+            open_positions,
+            total_positions,
+        } => {
+            // Not mint-scoped: scoped to the owning rule, not a token. The changed
+            // row is shipped in the `PositionResponse` wire shape so the client
+            // patches one row + the badge in place rather than refetching.
+            let position_json = position.as_ref().map(|p| {
+                serde_json::to_value(PositionResponse::from((**p).clone()))
+                    .unwrap_or(serde_json::Value::Null)
+            });
             (
                 None,
                 "tpsl_positions_changed",
-                json!({ "strategy": strategy, "rule_id": rule_id }),
+                json!({
+                    "strategy": strategy,
+                    "rule_id": rule_id,
+                    "position": position_json,
+                    "removed": removed,
+                    "open_positions": open_positions,
+                    "total_positions": total_positions,
+                }),
             )
         }
         SseEvent::SimulationProgress {

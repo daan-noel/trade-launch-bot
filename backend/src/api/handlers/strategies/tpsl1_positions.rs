@@ -128,7 +128,7 @@ pub(crate) async fn load_rule_positions(
     if is_paper {
         let paper_repo = Tpsl1PaperTradingRepo::new(db.clone());
         match paper_repo.current_run(rule_id).await? {
-            Some(run) => paper_repo.find_by_run(run.id).await,
+            Some(run) => paper_repo.find_by_run(run.id, limit, offset).await,
             None => Ok(Vec::new()),
         }
     } else {
@@ -378,7 +378,10 @@ mod tests {
             .await
             .expect("current_run")
             .expect("a run exists");
-        let via_result_rows = paper_repo.find_by_run(cur.id).await.expect("find_by_run");
+        let via_result_rows = paper_repo
+            .find_by_run(cur.id, 1000, 0)
+            .await
+            .expect("find_by_run");
 
         // Same count, including the still-open position.
         assert_eq!(via_positions.len(), 3, "all three run positions are returned");

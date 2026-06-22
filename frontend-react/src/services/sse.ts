@@ -119,17 +119,19 @@ export function connectPaperTestStream(
 type TpslStrategy = 'tpsl1' | 'tpsl2';
 
 /**
- * Rule-list change signal for `strategy`. Fires when a rule is created / updated
- * / deleted or moves through a lifecycle transition (`tpsl_rules_changed`), AND
- * when a position changes (`tpsl_positions_changed`, which shifts the open-count
- * and lifecycle badge). The payload is a bare signal — the caller refetches the
- * list. Both event types are filtered to `strategy` client-side.
+ * Rule-list change signal for `strategy` — fires when a rule is created /
+ * updated / deleted or moves through a lifecycle transition
+ * (`tpsl_rules_changed`). The payload is a bare signal; the caller refetches the
+ * list. Position changes are NOT included here: they arrive via
+ * {@link connectTpslPositionsChanged} as deltas the caller patches in place
+ * (open-count badge + lifecycle), so a busy run no longer refetches the whole
+ * rule list per position transition. Filtered to `strategy` client-side.
  */
 export function connectTpslRulesChanged(
   strategy: TpslStrategy,
   onChanged: () => void,
 ): StreamHandle {
-  const handle = (e: MessageEvent) => {
+  const unsub = subscribe('tpsl_rules_changed', (e) => {
     if (typeof e.data !== 'string') return;
     try {
       const p = JSON.parse(e.data) as { strategy?: string };
@@ -137,15 +139,8 @@ export function connectTpslRulesChanged(
     } catch {
       /* ignore malformed frames */
     }
-  };
-  const unsubRules = subscribe('tpsl_rules_changed', handle);
-  const unsubPos = subscribe('tpsl_positions_changed', handle);
-  return {
-    close: () => {
-      unsubRules();
-      unsubPos();
-    },
-  };
+  });
+  return { close: unsub };
 }
 
 /**
@@ -188,18 +183,36 @@ export function connectSimulationFinished(
 }
 
 /**
- * Position change signal for `strategy`. Calls `onChanged` with the affected
- * `rule_id` so the caller refetches only that rule's positions.
+ * Position change signal for `strategy`. Delivers a {@link TpslPositionDelta}:
+ * the changed row + the rule's live cap counters, so the caller patches one row
+ * (and the badge) in place rather than refetching the list. `removed` rows still
+ * carry their `position` so the caller knows which to drop. Filtered to
+ * `strategy` client-side.
  */
 export function connectTpslPositionsChanged(
   strategy: TpslStrategy,
-  onChanged: (ruleId: string) => void,
+  onDelta: (delta: import('types').TpslPositionDelta) => void,
 ): StreamHandle {
   const unsub = subscribe('tpsl_positions_changed', (e) => {
     if (typeof e.data !== 'string') return;
     try {
-      const p = JSON.parse(e.data) as { strategy?: string; rule_id?: string };
-      if (p.strategy === strategy && p.rule_id) onChanged(p.rule_id);
+      const p = JSON.parse(e.data) as {
+        strategy?: string;
+        rule_id?: string;
+        position?: import('types').RulePositionRecord | null;
+        removed?: boolean;
+        open_positions?: number;
+        total_positions?: number;
+      };
+      if (p.strategy === strategy && p.rule_id) {
+        onDelta({
+          ruleId: p.rule_id,
+          position: p.position ?? null,
+          removed: !!p.removed,
+          openPositions: p.open_positions ?? 0,
+          totalPositions: p.total_positions ?? 0,
+        });
+      }
     } catch {
       /* ignore malformed frames */
     }

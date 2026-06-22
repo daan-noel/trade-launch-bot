@@ -133,7 +133,7 @@ pub(crate) async fn load_rule_positions(
     if is_paper {
         let paper_repo = Tpsl2PaperTradingRepo::new(db.clone());
         match paper_repo.current_run(rule_id).await? {
-            Some(run) => paper_repo.find_by_run(run.id).await,
+            Some(run) => paper_repo.find_by_run(run.id, limit, offset).await,
             None => Ok(Vec::new()),
         }
     } else {

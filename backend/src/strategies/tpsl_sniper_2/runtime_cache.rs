@@ -696,11 +696,25 @@ impl Tpsl2RuntimeCache {
                 .apply(current, 1);
         }
 
-        // Cold-lane signal: the position table + the rule's open-count badge are
-        // now stale for this rule. Best-effort send (no subscribers => ignored).
+        // Cold-lane signal: ship the changed row + the rule's fresh cap counters
+        // so clients patch one row + the badge in place (no list refetch).
+        self.emit_position_changed(current, false);
+    }
+
+    /// Best-effort delta broadcast for a position change/removal. Skips building
+    /// the (cloned) payload entirely when nothing is listening. Counters are read
+    /// AFTER the caller has applied its cap adjustments.
+    fn emit_position_changed(&self, position: &Position, removed: bool) {
+        if self.sse_tx.receiver_count() == 0 {
+            return;
+        }
         let _ = self.sse_tx.send(SseEvent::TpslPositionsChanged {
             strategy: "tpsl2".to_string(),
-            rule_id: current.rule_id,
+            rule_id: position.rule_id,
+            position: Some(Box::new(position.clone())),
+            removed,
+            open_positions: self.holding_count_by_rule(position.rule_id),
+            total_positions: self.total_count_by_rule(position.rule_id),
         });
     }
 
@@ -725,6 +739,9 @@ impl Tpsl2RuntimeCache {
                 e.apply(position, -1);
             }
         }
+        // Signal the removal so clients drop the row (and update the badge) without
+        // waiting on the fallback poll. Counters are read after the adjustments above.
+        self.emit_position_changed(position, true);
     }
 
     fn upsert_in_holding_index(&self, position: &Position) {

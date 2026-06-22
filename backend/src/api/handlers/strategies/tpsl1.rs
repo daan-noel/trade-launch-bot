@@ -849,6 +849,12 @@ pub struct PaperResultResponse {
     pub tokens: Vec<BacktestTokenResult>,
 }
 
+/// Upper bound on positions pulled for the paper-result summary. The summary
+/// card aggregates over every row, so this can't use the 200-row table default;
+/// it mirrors the 5,000-row matched-tokens cap. Runs larger than this should move
+/// the aggregation server-side (SUM/COUNT) rather than raise the cap.
+const PAPER_RESULT_MAX_TOKENS: i64 = 5000;
+
 /// Aggregate the latest paper-test run's recorded positions into a
 /// simulation-shaped result.
 ///
@@ -890,7 +896,7 @@ pub async fn paper_result_tpsl_rule(
         });
     };
 
-    let positions = match paper_repo.find_by_run(run.id).await {
+    let positions = match paper_repo.find_by_run(run.id, PAPER_RESULT_MAX_TOKENS, 0).await {
         Ok(p) => p,
         Err(e) => {
             tracing::error!("Failed to load paper positions for run {}: {e}", run.id);

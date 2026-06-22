@@ -2,11 +2,27 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FALLBACK_POLL_INTERVAL_MS } from 'services/config';
 import { connectTpslPositionsChanged } from 'services/sse';
 import { useVisiblePolling } from './useVisiblePolling';
-import type { RulePositionRecord, RuleRecord } from 'types';
+import type { RulePositionRecord, RuleRecord, TpslPositionDelta } from 'types';
 
 const MAX_SILENT_FAILURES = 3;
-/** Coalesce a burst of position signals for the same rule into one refetch. */
+/** Coalesce a burst of position deltas into one in-place state update. */
 const REFRESH_DEBOUNCE_MS = 200;
+
+/** Apply a coalesced batch of deltas to the current list: upsert changed rows by
+ *  id, drop removed ones. Order is preserved for existing rows; brand-new rows
+ *  append (the table sorts client-side anyway). */
+function applyDeltas(
+  prev: RulePositionRecord[],
+  batch: TpslPositionDelta[],
+): RulePositionRecord[] {
+  const byId = new Map(prev.map((p) => [p.id, p]));
+  for (const d of batch) {
+    if (!d.position) continue;
+    if (d.removed) byId.delete(d.position.id);
+    else byId.set(d.position.id, d.position);
+  }
+  return Array.from(byId.values());
+}
 
 /** A rule whose positions can no longer change: entries are off (`is_active`
  *  false) AND nothing is still draining. Active rules can open new positions;
@@ -83,23 +99,40 @@ export function useRulePositions(
     return () => inflight.current?.abort();
   }, [selectedRuleId, load]);
 
-  // Primary path: refetch (debounced) when the backend signals a position change
-  // for the selected rule. Skipped once the rule is settled (no more changes).
+  // Primary path: patch the list in place from the backend's position deltas —
+  // no refetch. Deltas for the selected rule are buffered and flushed together
+  // (coalescing fill/exit bursts into one state update). Skipped once the rule is
+  // settled (no more changes); the fallback poll below reconciles dropped frames.
   useEffect(() => {
     if (!selectedRuleId || settled) return;
+    const pending: TpslPositionDelta[] = [];
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const handle = connectTpslPositionsChanged(strategy, (ruleId) => {
-      if (ruleId !== selectedRuleId || timer) return;
-      timer = setTimeout(() => {
-        timer = null;
-        void load(selectedRuleId, true);
-      }, REFRESH_DEBOUNCE_MS);
+    const flush = () => {
+      timer = null;
+      if (!pending.length) return;
+      const batch = pending.splice(0);
+      setPositions((prev) => applyDeltas(prev, batch));
+    };
+    const handle = connectTpslPositionsChanged(strategy, (delta) => {
+      if (delta.ruleId !== selectedRuleId) return;
+      pending.push(delta);
+      if (!timer) timer = setTimeout(flush, REFRESH_DEBOUNCE_MS);
     });
     return () => {
       if (timer) clearTimeout(timer);
       handle.close();
     };
-  }, [strategy, selectedRuleId, settled, load]);
+  }, [strategy, selectedRuleId, settled]);
+
+  // Reconcile once when the rule transitions to settled: the terminal exit delta
+  // can race the settle-driven unsubscribe above, so do one final silent fetch so
+  // the table always lands on the terminal state. Fires once per settle, not on a
+  // timer — cheap, and the only fetch this hook makes after the initial load.
+  const wasSettled = useRef(settled);
+  useEffect(() => {
+    if (settled && !wasSettled.current && selectedRuleId) void load(selectedRuleId, true);
+    wasSettled.current = settled;
+  }, [settled, selectedRuleId, load]);
 
   // Safety net: a slow visibility-gated poll catches dropped/lagged SSE frames.
   // No leading call (the select effect did the first fetch); off once settled.

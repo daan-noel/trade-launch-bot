@@ -71,10 +71,20 @@ pub enum SseEvent {
     /// signal (no payload beyond the strategy); the client refetches the list.
     /// Not mint-scoped — always delivered.
     TpslRulesChanged { strategy: String },
-    /// A tpsl position opened, closed, or changed status. `rule_id` scopes it to
-    /// the owning rule so a client refetches only that rule's positions (and the
-    /// rule's open-position count). Not mint-scoped — always delivered.
-    TpslPositionsChanged { strategy: String, rule_id: uuid::Uuid },
+    /// A tpsl position opened, closed, changed status, or was removed. `rule_id`
+    /// scopes it to the owning rule. Carries the changed row + the rule's live cap
+    /// counters (cheap in-memory reads) so clients **patch one row + the badge**
+    /// in place instead of refetching the whole list. `position` is `Some` even on
+    /// removal (so the client knows which row to drop); `removed` distinguishes the
+    /// two. Boxed to keep the enum small. Not mint-scoped — always delivered.
+    TpslPositionsChanged {
+        strategy: String,
+        rule_id: uuid::Uuid,
+        position: Option<Box<crate::models::Position>>,
+        removed: bool,
+        open_positions: i64,
+        total_positions: i64,
+    },
     /// Progress of an in-flight simulation (backtest) for `rule_id`: `processed`
     /// of `total` candidate tokens resolved. Lets the dashboard show real
     /// percentages instead of a fake trickle bar. Throttled to ~100 frames per

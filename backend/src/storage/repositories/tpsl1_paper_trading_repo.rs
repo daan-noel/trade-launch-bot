@@ -446,11 +446,18 @@ impl Tpsl1PaperTradingRepo {
     }
 
     /// All positions in a run, oldest first (for the run result aggregation).
-    pub async fn find_by_run(&self, run_id: Uuid) -> anyhow::Result<Vec<Position>> {
+    pub async fn find_by_run(
+        &self,
+        run_id: Uuid,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<Position>> {
         let rows = sqlx::query_as::<_, PaperPositionDbRow>(&format!(
-            "SELECT {POSITION_COLS} FROM tpsl1_paper_positions WHERE run_id = $1 ORDER BY created_at ASC"
+            "SELECT {POSITION_COLS} FROM tpsl1_paper_positions WHERE run_id = $1 ORDER BY created_at ASC LIMIT $2 OFFSET $3"
         ))
         .bind(run_id)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(Position::try_from).collect()

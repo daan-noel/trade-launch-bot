@@ -377,6 +377,23 @@ function positionToSimResult(p: RulePositionRecord): SimulatedTokenResult {
   };
 }
 
+/** Patch the open paper run's token rows from a coalesced batch of position
+ *  deltas: upsert by mint (mapping the changed position through the same
+ *  `positionToSimResult` the backend mirrors), drop removed ones. Lets the panel
+ *  stay live off the SSE stream instead of refetching the whole run on each fill. */
+function applyPaperDeltas(
+  tokens: SimulatedTokenResult[],
+  batch: import('types').TpslPositionDelta[],
+): SimulatedTokenResult[] {
+  const byMint = new Map(tokens.map((t) => [t.mint, t]));
+  for (const d of batch) {
+    if (!d.position) continue;
+    if (d.removed) byMint.delete(d.position.mint);
+    else byMint.set(d.position.mint, positionToSimResult(d.position));
+  }
+  return Array.from(byMint.values());
+}
+
 /** Confirm dialog for Stop & close. Spells out how many positions will be
  *  force-exited and hard-warns when the rule trades real (on-chain sells). */
 function StopConfirmDialog({
@@ -704,29 +721,35 @@ export function Tpsl2Page() {
     return () => es.close();
   }, [loadRules, dispatch]);
 
-  // Keep the open paper-result view live while its run is in progress: every
-  // position open/close emits `tpsl_positions_changed`, so (debounced, to
-  // coalesce fill bursts) force-refetch the result for the open rule. Without
-  // this the summary card froze at open-time and only refreshed when the run
-  // finished. Notify over poll, one refetch per debounce window.
+  // Keep the open paper-result view live while its run is in progress by patching
+  // its token rows from the position deltas (coalesced) instead of refetching the
+  // whole run on each fill. The one-time open fetch seeds the rows; run-meta
+  // (status → Finished) arrives via `paper_test_finished` above. Without this the
+  // summary froze at open-time. Notify over poll, zero refetch during the run.
   useEffect(() => {
+    const pending: import('types').TpslPositionDelta[] = [];
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const handle = connectTpslPositionsChanged('tpsl2', (ruleId) => {
-      if (ruleId !== openPaperRuleId.current || timer) return;
-      timer = setTimeout(() => {
-        timer = null;
-        const id = openPaperRuleId.current;
-        if (!id) return;
-        fetchPaperResultCached(dispatch, { strategy: 'tpsl2', ruleId: id }, true)
-          .then((data) => setPaperResult({ ruleId: id, data }))
-          .catch(() => { });
-      }, 800);
+    const flush = () => {
+      timer = null;
+      const id = openPaperRuleId.current;
+      const batch = pending.splice(0);
+      if (!id || !batch.length) return;
+      setPaperResult((prev) =>
+        prev && prev.ruleId === id
+          ? { ...prev, data: { ...prev.data, tokens: applyPaperDeltas(prev.data.tokens, batch) } }
+          : prev,
+      );
+    };
+    const handle = connectTpslPositionsChanged('tpsl2', (delta) => {
+      if (delta.ruleId !== openPaperRuleId.current) return;
+      pending.push(delta);
+      if (!timer) timer = setTimeout(flush, 250);
     });
     return () => {
       if (timer) clearTimeout(timer);
       handle.close();
     };
-  }, [dispatch]);
+  }, []);
 
   useEffect(() => {
     if (!paperNotice) return;
