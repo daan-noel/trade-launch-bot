@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use sqlx::types::Json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -60,8 +61,8 @@ struct PaperPositionDbRow {
     entry_price: Option<f64>,
     exit_price: Option<f64>,
     token_program_id: Option<String>,
-    entry_tx: String,
-    exit_tx: Option<String>,
+    entry_tx_signatures: Json<Vec<String>>,
+    exit_tx_signatures: Json<Vec<String>>,
     status: String,
     strategy: String,
     rule_id: Uuid,
@@ -92,8 +93,8 @@ impl TryFrom<PaperPositionDbRow> for Position {
             entry_price: r.entry_price,
             exit_price: r.exit_price,
             token_program_id: r.token_program_id,
-            entry_tx: r.entry_tx,
-            exit_tx: r.exit_tx,
+            entry_tx_signatures: r.entry_tx_signatures.0,
+            exit_tx_signatures: r.exit_tx_signatures.0,
             status,
             strategy: r.strategy,
             rule_id: r.rule_id,
@@ -122,8 +123,8 @@ fn position_status_str(s: PositionStatus) -> &'static str {
     }
 }
 
-const POSITION_COLS: &str = "id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, \
-     exit_tx, status, strategy, rule_id, entry_token_amount, exit_token_amount, entry_time, exit_time, \
+const POSITION_COLS: &str = "id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx_signatures, \
+     exit_tx_signatures, status, strategy, rule_id, entry_token_amount, exit_token_amount, entry_time, exit_time, \
      exit_reason, created_at, updated_at";
 
 // ---------------------------------------------------------------------------
@@ -281,7 +282,7 @@ impl Tpsl1PaperTradingRepo {
         sqlx::query(
             r#"
             INSERT INTO tpsl1_paper_positions
-                (id, run_id, mint, wallet, token_program_id, entry_price, exit_price, entry_tx, exit_tx,
+                (id, run_id, mint, wallet, token_program_id, entry_price, exit_price, entry_tx_signatures, exit_tx_signatures,
                  status, strategy, rule_id, entry_token_amount, exit_token_amount,
                  entry_time, exit_time, exit_reason, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
@@ -294,8 +295,8 @@ impl Tpsl1PaperTradingRepo {
         .bind(position.token_program_id.as_ref())
         .bind(position.entry_price)
         .bind(position.exit_price)
-        .bind(&position.entry_tx)
-        .bind(&position.exit_tx)
+        .bind(Json(&position.entry_tx_signatures))
+        .bind(Json(&position.exit_tx_signatures))
         .bind(position_status_str(position.status))
         .bind(&position.strategy)
         .bind(position.rule_id)
@@ -326,13 +327,13 @@ impl Tpsl1PaperTradingRepo {
         let row = sqlx::query_as::<_, PaperPositionDbRow>(&format!(
             r#"
             UPDATE tpsl1_paper_positions
-            SET entry_tx = $2, entry_token_amount = $3, entry_price = $4, entry_time = $5, updated_at = $6
+            SET entry_tx_signatures = $2, entry_token_amount = $3, entry_price = $4, entry_time = $5, updated_at = $6
             WHERE id = $1
             RETURNING {POSITION_COLS}
             "#
         ))
         .bind(position_id)
-        .bind(entry_tx)
+        .bind(Json(vec![entry_tx]))
         .bind(entry_token_amount)
         .bind(entry_price)
         .bind(entry_time)
@@ -357,14 +358,14 @@ impl Tpsl1PaperTradingRepo {
         let row = sqlx::query_as::<_, PaperPositionDbRow>(&format!(
             r#"
             UPDATE tpsl1_paper_positions
-            SET exit_tx = $2, exit_price = $3, exit_time = $4, exit_reason = $5,
+            SET exit_tx_signatures = $2, exit_price = $3, exit_time = $4, exit_reason = $5,
                 status = 'End', updated_at = $6
             WHERE id = $1
             RETURNING {POSITION_COLS}
             "#
         ))
         .bind(position_id)
-        .bind(exit_tx)
+        .bind(Json(vec![exit_tx]))
         .bind(exit_price)
         .bind(exit_time)
         .bind(exit_reason)
@@ -379,13 +380,13 @@ impl Tpsl1PaperTradingRepo {
         sqlx::query(
             r#"
             UPDATE tpsl1_paper_positions
-            SET exit_price = $1, exit_tx = $2, status = $3, exit_token_amount = $4,
+            SET exit_price = $1, exit_tx_signatures = $2, status = $3, exit_token_amount = $4,
                 exit_time = $5, updated_at = $6
             WHERE id = $7
             "#,
         )
         .bind(position.exit_price)
-        .bind(&position.exit_tx)
+        .bind(Json(&position.exit_tx_signatures))
         .bind(position_status_str(position.status))
         .bind(position.exit_token_amount)
         .bind(position.exit_time)

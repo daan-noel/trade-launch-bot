@@ -827,7 +827,7 @@ mod tests {
     fn holding(entry_price: f64, rule_id: Uuid) -> Position {
         let mut p = Position::new("mint".into(), "wallet".into(), "TPSL2".into(), rule_id);
         p.entry_price = Some(entry_price);
-        p.entry_tx = "entry-sig".into();
+        p.entry_tx_signatures = vec!["entry-sig".into()];
         p.entry_token_amount = Some(1.0);
         p.entry_time = Some(base_time());
         p

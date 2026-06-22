@@ -969,10 +969,10 @@ pub(crate) fn paper_position_to_sim_result(
         entry_price: p.entry_price.unwrap_or(0.0),
         ath_price,
         entry_token_amount: p.entry_token_amount.unwrap_or(0.0),
-        entry_tx: p.entry_tx,
+        entry_tx: p.entry_tx_signatures.first().cloned().unwrap_or_default(),
         entry_time: p.entry_time.unwrap_or(p.created_at),
         exit_price: p.exit_price,
-        exit_tx: p.exit_tx,
+        exit_tx: p.exit_tx_signatures.last().cloned(),
         exit_time: p.exit_time,
         holding_secs,
         pnl_percent,
@@ -996,10 +996,10 @@ mod tests {
             Uuid::new_v4(),
         );
         p.entry_price = Some(entry);
-        p.entry_tx = "etx".into();
+        p.entry_tx_signatures = vec!["etx".into()];
         p.entry_token_amount = Some(0.05);
         p.entry_time = Some(Utc::now());
-        p.close(exit, "xtx".into(), 0.05, Utc::now());
+        p.close(exit, vec!["xtx".into()], 0.05, Utc::now());
         p
     }
 
@@ -1034,7 +1034,7 @@ mod tests {
             Uuid::new_v4(),
         );
         p.entry_price = Some(1.0);
-        p.entry_tx = "etx".into();
+        p.entry_tx_signatures = vec!["etx".into()];
         p.entry_token_amount = Some(0.05);
         p.entry_time = Some(Utc::now());
         let r = paper_position_to_sim_result(p, &HashMap::new());

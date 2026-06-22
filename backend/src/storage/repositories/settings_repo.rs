@@ -219,6 +219,8 @@ mod tests {
         let mut map = HashMap::new();
         map.insert("ingest.track_mayhem".to_string(), json!("not a bool"));
         let settings = AppSettings::from_map(&map);
-        assert!(settings.track_mayhem); // default, not a decode error
+        // Falls back to the setting's default (`TRACK_MAYHEM` = false) instead of a
+        // decode error — the point is no panic, whatever the default value is.
+        assert!(!settings.track_mayhem);
     }
 }

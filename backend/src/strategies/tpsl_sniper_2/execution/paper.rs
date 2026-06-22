@@ -346,7 +346,7 @@ pub(crate) async fn record_time_exit(
         return;
     }
     // Reflect the close in the snapshot synced to the runtime cache.
-    position.close(exit_price, exit_tx, exit_token_amount, exit_time);
+    position.close(exit_price, vec![exit_tx], exit_token_amount, exit_time);
     position.exit_reason = Some(reason);
     runtime.sync_position(Some(&prev), &position);
     info!(

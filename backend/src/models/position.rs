@@ -31,16 +31,24 @@ pub struct Position {
     pub entry_token_amount: Option<f64>,
     /// On-chain block time of the confirmed buy trade.
     pub entry_time: Option<DateTime<Utc>>,
-    /// Transaction signature of the buy transaction.
-    pub entry_tx: String,
+    /// Transaction signature(s) that made up the entry fill. Single-leg today (one
+    /// snipe buy), but a JSONB array so a scaled-in, multi-leg entry needs no
+    /// schema change. Empty until the on-chain fill is adopted (per-signature
+    /// attribution — each concurrent same-token position tracks its OWN buy tx, so
+    /// the shared `(wallet, mint)` feed can never adopt another position's fill).
+    pub entry_tx_signatures: Vec<String>,
     /// Exit price (SOL per token) when the position was closed.
     pub exit_price: Option<f64>,
     /// Amount of tokens sold at exit.
     pub exit_token_amount: Option<f64>,
     /// On-chain block time of the confirmed sell trade.
     pub exit_time: Option<DateTime<Utc>>,
-    /// Transaction signature of the sell transaction.
-    pub exit_tx: Option<String>,
+    /// Transaction signature(s) that made up the exit fill — genuinely multi-leg
+    /// (the sell-confirm loop retries / re-routes across migration, each leg its
+    /// own tx). The exit is confirmed by summing *these* signatures' token legs
+    /// against `entry_token_amount`, so concurrent positions never confirm against
+    /// each other's sells. Empty until at least one sell lands.
+    pub exit_tx_signatures: Vec<String>,
     /// "Holding" — owns tokens, exit not yet triggered | "ExitPending" — exit
     /// triggered, sell/confirmation in flight | "End" — exited cleanly |
     /// "ExitFailed" — terminal: the exit attempt ran and failed.
@@ -114,11 +122,11 @@ impl Position {
             entry_price: None,
             entry_token_amount: None,
             entry_time: None,
-            entry_tx: String::new(),
+            entry_tx_signatures: Vec::new(),
             exit_price: None,
             exit_token_amount: None,
             exit_time: None,
-            exit_tx: None,
+            exit_tx_signatures: Vec::new(),
             status: PositionStatus::Holding,
             strategy,
             rule_id,
@@ -168,10 +176,19 @@ impl Position {
         self.updated_at = Utc::now();
     }
 
-    /// Close the position with an exit trade.
-    pub fn close(&mut self, exit_price: f64, exit_tx: String, exit_token_amount: f64, exit_time: DateTime<Utc>) {
+    /// Close the position with an exit fill. `exit_tx_signatures` are the
+    /// signature(s) of this position's OWN sell leg(s) that cleared the balance
+    /// (one for a single-shot sell; several when the sell-confirm loop retried /
+    /// re-routed across migration).
+    pub fn close(
+        &mut self,
+        exit_price: f64,
+        exit_tx_signatures: Vec<String>,
+        exit_token_amount: f64,
+        exit_time: DateTime<Utc>,
+    ) {
         self.exit_price = Some(exit_price);
-        self.exit_tx = Some(exit_tx);
+        self.exit_tx_signatures = exit_tx_signatures;
         self.exit_token_amount = Some(exit_token_amount);
         self.exit_time = Some(exit_time);
         self.status = PositionStatus::End;

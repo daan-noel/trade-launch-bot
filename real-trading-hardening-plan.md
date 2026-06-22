@@ -27,29 +27,7 @@
 
 *(ship all of this before putting real SOL in)*
 
-## 1C. Per-signature attribution *(enables concurrent same-token positions safely)*
-
-**Problem (in plain terms):** with one wallet, both the entry and the exit are recovered from the shared `trades` feed keyed only by *(wallet, mint)*:
-
-- **Entry** — `adopt_existing_fill_if_present` reads the buy via `trade_repo.find_latest_by_wallet_mint_type(wallet, mint, Buy)` — the *latest* buy for that pair (the buy's own returned signature is currently discarded for entry-recording).
-- **Exit** — `sell_until_balance_cleared` confirms by polling the *net* token balance (`Σ buys − Σ sells` for that wallet+mint).
-
-If two positions hold the same token at once (decision #2 allows it — e.g. both strategy clones fire on the same mint), both adopt the *same* latest buy, and the shared net balance can't tell their sells apart → double-counted entries, a position falsely seen as "sold", wrong PnL. On a real-money path this means a double-sell or a stranded bag.
-
-**Fix:** attribute each fill by the **transaction signature** the bot already gets back from its own trade (`buy_until_filled_or_give_up` and each sell attempt already return their `sig`).
-
-**Two kinds of "tx field" — keep them straight:**
-
-- **Signatures** (`entry_tx`, `exit_tx`) — *which* tx(s) made the fill. This is the part that can be **multi-leg** (the exit already is; the entry will be once we scale into a position). A single `TEXT` cannot hold several legs → these become **JSONB arrays**, and the old single columns are dropped (keeping both would be redundant; an array of length 1 covers today's single-leg case).
-- **Summaries** (`entry_price`, `entry_token_amount`, `entry_time` + exit equivalents) — the rolled-up *result* of the fill. **Kept as-is.** With multi-leg they become roll-ups (weighted-avg price, summed tokens, first/last time). Not redundant with the arrays — different data.
-- **`target_tx` stays a single `TEXT`** — it's someone *else's* trigger trade, inherently one tx, never the bot's multi-leg fill.
-
-1. **Entry** — drop `entry_tx TEXT`, add `entry_tx_signatures JSONB`. Today the bug is *which* fill is adopted: thread the buy's own returned signature into `poll_feed_until_entry_fill` and read the fill with a new `trade_repo.find_fill_by_signature(wallet, mint, sig)` (sums *that signature's* legs) instead of `find_latest_by_wallet_mint_type`; store the sig in the array. Single-leg today, but the array means multi-leg entry later needs **no second migration**.
-   - ⚠️ **Index required:** `find_fill_by_signature` and the per-signature sell-confirm both filter `trades` by `(wallet, mint, tx_signature)`. `trades` is one of the large, continuously-growing partitioned tables — without a supporting index this is a seq scan on the **entry/exit-confirm hot path** (data-scale guardrail violation). The 1C migration must add an index on `trades (wallet, mint, tx_signature)` (compatible with the partitioning scheme).
-2. **Exit** — drop `exit_tx TEXT`, add `exit_tx_signatures JSONB`. Today only the *last* sell leg is stored (`position.close(last_sell.tx_signature, …)`) and confirmation uses the shared net balance. Record **all** of this position's own sell signatures in the array, and confirm the exit by summing *those* signatures' token legs against the position's `entry_token_amount` — so concurrent positions never confirm against each other's sells. Keep the existing "poll the full window before retry" buffering.
-3. **Migration** — on the **four** position tables (2 real + 2 paper — the `Position` struct is shared, so columns must exist on all of them even though only the real path populates them): drop `entry_tx` + `exit_tx`, add `entry_tx_signatures JSONB NOT NULL DEFAULT '[]'` + `exit_tx_signatures JSONB NOT NULL DEFAULT '[]'`. Legacy rows: backfill the old single value into a 1-element array; empty `[]` falls back to the net-balance confirm (recovery only). **Tradeoff — keep a uniqueness backstop:** moving to a JSONB array drops the DB-level `entry_tx` `NOT NULL UNIQUE` guard. Don't replace it with "code enforces it" alone — this is a real-money path and the constraint was the last line against double-recording the same buy. Restore an equivalent backstop: a **unique expression index** on the adopted buy signature (e.g. `UNIQUE` on `entry_tx_signatures->>0` for the single-leg case, or a normalized side index over the array), **or** an explicit app-level dedup (reject adopting a signature already attributed to an open position) before insert. The in-code attribution argument (two concurrent positions = two distinct buy txs) explains why correctness *should* hold; the backstop is what catches it when it doesn't.
-
-**Files:** `storage/repositories/trade_repo.rs` (`find_fill_by_signature` + per-signature leg sum), position repos (read/write the two arrays; confirm-by-sig), `models/position.rs` (`entry_tx_signatures: Vec<String>` + `exit_tx_signatures: Vec<String>`, replacing `entry_tx`/`exit_tx`), `execution/real.rs` (thread the buy sig into entry; accumulate sell sigs; sum-by-sig confirm — both clones), frontend (positions table reads the arrays, shows first/last leg), new migration.
+*All hardening steps shipped. 1C (per-signature attribution) landed in migration `0009` + `models/position.rs` (`entry_tx_signatures`/`exit_tx_signatures` arrays) + `trade_repo` (`find_fill_by_signature` / `sum_legs_by_signatures`) + both `execution/real.rs` clones. The API exposes the arrays and keeps `entry_tx`/`exit_tx` as the first/last leg for the existing positions-table display (no frontend change needed).*
 
 ---
 

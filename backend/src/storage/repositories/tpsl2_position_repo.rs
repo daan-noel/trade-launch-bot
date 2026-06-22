@@ -9,6 +9,7 @@ impl Tpsl2PositionRepo {
     }
 }
 use chrono::{DateTime, Utc};
+use sqlx::types::Json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -43,11 +44,11 @@ struct PositionDbRow {
     entry_price: Option<f64>,
     entry_token_amount: Option<f64>,
     entry_time: Option<DateTime<Utc>>,
-    entry_tx: String,
+    entry_tx_signatures: Json<Vec<String>>,
     exit_price: Option<f64>,
     exit_token_amount: Option<f64>,
     exit_time: Option<DateTime<Utc>>,
-    exit_tx: Option<String>,
+    exit_tx_signatures: Json<Vec<String>>,
     status: String,
     strategy: String,
     rule_id: Uuid,
@@ -80,11 +81,11 @@ impl TryFrom<PositionDbRow> for Position {
             entry_price: r.entry_price,
             entry_token_amount: r.entry_token_amount,
             entry_time: r.entry_time,
-            entry_tx: r.entry_tx,
+            entry_tx_signatures: r.entry_tx_signatures.0,
             exit_price: r.exit_price,
             exit_token_amount: r.exit_token_amount,
             exit_time: r.exit_time,
-            exit_tx: r.exit_tx,
+            exit_tx_signatures: r.exit_tx_signatures.0,
             status,
             strategy: r.strategy,
             rule_id: r.rule_id,
@@ -109,8 +110,8 @@ fn position_status_str(s: PositionStatus) -> &'static str {
 /// target_* → entry_* → exit_* → state. Mirrors the table's physical order.
 const POSITION_COLS: &str = "id, mint, wallet, token_program_id, \
      target_price, target_token_amount, target_time, target_tx, \
-     entry_price, entry_token_amount, entry_time, entry_tx, \
-     exit_price, exit_token_amount, exit_time, exit_tx, \
+     entry_price, entry_token_amount, entry_time, entry_tx_signatures, \
+     exit_price, exit_token_amount, exit_time, exit_tx_signatures, \
      status, strategy, rule_id, exit_reason, created_at, updated_at";
 
 // ---------------------------------------------------------------------------
@@ -137,13 +138,13 @@ impl Tpsl2PositionRepo {
         let row = sqlx::query_as::<_, PositionDbRow>(&format!(
             r#"
             UPDATE tpsl2_real_positions
-            SET entry_tx = $2, entry_token_amount = $3, entry_price = $4, entry_time = $5, updated_at = $6
+            SET entry_tx_signatures = $2, entry_token_amount = $3, entry_price = $4, entry_time = $5, updated_at = $6
             WHERE id = $1
             RETURNING {POSITION_COLS}
             "#
         ))
         .bind(position_id)
-        .bind(entry_tx)
+        .bind(Json(vec![entry_tx]))
         .bind(entry_token_amount)
         .bind(entry_price)
         .bind(entry_time)
@@ -194,8 +195,8 @@ impl Tpsl2PositionRepo {
             INSERT INTO tpsl2_real_positions
                 (id, mint, wallet, token_program_id,
                  target_price, target_token_amount, target_time, target_tx,
-                 entry_price, entry_token_amount, entry_time, entry_tx,
-                 exit_price, exit_token_amount, exit_time, exit_tx,
+                 entry_price, entry_token_amount, entry_time, entry_tx_signatures,
+                 exit_price, exit_token_amount, exit_time, exit_tx_signatures,
                  status, strategy, rule_id, exit_reason, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
             "#,
@@ -211,11 +212,11 @@ impl Tpsl2PositionRepo {
         .bind(position.entry_price)
         .bind(position.entry_token_amount)
         .bind(position.entry_time)
-        .bind(&position.entry_tx)
+        .bind(Json(&position.entry_tx_signatures))
         .bind(position.exit_price)
         .bind(position.exit_token_amount)
         .bind(position.exit_time)
-        .bind(&position.exit_tx)
+        .bind(Json(&position.exit_tx_signatures))
         .bind(position_status_str(position.status))
         .bind(&position.strategy)
         .bind(position.rule_id)
@@ -233,13 +234,13 @@ impl Tpsl2PositionRepo {
         sqlx::query(
             r#"
             UPDATE tpsl2_real_positions
-            SET exit_price = $1, exit_tx = $2, status = $3, exit_token_amount = $4,
+            SET exit_price = $1, exit_tx_signatures = $2, status = $3, exit_token_amount = $4,
                 exit_time = $5, exit_reason = $6, updated_at = $7
             WHERE id = $8
             "#,
         )
         .bind(position.exit_price)
-        .bind(&position.exit_tx)
+        .bind(Json(&position.exit_tx_signatures))
         .bind(position_status_str(position.status))
         .bind(position.exit_token_amount)
         .bind(position.exit_time)

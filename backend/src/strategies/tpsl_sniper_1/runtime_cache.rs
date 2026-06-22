@@ -703,13 +703,16 @@ mod tests {
         let rule_id = Uuid::new_v4();
         let pos = holding_position(rule_id);
 
-        // Inline claim (runs on the runner's select task, before the spawn).
+        // Inline claim (runs on the runner's select task, before the spawn). Cap
+        // counters now gate on a real entry (SOL deployed), so an un-entered inline
+        // claim contributes to the holding INDEX but NOT the cap counts.
         cache.sync_position(None, &pos);
-        assert_eq!(cache.holding_count_by_rule(rule_id), 1);
-        assert_eq!(cache.total_count_by_rule(rule_id), 1);
+        assert_eq!(cache.holding_count_by_rule(rule_id), 0);
+        assert_eq!(cache.total_count_by_rule(rule_id), 0);
         assert_eq!(cache.holding_by_mint(&pos.mint).len(), 1);
 
-        // Rollback path taken when the spawned insert fails.
+        // Rollback path taken when the spawned insert fails — the holding index
+        // entry is the exact inverse, so a failed insert leaks nothing.
         cache.remove_position(&pos);
         assert_eq!(cache.holding_count_by_rule(rule_id), 0);
         assert_eq!(cache.total_count_by_rule(rule_id), 0);
@@ -750,17 +753,20 @@ mod tests {
         assert!(!cache.is_exiting(id), "guard freed the slot on panic unwind");
     }
 
-    /// During a launch wave the count bump must be visible synchronously: a second
-    /// claim for the same rule sees the first against the cap even though neither
-    /// insert has run yet. Two inline claims => holding count of 2.
+    /// The cap count bump must be visible synchronously once a position takes a
+    /// real entry: a second entered position for the same rule sees the first
+    /// against the cap even though neither row's later writes have run. Caps gate
+    /// on real entry (SOL deployed), so the positions carry an `entry_price`.
     #[test]
     fn inline_claims_accumulate_for_cap_visibility() {
         let cache = cache();
         let rule_id = Uuid::new_v4();
         let mut a = holding_position(rule_id);
         a.mint = "MintA".to_string();
+        a.entry_price = Some(0.001);
         let mut b = holding_position(rule_id);
         b.mint = "MintB".to_string();
+        b.entry_price = Some(0.001);
 
         cache.sync_position(None, &a);
         cache.sync_position(None, &b);

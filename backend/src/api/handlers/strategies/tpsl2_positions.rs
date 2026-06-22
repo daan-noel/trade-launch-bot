@@ -33,11 +33,17 @@ pub struct PositionResponse {
     pub entry_price: Option<f64>,
     pub entry_token_amount: Option<f64>,
     pub entry_time: Option<DateTime<Utc>>,
+    /// First entry leg's signature (display/back-compat); empty until adopted.
     pub entry_tx: String,
     pub exit_price: Option<f64>,
     pub exit_token_amount: Option<f64>,
     pub exit_time: Option<DateTime<Utc>>,
+    /// Last exit leg's signature (display/back-compat); `None` until a sell lands.
     pub exit_tx: Option<String>,
+    /// All signatures that made up the entry fill (per-signature attribution, 1C).
+    pub entry_tx_signatures: Vec<String>,
+    /// All signatures that made up the exit fill (multi-leg: retries / re-routes).
+    pub exit_tx_signatures: Vec<String>,
     pub pnl_percent: Option<f64>,
     pub status: String,
     pub strategy: String,
@@ -64,11 +70,14 @@ impl From<Position> for PositionResponse {
             entry_price: p.entry_price,
             entry_token_amount: p.entry_token_amount,
             entry_time: p.entry_time,
-            entry_tx: p.entry_tx,
+            // First entry leg / last exit leg for the single-address display columns.
+            entry_tx: p.entry_tx_signatures.first().cloned().unwrap_or_default(),
             exit_price: p.exit_price,
             exit_token_amount: p.exit_token_amount,
             exit_time: p.exit_time,
-            exit_tx: p.exit_tx,
+            exit_tx: p.exit_tx_signatures.last().cloned(),
+            entry_tx_signatures: p.entry_tx_signatures,
+            exit_tx_signatures: p.exit_tx_signatures,
             pnl_percent,
             status: p.status.to_string(),
             strategy: p.strategy,

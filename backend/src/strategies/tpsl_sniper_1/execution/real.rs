@@ -15,7 +15,10 @@ use super::super::Tpsl1RuntimeCache;
 use crate::models::Position;
 use crate::state::token_cache::TokenCache;
 use crate::state::trade_signals::TradeSignals;
-use crate::storage::repositories::{tpsl1_position_repo::Tpsl1PositionRepo, trade_repo::TradeRepo};
+use crate::storage::repositories::{
+    tpsl1_position_repo::Tpsl1PositionRepo,
+    trade_repo::{SigLegs, TradeRepo},
+};
 use crate::trader::{PumpFunTrader, SigStatus};
 
 /// Decision for a snipe buy that was sent but whose fill never appeared in the
@@ -153,11 +156,17 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
     let wallet = trader.wallet();
     let max_attempts = cfg.max_attempts;
     let mut backoff_ms = cfg.backoff_ms;
+    // The submitted signatures of OUR buys so far. Per-signature attribution: the
+    // entry is recovered by one of THESE signatures, never the latest buy on the
+    // shared (wallet, mint) feed — so two concurrent positions on the same token
+    // can't adopt each other's fill (decision #2). Empty on the first attempt, so
+    // the top guard is a no-op until we've actually sent something.
+    let mut sent_sigs: Vec<String> = Vec::new();
 
     for attempt in 1..=max_attempts {
-        // Never double-send: if a previous attempt's buy has since landed and been
-        // indexed, adopt that fill instead of firing another buy.
-        if adopt_existing_fill_if_present(&mint, &wallet, position_id, &position_repo, &trade_repo, &runtime)
+        // Never double-send: if one of our previous attempts' buys has since landed
+        // and been indexed, adopt that fill instead of firing another buy.
+        if adopt_existing_fill_if_present(&mint, &wallet, position_id, &position_repo, &trade_repo, &runtime, &sent_sigs)
             .await
         {
             return;
@@ -180,11 +189,13 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
                 continue;
             }
         };
+        // Track our own submitted signature so the fill is attributed to THIS buy.
+        sent_sigs.push(signature.clone());
         info!(mint = %mint, attempt, sig = %signature,
             "buy submitted (no RPC confirm); polling WS feed for fill");
 
         // Poll the WS-fed trade feed for this wallet's buy row.
-        if poll_feed_until_entry_fill(&mint, &wallet, position_id, &position_repo, &trade_repo, &runtime, &trade_signals, &cfg)
+        if poll_feed_until_entry_fill(&mint, &wallet, position_id, &position_repo, &trade_repo, &runtime, &trade_signals, &cfg, &sent_sigs)
             .await
         {
             return;
@@ -204,7 +215,7 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
                 // wait one more window for the row rather than fire again.
                 warn!(mint = %mint, sig = %signature,
                     "buy landed but not yet indexed; awaiting fill without re-send");
-                if poll_feed_until_entry_fill(&mint, &wallet, position_id, &position_repo, &trade_repo, &runtime, &trade_signals, &cfg)
+                if poll_feed_until_entry_fill(&mint, &wallet, position_id, &position_repo, &trade_repo, &runtime, &trade_signals, &cfg, &sent_sigs)
                     .await
                 {
                     return;
@@ -244,6 +255,7 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
 /// out a poll tick. A fallback tick (the old `poll_interval`) and a hard deadline
 /// equal to the old `poll_attempts × poll_interval` window are kept, so a missed
 /// signal degrades to exactly the previous polling behaviour — never worse.
+#[allow(clippy::too_many_arguments)]
 async fn poll_feed_until_entry_fill(
     mint: &str,
     wallet: &str,
@@ -253,6 +265,7 @@ async fn poll_feed_until_entry_fill(
     runtime: &Arc<Tpsl1RuntimeCache>,
     trade_signals: &Arc<TradeSignals>,
     cfg: &BuyRetryCfg,
+    sent_sigs: &[String],
 ) -> bool {
     let guard = trade_signals.register(wallet, mint);
     let deadline = Instant::now() + cfg.poll_interval * cfg.poll_attempts as u32;
@@ -265,7 +278,7 @@ async fn poll_feed_until_entry_fill(
         tokio::pin!(notified);
         notified.as_mut().enable();
 
-        if adopt_existing_fill_if_present(mint, wallet, position_id, position_repo, trade_repo, runtime).await
+        if adopt_existing_fill_if_present(mint, wallet, position_id, position_repo, trade_repo, runtime, sent_sigs).await
         {
             return true;
         }
@@ -282,9 +295,11 @@ async fn poll_feed_until_entry_fill(
     }
 }
 
-/// If a buy by `wallet` on `mint` is already present in the trade feed, record it
-/// as the position entry (price/amount/tx/time come from the on-chain fill) and
-/// return true; otherwise return false without sleeping.
+/// If one of OUR sent buy signatures (`sent_sigs`) is already present in the trade
+/// feed for `(wallet, mint)`, record it as the position entry (price/amount/tx/time
+/// summed from that signature's legs) and return true; otherwise return false
+/// without sleeping. Per-signature attribution: we adopt only a fill the bot itself
+/// submitted, so a concurrent same-token position never adopts the other's buy.
 async fn adopt_existing_fill_if_present(
     mint: &str,
     wallet: &str,
@@ -292,39 +307,40 @@ async fn adopt_existing_fill_if_present(
     position_repo: &Tpsl1PositionRepo,
     trade_repo: &TradeRepo,
     runtime: &Arc<Tpsl1RuntimeCache>,
+    sent_sigs: &[String],
 ) -> bool {
-    let fill = match trade_repo
-        .find_latest_by_wallet_mint_type(wallet, mint, crate::models::trade::TradeType::Buy)
-        .await
-    {
-        Ok(Some(fill)) => fill,
-        Ok(None) => return false,
-        Err(err) => {
-            warn!(mint = %mint, "failed to query trades for buy confirmation: {err}");
-            return false;
-        }
-    };
-    if let Ok(Some(prev)) = position_repo.find_by_id(position_id).await {
-        // `update_entry` RETURNs the updated row, so we sync the cache off it
-        // directly — no follow-up read of the row we just wrote.
-        match position_repo
-            .update_entry(
-                position_id,
-                &fill.tx_signature,
-                fill.token_amount,
-                fill.price_per_token,
-                fill.block_time,
-            )
-            .await
-        {
-            Ok(current) => {
-                runtime.sync_position(Some(&prev), &current);
-                info!(mint = %mint, tx = %fill.tx_signature, "position entry recorded from buy fill");
+    for sig in sent_sigs {
+        let fill = match trade_repo.find_fill_by_signature(wallet, mint, sig).await {
+            Ok(Some(fill)) => fill,
+            Ok(None) => continue,
+            Err(err) => {
+                warn!(mint = %mint, "failed to query trades for buy confirmation: {err}");
+                continue;
             }
-            Err(err) => warn!(mint = %mint, "failed to update position entry after buy: {err}"),
+        };
+        if let Ok(Some(prev)) = position_repo.find_by_id(position_id).await {
+            // `update_entry` RETURNs the updated row, so we sync the cache off it
+            // directly — no follow-up read of the row we just wrote.
+            match position_repo
+                .update_entry(
+                    position_id,
+                    sig,
+                    fill.token_amount,
+                    fill.price_per_token(),
+                    fill.first_block_time,
+                )
+                .await
+            {
+                Ok(current) => {
+                    runtime.sync_position(Some(&prev), &current);
+                    info!(mint = %mint, tx = %sig, "position entry recorded from buy fill");
+                }
+                Err(err) => warn!(mint = %mint, "failed to update position entry after buy: {err}"),
+            }
         }
+        return true;
     }
-    true
+    false
 }
 
 /// Sell a position's full balance out (retrying / re-routing across migration)
@@ -346,7 +362,8 @@ pub(crate) async fn sell_and_close_position(
     slippage_bps: u64,
 ) {
     let mint = position.mint.clone();
-    let amount = position.entry_token_amount.unwrap_or(0.0) as u64;
+    let target_tokens = position.entry_token_amount.unwrap_or(0.0);
+    let amount = target_tokens as u64;
     let base_token_program = position
         .token_program_id
         .clone()
@@ -357,10 +374,11 @@ pub(crate) async fn sell_and_close_position(
         "Executing sell for exited position"
     );
 
-    // The retry loop confirms the clear by polling the net balance, so on a
-    // confirmed clear it hands back the confirming sell row — the close step
-    // reuses it instead of re-querying the latest sell and the net balance again.
-    let last_sell = match sell_until_balance_cleared(
+    // The retry loop confirms the clear by summing THIS position's own sell
+    // signatures' token legs against its entry amount (not the shared net balance),
+    // so on a confirmed clear it hands back those signatures + their rolled-up legs
+    // — the close step reuses them instead of re-querying.
+    let (sigs, legs) = match sell_until_balance_cleared(
         trader.clone(),
         mint.clone(),
         amount,
@@ -372,8 +390,8 @@ pub(crate) async fn sell_and_close_position(
     )
     .await
     {
-        SellOutcome::Cleared(row) => row,
-        SellOutcome::Failed => {
+        SellOutcome::Cleared { sigs, legs } => (sigs, legs),
+        SellOutcome::Failed { sigs } => {
             warn!(
                 position_id = %position.id, mint = %mint,
                 "Sell execution finished without clearing token balance; marking position ExitFailed"
@@ -382,6 +400,8 @@ pub(crate) async fn sell_and_close_position(
             let prev = position.clone();
             position.mark_exit_failed(trigger_price, trigger_time);
             position.exit_reason = Some(exit_reason.clone());
+            // Record whatever legs DID sell so the failed row still attributes them.
+            position.exit_tx_signatures = sigs;
             if let Err(err) = position_repo.update(&position).await {
                 warn!(
                     position_id = %position.id, mint = %mint,
@@ -408,13 +428,12 @@ pub(crate) async fn sell_and_close_position(
         });
     }
 
-    if let Some(last_sell) = last_sell {
-        let exit_token_amount = last_sell.token_amount;
+    if let Some(legs) = legs {
         position.close(
-            last_sell.price_per_token,
-            last_sell.tx_signature.clone(),
-            exit_token_amount,
-            last_sell.block_time,
+            legs.price_per_token(),
+            sigs,
+            legs.token_amount,
+            legs.last_block_time,
         );
         position.exit_reason = Some(exit_reason.clone());
         let prev = position.clone();
@@ -427,8 +446,7 @@ pub(crate) async fn sell_and_close_position(
             runtime.sync_position(Some(&prev), &position);
             let pnl_percent = position.pnl_percentage().unwrap_or(0.0);
             info!(
-                position_id = %position.id, mint = %mint,
-                tx = %last_sell.tx_signature, pnl_percent,
+                position_id = %position.id, mint = %mint, pnl_percent,
                 "Position closed after confirmed sell"
             );
         }
@@ -441,12 +459,14 @@ pub(crate) async fn sell_and_close_position(
     );
 }
 
-/// Outcome of [`sell_until_balance_cleared`]. `Cleared` carries the confirming
-/// sell trade row (when one was found) so the close path reuses it instead of
-/// re-querying the latest sell and the net balance a second time.
+/// Outcome of [`sell_until_balance_cleared`]. Both variants carry the position's
+/// OWN accumulated sell signatures (one per landed leg/attempt) so the close /
+/// ExitFailed record attributes the exit per-signature. `Cleared` also carries the
+/// rolled-up sell legs (`SigLegs`) so the close reuses the exit price/amount/time
+/// without a re-query; `None` only on the amount==0 no-op.
 enum SellOutcome {
-    Cleared(Option<crate::models::trade::Trade>),
-    Failed,
+    Cleared { sigs: Vec<String>, legs: Option<SigLegs> },
+    Failed { sigs: Vec<String> },
 }
 
 /// pump.fun bonding-curve `TooLittleSolReceived` (Anchor error 6003) — the
@@ -537,8 +557,12 @@ async fn sell_until_balance_cleared(
 
     if amount == 0 {
         info!(mint = %mint, "sell skipped because amount is zero");
-        return SellOutcome::Cleared(None);
+        return SellOutcome::Cleared { sigs: Vec::new(), legs: None };
     }
+    // Total tokens this position is selling out. The exit is confirmed by summing
+    // OUR own sell signatures' token legs against this target, so concurrent
+    // same-token positions never confirm against each other's sells.
+    let target_tokens = amount as f64;
 
     // Resolve the token account once (cache-first; at most one wallet scan) and
     // reuse it across every attempt — it never changes for a given mint. If this
@@ -558,6 +582,9 @@ async fn sell_until_balance_cleared(
     // fallback ticks where the balance cannot have changed.
     let guard = trade_signals.register(&wallet, &mint);
     let mut last_seq: Option<u64> = None;
+    // Every sell signature THIS exit submitted (one per landed attempt/leg) — the
+    // per-signature confirm set, also returned for per-signature exit attribution.
+    let mut sell_sigs: Vec<String> = Vec::new();
 
     while attempt < max_attempts && amount > 0 {
         attempt += 1;
@@ -614,6 +641,9 @@ async fn sell_until_balance_cleared(
             // classified for a landed-revert before re-paying fees (see below).
             Ok(Some(sig)) => {
                 info!(mint = %mint, attempt, amount, "sell submitted (feed-confirm)");
+                // Attribute this leg to the position: confirm by summing OUR sell
+                // signatures, never the shared net balance.
+                sell_sigs.push(sig.clone());
                 // Confirm via the LaserStream-fed `trades` balance, waking on the
                 // DbWriter's persist signal for this (wallet, mint) instead of
                 // blindly sleeping each tick. A feed-confirmed send (confirm=false)
@@ -625,6 +655,9 @@ async fn sell_until_balance_cleared(
                 // the old polling.
                 let mut remaining_amount = amount;
                 let mut cleared = false;
+                // The rolled-up sell legs that confirmed the clear, captured so the
+                // caller closes the position off them (exit price/amount/time).
+                let mut confirmed_legs: Option<SigLegs> = None;
                 let interval = Duration::from_millis(super::SELL_POLL_INTERVAL_MS);
                 let min_query_gap =
                     Duration::from_millis(super::SELL_BALANCE_QUERY_MIN_INTERVAL_MS);
@@ -644,43 +677,54 @@ async fn sell_until_balance_cleared(
                     let now = Instant::now();
                     let at_deadline = now >= deadline;
 
-                    // Only run the net-balance SQL aggregate when the feed has
-                    // persisted a new trade for this (wallet, mint) since our last
-                    // read — `seq` is bumped once per such trade. A bare fallback
-                    // tick (no new trade) can't have changed the balance, so we
-                    // skip the per-tick scan over the large partitioned `trades`
-                    // table entirely. On top of that, rate-limit the aggregate to
-                    // at most once per `min_query_gap`: during a dump `seq` advances
-                    // (and wakes us) once per landed leg, which would otherwise fire
-                    // the SUM many times per poll interval. Coalescing is safe — SQL
-                    // stays the authoritative, PK-deduped confirm, so a slightly
-                    // later read only ever sees *more* of the balance gone, never
-                    // less, and can't over-sell. The rate-limit is bypassed at the
-                    // deadline so a clear that landed during a coalesced burst is
-                    // always confirmed before we fall through to a (wasteful, double-
-                    // sell-risking) retry. `seq` is sampled *before* the query so a
-                    // trade landing during it is re-checked next tick.
+                    // Only run the per-signature SUM when the feed has persisted a
+                    // new trade for this (wallet, mint) since our last read — `seq`
+                    // is bumped once per such trade. A bare fallback tick (no new
+                    // trade) can't have changed how much we've sold, so we skip the
+                    // per-tick scan over the large partitioned `trades` table
+                    // entirely. On top of that, rate-limit the aggregate to at most
+                    // once per `min_query_gap`: during a dump `seq` advances (and
+                    // wakes us) once per landed leg, which would otherwise fire the
+                    // SUM many times per poll interval. Coalescing is safe — SQL stays
+                    // the authoritative, PK-deduped confirm, so a slightly later read
+                    // only ever sees *more* sold, never less, and can't over-sell. The
+                    // rate-limit is bypassed at the deadline so a clear that landed
+                    // during a coalesced burst is always confirmed before we fall
+                    // through to a (wasteful, double-sell-risking) retry. `seq` is
+                    // sampled *before* the query so a trade landing during it is
+                    // re-checked next tick.
                     let seq = guard.seq();
                     let seq_advanced = last_seq != Some(seq);
                     let rate_ok = at_deadline
                         || last_query_at.map_or(true, |t| now.duration_since(t) >= min_query_gap);
                     if seq_advanced && rate_ok {
                         last_query_at = Some(now);
+                        // Sum only THIS position's own sell signatures' token legs and
+                        // measure the remainder against its target — so a concurrent
+                        // same-token position's sells never count toward (or against)
+                        // this clear.
                         match trade_repo
-                            .net_token_amount_by_wallet_and_mint(&wallet, &mint)
+                            .sum_legs_by_signatures(
+                                &wallet,
+                                &mint,
+                                &sell_sigs,
+                                crate::models::trade::TradeType::Sell,
+                            )
                             .await
                         {
-                            Ok(balance) => {
-                                let remaining = balance.max(0.0);
+                            Ok(legs) => {
+                                let sold = legs.as_ref().map(|l| l.token_amount).unwrap_or(0.0);
+                                let remaining = (target_tokens - sold).max(0.0);
                                 if remaining <= super::PARTIAL_FILL_THRESHOLD {
                                     info!(mint = %mint, attempt, "sell cleared the balance");
                                     cleared = true;
+                                    confirmed_legs = legs;
                                     break;
                                 }
                                 remaining_amount = remaining as u64;
                                 last_seq = Some(seq);
                             }
-                            Err(err) => warn!("Failed to query net token balance: {err}"),
+                            Err(err) => warn!("Failed to sum sell signature legs: {err}"),
                         }
                     }
                     if at_deadline {
@@ -694,19 +738,10 @@ async fn sell_until_balance_cleared(
                     }
                 }
                 if cleared {
-                    // Fetch the confirming sell row once, here, so the caller
-                    // closes the position off it without re-reading the latest
-                    // sell or the (already-cleared) net balance.
-                    let last_sell = trade_repo
-                        .find_latest_by_wallet_mint_type(
-                            &wallet,
-                            &mint,
-                            crate::models::trade::TradeType::Sell,
-                        )
-                        .await
-                        .ok()
-                        .flatten();
-                    return SellOutcome::Cleared(last_sell);
+                    // The confirming sum is already in hand (`confirmed_legs`) — the
+                    // caller closes the position off its rolled-up price/amount/time
+                    // and OUR sell signatures, without any re-read.
+                    return SellOutcome::Cleared { sigs: sell_sigs, legs: confirmed_legs };
                 }
                 // Not cleared within the window. A partial fill (balance dropped)
                 // just leaves a smaller remainder to chase. But an *unchanged*
@@ -742,7 +777,7 @@ async fn sell_until_balance_cleared(
                         warn!(mint = %mint, attempt, sig = %sig, raw_error_code = ?raw_code,
                             "sell reverted on-chain (structural/unknown) on a route the retry \
                              would reuse; stopping (a blind re-send would only re-pay fees)");
-                        return SellOutcome::Failed;
+                        return SellOutcome::Failed { sigs: sell_sigs };
                     }
                     warn!(mint = %mint, attempt, remaining = remaining_amount,
                         "sell not cleared within poll window; retrying with a higher tip");
@@ -757,14 +792,21 @@ async fn sell_until_balance_cleared(
             backoff_ms = (backoff_ms * 2).saturating_add(100);
         } else {
             warn!(mint = %mint, amount, "sell failed after {max_attempts} attempts");
-            return SellOutcome::Failed;
+            return SellOutcome::Failed { sigs: sell_sigs };
         }
     }
 
+    // Loop exited with `amount == 0` (fully chased): confirm the clear from OUR
+    // sell signatures' summed legs. Anything else is a failure to clear.
     if amount == 0 {
-        SellOutcome::Cleared(None)
+        let legs = trade_repo
+            .sum_legs_by_signatures(&wallet, &mint, &sell_sigs, crate::models::trade::TradeType::Sell)
+            .await
+            .ok()
+            .flatten();
+        SellOutcome::Cleared { sigs: sell_sigs, legs }
     } else {
-        SellOutcome::Failed
+        SellOutcome::Failed { sigs: sell_sigs }
     }
 }
 
@@ -981,15 +1023,17 @@ mod tests {
         fn send_count(&self) -> usize {
             self.sends.load(Ordering::SeqCst)
         }
-        /// Write a Buy trade row for this wallet+mint, simulating the WS feed.
-        async fn insert_fill(&self) {
+        /// Write a Buy trade row for this wallet+mint under transaction signature
+        /// `sig`, simulating the WS feed. Per-signature attribution means the fill
+        /// must carry the SAME signature the bot submitted, or it won't be adopted.
+        async fn insert_fill(&self, sig: &str) {
             let trade = Trade::new(
                 self.mint.clone(),
                 self.wallet.clone(),
                 TradeType::Buy,
                 0.05,
                 1000.0,
-                format!("fill-{}", Uuid::new_v4().simple()),
+                sig.to_string(),
                 100,
                 Utc::now(),
             );
@@ -1015,14 +1059,17 @@ mod tests {
             _reserves: Option<(u128, u128)>,
         ) -> anyhow::Result<String> {
             let n = self.sends.fetch_add(1, Ordering::SeqCst) + 1;
+            let sig = format!("fakesig-{n}");
             if self.fill_on_send == Some(n) {
-                self.insert_fill().await;
+                self.insert_fill(&sig).await;
             }
-            Ok(format!("fakesig-{n}"))
+            Ok(sig)
         }
-        async fn check_signature(&self, _signature: &str) -> anyhow::Result<Option<bool>> {
+        async fn check_signature(&self, signature: &str) -> anyhow::Result<Option<bool>> {
             if self.fill_on_status_check {
-                self.insert_fill().await;
+                // Fill under the SAME signature the bot is checking, so the extended
+                // poll adopts it (per-signature attribution).
+                self.insert_fill(signature).await;
             }
             match self.status {
                 FakeStatus::Reverted => Ok(Some(false)),
@@ -1073,7 +1120,8 @@ mod tests {
             "TPSL1".to_string(),
             Uuid::new_v4(),
         );
-        position.entry_tx = unique("create-");
+        // entry_tx_signatures starts empty ([]) — the partial unique backstop only
+        // covers non-empty arrays, so an unentered Holding row needs no placeholder.
         position.entry_token_amount = Some(0.001);
         position_repo.insert(&position).await.expect("insert position");
         runtime.sync_position(None, &position);
@@ -1136,19 +1184,30 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
-    async fn db_top_guard_adopts_existing_fill_without_sending() {
+    async fn db_foreign_fill_is_not_adopted() {
         let Some(pool) = test_pool().await else { return };
         let (mint, wallet) = (unique("MINT"), unique("WALLET"));
         let (position, position_repo, trade_repo, runtime) = setup(&pool, &mint, &wallet).await;
 
-        // A fill is ALREADY present before the buy task runs → adopt, never send.
+        // A buy on this (wallet, mint) under a signature the bot NEVER submitted —
+        // e.g. a concurrent same-token position's fill (decision #2). Per-signature
+        // attribution must NOT adopt it: the bot sends its own buy instead of
+        // mistaking the foreign fill for its entry. Status stays Pending → give up.
         let fake = Arc::new(FakeExecutor::new(wallet, pool.clone(), mint.clone()));
-        fake.insert_fill().await;
+        fake.insert_fill(&unique("foreign-")).await;
         run_buy(fake.clone(), &mint, &position, &position_repo, &trade_repo, &runtime).await;
 
         let updated = position_repo.find_by_id(position.id).await.unwrap().unwrap();
-        assert!(updated.entry_price.unwrap_or(0.0) > 0.0, "adopted the pre-existing fill");
-        assert_eq!(fake.send_count(), 0, "guard adopted the fill — no buy sent (no double-buy)");
+        assert_eq!(
+            updated.entry_price.unwrap_or(0.0),
+            0.0,
+            "foreign fill must NOT be adopted as this position's entry"
+        );
+        assert!(
+            updated.entry_tx_signatures.is_empty(),
+            "no signature attributed from a fill the bot didn't send"
+        );
+        assert_eq!(fake.send_count(), 1, "bot sent its own buy rather than adopting the foreign fill");
         cleanup(&pool, &mint, position.id).await;
     }
 

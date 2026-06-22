@@ -9,6 +9,7 @@ impl Tpsl1PositionRepo {
     }
 }
 use chrono::{DateTime, Utc};
+use sqlx::types::Json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -38,8 +39,8 @@ struct PositionDbRow {
     entry_price: Option<f64>,
     exit_price: Option<f64>,
     token_program_id: Option<String>,
-    entry_tx: String,
-    exit_tx: Option<String>,
+    entry_tx_signatures: Json<Vec<String>>,
+    exit_tx_signatures: Json<Vec<String>>,
     status: String,
     strategy: String,
     rule_id: Uuid,
@@ -71,8 +72,8 @@ impl TryFrom<PositionDbRow> for Position {
             entry_price: r.entry_price,
             exit_price: r.exit_price,
             token_program_id: r.token_program_id,
-            entry_tx: r.entry_tx,
-            exit_tx: r.exit_tx,
+            entry_tx_signatures: r.entry_tx_signatures.0,
+            exit_tx_signatures: r.exit_tx_signatures.0,
             status,
             strategy: r.strategy,
             rule_id: r.rule_id,
@@ -125,15 +126,15 @@ impl Tpsl1PositionRepo {
         let row = sqlx::query_as::<_, PositionDbRow>(
             r#"
             UPDATE tpsl1_real_positions
-            SET entry_tx = $2, entry_token_amount = $3, entry_price = $4, entry_time = $5, updated_at = $6
+            SET entry_tx_signatures = $2, entry_token_amount = $3, entry_price = $4, entry_time = $5, updated_at = $6
             WHERE id = $1
-            RETURNING id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
+            RETURNING id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx_signatures, exit_tx_signatures,
                       status, strategy, rule_id, entry_token_amount, exit_token_amount,
                       entry_time, exit_time, exit_reason, created_at, updated_at
             "#,
         )
         .bind(position_id)
-        .bind(entry_tx)
+        .bind(Json(vec![entry_tx]))
         .bind(entry_token_amount)
         .bind(entry_price)
         .bind(entry_time)
@@ -149,7 +150,7 @@ impl Tpsl1PositionRepo {
         sqlx::query(
             r#"
             INSERT INTO tpsl1_real_positions
-                (id, mint, wallet, token_program_id, entry_price, exit_price, entry_tx, exit_tx,
+                (id, mint, wallet, token_program_id, entry_price, exit_price, entry_tx_signatures, exit_tx_signatures,
                  status, strategy, rule_id, entry_token_amount, exit_token_amount,
                  entry_time, exit_time, exit_reason, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
@@ -161,8 +162,8 @@ impl Tpsl1PositionRepo {
         .bind(position.token_program_id.as_ref())
         .bind(position.entry_price)
         .bind(position.exit_price)
-        .bind(&position.entry_tx)
-        .bind(&position.exit_tx)
+        .bind(Json(&position.entry_tx_signatures))
+        .bind(Json(&position.exit_tx_signatures))
         .bind(position_status_str(position.status))
         .bind(&position.strategy)
         .bind(position.rule_id)
@@ -184,13 +185,13 @@ impl Tpsl1PositionRepo {
         sqlx::query(
             r#"
             UPDATE tpsl1_real_positions
-            SET exit_price = $1, exit_tx = $2, status = $3, exit_token_amount = $4,
+            SET exit_price = $1, exit_tx_signatures = $2, status = $3, exit_token_amount = $4,
                 exit_time = $5, exit_reason = $6, updated_at = $7
             WHERE id = $8
             "#,
         )
         .bind(position.exit_price)
-        .bind(&position.exit_tx)
+        .bind(Json(&position.exit_tx_signatures))
         .bind(position_status_str(position.status))
         .bind(position.exit_token_amount)
         .bind(position.exit_time)
@@ -212,7 +213,7 @@ impl Tpsl1PositionRepo {
     ) -> anyhow::Result<Vec<Position>> {
         let rows = sqlx::query_as::<_, PositionDbRow>(
             r#"
-                 SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
+                 SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx_signatures, exit_tx_signatures,
                    status, strategy, rule_id, entry_token_amount, exit_token_amount,
                    entry_time, exit_time, exit_reason, created_at, updated_at
             FROM tpsl1_real_positions
@@ -239,7 +240,7 @@ impl Tpsl1PositionRepo {
     ) -> anyhow::Result<Vec<Position>> {
         let rows = sqlx::query_as::<_, PositionDbRow>(
             r#"
-                 SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
+                 SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx_signatures, exit_tx_signatures,
                    status, strategy, rule_id, entry_token_amount, exit_token_amount,
                    entry_time, exit_time, exit_reason, created_at, updated_at
             FROM tpsl1_real_positions
@@ -261,7 +262,7 @@ impl Tpsl1PositionRepo {
     pub async fn find_by_id(&self, position_id: Uuid) -> anyhow::Result<Option<Position>> {
         let row = sqlx::query_as::<_, PositionDbRow>(
             r#"
-            SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
+            SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx_signatures, exit_tx_signatures,
                    status, strategy, rule_id, entry_token_amount, exit_token_amount,
                    entry_time, exit_time, exit_reason, created_at, updated_at
             FROM tpsl1_real_positions
@@ -284,7 +285,7 @@ impl Tpsl1PositionRepo {
     ) -> anyhow::Result<Vec<Position>> {
         let rows = sqlx::query_as::<_, PositionDbRow>(
                 r#"
-                SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
+                SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx_signatures, exit_tx_signatures,
                         status, strategy, rule_id, entry_token_amount, exit_token_amount,
                    entry_time, exit_time, exit_reason, created_at, updated_at
                 FROM tpsl1_real_positions
@@ -337,7 +338,7 @@ impl Tpsl1PositionRepo {
     ) -> anyhow::Result<Vec<Position>> {
         let rows = sqlx::query_as::<_, PositionDbRow>(
             r#"
-            SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
+            SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx_signatures, exit_tx_signatures,
                    status, strategy, rule_id, entry_token_amount, exit_token_amount,
                    entry_time, exit_time, exit_reason, created_at, updated_at
             FROM tpsl1_real_positions
@@ -362,7 +363,7 @@ impl Tpsl1PositionRepo {
     pub async fn find_all_exit_pending(&self) -> anyhow::Result<Vec<Position>> {
         let rows = sqlx::query_as::<_, PositionDbRow>(
             r#"
-            SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
+            SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx_signatures, exit_tx_signatures,
                    status, strategy, rule_id, entry_token_amount, exit_token_amount,
                    entry_time, exit_time, exit_reason, created_at, updated_at
             FROM tpsl1_real_positions
@@ -380,7 +381,7 @@ impl Tpsl1PositionRepo {
     pub async fn find_all_holding(&self) -> anyhow::Result<Vec<Position>> {
         let rows = sqlx::query_as::<_, PositionDbRow>(
             r#"
-            SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx, exit_tx,
+            SELECT id, mint, wallet, entry_price, exit_price, token_program_id, entry_tx_signatures, exit_tx_signatures,
                    status, strategy, rule_id, entry_token_amount, exit_token_amount,
                    entry_time, exit_time, exit_reason, created_at, updated_at
             FROM tpsl1_real_positions

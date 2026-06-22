@@ -25,8 +25,17 @@ pub struct PositionResponse {
     pub wallet: String,
     pub entry_price: Option<f64>,
     pub exit_price: Option<f64>,
+    /// First entry leg's signature (display/back-compat); empty until the fill is
+    /// adopted. The full per-leg list is `entry_tx_signatures`.
     pub entry_tx: String,
+    /// Last exit leg's signature (display/back-compat); `None` until a sell lands.
+    /// The full per-leg list is `exit_tx_signatures`.
     pub exit_tx: Option<String>,
+    /// All signatures that made up the entry fill (single-leg today; multi-leg ⇒
+    /// scaled-in entry). Per-signature attribution (1C).
+    pub entry_tx_signatures: Vec<String>,
+    /// All signatures that made up the exit fill (multi-leg: retries / re-routes).
+    pub exit_tx_signatures: Vec<String>,
     pub status: String,
     pub strategy: String,
     pub rule_id: Uuid,
@@ -52,8 +61,11 @@ impl From<Position> for PositionResponse {
             wallet: p.wallet,
             entry_price: p.entry_price,
             exit_price: p.exit_price,
-            entry_tx: p.entry_tx,
-            exit_tx: p.exit_tx,
+            // First entry leg / last exit leg for the single-address display columns.
+            entry_tx: p.entry_tx_signatures.first().cloned().unwrap_or_default(),
+            exit_tx: p.exit_tx_signatures.last().cloned(),
+            entry_tx_signatures: p.entry_tx_signatures,
+            exit_tx_signatures: p.exit_tx_signatures,
             status: p.status.to_string(),
             strategy: p.strategy,
             rule_id: p.rule_id,
@@ -320,7 +332,7 @@ mod tests {
             rule.id,
         );
         open.entry_price = Some(0.001);
-        open.entry_tx = unique("tx-");
+        open.entry_tx_signatures = vec![unique("tx-")];
         open.entry_token_amount = Some(0.05);
         open.entry_time = Some(Utc::now());
 
@@ -331,10 +343,10 @@ mod tests {
             rule.id,
         );
         win.entry_price = Some(0.001);
-        win.entry_tx = unique("tx-");
+        win.entry_tx_signatures = vec![unique("tx-")];
         win.entry_token_amount = Some(0.05);
         win.entry_time = Some(Utc::now());
-        win.close(0.0015, unique("xtx-"), 0.075, Utc::now());
+        win.close(0.0015, vec![unique("xtx-")], 0.075, Utc::now());
 
         let mut loss = Position::new(
             mints[2].clone(),
@@ -343,10 +355,10 @@ mod tests {
             rule.id,
         );
         loss.entry_price = Some(0.001);
-        loss.entry_tx = unique("tx-");
+        loss.entry_tx_signatures = vec![unique("tx-")];
         loss.entry_token_amount = Some(0.05);
         loss.entry_time = Some(Utc::now());
-        loss.close(0.0008, unique("xtx-"), 0.04, Utc::now());
+        loss.close(0.0008, vec![unique("xtx-")], 0.04, Utc::now());
 
         for p in [&open, &win, &loss] {
             paper_repo

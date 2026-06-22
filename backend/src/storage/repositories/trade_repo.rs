@@ -337,10 +337,14 @@ impl TradeRepo {
 
     /// Most-recent trade by `wallet` on `mint` of a given side, or `None`.
     /// Filters in SQL and fetches a single row instead of pulling N rows and
-    /// scanning them in Rust — used by the buy/sell confirmation hot loops, which
-    /// only ever want this one fill. Backed by `idx_trades_wallet_mint`. Unlike a
+    /// scanning them in Rust. Backed by `idx_trades_wallet_mint`. Unlike a
     /// bounded `find_by_mint(.., N)` + `.find()`, this can't miss the wallet's
     /// fill behind N newer trades on a high-volume mint.
+    ///
+    /// No longer on the entry/exit-confirm path (1C replaced "latest buy/sell for
+    /// the pair" with per-signature attribution — see [`Self::find_fill_by_signature`]
+    /// / [`Self::sum_legs_by_signatures`]); retained for ad-hoc single-fill lookups.
+    #[allow(dead_code)]
     pub async fn find_latest_by_wallet_mint_type(
         &self,
         wallet: &str,
@@ -478,6 +482,81 @@ impl TradeRepo {
         rows.into_iter().map(Trade::try_from).collect()
     }
 
+    /// Sum the legs of one transaction `signature` for `(wallet, mint, side)`,
+    /// rolled up into a [`SigLegs`] (Σtokens, Σsol, weighted price, first/last leg
+    /// time). `None` when the signature has no matching trade indexed yet.
+    ///
+    /// This is the **per-signature entry attribution** primitive: the snipe buy
+    /// already returns its own submitted signature, so the entry fill is recovered
+    /// by *that* signature instead of `find_latest_by_wallet_mint_type` (the latest
+    /// buy for the pair) — which, with two concurrent positions on the same token,
+    /// would adopt the same fill twice. Backed by `idx_trades_wallet_mint_sig`.
+    pub async fn find_fill_by_signature(
+        &self,
+        wallet: &str,
+        mint: &str,
+        signature: &str,
+    ) -> anyhow::Result<Option<SigLegs>> {
+        self.sum_legs_by_signatures(wallet, mint, std::slice::from_ref(&signature.to_string()), TradeType::Buy)
+            .await
+    }
+
+    /// Sum the legs of a *set* of this position's own transaction `signatures` for
+    /// `(wallet, mint, side)` into a single [`SigLegs`]. Used to confirm an exit by
+    /// summing the position's OWN sell signatures' token legs against its
+    /// `entry_token_amount` — so concurrent same-token positions never confirm
+    /// against each other's sells (unlike the shared net `(wallet, mint)` balance).
+    /// `None` when none of the signatures are indexed yet (empty `signatures`
+    /// short-circuits). Backed by `idx_trades_wallet_mint_sig` (one index probe per
+    /// signature via `= ANY`).
+    pub async fn sum_legs_by_signatures(
+        &self,
+        wallet: &str,
+        mint: &str,
+        signatures: &[String],
+        trade_type: TradeType,
+    ) -> anyhow::Result<Option<SigLegs>> {
+        if signatures.is_empty() {
+            return Ok(None);
+        }
+        let row: (i64, f64, f64, Option<DateTime<Utc>>, Option<DateTime<Utc>>) = sqlx::query_as(
+            r#"
+            SELECT COUNT(*)::bigint,
+                   COALESCE(SUM(token_amount), 0.0),
+                   COALESCE(SUM(sol_amount), 0.0),
+                   MIN(block_time),
+                   MAX(block_time)
+            FROM trades
+            WHERE wallet_address = $1
+              AND mint_address = $2
+              AND trade_type = $3
+              AND tx_signature = ANY($4)
+            "#,
+        )
+        .bind(wallet)
+        .bind(mint)
+        .bind(trade_type_str(trade_type))
+        .bind(signatures)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let (leg_count, token_amount, sol_amount, first, last) = row;
+        if leg_count == 0 {
+            return Ok(None);
+        }
+        Ok(Some(SigLegs {
+            token_amount,
+            sol_amount,
+            first_block_time: first.unwrap_or_else(Utc::now),
+            last_block_time: last.unwrap_or_else(Utc::now),
+        }))
+    }
+
+    /// Net token balance for `(wallet, mint)` (Σbuys − Σsells). No longer on the
+    /// sell-confirm hot path (replaced by per-signature attribution); retained for
+    /// the deferred SOL balance-floor / committed-SOL guards and ad-hoc balance
+    /// lookups.
+    #[allow(dead_code)]
     pub async fn net_token_amount_by_wallet_and_mint(
         &self,
         wallet: &str,
@@ -626,6 +705,35 @@ pub(crate) async fn find_tx_by_fill(
     .bind(price_per_token)
     .fetch_optional(pool)
     .await
+}
+
+/// Rolled-up result of one or more trade legs sharing a `(wallet, mint, side)`,
+/// summed by transaction signature ([`TradeRepo::find_fill_by_signature`] /
+/// [`TradeRepo::sum_legs_by_signatures`]). For an entry the summary is the adopted
+/// buy fill (single-leg today); for an exit it's the running total of the
+/// position's own sell legs, compared against `entry_token_amount` to confirm the
+/// clear.
+#[derive(Debug, Clone)]
+pub struct SigLegs {
+    /// Σ token_amount across the legs.
+    pub token_amount: f64,
+    /// Σ sol_amount across the legs.
+    pub sol_amount: f64,
+    /// Earliest leg's block time (the fill's entry time).
+    pub first_block_time: DateTime<Utc>,
+    /// Latest leg's block time (the fill's exit time).
+    pub last_block_time: DateTime<Utc>,
+}
+
+impl SigLegs {
+    /// Weighted-average execution price (Σsol / Σtokens), or 0 when no tokens.
+    pub fn price_per_token(&self) -> f64 {
+        if self.token_amount > 0.0 {
+            self.sol_amount / self.token_amount
+        } else {
+            0.0
+        }
+    }
 }
 
 /// Per-mint, lifetime-scoped aggregates the cache seed needs alongside a mint's
