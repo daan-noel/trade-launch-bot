@@ -1120,6 +1120,18 @@ mod tests {
             "TPSL1".to_string(),
             Uuid::new_v4(),
         );
+        // The position FK-references a strategy rule (rule_id NOT NULL + FK), so a
+        // matching rule must exist before the insert. Minimal row (only the
+        // NOT-NULL-without-default columns).
+        sqlx::query(
+            "INSERT INTO tpsl1_strategy_rules (id, rule_name, buy_amount, p_exit_take_profit, p_exit_stop_loss) \
+             VALUES ($1, $2, 0.1, 1.5, 0.5)",
+        )
+        .bind(position.rule_id)
+        .bind(unique("rule-"))
+        .execute(pool)
+        .await
+        .expect("insert rule");
         // entry_tx_signatures starts empty ([]) — the partial unique backstop only
         // covers non-empty arrays, so an unentered Holding row needs no placeholder.
         position.entry_token_amount = Some(0.001);
@@ -1129,6 +1141,15 @@ mod tests {
     }
 
     async fn cleanup(pool: &PgPool, mint: &str, position_id: Uuid) {
+        // Drop the FK-referenced rule first (ON DELETE SET NULL nulls the position's
+        // rule_id), then the position and its trades.
+        let _ = sqlx::query(
+            "DELETE FROM tpsl1_strategy_rules WHERE id = \
+             (SELECT rule_id FROM tpsl1_real_positions WHERE id = $1)",
+        )
+        .bind(position_id)
+        .execute(pool)
+        .await;
         let _ = sqlx::query("DELETE FROM trades WHERE mint_address = $1")
             .bind(mint)
             .execute(pool)

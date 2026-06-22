@@ -1418,6 +1418,11 @@ mod amm_verification {
         let (mut swaps, mut canonical, mut non_canonical) = (0, 0, 0);
         let mut verified = 0;
         let mut mismatches: Vec<String> = Vec::new();
+        // Diagnostic buckets for canonical swaps that decode to zero trades — to
+        // tell apart a benign filter (dust) from a real shared-decoder gap (an
+        // event the Borsh layout can't read, which would hit LIVE ingest too).
+        let (mut empty_no_event, mut empty_dust, mut empty_short, mut empty_unknown) =
+            (0u32, 0u32, 0u32, 0u32);
 
         for s in sigs {
             if !s["err"].is_null() {
@@ -1467,9 +1472,17 @@ mod amm_verification {
                 // Non-canonical pool (user-created PumpSwap pool, non-zero
                 // index, or non-pump token) — not something we sync.
                 non_canonical += 1;
-                if base_mint.ends_with("pump") {
-                    // Heuristic: a pump.fun mint that DOESN'T match derivation
-                    // would indicate a real bug — surface it.
+                // A pump.fun mint that doesn't match canonical derivation *could*
+                // be a real bug — but only flag it after confirming the event pool
+                // genuinely belongs to THIS base mint as a canonical (index 0,
+                // WSOL-quote) PumpSwap pool. A routed/aggregator tx swaps several
+                // legs, so the "first non-WSOL mint" (base_mint) and the "first swap
+                // event pool" (event_pool) can come from *different* legs — e.g. this
+                // base mint paired with another leg's USDC pool — which is a
+                // cross-attribution artifact of the sampling, not a derivation bug.
+                if base_mint.ends_with("pump")
+                    && pool_is_canonical_wsol_for(&client, &url, &event_pool, &base_mint).await
+                {
                     mismatches.push(format!("{base_mint} event={event_pool} derived={derived}"));
                 }
                 continue;
@@ -1505,7 +1518,71 @@ mod amm_verification {
                     .collect(),
                 _ => Vec::new(),
             };
-            assert!(!trades.is_empty(), "canonical swap must decode");
+            if trades.is_empty() {
+                // Canonical pool derivation already matched (the point of THIS test);
+                // decoding the full tx is a secondary smoke check. Classify WHY this
+                // canonical swap yielded no trade, so the skip is attributed to a
+                // concrete cause rather than waved off. The AMM decode is purely
+                // log-driven (`decode_pump_swap_trades_from_logs`) and SHARED with
+                // live ingest, so anything but "dust"/"no-event-in-logs" is a real
+                // shared-decoder gap. Re-scan the same `Program data:` lines with the
+                // independent offset parser used above (pool @ [120..152],
+                // user_quote_amount @ [112..120]) and find the event for `derived`.
+                let derived_event = logs.iter().find_map(|log| {
+                    let encoded = log.strip_prefix("Program data: ")?;
+                    let bytes = base64::Engine::decode(
+                        &base64::engine::general_purpose::STANDARD,
+                        encoded,
+                    )
+                    .ok()?;
+                    if bytes.len() < 152 {
+                        return None;
+                    }
+                    let disc = &bytes[..8];
+                    let is_swap = disc == crate::config::constants::PUMP_SWAP_BUY_EVENT_DISCRIMINATOR
+                        || disc == crate::config::constants::PUMP_SWAP_SELL_EVENT_DISCRIMINATOR;
+                    if !is_swap || bs58::encode(&bytes[120..152]).into_string() != derived {
+                        return None;
+                    }
+                    let quote_lamports =
+                        u64::from_le_bytes(bytes[112..120].try_into().unwrap());
+                    Some((bytes.len(), quote_lamports as f64 / 1e9))
+                });
+                match derived_event {
+                    None => {
+                        // No swap event for the derived pool survives in the logs at
+                        // all (e.g. RPC log truncation on a deep aggregator tx). Not a
+                        // decoder bug — a transport/log-availability gap.
+                        empty_no_event += 1;
+                        println!("EMPTY {sig} reason=no-derived-event-in-logs");
+                    }
+                    Some((_, quote_sol)) if crate::models::trade::Trade::is_dust(quote_sol) => {
+                        // Below the 10k-lamport ingest dust floor — dropped on purpose,
+                        // on BOTH live and backfill. Correct behavior, not a gap.
+                        empty_dust += 1;
+                        println!("EMPTY {sig} reason=dust quote_sol={quote_sol:.9}");
+                    }
+                    Some((len, quote_sol)) if len < 184 => {
+                        // Event shorter than the Borsh layout reads (timestamp + 13×u64
+                        // + pool + user = 184B): `RawPumpSwap*Event::deserialize` fails
+                        // → the SHARED decoder drops it on live too. A real gap.
+                        empty_short += 1;
+                        println!(
+                            "EMPTY {sig} reason=short-event len={len} quote_sol={quote_sol:.9} (Borsh fail — affects LIVE)"
+                        );
+                    }
+                    Some((len, quote_sol)) => {
+                        // Full-length, non-dust event for the right pool that the
+                        // production decoder still dropped — an unexplained gap in the
+                        // SHARED decoder path; would also drop on live.
+                        empty_unknown += 1;
+                        println!(
+                            "EMPTY {sig} reason=UNKNOWN len={len} quote_sol={quote_sol:.9} (full-length non-dust — affects LIVE)"
+                        );
+                    }
+                }
+                continue;
+            }
             let t = &trades[0];
             assert_eq!(t.venue, "amm");
             assert!(t.sol_amount > 0.0 && t.token_amount > 0.0);
@@ -1521,6 +1598,9 @@ mod amm_verification {
         println!(
             "swaps_seen={swaps} canonical={canonical} non_canonical={non_canonical} verified={verified}"
         );
+        println!(
+            "empty_decode breakdown: no_event_in_logs={empty_no_event} dust={empty_dust} short_event={empty_short} unknown={empty_unknown}  (short+unknown = shared-decoder gaps that also affect LIVE ingest)"
+        );
         assert!(
             mismatches.is_empty(),
             "pump.fun mints failed pool derivation (likely a bug):\n{}",
@@ -1529,6 +1609,19 @@ mod amm_verification {
         assert!(
             verified > 0,
             "no canonical pump swaps in sample — increase limit or target a known migrated mint"
+        );
+        // The AMM decode is purely log-driven and SHARED with live ingest. A
+        // canonical swap that decodes to zero trades is only acceptable when it's
+        // dust (intentional 10k-lamport floor) or its event was truncated out of
+        // the RPC logs (a transport gap, not a decoder one). A `short_event`
+        // (event the Borsh layout can't read — e.g. a PumpSwap event-layout change)
+        // or an `unknown` (full-length, non-dust, right pool, still dropped) is a
+        // real gap that would ALSO drop the trade on live ingest — fail loudly so a
+        // future layout drift can't silently make backfill + live miss swaps.
+        assert_eq!(
+            (empty_short, empty_unknown),
+            (0, 0),
+            "shared AMM decoder dropped non-dust canonical swap(s): short_event={empty_short} unknown={empty_unknown} — affects LIVE ingest, not just backfill"
         );
     }
 
@@ -1559,6 +1652,45 @@ mod amm_verification {
             }
         }
         None
+    }
+
+    /// True iff `pool` is on-chain a *canonical* PumpSwap pool for `base_mint`:
+    /// owned by the PumpSwap program, index 0, WSOL quote, and its `base_mint`
+    /// field equals `base_mint`. Used to reject cross-attribution false positives
+    /// (a routed tx pairing one leg's base mint with another leg's pool) before
+    /// treating a derivation mismatch as a real bug. Pool account layout after the
+    /// 8-byte discriminator: pool_bump(1) + index(u16) + creator(32) +
+    /// base_mint(32) + quote_mint(32).
+    async fn pool_is_canonical_wsol_for(
+        client: &reqwest::Client,
+        url: &str,
+        pool: &str,
+        base_mint: &str,
+    ) -> bool {
+        let acc = rpc(
+            client,
+            url,
+            "getAccountInfo",
+            json!([pool, {"encoding":"base64","commitment":"confirmed"}]),
+        )
+        .await;
+        if acc["value"]["owner"].as_str() != Some(PUMP_SWAP_PROGRAM_ID) {
+            return false;
+        }
+        let Some(b64) = acc["value"]["data"][0].as_str() else {
+            return false;
+        };
+        let Ok(data) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64)
+        else {
+            return false;
+        };
+        if data.len() < 107 {
+            return false;
+        }
+        let index = u16::from_le_bytes([data[9], data[10]]);
+        let pool_base = bs58::encode(&data[43..75]).into_string();
+        let pool_quote = bs58::encode(&data[75..107]).into_string();
+        index == 0 && pool_quote == WSOL_MINT && pool_base == base_mint
     }
 
     /// Live smoke test of token_sync's production decode path: pull one gTFA page
