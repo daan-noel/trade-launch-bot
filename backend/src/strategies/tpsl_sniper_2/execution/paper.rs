@@ -330,11 +330,12 @@ pub(crate) async fn record_time_exit(
     reason: String,
     rule: &Tpsl2Rule,
 ) {
-    // Time exits have no confirming trade, so the lookup returns "" (graceful).
-    let exit_tx = trade_repo::find_tx_by_fill(pool, &position.mint, exit_time, exit_price)
-        .await
-        .unwrap_or_default()
-        .unwrap_or_default();
+    // Time/manual exits are synthetic (exit_time = now, exit_price = last mark),
+    // so no on-chain trade ever matches — skip the `trades` lookup entirely. This
+    // matters on the stop-and-close path, which closes every open position
+    // serially: one pointless query per position against the hot, continuously
+    // written `trades` table was the bulk of the stop latency.
+    let exit_tx = String::new();
     let prev = position.clone();
     // Full-bag exit: the exit token amount is the entry token count.
     let exit_token_amount = position.entry_token_amount.unwrap_or(0.0);
