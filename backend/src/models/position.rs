@@ -228,6 +228,40 @@ impl Position {
         }
     }
 
+    /// Realized SOL profit/loss: exit proceeds minus entry cost. `None` until the
+    /// position has both an entry fill and an exit price. A terminal `ExitFailed`
+    /// row may carry no `exit_token_amount` (nothing — or only part — actually
+    /// sold); proceeds then fall back to `0`, booking the lost bag as a SOL loss.
+    /// Mirrors the warm-up aggregate's `COALESCE(exit_token_amount, 0)` so the
+    /// live counter and the startup query agree.
+    pub fn pnl_sol(&self) -> Option<f64> {
+        match (self.entry_price, self.entry_token_amount, self.exit_price) {
+            (Some(entry_price), Some(entry_tokens), Some(exit_price)) => {
+                let proceeds = exit_price * self.exit_token_amount.unwrap_or(0.0);
+                Some(proceeds - entry_price * entry_tokens)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether this position is terminally closed *with money deployed* — an
+    /// entered position that reached `End` (clean exit) or `ExitFailed`. The
+    /// per-rule performance stats accumulate exactly on the transition into this
+    /// state. `PendingEntry`/`Holding`/`ExitPending` are not closed; an unentered
+    /// row (no `entry_price`) is never counted.
+    pub fn is_closed(&self) -> bool {
+        self.entry_price.is_some()
+            && matches!(self.status, PositionStatus::End | PositionStatus::ExitFailed)
+    }
+
+    /// Whether this closed position is a win: a *clean* exit (`End`) that sold
+    /// above entry. A failed exit (`ExitFailed`) is never a win — the bag wasn't
+    /// realized — so it always falls to the loss bucket. Breakeven counts as a
+    /// loss (`> 0`, not `>= 0`).
+    pub fn is_win(&self) -> bool {
+        self.status == PositionStatus::End && self.pnl_percentage().is_some_and(|p| p > 0.0)
+    }
+
     /// The exit reason to display: the reason recorded at exit time when present,
     /// otherwise a best-effort fallback for legacy rows that closed before the
     /// `exit_reason` column existed (PnL sign for a clean close, the status for a
@@ -285,6 +319,65 @@ mod tests {
         assert_eq!(p.status, PositionStatus::PendingEntry);
         p.mark_entry_filled();
         assert_eq!(p.status, PositionStatus::Holding);
+    }
+
+    /// A clean profitable exit: win, positive SOL + %, closed.
+    #[test]
+    fn pnl_and_win_for_clean_profitable_exit() {
+        let mut p = make_position();
+        p.entry_price = Some(1.0);
+        p.entry_token_amount = Some(100.0);
+        p.close(2.0, vec!["sig".into()], 100.0, Utc::now());
+        assert!(p.is_closed());
+        assert!(p.is_win());
+        assert_eq!(p.pnl_percentage(), Some(100.0));
+        assert_eq!(p.pnl_sol(), Some(100.0)); // 2*100 - 1*100
+    }
+
+    /// A losing exit (sold below entry) is closed but not a win; breakeven also
+    /// falls to the loss side (`> 0`, not `>= 0`).
+    #[test]
+    fn loss_and_breakeven_are_not_wins() {
+        let mut loss = make_position();
+        loss.entry_price = Some(1.0);
+        loss.entry_token_amount = Some(100.0);
+        loss.close(0.5, vec!["sig".into()], 100.0, Utc::now());
+        assert!(loss.is_closed() && !loss.is_win());
+        assert_eq!(loss.pnl_sol(), Some(-50.0));
+
+        let mut breakeven = make_position();
+        breakeven.entry_price = Some(1.0);
+        breakeven.entry_token_amount = Some(100.0);
+        breakeven.close(1.0, vec!["sig".into()], 100.0, Utc::now());
+        assert!(!breakeven.is_win(), "0% is a loss, not a win");
+    }
+
+    /// A failed exit that sold nothing books a SOL loss (proceeds fall back to 0)
+    /// and is never a win, even though `ExitFailed` is terminal/closed.
+    #[test]
+    fn failed_exit_is_closed_loss_with_sol_loss() {
+        let mut p = make_position();
+        p.entry_price = Some(1.0);
+        p.entry_token_amount = Some(100.0);
+        p.mark_exit_failed(0.0, Utc::now()); // paper total loss: no exit tokens
+        assert!(p.is_closed());
+        assert!(!p.is_win());
+        assert_eq!(p.pnl_sol(), Some(-100.0)); // 0 proceeds - 1*100 entry cost
+    }
+
+    /// An un-entered or still-open position is neither closed nor priced.
+    #[test]
+    fn open_and_unentered_positions_are_not_closed() {
+        let pending = make_position(); // PendingEntry, no entry
+        assert!(!pending.is_closed());
+        assert_eq!(pending.pnl_sol(), None);
+
+        let mut holding = make_position();
+        holding.entry_price = Some(1.0);
+        holding.entry_token_amount = Some(100.0);
+        holding.mark_entry_filled();
+        assert!(!holding.is_closed(), "Holding is not closed");
+        assert_eq!(holding.pnl_sol(), None, "no exit price yet");
     }
 
     #[test]

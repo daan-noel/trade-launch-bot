@@ -30,6 +30,13 @@ function useRuleRow(): RuleRowContextValue {
   return ctx;
 }
 
+/** Sign-coloured class for a realized-PnL figure: green gain, red loss, dim flat. */
+function pnlClass(v: number): string {
+  if (v > 0) return 'text-green';
+  if (v < 0) return 'text-red';
+  return 'text-text-dim';
+}
+
 /** Read-only lifecycle badge. The clickable activate/pause/stop controls now
  *  live in the row actions; this column just *names* the state so it reads at a
  *  glance — the amber `Draining` answers "why is an inactive rule still trading?"
@@ -543,6 +550,86 @@ export const ruleColumns: ColumnDef<RuleRecord>[] = [
       render: (r) => <LifecycleBadge rule={r} />,
       sortValue: (r) => r.lifecycle,
       searchValue: (r) => r.lifecycle,
+    },
+    // Realized-performance group — all-time for real rules, current-run for
+    // paper. Backed by the runtime cache (no per-row fetch); see RuleRecord.
+    {
+      key: 'total_positions',
+      label: 'Total',
+      tooltip: 'Entered positions — all-time for real rules, current run for paper.',
+      group: 'performance',
+      sortable: true,
+      render: (r) => <span className="font-mono">{dashNum(r.total_positions)}</span>,
+      sortValue: (r) => r.total_positions,
+      searchValue: (r) => String(r.total_positions),
+    },
+    {
+      key: 'open_positions',
+      label: 'Hold',
+      tooltip: 'Positions currently held open.',
+      group: 'performance',
+      sortable: true,
+      render: (r) => <span className="font-mono text-info">{dashNum(r.open_positions)}</span>,
+      sortValue: (r) => r.open_positions,
+      searchValue: (r) => String(r.open_positions),
+    },
+    {
+      key: 'win_count',
+      label: 'Win',
+      tooltip: 'Closed positions that sold above entry.',
+      group: 'performance',
+      sortable: true,
+      render: (r) => <span className="font-mono text-green">{dashNum(r.win_count)}</span>,
+      sortValue: (r) => r.win_count,
+      searchValue: (r) => String(r.win_count),
+    },
+    {
+      key: 'loss_count',
+      label: 'Loss',
+      tooltip: 'Closed positions at or below entry (failed exits count as losses).',
+      group: 'performance',
+      sortable: true,
+      render: (r) => <span className="font-mono text-red">{dashNum(r.loss_count)}</span>,
+      sortValue: (r) => r.loss_count,
+      searchValue: (r) => String(r.loss_count),
+    },
+    {
+      key: 'win_rate',
+      label: 'Win %',
+      tooltip: 'Wins ÷ closed positions.',
+      group: 'performance',
+      sortable: true,
+      render: (r) => <span className="font-mono font-bold">{dashPercent(r.win_rate)}</span>,
+      sortValue: (r) => r.win_rate,
+      searchValue: (r) => String(r.win_rate),
+    },
+    {
+      key: 'avg_pnl_pct',
+      label: 'Avg %',
+      tooltip: 'Average realized PnL % across closed positions.',
+      group: 'performance',
+      sortable: true,
+      render: (r) => (
+        <span className={cn('font-mono font-bold', pnlClass(r.avg_pnl_pct))}>
+          {dashPercent(r.avg_pnl_pct)}
+        </span>
+      ),
+      sortValue: (r) => r.avg_pnl_pct,
+      searchValue: (r) => String(r.avg_pnl_pct),
+    },
+    {
+      key: 'total_pnl_sol',
+      label: 'PnL ◎',
+      tooltip: 'Total realized SOL PnL across closed positions.',
+      group: 'performance',
+      sortable: true,
+      render: (r) => (
+        <span className={cn('font-mono font-bold', pnlClass(r.total_pnl_sol))}>
+          {dashF(r.total_pnl_sol, 4)}
+        </span>
+      ),
+      sortValue: (r) => r.total_pnl_sol,
+      searchValue: (r) => String(r.total_pnl_sol),
     },
     {
       key: 'controls',

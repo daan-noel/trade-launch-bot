@@ -86,6 +86,16 @@ export interface RuleRecord {
   /** Positions this rule currently holds open (drives the 'Draining (N)' badge
    *  and gates the Stop & close action). */
   open_positions: number;
+  /** Realized-performance stats from the runtime cache (all-time for real rules,
+   *  current-run for paper). `total_positions` counts entered positions;
+   *  `win_count`/`loss_count` cover only closed positions; `win_rate` (0-100) and
+   *  `avg_pnl_pct` are 0 until something closes; `total_pnl_sol` is realized SOL. */
+  total_positions: number;
+  win_count: number;
+  loss_count: number;
+  win_rate: number;
+  avg_pnl_pct: number;
+  total_pnl_sol: number;
   created_at: string;
   updated_at: string;
 }

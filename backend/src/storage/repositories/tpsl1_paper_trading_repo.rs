@@ -478,6 +478,36 @@ impl Tpsl1PaperTradingRepo {
         Ok(rows.into_iter().collect())
     }
 
+    /// Per-run realized-performance aggregate (paper) — same shape and semantics
+    /// as the real repo's `closed_stats_by_rule`, but keyed by `run_id` so the
+    /// cache warm-up attributes each paper rule's stats to its current run.
+    /// `(wins, losses, sum_pnl_sol, sum_pnl_pct)` per run; runs with no closed
+    /// positions are absent from the map.
+    pub async fn closed_stats_by_run_all(
+        &self,
+    ) -> anyhow::Result<std::collections::HashMap<Uuid, (i64, i64, f64, f64)>> {
+        let rows: Vec<(Uuid, i64, i64, f64, f64)> = sqlx::query_as(
+            r#"
+            SELECT
+                run_id,
+                COUNT(*) FILTER (WHERE status = 'End' AND exit_price > entry_price)::bigint,
+                COUNT(*) FILTER (WHERE NOT (status = 'End' AND exit_price > entry_price))::bigint,
+                COALESCE(SUM(exit_price * COALESCE(exit_token_amount, 0) - entry_price * entry_token_amount), 0)::double precision,
+                COALESCE(SUM(((exit_price - entry_price) / NULLIF(entry_price, 0)) * 100.0), 0)::double precision
+            FROM tpsl1_paper_positions
+            WHERE entry_price IS NOT NULL AND exit_price IS NOT NULL
+              AND status IN ('End', 'ExitFailed')
+            GROUP BY run_id
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, w, l, s, p)| (id, (w, l, s, p)))
+            .collect())
+    }
+
     /// Terminally fail paper positions stuck in ExitPending past the staleness
     /// window (mirrors the real-position safety net). Such a row was orphaned —
     /// the exit task normally resolves within seconds — so fail it rather than

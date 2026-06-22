@@ -24,6 +24,48 @@ pub struct PaperRunRef {
     pub run_id: Uuid,
 }
 
+/// Per-rule realized-performance counters, accumulated live on each position
+/// close (see [`Tpsl1RuntimeCache::sync_position`]) and warmed from the DB on
+/// boot. All-time for real rules; current-run for paper rules (reset on
+/// `start_paper_run`). Stores raw sums only — the API layer derives win rate
+/// and average PnL % from these so the hot path never divides.
+#[derive(Clone, Copy, Default)]
+pub struct RuleClosedStats {
+    /// Clean `End` exits sold above entry.
+    pub wins: i64,
+    /// Every other closed position (breakeven, loss, failed exit).
+    pub losses: i64,
+    /// Sum of realized SOL PnL across all closed positions.
+    pub sum_pnl_sol: f64,
+    /// Sum of realized PnL % across all closed positions (numerator for the avg).
+    pub sum_pnl_pct: f64,
+}
+
+impl RuleClosedStats {
+    /// Number of closed positions = the win/loss denominator.
+    pub fn closed(&self) -> i64 {
+        self.wins + self.losses
+    }
+
+    /// Fold one freshly-closed position into the counters. `sign = 1` adds it
+    /// (a position just closed), `-1` backs it out (a closed position was
+    /// removed). Classification matches the warm-up SQL exactly.
+    fn apply(&mut self, p: &Position, sign: i64) {
+        if p.is_win() {
+            self.wins = (self.wins + sign).max(0);
+        } else {
+            self.losses = (self.losses + sign).max(0);
+        }
+        let s = sign as f64;
+        if let Some(sol) = p.pnl_sol() {
+            self.sum_pnl_sol += s * sol;
+        }
+        if let Some(pct) = p.pnl_percentage() {
+            self.sum_pnl_pct += s * pct;
+        }
+    }
+}
+
 /// RAII claim on an in-flight exit. While held, `position_id` stays in the
 /// `exiting` set (the no-double-sell guard); dropping it — on normal return,
 /// early return, OR a panic that unwinds the holding task — frees the slot
@@ -53,6 +95,11 @@ pub struct Tpsl1RuntimeCache {
     holding_by_mint: Arc<DashMap<String, Vec<Arc<Position>>>>,
     holding_count_by_rule: Arc<DashMap<Uuid, i64>>,
     total_count_by_rule: Arc<DashMap<Uuid, i64>>,
+    /// Per-rule realized-performance counters (wins/losses + PnL sums). Same
+    /// mode-aware scope as `total_count_by_rule`: all-time for real rules,
+    /// current-run for paper rules. Read by the rule-list endpoint; mutated on
+    /// each position close in `sync_position`.
+    closed_stats_by_rule: Arc<DashMap<Uuid, RuleClosedStats>>,
     /// Current paper run per paper rule (stamping target + result pointer).
     paper_run_by_rule: Arc<DashMap<Uuid, PaperRunRef>>,
     /// Memoized clock-driven exit walk state per holding position, keyed by
@@ -97,6 +144,7 @@ impl Tpsl1RuntimeCache {
             holding_by_mint: Arc::new(DashMap::new()),
             holding_count_by_rule: Arc::new(DashMap::new()),
             total_count_by_rule: Arc::new(DashMap::new()),
+            closed_stats_by_rule: Arc::new(DashMap::new()),
             paper_run_by_rule: Arc::new(DashMap::new()),
             exit_state_by_position: Arc::new(DashMap::new()),
             time_exit_holding: Arc::new(DashMap::new()),
@@ -157,13 +205,34 @@ impl Tpsl1RuntimeCache {
             }
         }
 
+        // Realized-performance counters, warmed the same way: real rules all-time,
+        // paper rules per current run (attributed below via run_id → rule_id).
+        self.closed_stats_by_rule.clear();
+        for (rule_id, wins, losses, sum_pnl_sol, sum_pnl_pct) in
+            position_repo.closed_stats_by_rule().await?
+        {
+            if !paper_ids.contains(&rule_id) {
+                self.closed_stats_by_rule.insert(
+                    rule_id,
+                    RuleClosedStats { wins, losses, sum_pnl_sol, sum_pnl_pct },
+                );
+            }
+        }
+
         self.paper_run_by_rule.clear();
         // One GROUP BY for every run's position count instead of a per-run query.
         let counts_by_run = paper_repo.count_by_run_all().await?;
+        let stats_by_run = paper_repo.closed_stats_by_run_all().await?;
         for run in paper_repo.find_all_runs().await? {
             let count = counts_by_run.get(&run.id).copied().unwrap_or(0);
             if count > 0 {
                 self.total_count_by_rule.insert(run.rule_id, count);
+            }
+            if let Some(&(wins, losses, sum_pnl_sol, sum_pnl_pct)) = stats_by_run.get(&run.id) {
+                self.closed_stats_by_rule.insert(
+                    run.rule_id,
+                    RuleClosedStats { wins, losses, sum_pnl_sol, sum_pnl_pct },
+                );
             }
             self.paper_run_by_rule.insert(
                 run.rule_id,
@@ -436,6 +505,15 @@ impl Tpsl1RuntimeCache {
             .unwrap_or(0)
     }
 
+    /// Realized-performance counters for a rule (wins/losses + PnL sums), or a
+    /// zeroed default when the rule has no closed positions yet.
+    pub fn closed_stats_by_rule(&self, rule_id: Uuid) -> RuleClosedStats {
+        self.closed_stats_by_rule
+            .get(&rule_id)
+            .map(|e| *e.value())
+            .unwrap_or_default()
+    }
+
     pub async fn reload_holding(&self, pool: &PgPool) -> anyhow::Result<()> {
         self.load_holdings(pool).await
     }
@@ -467,6 +545,8 @@ impl Tpsl1RuntimeCache {
         self.purge_rule_from_holding_index(rule_id);
         self.holding_count_by_rule.remove(&rule_id);
         self.total_count_by_rule.remove(&rule_id);
+        // Fresh run ⇒ fresh stats (the prior run's positions were deleted).
+        self.closed_stats_by_rule.remove(&rule_id);
         self.paper_run_by_rule.insert(
             rule_id,
             PaperRunRef {
@@ -602,6 +682,17 @@ impl Tpsl1RuntimeCache {
             self.adjust_holding_count(current.rule_id, -1);
         }
 
+        // Realized-performance counters: accumulate exactly on the transition
+        // into a terminally-closed state (entered → End/ExitFailed). Terminal
+        // states never transition again, so this fires once per position.
+        let prev_closed = prev.map(|p| p.is_closed()).unwrap_or(false);
+        if current.is_closed() && !prev_closed {
+            self.closed_stats_by_rule
+                .entry(current.rule_id)
+                .or_default()
+                .apply(current, 1);
+        }
+
         // Cold-lane signal: the position table + the rule's open-count badge are
         // now stale for this rule. Best-effort send (no subscribers => ignored).
         let _ = self.sse_tx.send(SseEvent::TpslPositionsChanged {
@@ -622,6 +713,14 @@ impl Tpsl1RuntimeCache {
                 self.adjust_holding_count(position.rule_id, -1);
             }
             self.adjust_total_count(position.rule_id, -1);
+        }
+        // Back the position out of the realized-performance counters if it had
+        // already closed (keeps the warmed sums consistent when a closed row is
+        // deleted, e.g. retention/cleanup), mirroring the +1 in `sync_position`.
+        if position.is_closed() {
+            if let Some(mut e) = self.closed_stats_by_rule.get_mut(&position.rule_id) {
+                e.apply(position, -1);
+            }
         }
     }
 
@@ -719,6 +818,50 @@ mod tests {
         assert_eq!(cache.holding_count_by_rule(rule_id), 0);
         assert_eq!(cache.total_count_by_rule(rule_id), 0);
         assert!(cache.holding_by_mint(&pos.mint).is_empty());
+    }
+
+    /// Closing an entered position accumulates the realized-performance counters
+    /// exactly once: a profitable close lands in `wins` with positive SOL/%; a
+    /// failed exit lands in `losses` with the lost bag booked as a SOL loss.
+    #[test]
+    fn sync_position_accumulates_closed_stats() {
+        let cache = cache();
+        let rule_id = Uuid::new_v4();
+
+        // Win: enter, then close above entry.
+        let mut win = holding_position(rule_id);
+        win.mint = "MintWin".into();
+        win.entry_price = Some(1.0);
+        win.entry_token_amount = Some(100.0);
+        win.mark_entry_filled();
+        cache.sync_position(None, &win);
+        let prev = win.clone();
+        win.close(2.0, vec!["sig".into()], 100.0, Utc::now());
+        cache.sync_position(Some(&prev), &win);
+
+        let stats = cache.closed_stats_by_rule(rule_id);
+        assert_eq!((stats.wins, stats.losses), (1, 0));
+        assert_eq!(stats.sum_pnl_sol, 100.0);
+        assert_eq!(stats.sum_pnl_pct, 100.0);
+
+        // Re-syncing the already-closed position must NOT double-count.
+        cache.sync_position(Some(&win), &win);
+        assert_eq!(cache.closed_stats_by_rule(rule_id).wins, 1);
+
+        // Loss via failed exit: closed, not a win, SOL loss = -entry cost.
+        let mut fail = holding_position(rule_id);
+        fail.mint = "MintFail".into();
+        fail.entry_price = Some(1.0);
+        fail.entry_token_amount = Some(100.0);
+        fail.mark_entry_filled();
+        cache.sync_position(None, &fail);
+        let prev = fail.clone();
+        fail.mark_exit_failed(0.0, Utc::now());
+        cache.sync_position(Some(&prev), &fail);
+
+        let stats = cache.closed_stats_by_rule(rule_id);
+        assert_eq!((stats.wins, stats.losses), (1, 1));
+        assert_eq!(stats.sum_pnl_sol, 0.0); // +100 win, -100 failed
     }
 
     /// The RAII exit guard frees the `exiting` slot when dropped — including the

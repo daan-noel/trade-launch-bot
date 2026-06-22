@@ -458,6 +458,37 @@ impl Tpsl1PositionRepo {
 
         Ok(rows)
     }
+
+    /// Per-rule realized-performance aggregate over terminally-closed positions
+    /// (`End` / `ExitFailed`, with both an entry and an exit price). Returns
+    /// `(rule_id, wins, losses, sum_pnl_sol, sum_pnl_pct)`. A win is a clean
+    /// `End` exit sold above entry; every other closed row (breakeven, loss,
+    /// failed exit) is a loss. `exit_token_amount` falls back to `0` for a
+    /// failed exit that sold nothing, booking the lost bag as a SOL loss —
+    /// mirrors [`Position::pnl_sol`] / [`Position::is_win`] so this boot warm-up
+    /// agrees exactly with the live counters accumulated in `sync_position`.
+    /// Time-range bounding (a future per-rule window selector) drops in as an
+    /// extra `created_at` predicate here.
+    pub async fn closed_stats_by_rule(&self) -> anyhow::Result<Vec<(Uuid, i64, i64, f64, f64)>> {
+        let rows: Vec<(Uuid, i64, i64, f64, f64)> = sqlx::query_as(
+            r#"
+            SELECT
+                rule_id,
+                COUNT(*) FILTER (WHERE status = 'End' AND exit_price > entry_price)::bigint,
+                COUNT(*) FILTER (WHERE NOT (status = 'End' AND exit_price > entry_price))::bigint,
+                COALESCE(SUM(exit_price * COALESCE(exit_token_amount, 0) - entry_price * entry_token_amount), 0)::double precision,
+                COALESCE(SUM(((exit_price - entry_price) / NULLIF(entry_price, 0)) * 100.0), 0)::double precision
+            FROM tpsl1_real_positions
+            WHERE entry_price IS NOT NULL AND exit_price IS NOT NULL
+              AND status IN ('End', 'ExitFailed')
+            GROUP BY rule_id
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
+    }
 }
 
 // ---------------------------------------------------------------------------

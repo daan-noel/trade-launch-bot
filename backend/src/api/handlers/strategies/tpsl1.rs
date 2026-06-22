@@ -9,7 +9,8 @@ use crate::{
     models::{ingest::SseEvent, PaperRunStatus, Position, Tpsl1Rule},
     state::app_state::AppState,
     strategies::tpsl_sniper_1::{
-        self, backtest::BacktestTokenResult, entry::token_matches_buy_rule, PaperActivation,
+        self, backtest::BacktestTokenResult, entry::token_matches_buy_rule,
+        runtime_cache::RuleClosedStats, PaperActivation,
     },
 };
 
@@ -45,6 +46,16 @@ pub struct RuleResponse {
     /// Number of positions this rule currently holds open (drives the
     /// `Draining (N open)` badge and gates the Stop & close action).
     pub open_positions: i64,
+    /// Realized-performance stats (all-time for real rules, current-run for
+    /// paper). `total_positions` = entered positions; `win/loss_count` cover
+    /// closed positions only; `win_rate`/`avg_pnl_pct` are 0 until something
+    /// closes. All sourced from the runtime cache — no per-request DB query.
+    pub total_positions: i64,
+    pub win_count: i64,
+    pub loss_count: i64,
+    pub win_rate: f64,
+    pub avg_pnl_pct: f64,
+    pub total_pnl_sol: f64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -68,10 +79,27 @@ fn lifecycle_label(rule: &Tpsl1Rule, open_positions: i64, paper_status: Option<P
 
 impl RuleResponse {
     /// Build the response from a rule plus the live context needed to derive its
-    /// lifecycle (`open_positions` from the runtime cache; `paper_status` from the
-    /// rule's current run, or `None` for real rules / rules with no run).
-    fn build(r: Tpsl1Rule, open_positions: i64, paper_status: Option<PaperRunStatus>) -> Self {
+    /// lifecycle (`open_positions` + `total_positions` + `stats` from the runtime
+    /// cache; `paper_status` from the rule's current run, or `None` for real
+    /// rules / rules with no run). Win rate and average PnL % are derived here
+    /// from the cache's raw sums (0 when nothing has closed).
+    fn build(
+        r: Tpsl1Rule,
+        open_positions: i64,
+        total_positions: i64,
+        stats: RuleClosedStats,
+        paper_status: Option<PaperRunStatus>,
+    ) -> Self {
         let lifecycle = lifecycle_label(&r, open_positions, paper_status).to_string();
+        let closed = stats.closed();
+        let (win_rate, avg_pnl_pct) = if closed > 0 {
+            (
+                stats.wins as f64 / closed as f64 * 100.0,
+                stats.sum_pnl_pct / closed as f64,
+            )
+        } else {
+            (0.0, 0.0)
+        };
         Self {
             id: r.id,
             rule_name: r.rule_name,
@@ -95,6 +123,12 @@ impl RuleResponse {
             is_active: r.is_active,
             lifecycle,
             open_positions,
+            total_positions,
+            win_count: stats.wins,
+            loss_count: stats.losses,
+            win_rate,
+            avg_pnl_pct,
+            total_pnl_sol: stats.sum_pnl_sol,
             created_at: r.created_at,
             updated_at: r.updated_at,
         }
@@ -113,6 +147,8 @@ fn emit_rules_changed(app_state: &Arc<AppState>) {
 
 async fn rule_response(app_state: &Arc<AppState>, rule: Tpsl1Rule) -> RuleResponse {
     let open = app_state.tpsl1_cache.holding_count_by_rule(rule.id);
+    let total = app_state.tpsl1_cache.total_count_by_rule(rule.id);
+    let stats = app_state.tpsl1_cache.closed_stats_by_rule(rule.id);
     let paper_status = if rule.trade_mode == "paper" {
         app_state.tpsl1_paper_repo()
             .current_run(rule.id)
@@ -123,7 +159,7 @@ async fn rule_response(app_state: &Arc<AppState>, rule: Tpsl1Rule) -> RuleRespon
     } else {
         None
     };
-    RuleResponse::build(rule, open, paper_status)
+    RuleResponse::build(rule, open, total, stats, paper_status)
 }
 
 #[derive(Deserialize)]
@@ -230,12 +266,14 @@ pub async fn list_tpsl_rules(app_state: web::Data<Arc<AppState>>) -> impl Respon
                 .into_iter()
                 .map(|r| {
                     let open = app_state.tpsl1_cache.holding_count_by_rule(r.id);
+                    let total = app_state.tpsl1_cache.total_count_by_rule(r.id);
+                    let stats = app_state.tpsl1_cache.closed_stats_by_rule(r.id);
                     let status = if r.trade_mode == "paper" {
                         run_status.get(&r.id).copied()
                     } else {
                         None
                     };
-                    RuleResponse::build(r, open, status)
+                    RuleResponse::build(r, open, total, stats, status)
                 })
                 .collect();
             HttpResponse::Ok().json(responses)
