@@ -101,6 +101,11 @@ pub(crate) fn snipe_reserves_from_cache(
 #[async_trait::async_trait]
 pub(crate) trait SnipeExecutor: Send + Sync {
     fn wallet(&self) -> String;
+    /// Send a snipe buy with **write-ahead** signature persistence (Phase 2): the
+    /// durable-nonce signature is known the instant the tx is signed — before the
+    /// network round-trip — so `on_signed` is invoked with it *before* submit, to
+    /// durably record the `BuySubmitted` marker ahead of the on-chain side effect.
+    /// Returns the submitted signature (== the one handed to `on_signed`).
     async fn send_snipe_buy(
         &self,
         mint: &str,
@@ -109,6 +114,7 @@ pub(crate) trait SnipeExecutor: Send + Sync {
         amount: f64,
         slippage_bps: Option<u64>,
         reserves: Option<(u128, u128)>,
+        on_signed: pump_trader::BuySignedHook,
     ) -> anyhow::Result<String>;
     async fn check_signature(&self, signature: &str) -> anyhow::Result<Option<bool>>;
 }
@@ -126,11 +132,13 @@ impl SnipeExecutor for PumpFunTrader {
         amount: f64,
         slippage_bps: Option<u64>,
         reserves: Option<(u128, u128)>,
+        on_signed: pump_trader::BuySignedHook,
     ) -> anyhow::Result<String> {
         // Slippage min_out is derived from the triggering event's reserves
         // (threaded in, no RPC); a missing snapshot yields min_out=1 inside
-        // `buy_token_snipe` — never an inline reserve read on the hot path.
-        self.buy_token_snipe(mint, creator, token_program_id, amount, slippage_bps, reserves)
+        // `buy_token_snipe_write_ahead` — never an inline reserve read on the hot
+        // path. `on_signed` fires with the signature before submit (write-ahead).
+        self.buy_token_snipe_write_ahead(mint, creator, token_program_id, amount, slippage_bps, reserves, on_signed)
             .await
     }
     async fn check_signature(&self, signature: &str) -> anyhow::Result<Option<bool>> {
@@ -307,16 +315,59 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
             return;
         }
 
+        // Per-attempt slot the write-ahead hook fills with the signed tx's
+        // signature BEFORE the submit POST (Phase 2). The durable-nonce signature
+        // is fixed at signing, so this is known pre-network; persisting it first
+        // makes a crash anywhere after signing recoverable.
+        let signed_slot: Arc<std::sync::Mutex<Option<String>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let on_signed: pump_trader::BuySignedHook = {
+            let position_repo = position_repo.clone();
+            let runtime = runtime.clone();
+            let mint = mint.clone();
+            let slot = signed_slot.clone();
+            Box::new(move |sig: String| {
+                Box::pin(async move {
+                    *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(sig.clone());
+                    // Write-ahead durable marker: record this signature + flip the
+                    // row to `BuySubmitted` BEFORE the tx is submitted. A crash in
+                    // the send→record gap can then recover the entry by checking
+                    // this signature against the feed (`redrive_orphaned_buy_
+                    // submitted`); without it the row would look like a never-bought
+                    // `Arming` orphan and get reaped while tokens sit in the wallet.
+                    // Best-effort: the sig is also captured in `signed_slot` for THIS
+                    // process, so a failed persist only loses the cross-restart marker.
+                    match position_repo.mark_buy_submitted(position_id, &sig).await {
+                        Ok(Some(updated)) => runtime.sync_position(None, &updated),
+                        Ok(None) => {} // already advanced to Holding concurrently
+                        Err(err) => warn!(mint = %mint, sig = %sig,
+                            "failed to persist BuySubmitted marker (continuing): {err}"),
+                    }
+                })
+            })
+        };
+
         // Snipe send WITHOUT the blocking RPC confirm — the WS/DB trade feed below
-        // is the sole confirmation and the entry-price source. `buy_token_snipe`
-        // returns the submitted signature so a silent feed can be classified.
-        let signature = match trader
-            .send_snipe_buy(&mint, &creator, &token_program_id, buy_amount, slippage_bps, reserves)
-            .await
-        {
-            Ok(sig) => sig,
-            Err(err) => {
-                warn!(mint = %mint, attempt, "buy send failed: {err}");
+        // is the sole confirmation and the entry-price source. The hook persists
+        // the marker before submit; the call returns the submitted signature.
+        let send_result = trader
+            .send_snipe_buy(&mint, &creator, &token_program_id, buy_amount, slippage_bps, reserves, on_signed)
+            .await;
+
+        // The signature is known the instant the tx was signed (captured by the
+        // hook pre-submit). If the slot is empty the send failed BEFORE signing, so
+        // no tx exists on-chain and a retry can't double-buy.
+        // Bind to a local so the MutexGuard is dropped here (not held across the
+        // backoff await in the `None` arm below).
+        let signed = signed_slot.lock().unwrap_or_else(|p| p.into_inner()).take();
+        let signature = match signed {
+            Some(sig) => sig,
+            None => {
+                match &send_result {
+                    Err(err) => warn!(mint = %mint, attempt, "buy send failed before signing: {err}"),
+                    Ok(sig) => warn!(mint = %mint, attempt, sig = %sig,
+                        "buy reported success but the write-ahead hook never fired; retrying"),
+                }
                 if attempt < max_attempts {
                     sleep(Duration::from_millis(backoff_ms)).await;
                     backoff_ms = (backoff_ms * 2).saturating_add(100);
@@ -324,25 +375,19 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
                 continue;
             }
         };
-        // Track our own submitted signature so the fill is attributed to THIS buy.
+        // Signed → the tx may land even if the submit POST reported an error (a
+        // durable-nonce tx, or a background fan-out loser, can still confirm). So
+        // attribute the signature to THIS buy and confirm via the feed; from here
+        // we NEVER fire another buy except on a proven on-chain revert (the
+        // double-buy invariant), exactly as a clean send would.
         sent_sigs.push(signature.clone());
-        // Write-ahead durable marker (persist-after-send, Phase 1): record this
-        // signature + flip the row to `BuySubmitted` the instant the send returns,
-        // BEFORE polling for the fill. A crash/restart in the send→record gap can
-        // then recover the entry by checking this signature against the feed
-        // (`redrive_orphaned_buy_submitted`); without it the row would look like a
-        // never-bought `Arming` orphan and get reaped while tokens sit in the
-        // wallet. Off the ingest hot path (spawned buy task) and does not delay the
-        // fill poll. Best-effort: the sig already lives in `sent_sigs` for THIS
-        // process, so a failed persist only loses the cross-restart marker.
-        match position_repo.mark_buy_submitted(position_id, &signature).await {
-            Ok(Some(updated)) => runtime.sync_position(None, &updated),
-            Ok(None) => {} // already advanced to Holding concurrently — nothing to mark
-            Err(err) => warn!(mint = %mint, sig = %signature,
-                "failed to persist BuySubmitted marker (continuing): {err}"),
+        match &send_result {
+            Ok(_) => info!(mint = %mint, attempt, sig = %signature,
+                "buy submitted (no RPC confirm); polling WS feed for fill"),
+            Err(err) => warn!(mint = %mint, attempt, sig = %signature,
+                "buy submit reported an error after signing; treating the signed tx as in-flight \
+                 (no re-send unless it reverts on-chain): {err}"),
         }
-        info!(mint = %mint, attempt, sig = %signature,
-            "buy submitted (no RPC confirm); polling WS feed for fill");
 
         // Poll the WS-fed trade feed for this wallet's buy row.
         if poll_feed_until_entry_fill(&mint, &wallet, position_id, &position_repo, &trade_repo, &runtime, &trade_signals, &cfg, &sent_sigs)
@@ -1223,9 +1268,13 @@ mod tests {
             _amount: f64,
             _slippage_bps: Option<u64>,
             _reserves: Option<(u128, u128)>,
+            on_signed: pump_trader::BuySignedHook,
         ) -> anyhow::Result<String> {
             let n = self.sends.fetch_add(1, Ordering::SeqCst) + 1;
             let sig = format!("fakesig-{n}");
+            // Mirror the live write-ahead ordering: fire the hook with the signed
+            // signature BEFORE "submitting" (here, before the fill is inserted).
+            on_signed(sig.clone()).await;
             if self.fill_on_send == Some(n) {
                 self.insert_fill(&sig).await;
             }

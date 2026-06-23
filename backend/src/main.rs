@@ -557,6 +557,28 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Boot wallet-balance sweep (buy-in-flight recovery, Phase 3 backstop): list
+    // the wallet's on-chain token accounts once and flag any balance no open
+    // position across either clone accounts for — a manual transfer, a failed
+    // marker persist, or any bug the durable `BuySubmitted` marker doesn't cover.
+    // Read-only + advisory (logs for review, never sells/deletes), spawned off the
+    // boot critical path so its RPC scan never delays ingest/HTTP startup.
+    {
+        let trader = trader.clone();
+        let tpsl1_repo =
+            storage::repositories::tpsl1_position_repo::Tpsl1PositionRepo::new(db.clone());
+        let tpsl2_repo =
+            storage::repositories::tpsl2_position_repo::Tpsl2PositionRepo::new(db.clone());
+        tokio::spawn(async move {
+            if let Err(e) =
+                services::wallet_reconcile::reconcile_wallet_holdings(&trader, &tpsl1_repo, &tpsl2_repo)
+                    .await
+            {
+                warn!("Boot wallet reconcile failed (advisory only): {e}");
+            }
+        });
+    }
+
     // In-memory caches (shared between services and future API handlers)
     let token_cache = Arc::new(state::token_cache::TokenCache::new());
 

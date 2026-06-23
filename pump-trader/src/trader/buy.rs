@@ -17,9 +17,21 @@ use solana_sdk::{
     signature::Signer,
 };
 use spl_associated_token_account::get_associated_token_address_with_program_id;
+use std::future::Future;
+use std::pin::Pin;
 use std::str::FromStr;
 use std::time::Instant;
 use tracing::{info, warn};
+
+/// Async callback invoked with a buy's transaction signature the instant the tx
+/// is **signed** — which, against a durable nonce, is *before* the network
+/// round-trip — and BEFORE it is submitted. Lets a caller durably record the
+/// signature ahead of the on-chain side effect (write-ahead crash-safety: the
+/// signature is on disk before any tokens can arrive, so a crash anywhere after
+/// signing is recoverable). Boxed so it threads through the buy path without
+/// making it generic; `None` on paths that don't need the marker (manual buys).
+pub type BuySignedHook =
+    Box<dyn FnOnce(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
 
 impl PumpFunTrader {
     /// Manual/API curve buy. Takes already-parsed routing pubkeys (the manual
@@ -35,7 +47,7 @@ impl PumpFunTrader {
     ) -> Result<bool> {
         // Manual buy: no triggering-event reserves in hand, so `buy_token_inner`
         // reads the curve on-chain for the slippage floor (snipe_reserves = None).
-        self.buy_token_inner(mint, creator, token_program, sol_amount, slippage_bps, None, false, false)
+        self.buy_token_inner(mint, creator, token_program, sol_amount, slippage_bps, None, false, false, None)
             .await
             .map(|_sig| true)
     }
@@ -71,7 +83,37 @@ impl PumpFunTrader {
         let mint = Pubkey::from_str(token_mint)?;
         let creator_pubkey = Pubkey::from_str(creator)?;
         let token_program = TokenProgram::from_id(token_program_id);
-        self.buy_token_inner(&mint, &creator_pubkey, token_program, sol_amount, slippage_bps, reserves, true, true)
+        self.buy_token_inner(&mint, &creator_pubkey, token_program, sol_amount, slippage_bps, reserves, true, true, None)
+            .await
+    }
+
+    /// As [`buy_token_snipe`], but invokes `on_signed` with the buy's signature
+    /// the instant the tx is signed and **before** it is submitted — the Phase 2
+    /// *write-ahead* entry point. Because the buy is signed against a durable
+    /// nonce, the signature is fixed locally before the network round-trip, so a
+    /// caller can persist a durable "buy in flight" marker keyed on that signature
+    /// *ahead* of any on-chain side effect. This closes the last persist-after-send
+    /// window: a crash between submit and record can no longer strand untracked
+    /// tokens, because the signature was already on disk before submit. Returns the
+    /// submitted signature (identical to the one handed to `on_signed`).
+    // Trade-path fn — the write-ahead buy threads the same routing/slippage inputs
+    // plus the persist hook; `too_many_arguments` is allowed by design (see
+    // CLAUDE.md), like `buy_token_inner`/the sell path.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn buy_token_snipe_write_ahead(
+        &self,
+        token_mint: &str,
+        creator: &str,
+        token_program_id: &str,
+        sol_amount: f64,
+        slippage_bps: Option<u64>,
+        reserves: Option<(u128, u128)>,
+        on_signed: BuySignedHook,
+    ) -> Result<String> {
+        let mint = Pubkey::from_str(token_mint)?;
+        let creator_pubkey = Pubkey::from_str(creator)?;
+        let token_program = TokenProgram::from_id(token_program_id);
+        self.buy_token_inner(&mint, &creator_pubkey, token_program, sol_amount, slippage_bps, reserves, true, true, Some(on_signed))
             .await
     }
 
@@ -91,6 +133,11 @@ impl PumpFunTrader {
         snipe_reserves: Option<(u128, u128)>,
         skip_ata_check: bool,
         skip_confirm: bool,
+        // Write-ahead hook: invoked with the signed tx's signature BEFORE submit
+        // (the durable-nonce signature is fixed at signing), so the caller can
+        // persist a recovery marker ahead of the on-chain side effect. `None` on
+        // the manual/legacy paths that don't need it.
+        on_signed: Option<BuySignedHook>,
     ) -> Result<String> {
         let t0 = Instant::now();
         // Guard the real spend before any work: both curve public entries
@@ -242,6 +289,24 @@ impl PumpFunTrader {
             let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
             let sent: Result<String> = async {
                 let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, keypair)?;
+                // Write-ahead persist (Phase 2): the durable-nonce signature is
+                // fixed the instant we sign — before any network round-trip — so
+                // hand it to the hook to durably record the "buy in flight" marker
+                // BEFORE the submit below. A crash anywhere after this point is
+                // recoverable; a crash before it means the tx never went out, so no
+                // tokens can exist. The hook is one DB write under the nonce's
+                // `in_use` window (the slot frees in `schedule_nonce_refresh`
+                // below regardless) — an intentional, bounded latency trade for
+                // crash-safety, off the ingest hot path (this is the spawned buy
+                // task).
+                if let Some(hook) = on_signed {
+                    let sig = tx
+                        .signatures
+                        .first()
+                        .map(|s| s.to_string())
+                        .context("signed buy tx has no signature")?;
+                    hook(sig).await;
+                }
                 let sig = self.send_transaction(&tx).await?;
                 info!(
                     "📤 Buy sent — sig: {} | SOL: {} | {}ms",
