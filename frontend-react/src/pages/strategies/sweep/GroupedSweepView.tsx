@@ -13,6 +13,7 @@ import { buildGroupColumns } from 'components/sweep/groupColumns';
 import { computeParamColumnColors, computePnlColumnColors } from 'lib/sweepParamColors';
 import { SweepConfigForm } from 'components/sweep/SweepConfigForm';
 import { SelectedSweepHistory } from 'components/sweep/SelectedSweepHistory';
+import { TokenInspectModal } from 'components/tpsl2/TokenInspectModal';
 import {
   type AxisDef,
   type GroupedSweepStartArgs,
@@ -228,6 +229,19 @@ export function GroupedSweepView({
   const tokenResults = tokenResultsQuery.data ?? [];
   const tokenResultsErr = apiErrorMessage(tokenResultsQuery.error, 'Failed to load token results');
 
+  const [showNotFired, setShowNotFired] = useState(true);
+  const visibleTokenResults = showNotFired ? tokenResults : tokenResults.filter((r) => r.fired);
+
+  const [selectedTokenMint, setSelectedTokenMint] = useState<string | null>(null);
+  // Clear the token selection when the combo changes.
+  useEffect(() => {
+    setSelectedTokenMint(null);
+  }, [activeComboId]);
+
+  const selectedTokenResult = selectedTokenMint
+    ? (tokenResults.find((r) => r.mint === selectedTokenMint) ?? null)
+    : null;
+
   const tokenColumns = useMemo<ColumnDef<ComboTokenResult>[]>(
     () => [
       {
@@ -235,6 +249,7 @@ export function GroupedSweepView({
         label: 'Symbol',
         render: (r) => <span className="font-mono text-xs">{r.symbol || '—'}</span>,
         searchValue: (r) => r.symbol,
+        filterValue: (r) => r.symbol,
         sortValue: (r) => r.symbol,
         sortable: true,
       },
@@ -247,6 +262,7 @@ export function GroupedSweepView({
           </span>
         ),
         searchValue: (r) => r.mint,
+        filterValue: (r) => r.mint,
         sortable: false,
       },
       {
@@ -258,6 +274,7 @@ export function GroupedSweepView({
           </span>
         ),
         searchValue: (r) => (r.fired ? 'yes' : 'no'),
+        filterValue: (r) => (r.fired ? 'yes' : 'no'),
         sortValue: (r) => (r.fired ? 1 : 0),
         sortable: true,
       },
@@ -270,6 +287,7 @@ export function GroupedSweepView({
           </span>
         ),
         searchValue: () => '',
+        filterNumber: (r) => (r.fired ? r.pnl_sol : null),
         sortValue: (r) => r.pnl_sol,
         sortable: true,
       },
@@ -282,6 +300,7 @@ export function GroupedSweepView({
           </span>
         ),
         searchValue: () => '',
+        filterNumber: (r) => (r.fired ? r.pnl_pct : null),
         sortValue: (r) => r.pnl_pct,
         sortable: true,
       },
@@ -294,6 +313,7 @@ export function GroupedSweepView({
           </span>
         ),
         searchValue: () => '',
+        filterNumber: (r) => (r.fired ? r.holding_secs : null),
         sortValue: (r) => r.holding_secs,
         sortable: true,
       },
@@ -302,6 +322,7 @@ export function GroupedSweepView({
         label: 'Exit',
         render: (r) => <span className="font-mono text-xs">{r.exit}</span>,
         searchValue: (r) => r.exit,
+        filterValue: (r) => r.exit,
         sortValue: (r) => r.exit,
         sortable: true,
       },
@@ -501,8 +522,15 @@ export function GroupedSweepView({
                     <span className="text-xs text-text-dim">
                       {tokenResultsQuery.isFetching
                         ? 'Simulating…'
-                        : `${tokenResults.length} tokens`}
+                        : `${visibleTokenResults.length}${!showNotFired ? ` / ${tokenResults.length}` : ''} tokens`}
                     </span>
+                    <button
+                      className={`text-xs ${showNotFired ? 'text-text-dim hover:text-primary' : 'text-primary'}`}
+                      onClick={() => setShowNotFired((v) => !v)}
+                      title={showNotFired ? 'Hide not-fired tokens' : 'Show not-fired tokens'}
+                    >
+                      {showNotFired ? 'Hide not fired' : 'Show not fired'}
+                    </button>
                     <button
                       className="ml-auto text-xs text-text-dim hover:text-primary"
                       onClick={() => setActiveComboId(null)}
@@ -517,20 +545,37 @@ export function GroupedSweepView({
 
                   <DataTable
                     columns={tokenColumns}
-                    rows={tokenResults}
+                    rows={visibleTokenResults}
                     rowKey={(r) => r.mint}
                     searchable
-                    colFilters={false}
-                    colToggle={false}
-                    selectable={false}
+                    colFilters
+                    colToggle
+                    selectable
+                    selectedKey={selectedTokenMint}
+                    onSelect={setSelectedTokenMint}
                     defaultSort={{ col: 'pnl_sol', dir: 'desc' }}
                     defaultPageSize={25}
                     pageSizeOptions={[25, 50, 100]}
                     tableId={`${strategyId}_combo_tokens`}
-                    resetKey={String(activeComboId)}
+                    resetKey={`${activeComboId}_${showNotFired}`}
                     loading={tokenResultsQuery.isFetching}
                     emptyMessage="No token results for this combo."
                   />
+
+                  {selectedTokenResult && (
+                    <TokenInspectModal
+                      target={{
+                        mint: selectedTokenResult.mint,
+                        symbol: selectedTokenResult.symbol,
+                        entryTime: null,
+                        entryPrice: null,
+                        exitTime: null,
+                        exitPrice: null,
+                        exitLabel: selectedTokenResult.fired ? selectedTokenResult.exit : null,
+                      }}
+                      onClose={() => setSelectedTokenMint(null)}
+                    />
+                  )}
                 </div>
               )}
             </div>
