@@ -197,7 +197,7 @@ export function SettingsPage() {
                 <Input
                   type="number"
                   fieldSize="md"
-                  min={30}
+                  min={52}
                   step={1}
                   value={stallText}
                   disabled={saving || !settings.watchdog_enabled}
@@ -240,8 +240,8 @@ export function SettingsPage() {
               </label>
             </div>
             <p className="text-[11px] text-text-dim">
-              Server floors: timeout ≥ 30s, interval ≥ 5s (and ≤ timeout). Out-of-range
-              values are clamped on save.
+              Server floors: timeout ≥ 52s, interval ≥ 5s. Out-of-range values are
+              clamped on save.
             </p>
           </div>
         ) : null}

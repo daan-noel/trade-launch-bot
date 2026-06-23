@@ -27,15 +27,14 @@ use tracing::error;
 
 use crate::storage::repositories::settings_repo::AppSettings;
 
-/// Floor for the watchdog stall window. This MUST stay above the upstream
-/// recovery window so the watchdog never pre-empts the in-process idle-reconnect:
-/// `client::STREAM_RECONNECT_IDLE_TIMEOUT` (60 s) + check cadence (~15 s) + max
-/// backoff (~30 s) + jitter + connect (~10 s) ≈ 130 s. At 180 s a stream blip the
-/// client absorbs on its own can never be turned into a process restart, and a
-/// hand-edited / stale DB row below the floor (e.g. the colliding `60`) is
-/// retroactively neutralized. The API clamps writes here and the watchdog
-/// re-applies it defensively against a hand-edited DB row.
-pub const WATCHDOG_STALL_TIMEOUT_FLOOR_SECS: u64 = 180;
+/// Floor for the watchdog stall window. Must stay above the worst-case upstream
+/// recovery window so the watchdog never pre-empts an in-progress reconnect:
+/// `client::STREAM_RECONNECT_IDLE_TIMEOUT` (10 s) + check cadence (~2 s) + max
+/// backoff (~30 s) + connect (~10 s) = 52 s exactly. A hand-edited or stale DB
+/// row below this is retroactively neutralized; the API clamps writes here and
+/// the watchdog re-applies it defensively on every tick. Update this constant
+/// whenever the reconnect timing constants in `client.rs` change.
+pub const WATCHDOG_STALL_TIMEOUT_FLOOR_SECS: u64 = 52;
 /// Floor for the watchdog check cadence — a `0`/tiny interval would busy-spin the
 /// OS thread for no detection benefit.
 pub const WATCHDOG_CHECK_INTERVAL_FLOOR_SECS: u64 = 5;
@@ -208,11 +207,9 @@ mod tests {
 
     #[test]
     fn stall_floor_exceeds_upstream_recovery_window() {
-        // The floor must stay above the client's idle-reconnect recovery window
-        // (idle 60s + check ~15s + backoff ~30s + connect ~10s ≈ 130s) so the
-        // watchdog can never pre-empt the in-process reconnect. See the constant's
-        // doc comment and `client::STREAM_RECONNECT_IDLE_TIMEOUT`.
-        assert!(WATCHDOG_STALL_TIMEOUT_FLOOR_SECS >= 130);
+        // Floor = idle timeout (10s) + check cadence (2s) + max backoff (30s) +
+        // connect (10s) = 52s. Must be updated when client.rs timing constants change.
+        assert!(WATCHDOG_STALL_TIMEOUT_FLOOR_SECS >= 52);
     }
 
     #[test]

@@ -47,14 +47,13 @@ const POOL_RESUBSCRIBE_DEBOUNCE: Duration = Duration::from_millis(250);
 /// gRPC stream can go silent — server-side stall, a silently-dropped
 /// subscription, or a throttle that pauses delivery — WITHOUT sending an error or
 /// closing, in which case `stream.message()` blocks forever and ingest freezes
-/// with no log (only a manual restart recovers it). Pump.fun's firehose never
-/// pauses this long, so a gap this size means a dead stream: tear it down so the
-/// outer loop reconnects (replaying from `last_slot`, so no data is lost).
-const STREAM_RECONNECT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// with no log (only a manual restart recovers it). Pump.fun's firehose is
+/// extremely high-frequency; a 10 s gap means the stream is dead.
+const STREAM_RECONNECT_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How often the idle-reconnect timer wakes to check the silence gap. A fraction
 /// of `STREAM_RECONNECT_IDLE_TIMEOUT` so detection latency is bounded to roughly
 /// one tick.
-const STREAM_RECONNECT_IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(15);
+const STREAM_RECONNECT_IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 /// Hard cap on how long the client will block handing a tx to the pipeline. A
 /// healthy pipeline drains in microseconds; a stall this long means a downstream
 /// consumer (DbWriter / StrategyRunner) wedged on an `.await`, so we tear the stream

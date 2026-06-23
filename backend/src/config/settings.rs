@@ -79,12 +79,10 @@ impl Settings {
             wallet_private_key: required("WALLET_PRIVATE_KEY")?,
             nonce_accounts: parse_required_list("NONCE_ACCOUNTS")?,
             reconnect_interval: Duration::from_millis(env_parse("RECONNECT_INTERVAL", 10_000)?),
-            // Floor at 30s so a typo can't set a trigger-happy timeout that restarts
-            // the process on a normal burst lull.
             ingest_stall_timeout: Duration::from_secs(env_parse_min(
                 "INGEST_STALL_TIMEOUT_SECS",
-                120u64,
-                30,
+                90u64,
+                52,
             )?),
             database_url: required("DATABASE_URL")?,
             db_max_connections: env_parse_min("DB_MAX_CONNECTIONS", 64u32, 1)?,
