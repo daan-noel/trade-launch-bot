@@ -301,10 +301,21 @@ function PaperResultSection({
 /** A row selected for inspection, tagged with its source table so only that
  *  table highlights the selection (the three tables can share a mint/key). */
 type InspectState = {
-  table: 'positions' | 'sim' | 'paper';
+  table: 'positions' | 'sim' | 'paper' | 'matched';
   key: string;
   target: InspectTarget;
 };
+
+function inspectFromMatched(r: import('types').MatchedTokenRecord): InspectTarget {
+  return {
+    mint: r.mint,
+    symbol: r.symbol,
+    entryTime: null,
+    entryPrice: null,
+    exitTime: null,
+    exitPrice: null,
+  };
+}
 
 function inspectFromSim(r: SimulatedTokenResult): InspectTarget {
   return {
@@ -1204,6 +1215,14 @@ export function Tpsl2Page() {
     [simResult],
   );
 
+  const onSelectMatched = useCallback(
+    (key: string | null) => {
+      const row = key ? matchedResult?.tokens.find((t) => t.mint === key) ?? null : null;
+      setInspect(row ? { table: 'matched', key: row.mint, target: inspectFromMatched(row) } : null);
+    },
+    [matchedResult],
+  );
+
   const onSelectPaperToken = useCallback((row: SimulatedTokenResult | null) => {
     setInspect(row ? { table: 'paper', key: row.mint, target: inspectFromSim(row) } : null);
   }, []);
@@ -1448,13 +1467,14 @@ export function Tpsl2Page() {
               columns={matchedColumns}
               rows={mergeTokenData(matchedResult.tokens, tokenMap)}
               rowKey={keyByMint}
-              defaultPageSize={20}
-              pageSizeOptions={[20, 50, 100]}
+              selectedKey={inspect?.table === 'matched' ? inspect.key : null}
+              onSelect={onSelectMatched}
+              defaultPageSize={5}
+              pageSizeOptions={[5, 10, 20, 50]}
               searchable
               colFilters
               colToggle
               tableId="tpsl2_matched"
-              selectable={false}
             />
           )}
         </section>
