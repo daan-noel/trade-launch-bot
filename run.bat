@@ -30,15 +30,15 @@ pg_restore -U postgres -d meme_bot --clean --if-exists < backup.dump
 @REM ==========================================================================================
 docker compose exec -T postgres \
   pg_dump -U postgres -Fc -d meme_bot \
-  --data-only \
-  -t public.tokens \
-  -t public.tokens_analysis \
-  -t public.tokens_info \
-  -t public.trades \
-  -t public.tpsl2_paper_positions \
-  -t public.tpsl2_paper_test_run \
-  -t public.tpsl2_real_positions \
-  -t public.tpsl2_strategy_rules \
+  -t 'public.tokens' \
+  -t 'public.tokens_analysis' \
+  -t 'public.tokens_info' \
+  -t 'public.trades' \
+  -t 'public.trades_*' \
+  -t 'public.tpsl2_paper_positions' \
+  -t 'public.tpsl2_paper_test_run' \
+  -t 'public.tpsl2_real_positions' \
+  -t 'public.tpsl2_strategy_rules' \
   > backup.dump
 @REM ==========================================================================================
 psql -U postgres -d meme_bot -c "TRUNCATE TABLE public.tokens, public.tokens_analysis, public.tokens_info, public.trades, public.tpsl2_paper_positions, public.tpsl2_paper_test_run, public.tpsl2_real_positions, public.tpsl2_strategy_rules RESTART IDENTITY CASCADE;"
