@@ -12,33 +12,34 @@
 --   * Add `BuySubmitted` (buy signed/sent, awaiting the fill — must be recovered,
 --     never reaped). `submitted_buy_signatures` records every attempt's sig.
 --
--- The data rewrite runs BEFORE the CHECK swap so existing rows don't violate the
--- new constraint. Idempotent guards (IF EXISTS / IF NOT EXISTS) keep it safe on a
--- fresh DB where 0001 already created the tables.
+-- Order matters: the OLD constraint from 0001 forbids 'Arming', so we must DROP
+-- it BEFORE rewriting the data — otherwise the UPDATE to 'Arming' violates the
+-- still-active old constraint (the new constraint is only added after the data is
+-- clean). Idempotent guards (IF EXISTS / IF NOT EXISTS) keep it safe on a fresh DB
+-- where 0001 already created the tables.
 -- ============================================================================
 
--- 1. Rewrite existing rows: PendingEntry -> Arming (all four position tables).
+-- 1. Drop the old status CHECK constraints first so the data rewrite below can
+--    set 'Arming' (Postgres auto-names an inline CHECK `<table>_status_check`).
+ALTER TABLE tpsl1_real_positions  DROP CONSTRAINT IF EXISTS tpsl1_real_positions_status_check;
+ALTER TABLE tpsl1_paper_positions DROP CONSTRAINT IF EXISTS tpsl1_paper_positions_status_check;
+ALTER TABLE tpsl2_real_positions  DROP CONSTRAINT IF EXISTS tpsl2_real_positions_status_check;
+ALTER TABLE tpsl2_paper_positions DROP CONSTRAINT IF EXISTS tpsl2_paper_positions_status_check;
+
+-- 2. Rewrite existing rows: PendingEntry -> Arming (all four position tables).
 UPDATE tpsl1_real_positions  SET status = 'Arming' WHERE status = 'PendingEntry';
 UPDATE tpsl1_paper_positions SET status = 'Arming' WHERE status = 'PendingEntry';
 UPDATE tpsl2_real_positions  SET status = 'Arming' WHERE status = 'PendingEntry';
 UPDATE tpsl2_paper_positions SET status = 'Arming' WHERE status = 'PendingEntry';
 
--- 2. Swap the status CHECK constraint to the new set on all four position tables.
---    (Postgres auto-names an inline CHECK `<table>_status_check`.)
-ALTER TABLE tpsl1_real_positions  DROP CONSTRAINT IF EXISTS tpsl1_real_positions_status_check;
-ALTER TABLE tpsl1_real_positions  ADD  CONSTRAINT tpsl1_real_positions_status_check
+-- 3. Add the new status CHECK constraints once the data is clean.
+ALTER TABLE tpsl1_real_positions  ADD CONSTRAINT tpsl1_real_positions_status_check
     CHECK (status IN ('Arming', 'BuySubmitted', 'Holding', 'ExitPending', 'End', 'ExitFailed'));
-
-ALTER TABLE tpsl1_paper_positions DROP CONSTRAINT IF EXISTS tpsl1_paper_positions_status_check;
-ALTER TABLE tpsl1_paper_positions ADD  CONSTRAINT tpsl1_paper_positions_status_check
+ALTER TABLE tpsl1_paper_positions ADD CONSTRAINT tpsl1_paper_positions_status_check
     CHECK (status IN ('Arming', 'BuySubmitted', 'Holding', 'ExitPending', 'End', 'ExitFailed'));
-
-ALTER TABLE tpsl2_real_positions  DROP CONSTRAINT IF EXISTS tpsl2_real_positions_status_check;
-ALTER TABLE tpsl2_real_positions  ADD  CONSTRAINT tpsl2_real_positions_status_check
+ALTER TABLE tpsl2_real_positions  ADD CONSTRAINT tpsl2_real_positions_status_check
     CHECK (status IN ('Arming', 'BuySubmitted', 'Holding', 'ExitPending', 'End', 'ExitFailed'));
-
-ALTER TABLE tpsl2_paper_positions DROP CONSTRAINT IF EXISTS tpsl2_paper_positions_status_check;
-ALTER TABLE tpsl2_paper_positions ADD  CONSTRAINT tpsl2_paper_positions_status_check
+ALTER TABLE tpsl2_paper_positions ADD CONSTRAINT tpsl2_paper_positions_status_check
     CHECK (status IN ('Arming', 'BuySubmitted', 'Holding', 'ExitPending', 'End', 'ExitFailed'));
 
 -- 3. Persist submitted buy signatures on the REAL tables only (paper sends no
