@@ -330,12 +330,20 @@ export interface SimulationFinishedEvent {
   cancelled: boolean;
 }
 
+/** Payload of the `swing_detection_finished` SSE event: the "Swing Detection All"
+ *  run for `run_id` ended (`cancelled` = user abort vs normal finish/error). */
+export interface SwingDetectionFinishedEvent {
+  run_id: string;
+  cancelled: boolean;
+}
+
 /** Response of `GET /api/jobs/status` — a snapshot of every running background
  *  job, used to recover the progress UI after a page load/refresh (SSE only
  *  delivers future frames). `sweep` is present iff the single-flight sweep runs. */
 export interface JobsStatus {
   sweep: { processed: number; total: number } | null;
   simulations: { rule_id: string; processed: number; total: number }[];
+  swings: { run_id: string; processed: number; total: number }[];
 }
 
 export interface WalletHolding {

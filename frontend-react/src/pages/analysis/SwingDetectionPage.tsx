@@ -59,7 +59,8 @@ import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { Tabs, TabsList, TabsPanel, TabsTrigger } from 'components/ui/Tabs';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
-import { fetchTokenSwings, fetchTokenSwingsBatch } from 'services/api';
+import { fetchTokenSwings, getJobsStatus, startSwingRun, fetchSwingRunResult } from 'services/api';
+import { connectSwingDetectionFinished } from 'services/sse';
 import {
   apiSlice,
   apiErrorMessage,
@@ -82,7 +83,6 @@ import {
   setTokensFetched,
 } from 'store/swingDetectionSlice';
 import type {
-  SwingBatchEntry,
   SwingLegRecord,
   SwingParams,
   TokenRecord,
@@ -122,20 +122,61 @@ const LS_SWING_DETECTION_KEY = STORAGE_KEYS.swingCriteria;
 const DEFAULT_CHAIN_LATENCY_MS = 60_000;
 
 /**
- * Max mints per `/api/tokens/swings/batch` request. The backend rejects batches
- * larger than 200 (each mint is a serial DB load + scan on one worker thread),
- * so "Swing Detection All" splits the filtered set into chunks of this size and
- * runs them sequentially, merging the results. Keep this ≤ the backend cap.
+ * Resolve once the "Swing Detection All" run for `runId` has finished. Primary
+ * signal is the `swing_detection_finished` SSE; a `jobs/status` poll is a backstop
+ * for a missed frame (e.g. a brief SSE reconnect) and the source of progress
+ * updates: once a run we saw running drops off the in-flight `swings` list, it
+ * ended. No premature timeout — an uncapped run may legitimately take many
+ * minutes; the generous ceiling only guards against a wedged backend so the caller
+ * can't hang forever. Mirrors `waitForSimulationFinish` in `strategyResultCache`.
  */
-const SWING_BATCH_CHUNK_SIZE = 200;
-
-/**
- * Max swing-detection batch requests in flight at once. The backend serves each
- * on a shared HTTP worker (only 2) and fans its DB loads out internally, so a
- * few concurrent chunks overlap the round-trips while leaving a worker free for
- * the rest of the app. Kept small on purpose — higher just queues on the workers.
- */
-const SWING_BATCH_REQUEST_CONCURRENCY = 3;
+function waitForSwingDetectionFinish(
+  runId: string,
+  onProgress: (done: number, total: number) => void,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let sawRunning = false;
+    const cleanup = () => {
+      handle.close();
+      clearInterval(poll);
+      clearTimeout(ceiling);
+    };
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    };
+    const handle = connectSwingDetectionFinished((ev) => {
+      if (ev.run_id === runId) finish();
+    });
+    const poll = window.setInterval(() => {
+      getJobsStatus()
+        .then((status) => {
+          const entry = status.swings.find((s) => s.run_id === runId);
+          if (entry) {
+            sawRunning = true;
+            onProgress(entry.processed, entry.total);
+          } else if (sawRunning) {
+            finish(); // was running, now gone → finished
+          }
+        })
+        .catch(() => {
+          /* backend blip — keep waiting for the SSE */
+        });
+    }, 2000);
+    const ceiling = window.setTimeout(
+      () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new Error('Swing detection timed out'));
+      },
+      30 * 60 * 1000,
+    );
+  });
+}
 
 function mergeSwingFilter(partial: Partial<SwingFilterCriteria> | undefined): SwingFilterCriteria {
   if (!partial) return DEFAULT_SWING_FILTER;
@@ -575,9 +616,13 @@ export function SwingDetectionPage() {
   // per mint for client-side chain grouping. With server-side paging only the
   // visible page is in memory, so the full filtered mint set is fetched here on
   // demand (one large request, reusing the table's exact filter args) — the heavy
-  // full-list load now happens only on an explicit Run, never on page view. The
-  // backend caps each batch detection request at SWING_BATCH_CHUNK_SIZE mints, so
-  // the set is split into chunks run sequentially and their results merged.
+  // full-list load now happens only on an explicit Run, never on page view.
+  //
+  // The whole set runs as one detached backend job (uncapped, minutes-long): this
+  // starts it, waits for the `swing_detection_finished` SSE (with a `jobs/status`
+  // poll backstop that also drives the progress bar), then collects the stored
+  // result — instead of holding HTTP connections open per chunk, which made any
+  // mid-run drop surface as a `FETCH_ERROR`.
   const handleRunAllSwings = useCallback(async () => {
     const myRun = ++swingAllRunIdRef.current;
     const isStale = () => swingAllRunIdRef.current !== myRun;
@@ -603,43 +648,24 @@ export function SwingDetectionPage() {
       if (isStale() || mints.length === 0) return;
       setSwingAllProgress({ done: 0, total: mints.length });
       const params = swingParamsFromForm(swingParams);
-      // One id shared by every chunk of this run; the backend stashes the raw
-      // legs under it so the tokens list can sort the chain columns from them.
+      // One id for the run; the backend keys the cancel/progress/result stores and
+      // stashes the raw legs under it so the tokens list can sort the chain columns.
       const runId = crypto.randomUUID();
-      const opts = {
+      await startSwingRun(mints, params, {
+        runId,
         startMs: curveOnly || windowStartSec === '' ? null : Math.round(windowStartSec * 1000),
         endMs: curveOnly || windowEndSec === '' ? null : Math.round(windowEndSec * 1000),
         curveOnly,
-        runId,
-      };
-      // Split into ≤200-mint chunks and run a bounded number concurrently. The
-      // backend now fans each chunk's DB loads out internally and runs the CPU
-      // scan off the HTTP worker, so a few in-flight chunks overlap their
-      // round-trips without swamping the 2 HTTP workers / connection pool.
-      const chunks: string[][] = [];
-      for (let i = 0; i < mints.length; i += SWING_BATCH_CHUNK_SIZE) {
-        chunks.push(mints.slice(i, i + SWING_BATCH_CHUNK_SIZE));
-      }
-      const chunkResults: SwingBatchEntry[][] = new Array(chunks.length);
-      let nextChunk = 0;
-      let doneMints = 0;
-      const worker = async () => {
-        for (;;) {
-          const idx = nextChunk++;
-          if (idx >= chunks.length) return;
-          const resp = await fetchTokenSwingsBatch(chunks[idx], params, opts);
-          if (isStale()) return; // re-run / unmount superseded this run
-          chunkResults[idx] = resp.results; // indexed write keeps result order
-          doneMints += chunks[idx].length;
-          setSwingAllProgress({ done: doneMints, total: mints.length });
-        }
-      };
-      await Promise.all(
-        Array.from({ length: Math.min(SWING_BATCH_REQUEST_CONCURRENCY, chunks.length) }, worker),
-      );
+      });
       if (isStale()) return;
-      dispatch(setSwingAllResults(chunkResults.flat()));
-      // Publish the run id only after every chunk landed, so a chain-column sort
+      await waitForSwingDetectionFinish(runId, (done, total) => {
+        if (!isStale()) setSwingAllProgress({ done, total: total || mints.length });
+      });
+      if (isStale()) return;
+      const result = await fetchSwingRunResult(runId);
+      if (isStale() || 'cancelled' in result) return;
+      dispatch(setSwingAllResults(result.results));
+      // Publish the run id only after the result landed, so a chain-column sort
       // reads a fully-populated server-side run.
       dispatch(setSwingRunId(runId));
     } catch (e) {

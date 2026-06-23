@@ -43,7 +43,7 @@ docker compose exec -T postgres \
 @REM ==========================================================================================
 psql -U postgres -d meme_bot -c "TRUNCATE TABLE public.tokens, public.tokens_analysis, public.tokens_info, public.trades, public.tpsl2_paper_positions, public.tpsl2_paper_test_run, public.tpsl2_real_positions, public.tpsl2_strategy_rules RESTART IDENTITY CASCADE;"
 
-pg_restore -U postgres -d meme_bot --data-only < backup.dump
+pg_restore -U postgres -d meme_bot --data-only --disable-triggers < backup.dump
 @REM ==========================================================================================
 
 

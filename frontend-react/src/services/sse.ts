@@ -183,6 +183,25 @@ export function connectSimulationFinished(
 }
 
 /**
+ * Terminal signal for an in-flight "Swing Detection All" run — the run for some
+ * `run_id` ended. The swing analogue of {@link connectSimulationFinished}; the
+ * consumer keys off `run_id`.
+ */
+export function connectSwingDetectionFinished(
+  onFinished: (ev: import('types').SwingDetectionFinishedEvent) => void,
+): StreamHandle {
+  const unsub = subscribe('swing_detection_finished', (e) => {
+    if (typeof e.data !== 'string') return;
+    try {
+      onFinished(JSON.parse(e.data) as import('types').SwingDetectionFinishedEvent);
+    } catch {
+      /* ignore malformed frames */
+    }
+  });
+  return { close: unsub };
+}
+
+/**
  * Position change signal for `strategy`. Delivers a {@link TpslPositionDelta}:
  * the changed row + the rule's live cap counters, so the caller patches one row
  * (and the badge) in place rather than refetching the list. `removed` rows still

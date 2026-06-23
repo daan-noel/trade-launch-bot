@@ -76,6 +76,18 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 "/jobs/simulations/{rule_id}/result",
                 web::get().to(handlers::system::simulation_result),
             )
+            // Cancel + collect a "Swing Detection All" run (started via
+            // `POST /tokens/swings/batch`). Keyed by the client run id, the swing
+            // twin of the simulation job routes — decouples the result from the
+            // starting request so a long run can't fail the client with `FETCH_ERROR`.
+            .route(
+                "/jobs/swings/{run_id}/cancel",
+                web::post().to(handlers::system::cancel_swing),
+            )
+            .route(
+                "/jobs/swings/{run_id}/result",
+                web::get().to(handlers::system::swing_result),
+            )
             // System endpoints
             .route(
                 "/system/live",

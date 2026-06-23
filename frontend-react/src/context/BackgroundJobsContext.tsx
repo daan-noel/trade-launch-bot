@@ -11,9 +11,15 @@ import { useDispatch } from 'react-redux';
 import {
   connectSimulationFinished,
   connectSweepFinished,
+  connectSwingDetectionFinished,
   sseSubscribe,
 } from 'services/sse';
-import { cancelGroupedSweep, cancelSimulation, getJobsStatus } from 'services/api';
+import {
+  cancelGroupedSweep,
+  cancelSimulation,
+  cancelSwingRun,
+  getJobsStatus,
+} from 'services/api';
 import { apiSlice } from 'store/apiSlice';
 import type { AppDispatch } from '../store';
 import type { SimulationProgressEvent, SweepProgressEvent } from 'types';
@@ -48,7 +54,7 @@ import type { SimulationProgressEvent, SweepProgressEvent } from 'types';
  * `jobs`/`isRunning` and is consumed by the global indicator (and the sweep
  * page's run-state check) alone.
  */
-export type JobKind = 'sweep' | 'simulation';
+export type JobKind = 'sweep' | 'simulation' | 'swing';
 
 /** Progress state for one named phase of a sweep (coarse / sweep / saving). */
 export interface PhaseProgress {
@@ -212,6 +218,9 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
         for (const s of status.simulations) {
           upsert('simulation', s.rule_id, { processed: s.processed, total: s.total });
         }
+        for (const s of status.swings) {
+          upsert('swing', s.run_id, { processed: s.processed, total: s.total });
+        }
       })
       .catch(() => {
         /* no jobs / backend down — nothing to recover */
@@ -241,6 +250,7 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
       dispatch(apiSlice.util.invalidateTags(['GroupedSweep']));
     });
     const simFinished = connectSimulationFinished((ev) => remove('simulation', ev.rule_id));
+    const swingFinished = connectSwingDetectionFinished((ev) => remove('swing', ev.run_id));
 
     return () => {
       alive = false;
@@ -248,6 +258,7 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
       offSimProgress();
       sweepFinished.close();
       simFinished.close();
+      swingFinished.close();
     };
   }, [upsert, remove, dispatch]);
 
@@ -265,7 +276,12 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
   const cancel = useCallback(
     (job: BackgroundJob) => {
       upsert(job.kind, job.id, { cancelling: true });
-      const req = job.kind === 'sweep' ? cancelGroupedSweep() : cancelSimulation(job.id);
+      const req =
+        job.kind === 'sweep'
+          ? cancelGroupedSweep()
+          : job.kind === 'swing'
+            ? cancelSwingRun(job.id)
+            : cancelSimulation(job.id);
       req.catch(() => upsert(job.kind, job.id, { cancelling: false }));
     },
     [upsert],

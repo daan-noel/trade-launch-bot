@@ -2,12 +2,16 @@ use actix_web::{web, HttpResponse, Responder};
 use futures_util::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::{
     analyzers::swing_analyzer::{detect_swings, SwingLeg, SwingParams},
+    models::ingest::SseEvent,
     models::trade::Trade,
     state::app_state::AppState,
+    state::job_progress::ProgressCell,
+    state::swing_results::SwingOutcome,
     state::token_cache::MAX_TRADES_RETAINED,
 };
 
@@ -187,11 +191,36 @@ pub async fn detect_token_swings(
     }
 }
 
-/// `POST /api/tokens/swings/batch` — run swing detection over many tokens in a
-/// single request, using one shared set of `SwingParams`. Trades come from the
-/// in-memory cache when present, else from the DB (same as the single-token
-/// endpoint). Mints whose trades fail to load are returned with an empty ledger
-/// so the result aligns one-to-one with the requested mints.
+/// Sanity ceiling on a single run's mint count. The run is uncapped by design
+/// (the whole filtered set can be thousands of tokens), but a wildly out-of-range
+/// list — a client bug, a hostile caller — would still pin the blocking pool and
+/// a connection-pool slice, so reject the absurd while leaving every real run
+/// (≤ the tokens-list ceiling) through.
+const MAX_RUN_MINTS: usize = 100_000;
+
+/// Max cache-miss DB loads in flight at once. Bounds the connection-pool pressure
+/// the detached run can create while still overlapping the round-trips instead of
+/// awaiting them one at a time.
+const BATCH_FETCH_CONCURRENCY: usize = 16;
+
+/// `POST /api/tokens/swings/batch` — start a "Swing Detection All" run as a
+/// detached background job and return at once (`202 {"started": true}`).
+///
+/// The run scans the whole filtered token set (thousands of uncapped histories)
+/// and can take minutes. The old design split the set into ≤200-mint chunks and
+/// held one HTTP connection open per chunk until its scan finished; any mid-run
+/// drop — dev proxy / browser idle cut / the ingest watchdog restarting the
+/// process under load — severed that socket and surfaced on the client as a
+/// `FETCH_ERROR`, even though the work was finishing fine. Instead the whole run
+/// is one detached job: it fans the DB loads + CPU scans out internally, stores
+/// its terminal outcome in [`AppState::swing_results`], and the client collects it
+/// via `GET /api/jobs/swings/{run_id}/result` once the `swing_detection_finished`
+/// SSE fires — no long-held connection to cut.
+///
+/// `run_id` is now required (it keys the cancel flag, progress cell, result store,
+/// and `swing_runs` legs cache). The detached scan still populates `swing_runs`
+/// **before** storing the outcome, so the tokens-list chain-column sort reads a
+/// fully-populated run the moment the client sees the result.
 pub async fn detect_tokens_swings_batch(
     state: web::Data<Arc<AppState>>,
     body: web::Json<SwingBatchRequest>,
@@ -205,66 +234,109 @@ pub async fn detect_tokens_swings_batch(
         run_id,
     } = body.into_inner();
 
-    // Cap the request size: each mint can trigger a DB load + swing scan, so an
-    // unbounded list could monopolize a connection-pool slice and the blocking
-    // pool at once.
-    const MAX_BATCH_MINTS: usize = 200;
-    if mints.len() > MAX_BATCH_MINTS {
+    // The run is keyed end-to-end by the client run id — no id, nothing to key the
+    // cancel/progress/result stores or the chain-sort legs cache by.
+    let Some(run_id) = run_id else {
         return HttpResponse::BadRequest().json(serde_json::json!({
-            "error": format!("too many mints: {} (max {MAX_BATCH_MINTS})", mints.len()),
+            "error": "run_id is required",
+        }));
+    };
+
+    if mints.len() > MAX_RUN_MINTS {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": format!("too many mints: {} (max {MAX_RUN_MINTS})", mints.len()),
         }));
     }
 
-    // Max cache-miss DB loads in flight at once. Bounds the connection-pool
-    // pressure a single batch can create while still overlapping the round-trips
-    // instead of awaiting them one at a time.
-    const BATCH_FETCH_CONCURRENCY: usize = 16;
+    // Register a cooperative cancel flag + a readable progress snapshot for this
+    // run so the global jobs endpoints (`/api/jobs/status`, the swing cancel) can
+    // observe and abort it. Both are removed on every exit path (RAII guard),
+    // which also broadcasts the terminal `SwingDetectionFinished` so a global
+    // progress indicator clears itself without polling. Registered synchronously
+    // here so an immediate cancel finds the entry before the task is scheduled.
+    // Drop any stale result so only this run's outcome is collectable.
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cell = Arc::new(ProgressCell::default());
+    cell.set_total(mints.len() as u64);
+    state.swing_cancels.insert(run_id.clone(), cancel.clone());
+    state.swing_progress.insert(run_id.clone(), cell.clone());
+    state.swing_results.clear(&run_id);
 
     let app = state.get_ref().clone();
 
-    // Resolve (creating if needed) the run this chunk feeds, so the swing scan
-    // below can stash its raw legs for the tokens-list chain sort. Concurrent
-    // chunks of the same run share one `SwingRun` (atomic get-or-create).
-    let run = run_id
-        .as_deref()
-        .map(|id| app.swing_runs.get_or_create(id));
-
-    // 1) Resolve each mint's trades concurrently — a cache hit clones in-memory
-    //    (no await), a miss hits the DB. The index is carried so the results can
-    //    be realigned to the requested order after the unordered fan-out.
-    let fetches = mints.into_iter().enumerate().map(|(idx, mint)| {
-        let app = app.clone();
-        async move {
-            // DB-only (see the single-mint path): the cache holds a slim
-            // `CachedTrade` projection, and batch swing analysis is a cold bounded
-            // path, so read full `Trade`s from Postgres.
-            let repo = app.trade_repo();
-            let trades: Arc<Vec<Trade>> =
-                match repo.find_by_mint_paged(&mint, SWING_DB_TRADE_CAP, 0).await {
-                    Ok(trades) => Arc::new(trades),
-                    Err(e) => {
-                        tracing::error!(
-                            "DB error fetching trades for batch swing analysis {mint}: {e}"
-                        );
-                        Arc::new(Vec::new())
-                    }
-                };
-            (idx, mint, trades)
+    // Detach the scan and return immediately. `rt::spawn` keeps the task on the
+    // worker independent of this request; a client disconnect never cancels it.
+    // The task stores its outcome BEFORE the guard drops (which fires
+    // `SwingDetectionFinished`), so a client reacting to that SSE always finds the
+    // result present.
+    actix_web::rt::spawn(async move {
+        struct SwingGuard {
+            app: Arc<AppState>,
+            run_id: String,
+            cancel: Arc<AtomicBool>,
         }
-    });
-    let mut resolved: Vec<(usize, String, Arc<Vec<Trade>>)> = stream::iter(fetches)
-        .buffer_unordered(BATCH_FETCH_CONCURRENCY)
-        .collect()
-        .await;
+        impl Drop for SwingGuard {
+            fn drop(&mut self) {
+                self.app.swing_cancels.remove(&self.run_id);
+                self.app.swing_progress.remove(&self.run_id);
+                let _ = self.app.sse_tx.send(SseEvent::SwingDetectionFinished {
+                    run_id: self.run_id.clone(),
+                    cancelled: self.cancel.load(Ordering::Acquire),
+                });
+            }
+        }
+        let _guard = SwingGuard {
+            app: app.clone(),
+            run_id: run_id.clone(),
+            cancel: cancel.clone(),
+        };
 
-    // 2) Run the (pure-CPU) window filter + swing scans off the HTTP worker.
-    //    Doing them inline would pin one of the few workers for the whole batch.
-    let resp_params = params.clone();
-    let results = web::block(move || {
-        resolved.sort_by_key(|(idx, _, _)| *idx);
-        resolved
-            .into_iter()
-            .map(|(_, mint, trades)| {
+        // Resolve (creating) the run that holds the raw legs for the tokens-list
+        // chain sort.
+        let run = app.swing_runs.get_or_create(&run_id);
+
+        // 1) Resolve each mint's trades concurrently — read full `Trade`s from
+        //    Postgres (the cache holds a slim projection; swing analysis is a cold
+        //    bounded path). The index is carried so results realign to the
+        //    requested order after the unordered fan-out.
+        let fetches = mints.into_iter().enumerate().map(|(idx, mint)| {
+            let app = app.clone();
+            async move {
+                let repo = app.trade_repo();
+                let trades: Arc<Vec<Trade>> =
+                    match repo.find_by_mint_paged(&mint, SWING_DB_TRADE_CAP, 0).await {
+                        Ok(trades) => Arc::new(trades),
+                        Err(e) => {
+                            tracing::error!(
+                                "DB error fetching trades for batch swing analysis {mint}: {e}"
+                            );
+                            Arc::new(Vec::new())
+                        }
+                    };
+                (idx, mint, trades)
+            }
+        });
+        let mut resolved: Vec<(usize, String, Arc<Vec<Trade>>)> = stream::iter(fetches)
+            .buffer_unordered(BATCH_FETCH_CONCURRENCY)
+            .collect()
+            .await;
+
+        // 2) Run the (pure-CPU) window filter + swing scans off the runtime, on
+        //    the blocking pool — doing them inline would pin a worker for the whole
+        //    run. Check the cancel flag between mints and bump the progress cell
+        //    per completed mint; on cancel, break early and surface a partial set
+        //    the caller discards.
+        let resp_params = params.clone();
+        let cancel_scan = cancel.clone();
+        let cell_scan = cell.clone();
+        let run_scan = run.clone();
+        let scan = web::block(move || {
+            resolved.sort_by_key(|(idx, _, _)| *idx);
+            let mut results = Vec::with_capacity(resolved.len());
+            for (processed, (_, mint, trades)) in resolved.into_iter().enumerate() {
+                if cancel_scan.load(Ordering::Acquire) {
+                    break;
+                }
                 // Borrow the shared buffer; allocate only what a filter retains.
                 let curve_filtered: Option<Vec<Trade>> = curve_only
                     .then(|| trades.iter().filter(|t| t.venue == "curve").cloned().collect());
@@ -273,29 +345,51 @@ pub async fn detect_tokens_swings_batch(
                 let swings = detect_swings(&windowed, &params);
                 // Stash the raw legs for this run so the tokens list can sort by
                 // (and re-group at any latency) the chain columns.
-                if let Some(run) = &run {
-                    run.mints.insert(mint.clone(), swings.clone());
-                }
-                SwingBatchEntry {
+                run_scan.mints.insert(mint.clone(), swings.clone());
+                results.push(SwingBatchEntry {
                     mint,
                     count: swings.len(),
                     swings,
-                }
-            })
-            .collect::<Vec<_>>()
-    })
-    .await;
+                });
+                cell_scan.set_processed(processed as u64 + 1);
+            }
+            results
+        })
+        .await;
 
-    match results {
-        Ok(results) => HttpResponse::Ok().json(SwingBatchResponse {
-            params: resp_params,
-            results,
-        }),
-        Err(e) => {
-            tracing::error!("swing batch compute task panicked: {e}");
-            HttpResponse::InternalServerError().json(serde_json::json!({
-                "error": "swing computation failed"
-            }))
-        }
-    }
+        // Store the terminal outcome BEFORE `_guard` drops and fires the SSE.
+        let outcome = if cancel.load(Ordering::Acquire) {
+            // User-requested abort — benign, not a failure. The partial scan (if
+            // any) is discarded.
+            SwingOutcome::Cancelled
+        } else {
+            match scan {
+                Ok(results) => {
+                    let resp = SwingBatchResponse {
+                        params: resp_params,
+                        results,
+                    };
+                    // Serialize once here so the result endpoint serves the bytes
+                    // verbatim (no re-encode of a potentially large payload).
+                    match serde_json::to_string(&resp) {
+                        Ok(json) => SwingOutcome::Done(json),
+                        Err(e) => SwingOutcome::Failed {
+                            status: 500,
+                            message: format!("result serialization failed: {e}"),
+                        },
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("swing run compute task panicked: {e}");
+                    SwingOutcome::Failed {
+                        status: 500,
+                        message: "swing computation failed".to_string(),
+                    }
+                }
+            }
+        };
+        app.swing_results.insert(run_id, outcome);
+    });
+
+    HttpResponse::Accepted().json(serde_json::json!({ "started": true }))
 }

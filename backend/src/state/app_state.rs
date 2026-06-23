@@ -27,6 +27,7 @@ use crate::sweep::corpus::TokenTrades;
 use super::backtest_trade_cache::BacktestTradeCache;
 use super::job_progress::ProgressCell;
 use super::sim_results::SimResults;
+use super::swing_results::SwingResults;
 use super::swing_run_cache::SwingRunCache;
 use super::token_cache::TokenCache;
 use super::token_list_cache::TokenListCache;
@@ -132,6 +133,22 @@ pub struct AppState {
     /// `simulation_finished` SSE fires, so a long run's result is never tied to
     /// the lifetime of the starting request (the old `FETCH_ERROR` source).
     pub sim_results: Arc<SimResults>,
+    /// Per-run cooperative cancel flags for in-flight "Swing Detection All" runs,
+    /// the swing analogue of `sim_cancels`. Keyed by the client run id (`String`)
+    /// like [`Self::swing_runs`], not a rule `Uuid`. The start handler inserts a
+    /// flag; the cancel endpoint flips it; the detached scan polls it between mints.
+    pub swing_cancels: Arc<DashMap<String, Arc<AtomicBool>>>,
+    /// Per-run `processed / total` snapshots of in-flight swing runs, the swing
+    /// analogue of `sim_progress`. The start handler inserts an entry (removed when
+    /// the run ends, keyed like `swing_cancels`); `/api/jobs/status` reads them so
+    /// a reconnecting Swing Detection page recovers its progress bar.
+    pub swing_progress: Arc<DashMap<String, Arc<ProgressCell>>>,
+    /// Finished swing-run outcomes awaiting collection, keyed by client run id. The
+    /// detached scan stores its terminal result here and the client fetches it via
+    /// `GET /api/jobs/swings/{run_id}/result` once the `swing_detection_finished`
+    /// SSE fires, so a long run's result is never tied to the lifetime of the
+    /// starting request (the old `FETCH_ERROR` source). Swing twin of `sim_results`.
+    pub swing_results: Arc<SwingResults>,
     /// Raw swings from recent "Swing Detection All" runs, keyed by client run id.
     /// Lets the server-side-paged tokens list sort by the chain columns and
     /// re-group on chain-latency changes without re-running detection.
@@ -256,6 +273,9 @@ impl AppState {
             sweep_progress: Arc::new(ProgressCell::default()),
             sim_progress: Arc::new(DashMap::new()),
             sim_results: Arc::new(SimResults::new()),
+            swing_cancels: Arc::new(DashMap::new()),
+            swing_progress: Arc::new(DashMap::new()),
+            swing_results: Arc::new(SwingResults::new()),
             // Keep a few recent runs so re-runs / multiple tabs don't accumulate.
             swing_runs: Arc::new(SwingRunCache::new(3)),
             sweep_corpus_cache: Arc::new(RwLock::new(None)),

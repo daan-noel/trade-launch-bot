@@ -89,38 +89,56 @@ export async function fetchTokenSwings(
 }
 
 /**
- * Run swing detection over many mints in one request (shared params).
+ * Start a "Swing Detection All" run as a detached background job (returns
+ * immediately). The run scans the whole filtered token set (uncapped, can take
+ * minutes), so its result is NOT delivered on this request — collect it via
+ * {@link fetchSwingRunResult} once the `swing_detection_finished` SSE fires. This
+ * decoupling is what stops a long run failing the client with `FETCH_ERROR`.
  *
- * `opts.startMs` / `opts.endMs` restrict detection to a time range expressed in
- * milliseconds relative to each token's first trade; a `null` bound is left
- * open. `opts.curveOnly` restricts detection to bonding-curve trades (the
- * token-creation → migration phase). Omit `opts` to run over full history.
- *
- * `opts.runId` tags every chunk of one "Swing Detection All" run with a shared
- * id; the backend stashes the raw legs under it so the server-side-paged tokens
- * list can sort by the chain columns. Omit for a one-off batch.
+ * `opts.runId` (required) keys the run's cancel flag, progress cell, result store,
+ * and the raw legs the backend stashes so the server-side-paged tokens list can
+ * sort by the chain columns. `opts.startMs` / `opts.endMs` restrict detection to a
+ * time range in milliseconds relative to each token's first trade (`null` = open);
+ * `opts.curveOnly` restricts to bonding-curve trades.
  */
-export async function fetchTokenSwingsBatch(
+export async function startSwingRun(
   mints: string[],
   params: import('types').SwingParams,
-  opts?: {
+  opts: {
+    runId: string;
     startMs: number | null;
     endMs: number | null;
     curveOnly?: boolean;
-    runId?: string;
   },
-): Promise<import('types').SwingBatchResponse> {
-  return request(`${API_BASE}/api/tokens/swings/batch`, {
+): Promise<void> {
+  await request(`${API_BASE}/api/tokens/swings/batch`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       mints,
       params,
-      window_start_ms: opts?.startMs ?? null,
-      window_end_ms: opts?.endMs ?? null,
-      curve_only: opts?.curveOnly ?? false,
-      run_id: opts?.runId ?? null,
+      window_start_ms: opts.startMs ?? null,
+      window_end_ms: opts.endMs ?? null,
+      curve_only: opts.curveOnly ?? false,
+      run_id: opts.runId,
     }),
+  });
+}
+
+/** Collect a finished "Swing Detection All" run's result (single delivery — the
+ *  backend removes the entry on read). Returns `{ cancelled: true }` if the run
+ *  was cancelled. Call once the `swing_detection_finished` SSE for `runId` fires. */
+export async function fetchSwingRunResult(
+  runId: string,
+): Promise<import('types').SwingBatchResponse | { cancelled: true }> {
+  return request(`${API_BASE}/api/jobs/swings/${encodeURIComponent(runId)}/result`);
+}
+
+/** Cooperative cancel for an in-flight "Swing Detection All" run. No-op if none
+ *  running for `runId`. */
+export async function cancelSwingRun(runId: string): Promise<void> {
+  await request(`${API_BASE}/api/jobs/swings/${encodeURIComponent(runId)}/cancel`, {
+    method: 'POST',
   });
 }
 
