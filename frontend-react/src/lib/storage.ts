@@ -31,6 +31,19 @@ export const STORAGE_KEYS = {
   tableCols: `${PREFIX}table.cols`,
   /** Map of `{ [tableId]: { pageSize, sortCol, sortDir } }` — DataTable sort + page-size. */
   tablePrefs: `${PREFIX}table.prefs`,
+  // Dashboard page controls
+  dashboardMetric: `${PREFIX}dashboard.metric`,
+  dashboardSegment: `${PREFIX}dashboard.segment`,
+  dashboardBucket: `${PREFIX}dashboard.bucket`,
+  dashboardRange: `${PREFIX}dashboard.range`,
+  // Grouped creation section draft controls
+  groupedBy: `${PREFIX}dashboard.grouped.by`,
+  groupedTop: `${PREFIX}dashboard.grouped.top`,
+  groupedBucket: `${PREFIX}dashboard.grouped.bucket`,
+  groupedRange: `${PREFIX}dashboard.grouped.range`,
+  groupedFilters: `${PREFIX}dashboard.grouped.filters`,
+  groupedCashback: `${PREFIX}dashboard.grouped.cashback`,
+  groupedIxLabels: `${PREFIX}dashboard.grouped.ixLabels`,
 } as const;
 
 // ── raw string accessors ────────────────────────────────────────────────────

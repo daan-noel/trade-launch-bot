@@ -1,4 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
+import { useLocalStorage } from 'hooks/useLocalStorage';
+import { STORAGE_KEYS } from 'lib/storage';
 import { skipToken } from '@reduxjs/toolkit/query/react';
 import { Button } from 'components/ui/Button';
 import { Select } from 'components/ui/Select';
@@ -72,13 +74,13 @@ function toHeatCell(c: GroupedCreationCell): CreationHeatCell {
 export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionProps) {
   // --- draft controls (don't fetch until applied) ---------------------------
   // Click order = compound-key order (matches the sweep page semantics).
-  const [groupBy, setGroupBy] = useState<GroupField[]>(DEFAULT_GROUP_BY);
-  const [top, setTop] = useState(8);
-  const [bucket, setBucket] = useState<CreationBucket>('day');
-  const [rangeDays, setRangeDays] = useState(30);
-  const [fieldFiltersText, setFieldFiltersText] = useState<Record<string, string>>({});
-  const [cashbackFilter, setCashbackFilter] = useState<CashbackFilter>('all');
-  const [ixLabelsText, setIxLabelsText] = useState('');
+  const [groupBy, setGroupBy] = useLocalStorage<GroupField[]>(STORAGE_KEYS.groupedBy, DEFAULT_GROUP_BY);
+  const [top, setTop] = useLocalStorage<number>(STORAGE_KEYS.groupedTop, 8);
+  const [bucket, setBucket] = useLocalStorage<CreationBucket>(STORAGE_KEYS.groupedBucket, 'day');
+  const [rangeDays, setRangeDays] = useLocalStorage<number>(STORAGE_KEYS.groupedRange, 30);
+  const [fieldFiltersText, setFieldFiltersText] = useLocalStorage<Record<string, string>>(STORAGE_KEYS.groupedFilters, {});
+  const [cashbackFilter, setCashbackFilter] = useLocalStorage<CashbackFilter>(STORAGE_KEYS.groupedCashback, 'all');
+  const [ixLabelsText, setIxLabelsText] = useLocalStorage<string>(STORAGE_KEYS.groupedIxLabels, '');
 
   // --- applied snapshot (drives the query) ----------------------------------
   const [applied, setApplied] = useState<GroupedCreationArgs | null>(null);

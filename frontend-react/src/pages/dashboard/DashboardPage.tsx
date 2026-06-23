@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { Button } from 'components/ui/Button';
 import { Select } from 'components/ui/Select';
 import { TimezoneSelect } from 'components/ui/TimezoneSelect';
@@ -6,6 +6,8 @@ import { StatCard } from 'components/ui/StatCard';
 import { useTimezone } from 'context/TimezoneContext';
 import { useGetCreationStatsQuery } from 'store/apiSlice';
 import { apiErrorMessage } from 'store/apiSlice';
+import { useLocalStorage } from 'hooks/useLocalStorage';
+import { STORAGE_KEYS } from 'lib/storage';
 import { CreationHeatmap } from 'components/dashboard/CreationHeatmap';
 import { CreationTrendChart } from 'components/dashboard/CreationTrendChart';
 import { GroupedCreationSection } from 'components/dashboard/GroupedCreationSection';
@@ -25,10 +27,10 @@ import { formatWithCommas } from 'utils/format';
 
 export function DashboardPage() {
   const { timezone } = useTimezone();
-  const [metric, setMetric] = useState<CreationMetric>('migrate_rate');
-  const [segment, setSegment] = useState<CreationSegment>('all');
-  const [bucket, setBucket] = useState<CreationBucket>('day');
-  const [rangeDays, setRangeDays] = useState(30);
+  const [metric, setMetric] = useLocalStorage<CreationMetric>(STORAGE_KEYS.dashboardMetric, 'migrate_rate');
+  const [segment, setSegment] = useLocalStorage<CreationSegment>(STORAGE_KEYS.dashboardSegment, 'all');
+  const [bucket, setBucket] = useLocalStorage<CreationBucket>(STORAGE_KEYS.dashboardBucket, 'day');
+  const [rangeDays, setRangeDays] = useLocalStorage<number>(STORAGE_KEYS.dashboardRange, 30);
 
   const from = useMemo(() => windowFrom(rangeDays), [rangeDays]);
 
