@@ -757,8 +757,37 @@ pub struct MatchedTokenResult {
 /// `from` → `since` (inclusive), `to` → `until` (exclusive).
 #[derive(Deserialize)]
 pub struct AnalysisRange {
+    #[serde(default, deserialize_with = "de_opt_wallclock_utc")]
     pub from: Option<DateTime<Utc>>,
+    #[serde(default, deserialize_with = "de_opt_wallclock_utc")]
     pub to: Option<DateTime<Utc>>,
+}
+
+/// Lenient deserializer for the optional analysis-window bounds. The frontend's
+/// `datetimeLocalToUtcWallClock` helper emits an offset-less UTC wall-clock string
+/// (`YYYY-MM-DDTHH:MM[:SS]`) — the same shape the tokens / creation-stats
+/// endpoints accept via their `parse_dt`. Strict `DateTime<Utc>` serde rejects the
+/// missing offset (chrono `TooShort` → "premature end of input", surfaced as a
+/// `Query deserialize error`), so we append a `Z` to the bare wall-clock here while
+/// still accepting a full RFC3339 instant. Keeps the field type unchanged so the
+/// downstream `since`/`until` plumbing is untouched.
+fn de_opt_wallclock_utc<'de, D>(de: D) -> Result<Option<DateTime<Utc>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Option<String> = Option::deserialize(de)?;
+    let Some(v) = raw.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    // A full RFC3339 string (carries an offset) parses as-is; a bare wall-clock
+    // gets `:00Z`/`Z` appended to make it a valid UTC instant.
+    if let Ok(d) = DateTime::parse_from_rfc3339(v) {
+        return Ok(Some(d.with_timezone(&Utc)));
+    }
+    let iso = if v.len() == 16 { format!("{v}:00Z") } else { format!("{v}Z") };
+    DateTime::parse_from_rfc3339(&iso)
+        .map(|d| Some(d.with_timezone(&Utc)))
+        .map_err(serde::de::Error::custom)
 }
 
 /// Upper bound on matched rows returned to the page. Matches are sparse, so this
