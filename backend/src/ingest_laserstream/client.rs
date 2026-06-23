@@ -85,6 +85,18 @@ enum DisconnectReason {
 }
 
 impl DisconnectReason {
+    /// Whether this disconnect implies a downstream consumer wedged on an `.await`
+    /// (the exact failure the process watchdog exists to restart). Only
+    /// `PipelineBackpressure` does — every other reason is an upstream/network event
+    /// or a normal close, where the client itself is healthy and reconnecting. The
+    /// reconnect path stamps the liveness heartbeat for the healthy reasons so a
+    /// routine reconnect (idle-timeout silence + backoff + connect) can't be mistaken
+    /// for a stall; it deliberately does NOT stamp on a wedge, so consecutive
+    /// backpressure reconnects keep aging the heartbeat until the watchdog fires.
+    fn is_downstream_wedge(self) -> bool {
+        matches!(self, DisconnectReason::PipelineBackpressure)
+    }
+
     fn label(self) -> String {
         match self {
             DisconnectReason::Graceful => "graceful".to_string(),
@@ -303,6 +315,20 @@ pub async fn run(
             counts.connect_error,
         );
 
+        // Liveness heartbeat: a healthy reconnect (idle-timeout silence, a network
+        // blip, a graceful close) is NOT a stall, but it forwards no tx — so without
+        // this stamp the in-stream idle window (up to STREAM_RECONNECT_IDLE_TIMEOUT)
+        // plus the backoff + connect time would age the heartbeat past the process
+        // watchdog's stall timeout and restart a perfectly-recovering process. Stamp
+        // here so each fresh attempt gets a full timeout window to land its first tx.
+        // The one exception is `PipelineBackpressure`: that means a downstream
+        // consumer wedged on an `.await` — exactly what the watchdog must restart — so
+        // we leave the heartbeat aging and let consecutive backpressure reconnects
+        // trip it.
+        if !reason.is_downstream_wedge() {
+            heartbeat.stamp();
+        }
+
         // A stream that delivered data and then dropped resets the backoff (a
         // long-lived connection shouldn't inherit a long delay); an attempt that
         // made no progress grows the backoff exponentially, capped, so a
@@ -482,5 +508,25 @@ async fn run_once(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_backpressure_counts_as_a_downstream_wedge() {
+        // Backpressure means a downstream consumer wedged on an `.await` — the one
+        // reason the reconnect path must NOT stamp the heartbeat, so the process
+        // watchdog can still restart the wedge.
+        assert!(DisconnectReason::PipelineBackpressure.is_downstream_wedge());
+
+        // Every other reason is a healthy client reconnecting; stamping keeps a
+        // routine reconnect from being mistaken for a stall.
+        assert!(!DisconnectReason::Graceful.is_downstream_wedge());
+        assert!(!DisconnectReason::IdleTimeout.is_downstream_wedge());
+        assert!(!DisconnectReason::ConnectError.is_downstream_wedge());
+        assert!(!DisconnectReason::StreamError(tonic::Code::Unavailable).is_downstream_wedge());
     }
 }
