@@ -181,10 +181,14 @@ impl DbWriter {
         }
 
         // Tokens first — a same-batch create must land before its trades (FK).
-        // Low volume, so kept per-row: one malformed token can't drop the rest.
-        for token in &tokens {
-            if let Err(e) = token_repo.insert(token).await {
-                warn!("DbWriter: token {}: {e}", token.mint_address);
+        // Bulk insert (one round-trip); per-row fallback so one malformed token
+        // can't drop the rest.
+        if let Err(e) = token_repo.insert_many(&tokens).await {
+            warn!("DbWriter: token bulk insert failed ({e}); retrying per-row");
+            for token in &tokens {
+                if let Err(e) = token_repo.insert(token).await {
+                    warn!("DbWriter: token {}: {e}", token.mint_address);
+                }
             }
         }
 

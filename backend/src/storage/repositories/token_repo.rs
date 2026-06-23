@@ -115,6 +115,45 @@ impl TokenRepo {
         Self { pool }
     }
 
+    /// Bulk-insert a slice of tokens in one round-trip. Silently ignores duplicates
+    /// (`ON CONFLICT DO NOTHING`), matching `insert`'s semantics. Falls back to
+    /// per-row via `insert` for the caller's error-handling path. Empty slice is a
+    /// no-op.
+    pub async fn insert_many(&self, tokens: &[Token]) -> anyhow::Result<()> {
+        if tokens.is_empty() {
+            return Ok(());
+        }
+        let mut qb = sqlx::QueryBuilder::new(
+            "INSERT INTO tokens \
+             (id, mint_address, creator_wallet, name, symbol, token_program_id, \
+              bonding_curve_address, initial_supply_token, initial_buy_sol, initial_buy_instruction, \
+              cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels, \
+              creation_tx_signature, created_at) ",
+        );
+        qb.push_values(tokens, |mut b, t| {
+            b.push_bind(t.id)
+                .push_bind(&t.mint_address)
+                .push_bind(&t.creator_wallet)
+                .push_bind(&t.name)
+                .push_bind(&t.symbol)
+                .push_bind(t.token_program_id.as_ref())
+                .push_bind(&t.bonding_curve_address)
+                .push_bind(t.initial_supply_token.map(|v| v as i64))
+                .push_bind(t.initial_buy_sol)
+                .push_bind(t.initial_buy_instruction.as_ref().map(Json))
+                .push_bind(t.cu_limit.map(|v| v as i64))
+                .push_bind(t.cu_price.map(|v| v as i64))
+                .push_bind(t.is_mayhem_mode)
+                .push_bind(t.is_cashback_enabled)
+                .push_bind(Json(&t.instruction_labels))
+                .push_bind(&t.creation_tx_signature)
+                .push_bind(t.created_at);
+        });
+        qb.push(" ON CONFLICT (mint_address) DO NOTHING");
+        qb.build().execute(&self.pool).await?;
+        Ok(())
+    }
+
     /// Insert a new token. Silently ignores duplicates (idempotent on replay).
     pub async fn insert(&self, token: &Token) -> anyhow::Result<()> {
         sqlx::query(
