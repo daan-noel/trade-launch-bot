@@ -450,7 +450,11 @@ export const apiSlice = createApi({
     // the same cache entry regardless of the order they were collected in.
     // `keepUnusedDataFor: 120` matches the per-token refresh cadence.
     getTokensByMints: builder.query<TokenRecord[], string[]>({
-      query: (mints) => `/api/tokens/batch?mints=${[...mints].sort().join(',')}`,
+      query: (mints) => ({
+        url: '/api/tokens/batch',
+        method: 'POST',
+        body: { mints: [...mints].sort() },
+      }),
       keepUnusedDataFor: 120,
     }),
     getTokenDetail: builder.query<TokenDetailRecord, string>({

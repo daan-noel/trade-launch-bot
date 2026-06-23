@@ -7,25 +7,25 @@ use crate::state::app_state::AppState;
 use super::TokenSummary;
 
 #[derive(Deserialize)]
-pub struct TokenBatchQuery {
-    pub mints: String,
+pub struct TokenBatchBody {
+    pub mints: Vec<String>,
 }
 
-/// `GET /api/tokens/batch?mints=a,b,...` — return full token records for an
-/// explicit set of mints (comma-separated, capped at 500, duplicates removed).
+/// `POST /api/tokens/batch` — return full token records for an explicit set of
+/// mints (JSON body `{"mints": [...]}`, capped at 500, duplicates removed).
 /// Reuses `TokenSummary` (same shape as the `/api/tokens` list) so the frontend
 /// can use the same `TokenRecord` type it already knows. Used by strategy pages
 /// to enrich Matched / Simulated / Positions tables without touching the strategy
-/// response structs.
-pub async fn get_tokens_batch(
+/// response structs. POST avoids URL-length limits (query-string approach hit
+/// actix-web's 4 KB request-line cap with large matched-token sets).
+pub async fn post_tokens_batch(
     state: web::Data<Arc<AppState>>,
-    query: web::Query<TokenBatchQuery>,
+    body: web::Json<TokenBatchBody>,
 ) -> HttpResponse {
     let mints: Vec<String> = {
         let mut seen = std::collections::HashSet::new();
-        query
-            .mints
-            .split(',')
+        body.mints
+            .iter()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty() && seen.insert(s.clone()))
             .take(500)
@@ -42,7 +42,7 @@ pub async fn get_tokens_batch(
             HttpResponse::Ok().json(items)
         }
         Err(e) => {
-            tracing::error!("GET /api/tokens/batch failed: {e}");
+            tracing::error!("POST /api/tokens/batch failed: {e}");
             HttpResponse::InternalServerError()
                 .json(serde_json::json!({"error": "batch query failed"}))
         }

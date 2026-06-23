@@ -26,7 +26,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             )
             .route(
                 "/tokens/batch",
-                web::get().to(handlers::tokens::get_tokens_batch),
+                web::post().to(handlers::tokens::post_tokens_batch),
             )
             .route("/tokens/{mint}", web::get().to(handlers::tokens::get_token))
             .route(
