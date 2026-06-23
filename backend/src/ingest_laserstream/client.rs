@@ -64,6 +64,62 @@ const STREAM_RECONNECT_IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(15);
 /// wedge that survives the reconnect.
 const PIPELINE_SEND_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Why a single stream attempt ended — drives the per-reason reconnect counters
+/// and the reconnect log line, so a consumer-lag eviction (`PipelineBackpressure`
+/// / a `ResourceExhausted` / `Unavailable` `StreamError`) is distinguishable from
+/// an idle stall, a network blip, or a graceful close in the deployed logs.
+#[derive(Clone, Copy)]
+enum DisconnectReason {
+    /// Server FIN, pipeline receiver dropped, or live mode turned off — expected.
+    Graceful,
+    /// In-stream idle timeout tripped (no slot advance within the window).
+    IdleTimeout,
+    /// `update_tx.send_timeout` exceeded `PIPELINE_SEND_TIMEOUT` — downstream
+    /// (DbWriter / StrategyRunner / Postgres) lagged; the socket was being starved.
+    PipelineBackpressure,
+    /// gRPC stream or subscribe error, carrying the `tonic` status code so
+    /// `Unavailable` / `Internal` / `ResourceExhausted` can be told apart.
+    StreamError(tonic::Code),
+    /// TCP/TLS connect (or the initial subscribe send) failed before streaming.
+    ConnectError,
+}
+
+impl DisconnectReason {
+    fn label(self) -> String {
+        match self {
+            DisconnectReason::Graceful => "graceful".to_string(),
+            DisconnectReason::IdleTimeout => "idle_timeout".to_string(),
+            DisconnectReason::PipelineBackpressure => "pipeline_backpressure".to_string(),
+            DisconnectReason::StreamError(code) => format!("stream_error({code:?})"),
+            DisconnectReason::ConnectError => "connect_error".to_string(),
+        }
+    }
+}
+
+/// Cumulative per-reason reconnect tally, logged on every reconnect so a
+/// dominant arm (e.g. `pipeline_backpressure` climbing = consumer-lag eviction)
+/// is visible at a glance without external metrics.
+#[derive(Default)]
+struct ReconnectCounts {
+    graceful: u64,
+    idle_timeout: u64,
+    backpressure: u64,
+    stream_error: u64,
+    connect_error: u64,
+}
+
+impl ReconnectCounts {
+    fn record(&mut self, reason: DisconnectReason) {
+        match reason {
+            DisconnectReason::Graceful => self.graceful += 1,
+            DisconnectReason::IdleTimeout => self.idle_timeout += 1,
+            DisconnectReason::PipelineBackpressure => self.backpressure += 1,
+            DisconnectReason::StreamError(_) => self.stream_error += 1,
+            DisconnectReason::ConnectError => self.connect_error += 1,
+        }
+    }
+}
+
 /// Add 0..50% jitter to a reconnect delay to decorrelate reconnect storms.
 /// Derives the jitter from wall-clock subsecond nanos (no rng dependency).
 fn with_jitter(base: Duration) -> Duration {
@@ -199,6 +255,8 @@ pub async fn run(
     let mut from_slot: Option<u64> = None;
     // Exponential backoff, reset whenever an attempt made progress.
     let mut backoff = reconnect_interval;
+    // Per-reason reconnect tally (Step 0 diagnostics).
+    let mut counts = ReconnectCounts::default();
 
     loop {
         while !*live_rx.borrow() {
@@ -209,7 +267,7 @@ pub async fn run(
         }
 
         let last_slot = AtomicU64::new(0);
-        let result = run_once(
+        let reason = run_once(
             &laserstream_url,
             &api_key,
             &pump_program_id,
@@ -229,10 +287,21 @@ pub async fn run(
         let seen = last_slot.load(Ordering::Relaxed);
         from_slot = if seen > 0 { Some(seen + 1) } else { None };
 
-        match &result {
-            Ok(()) => info!("LaserStream: stream closed gracefully"),
-            Err(e) => error!("LaserStream: stream error — {e}"),
-        }
+        // Per-reason reconnect tally: the detailed error/close was already logged
+        // inside `run_once`; here we surface *which* arm fired plus the running
+        // totals, so a climbing `pipeline_backpressure` (consumer-lag eviction) is
+        // obvious in the deployed logs.
+        counts.record(reason);
+        info!(
+            "LaserStream: reconnect (reason={}) — totals: graceful={} idle_timeout={} \
+             pipeline_backpressure={} stream_error={} connect_error={}",
+            reason.label(),
+            counts.graceful,
+            counts.idle_timeout,
+            counts.backpressure,
+            counts.stream_error,
+            counts.connect_error,
+        );
 
         // A stream that delivered data and then dropped resets the backoff (a
         // long-lived connection shouldn't inherit a long delay); an attempt that
@@ -268,23 +337,35 @@ async fn run_once(
     from_slot: Option<u64>,
     last_slot: &AtomicU64,
     heartbeat: &IngestHeartbeat,
-) -> anyhow::Result<()> {
+) -> DisconnectReason {
     match from_slot {
         Some(slot) => info!("LaserStream: connecting to {laserstream_url} (replay from slot {slot})"),
         None => info!("LaserStream: connecting to {laserstream_url} (live)"),
     }
-    let mut client = connect(laserstream_url, api_key).await?;
+    let mut client = match connect(laserstream_url, api_key).await {
+        Ok(c) => c,
+        Err(e) => {
+            error!("LaserStream: connect failed — {e}");
+            return DisconnectReason::ConnectError;
+        }
+    };
 
     // Outbound request stream: the initial subscription plus later filter updates
     // (pool set changes) are sent through this channel on the one live stream.
     let (req_tx, req_rx) = mpsc::channel::<SubscribeRequest>(REQUEST_QUEUE_CAP);
     let initial = build_subscribe_request(account_includes(pump_program_id, pool_index), from_slot);
-    req_tx
-        .send(initial)
-        .await
-        .map_err(|_| anyhow::anyhow!("request channel closed before initial subscribe"))?;
+    if req_tx.send(initial).await.is_err() {
+        error!("LaserStream: request channel closed before initial subscribe");
+        return DisconnectReason::ConnectError;
+    }
 
-    let response = client.subscribe(ReceiverStream::new(req_rx)).await?;
+    let response = match client.subscribe(ReceiverStream::new(req_rx)).await {
+        Ok(r) => r,
+        Err(status) => {
+            error!("LaserStream: subscribe failed — {status}");
+            return DisconnectReason::StreamError(status.code());
+        }
+    };
     let mut stream = response.into_inner();
     info!(
         "LaserStream: subscribed (curve program + {} pool(s))",
@@ -336,13 +417,11 @@ async fn run_once(
                                              {PIPELINE_SEND_TIMEOUT:?} — forcing reconnect \
                                              (downstream stalled)"
                                         );
-                                        return Err(anyhow::anyhow!(
-                                            "pipeline backpressure exceeded {PIPELINE_SEND_TIMEOUT:?}"
-                                        ));
+                                        return DisconnectReason::PipelineBackpressure;
                                     }
                                     Err(mpsc::error::SendTimeoutError::Closed(_)) => {
                                         info!("LaserStream: pipeline receiver dropped — stopping");
-                                        return Ok(());
+                                        return DisconnectReason::Graceful;
                                     }
                                 }
                             }
@@ -352,10 +431,11 @@ async fn run_once(
                     }
                     Ok(None) => {
                         info!("LaserStream: server closed the stream");
-                        return Ok(());
+                        return DisconnectReason::Graceful;
                     }
                     Err(status) => {
-                        return Err(anyhow::anyhow!("stream error: {status}"));
+                        error!("LaserStream: stream error — {status}");
+                        return DisconnectReason::StreamError(status.code());
                     }
                 }
             }
@@ -379,7 +459,7 @@ async fn run_once(
                     None,
                 );
                 if req_tx.send(req).await.is_err() {
-                    return Ok(());
+                    return DisconnectReason::Graceful;
                 }
             }
 
@@ -387,7 +467,7 @@ async fn run_once(
             _ = live_rx.changed() => {
                 if !*live_rx.borrow() {
                     info!("LaserStream: live mode disabled — closing stream");
-                    return Ok(());
+                    return DisconnectReason::Graceful;
                 }
             }
 
@@ -398,7 +478,7 @@ async fn run_once(
                 let idle = last_update.elapsed();
                 if idle >= STREAM_RECONNECT_IDLE_TIMEOUT {
                     warn!("LaserStream: no transaction update for {idle:?} — forcing reconnect");
-                    return Err(anyhow::anyhow!("stream idle for {idle:?}"));
+                    return DisconnectReason::IdleTimeout;
                 }
             }
         }

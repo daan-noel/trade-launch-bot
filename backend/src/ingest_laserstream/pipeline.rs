@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -31,8 +32,26 @@ use super::db_writer::{DbWriteOp, RawBlobJob};
 use super::decoder::{DecodeOutput, HeliusDecoder, TxRelevance};
 use super::proto::geyser::SubscribeUpdateTransaction;
 
-const DB_QUEUE_CAP: usize = 4096;
+// Larger DB queue so a short volume burst (migration wave, hot-token spike) is
+// absorbed here instead of stalling back to the gRPC socket and tripping a
+// consumer-lag eviction. Must-persist ops (`Trade`/`Migration`/`Token`/`Wallet`)
+// still `send().await` into this buffer; recomputable ops (`Metrics`/`Raw`) are
+// `try_send` and shed when it's full (see `enqueue_db_lossy`), so the buffer
+// fronts the must-persist writes and effectively never fills under them alone.
+const DB_QUEUE_CAP: usize = 16384;
 const STRATEGY_QUEUE_CAP: usize = 512;
+
+/// Cumulative count of intentionally-shed hot-path messages under backpressure
+/// (Step 1/2 diagnostics): coalesced strategy wakeups and recomputable DB writes
+/// dropped because their queue was full. Shared between the pipeline (which
+/// increments on each drop) and `run_queue_depth_logger` (which reads + logs).
+/// Both are safe to drop — the runner re-derives state from `runtime_cache` on the
+/// next ping, and metrics/raw blobs are recomputed/best-effort.
+#[derive(Default)]
+pub struct ShedCounters {
+    pub strategy_pings: AtomicU64,
+    pub db_writes: AtomicU64,
+}
 
 /// Single hot-path owner: decode → filter → order → cache → queue DB → ping strategy / SSE.
 pub struct IngestPipeline {
@@ -62,6 +81,9 @@ pub struct IngestPipeline {
     /// after the trade is appended to the token cache, so the TPSL2 scalp-entry
     /// arming wakes on the trade instead of re-reading the cache on a fixed timer.
     trade_signals: Arc<TradeSignals>,
+    /// Tally of shed strategy pings / recomputable DB writes, surfaced by the
+    /// queue-depth logger. Shared (`Arc`) with that logger task.
+    shed: Arc<ShedCounters>,
 }
 
 impl IngestPipeline {
@@ -133,12 +155,18 @@ impl IngestPipeline {
             settings_rx,
             trader,
             trade_signals,
+            shed: Arc::new(ShedCounters::default()),
         }
     }
 
     /// Shared pool → mint index, for the WS task's per-pool subscriptions.
     pub fn pool_index(&self) -> Arc<DashMap<String, String>> {
         self.pool_index.clone()
+    }
+
+    /// Shared shed-counter handle, for the queue-depth logger task.
+    pub fn shed_counters(&self) -> Arc<ShedCounters> {
+        self.shed.clone()
     }
 
     /// Migration signal, pinged when a new pool is added to [`Self::pool_index`].
@@ -203,14 +231,13 @@ impl IngestPipeline {
                             // ingest scalars; it synthesises the Helius blob off
                             // this hot path. `raw_tx` here is the null-data carrier.
                             if save_raw && persist_raw {
-                                self.enqueue_db(DbWriteOp::Raw(RawBlobJob {
+                                self.enqueue_db_lossy(DbWriteOp::Raw(RawBlobJob {
                                     update: update.clone(),
                                     signature: raw_tx.signature.clone(),
                                     slot: raw_tx.slot,
                                     block_time: raw_tx.block_time,
                                     received_at: raw_tx.received_at,
-                                }))
-                                .await;
+                                }));
                             }
 
                             for event in events {
@@ -311,30 +338,58 @@ impl IngestPipeline {
             InternalEvent::TokenCreated(e) => self.on_token_created(e).await,
             InternalEvent::TradeExecuted(e) => self.on_trade_executed(e).await,
             InternalEvent::TokenMigrated(e) => self.on_token_migrated(e).await,
-            InternalEvent::CreatorActivityDetected(e) => self.on_creator_activity(e).await,
+            InternalEvent::CreatorActivityDetected(e) => self.on_creator_activity(e),
             InternalEvent::LiquidityAdded(e) => self.on_liquidity(e, true, raw_tx),
             InternalEvent::LiquidityRemoved(e) => self.on_liquidity(e, false, raw_tx),
         }
     }
 
-    /// Persist a write op. Uses `send().await` (real backpressure) rather than
-    /// `try_send`: a hot token bursting past `DB_QUEUE_CAP` must slow the ingest
-    /// loop — which propagates the stall up to the gRPC `send().await` in
-    /// `client.rs` — never silently drop persisted trades/metrics. The only error
-    /// here is a closed channel (DbWriter gone at shutdown).
+    /// Persist a **money-critical** write op (`Trade`/`Migration`/`Token`/`Wallet`).
+    /// Uses `send().await` (real backpressure) rather than `try_send`: such a write
+    /// must never be silently dropped, so a burst past `DB_QUEUE_CAP` slows the
+    /// ingest loop instead. The large `DB_QUEUE_CAP` fronts these so they almost
+    /// never actually block (recomputable ops are shed first — see
+    /// [`Self::enqueue_db_lossy`]). The only error here is a closed channel
+    /// (DbWriter gone at shutdown).
     async fn enqueue_db(&self, op: DbWriteOp) {
         if let Err(e) = self.db_tx.send(op).await {
             warn!("DbWriter channel closed — write not persisted: {e}");
         }
     }
 
-    /// Ping a strategy. Also `send().await` for the same reason a dropped ping is
-    /// a missed price exit (money). Backpressure here stalls the ingest loop until
-    /// the strategy runner drains; the runner no longer blocks on slow real sells
-    /// (those are spawned), so this queue drains promptly.
-    async fn ping_strategy(&self, mint: String, kind: IngestKind) {
-        if let Err(e) = self.strategy_tx.send(StrategyPing { mint, kind }).await {
-            warn!("Strategy channel closed — ping not delivered: {e}");
+    /// Enqueue a **recomputable** write op (`Metrics`/`Raw`). Uses `try_send`: if
+    /// the DB queue is full we drop it (bumping a shed counter) rather than stall
+    /// the ingest socket and risk a consumer-lag eviction. Metrics are a full
+    /// snapshot recomputed on the very next trade; raw blobs are best-effort and
+    /// already gated by `persist_raw`. Money-critical writes go through
+    /// [`Self::enqueue_db`] and are never shed.
+    fn enqueue_db_lossy(&self, op: DbWriteOp) {
+        match self.db_tx.try_send(op) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.shed.db_writes.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                warn!("DbWriter channel closed — recomputable write dropped");
+            }
+        }
+    }
+
+    /// Ping a strategy. Uses `try_send` (non-blocking): a wakeup is only a hint to
+    /// re-evaluate, and the runner re-derives all rule/position state from
+    /// `runtime_cache` on each ping (plus a periodic time-exit sweep), so a
+    /// coalesced/dropped ping under backpressure can't lose an exit — it fires on
+    /// the next trade's ping. Dropping it here keeps strategy slowness from
+    /// stalling the ingest socket. Closed channel (runner gone at shutdown) warns.
+    fn ping_strategy(&self, mint: String, kind: IngestKind) {
+        match self.strategy_tx.try_send(StrategyPing { mint, kind }) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.shed.strategy_pings.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                warn!("Strategy channel closed — ping not delivered");
+            }
         }
     }
 
@@ -384,9 +439,9 @@ impl IngestPipeline {
         let token_state = TokenState::new(e.token);
         let metrics = metrics_from_state(&mint, &token_state);
         self.token_cache.insert(mint.clone(), token_state);
-        self.enqueue_db(DbWriteOp::Metrics(metrics)).await;
+        self.enqueue_db_lossy(DbWriteOp::Metrics(metrics));
 
-        self.ping_strategy(mint.clone(), IngestKind::TokenCreated).await;
+        self.ping_strategy(mint.clone(), IngestKind::TokenCreated);
         self.emit_sse(SseEvent::TokenCreated {
             mint,
             tx_signature: e.tx_signature,
@@ -476,7 +531,7 @@ impl IngestPipeline {
         self.trade_signals.notify_mint(&mint);
 
         if let Some(metrics) = metrics {
-            self.enqueue_db(DbWriteOp::Metrics(metrics)).await;
+            self.enqueue_db_lossy(DbWriteOp::Metrics(metrics));
         }
 
         // Feed the trader's live reserve cache from this trade's post-trade
@@ -506,7 +561,7 @@ impl IngestPipeline {
             });
         }
 
-        self.ping_strategy(mint.clone(), IngestKind::Trade).await;
+        self.ping_strategy(mint.clone(), IngestKind::Trade);
         self.emit_sse(SseEvent::TradeExecuted {
             mint,
             wallet,
@@ -539,19 +594,18 @@ impl IngestPipeline {
             metrics_from_state(&mint, &token_state)
         });
         if let Some(metrics) = metrics {
-            self.enqueue_db(DbWriteOp::Metrics(metrics)).await;
+            self.enqueue_db_lossy(DbWriteOp::Metrics(metrics));
         }
 
         self.enqueue_db(DbWriteOp::Migration { mint: mint.clone() }).await;
-        self.ping_strategy(mint, IngestKind::Migrated).await;
+        self.ping_strategy(mint, IngestKind::Migrated);
     }
 
-    async fn on_creator_activity(&self, e: CreatorActivityEvent) {
+    fn on_creator_activity(&self, e: CreatorActivityEvent) {
         if !self.token_cache.contains_key(&e.mint_address) {
             return;
         }
-        self.ping_strategy(e.mint_address, IngestKind::CreatorActivity)
-            .await;
+        self.ping_strategy(e.mint_address, IngestKind::CreatorActivity);
     }
 
     fn on_liquidity(&self, e: LiquidityEvent, added: bool, _raw_tx: &RawTransaction) {
@@ -662,6 +716,51 @@ fn pool_is_live(state: &TokenState, now: DateTime<Utc>) -> bool {
             now.signed_duration_since(t).num_seconds() < POOL_SUBSCRIBE_ACTIVITY_WINDOW_SECONDS
         })
         .unwrap_or(false)
+}
+
+/// Periodic ingest backpressure diagnostics (Step 0). Every 10s, logs how full
+/// the three hot-path channels are (depth/capacity) plus the cumulative count of
+/// shed strategy pings / recomputable DB writes — so a consumer-lag stall shows up
+/// as queues sitting near-full (and shed counts climbing) right before a
+/// reconnect. Only logs when something is actually backed up or has been shed, so
+/// a healthy steady state stays quiet. Holds **weak** sender handles so it never
+/// keeps a channel alive past ingest shutdown: if any upgrade fails the producers
+/// are gone and the logger exits.
+pub async fn run_queue_depth_logger(
+    update_tx: mpsc::WeakSender<(Arc<SubscribeUpdateTransaction>, TxRelevance)>,
+    db_tx: mpsc::WeakSender<DbWriteOp>,
+    strategy_tx: mpsc::WeakSender<StrategyPing>,
+    shed: Arc<ShedCounters>,
+) {
+    let mut tick = tokio::time::interval(Duration::from_secs(10));
+    tick.tick().await; // consume the immediate first tick
+    loop {
+        tick.tick().await;
+
+        let (Some(update_tx), Some(db_tx), Some(strategy_tx)) =
+            (update_tx.upgrade(), db_tx.upgrade(), strategy_tx.upgrade())
+        else {
+            return; // a producer/consumer dropped — ingest is shutting down
+        };
+
+        // `max_capacity - capacity` = currently-queued (in-flight) messages.
+        let upd_cap = update_tx.max_capacity();
+        let upd = upd_cap - update_tx.capacity();
+        let db_cap = db_tx.max_capacity();
+        let db = db_cap - db_tx.capacity();
+        let strat_cap = strategy_tx.max_capacity();
+        let strat = strat_cap - strategy_tx.capacity();
+
+        let shed_pings = shed.strategy_pings.load(Ordering::Relaxed);
+        let shed_db = shed.db_writes.load(Ordering::Relaxed);
+
+        if upd > 0 || db > 0 || strat > 0 || shed_pings > 0 || shed_db > 0 {
+            info!(
+                "Ingest queue depth: update_tx {upd}/{upd_cap}, db_tx {db}/{db_cap}, \
+                 strategy_tx {strat}/{strat_cap} | shed: pings={shed_pings} db_writes={shed_db}"
+            );
+        }
+    }
 }
 
 /// Periodic revival sweep: subscribe to the PumpSwap pools of migrated tokens

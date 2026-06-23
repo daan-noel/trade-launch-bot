@@ -661,10 +661,19 @@ async fn main() -> anyhow::Result<()> {
         // via Arc), not a pre-built Helius `Value` — the blob synthesis moved
         // off the ingest hot path into the DbWriter. The client's curve-vs-AMM
         // relevance verdict rides along so the decoder doesn't re-scan the logs.
+        // Buffer sized to absorb a short volume burst (migration wave / hot-token
+        // spike) so it never stalls back to the gRPC socket (consumer-lag guard).
         let (update_tx, update_rx) = tokio::sync::mpsc::channel::<(
             std::sync::Arc<ingest_laserstream::proto::geyser::SubscribeUpdateTransaction>,
             ingest_laserstream::decoder::TxRelevance,
-        )>(1024);
+        )>(4096);
+
+        // Weak sender handles for the queue-depth diagnostics logger — taken before
+        // the senders are moved into the pipeline / client, and weak so the logger
+        // never keeps a channel alive past ingest shutdown.
+        let update_tx_weak = update_tx.downgrade();
+        let db_tx_weak = db_tx.downgrade();
+        let strategy_tx_weak = strategy_tx.downgrade();
 
         let pipeline = ingest_laserstream::pipeline::IngestPipeline::new(
             constants::PUMP_FUN_PROGRAM_ID.to_string(),
@@ -678,6 +687,7 @@ async fn main() -> anyhow::Result<()> {
         );
         let pool_index = pipeline.pool_index();
         let pools_changed = pipeline.pools_changed();
+        let shed_counters = pipeline.shed_counters();
 
         // End-to-end ingest liveness: the client stamps this on every tx it forwards
         // to the pipeline; a dedicated OS-thread watchdog force-exits the process if
@@ -708,6 +718,15 @@ async fn main() -> anyhow::Result<()> {
             pools_changed.clone(),
             constants::PUMP_FUN_PROGRAM_ID.to_string(),
             settings_tx.subscribe(),
+        ));
+
+        // Periodic backpressure diagnostics: logs hot-path queue depths + shed
+        // counts every 10s (Step 0 consumer-lag visibility).
+        tokio::spawn(ingest_laserstream::pipeline::run_queue_depth_logger(
+            update_tx_weak,
+            db_tx_weak,
+            strategy_tx_weak,
+            shed_counters,
         ));
 
         // Weekly partition maintenance for raw_transactions (~2-month retention).
