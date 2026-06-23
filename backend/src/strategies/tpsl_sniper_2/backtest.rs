@@ -110,6 +110,17 @@ pub async fn run_backtest(
     cancel: Arc<std::sync::atomic::AtomicBool>,
     progress_cell: Arc<crate::state::job_progress::ProgressCell>,
 ) -> Result<Vec<BacktestTokenResult>> {
+    // Bound concurrent backtests so overlapping runs can't drain the `batch` pool
+    // (the `candidate token scan failed: pool timed out` contention). Held for the
+    // whole run; excess simulations queue here rather than pile onto the pool. The
+    // spawned task already owns its cancel/progress, so queueing only delays start.
+    let _permit = app_state
+        .backtest_sem
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| anyhow!("backtest concurrency semaphore closed"))?;
+
     let rule_repo = Tpsl2StrategyRuleRepo::new(app_state.db.clone());
 
     let rule = rule_repo

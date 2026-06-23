@@ -109,6 +109,12 @@ pub struct AppState {
     /// The simulate handler inserts a flag when a run starts and removes it when
     /// it ends; the cancel endpoint flips it; `run_backtest` polls it per chunk.
     pub sim_cancels: Arc<DashMap<Uuid, Arc<AtomicBool>>>,
+    /// Caps concurrent backtests (both tpsl1 and tpsl2 share it) so overlapping
+    /// simulations can't saturate the `batch` pool's connections — the contention
+    /// that surfaced as `candidate token scan failed: pool timed out`. Grouped
+    /// sweeps are already single-flight via [`Self::sweep_running`]; this is the
+    /// analogous bound for the per-rule simulate path, which had none.
+    pub backtest_sem: Arc<Semaphore>,
     /// Live `processed / total` snapshot of the in-flight grouped sweep, written
     /// by `SweepProgress` alongside its SSE frames and read by `/api/jobs/status`
     /// so a dashboard that mounts mid-run (or after a refresh) can recover the
@@ -132,6 +138,12 @@ pub struct AppState {
 
 /// Max concurrent token-sync backfills (each is RPC- and DB-heavy).
 const MAX_CONCURRENT_SYNCS: usize = 4;
+
+/// Max concurrent backtests across both strategies. Each one streams the `tokens`
+/// table and batched trade history off the `batch` pool (16 connections by
+/// default), so unbounded overlap drains it. Two keeps the dashboard's backtests
+/// responsive without letting them starve each other or a running grouped sweep.
+const MAX_CONCURRENT_BACKTESTS: usize = 2;
 
 /// Guards `POST /api/token/sync` against two failure modes: a burst of requests
 /// spawning unbounded RPC-heavy tasks, and two concurrent syncs of the *same*
@@ -233,6 +245,7 @@ impl AppState {
             sweep_running: Arc::new(AtomicBool::new(false)),
             sweep_cancel: Arc::new(AtomicBool::new(false)),
             sim_cancels: Arc::new(DashMap::new()),
+            backtest_sem: Arc::new(Semaphore::new(MAX_CONCURRENT_BACKTESTS)),
             sweep_progress: Arc::new(ProgressCell::default()),
             sim_progress: Arc::new(DashMap::new()),
             // Keep a few recent runs so re-runs / multiple tabs don't accumulate.
