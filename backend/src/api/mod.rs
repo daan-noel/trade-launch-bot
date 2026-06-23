@@ -19,6 +19,11 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 "/tokens/creation-stats",
                 web::get().to(handlers::tokens::get_creation_stats),
             )
+            // Per-fingerprint creation activity (dashboard "Creation by token group").
+            .route(
+                "/tokens/creation-stats/grouped",
+                web::get().to(handlers::tokens::get_grouped_creation_stats),
+            )
             .route(
                 "/tokens/batch",
                 web::get().to(handlers::tokens::get_tokens_batch),

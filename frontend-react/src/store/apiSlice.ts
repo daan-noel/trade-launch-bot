@@ -17,6 +17,10 @@ import type {
   CreationStatsArgs,
   CreationStatsResponse,
 } from 'components/dashboard/creationStats';
+import type {
+  GroupedCreationArgs,
+  GroupedCreationResponse,
+} from 'components/dashboard/groupedCreationStats';
 
 import type {
   AnalysisRecord,
@@ -413,6 +417,26 @@ export const apiSlice = createApi({
       },
       keepUnusedDataFor: 120,
     }),
+    // Per-fingerprint creation activity (dashboard "Creation by token group").
+    // Server-side partition by a compound fingerprint key + top-N by volume;
+    // returns each group's day×hour fold + calendar trend (count only). Cached
+    // 120s; the page floors `from` to the hour so the cache key stays stable.
+    getGroupedCreationStats: builder.query<
+      GroupedCreationResponse,
+      GroupedCreationArgs
+    >({
+      query: ({ bucket, tz, from, segment, groupBy, top }) => {
+        const p = new URLSearchParams();
+        p.set('bucket', bucket);
+        p.set('tz', tz);
+        p.set('segment', segment);
+        p.set('group_by', groupBy.join(','));
+        p.set('top', String(top));
+        if (from) p.set('from', from);
+        return `/api/tokens/creation-stats/grouped?${p.toString()}`;
+      },
+      keepUnusedDataFor: 120,
+    }),
     // Batch token lookup by mint list — used by strategy pages to enrich their
     // result tables without extending the strategy response structs. Keyed by
     // the sorted, comma-joined mint string so the same set of mints always hits
@@ -562,6 +586,7 @@ export const {
   useGetTokensByMintsQuery,
   useGetTokensPageQuery,
   useGetCreationStatsQuery,
+  useGetGroupedCreationStatsQuery,
   useGetTokenDetailQuery,
   useGetTokenTradesQuery,
   useGetCreatorsPageQuery,

@@ -101,6 +101,23 @@ impl GroupField {
             GroupField::IxLabels => "ix_labels",
         }
     }
+
+    /// Parse a serde snake_case tag back to a field (inverse of [`as_str`]).
+    /// Used by query handlers that take a comma-separated `group_by` string.
+    pub fn from_tag(tag: &str) -> Option<Self> {
+        Some(match tag.trim() {
+            "creator_wallet" => GroupField::CreatorWallet,
+            "token_program_id" => GroupField::TokenProgramId,
+            "cu_limit" => GroupField::CuLimit,
+            "cu_price" => GroupField::CuPrice,
+            "is_cashback_enabled" => GroupField::IsCashbackEnabled,
+            "max_sol_cost" => GroupField::MaxSolCost,
+            "spendable_sol_in" => GroupField::SpendableSolIn,
+            "initial_buy_sol" => GroupField::InitialBuySol,
+            "ix_labels" => GroupField::IxLabels,
+            _ => return None,
+        })
+    }
 }
 
 /// A compound group key: the chosen fields' exact values in selection order.

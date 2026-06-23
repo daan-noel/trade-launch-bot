@@ -8,6 +8,7 @@ import { useGetCreationStatsQuery } from 'store/apiSlice';
 import { apiErrorMessage } from 'store/apiSlice';
 import { CreationHeatmap } from 'components/dashboard/CreationHeatmap';
 import { CreationTrendChart } from 'components/dashboard/CreationTrendChart';
+import { GroupedCreationSection } from 'components/dashboard/GroupedCreationSection';
 import {
   BUCKET_OPTIONS,
   METRIC_OPTIONS,
@@ -193,6 +194,10 @@ export function DashboardPage() {
           <p className="text-text-dim">No tokens created in this window.</p>
         )}
       </section>
+
+      {/* Panel C — per-fingerprint creation activity (shares the control bar's
+          window / timezone / segment; owns its own group-by + top-N). */}
+      <GroupedCreationSection from={from} tz={timezone} segment={segment} />
     </div>
   );
 }

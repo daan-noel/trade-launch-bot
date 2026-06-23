@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::state::app_state::AppState;
 use crate::storage::repositories::creation_stats_repo::{HeatCellRow, StatsFilter, TrendPointRow};
+use crate::sweep::grouping::GroupField;
 
 /// Default outcome-maturity window (24h): tokens younger than this are excluded
 /// from migrate/dead counts so a fresh bucket doesn't read artificially bad.
@@ -14,6 +15,11 @@ const DEFAULT_WINDOW_DAYS: i64 = 30;
 /// Hard cap on the look-back span (defensive — keeps the index range scan bounded
 /// even if a client hand-crafts a huge `from`..`to`).
 const MAX_WINDOW_DAYS: i64 = 366;
+/// Default number of fingerprint groups returned by the grouped endpoint.
+const DEFAULT_TOP_GROUPS: i64 = 8;
+/// Hard cap on returned groups — keeps the small-multiple grid legible + the
+/// payload bounded.
+const MAX_TOP_GROUPS: i64 = 16;
 
 #[derive(Deserialize)]
 pub struct CreationStatsQuery {
@@ -249,6 +255,171 @@ pub async fn get_creation_stats(
     HttpResponse::Ok().json(resp)
 }
 
+// ---------------------------------------------------------------------------
+// Grouped (per-fingerprint) creation activity
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct GroupedCreationQuery {
+    /// Trend granularity: `hour` | `day` | `week` (default `day`).
+    pub bucket: Option<String>,
+    /// IANA timezone for bucketing; defaults to UTC.
+    pub tz: Option<String>,
+    /// Window bounds (RFC3339). Default: last 30d → now.
+    pub from: Option<String>,
+    pub to: Option<String>,
+    /// Segment filter: `all` | `mayhem` | `non_mayhem` | `cashback` | `non_cashback`.
+    pub segment: Option<String>,
+    /// Comma-separated `GroupField` serde tags, in compound-key order
+    /// (e.g. `cu_limit,ix_labels`). Empty/missing ⇒ a single "ALL" group.
+    pub group_by: Option<String>,
+    /// Number of top groups (by volume) to return. Clamped to [1, MAX_TOP_GROUPS].
+    pub top: Option<i64>,
+}
+
+#[derive(Serialize)]
+pub struct GroupedGroup {
+    /// 0-based rank index (0 = largest group). Keys `cells`/`points` back to a group.
+    pub g: i64,
+    /// `{"cu_limit":"200000","ix_labels":"A | B"}` — same shape as the sweep's group key.
+    pub group_key: serde_json::Value,
+    pub total: i64,
+}
+
+#[derive(Serialize)]
+pub struct GroupedCell {
+    pub g: i64,
+    pub dow: i32,
+    pub hour: i32,
+    pub count: i64,
+}
+
+#[derive(Serialize)]
+pub struct GroupedPoint {
+    pub g: i64,
+    pub bucket: NaiveDateTime,
+    pub count: i64,
+}
+
+#[derive(Serialize)]
+pub struct GroupedCreationResponse {
+    pub bucket: String,
+    pub tz: String,
+    pub from: DateTime<Utc>,
+    pub to: DateTime<Utc>,
+    pub segment: String,
+    /// The grouping fields echoed back (serde tags, in selection order).
+    pub group_by: Vec<String>,
+    /// Σ counts across the returned (top-N) groups.
+    pub total: i64,
+    pub groups: Vec<GroupedGroup>,
+    pub cells: Vec<GroupedCell>,
+    pub points: Vec<GroupedPoint>,
+}
+
+/// Parse a comma-separated `group_by` tag list into ordered, de-duplicated fields.
+/// Blank/missing ⇒ empty (the "ALL" group). `Err(tag)` on an unknown tag.
+fn parse_group_by(raw: Option<&str>) -> Result<Vec<GroupField>, String> {
+    let mut out: Vec<GroupField> = Vec::new();
+    for tag in raw.unwrap_or("").split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let field = GroupField::from_tag(tag).ok_or_else(|| tag.to_string())?;
+        if !out.contains(&field) {
+            out.push(field);
+        }
+    }
+    Ok(out)
+}
+
+/// Clamp the requested group count to `[1, MAX_TOP_GROUPS]` (default when absent).
+fn clamp_top(top: Option<i64>) -> i64 {
+    top.unwrap_or(DEFAULT_TOP_GROUPS).clamp(1, MAX_TOP_GROUPS)
+}
+
+/// `GET /api/tokens/creation-stats/grouped` — per-fingerprint creation activity.
+///
+/// Partitions tokens by a compound fingerprint key (`group_by`), keeps the top-N
+/// groups by volume, and returns each group's day×hour fold (`cells`) + calendar
+/// trend (`points`). Count only (no outcome join). Reuses the aggregate endpoint's
+/// window/tz/segment handling; the fingerprint fields mirror the sweep page.
+pub async fn get_grouped_creation_stats(
+    state: web::Data<Arc<AppState>>,
+    query: web::Query<GroupedCreationQuery>,
+) -> impl Responder {
+    let now = Utc::now();
+    let bucket = normalize_bucket(query.bucket.as_deref());
+    let tz = query.tz.clone().unwrap_or_else(|| "UTC".to_string());
+    let segment = query.segment.clone().unwrap_or_else(|| "all".to_string());
+    let (mayhem, cashback) = parse_segment(&segment);
+    let (from, to) = resolve_window(query.from.as_deref(), query.to.as_deref(), now);
+    let top = clamp_top(query.top);
+
+    let fields = match parse_group_by(query.group_by.as_deref()) {
+        Ok(f) => f,
+        Err(tag) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": format!("unknown group_by field: {tag}")
+            }));
+        }
+    };
+
+    let filter = StatsFilter {
+        tz: &tz,
+        // Unused (count-only) but the shared struct requires it; 0 = no censoring.
+        maturity_secs: 0.0,
+        from,
+        to,
+        mayhem,
+        cashback,
+    };
+
+    let repo = state.creation_stats_repo();
+    let data = match repo.grouped(&fields, bucket, top, filter).await {
+        Ok(d) => d,
+        Err(e) => return db_error(e),
+    };
+
+    let total: i64 = data.groups.iter().map(|g| g.total).sum();
+    let resp = GroupedCreationResponse {
+        bucket: bucket.to_string(),
+        tz,
+        from,
+        to,
+        segment,
+        group_by: fields.iter().map(|f| f.as_str().to_string()).collect(),
+        total,
+        groups: data
+            .groups
+            .into_iter()
+            .map(|r| GroupedGroup {
+                g: r.g,
+                group_key: r.group_key,
+                total: r.total,
+            })
+            .collect(),
+        cells: data
+            .cells
+            .into_iter()
+            .map(|r| GroupedCell {
+                g: r.g,
+                dow: r.dow,
+                hour: r.hour,
+                count: r.count,
+            })
+            .collect(),
+        points: data
+            .points
+            .into_iter()
+            .map(|r| GroupedPoint {
+                g: r.g,
+                bucket: r.bucket,
+                count: r.count,
+            })
+            .collect(),
+    };
+
+    HttpResponse::Ok().json(resp)
+}
+
 fn db_error(e: anyhow::Error) -> HttpResponse {
     tracing::error!("creation-stats query failed: {e}");
     HttpResponse::InternalServerError().json(serde_json::json!({
@@ -296,6 +467,30 @@ mod tests {
         // from far in the past → clamped to MAX_WINDOW_DAYS before `to`.
         let (from, to) = resolve_window(Some("2000-01-01T00:00:00Z"), None, now);
         assert_eq!((to - from).num_days(), MAX_WINDOW_DAYS);
+    }
+
+    #[test]
+    fn group_by_parses_and_dedups_in_order() {
+        // Empty / missing ⇒ the ALL group.
+        assert_eq!(parse_group_by(None).unwrap(), vec![]);
+        assert_eq!(parse_group_by(Some("")).unwrap(), vec![]);
+        assert_eq!(parse_group_by(Some(" , ")).unwrap(), vec![]);
+        // Order preserved; whitespace trimmed; duplicates dropped (keep first).
+        assert_eq!(
+            parse_group_by(Some("cu_limit, ix_labels , cu_limit")).unwrap(),
+            vec![GroupField::CuLimit, GroupField::IxLabels],
+        );
+        // Unknown tag ⇒ Err(tag).
+        assert_eq!(parse_group_by(Some("cu_limit,bogus")), Err("bogus".to_string()));
+    }
+
+    #[test]
+    fn top_groups_clamped() {
+        assert_eq!(clamp_top(None), DEFAULT_TOP_GROUPS);
+        assert_eq!(clamp_top(Some(0)), 1);
+        assert_eq!(clamp_top(Some(-5)), 1);
+        assert_eq!(clamp_top(Some(5)), 5);
+        assert_eq!(clamp_top(Some(999)), MAX_TOP_GROUPS);
     }
 
     #[test]
