@@ -85,11 +85,13 @@ lives in:
   - Exit: `exit_take_profit`, `exit_stop_loss`, `exit_trailing_stop_pct`,
     `exit_time_stop_secs`, `exit_stall_secs`, `exit_liquidity_drop_pct`,
     `exit_cohort_ratio` (cohort = TPSL2 only).
-  - Entry (TPSL2 scalp gates only): `entry_min_age_secs`, `entry_min_alive_sol`,
-    `entry_min_organic_sol`, `entry_pullback_pct`, `entry_higher_low_secs`,
-    `entry_max_cohort_held`, `entry_min_liquidity_sol`, `entry_min_organic_liq`.
-    (The rule also carries `p_entry_max_age_secs` — the scalp-window ceiling — but it
-    is **not** a swept axis: it flows through the base rule unchanged, untuned.)
+  - Entry (TPSL2 scalp gates only): `entry_min_age_secs`, `entry_max_age_secs`,
+    `entry_min_alive_sol`, `entry_min_organic_sol`, `entry_pullback_pct`,
+    `entry_higher_low_secs`, `entry_max_cohort_held`, `entry_min_liquidity_sol`,
+    `entry_min_organic_liq`. `entry_max_age_secs` is the scalp-window ceiling (paired
+    with the `min_age` floor); it joins the entry-key (9 knobs now) since it changes
+    the resolved entry. Its default axis is `[None]` — present but grid-inert until the
+    page supplies values.
 - **Evaluate params** (the measured *ranking/scoring outputs*): `score`, `win_rate`,
   `total_pnl_sol`, `expectancy_sol`, `profit_factor`, `median_pnl_pct`,
   `mean_pnl_pct`, `p90_pnl_pct`, `best_pnl_pct`, `worst_pnl_pct`, `std_pnl_pct`.
