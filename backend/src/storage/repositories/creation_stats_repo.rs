@@ -174,7 +174,7 @@ pub struct GroupedTrendPointRow {
 
 /// The per-field SQL value expression used to build the group key. Renders a TEXT
 /// value so every field collapses to a hashable key, mirroring the sweep's
-/// `render_field`: `∅` sentinel for missing values, `" | "`-joined sorted-distinct
+/// `render_field`: `∅` sentinel for missing values, `" | "`-joined on-chain-order
 /// labels for `ix_labels`. Fields come from the fixed [`GroupField`] enum (never
 /// user free-text), so interpolating these literals is injection-safe.
 fn group_field_sql(f: GroupField) -> &'static str {
@@ -189,12 +189,12 @@ fn group_field_sql(f: GroupField) -> &'static str {
             "COALESCE(t.initial_buy_instruction->>'spendable_sol_in', '∅')"
         }
         GroupField::InitialBuySol => "COALESCE(t.initial_buy_sol::text, '∅')",
-        // Sorted-distinct labels joined with " | ". Close-but-not-identical to the
-        // sweep's `normalize_label_vec` (consecutive-dedup, on-chain order) — a
-        // stable key for this discovery view (see @docs/architecture.md caveat).
+        // Labels joined with " | " in on-chain order (NOT alphabetised) so the
+        // displayed/copied set mirrors the real instruction sequence. Ordinality
+        // preserves array position; duplicates are kept intentionally.
         GroupField::IxLabels => {
-            "COALESCE((SELECT string_agg(DISTINCT e, ' | ' ORDER BY e) \
-              FROM jsonb_array_elements_text(t.ix_labels) AS e), '∅')"
+            "COALESCE((SELECT string_agg(e.val, ' | ' ORDER BY e.ord) \
+              FROM jsonb_array_elements_text(t.ix_labels) WITH ORDINALITY AS e(val, ord)), '∅')"
         }
     }
 }

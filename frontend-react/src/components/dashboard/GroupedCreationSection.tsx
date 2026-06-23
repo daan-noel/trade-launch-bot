@@ -3,6 +3,7 @@ import { Button } from 'components/ui/Button';
 import { Select } from 'components/ui/Select';
 import { useGetGroupedCreationStatsQuery, apiErrorMessage } from 'store/apiSlice';
 import { formatWithCommas } from 'utils/format';
+import { cn } from 'lib/cn';
 import { CreationHeatmap } from './CreationHeatmap';
 import { GroupedCreationTrendChart } from './GroupedCreationTrendChart';
 import type { CreationHeatCell, CreationSegment } from './creationStats';
@@ -196,8 +197,39 @@ function GroupKeyInline({ group }: { group: GroupedCreationGroup }) {
   );
 }
 
-/** Full group-key block for a heatmap card (label/value grid; ix_labels stacked
- *  one per row). Mirrors the sweep page's group-chip layout. */
+/** `ix_labels` rendered verbatim (on-chain order, NOT sorted) as a multi-line
+ *  JSON array. Click to copy the exact JSON. */
+function IxLabelsJson({ parts }: { parts: string[] }) {
+  const [copied, setCopied] = useState(false);
+  const json = useMemo(() => JSON.stringify(parts, null, 2), [parts]);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(json);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  return (
+    <pre
+      onClick={copy}
+      title={copied ? 'Copied!' : 'Click to copy JSON'}
+      className={cn(
+        'm-0 cursor-pointer whitespace-pre font-mono text-[11px] leading-tight',
+        copied ? 'text-primary' : 'text-secondary',
+      )}
+    >
+      {json}
+    </pre>
+  );
+}
+
+/** Full group-key block for a heatmap card (label/value grid; ix_labels shown as
+ *  copyable multi-line JSON in on-chain order). Mirrors the sweep page's
+ *  group-chip layout. */
 function GroupKeyBlock({ group }: { group: GroupedCreationGroup }) {
   const entries = Object.entries(group.group_key);
   if (entries.length === 0)
@@ -207,18 +239,14 @@ function GroupKeyBlock({ group }: { group: GroupedCreationGroup }) {
       {entries.map(([k, v]) => {
         const label = GROUP_FIELD_LABELS[k as GroupField] ?? k;
         const isIx = k === 'ix_labels';
-        const parts = isIx && v !== MISSING_VALUE ? groupValueParts(k, v) : null;
+        const parts = isIx ? (v === MISSING_VALUE ? [] : groupValueParts(k, v)) : null;
         return (
           <Fragment key={k}>
             <span className="text-[11px] leading-tight text-text-dim" title={`${label}: ${v}`}>
               {label}:
             </span>
             {parts ? (
-              <span className="flex flex-col font-mono text-[11px] leading-tight text-secondary">
-                {parts.map((p, i) => (
-                  <span key={i}>{p}</span>
-                ))}
-              </span>
+              <IxLabelsJson parts={parts} />
             ) : (
               <span className="font-mono text-[11px] text-secondary">{v}</span>
             )}
