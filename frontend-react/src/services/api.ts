@@ -502,6 +502,27 @@ export async function cancelGroupedSweep(): Promise<void> {
   await request(`${API_BASE}/api/strategies/sweeps/cancel`, { method: 'POST' });
 }
 
+/** Start a rule's backtest as a detached background job (returns immediately).
+ *  The run is uncapped and may take minutes, so the result is NOT delivered on
+ *  this request — collect it via the result endpoint (`getStrategySimulateResult`)
+ *  once the `simulation_finished` SSE fires. `range` scopes the candidate scan
+ *  (empty = all-time). This decoupling is what stops a long sim failing the client
+ *  with `FETCH_ERROR`. */
+export async function startSimulation(
+  strategy: 'tpsl1' | 'tpsl2',
+  ruleId: string,
+  range: { from?: string; to?: string },
+): Promise<void> {
+  const qs = new URLSearchParams();
+  if (range.from) qs.set('from', range.from);
+  if (range.to) qs.set('to', range.to);
+  const s = qs.toString();
+  const url = `${API_BASE}/api/strategies/${strategy}/rules/${encodeURIComponent(ruleId)}/simulate${
+    s ? `?${s}` : ''
+  }`;
+  await request(url, { method: 'POST' });
+}
+
 /** Strategy-agnostic cancel for a rule's in-flight simulation (the backend keys
  *  the cancel flag by rule_id across both tpsl snipers). No-op if none running. */
 export async function cancelSimulation(ruleId: string): Promise<void> {

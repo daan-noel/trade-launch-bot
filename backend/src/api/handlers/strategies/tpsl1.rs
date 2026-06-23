@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::{
     models::{ingest::SseEvent, PaperRunStatus, Position, Tpsl1Rule},
     state::app_state::AppState,
+    state::sim_results::SimOutcome,
     strategies::tpsl_sniper_1::{
         self, backtest::BacktestTokenResult, entry::token_matches_buy_rule,
         runtime_cache::RuleClosedStats, PaperActivation,
@@ -763,9 +764,18 @@ pub async fn get_matched_tokens(
 // Simulation
 // ---------------------------------------------------------------------------
 
-/// Simulate a TPSL rule against all historically matched tokens.
+/// Start a TPSL1 rule backtest as a detached background job and return at once.
 ///
-/// GET /api/strategies/tpsl1/rules/{rule_id}/simulate
+/// POST /api/strategies/tpsl1/rules/{rule_id}/simulate
+///
+/// The simulation runs uncapped and can take minutes; holding the HTTP connection
+/// open for the whole run (the old design) meant any mid-run drop — dev proxy /
+/// browser idle cut / the ingest watchdog restarting the process under load —
+/// severed the socket and surfaced on the client as a `FETCH_ERROR`, even though
+/// the detached run finished fine. Instead the run stores its terminal outcome in
+/// `sim_results` and the client collects it via
+/// `GET /api/jobs/simulations/{rule_id}/result` once the `simulation_finished`
+/// SSE fires — there is no long-held connection to cut.
 pub async fn simulate_tpsl_rule(
     app_state: web::Data<Arc<AppState>>,
     rule_id: web::Path<Uuid>,
@@ -780,18 +790,19 @@ pub async fn simulate_tpsl_rule(
     // can observe and abort it. Both are removed on every exit path (RAII guard),
     // which also broadcasts the terminal `SimulationFinished` so a global progress
     // indicator clears itself without polling. Registered synchronously here so an
-    // immediate cancel finds the entry before the task is scheduled.
+    // immediate cancel finds the entry before the task is scheduled. Drop any stale
+    // result so only this run's outcome is collectable.
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cell = std::sync::Arc::new(crate::state::job_progress::ProgressCell::default());
     app_state.sim_cancels.insert(rid, cancel.clone());
     app_state.sim_progress.insert(rid, cell.clone());
+    app_state.sim_results.clear(&rid);
 
-    // Detach the backtest so a client disconnect (browser refresh / SPA nav)
-    // can't drop the request future mid-run and tear down `sim_progress` — the run
-    // must outlive the HTTP request so `GET /api/jobs/status` can recover its bar
-    // after a reload. `rt::spawn` keeps it on the worker (no `Send` bound);
-    // awaiting the handle returns the same response while the client is connected,
-    // and dropping it on disconnect never cancels the task.
+    // Detach the backtest and return immediately. `rt::spawn` keeps the task on the
+    // worker (no `Send` bound) independent of this request; a client disconnect
+    // never cancels it. The task stores its outcome BEFORE the guard drops (which
+    // fires `SimulationFinished`), so a client reacting to that SSE always finds
+    // the result present.
     actix_web::rt::spawn(async move {
         struct SimGuard {
             state: web::Data<Arc<AppState>>,
@@ -814,7 +825,7 @@ pub async fn simulate_tpsl_rule(
             cancel: cancel.clone(),
         };
 
-        match crate::strategies::tpsl_sniper_1::run_backtest(
+        let outcome = match crate::strategies::tpsl_sniper_1::run_backtest(
             app_state.clone(),
             rid,
             since,
@@ -824,28 +835,33 @@ pub async fn simulate_tpsl_rule(
         )
         .await
         {
-            Ok(summary) => HttpResponse::Ok().json(summary),
+            // Serialize once here so the result endpoint serves the bytes verbatim.
+            Ok(summary) => match serde_json::to_string(&summary) {
+                Ok(json) => SimOutcome::Done(json),
+                Err(e) => SimOutcome::Failed {
+                    status: 500,
+                    message: format!("result serialization failed: {e}"),
+                },
+            },
             Err(e) => {
                 let msg = e.to_string();
                 if msg.contains("cancelled") {
                     // User-requested abort — benign, not a failure.
-                    HttpResponse::Ok().json(serde_json::json!({"cancelled": true}))
+                    SimOutcome::Cancelled
                 } else if msg.contains("Rule not found") {
-                    HttpResponse::NotFound().json(serde_json::json!({"error": msg}))
+                    SimOutcome::Failed { status: 404, message: msg }
                 } else if msg.contains("All rule criteria are empty") {
-                    HttpResponse::BadRequest().json(serde_json::json!({"error": msg}))
+                    SimOutcome::Failed { status: 400, message: msg }
                 } else {
                     tracing::error!("Simulation failed: {e}");
-                    HttpResponse::InternalServerError().json(serde_json::json!({"error": msg}))
+                    SimOutcome::Failed { status: 500, message: msg }
                 }
             }
-        }
-    })
-    .await
-    .unwrap_or_else(|_| {
-        HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": "simulation task ended unexpectedly"}))
-    })
+        };
+        app_state.sim_results.insert(rid, outcome);
+    });
+
+    HttpResponse::Accepted().json(serde_json::json!({ "started": true }))
 }
 
 /// `POST /api/strategies/tpsl1/rules/{rule_id}/simulate/cancel` — request

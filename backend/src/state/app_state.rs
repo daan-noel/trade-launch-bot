@@ -26,6 +26,7 @@ use crate::sweep::corpus::TokenTrades;
 
 use super::backtest_trade_cache::BacktestTradeCache;
 use super::job_progress::ProgressCell;
+use super::sim_results::SimResults;
 use super::swing_run_cache::SwingRunCache;
 use super::token_cache::TokenCache;
 use super::token_list_cache::TokenListCache;
@@ -125,6 +126,12 @@ pub struct AppState {
     /// entry when a run starts and removes it when it ends (keyed like
     /// `sim_cancels`); `/api/jobs/status` reads them for recovery.
     pub sim_progress: Arc<DashMap<Uuid, Arc<ProgressCell>>>,
+    /// Finished-simulation outcomes awaiting collection, keyed by `rule_id`. The
+    /// detached backtest stores its terminal result here and the client fetches
+    /// it via `GET /api/jobs/simulations/{rule_id}/result` once the
+    /// `simulation_finished` SSE fires, so a long run's result is never tied to
+    /// the lifetime of the starting request (the old `FETCH_ERROR` source).
+    pub sim_results: Arc<SimResults>,
     /// Raw swings from recent "Swing Detection All" runs, keyed by client run id.
     /// Lets the server-side-paged tokens list sort by the chain columns and
     /// re-group on chain-latency changes without re-running detection.
@@ -248,6 +255,7 @@ impl AppState {
             backtest_sem: Arc::new(Semaphore::new(MAX_CONCURRENT_BACKTESTS)),
             sweep_progress: Arc::new(ProgressCell::default()),
             sim_progress: Arc::new(DashMap::new()),
+            sim_results: Arc::new(SimResults::new()),
             // Keep a few recent runs so re-runs / multiple tabs don't accumulate.
             swing_runs: Arc::new(SwingRunCache::new(3)),
             sweep_corpus_cache: Arc::new(RwLock::new(None)),

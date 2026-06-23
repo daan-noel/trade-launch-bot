@@ -68,6 +68,14 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 "/jobs/simulations/{rule_id}/cancel",
                 web::post().to(handlers::system::cancel_simulation),
             )
+            // Collect a finished simulation's result (started via the per-strategy
+            // `POST .../simulate`). Strategy-agnostic — keyed by `rule_id` like the
+            // cancel route. Decouples the result from the starting request so a long
+            // run can't fail the client with `FETCH_ERROR`.
+            .route(
+                "/jobs/simulations/{rule_id}/result",
+                web::get().to(handlers::system::simulation_result),
+            )
             // System endpoints
             .route(
                 "/system/live",
@@ -165,7 +173,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             )
             .route(
                 "/strategies/tpsl1/rules/{rule_id}/simulate",
-                web::get().to(handlers::strategies::tpsl1::simulate_tpsl_rule),
+                web::post().to(handlers::strategies::tpsl1::simulate_tpsl_rule),
             )
             .route(
                 "/strategies/tpsl1/rules/{rule_id}/simulate/cancel",
@@ -240,7 +248,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             )
             .route(
                 "/strategies/tpsl2/rules/{rule_id}/simulate",
-                web::get().to(handlers::strategies::tpsl2::simulate_tpsl_rule),
+                web::post().to(handlers::strategies::tpsl2::simulate_tpsl_rule),
             )
             .route(
                 "/strategies/tpsl2/rules/{rule_id}/simulate/cancel",

@@ -288,17 +288,20 @@ export const apiSlice = createApi({
       providesTags: (_r, _e, a) => [strategyResultTag(a)],
       keepUnusedDataFor: 60,
     }),
-    // A user-cancelled run resolves to `{ cancelled: true }` instead of the token
-    // array (HTTP 200, no result persisted); callers type-guard on the shape.
-    getStrategySimulate: builder.query<
+    // Collect a finished backtest's result. The simulation is started separately
+    // (`startSimulation`, a detached job) and its result stored server-side, so
+    // this endpoint just picks it up once the `simulation_finished` SSE fires —
+    // no long-held connection that a minutes-long run could fail with a
+    // `FETCH_ERROR`. Strategy-agnostic URL (keyed by `rule_id`), but the cache key
+    // / tag stays per `strategy:ruleId` so a rule edit invalidates it and tpsl1 /
+    // tpsl2 don't share an entry. A cancelled run resolves to `{ cancelled: true }`;
+    // callers type-guard on the shape. Driven imperatively from
+    // `fetchSimulateCached` — see `store/strategyResultCache.ts`.
+    getStrategySimulateResult: builder.query<
       SimulatedTokenResult[] | { cancelled: true },
       StrategyRuleArg
     >({
-      query: (a) =>
-        withAnalysisRange(
-          `/api/strategies/${a.strategy}/rules/${encodeURIComponent(a.ruleId)}/simulate`,
-          a,
-        ),
+      query: (a) => `/api/jobs/simulations/${encodeURIComponent(a.ruleId)}/result`,
       providesTags: (_r, _e, a) => [strategyResultTag(a)],
       keepUnusedDataFor: 60,
     }),

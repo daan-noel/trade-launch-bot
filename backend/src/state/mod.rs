@@ -2,6 +2,7 @@ pub mod app_state;
 pub mod backtest_trade_cache;
 pub mod ingest_health;
 pub mod job_progress;
+pub mod sim_results;
 pub mod swing_run_cache;
 pub mod token_cache;
 pub mod token_list_cache;
