@@ -7,6 +7,11 @@
 //!
 //! The gates, all inert at `None`/`0`:
 //!   • `p_entry_min_age_secs`      — skip the launch spike (entry age ≥ N s after t0).
+//!   • `p_entry_max_age_secs`      — entry-window ceiling (entry age ≤ N s after t0).
+//!     A bound, NOT a positive gate: it never makes a rule enter on its own, so it
+//!     is deliberately excluded from `rule_configures_any_scalp_gate`. Because the
+//!     ceiling lives here, the backtest, paper, and real paths all stop entering
+//!     past it by construction — the live deadline merely derives from it.
 //!   • `p_entry_min_alive_sol`     — still trading (total SOL in the trailing window).
 //!   • `p_entry_min_organic_sol`   — new people buying (net SOL by outside wallets).
 //!   • `p_entry_pullback_pct` (+ `p_entry_higher_low_secs`) — higher-low continuation shape.
@@ -319,6 +324,9 @@ pub fn find_scalp_entry_with_cohort_indexed<T: TradeRow>(
     }
 
     let min_age = none_if_zero_u64(rule.p_entry_min_age_secs).map(|v| v as i64);
+    // Entry-window ceiling (a bound, not a gate). Once a candidate's age exceeds
+    // it, no later candidate can qualify (age is monotonic), so we `break`.
+    let max_age = none_if_zero_u64(rule.p_entry_max_age_secs).map(|v| v as i64);
     let min_alive = none_if_zero_f64(rule.p_entry_min_alive_sol);
     let min_organic = none_if_zero_f64(rule.p_entry_min_organic_sol);
     let pullback = none_if_zero_f64(rule.p_entry_pullback_pct);
@@ -389,6 +397,14 @@ pub fn find_scalp_entry_with_cohort_indexed<T: TradeRow>(
         }
 
         let age_secs = (block_time - first_time).num_seconds();
+        // Past the entry-window ceiling: no later (older) candidate can qualify, so
+        // stop the walk entirely. This is the shared bound that keeps sim/paper/real
+        // honoring the identical window.
+        if let Some(max) = max_age {
+            if age_secs > max {
+                break;
+            }
+        }
         let cohort_held_ratio = if cohort_bought > 0.0 {
             cohort_net_tokens.max(0.0) / cohort_bought
         } else {
@@ -603,6 +619,36 @@ mod tests {
     }
 
     #[test]
+    fn max_age_gate_rejects_entries_past_the_ceiling() {
+        // Candidates at +0s, +4s, +12s. A 10s ceiling rejects the +12s trade; a
+        // floor+ceiling window of [2, 10] admits only the +4s trade.
+        let trades = vec![pbuy(1.0, 1, 0), pbuy(1.0, 2, 4), pbuy(1.0, 3, 12)];
+
+        // Ceiling alone is NOT a positive gate: a rule with only max_age set never
+        // enters (it isn't a configured scalp gate).
+        let mut ceiling_only = rule();
+        ceiling_only.p_entry_max_age_secs = Some(10);
+        assert!(
+            find_scalp_entry(&trades, &ceiling_only).is_none(),
+            "max_age alone must not make a rule enter"
+        );
+
+        // Window [2, 10]: the +0s trade is too young, the +12s too old, so the
+        // first (and only) qualifying candidate is the +4s trade.
+        let mut windowed = rule();
+        windowed.p_entry_min_age_secs = Some(2);
+        windowed.p_entry_max_age_secs = Some(10);
+        let fill = find_scalp_entry(&trades, &windowed).expect("the +4s trade is inside the window");
+        assert_eq!(fill.block_time, base_time() + chrono::Duration::seconds(4));
+
+        // A min_age beyond the ceiling leaves an empty window → no entry.
+        let mut empty = rule();
+        empty.p_entry_min_age_secs = Some(13);
+        empty.p_entry_max_age_secs = Some(10);
+        assert!(find_scalp_entry(&trades, &empty).is_none(), "empty window enters nothing");
+    }
+
+    #[test]
     fn alive_gate_requires_recent_volume() {
         let mut r = rule();
         r.p_entry_min_alive_sol = Some(2.0);
@@ -669,6 +715,7 @@ mod tests {
             return None;
         }
         let min_age = none_if_zero_u64(rule.p_entry_min_age_secs).map(|v| v as i64);
+        let max_age = none_if_zero_u64(rule.p_entry_max_age_secs).map(|v| v as i64);
         let min_alive = none_if_zero_f64(rule.p_entry_min_alive_sol);
         let min_organic = none_if_zero_f64(rule.p_entry_min_organic_sol);
         let pullback = none_if_zero_f64(rule.p_entry_pullback_pct);
@@ -683,6 +730,7 @@ mod tests {
             }
             let prefix = &trades[..=i];
             let Some(f) = scalp_features(prefix) else { continue };
+            if max_age.is_some_and(|m| f.age_secs > m) { break; }
             if min_age.is_some_and(|m| f.age_secs < m) { continue; }
             if min_alive.is_some_and(|m| f.alive_sol < m) { continue; }
             if min_organic.is_some_and(|m| f.organic_sol < m) { continue; }
@@ -726,17 +774,26 @@ mod tests {
             },
         ];
 
-        // Sweep several gate combinations; each must agree with the oracle.
-        let combos: &[(Option<u64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>)] = &[
-            (Some(5), None, None, None, None, None),
-            (None, Some(2.0), None, None, None, None),
-            (None, None, Some(1.0), None, None, None),
-            (None, None, None, Some(30.0), None, None), // cohort-held %: ≤ 30%
-            (None, None, None, None, Some(10.0), None),
-            (None, None, None, None, None, Some(5.0)),
-            (Some(5), Some(1.0), Some(1.0), Some(50.0), Some(5.0), Some(1.0)),
+        // Sweep several gate combinations; each must agree with the oracle. The
+        // trailing field is `max_age` (the entry-window ceiling) so the linearized
+        // `break` is pinned against the oracle alongside every other gate.
+        type Combo = (Option<u64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<u64>);
+        let combos: &[Combo] = &[
+            (Some(5), None, None, None, None, None, None),
+            (None, Some(2.0), None, None, None, None, None),
+            (None, None, Some(1.0), None, None, None, None),
+            (None, None, None, Some(30.0), None, None, None), // cohort-held %: ≤ 30%
+            (None, None, None, None, Some(10.0), None, None),
+            (None, None, None, None, None, Some(5.0), None),
+            (Some(5), Some(1.0), Some(1.0), Some(50.0), Some(5.0), Some(1.0), None),
+            // max_age alone is inert (not a positive gate) → no entry.
+            (None, None, None, None, None, None, Some(5)),
+            // min_age floor paired with a max_age ceiling = a real window.
+            (Some(1), None, None, None, None, None, Some(8)),
+            // A real gate under a tight ceiling that cuts the walk short.
+            (None, Some(1.0), None, None, None, None, Some(2)),
         ];
-        for &(age, alive, organic, cohort_held, liq, organic_liq) in combos {
+        for &(age, alive, organic, cohort_held, liq, organic_liq, max_age) in combos {
             let mut r = rule();
             r.p_entry_min_age_secs = age;
             r.p_entry_min_alive_sol = alive;
@@ -744,11 +801,12 @@ mod tests {
             r.p_entry_max_cohort_held = cohort_held;
             r.p_entry_min_liquidity_sol = liq;
             r.p_entry_min_organic_liq = organic_liq;
+            r.p_entry_max_age_secs = max_age;
             assert_eq!(
                 find_scalp_entry(&trades, &r),
                 scalp_entry_oracle(&trades, &r),
                 "linearized find_scalp_entry diverged from the per-prefix oracle for combo {:?}",
-                (age, alive, organic, cohort_held, liq, organic_liq)
+                (age, alive, organic, cohort_held, liq, organic_liq, max_age)
             );
         }
     }

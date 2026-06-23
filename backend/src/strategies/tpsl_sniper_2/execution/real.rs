@@ -168,25 +168,43 @@ impl BuyRetryCfg {
     }
 }
 
-/// Window + fallback-tick timing for the scalp-entry arming wait
-/// ([`await_scalp_entry_signal`]). Separate from [`BuyRetryCfg`] because the entry
-/// signal can take far longer to form than a buy fill takes to index. `for_rule`
-/// sizes the window to the rule's own time gates (see `scalp_arming_attempts`);
-/// tests construct it directly. Total window = `attempts × interval`.
+/// How long the scalp-entry watch ([`await_scalp_entry_signal`]) keeps watching
+/// the feed before giving up. Derived from `p_entry_max_age_secs`: a set ceiling is
+/// self-limiting; `None` watches until the token dies (bounded by the global
+/// concurrent-armer cap). The shared `find_scalp_entry` ceiling is the real guard,
+/// so this is only an early-exit that frees the entry slot promptly.
+#[derive(Clone, Copy)]
+pub(crate) enum ScalpWatchWindow {
+    /// Stop watching once this much wall-clock has elapsed since arming began — the
+    /// `created_at + max_age` deadline (arming starts ≈ at token creation, so this
+    /// over-watches slightly if arming lagged; the gate's own ceiling is the guard).
+    MaxAge(Duration),
+    /// No ceiling: watch until `is_dead` or the concurrent-armer cap evicts.
+    UntilDead,
+}
+
+/// Window + fallback-tick timing for the scalp-entry watch. Separate from
+/// [`BuyRetryCfg`] because the entry signal can take far longer to form than a buy
+/// fill takes to index. `for_rule` derives the window from the rule's entry-window
+/// ceiling; tests construct it directly.
 #[derive(Clone, Copy)]
 pub(crate) struct ScalpWaitCfg {
-    /// Number of `interval`-long units in the arming window (total = attempts × interval).
-    attempts: usize,
+    window: ScalpWatchWindow,
     /// Bounded fallback tick between cache checks when no notify arrives.
     interval: Duration,
 }
 
 impl ScalpWaitCfg {
-    /// Window sized to the rule's gates, so a larger min-age / higher-low widens it
-    /// automatically — no fixed timeout to keep in sync with the params by hand.
+    /// Window derived from the rule's `p_entry_max_age_secs` (see
+    /// [`scalp_watch_window`](super::scalp_watch_window)) — a finite ceiling, or
+    /// until-dead when unset. No fixed timeout to keep in sync by hand.
     pub(crate) fn for_rule(rule: &Tpsl2Rule) -> Self {
+        let window = match super::scalp_watch_window(rule) {
+            Some(max) => ScalpWatchWindow::MaxAge(max),
+            None => ScalpWatchWindow::UntilDead,
+        };
         Self {
-            attempts: super::scalp_arming_attempts(rule),
+            window,
             interval: Duration::from_millis(super::SCALP_ENTRY_WAIT_INTERVAL_MS),
         }
     }
@@ -196,9 +214,15 @@ impl ScalpWaitCfg {
 /// trade feed (waking on the `TradeSignals` mint lane) until
 /// [`find_scalp_entry`](super::super::entry::find_scalp_entry)
 /// holds on some trade, arming the snipe buy. Returns the qualifying
-/// [`EntryFill`] (the **trigger trade**) once armed, or `None` if the window
-/// elapses without a signal (the caller then drops the unentered position,
-/// exactly as a missed buy does).
+/// [`EntryFill`] (the **trigger trade**) once armed, or `None` if the watch ends
+/// without a signal (the caller then drops the unentered position, exactly as a
+/// missed buy does).
+///
+/// The watch ends when: a signal fires (returns `Some`); the token dies; the
+/// `MaxAge` deadline elapses; or — in `UntilDead` mode — the concurrent-armer cap
+/// evicts this watch (see [`Tpsl2RuntimeCache::begin_until_dead_armer`]). The
+/// shared `find_scalp_entry` ceiling guarantees no entry past `max_age` regardless,
+/// so the deadline is purely an early-exit that frees the entry slot.
 ///
 /// In real mode the qualifying trade is only the **timing** signal — the actual
 /// entry price comes from the wallet's own on-chain fill, recorded later by
@@ -210,22 +234,27 @@ impl ScalpWaitCfg {
 pub(crate) async fn await_scalp_entry_signal(
     mint: &str,
     rule: &Tpsl2Rule,
+    position_id: Uuid,
     token_cache: &TokenCache,
     trade_signals: &Arc<TradeSignals>,
+    runtime: &Arc<Tpsl2RuntimeCache>,
     cfg: ScalpWaitCfg,
 ) -> Option<EntryFill> {
     // Wake the instant a trade lands for this mint instead of re-reading the cache
     // on a fixed timer: the ingest pipeline pings the mint lane (`notify_mint`)
     // right after it appends the trade to the cache. The arming signal watches all
     // trades on the mint, not a single wallet, so it uses the mint-only lane (any
-    // wallet wakes it). A bounded fallback tick keeps the wait honest — capped at
-    // the window — if a notify is ever missed.
+    // wallet wakes it). A bounded fallback tick keeps the wait honest if a notify
+    // is ever missed.
     let guard = trade_signals.register_mint(mint);
 
-    // Same total window as the old poll loop (attempts × interval), so a larger
-    // min-age / higher-low still widens it automatically — no fixed timeout to keep
-    // in sync with the params by hand.
-    let deadline = Instant::now() + cfg.interval * cfg.attempts as u32;
+    // A bounded (max-age) watch is self-limiting via its deadline; an until-dead
+    // watch instead occupies a capped armer slot so a never-dying token can't pin
+    // it (and its `token_cache` entry) forever. Held for the watch's lifetime.
+    let (armer_guard, deadline) = match cfg.window {
+        ScalpWatchWindow::MaxAge(max) => (None, Some(Instant::now() + max)),
+        ScalpWatchWindow::UntilDead => (Some(runtime.begin_until_dead_armer(position_id)), None),
+    };
 
     // Re-walk the O(n) `find_scalp_entry` only when the token's (monotonic)
     // `trade_count` advanced; `None` forces the first walk.
@@ -250,23 +279,37 @@ pub(crate) async fn await_scalp_entry_signal(
                 }
             }
             // The token died before the signal formed: a dead token draws no more
-            // meaningful trades, so the scalp entry can never fire — stop waiting
-            // out the rest of the arming window. Returning `None` now lets the
-            // caller drop the unentered position promptly (and unpin the dead token
-            // from `token_cache`) instead of holding it for up to a full minute.
+            // meaningful trades, so the scalp entry can never fire — stop watching.
+            // Returning `None` now lets the caller drop the unentered position
+            // promptly (and unpin the dead token from `token_cache`). This is the
+            // primary terminator for an until-dead watch.
             if state.is_dead(Utc::now()) {
                 debug!(mint = %mint, "scalp arming aborted: token died before entry signal");
                 return None;
             }
         }
 
-        let now = Instant::now();
-        if now >= deadline {
-            return None;
+        // Evicted by a newer until-dead armer because the cap was reached — bail so
+        // the slot frees and the unentered position is dropped.
+        if let Some(g) = &armer_guard {
+            if g.is_cancelled() {
+                debug!(mint = %mint, "scalp arming aborted: evicted by the until-dead armer cap");
+                return None;
+            }
         }
-        // Wake on the next trade for this mint, or a bounded fallback tick (≤ the
-        // poll interval, never past the deadline).
-        let tick = (deadline - now).min(cfg.interval);
+
+        // Bounded mode: stop at the deadline. Until-dead mode has no time bound —
+        // it loops on the fallback tick until death or eviction.
+        let now = Instant::now();
+        let tick = match deadline {
+            Some(dl) => {
+                if now >= dl {
+                    return None;
+                }
+                (dl - now).min(cfg.interval)
+            }
+            None => cfg.interval,
+        };
         tokio::select! {
             _ = notified.as_mut() => {}
             _ = sleep(tick) => {}

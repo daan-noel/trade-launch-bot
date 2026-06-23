@@ -40,6 +40,7 @@ pub struct RuleResponse {
     pub p_exit_liquidity_drop_pct: Option<f64>,
     // Scalp-continuation gates (see tpsl-scalp-continuation-plan.md).
     pub p_entry_min_age_secs: Option<u64>,
+    pub p_entry_max_age_secs: Option<u64>,
     pub p_entry_min_alive_sol: Option<f64>,
     pub p_entry_min_organic_sol: Option<f64>,
     pub p_entry_pullback_pct: Option<f64>,
@@ -130,6 +131,7 @@ impl RuleResponse {
             p_exit_stall_secs: r.p_exit_stall_secs,
             p_exit_liquidity_drop_pct: r.p_exit_liquidity_drop_pct,
             p_entry_min_age_secs: r.p_entry_min_age_secs,
+            p_entry_max_age_secs: r.p_entry_max_age_secs,
             p_entry_min_alive_sol: r.p_entry_min_alive_sol,
             p_entry_min_organic_sol: r.p_entry_min_organic_sol,
             p_entry_pullback_pct: r.p_entry_pullback_pct,
@@ -204,6 +206,8 @@ pub struct CreateRuleRequest {
     #[serde(default)]
     pub p_entry_min_age_secs: Option<u64>,
     #[serde(default)]
+    pub p_entry_max_age_secs: Option<u64>,
+    #[serde(default)]
     pub p_entry_min_alive_sol: Option<f64>,
     #[serde(default)]
     pub p_entry_min_organic_sol: Option<f64>,
@@ -234,6 +238,7 @@ pub struct UpdateRuleRequest {
     pub p_exit_liquidity_drop_pct: Option<f64>,
     // Scalp-continuation gates; present → set (0 disables, per ignore_zero).
     pub p_entry_min_age_secs: Option<u64>,
+    pub p_entry_max_age_secs: Option<u64>,
     pub p_entry_min_alive_sol: Option<f64>,
     pub p_entry_min_organic_sol: Option<f64>,
     pub p_entry_pullback_pct: Option<f64>,
@@ -283,6 +288,7 @@ impl UpdateRuleRequest {
             || self.p_exit_liquidity_drop_pct.is_some()
             || self.p_exit_cohort_ratio.is_some()
             || self.p_entry_min_age_secs.is_some()
+            || self.p_entry_max_age_secs.is_some()
             || self.p_entry_min_alive_sol.is_some()
             || self.p_entry_min_organic_sol.is_some()
             || self.p_entry_pullback_pct.is_some()
@@ -327,6 +333,22 @@ fn validate_percent_ranges(rule: &Tpsl2Rule) -> Result<(), String> {
     let held = rule.p_entry_max_cohort_held.unwrap_or(0.0);
     if !(0.0..=100.0).contains(&held) {
         return Err("Max Cohort Held % must be between 0 and 100".into());
+    }
+    Ok(())
+}
+
+/// Reject an empty entry window: when both `p_entry_min_age_secs` (floor) and
+/// `p_entry_max_age_secs` (ceiling) are set, the ceiling must be strictly greater
+/// than the floor, else `[min_age, max_age]` admits nothing. `0`/`None` disables
+/// each bound (ignore_zero), so a one-sided window is always valid.
+fn validate_entry_window(rule: &Tpsl2Rule) -> Result<(), String> {
+    let nz = |v: Option<u64>| v.filter(|&x| x != 0);
+    if let (Some(min), Some(max)) = (nz(rule.p_entry_min_age_secs), nz(rule.p_entry_max_age_secs)) {
+        if max <= min {
+            return Err(format!(
+                "Max Age ({max}s) must be greater than Min Age ({min}s)"
+            ));
+        }
     }
     Ok(())
 }
@@ -422,6 +444,7 @@ pub async fn create_tpsl_rule(
     // Scalp-continuation gates are set post-`new()` (so the shared model's
     // constructor signature — and tpsl1's call sites — stay untouched).
     rule.p_entry_min_age_secs = req.p_entry_min_age_secs;
+    rule.p_entry_max_age_secs = req.p_entry_max_age_secs;
     rule.p_entry_min_alive_sol = req.p_entry_min_alive_sol;
     rule.p_entry_min_organic_sol = req.p_entry_min_organic_sol;
     rule.p_entry_pullback_pct = req.p_entry_pullback_pct;
@@ -439,6 +462,9 @@ pub async fn create_tpsl_rule(
             .json(serde_json::json!({"error": "Rule configures no scalp entry gate"}));
     }
     if let Err(msg) = validate_percent_ranges(&rule) {
+        return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }));
+    }
+    if let Err(msg) = validate_entry_window(&rule) {
         return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }));
     }
 
@@ -522,6 +548,9 @@ pub async fn update_tpsl_rule(
             if let Some(v) = req.p_entry_min_age_secs {
                 rule.p_entry_min_age_secs = Some(v);
             }
+            if let Some(v) = req.p_entry_max_age_secs {
+                rule.p_entry_max_age_secs = Some(v);
+            }
             if let Some(v) = req.p_entry_min_alive_sol {
                 rule.p_entry_min_alive_sol = Some(v);
             }
@@ -597,6 +626,9 @@ pub async fn update_tpsl_rule(
                     .json(serde_json::json!({"error": "Rule configures no scalp entry gate"}));
             }
             if let Err(msg) = validate_percent_ranges(&rule) {
+                return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }));
+            }
+            if let Err(msg) = validate_entry_window(&rule) {
                 return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }));
             }
 

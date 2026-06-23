@@ -40,6 +40,7 @@ function fingerprintKey(r: RuleRecord): string {
 function entryKey(r: RuleRecord): string {
   return [
     r.p_entry_min_age_secs ?? '',
+    r.p_entry_max_age_secs ?? '',
     r.p_entry_min_alive_sol ?? '',
     r.p_entry_min_organic_sol ?? '',
     r.p_entry_pullback_pct ?? '',

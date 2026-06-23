@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use chrono::{DateTime, Utc};
@@ -100,6 +101,43 @@ impl Drop for EntryGuard {
     }
 }
 
+/// RAII slot for an **until-dead** scalp armer — a real/paper entry watch with no
+/// `p_entry_max_age_secs` ceiling, which would otherwise pin a never-dying token
+/// (and its `token_cache` entry / `paper_poll_sem` permit) indefinitely. While
+/// held, `position_id` occupies one of the [`MAX_UNTIL_DEAD_ARMERS`] slots; the
+/// armer polls [`is_cancelled`](UntilDeadArmerGuard::is_cancelled) each tick and
+/// bails if a newer armer evicted it. Dropping it — normal return, eviction, or a
+/// panic — frees the slot. A max-age-bounded armer is self-limiting (its deadline)
+/// and takes no slot.
+pub struct UntilDeadArmerGuard {
+    registry: Arc<DashMap<Uuid, UntilDeadArmerSlot>>,
+    position_id: Uuid,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl UntilDeadArmerGuard {
+    /// True once a newer armer evicted this one because the cap was reached. The
+    /// watch loop checks this each tick and returns (dropping its unentered
+    /// position), so the freed slot is reclaimed promptly.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for UntilDeadArmerGuard {
+    fn drop(&mut self) {
+        self.registry.remove(&self.position_id);
+    }
+}
+
+/// Registry value behind an [`UntilDeadArmerGuard`]: a monotonic `seq` (the
+/// eviction order — smallest = oldest) and the shared cancel flag.
+#[derive(Clone)]
+struct UntilDeadArmerSlot {
+    seq: u64,
+    cancelled: Arc<AtomicBool>,
+}
+
 /// In-memory TPSL state for the strategy hot path (rules + open positions + rule counters).
 ///
 /// Counters are mode-aware: for real rules `total_count_by_rule` is all-time
@@ -153,6 +191,14 @@ pub struct Tpsl2RuntimeCache {
     /// skip). After a crash the set is empty, so every reloaded `BuySubmitted` row
     /// is recoverable. The RAII guard frees the slot on drop incl. a panic.
     entering: Arc<DashSet<Uuid>>,
+    /// Active **until-dead** scalp armers (entry watches with no `max_age`
+    /// ceiling), keyed by position id. Bounded to [`MAX_UNTIL_DEAD_ARMERS`]: when
+    /// full, the oldest un-entered armer is evicted so a never-dying token can't
+    /// pin an unbounded number of watches (and their `token_cache` entries). A
+    /// max-age-bounded armer is self-limiting and never registers here.
+    until_dead_armers: Arc<DashMap<Uuid, UntilDeadArmerSlot>>,
+    /// Monotonic counter assigning each until-dead armer its eviction-order `seq`.
+    armer_seq: Arc<AtomicU64>,
     /// Cold-lane broadcast — every position transition emits a `TpslPositionsChanged`
     /// signal so SSE clients refetch the affected rule's positions in real time
     /// instead of polling.
@@ -161,6 +207,15 @@ pub struct Tpsl2RuntimeCache {
 
 /// Max concurrent paper fill-poll tasks (entry + exit) for this strategy.
 const PAPER_POLL_CONCURRENCY: usize = 64;
+
+/// Max concurrent **until-dead** scalp armers (real + paper) — entry watches with
+/// no `p_entry_max_age_secs` ceiling. A healthy pumping token never satisfies
+/// `is_dead` (liquidity-depletion + quiet), so an until-dead watch on one could
+/// pin its `token_cache` entry forever; this caps how many such watches run at
+/// once. When full, [`begin_until_dead_armer`](Tpsl2RuntimeCache::begin_until_dead_armer)
+/// evicts the oldest un-entered armer. Bounded (max-age) armers are self-limiting
+/// and don't count against this.
+const MAX_UNTIL_DEAD_ARMERS: usize = 32;
 
 impl Tpsl2RuntimeCache {
     pub fn new(sse_tx: broadcast::Sender<SseEvent>) -> Self {
@@ -177,6 +232,8 @@ impl Tpsl2RuntimeCache {
             paper_poll_sem: Arc::new(Semaphore::new(PAPER_POLL_CONCURRENCY)),
             exiting: Arc::new(DashSet::new()),
             entering: Arc::new(DashSet::new()),
+            until_dead_armers: Arc::new(DashMap::new()),
+            armer_seq: Arc::new(AtomicU64::new(0)),
             sse_tx,
         }
     }
@@ -235,6 +292,52 @@ impl Tpsl2RuntimeCache {
     #[cfg(test)]
     pub fn is_entering(&self, position_id: Uuid) -> bool {
         self.entering.contains(&position_id)
+    }
+
+    /// Claim an **until-dead** scalp-armer slot for `position_id` (an entry watch
+    /// with no `max_age` ceiling). Bounded to [`MAX_UNTIL_DEAD_ARMERS`]: when full,
+    /// the OLDEST un-entered armer is evicted — its
+    /// [`is_cancelled`](UntilDeadArmerGuard::is_cancelled) flips true so its watch
+    /// loop bails and drops its unentered position — and the eviction is logged (no
+    /// silent cap; data-scale guardrail). The returned guard frees this slot on
+    /// drop (normal return, eviction, or panic). Hold it only for the duration of
+    /// the watch: once armed (an entry is found), drop it so the slot frees while
+    /// the buy proceeds.
+    pub fn begin_until_dead_armer(&self, position_id: Uuid) -> UntilDeadArmerGuard {
+        // A position re-arming reuses its own slot — clear any stale entry first so
+        // it never evicts itself or double-counts against the cap.
+        self.until_dead_armers.remove(&position_id);
+        // Evict oldest while at capacity. `min_by_key` consumes the iterator and we
+        // copy out the key + cancel flag before `remove`, so no DashMap ref is held
+        // across the mutation (avoids the iter-while-remove deadlock).
+        while self.until_dead_armers.len() >= MAX_UNTIL_DEAD_ARMERS {
+            let oldest = self
+                .until_dead_armers
+                .iter()
+                .min_by_key(|e| e.value().seq)
+                .map(|e| (*e.key(), e.value().cancelled.clone()));
+            match oldest {
+                Some((id, cancelled)) => {
+                    cancelled.store(true, Ordering::Release);
+                    self.until_dead_armers.remove(&id);
+                    tracing::warn!(
+                        evicted_position = %id,
+                        cap = MAX_UNTIL_DEAD_ARMERS,
+                        "until-dead scalp-armer cap reached; evicting the oldest un-entered armer"
+                    );
+                }
+                None => break,
+            }
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let seq = self.armer_seq.fetch_add(1, Ordering::Relaxed);
+        self.until_dead_armers
+            .insert(position_id, UntilDeadArmerSlot { seq, cancelled: cancelled.clone() });
+        UntilDeadArmerGuard {
+            registry: self.until_dead_armers.clone(),
+            position_id,
+            cancelled,
+        }
     }
 
     pub async fn load_from_db(&self, pool: &PgPool) -> anyhow::Result<()> {

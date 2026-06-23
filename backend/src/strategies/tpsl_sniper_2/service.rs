@@ -324,8 +324,10 @@ impl Tpsl2StrategyService {
                     let armed = super::execution::real::await_scalp_entry_signal(
                         &mint,
                         &rule_owned,
+                        position_id,
                         &token_cache,
                         &trade_signals,
+                        &runtime,
                         super::execution::real::ScalpWaitCfg::for_rule(&rule_owned),
                     )
                     .await;

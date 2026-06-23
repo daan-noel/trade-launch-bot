@@ -9,6 +9,8 @@
 pub mod paper;
 pub mod real;
 
+use std::time::Duration;
+
 use super::util::none_if_zero_u64;
 use crate::models::Tpsl2Rule;
 
@@ -36,34 +38,25 @@ pub(crate) const PAPER_EXIT_POLL_INTERVAL_MS: u64 = 500;
 /// deadline (when `seq` advanced) so no clear is ever missed.
 pub(crate) const SELL_BALANCE_QUERY_MIN_INTERVAL_MS: u64 = 250;
 
-// ── Scalp-entry arming window ────────────────────────────────────────────────
+// ── Scalp-entry watch window ─────────────────────────────────────────────────
 // The scalp gates take far longer to come true than a buy fill takes to index, so
-// the *wait for the entry signal* gets its own window — sized to the rule, not a
-// fixed number. Both the real arming wait (`await_scalp_entry_signal`) and the
-// paper entry poll watch the live feed for the first trade where
-// `entry::find_scalp_entry` holds; the backtest has no such cutoff (it walks the
-// complete history), so the window only bounds how closely a live run matches sim.
+// the live *wait for the entry signal* needs a watch budget. That budget now
+// derives entirely from `p_entry_max_age_secs` (the entry-window ceiling): a set
+// ceiling gives a finite, self-limiting watch (`created_at + max_age`); `None`/`0`
+// means watch until the token dies (`is_dead`), bounded only by the global
+// concurrent-armer cap (see `Tpsl2RuntimeCache::begin_until_dead_armer`). The
+// shared `find_scalp_entry` ceiling is the real guard — sim/paper/real all stop
+// entering past `max_age` by construction — so the live deadline is just an
+// early-exit that frees the entry slot promptly.
 
-/// Poll cadence for the arming wait.
+/// Poll cadence + bounded fallback tick for the scalp-entry watch.
 pub(crate) const SCALP_ENTRY_WAIT_INTERVAL_MS: u64 = 1_000;
 
-/// Slack added on top of a rule's own time-based gates when sizing the arming
-/// window — room for a qualifying trade to appear *after* the age threshold and
-/// for the volume/pullback gates to settle. The only knob to tune by hand; the
-/// rest of the window tracks the configured gates automatically.
-pub(crate) const SCALP_ARMING_BASE_SECS: u64 = 60;
-
-/// How many poll ticks the live path watches for a rule's scalp entry signal before
-/// giving up, **derived from the rule** so a larger `p_entry_min_age_secs` /
-/// `p_entry_higher_low_secs` widens the window automatically — no constant to keep
-/// in sync by hand. A rule with no time gates still gets `SCALP_ARMING_BASE_SECS`.
-pub(crate) fn scalp_arming_attempts(rule: &Tpsl2Rule) -> usize {
-    let min_age = none_if_zero_u64(rule.p_entry_min_age_secs).unwrap_or(0);
-    let higher_low = none_if_zero_u64(rule.p_entry_higher_low_secs).unwrap_or(0);
-    let window_ms = SCALP_ARMING_BASE_SECS
-        .saturating_add(min_age)
-        .saturating_add(higher_low)
-        .saturating_mul(1_000);
-    // One tick per interval; never fewer than one so the feed is checked at least once.
-    (window_ms / SCALP_ENTRY_WAIT_INTERVAL_MS).max(1) as usize
+/// The live watch budget for a rule, derived from its entry-window ceiling:
+/// `Some(max_age)` ⇒ watch at most that long after arming starts; `None` ⇒ no
+/// ceiling, so the caller watches until the token dies (capped by the
+/// concurrent-armer limit). Mirrors the `max_age` the shared `find_scalp_entry`
+/// gate enforces, so the live deadline can never admit an entry the gate rejects.
+pub(crate) fn scalp_watch_window(rule: &Tpsl2Rule) -> Option<Duration> {
+    none_if_zero_u64(rule.p_entry_max_age_secs).map(Duration::from_secs)
 }

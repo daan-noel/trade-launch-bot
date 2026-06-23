@@ -74,6 +74,11 @@ export const TPSL_PARAM_HELP = {
     body:
       "Wait until the token is at least this many seconds old (measured from its first trade) before buying, skipping the wild first moments after launch. Blank or 0 turns it off.",
   },
+  maxAgeSecs: {
+    title: 'Max Age (seconds)',
+    body:
+      "Upper bound of the entry window: stop buying once the token is older than this many seconds (measured from its first trade), so you only scalp the early window. Together with Min Age this forms the window [Min Age, Max Age], and Max Age must be greater than Min Age. Blank or 0 means no ceiling — entries stay open until dead.",
+  },
   minAliveSol: {
     title: 'Min Alive SOL',
     body:

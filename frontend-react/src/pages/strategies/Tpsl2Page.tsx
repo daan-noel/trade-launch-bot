@@ -916,6 +916,14 @@ export function Tpsl2Page() {
         return;
       }
     }
+    // Entry window [Min Age, Max Age]: when both bounds are set (non-zero), the
+    // ceiling must sit above the floor — the backend rejects max <= min with 400.
+    const minAge = parseInt(form.minAgeSecs, 10);
+    const maxAge = parseInt(form.maxAgeSecs, 10);
+    if (minAge > 0 && maxAge > 0 && maxAge <= minAge) {
+      setFormError(`Max Age (${maxAge}s) must be greater than Min Age (${minAge}s)`);
+      return;
+    }
 
     setFormLoading(true);
     try {

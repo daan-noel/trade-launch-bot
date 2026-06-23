@@ -364,6 +364,21 @@ export const ruleColumns: ColumnDef<RuleRecord>[] = [
       searchValue: (r) => String(r.p_entry_min_age_secs ?? ''),
     },
     {
+      key: 'max_age',
+      label: 'Max Age',
+      tooltip: paramTip('maxAgeSecs'),
+      group: 'entry',
+      sortable: true,
+      render: (r) =>
+        r.p_entry_max_age_secs ? (
+          <span className="font-mono text-accent">{formatAge(r.p_entry_max_age_secs)}</span>
+        ) : (
+          <span className="text-text-dim">until dead</span>
+        ),
+      sortValue: (r) => r.p_entry_max_age_secs ?? 0,
+      searchValue: (r) => String(r.p_entry_max_age_secs ?? ''),
+    },
+    {
       key: 'min_alive',
       label: 'Min Alive',
       tooltip: paramTip('minAliveSol'),

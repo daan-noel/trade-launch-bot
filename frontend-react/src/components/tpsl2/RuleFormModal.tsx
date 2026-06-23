@@ -64,6 +64,7 @@ export interface RuleFormData {
   liquidityDropPct: string;
   // Scalp-continuation gates (0/blank = disabled).
   minAgeSecs: string;
+  maxAgeSecs: string;
   minAliveSol: string;
   minOrganicSol: string;
   pullbackPct: string;
@@ -95,6 +96,7 @@ export function emptyForm(): RuleFormData {
     stallSecs: '',
     liquidityDropPct: '',
     minAgeSecs: '',
+    maxAgeSecs: '',
     minAliveSol: '',
     minOrganicSol: '',
     pullbackPct: '',
@@ -130,6 +132,7 @@ export function formFromRule(rule: RuleRecord): RuleFormData {
     stallSecs: rule.p_exit_stall_secs?.toString() ?? '',
     liquidityDropPct: rule.p_exit_liquidity_drop_pct?.toString() ?? '',
     minAgeSecs: rule.p_entry_min_age_secs?.toString() ?? '',
+    maxAgeSecs: rule.p_entry_max_age_secs?.toString() ?? '',
     minAliveSol: rule.p_entry_min_alive_sol?.toString() ?? '',
     minOrganicSol: rule.p_entry_min_organic_sol?.toString() ?? '',
     pullbackPct: rule.p_entry_pullback_pct?.toString() ?? '',
@@ -374,6 +377,11 @@ export function RuleFormModal({
               onChange={(e) => set({ minAgeSecs: e.target.value })} className={fieldCls('entry')} placeholder="0 = off" />
           </label>
           <label className="flex flex-col gap-1.5">
+            <FieldLabel help="maxAgeSecs">Max Age (s)</FieldLabel>
+            <Input type="number" blankZero fieldSize="md" step="1" value={form.maxAgeSecs} readOnly={!editable('entry')}
+              onChange={(e) => set({ maxAgeSecs: e.target.value })} className={fieldCls('entry')} placeholder="0 = until dead" />
+          </label>
+          <label className="flex flex-col gap-1.5">
             <FieldLabel help="minAliveSol">Min Alive SOL</FieldLabel>
             <Input type="number" blankZero fieldSize="md" step="0.01" unit="◎" value={form.minAliveSol} readOnly={!editable('entry')}
               onChange={(e) => set({ minAliveSol: e.target.value })} className={fieldCls('entry')} placeholder="0 = off" />
@@ -498,6 +506,7 @@ export function buildCreatePayload(form: RuleFormData) {
     p_exit_liquidity_drop_pct: parseOptF(form.liquidityDropPct) ?? null,
     // Scalp-continuation gates.
     p_entry_min_age_secs: parseOptU(form.minAgeSecs) ?? null,
+    p_entry_max_age_secs: parseOptU(form.maxAgeSecs) ?? null,
     p_entry_min_alive_sol: parseOptF(form.minAliveSol) ?? null,
     p_entry_min_organic_sol: parseOptF(form.minOrganicSol) ?? null,
     p_entry_pullback_pct: parseOptF(form.pullbackPct) ?? null,
@@ -547,6 +556,7 @@ export function buildUpdatePayload(form: RuleFormData, unlocked: LockGroupState)
   if (unlocked.entry) {
     // Scalp-continuation gates; 0 disables, per ignore_zero.
     payload.p_entry_min_age_secs = form.minAgeSecs.trim() ? parseInt(form.minAgeSecs, 10) : 0;
+    payload.p_entry_max_age_secs = form.maxAgeSecs.trim() ? parseInt(form.maxAgeSecs, 10) : 0;
     payload.p_entry_min_alive_sol = form.minAliveSol.trim() ? parseFloat(form.minAliveSol) : 0;
     payload.p_entry_min_organic_sol = form.minOrganicSol.trim()
       ? parseFloat(form.minOrganicSol)

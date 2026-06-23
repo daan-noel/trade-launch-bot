@@ -32,8 +32,9 @@ struct Tpsl2StrategyRuleDbRow {
     p_exit_time_stop_secs: Option<i64>,
     p_exit_stall_secs: Option<i64>,
     p_exit_liquidity_drop_pct: Option<f64>,
-    // Scalp-continuation gates (migration 0008).
+    // Scalp-continuation gates (migration 0001; max_age added in 0003).
     p_entry_min_age_secs: Option<i64>,
+    p_entry_max_age_secs: Option<i64>,
     p_entry_min_alive_sol: Option<f64>,
     p_entry_min_organic_sol: Option<f64>,
     p_entry_pullback_pct: Option<f64>,
@@ -70,6 +71,7 @@ impl From<Tpsl2StrategyRuleDbRow> for Tpsl2Rule {
             p_exit_stall_secs: r.p_exit_stall_secs.map(|v| v as u64),
             p_exit_liquidity_drop_pct: r.p_exit_liquidity_drop_pct,
             p_entry_min_age_secs: r.p_entry_min_age_secs.map(|v| v as u64),
+            p_entry_max_age_secs: r.p_entry_max_age_secs.map(|v| v as u64),
             p_entry_min_alive_sol: r.p_entry_min_alive_sol,
             p_entry_min_organic_sol: r.p_entry_min_organic_sol,
             p_entry_pullback_pct: r.p_entry_pullback_pct,
@@ -102,9 +104,9 @@ impl Tpsl2StrategyRuleRepo {
             INSERT INTO tpsl2_strategy_rules
                 (id, rule_name, p_token_initial_buy_sol, p_token_cu_limit, p_token_cu_price, p_token_max_sol_cost, p_token_spendable_sol_in, p_max_concurrent_tokens, p_max_total_tokens, p_token_ix_labels,
                  trade_mode, buy_amount, p_exit_take_profit, p_exit_stop_loss, tolerance_pct, is_active, created_at, updated_at, p_exit_trailing_stop_pct, p_exit_time_stop_secs, p_exit_stall_secs, p_exit_liquidity_drop_pct,
-                 p_entry_min_age_secs, p_entry_min_alive_sol, p_entry_min_organic_sol, p_entry_pullback_pct, p_entry_higher_low_secs, p_entry_max_cohort_held, p_entry_min_liquidity_sol, p_entry_min_organic_liq, p_exit_cohort_ratio)
+                 p_entry_min_age_secs, p_entry_min_alive_sol, p_entry_min_organic_sol, p_entry_pullback_pct, p_entry_higher_low_secs, p_entry_max_cohort_held, p_entry_min_liquidity_sol, p_entry_min_organic_liq, p_exit_cohort_ratio, p_entry_max_age_secs)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
-                    $23, $24, $25, $26, $27, $28, $29, $30, $31)
+                    $23, $24, $25, $26, $27, $28, $29, $30, $31, $32)
             "#,
         )
         .bind(rule.id)
@@ -138,6 +140,7 @@ impl Tpsl2StrategyRuleRepo {
         .bind(rule.p_entry_min_liquidity_sol)
         .bind(rule.p_entry_min_organic_liq)
         .bind(rule.p_exit_cohort_ratio)
+        .bind(rule.p_entry_max_age_secs.map(|v| v as i64))
         .execute(&self.pool)
         .await?;
 
@@ -150,7 +153,7 @@ impl Tpsl2StrategyRuleRepo {
             r#"
                  SELECT id, rule_name, p_token_initial_buy_sol, p_token_cu_limit, p_token_cu_price, p_token_max_sol_cost, p_token_spendable_sol_in, p_max_concurrent_tokens, p_max_total_tokens, p_token_ix_labels,
                      trade_mode, buy_amount, p_exit_take_profit, p_exit_stop_loss, p_exit_trailing_stop_pct, p_exit_time_stop_secs, p_exit_stall_secs, p_exit_liquidity_drop_pct,
-                     p_entry_min_age_secs, p_entry_min_alive_sol, p_entry_min_organic_sol, p_entry_pullback_pct, p_entry_higher_low_secs, p_entry_max_cohort_held, p_entry_min_liquidity_sol, p_entry_min_organic_liq, p_exit_cohort_ratio,
+                     p_entry_min_age_secs, p_entry_max_age_secs, p_entry_min_alive_sol, p_entry_min_organic_sol, p_entry_pullback_pct, p_entry_higher_low_secs, p_entry_max_cohort_held, p_entry_min_liquidity_sol, p_entry_min_organic_liq, p_exit_cohort_ratio,
                      tolerance_pct, is_active, created_at, updated_at
             FROM tpsl2_strategy_rules
             ORDER BY created_at DESC
@@ -168,7 +171,7 @@ impl Tpsl2StrategyRuleRepo {
             r#"
                  SELECT id, rule_name, p_token_initial_buy_sol, p_token_cu_limit, p_token_cu_price, p_token_max_sol_cost, p_token_spendable_sol_in, p_max_concurrent_tokens, p_max_total_tokens, p_token_ix_labels,
                      trade_mode, buy_amount, p_exit_take_profit, p_exit_stop_loss, p_exit_trailing_stop_pct, p_exit_time_stop_secs, p_exit_stall_secs, p_exit_liquidity_drop_pct,
-                     p_entry_min_age_secs, p_entry_min_alive_sol, p_entry_min_organic_sol, p_entry_pullback_pct, p_entry_higher_low_secs, p_entry_max_cohort_held, p_entry_min_liquidity_sol, p_entry_min_organic_liq, p_exit_cohort_ratio,
+                     p_entry_min_age_secs, p_entry_max_age_secs, p_entry_min_alive_sol, p_entry_min_organic_sol, p_entry_pullback_pct, p_entry_higher_low_secs, p_entry_max_cohort_held, p_entry_min_liquidity_sol, p_entry_min_organic_liq, p_exit_cohort_ratio,
                      tolerance_pct, is_active, created_at, updated_at
             FROM tpsl2_strategy_rules
             WHERE id = $1
@@ -189,8 +192,8 @@ impl Tpsl2StrategyRuleRepo {
             SET rule_name = $1, p_token_initial_buy_sol = $2, p_token_cu_limit = $3, p_token_cu_price = $4,
                 p_token_ix_labels = $5, trade_mode = $6, buy_amount = $7, p_exit_take_profit = $8, p_exit_stop_loss = $9,
                 p_token_max_sol_cost = $10, p_token_spendable_sol_in = $11, p_max_concurrent_tokens = $12, p_max_total_tokens = $13, tolerance_pct = $14, is_active = $15, updated_at = $16, p_exit_trailing_stop_pct = $17, p_exit_time_stop_secs = $18, p_exit_stall_secs = $19, p_exit_liquidity_drop_pct = $20,
-                p_entry_min_age_secs = $21, p_entry_min_alive_sol = $22, p_entry_min_organic_sol = $23, p_entry_pullback_pct = $24, p_entry_higher_low_secs = $25, p_entry_max_cohort_held = $26, p_entry_min_liquidity_sol = $27, p_entry_min_organic_liq = $28, p_exit_cohort_ratio = $29
-            WHERE id = $30
+                p_entry_min_age_secs = $21, p_entry_min_alive_sol = $22, p_entry_min_organic_sol = $23, p_entry_pullback_pct = $24, p_entry_higher_low_secs = $25, p_entry_max_cohort_held = $26, p_entry_min_liquidity_sol = $27, p_entry_min_organic_liq = $28, p_exit_cohort_ratio = $29, p_entry_max_age_secs = $30
+            WHERE id = $31
             "#,
         )
         .bind(&rule.rule_name)
@@ -222,6 +225,7 @@ impl Tpsl2StrategyRuleRepo {
         .bind(rule.p_entry_min_liquidity_sol)
         .bind(rule.p_entry_min_organic_liq)
         .bind(rule.p_exit_cohort_ratio)
+        .bind(rule.p_entry_max_age_secs.map(|v| v as i64))
         .bind(rule.id)
         .execute(&self.pool)
         .await?;

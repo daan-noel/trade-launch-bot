@@ -88,6 +88,8 @@ lives in:
   - Entry (TPSL2 scalp gates only): `entry_min_age_secs`, `entry_min_alive_sol`,
     `entry_min_organic_sol`, `entry_pullback_pct`, `entry_higher_low_secs`,
     `entry_max_cohort_held`, `entry_min_liquidity_sol`, `entry_min_organic_liq`.
+    (The rule also carries `p_entry_max_age_secs` — the scalp-window ceiling — but it
+    is **not** a swept axis: it flows through the base rule unchanged, untuned.)
 - **Evaluate params** (the measured *ranking/scoring outputs*): `score`, `win_rate`,
   `total_pnl_sol`, `expectancy_sol`, `profit_factor`, `median_pnl_pct`,
   `mean_pnl_pct`, `p90_pnl_pct`, `best_pnl_pct`, `worst_pnl_pct`, `std_pnl_pct`.

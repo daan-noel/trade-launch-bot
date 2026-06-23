@@ -69,24 +69,51 @@ pub(crate) fn spawn_entry_fill_poll(
         // Bound concurrent fill-poll tasks; held for the task's lifetime.
         let _permit = poll_sem.acquire_owned().await;
         let mut recorded = false;
-        // Watch the live feed for the scalp entry signal over the arming window,
-        // sized to this rule's own gates (`scalp_arming_attempts`) so slow gates
-        // (min-age, higher-low) always have time to form. A signal needing longer
-        // than the window is missed live but still found by the backtest (no cutoff).
-        let attempts = super::scalp_arming_attempts(&rule);
+        // Watch the live feed for the scalp entry signal using the SAME window as
+        // real mode (`scalp_watch_window`): a `p_entry_max_age_secs` ceiling is
+        // self-limiting; otherwise watch until the token dies. An until-dead watch
+        // takes a bounded armer slot so a never-dying token can't pin this
+        // `paper_poll_sem` permit forever (the slot frees when this task ends). A
+        // signal needing longer than a bounded window is missed live but still
+        // found by the backtest (no cutoff).
+        let window = super::scalp_watch_window(&rule);
+        let _armer_guard = match window {
+            Some(_) => None,
+            None => Some(runtime.begin_until_dead_armer(position_id)),
+        };
+        let deadline = window.map(|max| std::time::Instant::now() + max);
         // Skip the O(n) scalp-entry walk on ticks where no new trade landed for the
         // mint (count is monotonic; `None` forces the first walk).
         let mut last_count: Option<u64> = None;
-        for _ in 0..attempts {
+        loop {
             sleep(Duration::from_millis(super::SCALP_ENTRY_WAIT_INTERVAL_MS)).await;
+            // Stop conditions mirror the real watch: the max-age deadline, eviction
+            // by the until-dead armer cap, or token death.
+            if let Some(dl) = deadline {
+                if std::time::Instant::now() >= dl {
+                    break;
+                }
+            }
+            if let Some(g) = &_armer_guard {
+                if g.is_cancelled() {
+                    break;
+                }
+            }
+            // A dead token never fires the scalp entry — sampled once per tick and
+            // used to terminate promptly (also when the cache has no trades yet).
+            let dead = token_cache
+                .get(&mint)
+                .map(|e| e.value().is_dead(Utc::now()))
+                .unwrap_or(false);
             // Read the mint's trade window from the in-memory cache (kept current
             // by the WS pipeline) instead of an unbounded DB scan per tick.
             let Some((trades, trade_count)) = cache_trades(&token_cache, &mint) else {
+                if dead {
+                    break;
+                }
                 continue;
             };
-            if last_count == Some(trade_count) {
-                continue;
-            }
+            if last_count != Some(trade_count) {
             last_count = Some(trade_count);
             // Resolve the trigger by **index** (Phase B step 1): the cache row carries
             // no signature, so the worst-case entry is keyed off the trigger's position
@@ -143,6 +170,10 @@ pub(crate) fn spawn_entry_fill_poll(
                     position_id, target_fill.price, target_tx, entry.price, entry_tx
                 );
                 recorded = true;
+                break;
+            }
+            }
+            if dead {
                 break;
             }
         }

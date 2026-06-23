@@ -69,6 +69,7 @@ export interface RuleRecord {
   p_exit_liquidity_drop_pct: number | null;
   // Scalp-continuation gates (tpsl2 only; null on tpsl1). 0/null = disabled.
   p_entry_min_age_secs: number | null;
+  p_entry_max_age_secs: number | null;
   p_entry_min_alive_sol: number | null;
   p_entry_min_organic_sol: number | null;
   p_entry_pullback_pct: number | null;

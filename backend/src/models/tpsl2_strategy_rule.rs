@@ -59,6 +59,14 @@ pub struct Tpsl2Rule {
     /// Skip the launch spike: the entry trade must be at least this many seconds
     /// after the token's first trade. `None`/`0` disables.
     pub p_entry_min_age_secs: Option<u64>,
+    /// Entry-window ceiling: the entry trade must be at most this many seconds
+    /// after the token's first trade — the symmetric upper bound to
+    /// `p_entry_min_age_secs` (window = `[min_age, max_age]`). A **ceiling, not a
+    /// positive gate**: it never makes a rule enter on its own (excluded from
+    /// `rule_configures_any_scalp_gate`). `None`/`0` disables ⇒ no ceiling ⇒ the
+    /// live watcher arms until the token dies (capped by the concurrent-armer
+    /// limit), matching the backtest's full-history walk.
+    pub p_entry_max_age_secs: Option<u64>,
     /// Liveness: total SOL traded (buys + sells, any wallet) in the trailing
     /// window ending at the candidate trade must be ≥ this. `None`/`0` disables.
     pub p_entry_min_alive_sol: Option<f64>,
@@ -137,6 +145,7 @@ impl Tpsl2Rule {
             // Scalp-continuation gates default to disabled; the tpsl2 API sets
             // them post-construction.
             p_entry_min_age_secs: None,
+            p_entry_max_age_secs: None,
             p_entry_min_alive_sol: None,
             p_entry_min_organic_sol: None,
             p_entry_pullback_pct: None,
