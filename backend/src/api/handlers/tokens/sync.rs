@@ -59,7 +59,13 @@ pub async fn sync_token(
     let (line_tx, line_rx) = mpsc::channel::<String>(128);
 
     let ctx = TokenSyncContext {
-        db: state.db.clone(),
+        // Backfill is a long, DB-heavy job (bulk trade/raw inserts, whole-history
+        // scans) — run it on the BATCH pool, not the API pool. Two reasons: it must
+        // not contend with the dashboard's connections, and the api pool's 8s
+        // `statement_timeout` would kill a large chunked insert on a slow box. Same
+        // isolation sweeps/backtests already use. (Preview stays on `db` — it's a
+        // fast, interactive read that benefits from the statement-timeout guard.)
+        db: state.batch_db.clone(),
         token_cache: state.token_cache.clone(),
         helius_rpc_url: state.helius_rpc_url.clone(),
         helius_laserstream_url: state.helius_laserstream_url.clone(),

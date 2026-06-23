@@ -11,6 +11,13 @@ use crate::models::trade::{Trade, TradeType};
 /// full-table seq scan on a huge array (mirrors `sweep::corpus::DbSource` chunking).
 const SEED_MINT_CHUNK: usize = 1000;
 
+/// Rows per `insert_many` statement. A single Postgres statement is capped at
+/// 65535 bind parameters (the wire protocol's int16 count); at 19 binds/row the
+/// hard ceiling is 3449 rows, so this stays well under it. sqlx 0.6 silently
+/// wraps `len() as i16` past the cap, corrupting the Parse/Bind message into a
+/// Postgres parse error — exactly what the token_sync backfill hit on busy mints.
+const TRADE_INSERT_CHUNK: usize = 3000;
+
 pub struct TradeRepo {
     pool: PgPool,
 }
@@ -207,54 +214,63 @@ impl TradeRepo {
         Ok(())
     }
 
-    /// Bulk version of [`insert`] — one multi-row statement for the whole slice,
-    /// with the identical upsert. Callers MUST dedup by `(tx_signature,
-    /// leg_index)` first: Postgres rejects an `ON CONFLICT DO UPDATE` that hits
-    /// the same conflict target twice within one statement. (`block_time` is
-    /// deterministic per tx, so it's part of the conflict target — see migration
-    /// 0002 — but adds nothing to the dedup key.) Used by the live
-    /// ingest DB-writer to collapse a flush of trades into a single round-trip.
+    /// Bulk version of [`insert`] — one multi-row statement per chunk, with the
+    /// identical upsert. Callers MUST dedup by `(tx_signature, leg_index)` first:
+    /// Postgres rejects an `ON CONFLICT DO UPDATE` that hits the same conflict
+    /// target twice within one statement. (`block_time` is deterministic per tx,
+    /// so it's part of the conflict target — see migration 0002 — but adds nothing
+    /// to the dedup key.) Used by the live ingest DB-writer to collapse a flush of
+    /// trades into a single round-trip, and by the token_sync backfill.
+    ///
+    /// Chunked at [`TRADE_INSERT_CHUNK`]: a single statement is capped at 65535
+    /// bind parameters (the wire protocol's int16 count), and sqlx 0.6 has no
+    /// guard — it writes `len() as i16`, so past the ceiling the count silently
+    /// wraps and Postgres rejects the malformed Parse/Bind ("DB parse error").
+    /// The live flush is ≤256 rows (one chunk), but the backfill flush
+    /// (`FLUSH_BACKFILL_ROWS` combined) can exceed it — without chunking a busy
+    /// mint's "Fetch All" aborts here. Each chunk is a subset of the already-deduped
+    /// slice (no intra-statement conflict) and the upsert is idempotent, so a
+    /// chunk-boundary failure is safe to retry.
     pub async fn insert_many(&self, trades: &[Trade]) -> anyhow::Result<()> {
-        if trades.is_empty() {
-            return Ok(());
+        for chunk in trades.chunks(TRADE_INSERT_CHUNK) {
+            let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+                "INSERT INTO trades \
+                 (id, mint_address, wallet_address, trade_type, sol_amount, token_amount, \
+                  price_per_token, tx_signature, leg_index, slot, block_time, received_at, \
+                  virtual_sol_reserves, virtual_token_reserves, real_sol_reserves, \
+                  real_token_reserves, ix_type, ix_labels, venue) ",
+            );
+            qb.push_values(chunk, |mut b, t| {
+                b.push_bind(t.id)
+                    .push_bind(&t.mint_address)
+                    .push_bind(&t.wallet_address)
+                    .push_bind(trade_type_str(t.trade_type))
+                    .push_bind(t.sol_amount)
+                    .push_bind(t.token_amount)
+                    .push_bind(t.price_per_token)
+                    .push_bind(&t.tx_signature)
+                    .push_bind(t.leg_index as i32)
+                    .push_bind(t.slot as i64)
+                    .push_bind(t.block_time)
+                    .push_bind(t.received_at)
+                    .push_bind(t.virtual_sol_reserves)
+                    .push_bind(t.virtual_token_reserves)
+                    .push_bind(t.real_sol_reserves)
+                    .push_bind(t.real_token_reserves)
+                    .push_bind(&t.instruction_type)
+                    .push_bind(sqlx::types::Json(&t.instruction_labels))
+                    .push_bind(&t.venue);
+            });
+            qb.push(
+                " ON CONFLICT (tx_signature, leg_index, block_time) DO UPDATE SET \
+                 price_per_token        = EXCLUDED.price_per_token, \
+                 virtual_sol_reserves   = EXCLUDED.virtual_sol_reserves, \
+                 virtual_token_reserves = EXCLUDED.virtual_token_reserves, \
+                 real_sol_reserves      = EXCLUDED.real_sol_reserves, \
+                 real_token_reserves    = EXCLUDED.real_token_reserves",
+            );
+            qb.build().execute(&self.pool).await?;
         }
-        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
-            "INSERT INTO trades \
-             (id, mint_address, wallet_address, trade_type, sol_amount, token_amount, \
-              price_per_token, tx_signature, leg_index, slot, block_time, received_at, \
-              virtual_sol_reserves, virtual_token_reserves, real_sol_reserves, \
-              real_token_reserves, ix_type, ix_labels, venue) ",
-        );
-        qb.push_values(trades, |mut b, t| {
-            b.push_bind(t.id)
-                .push_bind(&t.mint_address)
-                .push_bind(&t.wallet_address)
-                .push_bind(trade_type_str(t.trade_type))
-                .push_bind(t.sol_amount)
-                .push_bind(t.token_amount)
-                .push_bind(t.price_per_token)
-                .push_bind(&t.tx_signature)
-                .push_bind(t.leg_index as i32)
-                .push_bind(t.slot as i64)
-                .push_bind(t.block_time)
-                .push_bind(t.received_at)
-                .push_bind(t.virtual_sol_reserves)
-                .push_bind(t.virtual_token_reserves)
-                .push_bind(t.real_sol_reserves)
-                .push_bind(t.real_token_reserves)
-                .push_bind(&t.instruction_type)
-                .push_bind(sqlx::types::Json(&t.instruction_labels))
-                .push_bind(&t.venue);
-        });
-        qb.push(
-            " ON CONFLICT (tx_signature, leg_index, block_time) DO UPDATE SET \
-             price_per_token        = EXCLUDED.price_per_token, \
-             virtual_sol_reserves   = EXCLUDED.virtual_sol_reserves, \
-             virtual_token_reserves = EXCLUDED.virtual_token_reserves, \
-             real_sol_reserves      = EXCLUDED.real_sol_reserves, \
-             real_token_reserves    = EXCLUDED.real_token_reserves",
-        );
-        qb.build().execute(&self.pool).await?;
 
         Ok(())
     }
@@ -762,6 +778,19 @@ pub struct SeedAgg {
 mod tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;
+
+    /// `insert_many` binds 19 params/row; one Postgres statement is capped at
+    /// 65535 (sqlx 0.6 wraps `len() as i16` past it → a Postgres parse error).
+    /// Pin the chunk so adding a bound column re-checks the ceiling here instead
+    /// of surfacing as a runtime parse error on the backfill path.
+    #[test]
+    fn trade_insert_chunk_stays_under_param_ceiling() {
+        const BINDS_PER_ROW: usize = 19;
+        assert!(
+            TRADE_INSERT_CHUNK * BINDS_PER_ROW <= 65_535,
+            "TRADE_INSERT_CHUNK ({TRADE_INSERT_CHUNK}) × {BINDS_PER_ROW} binds exceeds the 65535 ceiling"
+        );
+    }
 
     async fn test_pool() -> Option<PgPool> {
         let url = std::env::var("DATABASE_URL").ok()?;

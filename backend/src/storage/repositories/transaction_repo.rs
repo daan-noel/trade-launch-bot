@@ -4,6 +4,13 @@ use sqlx::PgPool;
 
 use crate::models::transaction::RawTransaction;
 
+/// Rows per `insert_many` statement. One Postgres statement is capped at 65535
+/// bind parameters (the wire int16 count, which sqlx 0.6 wraps without a guard);
+/// at 7 binds/row the ceiling is 9362 rows. Kept lower than that anyway — each
+/// row carries a heavy `raw_data` JSONB blob, so a smaller chunk bounds the
+/// per-statement message size, not just the parameter count.
+const RAW_INSERT_CHUNK: usize = 5000;
+
 pub struct TransactionRepo {
     pool: PgPool,
 }
@@ -43,28 +50,28 @@ impl TransactionRepo {
         Ok(())
     }
 
-    /// Bulk version of [`insert`] — one multi-row statement tagging every row
-    /// with the same `source`. Like [`insert`] it's a plain insert (no conflict
-    /// target on the partitioned table). Used by the live ingest DB-writer to
-    /// collapse a flush of raw transactions into one round-trip.
+    /// Bulk version of [`insert`] — one multi-row statement per [`RAW_INSERT_CHUNK`]
+    /// rows, tagging every row with the same `source`. Like [`insert`] it's a plain
+    /// insert (no conflict target on the partitioned table). Used by the live ingest
+    /// DB-writer (≤256 rows = one chunk) and the token_sync backfill, whose larger
+    /// flushes are split across statements to stay under the 65535 bind-param ceiling.
     pub async fn insert_many(&self, txs: &[Arc<RawTransaction>], source: &str) -> anyhow::Result<()> {
-        if txs.is_empty() {
-            return Ok(());
+        for chunk in txs.chunks(RAW_INSERT_CHUNK) {
+            let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+                "INSERT INTO raw_transactions \
+                 (id, signature, slot, block_time, raw_data, received_at, source) ",
+            );
+            qb.push_values(chunk, |mut b, tx| {
+                b.push_bind(tx.id)
+                    .push_bind(&tx.signature)
+                    .push_bind(tx.slot as i64)
+                    .push_bind(tx.block_time)
+                    .push_bind(sqlx::types::Json(&tx.raw_data))
+                    .push_bind(tx.received_at)
+                    .push_bind(source);
+            });
+            qb.build().execute(&self.pool).await?;
         }
-        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
-            "INSERT INTO raw_transactions \
-             (id, signature, slot, block_time, raw_data, received_at, source) ",
-        );
-        qb.push_values(txs, |mut b, tx| {
-            b.push_bind(tx.id)
-                .push_bind(&tx.signature)
-                .push_bind(tx.slot as i64)
-                .push_bind(tx.block_time)
-                .push_bind(sqlx::types::Json(&tx.raw_data))
-                .push_bind(tx.received_at)
-                .push_bind(source);
-        });
-        qb.build().execute(&self.pool).await?;
 
         Ok(())
     }
