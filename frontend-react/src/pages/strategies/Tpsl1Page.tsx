@@ -62,6 +62,7 @@ import type {
   SimulatedTokenResult,
 } from 'types';
 import { cn } from 'lib/cn';
+import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 
 // Module-level, referentially-stable rowKey fns: each only reads the row, so a
 // single shared identity lets DataTable's page/select effects (and the row
@@ -1227,13 +1228,13 @@ export function Tpsl1Page() {
           subtitle={selectedRuleName ?? undefined}
           action={
             pendingCount > 0 ? (
-              <button
-                type="button"
-                onClick={() => setShowPending((v) => !v)}
-                className="text-[11px] text-text-dim transition hover:text-text"
+              <VisibilityToggleButton
+                visible={showPending}
+                onToggle={() => setShowPending((v) => !v)}
+                label="pending entry"
               >
-                {showPending ? 'Hide' : 'Show'} pending entry ({pendingCount})
-              </button>
+                {showPending ? `Hide pending (${pendingCount})` : `Show pending (${pendingCount})`}
+              </VisibilityToggleButton>
             ) : undefined
           }
         />

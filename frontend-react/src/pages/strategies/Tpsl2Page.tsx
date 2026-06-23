@@ -7,6 +7,7 @@ import { Button } from 'components/ui/Button';
 import { IconButton } from 'components/ui/IconButton';
 import { Input } from 'components/ui/Input';
 import { InlineAlert, Modal } from 'components/ui/Modal';
+import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 import {
   buildCreatePayload,
   buildUpdatePayload,
@@ -1250,13 +1251,13 @@ export function Tpsl2Page() {
           subtitle={selectedRuleName ?? undefined}
           action={
             pendingCount > 0 ? (
-              <button
-                type="button"
-                onClick={() => setShowPending((v) => !v)}
-                className="text-[11px] text-text-dim transition hover:text-text"
+              <VisibilityToggleButton
+                visible={showPending}
+                onToggle={() => setShowPending((v) => !v)}
+                label="pending entry"
               >
-                {showPending ? 'Hide' : 'Show'} pending entry ({pendingCount})
-              </button>
+                {showPending ? `Hide pending (${pendingCount})` : `Show pending (${pendingCount})`}
+              </VisibilityToggleButton>
             ) : undefined
           }
         />

@@ -14,6 +14,7 @@ import { computeParamColumnColors, computePnlColumnColors } from 'lib/sweepParam
 import { SweepConfigForm } from 'components/sweep/SweepConfigForm';
 import { SelectedSweepHistory } from 'components/sweep/SelectedSweepHistory';
 import { TokenInspectModal } from 'components/tpsl2/TokenInspectModal';
+import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 import {
   type AxisDef,
   type GroupedSweepStartArgs,
@@ -690,15 +691,16 @@ export function GroupedSweepView({
                         ? 'Simulating…'
                         : `${visibleTokenResults.length}${!showNotFired ? ` / ${tokenResults.length}` : ''} tokens`}
                     </span>
-                    <button
-                      className={`text-xs ${showNotFired ? 'text-text-dim hover:text-primary' : 'text-primary'}`}
-                      onClick={() => setShowNotFired((v) => !v)}
-                      title={showNotFired ? 'Hide not-fired tokens' : 'Show not-fired tokens'}
+                    <div className="flex-grow" />
+                    <VisibilityToggleButton
+                      visible={showNotFired}
+                      onToggle={() => setShowNotFired((v) => !v)}
+                      label="not-fired tokens"
                     >
                       {showNotFired ? 'Hide not fired' : 'Show not fired'}
-                    </button>
+                    </VisibilityToggleButton>
                     <button
-                      className="ml-auto text-xs text-text-dim hover:text-primary"
+                      className="text-xs text-text-dim hover:text-primary"
                       onClick={() => setActiveComboId(null)}
                     >
                       ✕ Close
