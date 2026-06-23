@@ -165,10 +165,14 @@ pub async fn connect(endpoint: &str, api_key: &str) -> anyhow::Result<LaserStrea
         .parse()
         .map_err(|_| anyhow::anyhow!("HELIUS_API_KEY is not a valid gRPC metadata value"))?;
 
+    // NB: no channel-level `.timeout(..)`. That sets a per-request deadline; on this
+    // infinite server-stream it would arm a 60s cancel on the `subscribe` call — a
+    // latent footgun that could tear down a healthy stream. Stream liveness is owned
+    // by the in-stream idle-reconnect timer (`STREAM_RECONNECT_IDLE_TIMEOUT`), and
+    // `connect_timeout` already bounds connection establishment.
     let channel = Endpoint::from_shared(endpoint.to_string())?
         .tls_config(ClientTlsConfig::new())?
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(60))
         .http2_keep_alive_interval(Duration::from_secs(30))
         .keep_alive_while_idle(true)
         .tcp_keepalive(Some(Duration::from_secs(30)))

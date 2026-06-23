@@ -53,6 +53,14 @@ LaserStream gRPC  ──Arc<protobuf>──▶  IngestPipeline  ──┬─DbWr
   - `live_rx` watch pauses the stream gracefully when live mode is toggled off.
 - **Reconnect:** exponential backoff with 0–50% jitter (capped 30 s); resets to base once a
   connection delivers data. Jitter derives from subsecond nanos (no RNG).
+- **In-stream idle-reconnect vs. process watchdog (timing invariant).** Helius has a routine
+  silent gap roughly every ~6 min. The in-stream idle-reconnect (`STREAM_RECONNECT_IDLE_TIMEOUT`
+  60 s, `client.rs`) is *designed* to reconnect+replay in-process, losslessly, with **no** restart.
+  The separate process liveness watchdog (`state/ingest_health.rs`) must therefore never fire first:
+  its stall-window floor is **180 s**, kept above the full upstream recovery window (idle 60 s +
+  check ~15 s + backoff ~30 s + connect ~10 s ≈ 130 s). A previously-stored `60` collided with the
+  idle-reconnect and force-exited the process ~10×/hr; the floor's `.max()` retroactively neutralizes
+  such DB rows. Keep `WATCHDOG_STALL_TIMEOUT_FLOOR_SECS` > `STREAM_RECONNECT_IDLE_TIMEOUT` + margin.
 
 ### 2. Decode (`HeliusDecoder`)
 
