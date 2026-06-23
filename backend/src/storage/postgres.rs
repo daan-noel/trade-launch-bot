@@ -61,7 +61,12 @@ async fn build_pool(
         .after_connect(move |conn, _meta| {
             let guard_sql = guard_sql.clone();
             Box::pin(async move {
-                sqlx::query(&guard_sql).execute(&mut *conn).await?;
+                // `guard_sql` is two `SET`s in one string. Run it through the
+                // simple-query protocol (`Executor::execute(&str)`), which allows
+                // multiple commands per round-trip; `sqlx::query(..)` would prepare
+                // it and Postgres rejects multi-statement prepared statements (42601).
+                use sqlx::Executor;
+                conn.execute(guard_sql.as_str()).await?;
                 Ok(())
             })
         })
