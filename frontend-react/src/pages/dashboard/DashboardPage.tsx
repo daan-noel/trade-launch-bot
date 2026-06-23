@@ -16,20 +16,12 @@ import {
   bucketOptionsForRange,
   clampBucketToRange,
   formatPct,
+  windowFrom,
   type CreationBucket,
   type CreationMetric,
   type CreationSegment,
 } from 'components/dashboard/creationStats';
 import { formatWithCommas } from 'utils/format';
-
-/** Floor `now` to the current hour and step back `days`, as an RFC3339 string.
- *  Hour-stable so the RTK cache key doesn't churn on every render. */
-function windowFrom(days: number): string {
-  const d = new Date();
-  d.setMinutes(0, 0, 0);
-  d.setHours(d.getHours() - days * 24);
-  return d.toISOString();
-}
 
 export function DashboardPage() {
   const { timezone } = useTimezone();
@@ -203,7 +195,7 @@ export function DashboardPage() {
 
       {/* Panel C — per-fingerprint creation activity (shares the control bar's
           window / timezone / segment; owns its own group-by + top-N). */}
-      <GroupedCreationSection from={from} tz={timezone} segment={segment} rangeDays={rangeDays} />
+      <GroupedCreationSection tz={timezone} segment={segment} />
     </div>
   );
 }

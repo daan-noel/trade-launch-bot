@@ -4,19 +4,24 @@ import { Button } from 'components/ui/Button';
 import { Select } from 'components/ui/Select';
 import { useGetGroupedCreationStatsQuery, apiErrorMessage } from 'store/apiSlice';
 import { parseNumbers, parseIxLabelsFilter } from 'components/sweep/fingerprintFilters';
+import {
+  FingerprintGroupPicker,
+  type CashbackFilter,
+} from 'components/sweep/FingerprintGroupPicker';
 import { formatWithCommas } from 'utils/format';
 import { cn } from 'lib/cn';
 import { CreationHeatmap } from './CreationHeatmap';
 import { GroupedCreationTrendChart } from './GroupedCreationTrendChart';
 import {
+  RANGE_OPTIONS,
   bucketOptionsForRange,
   clampBucketToRange,
+  windowFrom,
   type CreationBucket,
   type CreationHeatCell,
   type CreationSegment,
 } from './creationStats';
 import {
-  GROUP_FIELDS,
   GROUP_FIELD_LABELS,
   TOP_OPTIONS,
   MISSING_VALUE,
@@ -29,12 +34,8 @@ import {
 } from './groupedCreationStats';
 
 interface GroupedCreationSectionProps {
-  /** RFC3339 window lower bound (shared with the page's range control). */
-  from: string;
   tz: string;
   segment: CreationSegment;
-  /** Look-back days — gates the bucket-granularity options. */
-  rangeDays: number;
 }
 
 /** Default grouping — CU limit + instruction-label set: the two fields that
@@ -52,8 +53,6 @@ const SCALAR_FILTER_FIELDS: GroupField[] = [
   'initial_buy_sol',
 ];
 
-type CashbackFilter = 'all' | 'true' | 'false';
-
 /** A `GroupedCreationCell` lacks the outcome fields `CreationHeatmap` reads; the
  *  count view never touches them, so zero-fill is safe (count = volume). */
 function toHeatCell(c: GroupedCreationCell): CreationHeatCell {
@@ -70,12 +69,13 @@ function toHeatCell(c: GroupedCreationCell): CreationHeatCell {
  * snapshots the current draft (incl. the page window/tz/segment). The trend
  * chart's lines can be isolated by clicking a legend entry.
  */
-export function GroupedCreationSection({ from, tz, segment, rangeDays }: GroupedCreationSectionProps) {
+export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionProps) {
   // --- draft controls (don't fetch until applied) ---------------------------
   // Click order = compound-key order (matches the sweep page semantics).
   const [groupBy, setGroupBy] = useState<GroupField[]>(DEFAULT_GROUP_BY);
   const [top, setTop] = useState(8);
   const [bucket, setBucket] = useState<CreationBucket>('day');
+  const [rangeDays, setRangeDays] = useState(30);
   const [fieldFiltersText, setFieldFiltersText] = useState<Record<string, string>>({});
   const [cashbackFilter, setCashbackFilter] = useState<CashbackFilter>('all');
   const [ixLabelsText, setIxLabelsText] = useState('');
@@ -84,6 +84,7 @@ export function GroupedCreationSection({ from, tz, segment, rangeDays }: Grouped
   const [applied, setApplied] = useState<GroupedCreationArgs | null>(null);
   const [isolatedGroup, setIsolatedGroup] = useState<number | null>(null);
 
+  const from = useMemo(() => windowFrom(rangeDays), [rangeDays]);
   const bucketOpts = useMemo(() => bucketOptionsForRange(rangeDays), [rangeDays]);
   const effBucket = clampBucketToRange(bucket, rangeDays);
 
@@ -108,7 +109,11 @@ export function GroupedCreationSection({ from, tz, segment, rangeDays }: Grouped
       groupBy,
       top,
       ...(Object.keys(fieldFilters).length > 0 ? { fieldFilters } : {}),
-      ...(ixFilter.labels ? { ixLabelsFilter: ixFilter.labels } : {}),
+      // ix_labels grouping and the exact-set filter are mutually exclusive
+      // (matches the sweep page): drop the filter when grouping by ix_labels.
+      ...(!groupBy.includes('ix_labels') && ixFilter.labels
+        ? { ixLabelsFilter: ixFilter.labels }
+        : {}),
     };
   }, [effBucket, tz, from, segment, groupBy, top, fieldFiltersText, cashbackFilter, ixFilter.labels]);
 
@@ -150,6 +155,19 @@ export function GroupedCreationSection({ from, tz, segment, rangeDays }: Grouped
           </span>
         </div>
         <div className="flex items-center gap-2">
+          {/* Look-back window (section-local, independent of page range). */}
+          <Select
+            value={String(rangeDays)}
+            onChange={(e) => setRangeDays(Number(e.target.value))}
+            title="Look-back window"
+            className="max-w-[7rem]"
+          >
+            {RANGE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                Last {o.label}
+              </option>
+            ))}
+          </Select>
           {/* Bucket granularity (range-gated). */}
           <Select
             value={effBucket}
@@ -188,76 +206,21 @@ export function GroupedCreationSection({ from, tz, segment, rangeDays }: Grouped
         </div>
       </div>
 
-      {/* Group-by picker — order of selection is the compound-key order. */}
-      <div className="mb-2 flex flex-wrap items-center gap-1">
-        <span className="mr-1 text-xs text-text-dim">Group by:</span>
-        {GROUP_FIELDS.map((f) => (
-          <Button
-            key={f}
-            size="sm"
-            variant="subtle"
-            active={groupBy.includes(f)}
-            onClick={() => toggleField(f)}
-          >
-            {GROUP_FIELD_LABELS[f]}
-          </Button>
-        ))}
-      </div>
-
-      {/* Per-field value filters — independent of grouping; restrict the corpus. */}
-      <div className="mb-3 rounded-md border border-white/8 bg-white/2 p-2">
-        <div className="mb-1.5 text-[10px] uppercase tracking-wide text-text-dim/70">
-          Filter values (leave blank for all)
-        </div>
-        <div className="grid grid-cols-1 gap-x-4 gap-y-1.5 sm:grid-cols-2">
-          {SCALAR_FILTER_FIELDS.map((f) => (
-            <label key={f} className="flex items-center gap-2 text-xs text-text-mid">
-              <span className="w-32 shrink-0 whitespace-nowrap">{GROUP_FIELD_LABELS[f]}</span>
-              <input
-                type="text"
-                value={fieldFiltersText[f] ?? ''}
-                onChange={(e) =>
-                  setFieldFiltersText((prev) => ({ ...prev, [f]: e.target.value }))
-                }
-                placeholder="all values"
-                title="Comma-separated values to keep (match the group-key text). e.g. 200000, 300000"
-                className="min-w-0 flex-1 rounded border border-white/10 bg-surface px-2 py-0.5 text-xs text-text-mid placeholder:text-text-dim/30 focus:border-white/25 focus:outline-none"
-              />
-            </label>
-          ))}
-          {/* Cashback — tri-state select. */}
-          <label className="flex items-center gap-2 text-xs text-text-mid">
-            <span className="w-32 shrink-0 whitespace-nowrap">
-              {GROUP_FIELD_LABELS['is_cashback_enabled']}
-            </span>
-            <select
-              value={cashbackFilter}
-              onChange={(e) => setCashbackFilter(e.target.value as CashbackFilter)}
-              className="min-w-0 flex-1 rounded border border-white/10 bg-surface px-2 py-0.5 text-xs text-text-mid focus:border-white/25 focus:outline-none"
-            >
-              <option value="all">all</option>
-              <option value="true">cashback only</option>
-              <option value="false">no cashback</option>
-            </select>
-          </label>
-        </div>
-        {/* Instruction labels — exact JSON set. */}
-        <label className="mt-1.5 flex flex-col gap-0.5 text-xs text-text-mid">
-          <span className="whitespace-nowrap">
-            {GROUP_FIELD_LABELS['ix_labels']} — exact set (JSON array)
-          </span>
-          <textarea
-            value={ixLabelsText}
-            onChange={(e) => setIxLabelsText(e.target.value)}
-            placeholder='all sets — e.g. ["Pump.Fun: Create","System: Transfer"]'
-            rows={2}
-            className={cn(
-              'w-full rounded border bg-surface px-2 py-1 font-mono text-[11px] text-text-mid placeholder:text-text-dim/30 focus:outline-none',
-              ixFilter.error ? 'border-red focus:border-red' : 'border-white/10 focus:border-white/25',
-            )}
-          />
-          {ixFilter.error && <span className="text-[10px] text-red">{ixFilter.error}</span>}
-        </label>
+      {/* Group-by + value filters — shared with the sweep page's fingerprint
+          control so both read identically. */}
+      <div className="mb-3 rounded-md border border-white/8 bg-white/2 p-2.5">
+        <FingerprintGroupPicker
+          groupBy={groupBy}
+          onToggleField={toggleField}
+          fieldFiltersText={fieldFiltersText}
+          onSetFieldFilter={(f, v) => setFieldFiltersText((prev) => ({ ...prev, [f]: v }))}
+          cashbackFilter={cashbackFilter}
+          onSetCashback={setCashbackFilter}
+          ixLabelsText={ixLabelsText}
+          onSetIxLabels={setIxLabelsText}
+          ixFilter={ixFilter}
+          emptyHint='No fields selected → one "ALL" group (every token in the window).'
+        />
       </div>
 
       {isError && (

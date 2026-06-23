@@ -174,3 +174,12 @@ export const DOW_ROWS: { dow: number; label: string }[] = [
 ];
 
 export const HOURS = Array.from({ length: 24 }, (_, h) => h);
+
+/** Floor `now` to the current hour and step back `days`, as an RFC3339 string.
+ *  Hour-stable so the RTK cache key doesn't churn on every render. */
+export function windowFrom(days: number): string {
+  const d = new Date();
+  d.setMinutes(0, 0, 0);
+  d.setHours(d.getHours() - days * 24);
+  return d.toISOString();
+}
