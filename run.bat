@@ -29,7 +29,7 @@ pg_restore -U postgres -d meme_bot --clean --if-exists < backup.dump
 
 @REM ==========================================================================================
 docker compose exec -T postgres \
-  pg_dump -U postgres -Fc -d meme_bot \
+  pg_dump -U postgres -d meme_bot -Fc -Z9 \
   -t 'public.tokens' \
   -t 'public.tokens_analysis' \
   -t 'public.tokens_info' \
@@ -43,10 +43,18 @@ docker compose exec -T postgres \
 @REM ==========================================================================================
 psql -U postgres -d meme_bot -c "TRUNCATE TABLE public.tokens, public.tokens_analysis, public.tokens_info, public.trades, public.tpsl2_paper_positions, public.tpsl2_paper_test_run, public.tpsl2_real_positions, public.tpsl2_strategy_rules RESTART IDENTITY CASCADE;"
 
-pg_restore -U postgres -d meme_bot --data-only --disable-triggers < backup.dump
+@REM truncate the target tables, then:
+pg_restore -U postgres -d meme_bot \
+  --data-only --disable-triggers --no-owner --no-privileges -j4 \
+  backup.dump
+
+@REM overwrite the whole database with the backup:
+pg_restore -U postgres -d meme_bot \
+  --clean --if-exists --disable-triggers --no-owner --no-privileges -j4 \
+  backup.dump
 @REM ==========================================================================================
 
-
+pg_restore -U postgres -d meme_bot --clean --if-exists --disable-triggers --no-owner --no-privileges -j4 backup.dump
 
 
 @REM ==========================================================================================
