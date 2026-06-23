@@ -504,6 +504,20 @@ fn simulate_tpsl2_one_combo(
             pnl_pct: o.pnl_percent,
             holding_secs: o.holding_secs,
             exit: exit_label(o.exit).to_string(),
+            entry_time: o.entry_time.map(|t| t.to_rfc3339()),
+            entry_price: o.entry_price,
+            exit_time: o.exit_time.map(|t| t.to_rfc3339()),
+            exit_price: o.exit_price,
+            created_at: None,
+            creator_wallet: None,
+            ath_price: None,
+            ath_timestamp: None,
+            current_price: None,
+            market_cap: None,
+            volume_sol: None,
+            trade_count: None,
+            is_migrated: None,
+            is_dead: None,
         });
     }
     Ok(results)
@@ -533,6 +547,20 @@ fn simulate_tpsl1_one_combo(
             pnl_pct: o.pnl_percent,
             holding_secs: o.holding_secs,
             exit: exit_label(o.exit).to_string(),
+            entry_time: o.entry_time.map(|t| t.to_rfc3339()),
+            entry_price: o.entry_price,
+            exit_time: o.exit_time.map(|t| t.to_rfc3339()),
+            exit_price: o.exit_price,
+            created_at: None,
+            creator_wallet: None,
+            ath_price: None,
+            ath_timestamp: None,
+            current_price: None,
+            market_cap: None,
+            volume_sol: None,
+            trade_count: None,
+            is_migrated: None,
+            is_dead: None,
         });
     }
     Ok(results)

@@ -696,6 +696,10 @@ impl Strategy for Tpsl2Strategy {
                     pnl_percent: econ.pnl_percent as f32,
                     pnl_sol: econ.pnl_sol as f32,
                     exit: ExitCode::from_reason(f.reason.as_str()),
+                    entry_time: Some(entry_time),
+                    entry_price: Some(entry_price),
+                    exit_time: Some(f.block_time),
+                    exit_price: Some(f.price),
                 }
             }
             None => {
@@ -709,6 +713,10 @@ impl Strategy for Tpsl2Strategy {
                     pnl_percent: econ.pnl_percent as f32,
                     pnl_sol: econ.pnl_sol as f32,
                     exit: ExitCode::Open,
+                    entry_time: Some(entry_time),
+                    entry_price: Some(entry_price),
+                    exit_time: None,
+                    exit_price: None,
                 }
             }
         }

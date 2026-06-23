@@ -133,6 +133,26 @@ pub struct ComboTokenResult {
     /// `"Stall"`, `"TimeStop"`, `"LiquidityExit"`, `"CohortExit"`,
     /// `"Open"` (still open at end of history), or `"NoEntry"`.
     pub exit: String,
+    // --- Simulation fill details (populated by single-combo re-sim) ---
+    /// RFC3339 block time of the simulated entry fill; `None` when not fired.
+    pub entry_time: Option<String>,
+    /// Simulated entry fill price in SOL/token; `None` when not fired.
+    pub entry_price: Option<f64>,
+    /// RFC3339 block time of the simulated exit fill; `None` when open or not fired.
+    pub exit_time: Option<String>,
+    /// Simulated exit fill price in SOL/token; `None` when open or not fired.
+    pub exit_price: Option<f64>,
+    // --- Token metadata (batch-joined from tokens + tokens_info after sim) ---
+    pub created_at: Option<String>,
+    pub creator_wallet: Option<String>,
+    pub ath_price: Option<f64>,
+    pub ath_timestamp: Option<String>,
+    pub current_price: Option<f64>,
+    pub market_cap: Option<f64>,
+    pub volume_sol: Option<f64>,
+    pub trade_count: Option<i64>,
+    pub is_migrated: Option<bool>,
+    pub is_dead: Option<bool>,
 }
 
 /// A group plus its ranked combo rows, handed to the repo's `save_run` as the

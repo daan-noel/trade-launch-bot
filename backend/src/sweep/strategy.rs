@@ -5,6 +5,7 @@
 //! aggregate layers never know which concrete strategy ran: they only see
 //! [`TokenOutcome`] rows.
 
+use chrono::{DateTime, Utc};
 use rand::rngs::StdRng;
 use rand::Rng;
 
@@ -145,6 +146,13 @@ pub fn lhs_index_plan(rng: &mut StdRng, n: usize, axis_lens: &[usize]) -> Vec<Ve
 /// never allocates and the value stays register-friendly; the mint is recovered
 /// from the corpus by token index at emit time. Exit reason is a small code, not
 /// a string.
+///
+/// The `entry_*`/`exit_*` time/price fields are `Option<DateTime<Utc>>` and
+/// `Option<f64>` — `DateTime<Utc>` is `Copy`, so the struct stays `Copy`.
+/// They are populated only in the single-combo re-simulation path (the drill-in
+/// endpoint); the full sweep folds these into `ComboAgg` aggregates and never
+/// reads the individual timestamps, so the hot-path cost is four `None` writes
+/// per outcome (register-level, no allocation).
 #[derive(Clone, Copy, Debug)]
 pub struct TokenOutcome {
     /// Whether the strategy took a position on this token under these params.
@@ -157,6 +165,14 @@ pub struct TokenOutcome {
     pub pnl_sol: f32,
     /// Why it exited (or `Open`/`NoEntry`).
     pub exit: ExitCode,
+    /// Block time of the simulated entry fill (`None` when not fired).
+    pub entry_time: Option<DateTime<Utc>>,
+    /// Simulated entry fill price in SOL/token (`None` when not fired).
+    pub entry_price: Option<f64>,
+    /// Block time of the simulated exit fill (`None` when not fired or still open).
+    pub exit_time: Option<DateTime<Utc>>,
+    /// Simulated exit fill price in SOL/token (`None` when not fired or still open).
+    pub exit_price: Option<f64>,
 }
 
 impl TokenOutcome {
@@ -168,6 +184,10 @@ impl TokenOutcome {
             pnl_percent: 0.0,
             pnl_sol: 0.0,
             exit: ExitCode::NoEntry,
+            entry_time: None,
+            entry_price: None,
+            exit_time: None,
+            exit_price: None,
         }
     }
 }

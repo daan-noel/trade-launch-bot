@@ -1341,19 +1341,89 @@ pub async fn list_token_results(
     })
     .await;
 
-    match result {
-        Ok(Ok(rows)) => HttpResponse::Ok().json(rows),
+    let mut rows = match result {
+        Ok(Ok(rows)) => rows,
         Ok(Err(e)) => {
             tracing::error!("Single-combo simulation failed: {e}");
-            HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": format!("simulation failed: {e}")}))
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": format!("simulation failed: {e}")}));
         }
         Err(e) => {
             tracing::error!("spawn_blocking panicked: {e}");
-            HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "internal error"}))
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "internal error"}));
+        }
+    };
+
+    // Batch-join token metadata (tokens + tokens_info) for all mints so the
+    // frontend table can show rich columns without per-row fetches.
+    let mints: Vec<String> = rows.iter().map(|r| r.mint.clone()).collect();
+    if !mints.is_empty() {
+        if let Ok(meta_rows) = fetch_token_meta(&state.db, &mints).await {
+            let by_mint: std::collections::HashMap<String, TokenMetaRow> =
+                meta_rows.into_iter().map(|r| (r.mint_address.clone(), r)).collect();
+            for row in &mut rows {
+                if let Some(m) = by_mint.get(&row.mint) {
+                    row.created_at = Some(m.created_at.to_rfc3339());
+                    row.creator_wallet = Some(m.creator_wallet.clone());
+                    row.ath_price = m.ath_price;
+                    row.ath_timestamp = m.ath_timestamp.map(|t| t.to_rfc3339());
+                    row.current_price = m.current_price;
+                    row.market_cap = m.market_cap;
+                    row.volume_sol = m.volume_sol;
+                    row.trade_count = m.trade_count;
+                    row.is_migrated = Some(m.is_migrated);
+                    row.is_dead = Some(m.is_dead);
+                }
+            }
         }
     }
+
+    HttpResponse::Ok().json(rows)
+}
+
+#[derive(sqlx::FromRow)]
+struct TokenMetaRow {
+    mint_address: String,
+    creator_wallet: String,
+    created_at: chrono::DateTime<Utc>,
+    ath_price: Option<f64>,
+    ath_timestamp: Option<chrono::DateTime<Utc>>,
+    current_price: Option<f64>,
+    market_cap: Option<f64>,
+    volume_sol: Option<f64>,
+    trade_count: Option<i64>,
+    is_migrated: bool,
+    is_dead: bool,
+}
+
+async fn fetch_token_meta(
+    pool: &sqlx::PgPool,
+    mints: &[String],
+) -> anyhow::Result<Vec<TokenMetaRow>> {
+    let rows = sqlx::query_as::<_, TokenMetaRow>(
+        r#"
+        SELECT
+            t.mint_address,
+            t.creator_wallet,
+            t.created_at,
+            ti.ath_price,
+            ti.ath_timestamp,
+            ti.current_price,
+            ti.market_cap,
+            ti.volume        AS volume_sol,
+            ti.trade_count,
+            COALESCE(ti.is_migrated, false) AS is_migrated,
+            COALESCE(ti.is_dead,     false) AS is_dead
+        FROM tokens t
+        LEFT JOIN tokens_info ti ON ti.mint_address = t.mint_address
+        WHERE t.mint_address = ANY($1)
+        "#,
+    )
+    .bind(mints)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
 }
 
 fn bad_strategy(strategy_id: &str) -> HttpResponse {
