@@ -438,6 +438,25 @@ async fn run_grouped_sweep_job(
             .json(serde_json::json!({"error": e.to_string()})));
         return;
     }
+
+    // Option A: stash the **unfiltered** selection corpus (trades + fingerprints) in
+    // the in-memory cache so `list_token_results` calls right after the sweep skip
+    // all I/O. This MUST happen BEFORE the in-memory ix_labels/field filters below:
+    // the cache is keyed only by `corpus_hash` (selection mints + trade counts), which
+    // is identical for two runs over the same window/caps regardless of their filters.
+    // If we cached the post-filter subset, a later run with the same selection but a
+    // different (or no) filter would hit this cache and `apply_filters` could not
+    // recover the tokens this run's filter dropped — yielding an empty token-results
+    // table. Caching unfiltered mirrors Option B (the Parquet corpus is also
+    // unfiltered), so `apply_filters` re-applies *this* run's own filters either way.
+    // Clone is cheap — trades/wallets are `Arc`, fp is a small struct.
+    {
+        let cached_tokens = Arc::new(corpus.tokens.clone());
+        let corpus_hash = corpus.hash.clone();
+        let mut cache = state.sweep_corpus_cache.write().await;
+        *cache = Some(SweepCorpusCache { corpus_hash, tokens: cached_tokens });
+    }
+
     // Optional exact-set ix_labels filter (applied post-fingerprint, in-memory so
     // the unfiltered Parquet corpus cache is reused across filter values): keep only
     // tokens whose label set equals the requested set. Normalize the request set the
@@ -672,17 +691,6 @@ async fn run_grouped_sweep_job(
         }
         Arc::new(map)
     };
-
-    // Option A: stash the fully-loaded corpus (trades + fingerprints) in the
-    // in-memory cache so `list_token_results` calls right after the sweep skip
-    // all I/O. We clone the Vec here (cheap — trades are Arc, fp is a small
-    // struct) before the engine consumes the corpus.
-    {
-        let cached_tokens = Arc::new(corpus.tokens.clone());
-        let corpus_hash = corpus.hash.clone();
-        let mut cache = state.sweep_corpus_cache.write().await;
-        *cache = Some(SweepCorpusCache { corpus_hash, tokens: cached_tokens });
-    }
 
     // The sink hands each fully-folded group to the writer task. `run_grouped`
     // takes ownership, so it (and its sender) drop when the sweep ends — closing
