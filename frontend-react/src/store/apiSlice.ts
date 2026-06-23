@@ -425,7 +425,7 @@ export const apiSlice = createApi({
       GroupedCreationResponse,
       GroupedCreationArgs
     >({
-      query: ({ bucket, tz, from, segment, groupBy, top }) => {
+      query: ({ bucket, tz, from, segment, groupBy, top, fieldFilters, ixLabelsFilter }) => {
         const p = new URLSearchParams();
         p.set('bucket', bucket);
         p.set('tz', tz);
@@ -433,6 +433,13 @@ export const apiSlice = createApi({
         p.set('group_by', groupBy.join(','));
         p.set('top', String(top));
         if (from) p.set('from', from);
+        // Only attach filter params when non-empty so the cache key stays stable.
+        if (fieldFilters && Object.keys(fieldFilters).length > 0) {
+          p.set('field_filters', JSON.stringify(fieldFilters));
+        }
+        if (ixLabelsFilter && ixLabelsFilter.length > 0) {
+          p.set('ix_labels_filter', JSON.stringify(ixLabelsFilter));
+        }
         return `/api/tokens/creation-stats/grouped?${p.toString()}`;
       },
       keepUnusedDataFor: 120,

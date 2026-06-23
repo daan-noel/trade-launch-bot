@@ -10,10 +10,11 @@ import { CreationHeatmap } from 'components/dashboard/CreationHeatmap';
 import { CreationTrendChart } from 'components/dashboard/CreationTrendChart';
 import { GroupedCreationSection } from 'components/dashboard/GroupedCreationSection';
 import {
-  BUCKET_OPTIONS,
   METRIC_OPTIONS,
   RANGE_OPTIONS,
   SEGMENT_OPTIONS,
+  bucketOptionsForRange,
+  clampBucketToRange,
   formatPct,
   type CreationBucket,
   type CreationMetric,
@@ -39,6 +40,11 @@ export function DashboardPage() {
 
   const from = useMemo(() => windowFrom(rangeDays), [rangeDays]);
 
+  // Range-gated bucket granularities; clamp the current pick so a range change
+  // (e.g. 10m → 180d) never leaves an out-of-range bucket selected.
+  const bucketOpts = useMemo(() => bucketOptionsForRange(rangeDays), [rangeDays]);
+  const effBucket = clampBucketToRange(bucket, rangeDays);
+
   // Two cache entries: the heatmap fold + the absolute-time trend. The metric
   // toggle re-colors the heatmap client-side (all metrics ship in one payload),
   // so changing it never refetches.
@@ -51,7 +57,7 @@ export function DashboardPage() {
   });
   const trend = useGetCreationStatsQuery({
     view: 'trend',
-    bucket,
+    bucket: effBucket,
     tz: timezone,
     from,
     segment,
@@ -173,12 +179,12 @@ export function DashboardPage() {
         <div className="mb-2 flex items-center justify-between">
           <h3 className="text-sm font-semibold text-text">Creation trend</h3>
           <div className="flex items-center gap-1">
-            {BUCKET_OPTIONS.map((o) => (
+            {bucketOpts.map((o) => (
               <Button
                 key={o.value}
                 size="sm"
                 variant="subtle"
-                active={bucket === o.value}
+                active={effBucket === o.value}
                 onClick={() => setBucket(o.value)}
               >
                 {o.label}
@@ -197,7 +203,7 @@ export function DashboardPage() {
 
       {/* Panel C — per-fingerprint creation activity (shares the control bar's
           window / timezone / segment; owns its own group-by + top-N). */}
-      <GroupedCreationSection from={from} tz={timezone} segment={segment} />
+      <GroupedCreationSection from={from} tz={timezone} segment={segment} rangeDays={rangeDays} />
     </div>
   );
 }

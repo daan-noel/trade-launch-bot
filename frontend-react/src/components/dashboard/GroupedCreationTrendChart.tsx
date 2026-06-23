@@ -21,6 +21,9 @@ import {
 interface GroupedCreationTrendChartProps {
   points: GroupedCreationPoint[];
   groups: GroupedCreationGroup[];
+  /** When set, that rank's line stays bright/thick and all others dim — the
+   *  legend in `GroupedCreationSection` drives it (click to isolate). */
+  isolatedGroup?: number | null;
   height?: number;
 }
 
@@ -30,21 +33,37 @@ function bucketToTime(bucket: string): UTCTimestamp {
   return Math.floor(Date.parse(`${bucket}Z`) / 1000) as UTCTimestamp;
 }
 
+/** `#RRGGBB` → `rgba(r,g,b,a)`. Used to dim non-isolated lines (lightweight-charts
+ *  takes rgba; an 8-digit hex isn't reliably parsed). */
+function hexToRgba(hex: string, alpha: number): string {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 /**
  * Multi-series calendar trend — one line per fingerprint group (rank-colored via
  * [`groupColor`] so it matches the heatmap cards + legend). Built like
  * `CreationTrendChart` (single histogram) but draws N line series; the chart is
  * created once and the series are rebuilt only when `points`/`groups` change, so
  * it never churns on unrelated SOL/USD or live-trade ticks.
+ *
+ * `isolatedGroup` lets the legend solo one line (bright + thick) while the rest
+ * dim — applied via `applyOptions` (no rebuild) so toggling is cheap.
  */
 export const GroupedCreationTrendChart = memo(function GroupedCreationTrendChart({
   points,
   groups,
+  isolatedGroup = null,
   height = 240,
 }: GroupedCreationTrendChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<ISeriesApi<'Line'>[]>([]);
+  // Keep each series tagged with its rank `g` so the isolation effect can emphasize
+  // the right line without rebuilding.
+  const seriesRef = useRef<{ g: number; series: ISeriesApi<'Line'> }[]>([]);
 
   // UTC formatters: the buckets are pre-shifted, so format them as-is.
   const formatters = useMemo(() => createChartTimeFormatters('UTC'), []);
@@ -102,7 +121,7 @@ export const GroupedCreationTrendChart = memo(function GroupedCreationTrendChart
     const chart = chartRef.current;
     if (!chart) return;
 
-    for (const s of seriesRef.current) chart.removeSeries(s);
+    for (const { series } of seriesRef.current) chart.removeSeries(series);
     seriesRef.current = [];
 
     // Group points by rank index; SQL returns buckets ascending, so each
@@ -126,10 +145,22 @@ export const GroupedCreationTrendChart = memo(function GroupedCreationTrendChart
         priceFormat: { type: 'volume' },
       });
       series.setData(data);
-      seriesRef.current.push(series);
+      seriesRef.current.push({ g: grp.g, series });
     }
     chart.timeScale().fitContent();
   }, [points, groups]);
+
+  // Emphasize the isolated line / dim the rest. Re-runs after a rebuild too
+  // (deps include points/groups) so emphasis survives a data refetch.
+  useEffect(() => {
+    for (const { g, series } of seriesRef.current) {
+      const dim = isolatedGroup != null && g !== isolatedGroup;
+      series.applyOptions({
+        color: dim ? hexToRgba(groupColor(g), 0.12) : groupColor(g),
+        lineWidth: isolatedGroup === g ? 3 : 2,
+      });
+    }
+  }, [isolatedGroup, points, groups]);
 
   return <div ref={containerRef} className="w-full" style={{ height }} />;
 });

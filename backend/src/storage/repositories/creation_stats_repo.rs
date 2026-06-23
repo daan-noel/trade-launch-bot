@@ -58,6 +58,29 @@ pub struct TrendPointRow {
     pub dead: i64,
 }
 
+/// TZ-aware time-bucket SQL expression for a (whitelisted) bucket tag. `ts_expr`
+/// is the wall-clock timestamp expression (e.g. `(t.created_at AT TIME ZONE $1)`).
+///
+/// Calendar-aligned units stay on `date_trunc` (so `week` keeps its Monday
+/// alignment); the arbitrary sub-hour / multi-hour intervals use `date_bin` with
+/// a midnight origin, so every interval that evenly divides an hour or a day
+/// aligns to a clean local boundary. The tag is whitelisted by the handler
+/// (`normalize_bucket`) — never user free-text — so interpolating it is
+/// injection-safe.
+fn bucket_expr(ts_expr: &str, bucket: &str) -> String {
+    let bin = |iv: &str| format!("date_bin('{iv}', {ts_expr}, TIMESTAMP '2000-01-01 00:00:00')");
+    match bucket {
+        "hour" | "day" | "week" => format!("date_trunc('{bucket}', {ts_expr})"),
+        "10m" => bin("10 minutes"),
+        "30m" => bin("30 minutes"),
+        "4h" => bin("4 hours"),
+        "8h" => bin("8 hours"),
+        "12h" => bin("12 hours"),
+        // Defensive: normalize_bucket guarantees a known tag; fall back to day.
+        _ => format!("date_trunc('day', {ts_expr})"),
+    }
+}
+
 impl CreationStatsRepo {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
@@ -106,36 +129,39 @@ impl CreationStatsRepo {
         bucket_unit: &str,
         f: StatsFilter<'_>,
     ) -> anyhow::Result<Vec<TrendPointRow>> {
-        let rows = sqlx::query_as::<_, TrendPointRow>(
+        // Bucket expression is interpolated (whitelisted tag), not bound — so the
+        // `$2` slot the old `date_trunc($2, …)` used is gone and the rest shift up.
+        let bkt = bucket_expr("(t.created_at AT TIME ZONE $1)", bucket_unit);
+        let sql = format!(
             r#"
             SELECT
-                date_trunc($2, (t.created_at AT TIME ZONE $1)) AS bucket,
+                {bkt} AS bucket,
                 COUNT(*)::bigint AS total,
-                COUNT(*) FILTER (WHERE t.created_at < now() - make_interval(secs => $3))::bigint AS matured,
-                COUNT(*) FILTER (WHERE t.created_at < now() - make_interval(secs => $3)
+                COUNT(*) FILTER (WHERE t.created_at < now() - make_interval(secs => $2))::bigint AS matured,
+                COUNT(*) FILTER (WHERE t.created_at < now() - make_interval(secs => $2)
                                    AND ti.mint_address IS NOT NULL)::bigint AS known,
-                COUNT(*) FILTER (WHERE t.created_at < now() - make_interval(secs => $3)
+                COUNT(*) FILTER (WHERE t.created_at < now() - make_interval(secs => $2)
                                    AND ti.is_migrated)::bigint AS migrated,
-                COUNT(*) FILTER (WHERE t.created_at < now() - make_interval(secs => $3)
+                COUNT(*) FILTER (WHERE t.created_at < now() - make_interval(secs => $2)
                                    AND ti.is_dead)::bigint AS dead
             FROM tokens t
             LEFT JOIN tokens_info ti ON ti.mint_address = t.mint_address
-            WHERE t.created_at >= $4 AND t.created_at < $5
-              AND ($6::bool IS NULL OR t.is_mayhem_mode = $6)
-              AND ($7::bool IS NULL OR t.is_cashback_enabled = $7)
+            WHERE t.created_at >= $3 AND t.created_at < $4
+              AND ($5::bool IS NULL OR t.is_mayhem_mode = $5)
+              AND ($6::bool IS NULL OR t.is_cashback_enabled = $6)
             GROUP BY 1
             ORDER BY 1
             "#,
-        )
-        .bind(f.tz)
-        .bind(bucket_unit)
-        .bind(f.maturity_secs)
-        .bind(f.from)
-        .bind(f.to)
-        .bind(f.mayhem)
-        .bind(f.cashback)
-        .fetch_all(&self.pool)
-        .await?;
+        );
+        let rows = sqlx::query_as::<_, TrendPointRow>(&sql)
+            .bind(f.tz)
+            .bind(f.maturity_secs)
+            .bind(f.from)
+            .bind(f.to)
+            .bind(f.mayhem)
+            .bind(f.cashback)
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(rows)
     }
@@ -217,6 +243,8 @@ impl CreationStatsRepo {
         fields: &[GroupField],
         bucket_unit: &str,
         top: i64,
+        field_filters: &[(GroupField, Vec<String>)],
+        ix_labels_filter: Option<&[String]>,
         f: StatsFilter<'_>,
     ) -> anyhow::Result<GroupedCreation> {
         // Build the group-key JSON object expression from the selected fields.
@@ -231,19 +259,49 @@ impl CreationStatsRepo {
             format!("jsonb_build_object({})", pairs.join(", "))
         };
 
+        // Per-field value filters restrict the corpus *before* partitioning, so
+        // only matching groups survive into the top-N. Predicates compare the same
+        // TEXT expression the group key renders, against a bound `text[]` (one
+        // param per field). `ix_labels` is a set-equality match (order-independent)
+        // against the sorted-distinct label array. Binds start at `$7` (after
+        // top=$6); both predicate index and bind order must stay in lockstep.
+        let mut preds = String::new();
+        let mut filter_binds: Vec<Vec<String>> = Vec::new();
+        let mut idx = 7;
+        for (fld, vals) in field_filters {
+            preds.push_str(&format!("\n  AND {} = ANY(${idx})", group_field_sql(*fld)));
+            filter_binds.push(vals.clone());
+            idx += 1;
+        }
+        if let Some(labels) = ix_labels_filter {
+            let mut sorted: Vec<String> = labels.to_vec();
+            sorted.sort();
+            sorted.dedup();
+            preds.push_str(&format!(
+                "\n  AND (SELECT array_agg(DISTINCT e.val ORDER BY e.val) \
+                 FROM jsonb_array_elements_text(t.ix_labels) AS e(val)) = ${idx}"
+            ));
+            filter_binds.push(sorted);
+            idx += 1;
+        }
+        let _ = idx;
+
         // Shared CTE: window+segment-filtered rows with their group key + time
         // dimensions, then the top-N groups ranked by volume (g = 0-based rank).
+        // Bucket expression is interpolated (whitelisted tag), so the old `$2`
+        // bucket slot is gone and the fixed binds shift up by one.
+        let bkt = bucket_expr("(t.created_at AT TIME ZONE $1)", bucket_unit);
         let cte = format!(
             r#"
             WITH base AS (
                 SELECT {gkey} AS gkey,
                        EXTRACT(DOW  FROM (t.created_at AT TIME ZONE $1))::int AS dow,
                        EXTRACT(HOUR FROM (t.created_at AT TIME ZONE $1))::int AS hour,
-                       date_trunc($2, (t.created_at AT TIME ZONE $1)) AS bkt
+                       {bkt} AS bkt
                 FROM tokens t
-                WHERE t.created_at >= $3 AND t.created_at < $4
-                  AND ($5::bool IS NULL OR t.is_mayhem_mode = $5)
-                  AND ($6::bool IS NULL OR t.is_cashback_enabled = $6)
+                WHERE t.created_at >= $2 AND t.created_at < $3
+                  AND ($4::bool IS NULL OR t.is_mayhem_mode = $4)
+                  AND ($5::bool IS NULL OR t.is_cashback_enabled = $5){preds}
             ),
             ranked AS (
                 SELECT gkey, COUNT(*) AS total,
@@ -251,55 +309,49 @@ impl CreationStatsRepo {
                 FROM base
                 GROUP BY gkey
                 ORDER BY total DESC, gkey::text
-                LIMIT $7
+                LIMIT $6
             )
             "#,
             gkey = gkey_sql,
         );
 
-        let groups = sqlx::query_as::<_, GroupedGroupRow>(&format!(
+        // SQL strings bound to named locals so the queries (which borrow them)
+        // outlive each statement. Bind the fixed params (renumbered) then the
+        // per-field filter arrays; applied identically to all three sub-queries.
+        let groups_sql = format!(
             "{cte} SELECT g::bigint AS g, gkey AS group_key, total::bigint AS total \
              FROM ranked ORDER BY g"
-        ))
-        .bind(f.tz)
-        .bind(bucket_unit)
-        .bind(f.from)
-        .bind(f.to)
-        .bind(f.mayhem)
-        .bind(f.cashback)
-        .bind(top)
-        .fetch_all(&self.pool)
-        .await?;
-
-        let cells = sqlx::query_as::<_, GroupedHeatCellRow>(&format!(
+        );
+        let cells_sql = format!(
             "{cte} SELECT r.g::bigint AS g, b.dow, b.hour, COUNT(*)::bigint AS count \
              FROM base b JOIN ranked r ON b.gkey = r.gkey \
              GROUP BY r.g, b.dow, b.hour"
-        ))
-        .bind(f.tz)
-        .bind(bucket_unit)
-        .bind(f.from)
-        .bind(f.to)
-        .bind(f.mayhem)
-        .bind(f.cashback)
-        .bind(top)
-        .fetch_all(&self.pool)
-        .await?;
-
-        let points = sqlx::query_as::<_, GroupedTrendPointRow>(&format!(
+        );
+        let points_sql = format!(
             "{cte} SELECT r.g::bigint AS g, b.bkt AS bucket, COUNT(*)::bigint AS count \
              FROM base b JOIN ranked r ON b.gkey = r.gkey \
              GROUP BY r.g, b.bkt ORDER BY b.bkt"
-        ))
-        .bind(f.tz)
-        .bind(bucket_unit)
-        .bind(f.from)
-        .bind(f.to)
-        .bind(f.mayhem)
-        .bind(f.cashback)
-        .bind(top)
-        .fetch_all(&self.pool)
-        .await?;
+        );
+
+        macro_rules! run {
+            ($sql:expr, $ty:ty) => {{
+                let mut q = sqlx::query_as::<_, $ty>($sql)
+                    .bind(f.tz)
+                    .bind(f.from)
+                    .bind(f.to)
+                    .bind(f.mayhem)
+                    .bind(f.cashback)
+                    .bind(top);
+                for fv in &filter_binds {
+                    q = q.bind(fv.as_slice());
+                }
+                q.fetch_all(&self.pool).await?
+            }};
+        }
+
+        let groups = run!(&groups_sql, GroupedGroupRow);
+        let cells = run!(&cells_sql, GroupedHeatCellRow);
+        let points = run!(&points_sql, GroupedTrendPointRow);
 
         Ok(GroupedCreation {
             groups,

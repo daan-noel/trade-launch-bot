@@ -226,7 +226,9 @@ both `_runs` tables (Phase 4 partial persistence). The repo is generic and
 ## Frontend
 
 See [frontend.md](frontend.md). `pages/strategies/GroupedSweepPage.tsx` +
-`components/sweep/{SweepConfigForm,groupColumns,groupedTypes}` + RTK `GroupedSweep`
+`components/sweep/{SweepConfigForm,groupColumns,groupedTypes,fingerprintFilters}` + RTK `GroupedSweep`
+(`fingerprintFilters.ts` holds the shared `parseNumbers`/`parseIxLabelsFilter` value-filter
+parsers, also reused by the dashboard's "Creation by token group" section)
 hooks. The page is a generic `GroupedSweepView` parameterized by
 `{strategyId, paramKeys, axes, storageKey, title}`, with two thin wrappers
 exported: `GroupedSweepPage` (TPSL2, `/strategies/grouped-sweep`) and

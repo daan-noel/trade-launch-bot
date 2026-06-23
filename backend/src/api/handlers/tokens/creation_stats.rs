@@ -102,11 +102,18 @@ fn parse_segment(segment: &str) -> (Option<bool>, Option<bool>) {
     }
 }
 
-/// Validate the trend granularity against the `date_trunc` units we allow
-/// (defends the bound text against an arbitrary value). Defaults to `day`.
+/// Validate the trend granularity against the bucket tags we allow (defends the
+/// interpolated expression against an arbitrary value — see `bucket_expr`).
+/// Calendar units map to `date_trunc`; the sub-hour / multi-hour tags map to
+/// `date_bin`. Defaults to `day`.
 fn normalize_bucket(bucket: Option<&str>) -> &'static str {
     match bucket {
+        Some("10m") => "10m",
+        Some("30m") => "30m",
         Some("hour") => "hour",
+        Some("4h") => "4h",
+        Some("8h") => "8h",
+        Some("12h") => "12h",
         Some("week") => "week",
         _ => "day",
     }
@@ -275,6 +282,16 @@ pub struct GroupedCreationQuery {
     pub group_by: Option<String>,
     /// Number of top groups (by volume) to return. Clamped to [1, MAX_TOP_GROUPS].
     pub top: Option<i64>,
+    /// Per-field value filters restricting the corpus *before* partitioning, as a
+    /// JSON object `{"cu_limit":["300000"],"is_cashback_enabled":["true"]}` (keys =
+    /// `GroupField` tags, values = allowed string forms matching the group key).
+    /// Independent of `group_by`. Omitted/empty ⇒ no filter. `ix_labels` is handled
+    /// by `ix_labels_filter` below (set-equality, not value-in).
+    pub field_filters: Option<String>,
+    /// Exact instruction-label set filter as a JSON array (`["A","B"]`): keep only
+    /// tokens whose `ix_labels` set equals these labels (order-independent).
+    /// Omitted/empty ⇒ no filter.
+    pub ix_labels_filter: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -310,6 +327,10 @@ pub struct GroupedCreationResponse {
     pub segment: String,
     /// The grouping fields echoed back (serde tags, in selection order).
     pub group_by: Vec<String>,
+    /// The applied per-field value filters echoed back (`{"cu_limit":["300000"]}`).
+    pub field_filters: serde_json::Value,
+    /// The applied exact instruction-label set filter, or `null` when none.
+    pub ix_labels_filter: Option<Vec<String>>,
     /// Σ counts across the returned (top-N) groups.
     pub total: i64,
     pub groups: Vec<GroupedGroup>,
@@ -333,6 +354,58 @@ fn parse_group_by(raw: Option<&str>) -> Result<Vec<GroupField>, String> {
 /// Clamp the requested group count to `[1, MAX_TOP_GROUPS]` (default when absent).
 fn clamp_top(top: Option<i64>) -> i64 {
     top.unwrap_or(DEFAULT_TOP_GROUPS).clamp(1, MAX_TOP_GROUPS)
+}
+
+/// Parse the `field_filters` JSON object into ordered `(field, allowed-values)`
+/// pairs. Blank/missing ⇒ empty (no filter). `ix_labels` is ignored here (it has
+/// its own set-equality filter). Empty value lists and blank values are dropped so
+/// an empty box never pins "no values". `Err(msg)` on malformed JSON / unknown tag.
+fn parse_field_filters(raw: Option<&str>) -> Result<Vec<(GroupField, Vec<String>)>, String> {
+    let raw = raw.unwrap_or("").trim();
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    let obj: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(raw).map_err(|e| format!("invalid field_filters JSON: {e}"))?;
+    let mut out: Vec<(GroupField, Vec<String>)> = Vec::new();
+    for (tag, vals) in obj {
+        if tag == "ix_labels" {
+            continue; // handled by ix_labels_filter
+        }
+        let field = GroupField::from_tag(&tag).ok_or_else(|| format!("unknown field: {tag}"))?;
+        let arr = vals
+            .as_array()
+            .ok_or_else(|| format!("field_filters[{tag}] must be an array"))?;
+        let values: Vec<String> = arr
+            .iter()
+            .filter_map(|v| match v {
+                serde_json::Value::String(s) => Some(s.trim().to_string()),
+                // Tolerate numbers/bools so the client can send raw JSON values.
+                serde_json::Value::Number(n) => Some(n.to_string()),
+                serde_json::Value::Bool(b) => Some(b.to_string()),
+                _ => None,
+            })
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !values.is_empty() {
+            out.push((field, values));
+        }
+    }
+    Ok(out)
+}
+
+/// Parse the `ix_labels_filter` JSON array of label strings. Blank/missing or an
+/// empty array ⇒ `None` (no filter, so an empty `[]` never pins "no labels").
+/// `Err(msg)` on malformed JSON.
+fn parse_ix_labels_filter(raw: Option<&str>) -> Result<Option<Vec<String>>, String> {
+    let raw = raw.unwrap_or("").trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let arr: Vec<String> =
+        serde_json::from_str(raw).map_err(|e| format!("invalid ix_labels_filter JSON: {e}"))?;
+    let labels: Vec<String> = arr.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    Ok(if labels.is_empty() { None } else { Some(labels) })
 }
 
 /// `GET /api/tokens/creation-stats/grouped` — per-fingerprint creation activity.
@@ -362,6 +435,19 @@ pub async fn get_grouped_creation_stats(
         }
     };
 
+    let field_filters = match parse_field_filters(query.field_filters.as_deref()) {
+        Ok(f) => f,
+        Err(msg) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }));
+        }
+    };
+    let ix_labels_filter = match parse_ix_labels_filter(query.ix_labels_filter.as_deref()) {
+        Ok(f) => f,
+        Err(msg) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }));
+        }
+    };
+
     let filter = StatsFilter {
         tz: &tz,
         // Unused (count-only) but the shared struct requires it; 0 = no censoring.
@@ -373,10 +459,28 @@ pub async fn get_grouped_creation_stats(
     };
 
     let repo = state.creation_stats_repo();
-    let data = match repo.grouped(&fields, bucket, top, filter).await {
+    let data = match repo
+        .grouped(&fields, bucket, top, &field_filters, ix_labels_filter.as_deref(), filter)
+        .await
+    {
         Ok(d) => d,
         Err(e) => return db_error(e),
     };
+
+    // Echo the applied filters back as a JSON object (same shape the client sent).
+    let field_filters_json = serde_json::Value::Object(
+        field_filters
+            .iter()
+            .map(|(f, vals)| {
+                (
+                    f.as_str().to_string(),
+                    serde_json::Value::Array(
+                        vals.iter().map(|v| serde_json::Value::String(v.clone())).collect(),
+                    ),
+                )
+            })
+            .collect(),
+    );
 
     let total: i64 = data.groups.iter().map(|g| g.total).sum();
     let resp = GroupedCreationResponse {
@@ -386,6 +490,8 @@ pub async fn get_grouped_creation_stats(
         to,
         segment,
         group_by: fields.iter().map(|f| f.as_str().to_string()).collect(),
+        field_filters: field_filters_json,
+        ix_labels_filter,
         total,
         groups: data
             .groups
@@ -482,6 +588,54 @@ mod tests {
         );
         // Unknown tag ⇒ Err(tag).
         assert_eq!(parse_group_by(Some("cu_limit,bogus")), Err("bogus".to_string()));
+    }
+
+    #[test]
+    fn bucket_whitelists_fine_and_coarse_tags() {
+        assert_eq!(normalize_bucket(Some("10m")), "10m");
+        assert_eq!(normalize_bucket(Some("30m")), "30m");
+        assert_eq!(normalize_bucket(Some("4h")), "4h");
+        assert_eq!(normalize_bucket(Some("8h")), "8h");
+        assert_eq!(normalize_bucket(Some("12h")), "12h");
+        // Unknown / missing → day.
+        assert_eq!(normalize_bucket(Some("5m")), "day");
+        assert_eq!(normalize_bucket(None), "day");
+    }
+
+    #[test]
+    fn field_filters_parse_drops_blanks_and_ix_labels() {
+        // Empty / missing ⇒ no filter.
+        assert_eq!(parse_field_filters(None).unwrap(), vec![]);
+        assert_eq!(parse_field_filters(Some(" ")).unwrap(), vec![]);
+        // Strings, numbers, and bools all coerce to string; blanks/empty dropped;
+        // ix_labels ignored (handled separately).
+        let got = parse_field_filters(Some(
+            r#"{"cu_limit":["300000"," "],"cu_price":[1000],"is_cashback_enabled":[true],"max_sol_cost":[],"ix_labels":["A"]}"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            got,
+            vec![
+                (GroupField::CuLimit, vec!["300000".to_string()]),
+                (GroupField::CuPrice, vec!["1000".to_string()]),
+                (GroupField::IsCashbackEnabled, vec!["true".to_string()]),
+            ],
+        );
+        // Unknown tag / malformed JSON ⇒ Err.
+        assert!(parse_field_filters(Some(r#"{"bogus":["x"]}"#)).is_err());
+        assert!(parse_field_filters(Some("not json")).is_err());
+    }
+
+    #[test]
+    fn ix_labels_filter_parse() {
+        assert_eq!(parse_ix_labels_filter(None).unwrap(), None);
+        assert_eq!(parse_ix_labels_filter(Some("[]")).unwrap(), None);
+        assert_eq!(parse_ix_labels_filter(Some(r#"["",  " "]"#)).unwrap(), None);
+        assert_eq!(
+            parse_ix_labels_filter(Some(r#"["A"," B "]"#)).unwrap(),
+            Some(vec!["A".to_string(), "B".to_string()]),
+        );
+        assert!(parse_ix_labels_filter(Some("not json")).is_err());
     }
 
     #[test]

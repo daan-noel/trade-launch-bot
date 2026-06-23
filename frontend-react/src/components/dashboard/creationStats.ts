@@ -4,7 +4,15 @@
 // metric toggle is a pure client-side re-color (no refetch).
 
 export type CreationView = 'heatmap' | 'trend';
-export type CreationBucket = 'hour' | 'day' | 'week';
+export type CreationBucket =
+  | '10m'
+  | '30m'
+  | 'hour'
+  | '4h'
+  | '8h'
+  | '12h'
+  | 'day'
+  | 'week';
 export type CreationMetric = 'count' | 'migrate_rate' | 'dead_rate';
 export type CreationSegment =
   | 'all'
@@ -72,14 +80,46 @@ export const METRIC_OPTIONS: { value: CreationMetric; label: string }[] = [
   { value: 'dead_rate', label: 'Dead %' },
 ];
 
-export const BUCKET_OPTIONS: { value: CreationBucket; label: string }[] = [
-  { value: 'hour', label: 'Hour' },
-  { value: 'day', label: 'Day' },
-  { value: 'week', label: 'Week' },
+/** All bucket granularities, coarse→fine label, with the max look-back (days)
+ *  each one is offered for. Finer buckets are hidden on long ranges so a series
+ *  never balloons to tens of thousands of points (payload + render cost). */
+interface BucketOption {
+  value: CreationBucket;
+  label: string;
+  /** Largest `rangeDays` this granularity is selectable at. */
+  maxRangeDays: number;
+}
+
+export const BUCKET_OPTIONS: BucketOption[] = [
+  { value: '10m', label: '10m', maxRangeDays: 7 },
+  { value: '30m', label: '30m', maxRangeDays: 7 },
+  { value: 'hour', label: 'Hour', maxRangeDays: 30 },
+  { value: '4h', label: '4h', maxRangeDays: 90 },
+  { value: '8h', label: '8h', maxRangeDays: 90 },
+  { value: '12h', label: '12h', maxRangeDays: 180 },
+  { value: 'day', label: 'Day', maxRangeDays: Infinity },
+  { value: 'week', label: 'Week', maxRangeDays: Infinity },
 ];
 
-/** Date-range presets → look-back days (drives the `from` window bound). */
+/** The bucket granularities sensible for a given look-back window. */
+export function bucketOptionsForRange(rangeDays: number): BucketOption[] {
+  return BUCKET_OPTIONS.filter((o) => rangeDays <= o.maxRangeDays);
+}
+
+/** Clamp a bucket to the coarsest option still valid for `rangeDays` (used when a
+ *  range change invalidates the current selection — e.g. 10m → 180d). */
+export function clampBucketToRange(bucket: CreationBucket, rangeDays: number): CreationBucket {
+  const allowed = bucketOptionsForRange(rangeDays);
+  return allowed.some((o) => o.value === bucket)
+    ? bucket
+    : (allowed[allowed.length - 1]?.value ?? 'day');
+}
+
+/** Date-range presets → look-back days (drives the `from` window bound). The
+ *  short presets (1d/3d) make the sub-hour buckets actually useful. */
 export const RANGE_OPTIONS: { value: number; label: string }[] = [
+  { value: 1, label: '1d' },
+  { value: 3, label: '3d' },
   { value: 7, label: '7d' },
   { value: 30, label: '30d' },
   { value: 90, label: '90d' },
