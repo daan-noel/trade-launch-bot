@@ -51,6 +51,7 @@ export interface Tpsl2AxesSpec {
   liquidity_drop_pct?: (number | null)[];
   cohort_ratio?: (number | null)[];
   entry_min_age_secs?: (number | null)[];
+  entry_max_age_secs?: (number | null)[];
   entry_min_alive_sol?: (number | null)[];
   entry_min_organic_sol?: (number | null)[];
   entry_pullback_pct?: (number | null)[];
@@ -94,6 +95,7 @@ export interface AxisDef {
 export const TPSL2_AXES: AxisDef[] = [
   // Entry gates · scalp — when to buy (matches the modal's Entry section order).
   { key: 'entry_min_age_secs', label: 'Entry min age (s)', group: 'entry', nullable: true, default: [10, 30] },
+  { key: 'entry_max_age_secs', label: 'Entry max age (s)', group: 'entry', nullable: true, default: [null] },
   { key: 'entry_min_alive_sol', label: 'Entry min alive (SOL)', group: 'entry', nullable: true, default: [null] },
   { key: 'entry_min_organic_sol', label: 'Entry min organic (SOL)', group: 'entry', nullable: true, default: [null] },
   { key: 'entry_min_organic_liq', label: 'Entry min organic liq (SOL)', group: 'entry', nullable: true, default: [null] },
@@ -200,6 +202,22 @@ export interface ComboTokenResult {
   /** `"TakeProfit"` | `"StopLoss"` | `"TrailingStop"` | `"Stall"` |
    *  `"TimeStop"` | `"LiquidityExit"` | `"CohortExit"` | `"Open"` | `"NoEntry"` */
   exit: string;
+  // Simulation fill details
+  entry_time: string | null;
+  entry_price: number | null;
+  exit_time: string | null;
+  exit_price: number | null;
+  // Token metadata (from tokens + tokens_info)
+  created_at: string | null;
+  creator_wallet: string | null;
+  ath_price: number | null;
+  ath_timestamp: string | null;
+  current_price: number | null;
+  market_cap: number | null;
+  volume_sol: number | null;
+  trade_count: number | null;
+  is_migrated: boolean | null;
+  is_dead: boolean | null;
 }
 
 // --- start request ----------------------------------------------------------

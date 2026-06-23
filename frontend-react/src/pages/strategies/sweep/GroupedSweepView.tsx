@@ -244,9 +244,11 @@ export function GroupedSweepView({
 
   const tokenColumns = useMemo<ColumnDef<ComboTokenResult>[]>(
     () => [
+      // --- Identity ---
       {
         key: 'symbol',
         label: 'Symbol',
+        group: 'identity',
         render: (r) => <span className="font-mono text-xs">{r.symbol || '—'}</span>,
         searchValue: (r) => r.symbol,
         filterValue: (r) => r.symbol,
@@ -256,6 +258,7 @@ export function GroupedSweepView({
       {
         key: 'mint',
         label: 'Mint',
+        group: 'identity',
         render: (r) => (
           <span className="font-mono text-xs text-text-dim" title={r.mint}>
             {r.mint.slice(0, 8)}…{r.mint.slice(-4)}
@@ -266,8 +269,167 @@ export function GroupedSweepView({
         sortable: false,
       },
       {
+        key: 'creator_wallet',
+        label: 'Creator',
+        group: 'identity',
+        render: (r) =>
+          r.creator_wallet ? (
+            <span className="font-mono text-xs text-text-dim" title={r.creator_wallet}>
+              {r.creator_wallet.slice(0, 6)}…{r.creator_wallet.slice(-4)}
+            </span>
+          ) : (
+            <span className="text-text-dim">—</span>
+          ),
+        searchValue: (r) => r.creator_wallet ?? '',
+        filterValue: (r) => r.creator_wallet ?? '',
+        sortValue: (r) => r.creator_wallet ?? '',
+        sortable: true,
+      },
+      // --- Activity ---
+      {
+        key: 'created_at',
+        label: 'Created',
+        group: 'activity',
+        render: (r) =>
+          r.created_at ? (
+            <span className="text-xs text-text-dim">
+              {new Date(r.created_at).toLocaleString()}
+            </span>
+          ) : (
+            <span className="text-text-dim">—</span>
+          ),
+        searchValue: () => '',
+        sortValue: (r) => (r.created_at ? new Date(r.created_at).getTime() : 0),
+        sortable: true,
+      },
+      {
+        key: 'trade_count',
+        label: 'Trades',
+        group: 'activity',
+        render: (r) => (
+          <span className="text-xs text-text-dim">
+            {r.trade_count != null ? r.trade_count.toLocaleString() : '—'}
+          </span>
+        ),
+        searchValue: () => '',
+        filterNumber: (r) => r.trade_count,
+        sortValue: (r) => r.trade_count ?? -1,
+        sortable: true,
+      },
+      // --- Price ---
+      {
+        key: 'ath_price',
+        label: 'ATH',
+        group: 'price',
+        render: (r) => (
+          <span className="text-xs text-text-dim">
+            {r.ath_price != null ? r.ath_price.toExponential(3) : '—'}
+          </span>
+        ),
+        searchValue: () => '',
+        filterNumber: (r) => r.ath_price,
+        sortValue: (r) => r.ath_price ?? -1,
+        sortable: true,
+      },
+      {
+        key: 'ath_timestamp',
+        label: 'ATH At',
+        group: 'price',
+        render: (r) =>
+          r.ath_timestamp ? (
+            <span className="text-xs text-text-dim">
+              {new Date(r.ath_timestamp).toLocaleString()}
+            </span>
+          ) : (
+            <span className="text-text-dim">—</span>
+          ),
+        searchValue: () => '',
+        sortValue: (r) => (r.ath_timestamp ? new Date(r.ath_timestamp).getTime() : 0),
+        sortable: true,
+      },
+      {
+        key: 'current_price',
+        label: 'Price',
+        group: 'price',
+        render: (r) => (
+          <span className="text-xs text-text-dim">
+            {r.current_price != null ? r.current_price.toExponential(3) : '—'}
+          </span>
+        ),
+        searchValue: () => '',
+        filterNumber: (r) => r.current_price,
+        sortValue: (r) => r.current_price ?? -1,
+        sortable: true,
+      },
+      // --- Market ---
+      {
+        key: 'market_cap',
+        label: 'MCap',
+        group: 'market',
+        render: (r) => (
+          <span className="text-xs text-text-dim">
+            {r.market_cap != null ? `$${(r.market_cap / 1000).toFixed(1)}k` : '—'}
+          </span>
+        ),
+        searchValue: () => '',
+        filterNumber: (r) => r.market_cap,
+        sortValue: (r) => r.market_cap ?? -1,
+        sortable: true,
+      },
+      {
+        key: 'volume_sol',
+        label: 'Vol (SOL)',
+        group: 'market',
+        render: (r) => (
+          <span className="text-xs text-text-dim">
+            {r.volume_sol != null ? r.volume_sol.toFixed(1) : '—'}
+          </span>
+        ),
+        searchValue: () => '',
+        filterNumber: (r) => r.volume_sol,
+        sortValue: (r) => r.volume_sol ?? -1,
+        sortable: true,
+      },
+      // --- Flags ---
+      {
+        key: 'is_migrated',
+        label: 'Migrated',
+        group: 'flags',
+        render: (r) =>
+          r.is_migrated == null ? (
+            <span className="text-text-dim">—</span>
+          ) : (
+            <span className={r.is_migrated ? 'text-primary' : 'text-text-dim'}>
+              {r.is_migrated ? 'Yes' : 'No'}
+            </span>
+          ),
+        searchValue: (r) => (r.is_migrated ? 'yes' : 'no'),
+        filterValue: (r) => (r.is_migrated ? 'yes' : 'no'),
+        sortValue: (r) => (r.is_migrated ? 1 : 0),
+        sortable: true,
+      },
+      {
+        key: 'is_dead',
+        label: 'Dead',
+        group: 'flags',
+        render: (r) =>
+          r.is_dead == null ? (
+            <span className="text-text-dim">—</span>
+          ) : (
+            <span className={r.is_dead ? 'text-danger' : 'text-text-dim'}>
+              {r.is_dead ? 'Yes' : 'No'}
+            </span>
+          ),
+        searchValue: (r) => (r.is_dead ? 'yes' : 'no'),
+        filterValue: (r) => (r.is_dead ? 'yes' : 'no'),
+        sortValue: (r) => (r.is_dead ? 1 : 0),
+        sortable: true,
+      },
+      // --- Sim results ---
+      {
         key: 'fired',
         label: 'Fired',
+        group: 'sim',
         render: (r) => (
           <span className={r.fired ? 'text-success' : 'text-text-dim'}>
             {r.fired ? 'Yes' : 'No'}
@@ -281,6 +443,7 @@ export function GroupedSweepView({
       {
         key: 'pnl_sol',
         label: 'PnL (SOL)',
+        group: 'sim',
         render: (r) => (
           <span className={r.pnl_sol > 0 ? 'text-success' : r.pnl_sol < 0 ? 'text-danger' : 'text-text-dim'}>
             {r.fired ? r.pnl_sol.toFixed(4) : '—'}
@@ -294,6 +457,7 @@ export function GroupedSweepView({
       {
         key: 'pnl_pct',
         label: 'PnL %',
+        group: 'sim',
         render: (r) => (
           <span className={r.pnl_pct > 0 ? 'text-success' : r.pnl_pct < 0 ? 'text-danger' : 'text-text-dim'}>
             {r.fired ? `${r.pnl_pct.toFixed(1)}%` : '—'}
@@ -307,6 +471,7 @@ export function GroupedSweepView({
       {
         key: 'holding_secs',
         label: 'Hold (s)',
+        group: 'sim',
         render: (r) => (
           <span className="text-text-dim">
             {r.fired ? r.holding_secs : '—'}
@@ -320,6 +485,7 @@ export function GroupedSweepView({
       {
         key: 'exit',
         label: 'Exit',
+        group: 'sim',
         render: (r) => <span className="font-mono text-xs">{r.exit}</span>,
         searchValue: (r) => r.exit,
         filterValue: (r) => r.exit,
@@ -547,6 +713,14 @@ export function GroupedSweepView({
                     columns={tokenColumns}
                     rows={visibleTokenResults}
                     rowKey={(r) => r.mint}
+                    groupLabels={{
+                      identity: 'Identity',
+                      activity: 'Activity',
+                      price: 'Price',
+                      market: 'Market',
+                      flags: 'Flags',
+                      sim: 'Sim Results',
+                    }}
                     searchable
                     colFilters
                     colToggle
@@ -567,10 +741,10 @@ export function GroupedSweepView({
                       target={{
                         mint: selectedTokenResult.mint,
                         symbol: selectedTokenResult.symbol,
-                        entryTime: null,
-                        entryPrice: null,
-                        exitTime: null,
-                        exitPrice: null,
+                        entryTime: selectedTokenResult.entry_time ?? null,
+                        entryPrice: selectedTokenResult.entry_price ?? null,
+                        exitTime: selectedTokenResult.exit_time ?? null,
+                        exitPrice: selectedTokenResult.exit_price ?? null,
                         exitLabel: selectedTokenResult.fired ? selectedTokenResult.exit : null,
                       }}
                       onClose={() => setSelectedTokenMint(null)}

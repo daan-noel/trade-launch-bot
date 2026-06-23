@@ -11,6 +11,7 @@ const TPSL2_PARAM_KEYS = [
   'exit_take_profit',
   'exit_stop_loss',
   'entry_min_age_secs',
+  'entry_max_age_secs',
   'entry_min_alive_sol',
   'entry_min_organic_sol',
   'entry_pullback_pct',
