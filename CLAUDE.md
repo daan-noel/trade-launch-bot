@@ -80,8 +80,6 @@ Hard rules:
 - **Connection counts are load-bearing.** Each open PG connection is ~26 MB competing with the 256 MB buffer pool. New pools or raised limits require shrinking something else.
 - **In-memory caches trade RAM against page cache.** Any increase to `MAX_TRADES_RETAINED`, `SEED_TOKEN_LIMIT`, or cache TTLs on the server directly shrinks the Postgres buffer pool. Default to the tuned values in `tuning.rs`; raise them only on local.
 
-See [postgres-perf-plan.md](postgres-perf-plan.md) for the full diagnosis and all tuned values.
-
 ## Definition of done
 
 - **Backend:** `cargo check --bin backend` clean; `cargo clippy` on touched code; add/adjust a `--bin backend` (or `pump-trader`) test when logic changed.
