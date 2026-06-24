@@ -41,6 +41,22 @@ The `select!` **serializes** all position transitions (no Holding→ExitPending 
 
 `tpsl_sniper_2/` adds `cohort.rs` (launch-cohort primitive) and `entry/scalp.rs` (cohort-based scalp entry gates).
 
+## Buy guards (service.rs)
+
+Checked sequentially for every real buy, inline before `sync_position`. If either fires: `continue` — no position is created, no runtime cleanup needed.
+
+1. **SOL balance-floor** (`can_commit_buy`) — `wallet_balance − 0.02 SOL − committed_lamports ≥ buy_amount`. Fails open when the balance cache is cold (startup) so a stale cache never blocks all buys.
+2. **`trade.max_committed_sol`** — if set, blocks buy when `committed + buy_amount > ceiling`. Optional (default: no ceiling). Configured live via the Settings API; no restart needed.
+
+`committed_lamports` is shared across both TPSL1 and TPSL2 — the ceiling and floor apply to the wallet's total open exposure regardless of which strategy opened the position.
+
+## Recovery reapers (service.rs)
+
+Two background tasks fire once at boot then every 60 s:
+
+- **`redrive_orphaned_buy_submitted`** — classifies in-flight `BuySubmitted` rows (adopt from feed / drop if all sigs reverted / wait if any sig pending); **never re-sends**.
+- **`redrive_orphaned_exit_pending`** — re-drives `ExitPending` rows with no live `ExitGuard` (sell task gone); runs **before** the stale-fail sweep so recoverable bags retry before being marked `ExitFailed`.
+
 ## Exit ladder (priority order)
 
 `LiquidityExit → StopLoss → TakeProfit → TrailingStop → Stall → TimeStop`

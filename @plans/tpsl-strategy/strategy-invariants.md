@@ -97,3 +97,19 @@ Why: changing `buy_amount_sol` mid-run would make the position's token balance i
 **Why:** Clearing results while a paper run is active would delete in-progress positions. Clearing a real rule's results is a destructive operation that should never be available (real positions have financial consequences).
 
 **Mechanism:** `handler.rs` enforces both conditions before delegating to `paper_trading_repo.clear_runs()`.
+
+## 8. SOL balance-floor guard — never overdraft the wallet
+
+**Rule:** Every real buy must pass `can_commit_buy(buy_lamports)` before any position is created. The guard always leaves 0.02 SOL free for sell fees and Jito tips on the next exit.
+
+**Mechanism:** `trader.can_commit_buy` = `cached_balance − RESERVE_FLOOR(0.02 SOL) − committed_lamports ≥ buy_lamports`. Checked inline in `service.rs::on_token_created`, before `sync_position`. Fails open when the balance cache is empty (avoids blocking all buys on startup; the on-chain transaction is the real safety net).
+
+**Why:** Without the guard, a wallet with exactly N SOL committed could accept another buy, leaving insufficient SOL to pay the sell's Jito tip — the sell would then fail to land regardless of price action.
+
+## 9. `max_committed_sol` ceiling — cap concurrent exposure
+
+**Rule:** If `trade.max_committed_sol` is set, a new real buy is blocked when it would push the running committed total past the ceiling, regardless of wallet balance.
+
+**Mechanism:** Checked inline after the balance-floor guard: `committed_lamports + buy_lamports > max_lamports → continue`. The setting is read from the live-updated `AppSettings` borrow (DB-backed); no restart needed when changed.
+
+**Why separate from guard 8:** the balance-floor prevents overdraft; `max_committed_sol` caps risk exposure — e.g. a 10 SOL wallet can be capped at 2 SOL in-play at any moment. `committed_lamports` is shared across both TPSL1 and TPSL2, so the ceiling applies to the combined open exposure of all strategies.

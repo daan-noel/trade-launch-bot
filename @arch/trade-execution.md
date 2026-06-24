@@ -39,6 +39,12 @@ Deep-dive detail: `@plans/trade-execution/module-details.md`, `@plans/trade-exec
 - Rent (~0.002 SOL) reclaimed via `close_token_account` after balance confirmed cleared — off the exit hot path.
 - `initialize()` warms HTTP keep-alive pool so the first trade skips TLS handshake.
 - Simulation engine is **off the hot path** (RPC round-trips); never inline before a real send.
+- **SOL exposure lifecycle:** `commit_sol_for_position` debits before buy; `release_sol_for_position` (idempotent) credits on close or buy failure. `can_commit_buy` (balance-floor guard) + `max_committed_sol` setting gate every real buy before any position is created.
+- **Buy flow:** guard checks → commit → write-ahead hook (sign → persist sig → submit) → event-driven feed poll (12 × 1 s) → per-sig adopt → retry only on proven on-chain revert.
+- **Sell flow:** SOL released first (idempotent) → submit → event-driven per-sig balance poll (rate-limited ≥ 250 ms) → revert classified by error code → route re-read per attempt (migration auto-heals).
+- **Strategy integration:** strategies call `buy_token_snipe_write_ahead` / `sell_token_once` with `confirm=false`; fill confirmation comes from the `trades` LaserStream feed, never a new RPC call.
+
+Deep-dive on the full end-to-end workflow: [@plans/trade-execution/execution-workflow.md](@plans/trade-execution/execution-workflow.md)
 
 ## Unit tests
 
