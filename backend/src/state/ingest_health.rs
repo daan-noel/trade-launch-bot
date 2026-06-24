@@ -10,13 +10,25 @@
 //! freeze that only a manual restart clears (observed: recurring multi-hour total
 //! ingest stalls with no log).
 //!
-//! This module closes that gap. The client stamps [`IngestHeartbeat`] every time it
-//! successfully hands a transaction to the pipeline (real forward progress). A
-//! dedicated **OS thread** — not a tokio task, so a runtime starved by the very
-//! wedge we're detecting can't also freeze the watchdog — checks the heartbeat age
-//! and force-exits the process when it goes stale while live mode is on. `main`
+//! This module closes that gap. The **DbWriter** stamps [`IngestHeartbeat`] every
+//! time it commits a batch to Postgres — *real* end-to-end progress, measured at
+//! the sink where work actually lands, not where the client hands it off. That
+//! distinction is the whole point: a downstream that's merely *slow* (overloaded
+//! Postgres, recovering) keeps committing batches and so keeps stamping, while a
+//! downstream that's truly *wedged* (a hung DB socket parked on an `.await`)
+//! commits nothing and lets the heartbeat age. A dedicated **OS thread** — not a
+//! tokio task, so a runtime starved by the very wedge we're detecting can't also
+//! freeze the watchdog — checks the heartbeat age and force-exits the process when
+//! it goes stale *while work is pending* (the DB queue is non-empty). `main`
 //! already exits non-zero for the supervisor to restart, so a wedge self-heals in
 //! ~one timeout window instead of hours-until-noticed.
+//!
+//! The "work pending" gate is what makes this precise: an idle stretch (quiet
+//! upstream, or a reconnect in flight) drains the queue empty, so the absence of
+//! commits is expected and never counted as a stall — only a *backed-up* queue
+//! that isn't draining is a wedge. This replaces the older, fragile scheme where
+//! the client stamped on every forward and on healthy reconnects (which couldn't
+//! tell transient overload from a deadlock and restarted on both).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -27,14 +39,14 @@ use tracing::error;
 
 use crate::storage::repositories::settings_repo::AppSettings;
 
-/// Floor for the watchdog stall window. Must stay above the worst-case upstream
-/// recovery window so the watchdog never pre-empts an in-progress reconnect:
-/// `client::STREAM_RECONNECT_IDLE_TIMEOUT` (10 s) + check cadence (~2 s) + max
-/// backoff (~30 s) + connect (~10 s) = 52 s exactly. A hand-edited or stale DB
-/// row below this is retroactively neutralized; the API clamps writes here and
-/// the watchdog re-applies it defensively on every tick. Update this constant
-/// whenever the reconnect timing constants in `client.rs` change.
-pub const WATCHDOG_STALL_TIMEOUT_FLOOR_SECS: u64 = 52;
+/// Floor for the watchdog stall window. Kept generous (180 s) because the
+/// watchdog now only ever fires on a *genuine* downstream wedge — the stall
+/// predicate is gated on "work is pending" (the DB queue is non-empty), so a
+/// quiet upstream or an in-progress reconnect can never trip it regardless of the
+/// window. With false positives designed out, a wide window costs nothing and a
+/// hand-edited / stale DB row below it is retroactively neutralized (the API
+/// clamps writes here and the watchdog re-applies it defensively every tick).
+pub const WATCHDOG_STALL_TIMEOUT_FLOOR_SECS: u64 = 180;
 /// Floor for the watchdog check cadence — a `0`/tiny interval would busy-spin the
 /// OS thread for no detection benefit.
 pub const WATCHDOG_CHECK_INTERVAL_FLOOR_SECS: u64 = 5;
@@ -80,10 +92,18 @@ fn now_millis() -> u64 {
 }
 
 /// Pure stall predicate, factored out for unit testing: a stall is only declared
-/// while the watchdog is enabled and live (a paused operator expects silence), and
-/// once the idle gap reaches the timeout.
-fn is_stalled(enabled: bool, live: bool, idle: Duration, timeout: Duration) -> bool {
-    enabled && live && idle >= timeout
+/// while the watchdog is enabled and live (a paused operator expects silence),
+/// while work is actually pending (a non-empty DB queue — an empty one means the
+/// worker has nothing to drain, so no-commit silence is legitimate, not a wedge),
+/// and once the idle gap reaches the timeout.
+fn is_stalled(
+    enabled: bool,
+    live: bool,
+    work_pending: bool,
+    idle: Duration,
+    timeout: Duration,
+) -> bool {
+    enabled && live && work_pending && idle >= timeout
 }
 
 /// Spawn the liveness watchdog on a dedicated OS thread. Wakes every
@@ -102,10 +122,18 @@ fn is_stalled(enabled: bool, live: bool, idle: Duration, timeout: Duration) -> b
 /// so silence is expected and the watchdog holds fire. On the off→on edge it resets
 /// the window so a freshly-resumed stream gets a full timeout to reconnect before it
 /// can be judged stalled.
+///
+/// `work_pending` reports whether the downstream has anything to drain (the DB
+/// queue is non-empty). It's a plain closure — kept here rather than importing the
+/// queue type — so this module stays decoupled from `ingest_laserstream`; `main`
+/// builds it from a `WeakSender` to the DbWriter queue. A stall is only ever
+/// declared while it returns `true`: no pending work means no-commit silence is
+/// legitimate (quiet upstream / reconnect draining), not a wedge.
 pub fn spawn_watchdog(
     heartbeat: IngestHeartbeat,
     live_rx: watch::Receiver<bool>,
     settings_rx: watch::Receiver<AppSettings>,
+    work_pending: impl Fn() -> bool + Send + 'static,
 ) {
     std::thread::Builder::new()
         .name("ingest-watchdog".into())
@@ -139,11 +167,11 @@ pub fn spawn_watchdog(
                 prev_live = live;
 
                 let idle = Duration::from_millis(heartbeat.idle_millis());
-                if is_stalled(enabled, live, idle, timeout) {
+                if is_stalled(enabled, live, work_pending(), idle, timeout) {
                     error!(
-                        "Ingest watchdog: no forward progress for {idle:?} (>= {timeout:?}) \
-                         while live — forcing process exit so the supervisor restarts a wedged \
-                         ingest"
+                        "Ingest watchdog: DB queue backed up with no commit for {idle:?} \
+                         (>= {timeout:?}) while live — downstream wedged; forcing process exit \
+                         so the supervisor restarts ingest"
                     );
                     std::process::exit(1);
                 }
@@ -158,10 +186,12 @@ mod tests {
 
     #[test]
     fn paused_is_never_a_stall() {
-        // Even a huge idle gap can't trip the watchdog while live mode is off.
+        // Even a huge idle gap with work pending can't trip the watchdog while
+        // live mode is off.
         assert!(!is_stalled(
             true,
             false,
+            true,
             Duration::from_secs(10_000),
             Duration::from_secs(120)
         ));
@@ -169,9 +199,11 @@ mod tests {
 
     #[test]
     fn disabled_is_never_a_stall() {
-        // With the watchdog disabled, even a live + long-idle stall holds fire.
+        // With the watchdog disabled, even a live + work-pending + long-idle stall
+        // holds fire.
         assert!(!is_stalled(
             false,
+            true,
             true,
             Duration::from_secs(10_000),
             Duration::from_secs(120)
@@ -179,8 +211,25 @@ mod tests {
     }
 
     #[test]
-    fn live_and_idle_past_timeout_stalls() {
+    fn idle_queue_is_never_a_stall() {
+        // The crux of the design: no pending work means no-commit silence is
+        // legitimate (quiet upstream / reconnect draining), never a wedge — even
+        // live, enabled, and idle far past the timeout.
+        assert!(!is_stalled(
+            true,
+            true,
+            false,
+            Duration::from_secs(10_000),
+            Duration::from_secs(120)
+        ));
+    }
+
+    #[test]
+    fn live_with_work_pending_idle_past_timeout_stalls() {
+        // The one case that restarts: live, enabled, work pending (queue backed
+        // up), and no commit for >= the timeout = a genuine downstream wedge.
         assert!(is_stalled(
+            true,
             true,
             true,
             Duration::from_secs(121),
@@ -190,6 +239,7 @@ mod tests {
         assert!(is_stalled(
             true,
             true,
+            true,
             Duration::from_secs(120),
             Duration::from_secs(120)
         ));
@@ -197,7 +247,10 @@ mod tests {
 
     #[test]
     fn live_but_fresh_is_not_a_stall() {
+        // Work pending but a recent commit (fresh heartbeat) = a slow-but-draining
+        // worker, not a wedge.
         assert!(!is_stalled(
+            true,
             true,
             true,
             Duration::from_secs(5),
@@ -206,10 +259,11 @@ mod tests {
     }
 
     #[test]
-    fn stall_floor_exceeds_upstream_recovery_window() {
-        // Floor = idle timeout (10s) + check cadence (2s) + max backoff (30s) +
-        // connect (10s) = 52s. Must be updated when client.rs timing constants change.
-        assert!(WATCHDOG_STALL_TIMEOUT_FLOOR_SECS >= 52);
+    fn stall_floor_is_generous() {
+        // The watchdog only fires on a genuine wedge (gated on work-pending), so a
+        // wide window costs nothing and avoids any chance of pre-empting a slow
+        // recovery. Kept at the 180s seed default.
+        assert!(WATCHDOG_STALL_TIMEOUT_FLOOR_SECS >= 180);
     }
 
     #[test]

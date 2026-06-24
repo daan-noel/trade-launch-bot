@@ -25,7 +25,6 @@ use tonic::{Request, Status};
 use tracing::{error, info, warn};
 
 use crate::config::constants::PUMP_SWAP_PROGRAM_ID;
-use crate::state::ingest_health::IngestHeartbeat;
 
 use super::decoder::TxRelevance;
 use super::proto::geyser::geyser_client::GeyserClient;
@@ -84,18 +83,6 @@ enum DisconnectReason {
 }
 
 impl DisconnectReason {
-    /// Whether this disconnect implies a downstream consumer wedged on an `.await`
-    /// (the exact failure the process watchdog exists to restart). Only
-    /// `PipelineBackpressure` does — every other reason is an upstream/network event
-    /// or a normal close, where the client itself is healthy and reconnecting. The
-    /// reconnect path stamps the liveness heartbeat for the healthy reasons so a
-    /// routine reconnect (idle-timeout silence + backoff + connect) can't be mistaken
-    /// for a stall; it deliberately does NOT stamp on a wedge, so consecutive
-    /// backpressure reconnects keep aging the heartbeat until the watchdog fires.
-    fn is_downstream_wedge(self) -> bool {
-        matches!(self, DisconnectReason::PipelineBackpressure)
-    }
-
     fn label(self) -> String {
         match self {
             DisconnectReason::Graceful => "graceful".to_string(),
@@ -264,7 +251,6 @@ pub async fn run(
     pool_index: Arc<DashMap<String, String>>,
     pools_changed: Arc<Notify>,
     reconnect_interval: Duration,
-    heartbeat: IngestHeartbeat,
 ) {
     // Slot to replay from on the next (re)connect; `None` = live subscription.
     let mut from_slot: Option<u64> = None;
@@ -292,7 +278,6 @@ pub async fn run(
             &pools_changed,
             from_slot,
             &last_slot,
-            &heartbeat,
         )
         .await;
 
@@ -317,20 +302,6 @@ pub async fn run(
             counts.stream_error,
             counts.connect_error,
         );
-
-        // Liveness heartbeat: a healthy reconnect (idle-timeout silence, a network
-        // blip, a graceful close) is NOT a stall, but it forwards no tx — so without
-        // this stamp the in-stream idle window (up to STREAM_RECONNECT_IDLE_TIMEOUT)
-        // plus the backoff + connect time would age the heartbeat past the process
-        // watchdog's stall timeout and restart a perfectly-recovering process. Stamp
-        // here so each fresh attempt gets a full timeout window to land its first tx.
-        // The one exception is `PipelineBackpressure`: that means a downstream
-        // consumer wedged on an `.await` — exactly what the watchdog must restart — so
-        // we leave the heartbeat aging and let consecutive backpressure reconnects
-        // trip it.
-        if !reason.is_downstream_wedge() {
-            heartbeat.stamp();
-        }
 
         // A stream that delivered data and then dropped resets the backoff (a
         // long-lived connection shouldn't inherit a long delay); an attempt that
@@ -365,7 +336,6 @@ async fn run_once(
     pools_changed: &Notify,
     from_slot: Option<u64>,
     last_slot: &AtomicU64,
-    heartbeat: &IngestHeartbeat,
 ) -> DisconnectReason {
     match from_slot {
         Some(slot) => info!("LaserStream: connecting to {laserstream_url} (replay from slot {slot})"),
@@ -432,14 +402,14 @@ async fn run_once(
                                 // reconnect, never an invisible infinite park. Parking
                                 // on `send().await` sits OUTSIDE this `select!`, so the
                                 // idle-reconnect timer above could never fire — the exact
-                                // silent-freeze failure mode. A successful send is real
-                                // end-to-end progress, so stamp the liveness heartbeat
-                                // the process watchdog reads.
+                                // silent-freeze failure mode. Liveness is judged at the
+                                // sink (the DbWriter stamps the watchdog heartbeat on
+                                // commit), so the client just delivers and moves on.
                                 match update_tx
                                     .send_timeout((Arc::new(tx), relevance), PIPELINE_SEND_TIMEOUT)
                                     .await
                                 {
-                                    Ok(()) => heartbeat.stamp(),
+                                    Ok(()) => {}
                                     Err(mpsc::error::SendTimeoutError::Timeout(_)) => {
                                         warn!(
                                             "LaserStream: pipeline backpressured for \
@@ -519,17 +489,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_backpressure_counts_as_a_downstream_wedge() {
-        // Backpressure means a downstream consumer wedged on an `.await` — the one
-        // reason the reconnect path must NOT stamp the heartbeat, so the process
-        // watchdog can still restart the wedge.
-        assert!(DisconnectReason::PipelineBackpressure.is_downstream_wedge());
-
-        // Every other reason is a healthy client reconnecting; stamping keeps a
-        // routine reconnect from being mistaken for a stall.
-        assert!(!DisconnectReason::Graceful.is_downstream_wedge());
-        assert!(!DisconnectReason::IdleTimeout.is_downstream_wedge());
-        assert!(!DisconnectReason::ConnectError.is_downstream_wedge());
-        assert!(!DisconnectReason::StreamError(tonic::Code::Unavailable).is_downstream_wedge());
+    fn reason_labels_are_distinct() {
+        // The reconnect-reason labels drive the per-reason diagnostics counters in
+        // the deployed logs; keep them stable and distinguishable.
+        assert_eq!(DisconnectReason::Graceful.label(), "graceful");
+        assert_eq!(DisconnectReason::IdleTimeout.label(), "idle_timeout");
+        assert_eq!(
+            DisconnectReason::PipelineBackpressure.label(),
+            "pipeline_backpressure"
+        );
+        assert_eq!(DisconnectReason::ConnectError.label(), "connect_error");
+        assert!(DisconnectReason::StreamError(tonic::Code::Unavailable)
+            .label()
+            .starts_with("stream_error"));
     }
 }

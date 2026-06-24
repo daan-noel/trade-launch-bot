@@ -380,6 +380,10 @@ mod tests {
             pnl_percent: pnl_pct,
             pnl_sol,
             exit,
+            entry_time: None,
+            entry_price: None,
+            exit_time: None,
+            exit_price: None,
         }
     }
 

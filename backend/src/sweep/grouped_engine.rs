@@ -609,6 +609,10 @@ mod tests {
                 pnl_percent: *p as f32,
                 pnl_sol: *p as f32,
                 exit: ExitCode::TakeProfit,
+                entry_time: None,
+                entry_price: None,
+                exit_time: None,
+                exit_price: None,
             }
         }
         fn params_json(&self, p: &f64) -> serde_json::Value {

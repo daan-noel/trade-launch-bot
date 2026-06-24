@@ -47,7 +47,7 @@ pub mod keys {
     /// live trips the watchdog. Floored server-side (see `ingest_health`). Seeded
     /// from `INGEST_STALL_TIMEOUT_SECS` on a fresh DB; the UI value wins after.
     pub const WATCHDOG_STALL_TIMEOUT_SECS: Setting<u64> =
-        Setting::new("ingest.watchdog_stall_timeout_secs", || 90);
+        Setting::new("ingest.watchdog_stall_timeout_secs", || 180);
     /// How often (seconds) the watchdog wakes to check the stall window.
     pub const WATCHDOG_CHECK_INTERVAL_SECS: Setting<u64> =
         Setting::new("ingest.watchdog_check_interval_secs", || 15);
@@ -240,7 +240,7 @@ mod tests {
         assert_eq!(settings.slippage_bps, None);
         // Watchdog on by default, with the standard window/cadence.
         assert!(settings.watchdog_enabled);
-        assert_eq!(settings.watchdog_stall_timeout_secs, 90);
+        assert_eq!(settings.watchdog_stall_timeout_secs, 180);
         assert_eq!(settings.watchdog_check_interval_secs, 15);
     }
 

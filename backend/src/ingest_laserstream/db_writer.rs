@@ -12,6 +12,7 @@ use super::adapter::build_raw_blob;
 use super::proto::geyser::SubscribeUpdateTransaction;
 use crate::{
     models::{token::Token, trade::Trade, transaction::RawTransaction},
+    state::ingest_health::IngestHeartbeat,
     state::trade_signals::TradeSignals,
     storage::repositories::{
         token_info_repo::TokenInfoRepo, token_repo::TokenRepo, trade_repo::TradeRepo,
@@ -89,10 +90,21 @@ pub struct DbWriter {
     /// persisted (see [`TradeSignals`]). Signalled only after the row is committed,
     /// so a woken waiter that reads the DB is guaranteed to see it.
     trade_signals: Arc<TradeSignals>,
+    /// End-to-end ingest liveness clock read by the process watchdog. Stamped at
+    /// the end of every [`flush`](Self::flush) — i.e. on each committed batch —
+    /// because that is the one point where data actually lands in Postgres. A
+    /// merely-slow writer keeps stamping (so the watchdog holds fire); a writer
+    /// truly wedged on a hung DB `.await` never reaches the stamp, so the heartbeat
+    /// ages and the watchdog restarts it. See [`crate::state::ingest_health`].
+    heartbeat: IngestHeartbeat,
 }
 
 impl DbWriter {
-    pub fn new(pool: PgPool, trade_signals: Arc<TradeSignals>) -> Self {
+    pub fn new(
+        pool: PgPool,
+        trade_signals: Arc<TradeSignals>,
+        heartbeat: IngestHeartbeat,
+    ) -> Self {
         Self {
             token_repo: TokenRepo::new(pool.clone()),
             trade_repo: TradeRepo::new(pool.clone()),
@@ -100,6 +112,7 @@ impl DbWriter {
             tx_repo: TransactionRepo::new(pool.clone()),
             info_repo: TokenInfoRepo::new(pool),
             trade_signals,
+            heartbeat,
         }
     }
 
@@ -292,5 +305,12 @@ impl DbWriter {
                 warn!("DbWriter: migration {mint}: {e}");
             }
         }
+
+        // Real end-to-end progress: this batch's writes have all returned (a commit
+        // round-trip completed, even if some per-row inserts logged errors — the
+        // writer is alive, which is what the watchdog cares about). Stamp the
+        // liveness heartbeat. `flush` is only called with a non-empty batch, so this
+        // never fires on idle; a writer wedged on a hung DB `.await` never gets here.
+        self.heartbeat.stamp();
     }
 }

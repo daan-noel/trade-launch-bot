@@ -689,15 +689,28 @@ async fn main() -> anyhow::Result<()> {
         let pools_changed = pipeline.pools_changed();
         let shed_counters = pipeline.shed_counters();
 
-        // End-to-end ingest liveness: the client stamps this on every tx it forwards
-        // to the pipeline; a dedicated OS-thread watchdog force-exits the process if
-        // it goes stale while live, so a downstream `.await` deadlock that the
-        // in-stream watchdog and task supervision both miss self-heals via restart.
+        // End-to-end ingest liveness: the DbWriter stamps this on every committed
+        // batch (real progress, measured at the sink). A dedicated OS-thread watchdog
+        // force-exits the process only when the heartbeat goes stale *while the DB
+        // write queue is backed up* — a genuine downstream `.await` wedge that task
+        // supervision and the in-stream idle-reconnect both miss — so it self-heals
+        // via restart, but a merely-slow writer or a quiet/idle queue never trips it.
+        // A clone goes to the watchdog; the DbWriter takes the original (below).
         let heartbeat = state::ingest_health::IngestHeartbeat::new();
+        let db_tx_pending = db_tx_weak.clone();
         state::ingest_health::spawn_watchdog(
             heartbeat.clone(),
             live_tx.subscribe(),
             settings_tx.subscribe(),
+            // True while the DB write queue holds undrained ops. Sync atomic reads,
+            // safe from the watchdog's OS thread; a dropped sender (shutdown) reads
+            // as "no work" so the watchdog holds fire.
+            move || {
+                db_tx_pending
+                    .upgrade()
+                    .map(|tx| tx.capacity() < tx.max_capacity())
+                    .unwrap_or(false)
+            },
         );
 
         let producer_task = tokio::spawn(ingest_laserstream::client::run(
@@ -709,7 +722,6 @@ async fn main() -> anyhow::Result<()> {
             pool_index.clone(),
             pools_changed.clone(),
             settings.reconnect_interval,
-            heartbeat,
         ));
 
         tokio::spawn(ingest_laserstream::pipeline::run_pool_subscription_refresh(
@@ -735,8 +747,11 @@ async fn main() -> anyhow::Result<()> {
         ));
 
         let pipeline_task = tokio::spawn(pipeline.run(update_rx));
-        let db_writer =
-            ingest_laserstream::db_writer::DbWriter::new(db.clone(), trade_signals.clone());
+        let db_writer = ingest_laserstream::db_writer::DbWriter::new(
+            db.clone(),
+            trade_signals.clone(),
+            heartbeat,
+        );
         let db_writer_task = tokio::spawn(db_writer.run(db_rx));
 
         (

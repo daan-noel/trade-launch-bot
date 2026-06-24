@@ -79,9 +79,13 @@ impl Settings {
             wallet_private_key: required("WALLET_PRIVATE_KEY")?,
             nonce_accounts: parse_required_list("NONCE_ACCOUNTS")?,
             reconnect_interval: Duration::from_millis(env_parse("RECONNECT_INTERVAL", 10_000)?),
+            // Seeds a fresh DB's watchdog stall window; the UI value wins after.
+            // The real governing floor (180s) is re-applied at runtime in
+            // `ingest_health`, so a low value here can't make the watchdog
+            // trigger-happy — it only sets the initial seed.
             ingest_stall_timeout: Duration::from_secs(env_parse_min(
                 "INGEST_STALL_TIMEOUT_SECS",
-                90u64,
+                180u64,
                 52,
             )?),
             database_url: required("DATABASE_URL")?,
