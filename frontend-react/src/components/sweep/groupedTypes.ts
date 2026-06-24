@@ -169,6 +169,9 @@ export interface GroupedSweepRunRecord {
   max_combos: number | null;
   /** Optional user-given name; `null` = unnamed (UI falls back to timestamp). */
   label: string | null;
+  /** Notional (SOL) each simulated round-trip was priced at; `null` on legacy
+   *  runs (backend defaulted to 1.0 SOL). */
+  buy_amount_sol: number | null;
 }
 
 /** One group's summary row: its fingerprint key, sample size, and winning combo. */
@@ -251,4 +254,7 @@ export interface GroupedSweepStartArgs {
   /** Per-group combo cap override. Omitted ⇒ backend default (5000); the backend
    *  clamps to its hard backstop. */
   max_combos?: number;
+  /** Notional (SOL) to price every simulated round-trip at. Set to the live
+   *  `buy_amount` so backtest PnL% matches live results. Omitted ⇒ 1.0 SOL. */
+  buy_amount_sol?: number;
 }

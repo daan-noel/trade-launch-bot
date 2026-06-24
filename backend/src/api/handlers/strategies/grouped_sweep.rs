@@ -93,6 +93,12 @@ pub struct StartGroupedSweepBody {
     /// never cached regardless. Default `false`.
     #[serde(default)]
     pub fresh: bool,
+    /// Notional (SOL) to price every simulated round-trip at. Affects the fixed
+    /// per-leg cost (Jito tip + priority fee) as a fraction of the trade size —
+    /// set this to the live `buy_amount` so backtest PnL% matches live results.
+    /// Omitted ⇒ 1.0 SOL (the server default).
+    #[serde(default = "default_buy_amount_sol")]
+    pub buy_amount_sol: f64,
     /// Per-field value filters — restrict the corpus to tokens whose fingerprint
     /// value for the named field is in the allowed set. Map key = `GroupField`
     /// serde tag (e.g. `"cu_price"`); value = JSON array of allowed numbers.
@@ -117,6 +123,9 @@ fn default_token_cap() -> usize {
 }
 fn default_axes() -> serde_json::Value {
     serde_json::Value::Object(Default::default())
+}
+fn default_buy_amount_sol() -> f64 {
+    1.0
 }
 
 #[derive(serde::Deserialize)]
@@ -581,6 +590,7 @@ async fn run_grouped_sweep_job(
         token_cap: Some(b.token_cap as i32),
         max_combos: b.max_combos.map(|v| v as i32),
         label: None,
+        buy_amount_sol: Some(b.buy_amount_sol),
     };
     let repo = GroupedSweepRepo::new(state.batch_db.clone(), tables);
     if let Err(e) = repo.insert_run(&run).await {
@@ -708,6 +718,7 @@ async fn run_grouped_sweep_job(
         min_tokens,
         floor,
         b.max_combos,
+        b.buy_amount_sol,
         coarse_observer,
         observer,
         sink,
@@ -1339,8 +1350,9 @@ pub async fn list_token_results(
 
     // Re-simulate on a blocking thread (CPU-bound but short: one combo × N tokens).
     let strategy_id = query.strategy_id.clone();
+    let buy_amount_sol = run.buy_amount_sol.unwrap_or(1.0);
     let result = tokio::task::spawn_blocking(move || {
-        registry::simulate_one_combo(&strategy_id, &tokens, &params_json)
+        registry::simulate_one_combo(&strategy_id, &tokens, &params_json, buy_amount_sol)
     })
     .await;
 

@@ -138,6 +138,7 @@ interface SweepConfig {
   tokenCap: number;
   maxCombos: number;
   curveOnly: boolean;
+  buyAmountSol: number;
 }
 
 /** Default form state for a strategy — its `axesText` is prefilled from that
@@ -158,6 +159,7 @@ function defaultSweepConfig(axes: AxisDef[]): SweepConfig {
     tokenCap: 10000,
     maxCombos: DEFAULT_MAX_COMBOS,
     curveOnly: false,
+    buyAmountSol: 1.0,
   };
 }
 
@@ -227,6 +229,7 @@ function runToConfig(run: GroupedSweepRunRecord, axes: AxisDef[], defaults: Swee
     tokenCap: run.token_cap ?? defaults.tokenCap,
     maxCombos: run.max_combos ?? defaults.maxCombos,
     curveOnly: run.curve_only,
+    buyAmountSol: run.buy_amount_sol ?? defaults.buyAmountSol,
   };
 }
 
@@ -293,6 +296,7 @@ export function SweepConfigForm({
     tokenCap,
     maxCombos,
     curveOnly,
+    buyAmountSol,
   } = config;
 
   /** Patch one config field (always writes back a complete object). */
@@ -308,6 +312,7 @@ export function SweepConfigForm({
   const setTokenCap = (v: number) => setField('tokenCap', v);
   const setMaxCombos = (v: number) => setField('maxCombos', v);
   const setCurveOnly = (v: boolean) => setField('curveOnly', v);
+  const setBuyAmountSol = (v: number) => setField('buyAmountSol', v);
   const setIxLabelsFilter = (v: string) => setField('ixLabelsFilter', v);
   const setCashbackFilter = (v: SweepConfig['cashbackFilter']) => setField('cashbackFilter', v);
   const setFieldFilterText = (field: string, value: string) =>
@@ -391,6 +396,7 @@ export function SweepConfigForm({
       // Only send an override when it differs from the default, so the backend
       // default stays authoritative otherwise.
       max_combos: effectiveCap !== DEFAULT_MAX_COMBOS ? effectiveCap : undefined,
+      buy_amount_sol: buyAmountSol,
     });
   }
 
@@ -477,6 +483,16 @@ export function SweepConfigForm({
             onChange={(e) =>
               setMaxCombos(Math.min(HARD_MAX_COMBOS, Math.max(1, Number(e.target.value) || 1)))
             }
+          />
+        </Field>
+
+        <Field label="Buy amount (SOL)" hint="per trade" className="w-[140px]">
+          <Input
+            type="number"
+            min={0.001}
+            step={0.01}
+            value={buyAmountSol}
+            onChange={(e) => setBuyAmountSol(Math.max(0.001, Number(e.target.value) || 1))}
           />
         </Field>
 

@@ -149,7 +149,7 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
         </Row>
         <Row label="Caps / gates">
           min {run.min_tokens} tok/grp · token cap {run.token_cap ?? '—'} · max combos{' '}
-          {run.max_combos ?? 'default'}
+          {run.max_combos ?? 'default'} · buy {run.buy_amount_sol ?? 1} SOL
           {run.curve_only ? ' · curve-only' : ''}
         </Row>
         {fieldLines.length > 0 && (

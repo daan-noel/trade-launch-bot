@@ -74,6 +74,7 @@ struct RunDbRow {
     token_cap: Option<i32>,
     max_combos: Option<i32>,
     label: Option<String>,
+    buy_amount_sol: Option<f32>,
 }
 
 impl From<RunDbRow> for GroupedSweepRun {
@@ -101,6 +102,7 @@ impl From<RunDbRow> for GroupedSweepRun {
             token_cap: r.token_cap,
             max_combos: r.max_combos,
             label: r.label,
+            buy_amount_sol: r.buy_amount_sol.map(|v| v as f64),
         }
     }
 }
@@ -276,9 +278,9 @@ impl GroupedSweepRepo {
              (id, strategy_id, source, method, created_after, created_before, \
               curve_only, grouping_spec, axes_spec, min_tokens, token_count, group_count, \
               combo_count, corpus_hash, created_at, status, groups_done, \
-              ix_labels_filter, field_filters, token_cap, max_combos, label) \
+              ix_labels_filter, field_filters, token_cap, max_combos, label, buy_amount_sol) \
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,\
-                     $18,$19,$20,$21,$22)",
+                     $18,$19,$20,$21,$22,$23)",
             self.tables.runs
         );
         sqlx::query(&run_sql)
@@ -304,6 +306,7 @@ impl GroupedSweepRepo {
             .bind(run.token_cap)
             .bind(run.max_combos)
             .bind(&run.label)
+            .bind(run.buy_amount_sol.map(|v| v as f32))
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -510,7 +513,7 @@ impl GroupedSweepRepo {
             "SELECT id, strategy_id, source, method, created_after, created_before, \
                     curve_only, grouping_spec, axes_spec, min_tokens, token_count, group_count, \
                     combo_count, corpus_hash, created_at, status, groups_done, \
-                    ix_labels_filter, field_filters, token_cap, max_combos, label \
+                    ix_labels_filter, field_filters, token_cap, max_combos, label, buy_amount_sol \
              FROM {} WHERE id = $1",
             self.tables.runs
         );
@@ -574,7 +577,7 @@ impl GroupedSweepRepo {
             "SELECT id, strategy_id, source, method, created_after, created_before, \
                     curve_only, grouping_spec, axes_spec, min_tokens, token_count, group_count, \
                     combo_count, corpus_hash, created_at, status, groups_done, \
-                    ix_labels_filter, field_filters, token_cap, max_combos, label \
+                    ix_labels_filter, field_filters, token_cap, max_combos, label, buy_amount_sol \
              FROM {} ORDER BY created_at DESC LIMIT $1",
             self.tables.runs
         );

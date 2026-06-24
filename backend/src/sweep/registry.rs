@@ -160,6 +160,7 @@ pub async fn run_grouped(
     min_tokens: usize,
     floor: CoverageFloor,
     max_combos: Option<usize>,
+    buy_amount_sol: f64,
     coarse_observer: Arc<dyn SweepObserver + Send>,
     observer: Arc<dyn SweepObserver + Send>,
     sink: Arc<dyn GroupSink + Send + Sync>,
@@ -168,14 +169,14 @@ pub async fn run_grouped(
         "tpsl1" => {
             sweep_tpsl1(
                 axes_json, method, refine, corpus, fields, min_tokens, floor, max_combos,
-                coarse_observer, observer, sink,
+                buy_amount_sol, coarse_observer, observer, sink,
             )
             .await
         }
         "tpsl2" => {
             sweep_tpsl2(
                 axes_json, method, refine, corpus, fields, min_tokens, floor, max_combos,
-                coarse_observer, observer, sink,
+                buy_amount_sol, coarse_observer, observer, sink,
             )
             .await
         }
@@ -231,6 +232,7 @@ async fn sweep_tpsl2(
     min_tokens: usize,
     floor: CoverageFloor,
     max_combos: Option<usize>,
+    buy_amount_sol: f64,
     coarse_observer: Arc<dyn SweepObserver + Send>,
     observer: Arc<dyn SweepObserver + Send>,
     sink: Arc<dyn GroupSink + Send + Sync>,
@@ -251,7 +253,7 @@ async fn sweep_tpsl2(
     // Store the resolved axes (post-defaults/dedup) so the run is reproducible.
     let axes_json = serde_json::to_value(&axes).context("serializing resolved TPSL2 axes")?;
 
-    let strategy = Tpsl2Strategy::new(sweep_base_rule_tpsl2(), axes);
+    let strategy = Tpsl2Strategy::new(sweep_base_rule_tpsl2(buy_amount_sol), axes);
     let mut params = strategy.sample(method);
     if params.is_empty() {
         bail!("param space is empty");
@@ -313,24 +315,11 @@ async fn sweep_tpsl2(
     Ok(GroupedSweepOutput { combo_count, axes_json, groups })
 }
 
-/// Notional (in SOL) every simulated round-trip is priced at — the **only**
-/// base-rule field either sweep actually consumes. Every entry/exit knob is
-/// overwritten by the swept axes, and the token-creation filters/limits are never
-/// read in the grouped sweep, so the sweep needs no DB rule at all — the base rule
-/// is synthesized in-process by `sweep_base_rule_tpsl{1,2}`.
-///
-/// Set this to the per-trade size you actually intend to trade live: the
-/// `CostModel`'s fixed costs (Jito tip + priority fee) are a *fixed* SOL amount
-/// per leg, so a larger notional makes friction look smaller (and a smaller one
-/// larger) — which shifts the per-combo expectancy ranking. `1.0` is a neutral
-/// placeholder, not a recommendation.
-const SWEEP_BASE_BUY_AMOUNT_SOL: f64 = 1.0;
-
 /// Synthetic TPSL2 base rule the swept params overlay. Only `buy_amount` is
 /// meaningful (see [`SWEEP_BASE_BUY_AMOUNT_SOL`]); every other field is either
 /// overwritten by the swept axes or unused in the grouped sweep, so we build it
 /// in-memory instead of requiring a DB template rule.
-fn sweep_base_rule_tpsl2() -> Tpsl2Rule {
+fn sweep_base_rule_tpsl2(buy_amount_sol: f64) -> Tpsl2Rule {
     Tpsl2Rule::new(
         "sweep-synthetic-base".into(),
         None,                  // p_token_initial_buy_sol — unused in sweep
@@ -338,7 +327,7 @@ fn sweep_base_rule_tpsl2() -> Tpsl2Rule {
         None,                  // p_token_cu_price        — unused in sweep
         serde_json::json!([]), // p_token_ix_labels       — unused in sweep
         "paper".into(),        // trade_mode              — unused in sweep
-        SWEEP_BASE_BUY_AMOUNT_SOL,
+        buy_amount_sol,
         0.0,                   // p_exit_take_profit      — overlaid per combo
         0.0,                   // p_exit_stop_loss        — overlaid per combo
         None,                  // p_token_max_sol_cost    — unused in sweep
@@ -367,6 +356,7 @@ async fn sweep_tpsl1(
     min_tokens: usize,
     floor: CoverageFloor,
     max_combos: Option<usize>,
+    buy_amount_sol: f64,
     coarse_observer: Arc<dyn SweepObserver + Send>,
     observer: Arc<dyn SweepObserver + Send>,
     sink: Arc<dyn GroupSink + Send + Sync>,
@@ -388,7 +378,7 @@ async fn sweep_tpsl1(
     // Store the resolved axes (post-defaults/dedup) so the run is reproducible.
     let axes_json = serde_json::to_value(&axes).context("serializing resolved TPSL1 axes")?;
 
-    let strategy = Tpsl1Strategy::new(sweep_base_rule_tpsl1(), axes);
+    let strategy = Tpsl1Strategy::new(sweep_base_rule_tpsl1(buy_amount_sol), axes);
     let mut params = strategy.sample(method);
     if params.is_empty() {
         bail!("param space is empty");
@@ -454,10 +444,11 @@ pub fn simulate_one_combo(
     strategy_id: &str,
     tokens: &[TokenTrades],
     params_json: &Value,
+    buy_amount_sol: f64,
 ) -> Result<Vec<ComboTokenResult>> {
     match strategy_id {
-        "tpsl2" => simulate_tpsl2_one_combo(tokens, params_json),
-        "tpsl1" => simulate_tpsl1_one_combo(tokens, params_json),
+        "tpsl2" => simulate_tpsl2_one_combo(tokens, params_json, buy_amount_sol),
+        "tpsl1" => simulate_tpsl1_one_combo(tokens, params_json, buy_amount_sol),
         other => bail!(
             "strategy '{other}' has no single-combo simulation (supported: {:?})",
             strategy_ids()
@@ -482,9 +473,10 @@ fn exit_label(code: ExitCode) -> &'static str {
 fn simulate_tpsl2_one_combo(
     tokens: &[TokenTrades],
     params_json: &Value,
+    buy_amount_sol: f64,
 ) -> Result<Vec<ComboTokenResult>> {
     let has_cohort = params_json.get("exit_cohort_ratio").and_then(|v| v.as_f64()).is_some();
-    let strategy = Tpsl2Strategy::for_replay(sweep_base_rule_tpsl2(), has_cohort);
+    let strategy = Tpsl2Strategy::for_replay(sweep_base_rule_tpsl2(buy_amount_sol), has_cohort);
     let combo = strategy.combo_from_params_json(params_json)?;
     let params = std::slice::from_ref(&combo);
     let noop = Noop;
@@ -526,8 +518,9 @@ fn simulate_tpsl2_one_combo(
 fn simulate_tpsl1_one_combo(
     tokens: &[TokenTrades],
     params_json: &Value,
+    buy_amount_sol: f64,
 ) -> Result<Vec<ComboTokenResult>> {
-    let strategy = Tpsl1Strategy::for_replay(sweep_base_rule_tpsl1());
+    let strategy = Tpsl1Strategy::for_replay(sweep_base_rule_tpsl1(buy_amount_sol));
     let combo = strategy.combo_from_params_json(params_json)?;
     let params = std::slice::from_ref(&combo);
     let noop = Noop;
@@ -569,7 +562,7 @@ fn simulate_tpsl1_one_combo(
 /// Synthetic TPSL1 base rule the swept params overlay. As with TPSL2, only
 /// `buy_amount` is meaningful (see [`SWEEP_BASE_BUY_AMOUNT_SOL`]) — every other
 /// field is overwritten by the swept exit ladder or unused in the grouped sweep.
-fn sweep_base_rule_tpsl1() -> Tpsl1Rule {
+fn sweep_base_rule_tpsl1(buy_amount_sol: f64) -> Tpsl1Rule {
     Tpsl1Rule::new(
         "sweep-synthetic-base".into(),
         None,                  // p_token_initial_buy_sol — unused in sweep
@@ -577,7 +570,7 @@ fn sweep_base_rule_tpsl1() -> Tpsl1Rule {
         None,                  // p_token_cu_price        — unused in sweep
         serde_json::json!([]), // p_token_ix_labels       — unused in sweep
         "paper".into(),        // trade_mode              — unused in sweep
-        SWEEP_BASE_BUY_AMOUNT_SOL,
+        buy_amount_sol,
         0.0,                   // p_exit_take_profit      — overlaid per combo
         0.0,                   // p_exit_stop_loss        — overlaid per combo
         None,                  // p_token_max_sol_cost    — unused in sweep
