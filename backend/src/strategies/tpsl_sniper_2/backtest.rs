@@ -7,6 +7,7 @@ use uuid::Uuid;
 use super::entry;
 use super::exit;
 use super::util::none_if_zero_u64;
+use crate::sweep::strategy::{round_trip_with_costs, CostModel};
 use crate::models::trade::Trade;
 use crate::models::Token;
 use crate::state::app_state::AppState;
@@ -297,8 +298,14 @@ pub async fn run_backtest(
                     match exit {
                         Some(fill) => {
                             let secs = (fill.block_time - entry_time).num_seconds();
-                            let pct = ((fill.price - entry_price) / entry_price) * 100.0;
-                            let sol = rule.buy_amount * (pct / 100.0);
+                            let econ = round_trip_with_costs(
+                                entry_price,
+                                fill.price,
+                                rule.buy_amount,
+                                &CostModel::pumpfun_default(),
+                            );
+                            let pct = econ.pnl_percent;
+                            let sol = econ.pnl_sol;
                             (
                                 Some(fill.price),
                                 Some(fill.tx_signature),
