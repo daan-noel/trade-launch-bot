@@ -286,8 +286,18 @@ pub async fn run(
         // Replay the gap next attempt only if we made progress this attempt;
         // otherwise fall back to live so we never get stuck replaying a slot the
         // server can no longer serve (the existing token_sync backfill covers it).
+        //
+        // Exception: never replay after a PipelineBackpressure disconnect. The
+        // downstream was already overwhelmed; adding a replay burst on top of the
+        // live firehose re-triggers the same backpressure, which reconnects again
+        // with another replay — a cycle that sustains doubled Helius egress. Skip
+        // the gap and reconnect live; the pipeline was dropping that data anyway.
         let seen = last_slot.load(Ordering::Relaxed);
-        from_slot = if seen > 0 { Some(seen + 1) } else { None };
+        from_slot = if seen > 0 && !matches!(reason, DisconnectReason::PipelineBackpressure) {
+            Some(seen + 1)
+        } else {
+            None
+        };
 
         // Per-reason reconnect tally: the detailed error/close was already logged
         // inside `run_once`; here we surface *which* arm fired plus the running

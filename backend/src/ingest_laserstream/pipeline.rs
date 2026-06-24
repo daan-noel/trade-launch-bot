@@ -790,7 +790,23 @@ pub async fn run_pool_subscription_refresh(
         }
 
         let now = Utc::now();
-        let mut added = false;
+        let mut changed = false;
+
+        // Evict dead pools first: remove any pool whose token is no longer
+        // live so the gRPC account_include shrinks immediately rather than
+        // accumulating every pool that ever migrated.
+        pool_index.retain(|_pool, mint| {
+            let live = token_cache
+                .get(mint)
+                .map(|e| pool_is_live(e.value(), now))
+                .unwrap_or(false);
+            if !live {
+                changed = true;
+            }
+            live
+        });
+
+        // Add any newly-active pools not yet subscribed.
         for entry in token_cache.iter() {
             if !entry.is_migrated || !pool_is_live(entry.value(), now) {
                 continue;
@@ -803,12 +819,12 @@ pub async fn run_pool_subscription_refresh(
                     continue;
                 }
                 if pool_index.insert(pool, entry.key().clone()).is_none() {
-                    added = true;
+                    changed = true;
                 }
             }
         }
 
-        if added {
+        if changed {
             pools_changed.notify_one();
         }
     }
