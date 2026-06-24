@@ -39,13 +39,13 @@ impl SweepObserver for Noop {
 /// Bounds the `groups × combos × tokens` work; the handler rejects a full grid
 /// whose product exceeds this before any sweep runs, and random/LHS draws are
 /// clamped to it. A run may raise this per-request (up to [`HARD_MAX_COMBOS`]).
-pub const MAX_COMBOS: usize = 5_000;
+pub const MAX_COMBOS: usize = 100_000;
 
 /// Absolute backstop on the per-request combo cap. A run can opt into more than
 /// [`MAX_COMBOS`] (sweeps are infrequent and the caller accepts the wait), but
 /// never past this — so a fat-fingered override still can't run away with the
 /// `groups × combos × tokens` work or monopolise the bounded rayon pool.
-pub const HARD_MAX_COMBOS: usize = 500_000;
+pub const HARD_MAX_COMBOS: usize = 1_000_000;
 
 /// Resolve the effective per-group combo cap for a run: the request override if
 /// given, else the default, clamped to the hard backstop (and ≥ 1).

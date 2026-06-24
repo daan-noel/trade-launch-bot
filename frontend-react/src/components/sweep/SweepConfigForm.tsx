@@ -19,10 +19,10 @@ import { FingerprintGroupPicker } from './FingerprintGroupPicker';
 
 /** Mirror of the backend `MAX_COMBOS` default — the per-group cap a run uses
  *  unless overridden in the form below. */
-const DEFAULT_MAX_COMBOS = 5000;
+const DEFAULT_MAX_COMBOS = 100000;
 /** Mirror of the backend `HARD_MAX_COMBOS` backstop — the form won't let the
  *  override exceed it (the backend clamps too). */
-const HARD_MAX_COMBOS = 500000;
+const HARD_MAX_COMBOS = 1000000;
 
 interface SweepConfigFormProps {
   strategyId: string;
