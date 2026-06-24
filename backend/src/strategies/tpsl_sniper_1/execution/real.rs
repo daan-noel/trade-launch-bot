@@ -506,6 +506,25 @@ pub(crate) async fn sell_and_close_position(
         .clone()
         .unwrap_or_else(|| crate::config::constants::TOKEN_PROGRAM_ID.to_string());
 
+    if amount == 0 {
+        warn!(
+            position_id = %position.id, mint = %mint,
+            "No entry token amount recorded — closing position without sell TX"
+        );
+        let prev = position.clone();
+        position.close(trigger_price, Vec::new(), 0.0, trigger_time);
+        position.exit_reason = Some(exit_reason);
+        if let Err(err) = position_repo.update(&position).await {
+            warn!(
+                position_id = %position.id, mint = %mint,
+                "Failed to close zero-amount position: {err}"
+            );
+        } else {
+            runtime.sync_position(Some(&prev), &position);
+        }
+        return;
+    }
+
     info!(
         position_id = %position.id, mint = %mint, amount,
         "Executing sell for exited position"

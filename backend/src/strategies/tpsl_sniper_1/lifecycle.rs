@@ -196,6 +196,14 @@ pub async fn stop_and_close_rule(
         } else {
             // Real: sell on-chain. Spawn so the slow sell-with-retries loop runs
             // off the request path; the table reflects the drain via polling.
+            // 0-entry positions never filled — delete rather than spawn a no-op sell.
+            if position.entry_price.is_none() {
+                let position_repo = Tpsl1PositionRepo::new(app_state.db.clone());
+                let _ = position_repo.delete_position(position_id).await;
+                app_state.tpsl1_cache.remove_position(&position);
+                drop(guard);
+                continue;
+            }
             let trader = app_state.trader.clone();
             let runtime = app_state.tpsl1_cache.clone();
             let token_cache = app_state.token_cache.clone();
