@@ -90,6 +90,21 @@ See [postgres-perf-plan.md](postgres-perf-plan.md) for the full diagnosis and al
 - **Temp plan files:** when a step in a root `*-plan.md` is done, remove that step from the file; when every step is done, delete the file.
 - Stayed in the owning crate, no new warnings, no secrets in code.
 
+## .env management
+
+`.env` is gitignored and must always stay in sync with `.env.example`. When `.env.example` is updated:
+
+1. **Back up first:** copy `.env` → `.env.backup` so you can diff what changed.
+2. **Update `.env`:** apply every new key from `.env.example`, filling in real values (not placeholders).
+3. Never leave a key in `.env.example` that has no counterpart in `.env`.
+
+```powershell
+Copy-Item .env .env.backup -Force   # step 1 — always do this first
+# then edit .env to add/update keys
+```
+
+`.env.backup` is gitignored. It exists only for local diff/review — delete it once you've confirmed the update.
+
 ## Gotchas
 
 - **Sell-confirm timing:** the exit loop now polls the **full** window (poll-then-sleep, tracking remaining balance) before retrying — this buffers the gRPC feed's index lag that the old RPC confirm poll incidentally provided. Without it, duplicate sells fire. Preserve when editing `execution/real.rs` or the sell retry path.
