@@ -10,6 +10,7 @@
 use super::{PumpFunTrader, TokenPDAs};
 use crate::constants::{TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::Signer;
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -30,6 +31,13 @@ pub(super) struct CurveRouting {
 }
 
 impl PumpFunTrader {
+    /// Fetch the on-chain lamport balance of the trader's wallet. Intended for the
+    /// background SOL-balance refresh task; never called inline on the buy hot path.
+    pub async fn get_sol_balance(&self) -> anyhow::Result<u64> {
+        let wallet = self.config.keypair.pubkey();
+        Ok(self.rpc.get_balance(&wallet).await?)
+    }
+
     /// Return all non-zero token accounts held by the trader's wallet.
     /// Uses raw JSON-RPC via reqwest to avoid extra Solana SDK dependencies.
     pub async fn get_all_token_accounts(

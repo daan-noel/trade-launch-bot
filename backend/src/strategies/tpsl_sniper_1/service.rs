@@ -8,6 +8,7 @@ use tokio::sync::{broadcast, watch};
 use tracing::{debug, info, warn};
 
 use crate::config::constants::resolve_slippage_bps;
+use pump_trader::constants::LAMPORTS_PER_SOL;
 use crate::models::ingest::SseEvent;
 use crate::models::Position;
 use crate::state::token_cache::TokenCache;
@@ -265,6 +266,30 @@ impl Tpsl1StrategyService {
             position.target_tx = Some(String::new());
             position.target_time = Some(token.created_at);
 
+            let is_real = rule.trade_mode == "real";
+            let buy_amount = rule.buy_amount;
+            let position_id = position.id;
+
+            // SOL balance-floor guard for real buys: checked BEFORE sync_position
+            // so no runtime cleanup is needed when the guard fires.
+            if is_real {
+                let buy_lamports = (buy_amount * LAMPORTS_PER_SOL as f64) as u64;
+                if !self.trader.can_commit_buy(buy_lamports) {
+                    warn!("[REAL] SOL balance-floor guard blocked snipe of {buy_amount:.4} SOL \
+                           for {mint} rule {rule_id}");
+                    continue;
+                }
+                if let Some(max_sol) = self.settings.borrow().max_committed_sol {
+                    let max_lamports = (max_sol * LAMPORTS_PER_SOL as f64) as u64;
+                    if self.trader.committed_lamports().saturating_add(buy_lamports) > max_lamports {
+                        warn!("[REAL] max_committed_sol guard blocked snipe of {buy_amount:.4} SOL \
+                               for {mint} rule {rule_id}");
+                        continue;
+                    }
+                }
+                self.trader.commit_sol_for_position(position_id.to_string(), buy_lamports);
+            }
+
             // Claim the cap slot + holding-index entry INLINE on the runner's
             // select task, then spawn the slow DB insert + buy/fill off it — the
             // same discipline `trigger_real_exit` uses for the sell side. The
@@ -277,13 +302,10 @@ impl Tpsl1StrategyService {
             // mis-exited.
             self.runtime.sync_position(None, &position);
 
-            let is_real = rule.trade_mode == "real";
             // Resolve slippage before the spawn (the watch borrow isn't held
             // across an await); reserves are read inside the task at buy time.
             let slippage_bps = self.slippage_bps();
-            let buy_amount = rule.buy_amount;
             let creator = token.creator_wallet.clone();
-            let position_id = position.id;
             let token_program_id = position
                 .token_program_id
                 .clone()
@@ -302,7 +324,10 @@ impl Tpsl1StrategyService {
                 };
                 if let Err(err) = insert_res {
                     warn!("Failed to create position for token {mint}: {err}");
-                    // Roll back the inline cap/holding-index claim.
+                    // Roll back the inline cap/holding-index claim and SOL commitment.
+                    if is_real {
+                        trader.release_sol_for_position(&position_id.to_string());
+                    }
                     runtime.remove_position(&position);
                     return;
                 }
@@ -325,7 +350,7 @@ impl Tpsl1StrategyService {
                         )
                     });
                     super::execution::real::buy_until_filled_or_give_up(
-                        trader,
+                        trader.clone(),
                         mint.clone(),
                         creator,
                         token_program_id,
@@ -342,6 +367,10 @@ impl Tpsl1StrategyService {
                     .await;
                     if let Ok(Some(pos)) = position_repo.find_by_id(position_id).await {
                         if pos.entry_price.is_none() {
+                            // Buy failed with no fill — release the SOL commitment and
+                            // clean up the position. Positions that DID fill stay Holding;
+                            // their commitment is released in sell_and_close_position.
+                            trader.release_sol_for_position(&position_id.to_string());
                             let _ = position_repo.delete_position(position_id).await;
                             runtime.remove_position(&pos);
                             info!(

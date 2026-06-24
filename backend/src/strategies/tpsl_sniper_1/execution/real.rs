@@ -112,6 +112,9 @@ pub(crate) async fn close_externally_cleared_position(
     exit_time: DateTime<Utc>,
     reason: &str,
 ) {
+    // The position is terminal from this point — release the SOL commitment
+    // regardless of whether the DB write below succeeds.
+    trader.release_sol_for_position(&position.id.to_string());
     let entry_amount = position.entry_token_amount.unwrap_or(0.0);
     let mint = position.mint.clone();
     // Rent reclaim: the token account is already empty — same fire-and-forget
@@ -498,6 +501,11 @@ pub(crate) async fn sell_and_close_position(
     exit_reason: String,
     slippage_bps: u64,
 ) {
+    // Position is terminal from this point — release the SOL commitment so the
+    // balance-floor guard counts it as free again. Idempotent: a double-release
+    // (e.g. via the ManualSell fallback that calls close_externally_cleared_position)
+    // is safe because DashMap::remove returns None on the second call.
+    trader.release_sol_for_position(&position.id.to_string());
     let mint = position.mint.clone();
     let target_tokens = position.entry_token_amount.unwrap_or(0.0);
     let amount = target_tokens as u64;

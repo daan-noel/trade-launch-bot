@@ -51,6 +51,12 @@ pub mod keys {
     /// How often (seconds) the watchdog wakes to check the stall window.
     pub const WATCHDOG_CHECK_INTERVAL_SECS: Setting<u64> =
         Setting::new("ingest.watchdog_check_interval_secs", || 10);
+    /// Hard ceiling on total SOL committed to open real positions at any moment
+    /// (in SOL). When set, a new real buy is blocked if it would push the running
+    /// committed total over this value. `None` = no explicit ceiling (the wallet
+    /// balance-floor guard still applies).
+    pub const MAX_COMMITTED_SOL: Setting<Option<f64>> =
+        Setting::new("trade.max_committed_sol", || None);
 }
 
 /// Global, server-wide settings — the assembled, strongly-typed view of the
@@ -90,6 +96,10 @@ pub struct AppSettings {
     pub watchdog_stall_timeout_secs: u64,
     /// How often the watchdog wakes (seconds) to check the stall window.
     pub watchdog_check_interval_secs: u64,
+    /// Hard ceiling (SOL) on total SOL committed to open real positions. When set,
+    /// a new real buy that would push committed total over this is blocked. `None`
+    /// = no explicit ceiling.
+    pub max_committed_sol: Option<f64>,
 }
 
 impl Default for AppSettings {
@@ -115,6 +125,7 @@ impl AppSettings {
             watchdog_enabled: pick(map, &keys::WATCHDOG_ENABLED),
             watchdog_stall_timeout_secs: pick(map, &keys::WATCHDOG_STALL_TIMEOUT_SECS),
             watchdog_check_interval_secs: pick(map, &keys::WATCHDOG_CHECK_INTERVAL_SECS),
+            max_committed_sol: pick(map, &keys::MAX_COMMITTED_SOL),
         }
     }
 }

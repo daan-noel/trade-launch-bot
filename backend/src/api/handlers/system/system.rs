@@ -85,6 +85,9 @@ pub struct UpdateSettingsRequest {
     /// Watchdog check cadence (seconds); floored at `WATCHDOG_CHECK_INTERVAL_FLOOR_SECS`
     /// and capped at the (effective) stall window so a stall can't slip a full cycle.
     pub watchdog_check_interval_secs: Option<u64>,
+    /// Hard ceiling (SOL) on total SOL committed across all open real positions.
+    /// `None` = no explicit ceiling (balance-floor guard still applies).
+    pub max_committed_sol: Option<f64>,
 }
 
 pub async fn get_settings(state: web::Data<Arc<AppState>>) -> impl Responder {
@@ -105,6 +108,7 @@ pub async fn update_settings(
         watchdog_enabled,
         watchdog_stall_timeout_secs,
         watchdog_check_interval_secs,
+        max_committed_sol,
     } = req.into_inner();
 
     if let Some(pu) = &price_unit {
@@ -159,6 +163,9 @@ pub async fn update_settings(
     if let Some(v) = check_clamped {
         entries.push((keys::WATCHDOG_CHECK_INTERVAL_SECS.key, json!(v)));
     }
+    if let Some(v) = max_committed_sol {
+        entries.push((keys::MAX_COMMITTED_SOL.key, json!(v)));
+    }
 
     // Persist (one transaction) first; only publish to the watch channel if the
     // write succeeds, so a failed save never leaves the runtime diverged from the
@@ -202,6 +209,9 @@ pub async fn update_settings(
         }
         if let Some(v) = check_clamped {
             s.watchdog_check_interval_secs = v;
+        }
+        if let Some(v) = max_committed_sol {
+            s.max_committed_sol = Some(v);
         }
         updated = Some(s.clone());
     });

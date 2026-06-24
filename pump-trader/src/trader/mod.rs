@@ -70,7 +70,7 @@ use solana_sdk::{
 };
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
 
@@ -297,6 +297,19 @@ pub struct PumpFunTrader {
     // Background-refreshed recent blockhash for the AMM buy path (which can't use
     // a durable nonce — see `build_recent_tx`).
     blockhash_cache: Arc<BlockhashCache>,
+
+    // --- SOL exposure tracking ---
+    // Running sum of buy_amounts (in lamports) for all real positions this process
+    // has committed to but not yet closed. Both strategies share this single counter
+    // via the Arc<PumpFunTrader> so neither sees only half the open commitments.
+    // Per-position lamports keyed by position_id (as String) for clean release.
+    committed_lamports: AtomicU64,
+    position_commitments: Arc<DashMap<String, u64>>,
+    // Cached on-chain SOL balance of the wallet (lamports, fetch instant). Updated
+    // by a background task every ~30s — never queried inline on the hot buy path.
+    // `None` until the first refresh completes; `can_commit_buy` fails open (allows)
+    // when the cache is empty so a stale cache doesn't block all trades.
+    sol_balance_cache: Arc<std::sync::Mutex<Option<(u64, std::time::Instant)>>>,
 }
 
 impl PumpFunTrader {
@@ -396,6 +409,9 @@ impl PumpFunTrader {
             curve_routing_cache: Arc::new(DashMap::new()),
             reserve_cache: Arc::new(ReserveCache::default()),
             blockhash_cache: Arc::new(BlockhashCache::default()),
+            committed_lamports: AtomicU64::new(0),
+            position_commitments: Arc::new(DashMap::new()),
+            sol_balance_cache: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -423,6 +439,61 @@ impl PumpFunTrader {
     /// Expose the RPC URL for callers that need to make their own RPC requests.
     pub fn rpc_url(&self) -> &str {
         &self.config.rpc_url
+    }
+
+    // --- SOL exposure API ---
+
+    /// Reserve `buy_lamports` of SOL for `position_id`. Called before a real buy is
+    /// sent; the reservation persists until `release_sol_for_position` is called (on
+    /// close or on buy failure). Both strategies share the same atomic counter via the
+    /// shared `Arc<PumpFunTrader>` so neither sees only half the open commitments.
+    pub fn commit_sol_for_position(&self, position_id: String, buy_lamports: u64) {
+        self.committed_lamports.fetch_add(buy_lamports, Ordering::Relaxed);
+        self.position_commitments.insert(position_id, buy_lamports);
+    }
+
+    /// Release the reservation for `position_id`. No-op if the position was never
+    /// committed (e.g. paper positions, or a double-release on an already-released id).
+    pub fn release_sol_for_position(&self, position_id: &str) {
+        if let Some((_, lamports)) = self.position_commitments.remove(position_id) {
+            // Saturating sub: a race between two release calls can't underflow.
+            let _ = self.committed_lamports.fetch_update(
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+                |cur| Some(cur.saturating_sub(lamports)),
+            );
+        }
+    }
+
+    /// Total SOL committed (lamports) to open real positions across both strategies.
+    pub fn committed_lamports(&self) -> u64 {
+        self.committed_lamports.load(Ordering::Relaxed)
+    }
+
+    /// Whether there is enough free SOL to commit `buy_lamports` more. Checks:
+    ///   `cached_balance - RESERVE_FLOOR (0.02 SOL) - committed >= buy_lamports`
+    /// Fails **open** (returns `true`) when the cached balance is unknown so a stale
+    /// cache doesn't block all trades on startup. The on-chain transaction is the
+    /// ultimate safety net; this is a soft pre-send gate.
+    pub fn can_commit_buy(&self, buy_lamports: u64) -> bool {
+        // 0.02 SOL reserve — enough for fees/tips/rent on the next sell.
+        const RESERVE_FLOOR: u64 = 20_000_000;
+        let balance = match *self.sol_balance_cache.lock().unwrap_or_else(|p| p.into_inner()) {
+            Some((lamports, _)) => lamports,
+            None => return true, // cache empty → fail open
+        };
+        let committed = self.committed_lamports.load(Ordering::Relaxed);
+        balance
+            .saturating_sub(RESERVE_FLOOR)
+            .saturating_sub(committed)
+            >= buy_lamports
+    }
+
+    /// Update the cached on-chain SOL balance. Called by the background refresh task
+    /// every ~30 s — never on the hot buy path.
+    pub fn update_sol_balance_cache(&self, lamports: u64) {
+        *self.sol_balance_cache.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some((lamports, std::time::Instant::now()));
     }
 }
 

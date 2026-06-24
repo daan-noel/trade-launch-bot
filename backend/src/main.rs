@@ -579,6 +579,22 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Background SOL-balance refresh: keeps `PumpFunTrader::can_commit_buy` accurate
+    // without ever hitting the RPC on the hot buy path. Polls every 30 s; the first
+    // tick fires immediately so the cache is non-empty before the first snipe fires.
+    {
+        let trader = trader.clone();
+        tokio::spawn(async move {
+            loop {
+                match trader.get_sol_balance().await {
+                    Ok(lamports) => trader.update_sol_balance_cache(lamports),
+                    Err(e) => warn!("SOL balance refresh failed (guard stays on last cached value): {e}"),
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            }
+        });
+    }
+
     // In-memory caches (shared between services and future API handlers)
     let token_cache = Arc::new(state::token_cache::TokenCache::new());
 

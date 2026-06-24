@@ -39,6 +39,8 @@ export interface AppSettings {
   watchdog_stall_timeout_secs: number;
   /** How often (seconds) the watchdog checks the stall window. */
   watchdog_check_interval_secs: number;
+  /** Hard ceiling (SOL) on total SOL committed to open real positions; null = no ceiling. */
+  max_committed_sol: number | null;
 }
 
 export async function fetchTokens(

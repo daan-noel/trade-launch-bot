@@ -37,6 +37,7 @@ export function SettingsPage() {
   // clamps to its floors and returns the applied value, which re-syncs these.
   const [stallText, setStallText] = useState('');
   const [intervalText, setIntervalText] = useState('');
+  const [maxSolText, setMaxSolText] = useState('');
 
   useEffect(() => {
     setSlipText(
@@ -52,6 +53,10 @@ export function SettingsPage() {
     if (settings) setIntervalText(String(settings.watchdog_check_interval_secs));
   }, [settings?.watchdog_check_interval_secs]);
 
+  useEffect(() => {
+    setMaxSolText(settings?.max_committed_sol != null ? String(settings.max_committed_sol) : '');
+  }, [settings?.max_committed_sol]);
+
   function commitWatchdogSecs(
     text: string,
     current: number | undefined,
@@ -65,6 +70,22 @@ export function SettingsPage() {
       return;
     }
     if (secs !== current) update({ [field]: secs });
+  }
+
+  function commitMaxCommittedSol() {
+    if (!settings) return;
+    const raw = maxSolText.trim();
+    if (raw === '') {
+      // Blank = clear the ceiling (set to null).
+      if (settings.max_committed_sol != null) update({ max_committed_sol: null });
+      return;
+    }
+    const sol = parseFloat(raw);
+    if (!Number.isFinite(sol) || sol <= 0) {
+      setError('Max committed SOL must be a positive number');
+      return;
+    }
+    if (sol !== settings.max_committed_sol) update({ max_committed_sol: sol });
   }
 
   function commitSlippage() {
@@ -147,26 +168,50 @@ export function SettingsPage() {
         {loading ? (
           <p className="text-xs text-text-dim">Loading…</p>
         ) : settings ? (
-          <label className="flex max-w-[220px] flex-col gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
-              Default slippage %
-            </span>
-            <Input
-              type="number"
-              fieldSize="md"
-              min={0}
-              max={50}
-              step={0.1}
-              placeholder="5"
-              value={slipText}
-              disabled={saving}
-              onChange={(e) => setSlipText(e.target.value)}
-              onBlur={commitSlippage}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-              }}
-            />
-          </label>
+          <div className="flex flex-wrap gap-4">
+            <label className="flex max-w-[220px] flex-col gap-1.5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
+                Default slippage %
+              </span>
+              <Input
+                type="number"
+                fieldSize="md"
+                min={0}
+                max={50}
+                step={0.1}
+                placeholder="5"
+                value={slipText}
+                disabled={saving}
+                onChange={(e) => setSlipText(e.target.value)}
+                onBlur={commitSlippage}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                }}
+              />
+            </label>
+            <label className="flex max-w-[220px] flex-col gap-1.5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
+                Max committed SOL
+              </span>
+              <Input
+                type="number"
+                fieldSize="md"
+                min={0}
+                step={0.01}
+                placeholder="no limit"
+                value={maxSolText}
+                disabled={saving}
+                onChange={(e) => setMaxSolText(e.target.value)}
+                onBlur={commitMaxCommittedSol}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                }}
+              />
+              <p className="text-[11px] text-text-dim">
+                Hard ceiling on open real positions (SOL). Blank = no limit.
+              </p>
+            </label>
+          </div>
         ) : null}
       </section>
 
