@@ -13,11 +13,12 @@ services:
   postgres:
     image: postgres:16
     restart: unless-stopped
-    # Server tuning. Two problem classes were observed and addressed here:
+    # Server tuning. Problem classes observed and addressed here:
     #
-    # 1. "pool timed out" — the default max_connections=100 was below the three app
-    #    pools combined (DB_MAX + DB_API + DB_BATCH = 112) plus external clients +
-    #    superuser reserve. Lifted to 300 so the pools always have room.
+    # 1. "pool timed out" — the three app pools (DB_MAX=12 + DB_API=8 + DB_BATCH=2
+    #    = 22) plus external clients + superuser reserve fit easily under 80.
+    #    Keeping max_connections low is intentional: each open PG backend is ~26MB
+    #    competing with the 256MB buffer pool on a 4GB box.
     #
     # 2. Disk thrashing — Postgres runs co-located on a small (~4GB) box, and the
     #    `trades`/`raw_transactions` partitions outgrow the default 128MB/256MB cache,
@@ -32,6 +33,10 @@ services:
     #      - effective_io_concurrency — let bitmap heap scans issue concurrent reads
     #      - max_parallel_workers_per_gather=1 — only 2 vCPU shared with the backend,
     #        so cap parallel query workers to avoid stealing cores from ingest
+    #      - synchronous_commit=off — skip per-commit fsync; safe here because Postgres
+    #        stays up when the backend restarts (watchdog kills the process, not PG),
+    #        so committed trades are never lost. Worst-case power-loss drops <1 WAL
+    #        buffer (~8ms of commits) — the gRPC feed is replayable.
     #      - checkpoint/WAL spread — avoid write-I/O spikes that stall reads
     #    Every value is env-overridable so it can be dialed per box size without
     #    editing this file. If the box shows memory pressure, drop shared_buffers to
@@ -39,7 +44,7 @@ services:
     command:
       - "postgres"
       - "-c"
-      - "max_connections=${POSTGRES_MAX_CONNECTIONS:-300}"
+      - "max_connections=${POSTGRES_MAX_CONNECTIONS:-80}"
       - "-c"
       - "shared_buffers=${POSTGRES_SHARED_BUFFERS:-1GB}"
       - "-c"
@@ -57,11 +62,13 @@ services:
       - "-c"
       - "checkpoint_completion_target=0.9"
       - "-c"
-      - "max_wal_size=2GB"
+      - "max_wal_size=4GB"
       - "-c"
       - "min_wal_size=80MB"
       - "-c"
       - "wal_compression=on"
+      - "-c"
+      - "synchronous_commit=off"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}

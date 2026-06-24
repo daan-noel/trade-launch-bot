@@ -77,13 +77,13 @@ pub const MIN_TRADE_SOL: f64 = MIN_TRADE_LAMPORTS as f64 / LAMPORTS_PER_SOL as f
 /// A migrated token's PumpSwap pool is included in the live subscription set
 /// only if it has traded within this window. Quiet pools are re-added when
 /// fresh activity appears. Tune up to keep slower pools live.
-pub const POOL_SUBSCRIBE_ACTIVITY_WINDOW_SECONDS: i64 = 6 * 3600; // 6 hours
+pub const POOL_SUBSCRIBE_ACTIVITY_WINDOW_SECONDS: i64 = 3 * 3600; // 3 hours
 /// How often the pool-subscription refresh re-evaluates token liveness.
 pub const POOL_REFRESH_INTERVAL_SECONDS: u64 = 120; // 2 minutes
 
 /// Upper bound on how many tokens the startup cache seed pulls from the
 /// `tokens` table. Startup time + memory stay bounded as `tokens` grows.
-pub const SEED_TOKEN_LIMIT: i64 = 100_000;
+pub const SEED_TOKEN_LIMIT: i64 = 25_000;
 /// Only tokens created within this window are pulled into the startup cache seed.
 /// Tokens older than this aren't tracked live until they trade again.
 pub const SEED_ACTIVITY_WINDOW_DAYS: i64 = 7;
@@ -96,11 +96,11 @@ pub const SEED_TRADES_PER_MINT: i64 = crate::state::token_cache::MAX_TRADES_RETA
 pub const ANALYSIS_SCAN_PAGE: i64 = 5_000;
 
 /// How often the runtime token-cache eviction sweep runs.
-pub const TOKEN_CACHE_EVICT_INTERVAL_SECONDS: u64 = 300; // 5 minutes
+pub const TOKEN_CACHE_EVICT_INTERVAL_SECONDS: u64 = 120; // 2 minutes
 /// A tracked token inactive for at least this long with no open position is
 /// evicted from the in-memory cache. A mint with an open position is always
 /// exempt so an open exit never strands.
-pub const TOKEN_CACHE_EVICT_IDLE_SECONDS: i64 = 2 * 3600; // 2 hours
+pub const TOKEN_CACHE_EVICT_IDLE_SECONDS: i64 = 2700; // 45 min
 
 /// How often the background task refreshes the DB-backed token-list snapshot.
-pub const TOKEN_LIST_DB_REFRESH_SECS: u64 = 60;
+pub const TOKEN_LIST_DB_REFRESH_SECS: u64 = 120;

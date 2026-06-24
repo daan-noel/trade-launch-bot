@@ -20,16 +20,15 @@ use crate::{
     },
 };
 
-// Larger batch (not a longer interval) so steady high volume drains in fewer,
-// bigger multi-row inserts — raising the writer's throughput ceiling so the DB
-// queue rarely fills and backpressure rarely reaches the socket. `FLUSH_INTERVAL_MS`
-// stays low to keep tail latency on a partially-filled batch unchanged.
-const BATCH_MAX: usize = 256;
-const FLUSH_INTERVAL_MS: u64 = 25;
-/// Max concurrent per-mint metric upsert tasks per flush. Bounds the burst against
-/// the hot PgPool connection cap (default 64) — 16 leaves ample headroom for the
-/// trades/tokens/wallets/raw writes in the same flush plus strategy/confirm queries.
-const METRIC_WRITE_CONCURRENCY: usize = 16;
+// Larger batches + longer interval → fewer, bigger multi-row inserts → fewer
+// fsyncs per second (the dominant cost on the 2vCPU/4GB box). With
+// synchronous_commit=off the interval increase does not add durability risk.
+const BATCH_MAX: usize = 1000;
+const FLUSH_INTERVAL_MS: u64 = 150;
+/// Max concurrent per-mint metric upsert tasks per flush. Bounded to match the
+/// hot pool size (DB_MAX_CONNECTIONS=12): 6 metric upserts + trades/tokens/wallets
+/// writes in the same flush keeps total concurrency well under the pool cap.
+const METRIC_WRITE_CONCURRENCY: usize = 6;
 
 /// Async persistence queue — never blocks the ingest hot path.
 #[derive(Debug)]

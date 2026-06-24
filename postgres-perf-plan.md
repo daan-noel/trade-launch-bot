@@ -18,17 +18,17 @@
 
 ## Tier 1 — Free, highest-impact
 
-### [ ] 1a. Turn off `ingest.persist_raw` — biggest single lever, no deploy
+### [ ] 1a. Turn off `ingest.persist_raw` — biggest single lever, no deploy (UI toggle — do manually in Settings)
 
 Toggle in the Settings UI. Kills the fat Helius-blob writes (`raw_transactions`), roughly halving write IO and WAL volume. Sweeps use `trades`+`tokens` only — nothing lost for analysis.
 
-### [ ] 1b. `synchronous_commit = off`
+### [x] 1b. `synchronous_commit = off`
 
 Safe here: watchdog kills the **backend**, Postgres stays up, so no committed trades are lost on restart. Only risk: power-loss drops <1 WAL buffer — feed is replayable.
 
 **Where:** `docker-compose.yml` postgres service or `postgresql.conf`.
 
-### [ ] 1c. Raise flush batch size and interval
+### [x] 1c. Raise flush batch size and interval
 
 `backend/src/ingest_laserstream/db_writer.rs` lines 27–28:
 
@@ -37,7 +37,7 @@ const BATCH_MAX: usize = 1000;      // was 256
 const FLUSH_INTERVAL_MS: u64 = 150; // was 25
 ```
 
-### [ ] 1d. Cut connection counts — free RAM becomes page cache
+### [x] 1d. Cut connection counts — free RAM becomes page cache
 
 Each open connection is a ~26 MB backend competing with the 256 MB buffer pool.
 
@@ -48,13 +48,13 @@ DB_API_MAX_CONNECTIONS=8      # .env  (dashboard reads)
 DB_BATCH_MAX_CONNECTIONS=2    # .env  (no batch work on server)
 ```
 
-### [ ] 1e. Set `KEEP_DAYS = 7`
+### [x] 1e. Set `KEEP_DAYS = 7`
 
 `backend/src/ingest_laserstream/maintenance.rs` line 18. 7 days covers the daily dump + safety margin. Smaller live table → indexes fit in the 256 MB buffer pool → less disk thrash.
 
 Also set `SEED_ACTIVITY_WINDOW_DAYS` (`tuning.rs:89`) ≤ `KEEP_DAYS` so the cold-start seed can't scan beyond what's on disk.
 
-### [ ] 1f. Raise `max_wal_size = 4GB`
+### [x] 1f. Raise `max_wal_size = 4GB`
 
 `docker-compose.yml` postgres command. Spreads checkpoints time-based instead of WAL-fill spikes. With 1a (raw off) WAL fills slower — 4GB is plenty without risking the disk.
 

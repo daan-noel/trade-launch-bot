@@ -12,10 +12,11 @@ use chrono::{Duration as ChronoDuration, Utc};
 use sqlx::PgPool;
 use tracing::{info, warn};
 
-/// Retention: keep one month (30 days) of daily partitions. Shared by
-/// `raw_transactions` (partitioned on `received_at`) and `trades` (partitioned
-/// on `block_time`). Must match the pre-created window in migrations 0001/0003.
-const KEEP_DAYS: i64 = 30;
+/// Retention: keep 7 days of daily partitions. Shared by `raw_transactions`
+/// (partitioned on `received_at`) and `trades` (partitioned on `block_time`).
+/// 7 days covers the daily dump + safety margin; smaller live table means
+/// indexes fit in the 256MB buffer pool, reducing disk thrash on the 4GB box.
+const KEEP_DAYS: i64 = 7;
 /// How often to roll partitions forward / drop expired ones.
 const MAINT_INTERVAL_SECS: u64 = 6 * 3600;
 
