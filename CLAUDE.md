@@ -66,6 +66,22 @@ Notes
 - Frontend: request only the visible page; rely on RTK Query/SSE cache, not re-fetch loops.
 - New high-volume tables follow the `raw_transactions` partition + retention pattern (`maintenance.rs`).
 
+## Deployed server constraints (EC2: 2vCPU / 4GB RAM)
+
+**Read this before any change that touches ingest, DB writes, connections, table size, or retention.**
+The deployed box is IO-bound and RAM-constrained. Postgres and the backend share 4 GB; shared_buffers is 256 MB. Every change that increases write IO, index surface, connection count, or in-memory cache size on the server is a regression until proven otherwise.
+
+Hard rules:
+
+- **Sweeps and backtests run LOCAL only.** The server's batch pool does no work. Never add work to the deployed batch path.
+- **Analysis is dump→local.** The deployed DB is a thin rolling ingest buffer (`KEEP_DAYS = 7`, daily partitions). All historical analysis happens on the local DB after a `db-snapshot-dump.sh` + `db-snapshot-restore.ps1` refresh.
+- **No infra spend.** The box stays 2vCPU/4GB. "Use more RAM/disk/connections" is not a valid solution.
+- **Every new write path must justify its IO cost.** New tables or columns on high-volume paths (`trades`, `tokens`, `tokens_info`) must follow the partition+retention pattern in `maintenance.rs` and must not grow the index set without dropping an equivalent one.
+- **Connection counts are load-bearing.** Each open PG connection is ~26 MB competing with the 256 MB buffer pool. New pools or raised limits require shrinking something else.
+- **In-memory caches trade RAM against page cache.** Any increase to `MAX_TRADES_RETAINED`, `SEED_TOKEN_LIMIT`, or cache TTLs on the server directly shrinks the Postgres buffer pool. Default to the tuned values in `tuning.rs`; raise them only on local.
+
+See [postgres-perf-plan.md](postgres-perf-plan.md) for the full diagnosis and all tuned values.
+
 ## Definition of done
 
 - **Backend:** `cargo check --bin backend` clean; `cargo clippy` on touched code; add/adjust a `--bin backend` (or `pump-trader`) test when logic changed.
