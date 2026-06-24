@@ -94,6 +94,55 @@ pub(crate) fn snipe_reserves_from_cache(
     Some((vt as u128, vq_lamports as u128))
 }
 
+/// Close a position whose token balance was already externally cleared (manual sell).
+/// Skips the on-chain sell entirely and records the close with `exit_price`/`exit_time`.
+///
+/// Called from two paths:
+/// - **Proactive** (`try_close_manually_sold` in `service.rs`): the bot's own sell
+///   appeared in the LaserStream feed while the position was still `Holding`, and the
+///   DB balance confirmed the bag is cleared.
+/// - **Reactive** (`sell_and_close_position` below): a sell attempt reverted with a
+///   structural error and the DB balance confirms it was already externally cleared.
+pub(crate) async fn close_externally_cleared_position(
+    position: &mut Position,
+    position_repo: &Tpsl1PositionRepo,
+    runtime: &Arc<Tpsl1RuntimeCache>,
+    trader: &Arc<PumpFunTrader>,
+    exit_price: f64,
+    exit_time: DateTime<Utc>,
+    reason: &str,
+) {
+    let entry_amount = position.entry_token_amount.unwrap_or(0.0);
+    let mint = position.mint.clone();
+    // Rent reclaim: the token account is already empty — same fire-and-forget
+    // close as a normal exit, cheaply no-ops if sub-threshold dust remains.
+    {
+        let trader = trader.clone();
+        let mint = mint.clone();
+        tokio::spawn(async move {
+            if let Err(err) = trader.close_token_account(&mint, None).await {
+                debug!(mint = %mint, "rent-reclaim close skipped: {err}");
+            }
+        });
+    }
+    let prev = position.clone();
+    position.close(exit_price, vec![], entry_amount, exit_time);
+    position.exit_reason = Some(reason.to_string());
+    if let Err(err) = position_repo.update(position).await {
+        warn!(
+            position_id = %position.id, mint = %mint,
+            "Failed to close externally-cleared position: {err}"
+        );
+    } else {
+        runtime.sync_position(Some(&prev), position);
+        let pnl_pct = position.pnl_percentage().unwrap_or(0.0);
+        info!(
+            position_id = %position.id, mint = %mint, pnl_pct,
+            "Position closed after external (manual) sell confirmed"
+        );
+    }
+}
+
 /// Off-chain dependency of the snipe buy flow: send a buy (no RPC confirm) and
 /// classify a sent signature. A trait so `buy_until_filled_or_give_up` can be
 /// driven by a scripted fake in tests instead of a live chain.
@@ -480,6 +529,41 @@ pub(crate) async fn sell_and_close_position(
     {
         SellOutcome::Cleared { sigs, legs } => (sigs, legs),
         SellOutcome::Failed { sigs } => {
+            // Reactive fallback: before marking ExitFailed, check whether the
+            // balance was already cleared by an external (manual) sell. A
+            // structural revert on a 0-balance account lands here first — the
+            // DB confirms whether that's the cause.
+            let wallet = trader.wallet_pubkey();
+            if let Ok(balance) =
+                trade_repo.net_token_amount_by_wallet_and_mint(&wallet, &mint).await
+            {
+                if balance <= super::PARTIAL_FILL_THRESHOLD as f64 {
+                    if let Ok(Some(last_sell)) = trade_repo
+                        .find_latest_by_wallet_mint_type(
+                            &wallet,
+                            &mint,
+                            crate::models::trade::TradeType::Sell,
+                        )
+                        .await
+                    {
+                        info!(
+                            position_id = %position.id, mint = %mint,
+                            "Sell failed but balance externally cleared; closing as ManualSell"
+                        );
+                        close_externally_cleared_position(
+                            &mut position,
+                            &position_repo,
+                            &runtime,
+                            &trader,
+                            last_sell.price_per_token,
+                            last_sell.block_time,
+                            "ManualSell",
+                        )
+                        .await;
+                        return;
+                    }
+                }
+            }
             warn!(
                 position_id = %position.id, mint = %mint,
                 "Sell execution finished without clearing token balance; marking position ExitFailed"

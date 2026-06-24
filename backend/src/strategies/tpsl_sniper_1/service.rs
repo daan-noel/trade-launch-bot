@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -383,6 +384,11 @@ impl Tpsl1StrategyService {
         // the resulting fill.
         let current_price;
         let mut to_exit = Vec::new();
+        // Proactive manual-sell detection: if the last trade in the feed is a Sell
+        // from the bot's own wallet, capture its price/time so we can confirm and
+        // close any real Holding position that wasn't triggered by the exit ladder.
+        // The DB balance check (and guard claim) happen AFTER the guard is dropped.
+        let mut manual_sell_info: Option<(f64, DateTime<Utc>)> = None;
         {
             let Some(entry) = cache.get(&mint) else {
                 return;
@@ -395,7 +401,20 @@ impl Tpsl1StrategyService {
             let trades = &state.trades;
             let trades_base = state.trades_base;
 
-            for position in positions {
+            // Check whether the triggering trade is a sell from our own wallet.
+            // We only look at the last trade (the one that triggered this call)
+            // to keep the check O(1). `id_of` is a read-only map probe — no
+            // allocation, no mutation of the interner.
+            let bot_wallet = self.trader.wallet_pubkey();
+            if let Some(bot_id) = state.interner.id_of(&bot_wallet) {
+                if let Some(last) = trades.last() {
+                    if !last.is_buy && last.wallet == bot_id {
+                        manual_sell_info = Some((last.price_per_token, last.block_time));
+                    }
+                }
+            }
+
+            for position in &positions {
                 // Hot-path gate: pull only the exit-ladder scalars, not a full
                 // rule clone (that happens below, once per *actual* exit).
                 let Some(params) = self.runtime.ladder_params_by_id(position.rule_id) else {
@@ -403,7 +422,7 @@ impl Tpsl1StrategyService {
                 };
                 // Holding + recorded entry only; a 0-entry/non-Holding position is
                 // neither evaluated nor folded (matches the old gate guards).
-                let Some(entry_time) = super::exit::clock_entry_time(&position) else {
+                let Some(entry_time) = super::exit::clock_entry_time(position) else {
                     continue;
                 };
                 // Incremental trade gate: fold the newly-printed trades into the
@@ -419,10 +438,14 @@ impl Tpsl1StrategyService {
                     trades_base,
                     &params,
                 ) {
-                    to_exit.push((position, exit_reason));
+                    to_exit.push((position.clone(), exit_reason));
                 }
             }
         }
+
+        // Collect IDs that the ladder already claimed BEFORE moving `to_exit`
+        // into the loop — so the manual-sell pass can skip them without re-borrowing.
+        let exiting_ids: HashSet<uuid::Uuid> = to_exit.iter().map(|(p, _)| p.id).collect();
 
         for (position, exit_reason) in to_exit {
             // This position is actually exiting (rare) — now it's worth the full
@@ -489,6 +512,31 @@ impl Tpsl1StrategyService {
                     exit_reason.to_string(),
                 )
                 .await;
+            }
+        }
+
+        // Proactive manual-sell close: for real Holding positions that the ladder
+        // did NOT exit, verify the DB balance and close directly (no sell tx) if the
+        // position was externally cleared. The guard claim inside
+        // `try_close_manually_sold` acts as the double-exit interlock: a position
+        // already claimed by a ladder exit above returns `None` and is skipped.
+        if let Some((sell_price, sell_time)) = manual_sell_info {
+            for position in &positions {
+                if exiting_ids.contains(&position.id) {
+                    continue;
+                }
+                let Some(rule) = self.runtime.rule_by_id(position.rule_id) else {
+                    continue;
+                };
+                if rule.trade_mode != "real" {
+                    continue;
+                }
+                // Gate: only positions with a recorded entry (mirrors the ladder gate).
+                if super::exit::clock_entry_time(position).is_none() {
+                    continue;
+                }
+                self.try_close_manually_sold(position.clone(), mint.clone(), sell_price, sell_time)
+                    .await;
             }
         }
     }
@@ -678,6 +726,65 @@ impl Tpsl1StrategyService {
                 trigger_time,
                 reason,
                 slippage_bps,
+            )
+            .await;
+        });
+    }
+
+    /// Close a real `Holding` position that was externally (manually) sold out,
+    /// without sending any new on-chain sell transaction.
+    ///
+    /// Verifies via the DB that the net token balance is ≤ `PARTIAL_FILL_THRESHOLD`
+    /// before committing — a cheap indexed query that guards against false positives
+    /// from a same-wallet sell on a different concurrent position. On confirmation,
+    /// claims the exit guard (the double-exit interlock: returns `None` if a sell is
+    /// already in flight), marks `ExitPending`, then spawns the direct close.
+    async fn try_close_manually_sold(
+        &self,
+        position: std::sync::Arc<crate::models::Position>,
+        mint: String,
+        sell_price: f64,
+        sell_time: DateTime<Utc>,
+    ) {
+        let wallet = self.trader.wallet_pubkey();
+        match self
+            .trade_repo
+            .net_token_amount_by_wallet_and_mint(&wallet, &mint)
+            .await
+        {
+            Ok(balance) if balance <= super::execution::PARTIAL_FILL_THRESHOLD as f64 => {}
+            Ok(_) => return, // bag still positive — not fully cleared yet
+            Err(err) => {
+                warn!(position_id = %position.id, mint = %mint,
+                    "manual-sell check: balance query failed, skipping: {err}");
+                return;
+            }
+        }
+        let Some(guard) = self.runtime.try_begin_exit(position.id) else { return; };
+        let mut position = (*position).clone();
+        let prev = position.clone();
+        position.mark_exit_pending();
+        if let Err(err) = self.position_repo.update(&position).await {
+            warn!(position_id = %position.id, mint = %mint,
+                "Failed to mark position ExitPending (ManualSell): {err}");
+        } else {
+            self.runtime.sync_position(Some(&prev), &position);
+            info!(position_id = %position.id, mint = %mint,
+                "[REAL] Position marked ExitPending (ManualSell)");
+        }
+        let position_repo = self.position_repo.clone();
+        let runtime = self.runtime.clone();
+        let trader = self.trader.clone();
+        tokio::spawn(async move {
+            let _guard = guard;
+            super::execution::real::close_externally_cleared_position(
+                &mut position,
+                &position_repo,
+                &runtime,
+                &trader,
+                sell_price,
+                sell_time,
+                "ManualSell",
             )
             .await;
         });

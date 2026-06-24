@@ -112,6 +112,12 @@ impl WalletInterner {
         id
     }
 
+    /// Look up the interned id for `addr` without inserting. Returns `None` when
+    /// the address has never been seen on this token's trade history.
+    pub fn id_of(&self, addr: &str) -> Option<u32> {
+        self.by_addr.get(addr).copied()
+    }
+
     /// The finished `u32 → address` table (consuming form, for the sweep projection).
     pub fn into_table(self) -> Vec<Box<str>> {
         self.table

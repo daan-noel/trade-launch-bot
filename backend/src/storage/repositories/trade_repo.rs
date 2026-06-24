@@ -359,8 +359,8 @@ impl TradeRepo {
     ///
     /// No longer on the entry/exit-confirm path (1C replaced "latest buy/sell for
     /// the pair" with per-signature attribution — see [`Self::find_fill_by_signature`]
-    /// / [`Self::sum_legs_by_signatures`]); retained for ad-hoc single-fill lookups.
-    #[allow(dead_code)]
+    /// / [`Self::sum_legs_by_signatures`]); used for ad-hoc lookups and the
+    /// ManualSell external-clear detection path.
     pub async fn find_latest_by_wallet_mint_type(
         &self,
         wallet: &str,
@@ -569,10 +569,8 @@ impl TradeRepo {
     }
 
     /// Net token balance for `(wallet, mint)` (Σbuys − Σsells). No longer on the
-    /// sell-confirm hot path (replaced by per-signature attribution); retained for
-    /// the deferred SOL balance-floor / committed-SOL guards and ad-hoc balance
-    /// lookups.
-    #[allow(dead_code)]
+    /// sell-confirm hot path (replaced by per-signature attribution); used for
+    /// external-clear detection (ManualSell path) and ad-hoc balance lookups.
     pub async fn net_token_amount_by_wallet_and_mint(
         &self,
         wallet: &str,
