@@ -304,11 +304,13 @@ impl IngestPipeline {
 
     /// Drop all subscribed PumpSwap pools. The decoder attributes live AMM swaps
     /// via `pool_index`, so clearing it stops recording post-migration trades
-    /// immediately; the WS connection's now-orphaned subscriptions are trimmed on
-    /// its next natural reconnect.
+    /// immediately. Notifies the LaserStream client to resubscribe with the now-empty
+    /// pool set so Helius immediately stops matching (and billing for) those accounts —
+    /// without the notify, the filter is only trimmed on the next natural reconnect.
     fn clear_pools(&self) {
         let n = self.pool_index.len();
         self.pool_index.clear();
+        self.pools_changed.notify_one();
         info!("Tracking: post-migration disabled — cleared {n} pool(s); AMM trades no longer recorded");
     }
 
