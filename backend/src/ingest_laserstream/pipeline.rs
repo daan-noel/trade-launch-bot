@@ -770,8 +770,9 @@ pub async fn run_queue_depth_logger(
 /// what keeps a pool pruned from the startup set (or whose live `Migrate` event
 /// was missed) from going blind permanently — once fresh trades land in the
 /// cache (e.g. via a manual sync that refreshes `last_trade_at`), its pool is
-/// added and the WS task subscribes on the next ping. Only ever adds; the live
-/// subscription set is trimmed back to active pools on the next reconnect.
+/// added and the WS task subscribes on the next ping. Evicts dead/inactive pools
+/// on each tick to shrink the gRPC account filter and adds newly-active ones;
+/// notifies the LaserStream client immediately on any change.
 pub async fn run_pool_subscription_refresh(
     token_cache: Arc<TokenCache>,
     pool_index: Arc<DashMap<String, String>>,
@@ -822,6 +823,16 @@ pub async fn run_pool_subscription_refresh(
                     changed = true;
                 }
             }
+        }
+
+        // Safety net for the AMM-toggle race: if clear_pools() fired while we were
+        // iterating above and we just re-added pools into the freshly-cleared index,
+        // undo it now. Without this check the added pools stay in pool_index
+        // indefinitely — the AMM-off guard at the top of this loop only fires on
+        // future ticks (the next 120 s), so escaped pools are never evicted.
+        if !settings_rx.borrow().track_post_migration && !pool_index.is_empty() {
+            pool_index.clear();
+            changed = true;
         }
 
         if changed {

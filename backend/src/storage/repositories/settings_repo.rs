@@ -169,31 +169,6 @@ impl SettingsRepo {
         self.set_many(&[(setting.key, value)]).await
     }
 
-    /// Insert setting rows only if their key is absent (`ON CONFLICT DO NOTHING`).
-    /// Used at startup to seed a default into a fresh DB without ever clobbering a
-    /// value an operator has already set via the API.
-    pub async fn seed_if_absent(&self, entries: &[(&str, Value)]) -> anyhow::Result<()> {
-        if entries.is_empty() {
-            return Ok(());
-        }
-        let mut tx = self.pool.begin().await?;
-        for (key, value) in entries {
-            sqlx::query(
-                r#"
-                INSERT INTO app_settings (key, value, updated_at)
-                VALUES ($1, $2, now())
-                ON CONFLICT (key) DO NOTHING
-                "#,
-            )
-            .bind(key)
-            .bind(value)
-            .execute(&mut *tx)
-            .await?;
-        }
-        tx.commit().await?;
-        Ok(())
-    }
-
     /// Atomically upsert several setting rows in one transaction. Used by partial
     /// updates that touch multiple keys at once; each key is its own row, so this
     /// never clobbers settings the request didn't mention.

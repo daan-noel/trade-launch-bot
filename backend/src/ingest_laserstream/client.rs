@@ -287,13 +287,23 @@ pub async fn run(
         // otherwise fall back to live so we never get stuck replaying a slot the
         // server can no longer serve (the existing token_sync backfill covers it).
         //
-        // Exception: never replay after a PipelineBackpressure disconnect. The
-        // downstream was already overwhelmed; adding a replay burst on top of the
-        // live firehose re-triggers the same backpressure, which reconnects again
-        // with another replay — a cycle that sustains doubled Helius egress. Skip
-        // the gap and reconnect live; the pipeline was dropping that data anyway.
+        // Exception: never replay after PipelineBackpressure or ResourceExhausted.
+        // PipelineBackpressure: downstream was already overwhelmed — a replay burst
+        // re-triggers the same stall, which reconnects with another replay, sustaining
+        // doubled Helius egress.
+        // ResourceExhausted: Helius itself is rate-limiting because credits are
+        // exhausted — replaying the missed window on the very next attempt burns even
+        // more credits, triggering another ResourceExhausted, another replay, the same
+        // self-reinforcing billing cycle.
+        // In both cases: skip the gap and reconnect live.
         let seen = last_slot.load(Ordering::Relaxed);
-        from_slot = if seen > 0 && !matches!(reason, DisconnectReason::PipelineBackpressure) {
+        from_slot = if seen > 0
+            && !matches!(
+                reason,
+                DisconnectReason::PipelineBackpressure
+                    | DisconnectReason::StreamError(tonic::Code::ResourceExhausted)
+            )
+        {
             Some(seen + 1)
         } else {
             None

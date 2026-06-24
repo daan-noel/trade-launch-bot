@@ -19,7 +19,7 @@ run() outer loop
   │     ├─ inner select! loop:
   │     │     ├─ stream.message()           → new tx arrives
   │     │     │     ├─ slot advanced?       → reset last_update (idle timer)
-  │     │     │     └─ relevant tx?         → send_timeout(tx, PIPELINE_SEND_TIMEOUT=30s)
+  │     │     │     └─ relevant tx?         → send_timeout(tx, PIPELINE_SEND_TIMEOUT=10s)
   │     │     │           ├─ Ok             → continue
   │     │     │           ├─ Timeout        → return PipelineBackpressure
   │     │     │           └─ Closed         → return Graceful
@@ -29,6 +29,9 @@ run() outer loop
   │     │           └─ elapsed > 10s?       → return IdleTimeout
   │     └─ returns DisconnectReason
   ├─ record last seen slot → set from_slot for replay
+  │     (exception: from_slot = None when reason = PipelineBackpressure or
+  │      StreamError(ResourceExhausted) — replay would re-trigger the same
+  │      condition, doubling Helius egress in a self-reinforcing cycle)
   ├─ log reason + running counters
   ├─ decide delay:
   │     ├─ made progress (seen slot > 0): reset backoff to reconnect_interval, delay = reconnect_interval
@@ -43,7 +46,7 @@ run() outer loop
 |---|---|---|
 | `STREAM_RECONNECT_IDLE_TIMEOUT` | **10s** | No slot advance → `IdleTimeout` |
 | `STREAM_RECONNECT_IDLE_CHECK_INTERVAL` | **2s** | How often idle is tested |
-| `PIPELINE_SEND_TIMEOUT` | **30s** | Max wait on a full pipeline channel |
+| `PIPELINE_SEND_TIMEOUT` | **10s** | Max wait on a full pipeline channel |
 | `MAX_RECONNECT_BACKOFF` | **30s** | Exponential backoff cap (no-progress arm) |
 | `RECONNECT_INTERVAL` | **1s** (hardcoded in `client.rs`) | Base delay between reconnects |
 | `connect_timeout` (tonic) | **10s** | TCP/TLS connect hard deadline |
@@ -51,7 +54,7 @@ run() outer loop
 ### Two distinct idle paths
 
 - **Stream silent** (no tx updates): triggers at ≤ `IDLE_TIMEOUT` + up to 1 `CHECK_INTERVAL` = worst **~12s**
-- **Pipeline full** (downstream stall): triggers at exactly `PIPELINE_SEND_TIMEOUT` = **30s** — only fires on a relevant tx; a silent stream hits the idle path first
+- **Pipeline full** (downstream stall): triggers at exactly `PIPELINE_SEND_TIMEOUT` = **10s** — only fires on a relevant tx; a silent stream hits the idle path first
 
 ---
 
@@ -118,7 +121,7 @@ Time ~10s: No slot advance for STREAM_RECONNECT_IDLE_TIMEOUT
 | Base reconnect delay | Hardcoded `RECONNECT_INTERVAL` in `client.rs` (1s) |
 | Watchdog stall window | UI settings page → `watchdog_stall_timeout_secs` (floor 180s) |
 | Watchdog wake cadence | UI settings page → `watchdog_check_interval_secs` (floor 5s) |
-| Pipeline stall timeout | Hardcoded `PIPELINE_SEND_TIMEOUT` in `client.rs` (30s) |
+| Pipeline stall timeout | Hardcoded `PIPELINE_SEND_TIMEOUT` in `client.rs` (10s) |
 | Idle stream timeout | Hardcoded `STREAM_RECONNECT_IDLE_TIMEOUT` in `client.rs` (10s) |
 
 > Watchdog stall/cadence defaults (180s / 15s) are applied by `AppSettings` when the key is absent from the DB — no env seed needed.
