@@ -1041,7 +1041,9 @@ pub async fn delete_run(
         None => return bad_strategy(&query.strategy_id),
     };
     let run_id = path.into_inner();
-    match GroupedSweepRepo::new(state.db.clone(), tables).delete_run(run_id).await {
+    // Use batch_db: CASCADE deletes the combos table (can be hundreds of thousands
+    // of rows, ~1.7 GB) and the API pool's 8s statement_timeout kills it.
+    match GroupedSweepRepo::new(state.batch_db.clone(), tables).delete_run(run_id).await {
         Ok(0) => HttpResponse::NotFound().json(serde_json::json!({"error": "run not found"})),
         Ok(n) => HttpResponse::Ok().json(serde_json::json!({"deleted": n})),
         Err(e) => {
@@ -1097,7 +1099,8 @@ pub async fn prune_runs(
         Some(t) => t,
         None => return bad_strategy(&query.strategy_id),
     };
-    match GroupedSweepRepo::new(state.db.clone(), tables)
+    // Use batch_db: same cascade volume as delete_run; API pool's 8s timeout kills it.
+    match GroupedSweepRepo::new(state.batch_db.clone(), tables)
         .delete_runs_before(query.before)
         .await
     {
