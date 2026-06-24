@@ -60,7 +60,10 @@ const STREAM_RECONNECT_IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 /// `select!`, so the idle-reconnect timer could never fire and ingest would freeze
 /// with no log. Returning unblocks the task; the process liveness watchdog handles a
 /// wedge that survives the reconnect.
-const PIPELINE_SEND_TIMEOUT: Duration = Duration::from_secs(30);
+const PIPELINE_SEND_TIMEOUT: Duration = Duration::from_secs(10);
+/// Base delay before reconnecting after a stream drop. Reset to this value on any
+/// attempt that made progress; doubles up to `MAX_RECONNECT_BACKOFF` otherwise.
+const RECONNECT_INTERVAL: Duration = Duration::from_millis(1_000);
 
 /// Why a single stream attempt ended — drives the per-reason reconnect counters
 /// and the reconnect log line, so a consumer-lag eviction (`PipelineBackpressure`
@@ -250,12 +253,11 @@ pub async fn run(
     mut live_rx: watch::Receiver<bool>,
     pool_index: Arc<DashMap<String, String>>,
     pools_changed: Arc<Notify>,
-    reconnect_interval: Duration,
 ) {
     // Slot to replay from on the next (re)connect; `None` = live subscription.
     let mut from_slot: Option<u64> = None;
     // Exponential backoff, reset whenever an attempt made progress.
-    let mut backoff = reconnect_interval;
+    let mut backoff = RECONNECT_INTERVAL;
     // Per-reason reconnect tally (Step 0 diagnostics).
     let mut counts = ReconnectCounts::default();
 
@@ -308,8 +310,8 @@ pub async fn run(
         // made no progress grows the backoff exponentially, capped, so a
         // hard-down endpoint isn't hammered. Jitter decorrelates reconnects.
         let delay = if seen > 0 {
-            backoff = reconnect_interval;
-            reconnect_interval
+            backoff = RECONNECT_INTERVAL;
+            RECONNECT_INTERVAL
         } else {
             let d = backoff;
             backoff = (backoff * 2).min(MAX_RECONNECT_BACKOFF);

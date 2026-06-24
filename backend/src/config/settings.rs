@@ -21,15 +21,6 @@ pub struct Settings {
     pub wallet_private_key: String,
     pub nonce_accounts: Vec<String>,
 
-    // --- Timing ---
-    /// How long to wait before reconnecting after a stream drop.
-    pub reconnect_interval: Duration,
-    /// Liveness watchdog: if ingest makes no forward progress for this long while
-    /// live mode is on, the process force-exits so the supervisor restarts a wedged
-    /// ingest (a downstream `.await` deadlock the in-stream watchdog can't see). The
-    /// pump.fun firehose never goes this quiet, so only a real stall trips it.
-    pub ingest_stall_timeout: Duration,
-
     // --- Database ---
     pub database_url: String,
     /// **Hot-path** pool — ingest (`DbWriter`), `StrategyRunner`, maintenance,
@@ -78,16 +69,6 @@ impl Settings {
             helius_laserstream_url: required("HELIUS_LASERSTREAM_URL")?,
             wallet_private_key: required("WALLET_PRIVATE_KEY")?,
             nonce_accounts: parse_required_list("NONCE_ACCOUNTS")?,
-            reconnect_interval: Duration::from_millis(env_parse("RECONNECT_INTERVAL", 10_000)?),
-            // Seeds a fresh DB's watchdog stall window; the UI value wins after.
-            // The real governing floor (180s) is re-applied at runtime in
-            // `ingest_health`, so a low value here can't make the watchdog
-            // trigger-happy — it only sets the initial seed.
-            ingest_stall_timeout: Duration::from_secs(env_parse_min(
-                "INGEST_STALL_TIMEOUT_SECS",
-                180u64,
-                52,
-            )?),
             database_url: required("DATABASE_URL")?,
             db_max_connections: env_parse_min("DB_MAX_CONNECTIONS", 64u32, 1)?,
             db_min_connections: env_parse("DB_MIN_CONNECTIONS", 4u32)?,

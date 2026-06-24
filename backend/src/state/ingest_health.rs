@@ -46,7 +46,7 @@ use crate::storage::repositories::settings_repo::AppSettings;
 /// window. With false positives designed out, a wide window costs nothing and a
 /// hand-edited / stale DB row below it is retroactively neutralized (the API
 /// clamps writes here and the watchdog re-applies it defensively every tick).
-pub const WATCHDOG_STALL_TIMEOUT_FLOOR_SECS: u64 = 180;
+pub const WATCHDOG_STALL_TIMEOUT_FLOOR_SECS: u64 = 90;
 /// Floor for the watchdog check cadence — a `0`/tiny interval would busy-spin the
 /// OS thread for no detection benefit.
 pub const WATCHDOG_CHECK_INTERVAL_FLOOR_SECS: u64 = 5;
@@ -260,10 +260,10 @@ mod tests {
 
     #[test]
     fn stall_floor_is_generous() {
-        // The watchdog only fires on a genuine wedge (gated on work-pending), so a
-        // wide window costs nothing and avoids any chance of pre-empting a slow
-        // recovery. Kept at the 180s seed default.
-        assert!(WATCHDOG_STALL_TIMEOUT_FLOOR_SECS >= 180);
+        // The watchdog is gated on work-pending, so only a complete freeze triggers
+        // it. 90s floor gives enough room for slow-but-not-hung DB periods while
+        // recovering faster than the old 180s floor when the DbWriter truly wedges.
+        assert!(WATCHDOG_STALL_TIMEOUT_FLOOR_SECS >= 60);
     }
 
     #[test]
