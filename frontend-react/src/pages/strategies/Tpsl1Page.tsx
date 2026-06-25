@@ -43,7 +43,7 @@ import {
 } from 'services/api';
 import { connectPaperTestStream, connectTpslPositionsChanged } from 'services/sse';
 import { useBackgroundJobActions } from 'context/BackgroundJobsContext';
-import { apiErrorMessage, useGetTokensByMintsQuery } from 'store/apiSlice';
+import { apiErrorMessage, useGetTokensByMintsQuery, useSellTokenMutation } from 'store/apiSlice';
 import { mergeTokenData } from 'components/tokens/sharedTokenColumns';
 import {
   fetchMatchedCached,
@@ -779,6 +779,9 @@ export function Tpsl1Page() {
   const [stopConfirm, setStopConfirm] = useState<RuleRecord | null>(null);
   const [reactivate, setReactivate] = useState<RuleRecord | null>(null);
 
+  const [sellToken] = useSellTokenMutation();
+  const [sellingPositionMint, setSellingPositionMint] = useState<string | null>(null);
+
   const applyRuleUpdate = useCallback((updated: RuleRecord) => {
     setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
   }, []);
@@ -1213,6 +1216,43 @@ export function Tpsl1Page() {
     setInspect(row ? { table: 'paper', key: row.mint, target: inspectFromSim(row) } : null);
   }, []);
 
+  const handleSellPosition = useCallback(
+    async (mint: string) => {
+      setSellingPositionMint(mint);
+      setActionError(null);
+      try {
+        await sellToken({ mint }).unwrap();
+      } catch (e) {
+        setActionError(
+          `Sell failed: ${apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0]) ?? 'unknown error'}`,
+        );
+      } finally {
+        setSellingPositionMint(null);
+      }
+    },
+    [sellToken],
+  );
+
+  const positionRowActions = useCallback(
+    (row: RulePositionRecord) => {
+      if (row.status !== 'Holding') return null;
+      const isSelling = sellingPositionMint === row.mint;
+      return (
+        <div className="flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
+          <button
+            type="button"
+            disabled={isSelling}
+            onClick={() => { void handleSellPosition(row.mint); }}
+            className="rounded border border-red/50 bg-red/12 px-2 py-0.5 text-[11px] font-semibold text-red hover:bg-red/22 disabled:opacity-45"
+          >
+            {isSelling ? 'Selling…' : 'Sell ALL'}
+          </button>
+        </div>
+      );
+    },
+    [sellingPositionMint, handleSellPosition],
+  );
+
   // Positions for the selected rule. Built once and rendered under whichever
   // table owns the rule (real → below Real table, paper → below Paper table).
   // Only one of isReal/isPaperRuleSelected is true at a time, so it renders once.
@@ -1255,6 +1295,7 @@ export function Tpsl1Page() {
             rowKey={keyById}
             selectedKey={inspect?.table === 'positions' ? inspect.key : null}
             onSelect={onSelectPosition}
+            rowActions={isRealRuleSelected ? positionRowActions : undefined}
             defaultPageSize={20}
             pageSizeOptions={[20, 50, 100]}
             colFilters
