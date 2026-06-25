@@ -499,7 +499,7 @@ pub(crate) async fn sell_and_close_position(
     trigger_price: f64,
     trigger_time: DateTime<Utc>,
     exit_reason: String,
-    slippage_bps: u64,
+    slippage_bps: Option<u64>,
 ) {
     // Position is terminal from this point — release the SOL commitment so the
     // balance-floor guard counts it as free again. Idempotent: a double-release
@@ -767,7 +767,7 @@ async fn sell_until_balance_cleared(
     cache: &TokenCache,
     trade_signals: Arc<TradeSignals>,
     base_token_program: String,
-    slippage_bps: u64,
+    slippage_bps: Option<u64>,
 ) -> SellOutcome {
     let mut attempt = 0usize;
     let max_attempts = super::SELL_MAX_ATTEMPTS;
@@ -838,14 +838,14 @@ async fn sell_until_balance_cleared(
                         &base_token_program,
                         None,
                         token_account_override.as_deref(),
-                        Some(slippage_bps),
+                        slippage_bps,
                         tip_level,
                         false,
                     )
                     .await
             } else {
                 trader
-                    .sell_token_once(&mint, amount, None, is_cashback, token_account_override.as_deref(), Some(slippage_bps), tip_level, false)
+                    .sell_token_once(&mint, amount, None, is_cashback, token_account_override.as_deref(), slippage_bps, tip_level, false)
                     .await
             }
         };

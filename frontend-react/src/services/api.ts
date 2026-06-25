@@ -31,8 +31,12 @@ export interface AppSettings {
   persist_raw: boolean;
   timezone: string | null;
   price_unit: 'SOL' | 'USD' | null;
-  /** Default trade slippage in basis points (100 = 1%); null = use server default. */
+  /** Legacy combined slippage field; superseded by buy_slippage_bps / sell_slippage_bps. */
   slippage_bps: number | null;
+  /** Buy-side slippage in bps (100 = 1%); null = use legacy slippage_bps then server default (5%). 0 = no floor. */
+  buy_slippage_bps: number | null;
+  /** Sell-side slippage in bps; null or 0 = no floor (always fills). Default is no floor. */
+  sell_slippage_bps: number | null;
   /** Master switch for the ingest liveness watchdog (process-restart on stall). */
   watchdog_enabled: boolean;
   /** Stall window in seconds before the watchdog restarts a wedged ingest. */

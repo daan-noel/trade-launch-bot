@@ -3,7 +3,7 @@ use std::sync::Arc;
 use actix_web::{web, HttpResponse, Responder};
 use serde::Deserialize;
 
-use crate::config::constants::{resolve_slippage_bps, MAX_MANUAL_BUY_SOL};
+use crate::config::constants::{resolve_buy_slippage_bps, resolve_sell_slippage_bps, MAX_MANUAL_BUY_SOL};
 use crate::models::wallet::validate_solana_address;
 use crate::services::clients::jupiter;
 use crate::services::wallet_tokens;
@@ -40,12 +40,13 @@ pub struct SellRequest {
     pub slippage_bps: Option<u64>,
 }
 
-/// Resolve the effective slippage (bps) for a manual trade: per-request override
-/// → persisted global default → built-in constant. Thin wrapper over the shared
-/// [`resolve_slippage_bps`] that supplies the persisted setting from `app_state`;
-/// the strategy paths call the shared helper directly.
-fn resolve_slippage(app_state: &AppState, request: Option<u64>) -> u64 {
-    resolve_slippage_bps(app_state.settings().slippage_bps, request)
+fn resolve_buy_slippage(app_state: &AppState, request: Option<u64>) -> Option<u64> {
+    let s = app_state.settings();
+    resolve_buy_slippage_bps(s.buy_slippage_bps, s.slippage_bps, request)
+}
+
+fn resolve_sell_slippage(app_state: &AppState, request: Option<u64>) -> Option<u64> {
+    resolve_sell_slippage_bps(app_state.settings().sell_slippage_bps, request)
 }
 
 /// Max passes the "Sell All" clear loop makes before giving up: each pass reads
@@ -102,14 +103,14 @@ pub async fn manual_buy(
         .token_program_id
         .clone()
         .unwrap_or_else(|| routing.token_program_id.clone());
-    let slippage_bps = resolve_slippage(&app_state, body.slippage_bps);
+    let slippage = resolve_buy_slippage(&app_state, body.slippage_bps);
 
     let buy_result = if routing.is_migrated {
         // Migrated → PumpSwap AMM (canonical pool derived).
         // Mayhem tokens never migrate, so the AMM path needs no mayhem handling.
         app_state
             .trader
-            .amm_buy(&body.mint, &token_program_id, sol_amount, None, Some(slippage_bps), true)
+            .amm_buy(&body.mint, &token_program_id, sol_amount, None, slippage, true)
             .await
     } else {
         // Still on the bonding curve. Pass the pubkeys `resolve_buy_routing`
@@ -121,7 +122,7 @@ pub async fn manual_buy(
         };
         app_state
             .trader
-            .buy_token(&routing.mint, &routing.creator_pubkey, token_program, sol_amount, Some(slippage_bps))
+            .buy_token(&routing.mint, &routing.creator_pubkey, token_program, sol_amount, slippage)
             .await
     };
     match buy_result {
@@ -177,7 +178,7 @@ pub async fn manual_sell(
         .map(|e| e.token.is_cashback_enabled)
         .unwrap_or(false);
 
-    let slippage_bps = resolve_slippage(&app_state, body.slippage_bps);
+    let slippage = resolve_sell_slippage(&app_state, body.slippage_bps);
     let wallet = app_state.trader.wallet_pubkey();
 
     // Clear loop: read the live balance and sell all of it, bounded by
@@ -209,7 +210,7 @@ pub async fn manual_sell(
                     &routing.token_program_id,
                     None,
                     token_account_override,
-                    Some(slippage_bps),
+                    slippage,
                     // Escalate the Jito tip per pass: a sell that lost the auction
                     // didn't land (cost nothing), so bid up rather than re-send it.
                     pass as u8,
@@ -230,7 +231,7 @@ pub async fn manual_sell(
                     Some(&routing.creator),
                     is_cashback,
                     token_account_override,
-                    Some(slippage_bps),
+                    slippage,
                 )
                 .await
         };

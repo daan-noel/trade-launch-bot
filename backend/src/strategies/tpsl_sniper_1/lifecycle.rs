@@ -146,10 +146,9 @@ pub async fn stop_and_close_rule(
         .collect();
     let count = positions.len();
     let now = Utc::now();
-    // Effective slippage for the on-chain force-close sells (1B): persisted
-    // global default, clamped. Resolved once for the whole close batch.
+    // Sell slippage for the force-close batch: None = no floor (always fills).
     let slippage_bps =
-        crate::config::constants::resolve_slippage_bps(app_state.settings().slippage_bps, None);
+        crate::config::constants::resolve_sell_slippage_bps(app_state.settings().sell_slippage_bps, None);
 
     for position in positions {
         // The last observed mark is the honest exit price; fall back to entry for

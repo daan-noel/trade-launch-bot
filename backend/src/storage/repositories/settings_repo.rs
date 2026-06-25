@@ -38,6 +38,8 @@ pub mod keys {
     pub const TIMEZONE: Setting<Option<String>> = Setting::new("ui.timezone", || None);
     pub const PRICE_UNIT: Setting<Option<String>> = Setting::new("ui.price_unit", || None);
     pub const SLIPPAGE_BPS: Setting<Option<u64>> = Setting::new("trade.slippage_bps", || None);
+    pub const BUY_SLIPPAGE_BPS: Setting<Option<u64>> = Setting::new("trade.buy_slippage_bps", || None);
+    pub const SELL_SLIPPAGE_BPS: Setting<Option<u64>> = Setting::new("trade.sell_slippage_bps", || None);
     pub const LIVE: Setting<bool> = Setting::new("ingest.live", || false);
     pub const PERSIST_RAW: Setting<bool> = Setting::new("ingest.persist_raw", || false);
     /// Master switch for the ingest liveness watchdog. When off, the watchdog
@@ -76,10 +78,18 @@ pub struct AppSettings {
     pub timezone: Option<String>,
     /// Header price-unit preference ("SOL" | "USD"). `None` = never set.
     pub price_unit: Option<String>,
-    /// Default trade slippage tolerance in basis points (100 = 1%). Used when a
-    /// buy/sell request doesn't specify its own. `None` = fall back to the
-    /// server's built-in default (`DEFAULT_SLIPPAGE_BPS`).
+    /// Legacy single slippage field — superseded by `buy_slippage_bps` /
+    /// `sell_slippage_bps`. Kept as a fallback: if the new buy field is unset,
+    /// `resolve_buy_slippage_bps` falls back to this value so existing
+    /// deployments that already set `slippage_bps` keep their behaviour.
     pub slippage_bps: Option<u64>,
+    /// Buy-side slippage tolerance in bps (100 = 1%). `None` = use
+    /// `slippage_bps` fallback, then server default (5%). `Some(0)` = no floor.
+    pub buy_slippage_bps: Option<u64>,
+    /// Sell-side slippage tolerance in bps. `None` or `Some(0)` = no floor
+    /// (min_out = 1, always fills). Default is no floor so bot exits never
+    /// stall on a rapidly dumping token.
+    pub sell_slippage_bps: Option<u64>,
     /// Live-mode toggle for the LaserStream ingest (live = connect, dead = paused).
     /// Persisted so a restart restores the operator's last on/off choice instead
     /// of always booting paused. Set via `PUT /api/system/live`.
@@ -120,6 +130,8 @@ impl AppSettings {
             timezone: pick(map, &keys::TIMEZONE),
             price_unit: pick(map, &keys::PRICE_UNIT),
             slippage_bps: pick(map, &keys::SLIPPAGE_BPS),
+            buy_slippage_bps: pick(map, &keys::BUY_SLIPPAGE_BPS),
+            sell_slippage_bps: pick(map, &keys::SELL_SLIPPAGE_BPS),
             live: pick(map, &keys::LIVE),
             persist_raw: pick(map, &keys::PERSIST_RAW),
             watchdog_enabled: pick(map, &keys::WATCHDOG_ENABLED),
@@ -224,6 +236,8 @@ mod tests {
         assert_eq!(settings.timezone, None);
         assert_eq!(settings.price_unit, None);
         assert_eq!(settings.slippage_bps, None);
+        assert_eq!(settings.buy_slippage_bps, None);
+        assert_eq!(settings.sell_slippage_bps, None);
         // Watchdog on by default, with the standard window/cadence.
         assert!(settings.watchdog_enabled);
         assert_eq!(settings.watchdog_stall_timeout_secs, 90);

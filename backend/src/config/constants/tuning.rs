@@ -30,6 +30,33 @@ pub fn resolve_slippage_bps(setting: Option<u64>, request: Option<u64>) -> u64 {
         .clamp(SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS)
 }
 
+/// Resolve buy slippage: per-request → `buy_slippage_bps` → legacy
+/// `slippage_bps` → built-in 5% default. Returns `None` when the resolved
+/// value is `0` (explicit "no floor, accept any fill"); otherwise clamped
+/// to `[SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS]`.
+pub fn resolve_buy_slippage_bps(
+    buy_setting: Option<u64>,
+    legacy_setting: Option<u64>,
+    request: Option<u64>,
+) -> Option<u64> {
+    match request.or(buy_setting).or(legacy_setting) {
+        None => Some(DEFAULT_SLIPPAGE_BPS),
+        Some(0) => None,
+        Some(bps) => Some(bps.clamp(SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS)),
+    }
+}
+
+/// Resolve sell slippage: per-request → `sell_slippage_bps`. Returns `None`
+/// when unset or `0` — no floor, always fills (min_out = 1). The no-floor
+/// default ensures bot exits clear at any price during a rapid dump rather
+/// than stalling on repeated slippage reverts.
+pub fn resolve_sell_slippage_bps(sell_setting: Option<u64>, request: Option<u64>) -> Option<u64> {
+    match request.or(sell_setting) {
+        None | Some(0) => None,
+        Some(bps) => Some(bps.clamp(SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS)),
+    }
+}
+
 /// Per-trade SOL ceiling on the manual buy API (`POST /api/solana/wallet/buy`).
 /// A fat-finger ("buy 1000 SOL") or hostile value is rejected with a 400 before
 /// any on-chain work. The `pump_trader` crate enforces its own `MAX_BUY_SOL`

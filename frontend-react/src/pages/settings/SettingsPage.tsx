@@ -30,9 +30,9 @@ export function SettingsPage() {
   const { data: settings, isLoading: loading } = useGetSettingsQuery();
   const [updateSettings, { isLoading: saving }] = useUpdateSettingsMutation();
   const [error, setError] = useState<string | null>(null);
-  // Slippage edited as a percent string, committed on blur. Synced from the
-  // persisted bps value whenever it changes.
-  const [slipText, setSlipText] = useState('');
+  // Buy/sell slippage edited as percent strings, committed on blur.
+  const [buySlipText, setBuySlipText] = useState('');
+  const [sellSlipText, setSellSlipText] = useState('');
   // Watchdog timing edited as second strings, committed on blur. The server
   // clamps to its floors and returns the applied value, which re-syncs these.
   const [stallText, setStallText] = useState('');
@@ -40,10 +40,16 @@ export function SettingsPage() {
   const [maxSolText, setMaxSolText] = useState('');
 
   useEffect(() => {
-    setSlipText(
-      settings && settings.slippage_bps != null ? String(settings.slippage_bps / 100) : '',
+    setBuySlipText(
+      settings?.buy_slippage_bps != null ? String(settings.buy_slippage_bps / 100) : '',
     );
-  }, [settings?.slippage_bps]);
+  }, [settings?.buy_slippage_bps]);
+
+  useEffect(() => {
+    setSellSlipText(
+      settings?.sell_slippage_bps != null ? String(settings.sell_slippage_bps / 100) : '',
+    );
+  }, [settings?.sell_slippage_bps]);
 
   useEffect(() => {
     if (settings) setStallText(String(settings.watchdog_stall_timeout_secs));
@@ -88,20 +94,36 @@ export function SettingsPage() {
     if (sol !== settings.max_committed_sol) update({ max_committed_sol: sol });
   }
 
-  function commitSlippage() {
+  function commitBuySlippage() {
     if (!settings) return;
-    const raw = slipText.trim();
-    // Blank = leave the persisted default untouched.
-    if (raw === '') return;
+    const raw = buySlipText.trim();
+    if (raw === '') {
+      if (settings.buy_slippage_bps !== null) update({ buy_slippage_bps: null });
+      return;
+    }
     const pct = parseFloat(raw);
     if (!Number.isFinite(pct) || pct < 0 || pct > 50) {
-      setError('Slippage must be between 0 and 50%');
+      setError('Buy slippage must be between 0 and 50% (0 = no limit)');
       return;
     }
     const bps = Math.round(pct * 100);
-    if (bps !== settings.slippage_bps) {
-      update({ slippage_bps: bps });
+    if (bps !== settings.buy_slippage_bps) update({ buy_slippage_bps: bps });
+  }
+
+  function commitSellSlippage() {
+    if (!settings) return;
+    const raw = sellSlipText.trim();
+    if (raw === '') {
+      if (settings.sell_slippage_bps !== null) update({ sell_slippage_bps: null });
+      return;
     }
+    const pct = parseFloat(raw);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 50) {
+      setError('Sell slippage must be between 0 and 50% (0 or blank = no limit)');
+      return;
+    }
+    const bps = Math.round(pct * 100);
+    if (bps !== settings.sell_slippage_bps) update({ sell_slippage_bps: bps });
   }
 
   // The shared cache is patched optimistically inside the mutation, so toggles
@@ -160,9 +182,9 @@ export function SettingsPage() {
       <section className="mt-4 max-w-2xl rounded-xl border border-white/8 bg-bg-panel p-4">
         <h3 className="text-sm font-semibold text-text">Trading</h3>
         <p className="mt-0.5 mb-3.5 text-xs text-text-dim">
-          Default slippage tolerance applied to manual buys and sells that don't specify
-          their own. Applies to both bonding-curve and AMM trades. Leave blank to use the
-          server default (5%).
+          Separate slippage tolerances for buys and sells. Applies to both manual trades
+          and the bot. Buy default is 5% when blank. Sell default is no limit — bot exits
+          always clear even during a rapid dump.
         </p>
 
         {loading ? (
@@ -171,7 +193,7 @@ export function SettingsPage() {
           <div className="flex flex-wrap gap-4">
             <label className="flex max-w-[220px] flex-col gap-1.5">
               <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
-                Default slippage %
+                Buy slippage %
               </span>
               <Input
                 type="number"
@@ -180,14 +202,36 @@ export function SettingsPage() {
                 max={50}
                 step={0.1}
                 placeholder="5"
-                value={slipText}
+                value={buySlipText}
                 disabled={saving}
-                onChange={(e) => setSlipText(e.target.value)}
-                onBlur={commitSlippage}
+                onChange={(e) => setBuySlipText(e.target.value)}
+                onBlur={commitBuySlippage}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
                 }}
               />
+              <p className="text-[11px] text-text-dim">Blank = server default (5%). 0 = no limit.</p>
+            </label>
+            <label className="flex max-w-[220px] flex-col gap-1.5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
+                Sell slippage %
+              </span>
+              <Input
+                type="number"
+                fieldSize="md"
+                min={0}
+                max={50}
+                step={0.1}
+                placeholder="no limit"
+                value={sellSlipText}
+                disabled={saving}
+                onChange={(e) => setSellSlipText(e.target.value)}
+                onBlur={commitSellSlippage}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                }}
+              />
+              <p className="text-[11px] text-text-dim">Blank or 0 = no limit (always fills).</p>
             </label>
             <label className="flex max-w-[220px] flex-col gap-1.5">
               <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">

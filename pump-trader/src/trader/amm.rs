@@ -19,7 +19,7 @@ use super::{AmmGlobalConfig, AmmPoolInfo, PumpFunTrader};
 use crate::constants::{
     AMM_CONFIG_COIN_CREATOR_FEE_BPS_OFFSET, AMM_CONFIG_FEE_RECIPIENTS_OFFSET,
     AMM_CONFIG_LP_FEE_BPS_OFFSET, AMM_CONFIG_MIN_LEN, AMM_CONFIG_PROTOCOL_FEE_BPS_OFFSET,
-    AMM_DEFAULT_SLIPPAGE_BPS, AMM_POOL_BASE_VAULT_OFFSET, AMM_POOL_COIN_CREATOR_OFFSET,
+    AMM_POOL_BASE_VAULT_OFFSET, AMM_POOL_COIN_CREATOR_OFFSET,
     AMM_POOL_IS_CASHBACK_OFFSET, AMM_POOL_MIN_LEN, AMM_POOL_QUOTE_VAULT_OFFSET,
     CONFIRM_MAX_RETRIES, PUMP_AMM_CASHBACK_GLOBAL,
 };
@@ -252,7 +252,6 @@ impl PumpFunTrader {
         // Guard the real spend (NaN/∞, non-positive, oversized, or rounds-to-zero)
         // before building the swap — the AMM public entry, mirroring the curve path.
         let spendable = super::buy_lamports_checked(sol_amount)?;
-        let slip = slippage_bps.unwrap_or(AMM_DEFAULT_SLIPPAGE_BPS) as u128;
         let fee_bps = (cfg.lp_fee_bps + cfg.protocol_fee_bps + cfg.coin_creator_fee_bps) as u128;
         // A garbage/misread global-config (fee >= 100%) would wrap `BPS_DENOM -
         // fee_bps` in release and silently drop slippage protection on a real
@@ -267,8 +266,14 @@ impl PumpFunTrader {
         let base_out = cp_amount_out(quote_net, quote_res, base_res);
         // Exact-base-out buy: request slightly fewer tokens than the budget
         // buys (the slippage haircut) so the actual cost stays under the
-        // wrapped `spendable`, which is the spend cap.
-        let base_amount_out = (base_out.saturating_mul(BPS_DENOM.saturating_sub(slip)) / BPS_DENOM) as u64;
+        // wrapped `spendable`, which is the spend cap. `None` = no floor (1).
+        let base_amount_out: u64 = match slippage_bps {
+            None => 1,
+            Some(slip) => {
+                let s = slip as u128;
+                (base_out.saturating_mul(BPS_DENOM.saturating_sub(s)) / BPS_DENOM).max(1) as u64
+            }
+        };
 
         let quote_tp = self.token_program; // WSOL is legacy SPL
         let user_base =
@@ -338,7 +343,6 @@ impl PumpFunTrader {
         )?;
         let (base_res, quote_res) = self.amm_reserves_cached(token_mint, &pool).await?;
 
-        let slip = slippage_bps.unwrap_or(AMM_DEFAULT_SLIPPAGE_BPS) as u128;
         let fee_bps = (cfg.lp_fee_bps + cfg.protocol_fee_bps + cfg.coin_creator_fee_bps) as u128;
         // See `build_amm_buy_ixs`: bail on a >= 100% fee rather than wrap the
         // slippage denominator; `saturating_sub` guards the caller-supplied slip.
@@ -348,7 +352,16 @@ impl PumpFunTrader {
 
         let gross = cp_amount_out(token_amount as u128, base_res, quote_res);
         let net = gross.saturating_mul(BPS_DENOM.saturating_sub(fee_bps)) / BPS_DENOM;
-        let min_quote_out = (net.saturating_mul(BPS_DENOM.saturating_sub(slip)) / BPS_DENOM) as u64;
+        // `None` = no floor (min_out = 1): always fills regardless of price
+        // movement. This is the correct default for bot sells where clearing the
+        // position matters more than getting a precise price.
+        let min_quote_out: u64 = match slippage_bps {
+            None => 1,
+            Some(slip) => {
+                let s = slip as u128;
+                (net.saturating_mul(BPS_DENOM.saturating_sub(s)) / BPS_DENOM).max(1) as u64
+            }
+        };
 
         let quote_tp = self.token_program;
         let user_base = self
