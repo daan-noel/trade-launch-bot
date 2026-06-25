@@ -89,9 +89,9 @@ pub const MAX_FILL_WAIT_SLOTS: u64 = 3; // ≈ 1 s at 400 ms/slot
 // The verdict flips to true exactly once and stays there.
 
 /// Signal 1 — liquidity is gone. The latest `real_sol_reserves` is below this SOL.
-pub const DEAD_MAX_LIQUIDITY_SOL: f64 = 1.0;
+pub const DEAD_MAX_LIQUIDITY_SOL: f64 = 30.0;
 /// Signal 2 — no meaningful trade for this many seconds.
-pub const DEAD_QUIET_SECS: i64 = 120; // 2 minutes
+pub const DEAD_QUIET_SECS: i64 = 300; // 5 minutes
 /// SOL threshold below which a trade is dust and does NOT reset the quiet timer.
 pub const DEAD_MEANINGFUL_TRADE_SOL: f64 = 0.1;
 
