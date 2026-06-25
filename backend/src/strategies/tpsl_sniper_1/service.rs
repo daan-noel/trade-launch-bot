@@ -431,16 +431,19 @@ impl Tpsl1StrategyService {
             let trades = &state.trades;
             let trades_base = state.trades_base;
 
-            // Check whether the triggering trade is a sell from our own wallet.
-            // We only look at the last trade (the one that triggered this call)
-            // to keep the check O(1). `id_of` is a read-only map probe — no
-            // allocation, no mutation of the interner.
+            // Scan the ring buffer backwards for the most recent sell from the bot
+            // wallet. Checking only `trades.last()` is fragile: the strategy ping
+            // channel is async, so further trades can be appended to the ring buffer
+            // between the manual-sell ping being dispatched and the runner consuming
+            // it, pushing the sell off `.last()`. Scanning backwards costs O(k) where
+            // k ≤ MAX_TRADES_RETAINED but stops at the first hit.
+            // `try_close_manually_sold` guards against stale-sell false positives via
+            // a DB balance check (positive balance → early return), so finding an old
+            // sell from a prior already-closed position is safe.
             let bot_wallet = self.trader.wallet_pubkey();
             if let Some(bot_id) = state.interner.id_of(&bot_wallet) {
-                if let Some(last) = trades.last() {
-                    if !last.is_buy && last.wallet == bot_id {
-                        manual_sell_info = Some((last.price_per_token, last.block_time));
-                    }
+                if let Some(sell) = trades.iter().rev().find(|t| !t.is_buy && t.wallet == bot_id) {
+                    manual_sell_info = Some((sell.price_per_token, sell.block_time));
                 }
             }
 
