@@ -142,7 +142,7 @@ DECLARE
 BEGIN
     EXECUTE format(
         'CREATE TABLE IF NOT EXISTS %I PARTITION OF trades FOR VALUES FROM (%L) TO (%L)',
-        v_name, v_start::timestamptz, v_end::timestamptz
+        v_name, v_start::timestamp AT TIME ZONE 'UTC', v_end::timestamp AT TIME ZONE 'UTC'
     );
 END;
 $$;
@@ -206,7 +206,7 @@ DECLARE
 BEGIN
     EXECUTE format(
         'CREATE TABLE IF NOT EXISTS %I PARTITION OF raw_transactions FOR VALUES FROM (%L) TO (%L)',
-        v_name, v_start::timestamptz, v_end::timestamptz
+        v_name, v_start::timestamp AT TIME ZONE 'UTC', v_end::timestamp AT TIME ZONE 'UTC'
     );
 END;
 $$;

@@ -27,6 +27,11 @@ venv
 # see nginx/tls/README.md). Required locally before `docker compose up --build`.
 nginx/tls/*.pem
 
+# SSH keys — never commit
+*.pem
+*.ppk
+aws.pub
+
 # Editor
 .vscode/
 .idea/
@@ -74,3 +79,5 @@ build/
 
 # DB dump files
 /*.dump
+
+/snapshots
