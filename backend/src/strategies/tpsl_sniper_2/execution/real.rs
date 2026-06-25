@@ -820,6 +820,14 @@ const CURVE_TOO_LITTLE_SOL_RECEIVED: u32 = 6003;
 /// PumpSwap AMM `ExceededSlippage` (Anchor error 6004) — the AMM-side slippage
 /// floor. Retryable, same as the curve case.
 const AMM_EXCEEDED_SLIPPAGE: u32 = 6004;
+/// Anchor framework `ConstraintSeeds` (error 2006), surfaced on-chain as
+/// `Custom(2006)`. On the curve sell the only account whose PDA is seeded by
+/// MUTABLE on-chain state is `creator_vault` (`["creator-vault", bonding_curve.
+/// creator]`); every other PDA is mint-derived and immutable. So a 2006 on a curve
+/// sell means pump.fun changed `bonding_curve.creator` (via `set_creator`) AFTER
+/// our buy cached the vault — refresh the cached vault and retry, don't burn the
+/// position as ExitFailed.
+const ANCHOR_CONSTRAINT_SEEDS: u32 = 2006;
 
 /// After a feed-confirm sell's poll window elapses without the balance clearing,
 /// one `signature_state_detailed` check decides whether re-sending is worth the
@@ -849,6 +857,11 @@ enum SellRetryDecision {
     /// next attempt would reuse, so a blind re-send only re-pays fees. Caller marks
     /// the position ExitFailed.
     StopFeeBurn,
+    /// Curve `creator_vault` seeds violated (Anchor `ConstraintSeeds`, 2006):
+    /// pump.fun rotated `bonding_curve.creator` after our buy cached the vault, so
+    /// the cached vault is stale — not a dead end. Caller re-reads the current
+    /// creator, overwrites the cached vault, and retries on the same venue.
+    RefreshCreator,
 }
 
 /// Map a landed-and-reverted sell to a retry decision using the on-chain error
@@ -872,6 +885,13 @@ fn classify_sell_revert<E>(
             };
             if *custom == Some(slippage_code) {
                 SellRetryDecision::Retry
+            } else if *custom == Some(ANCHOR_CONSTRAINT_SEEDS) && !used_migrated {
+                // Curve creator_vault seeds violated — pump.fun changed
+                // bonding_curve.creator after our buy cached the vault. Recoverable
+                // (refresh the creator + retry), not a structural dead end. Scoped
+                // to the curve route: the AMM derives its coin_creator vault from a
+                // freshly read pool each attempt, so a 2006 there isn't this case.
+                SellRetryDecision::RefreshCreator
             } else {
                 SellRetryDecision::StopFeeBurn
             }
@@ -1109,22 +1129,44 @@ async fn sell_until_balance_cleared(
                     let now_migrated =
                         cache.get(&mint).map(|e| e.is_migrated).unwrap_or(is_migrated);
                     let state = trader.signature_state_detailed(&sig).await;
-                    if classify_sell_revert(&state, is_migrated, now_migrated)
-                        == SellRetryDecision::StopFeeBurn
-                    {
-                        // Surface the raw program error so an unmapped (non-slippage)
-                        // revert reason is visible, not silently swallowed.
-                        let raw_code = match &state {
-                            Ok(SigStatus::Reverted { custom }) => *custom,
-                            _ => None,
-                        };
-                        warn!(mint = %mint, attempt, sig = %sig, raw_error_code = ?raw_code,
-                            "sell reverted on-chain (structural/unknown) on a route the retry \
-                             would reuse; stopping (a blind re-send would only re-pay fees)");
-                        return SellOutcome::Failed { sigs: sell_sigs };
+                    match classify_sell_revert(&state, is_migrated, now_migrated) {
+                        SellRetryDecision::StopFeeBurn => {
+                            // Surface the raw program error so an unmapped (non-slippage)
+                            // revert reason is visible, not silently swallowed.
+                            let raw_code = match &state {
+                                Ok(SigStatus::Reverted { custom }) => *custom,
+                                _ => None,
+                            };
+                            warn!(mint = %mint, attempt, sig = %sig, raw_error_code = ?raw_code,
+                                "sell reverted on-chain (structural/unknown) on a route the retry \
+                                 would reuse; stopping (a blind re-send would only re-pay fees)");
+                            return SellOutcome::Failed { sigs: sell_sigs };
+                        }
+                        SellRetryDecision::RefreshCreator => {
+                            // pump.fun rotated bonding_curve.creator after our buy
+                            // cached the PDAs, so the stale creator_vault reverted
+                            // (Anchor ConstraintSeeds 2006). Re-read the current creator
+                            // and overwrite the cached vault, then retry on the same
+                            // venue — don't burn a still-sellable position. ONE off-path
+                            // RPC, fired only after a failed poll window + a 2006 revert.
+                            match trader.refresh_curve_creator_vault(&mint).await {
+                                Ok(vault) => warn!(mint = %mint, attempt, sig = %sig,
+                                    new_creator_vault = %vault,
+                                    "sell reverted on a stale creator_vault (pump set_creator); \
+                                     refreshed creator, retrying with a higher tip"),
+                                Err(err) => {
+                                    warn!(mint = %mint, attempt, sig = %sig,
+                                        "creator_vault refresh failed after a 2006 revert: {err}; \
+                                         marking ExitFailed");
+                                    return SellOutcome::Failed { sigs: sell_sigs };
+                                }
+                            }
+                        }
+                        SellRetryDecision::Retry => {
+                            warn!(mint = %mint, attempt, remaining = remaining_amount,
+                                "sell not cleared within poll window; retrying with a higher tip");
+                        }
                     }
-                    warn!(mint = %mint, attempt, remaining = remaining_amount,
-                        "sell not cleared within poll window; retrying with a higher tip");
                 }
             }
             Ok(None) => warn!(mint = %mint, attempt, amount, "sell returned no signature (no-op)"),
@@ -1279,6 +1321,36 @@ mod tests {
         );
         assert_eq!(
             classify_sell_revert(&reverted(Some(6022)), true, false),
+            SellRetryDecision::Retry
+        );
+    }
+
+    #[test]
+    fn curve_creator_vault_seeds_revert_refreshes_creator() {
+        // Anchor ConstraintSeeds (2006) on the curve route = pump.fun rotated
+        // bonding_curve.creator after our buy cached the vault → refresh + retry,
+        // never StopFeeBurn (the bag is still sellable).
+        assert_eq!(
+            classify_sell_revert(&reverted(Some(ANCHOR_CONSTRAINT_SEEDS)), false, false),
+            SellRetryDecision::RefreshCreator
+        );
+    }
+
+    #[test]
+    fn constraint_seeds_on_amm_route_is_not_creator_refresh() {
+        // On the AMM route the coin_creator vault is read fresh from the pool each
+        // attempt, so a 2006 there isn't the stale-cache case — stay conservative.
+        assert_eq!(
+            classify_sell_revert(&reverted(Some(ANCHOR_CONSTRAINT_SEEDS)), true, true),
+            SellRetryDecision::StopFeeBurn
+        );
+    }
+
+    #[test]
+    fn constraint_seeds_after_migration_retries_new_route() {
+        // Route changed mid-exit → retry on the re-routed venue regardless of code.
+        assert_eq!(
+            classify_sell_revert(&reverted(Some(ANCHOR_CONSTRAINT_SEEDS)), false, true),
             SellRetryDecision::Retry
         );
     }

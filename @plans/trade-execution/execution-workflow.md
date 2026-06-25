@@ -52,6 +52,8 @@ per-attempt loop (max 6, Jito tip escalates per level):
     remaining ≤ 0.0001 → cleared ✓
   if deadline without clear → classify_sell_revert(error_code, route_changed):
     slippage revert OR route changed       → retry (new reserves / new route next attempt)
+    curve ConstraintSeeds 2006             → RefreshCreator: refresh_curve_creator_vault()
+                                             (re-read bonding_curve.creator) then retry
     structural revert (empty acct, etc.)   → StopFeeBurn (blind retry only wastes fees)
     no-land / pending / status error       → retry with escalated Jito tip
 
@@ -65,6 +67,8 @@ on failed:
 **Why SOL is released first:** `release_sol_for_position` must fire regardless of whether the sell succeeds or the process crashes mid-exit. Releasing after a confirmed sell would leave committed SOL stranded if the process crashes between sell and release.
 
 **Why route is re-read per attempt:** a token can migrate from curve → AMM between sell attempts. Re-reading `is_migrated` lets the next attempt automatically switch venue without manual intervention.
+
+**Why a 2006 (ConstraintSeeds) is recoverable, not StopFeeBurn:** the snipe buy caches `TokenPDAs.creator_vault` derived from the create-event creator. pump.fun can change `bonding_curve.creator` (via `set_creator`) *after* that buy — both `buy` and `sell` seed `creator_vault` from `["creator-vault", bonding_curve.creator]`, so the stale cached vault then reverts every sell with Anchor `ConstraintSeeds (2006)`. On the curve route a 2006 is therefore *not* structural: `refresh_curve_creator_vault()` re-reads the current creator (one off-path RPC, only after a failed poll window) and overwrites the cached vault, and the next attempt builds with it. Scoped to the curve route only — the AMM derives its coin-creator vault from a freshly read pool each attempt, so a 2006 there stays StopFeeBurn. If the refresh RPC itself fails, the position falls to ExitFailed.
 
 **Why rate-limit balance queries:** during a rapid sell dump the `trades` feed can fire many times per 250 ms window. Querying `sum_legs_by_signatures` on every notification would run a DB aggregate in a tight loop; the rate-limit batches notifications into at most one query per 250 ms, with a bypass at the poll deadline to ensure a final check always runs.
 

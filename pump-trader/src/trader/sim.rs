@@ -257,9 +257,14 @@ impl PumpFunTrader {
         slippage_bps: Option<u64>,
         is_cashback: bool,
     ) -> Result<SimOutcome> {
-        if !self.token_pdas.contains_key(token_mint) {
-            self.ensure_token_pdas(token_mint).await?;
-        }
+        // Always re-derive the creator from chain (don't trust a possibly-stale
+        // cached vault): pump.fun can change `bonding_curve.creator` via
+        // `set_creator` after a buy cached this mint's PDAs, which makes the live
+        // sell revert with Anchor ConstraintSeeds (2006). Forcing a fresh read here
+        // (off the hot path — this is a manual probe) means the sim reflects the
+        // CURRENT creator, so a simulate-sell that passes proves the live sell would
+        // build the correct creator_vault.
+        self.ensure_token_pdas(token_mint).await?;
         if self.resolve_cached_token_account(token_mint).await?.is_none() {
             anyhow::bail!("No token account cached/found for mint {token_mint}");
         }

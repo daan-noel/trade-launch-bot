@@ -551,4 +551,21 @@ impl PumpFunTrader {
 
         Ok(routing.creator.to_string())
     }
+
+    /// Force-refresh the cached curve `creator_vault` for `mint` by re-reading the
+    /// bonding curve's CURRENT `creator` from chain, returning the freshly derived
+    /// vault. pump.fun can mutate `bonding_curve.creator` (via `set_creator`) AFTER
+    /// the snipe buy cached this mint's [`TokenPDAs`]; the stale buy-time
+    /// `creator_vault` then reverts every sell with Anchor `ConstraintSeeds` (2006).
+    /// [`Self::ensure_token_pdas`] re-reads the routing (a non-migrated curve is read
+    /// fresh, not served from cache) and overwrites the cached PDAs, so the next sell
+    /// attempt builds with the current vault. OFF the hot path — the exit loop calls
+    /// this only after a sell poll window failed AND the on-chain revert code is 2006.
+    pub async fn refresh_curve_creator_vault(&self, mint_address: &str) -> anyhow::Result<Pubkey> {
+        self.ensure_token_pdas(mint_address).await?;
+        self.token_pdas
+            .get(mint_address)
+            .map(|r| r.creator_vault)
+            .ok_or_else(|| anyhow::anyhow!("creator_vault missing after refresh for {mint_address}"))
+    }
 }
