@@ -22,7 +22,7 @@ use chrono::{DateTime, Duration, Utc};
 use crate::models::trade::{Trade, TradeRow};
 use crate::models::{Position, PositionStatus, Tpsl1Rule};
 
-use crate::config::constants::EXIT_SLIPPAGE_SLOTS;
+use crate::config::constants::MAX_FILL_WAIT_SLOTS;
 use super::util::{none_if_zero_f64, none_if_zero_u64};
 
 /// The typed reason a position exited. Replaces the old stringly-typed reason
@@ -380,7 +380,8 @@ pub fn find_trade_driven_exit<T: TradeRow>(
     let mut state = ExitWalkState::starting_at(entry_price, entry_time);
 
     // Single pass over the post-entry trades — no intermediate `Vec<&Trade>`.
-    for t in trades.iter().filter(|t| t.block_time() > entry_time) {
+    // enumerate() on the base slice so `fire_idx` is the true position in `trades`.
+    for (fire_idx, t) in trades.iter().enumerate().filter(|(_, t)| t.block_time() > entry_time) {
         state.update_with_trade(t);
 
         // First feature that fires on this trade wins (ladder order). Shared with
@@ -389,17 +390,27 @@ pub fn find_trade_driven_exit<T: TradeRow>(
             continue;
         };
 
-        // Exit price: lowest price in slots [F+1, F+1+EXIT_SLIPPAGE_SLOTS] where F
-        // is the firing slot. A real sell can't land in the same slot that triggers
-        // it, so the firing slot itself is excluded. If the window is empty the exit
-        // is not taken this round and the loop continues.
+        // Exit fill window: trigger slot F (always) + the next observed slot after F
+        // if it's within MAX_FILL_WAIT_SLOTS. Only trades after the firing tx in the
+        // slice are candidates (same-slot trades before the fire are excluded via the
+        // `post` slice). Fill = lowest price in the window (worst case for us).
         let exit_slot = t.slot();
-        let exit_trade = trades
+        let post = &trades[fire_idx + 1..];
+
+        let next_slot = post
+            .iter()
+            .filter(|x| x.block_time() > entry_time && x.slot() > exit_slot)
+            .map(|x| x.slot())
+            .next();
+
+        let exit_trade = post
             .iter()
             .filter(|x| {
-                x.block_time() > entry_time
-                    && x.slot() > exit_slot
-                    && x.slot() <= exit_slot + 1 + EXIT_SLIPPAGE_SLOTS
+                x.block_time() > entry_time && {
+                    let s = x.slot();
+                    s == exit_slot
+                        || next_slot.is_some_and(|ns| s == ns && ns <= exit_slot + MAX_FILL_WAIT_SLOTS)
+                }
             })
             .min_by(|a, b| {
                 a.price_per_token()
@@ -616,16 +627,17 @@ mod tests {
     }
 
     #[test]
-    fn exit_fill_is_in_slot_after_firing_slot() {
-        // SL fires at slot 3 (price 0.7, −30%). Fill must come from slots [4, 6],
-        // not slot 3. Slot 4 has 0.6, slot 5 has 0.9, slot 6 has 0.5. Min = 0.5.
+    fn exit_fill_window_is_fire_slot_and_next_slot() {
+        // SL fires at slot 3 (price 0.7, −30%).
+        // Window = {slot 3 (no post-fire trades), slot 4 (next_slot, ≤ 3 + MAX_FILL_WAIT_SLOTS)}.
+        // Slots 5 and 6 are beyond next_slot → excluded. Fill = min in window = 0.6.
         let trades = vec![buy(0.7, 3, 10), buy(0.6, 4, 11), buy(0.9, 5, 12), buy(0.5, 6, 13)];
         let rule = rule_with(1000.0, 20.0, None, None, None, None);
         let exit = find_trade_driven_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
         assert_eq!(exit.reason, ExitReason::StopLoss);
-        // Firing slot (3) excluded; min of [4,6] = 0.5.
-        assert!((exit.price - 0.5).abs() < 1e-9, "fill in [F+1,F+3], got {}", exit.price);
-        assert_eq!(exit.block_time, base_time() + Duration::seconds(13));
+        // Window = {slot 3 (empty after fire), slot 4}; min = 0.6.
+        assert!((exit.price - 0.6).abs() < 1e-9, "fill in {{F, F+1}}, got {}", exit.price);
+        assert_eq!(exit.block_time, base_time() + Duration::seconds(11));
     }
 
     #[test]

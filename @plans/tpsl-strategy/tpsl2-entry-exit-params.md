@@ -74,6 +74,8 @@ Each new buy trade
 
 **Rules for all gates:** `None` or `0` = gate is off (inert). A gate only blocks if it is configured. If NO scalp gate is configured, the rule never enters (safety guard — it can't accidentally buy every trade).
 
+**Fill convention (sim/backtest/sweep):** the trigger trade T fires in slot S. The fill window is **slot S (trades after T only) + the next observed slot after S**, provided the next slot is within `MAX_FILL_WAIT_SLOTS` (≈ 1 s). The recorded entry price is the **highest-priced qualifying buy in the window** — worst case for the buyer. Returns no-fill if the window is empty.
+
 ---
 
 #### Gate Details
@@ -166,7 +168,7 @@ Priority  Reason          Param                        Trigger condition
 
 **Always on:** StopLoss and TakeProfit. All others are off when their param is `0` or `None`.
 
-**Fill convention:** when a ladder rule fires on trade T in slot S, the actual recorded exit price is the **lowest-priced trade in slot S** (whole block), not necessarily T's price. This is the worst-case fill for the slot.
+**Fill convention (sim/backtest/sweep):** when a ladder rule fires on trade T in slot S, the fill window is **slot S (trades after T only) + the next observed slot after S**, provided the next slot is within `MAX_FILL_WAIT_SLOTS` (≈ 1 s). The recorded exit price is the **lowest-priced trade in the window** — worst case for the seller. If the window is empty the exit is not taken on this firing and the walk continues.
 
 ---
 

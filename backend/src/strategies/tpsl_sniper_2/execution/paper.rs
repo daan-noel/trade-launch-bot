@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use super::super::util::none_if_zero_u64;
 use super::super::{ExitGuard, Tpsl2RuntimeCache};
-use crate::config::constants::EXIT_SLIPPAGE_SLOTS;
+use crate::config::constants::MAX_FILL_WAIT_SLOTS;
 use crate::models::ingest::SseEvent;
 use crate::state::token_cache::CachedTrade;
 use crate::models::{Position, PositionStatus, Tpsl2Rule};
@@ -238,11 +238,10 @@ pub(crate) fn spawn_exit_fill_poll(
         // Skip the O(n) exit-fill walk on ticks where no new trade landed for the
         // mint (count is monotonic; `None` forces the first walk).
         let mut last_count: Option<u64> = None;
-        // Worst-case fill modelling (#1): once the ladder first fires at slot S, the
-        // recorded fill is the lowest price over [S, S + EXIT_SLIPPAGE_SLOTS]. We must
-        // NOT record on the first match — slots S+1/S+2 may not be indexed yet — so we
-        // keep re-walking as trades arrive (the windowed min only drops) until a trade
-        // past the window lands, or the poll window elapses, then record the lowest fill.
+        // Worst-case fill modelling: once the ladder first fires at slot S, the fill
+        // is the lowest price in {S, next_slot} where next_slot ≤ S + MAX_FILL_WAIT_SLOTS.
+        // Keep re-walking as trades arrive until a trade past the window lands (the min
+        // can only drop as more slots index), then record the lowest fill.
         let mut fired: Option<(super::super::exit::ExitFill, u64)> = None;
         let mut max_slot_seen: u64 = 0;
         let start = std::time::Instant::now();
@@ -273,9 +272,9 @@ pub(crate) fn spawn_exit_fill_poll(
                 ) {
                     fired = Some(windowed);
                 }
-                // The slippage window is fully indexed once a trade past it lands.
+                // Fill window is fully indexed once a trade past it lands.
                 if let Some((_, fire_slot)) = fired {
-                    if max_slot_seen > fire_slot + EXIT_SLIPPAGE_SLOTS {
+                    if max_slot_seen > fire_slot + MAX_FILL_WAIT_SLOTS {
                         break;
                     }
                 }

@@ -73,14 +73,11 @@ pub const MAX_MANUAL_BUY_SOL: f64 = 5.0;
 /// cluster across the tpsl2 entry gates and the cohort-dump exit — see `cohort.rs`.
 pub const EARLY_COHORT_SLOT_WINDOW: i64 = 150;
 
-/// Worst-case paper/backtest exit models sell latency: the fill is the lowest price
-/// over slots [F+1, F+1+EXIT_SLIPPAGE_SLOTS] where F is the firing slot (real sells
-/// can't land in the same slot that triggers them).
-pub const EXIT_SLIPPAGE_SLOTS: u64 = 2;
+/// Worst-case paper/backtest fill window (entry and exit): the fill candidates are
+/// the trigger slot S plus the next observed slot after S, provided that slot is
+/// within this many slots of S. If the next slot is farther away only slot S is used.
+pub const MAX_FILL_WAIT_SLOTS: u64 = 3; // ≈ 1 s at 400 ms/slot
 
-/// tpsl2 paper entry: if no real buy appears within this many slots after the
-/// trigger, score as no-fill (token is dead / one-shot pump).
-pub const MAX_FILL_WAIT_SLOTS: u64 = 12;
 
 // ── Dead-token detection ─────────────────────────────────────────────────────
 // A token is "dead" when BOTH conditions hold simultaneously:

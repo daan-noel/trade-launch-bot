@@ -19,7 +19,7 @@
 
 use chrono::{DateTime, Duration, Utc};
 
-use crate::config::constants::{EARLY_COHORT_SLOT_WINDOW, EXIT_SLIPPAGE_SLOTS};
+use crate::config::constants::{EARLY_COHORT_SLOT_WINDOW, MAX_FILL_WAIT_SLOTS};
 use crate::models::trade::{Trade, TradeRow};
 use crate::models::{Position, PositionStatus, Tpsl2Rule};
 
@@ -506,9 +506,9 @@ pub fn find_trade_driven_exit<T: TradeRow>(
 
 /// [`find_trade_driven_exit`] that also returns the **firing slot** `S` — the slot
 /// of the trade the ladder fired on (distinct from the recorded fill's slot, which
-/// can be up to `EXIT_SLIPPAGE_SLOTS` later). The live paper poll uses this to know
-/// when the slippage window has fully indexed before recording the fill; the plain
-/// wrapper above drops it, so backtest/sweep behavior is unchanged.
+/// may be in a later slot). The live paper poll uses this to know when the fill
+/// window has fully indexed before recording the fill; the plain wrapper above
+/// drops it, so backtest/sweep behavior is unchanged.
 pub fn find_trade_driven_exit_with_slot<T: TradeRow>(
     trades: &[T],
     entry_time: DateTime<Utc>,
@@ -584,15 +584,17 @@ fn run_exit_walk<T: TradeRow>(
     let mut state = ExitWalkState::starting_at(entry_price, entry_time);
 
     // Single pass over the post-entry trades. The first trade where the ladder fires
-    // decides the exit `reason` and the firing slot `S`. The recorded *fill* is the
-    // **lowest price over slots [S+1, S+1+EXIT_SLIPPAGE_SLOTS]** — real sells can't
-    // land in the same slot the trigger fires, so the window starts at S+1.
-    // `fill_min` accumulates across that window after firing. If history ends before
-    // any fill-window trade arrives, the exit is not taken (returns None).
+    // decides the exit `reason` and the firing slot `S`. The fill window is:
+    // slot S (always) + the next observed slot after S if within MAX_FILL_WAIT_SLOTS.
+    // Only trades that appear after the firing tx are candidates (the loop naturally
+    // handles this — after firing, subsequent iterations are past the fire point).
+    // `fill_min` accumulates the lowest price in the window. If the window is empty
+    // the exit is not taken (returns None).
     let mut cur_slot: Option<u64> = None;
     let mut fill_min: Option<&T> = None;
     let mut pending: Option<ExitReason> = None;
     let mut fire_slot: u64 = 0;
+    let mut next_slot: Option<u64> = None; // first slot > fire_slot seen after firing
 
     let is_lower = |t: &T, cur: Option<&T>| {
         cur.is_none_or(|m| {
@@ -606,11 +608,25 @@ fn run_exit_walk<T: TradeRow>(
     for t in trades.iter().filter(|t| t.block_time() > entry_time) {
         let slot = t.slot();
 
-        // Already fired: accumulate the lowest price in [fire_slot+1, fire_slot+1+EXIT_SLIPPAGE_SLOTS].
-        // Trades in the firing slot itself are excluded (sell can't land same slot).
+        // Already fired: accumulate lowest price in window {fire_slot, next_slot}.
+        // next_slot = first slot > fire_slot seen; included only if within MAX_FILL_WAIT_SLOTS.
         // A trade past the window finalizes; None fill_min means no fill → not taken.
         if let Some(reason) = pending {
-            if slot > fire_slot + 1 + EXIT_SLIPPAGE_SLOTS {
+            // Discover next_slot lazily on the first trade past fire_slot.
+            if slot > fire_slot && next_slot.is_none() {
+                next_slot = Some(slot);
+            }
+
+            let window_closed = match next_slot {
+                // next_slot too far → window is fire_slot only; anything after closes it
+                Some(ns) if ns > fire_slot + MAX_FILL_WAIT_SLOTS => slot > fire_slot,
+                // next_slot close → window = {fire_slot, next_slot}; slot beyond next closes it
+                Some(ns) => slot > ns,
+                // still on fire_slot, window not yet closed
+                None => false,
+            };
+
+            if window_closed {
                 return fill_min.map(|et| (
                     ExitFill {
                         price: et.price_per_token(),
@@ -620,9 +636,6 @@ fn run_exit_walk<T: TradeRow>(
                     },
                     fire_slot,
                 ));
-            }
-            if slot <= fire_slot {
-                continue; // firing slot excluded from fill window
             }
             if is_lower(t, fill_min) {
                 fill_min = Some(t);
@@ -653,7 +666,8 @@ fn run_exit_walk<T: TradeRow>(
         if let Some(reason) = ladder_reason(&state, t, entry_time, entry_price, params, cohort_arg) {
             pending = Some(reason);
             fire_slot = slot;
-            fill_min = None; // fill window starts at fire_slot+1
+            fill_min = None; // reset; window starts fresh after firing tx
+            next_slot = None;
         }
     }
 
@@ -885,17 +899,18 @@ mod tests {
     }
 
     #[test]
-    fn exit_fill_is_in_slot_after_firing_slot() {
-        // SL fires at slot 3 (price 0.7, −30%). Fill must come from slots [4, 6],
-        // not slot 3. Slot 4 has 0.6, slot 5 has 0.9, slot 6 has 0.5. Min = 0.5.
+    fn exit_fill_window_is_fire_slot_and_next_slot() {
+        // SL fires at slot 3 (price 0.7, −30%).
+        // Window = {slot 3 (no post-fire trades), slot 4 (next_slot, ≤ 3 + MAX_FILL_WAIT_SLOTS)}.
+        // Slots 5 and 6 are beyond next_slot → excluded. Fill = min in window = 0.6.
         let trades = vec![buy(0.7, 3, 10), buy(0.6, 4, 11), buy(0.9, 5, 12), buy(0.5, 6, 13)];
         let rule = rule_with(1000.0, 20.0, None, None, None, None);
         let exit = find_trade_driven_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
         assert_eq!(exit.reason, ExitReason::StopLoss);
-        // Firing slot (3) excluded; min of [4,6] = 0.5.
-        assert!((exit.price - 0.5).abs() < 1e-9, "fill in [F+1,F+3], got {}", exit.price);
-        assert_eq!(exit.block_time, base_time() + Duration::seconds(13));
-        // Fire slot is still S = 3 (the live poll waits the window out from there).
+        // Window = {slot 3 (empty after fire), slot 4}; min = 0.6.
+        assert!((exit.price - 0.6).abs() < 1e-9, "fill in {{F, F+1}}, got {}", exit.price);
+        assert_eq!(exit.block_time, base_time() + Duration::seconds(11));
+        // Fire slot is still S = 3 (the live poll waits MAX_FILL_WAIT_SLOTS from there).
         let (_, fire_slot) =
             find_trade_driven_exit_with_slot(&trades, base_time(), 1.0, &rule).unwrap();
         assert_eq!(fire_slot, 3);

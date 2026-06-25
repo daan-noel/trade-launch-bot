@@ -479,12 +479,11 @@ pub fn find_worst_case_paper_entry<T: TradeRow>(trades: &[T], target_tx: &str) -
 /// [`find_scalp_entry_with_cohort_indexed`] and calls this directly, so its
 /// [`SweepTrade`] rows need carry no signature string at all (Phase 1.2).
 ///
-/// Fill model: scan slots strictly after `trigger_slot` for the **first** slot
-/// that contains at least one real buy (not dust, `price_per_token > 0`). If that
-/// slot is more than [`MAX_FILL_WAIT_SLOTS`] away, the token couldn't be entered
-/// in time (one-shot pump / dead token) — return `None`. Otherwise the fill is the
-/// **highest-priced** real buy in that slot (worst case for us). Returns `None`
-/// when no qualifying buy exists at all.
+/// Fill model: window = trigger slot S (always) + the next observed slot after S
+/// if it's within [`MAX_FILL_WAIT_SLOTS`]. Only trades at indices > `target_idx`
+/// are considered (i.e. trades after the trigger tx in the same slot are eligible).
+/// Fill = highest price in the window (worst case for us). Returns `None` when the
+/// window contains no qualifying buy (not dust, `price_per_token > 0`).
 ///
 /// `target_idx` must index a real trade in `trades`.
 ///
@@ -493,21 +492,23 @@ pub fn find_worst_case_paper_entry_at<T: TradeRow>(trades: &[T], target_idx: usi
     let trigger_slot = trades[target_idx].slot();
     let post = trades.get(target_idx + 1..).unwrap_or(&[]);
 
-    // First slot > trigger_slot that has a qualifying buy.
-    let fill_slot = post
+    // First slot > trigger_slot that has a qualifying buy — used only for the
+    // MAX_FILL_WAIT_SLOTS proximity check, not to restrict the window.
+    let next_slot = post
         .iter()
         .filter(|t| t.slot() > trigger_slot && t.is_buy() && t.price_per_token() > 0.0 && !Trade::is_dust(t.sol_amount()))
         .map(|t| t.slot())
-        .next()?;
+        .next();
 
-    if fill_slot > trigger_slot + MAX_FILL_WAIT_SLOTS {
-        return None;
-    }
-
-    // Worst-case (highest) price among all qualifying buys in that slot.
+    // Window: trigger slot S (always) + next_slot only if close enough.
     let best = post
         .iter()
-        .filter(|t| t.slot() == fill_slot && t.is_buy() && t.price_per_token() > 0.0 && !Trade::is_dust(t.sol_amount()))
+        .filter(|t| {
+            let s = t.slot();
+            let in_s = s == trigger_slot;
+            let in_next = next_slot.is_some_and(|ns| s == ns && ns <= trigger_slot + MAX_FILL_WAIT_SLOTS);
+            (in_s || in_next) && t.is_buy() && t.price_per_token() > 0.0 && !Trade::is_dust(t.sol_amount())
+        })
         .max_by(|a, b| a.price_per_token().total_cmp(&b.price_per_token()))?;
 
     Some(EntryFill {
@@ -862,31 +863,33 @@ mod tests {
     }
 
     #[test]
-    fn worst_case_fills_in_first_post_trigger_slot() {
-        // Trigger at slot 100. Buys in slot 100 (same slot = excluded) and slot 101.
-        // First post-trigger slot with a qualifying buy is 101 → fill = max price there.
+    fn worst_case_fills_in_window_of_trigger_and_next_slot() {
+        // Trigger at slot 100. Window = {slot 100 (after trigger), slot 101 (next_slot)}.
+        // Slot 102 is beyond next_slot and excluded.
         let trigger = leg(1.0, 1.0, 100, 0, 0);
         let trades = vec![
             trigger.clone(),
-            leg(1.2, 1.0, 100, 1, 0), // same slot — excluded by new window
-            leg(1.5, 1.0, 101, 0, 1), // slot 101 — fill slot; highest buy here
-            leg(1.8, 1.0, 101, 1, 1), // slot 101 — higher price, worst case
-            leg(2.0, 1.0, 102, 0, 2), // slot 102 — ignored (fill slot already found)
+            leg(1.2, 1.0, 100, 1, 0), // same slot, after trigger — included
+            leg(1.5, 1.0, 101, 0, 1), // next slot — included
+            leg(1.8, 1.0, 101, 1, 1), // next slot — higher price, worst case
+            leg(2.0, 1.0, 102, 0, 2), // beyond next_slot — excluded
         ];
         let entry = find_worst_case_paper_entry(&trades, &trigger.tx_signature)
-            .expect("qualifying buy in slot 101");
-        assert_eq!(entry.price, 1.8); // max price in fill slot 101
+            .expect("qualifying buy in window");
+        assert_eq!(entry.price, 1.8); // max price across {slot 100, slot 101}
     }
 
     #[test]
-    fn worst_case_skips_trigger_slot_entirely() {
-        // Buys only in the trigger slot → no fill window trade → None.
+    fn worst_case_fills_from_trigger_slot_when_no_next_slot() {
+        // Buy only in the trigger slot (after the trigger tx) → fills from slot S.
         let trigger = leg(1.0, 1.0, 100, 0, 0);
         let trades = vec![
             trigger.clone(),
-            leg(1.5, 1.0, 100, 1, 0), // same slot as trigger — excluded
+            leg(1.5, 1.0, 100, 1, 0), // same slot, after trigger — included
         ];
-        assert!(find_worst_case_paper_entry(&trades, &trigger.tx_signature).is_none());
+        let entry = find_worst_case_paper_entry(&trades, &trigger.tx_signature)
+            .expect("qualifying buy in trigger slot");
+        assert!((entry.price - 1.5).abs() < 1e-9);
     }
 
     #[test]
@@ -924,7 +927,7 @@ mod tests {
 
     #[test]
     fn worst_case_no_fill_past_max_wait() {
-        // First qualifying buy is beyond MAX_FILL_WAIT_SLOTS → None.
+        // next_slot is beyond MAX_FILL_WAIT_SLOTS and trigger slot has no post-trigger buys → None.
         let trigger = leg(1.0, 1.0, 100, 0, 0);
         let late = leg(1.5, 1.0, 100 + MAX_FILL_WAIT_SLOTS + 1, 0, 5);
         let trades = vec![trigger.clone(), late];
