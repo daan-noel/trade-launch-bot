@@ -662,6 +662,10 @@ fn filter_events(
 ) -> (Vec<InternalEvent>, bool) {
     let mut out = Vec::new();
     let mut save_raw = false;
+    // Track mints created in THIS batch so the dev-buy TradeExecuted that
+    // arrives in the same create+buy tx passes the gate below. The cache isn't
+    // updated until apply_event runs, so checking it alone drops the init buy.
+    let mut pending_mints: Vec<String> = Vec::new();
 
     for event in events {
         match &event {
@@ -671,11 +675,14 @@ fn filter_events(
                 if e.token.is_mayhem_mode && !track_mayhem {
                     continue;
                 }
+                pending_mints.push(e.token.mint_address.clone());
                 save_raw = true;
                 out.push(event);
             }
             InternalEvent::TradeExecuted(e) => {
-                if cache.contains_key(&e.trade.mint_address) {
+                if cache.contains_key(&e.trade.mint_address)
+                    || pending_mints.contains(&e.trade.mint_address)
+                {
                     save_raw = true;
                     out.push(event);
                 }
