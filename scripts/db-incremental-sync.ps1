@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Append the EC2 server's newer data into the local meme_bot DB — directly,
+  Append the EC2 server's newer data into the local meme_bot DB -- directly,
   DB->DB, over an SSH tunnel. No CSV, no scp, no temp files.
 
 .DESCRIPTION
@@ -14,7 +14,7 @@
     5. Per table: INSERT INTO <local> SELECT * FROM ec2_sync_src.<t>
        WHERE <ts-col> >= <local watermark>  ON CONFLICT ...
        The watermark is a literal, so postgres_fdw PUSHES IT DOWN to the server
-       (remote partition pruning) — only new rows are fetched.
+       (remote partition pruning) -- only new rows are fetched.
 
   Non-destructive: existing local rows (sweep results, positions, settings,
   raw_transactions, your 4.5 days of trades) are never touched. Conflicts:
@@ -37,7 +37,7 @@ param(
   [Parameter(Mandatory = $true)][string]$SshTarget,                       # user@host of the EC2 box
   [string]$SshKey          = "$PSScriptRoot/../aws-ec2-key.pem",
   [string]$RemoteDir       = '~/projects/meme-trading',                   # where the server's .env lives
-  [string]$Db              = 'meme_bot',
+  [string]$Database        = 'meme_bot',
   [string]$LocalPgHost     = 'localhost',
   [int]   $LocalPgPort     = 5432,                                        # local meme_bot port (5555 if dockerized)
   [string]$LocalPgUser     = 'postgres',
@@ -52,13 +52,14 @@ if (-not $LocalPgPassword) { throw "Set the LOCAL DB password: `$env:PGPASSWORD=
 
 # Force UTC so ensure_trades_partition creates bounds in UTC regardless of OS tz.
 $env:PGOPTIONS = '-c timezone=UTC'
-$localPg = @('-h', $LocalPgHost, '-p', "$LocalPgPort", '-U', $LocalPgUser, '-d', $Db, '-v', 'ON_ERROR_STOP=1')
+$localPg = @('-h', $LocalPgHost, '-p', "$LocalPgPort", '-U', $LocalPgUser, '-d', $Database, '-v', 'ON_ERROR_STOP=1')
 $sshOpts = @('-i', $SshKey, '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=10')
 
+$Utf8NoBom = New-Object System.Text.UTF8Encoding $false   # psql chokes on a UTF-8 BOM
 function Use-LocalPw { $env:PGPASSWORD = $LocalPgPassword }
 function Invoke-LocalSqlFile([string]$sql) {
   $f = [System.IO.Path]::GetTempFileName() -replace '\.tmp$', '.sql'
-  [System.IO.File]::WriteAllText($f, $sql, [System.Text.Encoding]::UTF8)
+  [System.IO.File]::WriteAllText($f, $sql, $Utf8NoBom)
   try { & psql @localPg -f $f; if ($LASTEXITCODE -ne 0) { throw "psql failed (see above)" } }
   finally { Remove-Item $f -ErrorAction SilentlyContinue }
 }
@@ -67,6 +68,15 @@ function Get-LocalScalar([string]$sql) {
   $r = (& psql @localPg -tAc $sql).Trim()
   if ($LASTEXITCODE -ne 0) { throw "psql query failed: $sql" }
   return $r
+}
+# Fast, silent TCP probe (Test-NetConnection does a slow ICMP ping + progress UI).
+function Test-Port([int]$Port) {
+  $c = New-Object System.Net.Sockets.TcpClient
+  try {
+    $iar = $c.BeginConnect('127.0.0.1', $Port, $null, $null)
+    if ($iar.AsyncWaitHandle.WaitOne(800) -and $c.Connected) { $c.EndConnect($iar); return $true }
+    return $false
+  } catch { return $false } finally { $c.Close() }
 }
 
 # ---- 0. Lock down the .pem so Windows OpenSSH accepts it (idempotent) --------
@@ -95,16 +105,21 @@ Write-Host "  server postgres: 127.0.0.1:$RemotePgPort (db=$remoteDb user=$remot
 # ---- 2. Open the SSH tunnel (background) -------------------------------------
 $fwd = "127.0.0.1:${TunnelLocalPort}:127.0.0.1:${RemotePgPort}"
 Write-Host "Opening tunnel  local:$TunnelLocalPort  ->  $SshTarget : $RemotePgPort ..."
+Write-Host "  (if a passphrase prompt appears below, enter the key passphrase to open the tunnel)"
 $tunnelArgs = $sshOpts + @('-o', 'ExitOnForwardFailure=yes', '-o', 'ServerAliveInterval=30', '-N', '-L', $fwd, $SshTarget)
-$tunnel = Start-Process ssh -ArgumentList $tunnelArgs -PassThru -WindowStyle Hidden
+# -NoNewWindow: share this console so ssh's passphrase prompt is reachable. A hidden
+# window would leave the prompt invisible and the tunnel stuck forever.
+$tunnel = Start-Process ssh -ArgumentList $tunnelArgs -PassThru -NoNewWindow
 
 try {
   # ---- 3. Wait for the tunnel + verify end-to-end with remote creds ----------
+  # Generous window (~2 min) so there's time to type the passphrase; breaks as
+  # soon as the forwarded port accepts a connection.
   $ok = $false
-  foreach ($i in 1..40) {
-    if ($tunnel.HasExited) { throw "SSH tunnel exited early (key perms? host? port $RemotePgPort not published on the server?)" }
-    if ((Test-NetConnection -ComputerName 127.0.0.1 -Port $TunnelLocalPort -WarningAction SilentlyContinue).TcpTestSucceeded) { $ok = $true; break }
-    Start-Sleep -Milliseconds 500
+  foreach ($i in 1..120) {
+    if ($tunnel.HasExited) { throw "SSH tunnel exited (wrong passphrase, key perms, host, or server port $RemotePgPort not published?)" }
+    if (Test-Port $TunnelLocalPort) { $ok = $true; break }
+    Start-Sleep -Milliseconds 1000
   }
   if (-not $ok) { throw "Tunnel port $TunnelLocalPort never opened" }
 
@@ -148,14 +163,7 @@ BEGIN
 END $$;
 '@
 
-  # ---- 6. Ensure local trades partitions cover the incoming window -----------
-  Write-Host "Ensuring trades partitions ($PartitionDays days) ..."
-  $today = (Get-Date).ToUniversalTime().Date
-  $start = $today.AddDays(-$PartitionDays).ToString('yyyy-MM-dd')
-  $end   = $today.AddDays(2).ToString('yyyy-MM-dd')
-  Invoke-LocalSqlFile "DO `$`$ DECLARE d date := '$start'; BEGIN WHILE d <= '$end'::date LOOP PERFORM ensure_trades_partition(d); d := d + 1; END LOOP; END `$`$;"
-
-  # ---- 7. Local watermarks ---------------------------------------------------
+  # ---- 6. Local watermarks ---------------------------------------------------
   Write-Host "Local watermarks:"
   $tradesWm   = Get-LocalScalar "SELECT COALESCE(MAX(block_time), '1970-01-01 00:00:00+00')::text FROM trades"
   $tokensWm   = Get-LocalScalar "SELECT COALESCE(MAX(created_at), '1970-01-01 00:00:00+00')::text FROM tokens"
@@ -165,6 +173,31 @@ END $$;
   Write-Host "  tokens >=   $tokensWm"
   Write-Host "  tok_info >= $tinfoWm"
   Write-Host "  analysis >= $analysisWm"
+
+  # ---- 7. Ensure local trades partitions cover the incoming window -----------
+  # Scope the ensure to the incoming window: start at the trades watermark (floored
+  # to PartitionDays back so an empty local DB doesn't create thousands), end at
+  # today+2, all in UTC. Each ensure is overlap-tolerant -- a pre-existing partition
+  # with different bounds (e.g. legacy local-timezone day-aligned) already covers
+  # that day, so skip it instead of aborting the whole run.
+  Write-Host "Ensuring trades partitions ..."
+  Invoke-LocalSqlFile @"
+DO `$`$
+DECLARE
+  d date := (GREATEST('$tradesWm'::timestamptz, now() - interval '$PartitionDays days') AT TIME ZONE 'UTC')::date - 1;
+  e date := ((now() AT TIME ZONE 'UTC')::date + 2);
+BEGIN
+  WHILE d <= e LOOP
+    BEGIN
+      PERFORM ensure_trades_partition(d);
+    EXCEPTION WHEN others THEN
+      RAISE NOTICE 'partition % skipped (already covered): %', d, SQLERRM;
+    END;
+    d := d + 1;
+  END LOOP;
+END
+`$`$;
+"@
 
   # ---- 8. Upserts (predicate pushed to server; psql prints each row count) ----
   Write-Host "Appending new rows ..."
@@ -212,7 +245,36 @@ WHERE EXCLUDED.computed_at >= tokens_analysis.computed_at;
 $creatorSql
 "@
 
-  # ---- 9. Detach (drops the stored server password from the local catalog) ---
+  # ---- 9. Sync _sqlx_migrations so local backend doesn't re-apply applied migrations ---
+  # The server's checksum records are authoritative (same files, same binary).
+  # Without this, _sqlx_migrations is empty locally and sqlx re-runs all migrations
+  # on every startup, failing on non-idempotent steps (e.g. CREATE INDEX without IF NOT EXISTS).
+  Write-Host "Syncing _sqlx_migrations from server ..."
+  $env:PGPASSWORD = $remotePw
+  $remoteMigrations = & psql -h 127.0.0.1 -p $TunnelLocalPort -U $remoteUser -d $remoteDb `
+    -tAF "`t" -c "SELECT version, description, installed_on, success, checksum, execution_time FROM _sqlx_migrations ORDER BY version"
+  Use-LocalPw
+  if ($LASTEXITCODE -eq 0 -and $remoteMigrations) {
+    $upsertLines = foreach ($row in ($remoteMigrations -split "`n" | Where-Object { $_ -match '\S' })) {
+      $cols = $row -split "`t"
+      if ($cols.Count -lt 6) { continue }
+      $ver   = $cols[0].Trim()
+      $desc  = $cols[1].Trim() -replace "'", "''"
+      $inst  = $cols[2].Trim()
+      $succ  = if ($cols[3].Trim() -eq 't') { 'true' } else { 'false' }
+      $cksum = $cols[4].Trim()   # bytea hex from psql
+      $exec  = $cols[5].Trim()
+      "INSERT INTO _sqlx_migrations (version, description, installed_on, success, checksum, execution_time) VALUES ($ver, '$desc', '$inst', $succ, '$cksum'::bytea, $exec) ON CONFLICT (version) DO NOTHING;"
+    }
+    if ($upsertLines) {
+      Invoke-LocalSqlFile ($upsertLines -join "`n")
+      Write-Host "  _sqlx_migrations synced."
+    }
+  } else {
+    Write-Warning "_sqlx_migrations sync skipped (server query failed or empty -- run backend once to apply migrations manually)."
+  }
+
+  # ---- 10. Detach (drops the stored server password from the local catalog) ---
   Invoke-LocalSqlFile "DROP SERVER IF EXISTS ec2_sync CASCADE; DROP SCHEMA IF EXISTS ec2_sync_src CASCADE;"
   Write-Host ""
   Write-Host "Incremental sync complete (server credentials removed from local catalog)."

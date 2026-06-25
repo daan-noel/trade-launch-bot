@@ -85,7 +85,7 @@ EC2 box (per the data-scale guardrails in `CLAUDE.md`).
 | `-SshTarget` | *(required)* | e.g. `ubuntu@54.93.174.192` |
 | `-SshKey` | `../aws-ec2-key.pem` | Path to the EC2 private key |
 | `-RemoteDir` | `~/projects/meme-trading` | Where the server's `.env` lives |
-| `-Db` | `meme_bot` | Local + remote DB name |
+| `-Database` | `meme_bot` | Local + remote DB name |
 | `-LocalPgHost` | `localhost` | |
 | `-LocalPgPort` | `5432` | Use `5555` if your local DB is the dockerized one |
 | `-LocalPgUser` | `postgres` | Must be a superuser role |
@@ -97,15 +97,25 @@ EC2 box (per the data-scale guardrails in `CLAUDE.md`).
 
 ---
 
-## Avoid the key passphrase prompt
+## The passphrase prompt
 
-The `.pem` is passphrase-protected, so SSH prompts on each run. Cache it once per
-PowerShell session:
+The `.pem` is passphrase-protected. By default you'll be prompted **twice** per run
+(once to read the server config, once to open the tunnel) — that's expected. The
+tunnel prompt appears inline in the console; just type the passphrase.
+
+### Optional: zero prompts via ssh-agent
+
+Cache the key in the agent so every `ssh` runs non-interactively. The `ssh-agent`
+service ships **Disabled** on Windows, so enable it once from an **elevated**
+PowerShell:
 
 ```powershell
+Set-Service ssh-agent -StartupType Manual   # one-time, needs admin
 Start-Service ssh-agent
-ssh-add "F:\pumpfun\meme-trading\aws-ec2-key.pem"
+ssh-add "F:\pumpfun\meme-trading\aws-ec2-key.pem"   # enter passphrase once
 ```
+
+After that the key stays loaded across sessions and the script never prompts.
 
 ---
 
