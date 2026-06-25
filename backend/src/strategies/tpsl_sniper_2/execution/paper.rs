@@ -127,7 +127,11 @@ pub(crate) fn spawn_entry_fill_poll(
                 // worst-case adverse fill in the trigger's block (and the next), so
                 // paper has a real target↔entry gap. They coincide only in the
                 // fallback case where no adverse trade exists.
-                let entry = super::super::entry::find_worst_case_paper_entry_at(&trades, trigger_idx);
+                // No real buy in [trigger+1, trigger+12] yet — keep polling until
+                // the fill window is indexed or the deadline expires.
+                let Some(entry) = super::super::entry::find_worst_case_paper_entry_at(&trades, trigger_idx) else {
+                    continue;
+                };
                 // Recover real tx_signatures from the DB (cache strips them, Phase B).
                 let target_tx = trade_repo::find_tx_by_fill(&pool, &mint, target_fill.block_time, target_fill.price)
                     .await

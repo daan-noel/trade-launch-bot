@@ -269,7 +269,7 @@ pub async fn run_backtest(
                 // backtest reproduces the real target↔entry slippage gap. They
                 // coincide only when no adverse trade exists.
                 let target = entry::find_scalp_entry(&trades, &rule)?;
-                let entry_fill = entry::find_worst_case_paper_entry(&trades, &target.tx_signature);
+                let entry_fill = entry::find_worst_case_paper_entry(&trades, &target.tx_signature)?;
                 // No usable fill priced in the window → drop the token, mirroring
                 // paper's cleanup (it deletes the un-filled position rather than
                 // trade a 0-priced row).

@@ -657,8 +657,10 @@ impl Strategy for Tpsl2Strategy {
         else {
             return Tpsl2Entry::None;
         };
-        // (2) Worst-case entry fill (adverse same-/next-slot tick).
-        let entry_fill = entry::find_worst_case_paper_entry_at(trades, trigger_idx);
+        // (2) Worst-case entry fill (first post-trigger buy slot within wait window).
+        let Some(entry_fill) = entry::find_worst_case_paper_entry_at(trades, trigger_idx) else {
+            return Tpsl2Entry::None;
+        };
         if entry_fill.price <= 0.0 {
             return Tpsl2Entry::None;
         }

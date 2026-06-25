@@ -22,6 +22,7 @@ use chrono::{DateTime, Duration, Utc};
 use crate::models::trade::{Trade, TradeRow};
 use crate::models::{Position, PositionStatus, Tpsl1Rule};
 
+use crate::config::constants::EXIT_SLIPPAGE_SLOTS;
 use super::util::{none_if_zero_f64, none_if_zero_u64};
 
 /// The typed reason a position exited. Replaces the old stringly-typed reason
@@ -388,13 +389,18 @@ pub fn find_trade_driven_exit<T: TradeRow>(
             continue;
         };
 
-        // Exit price: lowest price in the block where the exit condition met.
-        // Re-scan the same post-entry filter for this slot (identical set to the
-        // old `trades_after_entry` re-filter, no allocation).
+        // Exit price: lowest price in slots [F+1, F+1+EXIT_SLIPPAGE_SLOTS] where F
+        // is the firing slot. A real sell can't land in the same slot that triggers
+        // it, so the firing slot itself is excluded. If the window is empty the exit
+        // is not taken this round and the loop continues.
         let exit_slot = t.slot();
         let exit_trade = trades
             .iter()
-            .filter(|x| x.block_time() > entry_time && x.slot() == exit_slot)
+            .filter(|x| {
+                x.block_time() > entry_time
+                    && x.slot() > exit_slot
+                    && x.slot() <= exit_slot + 1 + EXIT_SLIPPAGE_SLOTS
+            })
             .min_by(|a, b| {
                 a.price_per_token()
                     .partial_cmp(&b.price_per_token())
@@ -560,59 +566,18 @@ mod tests {
         p
     }
 
-    /// Test-only oracle for the legacy fixed TP/SL exit, retained to prove the
-    /// ladder reproduces it exactly when E1–E4 are unset.
-    fn legacy_fixed_take_profit_stop_loss(
-        trades: &[Trade],
-        entry_time: DateTime<Utc>,
-        entry_price: f64,
-        take_profit_pct: f64,
-        stop_loss_pct: f64,
-    ) -> Option<ExitFill> {
-        let later: Vec<&Trade> = trades.iter().filter(|t| t.block_time > entry_time).collect();
-        for t in later.iter() {
-            if entry_price <= 0.0 {
-                break;
-            }
-            let pct = ((t.price_per_token - entry_price) / entry_price) * 100.0;
-            if pct < take_profit_pct && pct > -stop_loss_pct {
-                continue;
-            }
-            let reason = if pct >= take_profit_pct {
-                ExitReason::TakeProfit
-            } else {
-                ExitReason::StopLoss
-            };
-            let exit_slot = t.slot;
-            let exit_trade = later
-                .iter()
-                .copied()
-                .filter(|t| t.slot == exit_slot)
-                .min_by(|a, b| {
-                    a.price_per_token
-                        .partial_cmp(&b.price_per_token)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-            if let Some(et) = exit_trade {
-                return Some(ExitFill {
-                    price: et.price_per_token,
-                    tx_signature: et.tx_signature.clone(),
-                    block_time: et.block_time,
-                    reason,
-                });
-            }
-        }
-        None
-    }
-
     // ── Trade-driven ladder (`find_trade_driven_exit`) ───────────────────────
+
+    // Each series includes a fill-slot trade (firing_slot + 1) so the new
+    // [F+1, F+3] window has at least one trade to fill against.
 
     fn moonshot_then_reversal() -> Vec<Trade> {
         vec![
             buy(2.0, 2, 1), // +100%
             buy(3.0, 3, 2), // +200% (peak)
-            buy(2.5, 4, 3), // -16.7% off peak (3.0*0.7 = 2.1 floor not hit)
-            buy(2.0, 5, 4), // <= 2.1 → trailing fires here
+            buy(2.5, 4, 3), // -16.7% off peak
+            buy(2.0, 5, 4), // <= 2.1 → trailing fires here (slot F=5)
+            buy(2.0, 6, 5), // slot F+1 — fill window
         ]
     }
 
@@ -625,7 +590,9 @@ mod tests {
             .expect("trailing stop should trigger an exit, not stay Open");
 
         assert_eq!(exit.reason, ExitReason::TrailingStop);
-        assert!((exit.price - 2.0).abs() < 1e-9, "expected fill at the 2.0 trade, got {}", exit.price);
+        // Fill is in slot F+1 (slot 6), price 2.0.
+        assert!((exit.price - 2.0).abs() < 1e-9, "expected fill at 2.0, got {}", exit.price);
+        assert_eq!(exit.block_time, base_time() + Duration::seconds(5));
     }
 
     #[test]
@@ -641,55 +608,72 @@ mod tests {
 
     #[test]
     fn stop_loss_takes_priority_over_trailing() {
-        let trades = vec![buy(3.0, 2, 1), buy(0.05, 3, 2)];
+        // SL fires at slot 3; fill at slot 4 (F+1).
+        let trades = vec![buy(3.0, 2, 1), buy(0.05, 3, 2), buy(0.05, 4, 3)];
         let rule = rule_with(1000.0, 90.0, Some(30.0), None, None, None);
         let exit = find_trade_driven_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
         assert_eq!(exit.reason, ExitReason::StopLoss);
     }
 
     #[test]
-    fn ladder_matches_legacy_fixed_exit_when_features_off() {
-        let trades = vec![buy(1.2, 2, 1), buy(0.7, 3, 2), buy(2.0, 4, 3)];
-        let rule = rule_with(50.0, 20.0, None, None, None, None);
+    fn exit_fill_is_in_slot_after_firing_slot() {
+        // SL fires at slot 3 (price 0.7, −30%). Fill must come from slots [4, 6],
+        // not slot 3. Slot 4 has 0.6, slot 5 has 0.9, slot 6 has 0.5. Min = 0.5.
+        let trades = vec![buy(0.7, 3, 10), buy(0.6, 4, 11), buy(0.9, 5, 12), buy(0.5, 6, 13)];
+        let rule = rule_with(1000.0, 20.0, None, None, None, None);
+        let exit = find_trade_driven_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
+        assert_eq!(exit.reason, ExitReason::StopLoss);
+        // Firing slot (3) excluded; min of [4,6] = 0.5.
+        assert!((exit.price - 0.5).abs() < 1e-9, "fill in [F+1,F+3], got {}", exit.price);
+        assert_eq!(exit.block_time, base_time() + Duration::seconds(13));
+    }
 
-        let legacy = legacy_fixed_take_profit_stop_loss(&trades, base_time(), 1.0, rule.p_exit_take_profit, rule.p_exit_stop_loss);
-        let walked = find_trade_driven_exit(&trades, base_time(), 1.0, &rule);
-        assert_eq!(legacy, walked);
+    #[test]
+    fn exit_no_fill_when_window_empty() {
+        // SL fires at slot 3 but no subsequent trades → no fill → None.
+        let trades = vec![buy(0.7, 3, 10)];
+        let rule = rule_with(1000.0, 20.0, None, None, None, None);
+        assert!(find_trade_driven_exit(&trades, base_time(), 1.0, &rule).is_none());
     }
 
     fn flat_series() -> Vec<Trade> {
+        // stall/time-stop fire at slot 4 (+30s); slot 5 is the fill slot.
         vec![buy(1.0, 2, 10), buy(1.0, 3, 20), buy(1.0, 4, 30), buy(1.0, 5, 40)]
     }
 
     #[test]
     fn time_stop_fires_at_deadline_trade() {
+        // time_stop=25s fires on the trade at +30s (slot 4). Fill at slot 5 (+40s).
         let trades = flat_series();
         let rule = rule_with(1000.0, 90.0, None, Some(25), None, None);
         let exit = find_trade_driven_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
         assert_eq!(exit.reason, ExitReason::TimeStop);
-        assert_eq!(exit.block_time, base_time() + Duration::seconds(30));
+        assert_eq!(exit.block_time, base_time() + Duration::seconds(40));
     }
 
     #[test]
     fn price_exit_preempts_later_time_stop() {
+        // SL fires at slot 2 (+10s). Fill at slot 3 (+30s, in [F+1, F+3]).
         let trades = vec![buy(0.5, 2, 10), buy(0.5, 3, 30)];
         let rule = rule_with(1000.0, 20.0, None, Some(25), None, None);
         let exit = find_trade_driven_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
         assert_eq!(exit.reason, ExitReason::StopLoss);
-        assert_eq!(exit.block_time, base_time() + Duration::seconds(10));
+        assert_eq!(exit.block_time, base_time() + Duration::seconds(30));
     }
 
     fn peak_then_stall() -> Vec<Trade> {
-        vec![buy(2.0, 2, 10), buy(2.0, 3, 20), buy(2.0, 4, 30), buy(2.0, 5, 40)]
+        // Stall fires at slot 5 (+40s); slot 6 (+50s) is the fill slot.
+        vec![buy(2.0, 2, 10), buy(2.0, 3, 20), buy(2.0, 4, 30), buy(2.0, 5, 40), buy(2.0, 6, 50)]
     }
 
     #[test]
     fn stall_fires_after_flatline() {
+        // stall_secs=25; last HH at +10s. Fires at +40s (slot 5). Fill at slot 6.
         let trades = peak_then_stall();
         let rule = rule_with(1000.0, 90.0, None, None, Some(25), None);
         let exit = find_trade_driven_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
         assert_eq!(exit.reason, ExitReason::Stall);
-        assert_eq!(exit.block_time, base_time() + Duration::seconds(40));
+        assert_eq!(exit.block_time, base_time() + Duration::seconds(50));
     }
 
     #[test]
@@ -701,19 +685,25 @@ mod tests {
 
     #[test]
     fn trailing_outranks_stall_on_same_trade() {
-        let trades = vec![buy(2.0, 2, 10), buy(1.5, 3, 20), buy(1.45, 4, 30), buy(1.3, 5, 40)];
+        // Trailing fires at slot 5 (price 1.3 ≤ 2.0*0.7=1.4). Fill at slot 6.
+        let trades = vec![
+            buy(2.0, 2, 10), buy(1.5, 3, 20), buy(1.45, 4, 30), buy(1.3, 5, 40),
+            buy(1.3, 6, 50), // fill slot
+        ];
         let rule = rule_with(1000.0, 90.0, Some(30.0), None, Some(25), None);
         let exit = find_trade_driven_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
         assert_eq!(exit.reason, ExitReason::TrailingStop);
-        assert_eq!(exit.block_time, base_time() + Duration::seconds(40));
+        assert_eq!(exit.block_time, base_time() + Duration::seconds(50));
     }
 
     fn rising_then_reserve_crash() -> Vec<Trade> {
+        // Liquidity fires at slot 5; slot 6 is the fill slot.
         vec![
             buy_resv(1.0, 2, 10, 100.0),
             buy_resv(1.0, 3, 20, 120.0),
             buy_resv(1.0, 4, 30, 130.0),
             buy_resv(1.0, 5, 40, 50.0),
+            buy_resv(1.0, 6, 50, 45.0), // fill slot
         ]
     }
 
@@ -723,12 +713,17 @@ mod tests {
         let rule = rule_with(1000.0, 90.0, None, None, None, Some(50.0));
         let exit = find_trade_driven_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
         assert_eq!(exit.reason, ExitReason::LiquidityExit);
-        assert_eq!(exit.block_time, base_time() + Duration::seconds(40));
+        assert_eq!(exit.block_time, base_time() + Duration::seconds(50));
     }
 
     #[test]
     fn liquidity_exit_outranks_stop_loss() {
-        let trades = vec![buy_resv(1.0, 2, 10, 100.0), buy_resv(0.05, 3, 20, 40.0)];
+        // Liquidity fires at slot 3; fill at slot 4.
+        let trades = vec![
+            buy_resv(1.0, 2, 10, 100.0),
+            buy_resv(0.05, 3, 20, 40.0),
+            buy_resv(0.05, 4, 30, 35.0), // fill slot
+        ];
         let rule = rule_with(1000.0, 90.0, None, None, None, Some(50.0));
         let exit = find_trade_driven_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
         assert_eq!(exit.reason, ExitReason::LiquidityExit);
@@ -740,7 +735,8 @@ mod tests {
     fn live_gate_fires_trailing_stop() {
         let rule = rule_with(1000.0, 90.0, Some(30.0), None, None, None);
         let pos = holding(1.0, rule.id);
-        let trades = vec![buy(2.0, 2, 1), buy(3.0, 3, 2), buy(2.0, 4, 3)];
+        // Trailing fires at slot 4 (price 2.0 ≤ 3.0*0.7=2.1). Fill at slot 5.
+        let trades = vec![buy(2.0, 2, 1), buy(3.0, 3, 2), buy(2.0, 4, 3), buy(2.0, 5, 4)];
         assert_eq!(
             should_position_exit_on_trade(&pos, &trades, &rule),
             Some(ExitReason::TrailingStop)

@@ -29,7 +29,7 @@ use chrono::{DateTime, Utc};
 use super::super::cohort::{cohort_flow, early_cohort_wallets, outside_net_sol};
 use super::super::util::{none_if_zero_f64, none_if_zero_u64};
 use super::EntryFill;
-use crate::config::constants::EARLY_COHORT_SLOT_WINDOW;
+use crate::config::constants::{EARLY_COHORT_SLOT_WINDOW, MAX_FILL_WAIT_SLOTS};
 use crate::models::trade::{Trade, TradeRow};
 use crate::models::Tpsl2Rule;
 
@@ -464,96 +464,58 @@ pub fn find_scalp_entry_with_cohort_indexed<T: TradeRow>(
     None
 }
 
-/// Paper worst-case entry. Given the mint's chronological `trades` and the
-/// trigger trade identified by `target_tx` (the scalp-entry signal), choose the
-/// adverse entry fill that the paper position is recorded at — distinct from the
-/// trigger so the paper target/entry gap is real:
-///   • candidate pool = trades in the trigger's slot S or S+1, strictly after the
-///     trigger by `(slot, leg_index)`, excluding the trigger tx, ANY trade type;
-///   • drop dust ([`Trade::is_dust`]) and `price_per_token <= 0`;
-///   • pick the highest `price_per_token` (worst case); tie → latest by
-///     `(slot, leg_index)`;
-///   • empty pool → fall back to the trigger itself (entry == target).
-///
-/// `amount_tokens` of the returned entry is the producing trade's own token count
-/// (it isn't used for paper position sizing — entry size is `buy_amount / price`).
-/// If `target_tx` is
-/// absent from `trades` (shouldn't happen — it was just resolved from this slice)
-/// the trigger can't be located, so the first usable trade is returned as a safe
-/// degenerate fallback.
-///
-/// Caveat: `leg_index` orders legs *within* a tx, so `(slot, leg_index)` does not
-/// fully order two distinct txs in the same slot; ties are resolved by the
-/// highest-price / latest rule as specified.
-pub fn find_worst_case_paper_entry<T: TradeRow>(trades: &[T], target_tx: &str) -> EntryFill {
-    match trades.iter().position(|t| t.tx_signature() == target_tx) {
-        Some(idx) => find_worst_case_paper_entry_at(trades, idx),
-        None => {
-            // The trigger isn't in the slice — degrade to the first usable trade, or
-            // (no trades at all) a zero-priced empty fill keyed to the missing tx.
-            trades
-                .iter()
-                .find(|t| t.price_per_token() > 0.0 && !Trade::is_dust(t.sol_amount()))
-                .map(|t| EntryFill {
-                    price: t.price_per_token(),
-                    amount_tokens: t.token_amount(),
-                    tx_signature: t.tx_signature().to_string(),
-                    block_time: t.block_time(),
-                })
-                .unwrap_or(EntryFill {
-                    price: 0.0,
-                    amount_tokens: 0.0,
-                    tx_signature: target_tx.to_string(),
-                    block_time: trades.first().map(|t| t.block_time()).unwrap_or_else(Utc::now),
-                })
-        }
-    }
+/// Paper worst-case entry. Given the mint's chronological `trades` and the trigger
+/// trade identified by `target_tx` (the scalp-entry signal), delegates to
+/// [`find_worst_case_paper_entry_at`] after locating the trigger by signature.
+/// Returns `None` when the trigger isn't in the slice or when no qualifying buy
+/// exists within [`MAX_FILL_WAIT_SLOTS`] after the trigger.
+pub fn find_worst_case_paper_entry<T: TradeRow>(trades: &[T], target_tx: &str) -> Option<EntryFill> {
+    let idx = trades.iter().position(|t| t.tx_signature() == target_tx)?;
+    find_worst_case_paper_entry_at(trades, idx)
 }
 
 /// [`find_worst_case_paper_entry`] keyed by the trigger trade's **index** rather
 /// than its `tx_signature`. The sweep resolves the trigger index from
 /// [`find_scalp_entry_with_cohort_indexed`] and calls this directly, so its
-/// [`SweepTrade`] rows need carry no signature string at all (Phase 1.2). The
-/// signature-keyed wrapper above (used by the live/backtest paths) is a thin
-/// `position()` lookup over this — identical selection, since the old
-/// `tx_signature() != target_tx` exclusion was redundant with the strict
-/// `(slot, leg_index) > target_key` filter (the trigger shares the target key, so
-/// `>` already drops it). `target_idx` must index a real trade in `trades`.
+/// [`SweepTrade`] rows need carry no signature string at all (Phase 1.2).
+///
+/// Fill model: scan slots strictly after `trigger_slot` for the **first** slot
+/// that contains at least one real buy (not dust, `price_per_token > 0`). If that
+/// slot is more than [`MAX_FILL_WAIT_SLOTS`] away, the token couldn't be entered
+/// in time (one-shot pump / dead token) — return `None`. Otherwise the fill is the
+/// **highest-priced** real buy in that slot (worst case for us). Returns `None`
+/// when no qualifying buy exists at all.
+///
+/// `target_idx` must index a real trade in `trades`.
 ///
 /// [`SweepTrade`]: crate::sweep::projection::SweepTrade
-pub fn find_worst_case_paper_entry_at<T: TradeRow>(trades: &[T], target_idx: usize) -> EntryFill {
-    let entry_from = |t: &T| EntryFill {
-        price: t.price_per_token(),
-        amount_tokens: t.token_amount(),
-        tx_signature: t.tx_signature().to_string(),
-        block_time: t.block_time(),
-    };
+pub fn find_worst_case_paper_entry_at<T: TradeRow>(trades: &[T], target_idx: usize) -> Option<EntryFill> {
+    let trigger_slot = trades[target_idx].slot();
+    let post = trades.get(target_idx + 1..).unwrap_or(&[]);
 
-    let target = &trades[target_idx];
-    let target_slot = target.slot();
-    let target_key = (target_slot, target.leg_index());
-
-    // Adverse candidates: same slot or the next, strictly after the trigger,
-    // non-dust, priced. The worst case is the highest price; ties break to the
-    // latest by (slot, leg_index). The strict `> target_key` already excludes the
-    // trigger itself (it sits at exactly `target_key`).
-    let worst = trades
+    // First slot > trigger_slot that has a qualifying buy.
+    let fill_slot = post
         .iter()
-        .filter(|t| t.slot() == target_slot || t.slot() == target_slot + 1)
-        .filter(|t| (t.slot(), t.leg_index()) > target_key)
-        .filter(|t| t.price_per_token() > 0.0 && !Trade::is_dust(t.sol_amount()))
-        .max_by(|a, b| {
-            a.price_per_token()
-                .total_cmp(&b.price_per_token())
-                .then_with(|| (a.slot(), a.leg_index()).cmp(&(b.slot(), b.leg_index())))
-        });
+        .filter(|t| t.slot() > trigger_slot && t.is_buy() && t.price_per_token() > 0.0 && !Trade::is_dust(t.sol_amount()))
+        .map(|t| t.slot())
+        .next()?;
 
-    // Worst-case adverse trade if any, else fall back to the trigger itself.
-    // `amount_tokens` is the producing trade's own token count (not used for
-    // paper sizing — that's `buy_amount / entry_price`).
-    worst
-        .map(entry_from)
-        .unwrap_or_else(|| entry_from(target))
+    if fill_slot > trigger_slot + MAX_FILL_WAIT_SLOTS {
+        return None;
+    }
+
+    // Worst-case (highest) price among all qualifying buys in that slot.
+    let best = post
+        .iter()
+        .filter(|t| t.slot() == fill_slot && t.is_buy() && t.price_per_token() > 0.0 && !Trade::is_dust(t.sol_amount()))
+        .max_by(|a, b| a.price_per_token().total_cmp(&b.price_per_token()))?;
+
+    Some(EntryFill {
+        price: best.price_per_token(),
+        amount_tokens: best.token_amount(),
+        tx_signature: best.tx_signature().to_string(),
+        block_time: best.block_time(),
+    })
 }
 
 #[cfg(test)]
@@ -891,8 +853,7 @@ mod tests {
 
     // ── find_worst_case_paper_entry ──────────────────────────────────────────
 
-    /// A priced buy at `slot`/`leg`/`secs` with an explicit `sol` size and a tx
-    /// signature unique across `(slot, leg)` so same-slot legs don't collide.
+    /// A priced buy at `slot`/`leg`/`secs` with explicit sol/tokens and a unique sig.
     fn leg(sol: f64, tokens: f64, slot: u64, leg: u32, secs: i64) -> Trade {
         let mut tr = buy("w", sol, tokens, slot, secs);
         tr.leg_index = leg;
@@ -901,71 +862,90 @@ mod tests {
     }
 
     #[test]
-    fn worst_case_picks_highest_price_after_trigger_same_block() {
-        // Trigger at slot 100 leg 0 (price 1.0). Two adverse buys later in the
-        // same slot: price 1.2 and 1.5 → the 1.5 is the worst case.
+    fn worst_case_fills_in_first_post_trigger_slot() {
+        // Trigger at slot 100. Buys in slot 100 (same slot = excluded) and slot 101.
+        // First post-trigger slot with a qualifying buy is 101 → fill = max price there.
         let trigger = leg(1.0, 1.0, 100, 0, 0);
         let trades = vec![
             trigger.clone(),
-            leg(1.2, 1.0, 100, 1, 0),
-            leg(1.5, 1.0, 100, 2, 0),
+            leg(1.2, 1.0, 100, 1, 0), // same slot — excluded by new window
+            leg(1.5, 1.0, 101, 0, 1), // slot 101 — fill slot; highest buy here
+            leg(1.8, 1.0, 101, 1, 1), // slot 101 — higher price, worst case
+            leg(2.0, 1.0, 102, 0, 2), // slot 102 — ignored (fill slot already found)
         ];
-        let entry = find_worst_case_paper_entry(&trades, &trigger.tx_signature);
-        assert_eq!(entry.tx_signature, "sig-100-2");
-        assert_eq!(entry.price, 1.5);
-        // amount_tokens is the producing (adverse) trade's own token count.
-        assert_eq!(entry.amount_tokens, trigger.token_amount);
+        let entry = find_worst_case_paper_entry(&trades, &trigger.tx_signature)
+            .expect("qualifying buy in slot 101");
+        assert_eq!(entry.price, 1.8); // max price in fill slot 101
     }
 
     #[test]
-    fn worst_case_spans_trigger_slot_and_next() {
+    fn worst_case_skips_trigger_slot_entirely() {
+        // Buys only in the trigger slot → no fill window trade → None.
         let trigger = leg(1.0, 1.0, 100, 0, 0);
         let trades = vec![
             trigger.clone(),
-            leg(1.3, 1.0, 100, 1, 0), // same slot
-            leg(1.8, 1.0, 101, 0, 1), // next slot — highest
-            leg(2.0, 1.0, 102, 0, 2), // S+2 — out of window, ignored
+            leg(1.5, 1.0, 100, 1, 0), // same slot as trigger — excluded
         ];
-        let entry = find_worst_case_paper_entry(&trades, &trigger.tx_signature);
-        assert_eq!(entry.price, 1.8);
+        assert!(find_worst_case_paper_entry(&trades, &trigger.tx_signature).is_none());
     }
 
     #[test]
-    fn worst_case_filters_dust_and_zero_price() {
+    fn worst_case_filters_dust_and_zero_price_in_fill_slot() {
         let trigger = leg(1.0, 1.0, 100, 0, 0);
-        // Adverse candidates: one dust (sub-MIN_TRADE_SOL), one zero-priced
-        // (token_amount 0 → price 0), one valid at 1.1.
         let dust_sol = crate::config::constants::MIN_TRADE_SOL / 2.0;
-        let mut dust = leg(dust_sol, 1.0, 100, 1, 0);
+        let mut dust = leg(dust_sol, 1.0, 101, 0, 1);
         dust.sol_amount = dust_sol;
-        let mut zero = leg(1.0, 0.0, 100, 2, 0); // tokens 0 → price 0
+        let mut zero = leg(1.0, 0.0, 101, 1, 1); // price 0 → excluded
         zero.price_per_token = 0.0;
-        let valid = leg(1.1, 1.0, 100, 3, 0);
+        let valid = leg(1.1, 1.0, 101, 2, 1);
         let trades = vec![trigger.clone(), dust, zero, valid];
-        let entry = find_worst_case_paper_entry(&trades, &trigger.tx_signature);
+        let entry = find_worst_case_paper_entry(&trades, &trigger.tx_signature)
+            .expect("valid buy in slot 101");
         assert_eq!(entry.price, 1.1);
     }
 
     #[test]
-    fn worst_case_tie_breaks_to_latest() {
+    fn worst_case_no_fill_when_all_post_trigger_are_sells() {
+        // Only sells after the trigger → no qualifying buy → None.
         let trigger = leg(1.0, 1.0, 100, 0, 0);
-        let trades = vec![
-            trigger.clone(),
-            leg(1.5, 1.0, 100, 1, 0),
-            leg(1.5, 1.0, 101, 0, 1), // same price, later key → wins the tie
-        ];
-        let entry = find_worst_case_paper_entry(&trades, &trigger.tx_signature);
-        assert_eq!(entry.block_time, base_time() + chrono::Duration::seconds(1));
+        let mut sell = leg(0.9, 1.0, 101, 0, 1);
+        sell.trade_type = crate::models::trade::TradeType::Sell;
+        let trades = vec![trigger.clone(), sell];
+        assert!(find_worst_case_paper_entry(&trades, &trigger.tx_signature).is_none());
     }
 
     #[test]
-    fn worst_case_empty_pool_falls_back_to_trigger() {
-        // Trigger is the only candidate (nothing strictly after it in S/S+1).
+    fn worst_case_no_fill_when_window_empty() {
+        // Nothing after the trigger at all.
         let trigger = leg(1.0, 1.0, 100, 0, 0);
         let trades = vec![trigger.clone()];
-        let entry = find_worst_case_paper_entry(&trades, &trigger.tx_signature);
-        assert_eq!(entry.tx_signature, trigger.tx_signature);
-        assert_eq!(entry.price, trigger.price_per_token);
-        assert_eq!(entry.amount_tokens, trigger.token_amount);
+        assert!(find_worst_case_paper_entry(&trades, &trigger.tx_signature).is_none());
+    }
+
+    #[test]
+    fn worst_case_no_fill_past_max_wait() {
+        // First qualifying buy is beyond MAX_FILL_WAIT_SLOTS → None.
+        let trigger = leg(1.0, 1.0, 100, 0, 0);
+        let late = leg(1.5, 1.0, 100 + MAX_FILL_WAIT_SLOTS + 1, 0, 5);
+        let trades = vec![trigger.clone(), late];
+        assert!(find_worst_case_paper_entry(&trades, &trigger.tx_signature).is_none());
+    }
+
+    #[test]
+    fn worst_case_fills_at_max_wait_boundary() {
+        // First qualifying buy is exactly MAX_FILL_WAIT_SLOTS away → Some.
+        let trigger = leg(1.0, 1.0, 100, 0, 0);
+        let boundary = leg(1.5, 1.0, 100 + MAX_FILL_WAIT_SLOTS, 0, 5);
+        let trades = vec![trigger.clone(), boundary];
+        let entry = find_worst_case_paper_entry(&trades, &trigger.tx_signature)
+            .expect("boundary slot qualifies");
+        assert!((entry.price - 1.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn worst_case_unknown_trigger_returns_none() {
+        let trigger = leg(1.0, 1.0, 100, 0, 0);
+        let trades = vec![trigger, leg(1.5, 1.0, 101, 0, 1)];
+        assert!(find_worst_case_paper_entry(&trades, "missing-sig").is_none());
     }
 }
