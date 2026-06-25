@@ -63,6 +63,7 @@ import type {
 } from 'types';
 import { cn } from 'lib/cn';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
+import { ruleToParamsJson } from 'lib/ruleParams';
 
 // Module-level, referentially-stable rowKey fns: each only reads the row, so a
 // single shared identity lets DataTable's page/select effects (and the row
@@ -585,6 +586,17 @@ const RuleActionsCell = memo(function RuleActionsCell({
   onRequestDelete: (ruleId: string) => void;
   onCancelDelete: () => void;
 }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    const json = ruleToParamsJson(rule, 'tpsl1');
+    try {
+      await navigator.clipboard.writeText(json);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* ignore */ }
+  };
+
   if (confirmingDelete) {
     return (
       <div className="flex items-center justify-center gap-1">
@@ -624,6 +636,15 @@ const RuleActionsCell = memo(function RuleActionsCell({
         className="text-text-dim hover:text-text"
       >
         ⧉
+      </Button>
+      <Button
+        variant="ghost"
+        size="xs"
+        onClick={handleCopy}
+        title="Copy params to clipboard"
+        className={copied ? 'text-green' : 'text-text-dim hover:text-text'}
+      >
+        {copied ? '✓' : '⎘'}
       </Button>
       <Button
         variant="ghost"

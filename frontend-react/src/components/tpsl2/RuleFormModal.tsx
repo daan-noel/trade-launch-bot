@@ -8,6 +8,8 @@ import { InfoTooltip } from 'components/ui/InfoTooltip';
 import { TPSL_PARAM_HELP, type TpslParamKey } from 'lib/tpslParamHelp';
 import { cn } from 'lib/cn';
 import { EXAMPLE_IX_LABELS, parseIxLabels } from './utils';
+import { PasteParamsSection } from 'components/strategy/PasteParamsSection';
+import { applyParamsToForm } from 'lib/ruleParams';
 
 /** A field label with the standard uppercase styling plus a ⓘ tooltip that
  *  explains the parameter (copy lives in {@link TPSL_PARAM_HELP}). The tooltip
@@ -270,6 +272,20 @@ export function RuleFormModal({
             />
           </label>
         </div>
+
+        <PasteParamsSection
+          strategy="tpsl2"
+          live={live}
+          onApply={(blob, mode) => {
+            const { next, result } = applyParamsToForm(
+              form as unknown as Record<string, string>,
+              () => emptyForm() as unknown as Record<string, string>,
+              blob, 'tpsl2', live, mode,
+            );
+            onChange(next as unknown as RuleFormData);
+            return result;
+          }}
+        />
 
         {/* ── Token fingerprint: which token this rule matches at creation
             (p_token_*). Locked behind the 🔓 toggle when editing. ── */}

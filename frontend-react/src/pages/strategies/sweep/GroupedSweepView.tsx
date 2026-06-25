@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { STORAGE_KEYS } from 'lib/storage';
 import { DataTable } from 'components/table/DataTable';
@@ -32,6 +32,8 @@ import {
 } from 'store/apiSlice';
 import { useStreamedSweepResults, COMBO_PAGE_SIZE } from 'hooks/useStreamedSweepResults';
 import type { ColumnDef, SortEntry, TableQuery } from 'components/table/types';
+import { sweepComboToParamsJson, type Strategy } from 'lib/ruleParams';
+import type { SweepResultRecord } from 'components/sweep/types';
 
 /** The grouped-sweep view is strategy-agnostic — the API/data layer and column
  *  builders are all driven by `strategyId` + a swept-param-key list. Each
@@ -98,6 +100,32 @@ export function GroupedSweepView({
   useEffect(() => {
     setActiveComboId(null);
   }, [activeGroupId]);
+
+  const [copiedComboId, setCopiedComboId] = useState<number | null>(null);
+  const comboRowActions = useCallback(
+    (row: SweepResultRecord): ReactNode => {
+      const isCopied = copiedComboId === row.combo_id;
+      return (
+        <button
+          type="button"
+          onClick={async (e) => {
+            e.stopPropagation();
+            const json = sweepComboToParamsJson(row, strategyId as Strategy);
+            try {
+              await navigator.clipboard.writeText(json);
+              setCopiedComboId(row.combo_id);
+              setTimeout(() => setCopiedComboId(null), 1500);
+            } catch { /* ignore */ }
+          }}
+          title="Copy combo params to clipboard"
+          className={isCopied ? 'text-green' : 'text-text-dim hover:text-text'}
+        >
+          {isCopied ? '✓' : '⎘'}
+        </button>
+      );
+    },
+    [copiedComboId, strategyId],
+  );
 
   const [startSweep, startState] = useStartGroupedSweepMutation();
   const startErr = apiErrorMessage(startState.error, 'Failed to start sweep');
@@ -658,6 +686,7 @@ export function GroupedSweepView({
                 columns={comboColumns}
                 rows={results}
                 rowKey={(r) => String(r.combo_id)}
+                rowActions={comboRowActions}
                 groupLabels={{
                   params: 'Params',
                   counts: 'Counts',
