@@ -869,9 +869,32 @@ impl Tpsl2RuntimeCache {
         if self.sse_tx.receiver_count() == 0 {
             return;
         }
+        let rule_snapshot = self
+            .rules_by_id
+            .read()
+            .ok()
+            .and_then(|m| m.get(&position.rule_id).cloned())
+            .map(|r| {
+                Box::new(crate::models::ingest::RuleNotifSnapshot {
+                    rule_name: r.rule_name.clone(),
+                    trade_mode: r.trade_mode.clone(),
+                    p_token_initial_buy_sol: r.p_token_initial_buy_sol,
+                    tolerance_pct: r.tolerance_pct,
+                    p_token_cu_limit: r.p_token_cu_limit,
+                    p_token_cu_price: r.p_token_cu_price,
+                    p_token_max_sol_cost: r.p_token_max_sol_cost,
+                    p_token_spendable_sol_in: r.p_token_spendable_sol_in,
+                    p_token_ix_labels: r.p_token_ix_labels.as_array()
+                        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                        .unwrap_or_default(),
+                    p_exit_take_profit: r.p_exit_take_profit,
+                    p_exit_stop_loss: r.p_exit_stop_loss,
+                })
+            });
         let _ = self.sse_tx.send(SseEvent::TpslPositionsChanged {
             strategy: "tpsl2".to_string(),
             rule_id: position.rule_id,
+            rule_snapshot,
             position: Some(Box::new(position.clone())),
             removed,
             open_positions: self.holding_count_by_rule(position.rule_id),

@@ -18,6 +18,23 @@ pub enum IngestKind {
     CreatorActivity,
 }
 
+/// Compact rule snapshot attached to every `TpslPositionsChanged` event so
+/// notification consumers can display rule context without a round-trip.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuleNotifSnapshot {
+    pub rule_name: String,
+    pub trade_mode: String,
+    pub p_token_initial_buy_sol: Option<f64>,
+    pub tolerance_pct: f64,
+    pub p_token_cu_limit: Option<u64>,
+    pub p_token_cu_price: Option<u64>,
+    pub p_token_max_sol_cost: Option<f64>,
+    pub p_token_spendable_sol_in: Option<f64>,
+    pub p_token_ix_labels: Vec<String>,
+    pub p_exit_take_profit: f64,
+    pub p_exit_stop_loss: f64,
+}
+
 /// Cold-lane SSE notification (enriched from cache in the HTTP handler).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -80,6 +97,9 @@ pub enum SseEvent {
     TpslPositionsChanged {
         strategy: String,
         rule_id: uuid::Uuid,
+        /// Rule context snapshot — looked up from the runtime cache at emit time
+        /// so notification consumers have full context without a round-trip.
+        rule_snapshot: Option<Box<RuleNotifSnapshot>>,
         position: Option<Box<crate::models::Position>>,
         removed: bool,
         open_positions: i64,

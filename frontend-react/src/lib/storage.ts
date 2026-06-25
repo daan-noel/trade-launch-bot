@@ -31,6 +31,8 @@ export const STORAGE_KEYS = {
   tableCols: `${PREFIX}table.cols`,
   /** Map of `{ [tableId]: { pageSize, sortCol, sortDir } }` — DataTable sort + page-size. */
   tablePrefs: `${PREFIX}table.prefs`,
+  /** Notification preferences (real/paper toggles, status filter, fp-param display). */
+  notificationPrefs: `${PREFIX}notifications`,
   // Dashboard page controls
   dashboardMetric: `${PREFIX}dashboard.metric`,
   dashboardSegment: `${PREFIX}dashboard.segment`,

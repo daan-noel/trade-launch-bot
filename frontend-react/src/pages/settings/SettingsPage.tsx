@@ -1,8 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import type { AppSettings } from 'services/api';
 import { useGetSettingsQuery, useUpdateSettingsMutation } from 'store/apiSlice';
 import { Switch } from 'components/ui/Switch';
+import { Checkbox } from 'components/ui/Checkbox';
 import { Input } from 'components/ui/Input';
+import { cn } from 'lib/cn';
+import {
+  useNotificationPrefs,
+  ALL_POSITION_STATUSES,
+  FP_PARAM_GROUPS,
+  type PositionStatus,
+} from 'hooks/useNotificationPrefs';
 
 interface ToggleRowProps {
   title: string;
@@ -23,6 +31,188 @@ function ToggleRow({ title, description, checked, disabled, onChange }: ToggleRo
         <Switch checked={checked} disabled={disabled} onChange={onChange} label={title} />
       </div>
     </div>
+  );
+}
+
+const STATUS_PILL: Record<
+  PositionStatus,
+  { active: string; inactive: string; label: string }
+> = {
+  Arming: {
+    active: 'border-white/20 bg-white/8 text-text',
+    inactive: 'border-white/6 bg-transparent text-text-dim',
+    label: 'Arming',
+  },
+  BuySubmitted: {
+    active: 'border-info/40 bg-info/12 text-info',
+    inactive: 'border-white/6 bg-transparent text-text-dim',
+    label: 'Buy submitted',
+  },
+  Holding: {
+    active: 'border-green/40 bg-green/10 text-green',
+    inactive: 'border-white/6 bg-transparent text-text-dim',
+    label: 'Holding',
+  },
+  ExitPending: {
+    active: 'border-warning/40 bg-warning/10 text-warning',
+    inactive: 'border-white/6 bg-transparent text-text-dim',
+    label: 'Exit pending',
+  },
+  End: {
+    active: 'border-primary/40 bg-primary/12 text-primary',
+    inactive: 'border-white/6 bg-transparent text-text-dim',
+    label: 'End',
+  },
+  ExitFailed: {
+    active: 'border-red/40 bg-red/10 text-red',
+    inactive: 'border-white/6 bg-transparent text-text-dim',
+    label: 'Exit failed',
+  },
+};
+
+function NotificationSection() {
+  const [prefs, setPrefs] = useNotificationPrefs();
+  const notifSupported = typeof Notification !== 'undefined';
+  const [permState, setPermState] = useState<NotificationPermission>(
+    notifSupported ? Notification.permission : 'denied',
+  );
+
+  const handleDesktopToggle = useCallback(
+    async (next: boolean) => {
+      if (!next) {
+        setPrefs((p) => ({ ...p, desktopEnabled: false }));
+        return;
+      }
+      if (permState === 'denied') return;
+      if (permState === 'granted') {
+        setPrefs((p) => ({ ...p, desktopEnabled: true }));
+        return;
+      }
+      const result = await Notification.requestPermission();
+      setPermState(result);
+      if (result === 'granted') setPrefs((p) => ({ ...p, desktopEnabled: true }));
+    },
+    [permState, setPrefs],
+  );
+
+  function toggleStatus(s: string) {
+    setPrefs((prev) => ({
+      ...prev,
+      statuses: prev.statuses.includes(s)
+        ? prev.statuses.filter((x) => x !== s)
+        : [...prev.statuses, s],
+    }));
+  }
+
+  function toggleFp(key: string) {
+    setPrefs((prev) => ({
+      ...prev,
+      fpParams: prev.fpParams.includes(key)
+        ? prev.fpParams.filter((x) => x !== key)
+        : [...prev.fpParams, key],
+    }));
+  }
+
+  function setAllStatuses(all: boolean) {
+    setPrefs((prev) => ({
+      ...prev,
+      statuses: all ? [...ALL_POSITION_STATUSES] : [],
+    }));
+  }
+
+  const allSelected = ALL_POSITION_STATUSES.every((s) => prefs.statuses.includes(s));
+
+  return (
+    <section className="mt-4 max-w-2xl rounded-xl border border-white/8 bg-bg-panel p-4">
+      <h3 className="text-sm font-semibold text-text">Position notifications</h3>
+      <p className="mt-0.5 mb-3.5 text-xs text-text-dim">
+        Toast alerts on position status changes. Shown on any page, regardless of which
+        strategy tab is open. All preferences are stored locally.
+      </p>
+
+      <div className="flex flex-col gap-2.5">
+        <ToggleRow
+          title="Real trading notifications"
+          description="Notify when a real (on-chain) position changes status."
+          checked={prefs.realEnabled}
+          disabled={false}
+          onChange={(realEnabled) => setPrefs((p) => ({ ...p, realEnabled }))}
+        />
+        <ToggleRow
+          title="Paper trading notifications"
+          description="Notify when a paper-test position changes status."
+          checked={prefs.paperEnabled}
+          disabled={false}
+          onChange={(paperEnabled) => setPrefs((p) => ({ ...p, paperEnabled }))}
+        />
+        <ToggleRow
+          title="Desktop notifications (Windows Action Center)"
+          description={
+            permState === 'denied'
+              ? 'Blocked by browser — click the lock icon in the address bar to allow notifications for this site.'
+              : 'Send OS-level notifications so you get alerted even when this tab is in the background.'
+          }
+          checked={prefs.desktopEnabled && permState === 'granted'}
+          disabled={!notifSupported || permState === 'denied'}
+          onChange={handleDesktopToggle}
+        />
+      </div>
+
+      <div className="mt-4">
+        <div className="mb-1.5 flex items-center gap-3">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
+            Notify on status
+          </span>
+          <button
+            type="button"
+            onClick={() => setAllStatuses(!allSelected)}
+            className="text-[11px] text-text-dim underline underline-offset-2 hover:text-text"
+          >
+            {allSelected ? 'Deselect all' : 'Select all'}
+          </button>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {ALL_POSITION_STATUSES.map((s) => {
+            const on = prefs.statuses.includes(s);
+            const cls = STATUS_PILL[s];
+            return (
+              <button
+                key={s}
+                type="button"
+                onClick={() => toggleStatus(s)}
+                className={cn(
+                  'rounded-md border px-2.5 py-1 text-[11px] font-medium transition',
+                  on ? cls.active : cls.inactive,
+                )}
+              >
+                {cls.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <span className="mb-1.5 block text-[10px] font-bold uppercase tracking-wider text-text-dim">
+          Show in notification
+        </span>
+        <div className="grid grid-cols-2 gap-x-6 gap-y-1.5">
+          {FP_PARAM_GROUPS.map((g) => (
+            <label key={g.key} className="flex cursor-pointer items-center gap-2">
+              <Checkbox
+                boxSize="sm"
+                checked={prefs.fpParams.includes(g.key)}
+                onChange={() => toggleFp(g.key)}
+              />
+              <span className="text-xs text-text">
+                {g.label}
+                <span className="ml-1.5 font-mono text-[10px] text-text-dim">{g.hint}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -335,6 +525,8 @@ export function SettingsPage() {
           </div>
         ) : null}
       </section>
+
+      <NotificationSection />
     </div>
   );
 }

@@ -29,6 +29,44 @@ export function sseSubscribe(type: string, cb: SseListener): () => void {
   return subscribe(type, cb);
 }
 
+/**
+ * Strategy-agnostic position-change subscriber — receives deltas for BOTH
+ * tpsl1 and tpsl2 without filtering. Used by the global notification hook so
+ * it works regardless of which page the user is on.
+ */
+export function connectAllPositionsChanged(
+  onDelta: (delta: import('types').TpslPositionDelta & { strategy: string }) => void,
+): StreamHandle {
+  const unsub = subscribe('tpsl_positions_changed', (e) => {
+    if (typeof e.data !== 'string') return;
+    try {
+      const p = JSON.parse(e.data) as {
+        strategy?: string;
+        rule_id?: string;
+        rule_snapshot?: import('types').RuleNotifSnapshot | null;
+        position?: import('types').RulePositionRecord | null;
+        removed?: boolean;
+        open_positions?: number;
+        total_positions?: number;
+      };
+      if (p.strategy && p.rule_id) {
+        onDelta({
+          strategy: p.strategy,
+          ruleId: p.rule_id,
+          ruleSnapshot: p.rule_snapshot ?? null,
+          position: p.position ?? null,
+          removed: !!p.removed,
+          openPositions: p.open_positions ?? 0,
+          totalPositions: p.total_positions ?? 0,
+        });
+      }
+    } catch {
+      /* ignore malformed frames */
+    }
+  });
+  return { close: unsub };
+}
+
 function subscribe(type: string, cb: SseListener): () => void {
   let set = listeners.get(type);
   if (!set) {
@@ -218,6 +256,7 @@ export function connectTpslPositionsChanged(
       const p = JSON.parse(e.data) as {
         strategy?: string;
         rule_id?: string;
+        rule_snapshot?: import('types').RuleNotifSnapshot | null;
         position?: import('types').RulePositionRecord | null;
         removed?: boolean;
         open_positions?: number;
@@ -226,6 +265,7 @@ export function connectTpslPositionsChanged(
       if (p.strategy === strategy && p.rule_id) {
         onDelta({
           ruleId: p.rule_id,
+          ruleSnapshot: p.rule_snapshot ?? null,
           position: p.position ?? null,
           removed: !!p.removed,
           openPositions: p.open_positions ?? 0,

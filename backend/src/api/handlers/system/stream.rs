@@ -169,6 +169,7 @@ fn render_sse_frame(event: &SseEvent, state: &AppState) -> SseFrame {
         SseEvent::TpslPositionsChanged {
             strategy,
             rule_id,
+            rule_snapshot,
             position,
             removed,
             open_positions,
@@ -181,12 +182,17 @@ fn render_sse_frame(event: &SseEvent, state: &AppState) -> SseFrame {
                 serde_json::to_value(PositionResponse::from((**p).clone()))
                     .unwrap_or(serde_json::Value::Null)
             });
+            let rule_snapshot_json = rule_snapshot
+                .as_deref()
+                .and_then(|s| serde_json::to_value(s).ok())
+                .unwrap_or(serde_json::Value::Null);
             (
                 None,
                 "tpsl_positions_changed",
                 json!({
                     "strategy": strategy,
                     "rule_id": rule_id,
+                    "rule_snapshot": rule_snapshot_json,
                     "position": position_json,
                     "removed": removed,
                     "open_positions": open_positions,
