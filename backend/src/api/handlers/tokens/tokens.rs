@@ -357,6 +357,78 @@ fn default_limit() -> i64 {
 // Handlers
 // ---------------------------------------------------------------------------
 
+/// Filter → sort → page → serialize+ETag the token list (the CPU core of
+/// `list_tokens`). The swing-sort stats map is passed in rather than computed
+/// here, so this stays free of any swing/analysis dependency: a deploy build
+/// calls it with `swing_stats = None`; a local build computes the map first.
+/// Returns the response body bytes and their content-hash ETag.
+pub fn build_tokens_list(
+    state: &AppState,
+    q: &TokenQuery,
+    limit_q: i64,
+    offset_q: i64,
+    tracked_only: bool,
+    swing_stats: Option<&HashMap<String, ChainStats>>,
+) -> (Vec<u8>, String) {
+    let now = chrono::Utc::now();
+
+    // Shared, pre-sorted (newest-first) snapshot of the whole list. Rebuilt at
+    // most once per staleness window across all clients, so a request no longer
+    // clones the entire cache on every poll.
+    let snapshot = state.token_list.get(&state.token_cache, now);
+
+    // When `tracked_only`, restrict to the live cache subset; otherwise use the
+    // full merged universe (live cache overlaying the DB base).
+    let mut matched: Vec<&TokenSummary> = if tracked_only {
+        snapshot.tracked_filtered(|t| q.matches(t, now))
+    } else {
+        // Full-fidelity server-side reduction: global filters + search + per-column
+        // filters (mirrors `tokenPassesFilters` and the DataTable). Filter by
+        // reference — non-matching rows are never cloned. The snapshot merges the
+        // live cache over the DB base (whole seeded universe), so the list includes
+        // mints already evicted from the cache, newest-first.
+        snapshot.merged_filtered(|t| q.matches(t, now))
+    };
+
+    // `total` is the FILTERED count — that's what the table's pager needs.
+    let total = matched.len();
+
+    // Same reduction, restricted to the live cache-tracked subset. Cheap: the
+    // resident set is small (post-eviction) relative to the merged universe.
+    // When already in tracked_only mode, `total` == `tracked`.
+    let tracked = if tracked_only {
+        total
+    } else {
+        snapshot.tracked_filtered_count(|t| q.matches(t, now))
+    };
+
+    // The snapshot is already newest-first, so the default view needs no sort;
+    // only explicit sort levels re-order (sorting precedes paging). Non-matched
+    // mints absent from `swing_stats` simply sort last.
+    q.sort_refs(&mut matched, swing_stats);
+
+    let limit = limit_q.max(1).min(50_000) as usize;
+    let offset = offset_q.max(0) as usize;
+    // Materialise (clone) only the requested page.
+    let items: Vec<TokenSummary> = matched
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .cloned()
+        .collect();
+    let resp = TokensListResponse { total, tracked, items };
+
+    // Serialize + fingerprint here, off the async worker pool. The ETag is a
+    // content hash of the page bytes, so a poll that produces a byte-identical
+    // page (no new tokens/trades — `age` is no longer in the body, so it no
+    // longer churns) can revalidate to a bodyless 304 instead of resending.
+    let body = serde_json::to_vec(&resp).unwrap_or_default();
+    let mut hasher = DefaultHasher::new();
+    body.hash(&mut hasher);
+    let etag = format!("\"{:016x}\"", hasher.finish());
+    (body, etag)
+}
+
 /// `GET /api/tokens` — list all currently tracked tokens sorted by trade count.
 pub async fn list_tokens(
     req: HttpRequest,
@@ -373,58 +445,24 @@ pub async fn list_tokens(
     let tracked_only = query.tracked_only.unwrap_or(false);
 
     let built = web::block(move || {
-        let now = chrono::Utc::now();
-
-        // Shared, pre-sorted (newest-first) snapshot of the whole list. Rebuilt at
-        // most once per staleness window across all clients, so a request no longer
-        // clones the entire cache on every poll.
-        let snapshot = state.token_list.get(&state.token_cache, now);
-
-        // When `tracked_only`, restrict to the live cache subset; otherwise use the
-        // full merged universe (live cache overlaying the DB base).
-        let mut matched: Vec<&TokenSummary> = if tracked_only {
-            snapshot.tracked_filtered(|t| q.matches(t, now))
-        } else {
-            // Full-fidelity server-side reduction: global filters + search + per-column
-            // filters (mirrors `tokenPassesFilters` and the DataTable). Filter by
-            // reference — non-matching rows are never cloned. The snapshot merges the
-            // live cache over the DB base (whole seeded universe), so the list includes
-            // mints already evicted from the cache, newest-first.
-            snapshot.merged_filtered(|t| q.matches(t, now))
-        };
-
-        // `total` is the FILTERED count — that's what the table's pager needs.
-        let total = matched.len();
-
-        // Same reduction, restricted to the live cache-tracked subset. Cheap: the
-        // resident set is small (post-eviction) relative to the merged universe.
-        // When already in tracked_only mode, `total` == `tracked`.
-        let tracked = if tracked_only {
-            total
-        } else {
-            snapshot.tracked_filtered_count(|t| q.matches(t, now))
-        };
-
-        // Any chain column among the sort levels? Compute each matched mint's
-        // chain stats once from the raw legs stashed under the run, grouped at the
-        // requested latency. Cheap (a handful of legs per mint) and only over the
-        // filtered set. Mints the run never analysed are simply absent → they sort
-        // last. A single stats map serves every chain level (each reads a different
-        // field via `swing_sort_value`).
+        // Swing-dependent branch — the only part of the list build that touches
+        // `swing_runs`. Any chain column among the sort levels? Compute each mint's
+        // chain stats from the raw legs stashed under the run, grouped at the
+        // requested latency (a single stats map serves every chain level, each
+        // reading a different field via `swing_sort_value`). Kept here, out of the
+        // core `build_tokens_list`, so a deploy build can pass `None`.
         let swing_stats: Option<HashMap<String, ChainStats>> =
             if q.sort_levels.iter().any(|(col, _)| is_swing_sort_col(col)) {
                 q.swing_run_id
                     .as_deref()
                     .and_then(|id| state.swing_runs.get(id))
                     .map(|run| {
-                        let mut stats = HashMap::with_capacity(matched.len());
-                        for &t in &matched {
-                            if let Some(swings) = run.mints.get(&t.mint_address) {
-                                stats.insert(
-                                    t.mint_address.clone(),
-                                    compute_chain_stats(swings.value(), q.swing_chain_latency_ms),
-                                );
-                            }
+                        let mut stats = HashMap::with_capacity(run.mints.len());
+                        for entry in run.mints.iter() {
+                            stats.insert(
+                                entry.key().clone(),
+                                compute_chain_stats(entry.value(), q.swing_chain_latency_ms),
+                            );
                         }
                         stats
                     })
@@ -432,30 +470,7 @@ pub async fn list_tokens(
                 None
             };
 
-        // The snapshot is already newest-first, so the default view needs no sort;
-        // only explicit sort levels re-order (sorting precedes paging).
-        q.sort_refs(&mut matched, swing_stats.as_ref());
-
-        let limit = limit_q.max(1).min(50_000) as usize;
-        let offset = offset_q.max(0) as usize;
-        // Materialise (clone) only the requested page.
-        let items: Vec<TokenSummary> = matched
-            .into_iter()
-            .skip(offset)
-            .take(limit)
-            .cloned()
-            .collect();
-        let resp = TokensListResponse { total, tracked, items };
-
-        // Serialize + fingerprint here, off the async worker pool. The ETag is a
-        // content hash of the page bytes, so a poll that produces a byte-identical
-        // page (no new tokens/trades — `age` is no longer in the body, so it no
-        // longer churns) can revalidate to a bodyless 304 instead of resending.
-        let body = serde_json::to_vec(&resp).unwrap_or_default();
-        let mut hasher = DefaultHasher::new();
-        body.hash(&mut hasher);
-        let etag = format!("\"{:016x}\"", hasher.finish());
-        (body, etag)
+        build_tokens_list(&state, &q, limit_q, offset_q, tracked_only, swing_stats.as_ref())
     })
     .await;
 
@@ -735,7 +750,7 @@ fn swing_sort_value(col: &str, s: &crate::analyzers::swing_analyzer::ChainStats)
 }
 
 /// Parsed query: global filters + search + per-column filters + sort.
-struct TokenQuery {
+pub struct TokenQuery {
     search: String,
     /// Ordered sort levels `(column, descending)`; index 0 is the primary key.
     /// Empty ⇒ keep the snapshot's default (newest-first) order.
@@ -764,7 +779,7 @@ fn g<'a>(f: &'a HashMap<&'static str, String>, k: &str) -> &'a str {
 }
 
 impl TokenQuery {
-    fn from_params(q: &PaginationParams) -> Self {
+    pub fn from_params(q: &PaginationParams) -> Self {
         let mut f: HashMap<&'static str, String> = HashMap::new();
         put(&mut f, "symbol", &q.f_symbol);
         put(&mut f, "name", &q.f_name);
