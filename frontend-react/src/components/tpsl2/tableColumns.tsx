@@ -5,7 +5,7 @@ import { AmountCell, CurrentPriceCell } from 'components/tokens/priceCells';
 import { DateCell } from 'components/table/DateCell';
 import { cn } from 'lib/cn';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
-import { appendedTokenColumns } from 'components/tokens/sharedTokenColumns';
+import { appendedTokenColumns, coreTokenColumns } from 'components/tokens/sharedTokenColumns';
 
 /** Render an exit reason as a compact colored badge, shared by the live-position
  * and simulation-result tables. Falsy/unknown reasons (e.g. a still-open
@@ -43,7 +43,8 @@ const solOf = (price?: number | null, tokens?: number | null): number | null =>
 // Keys already present in each table — used to filter out duplicates from the
 // appended token-info columns.
 const POSITION_KEYS = new Set([
-  'mint', 'target_price', 'target_tokens', 'target_sol', 'target_time', 'target_tx',
+  'mint', 'symbol', 'name', 'created',
+  'target_price', 'target_tokens', 'target_sol', 'target_time', 'target_tx',
   'entry_price', 'entry_tokens', 'entry_sol', 'entry_time', 'entry_tx',
   'exit_price', 'exit_tokens', 'exit_sol', 'exit_time', 'exit_tx',
   'holding', 'pnl_pct', 'pnl_sol', 'status', 'exit_reason',
@@ -54,7 +55,8 @@ const MATCHED_KEYS = new Set([
   'init_buy', 'initial_buy', 'cu_limit', 'cu_price',
 ]);
 const SIM_KEYS = new Set([
-  'symbol', 'mint', 'target_price', 'target_tokens', 'target_sol', 'target_time', 'target_tx',
+  'symbol', 'mint', 'created',
+  'target_price', 'target_tokens', 'target_sol', 'target_time', 'target_tx',
   'entry_price', 'entry_tokens', 'entry_sol', 'entry_time', 'ath_price', 'exit_price', 'exit_time',
   'holding', 'pnl_pct', 'pnl_sol', 'reason', 'trades',
 ]);
@@ -76,6 +78,7 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
       ),
       searchValue: (r) => r.mint,
     },
+    ...coreTokenColumns(),
     {
       key: 'target_price',
       label: 'Target Price',
@@ -403,6 +406,7 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
       ),
       searchValue: (r) => r.mint,
     },
+    ...coreTokenColumns(new Set(['symbol', 'mint'])),
     {
       key: 'target_price',
       label: 'Target Price',

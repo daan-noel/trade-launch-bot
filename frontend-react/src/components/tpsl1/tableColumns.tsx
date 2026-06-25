@@ -5,7 +5,7 @@ import { AmountCell, CurrentPriceCell } from 'components/tokens/priceCells';
 import { DateCell } from 'components/table/DateCell';
 import { cn } from 'lib/cn';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
-import { appendedTokenColumns } from 'components/tokens/sharedTokenColumns';
+import { appendedTokenColumns, coreTokenColumns } from 'components/tokens/sharedTokenColumns';
 
 /** Render an exit reason as a compact colored badge, shared by the live-position
  * and simulation-result tables. Falsy/unknown reasons (e.g. a still-open
@@ -34,7 +34,8 @@ export function exitReasonBadge(reason: string | null | undefined) {
 }
 
 const POSITION_KEYS = new Set([
-  'mint', 'entry_price', 'entry_time', 'exit_price', 'exit_time',
+  'mint', 'symbol', 'name', 'created',
+  'entry_price', 'entry_time', 'exit_price', 'exit_time',
   'holding', 'pnl_pct', 'pnl_sol', 'status', 'exit_reason',
 ]);
 const MATCHED_KEYS = new Set([
@@ -42,7 +43,7 @@ const MATCHED_KEYS = new Set([
   'init_buy', 'initial_buy', 'cu_limit', 'cu_price',
 ]);
 const SIM_KEYS = new Set([
-  'symbol', 'entry_price', 'entry_time', 'ath_price', 'exit_price', 'exit_time',
+  'symbol', 'created', 'entry_price', 'entry_time', 'ath_price', 'exit_price', 'exit_time',
   'holding', 'pnl_pct', 'pnl_sol', 'reason', 'trades',
 ]);
 
@@ -63,6 +64,7 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
       ),
       searchValue: (r) => r.mint,
     },
+    ...coreTokenColumns(),
     {
       key: 'entry_price',
       label: 'Entry Price',
@@ -239,6 +241,7 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
       sortValue: (r) => r.symbol,
       searchValue: (r) => r.symbol,
     },
+    ...coreTokenColumns(new Set(['symbol'])),
     {
       key: 'entry_price',
       label: 'Entry Price',

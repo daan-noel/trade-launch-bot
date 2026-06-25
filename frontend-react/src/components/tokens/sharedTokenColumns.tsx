@@ -14,6 +14,9 @@ import { formatCompact, formatDecimalTrim, formatWithCommas } from 'utils/format
 // ---------------------------------------------------------------------------
 
 const TOKEN_ENRICH_FIELDS = [
+  'symbol',
+  'name',
+  'created_at',
   'creator_address',
   'initial_supply_token',
   'token_amount',
@@ -343,6 +346,49 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     searchValue: (r: { is_cashback_enabled?: boolean }) => String(r.is_cashback_enabled ?? false),
   },
 ];
+
+/**
+ * Core token-identity columns (symbol, name, created) for tables that don't
+ * carry these fields on their result record (e.g. positions). All visible by
+ * default. Pass `existingKeys` to skip any already present in the table.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function coreTokenColumns(existingKeys?: Set<string>): ColumnDef<any>[] {
+  const cols: ColumnDef<any>[] = [
+    {
+      key: 'symbol',
+      label: 'Symbol',
+      group: 'identity',
+      sortable: true,
+      render: (r: { mint: string; symbol?: string; name?: string }) => (
+        <AddressDisplay address={r.mint} kind="token" display={r.symbol ?? r.mint.slice(0, 6)} />
+      ),
+      sortValue: (r: { symbol?: string }) => r.symbol ?? '',
+      searchValue: (r: { symbol?: string; name?: string }) => `${r.symbol ?? ''} ${r.name ?? ''}`,
+    },
+    {
+      key: 'name',
+      label: 'Name',
+      group: 'identity',
+      sortable: true,
+      render: (r: { name?: string }) => (
+        <span className="text-text-dim">{r.name ?? '—'}</span>
+      ),
+      sortValue: (r: { name?: string }) => r.name ?? '',
+      searchValue: (r: { name?: string }) => r.name ?? '',
+    },
+    {
+      key: 'created',
+      label: 'Created',
+      group: 'identity',
+      sortable: true,
+      render: (r: { created_at?: string | null }) => <DateCell iso={r.created_at ?? null} />,
+      sortValue: (r: { created_at?: string | null }) => r.created_at ?? '',
+      searchValue: (r: { created_at?: string | null }) => r.created_at ?? '',
+    },
+  ];
+  return existingKeys ? cols.filter((c) => !existingKeys.has(c.key)) : cols;
+}
 
 /**
  * Return token-info columns to append to a strategy result table. All columns
