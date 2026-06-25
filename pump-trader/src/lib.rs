@@ -10,7 +10,7 @@
 //! trader.buy_token(mint, sol_amount, /* ... */).await?;
 //! ```
 
-pub mod constants;
+pub use pump_constants as constants;
 pub mod types;
 mod trader;
 

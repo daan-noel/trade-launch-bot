@@ -3753,6 +3753,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "pump-constants"
+version = "0.1.0"
+
+[[package]]
 name = "pump-trader"
 version = "0.1.0"
 dependencies = [
@@ -3761,6 +3765,7 @@ dependencies = [
  "bincode",
  "bs58 0.5.1",
  "dashmap 4.0.2",
+ "pump-constants",
  "rand 0.8.6",
  "reqwest",
  "serde",

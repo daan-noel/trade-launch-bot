@@ -9,6 +9,10 @@ name = "pump_trader"
 path = "src/lib.rs"
 
 [dependencies]
+# Single-source protocol/tuning constants (extracted so core/local can read them
+# without depending on pump-trader). Re-exported as `pump_trader::constants`.
+pump-constants = { path = "../pump-constants" }
+
 # Async runtime (consumer provides the runtime; the trader spawns background tasks).
 tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 

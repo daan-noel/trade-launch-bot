@@ -1,5 +1,5 @@
 [workspace]
-members = ["backend", "pump-trader"]
+members = ["backend", "pump-constants", "pump-trader"]
 resolver = "1"
 
 [workspace.package]
