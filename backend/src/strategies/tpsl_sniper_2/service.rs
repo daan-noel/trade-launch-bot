@@ -129,6 +129,10 @@ impl Tpsl2StrategyService {
                 // never deletes a row that might own tokens, so an unresolvable one
                 // is just left + flagged, not reaped.
                 service.redrive_orphaned_buy_submitted().await;
+                // Reconcile positions left Holding by a manual sell (the bag was
+                // cleared outside the strategy exit path). Boot + cadence catch-all
+                // for the live-ping detector, which a dead token never triggers.
+                service.reconcile_externally_cleared_holdings().await;
                 let mut failed_total: u64 = 0;
                 let mut changed = false;
                 match cleanup_repo.fail_stale_exit_pending(stale).await {
@@ -877,6 +881,37 @@ impl Tpsl2StrategyService {
             )
             .await;
         });
+    }
+
+    /// Reconcile real positions left `Holding` after their bag was cleared outside
+    /// the strategy exit path (a manual "Sell" / "Sell All"). Without this a
+    /// manually-sold position stays `Holding` forever: the live-ping detector
+    /// (`try_close_manually_sold`) only fires on the *next* trade for the mint
+    /// (which never comes for a dead token), and boot seeding reloads the stale
+    /// `Holding` row verbatim. Runs at boot (the reaper's immediate first tick) and
+    /// on the maintenance cadence — one set-based candidate query, normally empty.
+    async fn reconcile_externally_cleared_holdings(&self) {
+        let mints = match self
+            .position_repo
+            .find_externally_cleared_holding_mints(super::execution::PARTIAL_FILL_THRESHOLD)
+            .await
+        {
+            Ok(m) => m,
+            Err(err) => {
+                warn!("manual-sell reaper: candidate query failed: {err}");
+                return;
+            }
+        };
+        for mint in mints {
+            super::execution::real::reconcile_externally_cleared_mint(
+                &mint,
+                &self.position_repo,
+                &self.trade_repo,
+                &self.runtime,
+                &self.trader,
+            )
+            .await;
+        }
     }
 
     /// Re-drive real positions stranded in `ExitPending` whose exit guard is **not**

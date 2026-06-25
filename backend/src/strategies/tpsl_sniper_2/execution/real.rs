@@ -146,6 +146,77 @@ pub(crate) async fn close_externally_cleared_position(
     }
 }
 
+/// Reconcile a single mint's open real positions after an external (manual)
+/// sell cleared the wallet's bag: drive each entry-recorded `Holding` position
+/// to `End` (reason `ManualSell`) without sending a new sell tx. Shared by the
+/// manual-sell API handler (immediate) and the boot/maintenance reaper
+/// ([`Tpsl2StrategyService::reconcile_externally_cleared_holdings`]).
+///
+/// Returns `None` when no open position exists for the mint (nothing to do, so
+/// the caller stops retrying); `Some(n)` when `n` positions were closed. A
+/// `Some(0)` means a position exists but the trades feed hasn't yet caught the
+/// sell (index lag) — the handler retries briefly so the recorded exit price is
+/// the real sell, with the reaper as the ultimate backstop.
+pub(crate) async fn reconcile_externally_cleared_mint(
+    mint: &str,
+    position_repo: &Tpsl2PositionRepo,
+    trade_repo: &TradeRepo,
+    runtime: &Arc<Tpsl2RuntimeCache>,
+    trader: &Arc<PumpFunTrader>,
+) -> Option<usize> {
+    let positions = match position_repo.find_open_by_mint(mint).await {
+        Ok(p) if p.is_empty() => return None,
+        Ok(p) => p,
+        Err(err) => {
+            warn!(mint = %mint, "manual-sell reconcile: open-position query failed: {err}");
+            return None;
+        }
+    };
+    let wallet = trader.wallet_pubkey();
+    // Confirm via the trades feed that the bag is actually cleared before closing
+    // — guards against closing a still-held position. The feed lags the on-chain
+    // sell, so a positive balance returns Some(0) and the caller retries.
+    match trade_repo.net_token_amount_by_wallet_and_mint(&wallet, mint).await {
+        Ok(balance) if balance <= super::PARTIAL_FILL_THRESHOLD => {}
+        Ok(_) => return Some(0),
+        Err(err) => {
+            warn!(mint = %mint, "manual-sell reconcile: balance query failed: {err}");
+            return Some(0);
+        }
+    }
+    // Exit price/time from the most recent sell; fall back to entry if the sell
+    // isn't indexed yet (the position still closes — pnl just reads as 0).
+    let last_sell = trade_repo
+        .find_latest_by_wallet_mint_type(&wallet, mint, crate::models::trade::TradeType::Sell)
+        .await
+        .ok()
+        .flatten();
+    let mut closed = 0;
+    for position in positions {
+        // The atomic claim is the double-exit interlock: skip if a strategy sell
+        // is already in flight for this position.
+        let Some(guard) = runtime.try_begin_exit(position.id) else { continue };
+        let _guard = guard;
+        let (exit_price, exit_time) = match &last_sell {
+            Some(s) => (s.price_per_token, s.block_time),
+            None => (position.entry_price.unwrap_or(0.0), Utc::now()),
+        };
+        let mut position = position;
+        close_externally_cleared_position(
+            &mut position,
+            position_repo,
+            runtime,
+            trader,
+            exit_price,
+            exit_time,
+            "ManualSell",
+        )
+        .await;
+        closed += 1;
+    }
+    Some(closed)
+}
+
 /// Off-chain dependency of the snipe buy flow: send a buy (no RPC confirm) and
 /// classify a sent signature. A trait so `buy_until_filled_or_give_up` can be
 /// driven by a scripted fake in tests instead of a live chain.

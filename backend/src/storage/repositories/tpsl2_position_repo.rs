@@ -525,6 +525,61 @@ impl Tpsl2PositionRepo {
         rows.into_iter().map(Position::try_from).collect()
     }
 
+    /// Open (`Holding`, entry-recorded) real positions for a single mint. Drives
+    /// the manual-sell reconcile (API handler + reaper), which closes a position
+    /// whose bag was cleared outside the strategy exit path.
+    pub async fn find_open_by_mint(&self, mint: &str) -> anyhow::Result<Vec<Position>> {
+        let rows = sqlx::query_as::<_, PositionDbRow>(&format!(
+            r#"
+            SELECT {POSITION_COLS}
+            FROM tpsl2_real_positions
+            WHERE mint = $1 AND status = 'Holding' AND entry_price IS NOT NULL
+            "#
+        ))
+        .bind(mint)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(Position::try_from).collect()
+    }
+
+    /// Distinct mints with an entry-recorded `Holding` position whose net traded
+    /// balance (Σbuys − Σsells) has fallen to ≤ `threshold` — i.e. the bag was
+    /// cleared outside the strategy exit path (a manual sell). Drives the boot /
+    /// maintenance manual-sell reaper. One set-based query: the `Holding` set is
+    /// tiny and each per-mint sum rides the `trades (wallet_address, mint_address)`
+    /// index.
+    pub async fn find_externally_cleared_holding_mints(
+        &self,
+        threshold: f64,
+    ) -> anyhow::Result<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            r#"
+            SELECT DISTINCT p.mint
+            FROM tpsl2_real_positions p
+            WHERE p.status = 'Holding' AND p.entry_price IS NOT NULL
+              -- Require a sell on record: else a position whose BUY merely aged out
+              -- of the rolling buffer (net = 0, no sell) would be falsely "cleared".
+              AND EXISTS (
+                    SELECT 1 FROM trades s
+                    WHERE s.wallet_address = p.wallet AND s.mint_address = p.mint
+                      AND s.trade_type = 'sell'
+                  )
+              AND COALESCE((
+                    SELECT SUM(CASE WHEN t.trade_type = 'buy'  THEN t.token_amount
+                                    WHEN t.trade_type = 'sell' THEN -t.token_amount
+                                    ELSE 0 END)
+                    FROM trades t
+                    WHERE t.wallet_address = p.wallet AND t.mint_address = p.mint
+                  ), 0.0) <= $1
+            "#,
+        )
+        .bind(threshold)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(m,)| m).collect())
+    }
+
     /// Distinct mints with an unsettled (non-`End`) real position. The cache seed
     /// always tracks these regardless of the recency window — the live path can't
     /// re-track an existing mint (a trade for an untracked mint is dropped), so an

@@ -56,6 +56,7 @@ Two background tasks fire once at boot then every 60 s:
 
 - **`redrive_orphaned_buy_submitted`** — classifies in-flight `BuySubmitted` rows (adopt from feed / drop if all sigs reverted / wait if any sig pending); **never re-sends**.
 - **`redrive_orphaned_exit_pending`** — re-drives `ExitPending` rows with no live `ExitGuard` (sell task gone); runs **before** the stale-fail sweep so recoverable bags retry before being marked `ExitFailed`.
+- **`reconcile_externally_cleared_holdings`** — closes `Holding` rows whose bag was cleared **outside** the strategy exit path (a manual "Sell"/"Sell All"). One set-based candidate query (`find_externally_cleared_holding_mints`: entry-recorded `Holding` + a sell on record + net traded balance ≤ `PARTIAL_FILL_THRESHOLD`), then `execution::real::reconcile_externally_cleared_mint` drives each to `End` (reason `ManualSell`) with no new sell tx. Catch-all for the live-ping detector (`try_close_manually_sold`), which only fires on the *next* trade for a mint — a dead, manually-sold token never produces one, so without this the row stays `Holding` forever and boot seeding reloads it verbatim. The `manual_sell` API handler calls the same `reconcile_externally_cleared_mint` immediately (off the response path, brief retry to await sell indexing) so the UI updates without waiting for the 60 s tick.
 
 ## Exit ladder (priority order)
 

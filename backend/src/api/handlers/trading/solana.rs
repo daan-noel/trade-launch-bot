@@ -14,6 +14,13 @@ use crate::state::app_state::AppState;
 /// cap it (extra ids are dropped).
 const MAX_PRICE_IDS: usize = 100;
 
+/// Manual-sell position reconcile: retry budget and spacing while the on-chain
+/// sell indexes into the `trades` feed (so the closed position records the real
+/// exit price). ~6 attempts × 2s comfortably covers LaserStream index lag; the
+/// per-strategy boot/maintenance reaper backstops anything still unresolved.
+const RECONCILE_MAX_ATTEMPTS: u32 = 6;
+const RECONCILE_RETRY_SECS: u64 = 2;
+
 #[derive(Deserialize)]
 pub struct BuyRequest {
     pub mint: String,
@@ -263,6 +270,45 @@ pub async fn manual_sell(
         tokio::spawn(async move {
             if let Err(err) = trader.close_token_account(&mint, token_account.as_deref()).await {
                 tracing::debug!(mint = %mint, "rent-reclaim close skipped: {err}");
+            }
+        });
+    }
+
+    // Position reconcile (off the response path): the bag is cleared on-chain, so
+    // drive any owning tpsl `Holding` position to `End` (reason ManualSell) — else
+    // it shows "Holding" forever and survives restarts (boot seeding reloads the
+    // stale row). A no-op for a plain wallet sell with no strategy position.
+    // Retries briefly so the recorded exit price is the real sell once it indexes;
+    // each strategy's boot/maintenance reaper is the ultimate backstop.
+    {
+        use crate::strategies::{tpsl_sniper_1, tpsl_sniper_2};
+        let state = app_state.get_ref().clone();
+        let mint = body.mint.clone();
+        tokio::spawn(async move {
+            for _ in 0..RECONCILE_MAX_ATTEMPTS {
+                let r1 = tpsl_sniper_1::execution::real::reconcile_externally_cleared_mint(
+                    &mint,
+                    &state.tpsl1_position_repo(),
+                    &state.trade_repo(),
+                    &state.tpsl1_cache,
+                    &state.trader,
+                )
+                .await;
+                let r2 = tpsl_sniper_2::execution::real::reconcile_externally_cleared_mint(
+                    &mint,
+                    &state.tpsl2_position_repo(),
+                    &state.trade_repo(),
+                    &state.tpsl2_cache,
+                    &state.trader,
+                )
+                .await;
+                // Stop once a position closed, or once neither strategy has an open
+                // position for the mint (`None` = nothing to reconcile).
+                let closed = r1.unwrap_or(0) + r2.unwrap_or(0);
+                if closed > 0 || (r1.is_none() && r2.is_none()) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(RECONCILE_RETRY_SECS)).await;
             }
         });
     }
