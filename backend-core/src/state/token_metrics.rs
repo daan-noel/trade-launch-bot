@@ -2,9 +2,31 @@ use std::sync::Arc;
 
 use chrono::Utc;
 
-use crate::{
-    ingest_laserstream::db_writer::TokenMetricsWrite, state::token_cache::TokenState,
-};
+use crate::state::token_cache::TokenState;
+
+/// Aggregate token metrics produced from a [`TokenState`] (by [`metrics_from_state`])
+/// and persisted by the ingest db_writer. Lives in core so both the cache-metrics
+/// producer and the ingest crate share one definition.
+#[derive(Debug, Clone)]
+pub struct TokenMetricsWrite {
+    pub mint: String,
+    pub ath_price: Option<f64>,
+    pub ath_timestamp: Option<chrono::DateTime<Utc>>,
+    pub age_seconds: Option<i64>,
+    pub volume: f64,
+    pub market_cap: Option<f64>,
+    pub trade_count: i64,
+    pub last_trade_at: Option<chrono::DateTime<Utc>>,
+    pub current_price: Option<f64>,
+    pub is_migrated: bool,
+    /// Cheap in-memory dead-token verdict computed at metrics time (see
+    /// [`crate::state::token_cache::TokenState::is_dead`]); persisted as-is.
+    pub is_dead: bool,
+    /// Seconds from token creation to the last meaningful trade (`sol_amount >=
+    /// DEAD_MEANINGFUL_TRADE_SOL`). `Some` only when `is_dead = true`; `None` while
+    /// the token is still alive.
+    pub lifetime_secs: Option<i64>,
+}
 
 /// Replay all trades in chronological order and rebuild aggregate metrics.
 pub fn recompute_token_state(state: &mut TokenState) {

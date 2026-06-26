@@ -13,7 +13,6 @@
 //! table (`u32 → address`) kept only for the Parquet cache write.
 
 use chrono::{DateTime, Utc};
-use std::collections::HashMap;
 
 use crate::models::trade::TradeRow;
 
@@ -88,41 +87,10 @@ impl TradeRow for SweepTrade {
     }
 }
 
-/// Interns wallet addresses to dense token-local `u32` ids in first-seen order.
-/// The `Vec` (`u32 → address`) maps an id back to its address.
-///
-/// The sweep discards the map once a token is projected (keeping only the table for
-/// the Parquet write). The **live token cache** keeps a `WalletInterner` resident on
-/// each `TokenState` so it can intern every appended trade's wallet to a `u32` (Phase
-/// B step 2) — hence `Clone` (the state derives it).
-#[derive(Default, Clone)]
-pub struct WalletInterner {
-    by_addr: HashMap<String, u32>,
-    table: Vec<Box<str>>,
-}
-
-impl WalletInterner {
-    pub fn intern(&mut self, addr: &str) -> u32 {
-        if let Some(&id) = self.by_addr.get(addr) {
-            return id;
-        }
-        let id = self.table.len() as u32;
-        self.table.push(Box::from(addr));
-        self.by_addr.insert(addr.to_string(), id);
-        id
-    }
-
-    /// Look up the interned id for `addr` without inserting. Returns `None` when
-    /// the address has never been seen on this token's trade history.
-    pub fn id_of(&self, addr: &str) -> Option<u32> {
-        self.by_addr.get(addr).copied()
-    }
-
-    /// The finished `u32 → address` table (consuming form, for the sweep projection).
-    pub fn into_table(self) -> Vec<Box<str>> {
-        self.table
-    }
-}
+// `WalletInterner` moved to `backend-core` (shared with the live token cache, which
+// can't depend on this local sweep crate); re-exported so `crate::sweep::projection::
+// WalletInterner` paths keep resolving.
+pub use backend_core::wallet_interner::WalletInterner;
 
 /// Project a token's chronological trade slice into the slim sweep rows plus the
 /// interned `u32 → wallet` table. Generic over any [`TradeRow`] whose `Wallet` is a

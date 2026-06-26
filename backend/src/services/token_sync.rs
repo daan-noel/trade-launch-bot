@@ -1352,7 +1352,7 @@ fn sort_sync_events(events: &mut [InternalEvent]) {
 
 async fn write_metrics(
     info_repo: &TokenInfoRepo,
-    m: &crate::ingest_laserstream::db_writer::TokenMetricsWrite,
+    m: &crate::state::token_metrics::TokenMetricsWrite,
 ) -> Result<(), SyncError> {
     info_repo
         .upsert_metrics(

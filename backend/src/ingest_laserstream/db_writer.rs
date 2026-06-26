@@ -13,6 +13,7 @@ use super::proto::geyser::SubscribeUpdateTransaction;
 use crate::{
     models::{token::Token, trade::Trade, transaction::RawTransaction},
     state::ingest_health::IngestHeartbeat,
+    state::token_metrics::TokenMetricsWrite,
     state::trade_signals::TradeSignals,
     storage::repositories::{
         token_info_repo::TokenInfoRepo, token_repo::TokenRepo, trade_repo::TradeRepo,
@@ -53,27 +54,6 @@ pub struct RawBlobJob {
     pub slot: u64,
     pub block_time: DateTime<Utc>,
     pub received_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone)]
-pub struct TokenMetricsWrite {
-    pub mint: String,
-    pub ath_price: Option<f64>,
-    pub ath_timestamp: Option<chrono::DateTime<Utc>>,
-    pub age_seconds: Option<i64>,
-    pub volume: f64,
-    pub market_cap: Option<f64>,
-    pub trade_count: i64,
-    pub last_trade_at: Option<chrono::DateTime<Utc>>,
-    pub current_price: Option<f64>,
-    pub is_migrated: bool,
-    /// Cheap in-memory dead-token verdict computed at metrics time (see
-    /// [`crate::state::token_cache::TokenState::is_dead`]); persisted as-is.
-    pub is_dead: bool,
-    /// Seconds from token creation to the last meaningful trade (`sol_amount >=
-    /// DEAD_MEANINGFUL_TRADE_SOL`). `Some` only when `is_dead = true`; `None` while
-    /// the token is still alive.
-    pub lifetime_secs: Option<i64>,
 }
 
 pub struct DbWriter {

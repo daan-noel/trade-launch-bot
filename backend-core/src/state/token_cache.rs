@@ -13,7 +13,7 @@ use crate::config::constants::{
 use crate::storage::repositories::token_info_repo::TokenInfoRepo;
 use crate::models::token::Token;
 use crate::models::trade::{Trade, TradeRow, TradeType};
-use crate::sweep::projection::WalletInterner;
+use crate::wallet_interner::WalletInterner;
 
 /// Hard cap on retained in-memory trade history per token. Defined in
 /// `config::constants` (single-source with the seed cap) and re-exported here so
