@@ -1,10 +1,11 @@
 // On-chain program addresses for the backend.
 //
 // Protocol IDs shared with the trader crate are re-exported here so the rest
-// of the backend has a single import path (no split between `pump_trader::constants`
-// and this module).
+// of the backend has a single import path (no split between `pump_constants`
+// and this module). `pump_constants` is the zero-dep single source; the trader
+// crate re-exports the same constants.
 
-pub use pump_trader::constants::{
+pub use pump_constants::{
     ASSOCIATED_TOKEN_PROGRAM_ID, EVENT_AUTHORITY, FEE_PROGRAM_ID, LAMPORTS_PER_SOL,
     PUMP_FUN_PROGRAM_ID, PUMP_SWAP_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, WSOL_MINT,
 };

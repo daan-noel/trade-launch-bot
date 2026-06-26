@@ -1,4 +1,4 @@
-use pump_trader::constants::LAMPORTS_PER_SOL;
+use pump_constants::LAMPORTS_PER_SOL;
 
 // ---------------------------------------------------------------------------
 // Trade slippage
@@ -116,9 +116,29 @@ pub const SEED_TOKEN_LIMIT: i64 = 25_000;
 /// Only tokens created within this window are pulled into the startup cache seed.
 /// Tokens older than this aren't tracked live until they trade again.
 pub const SEED_ACTIVITY_WINDOW_DAYS: i64 = 7;
+/// Hard cap on retained in-memory trade history per token. The live token cache
+/// (`state::token_cache`, which re-exports this) keeps only the most recent
+/// `MAX_TRADES_RETAINED` trades; the oldest are trimmed from the front once the vec
+/// exceeds the cap by `TRADES_TRIM_SLACK` (batched so the O(n) front-drain amortizes
+/// to O(1) per trade).
+///
+/// SAFETY — why a fixed cap doesn't corrupt any trade/exit decision: every consumer
+/// that walks `trades` either needs only the tail (the exit re-walk/memo for an open
+/// position whose entry is within the window) or treats it as a display sample
+/// (`unique_wallets`, swing analysis, the trades API). For the sniper use case a
+/// position's whole entry→exit span is a tiny fraction of this window, so the cap
+/// never reaches a trade that an open position still needs. The exit memo folds
+/// against an *absolute* count (`CachedExitState::consumed_abs`) mapped through
+/// `trades_base`, so front-trims can never skip or double-fold a trade.
+/// Backtest/paper sims read full history from the DB, not this cache, so they are
+/// unaffected.
+///
+/// Lives in `config` (not `state::token_cache`) so it stays single-source for the
+/// seed cap below without `config` depending on `state`.
+pub const MAX_TRADES_RETAINED: usize = 2_500;
 /// Per-mint cap on trade history pulled at seed time. Matches the live retained
 /// cap (`MAX_TRADES_RETAINED`) so a high-volume token reads only its newest window.
-pub const SEED_TRADES_PER_MINT: i64 = crate::state::token_cache::MAX_TRADES_RETAINED as i64;
+pub const SEED_TRADES_PER_MINT: i64 = MAX_TRADES_RETAINED as i64;
 
 /// Keyset page size for analysis scans (tpsl matched / simulate) that stream
 /// the whole `tokens` table one page at a time.

@@ -15,21 +15,10 @@ use crate::models::token::Token;
 use crate::models::trade::{Trade, TradeRow, TradeType};
 use crate::sweep::projection::WalletInterner;
 
-/// Hard cap on retained in-memory trade history per token. The cache keeps only
-/// the most recent `MAX_TRADES_RETAINED` trades; the oldest are trimmed from the
-/// front once the vec exceeds the cap by `TRADES_TRIM_SLACK` (batched so the
-/// O(n) front-drain amortizes to O(1) per trade).
-///
-/// SAFETY — why a fixed cap doesn't corrupt any trade/exit decision: every
-/// consumer that walks `trades` either needs only the tail (the exit re-walk/memo
-/// for an open position whose entry is within the window) or treats it as a display
-/// sample (`unique_wallets`, swing analysis, the trades API). For the sniper use case a position's whole entry→exit span is
-/// a tiny fraction of this window, so the cap never reaches a trade that an open
-/// position still needs. The exit memo folds against an *absolute* count
-/// (`CachedExitState::consumed_abs`) mapped through `trades_base`, so front-trims
-/// can never skip or double-fold a trade. Backtest/paper sims read full history
-/// from the DB, not this cache, so they are unaffected.
-pub const MAX_TRADES_RETAINED: usize = 2_500;
+/// Hard cap on retained in-memory trade history per token. Defined in
+/// `config::constants` (single-source with the seed cap) and re-exported here so
+/// the long-standing `state::token_cache::MAX_TRADES_RETAINED` path keeps working.
+pub use crate::config::constants::MAX_TRADES_RETAINED;
 /// Trim only once the window overruns the cap by this much, so the front-drain
 /// runs at most once per `TRADES_TRIM_SLACK` trades instead of on every push.
 pub const TRADES_TRIM_SLACK: usize = 1_000;

@@ -1,9 +1,8 @@
 mod sweep;
 mod api;
-mod config;
+pub use backend_core::{config, models};
 pub use config::constants as constants;
 mod ingest_laserstream;
-mod models;
 mod analyzers;
 mod state;
 mod storage;

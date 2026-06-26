@@ -1,4 +1,4 @@
-use pump_trader::constants::LAMPORTS_PER_SOL;
+use pump_constants::LAMPORTS_PER_SOL;
 
 // ---------------------------------------------------------------------------
 // Static initial reserve values for Pump.fun tokens
