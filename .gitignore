@@ -80,4 +80,7 @@ build/
 # DB dump files
 /*.dump
 
-/snapshots.claude/worktrees/
+/snapshots
+
+# Claude Code internal worktrees
+.claude/worktrees/

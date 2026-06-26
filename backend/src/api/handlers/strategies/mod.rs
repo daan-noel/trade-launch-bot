@@ -1,5 +1,8 @@
 pub mod grouped_sweep;
-pub mod tpsl_rules_core;
+// The rule **domain** (`tpsl_rules_core`: request DTOs + validation + repo write)
+// moved to `backend-core`; re-export so existing `super::tpsl_rules_core::…`
+// paths in tpsl1/tpsl2 keep resolving.
+pub use backend_core::api::handlers::strategies::tpsl_rules_core;
 pub mod tpsl1;
 pub mod tpsl2;
 

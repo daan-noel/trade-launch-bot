@@ -28,9 +28,95 @@ pub enum RuleWriteError {
 
 pub mod tpsl1 {
     use super::*;
-    use crate::api::handlers::strategies::tpsl1::{CreateRuleRequest, UpdateRuleRequest};
     use crate::models::Tpsl1Rule;
     use crate::storage::repositories::tpsl1_strategy_rule_repo::Tpsl1StrategyRuleRepo;
+    use serde::{Deserialize, Serialize};
+
+    /// Body for `POST /strategies/tpsl1/rules`. Shared by the deploy + local CRUD
+    /// edges (request shape is identical; only the post-write side effect
+    /// differs), so it lives in the domain layer.
+    #[derive(Deserialize)]
+    pub struct CreateRuleRequest {
+        pub rule_name: String,
+        pub p_token_initial_buy_sol: Option<f64>,
+        pub p_token_cu_limit: Option<u64>,
+        pub p_token_cu_price: Option<u64>,
+        pub p_token_max_sol_cost: Option<f64>,
+        pub p_token_spendable_sol_in: Option<f64>,
+        pub p_max_concurrent_tokens: Option<u64>,
+        pub p_max_total_tokens: Option<u64>,
+        pub p_token_ix_labels: serde_json::Value,
+        pub trade_mode: String,
+        pub buy_amount: f64,
+        pub p_exit_take_profit: f64,
+        pub p_exit_stop_loss: f64,
+        pub p_exit_trailing_stop_pct: Option<f64>,
+        pub p_exit_time_stop_secs: Option<u64>,
+        pub p_exit_stall_secs: Option<u64>,
+        pub p_exit_liquidity_drop_pct: Option<f64>,
+        pub tolerance_pct: Option<f64>,
+    }
+
+    /// Body for `PUT /strategies/tpsl1/rules/{id}`. Every field optional; an
+    /// `Option<Option<_>>` field distinguishes "absent" (outer `None`) from
+    /// "explicit null" (inner `None`).
+    #[derive(Deserialize, Serialize)]
+    pub struct UpdateRuleRequest {
+        pub rule_name: Option<String>,
+        pub buy_amount: Option<f64>,
+        pub p_exit_take_profit: Option<f64>,
+        pub p_exit_stop_loss: Option<f64>,
+        pub p_exit_trailing_stop_pct: Option<f64>,
+        pub p_exit_time_stop_secs: Option<u64>,
+        pub p_exit_stall_secs: Option<u64>,
+        pub p_exit_liquidity_drop_pct: Option<f64>,
+        #[serde(default)]
+        pub p_token_initial_buy_sol: Option<Option<f64>>,
+        #[serde(default)]
+        pub p_token_cu_limit: Option<Option<u64>>,
+        #[serde(default)]
+        pub p_token_cu_price: Option<Option<u64>>,
+        #[serde(default)]
+        pub p_token_ix_labels: Option<Option<serde_json::Value>>,
+        #[serde(default)]
+        pub p_token_max_sol_cost: Option<Option<f64>>,
+        #[serde(default)]
+        pub p_token_spendable_sol_in: Option<Option<f64>>,
+        // Outer Option = field present; inner Option = value or explicit null
+        #[serde(default)]
+        pub p_max_concurrent_tokens: Option<Option<u64>>,
+        #[serde(default)]
+        pub p_max_total_tokens: Option<Option<u64>>,
+        pub tolerance_pct: Option<f64>,
+        pub is_active: Option<bool>,
+        pub trade_mode: Option<String>,
+    }
+
+    impl UpdateRuleRequest {
+        /// True if the request would change any field FROZEN while a rule is live
+        /// (running or holding positions) — the token fingerprint, exit ladder,
+        /// and matching tolerance, i.e. anything that redefines which tokens the
+        /// rule takes or when it exits. The only fields editable mid-run are the
+        /// "hot" set: `buy_amount` + concurrency caps + the administrative
+        /// `rule_name`. `trade_mode` is also frozen while live but is always
+        /// present in the PUT body, so it's checked separately (by value). Used by
+        /// the deploy update edge's live-freeze guard.
+        pub fn touches_frozen_fields(&self) -> bool {
+            self.p_exit_take_profit.is_some()
+                || self.p_exit_stop_loss.is_some()
+                || self.p_exit_trailing_stop_pct.is_some()
+                || self.p_exit_time_stop_secs.is_some()
+                || self.p_exit_stall_secs.is_some()
+                || self.p_exit_liquidity_drop_pct.is_some()
+                || self.p_token_initial_buy_sol.is_some()
+                || self.p_token_cu_limit.is_some()
+                || self.p_token_cu_price.is_some()
+                || self.p_token_ix_labels.is_some()
+                || self.p_token_max_sol_cost.is_some()
+                || self.p_token_spendable_sol_in.is_some()
+                || self.tolerance_pct.is_some()
+        }
+    }
 
     /// Reject percent params outside their valid range before a rule is persisted.
     /// Every percent field is whole-percent (see percent-params-unify-plan): Take
@@ -194,9 +280,131 @@ pub mod tpsl1 {
 
 pub mod tpsl2 {
     use super::*;
-    use crate::api::handlers::strategies::tpsl2::{CreateRuleRequest, UpdateRuleRequest};
     use crate::models::Tpsl2Rule;
     use crate::storage::repositories::tpsl2_strategy_rule_repo::Tpsl2StrategyRuleRepo;
+    use serde::{Deserialize, Serialize};
+
+    /// Body for `POST /strategies/tpsl2/rules` (tpsl1's plus the scalp-continuation
+    /// entry gates). Shared by the deploy + local CRUD edges.
+    #[derive(Deserialize)]
+    pub struct CreateRuleRequest {
+        pub rule_name: String,
+        pub p_token_initial_buy_sol: Option<f64>,
+        pub p_token_cu_limit: Option<u64>,
+        pub p_token_cu_price: Option<u64>,
+        pub p_token_max_sol_cost: Option<f64>,
+        pub p_token_spendable_sol_in: Option<f64>,
+        pub p_max_concurrent_tokens: Option<u64>,
+        pub p_max_total_tokens: Option<u64>,
+        pub p_token_ix_labels: serde_json::Value,
+        pub trade_mode: String,
+        pub buy_amount: f64,
+        pub p_exit_take_profit: f64,
+        pub p_exit_stop_loss: f64,
+        pub p_exit_trailing_stop_pct: Option<f64>,
+        pub p_exit_time_stop_secs: Option<u64>,
+        pub p_exit_stall_secs: Option<u64>,
+        pub p_exit_liquidity_drop_pct: Option<f64>,
+        // Scalp-continuation gates; absent/0 = disabled.
+        #[serde(default)]
+        pub p_entry_min_age_secs: Option<u64>,
+        #[serde(default)]
+        pub p_entry_max_age_secs: Option<u64>,
+        #[serde(default)]
+        pub p_entry_min_alive_sol: Option<f64>,
+        #[serde(default)]
+        pub p_entry_min_organic_sol: Option<f64>,
+        #[serde(default)]
+        pub p_entry_pullback_pct: Option<f64>,
+        #[serde(default)]
+        pub p_entry_higher_low_secs: Option<u64>,
+        #[serde(default)]
+        pub p_entry_max_cohort_held: Option<f64>,
+        #[serde(default)]
+        pub p_entry_min_liquidity_sol: Option<f64>,
+        #[serde(default)]
+        pub p_entry_min_organic_liq: Option<f64>,
+        #[serde(default)]
+        pub p_exit_cohort_ratio: Option<f64>,
+        pub tolerance_pct: Option<f64>,
+    }
+
+    /// Body for `PUT /strategies/tpsl2/rules/{id}`.
+    #[derive(Deserialize, Serialize)]
+    pub struct UpdateRuleRequest {
+        pub rule_name: Option<String>,
+        pub buy_amount: Option<f64>,
+        pub p_exit_take_profit: Option<f64>,
+        pub p_exit_stop_loss: Option<f64>,
+        pub p_exit_trailing_stop_pct: Option<f64>,
+        pub p_exit_time_stop_secs: Option<u64>,
+        pub p_exit_stall_secs: Option<u64>,
+        pub p_exit_liquidity_drop_pct: Option<f64>,
+        // Scalp-continuation gates; present → set (0 disables, per ignore_zero).
+        pub p_entry_min_age_secs: Option<u64>,
+        pub p_entry_max_age_secs: Option<u64>,
+        pub p_entry_min_alive_sol: Option<f64>,
+        pub p_entry_min_organic_sol: Option<f64>,
+        pub p_entry_pullback_pct: Option<f64>,
+        pub p_entry_higher_low_secs: Option<u64>,
+        pub p_entry_max_cohort_held: Option<f64>,
+        pub p_entry_min_liquidity_sol: Option<f64>,
+        pub p_entry_min_organic_liq: Option<f64>,
+        pub p_exit_cohort_ratio: Option<f64>,
+        #[serde(default)]
+        pub p_token_initial_buy_sol: Option<Option<f64>>,
+        #[serde(default)]
+        pub p_token_cu_limit: Option<Option<u64>>,
+        #[serde(default)]
+        pub p_token_cu_price: Option<Option<u64>>,
+        #[serde(default)]
+        pub p_token_ix_labels: Option<Option<serde_json::Value>>,
+        #[serde(default)]
+        pub p_token_max_sol_cost: Option<Option<f64>>,
+        #[serde(default)]
+        pub p_token_spendable_sol_in: Option<Option<f64>>,
+        // Outer Option = field present; inner Option = value or explicit null
+        #[serde(default)]
+        pub p_max_concurrent_tokens: Option<Option<u64>>,
+        #[serde(default)]
+        pub p_max_total_tokens: Option<Option<u64>>,
+        pub tolerance_pct: Option<f64>,
+        pub is_active: Option<bool>,
+        pub trade_mode: Option<String>,
+    }
+
+    impl UpdateRuleRequest {
+        /// True if the request would change any field FROZEN while a rule is live —
+        /// the token fingerprint, scalp entry gates, exit ladder, and matching
+        /// tolerance. The only fields editable mid-run are the "hot" set:
+        /// `buy_amount` + concurrency caps + `rule_name`. `trade_mode` is checked
+        /// separately (by value). Used by the deploy update edge's live-freeze guard.
+        pub fn touches_frozen_fields(&self) -> bool {
+            self.p_exit_take_profit.is_some()
+                || self.p_exit_stop_loss.is_some()
+                || self.p_exit_trailing_stop_pct.is_some()
+                || self.p_exit_time_stop_secs.is_some()
+                || self.p_exit_stall_secs.is_some()
+                || self.p_exit_liquidity_drop_pct.is_some()
+                || self.p_exit_cohort_ratio.is_some()
+                || self.p_entry_min_age_secs.is_some()
+                || self.p_entry_max_age_secs.is_some()
+                || self.p_entry_min_alive_sol.is_some()
+                || self.p_entry_min_organic_sol.is_some()
+                || self.p_entry_pullback_pct.is_some()
+                || self.p_entry_higher_low_secs.is_some()
+                || self.p_entry_max_cohort_held.is_some()
+                || self.p_entry_min_liquidity_sol.is_some()
+                || self.p_entry_min_organic_liq.is_some()
+                || self.p_token_initial_buy_sol.is_some()
+                || self.p_token_cu_limit.is_some()
+                || self.p_token_cu_price.is_some()
+                || self.p_token_ix_labels.is_some()
+                || self.p_token_max_sol_cost.is_some()
+                || self.p_token_spendable_sol_in.is_some()
+                || self.tolerance_pct.is_some()
+        }
+    }
 
     /// Reject percent params outside their valid range. Same model as tpsl1, plus
     /// the scalp Pullback %, Cohort Exit Ratio %, and Max Cohort Held %.
