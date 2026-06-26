@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::sync::Arc;
 
-use crate::state::app_state::AppState;
+use crate::state::local_state::LocalState;
 
 // ---------------------------------------------------------------------------
 // Response types
@@ -38,7 +38,7 @@ pub struct PersistedCreatorProfile {
 
 /// `GET /api/tokens/:mint/analysis` — all analysis results for a token.
 pub async fn get_token_analysis(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<LocalState>>,
     path: web::Path<String>,
 ) -> impl Responder {
     let mint = path.into_inner();
@@ -68,7 +68,7 @@ pub async fn get_token_analysis(
 
 /// `GET /api/creators/:wallet` — persisted creator profile from DB.
 pub async fn get_creator(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<LocalState>>,
     path: web::Path<String>,
 ) -> impl Responder {
     let wallet = path.into_inner();
@@ -150,7 +150,7 @@ fn clamp_page(limit: i64, offset: i64) -> (i64, i64) {
 
 /// `GET /api/analysis?limit=&offset=` — all analysis results, newest first.
 pub async fn list_analysis_results(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<LocalState>>,
     query: web::Query<ListParams>,
 ) -> impl Responder {
     let repo = state.analysis_repo();
@@ -178,7 +178,7 @@ pub async fn list_analysis_results(
 
 /// `GET /api/creators?limit=&offset=` — all creator profiles, most suspicious first.
 pub async fn list_creators(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<LocalState>>,
     query: web::Query<ListParams>,
 ) -> impl Responder {
     let repo = state.analysis_repo();

@@ -22,7 +22,8 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::models::grouped_sweep::{GroupedSweepGroupWrite, GroupedSweepResult, GroupedSweepRun};
-use crate::state::app_state::{AppState, SweepCorpusCache};
+use crate::state::app_state::SweepCorpusCache;
+use crate::state::local_state::LocalState;
 use crate::storage::repositories::grouped_sweep_repo::{GroupedSweepRepo, GroupedSweepTables};
 use crate::sweep::aggregate::ComboMetrics;
 use crate::sweep::corpus::{
@@ -278,7 +279,7 @@ fn resolve_sort(col: &str, dir: &str) -> Option<SortSpec> {
 // ---------------------------------------------------------------------------
 
 pub async fn start_grouped_sweep(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<LocalState>>,
     body: web::Json<StartGroupedSweepBody>,
 ) -> impl Responder {
     let b = body.into_inner();
@@ -345,7 +346,7 @@ pub async fn start_grouped_sweep(
 /// Post-admission outcomes (done / cancel / error) are surfaced via the DB run
 /// status + the `SweepFinished` SSE frame, not this function's (now `()`) return.
 async fn run_grouped_sweep_job(
-    state: Arc<AppState>,
+    state: Arc<LocalState>,
     b: StartGroupedSweepBody,
     tables: GroupedSweepTables,
     early_tx: tokio::sync::oneshot::Sender<HttpResponse>,
@@ -914,7 +915,7 @@ fn metrics_to_result(m: &ComboMetrics) -> GroupedSweepResult {
 
 /// `GET /api/strategies/sweeps?strategy_id=tpsl2&limit=50` — runs, newest first.
 pub async fn list_runs(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<LocalState>>,
     query: web::Query<RunsQuery>,
 ) -> impl Responder {
     let tables = match registry::tables_for(&query.strategy_id) {
@@ -934,7 +935,7 @@ pub async fn list_runs(
 /// `GET /api/strategies/sweeps/{run_id}/groups?strategy_id=tpsl2` — group
 /// summaries for a run (best expectancy first).
 pub async fn list_groups(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<LocalState>>,
     path: web::Path<Uuid>,
     query: web::Query<StrategyQuery>,
 ) -> impl Responder {
@@ -959,7 +960,7 @@ pub async fn list_groups(
 /// The `X-Total-Count` response header carries the unfiltered group total so the
 /// frontend can render a correct page count without a second round-trip.
 pub async fn list_results(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<LocalState>>,
     path: web::Path<(Uuid, Uuid)>,
     query: web::Query<ResultsQuery>,
 ) -> HttpResponse {
@@ -1031,7 +1032,7 @@ pub async fn list_results(
 /// a partial `cancelled` run, announced via the `SweepFinished` SSE frame). A no-op
 /// when no sweep is running. Logs every hit so the request reaching the backend is
 /// positively confirmable in the log (vs. a cancel stuck queued in the browser).
-pub async fn cancel_grouped_sweep(state: web::Data<Arc<AppState>>) -> impl Responder {
+pub async fn cancel_grouped_sweep(state: web::Data<Arc<LocalState>>) -> impl Responder {
     let running = state.sweep_running.load(Ordering::Acquire);
     tracing::info!(running, "grouped sweep: cancel requested");
     if running {
@@ -1043,7 +1044,7 @@ pub async fn cancel_grouped_sweep(state: web::Data<Arc<AppState>>) -> impl Respo
 /// `DELETE /api/strategies/sweeps/{run_id}?strategy_id=tpsl2` — drop one run.
 /// Groups + results cascade. 404 if the id isn't found.
 pub async fn delete_run(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<LocalState>>,
     path: web::Path<Uuid>,
     query: web::Query<StrategyQuery>,
 ) -> impl Responder {
@@ -1074,7 +1075,7 @@ pub struct RenameBody {
 /// `PATCH /api/strategies/sweeps/{run_id}?strategy_id=tpsl2` — set or clear a
 /// run's user-given name. 404 if the id isn't found.
 pub async fn rename_run(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<LocalState>>,
     path: web::Path<Uuid>,
     query: web::Query<StrategyQuery>,
     body: web::Json<RenameBody>,
@@ -1103,7 +1104,7 @@ pub async fn rename_run(
 /// runs created strictly before `before` (groups + results cascade). `before` is
 /// required so this can't accidentally wipe everything.
 pub async fn prune_runs(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<LocalState>>,
     query: web::Query<PruneQuery>,
 ) -> impl Responder {
     let tables = match registry::tables_for(&query.strategy_id) {
@@ -1140,7 +1141,7 @@ pub struct TokenResultsQuery {
 /// loaded from the Parquet cache (near-instant for settled windows) so this
 /// endpoint is cheap to call on repeat.
 pub async fn list_token_results(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<LocalState>>,
     path: web::Path<(Uuid, Uuid)>,
     query: web::Query<TokenResultsQuery>,
 ) -> impl Responder {

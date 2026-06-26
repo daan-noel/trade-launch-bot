@@ -16,7 +16,7 @@ use actix_web::{web, HttpResponse, Responder};
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::state::app_state::AppState;
+use crate::state::local_state::LocalState;
 use crate::state::sim_results::SimOutcome;
 use crate::state::swing_results::SwingOutcome;
 
@@ -51,7 +51,7 @@ struct JobsStatus {
 }
 
 /// `GET /api/jobs/status` — snapshot of every running background job.
-pub async fn job_status(state: web::Data<Arc<AppState>>) -> impl Responder {
+pub async fn job_status(state: web::Data<Arc<LocalState>>) -> impl Responder {
     let sweep = if state.sweep_running.load(Ordering::Acquire) {
         let (processed, total) = state.sweep_progress.snapshot();
         Some(SweepStatus { processed, total })
@@ -96,7 +96,7 @@ pub async fn job_status(state: web::Data<Arc<AppState>>) -> impl Responder {
 /// cancel for a rule's in-flight simulation. A no-op (`{"cancelling": false}`)
 /// when no simulation is running for that rule.
 pub async fn cancel_simulation(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<LocalState>>,
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
     let rid = rule_id.into_inner();
@@ -112,7 +112,7 @@ pub async fn cancel_simulation(
 
 /// `GET /api/jobs/simulations/{rule_id}/result` — collect the terminal outcome of
 /// a finished simulation (started via the per-strategy `POST .../simulate`). The
-/// detached run stores its result in [`AppState::sim_results`] on completion and
+/// detached run stores its result in [`LocalState::sim_results`] on completion and
 /// the client fetches it here after the `simulation_finished` SSE, so a long
 /// backtest's result is never tied to the lifetime of the starting request —
 /// the structural source of the old `FETCH_ERROR`. Strategy-agnostic (keyed by
@@ -123,7 +123,7 @@ pub async fn cancel_simulation(
 /// - 400 / 404 / 500 + `{"error": …}` — the run failed (status mirrors the cause)
 /// - 404 + `{"error": …}` — no result (still running, not started, or expired)
 pub async fn simulation_result(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<LocalState>>,
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
     let rid = rule_id.into_inner();
@@ -152,7 +152,7 @@ pub async fn simulation_result(
 /// the client run id (`String`). A no-op (`{"cancelling": false}`) when no run is
 /// in flight for that id.
 pub async fn cancel_swing(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<LocalState>>,
     run_id: web::Path<String>,
 ) -> impl Responder {
     let rid = run_id.into_inner();
@@ -168,7 +168,7 @@ pub async fn cancel_swing(
 
 /// `GET /api/jobs/swings/{run_id}/result` — collect the terminal outcome of a
 /// finished "Swing Detection All" run (started via `POST /api/tokens/swings/batch`).
-/// The detached scan stores its result in [`AppState::swing_results`] on completion
+/// The detached scan stores its result in [`LocalState::swing_results`] on completion
 /// and the client fetches it here after the `swing_detection_finished` SSE, so a
 /// long run's result is never tied to the lifetime of the starting request — the
 /// structural source of the old `FETCH_ERROR`. The swing twin of
@@ -179,7 +179,7 @@ pub async fn cancel_swing(
 /// - 500 + `{"error": …}` — the run failed
 /// - 404 + `{"error": …}` — no result (still running, not started, or expired)
 pub async fn swing_result(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<LocalState>>,
     run_id: web::Path<String>,
 ) -> impl Responder {
     let rid = run_id.into_inner();

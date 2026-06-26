@@ -9,7 +9,7 @@ use crate::{
     analyzers::swing_analyzer::{detect_swings, SwingLeg, SwingParams},
     models::ingest::SseEvent,
     models::trade::Trade,
-    state::app_state::AppState,
+    state::local_state::LocalState,
     state::job_progress::ProgressCell,
     state::swing_results::SwingOutcome,
     state::token_cache::MAX_TRADES_RETAINED,
@@ -134,7 +134,7 @@ pub struct SwingBatchResponse {
 /// trade filters as the batch endpoint; send `{}` to use defaults over full
 /// history.
 pub async fn detect_token_swings(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<LocalState>>,
     path: web::Path<String>,
     body: web::Json<SwingDetectRequest>,
 ) -> impl Responder {
@@ -213,7 +213,7 @@ const BATCH_FETCH_CONCURRENCY: usize = 16;
 /// process under load — severed that socket and surfaced on the client as a
 /// `FETCH_ERROR`, even though the work was finishing fine. Instead the whole run
 /// is one detached job: it fans the DB loads + CPU scans out internally, stores
-/// its terminal outcome in [`AppState::swing_results`], and the client collects it
+/// its terminal outcome in [`LocalState::swing_results`], and the client collects it
 /// via `GET /api/jobs/swings/{run_id}/result` once the `swing_detection_finished`
 /// SSE fires — no long-held connection to cut.
 ///
@@ -222,7 +222,7 @@ const BATCH_FETCH_CONCURRENCY: usize = 16;
 /// **before** storing the outcome, so the tokens-list chain-column sort reads a
 /// fully-populated run the moment the client sees the result.
 pub async fn detect_tokens_swings_batch(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<LocalState>>,
     body: web::Json<SwingBatchRequest>,
 ) -> impl Responder {
     let SwingBatchRequest {
@@ -271,7 +271,7 @@ pub async fn detect_tokens_swings_batch(
     // result present.
     actix_web::rt::spawn(async move {
         struct SwingGuard {
-            app: Arc<AppState>,
+            app: Arc<LocalState>,
             run_id: String,
             cancel: Arc<AtomicBool>,
         }
