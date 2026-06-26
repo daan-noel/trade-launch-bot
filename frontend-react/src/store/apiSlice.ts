@@ -68,6 +68,17 @@ const withAnalysisRange = (url: string, { from, to }: StrategyRuleArg): string =
 const strategyResultTag = (a: StrategyRuleArg) =>
   ({ type: 'StrategyResult', id: `${a.strategy}:${a.ruleId}` }) as const;
 
+/**
+ * Per-backend feature advertisement (`GET /api/system/capabilities`). The deploy
+ * bin reports `{ has_live_trading: true, has_analysis: false }`; the local bin the
+ * inverse. Fetched once at boot to gate nav + lazy routes (T16) so the SPA can
+ * serve either backend without hard-coding which one it's talking to.
+ */
+export interface Capabilities {
+  has_live_trading: boolean;
+  has_analysis: boolean;
+}
+
 export interface TokensArgs {
   search: string;
   limit: number;
@@ -537,6 +548,13 @@ export const apiSlice = createApi({
       invalidatesTags: ['Cashback'],
     }),
 
+    // Per-backend capability flags — fetched once at boot to gate nav + lazy
+    // routes (deploy = live trading, local = analysis). Static per backend, so it
+    // is subscribed app-wide and never refetched within a session.
+    getCapabilities: builder.query<Capabilities, void>({
+      query: () => '/api/system/capabilities',
+    }),
+
     // System reads shared app-wide (header + price toggle). Folding them into
     // RTK Query collapses the StrictMode double-fire and the multiple
     // independent callers into a single deduped request per cache key.
@@ -619,6 +637,7 @@ export const {
   useSellTokenMutation,
   useGetCashbackStatusQuery,
   useClaimCashbackMutation,
+  useGetCapabilitiesQuery,
   useGetSolPriceQuery,
   useLazyGetSolPriceQuery,
   useGetLiveModeQuery,

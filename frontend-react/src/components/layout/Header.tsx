@@ -10,6 +10,7 @@ import {
   useSetLiveModeMutation,
 } from 'store/apiSlice';
 import { usePriceUnit } from 'context/PriceUnitContext';
+import { useCapabilities } from 'hooks/useCapabilities';
 import { cn } from 'lib/cn';
 
 function NavItem({ to, children }: { to: string; children: React.ReactNode }) {
@@ -38,7 +39,10 @@ export function Header() {
   const analysisActive = location.pathname.startsWith('/analysis');
   const strategiesActive = location.pathname.startsWith('/strategies');
   const profilesActive = location.pathname.startsWith('/profiles');
-  const { data: liveMode = false } = useGetLiveModeQuery();
+  const { hasLiveTrading, hasAnalysis } = useCapabilities();
+  // Live mode + holdings routes only exist on the deploy backend; skip the query
+  // on the analysis backend so it doesn't 404 on every header mount.
+  const { data: liveMode = false } = useGetLiveModeQuery(undefined, { skip: !hasLiveTrading });
   const { data: usdRate } = useGetSolPriceQuery();
   const [setLiveMode] = useSetLiveModeMutation();
   const { setUsdRate } = usePriceUnit();
@@ -80,41 +84,47 @@ export function Header() {
         <nav className="flex min-w-0 flex-1 items-center gap-0.5 overflow-visible rounded-lg border border-white/6 bg-white/3 p-1">
           <NavItem to="/">Home</NavItem>
           <NavItem to="/dashboard">Dashboard</NavItem>
+          {/* Capability-gated nav (T16): live-trading entries only show against
+              the deploy backend, analysis entries only against the local one. */}
           <NavDropdown
             label="Tokens"
             isActive={tokensActive}
             items={[
               { to: '/tokens', label: 'All tokens' },
-              { to: '/token/sync', label: 'Sync token' },
+              ...(hasLiveTrading ? [{ to: '/token/sync', label: 'Sync token' }] : []),
             ]}
           />
-          <NavItem to="/transactions">Transactions</NavItem>
-          <NavDropdown
-            label="Analysis"
-            isActive={analysisActive}
-            items={[
-              { to: '/analysis/general', label: 'General' },
-              { to: '/analysis/swing-detection', label: 'Swing detection' },
-            ]}
-          />
+          {hasLiveTrading && <NavItem to="/transactions">Transactions</NavItem>}
+          {hasAnalysis && (
+            <NavDropdown
+              label="Analysis"
+              isActive={analysisActive}
+              items={[
+                { to: '/analysis/general', label: 'General' },
+                { to: '/analysis/swing-detection', label: 'Swing detection' },
+              ]}
+            />
+          )}
           <NavDropdown
             label="Profiles"
             isActive={profilesActive}
             items={[
-              { to: '/profiles/mine', label: 'My wallets' },
+              ...(hasLiveTrading ? [{ to: '/profiles/mine', label: 'My wallets' }] : []),
               { to: '/profiles/other', label: 'Other profiles' },
             ]}
           />
-          <NavDropdown
-            label="Strategies"
-            isActive={strategiesActive}
-            items={[
-              { to: '/strategies/tpsl1', label: 'TP / SL Sniper 1' },
-              { to: '/strategies/tpsl2', label: 'TP / SL Sniper 2' },
-              { to: '/strategies/grouped-sweep-tpsl1', label: 'Grouped Sweep · TPSL1' },
-              { to: '/strategies/grouped-sweep-tpsl2', label: 'Grouped Sweep · TPSL2' },
-            ]}
-          />
+          {hasAnalysis && (
+            <NavDropdown
+              label="Strategies"
+              isActive={strategiesActive}
+              items={[
+                { to: '/strategies/tpsl1', label: 'TP / SL Sniper 1' },
+                { to: '/strategies/tpsl2', label: 'TP / SL Sniper 2' },
+                { to: '/strategies/grouped-sweep-tpsl1', label: 'Grouped Sweep · TPSL1' },
+                { to: '/strategies/grouped-sweep-tpsl2', label: 'Grouped Sweep · TPSL2' },
+              ]}
+            />
+          )}
           <NavItem to="/settings">Settings</NavItem>
         </nav>
 
@@ -122,13 +132,18 @@ export function Header() {
           <TimezoneSelect />
           <PriceUnitToggle />
 
-          <div className="hidden h-5 w-px bg-white/8 sm:block" aria-hidden />
-
-          <StatusButton
-            state={liveMode ? 'live' : 'dead'}
-            label={liveMode ? 'Helius / LIVE' : 'Helius / DEAD'}
-            onClick={toggleLive}
-          />
+          {/* Live-mode toggle is deploy-only; the local (analysis) backend has no
+              ingest/trading to switch, so the control is hidden there. */}
+          {hasLiveTrading && (
+            <>
+              <div className="hidden h-5 w-px bg-white/8 sm:block" aria-hidden />
+              <StatusButton
+                state={liveMode ? 'live' : 'dead'}
+                label={liveMode ? 'Helius / LIVE' : 'Helius / DEAD'}
+                onClick={toggleLive}
+              />
+            </>
+          )}
         </div>
       </div>
     </header>

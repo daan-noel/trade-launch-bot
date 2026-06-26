@@ -4,6 +4,7 @@ import { AppProviders } from 'context/AppProviders';
 import { AppLayout } from 'components/layout/AppLayout';
 import { RouteErrorBoundary } from 'components/ui/ErrorBoundary';
 import { SuspenseFallback } from 'components/ui/SuspenseFallback';
+import { useCapabilities } from 'hooks/useCapabilities';
 
 // Code-split each route into its own chunk so heavy tables/charts/sweep stay out
 // of the initial bundle. Pages export named (not default) components, so map the
@@ -24,6 +25,56 @@ const Tpsl2GroupedSweepPage = lazy(() => import('pages/strategies/sweep/Tpsl2Gro
 const SettingsPage = lazy(() => import('pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
 const NotFoundPage = lazy(() => import('pages/not-found/NotFoundPage').then((m) => ({ default: m.NotFoundPage })));
 
+/**
+ * Capability-gated route table (T16). Live-trading routes (sync, transactions,
+ * wallet holdings) only mount against the deploy backend; analysis routes
+ * (analysis pages, strategy rule editor + sweeps) only against the local backend.
+ * Gated routes are simply omitted on the wrong backend, so their paths fall
+ * through to `NotFoundPage`. Boots the gate from `useCapabilities`, which holds
+ * the whole table back behind a fallback until the one boot fetch resolves to
+ * avoid mounting then unmounting a restricted page.
+ */
+function AppRoutes() {
+  const { hasLiveTrading, hasAnalysis, ready } = useCapabilities();
+  if (!ready) return <SuspenseFallback />;
+  return (
+    <Routes>
+      <Route element={<AppLayout />}>
+        <Route index element={<HomePage />} />
+        <Route path="dashboard" element={<DashboardPage />} />
+        <Route path="tokens" element={<TokensPage />} />
+        {hasLiveTrading && <Route path="token/sync" element={<SyncTokenPage />} />}
+        {hasLiveTrading && <Route path="transactions" element={<TransactionsPage />} />}
+        {hasAnalysis && (
+          <>
+            <Route path="analysis" element={<Navigate to="/analysis/general" replace />} />
+            <Route path="analysis/general" element={<AnalysisPage />} />
+            <Route path="analysis/swing-detection" element={<SwingDetectionPage />} />
+          </>
+        )}
+        {hasLiveTrading && (
+          <>
+            <Route path="wallet" element={<Navigate to="/profiles/mine" replace />} />
+            <Route path="profiles/mine" element={<MyWalletPage />} />
+          </>
+        )}
+        <Route path="profiles/other" element={<OtherProfilesPage />} />
+        {hasAnalysis && (
+          <>
+            <Route path="strategies/tpsl1" element={<Tpsl1Page />} />
+            <Route path="strategies/tpsl2" element={<Tpsl2Page />} />
+            <Route path="strategies/grouped-sweep-tpsl1" element={<Tpsl1GroupedSweepPage />} />
+            <Route path="strategies/grouped-sweep-tpsl2" element={<Tpsl2GroupedSweepPage />} />
+            <Route path="strategies" element={<Navigate to="/strategies/tpsl2" replace />} />
+          </>
+        )}
+        <Route path="settings" element={<SettingsPage />} />
+        <Route path="*" element={<NotFoundPage />} />
+      </Route>
+    </Routes>
+  );
+}
+
 export default function App() {
   return (
     <BrowserRouter>
@@ -32,28 +83,7 @@ export default function App() {
             layout, providers-level render). Resets on route change. */}
         <RouteErrorBoundary variant="root">
           <Suspense fallback={<SuspenseFallback />}>
-            <Routes>
-            <Route element={<AppLayout />}>
-              <Route index element={<HomePage />} />
-              <Route path="dashboard" element={<DashboardPage />} />
-              <Route path="tokens" element={<TokensPage />} />
-              <Route path="token/sync" element={<SyncTokenPage />} />
-              <Route path="transactions" element={<TransactionsPage />} />
-              <Route path="analysis" element={<Navigate to="/analysis/general" replace />} />
-              <Route path="analysis/general" element={<AnalysisPage />} />
-              <Route path="analysis/swing-detection" element={<SwingDetectionPage />} />
-              <Route path="wallet" element={<Navigate to="/profiles/mine" replace />} />
-              <Route path="profiles/mine" element={<MyWalletPage />} />
-              <Route path="profiles/other" element={<OtherProfilesPage />} />
-              <Route path="strategies/tpsl1" element={<Tpsl1Page />} />
-              <Route path="strategies/tpsl2" element={<Tpsl2Page />} />
-              <Route path="strategies/grouped-sweep-tpsl1" element={<Tpsl1GroupedSweepPage />} />
-              <Route path="strategies/grouped-sweep-tpsl2" element={<Tpsl2GroupedSweepPage />} />
-              <Route path="strategies" element={<Navigate to="/strategies/tpsl2" replace />} />
-              <Route path="settings" element={<SettingsPage />} />
-              <Route path="*" element={<NotFoundPage />} />
-            </Route>
-            </Routes>
+            <AppRoutes />
           </Suspense>
         </RouteErrorBoundary>
       </AppProviders>

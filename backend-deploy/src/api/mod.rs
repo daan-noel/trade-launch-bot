@@ -1,6 +1,16 @@
 pub mod handlers;
 
-use actix_web::web;
+use actix_web::{web, HttpResponse};
+
+/// Static capability advertisement for the deploy bin: live trading on, analysis
+/// (sweeps/backtests/swing) off. The frontend fetches this once at boot to gate
+/// nav + lazy routes (T16). Mirror of the local bin's inverse response.
+async fn get_capabilities() -> HttpResponse {
+    HttpResponse::Ok().json(serde_json::json!({
+        "has_live_trading": true,
+        "has_analysis": false,
+    }))
+}
 
 /// Register deploy-only routes (live trading, token sync, live-mode toggle,
 /// position reads, on-chain Solana queries, cashback). Call alongside
@@ -12,6 +22,8 @@ use actix_web::web;
 pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/api")
+            // Capability advertisement (frontend nav/route gating)
+            .route("/system/capabilities", web::get().to(get_capabilities))
             // Token sync
             .route("/token/sync", web::post().to(handlers::tokens::sync_token))
             .route("/token/sync/preview", web::post().to(handlers::tokens::preview_sync))
