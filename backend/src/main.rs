@@ -812,6 +812,53 @@ async fn main() -> anyhow::Result<()> {
         trade_signals.clone(),
     ));
 
+    // Phase 1 of the deploy/local crate split: build the three narrow states by
+    // cloning `AppState`'s handles, so all four states share the same underlying
+    // objects (every field is an Arc/PgPool/watch/broadcast handle — clone = cheap
+    // refcount bump). Handlers migrate off `AppState` onto these in T4c–T4e; the
+    // fat `AppState` is removed once nothing references it (T4f).
+    let core_state = Arc::new(state::core_state::CoreState {
+        db: app_state.db.clone(),
+        batch_db: app_state.batch_db.clone(),
+        helius_rpc_url: app_state.helius_rpc_url.clone(),
+        helius_laserstream_url: app_state.helius_laserstream_url.clone(),
+        helius_api_key: app_state.helius_api_key.clone(),
+        pump_program_id: app_state.pump_program_id.clone(),
+        token_cache: app_state.token_cache.clone(),
+        token_list: app_state.token_list.clone(),
+        sse_tx: app_state.sse_tx.clone(),
+        sse_frame_tx: app_state.sse_frame_tx.clone(),
+        settings: app_state.settings.clone(),
+        sol_price: app_state.sol_price.clone(),
+    });
+    let deploy_state = Arc::new(state::deploy_state::DeployState {
+        core: core_state.clone(),
+        trader: app_state.trader.clone(),
+        tpsl1_cache: app_state.tpsl1_cache.clone(),
+        tpsl2_cache: app_state.tpsl2_cache.clone(),
+        pool_index: app_state.pool_index.clone(),
+        pools_changed: app_state.pools_changed.clone(),
+        trade_signals: app_state.trade_signals.clone(),
+        sync_gate: app_state.sync_gate.clone(),
+        live_mode: app_state.live_mode.clone(),
+    });
+    let local_state = Arc::new(state::local_state::LocalState {
+        core: core_state.clone(),
+        backtest_trade_cache: app_state.backtest_trade_cache.clone(),
+        sweep_running: app_state.sweep_running.clone(),
+        sweep_cancel: app_state.sweep_cancel.clone(),
+        sim_cancels: app_state.sim_cancels.clone(),
+        backtest_sem: app_state.backtest_sem.clone(),
+        sweep_progress: app_state.sweep_progress.clone(),
+        sim_progress: app_state.sim_progress.clone(),
+        sim_results: app_state.sim_results.clone(),
+        swing_cancels: app_state.swing_cancels.clone(),
+        swing_progress: app_state.swing_progress.clone(),
+        swing_results: app_state.swing_results.clone(),
+        swing_runs: app_state.swing_runs.clone(),
+        sweep_corpus_cache: app_state.sweep_corpus_cache.clone(),
+    });
+
     // Keep the token-list DB base fresh so `GET /api/tokens` reflects the whole
     // seeded universe (tokens + persisted stats), not just mints still resident in
     // the live cache after idle eviction. Fire-and-forget like the eviction sweep.
@@ -856,6 +903,9 @@ async fn main() -> anyhow::Result<()> {
             app_state.clone(),
         ));
         let http_state = app_state.clone();
+        let http_core = core_state.clone();
+        let http_deploy = deploy_state.clone();
+        let http_local = local_state.clone();
         let http_workers = settings.http_workers;
         let cors_allowed_origin = settings.cors_allowed_origin.clone();
         let api_auth = ApiAuth {
@@ -887,6 +937,9 @@ async fn main() -> anyhow::Result<()> {
                 .wrap(from_fn(require_bearer_auth))
                 .wrap(cors)
                 .app_data(web::Data::new(http_state.clone()))
+                .app_data(web::Data::new(http_core.clone()))
+                .app_data(web::Data::new(http_deploy.clone()))
+                .app_data(web::Data::new(http_local.clone()))
                 .app_data(web::Data::new(api_auth.clone()))
                 .configure(api::configure)
         })
