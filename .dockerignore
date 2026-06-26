@@ -22,5 +22,9 @@ node_modules/
 .idea/
 *.log
 
-# Docs / plans not needed for the build
-@project_plans/
+# Docs / plans not needed for the build (excluded so a docs edit doesn't bust
+# the builder's source-copy layer and force a recompile)
+@plans/
+@arch/
+*.md
+target-check/

@@ -877,53 +877,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "backend"
-version = "0.1.0"
-dependencies = [
- "actix-cors",
- "actix-web",
- "anyhow",
- "arrow",
- "async-trait",
- "backend-core",
- "backend-deploy",
- "backend-local",
- "base64 0.22.1",
- "bincode",
- "borsh 1.6.1",
- "bs58 0.5.1",
- "chrono",
- "dashmap 4.0.2",
- "dotenvy",
- "futures-util",
- "ingest-laserstream",
- "memory-stats",
- "parquet",
- "prost",
- "pump-trader",
- "rand 0.8.6",
- "rayon",
- "reqwest",
- "serde",
- "serde_json",
- "solana-client",
- "solana-sdk",
- "spl-associated-token-account",
- "spl-memo",
- "spl-token",
- "spl-token-2022",
- "sqlx",
- "thiserror",
- "tokio",
- "tokio-stream",
- "tonic",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
-]
-
-[[package]]
 name = "backend-core"
 version = "0.1.0"
 dependencies = [

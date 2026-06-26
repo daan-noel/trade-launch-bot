@@ -1,6 +1,11 @@
 # syntax=docker/dockerfile:1
 # ---------------------------------------------------------------------------
-# Multi-stage build for the Rust backend (actix-web + sqlx + solana-sdk).
+# Multi-stage build for the LIVE backend bin (`backend-deploy`): ingest +
+# strategies + trade execution + HTTP API (actix-web + sqlx + solana-sdk).
+#
+# This is the ONLY backend image shipped to EC2. The analysis bin
+# (`backend-local`, with arrow/parquet/rayon) runs on the workstation and is
+# never containerised — see CLAUDE.md "Deployed server".
 #
 # cargo-chef caches the (huge) dependency tree as its own layer, so day-to-day
 # updates only recompile YOUR code (~1 min) instead of all ~400 crates (~10 min).
@@ -20,7 +25,7 @@ FROM chef AS planner
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
-# --- Build: cook deps (cached), then compile the backend binary -------------
+# --- Build: cook deps (cached), then compile the backend-deploy binary -------
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 # Cook the dependency tree. The cargo-chef layer caches at the Docker level;
@@ -30,19 +35,16 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
-    cargo chef cook --release --recipe-path recipe.json
-# Now bring in the real source and build just our crate.
+    cargo chef cook --release --recipe-path recipe.json --bin backend-deploy
+# Now bring in the real source and build just the live bin.
 COPY . .
 # target/ is a cache mount, so it is NOT persisted into the image layer —
-# copy the finished binary out within the same RUN. NOTE: must NOT copy to
-# /app/backend — that path already exists as the `backend/` crate source dir
-# (from COPY . .), so `cp file /app/backend` drops the binary INSIDE it as
-# /app/backend/backend. Copy to /usr/local/bin/backend instead.
+# copy the finished binary out within the same RUN.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
-    cargo build --release --bin backend \
-    && cp /app/target/release/backend /usr/local/bin/backend
+    cargo build --release --bin backend-deploy \
+    && cp /app/target/release/backend-deploy /usr/local/bin/backend-deploy
 
 # --- Runtime: slim image with just the binary -------------------------------
 FROM debian:bookworm-slim AS runtime
@@ -51,7 +53,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY --from=builder /usr/local/bin/backend /usr/local/bin/backend
+COPY --from=builder /usr/local/bin/backend-deploy /usr/local/bin/backend-deploy
 # HOST/PORT are set in docker-compose.yml (must bind 0.0.0.0 inside the network).
 EXPOSE 8081
-CMD ["backend"]
+CMD ["backend-deploy"]

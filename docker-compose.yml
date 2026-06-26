@@ -85,10 +85,13 @@ services:
       timeout: 5s
       retries: 10
 
+  # The live trading bin (`backend-deploy`). Service stays named `backend` so
+  # nginx's `proxy_pass http://backend:8081` and `run.bat` keep working. The
+  # analysis bin (`backend-local`) is workstation-only and never built here.
   backend:
     build:
       context: .
-      dockerfile: backend/Dockerfile
+      dockerfile: backend-deploy/Dockerfile
     restart: unless-stopped
     # tini as PID 1: forwards SIGTERM to the binary (the kernel ignores SIGTERM for
     # PID 1 with no handler), so `docker stop`/redeploy kills it promptly instead of
