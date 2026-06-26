@@ -89,6 +89,40 @@ impl Settings {
 
         Ok(settings)
     }
+
+    /// Load configuration for the **local** (analysis box) bin. Unlike
+    /// [`Self::from_env`], the trading/ingest credentials (wallet key, nonce
+    /// accounts, sender + LaserStream endpoints) are NOT required — the local box
+    /// never trades or ingests, so demanding them would block a boot that has no
+    /// reason to hold them. Only `DATABASE_URL` (corpus) and `API_AUTH_TOKEN`
+    /// (mutating rule/sweep routes are fail-closed) are required; the Helius RPC
+    /// URL/key default to empty and are unused by local handlers.
+    pub fn from_env_local() -> anyhow::Result<Self> {
+        let settings = Self {
+            helius_api_key: env_or("HELIUS_API_KEY", ""),
+            helius_rpc_url: env_or("HELIUS_RPC_URL", ""),
+            helius_sender_urls: Vec::new(),
+            helius_laserstream_url: env_or("HELIUS_LASERSTREAM_URL", ""),
+            wallet_private_key: String::new(),
+            nonce_accounts: Vec::new(),
+            database_url: required("DATABASE_URL")?,
+            db_max_connections: env_parse_min("DB_MAX_CONNECTIONS", 64u32, 1)?,
+            db_min_connections: env_parse("DB_MIN_CONNECTIONS", 4u32)?,
+            db_api_max_connections: env_parse_min("DB_API_MAX_CONNECTIONS", 32u32, 1)?,
+            db_api_min_connections: env_parse("DB_API_MIN_CONNECTIONS", 2u32)?,
+            db_batch_max_connections: env_parse_min("DB_BATCH_MAX_CONNECTIONS", 16u32, 1)?,
+            db_batch_min_connections: env_parse("DB_BATCH_MIN_CONNECTIONS", 2u32)?,
+            db_acquire_timeout: Duration::from_secs(env_parse("DB_ACQUIRE_TIMEOUT_SECS", 10u64)?),
+            host: env_or("HOST", "127.0.0.1"),
+            port: env_parse("PORT", 8081)?,
+            http_enabled: env_parse("HTTP_ENABLED", true)?,
+            http_workers: env_parse_min("HTTP_WORKERS", 2usize, 1)?,
+            cors_allowed_origin: env_or("CORS_ALLOWED_ORIGIN", "*"),
+            api_auth_token: Some(required_non_empty("API_AUTH_TOKEN")?),
+        };
+
+        Ok(settings)
+    }
 }
 
 /// Helius Sender endpoints, newest-form first. Prefer the plural
