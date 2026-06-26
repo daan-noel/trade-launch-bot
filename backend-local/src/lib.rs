@@ -11,6 +11,7 @@
 
 pub use backend_core::models;
 
+pub mod api;
 pub mod analyzers;
 pub mod state;
 pub mod storage;

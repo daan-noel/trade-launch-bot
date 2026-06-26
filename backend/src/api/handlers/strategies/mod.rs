@@ -1,4 +1,6 @@
-pub mod grouped_sweep;
+// `grouped_sweep` (local) moved to `backend-local`; re-export so existing
+// `handlers::strategies::grouped_sweep::…` paths keep resolving.
+pub use backend_local::api::handlers::strategies::grouped_sweep;
 // The rule **domain** (`tpsl_rules_core`: request DTOs + validation + repo write)
 // moved to `backend-core`; re-export so existing `super::tpsl_rules_core::…`
 // paths in tpsl1/tpsl2 keep resolving.

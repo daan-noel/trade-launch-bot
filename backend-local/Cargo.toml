@@ -19,6 +19,8 @@ pump-constants = { path = "../pump-constants" }
 
 # Tokio
 tokio = { version = "1", features = ["full"] }
+# Streamed SSE progress in the grouped-sweep handler.
+tokio-stream = "0.1"
 
 # Web framework (for handlers + HTTP server)
 actix-web = "4"

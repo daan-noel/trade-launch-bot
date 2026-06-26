@@ -1,17 +1,15 @@
-//! Backend token handlers: re-exports the core token handlers (reads, list
-//! builder, creation stats, batch) and adds the backend-only ones — the local
-//! `list_tokens`, swing detection, analysis, and DB-sync handlers.
+//! Backend token handlers shim: re-exports the core token handlers (reads, list
+//! builder, creation stats, batch), the deploy DB-sync handlers, and the local
+//! analysis/list/swing handlers (now in `backend-local`), so `backend`'s paths
+//! resolve unchanged until the combined bin is deleted (T15).
 
 pub use backend_core::api::handlers::tokens::*;
 
-// `sync` (deploy DB-sync) moved to `backend-deploy`; re-export it. The local
-// analysis/list/swing handlers stay in `backend`.
+// Deploy DB-sync.
 pub use backend_deploy::api::handlers::tokens::{preview_sync, sync_token};
 
-mod analysis;
-mod list;
-mod swing;
-
-pub use analysis::*;
-pub use list::*;
-pub use swing::*;
+// Local analysis/list/swing.
+pub use backend_local::api::handlers::tokens::{
+    detect_token_swings, detect_tokens_swings_batch, get_creator, get_token_analysis,
+    list_analysis_results, list_creators, list_tokens,
+};
