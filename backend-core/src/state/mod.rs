@@ -7,3 +7,4 @@ pub mod core_state;
 pub mod token_cache;
 pub mod token_list_cache;
 pub mod token_metrics;
+pub mod trade_signals;

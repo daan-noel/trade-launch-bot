@@ -14,14 +14,16 @@ use serde_json::Value;
 use solana_sdk::pubkey::Pubkey;
 use tokio::sync::{mpsc, Notify};
 
+pub use backend_core::services::pda::derive_pump_swap_pool;
+
+use ingest_laserstream::{
+    adapter::build_raw_blob,
+    adapter_rpc::rpc_to_protobuf,
+    decoder::{DecodeOutput, HeliusDecoder},
+    proto::geyser::SubscribeUpdateTransaction,
+};
+
 use crate::{
-    config::constants::{PUMP_SWAP_PROGRAM_ID, WSOL_MINT},
-    ingest_laserstream::{
-        adapter::build_raw_blob,
-        adapter_rpc::rpc_to_protobuf,
-        decoder::{DecodeOutput, HeliusDecoder},
-        proto::geyser::SubscribeUpdateTransaction,
-    },
     models::{
         events::InternalEvent,
         token::Token,
@@ -162,34 +164,6 @@ pub fn derive_bonding_curve(mint: &str, pump_program_id: &str) -> anyhow::Result
     let program = Pubkey::from_str(pump_program_id).context("invalid pump program id")?;
     let (bc, _) = Pubkey::find_program_address(&[b"bonding-curve", mint_pk.as_ref()], &program);
     Ok(bc.to_string())
-}
-
-/// Derive the canonical PumpSwap pool address for a migrated pump.fun token.
-///
-/// Migrated coins use a fixed pool layout: the pool's creator is the pump
-/// program PDA `["pool-authority", mint]`, and the pool itself is the PumpSwap
-/// PDA `["pool", 0u16, pool_authority, base_mint, WSOL]` (canonical index 0,
-/// WSOL quote mint).
-pub fn derive_pump_swap_pool(mint: &str, pump_program_id: &str) -> anyhow::Result<String> {
-    let mint_pk = Pubkey::from_str(mint).context("invalid mint pubkey")?;
-    let pump = Pubkey::from_str(pump_program_id).context("invalid pump program id")?;
-    let swap = Pubkey::from_str(PUMP_SWAP_PROGRAM_ID).context("invalid pump swap program id")?;
-    let wsol = Pubkey::from_str(WSOL_MINT).context("invalid wsol mint")?;
-
-    let (authority, _) =
-        Pubkey::find_program_address(&[b"pool-authority", mint_pk.as_ref()], &pump);
-    let index: u16 = 0;
-    let (pool, _) = Pubkey::find_program_address(
-        &[
-            b"pool",
-            &index.to_le_bytes(),
-            authority.as_ref(),
-            mint_pk.as_ref(),
-            wsol.as_ref(),
-        ],
-        &swap,
-    );
-    Ok(pool.to_string())
 }
 
 pub fn validate_mint_address(mint: &str) -> Result<(), SyncError> {
@@ -1381,7 +1355,7 @@ mod amm_verification {
     //!   HELIUS_RPC_URL="<url>" cargo test -p backend amm_pool_derivation -- --ignored --nocapture
     use super::*;
     use crate::config::constants::{PUMP_FUN_PROGRAM_ID, PUMP_SWAP_PROGRAM_ID, WSOL_MINT};
-    use crate::ingest_laserstream::decoder::HeliusDecoder;
+    use ingest_laserstream::decoder::HeliusDecoder;
     use crate::services::helius_rpc::wrap_transaction_result;
     use serde_json::{json, Value};
 
@@ -1504,7 +1478,7 @@ mod amm_verification {
             idx.insert(derived.clone(), base_mint.clone());
             let amm_decoder =
                 HeliusDecoder::new(PUMP_FUN_PROGRAM_ID.to_string()).with_pool_index(idx);
-            let update = crate::ingest_laserstream::adapter_rpc::rpc_to_protobuf(
+            let update = ingest_laserstream::adapter_rpc::rpc_to_protobuf(
                 &wrap_transaction_result(sig, &tx_b64),
             )
             .expect("canonical swap must lower to protobuf");
@@ -1702,7 +1676,7 @@ mod amm_verification {
     #[tokio::test]
     #[ignore = "requires HELIUS_RPC_URL with the archival API + network"]
     async fn gtfa_base64_decodes_via_protobuf() {
-        use crate::ingest_laserstream::adapter_rpc::rpc_to_protobuf;
+        use ingest_laserstream::adapter_rpc::rpc_to_protobuf;
         use base64::{engine::general_purpose::STANDARD, Engine};
         use solana_sdk::{message::VersionedMessage, transaction::VersionedTransaction};
 

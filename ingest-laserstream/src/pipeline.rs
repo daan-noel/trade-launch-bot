@@ -9,7 +9,7 @@ use tracing::{debug, info, warn};
 
 use serde_json::Value;
 
-use crate::{
+use backend_core::{
     config::constants::{POOL_REFRESH_INTERVAL_SECONDS, POOL_SUBSCRIBE_ACTIVITY_WINDOW_SECONDS},
     models::{
         events::{
@@ -19,13 +19,14 @@ use crate::{
         ingest::{IngestKind, SseEvent, StrategyPing},
         transaction::RawTransaction,
     },
-    services::token_sync::derive_pump_swap_pool,
+    services::pda::derive_pump_swap_pool,
     state::token_cache::{TokenCache, TokenState},
     state::token_metrics::metrics_from_state,
     state::trade_signals::TradeSignals,
     storage::repositories::settings_repo::AppSettings,
-    trader::PumpFunTrader,
 };
+
+use crate::TraderHook;
 
 // Cloned ingest internals — self-contained copies, not imported from `ingest/`.
 use super::db_writer::{DbWriteOp, RawBlobJob};
@@ -76,7 +77,7 @@ pub struct IngestPipeline {
     /// Trader handle — fed live reserve snapshots from each tracked-token trade
     /// and asked to pre-warm a token's AMM pool caches on its first AMM trade, so
     /// the trade path reads cached reserves / a warm pool instead of RPC.
-    trader: Arc<PumpFunTrader>,
+    trader: Arc<dyn TraderHook>,
     /// Shared wakeup hub. The mint lane is pinged from `on_trade_executed` right
     /// after the trade is appended to the token cache, so the TPSL2 scalp-entry
     /// arming wakes on the trade instead of re-reading the cache on a fixed timer.
@@ -94,7 +95,7 @@ impl IngestPipeline {
         strategy_tx: mpsc::Sender<StrategyPing>,
         sse_tx: broadcast::Sender<SseEvent>,
         settings_rx: watch::Receiver<AppSettings>,
-        trader: Arc<PumpFunTrader>,
+        trader: Arc<dyn TraderHook>,
         trade_signals: Arc<TradeSignals>,
     ) -> Self {
         let (track_mayhem, track_post_migration) = {

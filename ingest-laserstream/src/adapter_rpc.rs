@@ -234,10 +234,10 @@ mod tests {
 
     use super::rpc_to_protobuf;
     use super::super::decoder::{DecodeOutput, HeliusDecoder};
-    use crate::config::constants::{
+    use backend_core::config::constants::{
         BUY_DISCRIMINATOR, COMPUTE_BUDGET_PROGRAM_ID, PUMP_FUN_PROGRAM_ID, TRADE_EVENT_DISCRIMINATOR,
     };
-    use crate::models::events::InternalEvent;
+    use backend_core::models::events::InternalEvent;
 
     fn pk(b: u8) -> Pubkey {
         Pubkey::new_from_array([b; 32])

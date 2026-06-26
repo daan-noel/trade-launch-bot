@@ -10,9 +10,9 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use tracing::warn;
 
-use crate::config::constants::{ANCHOR_EVENT_CPI_DISCRIMINATOR, TRADE_EVENT_DISCRIMINATOR};
-use crate::ingest_laserstream::proto::solana::storage::confirmed_block as scb;
-use crate::models::{
+use backend_core::config::constants::{ANCHOR_EVENT_CPI_DISCRIMINATOR, TRADE_EVENT_DISCRIMINATOR};
+use crate::proto::solana::storage::confirmed_block as scb;
+use backend_core::models::{
     events::{InternalEvent, TradeExecutedEvent},
     trade::{Trade, TradeType},
     transaction::RawTransaction,

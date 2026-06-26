@@ -2,7 +2,6 @@ mod sweep;
 mod api;
 pub use backend_core::{config, models};
 pub use config::constants as constants;
-mod ingest_laserstream;
 mod analyzers;
 mod state;
 mod storage;
@@ -658,115 +657,24 @@ async fn main() -> anyhow::Result<()> {
     // Feeds the shared token cache / strategy / SSE / DB. Yields the pool→mint
     // index + migration signal (for DeployState), the strategy receiver, and the
     // long-lived task handles the supervising select watches.
-    let (pool_index, pools_changed, strategy_rx, producer_task, pipeline_task, db_writer_task) = {
-        info!("Ingest transport: LaserStream (gRPC)");
-        let (db_tx, db_rx, strategy_tx, strategy_rx) =
-            ingest_laserstream::pipeline::IngestPipeline::channel_pair();
-        // Tier B: the pipeline channel carries the typed protobuf update (shared
-        // via Arc), not a pre-built Helius `Value` — the blob synthesis moved
-        // off the ingest hot path into the DbWriter. The client's curve-vs-AMM
-        // relevance verdict rides along so the decoder doesn't re-scan the logs.
-        // Buffer sized to absorb a short volume burst (migration wave / hot-token
-        // spike) so it never stalls back to the gRPC socket (consumer-lag guard).
-        let (update_tx, update_rx) = tokio::sync::mpsc::channel::<(
-            std::sync::Arc<ingest_laserstream::proto::geyser::SubscribeUpdateTransaction>,
-            ingest_laserstream::decoder::TxRelevance,
-        )>(4096);
-
-        // Weak sender handles for the queue-depth diagnostics logger — taken before
-        // the senders are moved into the pipeline / client, and weak so the logger
-        // never keeps a channel alive past ingest shutdown.
-        let update_tx_weak = update_tx.downgrade();
-        let db_tx_weak = db_tx.downgrade();
-        let strategy_tx_weak = strategy_tx.downgrade();
-
-        let pipeline = ingest_laserstream::pipeline::IngestPipeline::new(
-            constants::PUMP_FUN_PROGRAM_ID.to_string(),
-            token_cache.clone(),
-            db_tx,
-            strategy_tx,
-            sse_tx.clone(),
-            settings_tx.subscribe(),
-            trader.clone(),
-            trade_signals.clone(),
-        );
-        let pool_index = pipeline.pool_index();
-        let pools_changed = pipeline.pools_changed();
-        let shed_counters = pipeline.shed_counters();
-
-        // End-to-end ingest liveness: the DbWriter stamps this on every committed
-        // batch (real progress, measured at the sink). A dedicated OS-thread watchdog
-        // force-exits the process only when the heartbeat goes stale *while the DB
-        // write queue is backed up* — a genuine downstream `.await` wedge that task
-        // supervision and the in-stream idle-reconnect both miss — so it self-heals
-        // via restart, but a merely-slow writer or a quiet/idle queue never trips it.
-        // A clone goes to the watchdog; the DbWriter takes the original (below).
-        let heartbeat = state::ingest_health::IngestHeartbeat::new();
-        let db_tx_pending = db_tx_weak.clone();
-        state::ingest_health::spawn_watchdog(
-            heartbeat.clone(),
-            live_tx.subscribe(),
-            settings_tx.subscribe(),
-            // True while the DB write queue holds undrained ops. Sync atomic reads,
-            // safe from the watchdog's OS thread; a dropped sender (shutdown) reads
-            // as "no work" so the watchdog holds fire.
-            move || {
-                db_tx_pending
-                    .upgrade()
-                    .map(|tx| tx.capacity() < tx.max_capacity())
-                    .unwrap_or(false)
-            },
-        );
-
-        let producer_task = tokio::spawn(ingest_laserstream::client::run(
-            settings.helius_laserstream_url.clone(),
-            settings.helius_api_key.clone(),
-            constants::PUMP_FUN_PROGRAM_ID.to_string(),
-            update_tx,
-            live_rx,
-            pool_index.clone(),
-            pools_changed.clone(),
-        ));
-
-        tokio::spawn(ingest_laserstream::pipeline::run_pool_subscription_refresh(
-            token_cache.clone(),
-            pool_index.clone(),
-            pools_changed.clone(),
-            constants::PUMP_FUN_PROGRAM_ID.to_string(),
-            settings_tx.subscribe(),
-        ));
-
-        // Periodic backpressure diagnostics: logs hot-path queue depths + shed
-        // counts every 10s (Step 0 consumer-lag visibility).
-        tokio::spawn(ingest_laserstream::pipeline::run_queue_depth_logger(
-            update_tx_weak,
-            db_tx_weak,
-            strategy_tx_weak,
-            shed_counters,
-        ));
-
-        // Weekly partition maintenance for raw_transactions (~2-month retention).
-        tokio::spawn(ingest_laserstream::maintenance::run_partition_maintenance(
-            db.clone(),
-        ));
-
-        let pipeline_task = tokio::spawn(pipeline.run(update_rx));
-        let db_writer = ingest_laserstream::db_writer::DbWriter::new(
-            db.clone(),
-            trade_signals.clone(),
-            heartbeat,
-        );
-        let db_writer_task = tokio::spawn(db_writer.run(db_rx));
-
-        (
-            pool_index,
-            pools_changed,
-            strategy_rx,
-            producer_task,
-            pipeline_task,
-            db_writer_task,
-        )
-    };
+    let ingest_handles = ingest_laserstream::spawn(
+        settings.helius_laserstream_url.clone(),
+        settings.helius_api_key.clone(),
+        constants::PUMP_FUN_PROGRAM_ID.to_string(),
+        db.clone(),
+        token_cache.clone(),
+        sse_tx.clone(),
+        settings_tx.subscribe(),
+        live_rx,
+        Arc::new(trader::TraderHookBridge(trader.clone())),
+        trade_signals.clone(),
+    );
+    let pool_index = ingest_handles.pool_index;
+    let pools_changed = ingest_handles.pools_changed;
+    let strategy_rx = ingest_handles.strategy_rx;
+    let producer_task = ingest_handles.producer_task;
+    let pipeline_task = ingest_handles.pipeline_task;
+    let db_writer_task = ingest_handles.db_writer_task;
 
     // Bound the in-memory token cache: evict mints that have gone quiet beyond the
     // activity window and hold no open position, so the cache doesn't grow one

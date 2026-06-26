@@ -15,11 +15,11 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use tracing::warn;
 
-use crate::config::constants::{
+use backend_core::config::constants::{
     LAMPORTS_PER_SOL, PUMP_SWAP_BUY_EVENT_DISCRIMINATOR, PUMP_SWAP_SELL_EVENT_DISCRIMINATOR,
     TRADE_EVENT_DISCRIMINATOR,
 };
-use crate::models::trade::{Trade, TradeType};
+use backend_core::models::trade::{Trade, TradeType};
 
 // ---------------------------------------------------------------------------
 // Step 1a — decode TradeEvent from "Program data:" log lines (base64 + Borsh)

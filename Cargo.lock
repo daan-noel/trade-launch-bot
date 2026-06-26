@@ -894,6 +894,7 @@ dependencies = [
  "dashmap 4.0.2",
  "dotenvy",
  "futures-util",
+ "ingest-laserstream",
  "memory-stats",
  "parquet",
  "prost",
@@ -2792,6 +2793,31 @@ dependencies = [
  "portable-atomic",
  "unicode-width 0.2.2",
  "web-time",
+]
+
+[[package]]
+name = "ingest-laserstream"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "backend-core",
+ "base64 0.22.1",
+ "bincode",
+ "borsh 1.6.1",
+ "bs58 0.5.1",
+ "chrono",
+ "dashmap 4.0.2",
+ "futures-util",
+ "prost",
+ "serde",
+ "serde_json",
+ "solana-sdk",
+ "sqlx",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

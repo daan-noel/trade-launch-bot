@@ -89,6 +89,9 @@ pump-trader = { path = "../pump-trader" }
 # Shared core: config, models, storage, core services/state, api framework.
 backend-core = { path = "../backend-core" }
 
+# LaserStream gRPC ingest transport (extracted from backend).
+ingest-laserstream = { path = "../ingest-laserstream" }
+
 # Param-sweep / backtest engine (src/sweep): data-parallel sweep over
 # tokens, columnar Parquet corpus + result emit for the Python scoring layer.
 rayon = "1"

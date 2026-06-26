@@ -10,9 +10,8 @@ use uuid::Uuid;
 
 use super::adapter::build_raw_blob;
 use super::proto::geyser::SubscribeUpdateTransaction;
-use crate::{
+use backend_core::{
     models::{token::Token, trade::Trade, transaction::RawTransaction},
-    state::ingest_health::IngestHeartbeat,
     state::token_metrics::TokenMetricsWrite,
     state::trade_signals::TradeSignals,
     storage::repositories::{
@@ -20,6 +19,7 @@ use crate::{
         transaction_repo::TransactionRepo, wallet_repo::WalletRepo,
     },
 };
+use crate::ingest_health::IngestHeartbeat;
 
 // Larger batches + longer interval → fewer, bigger multi-row inserts → fewer
 // fsyncs per second (the dominant cost on the 2vCPU/4GB box). With

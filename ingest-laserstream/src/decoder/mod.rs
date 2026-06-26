@@ -12,7 +12,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 
-use crate::models::{
+use backend_core::models::{
     events::{InternalEvent, TokenMigratedEvent},
     transaction::RawTransaction,
 };
