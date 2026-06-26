@@ -5,13 +5,24 @@ use dashmap::DashMap;
 use uuid::Uuid;
 use tokio::sync::{RwLock, Semaphore};
 
-use super::app_state::SweepCorpusCache;
 use super::backtest_trade_cache::BacktestTradeCache;
 use super::core_state::CoreState;
 use super::job_progress::ProgressCell;
 use super::sim_results::SimResults;
 use super::swing_results::SwingResults;
 use super::swing_run_cache::SwingRunCache;
+use crate::sweep::corpus::TokenTrades;
+
+/// Option A: the fully-loaded corpus (trades + fingerprints) from the most recent
+/// sweep run, keyed by its corpus hash. Lets `list_token_results` skip both the
+/// Parquet read and the `attach_fingerprints` DB queries on the warm path — the
+/// common case where a user drills into a combo right after running a sweep.
+pub struct SweepCorpusCache {
+    pub corpus_hash: String,
+    /// All tokens with fingerprints already attached, as `Arc<Vec<_>>` so
+    /// cloning into the handler is a refcount bump (no copy of the trade data).
+    pub tokens: Arc<Vec<TokenTrades>>,
+}
 
 /// Max concurrent backtests across both strategies. Each one streams the `tokens`
 /// table and batched trade history off the `batch` pool (16 connections by

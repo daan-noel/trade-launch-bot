@@ -11,8 +11,8 @@
 //! `simulation_finished` SSE fires — there is no long-held connection to sever.
 //!
 //! Keyed by `rule_id` (UUIDs never collide across tpsl1/tpsl2), strategy-agnostic
-//! like [`sim_cancels`](crate::state::app_state::AppState::sim_cancels) and
-//! [`sim_progress`](crate::state::app_state::AppState::sim_progress). Entries are
+//! like [`sim_cancels`](crate::state::local_state::LocalState::sim_cancels) and
+//! [`sim_progress`](crate::state::local_state::LocalState::sim_progress). Entries are
 //! taken (removed) on fetch — single delivery — and, as a backstop against a run
 //! whose result is never collected (the client navigated away), lazily evicted
 //! past [`RESULT_TTL`] on every insert.

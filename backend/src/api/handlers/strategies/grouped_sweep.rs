@@ -22,7 +22,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::models::grouped_sweep::{GroupedSweepGroupWrite, GroupedSweepResult, GroupedSweepRun};
-use crate::state::app_state::SweepCorpusCache;
+use crate::state::local_state::SweepCorpusCache;
 use crate::state::local_state::LocalState;
 use crate::storage::repositories::grouped_sweep_repo::{GroupedSweepRepo, GroupedSweepTables};
 use crate::sweep::aggregate::ComboMetrics;
