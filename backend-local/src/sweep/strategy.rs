@@ -10,7 +10,7 @@ use rand::rngs::StdRng;
 use rand::Rng;
 
 use crate::sweep::projection::SweepTrade;
-use pump_trader::constants::{
+use pump_constants::{
     COMPUTE_UNIT_LIMIT_CURVE_BUY, COMPUTE_UNIT_LIMIT_CURVE_SELL,
     COMPUTE_UNIT_PRICE_MICRO_LAMPORTS, LAMPORTS_PER_SOL,
 };

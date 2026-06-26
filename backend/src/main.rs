@@ -1,8 +1,8 @@
-mod sweep;
+pub use backend_local::sweep;
 mod api;
 pub use backend_core::{config, models};
 pub use config::constants as constants;
-mod analyzers;
+pub use backend_local::analyzers;
 mod state;
 mod storage;
 mod services;

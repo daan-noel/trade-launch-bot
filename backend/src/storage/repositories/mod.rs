@@ -1,6 +1,7 @@
-//! Re-exports the shared core repos and adds the backend-only `grouped_sweep_repo`
-//! (sweep-coupled), so `crate::storage::repositories::…` paths resolve unchanged.
+//! Re-exports the shared core repos and the sweep-coupled `grouped_sweep_repo`
+//! (now in `backend-local`), so `crate::storage::repositories::…` paths resolve
+//! unchanged until the combined `backend` bin is deleted (T15).
 
 pub use backend_core::storage::repositories::*;
 
-pub mod grouped_sweep_repo;
+pub use backend_local::storage::repositories::grouped_sweep_repo;

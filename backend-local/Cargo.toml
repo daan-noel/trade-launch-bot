@@ -1,0 +1,68 @@
+[package]
+name = "backend-local"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "backend_local"
+path = "src/lib.rs"
+
+[[bin]]
+name = "backend-local"
+path = "src/main.rs"
+
+[dependencies]
+backend-core = { path = "../backend-core" }
+# Sweep CU cost-model constants — single-source with the live trader (no
+# pump-trader dep, so the local bin never pulls the trading/RPC stack).
+pump-constants = { path = "../pump-constants" }
+
+# Tokio
+tokio = { version = "1", features = ["full"] }
+
+# Web framework (for handlers + HTTP server)
+actix-web = "4"
+actix-cors = "0.7"
+
+# Database
+sqlx = { version = "0.6", features = ["runtime-tokio-rustls", "postgres", "json", "chrono", "uuid", "migrate"] }
+
+# Serialization
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Errors
+anyhow = "1"
+thiserror = "1"
+
+# Shared state
+dashmap = "4.0"
+
+# Config
+dotenvy = "0.15"
+
+# IDs
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Async trait
+async-trait = "0.1"
+
+# Futures
+futures-util = "0.3"
+
+# Param-sweep / backtest engine: data-parallel sweep over tokens, columnar
+# Parquet corpus + result emit for the Python scoring layer.
+rayon = "1"
+arrow = "53"
+parquet = "53"
+# Cross-platform process RSS read for the sweep memory observability milestones.
+memory-stats = "1"
+# Deterministic sampling in the sweep grid / cost model.
+rand = "0.8"

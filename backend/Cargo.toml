@@ -97,6 +97,11 @@ backend-deploy = { path = "../backend-deploy" }
 # LaserStream gRPC ingest transport (extracted from backend).
 ingest-laserstream = { path = "../ingest-laserstream" }
 
+# Analysis/backtest crate: sweep engine, swing analyzer, local state, backtest
+# harness. Re-exported here so `crate::sweep::…` / `crate::state::local_state::…`
+# paths keep resolving until `backend` is deleted (T15).
+backend-local = { path = "../backend-local" }
+
 # Param-sweep / backtest engine (src/sweep): data-parallel sweep over
 # tokens, columnar Parquet corpus + result emit for the Python scoring layer.
 rayon = "1"
