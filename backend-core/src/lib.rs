@@ -1,7 +1,7 @@
 //! Shared core for the meme-trading backends.
 //!
-//! Modules are migrated in here task-by-task per `local-deploy-mode-split-plan.md`
-//! (Phase 2). `backend` depends on it.
+//! Shared lib consumed by the `backend-deploy` and `backend-local` bins.
+//! See `@plans/modes/crate-split.md` for the crate-split design.
 
 pub mod analyzers;
 pub mod api;
