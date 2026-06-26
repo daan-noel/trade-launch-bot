@@ -10,9 +10,9 @@
 
 use chrono::{DateTime, Utc};
 
-use backend_core::config::constants::ANALYSIS_SCAN_PAGE;
-use backend_core::models::token::Token;
-use backend_core::storage::repositories::token_repo::TokenRepo;
+use crate::config::constants::ANALYSIS_SCAN_PAGE;
+use crate::models::token::Token;
+use crate::storage::repositories::token_repo::TokenRepo;
 
 /// Stream the `tokens` table in keyset pages within the optional `[since, until)`
 /// creation-time window (both `None` = all-time), returning the tokens that pass

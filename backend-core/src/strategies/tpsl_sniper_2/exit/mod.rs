@@ -19,9 +19,9 @@
 
 use chrono::{DateTime, Duration, Utc};
 
-use backend_core::config::constants::{EARLY_COHORT_SLOT_WINDOW, MAX_FILL_WAIT_SLOTS};
-use backend_core::models::trade::{Trade, TradeRow};
-use backend_core::models::{Position, PositionStatus, Tpsl2Rule};
+use crate::config::constants::{EARLY_COHORT_SLOT_WINDOW, MAX_FILL_WAIT_SLOTS};
+use crate::models::trade::{Trade, TradeRow};
+use crate::models::{Position, PositionStatus, Tpsl2Rule};
 
 use super::cohort::{cohort_flow, early_cohort_wallets};
 use super::util::{none_if_zero_f64, none_if_zero_u64};
@@ -764,7 +764,7 @@ pub fn clock_entry_time(position: &Position) -> Option<DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use backend_core::models::trade::{Trade, TradeType};
+    use crate::models::trade::{Trade, TradeType};
     use uuid::Uuid;
 
     fn base_time() -> DateTime<Utc> {

@@ -13,15 +13,17 @@
 //!   - `lifecycle`    — manual activate / pause / stop-and-close transitions.
 //!   - `paper_run`    — paper-run completion lifecycle.
 //!   - `runtime_cache`— in-memory rules/positions/run state.
-pub mod entry;
+//!
+//! The decision layer (`entry`/`exit`/`util`) moved to
+//! `backend_core::strategies::tpsl_sniper_1`; it's re-exported here so this
+//! crate's live modules keep resolving `super::{entry,exit,util}`.
+pub use backend_core::strategies::tpsl_sniper_1::{entry, exit, util};
 pub mod execution;
-pub mod exit;
 pub mod handler;
 pub mod lifecycle;
 pub mod paper_run;
 pub mod runtime_cache;
 pub mod service;
-pub mod util;
 
 pub use handler::TPSL1StrategyHandler;
 pub use lifecycle::{activate_rule, pause_rule, stop_and_close_rule, PaperActivation};

@@ -4,8 +4,8 @@
 //! Two concerns:
 //!   • criteria matching ([`token_matches_buy_rule`] / [`find_all_matching_buy_rules`])
 //!     — does a token satisfy a rule's buy filters?
-//!   • fill resolution ([`find_entry_fill_in_trades`]) — at what price/tx/time
-//!     did we actually enter?
+//!   • fill resolution ([`find_scalp_entry`], in [`scalp`]) — the first trade
+//!     where every configured scalp gate holds is the entry.
 //!
 //! **To add an entry criterion:** write a `check_*` function returning a
 //! [`CriterionOutcome`] and add it to the [`CRITERIA`] list. Every configured
@@ -17,9 +17,14 @@ use tracing::warn;
 use uuid::Uuid;
 
 use super::util::{none_if_zero_f64, none_if_zero_u64};
-use backend_core::config::constants::LAMPORTS_PER_SOL;
-use backend_core::models::trade::TradeRow;
-use backend_core::models::{Tpsl1Rule, Token};
+use crate::config::constants::LAMPORTS_PER_SOL;
+use crate::models::{Tpsl2Rule, Token};
+
+mod scalp;
+pub use scalp::{
+    find_scalp_entry, find_scalp_entry_with_cohort_indexed, find_worst_case_paper_entry,
+    find_worst_case_paper_entry_at, rule_configures_any_scalp_gate, scalp_cohort,
+};
 
 /// The result of testing one entry criterion against a token.
 enum CriterionOutcome {
@@ -33,7 +38,7 @@ enum CriterionOutcome {
 
 /// Every entry criterion, evaluated in order. Adding a filter = add its
 /// `check_*` here; nothing else changes.
-const CRITERIA: &[fn(&Token, &Tpsl1Rule) -> CriterionOutcome] = &[
+const CRITERIA: &[fn(&Token, &Tpsl2Rule) -> CriterionOutcome] = &[
     check_initial_buy_sol,
     check_compute_unit_limit,
     check_compute_unit_price,
@@ -45,7 +50,7 @@ const CRITERIA: &[fn(&Token, &Tpsl1Rule) -> CriterionOutcome] = &[
 /// Whether a token satisfies a rule's buy criteria. A rule must configure at
 /// least one criterion, and every configured criterion must be satisfied.
 /// Shared by the live entry gate and the backtest.
-pub fn token_matches_buy_rule(token: &Token, rule: &Tpsl1Rule) -> bool {
+pub fn token_matches_buy_rule(token: &Token, rule: &Tpsl2Rule) -> bool {
     let mut any_configured = false;
     for check in CRITERIA {
         match check(token, rule) {
@@ -57,10 +62,24 @@ pub fn token_matches_buy_rule(token: &Token, rule: &Tpsl1Rule) -> bool {
     any_configured
 }
 
+/// Whether a token satisfies every *configured* token-level criterion. Unlike
+/// [`token_matches_buy_rule`], a rule that configures **no** token criterion
+/// passes vacuously. Used as the token pre-filter for the scalp entry path,
+/// where the trade-window gates ([`find_scalp_entry`]) do the real gating and a
+/// rule may set no creation-instruction filter at all.
+pub fn token_criteria_satisfied(token: &Token, rule: &Tpsl2Rule) -> bool {
+    for check in CRITERIA {
+        if let CriterionOutcome::Rejected = check(token, rule) {
+            return false;
+        }
+    }
+    true
+}
+
 /// All active rules whose criteria the token satisfies, in rule-list order. A
 /// rule that configures no criterion is skipped with a warning rather than
 /// matching every token.
-pub fn find_all_matching_buy_rules(token: &Token, rules: &[Tpsl1Rule]) -> Vec<Uuid> {
+pub fn find_all_matching_buy_rules(token: &Token, rules: &[Tpsl2Rule]) -> Vec<Uuid> {
     let mut matched = Vec::new();
     for rule in rules {
         if !rule.is_active {
@@ -80,9 +99,10 @@ pub fn find_all_matching_buy_rules(token: &Token, rules: &[Tpsl1Rule]) -> Vec<Uu
     matched
 }
 
-/// Whether a rule sets at least one entry criterion (used to skip — and warn
-/// about — a misconfigured, match-everything rule).
-fn rule_configures_any_criterion(rule: &Tpsl1Rule) -> bool {
+/// Whether a rule sets at least one **token-level** entry criterion (used to
+/// skip — and warn about — a misconfigured, match-everything rule). The scalp
+/// trade-window gates are checked separately via [`rule_configures_any_scalp_gate`].
+pub fn rule_configures_any_criterion(rule: &Tpsl2Rule) -> bool {
     none_if_zero_f64(rule.p_token_initial_buy_sol).is_some()
         || none_if_zero_u64(rule.p_token_cu_limit).is_some()
         || none_if_zero_u64(rule.p_token_cu_price).is_some()
@@ -102,7 +122,7 @@ fn within_tolerance(token_val: f64, rule_val: f64, tolerance_pct: f64, eps: f64)
     (token_val - rule_val).abs() <= tol + eps
 }
 
-fn check_initial_buy_sol(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome {
+fn check_initial_buy_sol(token: &Token, rule: &Tpsl2Rule) -> CriterionOutcome {
     let Some(rule_val) = none_if_zero_f64(rule.p_token_initial_buy_sol) else {
         return CriterionOutcome::NotConfigured;
     };
@@ -114,7 +134,7 @@ fn check_initial_buy_sol(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome {
     }
 }
 
-fn check_compute_unit_limit(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome {
+fn check_compute_unit_limit(token: &Token, rule: &Tpsl2Rule) -> CriterionOutcome {
     let Some(rule_val) = none_if_zero_u64(rule.p_token_cu_limit) else {
         return CriterionOutcome::NotConfigured;
     };
@@ -124,7 +144,7 @@ fn check_compute_unit_limit(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome
     }
 }
 
-fn check_compute_unit_price(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome {
+fn check_compute_unit_price(token: &Token, rule: &Tpsl2Rule) -> CriterionOutcome {
     let Some(rule_val) = none_if_zero_u64(rule.p_token_cu_price) else {
         return CriterionOutcome::NotConfigured;
     };
@@ -134,7 +154,7 @@ fn check_compute_unit_price(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome
     }
 }
 
-fn check_max_sol_cost(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome {
+fn check_max_sol_cost(token: &Token, rule: &Tpsl2Rule) -> CriterionOutcome {
     let Some(rule_val) = none_if_zero_f64(rule.p_token_max_sol_cost) else {
         return CriterionOutcome::NotConfigured;
     };
@@ -146,7 +166,7 @@ fn check_max_sol_cost(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome {
     }
 }
 
-fn check_spendable_sol_in(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome {
+fn check_spendable_sol_in(token: &Token, rule: &Tpsl2Rule) -> CriterionOutcome {
     let Some(rule_val) = none_if_zero_f64(rule.p_token_spendable_sol_in) else {
         return CriterionOutcome::NotConfigured;
     };
@@ -158,7 +178,7 @@ fn check_spendable_sol_in(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome {
     }
 }
 
-fn check_instruction_labels(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome {
+fn check_instruction_labels(token: &Token, rule: &Tpsl2Rule) -> CriterionOutcome {
     let Some(rule_labels) = rule.p_token_ix_labels.as_array() else {
         return CriterionOutcome::NotConfigured;
     };
@@ -195,59 +215,17 @@ fn instruction_arg_as_sol(token: &Token, key: &str) -> Option<f64> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EntryFill {
     pub price: f64,
+    /// Token amount of the resolving trade — carried so the target (trigger-trade)
+    /// snapshot can persist the trade's own size, not just its price/tx/time.
+    /// SOL is never stored; it's derived at display as `price × amount_tokens`.
+    pub amount_tokens: f64,
     pub tx_signature: String,
     pub block_time: DateTime<Utc>,
-}
-
-/// Resolve the entry fill from a token's trade history: the highest-priced buy
-/// in the first slot block plus the first `second_block_cap` buys of the second
-/// block. Shared by the backtest (cap 1) and the live paper entry poll (cap 5).
-pub fn find_entry_fill_in_trades<T: TradeRow>(
-    trades: &[T],
-    second_block_cap: usize,
-) -> Option<EntryFill> {
-    if trades.is_empty() {
-        return None;
-    }
-
-    let first_slot = trades[0].slot();
-    let second_slot = trades.iter().find(|t| t.slot() > first_slot).map(|t| t.slot());
-
-    let mut candidates: Vec<&T> = Vec::new();
-    for t in trades.iter() {
-        if !t.is_buy() {
-            continue;
-        }
-        if t.slot() == first_slot {
-            candidates.push(t);
-        } else if let Some(second_slot) = second_slot {
-            if t.slot() == second_slot {
-                let already = candidates.iter().filter(|c| c.slot() == second_slot).count();
-                if already < second_block_cap {
-                    candidates.push(t);
-                }
-            }
-        }
-    }
-
-    candidates
-        .into_iter()
-        .max_by(|a, b| {
-            a.price_per_token()
-                .partial_cmp(&b.price_per_token())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .map(|t| EntryFill {
-            price: t.price_per_token(),
-            tx_signature: t.tx_signature().to_string(),
-            block_time: t.block_time(),
-        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use backend_core::models::trade::{Trade, TradeType};
     use serde_json::{json, Value};
 
     fn base_time() -> DateTime<Utc> {
@@ -290,8 +268,8 @@ mod tests {
         p_token_max_sol_cost: Option<f64>,
         p_token_spendable_sol_in: Option<f64>,
         tolerance_pct: f64,
-    ) -> Tpsl1Rule {
-        let mut r = Tpsl1Rule::new(
+    ) -> Tpsl2Rule {
+        let mut r = Tpsl2Rule::new(
             "test".into(),
             p_token_initial_buy_sol,
             p_token_cu_limit,
@@ -313,19 +291,6 @@ mod tests {
         );
         r.is_active = true;
         r
-    }
-
-    fn buy(price: f64, slot: u64, secs: i64) -> Trade {
-        Trade::new(
-            "mint".into(),
-            "wallet".into(),
-            TradeType::Buy,
-            price,
-            1.0,
-            format!("sig-{slot}-{secs}"),
-            slot,
-            base_time() + chrono::Duration::seconds(secs),
-        )
     }
 
     #[test]
@@ -398,14 +363,5 @@ mod tests {
             find_all_matching_buy_rules(&token, &rules),
             vec![active1.id, active2.id]
         );
-    }
-
-    #[test]
-    fn entry_fill_picks_highest_among_admitted_buys() {
-        let trades = vec![buy(1.0, 5, 1), buy(2.0, 5, 1), buy(9.0, 6, 2)];
-        let fill = find_entry_fill_in_trades(&trades, 1).expect("entry fill");
-        // First block (slot 5) plus one admitted second-block buy (slot 6, cap 1);
-        // the highest price across them wins — here the 9.0 second-block trade.
-        assert_eq!(fill.price, 9.0);
     }
 }

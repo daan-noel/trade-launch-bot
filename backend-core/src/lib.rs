@@ -11,4 +11,5 @@ pub mod models;
 pub mod services;
 pub mod state;
 pub mod storage;
+pub mod strategies;
 pub mod wallet_interner;

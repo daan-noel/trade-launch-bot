@@ -11,11 +11,11 @@
 
 use std::collections::HashSet;
 
-use backend_core::models::trade::TradeRow;
+use crate::models::trade::TradeRow;
 
 /// Wallets that bought within `slot_window` slots of the token's first trade —
 /// the launch cohort. Empty when `trades` is empty. `slot_window` mirrors
-/// [`backend_core::config::constants::EARLY_COHORT_SLOT_WINDOW`].
+/// [`crate::config::constants::EARLY_COHORT_SLOT_WINDOW`].
 ///
 /// Generic over [`TradeRow`] so the live path (`T = Trade`, `Wallet = String`)
 /// and the sweep (`Wallet = u32`) share one cohort definition; the returned set
@@ -98,7 +98,7 @@ pub fn outside_net_sol<T: TradeRow>(trades: &[T], cohort: &HashSet<T::Wallet>) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use backend_core::models::trade::{Trade, TradeType};
+    use crate::models::trade::{Trade, TradeType};
     use chrono::{DateTime, Utc};
 
     fn base_time() -> DateTime<Utc> {

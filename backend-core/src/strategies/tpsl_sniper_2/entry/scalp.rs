@@ -29,9 +29,9 @@ use chrono::{DateTime, Utc};
 use super::super::cohort::{cohort_flow, early_cohort_wallets, outside_net_sol};
 use super::super::util::{none_if_zero_f64, none_if_zero_u64};
 use super::EntryFill;
-use backend_core::config::constants::{EARLY_COHORT_SLOT_WINDOW, MAX_FILL_WAIT_SLOTS};
-use backend_core::models::trade::{Trade, TradeRow};
-use backend_core::models::Tpsl2Rule;
+use crate::config::constants::{EARLY_COHORT_SLOT_WINDOW, MAX_FILL_WAIT_SLOTS};
+use crate::models::trade::{Trade, TradeRow};
+use crate::models::Tpsl2Rule;
 
 /// Liveness window for `p_entry_min_alive_sol`: total SOL traded in the trailing
 /// `ALIVE_WINDOW_SECS` ending at the candidate trade. Kept a module constant (not
@@ -522,7 +522,7 @@ pub fn find_worst_case_paper_entry_at<T: TradeRow>(trades: &[T], target_idx: usi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use backend_core::models::trade::TradeType;
+    use crate::models::trade::TradeType;
 
     fn base_time() -> DateTime<Utc> {
         DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap()
@@ -895,7 +895,7 @@ mod tests {
     #[test]
     fn worst_case_filters_dust_and_zero_price_in_fill_slot() {
         let trigger = leg(1.0, 1.0, 100, 0, 0);
-        let dust_sol = backend_core::config::constants::MIN_TRADE_SOL / 2.0;
+        let dust_sol = crate::config::constants::MIN_TRADE_SOL / 2.0;
         let mut dust = leg(dust_sol, 1.0, 101, 0, 1);
         dust.sol_amount = dust_sol;
         let mut zero = leg(1.0, 0.0, 101, 1, 1); // price 0 → excluded
@@ -912,7 +912,7 @@ mod tests {
         // Only sells after the trigger → no qualifying buy → None.
         let trigger = leg(1.0, 1.0, 100, 0, 0);
         let mut sell = leg(0.9, 1.0, 101, 0, 1);
-        sell.trade_type = backend_core::models::trade::TradeType::Sell;
+        sell.trade_type = crate::models::trade::TradeType::Sell;
         let trades = vec![trigger.clone(), sell];
         assert!(find_worst_case_paper_entry(&trades, &trigger.tx_signature).is_none());
     }
