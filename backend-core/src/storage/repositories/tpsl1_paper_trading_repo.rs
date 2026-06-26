@@ -143,7 +143,7 @@ impl Tpsl1PaperTradingRepo {
         Self { pool }
     }
 
-    pub(crate) fn pool(&self) -> &PgPool {
+    pub fn pool(&self) -> &PgPool {
         &self.pool
     }
 

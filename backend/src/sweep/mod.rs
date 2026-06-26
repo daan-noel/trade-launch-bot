@@ -35,7 +35,10 @@ pub mod aggregate;
 pub mod corpus;
 pub mod engine;
 pub mod grouped_engine;
-pub mod grouping;
+// `grouping` is strategy-blind shared data (TokenFingerprint/GroupField/GroupKey)
+// that a core handler + core repo also need, so it lives in `backend-core`; this
+// re-export keeps the `crate::sweep::grouping::…` paths working.
+pub use backend_core::grouping;
 pub mod obs;
 pub mod progress;
 pub mod projection;

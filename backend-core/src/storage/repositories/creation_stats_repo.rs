@@ -1,7 +1,7 @@
 use chrono::{DateTime, NaiveDateTime, Utc};
 use sqlx::PgPool;
 
-use crate::sweep::grouping::GroupField;
+use crate::grouping::GroupField;
 
 /// Token-creation-time bias aggregates. Reads `tokens` (creation time + segment
 /// flags) LEFT JOINed to `tokens_info` (outcome: migrated / dead), grouped

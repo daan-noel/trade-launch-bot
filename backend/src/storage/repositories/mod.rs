@@ -1,17 +1,6 @@
-pub mod analysis_repo;
-pub mod creation_stats_repo;
+//! Re-exports the shared core repos and adds the backend-only `grouped_sweep_repo`
+//! (sweep-coupled), so `crate::storage::repositories::…` paths resolve unchanged.
+
+pub use backend_core::storage::repositories::*;
+
 pub mod grouped_sweep_repo;
-pub mod settings_repo;
-pub mod token_info_repo;
-pub mod token_repo;
-pub mod trade_repo;
-pub mod transaction_repo;
-pub mod tpsl1_paper_trading_repo;
-pub mod tpsl1_position_repo;
-pub mod tpsl1_strategy_rule_repo;
-pub mod tpsl2_paper_trading_repo;
-pub mod tpsl2_position_repo;
-pub mod tpsl2_strategy_rule_repo;
-pub mod wallet_profile_repo;
-pub mod wallet_profile_tag_repo;
-pub mod wallet_repo;

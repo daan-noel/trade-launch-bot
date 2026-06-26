@@ -4,4 +4,6 @@
 //! (Phase 2). `backend` depends on it.
 
 pub mod config;
+pub mod grouping;
 pub mod models;
+pub mod storage;

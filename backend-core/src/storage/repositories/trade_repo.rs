@@ -95,7 +95,7 @@ impl TryFrom<TradeDbRow> for Trade {
 /// ring strips them to `Null` too — see `pipeline.rs`), so omitting the column
 /// skips a per-row JSONB decode across whole-mint histories.
 #[derive(sqlx::FromRow)]
-pub(crate) struct TradeSlimRow {
+pub struct TradeSlimRow {
     id: Uuid,
     mint_address: String,
     wallet_address: String,
@@ -703,7 +703,7 @@ impl TradeRepo {
 /// for Phase B), then calls this to recover the real signature so paper positions
 /// store the same tx as sim positions and the frontend highlight works identically.
 /// Returns `None` for time-driven exits where no real trade occurred.
-pub(crate) async fn find_tx_by_fill(
+pub async fn find_tx_by_fill(
     pool: &PgPool,
     mint: &str,
     block_time: DateTime<Utc>,
