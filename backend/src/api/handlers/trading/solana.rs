@@ -7,7 +7,7 @@ use crate::config::constants::{resolve_buy_slippage_bps, resolve_sell_slippage_b
 use crate::models::wallet::validate_solana_address;
 use crate::services::clients::jupiter;
 use crate::services::wallet_tokens;
-use crate::state::app_state::AppState;
+use crate::state::deploy_state::DeployState;
 
 /// Max mints accepted per `get_prices` request. The `ids` list is fanned into a
 /// single Jupiter URL, so an unbounded list is a cheap amplification vector —
@@ -47,12 +47,12 @@ pub struct SellRequest {
     pub slippage_bps: Option<u64>,
 }
 
-fn resolve_buy_slippage(app_state: &AppState, request: Option<u64>) -> Option<u64> {
+fn resolve_buy_slippage(app_state: &DeployState, request: Option<u64>) -> Option<u64> {
     let s = app_state.settings();
     resolve_buy_slippage_bps(s.buy_slippage_bps, s.slippage_bps, request)
 }
 
-fn resolve_sell_slippage(app_state: &AppState, request: Option<u64>) -> Option<u64> {
+fn resolve_sell_slippage(app_state: &DeployState, request: Option<u64>) -> Option<u64> {
     resolve_sell_slippage_bps(app_state.settings().sell_slippage_bps, request)
 }
 
@@ -66,7 +66,7 @@ const SELL_ALL_MAX_PASSES: usize = 3;
 
 /// POST /api/solana/wallet/buy
 pub async fn manual_buy(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<DeployState>>,
     body: web::Json<BuyRequest>,
 ) -> impl Responder {
     // Validate the client-supplied spend BEFORE any on-chain work — this is real
@@ -153,7 +153,7 @@ pub async fn manual_buy(
 /// fire-and-forget `close_token_account` returns the ~0.002 SOL rent; it cheaply
 /// no-ops if unsellable sub-threshold dust kept the account funded.
 pub async fn manual_sell(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<DeployState>>,
     body: web::Json<SellRequest>,
 ) -> impl Responder {
     // Validate the mint format before any RPC (same as manual_buy).
@@ -320,7 +320,7 @@ pub async fn manual_sell(
 ///
 /// Returns all non-zero token accounts held by the trader's wallet,
 /// enriched with symbol (from token cache) and current USD price (Jupiter).
-pub async fn get_wallet_tokens(app_state: web::Data<Arc<AppState>>) -> impl Responder {
+pub async fn get_wallet_tokens(app_state: web::Data<Arc<DeployState>>) -> impl Responder {
     match wallet_tokens::list_enriched(app_state.get_ref()).await {
         Ok(enriched) => HttpResponse::Ok().json(enriched),
         Err(e) => {
@@ -338,7 +338,7 @@ pub async fn get_wallet_tokens(app_state: web::Data<Arc<AppState>>) -> impl Resp
 /// balance change after a manual trade without re-scanning/re-pricing the
 /// whole wallet.
 pub async fn get_wallet_token(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<DeployState>>,
     path: web::Path<String>,
 ) -> impl Responder {
     let mint = path.into_inner();
@@ -395,7 +395,7 @@ pub async fn get_prices(query: web::Query<PricesQuery>) -> impl Responder {
 /// Returns the on-chain token balance for the given wallet and mint,
 /// queried directly from Solana — does not touch the local database.
 pub async fn get_wallet_token_balance(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<DeployState>>,
     path: web::Path<(String, String)>,
 ) -> impl Responder {
     let (wallet, mint) = path.into_inner();

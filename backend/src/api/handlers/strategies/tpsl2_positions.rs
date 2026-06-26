@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::{
     models::Position,
-    state::app_state::AppState,
+    state::deploy_state::DeployState,
     storage::repositories::{
         tpsl2_paper_trading_repo::Tpsl2PaperTradingRepo, tpsl2_position_repo::Tpsl2PositionRepo,
         tpsl2_strategy_rule_repo::Tpsl2StrategyRuleRepo,
@@ -146,7 +146,7 @@ pub(crate) async fn load_rule_positions(
 /// Get all positions for a specific TPSL2 rule (by rule_id).
 /// GET /api/strategies/tpsl2/rules/{rule_id}/positions
 pub async fn get_positions_by_rule(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<DeployState>>,
     rule_id: web::Path<Uuid>,
     query: web::Query<PositionListParams>,
 ) -> impl Responder {
@@ -169,7 +169,7 @@ pub async fn get_positions_by_rule(
 /// List all tpsl2 positions.
 /// GET /api/strategies/tpsl2/positions
 pub async fn list_positions(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<DeployState>>,
     query: web::Query<PositionListParams>,
 ) -> impl Responder {
     let repo = app_state.tpsl2_position_repo();
@@ -192,7 +192,7 @@ pub async fn list_positions(
 /// Get tpsl2 positions by mint (token).
 /// GET /api/strategies/tpsl2/positions/mint/{mint}
 pub async fn get_positions_by_mint(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<DeployState>>,
     mint: web::Path<String>,
     query: web::Query<PositionListParams>,
 ) -> impl Responder {
@@ -217,7 +217,7 @@ pub async fn get_positions_by_mint(
 /// Get tpsl2 positions by wallet.
 /// GET /api/strategies/tpsl2/positions/wallet/{wallet}
 pub async fn get_positions_by_wallet(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<DeployState>>,
     wallet: web::Path<String>,
     query: web::Query<PositionListParams>,
 ) -> impl Responder {
@@ -242,7 +242,7 @@ pub async fn get_positions_by_wallet(
 /// Get a specific tpsl2 position.
 /// GET /api/strategies/tpsl2/positions/{position_id}
 pub async fn get_position(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<DeployState>>,
     position_id: web::Path<Uuid>,
 ) -> impl Responder {
     let repo = app_state.tpsl2_position_repo();

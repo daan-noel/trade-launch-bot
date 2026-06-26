@@ -2,7 +2,7 @@ use serde::Serialize;
 use tracing::warn;
 
 use crate::services::clients::jupiter;
-use crate::state::app_state::AppState;
+use crate::state::deploy_state::DeployState;
 use crate::trader::WalletHolding;
 
 #[derive(Debug, Serialize)]
@@ -25,7 +25,7 @@ pub struct EnrichedWalletHolding {
     pub is_cashback_enabled: bool,
 }
 
-pub async fn list_enriched(state: &AppState) -> anyhow::Result<Vec<EnrichedWalletHolding>> {
+pub async fn list_enriched(state: &DeployState) -> anyhow::Result<Vec<EnrichedWalletHolding>> {
     let holdings = state.trader.get_all_token_accounts().await?;
     Ok(enrich_holdings(state, holdings).await)
 }
@@ -35,7 +35,7 @@ pub async fn list_enriched(state: &AppState) -> anyhow::Result<Vec<EnrichedWalle
 /// price) used to confirm a balance change after a manual trade without
 /// re-scanning and re-pricing the whole wallet.
 pub async fn enrich_one(
-    state: &AppState,
+    state: &DeployState,
     mint: &str,
 ) -> anyhow::Result<Option<EnrichedWalletHolding>> {
     let Some(holding) = state.trader.get_token_account_for_mint(mint).await? else {
@@ -45,7 +45,7 @@ pub async fn enrich_one(
 }
 
 async fn enrich_holdings(
-    state: &AppState,
+    state: &DeployState,
     holdings: Vec<WalletHolding>,
 ) -> Vec<EnrichedWalletHolding> {
     let mints: Vec<String> = holdings.iter().map(|h| h.mint.clone()).collect();

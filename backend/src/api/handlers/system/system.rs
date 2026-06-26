@@ -4,8 +4,8 @@ use actix_web::{web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use crate::config::constants::{SLIPPAGE_MAX_BPS, SLIPPAGE_MIN_BPS};
-use crate::state::app_state::AppState;
 use crate::state::core_state::CoreState;
+use crate::state::deploy_state::DeployState;
 use crate::state::ingest_health::{
     WATCHDOG_CHECK_INTERVAL_FLOOR_SECS, WATCHDOG_STALL_TIMEOUT_FLOOR_SECS,
 };
@@ -201,14 +201,14 @@ pub struct UpdateLiveModeRequest {
     pub live: bool,
 }
 
-pub async fn get_live_mode(state: web::Data<Arc<AppState>>) -> impl Responder {
+pub async fn get_live_mode(state: web::Data<Arc<DeployState>>) -> impl Responder {
     HttpResponse::Ok().json(LiveModeResponse {
         live: state.is_live(),
     })
 }
 
 pub async fn set_live_mode(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<DeployState>>,
     req: web::Json<UpdateLiveModeRequest>,
 ) -> impl Responder {
     // Persist the toggle (its own row) first; only flip the runtime live mode if

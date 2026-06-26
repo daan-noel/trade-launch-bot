@@ -19,7 +19,7 @@ use uuid::Uuid;
 use super::util::none_if_zero_u64;
 use crate::models::ingest::SseEvent;
 use crate::models::{Position, Tpsl1Rule};
-use crate::state::app_state::AppState;
+use crate::state::deploy_state::DeployState;
 use crate::storage::repositories::{
     tpsl1_paper_trading_repo::Tpsl1PaperTradingRepo, tpsl1_position_repo::Tpsl1PositionRepo,
     tpsl1_strategy_rule_repo::Tpsl1StrategyRuleRepo, trade_repo::TradeRepo,
@@ -43,7 +43,7 @@ const MANUAL_CLOSE_REASON: &str = "ManualClose";
 /// then refreshes the rules cache so the strategy hot path sees the rule. Returns
 /// the updated rule.
 pub async fn activate_rule(
-    app_state: &Arc<AppState>,
+    app_state: &Arc<DeployState>,
     rule_id: Uuid,
     paper: PaperActivation,
 ) -> anyhow::Result<Tpsl1Rule> {
@@ -91,7 +91,7 @@ pub async fn activate_rule(
 /// `on_trade_executed` / the time sweep still exit them). For a paper rule this
 /// marks the current run `Stopped`. Returns the updated rule.
 pub async fn pause_rule(
-    app_state: &Arc<AppState>,
+    app_state: &Arc<DeployState>,
     rule_id: Uuid,
 ) -> anyhow::Result<Tpsl1Rule> {
     let repo = Tpsl1StrategyRuleRepo::new(app_state.db.clone());
@@ -117,7 +117,7 @@ pub async fn pause_rule(
 
 /// Best-effort cold-lane signal that this strategy's rule list changed, so SSE
 /// clients refetch it. No subscribers => the send is a no-op.
-fn emit_rules_changed(app_state: &Arc<AppState>) {
+fn emit_rules_changed(app_state: &Arc<DeployState>) {
     let _ = app_state.sse_tx.send(SseEvent::TpslRulesChanged {
         strategy: "tpsl1".to_string(),
     });
@@ -130,7 +130,7 @@ fn emit_rules_changed(app_state: &Arc<AppState>) {
 /// a many-position close doesn't block the response. Returns the updated rule and
 /// the number of positions that were closing.
 pub async fn stop_and_close_rule(
-    app_state: &Arc<AppState>,
+    app_state: &Arc<DeployState>,
     rule_id: Uuid,
 ) -> anyhow::Result<(Tpsl1Rule, usize)> {
     let rule = pause_rule(app_state, rule_id).await?;

@@ -7,7 +7,8 @@ use uuid::Uuid;
 
 use crate::{
     models::{ingest::SseEvent, PaperRunStatus, Position, Tpsl2Rule},
-    state::app_state::AppState,
+    state::deploy_state::DeployState,
+    state::local_state::LocalState,
     state::sim_results::SimOutcome,
     strategies::tpsl_sniper_2::{
         self, backtest::BacktestTokenResult, entry::token_matches_buy_rule,
@@ -163,13 +164,13 @@ impl RuleResponse {
 /// rules). The list endpoint avoids this per-rule query via a bulk run lookup.
 /// Best-effort cold-lane signal that the tpsl2 rule list changed (create / update
 /// / delete), so SSE clients refetch it instead of waiting on the fallback poll.
-fn emit_rules_changed(app_state: &Arc<AppState>) {
+fn emit_rules_changed(app_state: &Arc<DeployState>) {
     let _ = app_state.sse_tx.send(SseEvent::TpslRulesChanged {
         strategy: "tpsl2".to_string(),
     });
 }
 
-async fn rule_response(app_state: &Arc<AppState>, rule: Tpsl2Rule) -> RuleResponse {
+async fn rule_response(app_state: &Arc<DeployState>, rule: Tpsl2Rule) -> RuleResponse {
     let open = app_state.tpsl2_cache.holding_count_by_rule(rule.id);
     let total = app_state.tpsl2_cache.total_count_by_rule(rule.id);
     let stats = app_state.tpsl2_cache.closed_stats_by_rule(rule.id);
@@ -314,7 +315,7 @@ impl UpdateRuleRequest {
 // ---------------------------------------------------------------------------
 
 /// List all TPSL rules
-pub async fn list_tpsl_rules(app_state: web::Data<Arc<AppState>>) -> impl Responder {
+pub async fn list_tpsl_rules(app_state: web::Data<Arc<DeployState>>) -> impl Responder {
     let repo = app_state.tpsl2_rule_repo();
 
     match repo.find_all().await {
@@ -355,7 +356,7 @@ pub async fn list_tpsl_rules(app_state: web::Data<Arc<AppState>>) -> impl Respon
 
 /// Get a specific TPSL rule
 pub async fn get_tpsl_rule(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<DeployState>>,
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
     let repo = app_state.tpsl2_rule_repo();
@@ -382,7 +383,7 @@ pub async fn get_tpsl_rule(
 
 /// Create a new TPSL rule
 pub async fn create_tpsl_rule(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<DeployState>>,
     req: web::Json<CreateRuleRequest>,
 ) -> impl Responder {
     let repo = app_state.tpsl2_rule_repo();
@@ -407,7 +408,7 @@ pub async fn create_tpsl_rule(
 
 /// Update an existing TPSL rule
 pub async fn update_tpsl_rule(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<DeployState>>,
     rule_id: web::Path<Uuid>,
     req: web::Json<UpdateRuleRequest>,
 ) -> impl Responder {
@@ -479,7 +480,7 @@ pub async fn update_tpsl_rule(
 
 /// Delete a TPSL rule
 pub async fn delete_tpsl_rule(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<DeployState>>,
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
@@ -539,7 +540,7 @@ fn lifecycle_error(action: &str, e: anyhow::Error) -> HttpResponse {
 ///
 /// POST /api/strategies/tpsl2/rules/{rule_id}/activate
 pub async fn activate_tpsl_rule(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<DeployState>>,
     rule_id: web::Path<Uuid>,
     req: web::Json<ActivateRequest>,
 ) -> impl Responder {
@@ -558,7 +559,7 @@ pub async fn activate_tpsl_rule(
 ///
 /// POST /api/strategies/tpsl2/rules/{rule_id}/pause
 pub async fn pause_tpsl_rule(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<DeployState>>,
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
@@ -574,7 +575,7 @@ pub async fn pause_tpsl_rule(
 ///
 /// POST /api/strategies/tpsl2/rules/{rule_id}/stop
 pub async fn stop_tpsl_rule(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<DeployState>>,
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
@@ -664,7 +665,7 @@ pub struct MatchedTokensResponse {
 ///
 /// GET /api/strategies/tpsl/rules/{rule_id}/matched
 pub async fn get_matched_tokens(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<DeployState>>,
     rule_id: web::Path<Uuid>,
     range: web::Query<AnalysisRange>,
 ) -> impl Responder {
@@ -747,7 +748,7 @@ pub async fn get_matched_tokens(
 /// `GET /api/jobs/simulations/{rule_id}/result` once the `simulation_finished`
 /// SSE fires — there is no long-held connection to cut.
 pub async fn simulate_tpsl_rule(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<LocalState>>,
     rule_id: web::Path<Uuid>,
     range: web::Query<AnalysisRange>,
 ) -> impl Responder {
@@ -775,7 +776,7 @@ pub async fn simulate_tpsl_rule(
     // the result present.
     actix_web::rt::spawn(async move {
         struct SimGuard {
-            state: web::Data<Arc<AppState>>,
+            state: web::Data<Arc<LocalState>>,
             rule_id: Uuid,
             cancel: Arc<std::sync::atomic::AtomicBool>,
         }
@@ -837,7 +838,7 @@ pub async fn simulate_tpsl_rule(
 /// `POST /api/strategies/tpsl2/rules/{rule_id}/simulate/cancel` — request
 /// cancellation of an in-flight simulation for this rule (see the tpsl1 twin).
 pub async fn cancel_simulate_tpsl_rule(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<LocalState>>,
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
     let rid = rule_id.into_inner();
@@ -886,7 +887,7 @@ const PAPER_RESULT_MAX_TOKENS: i64 = 5000;
 ///
 /// GET /api/strategies/tpsl/rules/{rule_id}/paper-result
 pub async fn paper_result_tpsl_rule(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<LocalState>>,
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
@@ -967,7 +968,7 @@ pub async fn paper_result_tpsl_rule(
 ///
 /// DELETE /api/strategies/tpsl2/rules/{rule_id}/paper-result
 pub async fn clear_paper_result_tpsl_rule(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<DeployState>>,
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();

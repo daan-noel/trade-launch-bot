@@ -10,7 +10,7 @@ use crate::{
         helius_rpc::HeliusRpc,
         token_sync::{self, SyncCompleteEvent, TokenSyncContext, TokenSyncRequest},
     },
-    state::app_state::AppState,
+    state::deploy_state::DeployState,
 };
 
 use super::tokens::TokenDetail;
@@ -38,7 +38,7 @@ struct StreamErrorEvent {
 
 /// `POST /api/token/sync` — NDJSON stream: progress lines, then `complete` or `error`.
 pub async fn sync_token(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<DeployState>>,
     body: web::Json<SyncTokenBody>,
 ) -> impl Responder {
     let mint = body.mint_address.trim().to_string();
@@ -139,7 +139,7 @@ pub async fn sync_token(
 /// download for a mint (signatures only, no tx downloads). Returns `SyncPreview`
 /// with new (Fetch New) and total (Fetch All) counts.
 pub async fn preview_sync(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<DeployState>>,
     body: web::Json<SyncTokenBody>,
 ) -> impl Responder {
     let mint = body.mint_address.trim().to_string();

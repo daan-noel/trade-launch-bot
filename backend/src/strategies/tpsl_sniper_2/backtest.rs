@@ -10,7 +10,7 @@ use super::util::none_if_zero_u64;
 use crate::sweep::strategy::{round_trip_with_costs, CostModel};
 use crate::models::trade::Trade;
 use crate::models::Token;
-use crate::state::app_state::AppState;
+use crate::state::local_state::LocalState;
 use crate::strategies::sim_progress::SimProgress;
 use crate::storage::repositories::tpsl2_strategy_rule_repo::Tpsl2StrategyRuleRepo;
 use crate::storage::repositories::token_repo::TokenRepo;
@@ -104,7 +104,7 @@ fn select_simulated_tokens(
 /// Shares the exit ladder with the live path via [`exit::find_trade_driven_exit`],
 /// so a backtest and a live run resolve identical exits.
 pub async fn run_backtest(
-    app_state: actix_web::web::Data<Arc<AppState>>,
+    app_state: actix_web::web::Data<Arc<LocalState>>,
     rule_id: Uuid,
     since: Option<DateTime<Utc>>,
     until: Option<DateTime<Utc>>,

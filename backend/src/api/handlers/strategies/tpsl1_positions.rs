@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::{
     models::Position,
-    state::app_state::AppState,
+    state::deploy_state::DeployState,
     storage::repositories::{
         tpsl1_paper_trading_repo::Tpsl1PaperTradingRepo, tpsl1_position_repo::Tpsl1PositionRepo,
         tpsl1_strategy_rule_repo::Tpsl1StrategyRuleRepo,
@@ -141,7 +141,7 @@ pub(crate) async fn load_rule_positions(
 /// Get all positions for a specific TPSL rule (by rule_id).
 /// GET /api/strategies/tpsl1/rules/{rule_id}/positions
 pub async fn get_positions_by_rule(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<DeployState>>,
     rule_id: web::Path<Uuid>,
     query: web::Query<PositionListParams>,
 ) -> impl Responder {
@@ -163,7 +163,7 @@ pub async fn get_positions_by_rule(
 
 /// List all positions
 pub async fn list_positions(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<DeployState>>,
     query: web::Query<PositionListParams>,
 ) -> impl Responder {
     let repo = app_state.tpsl1_position_repo();
@@ -185,7 +185,7 @@ pub async fn list_positions(
 
 /// Get positions by mint (token)
 pub async fn get_positions_by_mint(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<DeployState>>,
     mint: web::Path<String>,
     query: web::Query<PositionListParams>,
 ) -> impl Responder {
@@ -209,7 +209,7 @@ pub async fn get_positions_by_mint(
 
 /// Get positions by wallet
 pub async fn get_positions_by_wallet(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<DeployState>>,
     wallet: web::Path<String>,
     query: web::Query<PositionListParams>,
 ) -> impl Responder {
@@ -233,7 +233,7 @@ pub async fn get_positions_by_wallet(
 
 /// Get a specific position
 pub async fn get_position(
-    app_state: web::Data<Arc<AppState>>,
+    app_state: web::Data<Arc<DeployState>>,
     position_id: web::Path<Uuid>,
 ) -> impl Responder {
     let repo = app_state.tpsl1_position_repo();
