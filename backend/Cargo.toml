@@ -86,6 +86,9 @@ tokio-stream = "0.1"
 # Standalone Pump.fun trader, extracted for reuse across projects.
 pump-trader = { path = "../pump-trader" }
 
+# Shared core: config, models, storage, core services/state, api framework.
+backend-core = { path = "../backend-core" }
+
 # Param-sweep / backtest engine (src/sweep): data-parallel sweep over
 # tokens, columnar Parquet corpus + result emit for the Python scoring layer.
 rayon = "1"

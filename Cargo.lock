@@ -885,6 +885,7 @@ dependencies = [
  "anyhow",
  "arrow",
  "async-trait",
+ "backend-core",
  "base64 0.22.1",
  "bincode",
  "borsh 1.6.1",
@@ -913,6 +914,33 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "backend-core"
+version = "0.1.0"
+dependencies = [
+ "actix-cors",
+ "actix-web",
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "dashmap 4.0.2",
+ "dotenvy",
+ "futures-util",
+ "pump-constants",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "solana-client",
+ "solana-sdk",
+ "sqlx",
+ "thiserror",
+ "tokio",
  "tracing",
  "tracing-subscriber",
  "url",
