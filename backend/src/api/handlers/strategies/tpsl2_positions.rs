@@ -1,6 +1,4 @@
 use actix_web::{web, HttpResponse, Responder};
-use chrono::{DateTime, Utc};
-use serde::Serialize;
 use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -18,76 +16,10 @@ use crate::{
 // Response Types
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize)]
-pub struct PositionResponse {
-    pub id: Uuid,
-    pub mint: String,
-    pub wallet: String,
-    /// Target (trigger-trade) snapshot — the scalp-entry signal trade that armed
-    /// this position, distinct from the actual entry fill. `None` until armed.
-    /// The gap vs. the `entry_*` columns is derived client-side, not stored.
-    pub target_price: Option<f64>,
-    pub target_token_amount: Option<f64>,
-    pub target_time: Option<DateTime<Utc>>,
-    pub target_tx: Option<String>,
-    pub entry_price: Option<f64>,
-    pub entry_token_amount: Option<f64>,
-    pub entry_time: Option<DateTime<Utc>>,
-    /// First entry leg's signature (display/back-compat); empty until adopted.
-    pub entry_tx: String,
-    pub exit_price: Option<f64>,
-    pub exit_token_amount: Option<f64>,
-    pub exit_time: Option<DateTime<Utc>>,
-    /// Last exit leg's signature (display/back-compat); `None` until a sell lands.
-    pub exit_tx: Option<String>,
-    /// All signatures that made up the entry fill (per-signature attribution, 1C).
-    pub entry_tx_signatures: Vec<String>,
-    /// All signatures that made up the exit fill (multi-leg: retries / re-routes).
-    pub exit_tx_signatures: Vec<String>,
-    pub pnl_percent: Option<f64>,
-    pub status: String,
-    pub strategy: String,
-    pub rule_id: Uuid,
-    /// Why the position exited ("TakeProfit", "StopLoss", "TrailingStop",
-    /// "Stall", "TimeStop", "LiquidityExit"); `None` while still open.
-    pub exit_reason: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-impl From<Position> for PositionResponse {
-    fn from(p: Position) -> Self {
-        let pnl_percent = p.pnl_percentage();
-        let exit_reason = p.exit_reason_or_derived();
-        Self {
-            id: p.id,
-            mint: p.mint,
-            wallet: p.wallet,
-            target_price: p.target_price,
-            target_token_amount: p.target_token_amount,
-            target_time: p.target_time,
-            target_tx: p.target_tx,
-            entry_price: p.entry_price,
-            entry_token_amount: p.entry_token_amount,
-            entry_time: p.entry_time,
-            // First entry leg / last exit leg for the single-address display columns.
-            entry_tx: p.entry_tx_signatures.first().cloned().unwrap_or_default(),
-            exit_price: p.exit_price,
-            exit_token_amount: p.exit_token_amount,
-            exit_time: p.exit_time,
-            exit_tx: p.exit_tx_signatures.last().cloned(),
-            entry_tx_signatures: p.entry_tx_signatures,
-            exit_tx_signatures: p.exit_tx_signatures,
-            pnl_percent,
-            status: p.status.to_string(),
-            strategy: p.strategy,
-            rule_id: p.rule_id,
-            exit_reason,
-            created_at: p.created_at,
-            updated_at: p.updated_at,
-        }
-    }
-}
+// `PositionResponse` (this tpsl2 shape, with the `target_*` snapshot) moved to
+// `backend-core::models::position` so the core SSE render bridge can emit it;
+// re-exported so existing `tpsl2_positions::PositionResponse` paths resolve.
+pub use crate::models::position::PositionResponse;
 
 /// Query params for the position list views. Bounds every list query so a
 /// growing `tpsl2_real_positions` table can't be fetched whole in one request.

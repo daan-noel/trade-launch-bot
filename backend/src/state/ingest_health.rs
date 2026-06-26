@@ -39,17 +39,13 @@ use tracing::error;
 
 use crate::storage::repositories::settings_repo::AppSettings;
 
-/// Floor for the watchdog stall window. Kept generous (180 s) because the
-/// watchdog now only ever fires on a *genuine* downstream wedge — the stall
-/// predicate is gated on "work is pending" (the DB queue is non-empty), so a
-/// quiet upstream or an in-progress reconnect can never trip it regardless of the
-/// window. With false positives designed out, a wide window costs nothing and a
-/// hand-edited / stale DB row below it is retroactively neutralized (the API
-/// clamps writes here and the watchdog re-applies it defensively every tick).
-pub const WATCHDOG_STALL_TIMEOUT_FLOOR_SECS: u64 = 90;
-/// Floor for the watchdog check cadence — a `0`/tiny interval would busy-spin the
-/// OS thread for no detection benefit.
-pub const WATCHDOG_CHECK_INTERVAL_FLOOR_SECS: u64 = 5;
+// The watchdog floor constants live in `config::constants` (core) so the core
+// settings handler (`update_settings`) can clamp writes to them without depending
+// on this ingest module; re-exported here to keep the long-standing
+// `state::ingest_health::WATCHDOG_*` paths (and this module's own uses) resolving.
+pub use crate::config::constants::{
+    WATCHDOG_CHECK_INTERVAL_FLOOR_SECS, WATCHDOG_STALL_TIMEOUT_FLOOR_SECS,
+};
 
 /// Shared progress clock: unix-millis of the last observed ingest forward progress.
 /// Cloning shares the same atomic (it's an `Arc` bump).

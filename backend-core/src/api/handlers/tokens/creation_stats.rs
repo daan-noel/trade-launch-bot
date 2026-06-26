@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::state::core_state::CoreState;
 use crate::storage::repositories::creation_stats_repo::{HeatCellRow, StatsFilter, TrendPointRow};
-use crate::sweep::grouping::GroupField;
+use crate::grouping::GroupField;
 
 /// Default outcome-maturity window (24h): tokens younger than this are excluded
 /// from migrate/dead counts so a fresh bucket doesn't read artificially bad.

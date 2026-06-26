@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 
 use crate::{
-    api::handlers::strategies::tpsl2_positions::PositionResponse, models::ingest::SseEvent,
+    models::ingest::SseEvent, models::position::PositionResponse,
     state::core_state::CoreState,
 };
 

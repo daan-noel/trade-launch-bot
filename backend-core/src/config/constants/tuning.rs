@@ -140,6 +140,16 @@ pub const MAX_TRADES_RETAINED: usize = 2_500;
 /// cap (`MAX_TRADES_RETAINED`) so a high-volume token reads only its newest window.
 pub const SEED_TRADES_PER_MINT: i64 = MAX_TRADES_RETAINED as i64;
 
+/// Floor for the ingest watchdog stall window. Kept generous because the watchdog
+/// only ever fires on a *genuine* downstream wedge — the stall predicate is gated
+/// on "work is pending" (the DB queue is non-empty), so a quiet upstream or an
+/// in-progress reconnect can never trip it regardless of the window. The settings
+/// API clamps writes here and the watchdog re-applies it defensively every tick.
+pub const WATCHDOG_STALL_TIMEOUT_FLOOR_SECS: u64 = 90;
+/// Floor for the watchdog check cadence — a `0`/tiny interval would busy-spin the
+/// OS thread for no detection benefit.
+pub const WATCHDOG_CHECK_INTERVAL_FLOOR_SECS: u64 = 5;
+
 /// Keyset page size for analysis scans (tpsl matched / simulate) that stream
 /// the whole `tokens` table one page at a time.
 pub const ANALYSIS_SCAN_PAGE: i64 = 5_000;

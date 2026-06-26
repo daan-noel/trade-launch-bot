@@ -1,4 +1,4 @@
-use actix_web::{http::header, web, HttpRequest, HttpResponse, Responder};
+use actix_web::{web, HttpResponse, Responder};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -9,8 +9,8 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::{
-    analyzers::swing_analyzer::{compute_chain_stats, ChainStats},
-    state::{core_state::CoreState, local_state::LocalState, token_cache::TokenState},
+    analyzers::ChainStats,
+    state::{core_state::CoreState, token_cache::TokenState},
 };
 
 fn extract_buy_arg_u64(value: &Option<Value>, field: &str) -> Option<u64> {
@@ -429,84 +429,9 @@ pub fn build_tokens_list(
     (body, etag)
 }
 
-/// `GET /api/tokens` — list all currently tracked tokens sorted by trade count.
-pub async fn list_tokens(
-    req: HttpRequest,
-    state: web::Data<Arc<LocalState>>,
-    query: web::Query<PaginationParams>,
-) -> impl Responder {
-    // Filtering + sorting the token set is CPU work that would otherwise block one
-    // of the few (http_workers=2) async request threads. Run it on the blocking
-    // pool so a large cache can't stall other requests.
-    let state = state.get_ref().clone();
-    let q = TokenQuery::from_params(&query);
-    let limit_q = query.limit;
-    let offset_q = query.offset;
-    let tracked_only = query.tracked_only.unwrap_or(false);
-
-    let built = web::block(move || {
-        // Swing-dependent branch — the only part of the list build that touches
-        // `swing_runs`. Any chain column among the sort levels? Compute each mint's
-        // chain stats from the raw legs stashed under the run, grouped at the
-        // requested latency (a single stats map serves every chain level, each
-        // reading a different field via `swing_sort_value`). Kept here, out of the
-        // core `build_tokens_list`, so a deploy build can pass `None`.
-        let swing_stats: Option<HashMap<String, ChainStats>> =
-            if q.sort_levels.iter().any(|(col, _)| is_swing_sort_col(col)) {
-                q.swing_run_id
-                    .as_deref()
-                    .and_then(|id| state.swing_runs.get(id))
-                    .map(|run| {
-                        let mut stats = HashMap::with_capacity(run.mints.len());
-                        for entry in run.mints.iter() {
-                            stats.insert(
-                                entry.key().clone(),
-                                compute_chain_stats(entry.value(), q.swing_chain_latency_ms),
-                            );
-                        }
-                        stats
-                    })
-            } else {
-                None
-            };
-
-        build_tokens_list(&state, &q, limit_q, offset_q, tracked_only, swing_stats.as_ref())
-    })
-    .await;
-
-    let (body, etag) = match built {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::error!("list_tokens blocking build failed: {e}");
-            return HttpResponse::InternalServerError()
-                .json(serde_json::json!({ "error": "failed to build token list" }));
-        }
-    };
-
-    // Conditional GET: the browser's HTTP cache echoes our last `ETag` back in
-    // `If-None-Match`. `Cache-Control: no-cache` makes it revalidate on every poll
-    // (never serve a stale page without asking), so when the tag still matches we
-    // answer 304 with no body and the browser hands the cached page to the app —
-    // the wire carries only headers. A changed page falls through to a full 200.
-    let if_none_match_hit = req
-        .headers()
-        .get(header::IF_NONE_MATCH)
-        .and_then(|v| v.to_str().ok())
-        .map(|hdr| hdr.split(',').any(|t| t.trim() == etag))
-        .unwrap_or(false);
-    if if_none_match_hit {
-        return HttpResponse::NotModified()
-            .insert_header((header::ETAG, etag))
-            .insert_header((header::CACHE_CONTROL, "no-cache"))
-            .finish();
-    }
-
-    HttpResponse::Ok()
-        .insert_header((header::ETAG, etag))
-        .insert_header((header::CACHE_CONTROL, "no-cache"))
-        .content_type("application/json")
-        .body(body)
-}
+// `list_tokens` (the `GET /api/tokens` handler) lives in the `backend` crate
+// (`api::handlers::tokens::list`) because it takes `LocalState` and computes swing
+// stats; it calls the core `build_tokens_list` + `is_swing_sort_col` below.
 
 /// `GET /api/tokens/:mint` — token detail from in-memory cache; falls back to DB.
 pub async fn get_token(state: web::Data<Arc<CoreState>>, path: web::Path<String>) -> impl Responder {
@@ -700,7 +625,7 @@ const SORTABLE_COLS: &[&str] = &[
 const SWING_SORT_COLS: &[&str] = &["swing_pairs", "max_seq_pairs", "chain_count"];
 const DEFAULT_CHAIN_LATENCY_MS: i64 = 60_000;
 
-fn is_swing_sort_col(col: &str) -> bool {
+pub fn is_swing_sort_col(col: &str) -> bool {
     SWING_SORT_COLS.contains(&col)
 }
 
@@ -740,7 +665,7 @@ fn sort_levels_from(
 }
 
 /// Pick a chain stat as the numeric sort key for a swing column.
-fn swing_sort_value(col: &str, s: &crate::analyzers::swing_analyzer::ChainStats) -> f64 {
+fn swing_sort_value(col: &str, s: &crate::analyzers::ChainStats) -> f64 {
     match col {
         "swing_pairs" => s.swing_pairs as f64,
         "max_seq_pairs" => s.max_seq_pairs as f64,
@@ -779,6 +704,23 @@ fn g<'a>(f: &'a HashMap<&'static str, String>, k: &str) -> &'a str {
 }
 
 impl TokenQuery {
+    /// Sort levels `(column, descending)`, primary first. Exposed for the local
+    /// `list_tokens` handler (in the `backend` crate) to detect a chain-sort column
+    /// before computing swing stats.
+    pub fn sort_levels(&self) -> &[(String, bool)] {
+        &self.sort_levels
+    }
+
+    /// Swing run id to read chain stats from when a chain column is sorted.
+    pub fn swing_run_id(&self) -> Option<&str> {
+        self.swing_run_id.as_deref()
+    }
+
+    /// Chain-latency budget (ms) used to group those chain stats.
+    pub fn swing_chain_latency_ms(&self) -> i64 {
+        self.swing_chain_latency_ms
+    }
+
     pub fn from_params(q: &PaginationParams) -> Self {
         let mut f: HashMap<&'static str, String> = HashMap::new();
         put(&mut f, "symbol", &q.f_symbol);

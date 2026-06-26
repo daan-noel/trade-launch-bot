@@ -13,7 +13,7 @@ use crate::{
     state::deploy_state::DeployState,
 };
 
-use super::tokens::TokenDetail;
+use super::TokenDetail;
 
 #[derive(Deserialize)]
 pub struct SyncTokenBody {
