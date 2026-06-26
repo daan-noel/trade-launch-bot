@@ -15,6 +15,8 @@ use crate::{
     },
 };
 
+use super::tpsl_rules_core::{tpsl2 as rules_core, RuleWriteError};
+
 // ---------------------------------------------------------------------------
 // Response / Request Types
 // ---------------------------------------------------------------------------
@@ -307,53 +309,6 @@ impl UpdateRuleRequest {
     }
 }
 
-/// Reject percent params that fall outside their valid range before a rule is
-/// persisted. Every percent field is whole-percent (see percent-params-unify-plan):
-///   • Take Profit is unbounded above (a gain can exceed 100%) — only `> 0`.
-///   • Every other percent is a fraction of a reference it cannot exceed, so it
-///     is clamped to `0–100`. `0` is the disable sentinel and stays legal.
-/// Returns `Err(message)` on the first violation.
-fn validate_percent_ranges(rule: &Tpsl2Rule) -> Result<(), String> {
-    if rule.p_exit_take_profit <= 0.0 {
-        return Err("Take Profit % must be greater than 0".into());
-    }
-    let bounded: [(&str, f64); 6] = [
-        ("Stop Loss %", rule.p_exit_stop_loss),
-        ("Tolerance %", rule.tolerance_pct),
-        ("Trailing Stop %", rule.p_exit_trailing_stop_pct.unwrap_or(0.0)),
-        ("Liquidity Drop %", rule.p_exit_liquidity_drop_pct.unwrap_or(0.0)),
-        ("Pullback %", rule.p_entry_pullback_pct.unwrap_or(0.0)),
-        ("Cohort Exit Ratio %", rule.p_exit_cohort_ratio.unwrap_or(0.0)),
-    ];
-    for (name, v) in bounded {
-        if !(0.0..=100.0).contains(&v) {
-            return Err(format!("{name} must be between 0 and 100"));
-        }
-    }
-    // Max Cohort Held is bounded the same way but lives in its own field.
-    let held = rule.p_entry_max_cohort_held.unwrap_or(0.0);
-    if !(0.0..=100.0).contains(&held) {
-        return Err("Max Cohort Held % must be between 0 and 100".into());
-    }
-    Ok(())
-}
-
-/// Reject an empty entry window: when both `p_entry_min_age_secs` (floor) and
-/// `p_entry_max_age_secs` (ceiling) are set, the ceiling must be strictly greater
-/// than the floor, else `[min_age, max_age]` admits nothing. `0`/`None` disables
-/// each bound (ignore_zero), so a one-sided window is always valid.
-fn validate_entry_window(rule: &Tpsl2Rule) -> Result<(), String> {
-    let nz = |v: Option<u64>| v.filter(|&x| x != 0);
-    if let (Some(min), Some(max)) = (nz(rule.p_entry_min_age_secs), nz(rule.p_entry_max_age_secs)) {
-        if max <= min {
-            return Err(format!(
-                "Max Age ({max}s) must be greater than Min Age ({min}s)"
-            ));
-        }
-    }
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // Rule Handlers
 // ---------------------------------------------------------------------------
@@ -417,69 +372,32 @@ pub async fn get_tpsl_rule(
     }
 }
 
+// ---------------------------------------------------------------------------
+// --- DEPLOY --- CRUD write edges
+//
+// Thin wrappers over `tpsl_rules_core::tpsl2` (validation + repo write); the only
+// thing they add is the runtime side effect — refresh the live `tpsl2_cache` and
+// nudge SSE clients. The domain logic is shared with the local crate's wrappers.
+// ---------------------------------------------------------------------------
+
 /// Create a new TPSL rule
 pub async fn create_tpsl_rule(
     app_state: web::Data<Arc<AppState>>,
     req: web::Json<CreateRuleRequest>,
 ) -> impl Responder {
-    let mut rule = Tpsl2Rule::new(
-        req.rule_name.clone(),
-        req.p_token_initial_buy_sol,
-        req.p_token_cu_limit,
-        req.p_token_cu_price,
-        req.p_token_ix_labels.clone(),
-        req.trade_mode.clone(),
-        req.buy_amount,
-        req.p_exit_take_profit,
-        req.p_exit_stop_loss,
-        req.p_token_max_sol_cost,
-        req.p_token_spendable_sol_in,
-        req.p_max_concurrent_tokens,
-        req.p_max_total_tokens,
-        req.tolerance_pct,
-        req.p_exit_trailing_stop_pct,
-        req.p_exit_time_stop_secs,
-        req.p_exit_stall_secs,
-        req.p_exit_liquidity_drop_pct,
-    );
-    // Scalp-continuation gates are set post-`new()` (so the shared model's
-    // constructor signature — and tpsl1's call sites — stay untouched).
-    rule.p_entry_min_age_secs = req.p_entry_min_age_secs;
-    rule.p_entry_max_age_secs = req.p_entry_max_age_secs;
-    rule.p_entry_min_alive_sol = req.p_entry_min_alive_sol;
-    rule.p_entry_min_organic_sol = req.p_entry_min_organic_sol;
-    rule.p_entry_pullback_pct = req.p_entry_pullback_pct;
-    rule.p_entry_higher_low_secs = req.p_entry_higher_low_secs;
-    rule.p_entry_max_cohort_held = req.p_entry_max_cohort_held;
-    rule.p_entry_min_liquidity_sol = req.p_entry_min_liquidity_sol;
-    rule.p_entry_min_organic_liq = req.p_entry_min_organic_liq;
-    rule.p_exit_cohort_ratio = req.p_exit_cohort_ratio;
-
-    // A tpsl2 rule's only entry path is the scalp trade-window gates, so at least
-    // one must be configured — otherwise the rule can never resolve an entry. This
-    // is the scalp-side analogue of `rule_configures_any_criterion` on token params.
-    if !crate::strategies::tpsl_sniper_2::entry::rule_configures_any_scalp_gate(&rule) {
-        return HttpResponse::BadRequest()
-            .json(serde_json::json!({"error": "Rule configures no scalp entry gate"}));
-    }
-    if let Err(msg) = validate_percent_ranges(&rule) {
-        return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }));
-    }
-    if let Err(msg) = validate_entry_window(&rule) {
-        return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }));
-    }
-
     let repo = app_state.tpsl2_rule_repo();
-
-    match repo.insert(&rule).await {
-        Ok(_) => {
+    match rules_core::create(&repo, &req).await {
+        Ok(rule) => {
             if let Err(e) = app_state.tpsl2_cache.reload_rules(&app_state.db).await {
                 tracing::warn!("TPSL rule cache reload after create failed: {e}");
             }
             emit_rules_changed(&app_state);
             HttpResponse::Created().json(rule_response(&app_state, rule).await)
         }
-        Err(e) => {
+        Err(RuleWriteError::Invalid(msg)) => {
+            HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }))
+        }
+        Err(RuleWriteError::Repo(e)) => {
             tracing::error!("Failed to create TPSL rule: {e}");
             HttpResponse::InternalServerError()
                 .json(serde_json::json!({"error": "Failed to create rule"}))
@@ -496,168 +414,65 @@ pub async fn update_tpsl_rule(
     let rule_id = rule_id.into_inner();
     let repo = app_state.tpsl2_rule_repo();
 
-    match repo.find_by_id(rule_id).await {
-        Ok(Some(mut rule)) => {
-            // Log incoming update request for debugging
-            match serde_json::to_value(&req.0) {
-                Ok(v) => tracing::debug!("UpdateRuleRequest JSON: {}", v),
-                Err(e) => tracing::debug!("Failed to serialize UpdateRuleRequest: {e}"),
-            }
-            // While the rule is live (running, or still draining open positions)
-            // only the "hot" fields may change — Rule Name, Buy Amount, and the
-            // concurrency caps. Everything else (match/entry/exit criteria, and
-            // the paper/real mode) redefines the rule, so it's frozen and the run
-            // can't shift under itself. The UI enforces this via per-group locks;
-            // this guards non-UI callers.
-            let live = rule.is_active
-                || app_state.tpsl2_cache.holding_count_by_rule(rule_id) > 0;
-            let changes_mode = req
-                .trade_mode
-                .as_deref()
-                .is_some_and(|m| m != rule.trade_mode);
-            if live && (req.touches_frozen_fields() || changes_mode) {
-                return HttpResponse::Conflict().json(serde_json::json!({
-                    "error": "Rule is live: only Rule Name, Buy Amount, and concurrency caps can be edited while running or holding positions",
-                }));
-            }
-            // Update fields if provided
-            if let Some(name) = &req.rule_name {
-                rule.rule_name = name.clone();
-            }
-            if let Some(buy_amount) = req.buy_amount {
-                rule.buy_amount = buy_amount;
-            }
-            if let Some(p_exit_take_profit) = req.p_exit_take_profit {
-                rule.p_exit_take_profit = p_exit_take_profit;
-            }
-            if let Some(p_exit_stop_loss) = req.p_exit_stop_loss {
-                rule.p_exit_stop_loss = p_exit_stop_loss;
-            }
-            if let Some(trailing_stop_pct) = req.p_exit_trailing_stop_pct {
-                rule.p_exit_trailing_stop_pct = Some(trailing_stop_pct);
-            }
-            if let Some(time_stop_secs) = req.p_exit_time_stop_secs {
-                rule.p_exit_time_stop_secs = Some(time_stop_secs);
-            }
-            if let Some(stall_secs) = req.p_exit_stall_secs {
-                rule.p_exit_stall_secs = Some(stall_secs);
-            }
-            if let Some(liquidity_drop_pct) = req.p_exit_liquidity_drop_pct {
-                rule.p_exit_liquidity_drop_pct = Some(liquidity_drop_pct);
-            }
-            // Scalp-continuation gates (present → set; 0 disables).
-            if let Some(v) = req.p_entry_min_age_secs {
-                rule.p_entry_min_age_secs = Some(v);
-            }
-            if let Some(v) = req.p_entry_max_age_secs {
-                rule.p_entry_max_age_secs = Some(v);
-            }
-            if let Some(v) = req.p_entry_min_alive_sol {
-                rule.p_entry_min_alive_sol = Some(v);
-            }
-            if let Some(v) = req.p_entry_min_organic_sol {
-                rule.p_entry_min_organic_sol = Some(v);
-            }
-            if let Some(v) = req.p_entry_pullback_pct {
-                rule.p_entry_pullback_pct = Some(v);
-            }
-            if let Some(v) = req.p_entry_higher_low_secs {
-                rule.p_entry_higher_low_secs = Some(v);
-            }
-            if let Some(v) = req.p_entry_max_cohort_held {
-                rule.p_entry_max_cohort_held = Some(v);
-            }
-            if let Some(v) = req.p_entry_min_liquidity_sol {
-                rule.p_entry_min_liquidity_sol = Some(v);
-            }
-            if let Some(v) = req.p_entry_min_organic_liq {
-                rule.p_entry_min_organic_liq = Some(v);
-            }
-            if let Some(v) = req.p_exit_cohort_ratio {
-                rule.p_exit_cohort_ratio = Some(v);
-            }
-            if let Some(initial_buy_sol_opt) = &req.p_token_initial_buy_sol {
-                rule.p_token_initial_buy_sol = initial_buy_sol_opt.clone();
-            }
-            if let Some(cu_limit_opt) = &req.p_token_cu_limit {
-                rule.p_token_cu_limit = cu_limit_opt.clone();
-            }
-            if let Some(cu_price_opt) = &req.p_token_cu_price {
-                rule.p_token_cu_price = cu_price_opt.clone();
-            }
-            if let Some(ix_labels_opt) = &req.p_token_ix_labels {
-                rule.p_token_ix_labels = ix_labels_opt
-                    .clone()
-                    .unwrap_or_else(|| serde_json::Value::Array(vec![]));
-            }
-            if let Some(max_sol_cost_opt) = &req.p_token_max_sol_cost {
-                rule.p_token_max_sol_cost = max_sol_cost_opt.clone();
-            }
-            if let Some(spendable_sol_in_opt) = &req.p_token_spendable_sol_in {
-                rule.p_token_spendable_sol_in = spendable_sol_in_opt.clone();
-            }
-            if let Some(max_concurrent_tokens_opt) = &req.p_max_concurrent_tokens {
-                rule.p_max_concurrent_tokens = max_concurrent_tokens_opt.clone();
-            }
-            if let Some(max_total_tokens_opt) = &req.p_max_total_tokens {
-                rule.p_max_total_tokens = max_total_tokens_opt.clone();
-            }
-            if let Some(tolerance_pct) = req.tolerance_pct {
-                rule.tolerance_pct = tolerance_pct;
-            }
-            // `is_active` is intentionally NOT applied here: activation/pause is
-            // owned by the dedicated lifecycle endpoints (`activate`/`pause`/
-            // `stop`) so the paper-run side effects can't drift. This PUT only
-            // edits rule fields.
+    let rule = match repo.find_by_id(rule_id).await {
+        Ok(Some(rule)) => rule,
+        Ok(None) => {
+            return HttpResponse::NotFound().json(serde_json::json!({"error": "Rule not found"}));
+        }
+        Err(e) => {
+            tracing::error!("Failed to get TPSL rule {rule_id}: {e}");
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "Failed to get rule"}));
+        }
+    };
+
+    // Log incoming update request for debugging
+    match serde_json::to_value(&req.0) {
+        Ok(v) => tracing::debug!("UpdateRuleRequest JSON: {}", v),
+        Err(e) => tracing::debug!("Failed to serialize UpdateRuleRequest: {e}"),
+    }
+
+    // Deploy-only live-freeze guard (reads the runtime cache): while the rule is
+    // live (running, or still draining open positions) only the "hot" fields may
+    // change — Rule Name, Buy Amount, and the concurrency caps. Everything else
+    // (match/entry/exit criteria, and the paper/real mode) redefines the rule, so
+    // it's frozen and the run can't shift under itself. The UI enforces this via
+    // per-group locks; this guards non-UI callers. (Dropped in the local crate,
+    // where rules never run.)
+    let live = rule.is_active || app_state.tpsl2_cache.holding_count_by_rule(rule_id) > 0;
+    let changes_mode = req
+        .trade_mode
+        .as_deref()
+        .is_some_and(|m| m != rule.trade_mode);
+    if live && (req.touches_frozen_fields() || changes_mode) {
+        return HttpResponse::Conflict().json(serde_json::json!({
+            "error": "Rule is live: only Rule Name, Buy Amount, and concurrency caps can be edited while running or holding positions",
+        }));
+    }
+
+    match rules_core::apply_and_persist(&repo, rule, &req.0).await {
+        Ok((rule, mode_changed)) => {
             // Switching real<->paper changes which table this rule's stats come
             // from, so the cached per-rule counters must be fully recomputed
             // (`reload_rules` only swaps the rule list, leaving stale stats).
-            let mode_changed = req
-                .trade_mode
-                .as_ref()
-                .is_some_and(|m| *m != rule.trade_mode);
-            if let Some(trade_mode) = &req.trade_mode {
-                rule.trade_mode = trade_mode.clone();
+            let reload = if mode_changed {
+                app_state.tpsl2_cache.load_from_db(&app_state.db).await
+            } else {
+                app_state.tpsl2_cache.reload_rules(&app_state.db).await
+            };
+            if let Err(e) = reload {
+                tracing::warn!("TPSL rule cache reload after update failed: {e}");
             }
-
-            // The merged rule must still carry at least one scalp entry gate — an
-            // edit that clears them all would leave a rule that can never enter.
-            if !crate::strategies::tpsl_sniper_2::entry::rule_configures_any_scalp_gate(&rule) {
-                return HttpResponse::BadRequest()
-                    .json(serde_json::json!({"error": "Rule configures no scalp entry gate"}));
-            }
-            if let Err(msg) = validate_percent_ranges(&rule) {
-                return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }));
-            }
-            if let Err(msg) = validate_entry_window(&rule) {
-                return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }));
-            }
-
-            match repo.update(&rule).await {
-                Ok(_) => {
-                    let reload = if mode_changed {
-                        app_state.tpsl2_cache.load_from_db(&app_state.db).await
-                    } else {
-                        app_state.tpsl2_cache.reload_rules(&app_state.db).await
-                    };
-                    if let Err(e) = reload {
-                        tracing::warn!("TPSL rule cache reload after update failed: {e}");
-                    }
-                    emit_rules_changed(&app_state);
-                    HttpResponse::Ok().json(rule_response(&app_state, rule).await)
-                }
-                Err(e) => {
-                    tracing::error!("Failed to update TPSL rule {rule_id}: {e}");
-                    HttpResponse::InternalServerError()
-                        .json(serde_json::json!({"error": "Failed to update rule"}))
-                }
-            }
+            emit_rules_changed(&app_state);
+            HttpResponse::Ok().json(rule_response(&app_state, rule).await)
         }
-        Ok(None) => HttpResponse::NotFound().json(serde_json::json!({"error": "Rule not found"})),
-        Err(e) => {
-            tracing::error!("Failed to get TPSL rule {rule_id}: {e}");
+        Err(RuleWriteError::Invalid(msg)) => {
+            HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }))
+        }
+        Err(RuleWriteError::Repo(e)) => {
+            tracing::error!("Failed to update TPSL rule {rule_id}: {e}");
             HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "Failed to get rule"}))
+                .json(serde_json::json!({"error": "Failed to update rule"}))
         }
     }
 }
@@ -670,15 +485,18 @@ pub async fn delete_tpsl_rule(
     let rule_id = rule_id.into_inner();
     let repo = app_state.tpsl2_rule_repo();
 
-    match repo.delete(rule_id).await {
-        Ok(_) => {
+    match rules_core::delete(&repo, rule_id).await {
+        Ok(()) => {
             if let Err(e) = app_state.tpsl2_cache.reload_rules(&app_state.db).await {
                 tracing::warn!("TPSL rule cache reload after delete failed: {e}");
             }
             emit_rules_changed(&app_state);
             HttpResponse::NoContent().finish()
         }
-        Err(e) => {
+        Err(RuleWriteError::Invalid(msg)) => {
+            HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }))
+        }
+        Err(RuleWriteError::Repo(e)) => {
             tracing::error!("Failed to delete TPSL rule {rule_id}: {e}");
             HttpResponse::InternalServerError()
                 .json(serde_json::json!({"error": "Failed to delete rule"}))
@@ -913,7 +731,7 @@ pub async fn get_matched_tokens(
 }
 
 // ---------------------------------------------------------------------------
-// Simulation
+// --- LOCAL --- Simulation
 // ---------------------------------------------------------------------------
 
 /// Start a TPSL2 rule backtest as a detached background job and return at once.
@@ -1034,7 +852,7 @@ pub async fn cancel_simulate_tpsl_rule(
 }
 
 // ---------------------------------------------------------------------------
-// Paper-test result
+// --- LOCAL --- Paper-test result
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
@@ -1169,6 +987,9 @@ pub async fn clear_paper_result_tpsl_rule(
         return HttpResponse::BadRequest()
             .json(serde_json::json!({"error": "Only paper rules have results to clear"}));
     }
+    // NOTE (crate split): this live-cache guard is a deploy-only concern. In the
+    // local crate (no live runtime) rules are never live, so this guard is dropped
+    // there (T14) and the clear always proceeds. Left intact here for now.
     let live = rule.is_active || app_state.tpsl2_cache.holding_count_by_rule(rule_id) > 0;
     if live {
         return HttpResponse::Conflict().json(serde_json::json!({
