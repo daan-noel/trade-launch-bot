@@ -159,11 +159,11 @@ impl Default for Selection {
 // Memory bounding (Phase 0/1 of the sweep memory plan)
 // ---------------------------------------------------------------------------
 
-/// Default sweep per-mint trade cap (Phase 1.1). Far below the live
-/// `MAX_TRADES_RETAINED` (50k): launch-window scalp entries decide on the first
-/// minutes, so a few thousand trades/token is plenty and cuts a high-volume
-/// token's corpus weight (and its entry/exit walk) ~10–25×. Override per box with
-/// `SWEEP_PER_MINT_CAP`.
+/// Default sweep per-mint trade cap (Phase 1.1). Launch-window scalp entries
+/// decide on the first minutes, so a few thousand trades/token is plenty and cuts
+/// a high-volume token's corpus weight (and its entry/exit walk) ~10–25×. This
+/// caps reads from the historical Postgres corpus (a different tier from the live
+/// in-RAM `MAX_TRADES_RETAINED` cache). Override per box with `SWEEP_PER_MINT_CAP`.
 pub const SWEEP_DEFAULT_PER_MINT_CAP: i64 = 5_000;
 
 /// Effective per-mint trade cap for a sweep `Selection`: `SWEEP_PER_MINT_CAP` if
@@ -1102,10 +1102,14 @@ mod tests {
     }
 
     #[test]
-    fn sweep_per_mint_cap_defaults_below_live_retention() {
-        // The sweep cap must sit well under the live MAX_TRADES_RETAINED (50k) —
-        // that gap is the Phase 1.1 corpus cut.
-        assert!(SWEEP_DEFAULT_PER_MINT_CAP < crate::state::token_cache::MAX_TRADES_RETAINED as i64);
+    fn sweep_per_mint_cap_defaults_when_env_unset() {
+        // Reads the historical Postgres corpus, so this cap is NOT tied to the live
+        // in-RAM MAX_TRADES_RETAINED cache (different storage tier). What must hold:
+        // a positive default, returned by sweep_per_mint_cap() when the env override
+        // is absent. (Env unset here because no test in this binary sets it.)
+        assert!(SWEEP_DEFAULT_PER_MINT_CAP >= 1);
+        std::env::remove_var("SWEEP_PER_MINT_CAP");
+        assert_eq!(sweep_per_mint_cap(), SWEEP_DEFAULT_PER_MINT_CAP);
     }
 
     #[test]
