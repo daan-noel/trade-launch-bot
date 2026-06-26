@@ -89,6 +89,11 @@ pump-trader = { path = "../pump-trader" }
 # Shared core: config, models, storage, core services/state, api framework.
 backend-core = { path = "../backend-core" }
 
+# Live-trading crate: strategies, trader, deploy services/state, deploy handlers,
+# token-cache seed. Re-exported here so `crate::strategies::…` / `crate::trader::…`
+# paths keep resolving until `backend` is deleted (T15).
+backend-deploy = { path = "../backend-deploy" }
+
 # LaserStream gRPC ingest transport (extracted from backend).
 ingest-laserstream = { path = "../ingest-laserstream" }
 

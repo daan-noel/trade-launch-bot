@@ -4,8 +4,9 @@
 
 pub use backend_core::api::handlers::system::*;
 
-mod jobs;
-mod live_mode;
+// `live_mode` (deploy) moved to `backend-deploy`; re-export it. `jobs` (local)
+// stays in `backend`.
+pub use backend_deploy::api::handlers::system::*;
 
+mod jobs;
 pub use jobs::*;
-pub use live_mode::*;

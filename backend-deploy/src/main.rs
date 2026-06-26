@@ -1,13 +1,12 @@
-mod sweep;
-mod api;
-pub use backend_core::{config, models};
-pub use config::constants as constants;
-mod analyzers;
-mod state;
-mod storage;
-mod services;
-mod strategies;
-pub use backend_deploy::trader;
+//! `backend-deploy` — the live-trading binary. Composition root for the deploy
+//! stack: LaserStream ingest, the tpsl1/tpsl2 strategies, the trader, and the
+//! deploy HTTP surface (core routes + deploy routes). Mirrors the old
+//! `backend/src/main.rs` minus all sweep/backtest/local-only wiring.
+
+use backend_deploy::{api, seed, services, state, strategies, trader};
+
+use backend_core::{config, models};
+use config::constants;
 
 use anyhow::Context;
 use solana_sdk::signature::Keypair;
@@ -19,7 +18,8 @@ use actix_web::body::{EitherBody, MessageBody};
 use actix_web::dev::{ServiceRequest, ServiceResponse};
 use actix_web::middleware::{from_fn, Next};
 use actix_web::{web, App, HttpResponse, HttpServer};
-use crate::trader::{PumpFunTrader, TraderConfig};
+
+use backend_deploy::trader::{PumpFunTrader, TraderConfig};
 
 /// Optional bearer token gating mutating API requests, shared via `app_data`.
 /// `None` disables the check entirely (the default, current behaviour).
@@ -307,10 +307,7 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
             for p in &pots {
                 let claimable = p.claimable();
                 total_wsol += claimable;
-                println!(
-                    "  [{}] uva={} exists={}",
-                    p.label, p.pda, p.exists
-                );
+                println!("  [{}] uva={} exists={}", p.label, p.pda, p.exists);
                 println!(
                     "      cashback: earned={} claimed={} -> claimable={} lamports ({:.6} SOL)",
                     p.cashback_earned,
@@ -374,9 +371,9 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
             }
         }
         other => anyhow::bail!(
-            "unknown probe '{other}'. Use: ladder | fanout | simulate-buy | simulate-sell | \
-             simulate-amm-buy | simulate-amm-sell | holdings | cashback-status | \
-             claim-cashback [--execute] | compact-sweeps [tpsl1|tpsl2]"
+            "unknown probe '{other}'. Use: ladder | fanout | check-nonces | simulate-buy | \
+             simulate-sell | simulate-amm-buy | simulate-amm-sell | holdings | cashback-status | \
+             claim-cashback [--execute]"
         ),
     }
     Ok(())
@@ -416,61 +413,6 @@ fn print_sim_outcome(o: &pump_trader::SimOutcome) {
     }
 }
 
-/// One-time storage retention of the existing grouped-sweep `_results` rows.
-/// `probe compact-sweeps [tpsl1|tpsl2]` (no arg = every strategy). For each group
-/// it runs the same [`sweep::retention::retained_combo_ids`] the write path uses,
-/// deletes the non-surviving combos in one statement, then `VACUUM (FULL)`s the
-/// table to physically reclaim disk. Offline-only — the `VACUUM` takes an
-/// `ACCESS EXCLUSIVE` lock. Idempotent: a second run finds the rows already
-/// pruned and deletes nothing.
-async fn run_compact_sweeps(db: &sqlx::PgPool, args: Vec<String>) -> anyhow::Result<()> {
-    use storage::repositories::grouped_sweep_repo::GroupedSweepRepo;
-    let cfg = sweep::retention::RetentionCfg::default();
-    // Worst-case retained rows/group (11 metrics × (top+bottom) values × cap); a
-    // group exceeding it signals a retention bug, so we flag it loudly.
-    let bound = 11 * (cfg.top_n + cfg.bottom_n) * cfg.cap_per_value;
-
-    let strategies: Vec<&str> = match args.first().map(String::as_str) {
-        Some(s) if !s.is_empty() => vec![s],
-        _ => sweep::registry::strategy_ids().to_vec(),
-    };
-
-    for sid in strategies {
-        let tables = sweep::registry::tables_for(sid)
-            .with_context(|| format!("unknown strategy '{sid}' (no grouped-sweep tables)"))?;
-        let repo = GroupedSweepRepo::new(db.clone(), tables);
-        let groups = repo.list_all_groups_for_compaction().await?;
-        println!("compact-sweeps [{sid}]: {} group(s) in {}", groups.len(), tables.results);
-
-        let (mut total_before, mut total_kept, mut max_kept) = (0u64, 0u64, 0usize);
-        for (group_id, best_combo_id) in &groups {
-            let metrics = repo.fetch_combo_metrics_for_group(*group_id).await?;
-            let before = metrics.len();
-            let keep = sweep::retention::retained_combo_ids(&metrics, *best_combo_id as u32, &cfg);
-            let keep_ids: Vec<i32> = keep.iter().map(|&id| id as i32).collect();
-            let deleted = repo.delete_combos_except(*group_id, &keep_ids).await?;
-            let kept = before as u64 - deleted;
-
-            total_before += before as u64;
-            total_kept += kept;
-            max_kept = max_kept.max(kept as usize);
-            if kept as usize > bound {
-                println!(
-                    "  ⚠️  group {group_id}: kept {kept} > bound {bound} — retention may be miscounting"
-                );
-            }
-        }
-        println!(
-            "  rows {total_before} -> {total_kept} (deleted {}, max kept/group {max_kept}, bound {bound})",
-            total_before - total_kept
-        );
-        println!("  VACUUM (FULL, ANALYZE) {} — reclaiming disk (ACCESS EXCLUSIVE)…", tables.results);
-        repo.vacuum_full_results().await?;
-        println!("  ✅ {sid} done");
-    }
-    Ok(())
-}
-
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
     // Load .env before anything else
@@ -480,7 +422,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "backend=info,sqlx=error".into()),
+                .unwrap_or_else(|_| "backend_deploy=info,sqlx=error".into()),
         )
         .init();
 
@@ -493,17 +435,6 @@ async fn main() -> anyhow::Result<()> {
         pump_program = constants::PUMP_FUN_PROGRAM_ID,
         "Configuration loaded"
     );
-
-    // Compaction probe: `probe compact-sweeps [tpsl1|tpsl2]` is DB-only (no trader
-    // / ingest / HTTP), so dispatch it here before the trader init's network calls.
-    // One-time storage retention of the existing grouped-sweep rows; see
-    // `run_compact_sweeps`.
-    if std::env::args().nth(1).as_deref() == Some("probe")
-        && std::env::args().nth(2).as_deref() == Some("compact-sweeps")
-    {
-        let pools = storage::postgres::connect(&settings).await?;
-        return run_compact_sweeps(&pools.hot, std::env::args().skip(3).collect()).await;
-    }
 
     let trader_config = Arc::new(TraderConfig {
         rpc_url: settings.helius_rpc_url.clone(),
@@ -520,40 +451,22 @@ async fn main() -> anyhow::Result<()> {
         .context("Failed to initialize PumpFunTrader")?;
     let trader = Arc::new(trader);
 
-    // Probe mode: `cargo run -p backend -- probe <subcommand>` runs a one-shot,
-    // no-/low-SOL validation of the latency changes against live infra, then
-    // exits before touching the DB / ingest / HTTP server. See `run_probe`.
+    // Probe mode: `cargo run -p backend-deploy -- probe <subcommand>` runs a
+    // one-shot, no-/low-SOL validation of the latency changes against live infra,
+    // then exits before touching the DB / ingest / HTTP server. See `run_probe`.
     if std::env::args().nth(1).as_deref() == Some("probe") {
         return run_probe(&trader, std::env::args().skip(2).collect()).await;
     }
 
     // Database — connect the three workload-isolated pools and run migrations. `db`
     // (hot) backs ingest/strategy/maintenance/seed/caches; `api_db` backs the fast
-    // HTTP handlers; `batch_db` backs the long DB-heavy jobs (sweeps + backtests) so
-    // they can't starve the dashboard reads.
-    let storage::postgres::DbPools {
+    // HTTP handlers; `batch_db` is connected for the shared `CoreState` shape (the
+    // sweep/backtest jobs that use it live in the local bin).
+    let backend_core::storage::postgres::DbPools {
         hot: db,
         api: api_db,
         batch: batch_db,
-    } = storage::postgres::connect(&settings).await?;
-
-    // Crash recovery (Phase 4): a killed process can leave a grouped sweep stuck at
-    // `status = 'running'`. The single-flight gate allows one sweep at a time and
-    // none can be live at boot, so any `running` run is an orphan — mark it
-    // `cancelled` (its already-persisted groups stay) so the UI stops showing it as
-    // live. Best-effort: a failure here is logged, not fatal.
-    for strategy_id in sweep::registry::strategy_ids() {
-        if let Some(tables) = sweep::registry::tables_for(strategy_id) {
-            match storage::repositories::grouped_sweep_repo::GroupedSweepRepo::new(db.clone(), tables)
-                .reconcile_orphaned_runs()
-                .await
-            {
-                Ok(0) => {}
-                Ok(n) => warn!("grouped sweep: marked {n} orphaned '{strategy_id}' run(s) cancelled"),
-                Err(e) => error!("grouped sweep: orphaned-run reconcile for '{strategy_id}' failed: {e}"),
-            }
-        }
-    }
+    } = backend_core::storage::postgres::connect(&settings).await?;
 
     // Boot wallet-balance sweep (buy-in-flight recovery, Phase 3 backstop): list
     // the wallet's on-chain token accounts once and flag any balance no open
@@ -563,14 +476,17 @@ async fn main() -> anyhow::Result<()> {
     // boot critical path so its RPC scan never delays ingest/HTTP startup.
     {
         let trader = trader.clone();
-        let tpsl1_repo =
-            storage::repositories::tpsl1_position_repo::Tpsl1PositionRepo::new(db.clone());
-        let tpsl2_repo =
-            storage::repositories::tpsl2_position_repo::Tpsl2PositionRepo::new(db.clone());
+        let tpsl1_repo = backend_core::storage::repositories::tpsl1_position_repo::Tpsl1PositionRepo::new(
+            db.clone(),
+        );
+        let tpsl2_repo = backend_core::storage::repositories::tpsl2_position_repo::Tpsl2PositionRepo::new(
+            db.clone(),
+        );
         tokio::spawn(async move {
-            if let Err(e) =
-                services::wallet_reconcile::reconcile_wallet_holdings(&trader, &tpsl1_repo, &tpsl2_repo)
-                    .await
+            if let Err(e) = services::wallet_reconcile::reconcile_wallet_holdings(
+                &trader, &tpsl1_repo, &tpsl2_repo,
+            )
+            .await
             {
                 warn!("Boot wallet reconcile failed (advisory only): {e}");
             }
@@ -593,19 +509,19 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // In-memory caches (shared between services and future API handlers)
+    // In-memory caches (shared between services and API handlers)
     let token_cache = Arc::new(state::token_cache::TokenCache::new());
 
     // Seed the cache off the boot critical path: ingest/HTTP start immediately and
     // the cache hydrates in the background (build-then-insert keeps it race-safe vs
     // the live pipeline). A failure is logged, not fatal — the system still runs and
-    // the cache fills from live events. See `storage::seed`.
+    // the cache fills from live events. See `crate::seed`.
     {
         let db = db.clone();
         let token_cache = token_cache.clone();
         tokio::spawn(async move {
             let started = std::time::Instant::now();
-            match storage::seed::seed_token_cache(&db, token_cache).await {
+            match seed::seed_token_cache(&db, token_cache).await {
                 Ok(()) => info!("Cache seed task finished in {:?}", started.elapsed()),
                 Err(e) => error!("Cache seed task failed (cache will fill from live events): {e}"),
             }
@@ -617,7 +533,7 @@ async fn main() -> anyhow::Result<()> {
     // Load the persisted settings document and hold it in a watch channel as the
     // in-memory source of truth, so a policy set in a previous run is in force
     // before the first event arrives.
-    let settings_repo = storage::repositories::settings_repo::SettingsRepo::new(db.clone());
+    let settings_repo = backend_core::storage::repositories::settings_repo::SettingsRepo::new(db.clone());
     let app_settings = settings_repo
         .load_all()
         .await
@@ -686,7 +602,7 @@ async fn main() -> anyhow::Result<()> {
         let tpsl1 = tpsl1_cache.clone();
         let tpsl2 = tpsl2_cache.clone();
         let evict_repo =
-            storage::repositories::token_info_repo::TokenInfoRepo::new(db.clone());
+            backend_core::storage::repositories::token_info_repo::TokenInfoRepo::new(db.clone());
         tokio::spawn(state::token_cache::run_token_cache_eviction(
             token_cache,
             move |mint: &str| tpsl1.is_mint_held(mint) || tpsl2.is_mint_held(mint),
@@ -697,13 +613,8 @@ async fn main() -> anyhow::Result<()> {
     // Built after the transport branch so `DeployState` shares the active
     // pipeline's pool→mint index and migration signal with the HTTP handlers (a
     // token sync registers a migrated token's pool so live ingest subscribes
-    // immediately). `api_db` backs the fast (core) handlers; `batch_db` backs the
-    // heavy sweep/backtest jobs — both connected up front alongside hot-path `db`.
-    //
-    // The three narrow states are the deploy/local crate split's seam: `CoreState`
-    // holds the mode-agnostic handles; `DeployState`/`LocalState` add their own and
-    // `Deref` to the shared `Arc<CoreState>`. Every field is an Arc/PgPool/
-    // watch/broadcast handle, so the per-mode states cost only refcount bumps.
+    // immediately). `api_db` backs the fast (core) handlers; `batch_db` is held by
+    // `CoreState` for shape parity with the local bin.
     let core_state = Arc::new(state::core_state::CoreState::new(
         api_db,
         batch_db,
@@ -726,7 +637,6 @@ async fn main() -> anyhow::Result<()> {
         trade_signals.clone(),
         live_tx.clone(),
     ));
-    let local_state = Arc::new(state::local_state::LocalState::new(core_state.clone()));
 
     // Keep the token-list DB base fresh so `GET /api/tokens` reflects the whole
     // seeded universe (tokens + persisted stats), not just mints still resident in
@@ -768,12 +678,11 @@ async fn main() -> anyhow::Result<()> {
         // Render each SSE event to wire bytes exactly once and fan the shared
         // frame out to all connections, instead of every subscriber re-rendering
         // (and re-reading the token cache) per event. Only needed when serving HTTP.
-        tokio::spawn(api::handlers::system::run_sse_render_bridge(
-            core_state.clone(),
-        ));
+        tokio::spawn(
+            backend_core::api::handlers::system::run_sse_render_bridge(core_state.clone()),
+        );
         let http_core = core_state.clone();
         let http_deploy = deploy_state.clone();
-        let http_local = local_state.clone();
         let http_workers = settings.http_workers;
         let cors_allowed_origin = settings.cors_allowed_origin.clone();
         let api_auth = ApiAuth {
@@ -806,9 +715,9 @@ async fn main() -> anyhow::Result<()> {
                 .wrap(cors)
                 .app_data(web::Data::new(http_core.clone()))
                 .app_data(web::Data::new(http_deploy.clone()))
-                .app_data(web::Data::new(http_local.clone()))
                 .app_data(web::Data::new(api_auth.clone()))
-                .configure(api::configure)
+                .configure(backend_core::api::configure_core_routes)
+                .configure(api::configure_deploy_routes)
         })
         .workers(http_workers)
         .bind(&bind_addr)
@@ -825,8 +734,6 @@ async fn main() -> anyhow::Result<()> {
     // of them resolving is a fault — whether it returned cleanly, errored, or
     // panicked. Bind each arm's `JoinHandle` result and surface a fault as an
     // `Err`, so `main` exits non-zero and a supervisor restarts the process.
-    // (The old `_ = task` arms logged and then returned `Ok(())`, so a panicked
-    // ingest/strategy task looked like a clean shutdown and was never restarted.)
     let outcome: anyhow::Result<()> = tokio::select! {
         res = producer_task => Err(task_fault("Ingest producer", res)),
         res = pipeline_task  => Err(task_fault("Ingest pipeline", res)),

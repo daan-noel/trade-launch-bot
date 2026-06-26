@@ -10,5 +10,8 @@
 
 pub use backend_core::storage::postgres;
 
+// `seed` (token-cache seeding) moved to `backend-deploy`; re-export so existing
+// `crate::storage::seed::…` paths keep resolving.
+pub use backend_deploy::seed;
+
 pub mod repositories;
-pub mod seed;

@@ -4,9 +4,11 @@
 
 // `http` is used only by the core services (clients/helius_rpc); backend code
 // doesn't reference it directly, so it's not re-exported here.
+#[allow(unused_imports)]
 pub use backend_core::services::{clients, helius_rpc, sol_price};
 
-pub mod laserstream_replay;
-pub mod token_sync;
-pub mod wallet_reconcile;
-pub mod wallet_tokens;
+// The ingest/trade-specific services moved to `backend-deploy`; re-export them so
+// existing `crate::services::…` paths keep resolving (path-stability re-exports;
+// not all are consumed within `backend` itself any more).
+#[allow(unused_imports)]
+pub use backend_deploy::services::{laserstream_replay, token_sync, wallet_reconcile, wallet_tokens};
