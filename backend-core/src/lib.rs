@@ -3,6 +3,7 @@
 //! Modules are migrated in here task-by-task per `local-deploy-mode-split-plan.md`
 //! (Phase 2). `backend` depends on it.
 
+pub mod analyzers;
 pub mod config;
 pub mod grouping;
 pub mod models;
