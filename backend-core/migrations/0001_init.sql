@@ -1,5 +1,5 @@
 -- ============================================================================
--- Initial schema (fully squashed — single init).
+-- Initial schema (fully squashed — single init, migrations 0001–0006 included).
 --
 -- Every prior migration has been folded in directly:
 --   * tpsl1_*/tpsl2_* table prefixes, p_token_/p_entry_/p_exit_ param prefixes,
@@ -112,24 +112,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_tx_leg
     ON trades (tx_signature, leg_index, block_time);
 
 -- Non-unique indexes on the parent cascade to all (incl. future) partitions.
+-- Only indexes with confirmed pg_stat_user_indexes scans are kept (0004 dropped
+-- the 5 zero-scan indexes: wallet, mint_venue_slot, wallet_mint, mint_slot_leg,
+-- wallet_mint_sig — pure write amplification on the high-volume ingest path).
 CREATE INDEX IF NOT EXISTS idx_trades_mint          ON trades(mint_address);
-CREATE INDEX IF NOT EXISTS idx_trades_wallet        ON trades(wallet_address);
-CREATE INDEX IF NOT EXISTS idx_trades_block_time    ON trades(block_time DESC);
 CREATE INDEX IF NOT EXISTS idx_trades_mint_time     ON trades(mint_address, block_time DESC);
--- Supports the incremental "Fetch new" boundary lookup: latest signature per
--- (mint, venue) so each source resumes from its own last saved trade.
-CREATE INDEX IF NOT EXISTS idx_trades_mint_venue_slot ON trades(mint_address, venue, slot DESC);
--- Wallet+mint net-amount / balance checks (compute_is_rugged's creator-dump and
--- cohort-net queries, manual balance lookups) — composite avoids re-filtering
--- every wallet row by mint.
-CREATE INDEX IF NOT EXISTS idx_trades_wallet_mint   ON trades(wallet_address, mint_address);
--- Chronological-by-slot ordering within a single mint (multi-leg aware), without
--- needing a venue predicate (which idx_trades_mint_venue_slot would require).
-CREATE INDEX IF NOT EXISTS idx_trades_mint_slot_leg ON trades(mint_address, slot, leg_index);
--- Hot-path index: find_fill_by_signature and per-signature sell-confirm filter
--- trades by (wallet, mint, tx_signature) — without this a seq scan hits every row.
-CREATE INDEX IF NOT EXISTS idx_trades_wallet_mint_sig
-    ON trades (wallet_address, mint_address, tx_signature);
+-- BRIN on append-ordered block_time: equivalent range-scan support in a few KB
+-- vs the btree's per-insert write amplification (0006).
+CREATE INDEX IF NOT EXISTS idx_trades_block_time_brin ON trades USING BRIN (block_time);
 
 -- Daily partition helpers (one calendar day each), analogous to the
 -- raw_transactions fns.
@@ -373,13 +363,14 @@ CREATE TABLE IF NOT EXISTS tpsl1_real_positions (
     exit_price              DOUBLE PRECISION,
     exit_token_amount       DOUBLE PRECISION,
     exit_time               TIMESTAMPTZ,
-    exit_tx_signatures      JSONB       NOT NULL DEFAULT '[]',
-    status                  TEXT        NOT NULL CHECK (status IN ('Holding', 'PendingEntry', 'ExitPending', 'End', 'ExitFailed')),
-    strategy                TEXT        NOT NULL,
-    rule_id                 UUID        NOT NULL,
-    exit_reason             TEXT,
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    exit_tx_signatures       JSONB       NOT NULL DEFAULT '[]',
+    submitted_buy_signatures TEXT[]      NOT NULL DEFAULT '{}',
+    status                   TEXT        NOT NULL CHECK (status IN ('Arming', 'BuySubmitted', 'Holding', 'ExitPending', 'End', 'ExitFailed')),
+    strategy                 TEXT        NOT NULL,
+    rule_id                  UUID        NOT NULL,
+    exit_reason              TEXT,
+    created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     FOREIGN KEY (rule_id) REFERENCES tpsl1_strategy_rules(id) ON DELETE SET NULL
 );
@@ -403,6 +394,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_tpsl1_real_positions_entry_sig0
 CREATE UNIQUE INDEX IF NOT EXISTS uq_tpsl1_real_positions_exit_sig0
     ON tpsl1_real_positions ((exit_tx_signatures->>0))
     WHERE jsonb_array_length(exit_tx_signatures) > 0;
+CREATE INDEX IF NOT EXISTS idx_tpsl1_real_positions_buy_submitted
+    ON tpsl1_real_positions(updated_at) WHERE status = 'BuySubmitted';
 
 -- -------------------------------------------------------------------------
 -- tpsl1_paper_test_run
@@ -447,7 +440,7 @@ CREATE TABLE IF NOT EXISTS tpsl1_paper_positions (
     exit_token_amount       DOUBLE PRECISION,
     exit_time               TIMESTAMPTZ,
     exit_tx_signatures      JSONB       NOT NULL DEFAULT '[]',
-    status                  TEXT        NOT NULL CHECK (status IN ('Holding', 'PendingEntry', 'ExitPending', 'End', 'ExitFailed')),
+    status                  TEXT        NOT NULL CHECK (status IN ('Arming', 'BuySubmitted', 'Holding', 'ExitPending', 'End', 'ExitFailed')),
     strategy                TEXT        NOT NULL,
     rule_id                 UUID        NOT NULL,
     exit_reason             TEXT,
@@ -501,6 +494,7 @@ CREATE TABLE IF NOT EXISTS tpsl2_strategy_rules (
     is_active                   BOOLEAN     NOT NULL DEFAULT TRUE,
     -- Scalp-continuation entry gates (tpsl2 only).
     p_entry_min_age_secs        BIGINT,
+    p_entry_max_age_secs        BIGINT,
     p_entry_min_alive_sol       DOUBLE PRECISION,
     p_entry_min_organic_sol     DOUBLE PRECISION,
     p_entry_pullback_pct        DOUBLE PRECISION,
@@ -542,13 +536,14 @@ CREATE TABLE IF NOT EXISTS tpsl2_real_positions (
     exit_price              DOUBLE PRECISION,
     exit_token_amount       DOUBLE PRECISION,
     exit_time               TIMESTAMPTZ,
-    exit_tx_signatures      JSONB       NOT NULL DEFAULT '[]',
-    status                  TEXT        NOT NULL CHECK (status IN ('Holding', 'PendingEntry', 'ExitPending', 'End', 'ExitFailed')),
-    strategy                TEXT        NOT NULL,
-    rule_id                 UUID        NOT NULL,
-    exit_reason             TEXT,
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    exit_tx_signatures       JSONB       NOT NULL DEFAULT '[]',
+    submitted_buy_signatures TEXT[]      NOT NULL DEFAULT '{}',
+    status                   TEXT        NOT NULL CHECK (status IN ('Arming', 'BuySubmitted', 'Holding', 'ExitPending', 'End', 'ExitFailed')),
+    strategy                 TEXT        NOT NULL,
+    rule_id                  UUID        NOT NULL,
+    exit_reason              TEXT,
+    created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     FOREIGN KEY (rule_id) REFERENCES tpsl2_strategy_rules(id) ON DELETE SET NULL
 );
@@ -572,6 +567,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_tpsl2_real_positions_entry_sig0
 CREATE UNIQUE INDEX IF NOT EXISTS uq_tpsl2_real_positions_exit_sig0
     ON tpsl2_real_positions ((exit_tx_signatures->>0))
     WHERE jsonb_array_length(exit_tx_signatures) > 0;
+CREATE INDEX IF NOT EXISTS idx_tpsl2_real_positions_buy_submitted
+    ON tpsl2_real_positions(updated_at) WHERE status = 'BuySubmitted';
 
 -- -------------------------------------------------------------------------
 -- tpsl2_paper_test_run  (clone of tpsl1_paper_test_run)
@@ -611,7 +608,7 @@ CREATE TABLE IF NOT EXISTS tpsl2_paper_positions (
     exit_token_amount       DOUBLE PRECISION,
     exit_time               TIMESTAMPTZ,
     exit_tx_signatures      JSONB       NOT NULL DEFAULT '[]',
-    status                  TEXT        NOT NULL CHECK (status IN ('Holding', 'PendingEntry', 'ExitPending', 'End', 'ExitFailed')),
+    status                  TEXT        NOT NULL CHECK (status IN ('Arming', 'BuySubmitted', 'Holding', 'ExitPending', 'End', 'ExitFailed')),
     strategy                TEXT        NOT NULL,
     rule_id                 UUID        NOT NULL,
     exit_reason             TEXT,
@@ -665,6 +662,7 @@ CREATE TABLE IF NOT EXISTS tpsl2_grouped_sweep_runs (
     token_count      INTEGER     NOT NULL,          -- corpus size after selection
     group_count      INTEGER     NOT NULL,          -- surviving groups swept
     combo_count      INTEGER     NOT NULL,          -- combos per group
+    buy_amount_sol   REAL,                         -- per-run notional (NULL = legacy default)
     corpus_hash      TEXT,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     -- Incremental persistence lifecycle.
@@ -779,6 +777,7 @@ CREATE TABLE IF NOT EXISTS tpsl1_grouped_sweep_runs (
     token_count      INTEGER     NOT NULL,          -- corpus size after selection
     group_count      INTEGER     NOT NULL,          -- surviving groups swept
     combo_count      INTEGER     NOT NULL,          -- combos per group
+    buy_amount_sol   REAL,                         -- per-run notional (NULL = legacy default)
     corpus_hash      TEXT,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     -- Incremental persistence lifecycle.
