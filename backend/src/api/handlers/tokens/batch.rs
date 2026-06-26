@@ -2,7 +2,7 @@ use actix_web::{web, HttpResponse};
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::state::app_state::AppState;
+use crate::state::core_state::CoreState;
 
 use super::TokenSummary;
 
@@ -19,7 +19,7 @@ pub struct TokenBatchBody {
 /// response structs. POST avoids URL-length limits (query-string approach hit
 /// actix-web's 4 KB request-line cap with large matched-token sets).
 pub async fn post_tokens_batch(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<CoreState>>,
     body: web::Json<TokenBatchBody>,
 ) -> HttpResponse {
     let mints: Vec<String> = {

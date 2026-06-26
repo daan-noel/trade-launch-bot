@@ -10,7 +10,7 @@ use crate::{
         wallet::validate_solana_address,
         wallet_profile::ProfileType,
     },
-    state::app_state::AppState,
+    state::core_state::CoreState,
 };
 
 /// True when `e` is a Postgres unique-violation (SQLSTATE `23505`). The repos
@@ -78,7 +78,7 @@ pub struct UpdateTagRequest {
 // ---------------------------------------------------------------------------
 
 /// `GET /api/profiles` — list all profiles with their wallets.
-pub async fn list_profiles(state: web::Data<Arc<AppState>>) -> impl Responder {
+pub async fn list_profiles(state: web::Data<Arc<CoreState>>) -> impl Responder {
     let repo = state.wallet_profile_repo();
     match repo.list_with_wallets().await {
         Ok(profiles) => HttpResponse::Ok().json(profiles),
@@ -91,7 +91,7 @@ pub async fn list_profiles(state: web::Data<Arc<AppState>>) -> impl Responder {
 
 /// `GET /api/profiles/{id}` — get one profile with its wallets.
 pub async fn get_profile(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<CoreState>>,
     path: web::Path<Uuid>,
 ) -> impl Responder {
     let repo = state.wallet_profile_repo();
@@ -107,7 +107,7 @@ pub async fn get_profile(
 
 /// `POST /api/profiles` — create a new profile.
 pub async fn create_profile(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<CoreState>>,
     body: web::Json<CreateProfileRequest>,
 ) -> impl Responder {
     let body = body.into_inner();
@@ -126,7 +126,7 @@ pub async fn create_profile(
 
 /// `PUT /api/profiles/{id}` — update name / type.
 pub async fn update_profile(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<CoreState>>,
     path: web::Path<Uuid>,
     body: web::Json<UpdateProfileRequest>,
 ) -> impl Responder {
@@ -147,7 +147,7 @@ pub async fn update_profile(
 
 /// `PUT /api/profiles/{id}/tags` — replace the full tag_ids array for a profile.
 pub async fn update_profile_tags(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<CoreState>>,
     path: web::Path<Uuid>,
     body: web::Json<UpdateProfileTagsRequest>,
 ) -> impl Responder {
@@ -164,7 +164,7 @@ pub async fn update_profile_tags(
 
 /// `DELETE /api/profiles/{id}` — delete profile and all its wallets (cascade).
 pub async fn delete_profile(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<CoreState>>,
     path: web::Path<Uuid>,
 ) -> impl Responder {
     let id = path.into_inner();
@@ -184,7 +184,7 @@ pub async fn delete_profile(
 
 /// `POST /api/profiles/{id}/wallets` — add a wallet to a profile.
 pub async fn create_wallet(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<CoreState>>,
     path: web::Path<Uuid>,
     body: web::Json<CreateWalletRequest>,
 ) -> impl Responder {
@@ -232,7 +232,7 @@ pub async fn create_wallet(
 
 /// `GET /api/wallets/{id}` — get a single wallet.
 pub async fn get_wallet(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<CoreState>>,
     path: web::Path<Uuid>,
 ) -> impl Responder {
     let repo = state.wallet_repo();
@@ -248,7 +248,7 @@ pub async fn get_wallet(
 
 /// `PUT /api/wallets/{id}` — update is_tracked and/or comment.
 pub async fn update_wallet(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<CoreState>>,
     path: web::Path<Uuid>,
     body: web::Json<UpdateWalletRequest>,
 ) -> impl Responder {
@@ -266,7 +266,7 @@ pub async fn update_wallet(
 
 /// `DELETE /api/wallets/{id}` — remove a wallet.
 pub async fn delete_wallet(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<CoreState>>,
     path: web::Path<Uuid>,
 ) -> impl Responder {
     let id = path.into_inner();
@@ -285,7 +285,7 @@ pub async fn delete_wallet(
 // ---------------------------------------------------------------------------
 
 /// `GET /api/tags` — list all tags.
-pub async fn list_tags(state: web::Data<Arc<AppState>>) -> impl Responder {
+pub async fn list_tags(state: web::Data<Arc<CoreState>>) -> impl Responder {
     let repo = state.wallet_tag_repo();
     match repo.list().await {
         Ok(tags) => HttpResponse::Ok().json(tags),
@@ -298,7 +298,7 @@ pub async fn list_tags(state: web::Data<Arc<AppState>>) -> impl Responder {
 
 /// `POST /api/tags` — create a tag.
 pub async fn create_tag(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<CoreState>>,
     body: web::Json<CreateTagRequest>,
 ) -> impl Responder {
     let body = body.into_inner();
@@ -324,7 +324,7 @@ pub async fn create_tag(
 
 /// `PUT /api/tags/{id}` — update a tag.
 pub async fn update_tag(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<CoreState>>,
     path: web::Path<Uuid>,
     body: web::Json<UpdateTagRequest>,
 ) -> impl Responder {
@@ -346,7 +346,7 @@ pub async fn update_tag(
 
 /// `DELETE /api/tags/{id}` — delete a tag.
 pub async fn delete_tag(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<CoreState>>,
     path: web::Path<Uuid>,
 ) -> impl Responder {
     let id = path.into_inner();

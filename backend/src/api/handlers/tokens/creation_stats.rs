@@ -3,7 +3,7 @@ use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::state::app_state::AppState;
+use crate::state::core_state::CoreState;
 use crate::storage::repositories::creation_stats_repo::{HeatCellRow, StatsFilter, TrendPointRow};
 use crate::sweep::grouping::GroupField;
 
@@ -193,7 +193,7 @@ fn to_point(r: TrendPointRow) -> TrendPoint {
 /// (migrated/dead) per time bucket plus window totals for share/coverage. All
 /// three color metrics ship together so the UI toggles them without a refetch.
 pub async fn get_creation_stats(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<CoreState>>,
     query: web::Query<CreationStatsQuery>,
 ) -> impl Responder {
     let now = Utc::now();
@@ -415,7 +415,7 @@ fn parse_ix_labels_filter(raw: Option<&str>) -> Result<Option<Vec<String>>, Stri
 /// trend (`points`). Count only (no outcome join). Reuses the aggregate endpoint's
 /// window/tz/segment handling; the fingerprint fields mirror the sweep page.
 pub async fn get_grouped_creation_stats(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<CoreState>>,
     query: web::Query<GroupedCreationQuery>,
 ) -> impl Responder {
     let now = Utc::now();

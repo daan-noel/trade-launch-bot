@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::{
     analyzers::swing_analyzer::{compute_chain_stats, ChainStats},
-    state::{app_state::AppState, token_cache::TokenState},
+    state::{core_state::CoreState, local_state::LocalState, token_cache::TokenState},
 };
 
 fn extract_buy_arg_u64(value: &Option<Value>, field: &str) -> Option<u64> {
@@ -363,7 +363,7 @@ fn default_limit() -> i64 {
 /// calls it with `swing_stats = None`; a local build computes the map first.
 /// Returns the response body bytes and their content-hash ETag.
 pub fn build_tokens_list(
-    state: &AppState,
+    state: &CoreState,
     q: &TokenQuery,
     limit_q: i64,
     offset_q: i64,
@@ -432,7 +432,7 @@ pub fn build_tokens_list(
 /// `GET /api/tokens` — list all currently tracked tokens sorted by trade count.
 pub async fn list_tokens(
     req: HttpRequest,
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<LocalState>>,
     query: web::Query<PaginationParams>,
 ) -> impl Responder {
     // Filtering + sorting the token set is CPU work that would otherwise block one
@@ -509,7 +509,7 @@ pub async fn list_tokens(
 }
 
 /// `GET /api/tokens/:mint` — token detail from in-memory cache; falls back to DB.
-pub async fn get_token(state: web::Data<Arc<AppState>>, path: web::Path<String>) -> impl Responder {
+pub async fn get_token(state: web::Data<Arc<CoreState>>, path: web::Path<String>) -> impl Responder {
     let mint = path.into_inner();
 
     // Fast path: served from cache
@@ -596,7 +596,7 @@ const MAX_TRADES_OFFSET: i64 = 50_000;
 /// `CachedTrade` projection (missing the `id`/`instruction_labels`/… fields this
 /// endpoint serializes), and this is a cold, paginated path off the hot loop.
 pub async fn get_trades(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<CoreState>>,
     path: web::Path<String>,
     query: web::Query<TradesPageParams>,
 ) -> impl Responder {

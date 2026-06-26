@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use crate::config::constants::{SLIPPAGE_MAX_BPS, SLIPPAGE_MIN_BPS};
 use crate::state::app_state::AppState;
+use crate::state::core_state::CoreState;
 use crate::state::ingest_health::{
     WATCHDOG_CHECK_INTERVAL_FLOOR_SECS, WATCHDOG_STALL_TIMEOUT_FLOOR_SECS,
 };
@@ -24,7 +25,7 @@ pub struct SolPriceResponse {
     pub usd_rate: Option<f64>,
 }
 
-pub async fn get_sol_price(state: web::Data<Arc<AppState>>) -> impl Responder {
+pub async fn get_sol_price(state: web::Data<Arc<CoreState>>) -> impl Responder {
     // Serve the cached price maintained by the background SOL-price poller
     // (refreshed on the watch channel every 60s) rather than doing a synchronous
     // CoinGecko fetch on every request.
@@ -56,12 +57,12 @@ pub struct UpdateSettingsRequest {
     pub max_committed_sol: Option<f64>,
 }
 
-pub async fn get_settings(state: web::Data<Arc<AppState>>) -> impl Responder {
+pub async fn get_settings(state: web::Data<Arc<CoreState>>) -> impl Responder {
     HttpResponse::Ok().json(state.settings())
 }
 
 pub async fn update_settings(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<CoreState>>,
     req: web::Json<UpdateSettingsRequest>,
 ) -> impl Responder {
     let UpdateSettingsRequest {

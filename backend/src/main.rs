@@ -900,7 +900,7 @@ async fn main() -> anyhow::Result<()> {
         // frame out to all connections, instead of every subscriber re-rendering
         // (and re-reading the token cache) per event. Only needed when serving HTTP.
         tokio::spawn(api::handlers::system::run_sse_render_bridge(
-            app_state.clone(),
+            core_state.clone(),
         ));
         let http_state = app_state.clone();
         let http_core = core_state.clone();

@@ -7,7 +7,7 @@ use tokio::sync::broadcast;
 
 use crate::{
     api::handlers::strategies::tpsl2_positions::PositionResponse, models::ingest::SseEvent,
-    state::app_state::AppState,
+    state::core_state::CoreState,
 };
 
 #[derive(Deserialize)]
@@ -27,7 +27,7 @@ pub struct SseFrame {
     pub bytes: web::Bytes,
 }
 
-fn live_stats(state: &AppState, mint: &str) -> serde_json::Value {
+fn live_stats(state: &CoreState, mint: &str) -> serde_json::Value {
     state
         .token_cache
         .get(mint)
@@ -49,7 +49,7 @@ fn live_stats(state: &AppState, mint: &str) -> serde_json::Value {
 /// Render one event to a shared `SseFrame`. Called ONCE per event by the render
 /// bridge (not once per subscriber): the (single) `live_stats` cache read and
 /// the JSON build happen here, off the per-connection delivery path.
-fn render_sse_frame(event: &SseEvent, state: &AppState) -> SseFrame {
+fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
     let (mint_scope, event_type, data): (Option<String>, &str, serde_json::Value) = match event {
         SseEvent::TokenCreated {
             mint,
@@ -270,7 +270,7 @@ fn render_sse_frame(event: &SseEvent, state: &AppState) -> SseFrame {
 /// re-serialization (and per-subscriber `token_cache` reads that contended with
 /// the ingest writer's `get_mut`) down to one render + one cache read per event.
 /// Exits when the producer channel closes (shutdown).
-pub async fn run_sse_render_bridge(state: Arc<AppState>) {
+pub async fn run_sse_render_bridge(state: Arc<CoreState>) {
     let mut rx = state.sse_tx.subscribe();
     loop {
         match rx.recv().await {
@@ -290,7 +290,7 @@ pub async fn run_sse_render_bridge(state: Arc<AppState>) {
 
 /// `GET /api/stream[?mint=<address>]`
 pub async fn stream_events(
-    state: web::Data<Arc<AppState>>,
+    state: web::Data<Arc<CoreState>>,
     query: web::Query<StreamQuery>,
 ) -> impl Responder {
     let frame_rx = state.sse_frame_tx.subscribe();
