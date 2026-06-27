@@ -21,7 +21,6 @@ export const analysisNav: NavConfig = {
       label: 'Analysis',
       basePath: '/analysis',
       items: [
-        { to: '/analysis/general', label: 'General' },
         { to: '/analysis/swing-detection', label: 'Swing detection' },
       ],
     },

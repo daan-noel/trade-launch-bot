@@ -11,8 +11,6 @@ import type {
   GroupedCreationResponse,
 } from 'components/dashboard/groupedCreationStats';
 import type {
-  AnalysisRecord,
-  CreatorRecord,
   MatchedTokensResponse,
   PaperResultResponse,
   SimulatedTokenResult,
@@ -47,23 +45,6 @@ const withAnalysisRange = (url: string, { from, to }: StrategyRuleArg): string =
  *  rule's entry criteria, so editing the rule invalidates the pair. */
 const strategyResultTag = (a: StrategyRuleArg) =>
   ({ type: 'StrategyResult', id: `${a.strategy}:${a.ruleId}` }) as const;
-
-/** Offset-paginated list args shared by the simple `{ total, items }`
- *  endpoints (creators / analysis) that page server-side via limit+offset. */
-export interface OffsetPageArgs {
-  limit: number;
-  offset: number;
-}
-
-export interface CreatorsResponse {
-  total: number;
-  items: CreatorRecord[];
-}
-
-export interface AnalysisResponse {
-  total: number;
-  items: AnalysisRecord[];
-}
 
 /**
  * Analysis-only RTK Query endpoints â€” bundled exclusively in the analysis
@@ -232,25 +213,11 @@ export const analysisApi = baseApi.injectEndpoints({
       },
       keepUnusedDataFor: 120,
     }),
-    // Creator profiles + analysis results â€” paged server-side (limit/offset).
-    // On RTK Query (like the Tokens list) so revisiting the Analysis page reuses
-    // the cache instead of re-fetching, and structural sharing keeps unchanged
-    // rows referentially stable across polls (no whole-table re-render on a tick).
-    getCreatorsPage: builder.query<CreatorsResponse, OffsetPageArgs>({
-      query: ({ limit, offset }) => `/api/creators?limit=${limit}&offset=${offset}`,
-      keepUnusedDataFor: 60,
-    }),
-    getAnalysisPage: builder.query<AnalysisResponse, OffsetPageArgs>({
-      query: ({ limit, offset }) => `/api/analysis?limit=${limit}&offset=${offset}`,
-      keepUnusedDataFor: 60,
-    }),
   }),
 });
 
 export const {
   useGetGroupedCreationStatsQuery,
-  useGetCreatorsPageQuery,
-  useGetAnalysisPageQuery,
   useGetGroupedSweepRunsQuery,
   useGetGroupedSweepGroupsQuery,
   useGetGroupedSweepResultsQuery,

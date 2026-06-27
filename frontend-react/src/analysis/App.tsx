@@ -14,7 +14,6 @@ import { analysisNav } from './nav';
 const HomePage = lazy(() => import('pages/home/HomePage').then((m) => ({ default: m.HomePage })));
 const DashboardPage = lazy(() => import('pages/dashboard/DashboardPage').then((m) => ({ default: m.DashboardPage })));
 const TokensPage = lazy(() => import('pages/tokens/TokensPage').then((m) => ({ default: m.TokensPage })));
-const AnalysisPage = lazy(() => import('@analysis/pages/analysis/AnalysisPage').then((m) => ({ default: m.AnalysisPage })));
 const SwingDetectionPage = lazy(() => import('@analysis/pages/analysis/SwingDetectionPage').then((m) => ({ default: m.SwingDetectionPage })));
 const OtherProfilesPage = lazy(() => import('pages/profiles/OtherProfilesPage').then((m) => ({ default: m.OtherProfilesPage })));
 const Tpsl1Page = lazy(() => import('@analysis/pages/strategies/Tpsl1Page').then((m) => ({ default: m.Tpsl1Page })));
@@ -48,8 +47,7 @@ export default function App() {
                     }
                   />
                   <Route path="tokens" element={<TokensPage />} />
-                  <Route path="analysis" element={<Navigate to="/analysis/general" replace />} />
-                  <Route path="analysis/general" element={<AnalysisPage />} />
+                  <Route path="analysis" element={<Navigate to="/analysis/swing-detection" replace />} />
                   <Route path="analysis/swing-detection" element={<SwingDetectionPage />} />
                   <Route path="profiles/other" element={<OtherProfilesPage />} />
                   <Route path="strategies/tpsl1" element={<Tpsl1Page />} />

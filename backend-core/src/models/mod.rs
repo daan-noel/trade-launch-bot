@@ -1,4 +1,3 @@
-pub mod analysis;
 pub mod events;
 pub mod grouped_sweep;
 pub mod ingest;

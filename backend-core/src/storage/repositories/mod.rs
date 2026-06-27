@@ -1,4 +1,3 @@
-pub mod analysis_repo;
 pub mod creation_stats_repo;
 // `grouped_sweep_repo` stays in `backend`: it depends on the sweep engine's
 // `ComboMetrics` aggregate (local), so it lands in `backend-local`, not core.

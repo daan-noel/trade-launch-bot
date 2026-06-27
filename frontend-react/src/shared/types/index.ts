@@ -522,13 +522,6 @@ export interface TradeRecord {
   venue?: 'curve' | 'amm';
 }
 
-export interface AnalysisRecord {
-  analyzer_name: string;
-  score: number;
-  indicators: string[];
-  computed_at: string;
-}
-
 export interface SwingParams {
   high_to_low_threshold_sol: number;
   high_to_low_threshold_pct: number;
@@ -592,15 +585,6 @@ export interface SwingBatchEntry {
 export interface SwingBatchResponse {
   params: SwingParams;
   results: SwingBatchEntry[];
-}
-
-export interface CreatorRecord {
-  wallet_address: string;
-  tokens_created: number;
-  total_volume_sol: number;
-  suspiciousness_score: number;
-  wash_trade_score: number;
-  last_analyzed_at: string | null;
 }
 
 export type ProfileType = 'mine' | 'trader' | 'whale' | 'dev';

@@ -13,8 +13,8 @@ async fn get_capabilities() -> HttpResponse {
 }
 
 /// Register local-only (analysis box) routes: the swing-aware token list, swing
-/// detection, analysis/creator reads, background-job control, the tpsl1/tpsl2 rule
-/// authoring + backtest edge, and grouped param-sweeps. Call alongside
+/// detection, background-job control, the tpsl1/tpsl2 rule authoring + backtest
+/// edge, and grouped param-sweeps. Call alongside
 /// `backend_core::api::configure_core_routes` to build the full local route set
 /// (`App::new().configure(configure_core_routes).configure(configure_local_routes)`).
 ///
@@ -26,12 +26,8 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
         web::scope("/api")
             // Capability advertisement (frontend nav/route gating)
             .route("/system/capabilities", web::get().to(get_capabilities))
-            // Token list (swing-aware) + analysis
+            // Token list (swing-aware)
             .route("/tokens", web::get().to(handlers::tokens::list_tokens))
-            .route(
-                "/tokens/{mint}/analysis",
-                web::get().to(handlers::tokens::get_token_analysis),
-            )
             // Swing detection
             .route(
                 "/tokens/swings/batch",
@@ -41,11 +37,6 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 "/tokens/{mint}/swings",
                 web::post().to(handlers::tokens::detect_token_swings),
             )
-            // Creators (analysis reads, take LocalState)
-            .route("/creators", web::get().to(handlers::tokens::list_creators))
-            .route("/creators/{wallet}", web::get().to(handlers::tokens::get_creator))
-            // Analysis list
-            .route("/analysis", web::get().to(handlers::tokens::list_analysis_results))
             // Background-job status + control (sweep / simulation / swing)
             .route("/jobs/status", web::get().to(handlers::system::job_status))
             .route(

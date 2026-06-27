@@ -390,20 +390,6 @@ export async function fetchTpsl2Position(
   return request(`${API_BASE}/api/strategies/tpsl2/positions/${positionId}`);
 }
 
-export async function fetchAnalysis(
-  limit: number,
-  offset: number,
-): Promise<{ total: number; items: import('types').AnalysisRecord[] }> {
-  return request(`${API_BASE}/api/analysis?limit=${limit}&offset=${offset}`);
-}
-
-export async function fetchCreators(
-  limit: number,
-  offset: number,
-): Promise<{ total: number; items: import('types').CreatorRecord[] }> {
-  return request(`${API_BASE}/api/creators?limit=${limit}&offset=${offset}`);
-}
-
 // ---------------------------------------------------------------------------
 // Profiles & Wallets
 // ---------------------------------------------------------------------------
