@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host",
+    "dev:local": "vite --host --open /analysis.html",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },

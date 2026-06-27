@@ -51,9 +51,18 @@ cargo test  -p pump-trader             # trader crate tests
 cargo run   -p backend-deploy          # live box: loads .env; needs Postgres + Helius gRPC
 cargo run   -p backend-local           # analysis box: needs Postgres; NO keys / NO gRPC
 cargo run   -p backend-deploy -- probe <ladder|fanout|simulate-sell|holdings> [args]
-cd frontend-react; npm run dev         # dev server :5173, proxies /api -> :8081
-npm run build                          # tsc && vite build
+cd frontend-react; npm run dev         # both builds: deploy at /, analysis at /analysis.html (:5173, proxies /api -> :8081)
+npm run dev:local                      # analysis build only (opens /analysis.html) — pair with backend-local
+npm run build                          # tsc (checks BOTH trees) && vite build → DEPLOY-ONLY dist/index.html
 ```
+
+**Frontend is two builds over a shared core** (mirrors the backend two-bin split): `src/shared` ·
+`src/deploy` (`@deploy/*`) · `src/analysis` (`@analysis/*`), two Vite entries
+(`index.html`→deploy, `analysis.html`→analysis, dev-only). Mode is build-time, not runtime — no
+`useCapabilities` gating. Ship the **deploy** build to EC2 (`npm run build` emits analysis-free
+`dist/index.html`). One split `createApi`: `baseApi` shell + per-mode `injectEndpoints`; import mode
+hooks from `@deploy|@analysis/store/*Endpoints`, never the shared `store/apiSlice` barrel, so a
+mode's side effect never leaks across builds. See [@arch/frontend.md](@arch/frontend.md).
 
 Stay in the owning crate (`pump-constants` / `backend-core` / `ingest-laserstream` / `backend-deploy` / `backend-local`). Use `--target-dir target-check` if a bin `.exe` is running (locks `target/`). Clippy `too_many_arguments` is `#[allow]`-ed on trade-path fns by design.
 

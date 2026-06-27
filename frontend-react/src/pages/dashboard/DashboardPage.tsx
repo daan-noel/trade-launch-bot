@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import { Button } from 'components/ui/Button';
 import { Select } from 'components/ui/Select';
 import { TimezoneSelect } from 'components/ui/TimezoneSelect';
@@ -10,7 +10,6 @@ import { useLocalStorage } from 'hooks/useLocalStorage';
 import { STORAGE_KEYS } from 'lib/storage';
 import { CreationHeatmap } from 'components/dashboard/CreationHeatmap';
 import { CreationTrendChart } from 'components/dashboard/CreationTrendChart';
-import { GroupedCreationSection } from 'components/dashboard/GroupedCreationSection';
 import {
   METRIC_OPTIONS,
   RANGE_OPTIONS,
@@ -25,7 +24,18 @@ import {
 } from 'components/dashboard/creationStats';
 import { formatWithCommas } from 'utils/format';
 
-export function DashboardPage() {
+/**
+ * Shared dashboard (heatmap + creation trend). The analysis build injects its
+ * per-fingerprint grouped section via `extraSections` — a render-prop, not a
+ * direct import, so the deploy build never pulls the analysis-only
+ * `GroupedCreationSection` (and its `getGroupedCreationStats` endpoint) into its
+ * bundle.
+ */
+export function DashboardPage({
+  extraSections,
+}: {
+  extraSections?: (ctx: { tz: string; segment: CreationSegment }) => ReactNode;
+}) {
   const { timezone } = useTimezone();
   const [metric, setMetric] = useLocalStorage<CreationMetric>(STORAGE_KEYS.dashboardMetric, 'migrate_rate');
   const [segment, setSegment] = useLocalStorage<CreationSegment>(STORAGE_KEYS.dashboardSegment, 'all');
@@ -195,9 +205,10 @@ export function DashboardPage() {
         )}
       </section>
 
-      {/* Panel C — per-fingerprint creation activity (shares the control bar's
-          window / timezone / segment; owns its own group-by + top-N). */}
-      <GroupedCreationSection tz={timezone} segment={segment} />
+      {/* Panel C — per-fingerprint creation activity (analysis build only),
+          injected via render-prop so it shares the control bar's
+          window / timezone / segment while staying out of the deploy bundle. */}
+      {extraSections?.({ tz: timezone, segment })}
     </div>
   );
 }

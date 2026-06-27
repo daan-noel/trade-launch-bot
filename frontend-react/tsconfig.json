@@ -17,16 +17,19 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true,
     "paths": {
-      "components/*": ["./src/components/*"],
+      "@shared/*": ["./src/shared/*"],
+      "@deploy/*": ["./src/deploy/*"],
+      "@analysis/*": ["./src/analysis/*"],
+      "components/*": ["./src/shared/components/*"],
       "pages/*": ["./src/pages/*"],
-      "services/*": ["./src/services/*"],
-      "types": ["./src/types/index.ts"],
-      "types/*": ["./src/types/*"],
-      "hooks/*": ["./src/hooks/*"],
-      "utils/*": ["./src/utils/*"],
-      "store/*": ["./src/store/*"],
-      "context/*": ["./src/context/*"],
-      "lib/*": ["./src/lib/*"]
+      "services/*": ["./src/shared/services/*"],
+      "types": ["./src/shared/types/index.ts"],
+      "types/*": ["./src/shared/types/*"],
+      "hooks/*": ["./src/shared/hooks/*"],
+      "utils/*": ["./src/shared/utils/*"],
+      "store/*": ["./src/shared/store/*"],
+      "context/*": ["./src/shared/context/*"],
+      "lib/*": ["./src/shared/lib/*"]
     }
   },
   "include": ["src"]

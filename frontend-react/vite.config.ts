@@ -9,11 +9,24 @@ import tsconfigPaths from 'vite-tsconfig-paths';
 // (In Docker the build uses ENV build-args instead — see frontend-react/Dockerfile.)
 const ENV_DIR = '..';
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, ENV_DIR, '');
   return {
     envDir: ENV_DIR,
     plugins: [react(), tailwindcss(), tsconfigPaths()],
+    build: {
+      rollupOptions: {
+        // Two Vite entries over the shared core. `index.html` → the deploy
+        // (LIVE) build; `analysis.html` → the analysis (workstation) build.
+        // Production builds emit DEPLOY ONLY, so the EC2 image never ships any
+        // analysis (sweep / swing / arrow) code. The analysis entry is served
+        // only in dev (`vite dev` at /analysis.html).
+        input:
+          command === 'build'
+            ? { main: 'index.html' }
+            : { main: 'index.html', analysis: 'analysis.html' },
+      },
+    },
     server: {
       port: Number(env.VITE_DEV_PORT) || 5173,
       proxy: {
