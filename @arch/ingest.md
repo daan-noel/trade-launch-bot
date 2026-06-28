@@ -1,57 +1,87 @@
 # Ingest — LaserStream (the sole live transport)
 
-File-level map of `backend/src/ingest_laserstream/`. Helius LaserStream (Yellowstone gRPC) is the **only** live ingest path.
+File-level map of `ingest-laserstream/` (standalone crate) and `live/src/ingest/` (host adapter). Helius LaserStream (Yellowstone gRPC) is the **only** live ingest path.
 Logic explainers: `@plans/ingest/laserstream-workflow.md`, `@plans/ingest/token_sync-workflow.md`, `@plans/ingest/backpressure-watchdog.md`, `@plans/ingest/reconnect-restart-flow.md`.
 
-## Data flow
+## Architecture
+
+`ingest-laserstream` is a **standalone drop-in crate** — no workspace deps. It emits decoded `IngestEvent`s out a bounded mpsc channel; the host (`live`) owns all sinks.
 
 ```text
-client.rs (gRPC, pre-filter + classify)  --(Arc<SubscribeUpdateTransaction>, TxRelevance)-->
-pipeline.rs (decode + TokenCache update + fan-out)  -->  { db_tx, strategy_tx, sse_tx }
-db_writer.rs (build_raw_blob off-thread)  --batched-->  Postgres  -->  TradeSignals.notify(wallet,mint)
+Ingest::builder().build()?.start(live)
+  -> (Receiver<IngestEvent>, IngestHandle)
+
+Internal crate topology:
+  transport::run()  (gRPC, classify)
+    --(Arc<SubscribeUpdateTransaction>, TxRelevance, DateTime<Utc>)-->
+  decode task  (Decoder::decode_relevant_pb)
+    --IngestEvent-->  host event channel
+
+Host adapter (live/src/ingest/):
+  consumer.rs  (translate IngestEvent -> trading_core types, fan-out)
+    --> { db_tx, strategy_tx, sse_tx, trader, trade_signals }
+  db_writer.rs  (batch persistence) --> Postgres --> TradeSignals.notify
+  watchdog.rs  (OS thread, DbHeartbeat)
 ```
 
-Channels: `update_tx` cap 4096 · `db_tx` cap 16384 · `strategy_tx` cap 512 · `sse_tx` broadcast.
+Channels: `update_tx` cap 4096 · `event_rx` cap 8192 · `db_tx` cap 16384 · `strategy_tx` cap 512 · `sse_tx` broadcast.
 
 **Backpressure:** money-critical writes (`Trade`/`Migration`/`Token`/`Wallet`) use `send().await` (never dropped); recomputable writes (`Metrics`/`Raw`) use `try_send` (dropped on Full). See `@plans/ingest/backpressure-watchdog.md`.
 
-**Liveness watchdog:** DbWriter stamps `IngestHeartbeat` at the end of every `flush()`. A dedicated OS thread force-exits (`exit(1)`) when the heartbeat is stale AND the DB queue is non-empty AND live mode is on. See `@plans/ingest/backpressure-watchdog.md`.
+**Liveness watchdog:** `db_writer.rs` stamps `DbHeartbeat` at the end of every `flush()`. A dedicated OS thread (via `watchdog::spawn_watchdog`) force-exits (`exit(1)`) when the heartbeat is stale AND the DB queue is non-empty AND live mode is on.
 
-## Files — `backend/src/ingest_laserstream/`
-
-| File | Responsibility |
-| --- | --- |
-| `client.rs` | gRPC producer: TLS auth, reconnect w/ backoff (max 30s), replay from `last_slot`, idle-reconnect timer (10s), backpressure guard (`send_timeout` 30s) |
-| `adapter.rs` | Protobuf → Helius JSON blob (`build_raw_blob`, runs off-thread in DbWriter) |
-| `adapter_rpc.rs` | RPC result → protobuf (inverse of `adapter.rs`; used by token_sync) |
-| `pipeline.rs` | Hot path: decode → filter → TokenCache update → fan-out to DB/strategy/SSE. Pings `TradeSignals` mint lane after cache update |
-| `db_writer.rs` | Batches (256 ops / 25ms), dedups, persists; stamps `IngestHeartbeat` each flush; signals `TradeSignals` per `(wallet,mint)` |
-| `mod.rs` | re-exports + `proto` |
-
-### `DbWriteOp` variants
-
-`Raw(RawBlobJob)` · `Token(Token)` · `Wallet(String)` · `Trade(Trade)` · `Metrics(TokenMetricsWrite)` · `Migration{mint}`
-
-### Pipeline event handlers
-
-`on_token_created` (Token+Wallet+Metrics+ping+SSE) · `on_trade_executed` (Trade+Wallet+Metrics+reserves+AMM prewarm+ping+SSE) · `on_token_migrated` (register pool+Migration+ping) · `on_creator_activity` (ping) · `on_liquidity` (SSE only)
-
-## Decoder — `decoder/`
-
-Protobuf-native only (the old JSON/Value path has been deleted). Both live ingest and token_sync feed `decode_protobuf`.
+## `ingest-laserstream/src/` — crate modules
 
 | File | Responsibility |
 | --- | --- |
-| `grpc/mod.rs` | `decode_protobuf` / `decode_relevant_pb` — two entry points, one decode body; `LazyKeys` (base58 on demand) |
-| `grpc/trade.rs` | Protobuf-native trade helpers |
-| `mod.rs` (root) | `HeliusDecoder`, `TxRelevance`, module wiring |
-| `trade.rs` (root) | Borsh `RawTradeEvent`, `build_amm_trade`, `compute_sol_change` |
-| `instructions.rs` (root) | `InstructionKind`, `determine_instruction_type`, `label_instruction` |
-| `create.rs` (root) | `decode_create_events_from_logs`, creator-wallet precedence |
+| `lib.rs` | `Ingest` builder + `IngestHandle`; spawns transport + decode tasks; `start(live)` → `(Receiver<IngestEvent>, IngestHandle)` |
+| `event.rs` | Crate-owned output types: `IngestEvent`, `Trade`, `TokenCreated`, `TokenMigrated`, `LiquidityEvent`, `CreatorActivityEvent`, `BuyInstructionArgs`, `Side`, `Venue`, `Reserves`; `RawTx` under `raw-json` feature |
+| `protocol.rs` | `Protocol` descriptor: pre-decoded program IDs (`ProgramId` w/ bytes + base58) + discriminators decoded once at build time |
+| `config.rs` | `IngestConfig` (all tunables, no env reads), `Commitment` enum |
+| `error.rs` | `IngestError`, `Result<T>` alias |
+| `pool.rs` | PDA derivation (`derive_pool`), `register_pool`, `pool_for_mint`; `PoolIndex = Arc<DashMap<String, String>>` |
+| `health.rs` | `HealthState` (atomics), `HealthSnapshot`, `watch::Receiver<HealthSnapshot>` |
+| `transport/mod.rs` | gRPC producer: TLS auth, reconnect w/ backoff, replay from `last_slot`, idle-reconnect timer, backpressure guard; `connect`, `build_subscribe_request`, `TransportConfig` |
+| `decode/mod.rs` | `Decoder` (+ `HeliusDecoder` back-compat alias), `TxRelevance`, `DecodeOutput` |
+| `decode/grpc.rs` | `decode_protobuf` (self-classify), `decode_relevant_pb` (hot path), `decode_amm_protobuf` (backfill); `LazyKeys` |
+| `decode/trade.rs` | Borsh `RawTradeEvent`, trade helpers |
+| `decode/instructions.rs` | `InstructionKind`, labeler |
+| `decode/create.rs` | `decode_create_events_from_logs` |
+| `raw_json.rs` | `build_raw_blob` (protobuf → Helius JSON), `build_raw_tx_event` — **`raw-json` feature** |
+| `backfill.rs` | `rpc_to_protobuf` (RPC result → protobuf) — **`rpc-backfill` feature** |
+
+### Feature gates
+
+| Feature | Unlocks |
+| --- | --- |
+| `raw-json` | `serde_json` dep, `IngestEvent::RawTx`, `raw_json::build_raw_blob` |
+| `rpc-backfill` | `backfill::rpc_to_protobuf` |
+
+`live` enables both. `IngestHandle` exposes `set_live`, `track_pools`, `untrack_pools`, `health`, `health_watch`, `pool_index`, `pools_changed`.
+
+## `live/src/ingest/` — host adapter
+
+| File | Responsibility |
+| --- | --- |
+| `mod.rs` | `spawn_ingest(...)` — builds `Ingest`, starts it, spawns consumer + db_writer tasks, starts watchdog thread; returns `IngestSpawnResult` |
+| `consumer.rs` | `IngestConsumer` — translates `IngestEvent` → `trading_core` types; fans out to token_cache, DB, strategy, SSE, trader; handles `track_mayhem` / `track_post_migration` policy transitions |
+| `db_writer.rs` | `DbWriter` — batches (1000 ops / 150ms), dedups, persists; stamps `DbHeartbeat` each flush; signals `TradeSignals` per `(wallet,mint)`; `DbWriteOp` variants: `Raw(RawBlobJob)` · `Token` · `Wallet` · `Trade` · `Metrics` · `Migration` |
+| `watchdog.rs` | `DbHeartbeat` (atomic ms stamp), `spawn_watchdog` (OS thread); force-exits when DB queue backed up and no commit within `watchdog_stall_timeout_secs` |
+
+### Consumer event handlers
+
+`on_token_created` (Token+Wallet+Metrics+cache+ping+SSE) · `on_trade` (Trade+Wallet+Metrics+reserves+AMM prewarm+ping+SSE) · `on_token_migrated` (pool gate+Migration+ping) · `on_creator_activity` (ping) · `on_liquidity` (SSE only)
+
+## Decoder — `decode/`
+
+Protobuf-native only (no Value/JSON path in decode). Both live ingest and `token_sync.rs` feed `decode_protobuf`.
+
+Pool→mint index (`PoolIndex`) is shared: the decode task auto-registers pools on `TokenMigrated`; the consumer un-registers when `track_post_migration` is off.
 
 Codegen: committed prost/tonic bindings in `generated/`; `.proto` sources in `proto/`. Regen only when `.proto` changes.
 
 ## Key rules
 
 - `trades` table = this feed. TPSL exit loop confirms fills from this feed (not a separate RPC).
-- No blocking I/O / `.await`-on-lock / unbounded alloc per event in `pipeline.rs`; DB+SSE go through channels.
+- No blocking I/O / `.await`-on-lock / unbounded alloc per event on the ingest hot path; DB+SSE go through channels.
+- `ingest-laserstream` has **zero workspace deps** — standalone drop-in crate.

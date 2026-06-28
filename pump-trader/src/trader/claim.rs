@@ -47,7 +47,8 @@ pub struct PotStatus {
 impl PotStatus {
     /// Claimable WSOL cashback (lamports).
     pub fn claimable(&self) -> u64 {
-        self.cashback_earned.saturating_sub(self.total_cashback_claimed)
+        self.cashback_earned
+            .saturating_sub(self.total_cashback_claimed)
     }
     /// Claimable stable cashback (raw units of the stable mint).
     pub fn stable_claimable(&self) -> u64 {
@@ -191,15 +192,22 @@ impl PumpFunTrader {
         let atoken_program = protocol::ASSOCIATED_TOKEN_PROGRAM;
 
         // Both layouts move the quote from ATA(uva) -> ATA(user).
-        let uva_quote_ata =
-            get_associated_token_address_with_program_id(&p.user_volume_accumulator, &mint, &token_prog);
-        let user_quote_ata = get_associated_token_address_with_program_id(&user, &mint, &token_prog);
+        let uva_quote_ata = get_associated_token_address_with_program_id(
+            &p.user_volume_accumulator,
+            &mint,
+            &token_prog,
+        );
+        let user_quote_ata =
+            get_associated_token_address_with_program_id(&user, &mint, &token_prog);
 
         let mut ixs = Vec::with_capacity(4);
 
         // 1. Ensure the user's quote ATA exists (idempotent — no-op if present).
         ixs.push(create_associated_token_account_idempotent(
-            &user, &user, &mint, &token_prog,
+            &user,
+            &user,
+            &mint,
+            &token_prog,
         ));
 
         // 2. sync_user_volume_accumulator — recompute the rolling window.
@@ -256,10 +264,7 @@ impl PumpFunTrader {
 
     /// The two WSOL pots, with their per-program PDAs and claim variant.
     fn claim_pots(&self) -> Result<[PotClaim; 2]> {
-        let global = self
-            .global_account
-            .as_ref()
-            .context("Not initialized")?;
+        let global = self.global_account.as_ref().context("Not initialized")?;
         Ok([
             PotClaim {
                 label: "curve",
@@ -359,7 +364,9 @@ impl PumpFunTrader {
             }
 
             let ixs = self.build_claim_ixs(pot)?;
-            let tx = self.build_recent_tx(ixs, self.config.signer.as_ref()).await?;
+            let tx = self
+                .build_recent_tx(ixs, self.config.signer.as_ref())
+                .await?;
 
             let outcome = if execute {
                 match self.rpc.send_transaction(&tx).await {
@@ -446,14 +453,14 @@ mod tests {
         let mut pots: Vec<super::PotClaim> = t.claim_pots().expect("claim pots").to_vec();
         pots.push(super::PotClaim {
             label: "curve-stable",
-            program: t.pump_program,
+            program: crate::protocol::PUMP_FUN,
             user_volume_accumulator: global.user_volume_accumulator,
             global_volume_accumulator: global.global_volume_accumulator,
-            event_authority: t.event_authority,
+            event_authority: crate::protocol::EVENT_AUTHORITY,
             claim_disc: crate::protocol::CLAIM_CASHBACK_V2_DISC,
             include_atoken_program: true,
             quote_mint: global.stable_quote_mint.expect("stable mint set in dummy"),
-            quote_token_program: t.token_program,
+            quote_token_program: crate::protocol::TOKEN,
             unwrap: false,
             is_stable: true,
         });
@@ -462,7 +469,11 @@ mod tests {
             let msg = Message::new(&ixs, Some(&payer));
             let size = wire_size(&msg);
             eprintln!("claim [{}] = {size} B (limit {TX_LIMIT})", pot.label);
-            assert!(size <= TX_LIMIT, "claim [{}] = {size} B over limit", pot.label);
+            assert!(
+                size <= TX_LIMIT,
+                "claim [{}] = {size} B over limit",
+                pot.label
+            );
         }
     }
 }

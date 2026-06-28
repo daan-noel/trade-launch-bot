@@ -32,9 +32,6 @@ thiserror = "1"
 dashmap = "4.0"
 chrono = { version = "0.4", features = ["serde"] }
 
-# Futures utilities
-futures-util = "0.3"
-
 # Base58 / Base64 (decode, backfill)
 bs58 = "0.5"
 base64 = "0.22"

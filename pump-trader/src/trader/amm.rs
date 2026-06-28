@@ -1013,7 +1013,7 @@ mod tests {
         data.extend_from_slice(&0u64.to_le_bytes()); // max_quote_amount_in
         data.push(1); // track_volume
         ixs.push(Instruction {
-            program_id: t.pump_swap_program,
+            program_id: protocol::PUMP_SWAP,
             accounts: t.amm_swap_accounts(&pool, user, &cfg(), user_base, user_quote, legacy, true),
             data,
         });
@@ -1035,7 +1035,7 @@ mod tests {
         data.extend_from_slice(&0u64.to_le_bytes()); // base_amount_in
         data.extend_from_slice(&0u64.to_le_bytes()); // min_quote_amount_out
         ixs.push(Instruction {
-            program_id: t.pump_swap_program,
+            program_id: protocol::PUMP_SWAP,
             accounts: t.amm_swap_accounts(&pool, user, &cfg(), user_base, user_quote, legacy, false),
             data,
         });

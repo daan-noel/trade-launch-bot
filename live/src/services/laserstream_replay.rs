@@ -27,9 +27,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::info;
 
 use trading_core::config::constants::PUMP_SWAP_PROGRAM_ID;
-use ingest_laserstream::client::{build_subscribe_request, connect};
 use ingest_laserstream::proto::geyser::subscribe_update::UpdateOneof;
-use ingest_laserstream::proto::geyser::{SubscribeRequest, SubscribeUpdateTransaction};
+use ingest_laserstream::proto::geyser::{CommitmentLevel, SubscribeRequest, SubscribeUpdateTransaction};
+use ingest_laserstream::transport::{build_subscribe_request, connect, TransportConfig};
 
 /// Outbound request queue depth (just the single initial subscribe).
 const REQUEST_QUEUE_CAP: usize = 4;
@@ -71,12 +71,13 @@ pub async fn replay_account_from_slot(
     from_slot: u64,
     pump_program_id: &str,
 ) -> anyhow::Result<Vec<ReplayedTx>> {
-    let mut client = connect(laserstream_url, api_key)
+    let cfg = TransportConfig::default();
+    let mut client = connect(laserstream_url, api_key, &cfg)
         .await
         .context("laserstream replay: connect failed")?;
 
     let (req_tx, req_rx) = mpsc::channel::<SubscribeRequest>(REQUEST_QUEUE_CAP);
-    let initial = build_subscribe_request(vec![account.to_string()], Some(from_slot));
+    let initial = build_subscribe_request(vec![account.to_string()], Some(from_slot), CommitmentLevel::Confirmed);
     req_tx
         .send(initial)
         .await

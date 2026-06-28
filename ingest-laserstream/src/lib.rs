@@ -13,9 +13,7 @@
 //!
 //! The host owns all sinks (DB, cache, SSE, strategy, watchdog). The crate emits
 //! decoded [`event::IngestEvent`]s out a bounded mpsc channel and never reads env.
-#![allow(dead_code)]
-
-#[allow(clippy::all)]
+#[allow(clippy::all, dead_code)]
 #[rustfmt::skip]
 pub mod proto {
     include!("generated/mod.rs");
@@ -31,10 +29,10 @@ pub mod health;
 pub mod pool;
 pub mod protocol;
 
-mod transport;
+pub mod transport;
 
 #[cfg(feature = "raw-json")]
-mod raw_json;
+pub mod raw_json;
 
 pub use config::{Commitment, IngestConfig};
 pub use error::{IngestError, Result};

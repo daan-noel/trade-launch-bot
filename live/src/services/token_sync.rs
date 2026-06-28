@@ -16,11 +16,15 @@ use tokio::sync::{mpsc, Notify};
 
 pub use trading_core::services::pda::derive_pump_swap_pool;
 
+use std::sync::Arc as StdArc;
+
 use ingest_laserstream::{
-    adapter::build_raw_blob,
-    adapter_rpc::rpc_to_protobuf,
-    decoder::{DecodeOutput, HeliusDecoder},
+    backfill::rpc_to_protobuf,
+    decode::{DecodeOutput, HeliusDecoder},
+    event::{IngestEvent, Side, Venue},
     proto::geyser::SubscribeUpdateTransaction,
+    raw_json::build_raw_blob,
+    Protocol,
 };
 
 use crate::state::{
@@ -28,9 +32,8 @@ use crate::state::{
     token_metrics::{self, metrics_from_state},
 };
 use trading_core::models::{
-    events::InternalEvent,
     token::Token,
-    trade::Trade,
+    trade::{Trade, TradeType},
     transaction::RawTransaction,
 };
 use trading_core::storage::repositories::{
@@ -244,7 +247,7 @@ pub async fn run_token_sync(
     if let Ok(pool) = derive_pump_swap_pool(&mint, &ctx.pump_program_id) {
         pool_index.insert(pool, mint.clone());
     }
-    let decoder = HeliusDecoder::new(ctx.pump_program_id.clone()).with_pool_index(pool_index);
+    let decoder = HeliusDecoder::new(StdArc::new(Protocol::pump_fun())).with_pool_index(pool_index.clone());
 
     let info_repo = TokenInfoRepo::new(ctx.db.clone());
 
@@ -1052,11 +1055,12 @@ fn update_signature(update: &SubscribeUpdateTransaction) -> Option<String> {
 /// byte-consistent across sources for later analysis. `RawTransaction::new` stamps
 /// `received_at` to now, while `block_time` stays the real on-chain time from the
 /// carrier.
-fn persist_tx(update: &SubscribeUpdateTransaction, raw_tx: &RawTransaction) -> Arc<RawTransaction> {
+fn persist_tx(update: &SubscribeUpdateTransaction, slot: u64, block_time: DateTime<Utc>) -> Arc<RawTransaction> {
+    let signature = update_signature(update).unwrap_or_default();
     Arc::new(RawTransaction::new(
-        raw_tx.signature.clone(),
-        raw_tx.slot,
-        raw_tx.block_time,
+        signature,
+        slot,
+        block_time,
         build_raw_blob(update).unwrap_or(Value::Null),
     ))
 }
@@ -1147,32 +1151,34 @@ async fn decode_curve_batch(
         let slot = entry.slot;
         let skip_trades = !req.include_post_migrate && migrate_slot.is_some_and(|ms| slot > ms);
 
-        if let DecodeOutput::Transaction { raw_tx, mut events } =
+        if let DecodeOutput::Events(mut events) =
             decoder.decode_protobuf(&entry.update, entry.block_time)
         {
             sort_sync_events(&mut events);
 
-            txs.push(persist_tx(&entry.update, &raw_tx));
+            txs.push(persist_tx(&entry.update, entry.slot, entry.block_time));
 
             for event in events {
                 match event {
-                    InternalEvent::TokenCreated(e) if e.token.mint_address == mint => {
+                    IngestEvent::TokenCreated(e) if e.mint == mint => {
+                        let token = token_from_ingest_event(e);
                         token_repo
-                            .upsert(&e.token)
+                            .upsert(&token)
                             .await
                             .map_err(|e| SyncError::Internal(e.to_string()))?;
-                        wallets.push(e.token.creator_wallet.clone());
-                        *token_record = Some(e.token);
+                        wallets.push(token.creator_wallet.clone());
+                        *token_record = Some(token);
                     }
-                    InternalEvent::TradeExecuted(mut e) if e.trade.mint_address == mint => {
+                    IngestEvent::Trade(e) if e.mint == mint => {
                         if skip_trades {
                             continue;
                         }
-                        e.trade.received_at = Utc::now();
-                        wallets.push(e.trade.wallet_address.clone());
-                        trades.push(e.trade);
+                        let mut trade = trade_from_ingest_event(&e);
+                        trade.received_at = Utc::now();
+                        wallets.push(trade.wallet_address.clone());
+                        trades.push(trade);
                     }
-                    InternalEvent::TokenMigrated(e) if e.mint_address == mint => {
+                    IngestEvent::TokenMigrated(e) if e.mint == mint => {
                         *migrate_slot = Some(e.slot);
                         if let Err(err) = info_repo.update_migration_status(mint, true).await {
                             tracing::warn!(
@@ -1199,15 +1205,16 @@ fn decode_amm_batch(
     wallets: &mut Vec<String>,
 ) {
     for entry in batch {
-        if let DecodeOutput::Transaction { raw_tx, events } =
+        if let DecodeOutput::Events(events) =
             decoder.decode_amm_protobuf(&entry.update, entry.block_time)
         {
-            txs.push(persist_tx(&entry.update, &raw_tx));
+            txs.push(persist_tx(&entry.update, entry.slot, entry.block_time));
             for event in events {
-                if let InternalEvent::TradeExecuted(mut e) = event {
-                    e.trade.received_at = Utc::now();
-                    wallets.push(e.trade.wallet_address.clone());
-                    trades.push(e.trade);
+                if let IngestEvent::Trade(e) = event {
+                    let mut trade = trade_from_ingest_event(&e);
+                    trade.received_at = Utc::now();
+                    wallets.push(trade.wallet_address.clone());
+                    trades.push(trade);
                 }
             }
         }
@@ -1311,14 +1318,14 @@ async fn send_progress(
         .map_err(|_| SyncError::Internal("progress channel closed".into()))
 }
 
-fn sort_sync_events(events: &mut [InternalEvent]) {
+fn sort_sync_events(events: &mut [IngestEvent]) {
     events.sort_by_key(|e| match e {
-        InternalEvent::TokenCreated(_) => 0,
-        InternalEvent::TokenMigrated(_) => 1,
-        InternalEvent::TradeExecuted(_) => 2,
-        InternalEvent::CreatorActivityDetected(_) => 3,
-        InternalEvent::LiquidityAdded(_) => 4,
-        InternalEvent::LiquidityRemoved(_) => 5,
+        IngestEvent::TokenCreated(_) => 0,
+        IngestEvent::TokenMigrated(_) => 1,
+        IngestEvent::Trade(_) => 2,
+        IngestEvent::CreatorActivity(_) => 3,
+        IngestEvent::Liquidity(_) => 4,
+        IngestEvent::RawTx(_) => 5,
     });
 }
 
@@ -1345,6 +1352,59 @@ async fn write_metrics(
         .map_err(|e| SyncError::Internal(e.to_string()))
 }
 
+// ── IngestEvent → trading_core type translators ───────────────────────────────
+
+fn trade_from_ingest_event(e: &ingest_laserstream::event::Trade) -> Trade {
+    use uuid::Uuid;
+    Trade {
+        id: Uuid::new_v4(),
+        mint_address: e.mint.clone(),
+        wallet_address: e.wallet.clone(),
+        trade_type: match e.side {
+            Side::Buy => TradeType::Buy,
+            Side::Sell => TradeType::Sell,
+        },
+        sol_amount: e.sol,
+        token_amount: e.tokens,
+        price_per_token: e.price,
+        tx_signature: e.signature.clone(),
+        leg_index: e.leg_index,
+        slot: e.slot,
+        block_time: e.block_time,
+        received_at: e.received_at,
+        virtual_sol_reserves: e.reserves.virtual_sol,
+        virtual_token_reserves: e.reserves.virtual_token,
+        real_sol_reserves: e.reserves.real_sol,
+        real_token_reserves: e.reserves.real_token,
+        instruction_type: e.instruction_type.clone(),
+        instruction_labels: serde_json::json!(e.instruction_labels),
+        venue: match e.venue { Venue::Curve => "curve", Venue::Amm => "amm" }.to_string(),
+    }
+}
+
+fn token_from_ingest_event(e: ingest_laserstream::event::TokenCreated) -> Token {
+    use uuid::Uuid;
+    Token {
+        id: Uuid::new_v4(),
+        mint_address: e.mint,
+        creator_wallet: e.creator,
+        name: e.name,
+        symbol: e.symbol,
+        token_program_id: e.token_program_id,
+        bonding_curve_address: e.bonding_curve,
+        initial_supply_token: e.initial_supply,
+        initial_buy_sol: e.initial_buy_sol,
+        initial_buy_instruction: e.initial_buy_instruction.as_ref().map(|_| serde_json::Value::Null),
+        cu_limit: e.cu_limit,
+        cu_price: e.cu_price,
+        is_mayhem_mode: e.is_mayhem_mode,
+        is_cashback_enabled: e.is_cashback_enabled,
+        instruction_labels: serde_json::json!(e.instruction_labels),
+        creation_tx_signature: e.signature,
+        created_at: e.block_time,
+    }
+}
+
 #[cfg(test)]
 mod amm_verification {
     //! On-chain verification of PumpSwap pool derivation + event decoding.
@@ -1353,7 +1413,7 @@ mod amm_verification {
     //!   HELIUS_RPC_URL="<url>" cargo test -p backend amm_pool_derivation -- --ignored --nocapture
     use super::*;
     use trading_core::config::constants::{PUMP_FUN_PROGRAM_ID, PUMP_SWAP_PROGRAM_ID, WSOL_MINT};
-    use ingest_laserstream::decoder::HeliusDecoder;
+    use ingest_laserstream::decode::HeliusDecoder;
     use crate::services::helius_rpc::wrap_transaction_result;
     use serde_json::{json, Value};
 
@@ -1475,16 +1535,16 @@ mod amm_verification {
             let idx = std::sync::Arc::new(dashmap::DashMap::new());
             idx.insert(derived.clone(), base_mint.clone());
             let amm_decoder =
-                HeliusDecoder::new(PUMP_FUN_PROGRAM_ID.to_string()).with_pool_index(idx);
-            let update = ingest_laserstream::adapter_rpc::rpc_to_protobuf(
+                HeliusDecoder::new(StdArc::new(Protocol::pump_fun())).with_pool_index(idx);
+            let update = ingest_laserstream::backfill::rpc_to_protobuf(
                 &wrap_transaction_result(sig, &tx_b64),
             )
             .expect("canonical swap must lower to protobuf");
             let trades: Vec<_> = match amm_decoder.decode_amm_protobuf(&update, Utc::now()) {
-                DecodeOutput::Transaction { events, .. } => events
+                DecodeOutput::Events(events) => events
                     .into_iter()
                     .filter_map(|e| match e {
-                        InternalEvent::TradeExecuted(t) => Some(t.trade),
+                        IngestEvent::Trade(t) => Some(trade_from_ingest_event(&t)),
                         _ => None,
                     })
                     .collect(),
@@ -1674,13 +1734,13 @@ mod amm_verification {
     #[tokio::test]
     #[ignore = "requires HELIUS_RPC_URL with the archival API + network"]
     async fn gtfa_base64_decodes_via_protobuf() {
-        use ingest_laserstream::adapter_rpc::rpc_to_protobuf;
+        use ingest_laserstream::backfill::rpc_to_protobuf;
         use base64::{engine::general_purpose::STANDARD, Engine};
         use solana_sdk::{message::VersionedMessage, transaction::VersionedTransaction};
 
         let url = std::env::var("HELIUS_RPC_URL").expect("set HELIUS_RPC_URL");
         let helius = HeliusRpc::new(url);
-        let decoder = HeliusDecoder::new(PUMP_FUN_PROGRAM_ID.to_string());
+        let decoder = HeliusDecoder::new(StdArc::new(Protocol::pump_fun()));
 
         let (data, _token) = helius
             .get_transactions_for_address_full_page_enc(PUMP_FUN_PROGRAM_ID, "desc", 25, None, "base64")
@@ -1710,16 +1770,15 @@ mod amm_verification {
             let Some(update) = rpc_to_protobuf(&wrap_transaction_result("", item)) else {
                 continue;
             };
-            if let DecodeOutput::Transaction { events, .. } =
+            if let DecodeOutput::Events(events) =
                 decoder.decode_protobuf(&update, Utc::now())
             {
                 decoded += 1;
                 for e in &events {
-                    if let InternalEvent::TradeExecuted(t) = e {
+                    if let IngestEvent::Trade(t) = e {
                         assert!(
-                            t.trade.sol_amount > 0.0 && t.trade.token_amount > 0.0,
-                            "decoded trade has non-positive amounts: {:?}",
-                            t.trade
+                            t.sol > 0.0 && t.tokens > 0.0,
+                            "decoded trade has non-positive amounts: {t:?}",
                         );
                         trade_legs += 1;
                     }
