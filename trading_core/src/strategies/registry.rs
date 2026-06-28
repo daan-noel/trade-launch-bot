@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::models::trade::TradeRow;
-use crate::models::{Token, Tpsl1Rule, Tpsl2Rule};
+use crate::models::{StrategyRule, Token, Tpsl1Rule, Tpsl2Rule};
 
 use super::{tpsl_sniper_1 as t1, tpsl_sniper_2 as t2};
 
@@ -63,6 +63,41 @@ impl StrategyImpl {
 
 fn empty_array() -> Value {
     json!([])
+}
+
+/// Rebuild the `Tpsl1Rule` the tpsl1 decision/backtest layer consumes from a
+/// unified [`StrategyRule`]: the gate params come from the `params` JSONB (via
+/// [`Tpsl1Params::to_rule`]); the universal knobs (`id`, name, `buy_amount`,
+/// `trade_mode`, caps) are copied from the row's typed columns (`to_rule` leaves
+/// them as inert placeholders). Errors only if `params` isn't valid tpsl1 JSON.
+pub fn tpsl1_decision_rule(sr: &StrategyRule) -> Result<Tpsl1Rule, serde_json::Error> {
+    let StrategyParams::Tpsl1(p) = StrategyImpl::Tpsl1.parse_params(&sr.params)? else {
+        unreachable!("Tpsl1.parse_params always yields Tpsl1 params")
+    };
+    let mut r = p.to_rule();
+    r.id = sr.id;
+    r.rule_name = sr.rule_name.clone();
+    r.buy_amount = sr.buy_amount;
+    r.trade_mode = sr.trade_mode.clone();
+    r.p_max_concurrent_tokens = sr.max_concurrent_tokens.map(|v| v as u64);
+    r.p_max_total_tokens = sr.max_total_tokens.map(|v| v as u64);
+    Ok(r)
+}
+
+/// tpsl2 twin of [`tpsl1_decision_rule`] — rebuild the `Tpsl2Rule` from a unified
+/// [`StrategyRule`].
+pub fn tpsl2_decision_rule(sr: &StrategyRule) -> Result<Tpsl2Rule, serde_json::Error> {
+    let StrategyParams::Tpsl2(p) = StrategyImpl::Tpsl2.parse_params(&sr.params)? else {
+        unreachable!("Tpsl2.parse_params always yields Tpsl2 params")
+    };
+    let mut r = p.to_rule();
+    r.id = sr.id;
+    r.rule_name = sr.rule_name.clone();
+    r.buy_amount = sr.buy_amount;
+    r.trade_mode = sr.trade_mode.clone();
+    r.p_max_concurrent_tokens = sr.max_concurrent_tokens.map(|v| v as u64);
+    r.p_max_total_tokens = sr.max_total_tokens.map(|v| v as u64);
+    Ok(r)
 }
 
 /// tpsl1 strategy-specific gate params (the JSONB "brain"). Field names match the

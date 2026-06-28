@@ -10,10 +10,7 @@ use crate::storage::repositories::{
     creation_stats_repo::CreationStatsRepo, raw_tx_repo::RawTxRepo,
     settings_repo::SettingsRepo, strategy_repo::StrategyRepo, token_repo::TokenRepo,
     token_sync_state_repo::TokenSyncStateRepo, trade_repo::TradeRepo,
-    tpsl1_paper_trading_repo::Tpsl1PaperTradingRepo,
-    tpsl1_position_repo::Tpsl1PositionRepo, tpsl1_strategy_rule_repo::Tpsl1StrategyRuleRepo,
-    tpsl2_paper_trading_repo::Tpsl2PaperTradingRepo, tpsl2_position_repo::Tpsl2PositionRepo,
-    tpsl2_strategy_rule_repo::Tpsl2StrategyRuleRepo, wallet_dict_repo::WalletDictRepo,
+    wallet_dict_repo::WalletDictRepo,
     wallet_profile_repo::WalletProfileRepo,
     wallet_profile_tag_repo::WalletProfileTagRepo, wallet_repo::WalletRepo,
 };
@@ -177,28 +174,7 @@ impl CoreState {
     pub fn wallet_tag_repo(&self) -> WalletProfileTagRepo {
         WalletProfileTagRepo::new(self.db.clone())
     }
-
-    pub fn tpsl1_rule_repo(&self) -> Tpsl1StrategyRuleRepo {
-        Tpsl1StrategyRuleRepo::new(self.db.clone())
-    }
-
-    pub fn tpsl1_position_repo(&self) -> Tpsl1PositionRepo {
-        Tpsl1PositionRepo::new(self.db.clone())
-    }
-
-    pub fn tpsl1_paper_repo(&self) -> Tpsl1PaperTradingRepo {
-        Tpsl1PaperTradingRepo::new(self.db.clone())
-    }
-
-    pub fn tpsl2_rule_repo(&self) -> Tpsl2StrategyRuleRepo {
-        Tpsl2StrategyRuleRepo::new(self.db.clone())
-    }
-
-    pub fn tpsl2_position_repo(&self) -> Tpsl2PositionRepo {
-        Tpsl2PositionRepo::new(self.db.clone())
-    }
-
-    pub fn tpsl2_paper_repo(&self) -> Tpsl2PaperTradingRepo {
-        Tpsl2PaperTradingRepo::new(self.db.clone())
-    }
+    // The old per-strategy `tpsl{1,2}_{rule,position,paper}_repo()` accessors were
+    // removed with the strategy-table merge; callers use `strategy_repo()` (above)
+    // over the unified `strategy_rules`/`strategy_runs`/`strategy_positions`.
 }

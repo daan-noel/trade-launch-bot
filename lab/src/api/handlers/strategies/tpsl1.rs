@@ -1,177 +1,154 @@
-//! Local (analysis-box) `tpsl_sniper_1` handlers — the **local runtime edge** of
-//! the rule family. Shares the rule domain (`tpsl_rules_core`: DTOs + validation +
-//! repo write) with the deploy edge, but carries only the local wiring:
+//! Local (analysis-box) `tpsl_sniper_1` handlers over the **unified**
+//! `strategy_rules` / `strategy_runs` / `strategy_positions` schema — the same
+//! [`StrategyRepo`] + registry the deploy box uses. Carries only the local wiring:
 //!   - CRUD (create/update/delete/get/list) with **no** live-cache reload, **no**
-//!     `emit_rules_changed`, and **no** live-freeze guard — the local box never
-//!     runs a rule, so there's nothing live to keep consistent or freeze.
+//!     `rules_changed` SSE, and **no** live-freeze guard — the local box never runs
+//!     a rule, so there's nothing live to keep consistent or freeze (every field
+//!     stays editable).
 //!   - `simulate` / `cancel_simulate` — the detached backtest over the shared
 //!     decision layer.
-//!   - `paper-result` (read) + `clear_paper-result` (no `is_live` guard).
+//!   - `paper-result` (read) + `clear_paper-result` — read/clear the persisted
+//!     paper runs (authored on the deploy box, restored here via a DB snapshot).
 //!
-//! Live-only concerns (lifecycle activate/pause/stop, matched tokens, positions)
-//! are deploy's and are not served here. Runtime performance counters
+//! Live-only concerns (lifecycle activate/pause/stop, matched tokens, real
+//! positions) are deploy's and are not served here. Runtime performance counters
 //! (open/total/win/loss) are always zero locally — there is no runtime cache — so
 //! the rule list reflects authoring state, not live activity.
 
 use actix_web::{web, HttpResponse, Responder};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use serde_json::{json, Map, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
-    models::{ingest::SseEvent, PaperRunStatus, Position, Tpsl1Rule},
+    models::ingest::SseEvent,
     state::local_state::LocalState,
     state::sim_results::SimOutcome,
     strategies::tpsl_sniper_1::backtest::BacktestTokenResult,
 };
 
-use trading_core::api::handlers::strategies::tpsl_rules_core::{tpsl1 as rules_core, RuleWriteError};
-use rules_core::{CreateRuleRequest, UpdateRuleRequest};
+use trading_core::models::{StrategyPosition, StrategyRule};
+use trading_core::storage::repositories::strategy_repo::StrategyRepo;
+use trading_core::strategies::registry::StrategyImpl;
+use trading_core::strategies::rules::{self, params_to_value, RuleDraft, RuleError};
 
-// ---------------------------------------------------------------------------
-// Response Types
-// ---------------------------------------------------------------------------
+/// The strategy this handler module serves (canonical `strategy_id`).
+const STRATEGY_ID: &str = "tpsl_sniper_1";
+const STRATEGY: StrategyImpl = StrategyImpl::Tpsl1;
 
-#[derive(Serialize)]
-pub struct RuleResponse {
-    pub id: Uuid,
-    pub rule_name: String,
-    pub p_token_initial_buy_sol: Option<f64>,
-    pub p_token_cu_limit: Option<u64>,
-    pub p_token_cu_price: Option<u64>,
-    pub p_token_max_sol_cost: Option<f64>,
-    pub p_token_spendable_sol_in: Option<f64>,
-    pub p_max_concurrent_tokens: Option<u64>,
-    pub p_max_total_tokens: Option<u64>,
-    pub p_token_ix_labels: serde_json::Value,
-    pub trade_mode: String,
-    pub buy_amount: f64,
-    pub p_exit_take_profit: f64,
-    pub p_exit_stop_loss: f64,
-    pub p_exit_trailing_stop_pct: Option<f64>,
-    pub p_exit_time_stop_secs: Option<u64>,
-    pub p_exit_stall_secs: Option<u64>,
-    pub p_exit_liquidity_drop_pct: Option<f64>,
-    pub tolerance_pct: f64,
-    pub is_active: bool,
-    /// Derived lifecycle label. Locally a rule never runs, so this is `Finished`
-    /// for a completed paper run and `Idle` otherwise.
-    pub lifecycle: String,
-    /// Live runtime counters — always 0 on the local box (no runtime cache). Kept
-    /// in the payload so the shape matches the deploy edge's response.
-    pub open_positions: i64,
-    pub total_positions: i64,
-    pub win_count: i64,
-    pub loss_count: i64,
-    pub win_rate: f64,
-    pub avg_pnl_pct: f64,
-    pub total_pnl_sol: f64,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+// Universal (typed-column) request keys — everything else in a body is a
+// strategy-specific param. Mirror the deploy edge so the shared frontend body
+// shape is parsed identically.
+const RULE_NAME: &str = "rule_name";
+const BUY_AMOUNT: &str = "buy_amount";
+const TRADE_MODE: &str = "trade_mode";
+const MAX_CONCURRENT: &str = "p_max_concurrent_tokens";
+const MAX_TOTAL: &str = "p_max_total_tokens";
+
+/// Pull `Some(i64)` from a JSON number, `None` for JSON null.
+fn opt_i64(v: &Value) -> Option<i64> {
+    v.as_i64()
 }
 
-impl RuleResponse {
-    /// Build the response for a rule on the local box, where there is no runtime
-    /// cache: all live counters are 0 and the lifecycle is derived from the rule's
-    /// `is_active` flag + (for paper rules) its latest run status.
-    fn build(r: Tpsl1Rule, paper_status: Option<PaperRunStatus>) -> Self {
-        let lifecycle = if r.trade_mode == "paper" && paper_status == Some(PaperRunStatus::Finished)
-        {
-            "Finished"
-        } else {
-            "Idle"
-        }
-        .to_string();
-        Self {
-            id: r.id,
-            rule_name: r.rule_name,
-            p_token_initial_buy_sol: r.p_token_initial_buy_sol,
-            p_token_cu_limit: r.p_token_cu_limit,
-            p_token_cu_price: r.p_token_cu_price,
-            p_token_max_sol_cost: r.p_token_max_sol_cost,
-            p_token_spendable_sol_in: r.p_token_spendable_sol_in,
-            p_max_concurrent_tokens: r.p_max_concurrent_tokens,
-            p_max_total_tokens: r.p_max_total_tokens,
-            p_token_ix_labels: r.p_token_ix_labels,
-            trade_mode: r.trade_mode,
-            buy_amount: r.buy_amount,
-            p_exit_take_profit: r.p_exit_take_profit,
-            p_exit_stop_loss: r.p_exit_stop_loss,
-            p_exit_trailing_stop_pct: r.p_exit_trailing_stop_pct,
-            p_exit_time_stop_secs: r.p_exit_time_stop_secs,
-            p_exit_stall_secs: r.p_exit_stall_secs,
-            p_exit_liquidity_drop_pct: r.p_exit_liquidity_drop_pct,
-            tolerance_pct: r.tolerance_pct,
-            is_active: r.is_active,
-            lifecycle,
-            open_positions: 0,
-            total_positions: 0,
-            win_count: 0,
-            loss_count: 0,
-            win_rate: 0.0,
-            avg_pnl_pct: 0.0,
-            total_pnl_sol: 0.0,
-            created_at: r.created_at,
-            updated_at: r.updated_at,
+/// Map a [`RuleError`] to its HTTP response.
+fn rule_error(e: RuleError, ctx: &str) -> HttpResponse {
+    match e {
+        RuleError::Invalid(msg) => HttpResponse::BadRequest().json(json!({ "error": msg })),
+        RuleError::Repo(err) => {
+            tracing::error!("Failed to {ctx}: {err}");
+            HttpResponse::InternalServerError().json(json!({"error": format!("Failed to {ctx}")}))
         }
     }
 }
 
-/// Enrich a single rule into a [`RuleResponse`] (one paper-run query for paper
-/// rules, to derive the `Finished` lifecycle).
-async fn rule_response(app_state: &Arc<LocalState>, rule: Tpsl1Rule) -> RuleResponse {
-    let paper_status = if rule.trade_mode == "paper" {
-        app_state
-            .tpsl1_paper_repo()
-            .current_run(rule.id)
-            .await
-            .ok()
-            .flatten()
-            .map(|run| run.status)
-    } else {
-        None
+// ---------------------------------------------------------------------------
+// Response shaping
+// ---------------------------------------------------------------------------
+
+/// Build the flat frontend rule shape (params JSONB merged with the universal
+/// columns), the live runtime counters (always 0 on the local box — no runtime
+/// cache), and a derived lifecycle. `paper_finished` flags a paper rule whose
+/// latest run is `Finished`. The shape matches the deploy edge's `rule_to_json`.
+fn rule_to_json(rule: &StrategyRule, paper_finished: bool) -> Value {
+    let mut obj: Map<String, Value> = match &rule.params {
+        Value::Object(m) => m.clone(),
+        _ => Map::new(),
     };
-    RuleResponse::build(rule, paper_status)
+
+    obj.insert("id".into(), json!(rule.id));
+    obj.insert("strategy_id".into(), json!(rule.strategy_id));
+    obj.insert(RULE_NAME.into(), json!(rule.rule_name));
+    obj.insert(BUY_AMOUNT.into(), json!(rule.buy_amount));
+    obj.insert(TRADE_MODE.into(), json!(rule.trade_mode));
+    obj.insert("is_active".into(), json!(rule.is_active));
+    obj.insert(MAX_CONCURRENT.into(), json!(rule.max_concurrent_tokens));
+    obj.insert(MAX_TOTAL.into(), json!(rule.max_total_tokens));
+    obj.insert("created_at".into(), json!(rule.created_at));
+    obj.insert("updated_at".into(), json!(rule.updated_at));
+
+    // No runtime cache locally → all live counters are zero.
+    obj.insert("open_positions".into(), json!(0));
+    obj.insert("total_positions".into(), json!(0));
+    obj.insert("win_count".into(), json!(0));
+    obj.insert("loss_count".into(), json!(0));
+    obj.insert("win_rate".into(), json!(0.0));
+    obj.insert("avg_pnl_pct".into(), json!(0.0));
+    obj.insert("total_pnl_sol".into(), json!(0.0));
+
+    // Locally a rule never runs, so lifecycle is `Active` if the (snapshot-restored)
+    // flag is set, `Finished` for a completed paper run, else `Idle`.
+    let lifecycle = if rule.is_active {
+        "Active"
+    } else if paper_finished {
+        "Finished"
+    } else {
+        "Idle"
+    };
+    obj.insert("lifecycle".into(), json!(lifecycle));
+
+    Value::Object(obj)
+}
+
+/// True when `rule` is a paper rule whose latest run is `Finished` (one query).
+async fn paper_finished(repo: &StrategyRepo, rule: &StrategyRule) -> bool {
+    if rule.trade_mode != "paper" {
+        return false;
+    }
+    matches!(repo.latest_run(rule.id, "paper").await, Ok(Some(run)) if run.status == "Finished")
 }
 
 // ---------------------------------------------------------------------------
-// Rule Handlers (CRUD) — domain core + local wiring (no cache reload)
+// Rule Handlers (CRUD) — domain core + local wiring (no cache reload / SSE)
 // ---------------------------------------------------------------------------
 
 /// List all TPSL rules.
 pub async fn list_tpsl_rules(app_state: web::Data<Arc<LocalState>>) -> impl Responder {
-    let repo = app_state.tpsl1_rule_repo();
-    match repo.find_all().await {
-        Ok(rules) => {
-            // One query for all latest runs → status map (no N+1).
-            let run_status: std::collections::HashMap<Uuid, PaperRunStatus> = app_state
-                .tpsl1_paper_repo()
-                .find_all_runs()
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|run| (run.rule_id, run.status))
-                .collect();
-            let responses: Vec<RuleResponse> = rules
-                .into_iter()
-                .map(|r| {
-                    let status = if r.trade_mode == "paper" {
-                        run_status.get(&r.id).copied()
-                    } else {
-                        None
-                    };
-                    RuleResponse::build(r, status)
-                })
-                .collect();
-            HttpResponse::Ok().json(responses)
-        }
+    let repo = app_state.strategy_repo();
+    let rules = match repo.find_rules_by_strategy(STRATEGY_ID).await {
+        Ok(r) => r,
         Err(e) => {
             tracing::error!("Failed to list TPSL rules: {e}");
-            HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "Failed to list rules"}))
+            return HttpResponse::InternalServerError()
+                .json(json!({"error": "Failed to list rules"}));
         }
-    }
+    };
+    // One query for the latest paper run per rule → finished-set (no N+1).
+    let finished: std::collections::HashSet<Uuid> = repo
+        .latest_runs_by_rule("paper")
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|run| run.status == "Finished")
+        .filter_map(|run| run.rule_id)
+        .collect();
+    let out: Vec<Value> = rules
+        .iter()
+        .map(|r| rule_to_json(r, finished.contains(&r.id)))
+        .collect();
+    HttpResponse::Ok().json(out)
 }
 
 /// Get a specific TPSL rule.
@@ -179,69 +156,120 @@ pub async fn get_tpsl_rule(
     app_state: web::Data<Arc<LocalState>>,
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
-    let repo = app_state.tpsl1_rule_repo();
+    let repo = app_state.strategy_repo();
     let rule_id = rule_id.into_inner();
-    match repo.find_by_id(rule_id).await {
-        Ok(Some(rule)) => HttpResponse::Ok().json(rule_response(&app_state, rule).await),
-        Ok(None) => HttpResponse::NotFound().json(serde_json::json!({"error": "Rule not found"})),
+    match repo.find_rule(rule_id).await {
+        Ok(Some(rule)) if rule.strategy_id == STRATEGY_ID => {
+            let pf = paper_finished(&repo, &rule).await;
+            HttpResponse::Ok().json(rule_to_json(&rule, pf))
+        }
+        Ok(_) => HttpResponse::NotFound().json(json!({"error": "Rule not found"})),
         Err(e) => {
             tracing::error!("Failed to get TPSL rule {rule_id}: {e}");
-            HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "Failed to get rule"}))
+            HttpResponse::InternalServerError().json(json!({"error": "Failed to get rule"}))
         }
     }
+}
+
+/// Read the [`RuleDraft`] inputs from the flat request body (params parse off the
+/// body; the universal columns are read out explicitly).
+fn draft_from_body(body: &Value) -> Result<RuleDraft, HttpResponse> {
+    let params = STRATEGY
+        .parse_params(body)
+        .map_err(|e| HttpResponse::BadRequest().json(json!({"error": format!("invalid params: {e}")})))?;
+    Ok(RuleDraft {
+        strategy: STRATEGY,
+        rule_name: body.get(RULE_NAME).and_then(Value::as_str).unwrap_or("").to_string(),
+        buy_amount: body.get(BUY_AMOUNT).and_then(Value::as_f64).unwrap_or(0.0),
+        trade_mode: body.get(TRADE_MODE).and_then(Value::as_str).unwrap_or("paper").to_string(),
+        max_concurrent_tokens: body.get(MAX_CONCURRENT).and_then(opt_i64),
+        max_total_tokens: body.get(MAX_TOTAL).and_then(opt_i64),
+        params,
+    })
 }
 
 /// Create a new TPSL rule (local edge: domain write only, no live-cache reload).
 pub async fn create_tpsl_rule(
     app_state: web::Data<Arc<LocalState>>,
-    req: web::Json<CreateRuleRequest>,
+    body: web::Json<Value>,
 ) -> impl Responder {
-    let repo = app_state.tpsl1_rule_repo();
-    match rules_core::create(&repo, &req).await {
-        Ok(rule) => HttpResponse::Created().json(rule_response(&app_state, rule).await),
-        Err(RuleWriteError::Invalid(msg)) => {
-            HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }))
-        }
-        Err(RuleWriteError::Repo(e)) => {
-            tracing::error!("Failed to create TPSL rule: {e}");
-            HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "Failed to create rule"}))
-        }
+    let body = body.into_inner();
+    let draft = match draft_from_body(&body) {
+        Ok(d) => d,
+        Err(resp) => return resp,
+    };
+    let repo = app_state.strategy_repo();
+    match rules::create(&repo, &draft).await {
+        Ok(rule) => HttpResponse::Created().json(rule_to_json(&rule, false)),
+        Err(e) => rule_error(e, "create rule"),
     }
 }
 
-/// Update an existing TPSL rule (local edge: no live-freeze guard, no cache reload).
+/// Update an existing TPSL rule. Local edge: no live-freeze guard (the box never
+/// runs a rule) — present body keys overlay the rule's params, universal columns
+/// update if present.
 pub async fn update_tpsl_rule(
     app_state: web::Data<Arc<LocalState>>,
     rule_id: web::Path<Uuid>,
-    req: web::Json<UpdateRuleRequest>,
+    body: web::Json<Value>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
-    let repo = app_state.tpsl1_rule_repo();
+    let body = body.into_inner();
+    let repo = app_state.strategy_repo();
 
-    let rule = match repo.find_by_id(rule_id).await {
-        Ok(Some(rule)) => rule,
-        Ok(None) => {
-            return HttpResponse::NotFound().json(serde_json::json!({"error": "Rule not found"}));
-        }
+    let mut rule = match repo.find_rule(rule_id).await {
+        Ok(Some(r)) if r.strategy_id == STRATEGY_ID => r,
+        Ok(_) => return HttpResponse::NotFound().json(json!({"error": "Rule not found"})),
         Err(e) => {
             tracing::error!("Failed to get TPSL rule {rule_id}: {e}");
-            return HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "Failed to get rule"}));
+            return HttpResponse::InternalServerError().json(json!({"error": "Failed to get rule"}));
         }
     };
 
-    match rules_core::apply_and_persist(&repo, rule, &req.0).await {
-        Ok((rule, _mode_changed)) => HttpResponse::Ok().json(rule_response(&app_state, rule).await),
-        Err(RuleWriteError::Invalid(msg)) => {
-            HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }))
+    // Merge present body keys onto the existing params, then re-parse (validates
+    // types) and clean back to the canonical params JSONB (drops universal keys).
+    let mut merged: Map<String, Value> = match &rule.params {
+        Value::Object(m) => m.clone(),
+        _ => Map::new(),
+    };
+    if let Value::Object(m) = &body {
+        for (k, v) in m {
+            merged.insert(k.clone(), v.clone());
         }
-        Err(RuleWriteError::Repo(e)) => {
-            tracing::error!("Failed to update TPSL rule {rule_id}: {e}");
-            HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "Failed to update rule"}))
+    }
+    let params = match STRATEGY.parse_params(&Value::Object(merged)) {
+        Ok(p) => p,
+        Err(e) => {
+            return HttpResponse::BadRequest().json(json!({"error": format!("invalid params: {e}")}))
         }
+    };
+    rule.params = params_to_value(&params);
+
+    // Universal columns (apply only the keys present in the body).
+    if let Value::Object(m) = &body {
+        if let Some(name) = m.get(RULE_NAME).and_then(Value::as_str) {
+            rule.rule_name = name.to_string();
+        }
+        if let Some(amount) = m.get(BUY_AMOUNT).and_then(Value::as_f64) {
+            rule.buy_amount = amount;
+        }
+        if let Some(mode) = m.get(TRADE_MODE).and_then(Value::as_str) {
+            rule.trade_mode = mode.to_string();
+        }
+        if let Some(v) = m.get(MAX_CONCURRENT) {
+            rule.max_concurrent_tokens = opt_i64(v);
+        }
+        if let Some(v) = m.get(MAX_TOTAL) {
+            rule.max_total_tokens = opt_i64(v);
+        }
+    }
+
+    match rules::save(&repo, &rule).await {
+        Ok(()) => {
+            let pf = paper_finished(&repo, &rule).await;
+            HttpResponse::Ok().json(rule_to_json(&rule, pf))
+        }
+        Err(e) => rule_error(e, "update rule"),
     }
 }
 
@@ -251,16 +279,12 @@ pub async fn delete_tpsl_rule(
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
-    let repo = app_state.tpsl1_rule_repo();
-    match rules_core::delete(&repo, rule_id).await {
+    let repo = app_state.strategy_repo();
+    match repo.delete_rule(rule_id).await {
         Ok(()) => HttpResponse::NoContent().finish(),
-        Err(RuleWriteError::Invalid(msg)) => {
-            HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }))
-        }
-        Err(RuleWriteError::Repo(e)) => {
+        Err(e) => {
             tracing::error!("Failed to delete TPSL rule {rule_id}: {e}");
-            HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "Failed to delete rule"}))
+            HttpResponse::InternalServerError().json(json!({"error": "Failed to delete rule"}))
         }
     }
 }
@@ -400,13 +424,13 @@ pub async fn cancel_simulate_tpsl_rule(
 }
 
 // ---------------------------------------------------------------------------
-// Paper-test result
+// Paper-test result (over the unified strategy_runs / strategy_positions)
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
 pub struct PaperRunResponse {
     pub run_seq: i64,
-    /// "Running" | "Finished" | "Stopped".
+    /// "Running" | "Finished" | "Stopped" | "Cancelled".
     pub status: String,
     pub max_total_tokens: Option<u64>,
     pub started_at: DateTime<Utc>,
@@ -433,27 +457,23 @@ pub async fn paper_result_tpsl_rule(
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
-    let rule_repo = app_state.tpsl1_rule_repo();
-    let paper_repo = app_state.tpsl1_paper_repo();
+    let repo = app_state.strategy_repo();
 
-    let rule = match rule_repo.find_by_id(rule_id).await {
-        Ok(Some(r)) => r,
-        Ok(None) => {
-            return HttpResponse::NotFound().json(serde_json::json!({"error": "Rule not found"}));
-        }
+    let rule = match repo.find_rule(rule_id).await {
+        Ok(Some(r)) if r.strategy_id == STRATEGY_ID => r,
+        Ok(_) => return HttpResponse::NotFound().json(json!({"error": "Rule not found"})),
         Err(e) => {
             tracing::error!("Failed to get rule {rule_id}: {e}");
-            return HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "Failed to get rule"}));
+            return HttpResponse::InternalServerError().json(json!({"error": "Failed to get rule"}));
         }
     };
 
-    let run = match paper_repo.current_run(rule_id).await {
+    let run = match repo.latest_run(rule_id, "paper").await {
         Ok(run) => run,
         Err(e) => {
             tracing::error!("Failed to load paper run for {rule_id}: {e}");
             return HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "Failed to load paper run"}));
+                .json(json!({"error": "Failed to load paper run"}));
         }
     };
 
@@ -465,12 +485,15 @@ pub async fn paper_result_tpsl_rule(
         });
     };
 
-    let positions = match paper_repo.find_by_run(run.id, PAPER_RESULT_MAX_TOKENS, 0).await {
+    let positions = match repo
+        .find_positions_by_run_paged(run.id, PAPER_RESULT_MAX_TOKENS, 0)
+        .await
+    {
         Ok(p) => p,
         Err(e) => {
             tracing::error!("Failed to load paper positions for run {}: {e}", run.id);
             return HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "Failed to load paper positions"}));
+                .json(json!({"error": "Failed to load paper positions"}));
         }
     };
 
@@ -481,7 +504,7 @@ pub async fn paper_result_tpsl_rule(
         .await
         .unwrap_or_else(|e| {
             tracing::warn!("Failed to load token symbols for paper result: {e}");
-            std::collections::HashMap::new()
+            HashMap::new()
         });
 
     let tokens: Vec<BacktestTokenResult> = positions
@@ -493,8 +516,8 @@ pub async fn paper_result_tpsl_rule(
         rule_name: rule.rule_name,
         run: Some(PaperRunResponse {
             run_seq: run.run_seq,
-            status: run.status.as_str().to_string(),
-            max_total_tokens: run.max_total_tokens,
+            status: run.status,
+            max_total_tokens: run.max_total_tokens.map(|v| v as u64),
             started_at: run.started_at,
             finished_at: run.finished_at,
         }),
@@ -502,9 +525,8 @@ pub async fn paper_result_tpsl_rule(
     })
 }
 
-/// Clear a paper rule's recorded run history (runs + positions). Paper-only.
-/// Unlike the deploy edge there is **no** live-cache guard: the local box never
-/// runs a rule, so a clear always proceeds.
+/// Clear a paper rule's recorded run history (runs + positions, via cascade).
+/// Paper-only. The local box never runs a rule, so a clear always proceeds.
 ///
 /// DELETE /api/strategies/tpsl1/rules/{rule_id}/paper-result
 pub async fn clear_paper_result_tpsl_rule(
@@ -512,24 +534,22 @@ pub async fn clear_paper_result_tpsl_rule(
     rule_id: web::Path<Uuid>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
-    let rule = match app_state.tpsl1_rule_repo().find_by_id(rule_id).await {
-        Ok(Some(r)) => r,
-        Ok(None) => {
-            return HttpResponse::NotFound().json(serde_json::json!({"error": "Rule not found"}));
-        }
+    let repo = app_state.strategy_repo();
+    let rule = match repo.find_rule(rule_id).await {
+        Ok(Some(r)) if r.strategy_id == STRATEGY_ID => r,
+        Ok(_) => return HttpResponse::NotFound().json(json!({"error": "Rule not found"})),
         Err(e) => {
             tracing::error!("Failed to get rule {rule_id}: {e}");
-            return HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "Failed to get rule"}));
+            return HttpResponse::InternalServerError().json(json!({"error": "Failed to get rule"}));
         }
     };
 
     if rule.trade_mode != "paper" {
         return HttpResponse::BadRequest()
-            .json(serde_json::json!({"error": "Only paper rules have results to clear"}));
+            .json(json!({"error": "Only paper rules have results to clear"}));
     }
 
-    match app_state.tpsl1_paper_repo().clear_runs(rule_id).await {
+    match repo.delete_runs_by_rule(rule_id, "paper").await {
         Ok(n) => {
             tracing::info!("Cleared {n} paper run(s) for rule {rule_id}");
             HttpResponse::NoContent().finish()
@@ -537,21 +557,35 @@ pub async fn clear_paper_result_tpsl_rule(
         Err(e) => {
             tracing::error!("Failed to clear paper results for {rule_id}: {e}");
             HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "Failed to clear paper results"}))
+                .json(json!({"error": "Failed to clear paper results"}))
         }
     }
 }
 
-/// Map one recorded paper position into the simulation-shaped result the shared
-/// frontend card/table renders. Pure (no DB) so it stays unit-testable.
+/// The exit reason a closed position carries, or `None` while still open. A
+/// closed row with no stored reason (legacy) falls back to the realized-PnL sign.
+fn exit_reason_or_derived(p: &StrategyPosition) -> Option<String> {
+    p.exit_price?; // None → still open
+    if let Some(r) = &p.exit_reason {
+        return Some(r.clone());
+    }
+    Some(
+        match p.pnl_pct() {
+            Some(pct) if pct < 0.0 => "StopLoss",
+            _ => "TakeProfit",
+        }
+        .to_string(),
+    )
+}
+
+/// Map one recorded paper [`StrategyPosition`] into the simulation-shaped result
+/// the shared frontend card/table renders. Pure (no DB) so it stays unit-testable.
 pub(crate) fn paper_position_to_sim_result(
-    p: Position,
-    symbols: &std::collections::HashMap<String, String>,
+    p: StrategyPosition,
+    symbols: &HashMap<String, String>,
 ) -> BacktestTokenResult {
-    let pnl_percent = p.pnl_percentage();
-    let exit_reason = p
-        .exit_reason_or_derived()
-        .unwrap_or_else(|| "Open".to_string());
+    let pnl_percent = p.pnl_pct();
+    let exit_reason = exit_reason_or_derived(&p).unwrap_or_else(|| "Open".to_string());
     let pnl_sol = pnl_percent.and_then(|pct| p.entry_token_amount.map(|a| a * (pct / 100.0)));
     let holding_secs = match (p.entry_time, p.exit_time) {
         (Some(e), Some(x)) => Some((x - e).num_seconds()),
@@ -562,16 +596,19 @@ pub(crate) fn paper_position_to_sim_result(
         .map(|x| x.max(p.entry_price.unwrap_or(0.0)))
         .or(p.entry_price)
         .unwrap_or(0.0);
+    let symbol = symbols.get(&p.mint).cloned().unwrap_or_default();
+    let entry_tx = p.entry_tx_sigs().first().cloned().unwrap_or_default();
+    let exit_tx = p.exit_tx_sigs().last().cloned();
     BacktestTokenResult {
-        symbol: symbols.get(&p.mint).cloned().unwrap_or_default(),
+        symbol,
         mint: p.mint,
         entry_price: p.entry_price.unwrap_or(0.0),
         ath_price,
         entry_token_amount: p.entry_token_amount.unwrap_or(0.0),
-        entry_tx: p.entry_tx_signatures.first().cloned().unwrap_or_default(),
+        entry_tx,
         entry_time: p.entry_time.unwrap_or(p.created_at),
         exit_price: p.exit_price,
-        exit_tx: p.exit_tx_signatures.last().cloned(),
+        exit_tx,
         exit_time: p.exit_time,
         holding_secs,
         pnl_percent,
@@ -584,15 +621,27 @@ pub(crate) fn paper_position_to_sim_result(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
-    fn closed(entry: f64, exit: f64) -> Position {
-        let mut p = Position::new("mint".into(), "wallet".into(), "TPSL1".into(), Uuid::new_v4());
+    /// A closed paper position with no stored exit reason (legacy row) — entry/exit
+    /// fills set directly so the derived-reason fallback is exercised.
+    fn closed(entry: f64, exit: f64) -> StrategyPosition {
+        let mut p = StrategyPosition::new(
+            Uuid::new_v4(),
+            STRATEGY_ID.to_string(),
+            Uuid::new_v4(),
+            "paper".to_string(),
+            "mint".to_string(),
+            "wallet".to_string(),
+        );
         p.entry_price = Some(entry);
-        p.entry_tx_signatures = vec!["etx".into()];
+        p.entry_tx_signatures = json!(["etx"]);
         p.entry_token_amount = Some(0.05);
         p.entry_time = Some(Utc::now());
-        p.close(exit, vec!["xtx".into()], 0.05, Utc::now());
+        p.exit_price = Some(exit);
+        p.exit_sol = Some(0.05);
+        p.exit_tx_signatures = json!(["xtx"]);
+        p.exit_time = Some(Utc::now());
+        p.status = "End".to_string();
         p
     }
 
@@ -614,9 +663,16 @@ mod tests {
 
     #[test]
     fn open_position_reads_as_open() {
-        let mut p = Position::new("mint".into(), "wallet".into(), "TPSL1".into(), Uuid::new_v4());
+        let mut p = StrategyPosition::new(
+            Uuid::new_v4(),
+            STRATEGY_ID.to_string(),
+            Uuid::new_v4(),
+            "paper".to_string(),
+            "mint".to_string(),
+            "wallet".to_string(),
+        );
         p.entry_price = Some(1.0);
-        p.entry_tx_signatures = vec!["etx".into()];
+        p.entry_tx_signatures = json!(["etx"]);
         p.entry_token_amount = Some(0.05);
         p.entry_time = Some(Utc::now());
         let r = paper_position_to_sim_result(p, &HashMap::new());

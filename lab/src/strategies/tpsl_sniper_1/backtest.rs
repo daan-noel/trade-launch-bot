@@ -11,8 +11,8 @@ use crate::models::trade::Trade;
 use crate::models::Token;
 use crate::state::local_state::LocalState;
 use crate::strategies::sim_progress::SimProgress;
-use crate::storage::repositories::tpsl1_strategy_rule_repo::Tpsl1StrategyRuleRepo;
 use crate::storage::repositories::token_repo::TokenRepo;
+use trading_core::strategies::registry::tpsl1_decision_rule;
 use crate::storage::repositories::trade_repo::TradeRepo;
 
 /// Candidate mints fetched per batched `trades` query. One round-trip pulls a
@@ -111,13 +111,19 @@ pub async fn run_backtest(
         .await
         .map_err(|_| anyhow!("backtest concurrency semaphore closed"))?;
 
-    let rule_repo = Tpsl1StrategyRuleRepo::new(app_state.db.clone());
-
-    let rule = rule_repo
-        .find_by_id(rule_id)
+    // Load the rule from the unified `strategy_rules` table and rebuild the
+    // `Tpsl1Rule` the decision layer consumes (params JSONB → gates + universal
+    // columns). A rule_id that resolves to a different strategy is "not found" for
+    // this tpsl1 endpoint.
+    let strategy_rule = app_state
+        .strategy_repo()
+        .find_rule(rule_id)
         .await
         .map_err(|e| anyhow!("DB error fetching rule: {e}"))?
+        .filter(|r| r.strategy_id == "tpsl_sniper_1")
         .ok_or_else(|| anyhow!("Rule not found"))?;
+    let rule =
+        tpsl1_decision_rule(&strategy_rule).map_err(|e| anyhow!("invalid tpsl1 rule params: {e}"))?;
 
     let max_concurrent_tokens = none_if_zero_u64(rule.p_max_concurrent_tokens).map(|v| v as usize);
     let max_total_tokens = none_if_zero_u64(rule.p_max_total_tokens).map(|v| v as usize);

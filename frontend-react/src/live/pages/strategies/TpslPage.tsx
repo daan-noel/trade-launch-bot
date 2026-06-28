@@ -24,8 +24,8 @@ import {
   formFromRule as formFromRule2,
   RuleFormModal as RuleFormModal2,
 } from 'components/tpsl2/RuleFormModal';
-import { ruleColumns as ruleCols1, RuleRowProvider } from 'components/tpsl1/ruleColumns';
-import { ruleColumns as ruleCols2 } from 'components/tpsl2/ruleColumns';
+import { ruleColumns as ruleCols1, RuleRowProvider as RuleRowProvider1 } from 'components/tpsl1/ruleColumns';
+import { ruleColumns as ruleCols2, RuleRowProvider as RuleRowProvider2 } from 'components/tpsl2/ruleColumns';
 import {
   activateTpsl1Rule,
   activateTpsl2Rule,
@@ -327,7 +327,7 @@ function inspectFromPosition(r: RulePositionRecord): InspectTarget {
 // still requires the field.
 const NO_ANALYSIS = {
   simLoading: false, matchedLoading: false, paperLoading: false,
-  matchedActiveId: null, paperActiveId: null,
+  simActiveId: null, matchedActiveId: null, paperActiveId: null,
   onSimulate: () => {}, onMatched: () => {}, onPaperResult: () => {},
 };
 
@@ -631,6 +631,11 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
 
   const label = strategy === 'tpsl1' ? 'TPSL1' : 'TPSL2';
   const FormModal = is1 ? RuleFormModal1 : RuleFormModal2;
+  // tpsl1/tpsl2 ruleColumns each define their OWN RuleRowContext, and a row's
+  // RunControls cell reads its own strategy's context — so the page must provide
+  // the provider that matches the columns being rendered, else the tpsl2 control
+  // cell renders outside its provider and throws.
+  const RuleRowProvider = is1 ? RuleRowProvider1 : RuleRowProvider2;
 
   return (
     <div>

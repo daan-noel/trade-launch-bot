@@ -12,10 +12,9 @@ use trading_core::config::constants::{
 };
 use trading_core::models::{token::Token, token_info::TokenInfo, trade::Trade};
 use trading_core::storage::repositories::{
+    strategy_repo::StrategyRepo,
     token_info_repo::TokenInfoRepo,
     token_repo::TokenRepo,
-    tpsl1_position_repo::Tpsl1PositionRepo,
-    tpsl2_position_repo::Tpsl2PositionRepo,
     trade_repo::{SeedAgg, TradeRepo},
 };
 
@@ -54,16 +53,11 @@ pub async fn seed_token_cache(pool: &PgPool, token_cache: Arc<TokenCache>) -> an
     // 1b. Mints with an unsettled position must always be tracked — the live path
     // can't re-track an existing mint, so an open exit on a token older than the
     // window would otherwise strand. Pull in any that the window missed.
-    let mut held_set: HashSet<String> = Tpsl1PositionRepo::new(pool.clone())
-        .distinct_unsettled_mints()
+    let held_set: HashSet<String> = StrategyRepo::new(pool.clone())
+        .distinct_unsettled_real_mints()
         .await?
         .into_iter()
         .collect();
-    held_set.extend(
-        Tpsl2PositionRepo::new(pool.clone())
-            .distinct_unsettled_mints()
-            .await?,
-    );
     let missing_held: Vec<String> = held_set
         .iter()
         .filter(|m| !token_by_mint.contains_key(*m))
@@ -513,61 +507,5 @@ mod tests {
                 .execute(&pool)
                 .await;
         }
-    }
-
-    /// Position safety net: `distinct_unsettled_mints` surfaces a mint with a
-    /// Holding position (so the seed always tracks it, even outside the window) and
-    /// omits one whose only position has settled (`End`).
-    #[tokio::test]
-    #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
-    async fn distinct_unsettled_mints_returns_open_omits_settled() {
-        let Some(pool) = test_pool().await else { return };
-        let rule_id = Uuid::new_v4();
-        sqlx::query(
-            "INSERT INTO tpsl1_strategy_rules (id, rule_name, buy_amount, p_exit_take_profit, p_exit_stop_loss)
-             VALUES ($1, $2, 0.1, 1.5, 0.5)",
-        )
-        .bind(rule_id)
-        .bind(uniq("rule-"))
-        .execute(&pool)
-        .await
-        .expect("insert rule");
-
-        let open_mint = uniq("MINT-open-");
-        let settled_mint = uniq("MINT-settled-");
-        for (mint, status) in [(&open_mint, "Holding"), (&settled_mint, "End")] {
-            sqlx::query(
-                "INSERT INTO tpsl1_real_positions
-                   (mint, wallet, entry_price, entry_token_amount, entry_tx_signatures, status, strategy, rule_id)
-                 VALUES ($1, $2, 0.001, 1000.0, jsonb_build_array($3::text), $4, 'tpsl1', $5)",
-            )
-            .bind(mint)
-            .bind(uniq("W-pos-"))
-            .bind(uniq("entry-sig-"))
-            .bind(status)
-            .bind(rule_id)
-            .execute(&pool)
-            .await
-            .expect("insert position");
-        }
-
-        let mints: HashSet<String> = Tpsl1PositionRepo::new(pool.clone())
-            .distinct_unsettled_mints()
-            .await
-            .expect("query")
-            .into_iter()
-            .collect();
-
-        assert!(mints.contains(&open_mint), "Holding mint is unsettled");
-        assert!(!mints.contains(&settled_mint), "End mint is settled");
-
-        let _ = sqlx::query("DELETE FROM tpsl1_real_positions WHERE rule_id = $1")
-            .bind(rule_id)
-            .execute(&pool)
-            .await;
-        let _ = sqlx::query("DELETE FROM tpsl1_strategy_rules WHERE id = $1")
-            .bind(rule_id)
-            .execute(&pool)
-            .await;
     }
 }

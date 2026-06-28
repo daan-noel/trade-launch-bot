@@ -20,9 +20,7 @@ use std::collections::HashSet;
 
 use tracing::{info, warn};
 
-use trading_core::storage::repositories::{
-    tpsl1_position_repo::Tpsl1PositionRepo, tpsl2_position_repo::Tpsl2PositionRepo,
-};
+use trading_core::storage::repositories::strategy_repo::StrategyRepo;
 use crate::trader::{PumpFunTrader, WalletHolding};
 
 /// The native wrapped-SOL mint. The trade paths wrap/unwrap WSOL per AMM swap and
@@ -55,29 +53,23 @@ fn unattributed<'a>(
 }
 
 /// List the wallet's on-chain token accounts and reconcile them against every
-/// open (non-`End`) position across both strategy clones. Logs a summary, flags
-/// each unattributable balance for review, and returns them. Best-effort: a failed
-/// RPC/DB read returns an `Err` the caller logs — the sweep is never fatal.
+/// open (non-`End`) real position. Logs a summary, flags each unattributable
+/// balance for review, and returns them. Best-effort: a failed RPC/DB read returns
+/// an `Err` the caller logs — the sweep is never fatal.
 pub async fn reconcile_wallet_holdings(
     trader: &PumpFunTrader,
-    tpsl1_repo: &Tpsl1PositionRepo,
-    tpsl2_repo: &Tpsl2PositionRepo,
+    strategy_repo: &StrategyRepo,
 ) -> anyhow::Result<Vec<UnattributedHolding>> {
     // On-chain ground truth: every non-zero token account the wallet holds.
     let holdings = trader.get_all_token_accounts().await?;
 
-    // The set of mints any open position could own tokens for, across BOTH clones
-    // — a single-clone view would mis-flag the other clone's bags as orphans.
-    // `distinct_unsettled_mints` covers Holding / Arming / BuySubmitted /
-    // ExitPending / ExitFailed (the last can still hold a bag whose sell failed),
-    // i.e. exactly the states where tokens may legitimately sit in the wallet.
-    let mut tracked: HashSet<String> = HashSet::new();
-    for m in tpsl1_repo.distinct_unsettled_mints().await? {
-        tracked.insert(m);
-    }
-    for m in tpsl2_repo.distinct_unsettled_mints().await? {
-        tracked.insert(m);
-    }
+    // The set of mints any open position could own tokens for, across ALL
+    // strategies. `distinct_unsettled_real_mints` covers Holding / Arming /
+    // BuySubmitted / ExitPending / ExitFailed (the last can still hold a bag whose
+    // sell failed), i.e. exactly the states where tokens may legitimately sit in
+    // the wallet. The unified `strategy_positions` table makes this one query.
+    let tracked: HashSet<String> =
+        strategy_repo.distinct_unsettled_real_mints().await?.into_iter().collect();
 
     let flagged: Vec<UnattributedHolding> = unattributed(&holdings, &tracked)
         .into_iter()

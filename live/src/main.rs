@@ -487,15 +487,11 @@ async fn main() -> anyhow::Result<()> {
     // boot critical path so its RPC scan never delays ingest/HTTP startup.
     {
         let trader = trader.clone();
-        let tpsl1_repo = trading_core::storage::repositories::tpsl1_position_repo::Tpsl1PositionRepo::new(
-            db.clone(),
-        );
-        let tpsl2_repo = trading_core::storage::repositories::tpsl2_position_repo::Tpsl2PositionRepo::new(
-            db.clone(),
-        );
+        let strategy_repo =
+            trading_core::storage::repositories::strategy_repo::StrategyRepo::new(db.clone());
         tokio::spawn(async move {
             if let Err(e) = services::wallet_reconcile::reconcile_wallet_holdings(
-                &trader, &tpsl1_repo, &tpsl2_repo,
+                &trader, &strategy_repo,
             )
             .await
             {
@@ -603,6 +599,24 @@ async fn main() -> anyhow::Result<()> {
     let strategy_rx = ingest_result.strategy_rx;
     let consumer_task = ingest_result.consumer_task;
     let db_writer_task = ingest_result.db_writer_task;
+    let ingest_handle = ingest_result.ingest_handle;
+
+    // Bridge the operator live-mode toggle to the ingest transport. The host
+    // `live_tx` (flipped by `PUT /api/system/live`) and the ingest crate's own
+    // internal live gate are *separate* watch channels; `start()` only seeds the
+    // transport with the boot value, so without this forwarder a runtime toggle
+    // never reaches the gRPC stream — it stays paused (or running) regardless of
+    // the UI. Re-applies the current value first, then mirrors every change.
+    {
+        let ingest_handle = ingest_handle.clone();
+        let mut live_rx = live_tx.subscribe();
+        tokio::spawn(async move {
+            ingest_handle.set_live(*live_rx.borrow_and_update());
+            while live_rx.changed().await.is_ok() {
+                ingest_handle.set_live(*live_rx.borrow_and_update());
+            }
+        });
+    }
 
     // Bound the in-memory token cache: evict mints that have gone quiet beyond the
     // activity window and hold no open position, so the cache doesn't grow one

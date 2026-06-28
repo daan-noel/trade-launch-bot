@@ -776,6 +776,50 @@ impl StrategyRepo {
         Ok(rows.into_iter().map(StrategyPosition::from).collect())
     }
 
+    /// Distinct mints with an unsettled **real** position — every mint the wallet
+    /// could legitimately hold a bag for. Covers `Holding`/`Arming`/`BuySubmitted`/
+    /// `ExitPending`/`ExitFailed` (the last can still hold a bag whose sell failed),
+    /// across all strategies. Backs the boot wallet-reconcile sweep. Positive `IN`
+    /// over the unsettled statuses so the predicate stays index-servable.
+    pub async fn distinct_unsettled_real_mints(&self) -> anyhow::Result<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT DISTINCT mint FROM strategy_positions \
+             WHERE mode = 'real' \
+               AND status IN ('Holding', 'Arming', 'BuySubmitted', 'ExitPending', 'ExitFailed')",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(m,)| m).collect())
+    }
+
+    /// The latest run per rule for a given `mode` (one row per `rule_id`, highest
+    /// `run_seq`). Backs the lab rule-list enrichment (derive a paper rule's
+    /// `Finished`/`Idle` lifecycle in one query, no N+1). `DISTINCT ON` keyed by
+    /// `rule_id` after ordering by `run_seq DESC`.
+    pub async fn latest_runs_by_rule(&self, mode: &str) -> anyhow::Result<Vec<StrategyRun>> {
+        let rows = sqlx::query_as::<_, StrategyRunDbRow>(&format!(
+            "SELECT DISTINCT ON (rule_id) {RUN_COLS} FROM strategy_runs \
+             WHERE mode = $1 AND rule_id IS NOT NULL \
+             ORDER BY rule_id, run_seq DESC"
+        ))
+        .bind(mode)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(StrategyRun::from).collect())
+    }
+
+    /// Delete every run (and, via `ON DELETE CASCADE`, its positions/metrics) for a
+    /// rule in a given `mode`. Backs the lab "clear paper results" action. Returns
+    /// the number of runs removed.
+    pub async fn delete_runs_by_rule(&self, rule_id: Uuid, mode: &str) -> anyhow::Result<u64> {
+        let res = sqlx::query("DELETE FROM strategy_runs WHERE rule_id = $1 AND mode = $2")
+            .bind(rule_id)
+            .bind(mode)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected())
+    }
+
     pub async fn delete_position(&self, id: Uuid) -> anyhow::Result<()> {
         sqlx::query("DELETE FROM strategy_positions WHERE id = $1")
             .bind(id)
