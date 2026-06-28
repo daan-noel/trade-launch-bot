@@ -7,12 +7,14 @@ use crate::api::handlers::system::SseFrame;
 use crate::models::ingest::SseEvent;
 use crate::storage::repositories::settings_repo::AppSettings;
 use crate::storage::repositories::{
-    creation_stats_repo::CreationStatsRepo,
-    settings_repo::SettingsRepo, token_repo::TokenRepo,
-    trade_repo::TradeRepo, tpsl1_paper_trading_repo::Tpsl1PaperTradingRepo,
+    creation_stats_repo::CreationStatsRepo, raw_tx_repo::RawTxRepo,
+    settings_repo::SettingsRepo, strategy_repo::StrategyRepo, token_repo::TokenRepo,
+    token_sync_state_repo::TokenSyncStateRepo, trade_repo::TradeRepo,
+    tpsl1_paper_trading_repo::Tpsl1PaperTradingRepo,
     tpsl1_position_repo::Tpsl1PositionRepo, tpsl1_strategy_rule_repo::Tpsl1StrategyRuleRepo,
     tpsl2_paper_trading_repo::Tpsl2PaperTradingRepo, tpsl2_position_repo::Tpsl2PositionRepo,
-    tpsl2_strategy_rule_repo::Tpsl2StrategyRuleRepo, wallet_profile_repo::WalletProfileRepo,
+    tpsl2_strategy_rule_repo::Tpsl2StrategyRuleRepo, wallet_dict_repo::WalletDictRepo,
+    wallet_profile_repo::WalletProfileRepo,
     wallet_profile_tag_repo::WalletProfileTagRepo, wallet_repo::WalletRepo,
 };
 
@@ -123,6 +125,37 @@ impl CoreState {
 
     pub fn trade_repo(&self) -> TradeRepo {
         TradeRepo::new(self.db.clone())
+    }
+
+    // --- New (live/lab remake) data-layer repos -------------------------------
+    // Unified strategy domain (strategy_rules/runs/run_metrics/positions),
+    // per-venue sync watermarks, the raw_txs source feed, and the trades
+    // wallet-interning dictionary. The old per-strategy tpsl accessors below
+    // remain until Phase 2/3 rewires their consumers.
+
+    /// Unified strategy repo spanning `strategy_rules` / `strategy_runs` /
+    /// `strategy_run_metrics` / `strategy_positions` (replaces the per-strategy
+    /// tpsl1/tpsl2 rule/position/paper repos as consumers migrate in Phase 2/3).
+    pub fn strategy_repo(&self) -> StrategyRepo {
+        StrategyRepo::new(self.db.clone())
+    }
+
+    /// Per-`(mint, venue)` ingest watermarks (`token_sync_state`) — replaces the
+    /// old `tokens_info.last_synced_*` columns.
+    pub fn token_sync_state_repo(&self) -> TokenSyncStateRepo {
+        TokenSyncStateRepo::new(self.db.clone())
+    }
+
+    /// Source-of-truth raw transaction feed (`raw_txs`, BYTEA payloads).
+    pub fn raw_tx_repo(&self) -> RawTxRepo {
+        RawTxRepo::new(self.db.clone())
+    }
+
+    /// Wallet-address interning dictionary (`wallet_dict`) backing the trades
+    /// `wallet_id` column. Hot-path writes go through this on the `hot` pool;
+    /// exposed here for read/resolve on the api pool.
+    pub fn wallet_dict_repo(&self) -> WalletDictRepo {
+        WalletDictRepo::new(self.db.clone())
     }
 
     pub fn settings_repo(&self) -> SettingsRepo {

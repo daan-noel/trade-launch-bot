@@ -77,8 +77,8 @@ Stay in the owning crate (`trading_core` / `pump-trader` / `ingest-laserstream` 
 
 ## Data-scale guardrails
 
-- Bound every query — paginate/time-window/stream. Never `SELECT *` the full `trades`/`raw_transactions`.
-- New high-volume tables follow the `raw_transactions` partition+retention pattern (`maintenance.rs`).
+- Bound every query — paginate/time-window/stream. Never `SELECT *` the full `trades`/`raw_txs`.
+- New high-volume tables are **TimescaleDB hypertables** with declarative `add_compression_policy` + `add_retention_policy` (defined in `0001_init.sql`); continuous aggregates are set up at boot by `trading_core::storage::timescale`. The old hand-rolled `maintenance.rs` partition loop is gone.
 
 ## Deployed server (EC2: 2vCPU / 4GB RAM — IO-bound, RAM-constrained)
 

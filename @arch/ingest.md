@@ -26,7 +26,6 @@ Channels: `update_tx` cap 4096 · `db_tx` cap 16384 · `strategy_tx` cap 512 · 
 | `adapter_rpc.rs` | RPC result → protobuf (inverse of `adapter.rs`; used by token_sync) |
 | `pipeline.rs` | Hot path: decode → filter → TokenCache update → fan-out to DB/strategy/SSE. Pings `TradeSignals` mint lane after cache update |
 | `db_writer.rs` | Batches (256 ops / 25ms), dedups, persists; stamps `IngestHeartbeat` each flush; signals `TradeSignals` per `(wallet,mint)` |
-| `maintenance.rs` | Every 6h: ensure today+2 future daily partitions, drop everything past `KEEP_DAYS` for `raw_transactions` + `trades` |
 | `mod.rs` | re-exports + `proto` |
 
 ### `DbWriteOp` variants

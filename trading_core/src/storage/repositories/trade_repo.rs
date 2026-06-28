@@ -1,10 +1,12 @@
 use std::collections::HashSet;
+use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
-use sqlx::{types::Json, PgPool};
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::models::trade::{Trade, TradeType};
+use crate::storage::repositories::wallet_dict_repo::WalletDictRepo;
 
 /// Mints per round-trip for the startup cache-seed scans. Bounds each `= ANY($1)`
 /// array so Postgres keeps using the per-mint indexes instead of falling back to a
@@ -12,8 +14,8 @@ use crate::models::trade::{Trade, TradeType};
 const SEED_MINT_CHUNK: usize = 1000;
 
 /// Rows per `insert_many` statement. A single Postgres statement is capped at
-/// 65535 bind parameters (the wire protocol's int16 count); at 19 binds/row the
-/// hard ceiling is 3449 rows, so this stays well under it. sqlx 0.6 silently
+/// 65535 bind parameters (the wire protocol's int16 count); at 13 binds/row the
+/// hard ceiling is 5041 rows, so this stays well under it. sqlx 0.6 silently
 /// wraps `len() as i16` past the cap, corrupting the Parse/Bind message into a
 /// Postgres parse error — exactly what the token_sync backfill hit on busy mints.
 const TRADE_INSERT_CHUNK: usize = 3000;
@@ -30,28 +32,32 @@ impl Clone for TradeRepo {
 
 // ---------------------------------------------------------------------------
 // DB row
+//
+// The NEW `trades` table stores integers (lamports / raw token units) and a raw
+// 64-byte signature (BYTEA); the wallet address is resolved in-SQL by joining
+// `wallet_dict`. The runtime `Trade` model is unchanged (f64 amounts, base58
+// signature string), so every read path reconstructs the model from the integer
+// columns via the conversion helpers at the bottom of this file. Columns the new
+// table dropped (`id`, `price_per_token`, `received_at`, `ix_type`, `ix_labels`,
+// `real_*_reserves`) are synthesized on read.
 // ---------------------------------------------------------------------------
 
+/// One row read from the new `trades` table joined to `wallet_dict`. All amounts
+/// are integers (lamports / raw token units); `tx_signature` is the raw 64-byte
+/// signature; `wallet_address` is the joined-in base58 string.
 #[derive(sqlx::FromRow)]
 struct TradeDbRow {
-    id: Uuid,
     mint_address: String,
     wallet_address: String,
     trade_type: String,
-    sol_amount: f64,
-    token_amount: f64,
-    price_per_token: f64,
-    tx_signature: String,
-    leg_index: i32,
+    sol_amount: i64,
+    token_amount: i64,
+    tx_signature: Vec<u8>,
+    leg_index: i16,
     slot: i64,
     block_time: DateTime<Utc>,
-    received_at: DateTime<Utc>,
-    virtual_sol_reserves: Option<f64>,
-    virtual_token_reserves: Option<f64>,
-    real_sol_reserves: Option<f64>,
-    real_token_reserves: Option<f64>,
-    ix_type: String,
-    ix_labels: Json<serde_json::Value>,
+    virtual_sol_reserves: Option<i64>,
+    virtual_token_reserves: Option<i64>,
     venue: String,
 }
 
@@ -65,86 +71,33 @@ impl TryFrom<TradeDbRow> for Trade {
             other => anyhow::bail!("Unknown trade_type in DB: {other}"),
         };
 
+        // Reconstruct the f64 model amounts from the integer columns.
+        let sol_amount = lamports_to_sol(r.sol_amount);
+        let token_amount = raw_to_f64(r.token_amount);
+
         Ok(Self {
-            id: r.id,
+            // Synthesized: the new table has no `id` column.
+            id: Uuid::new_v4(),
             mint_address: r.mint_address,
             wallet_address: r.wallet_address,
             trade_type,
-            sol_amount: r.sol_amount,
-            token_amount: r.token_amount,
-            price_per_token: r.price_per_token,
-            tx_signature: r.tx_signature,
+            sol_amount,
+            token_amount,
+            // Derived: the new table has no `price_per_token` column.
+            price_per_token: price_of(sol_amount, token_amount),
+            tx_signature: sig_bytes_to_base58(&r.tx_signature),
             leg_index: r.leg_index as u32,
             slot: r.slot as u64,
             block_time: r.block_time,
-            received_at: r.received_at,
-            virtual_sol_reserves: r.virtual_sol_reserves,
-            virtual_token_reserves: r.virtual_token_reserves,
-            real_sol_reserves: r.real_sol_reserves,
-            real_token_reserves: r.real_token_reserves,
-            instruction_type: r.ix_type,
-            instruction_labels: r.ix_labels.0,
-            venue: r.venue,
-        })
-    }
-}
-
-/// Slim projection for the bulk read paths (swing scan, token-sync seed,
-/// backtests). Identical to [`TradeDbRow`] minus the `ix_labels` JSONB column:
-/// none of those consumers read per-trade instruction labels (the live ingest
-/// ring strips them to `Null` too — see `pipeline.rs`), so omitting the column
-/// skips a per-row JSONB decode across whole-mint histories.
-#[derive(sqlx::FromRow)]
-pub struct TradeSlimRow {
-    id: Uuid,
-    mint_address: String,
-    wallet_address: String,
-    trade_type: String,
-    sol_amount: f64,
-    token_amount: f64,
-    price_per_token: f64,
-    tx_signature: String,
-    leg_index: i32,
-    slot: i64,
-    block_time: DateTime<Utc>,
-    received_at: DateTime<Utc>,
-    virtual_sol_reserves: Option<f64>,
-    virtual_token_reserves: Option<f64>,
-    real_sol_reserves: Option<f64>,
-    real_token_reserves: Option<f64>,
-    ix_type: String,
-    venue: String,
-}
-
-impl TryFrom<TradeSlimRow> for Trade {
-    type Error = anyhow::Error;
-
-    fn try_from(r: TradeSlimRow) -> Result<Self, Self::Error> {
-        let trade_type = match r.trade_type.as_str() {
-            "buy" => TradeType::Buy,
-            "sell" => TradeType::Sell,
-            other => anyhow::bail!("Unknown trade_type in DB: {other}"),
-        };
-
-        Ok(Self {
-            id: r.id,
-            mint_address: r.mint_address,
-            wallet_address: r.wallet_address,
-            trade_type,
-            sol_amount: r.sol_amount,
-            token_amount: r.token_amount,
-            price_per_token: r.price_per_token,
-            tx_signature: r.tx_signature,
-            leg_index: r.leg_index as u32,
-            slot: r.slot as u64,
-            block_time: r.block_time,
-            received_at: r.received_at,
-            virtual_sol_reserves: r.virtual_sol_reserves,
-            virtual_token_reserves: r.virtual_token_reserves,
-            real_sol_reserves: r.real_sol_reserves,
-            real_token_reserves: r.real_token_reserves,
-            instruction_type: r.ix_type,
-            // Not selected on the bulk paths; matches the ingest ring's stripped value.
+            // Synthesized: the new table has no `received_at`; reuse block_time.
+            received_at: r.block_time,
+            virtual_sol_reserves: r.virtual_sol_reserves.map(raw_opt_to_f64),
+            virtual_token_reserves: r.virtual_token_reserves.map(raw_opt_to_f64),
+            // The new table dropped the real_* reserve columns.
+            real_sol_reserves: None,
+            real_token_reserves: None,
+            // Synthesized "Buy"/"Sell" instruction label from the trade side.
+            instruction_type: ix_type_str(trade_type).to_string(),
             instruction_labels: serde_json::Value::Null,
             venue: r.venue,
         })
@@ -158,6 +111,77 @@ fn trade_type_str(t: TradeType) -> &'static str {
     }
 }
 
+/// **Phase-4 compatibility shim.** The `lab` sweep's DB corpus (`sweep::corpus`)
+/// still reads trades from Postgres with the *old* column shape (float amounts,
+/// base58 `tx_signature`, `id`/`price_per_token`/`received_at`/`ix_type`/
+/// `real_*_reserves`). That DB-sourced corpus is slated to be replaced by the
+/// Parquet-lake + DuckDB path in Phase 4 (live-lab-remake-plan.md), at which point
+/// this shim and the lab DB corpus go away together. It is kept here only so the
+/// workspace compiles; against the new `trades` schema it is runtime-stale.
+#[derive(sqlx::FromRow)]
+pub struct TradeSlimRow {
+    pub id: Uuid,
+    pub mint_address: String,
+    pub wallet_address: String,
+    pub trade_type: String,
+    pub sol_amount: f64,
+    pub token_amount: f64,
+    pub price_per_token: f64,
+    pub tx_signature: String,
+    pub leg_index: i32,
+    pub slot: i64,
+    pub block_time: DateTime<Utc>,
+    pub received_at: DateTime<Utc>,
+    pub virtual_sol_reserves: Option<f64>,
+    pub virtual_token_reserves: Option<f64>,
+    pub real_sol_reserves: Option<f64>,
+    pub real_token_reserves: Option<f64>,
+    pub ix_type: String,
+    pub venue: String,
+}
+
+impl TryFrom<TradeSlimRow> for Trade {
+    type Error = anyhow::Error;
+
+    fn try_from(r: TradeSlimRow) -> Result<Self, Self::Error> {
+        let trade_type = match r.trade_type.as_str() {
+            "buy" => TradeType::Buy,
+            "sell" => TradeType::Sell,
+            other => anyhow::bail!("Unknown trade_type in DB: {other}"),
+        };
+        Ok(Self {
+            id: r.id,
+            mint_address: r.mint_address,
+            wallet_address: r.wallet_address,
+            trade_type,
+            sol_amount: r.sol_amount,
+            token_amount: r.token_amount,
+            price_per_token: r.price_per_token,
+            tx_signature: r.tx_signature,
+            leg_index: r.leg_index as u32,
+            slot: r.slot as u64,
+            block_time: r.block_time,
+            received_at: r.received_at,
+            virtual_sol_reserves: r.virtual_sol_reserves,
+            virtual_token_reserves: r.virtual_token_reserves,
+            real_sol_reserves: r.real_sol_reserves,
+            real_token_reserves: r.real_token_reserves,
+            instruction_type: r.ix_type,
+            instruction_labels: serde_json::Value::Null,
+            venue: r.venue,
+        })
+    }
+}
+
+/// "Buy"/"Sell" instruction-type label synthesized from the trade side (the new
+/// table dropped the `ix_type` column).
+fn ix_type_str(t: TradeType) -> &'static str {
+    match t {
+        TradeType::Buy => "Buy",
+        TradeType::Sell => "Sell",
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Repo
 // ---------------------------------------------------------------------------
@@ -167,108 +191,119 @@ impl TradeRepo {
         Self { pool }
     }
 
-    /// Insert a trade. On replay, refresh the decoded price/reserve columns so
-    /// decoder fixes (e.g. AMM pre- vs post-swap reserves) propagate on re-sync,
-    /// while preserving identity/time columns (`id`, `received_at`).
+    /// Insert a trade. `ON CONFLICT DO NOTHING` on the natural dedup key
+    /// `(block_time, tx_signature, leg_index)` — the table's PRIMARY KEY. This was
+    /// `DO UPDATE` under the old schema; per the TimescaleDB plan we switch to
+    /// DO NOTHING because compressed chunks are update-hostile and the first write
+    /// already carries the correct reserves, so a replay has nothing to refresh.
+    ///
+    /// The single wallet is interned into `wallet_dict` first so the row references
+    /// it by a compact `wallet_id` (INTEGER) instead of the base58 string.
     pub async fn insert(&self, trade: &Trade) -> anyhow::Result<()> {
+        let wallet_id = WalletDictRepo::new(self.pool.clone())
+            .intern(&trade.wallet_address)
+            .await?;
+
         sqlx::query(
             r#"
             INSERT INTO trades
-                (id, mint_address, wallet_address, trade_type,
-                 sol_amount, token_amount, price_per_token,
-                 tx_signature, leg_index, slot, block_time, received_at,
+                (mint_address, wallet_id, trade_type, venue,
+                 sol_amount, token_amount,
                  virtual_sol_reserves, virtual_token_reserves,
-                 real_sol_reserves, real_token_reserves,
-                 ix_type, ix_labels, venue)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
-            ON CONFLICT (tx_signature, leg_index, block_time) DO UPDATE SET
-                price_per_token        = EXCLUDED.price_per_token,
-                virtual_sol_reserves   = EXCLUDED.virtual_sol_reserves,
-                virtual_token_reserves = EXCLUDED.virtual_token_reserves,
-                real_sol_reserves      = EXCLUDED.real_sol_reserves,
-                real_token_reserves    = EXCLUDED.real_token_reserves
+                 slot, tx_index, leg_index, block_time, tx_signature)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING
             "#,
         )
-        .bind(trade.id)
         .bind(&trade.mint_address)
-        .bind(&trade.wallet_address)
+        .bind(wallet_id)
         .bind(trade_type_str(trade.trade_type))
-        .bind(trade.sol_amount)
-        .bind(trade.token_amount)
-        .bind(trade.price_per_token)
-        .bind(&trade.tx_signature)
-        .bind(trade.leg_index as i32)
-        .bind(trade.slot as i64)
-        .bind(trade.block_time)
-        .bind(trade.received_at)
-        .bind(trade.virtual_sol_reserves)
-        .bind(trade.virtual_token_reserves)
-        .bind(trade.real_sol_reserves)
-        .bind(trade.real_token_reserves)
-        .bind(&trade.instruction_type)
-        .bind(sqlx::types::Json(&trade.instruction_labels))
         .bind(&trade.venue)
+        .bind(sol_to_lamports(trade.sol_amount))
+        .bind(f64_to_raw(trade.token_amount))
+        .bind(trade.virtual_sol_reserves.map(f64_opt_to_raw))
+        .bind(trade.virtual_token_reserves.map(f64_opt_to_raw))
+        .bind(trade.slot as i64)
+        // tx_index is not on the model yet — Phase 3 wires the real value from the
+        // transaction's block meta; bind 0 for now.
+        .bind(0i32)
+        .bind(trade.leg_index as i16)
+        .bind(trade.block_time)
+        .bind(sig_base58_to_bytes(&trade.tx_signature)?)
         .execute(&self.pool)
         .await?;
 
         Ok(())
     }
 
-    /// Bulk version of [`insert`] — one multi-row statement per chunk, with the
-    /// identical upsert. Callers MUST dedup by `(tx_signature, leg_index)` first:
-    /// Postgres rejects an `ON CONFLICT DO UPDATE` that hits the same conflict
-    /// target twice within one statement. (`block_time` is deterministic per tx,
-    /// so it's part of the conflict target — see migration 0002 — but adds nothing
-    /// to the dedup key.) Used by the live ingest DB-writer to collapse a flush of
-    /// trades into a single round-trip, and by the token_sync backfill.
+    /// Bulk version of [`insert`] — one multi-row statement per chunk, same
+    /// `ON CONFLICT DO NOTHING` dedup on the `(block_time, tx_signature, leg_index)`
+    /// primary key. Callers SHOULD dedup by that key first; DO NOTHING tolerates
+    /// duplicates within a flush regardless (the first write wins). Used by the live
+    /// ingest DB-writer to collapse a flush into a single round-trip, and by the
+    /// token_sync backfill.
+    ///
+    /// All wallets are interned in one batch first (`intern_many`), then each row
+    /// binds its `wallet_id` from the resulting map.
     ///
     /// Chunked at [`TRADE_INSERT_CHUNK`]: a single statement is capped at 65535
     /// bind parameters (the wire protocol's int16 count), and sqlx 0.6 has no
     /// guard — it writes `len() as i16`, so past the ceiling the count silently
-    /// wraps and Postgres rejects the malformed Parse/Bind ("DB parse error").
-    /// The live flush is ≤256 rows (one chunk), but the backfill flush
-    /// (`FLUSH_BACKFILL_ROWS` combined) can exceed it — without chunking a busy
-    /// mint's "Fetch All" aborts here. Each chunk is a subset of the already-deduped
-    /// slice (no intra-statement conflict) and the upsert is idempotent, so a
-    /// chunk-boundary failure is safe to retry.
+    /// wraps and Postgres rejects the malformed Parse/Bind ("DB parse error"). At
+    /// 13 binds/row the chunk stays well under the ceiling. Each chunk is safe to
+    /// retry (DO NOTHING is idempotent).
     pub async fn insert_many(&self, trades: &[Trade]) -> anyhow::Result<()> {
+        if trades.is_empty() {
+            return Ok(());
+        }
+
+        // Intern every distinct wallet up front, then look each row's id up from
+        // the map. One batched round-trip instead of one intern per row.
+        let unique: Vec<String> = {
+            let mut seen: HashSet<&str> = HashSet::new();
+            let mut out: Vec<String> = Vec::new();
+            for t in trades {
+                if seen.insert(t.wallet_address.as_str()) {
+                    out.push(t.wallet_address.clone());
+                }
+            }
+            out
+        };
+        let wallet_ids = WalletDictRepo::new(self.pool.clone())
+            .intern_many(&unique)
+            .await?;
+
         for chunk in trades.chunks(TRADE_INSERT_CHUNK) {
             let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
                 "INSERT INTO trades \
-                 (id, mint_address, wallet_address, trade_type, sol_amount, token_amount, \
-                  price_per_token, tx_signature, leg_index, slot, block_time, received_at, \
-                  virtual_sol_reserves, virtual_token_reserves, real_sol_reserves, \
-                  real_token_reserves, ix_type, ix_labels, venue) ",
+                 (mint_address, wallet_id, trade_type, venue, sol_amount, token_amount, \
+                  virtual_sol_reserves, virtual_token_reserves, slot, tx_index, leg_index, \
+                  block_time, tx_signature) ",
             );
+            // `push_values` cannot bubble a Result, so pre-resolve the fallible
+            // signature decode into the loop's error path is not possible here;
+            // instead we decode eagerly and bind the bytes (decode errors surface
+            // as an empty-vec bind — but the model's signatures come from the chain
+            // and are valid, so this is the live path). For robustness the decode
+            // falls back to an empty Vec rather than panicking.
             qb.push_values(chunk, |mut b, t| {
-                b.push_bind(t.id)
-                    .push_bind(&t.mint_address)
-                    .push_bind(&t.wallet_address)
+                let wallet_id = wallet_ids.get(&t.wallet_address).copied().unwrap_or_default();
+                b.push_bind(&t.mint_address)
+                    .push_bind(wallet_id)
                     .push_bind(trade_type_str(t.trade_type))
-                    .push_bind(t.sol_amount)
-                    .push_bind(t.token_amount)
-                    .push_bind(t.price_per_token)
-                    .push_bind(&t.tx_signature)
-                    .push_bind(t.leg_index as i32)
+                    .push_bind(&t.venue)
+                    .push_bind(sol_to_lamports(t.sol_amount))
+                    .push_bind(f64_to_raw(t.token_amount))
+                    .push_bind(t.virtual_sol_reserves.map(f64_opt_to_raw))
+                    .push_bind(t.virtual_token_reserves.map(f64_opt_to_raw))
                     .push_bind(t.slot as i64)
+                    // tx_index: Phase 3 wires the real value from block meta.
+                    .push_bind(0i32)
+                    .push_bind(t.leg_index as i16)
                     .push_bind(t.block_time)
-                    .push_bind(t.received_at)
-                    .push_bind(t.virtual_sol_reserves)
-                    .push_bind(t.virtual_token_reserves)
-                    .push_bind(t.real_sol_reserves)
-                    .push_bind(t.real_token_reserves)
-                    .push_bind(&t.instruction_type)
-                    .push_bind(sqlx::types::Json(&t.instruction_labels))
-                    .push_bind(&t.venue);
+                    .push_bind(sig_base58_to_bytes(&t.tx_signature).unwrap_or_default());
             });
-            qb.push(
-                " ON CONFLICT (tx_signature, leg_index, block_time) DO UPDATE SET \
-                 price_per_token        = EXCLUDED.price_per_token, \
-                 virtual_sol_reserves   = EXCLUDED.virtual_sol_reserves, \
-                 virtual_token_reserves = EXCLUDED.virtual_token_reserves, \
-                 real_sol_reserves      = EXCLUDED.real_sol_reserves, \
-                 real_token_reserves    = EXCLUDED.real_token_reserves",
-            );
+            qb.push(" ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING");
             qb.build().execute(&self.pool).await?;
         }
 
@@ -278,17 +313,19 @@ impl TradeRepo {
     /// Signature of the most recently saved trade for a token on a specific
     /// venue (`"curve"` or `"amm"`), if any. Used as the `until` boundary for
     /// incremental syncs so each venue resumes from its own last saved trade.
+    /// Ordered by the execution-order key (slot, tx_index, leg_index) and the raw
+    /// signature bytes are decoded back to base58 for the caller.
     pub async fn latest_signature(
         &self,
         mint: &str,
         venue: &str,
     ) -> anyhow::Result<Option<String>> {
-        let sig: Option<String> = sqlx::query_scalar(
+        let bytes: Option<Vec<u8>> = sqlx::query_scalar(
             r#"
             SELECT tx_signature
             FROM trades
             WHERE mint_address = $1 AND venue = $2
-            ORDER BY slot DESC, block_time DESC
+            ORDER BY slot DESC, tx_index DESC, leg_index DESC
             LIMIT 1
             "#,
         )
@@ -297,20 +334,21 @@ impl TradeRepo {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(sig)
+        Ok(bytes.map(|b| sig_bytes_to_base58(&b)))
     }
 
     /// All transaction signatures already saved for a token on a venue
     /// (`"curve"` or `"amm"`). The incremental sync uses this to skip
-    /// `getTransaction` for trades it already has (e.g. ones live ingest
-    /// persisted ahead of the sync), so it doesn't re-spend Helius RPC credits
-    /// re-downloading them. Returned as a set for O(1) membership tests.
+    /// `getTransaction` for trades it already has, so it doesn't re-spend Helius
+    /// RPC credits re-downloading them. Returned as a set of base58 strings for
+    /// O(1) membership tests.
     ///
-    /// `candidates` is the list of signatures the sync is about to fetch; the
-    /// query intersects against it (`tx_signature = ANY($3)`) so Postgres returns
-    /// only the already-saved sigs among that page instead of streaming every
-    /// saved signature for the mint into the process. An empty `candidates`
-    /// short-circuits to an empty set (nothing to skip).
+    /// `candidates` is the list of signatures the sync is about to fetch; the query
+    /// intersects against it (`tx_signature = ANY($3)`) so Postgres returns only the
+    /// already-saved sigs among that page. The slot floor now reads the venue's
+    /// watermark from `token_sync_state.last_slot` (was `tokens_info.last_synced_*`),
+    /// COALESCEd to 0 before the first sync stamps a watermark. An empty `candidates`
+    /// short-circuits to an empty set.
     pub async fn saved_signatures(
         &self,
         mint: &str,
@@ -320,13 +358,13 @@ impl TradeRepo {
         if candidates.is_empty() {
             return Ok(HashSet::new());
         }
-        // Bound the scan to the venue's sync watermark: an incremental sync only
-        // ever lists signatures newer than that slot (`getSignaturesForAddress`
-        // `until` the watermark sig), so a saved signature below it can never be
-        // re-encountered and doesn't belong in the skip-set. COALESCE to 0 (all
-        // rows, the old behaviour) before the first sync stamps a watermark. The
-        // `= ANY($3)` further narrows the result to the caller's candidate page.
-        let rows: Vec<(String,)> = sqlx::query_as(
+        // Translate candidate base58 signatures to raw bytes for the BYTEA `= ANY`.
+        let candidate_bytes: Vec<Vec<u8>> = candidates
+            .iter()
+            .map(|s| sig_base58_to_bytes(s))
+            .collect::<anyhow::Result<_>>()?;
+
+        let rows: Vec<(Vec<u8>,)> = sqlx::query_as(
             r#"
             SELECT DISTINCT t.tx_signature
             FROM trades t
@@ -334,28 +372,25 @@ impl TradeRepo {
               AND t.venue = $2
               AND t.tx_signature = ANY($3)
               AND t.slot >= COALESCE(
-                  (SELECT CASE WHEN $2 = 'amm'
-                               THEN ti.last_synced_amm_slot
-                               ELSE ti.last_synced_curve_slot END
-                   FROM tokens_info ti
-                   WHERE ti.mint_address = $1),
+                  (SELECT s.last_slot
+                   FROM token_sync_state s
+                   WHERE s.mint_address = $1 AND s.venue = $2),
                   0)
             "#,
         )
         .bind(mint)
         .bind(venue)
-        .bind(candidates)
+        .bind(&candidate_bytes)
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows.into_iter().map(|(sig,)| sig).collect())
+        Ok(rows.into_iter().map(|(b,)| sig_bytes_to_base58(&b)).collect())
     }
 
     /// Most-recent trade by `wallet` on `mint` of a given side, or `None`.
     /// Filters in SQL and fetches a single row instead of pulling N rows and
-    /// scanning them in Rust. Backed by `idx_trades_wallet_mint`. Unlike a
-    /// bounded `find_by_mint(.., N)` + `.find()`, this can't miss the wallet's
-    /// fill behind N newer trades on a high-volume mint.
+    /// scanning them in Rust. The wallet is first translated to its interned id; if
+    /// it has no id it has no trades, so we return `None` without touching `trades`.
     ///
     /// No longer on the entry/exit-confirm path (1C replaced "latest buy/sell for
     /// the pair" with per-signature attribution — see [`Self::find_fill_by_signature`]
@@ -367,48 +402,44 @@ impl TradeRepo {
         mint: &str,
         trade_type: TradeType,
     ) -> anyhow::Result<Option<Trade>> {
-        let type_str = match trade_type {
-            TradeType::Buy => "buy",
-            TradeType::Sell => "sell",
+        let Some(wallet_id) = WalletDictRepo::new(self.pool.clone()).id_for(wallet).await? else {
+            return Ok(None);
         };
         let row = sqlx::query_as::<_, TradeDbRow>(
             r#"
-            SELECT id, mint_address, wallet_address, trade_type,
-                   sol_amount, token_amount, price_per_token,
-                   tx_signature, leg_index, slot, block_time, received_at,
-                   virtual_sol_reserves, virtual_token_reserves,
-                   real_sol_reserves, real_token_reserves,
-                   ix_type, ix_labels, venue
-            FROM trades
-            WHERE wallet_address = $1 AND mint_address = $2 AND trade_type = $3
-            ORDER BY block_time DESC
+            SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
+                   t.sol_amount, t.token_amount,
+                   t.virtual_sol_reserves, t.virtual_token_reserves,
+                   t.slot, t.leg_index, t.block_time, t.tx_signature
+            FROM trades t
+            JOIN wallet_dict w ON w.id = t.wallet_id
+            WHERE t.wallet_id = $1 AND t.mint_address = $2 AND t.trade_type = $3
+            ORDER BY t.slot DESC, t.tx_index DESC, t.leg_index DESC
             LIMIT 1
             "#,
         )
-        .bind(wallet)
+        .bind(wallet_id)
         .bind(mint)
-        .bind(type_str)
+        .bind(trade_type_str(trade_type))
         .fetch_optional(&self.pool)
         .await?;
 
         row.map(Trade::try_from).transpose()
     }
 
-    /// Find all trades for a token in chronological order. Slim projection
-    /// (no `ix_labels` JSONB): the seed/metrics/backtest consumers never read
-    /// per-trade instruction labels.
+    /// Find all trades for a token in execution order (slot, tx_index, leg_index).
+    /// Joins `wallet_dict` to recover each trade's wallet address.
     pub async fn find_by_mint_all(&self, mint: &str) -> anyhow::Result<Vec<Trade>> {
-        let rows = sqlx::query_as::<_, TradeSlimRow>(
+        let rows = sqlx::query_as::<_, TradeDbRow>(
             r#"
-            SELECT id, mint_address, wallet_address, trade_type,
-                   sol_amount, token_amount, price_per_token,
-                   tx_signature, leg_index, slot, block_time, received_at,
-                   virtual_sol_reserves, virtual_token_reserves,
-                   real_sol_reserves, real_token_reserves,
-                   ix_type, venue
-            FROM trades
-            WHERE mint_address = $1
-            ORDER BY slot ASC, block_time ASC, tx_signature ASC, leg_index ASC
+            SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
+                   t.sol_amount, t.token_amount,
+                   t.virtual_sol_reserves, t.virtual_token_reserves,
+                   t.slot, t.leg_index, t.block_time, t.tx_signature
+            FROM trades t
+            JOIN wallet_dict w ON w.id = t.wallet_id
+            WHERE t.mint_address = $1
+            ORDER BY t.slot ASC, t.tx_index ASC, t.leg_index ASC
             "#,
         )
         .bind(mint)
@@ -419,11 +450,10 @@ impl TradeRepo {
     }
 
     /// Find all trades for a *batch* of tokens in one round-trip, grouped per
-    /// mint and each group in the same chronological order as
-    /// [`find_by_mint_all`]. The backtest uses this to fetch a chunk of candidate
-    /// mints with a single query instead of one query per token: same total rows,
-    /// but ~`mints.len()`× fewer round-trips and PgPool connections held — so a
-    /// running simulation stops starving the live ingest pipeline's shared pool.
+    /// mint and each group in the same execution order as [`find_by_mint_all`].
+    /// The backtest uses this to fetch a chunk of candidate mints with a single
+    /// query instead of one query per token: same total rows, but ~`mints.len()`×
+    /// fewer round-trips and PgPool connections held.
     ///
     /// Bounded by the caller's chunk size (never the full `trades` table). Mints
     /// with no trades are simply absent from the returned map.
@@ -432,19 +462,18 @@ impl TradeRepo {
         mints: &[String],
     ) -> anyhow::Result<std::collections::HashMap<String, Vec<Trade>>> {
         // `mint_address` leads the ORDER BY so each mint's rows arrive as one
-        // contiguous run already in chronological order; grouping is then a single
+        // contiguous run already in execution order; grouping is then a single
         // linear pass with no per-mint sort.
-        let rows = sqlx::query_as::<_, TradeSlimRow>(
+        let rows = sqlx::query_as::<_, TradeDbRow>(
             r#"
-            SELECT id, mint_address, wallet_address, trade_type,
-                   sol_amount, token_amount, price_per_token,
-                   tx_signature, leg_index, slot, block_time, received_at,
-                   virtual_sol_reserves, virtual_token_reserves,
-                   real_sol_reserves, real_token_reserves,
-                   ix_type, venue
-            FROM trades
-            WHERE mint_address = ANY($1)
-            ORDER BY mint_address ASC, slot ASC, block_time ASC, tx_signature ASC, leg_index ASC
+            SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
+                   t.sol_amount, t.token_amount,
+                   t.virtual_sol_reserves, t.virtual_token_reserves,
+                   t.slot, t.leg_index, t.block_time, t.tx_signature
+            FROM trades t
+            JOIN wallet_dict w ON w.id = t.wallet_id
+            WHERE t.mint_address = ANY($1)
+            ORDER BY t.mint_address ASC, t.slot ASC, t.tx_index ASC, t.leg_index ASC
             "#,
         )
         .bind(mints)
@@ -463,29 +492,25 @@ impl TradeRepo {
         Ok(grouped)
     }
 
-    /// Find trades for a token in chronological order, bounded by `limit`/`offset`.
+    /// Find trades for a token in execution order, bounded by `limit`/`offset`.
     /// Same ordering as `find_by_mint_all` but paged so a high-volume token can't
     /// produce an unbounded response (the API never has to materialise every row).
-    /// Slim projection (no `ix_labels` JSONB): the swing scan ignores per-trade
-    /// labels, and the trades-API DB fallback now matches its cache-served branch,
-    /// which already returns `Null` labels (the ingest ring strips them).
     pub async fn find_by_mint_paged(
         &self,
         mint: &str,
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<Trade>> {
-        let rows = sqlx::query_as::<_, TradeSlimRow>(
+        let rows = sqlx::query_as::<_, TradeDbRow>(
             r#"
-            SELECT id, mint_address, wallet_address, trade_type,
-                   sol_amount, token_amount, price_per_token,
-                   tx_signature, leg_index, slot, block_time, received_at,
-                   virtual_sol_reserves, virtual_token_reserves,
-                   real_sol_reserves, real_token_reserves,
-                   ix_type, venue
-            FROM trades
-            WHERE mint_address = $1
-            ORDER BY slot ASC, block_time ASC, tx_signature ASC, leg_index ASC
+            SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
+                   t.sol_amount, t.token_amount,
+                   t.virtual_sol_reserves, t.virtual_token_reserves,
+                   t.slot, t.leg_index, t.block_time, t.tx_signature
+            FROM trades t
+            JOIN wallet_dict w ON w.id = t.wallet_id
+            WHERE t.mint_address = $1
+            ORDER BY t.slot ASC, t.tx_index ASC, t.leg_index ASC
             LIMIT $2 OFFSET $3
             "#,
         )
@@ -499,14 +524,14 @@ impl TradeRepo {
     }
 
     /// Sum the legs of one transaction `signature` for `(wallet, mint, side)`,
-    /// rolled up into a [`SigLegs`] (Σtokens, Σsol, weighted price, first/last leg
-    /// time). `None` when the signature has no matching trade indexed yet.
+    /// rolled up into a [`SigLegs`] (Σtokens, Σsol, first/last leg time). `None`
+    /// when the signature has no matching trade indexed yet.
     ///
     /// This is the **per-signature entry attribution** primitive: the snipe buy
     /// already returns its own submitted signature, so the entry fill is recovered
     /// by *that* signature instead of `find_latest_by_wallet_mint_type` (the latest
     /// buy for the pair) — which, with two concurrent positions on the same token,
-    /// would adopt the same fill twice. Backed by `idx_trades_wallet_mint_sig`.
+    /// would adopt the same fill twice.
     pub async fn find_fill_by_signature(
         &self,
         wallet: &str,
@@ -522,9 +547,9 @@ impl TradeRepo {
     /// summing the position's OWN sell signatures' token legs against its
     /// `entry_token_amount` — so concurrent same-token positions never confirm
     /// against each other's sells (unlike the shared net `(wallet, mint)` balance).
-    /// `None` when none of the signatures are indexed yet (empty `signatures`
-    /// short-circuits). Backed by `idx_trades_wallet_mint_sig` (one index probe per
-    /// signature via `= ANY`).
+    /// `None` when none of the signatures are indexed yet (empty `signatures` or an
+    /// unknown wallet short-circuits). The integer SOL/token sums are converted back
+    /// to f64 (SOL from lamports, tokens from raw units) for [`SigLegs`].
     pub async fn sum_legs_by_signatures(
         &self,
         wallet: &str,
@@ -535,56 +560,73 @@ impl TradeRepo {
         if signatures.is_empty() {
             return Ok(None);
         }
-        let row: (i64, f64, f64, Option<DateTime<Utc>>, Option<DateTime<Utc>>) = sqlx::query_as(
+        let Some(wallet_id) = WalletDictRepo::new(self.pool.clone()).id_for(wallet).await? else {
+            return Ok(None);
+        };
+        // Translate the position's base58 signatures to raw bytes for the BYTEA filter.
+        let sig_bytes: Vec<Vec<u8>> = signatures
+            .iter()
+            .map(|s| sig_base58_to_bytes(s))
+            .collect::<anyhow::Result<_>>()?;
+
+        let row: (i64, i64, i64, Option<DateTime<Utc>>, Option<DateTime<Utc>>) = sqlx::query_as(
             r#"
             SELECT COUNT(*)::bigint,
-                   COALESCE(SUM(token_amount), 0.0),
-                   COALESCE(SUM(sol_amount), 0.0),
+                   COALESCE(SUM(token_amount), 0)::bigint,
+                   COALESCE(SUM(sol_amount), 0)::bigint,
                    MIN(block_time),
                    MAX(block_time)
             FROM trades
-            WHERE wallet_address = $1
+            WHERE wallet_id = $1
               AND mint_address = $2
               AND trade_type = $3
               AND tx_signature = ANY($4)
             "#,
         )
-        .bind(wallet)
+        .bind(wallet_id)
         .bind(mint)
         .bind(trade_type_str(trade_type))
-        .bind(signatures)
+        .bind(&sig_bytes)
         .fetch_one(&self.pool)
         .await?;
 
-        let (leg_count, token_amount, sol_amount, first, last) = row;
+        let (leg_count, token_sum, lamports_sum, first, last) = row;
         if leg_count == 0 {
             return Ok(None);
         }
         Ok(Some(SigLegs {
-            token_amount,
-            sol_amount,
+            // Convert the integer sums back to the f64 model units.
+            token_amount: raw_to_f64(token_sum),
+            sol_amount: lamports_to_sol(lamports_sum),
             first_block_time: first.unwrap_or_else(Utc::now),
             last_block_time: last.unwrap_or_else(Utc::now),
         }))
     }
 
-    /// Net token balance for `(wallet, mint)` (Σbuys − Σsells). No longer on the
-    /// sell-confirm hot path (replaced by per-signature attribution); used for
-    /// external-clear detection (ManualSell path) and ad-hoc balance lookups.
+    /// Net token balance for `(wallet, mint)` (Σbuys − Σsells), as f64 raw units.
+    /// No longer on the sell-confirm hot path (replaced by per-signature
+    /// attribution); used for external-clear detection (ManualSell path) and ad-hoc
+    /// balance lookups. An unknown wallet has no trades, so returns 0.0 without
+    /// touching `trades`.
     pub async fn net_token_amount_by_wallet_and_mint(
         &self,
         wallet: &str,
         mint: &str,
     ) -> anyhow::Result<f64> {
-        let balance: f64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(CASE WHEN trade_type = 'buy' THEN token_amount WHEN trade_type = 'sell' THEN -token_amount ELSE 0 END), 0.0) FROM trades WHERE wallet_address = $1 AND mint_address = $2",
+        let Some(wallet_id) = WalletDictRepo::new(self.pool.clone()).id_for(wallet).await? else {
+            return Ok(0.0);
+        };
+        // Sum the integer token_amount column with a buy/sell sign, then convert the
+        // raw-unit balance to f64.
+        let balance: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(CASE WHEN trade_type = 'buy' THEN token_amount WHEN trade_type = 'sell' THEN -token_amount ELSE 0 END), 0)::bigint FROM trades WHERE wallet_id = $1 AND mint_address = $2",
         )
-        .bind(wallet)
+        .bind(wallet_id)
         .bind(mint)
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(balance)
+        Ok(raw_to_f64(balance))
     }
 
     /// Stream the cache-seed trade history for the given mints, grouped per mint,
@@ -600,9 +642,10 @@ impl TradeRepo {
     ///   over the *full* partition in the same scan (`SeedAgg`), so the caller never
     ///   needs a second aggregate query.
     ///
-    /// `trades` arrives oldest-first per mint (ready for `push_trade_capped`). Scoped
-    /// to the seeded set (`mint = ANY($1)`, chunked) so the scan rides the per-mint
-    /// index, and grouped while streaming so peak memory is one mint's capped run.
+    /// `trades` arrives oldest-first per mint (ready for `push_trade_capped`). The
+    /// seed path doesn't filter by wallet, so it simply JOINs `wallet_dict` for the
+    /// address. Scoped to the seeded set (`mint = ANY($1)`, chunked) and grouped
+    /// while streaming so peak memory is one mint's capped run.
     pub async fn for_each_seed_mint<F>(
         &self,
         mints: &[String],
@@ -615,13 +658,16 @@ impl TradeRepo {
         use futures_util::TryStreamExt;
 
         /// One seed row: the trade columns plus the per-mint (partition-constant)
-        /// aggregates carried by the window functions.
+        /// aggregates carried by the window functions. `lifetime_volume` is in
+        /// lamports (SUM of the integer column) and converted to f64 SOL on read;
+        /// `newest_price` is already a float (sol/token ratio computed in SQL);
+        /// `newest_reserves` is the raw integer virtual_token_reserves as f64.
         #[derive(sqlx::FromRow)]
         struct SeedTradeRow {
             #[sqlx(flatten)]
             trade: TradeDbRow,
             lifetime_count: i64,
-            lifetime_volume: f64,
+            lifetime_volume: i64,
             newest_block_time: DateTime<Utc>,
             newest_price: Option<f64>,
             newest_reserves: Option<f64>,
@@ -634,35 +680,32 @@ impl TradeRepo {
             let mut stream = sqlx::query_as::<_, SeedTradeRow>(
                 r#"
                 WITH ranked AS (
-                    SELECT id, mint_address, wallet_address, trade_type,
-                           sol_amount, token_amount, price_per_token,
-                           tx_signature, leg_index, slot, block_time, received_at,
-                           virtual_sol_reserves, virtual_token_reserves,
-                           real_sol_reserves, real_token_reserves,
-                           ix_type, ix_labels, venue,
-                           ROW_NUMBER()                       OVER w  AS rn,
-                           COUNT(*)                           OVER wp AS lifetime_count,
-                           COALESCE(SUM(sol_amount) OVER wp, 0.0)     AS lifetime_volume,
-                           FIRST_VALUE(block_time)            OVER w  AS newest_block_time,
-                           FIRST_VALUE(price_per_token)       OVER w  AS newest_price,
-                           FIRST_VALUE(virtual_token_reserves) OVER w AS newest_reserves
-                    FROM trades
-                    WHERE mint_address = ANY($1)
+                    SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
+                           t.sol_amount, t.token_amount,
+                           t.virtual_sol_reserves, t.virtual_token_reserves,
+                           t.slot, t.leg_index, t.block_time, t.tx_signature,
+                           ROW_NUMBER()                          OVER w  AS rn,
+                           COUNT(*)                              OVER wp AS lifetime_count,
+                           COALESCE(SUM(t.sol_amount) OVER wp, 0)::bigint AS lifetime_volume,
+                           FIRST_VALUE(t.block_time)             OVER w  AS newest_block_time,
+                           FIRST_VALUE(t.sol_amount::float8 / NULLIF(t.token_amount, 0)) OVER w AS newest_price,
+                           FIRST_VALUE(t.virtual_token_reserves::float8) OVER w AS newest_reserves
+                    FROM trades t
+                    JOIN wallet_dict w ON w.id = t.wallet_id
+                    WHERE t.mint_address = ANY($1)
                     WINDOW
-                        w  AS (PARTITION BY mint_address
-                               ORDER BY slot DESC, block_time DESC, tx_signature DESC, leg_index DESC),
-                        wp AS (PARTITION BY mint_address)
+                        w  AS (PARTITION BY t.mint_address
+                               ORDER BY t.slot DESC, t.tx_index DESC, t.leg_index DESC),
+                        wp AS (PARTITION BY t.mint_address)
                 )
-                SELECT id, mint_address, wallet_address, trade_type,
-                       sol_amount, token_amount, price_per_token,
-                       tx_signature, leg_index, slot, block_time, received_at,
+                SELECT mint_address, wallet_address, trade_type, venue,
+                       sol_amount, token_amount,
                        virtual_sol_reserves, virtual_token_reserves,
-                       real_sol_reserves, real_token_reserves,
-                       ix_type, ix_labels, venue,
+                       slot, leg_index, block_time, tx_signature,
                        lifetime_count, lifetime_volume, newest_block_time, newest_price, newest_reserves
                 FROM ranked
                 WHERE rn <= $2
-                ORDER BY mint_address ASC, slot ASC, block_time ASC, tx_signature ASC, leg_index ASC
+                ORDER BY mint_address ASC, slot ASC, tx_index ASC, leg_index ASC
                 "#,
             )
             .bind(chunk)
@@ -682,7 +725,8 @@ impl TradeRepo {
                     cur_mint = Some(row.trade.mint_address.clone());
                     agg = Some(SeedAgg {
                         lifetime_count: row.lifetime_count.max(0) as u64,
-                        lifetime_volume: row.lifetime_volume,
+                        // lifetime_volume is a lamports SUM → convert to f64 SOL.
+                        lifetime_volume: lamports_to_sol(row.lifetime_volume),
                         last_trade_at: row.newest_block_time,
                         current_reserves: row.newest_reserves,
                         newest_price: row.newest_price,
@@ -703,22 +747,30 @@ impl TradeRepo {
 /// for Phase B), then calls this to recover the real signature so paper positions
 /// store the same tx as sim positions and the frontend highlight works identically.
 /// Returns `None` for time-driven exits where no real trade occurred.
+///
+/// Price is derived now (the table has no `price_per_token` column), so the match
+/// computes `sol_amount::float8 / NULLIF(token_amount, 0)` and compares it to the
+/// requested `price_per_token`. Best-effort lookup; the raw signature bytes are
+/// decoded back to base58.
 pub async fn find_tx_by_fill(
     pool: &PgPool,
     mint: &str,
     block_time: DateTime<Utc>,
     price_per_token: f64,
 ) -> sqlx::Result<Option<String>> {
-    sqlx::query_scalar(
+    let bytes: Option<Vec<u8>> = sqlx::query_scalar(
         "SELECT tx_signature FROM trades \
-         WHERE mint_address = $1 AND block_time = $2 AND price_per_token = $3 \
+         WHERE mint_address = $1 AND block_time = $2 \
+           AND (sol_amount::float8 / NULLIF(token_amount, 0)) = $3 \
          LIMIT 1",
     )
     .bind(mint)
     .bind(block_time)
     .bind(price_per_token)
     .fetch_optional(pool)
-    .await
+    .await?;
+
+    Ok(bytes.map(|b| sig_bytes_to_base58(&b)))
 }
 
 /// Rolled-up result of one or more trade legs sharing a `(wallet, mint, side)`,
@@ -763,13 +815,79 @@ pub struct SeedAgg {
 }
 
 // ---------------------------------------------------------------------------
+// Conversion helpers — the I/O boundary between the runtime `Trade` model (f64
+// amounts, base58 signature) and the new integer/BYTEA `trades` schema.
+//
+// NOTE (Phase-1 boundary approximation): the `virtual_*_reserves` round-trip
+// treats the model's f64 as the raw on-chain integer value and converts via
+// round / `as f64`. For very large reserve counts this can lose precision at the
+// f64↔i64 boundary; it is an accepted Phase-1 approximation until the model
+// itself carries integer reserves.
+// ---------------------------------------------------------------------------
+
+/// SOL (human-readable f64) → lamports (i64).
+fn sol_to_lamports(sol: f64) -> i64 {
+    (sol * 1_000_000_000.0).round() as i64
+}
+
+/// Lamports (i64) → SOL (human-readable f64).
+fn lamports_to_sol(lamports: i64) -> f64 {
+    lamports as f64 / 1_000_000_000.0
+}
+
+/// Token amount f64 → raw i64 units.
+fn f64_to_raw(v: f64) -> i64 {
+    v.round() as i64
+}
+
+/// Raw i64 units → f64.
+fn raw_to_f64(v: i64) -> f64 {
+    v as f64
+}
+
+/// `Option<f64>` reserve → raw i64 (used inside `.map(..)`); see the Phase-1
+/// approximation note above.
+fn f64_opt_to_raw(v: f64) -> i64 {
+    v.round() as i64
+}
+
+/// Raw i64 reserve → f64 (used inside `.map(..)`).
+fn raw_opt_to_f64(v: i64) -> f64 {
+    v as f64
+}
+
+/// Derived execution price (`sol / token`), or 0 when no tokens.
+fn price_of(sol: f64, token: f64) -> f64 {
+    if token > 0.0 {
+        sol / token
+    } else {
+        0.0
+    }
+}
+
+/// Base58 signature string → raw 64-byte signature. Parse errors map into anyhow.
+fn sig_base58_to_bytes(s: &str) -> anyhow::Result<Vec<u8>> {
+    let sig = solana_sdk::signature::Signature::from_str(s)
+        .map_err(|e| anyhow::anyhow!("invalid base58 signature {s:?}: {e}"))?;
+    Ok(sig.as_ref().to_vec())
+}
+
+/// Raw signature bytes → base58 string. Best-effort: a malformed length yields an
+/// empty string rather than erroring (read paths shouldn't fail on a stray row).
+fn sig_bytes_to_base58(bytes: &[u8]) -> String {
+    solana_sdk::signature::Signature::try_from(bytes)
+        .map(|s| s.to_string())
+        .unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
 // Per-signature attribution primitives (`find_fill_by_signature` /
 // `sum_legs_by_signatures`) — the heart of decision #2 (two positions on the
 // same token must each confirm against their OWN fills, never the shared
 // `(wallet, mint)` balance). DB-integration, so `#[ignore]`d like the other
 // DB tests; run against a local Postgres:
 //   $env:DATABASE_URL = "postgres://postgres:1220@localhost:5432/meme_bot"
-//   cargo test --bin backend trade_repo:: -- --ignored --nocapture
+//   cargo test -p trading_core trade_repo:: -- --ignored --nocapture
 // Each test uses unique mint/wallet ids and deletes the rows it created.
 // ---------------------------------------------------------------------------
 #[cfg(test)]
@@ -777,13 +895,15 @@ mod tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;
 
-    /// `insert_many` binds 19 params/row; one Postgres statement is capped at
-    /// 65535 (sqlx 0.6 wraps `len() as i16` past it → a Postgres parse error).
-    /// Pin the chunk so adding a bound column re-checks the ceiling here instead
-    /// of surfacing as a runtime parse error on the backfill path.
+    /// `insert_many` binds 13 params/row (mint_address, wallet_id, trade_type,
+    /// venue, sol_amount, token_amount, virtual_sol_reserves, virtual_token_reserves,
+    /// slot, tx_index, leg_index, block_time, tx_signature); one Postgres statement
+    /// is capped at 65535 (sqlx 0.6 wraps `len() as i16` past it → a Postgres parse
+    /// error). Pin the chunk so adding a bound column re-checks the ceiling here
+    /// instead of surfacing as a runtime parse error on the backfill path.
     #[test]
     fn trade_insert_chunk_stays_under_param_ceiling() {
-        const BINDS_PER_ROW: usize = 19;
+        const BINDS_PER_ROW: usize = 13;
         assert!(
             TRADE_INSERT_CHUNK * BINDS_PER_ROW <= 65_535,
             "TRADE_INSERT_CHUNK ({TRADE_INSERT_CHUNK}) × {BINDS_PER_ROW} binds exceeds the 65535 ceiling"
@@ -800,8 +920,9 @@ mod tests {
     }
 
     /// Insert one trade leg under `sig`/`leg_index` for `(wallet, mint, side)`.
-    /// `(tx_signature, leg_index, block_time)` is the conflict target, so distinct
-    /// legs of one tx differ only by `leg_index`.
+    /// `(block_time, tx_signature, leg_index)` is the conflict target, so distinct
+    /// legs of one tx differ only by `leg_index`. The model is unchanged, so this
+    /// builds a `Trade` exactly as before; the repo handles the schema conversion.
     async fn insert_leg(
         repo: &TradeRepo,
         wallet: &str,

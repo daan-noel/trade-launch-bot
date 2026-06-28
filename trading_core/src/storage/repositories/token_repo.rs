@@ -15,7 +15,6 @@ pub struct TokenRepo {
 
 #[derive(sqlx::FromRow)]
 struct TokenDbRow {
-    id: Uuid,
     mint_address: String,
     creator_wallet: String,
     name: String,
@@ -77,7 +76,11 @@ pub struct TokenListRow {
 impl From<TokenDbRow> for Token {
     fn from(r: TokenDbRow) -> Self {
         Self {
-            id: r.id,
+            // `tokens` is now mint-keyed (no surrogate id column). The runtime
+            // `Token` model still carries a `Uuid` id (consumed by caches/handlers
+            // until Phase 2/3); synthesize a fresh one on read — nothing persists
+            // or joins on it.
+            id: Uuid::new_v4(),
             mint_address: r.mint_address,
             creator_wallet: r.creator_wallet,
             name: r.name,
@@ -105,7 +108,7 @@ impl From<TokenDbRow> for Token {
 /// Columns selected for `TokenDbRow`, in struct order. Explicit (not `SELECT *`)
 /// so a future column added to `tokens` isn't pulled into every read, and the
 /// query's wire contract is decoupled from the physical table layout.
-const TOKEN_COLS: &str = "id, mint_address, creator_wallet, name, symbol, token_program_id, \
+const TOKEN_COLS: &str = "mint_address, creator_wallet, name, symbol, token_program_id, \
     bonding_curve_address, initial_supply_token, initial_buy_sol, initial_buy_instruction, \
     cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels, creation_tx_signature, \
     created_at";
@@ -125,14 +128,13 @@ impl TokenRepo {
         }
         let mut qb = sqlx::QueryBuilder::new(
             "INSERT INTO tokens \
-             (id, mint_address, creator_wallet, name, symbol, token_program_id, \
+             (mint_address, creator_wallet, name, symbol, token_program_id, \
               bonding_curve_address, initial_supply_token, initial_buy_sol, initial_buy_instruction, \
               cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels, \
               creation_tx_signature, created_at) ",
         );
         qb.push_values(tokens, |mut b, t| {
-            b.push_bind(t.id)
-                .push_bind(&t.mint_address)
+            b.push_bind(&t.mint_address)
                 .push_bind(&t.creator_wallet)
                 .push_bind(&t.name)
                 .push_bind(&t.symbol)
@@ -159,14 +161,13 @@ impl TokenRepo {
         sqlx::query(
             r#"
             INSERT INTO tokens
-                (id, mint_address, creator_wallet, name, symbol, token_program_id,
+                (mint_address, creator_wallet, name, symbol, token_program_id,
                     bonding_curve_address, initial_supply_token, initial_buy_sol, initial_buy_instruction, cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels,
                     creation_tx_signature, created_at)
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             ON CONFLICT (mint_address) DO NOTHING
             "#,
         )
-        .bind(token.id)
         .bind(&token.mint_address)
         .bind(&token.creator_wallet)
         .bind(&token.name)
@@ -194,10 +195,10 @@ impl TokenRepo {
         sqlx::query(
             r#"
             INSERT INTO tokens
-                (id, mint_address, creator_wallet, name, symbol, token_program_id,
+                (mint_address, creator_wallet, name, symbol, token_program_id,
                     bonding_curve_address, initial_supply_token, initial_buy_sol, initial_buy_instruction, cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels,
                     creation_tx_signature, created_at)
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             ON CONFLICT (mint_address) DO UPDATE SET
                 creator_wallet = EXCLUDED.creator_wallet,
                 name = EXCLUDED.name,
@@ -216,7 +217,6 @@ impl TokenRepo {
                 created_at = LEAST(tokens.created_at, EXCLUDED.created_at)
             "#,
         )
-        .bind(token.id)
         .bind(&token.mint_address)
         .bind(&token.creator_wallet)
         .bind(&token.name)
@@ -332,8 +332,11 @@ impl TokenRepo {
                    t.initial_supply_token, t.initial_buy_sol, t.initial_buy_instruction,
                    t.cu_limit, t.cu_price, t.is_mayhem_mode, t.is_cashback_enabled,
                    t.ix_labels, t.creation_tx_signature, t.created_at,
-                   i.ath_price, i.ath_timestamp, i.volume, i.market_cap, i.trade_count,
-                   i.last_trade_at, i.current_price, i.is_dead, i.is_migrated, i.last_synced_at,
+                   i.ath_price, i.ath_timestamp, i.volume,
+                   (i.current_price * t.initial_supply_token) AS market_cap, i.trade_count,
+                   i.last_trade_at, i.current_price, i.is_dead, i.is_migrated,
+                   (SELECT MAX(s.last_synced_at) FROM token_sync_state s
+                      WHERE s.mint_address = t.mint_address) AS last_synced_at,
                    i.lifetime_secs
               FROM tokens t
               LEFT JOIN tokens_info i ON i.mint_address = t.mint_address
@@ -388,8 +391,11 @@ impl TokenRepo {
                    t.initial_supply_token, t.initial_buy_sol, t.initial_buy_instruction,
                    t.cu_limit, t.cu_price, t.is_mayhem_mode, t.is_cashback_enabled,
                    t.ix_labels, t.creation_tx_signature, t.created_at,
-                   i.ath_price, i.ath_timestamp, i.volume, i.market_cap, i.trade_count,
-                   i.last_trade_at, i.current_price, i.is_dead, i.is_migrated, i.last_synced_at,
+                   i.ath_price, i.ath_timestamp, i.volume,
+                   (i.current_price * t.initial_supply_token) AS market_cap, i.trade_count,
+                   i.last_trade_at, i.current_price, i.is_dead, i.is_migrated,
+                   (SELECT MAX(s.last_synced_at) FROM token_sync_state s
+                      WHERE s.mint_address = t.mint_address) AS last_synced_at,
                    i.lifetime_secs
               FROM tokens t
               LEFT JOIN tokens_info i ON i.mint_address = t.mint_address
@@ -413,8 +419,11 @@ impl TokenRepo {
                    t.initial_supply_token, t.initial_buy_sol, t.initial_buy_instruction,
                    t.cu_limit, t.cu_price, t.is_mayhem_mode, t.is_cashback_enabled,
                    t.ix_labels, t.creation_tx_signature, t.created_at,
-                   i.ath_price, i.ath_timestamp, i.volume, i.market_cap, i.trade_count,
-                   i.last_trade_at, i.current_price, i.is_dead, i.is_migrated, i.last_synced_at,
+                   i.ath_price, i.ath_timestamp, i.volume,
+                   (i.current_price * t.initial_supply_token) AS market_cap, i.trade_count,
+                   i.last_trade_at, i.current_price, i.is_dead, i.is_migrated,
+                   (SELECT MAX(s.last_synced_at) FROM token_sync_state s
+                      WHERE s.mint_address = t.mint_address) AS last_synced_at,
                    i.lifetime_secs
               FROM tokens t
               LEFT JOIN tokens_info i ON i.mint_address = t.mint_address

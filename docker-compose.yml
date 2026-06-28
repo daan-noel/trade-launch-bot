@@ -11,7 +11,10 @@
 
 services:
   postgres:
-    image: postgres:16
+    # TimescaleDB (live/lab remake, Phase 1): hypertables + columnar compression +
+    # declarative retention/compression policies replace the old hand-rolled daily
+    # partition maintenance. The -ha image bundles the timescaledb extension for pg16.
+    image: timescale/timescaledb-ha:pg16
     restart: unless-stopped
     # Server tuning. Problem classes observed and addressed here:
     #
@@ -43,6 +46,12 @@ services:
     #    768MB (and effective_cache_size to ~1.5GB).
     command:
       - "postgres"
+      - "-c"
+      - "shared_preload_libraries=timescaledb"
+      - "-c"
+      # Cap background compression/CAgg-refresh workers — periodic seconds-long
+      # bursts on the 2-vCPU box; keep them off the ingest cores.
+      - "timescaledb.max_background_workers=${TIMESCALEDB_MAX_BG_WORKERS:-2}"
       - "-c"
       - "max_connections=${POSTGRES_MAX_CONNECTIONS:-80}"
       - "-c"

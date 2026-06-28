@@ -1,6 +1,20 @@
 # Database — schema & repositories
 
-sqlx + Postgres. Raw SQL lives **only** in `backend/src/storage/repositories/*`. Migrations in `backend/migrations/` (`0001_init.sql` = consolidated baseline; add `00NN_*.sql`). Runner: `sqlx::migrate!("./migrations")` in `storage/postgres.rs`.
+> **Live/lab remake Phase 1 (clean rebuild) applied.** `trading_core/migrations/0001_init.sql`
+> was rewritten as a **TimescaleDB** clean rebuild; the per-table designs below are superseded by
+> the four storage plans (now the source of truth): `token-storage-plan.md`, `trades-storage-plan.md`,
+> `raw-txs-storage-plan.md`, `strategy-storage-plan.md` + `timescaledb-plan.md`. Highlights:
+> `tokens`(mint PK)/`tokens_info`/`token_sync_state`; `trades` & `raw_txs` are **hypertables** on
+> `block_time` with `add_compression_policy`/`add_retention_policy` (trades 7d/30d, raw 2d/7d) — the
+> old `maintenance.rs` partition loop is deleted; integer base units, **BYTEA** signatures, wallet
+> interning (`wallet_dict` → `trades.wallet_id`), `real_*_reserves` dropped; unified
+> `strategy_rules`/`strategy_runs`/`strategy_run_metrics`/`strategy_positions` replace the tpsl1/2
+> tables; views `token_overview`/`trades_priced`/`strategy_position_pnl`; OHLCV continuous aggregates
+> (`trades_ohlcv_1m`/`_5m`/`_1h`) created at boot by `trading_core::storage::timescale::setup_caggs`.
+> sqlx is **runtime-checked** (no compile-time SQL validation). The prose below is the pre-rebuild
+> shape and is being migrated; trust the storage plans + `0001_init.sql`.
+
+sqlx + Postgres. Raw SQL lives **only** in `trading_core/src/storage/repositories/*`. Migrations in `trading_core/migrations/` (`0001_init.sql` = clean TimescaleDB baseline; add `00NN_*.sql`). Runner: `sqlx::migrate!("./migrations")` in `storage/postgres.rs` (then `timescale::setup_caggs`).
 Deep-dive detail: `@plans/database/db-pool-routing.md`, `@plans/database/db-patterns.md`.
 
 ## Connection pools

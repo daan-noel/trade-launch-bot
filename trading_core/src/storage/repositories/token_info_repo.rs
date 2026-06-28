@@ -4,9 +4,75 @@ use uuid::Uuid;
 
 use crate::models::token_info::TokenInfo;
 
+/// Repo over the (clean-rebuild) `tokens_info` metrics table.
+///
+/// The new `tokens_info` shape (token-storage-plan.md) is mint-keyed and drops
+/// the old surrogate `id`, the cached `age`/`market_cap` (derived in the
+/// `token_overview` view), `created_at` (redundant with `tokens.created_at`),
+/// and the per-venue `last_synced_*` columns (moved to `token_sync_state`).
+///
+/// The runtime [`TokenInfo`] model still carries those fields (consumed by caches
+/// / handlers until Phase 2/3 rewires them), so reads synthesize them: `id` is a
+/// fresh uuid, `age`/`market_cap` are `None` (derive at the call site / view),
+/// `created_at` mirrors `updated_at`, and `last_synced_at` is read from
+/// `token_sync_state`. Sync-watermark methods now read/write `token_sync_state`.
 #[derive(Clone)]
 pub struct TokenInfoRepo {
     pool: PgPool,
+}
+
+/// New-schema metrics columns, in the order [`row_to_info`] consumes them.
+const INFO_COLS: &str = "mint_address, ath_price, ath_timestamp, volume, trade_count, \
+    last_trade_at, current_price, is_dead, is_migrated, lifetime_secs, updated_at";
+
+type InfoRow = (
+    String,                  // mint_address
+    Option<f64>,             // ath_price
+    Option<DateTime<Utc>>,   // ath_timestamp
+    f64,                     // volume
+    i64,                     // trade_count
+    Option<DateTime<Utc>>,   // last_trade_at
+    Option<f64>,             // current_price
+    bool,                    // is_dead
+    bool,                    // is_migrated
+    Option<i64>,             // lifetime_secs (not on the TokenInfo model; read+dropped)
+    DateTime<Utc>,           // updated_at
+);
+
+/// Build the runtime [`TokenInfo`] from a new-schema row, synthesizing the fields
+/// the new table no longer stores. `last_synced_at` is filled separately (from
+/// `token_sync_state`) — `None` here.
+fn row_to_info(r: InfoRow) -> TokenInfo {
+    let (
+        mint_address,
+        ath_price,
+        ath_timestamp,
+        volume,
+        trade_count,
+        last_trade_at,
+        current_price,
+        is_dead,
+        is_migrated,
+        _lifetime_secs,
+        updated_at,
+    ) = r;
+    TokenInfo {
+        id: Uuid::new_v4(),
+        mint_address,
+        ath_price,
+        ath_timestamp,
+        age: None,
+        volume,
+        market_cap: None,
+        trade_count,
+        last_trade_at,
+        current_price,
+        is_dead,
+        is_migrated,
+        created_at: updated_at,
+        updated_at,
+        last_synced_at: None,
+    }
 }
 
 impl TokenInfoRepo {
@@ -14,22 +80,21 @@ impl TokenInfoRepo {
         Self { pool }
     }
 
-    /// Upsert token metrics.
+    /// Upsert token metrics. `age` / `market_cap` are accepted for signature
+    /// stability but no longer stored (derived in `token_overview`).
     ///
-    /// `ath_price` is written authoritatively from the caller's freshly
-    /// recomputed value: the sync path rebuilds state from the full trade
-    /// history, so a re-sync must be able to *lower* a previously over-stated
-    /// ATH (e.g. one poisoned by a bad trade). A NULL incoming value preserves
-    /// the existing stored value. The live ingest path always supplies a
-    /// running max seeded from this column on startup, so it never lowers it.
+    /// `ath_price` is written authoritatively from the caller's freshly recomputed
+    /// value (a re-sync must be able to *lower* a previously over-stated ATH); a
+    /// NULL incoming value preserves the existing stored value.
+    #[allow(clippy::too_many_arguments)]
     pub async fn upsert_metrics(
         &self,
         mint: &str,
         ath_price: Option<f64>,
         ath_timestamp: Option<DateTime<Utc>>,
-        age: Option<i64>,
+        _age: Option<i64>,
         volume: f64,
-        market_cap: Option<f64>,
+        _market_cap: Option<f64>,
         trade_count: i64,
         last_trade_at: Option<DateTime<Utc>>,
         current_price: Option<f64>,
@@ -37,20 +102,17 @@ impl TokenInfoRepo {
         is_migrated: bool,
         lifetime_secs: Option<i64>,
     ) -> anyhow::Result<()> {
-        let now = Utc::now();
-
         sqlx::query(
             r#"
             INSERT INTO tokens_info
-                (mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_dead, is_migrated, lifetime_secs, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                (mint_address, ath_price, ath_timestamp, volume, trade_count,
+                 last_trade_at, current_price, is_dead, is_migrated, lifetime_secs, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
             ON CONFLICT (mint_address) DO UPDATE
                 SET ath_price = COALESCE(EXCLUDED.ath_price, tokens_info.ath_price),
                     ath_timestamp = CASE WHEN EXCLUDED.ath_price IS NOT NULL
                                     THEN EXCLUDED.ath_timestamp ELSE tokens_info.ath_timestamp END,
-                    age = EXCLUDED.age,
                     volume = EXCLUDED.volume,
-                    market_cap = EXCLUDED.market_cap,
                     trade_count = EXCLUDED.trade_count,
                     last_trade_at = CASE
                         WHEN EXCLUDED.last_trade_at IS NULL THEN tokens_info.last_trade_at
@@ -68,17 +130,13 @@ impl TokenInfoRepo {
         .bind(mint)
         .bind(ath_price)
         .bind(ath_timestamp)
-        .bind(age)
         .bind(volume)
-        .bind(market_cap)
         .bind(trade_count)
         .bind(last_trade_at)
         .bind(current_price)
         .bind(is_dead)
         .bind(is_migrated)
         .bind(lifetime_secs)
-        .bind(now)
-        .bind(now)
         .execute(&self.pool)
         .await?;
 
@@ -90,11 +148,10 @@ impl TokenInfoRepo {
         mint: &str,
         is_migrated: bool,
     ) -> anyhow::Result<()> {
-        let now = Utc::now();
         sqlx::query(
             r#"
-            INSERT INTO tokens_info (mint_address, is_migrated, created_at, updated_at)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO tokens_info (mint_address, is_migrated, updated_at)
+            VALUES ($1, $2, now())
             ON CONFLICT (mint_address) DO UPDATE
                 SET is_migrated = tokens_info.is_migrated OR EXCLUDED.is_migrated,
                     updated_at = EXCLUDED.updated_at
@@ -102,8 +159,6 @@ impl TokenInfoRepo {
         )
         .bind(mint)
         .bind(is_migrated)
-        .bind(now)
-        .bind(now)
         .execute(&self.pool)
         .await?;
 
@@ -111,117 +166,61 @@ impl TokenInfoRepo {
     }
 
     pub async fn find_by_mint(&self, mint: &str) -> anyhow::Result<Option<TokenInfo>> {
-        let row = sqlx::query_as::<_, (Uuid, String, Option<f64>, Option<DateTime<Utc>>, Option<i64>, f64, Option<f64>, i64, Option<DateTime<Utc>>, Option<f64>, bool, bool, DateTime<Utc>, DateTime<Utc>, Option<DateTime<Utc>>)>(
-            "SELECT id, mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_dead, is_migrated, created_at, updated_at, last_synced_at FROM tokens_info WHERE mint_address = $1",
-        )
+        let row = sqlx::query_as::<_, InfoRow>(&format!(
+            "SELECT {INFO_COLS} FROM tokens_info WHERE mint_address = $1"
+        ))
         .bind(mint)
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(
-            |(
-                id,
-                mint_address,
-                ath_price,
-                ath_timestamp,
-                age,
-                volume,
-                market_cap,
-                trade_count,
-                last_trade_at,
-                current_price,
-                is_dead,
-                is_migrated,
-                created_at,
-                updated_at,
-                last_synced_at,
-            )| TokenInfo {
-                id,
-                mint_address,
-                ath_price,
-                ath_timestamp,
-                age,
-                volume,
-                market_cap,
-                trade_count,
-                last_trade_at,
-                current_price,
-                is_dead,
-                is_migrated,
-                created_at,
-                updated_at,
-                last_synced_at,
-            },
-        ))
+        let mut info = row.map(row_to_info);
+        if let Some(info) = info.as_mut() {
+            info.last_synced_at = self.max_synced_at(mint).await?;
+        }
+        Ok(info)
     }
 
     /// Token metrics rows for the given mints, batched in chunks of `INFO_CHUNK`.
     /// Scoped to the seeded set (`mint = ANY($1)`) so cold start never `SELECT`s the
-    /// whole, retention-free `tokens_info` table — it grows forever and the cache
-    /// only keeps the recent `SEED_TOKEN_LIMIT` mints. Mints with no row are absent.
+    /// whole, retention-free `tokens_info` table. Mints with no row are absent.
+    /// `last_synced_at` is left `None` here (the batch seed path does not need it;
+    /// fetch per-mint via [`Self::find_by_mint`] when required).
     pub async fn find_for(&self, mints: &[String]) -> anyhow::Result<Vec<TokenInfo>> {
         /// Mints per round-trip; keeps each `= ANY($1)` array index-friendly.
         const INFO_CHUNK: usize = 1000;
         if mints.is_empty() {
             return Ok(Vec::new());
         }
-        let mut rows = Vec::with_capacity(mints.len());
+        let mut out = Vec::with_capacity(mints.len());
         for chunk in mints.chunks(INFO_CHUNK) {
-            let batch = sqlx::query_as::<_, (Uuid, String, Option<f64>, Option<DateTime<Utc>>, Option<i64>, f64, Option<f64>, i64, Option<DateTime<Utc>>, Option<f64>, bool, bool, DateTime<Utc>, DateTime<Utc>, Option<DateTime<Utc>>)>(
-                "SELECT id, mint_address, ath_price, ath_timestamp, age, volume, market_cap, trade_count, last_trade_at, current_price, is_dead, is_migrated, created_at, updated_at, last_synced_at FROM tokens_info WHERE mint_address = ANY($1)",
-            )
+            let batch = sqlx::query_as::<_, InfoRow>(&format!(
+                "SELECT {INFO_COLS} FROM tokens_info WHERE mint_address = ANY($1)"
+            ))
             .bind(chunk)
             .fetch_all(&self.pool)
             .await?;
-            rows.extend(batch);
+            out.extend(batch.into_iter().map(row_to_info));
         }
-
-        Ok(rows
-            .into_iter()
-            .map(
-                |(
-                    id,
-                    mint_address,
-                    ath_price,
-                    ath_timestamp,
-                    age,
-                    volume,
-                    market_cap,
-                    trade_count,
-                    last_trade_at,
-                    current_price,
-                    is_dead,
-                    is_migrated,
-                    created_at,
-                    updated_at,
-                    last_synced_at,
-                )| TokenInfo {
-                    id,
-                    mint_address,
-                    ath_price,
-                    ath_timestamp,
-                    age,
-                    volume,
-                    market_cap,
-                    trade_count,
-                    last_trade_at,
-                    current_price,
-                    is_dead,
-                    is_migrated,
-                    created_at,
-                    updated_at,
-                    last_synced_at,
-                },
-            )
-            .collect())
+        Ok(out)
     }
 
-    /// Read the per-token sync watermark:
+    /// Newest successful-sync wall-clock for a mint (MAX over its venue rows).
+    async fn max_synced_at(&self, mint: &str) -> anyhow::Result<Option<DateTime<Utc>>> {
+        let at: Option<DateTime<Utc>> = sqlx::query_scalar(
+            "SELECT MAX(last_synced_at) FROM token_sync_state WHERE mint_address = $1",
+        )
+        .bind(mint)
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten();
+        Ok(at)
+    }
+
+    /// Read the per-token sync watermark across venues:
     /// `(last_synced_at, curve_sig, amm_sig, curve_slot, amm_slot)`.
-    /// Any field is `None` if the token has never been synced (or predates that
-    /// field). Returns all-`None` when the row doesn't exist yet. The `*_slot`
-    /// fields are the slots of the matching `*_sig` watermarks, used as the
-    /// `from_slot` boundary for the LaserStream replay fast path.
+    /// Now sourced from `token_sync_state` (one row per `(mint, venue)`); any field
+    /// is `None` if that venue has never synced. `last_synced_at` is the MAX over
+    /// the mint's venue rows.
     pub async fn get_sync_watermark(
         &self,
         mint: &str,
@@ -232,31 +231,40 @@ impl TokenInfoRepo {
         Option<i64>,
         Option<i64>,
     )> {
-        let row = sqlx::query_as::<
-            _,
-            (
-                Option<DateTime<Utc>>,
-                Option<String>,
-                Option<String>,
-                Option<i64>,
-                Option<i64>,
-            ),
-        >(
-            "SELECT last_synced_at, last_synced_curve_sig, last_synced_amm_sig, \
-                    last_synced_curve_slot, last_synced_amm_slot \
-             FROM tokens_info WHERE mint_address = $1",
+        let rows = sqlx::query_as::<_, (String, Option<String>, Option<i64>, Option<DateTime<Utc>>)>(
+            "SELECT venue, last_sig, last_slot, last_synced_at \
+             FROM token_sync_state WHERE mint_address = $1",
         )
         .bind(mint)
-        .fetch_optional(&self.pool)
+        .fetch_all(&self.pool)
         .await?;
 
-        Ok(row.unwrap_or((None, None, None, None, None)))
+        let mut last_synced_at: Option<DateTime<Utc>> = None;
+        let (mut curve_sig, mut amm_sig, mut curve_slot, mut amm_slot) = (None, None, None, None);
+        for (venue, sig, slot, at) in rows {
+            last_synced_at = match (last_synced_at, at) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (a, b) => a.or(b),
+            };
+            match venue.as_str() {
+                "curve" => {
+                    curve_sig = sig;
+                    curve_slot = slot;
+                }
+                "amm" => {
+                    amm_sig = sig;
+                    amm_slot = slot;
+                }
+                _ => {}
+            }
+        }
+        Ok((last_synced_at, curve_sig, amm_sig, curve_slot, amm_slot))
     }
 
-    /// Record a successful sync: stamp `last_synced_at = at` and store the newest
-    /// per-venue signatures (and their slots) seen. A `None` signature/slot
-    /// preserves the prior value (e.g. an AMM-less sync leaves any existing AMM
-    /// watermark intact).
+    /// Record a successful sync: upsert the per-venue `token_sync_state` rows with
+    /// `last_synced_at = at` and the newest signature/slot seen. A `None`
+    /// signature for a venue leaves that venue's row untouched (an AMM-less sync
+    /// preserves any existing AMM watermark).
     pub async fn update_sync_watermark(
         &self,
         mint: &str,
@@ -266,30 +274,30 @@ impl TokenInfoRepo {
         curve_slot: Option<i64>,
         amm_slot: Option<i64>,
     ) -> anyhow::Result<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO tokens_info
-                (mint_address, last_synced_at, last_synced_curve_sig, last_synced_amm_sig,
-                 last_synced_curve_slot, last_synced_amm_slot, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $2, $2)
-            ON CONFLICT (mint_address) DO UPDATE
-                SET last_synced_at = EXCLUDED.last_synced_at,
-                    last_synced_curve_sig = COALESCE(EXCLUDED.last_synced_curve_sig, tokens_info.last_synced_curve_sig),
-                    last_synced_amm_sig = COALESCE(EXCLUDED.last_synced_amm_sig, tokens_info.last_synced_amm_sig),
-                    last_synced_curve_slot = COALESCE(EXCLUDED.last_synced_curve_slot, tokens_info.last_synced_curve_slot),
-                    last_synced_amm_slot = COALESCE(EXCLUDED.last_synced_amm_slot, tokens_info.last_synced_amm_slot),
-                    updated_at = EXCLUDED.updated_at
-            "#,
-        )
-        .bind(mint)
-        .bind(at)
-        .bind(curve_sig)
-        .bind(amm_sig)
-        .bind(curve_slot)
-        .bind(amm_slot)
-        .execute(&self.pool)
-        .await?;
-
+        let mut tx = self.pool.begin().await?;
+        for (venue, sig, slot) in [("curve", curve_sig, curve_slot), ("amm", amm_sig, amm_slot)] {
+            if sig.is_none() && slot.is_none() {
+                continue;
+            }
+            sqlx::query(
+                r#"
+                INSERT INTO token_sync_state (mint_address, venue, last_sig, last_slot, last_synced_at)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (mint_address, venue) DO UPDATE
+                    SET last_sig = COALESCE(EXCLUDED.last_sig, token_sync_state.last_sig),
+                        last_slot = COALESCE(EXCLUDED.last_slot, token_sync_state.last_slot),
+                        last_synced_at = EXCLUDED.last_synced_at
+                "#,
+            )
+            .bind(mint)
+            .bind(venue)
+            .bind(sig)
+            .bind(slot)
+            .bind(at)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
         Ok(())
     }
 }

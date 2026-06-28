@@ -17,7 +17,6 @@ pub mod client;
 pub mod db_writer;
 pub mod decoder;
 pub mod ingest_health;
-pub mod maintenance;
 pub mod pipeline;
 
 // The transport-agnostic ingest contract lives in `trading_core::ingest`.
@@ -131,7 +130,9 @@ pub fn spawn(
         shed_counters,
     ));
 
-    tokio::spawn(maintenance::run_partition_maintenance(db.clone()));
+    // Partition maintenance removed: TimescaleDB retention + compression policies
+    // (defined in the migration) now manage chunk lifecycle declaratively. See
+    // `trades-storage-plan.md` / `timescaledb-plan.md`.
 
     let pipeline_task = tokio::spawn(ingest_pipeline.run(update_rx));
     let db_writer = db_writer::DbWriter::new(db, trade_signals, heartbeat);

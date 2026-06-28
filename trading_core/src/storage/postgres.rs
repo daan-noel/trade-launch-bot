@@ -107,6 +107,13 @@ pub async fn connect(settings: &Settings) -> anyhow::Result<DbPools> {
         .await
         .map_err(|e| anyhow::anyhow!("Migration failed: {e}"))?;
 
+    // Continuous aggregates (OHLCV candles) can't be created inside a transaction,
+    // and every sqlx migration runs in one — so set them up here, idempotently,
+    // right after the schema migration applies. See `storage::timescale`.
+    crate::storage::timescale::setup_caggs(&hot)
+        .await
+        .map_err(|e| anyhow::anyhow!("TimescaleDB continuous-aggregate setup failed: {e}"))?;
+
     // `api` serves interactive reads — bound each statement so one slow query under
     // disk pressure can't drain the pool the dashboard depends on.
     let api = build_pool(
