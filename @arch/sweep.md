@@ -52,7 +52,7 @@ The 3-hop analysis pipeline that feeds the sweep on the workstation:
 
 CLI: `cargo run -p lab -- lake-export` (batch job; reads `SWEEP_LAKE_DIR`, default OS-temp `pumpfun-lake`). `duckdb = { features=["bundled"] }` is a lab-only dep (lab never ships to EC2).
 
-**Cutover (deferred, needs DB/EC2):** `LakeSource` is wired as an alternative `CorpusSource`, not yet the default — the grouped-sweep handler still calls `load_grouped_corpus` (PG + Parquet cache) at `grouped_sweep.rs:~429`. Switching that to `LakeSource` is gated on the Phase-4 "done-when" check (lake-sourced `strategy_run_metrics` must match a PG-sourced baseline), which requires the live pipeline to run.
+**Cutover (env-toggled; runtime metric-match still pending DB/EC2):** the grouped-sweep handler picks its `CorpusSource` per-request via `SWEEP_CORPUS_SOURCE` (`grouped_sweep.rs::corpus_source_is_lake`). Unset/anything-but-`lake` → the default `load_grouped_corpus` (PG + Parquet cache); `SWEEP_CORPUS_SOURCE=lake` → `LakeSource::new(lake_root()).load(sel)`. On the lake path the handler skips the separate PG `attach_fingerprints` (gated on `corpus.has_fingerprints`, which `LakeSource` sets). The toggle keeps PG the default so the *same* sweep can run both ways for the Phase-4 "done-when" check — lake-sourced `strategy_run_metrics` must match a PG-sourced baseline — which still requires the live pipeline to produce data. Flip the default to lake once that diff is green.
 
 ## Adding a strategy
 
