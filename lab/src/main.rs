@@ -96,6 +96,13 @@ async fn main() -> anyhow::Result<()> {
         batch: batch_db,
     } = storage::postgres::connect(&settings).await?;
 
+    // Lab-only schema: grouped-sweep result tables (and future analysis-only
+    // tables) live in the lab-owned migration set, never on EC2/live. Must run
+    // before the grouped-sweep reconcile below, which reads those tables.
+    storage::lab_migrations::run(&db)
+        .await
+        .context("lab migrations failed")?;
+
     // Crash recovery: a killed process can leave a grouped sweep stuck at
     // `status = 'running'`. None can be live at boot (single-flight gate), so any
     // `running` run is an orphan — mark it `cancelled`. Best-effort.

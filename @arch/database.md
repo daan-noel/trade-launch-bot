@@ -14,7 +14,10 @@
 > sqlx is **runtime-checked** (no compile-time SQL validation). The prose below is the pre-rebuild
 > shape and is being migrated; trust the storage plans + `0001_init.sql`.
 
-sqlx + Postgres. Raw SQL lives **only** in `trading_core/src/storage/repositories/*`. Migrations in `trading_core/migrations/` (`0001_init.sql` = clean TimescaleDB baseline; `0002_lab_grouped_sweep.sql` = the lab-local `tpsl{1,2}_grouped_sweep_*` tables the rebuild's init omitted — written by `lab` only, created empty/unused on EC2 since the migration runner is shared; add further `00NN_*.sql`). Runner: `sqlx::migrate!("./migrations")` in `storage/postgres.rs` (then `timescale::setup_caggs`).
+sqlx + Postgres. Raw SQL lives **only** in `trading_core/src/storage/repositories/*`. **Two migration sets, applied by separate runners so lab-only tables never reach EC2/live:**
+
+- **Shared core** — `trading_core/migrations/` (`0001_init.sql` = clean TimescaleDB baseline; add further `00NN_*.sql`). Runner: `sqlx::migrate!("./migrations")` in `storage/postgres.rs::connect()` (then `timescale::setup_caggs`). Run by **both** bins on boot.
+- **Lab-only** — `lab/migrations/` (`0001_grouped_sweep.sql` = the `tpsl{1,2}_grouped_sweep_*` tables). Runner: `lab::storage::lab_migrations::run()`, called from `lab/main.rs` after `connect()`. Tracked in a lab-private **`_lab_migrations`** ledger (its own checksum table; reuses `migrate!` only as an embedder, never `.run()`, so core's `_sqlx_migrations` is untouched). Run by **`lab` only** → these tables never exist on EC2. Add a lab-only table = drop `NNNN_*.sql` into `lab/migrations/`.
 Deep-dive detail: `@plans/database/db-pool-routing.md`, `@plans/database/db-patterns.md`.
 
 ## Connection pools

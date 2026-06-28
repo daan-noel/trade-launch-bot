@@ -1,31 +1,22 @@
 -- ============================================================================
--- Lab-local grouped param-sweep storage (live/lab remake — Phase 4 gap fix).
+-- Lab-only grouped param-sweep storage.
 --
--- The Phase-1 clean rebuild (0001_init.sql) recreated the shared market-data +
--- unified strategy tables but dropped the per-strategy grouped-sweep result
--- tables that the OLD schema built up across many incremental migrations
--- (0003_tpsl2_sweep, 0004_tpsl1_grouped_sweep, best_score, group_mints, and the
--- 0007 dedup/narrow). The Phase-4 carve-out keeps the sweep's own grouped engine
--- + tables (it did NOT move onto strategy_runs/strategy_run_metrics), so `lab`
--- still reads/writes them via `grouped_sweep_repo` + the `registry` table map.
--- This migration restores them in their final, post-0007 shape.
---
--- These tables are written **only by `lab`** (the workstation analysis box); `live`
--- never touches them. They live in the shared `trading_core` migration set because
--- that is the single migration runner both bins use — exactly as the pre-split
--- single backend created them everywhere. On EC2 they are created empty + unused.
+-- Written **only by `lab`** (the workstation analysis box); `live`/EC2 never
+-- touches them, which is exactly why they live here in the lab-owned migration
+-- set (applied via `_lab_migrations`) and NOT in the shared `trading_core`
+-- migration set. Moved out of the old shared `0002_lab_grouped_sweep.sql`.
 --
 -- Per strategy (`tpsl1`, `tpsl2`) a four-table set, names per
 -- `crate::sweep::registry`'s `GroupedSweepTables`:
 --   <s>_grouped_sweep_runs     one row per sweep run (header + lifecycle status)
 --   <s>_grouped_sweep_groups   one row per surviving fingerprint group
---   <s>_grouped_sweep_results  one row per (group, ranked combo) — narrowed (0007)
---   <s>_grouped_sweep_combos   per-run combo->params dictionary (0007 dedup)
+--   <s>_grouped_sweep_results  one row per (group, ranked combo)
+--   <s>_grouped_sweep_combos   per-run combo->params dictionary
 --
 -- Storage types mirror the repo's read/write code (RunDbRow / GroupDbRow /
 -- ResultDbRow + the append/insert binds): results PnL/score floats are REAL (f32)
--- and the count columns INTEGER (i32) post-0007; group best_score/expectancy stay
--- DOUBLE PRECISION; run buy_amount_sol is REAL.
+-- and the count columns INTEGER (i32); group best_score/expectancy stay DOUBLE
+-- PRECISION; run buy_amount_sol is REAL.
 -- ============================================================================
 
 -- ---------------------------------------------------------------------------

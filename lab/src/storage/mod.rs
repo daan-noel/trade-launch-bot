@@ -4,4 +4,5 @@
 
 pub use trading_core::storage::postgres;
 
+pub mod lab_migrations;
 pub mod repositories;
