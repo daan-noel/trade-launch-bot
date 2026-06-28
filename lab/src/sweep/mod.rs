@@ -17,10 +17,11 @@
 //! - [`projection`] — `SweepTrade`, the slim row the hot loop walks; the shared
 //!   entry/exit fns are generic over `TradeRow` so they serve it and the live
 //!   `Trade` from one implementation.
-//! - [`strategy`] — `Strategy` + `ParamSpace` traits + `TokenOutcome` and the
-//!   frictionless `round_trip`.
+//! - [`strategy`] — `Strategy` + `ParamSpace` traits + `TokenOutcome`; re-exports
+//!   the core `CostModel`/`round_trip_with_costs`/`ExitCode`.
 //! - [`engine`] — `rayon` over tokens (combos inner) → folded `ComboAgg`s.
-//! - [`aggregate`] — `ComboAgg`/`ComboMetrics`: outcomes → one ranked row per combo.
+//! - [`aggregate`] — `ComboAgg` (a thin wrapper over the core kernel's `RunAgg`) →
+//!   `ComboMetrics`: outcomes → one ranked row per combo.
 //! - [`grouping`] — token fingerprint → exact-value `GroupKey` (strategy-agnostic).
 //! - [`grouped_engine`] — partition the corpus by group key, run [`engine`] per group.
 //! - [`registry`] — `strategy_id` → builds the concrete `Strategy` + axes.
@@ -28,8 +29,8 @@
 //!
 //! Decision parity: `simulate` calls the *same* pure fns the live path uses (now
 //! generic over `TradeRow`, monomorphized per row type), so backtest and real
-//! trading resolve identical entry/exit decisions. PnL is frictionless for now
-//! (pure price ratio — see [`strategy::round_trip`]).
+//! trading resolve identical entry/exit decisions. PnL is priced through the core
+//! [`CostModel`](strategy::CostModel) so the table reflects live frictions.
 
 pub mod aggregate;
 pub mod corpus;

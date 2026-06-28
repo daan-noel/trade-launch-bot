@@ -298,14 +298,12 @@ pub async fn run_backtest(
                     match exit {
                         Some(fill) => {
                             let secs = (fill.block_time - entry_time).num_seconds();
-                            let econ = round_trip_with_costs(
+                            let (sol, pct) = round_trip_with_costs(
                                 entry_price,
                                 fill.price,
                                 rule.buy_amount,
                                 &CostModel::pumpfun_default(),
                             );
-                            let pct = econ.pnl_percent;
-                            let sol = econ.pnl_sol;
                             (
                                 Some(fill.price),
                                 Some(fill.tx_signature),

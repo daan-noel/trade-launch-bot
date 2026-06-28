@@ -691,12 +691,13 @@ impl Strategy for Tpsl2Strategy {
             state.cohort_bought,
         ) {
             Some(f) => {
-                let econ = round_trip_with_costs(entry_price, f.price, notional, &self.costs);
+                let (pnl_sol, pnl_percent) =
+                    round_trip_with_costs(entry_price, f.price, notional, &self.costs);
                 TokenOutcome {
                     fired: true,
                     holding_secs: (f.block_time - entry_time).num_seconds(),
-                    pnl_percent: econ.pnl_percent as f32,
-                    pnl_sol: econ.pnl_sol as f32,
+                    pnl_percent: pnl_percent as f32,
+                    pnl_sol: pnl_sol as f32,
                     exit: ExitCode::from_reason(f.reason.as_str()),
                     entry_time: Some(entry_time),
                     entry_price: Some(entry_price),
@@ -708,12 +709,13 @@ impl Strategy for Tpsl2Strategy {
                 // Still open at end of history — mark unrealized PnL at last price,
                 // so the scoring layer can separate open from closed outcomes.
                 let last_price = trades.last().map(|t| t.price_per_token).unwrap_or(entry_price);
-                let econ = round_trip_with_costs(entry_price, last_price, notional, &self.costs);
+                let (pnl_sol, pnl_percent) =
+                    round_trip_with_costs(entry_price, last_price, notional, &self.costs);
                 TokenOutcome {
                     fired: true,
                     holding_secs: 0,
-                    pnl_percent: econ.pnl_percent as f32,
-                    pnl_sol: econ.pnl_sol as f32,
+                    pnl_percent: pnl_percent as f32,
+                    pnl_sol: pnl_sol as f32,
                     exit: ExitCode::Open,
                     entry_time: Some(entry_time),
                     entry_price: Some(entry_price),

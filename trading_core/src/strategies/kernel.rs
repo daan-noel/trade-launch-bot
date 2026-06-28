@@ -13,9 +13,10 @@
 //!
 //! [`RunMetrics`] mirrors the `strategy_run_metrics` columns 1:1 (see
 //! [`StrategyRunMetrics`](crate::models::StrategyRunMetrics)); [`to_run_metrics`]
-//! stamps it onto a run. The bounded [`QuantileSketch`] + streaming [`RunAgg`]
-//! are lifted from `lab`'s `sweep::aggregate` so the analysis path can converge on
-//! this one copy (Phase 4 repoints the sweep here and drops its duplicate).
+//! stamps it onto a run. The bounded `QuantileSketch` + streaming [`RunAgg`] are
+//! the single home for the sketch / robust-score math: `lab`'s per-combo sweep
+//! folds into [`RunAgg`] via its thin `ComboAgg` wrapper (Phase 4), so backtest
+//! and live/paper metrics can never drift to a second copy.
 
 use chrono::Utc;
 use uuid::Uuid;
@@ -301,8 +302,13 @@ const SCORE_Z: f64 = 1.64;
 /// Streaming accumulator across every token a run fires on. PnL stats mark open
 /// positions to last price; holding-time stats and the robust score use closed
 /// positions only. O(1) per run — interior quantiles via a fixed [`QuantileSketch`].
+///
+/// Public so the analysis path can fold into the **same** accumulator the live /
+/// paper kernel uses: `lab`'s per-combo sweep wraps one of these per combo (its
+/// `ComboAgg`) so backtest metrics are byte-identical to a live run's, with no
+/// second copy of the sketch / robust-score math to drift.
 #[derive(Clone)]
-struct RunAgg {
+pub struct RunAgg {
     fired: u64,
     open: u64,
     wins: u64,
@@ -343,7 +349,8 @@ impl Default for RunAgg {
 }
 
 impl RunAgg {
-    fn record(&mut self, o: &TokenOutcome) {
+    /// Fold one token's outcome into the accumulator. No-entry rows are ignored.
+    pub fn record(&mut self, o: &TokenOutcome) {
         if !o.fired {
             return;
         }
@@ -371,7 +378,8 @@ impl RunAgg {
         self.exit_counts[exit_index(o.exit)] += 1;
     }
 
-    fn finalize(self) -> RunMetrics {
+    /// Collapse the accumulator to the final rolled-up [`RunMetrics`].
+    pub fn finalize(self) -> RunMetrics {
         let n = self.fired as f64;
         let (median_pnl_pct, p90_pnl_pct, best_pnl_pct, worst_pnl_pct) = if self.fired == 0 {
             (0.0, 0.0, 0.0, 0.0)

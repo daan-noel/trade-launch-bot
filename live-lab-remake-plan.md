@@ -186,22 +186,27 @@ Parquet lake ──(query/attach)──▶ DuckDB ──▶ sweep corpus        
 | **0 · Topology** ✅ DONE | Rename crates `core`/`live`/`lab` (dirs, Cargo package names, path deps, workspace members, imports, docs). Fold `pump-constants` → `pump-trader::constants`. Scaffold empty `ingest-websocket` (spawn stub). Lift ingest contract into `core::ingest`. Keep capabilities mode strings unchanged. | `cargo check` clean on all crates; behavior identical (run `live`+`lab`, compare endpoints) |
 | **1 · Schema + core data layer** ✅ DONE | New migration (clean rebuild, TimescaleDB) on fresh **local** DB. New `core` models + repos for tokens/trades/strategy/settings. Swap maintenance → Timescale policies. | Migration applies on fresh local DB; repos round-trip; `cargo check -p core` |
 | **2 · Strategy unify (core)** ✅ DONE | `StrategyImpl`/`StrategyParams` registry; `simulate_rule` kernel + shared `RunMetrics`; unified `StrategyRuntimeCache`; unified rule-CRUD domain. Keep tpsl1/tpsl2 logic modules. | Parity unit tests vs old tpsl1/2 decisions on fixtures; `cargo check -p core` |
-| **3 · `live` rewire** | Strategy-agnostic `StrategyRunner` + generalized position execution; ingest via `core::ingest`; unified strategy handlers keyed by `strategy_id`. | `cargo check -p live`; probe `ladder`/`simulate-sell`; manual buy/sell; sell-confirm still feed-driven (no new RPC) |
-| **4 · `lab` pipeline** | Sealed-daily PG sync; lake export; DuckDB corpus; sweep calls `core::simulate_rule`. | `cargo check -p lab`; grouped sweep runs off the lake; metrics match a PG-sourced baseline |
+| **3 · `live` rewire** ✅ DONE | Strategy-agnostic `StrategyRunner` + generalized position execution; ingest via `core::ingest`; unified strategy handlers keyed by `strategy_id`. | `cargo check -p live`; probe `ladder`/`simulate-sell`; manual buy/sell; sell-confirm still feed-driven (no new RPC) |
+| **4 · `lab` pipeline** 🟡 IN PROGRESS | Sealed-daily PG sync; lake export; DuckDB corpus; sweep calls core's kernel. **Sub-task ✅ DONE: sweep repoint/dedup** — `ComboAgg` now wraps `trading_core::strategies::kernel::RunAgg`; lab's duplicate `QuantileSketch`/`robust_score`/`exit_index`/`CostModel`/`round_trip_with_costs`/`ExitCode` deleted (re-exported from core). **Remaining:** sealed-daily PG sync rework (new schema), Parquet lake export, DuckDB corpus layer. | `cargo check -p lab`; grouped sweep runs off the lake; metrics match a PG-sourced baseline |
 | **5 · EC2 cutover** | Apply schema rebuild + TimescaleDB on EC2; deploy `live` + `ingest-laserstream`; watch RAM/heartbeat/compression. | Stable ingest + trading on EC2; RAM within budget |
 | **6 · (deferred)** | Frontend rename `@deploy`/`@analysis` → `@live`/`@lab` + flip capabilities mode strings. | out of scope this remake |
 
-> **Status (2026-06-27):** Phases **0** (`4d68d82`), **1** (`d62111f`), **2** (`15881b1`) complete;
-> `cargo check --workspace` clean. **Phase 3 (`live` rewire) is next.**
+> **Status (2026-06-28):** Phases **0** (`4d68d82`), **1** (`d62111f`), **2** (`6c46110`), **3**
+> (`395dd86`/`0043ba3`/`2d76127`) complete; `cargo check --workspace` clean. **Phase 4 (`lab`
+> pipeline) in progress** — the sweep repoint/dedup sub-task is done (lab's `aggregate.rs` cost/sketch
+> duplicate removed, folded into core's `RunAgg`); sync/lake/DuckDB remain.
 >
 > **Carried into later phases:**
 > - **Phase 3** also absorbs the one Phase-2 carve-out: the per-position clock exit-state memo
 >   (`exit_state_by_position`) + time-exit secondary index — deferred because they need the live
 >   token-cache trade source (only meaningfully built/tested with the live feed). And: migration is
 >   build-verified but **not yet run on a real TimescaleDB box** (do this before/with the EC2 cutover).
-> - **Phase 4** must repoint the `lab` sweep at `core::strategies::kernel`
->   (`simulate_rule`/`RunMetrics`/`QuantileSketch`/`CostModel`) and **delete lab's duplicate**
->   `sweep/aggregate.rs` + cost code (Phase 2 ported a copy into core, left lab's in place).
+> - **Phase 4** ✅ (this sub-task) repointed the `lab` sweep at `core::strategies::kernel`:
+>   `ComboAgg` wraps the shared `RunAgg`, `ComboMetrics` = core `RunMetrics` + `combo_id`, and lab's
+>   duplicate `QuantileSketch`/`robust_score`/`exit_index`/`CostModel`/`round_trip_with_costs`/`ExitCode`
+>   are deleted (re-exported from core). Note the sweep keeps its own entry-cache/grouped engine and
+>   `TokenOutcome` (richer, for drill-in) — `core::simulate_rule`'s linear walk would drop the per-token
+>   entry-cache reuse, a hot-path regression, so only the shared cost/aggregate math was unified.
 
 ---
 
