@@ -12,5 +12,9 @@
 //! belongs in both.
 
 pub mod analysis;
+pub mod kernel;
+pub mod registry;
+pub mod rules;
+pub mod runtime_cache;
 pub mod tpsl_sniper_1;
 pub mod tpsl_sniper_2;

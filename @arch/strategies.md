@@ -5,6 +5,26 @@ Logic explainers: `@plans/tpsl-strategy/` (strategy-invariants.md, tpsl2-entry-e
 
 Backtesting is strategy-agnostic — the sweep engine only sees `Strategy`/`ParamSpace` returning `TokenOutcome`. TPSL2's impl (`sweep/strategies/tpsl2.rs`) reuses the same live entry/exit pure fns. A new strategy adds only its `Strategy`+`ParamSpace`+`AxesSpec` impl + a `registry.rs` arm + migration. See [@arch/sweep.md](@arch/sweep.md).
 
+## Unified core domain — `trading_core::strategies` (Phase 2)
+
+The strategy domain is being unified behind one enum-dispatched registry in
+`trading_core` (live-lab remake Phase 2 — see [live-lab-remake-plan.md](../live-lab-remake-plan.md)).
+The decision logic in `tpsl_sniper_1`/`tpsl_sniper_2` is **unchanged** (still intentional clones); the
+new modules only route by `strategy_id` and parse params once, so they run the identical code path
+(exact parity). The live edge below still consumes the old per-strategy caches/handlers until Phase 3
+rewires it onto these.
+
+| Module | Role |
+| --- | --- |
+| `registry.rs` | `StrategyImpl{Tpsl1,Tpsl2}` (`from_id`/`id`/`parse_params`); typed `Tpsl1Params`/`Tpsl2Params` (serde, `to_rule`/`from_rule`) parsed once from the `strategy_rules.params` JSONB; `StrategyParams`; enum-dispatched `matches_entry` / `resolve_entry` / `resolve_exit` over the unchanged tpsl1/2 fns |
+| `kernel.rs` | `simulate_rule(StrategyImpl, &StrategyParams, &[&[T]], &SimConfig) -> RunMetrics` + `simulate_token`; `RunMetrics` ≡ the `strategy_run_metrics` columns (`to_run_metrics(run_id)`); `CostModel`/`round_trip_with_costs` + `QuantileSketch`/`RunAgg` (ported from `lab/sweep`; Phase 4 repoints the sweep here and drops the dup) |
+| `runtime_cache.rs` | strategy-agnostic `StrategyRuntimeCache`: active rules + parsed params, holding-by-mint index, per-rule cap counters, `RuleClosedStats`, paper-run pointer, `ExitGuard`/`EntryGuard` RAII. DB/SSE-free (Phase-3 edge wraps those). **Deferred to Phase 3:** the per-position clock exit-state memo + time-exit index (tied to the live token-cache trade source) |
+| `rules.rs` | `strategy_id`-dispatched rule-CRUD domain: `validate` (percent ranges + tpsl2 entry-window/scalp-gate), `build_rule(RuleDraft) -> StrategyRule`, `create`/`save` against `StrategyRepo`. Replaces the cloned `tpsl_rules_core` split |
+
+Universal knobs (`buy_amount`, `trade_mode`, caps) are the typed columns on `StrategyRule`; only the
+strategy-specific gates live in `params`. `StrategyPosition` gained PnL/status helpers
+(`is_win`/`realized_pnl_sol`/`pnl_pct`/`is_closed`/…) mirroring the `strategy_position_pnl` view.
+
 ## Dispatch — `runner.rs`
 
 `StrategyRunner` consumes `strategy_rx` in a `select!` loop and routes to both strategy services:

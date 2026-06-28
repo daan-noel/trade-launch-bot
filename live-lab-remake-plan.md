@@ -185,19 +185,23 @@ Parquet lake ──(query/attach)──▶ DuckDB ──▶ sweep corpus        
 | --- | --- | --- |
 | **0 · Topology** ✅ DONE | Rename crates `core`/`live`/`lab` (dirs, Cargo package names, path deps, workspace members, imports, docs). Fold `pump-constants` → `pump-trader::constants`. Scaffold empty `ingest-websocket` (spawn stub). Lift ingest contract into `core::ingest`. Keep capabilities mode strings unchanged. | `cargo check` clean on all crates; behavior identical (run `live`+`lab`, compare endpoints) |
 | **1 · Schema + core data layer** ✅ DONE | New migration (clean rebuild, TimescaleDB) on fresh **local** DB. New `core` models + repos for tokens/trades/strategy/settings. Swap maintenance → Timescale policies. | Migration applies on fresh local DB; repos round-trip; `cargo check -p core` |
-| **2 · Strategy unify (core)** | `StrategyImpl`/`StrategyParams` registry; `simulate_rule` kernel + shared `RunMetrics`; unified `StrategyRuntimeCache`; unified rule-CRUD domain. Keep tpsl1/tpsl2 logic modules. | Parity unit tests vs old tpsl1/2 decisions on fixtures; `cargo check -p core` |
+| **2 · Strategy unify (core)** ✅ DONE | `StrategyImpl`/`StrategyParams` registry; `simulate_rule` kernel + shared `RunMetrics`; unified `StrategyRuntimeCache`; unified rule-CRUD domain. Keep tpsl1/tpsl2 logic modules. | Parity unit tests vs old tpsl1/2 decisions on fixtures; `cargo check -p core` |
 | **3 · `live` rewire** | Strategy-agnostic `StrategyRunner` + generalized position execution; ingest via `core::ingest`; unified strategy handlers keyed by `strategy_id`. | `cargo check -p live`; probe `ladder`/`simulate-sell`; manual buy/sell; sell-confirm still feed-driven (no new RPC) |
 | **4 · `lab` pipeline** | Sealed-daily PG sync; lake export; DuckDB corpus; sweep calls `core::simulate_rule`. | `cargo check -p lab`; grouped sweep runs off the lake; metrics match a PG-sourced baseline |
 | **5 · EC2 cutover** | Apply schema rebuild + TimescaleDB on EC2; deploy `live` + `ingest-laserstream`; watch RAM/heartbeat/compression. | Stable ingest + trading on EC2; RAM within budget |
 | **6 · (deferred)** | Frontend rename `@deploy`/`@analysis` → `@live`/`@lab` + flip capabilities mode strings. | out of scope this remake |
 
-> **Status (2026-06-27):** Phases **0** and **1** complete. Phase 1 done at the code layer — migration
-> (TimescaleDB hypertables, compression/retention policies, `trades_ohlcv_1m`+5m/1h CAggs via
-> `timescale::setup_caggs`), all new models + repos (`raw_tx`, `strategy`, `token_sync_state`,
-> `wallet_dict`, refreshed `token`/`token_info`/`trade`), `maintenance.rs` removed, `trade_repo`
-> on `ON CONFLICT DO NOTHING`; `cargo check -p trading_core` clean (changes still uncommitted).
-> **Phase 2 is the next task** — no `registry.rs`/`kernel.rs`/`StrategyImpl`/`StrategyRuntimeCache`
-> yet; `tpsl_sniper_1`/`tpsl_sniper_2` are still the hand-cloned pair.
+> **Status (2026-06-27):** Phases **0** (`4d68d82`), **1** (`d62111f`), **2** (`15881b1`) complete;
+> `cargo check --workspace` clean. **Phase 3 (`live` rewire) is next.**
+>
+> **Carried into later phases:**
+> - **Phase 3** also absorbs the one Phase-2 carve-out: the per-position clock exit-state memo
+>   (`exit_state_by_position`) + time-exit secondary index — deferred because they need the live
+>   token-cache trade source (only meaningfully built/tested with the live feed). And: migration is
+>   build-verified but **not yet run on a real TimescaleDB box** (do this before/with the EC2 cutover).
+> - **Phase 4** must repoint the `lab` sweep at `core::strategies::kernel`
+>   (`simulate_rule`/`RunMetrics`/`QuantileSketch`/`CostModel`) and **delete lab's duplicate**
+>   `sweep/aggregate.rs` + cost code (Phase 2 ported a copy into core, left lab's in place).
 
 ---
 

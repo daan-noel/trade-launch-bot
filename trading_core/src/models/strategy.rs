@@ -122,3 +122,49 @@ pub struct StrategyPosition {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
+
+impl StrategyPosition {
+    /// In the runtime holding index: still arming, buy in flight, or held. These
+    /// are the states the exit gate and fill-adopt path scan by mint.
+    pub fn is_in_holding_index(&self) -> bool {
+        matches!(self.status.as_str(), "Arming" | "BuySubmitted" | "Holding")
+    }
+
+    /// Fully entered and currently held (SOL deployed, not yet exiting).
+    pub fn is_holding(&self) -> bool {
+        self.status == "Holding"
+    }
+
+    /// Terminally closed — either a clean exit or a failed one.
+    pub fn is_closed(&self) -> bool {
+        matches!(self.status.as_str(), "End" | "ExitFailed")
+    }
+
+    /// A real entry landed (SOL deployed) — the gate for the cap counters.
+    pub fn is_entered(&self) -> bool {
+        self.entry_price.is_some()
+    }
+
+    /// Realized SOL PnL (`exit_sol − entry_sol`), once both fills are recorded.
+    /// Mirrors `strategy_position_pnl.realized_pnl_sol`.
+    pub fn realized_pnl_sol(&self) -> Option<f64> {
+        match (self.entry_sol, self.exit_sol) {
+            (Some(entry), Some(exit)) => Some(exit - entry),
+            _ => None,
+        }
+    }
+
+    /// Realized PnL % off the entry price. Mirrors `strategy_position_pnl.pnl_pct`.
+    pub fn pnl_pct(&self) -> Option<f64> {
+        match (self.entry_price, self.exit_price) {
+            (Some(entry), Some(exit)) if entry > 0.0 => Some((exit - entry) / entry * 100.0),
+            _ => None,
+        }
+    }
+
+    /// A clean `End` exit that realized positive SOL — the win/loss classifier the
+    /// per-rule closed-stats counters use (everything else is a loss).
+    pub fn is_win(&self) -> bool {
+        self.status == "End" && self.realized_pnl_sol().map(|p| p > 0.0).unwrap_or(false)
+    }
+}
