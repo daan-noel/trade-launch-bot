@@ -16,19 +16,17 @@
 // ============================================================
 
 use super::{AmmGlobalConfig, AmmPoolInfo, PumpFunTrader};
-use crate::constants::{
-    AMM_CONFIG_COIN_CREATOR_FEE_BPS_OFFSET, AMM_CONFIG_FEE_RECIPIENTS_OFFSET,
+use crate::error::{bail, Context, Result, TradeError};
+use crate::protocol::{
+    self, AMM_CONFIG_COIN_CREATOR_FEE_BPS_OFFSET, AMM_CONFIG_FEE_RECIPIENTS_OFFSET,
     AMM_CONFIG_LP_FEE_BPS_OFFSET, AMM_CONFIG_MIN_LEN, AMM_CONFIG_PROTOCOL_FEE_BPS_OFFSET,
-    AMM_POOL_BASE_VAULT_OFFSET, AMM_POOL_COIN_CREATOR_OFFSET,
-    AMM_POOL_IS_CASHBACK_OFFSET, AMM_POOL_MIN_LEN, AMM_POOL_QUOTE_VAULT_OFFSET,
-    CONFIRM_MAX_RETRIES, PUMP_AMM_CASHBACK_GLOBAL,
+    AMM_POOL_BASE_VAULT_OFFSET, AMM_POOL_COIN_CREATOR_OFFSET, AMM_POOL_IS_CASHBACK_OFFSET,
+    AMM_POOL_MIN_LEN, AMM_POOL_QUOTE_VAULT_OFFSET,
 };
-use anyhow::{anyhow, bail, Context, Result};
 use serde_json::json;
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
-    signature::Signer,
     system_instruction,
 };
 use spl_associated_token_account::{
@@ -84,7 +82,7 @@ impl PumpFunTrader {
         confirm: bool,
     ) -> Result<bool> {
         let t0 = Instant::now();
-        let user = self.config.keypair.pubkey();
+        let user = self.config.signer.pubkey();
 
         let (core_ixs, user_base) = self
             .build_amm_buy_ixs(
@@ -104,7 +102,7 @@ impl PumpFunTrader {
 
         // Recent blockhash (not durable nonce): the swap already carries ~27
         // accounts, and a nonce-advance would push the legacy tx over 1232 bytes.
-        let tx = self.build_recent_tx(ixs, &self.config.keypair).await?;
+        let tx = self.build_recent_tx(ixs, self.config.signer.as_ref()).await?;
         let sig = self.send_transaction(&tx).await?;
         info!(
             "📤 AMM buy sent — sig: {} | SOL: {} | {}ms",
@@ -117,7 +115,8 @@ impl PumpFunTrader {
         self.user_token_accounts
             .insert(token_mint.to_string(), user_base);
         if confirm {
-            self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES).await?;
+            self.confirm_transaction(&sig, self.config.retry.confirm_max_retries)
+                .await?;
             info!(
                 "✅ AMM buy confirmed — sig: {} | {}ms",
                 sig,
@@ -172,7 +171,7 @@ impl PumpFunTrader {
         confirm: bool,
     ) -> Result<Option<String>> {
         let t0 = Instant::now();
-        let user = self.config.keypair.pubkey();
+        let user = self.config.signer.pubkey();
 
         let core_ixs = self
             .build_amm_sell_ixs(
@@ -196,7 +195,8 @@ impl PumpFunTrader {
         // always falls through to `schedule_nonce_refresh`.
         let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
         let result: Result<Option<String>> = async {
-            let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, &self.config.keypair)?;
+            let tx =
+                self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, self.config.signer.as_ref())?;
             let sig = self.send_transaction(&tx).await?;
             info!(
                 "📤 AMM sell sent — sig: {} | amount: {} | {}ms",
@@ -207,7 +207,8 @@ impl PumpFunTrader {
             // See `sell_token_once`: skip the redundant RPC poll on the
             // feed-confirmed path (the caller watches the LaserStream `trades`).
             if confirm {
-                self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES).await?;
+                self.confirm_transaction(&sig, self.config.retry.confirm_max_retries)
+                    .await?;
                 info!(
                     "✅ AMM sell confirmed — sig: {} | {}ms",
                     sig,
@@ -251,7 +252,7 @@ impl PumpFunTrader {
 
         // Guard the real spend (NaN/∞, non-positive, oversized, or rounds-to-zero)
         // before building the swap — the AMM public entry, mirroring the curve path.
-        let spendable = super::buy_lamports_checked(sol_amount)?;
+        let spendable = self.buy_lamports_checked(sol_amount)?;
         let fee_bps = (cfg.lp_fee_bps + cfg.protocol_fee_bps + cfg.coin_creator_fee_bps) as u128;
         // A garbage/misread global-config (fee >= 100%) would wrap `BPS_DENOM -
         // fee_bps` in release and silently drop slippage protection on a real
@@ -483,10 +484,7 @@ impl PumpFunTrader {
             if !with_volume {
                 accounts.push(AccountMeta::new(uva, false)); // writable, sell-only
             }
-            accounts.push(AccountMeta::new_readonly(
-                Pubkey::from_str(PUMP_AMM_CASHBACK_GLOBAL).expect("valid PUMP_AMM_CASHBACK_GLOBAL"),
-                false,
-            ));
+            accounts.push(AccountMeta::new_readonly(protocol::PUMP_AMM_CASHBACK_GLOBAL, false));
         } else if let Some(marker) = pool.fee_share_marker {
             // Non-cashback swaps carry a single per-coin "fee-share" marker
             // (readonly) in this slot, on both buy and sell. The deployed program
@@ -719,9 +717,9 @@ impl PumpFunTrader {
             ])
             .await
             .context("read pool reserves")?;
-        let [base, quote]: [Option<_>; 2] = accounts
-            .try_into()
-            .map_err(|_| anyhow!("getMultipleAccounts returned an unexpected count"))?;
+        let [base, quote]: [Option<_>; 2] = accounts.try_into().map_err(|_| {
+            TradeError::Other("getMultipleAccounts returned an unexpected count".into())
+        })?;
         let base = base.context("pool base vault not found")?;
         let quote = quote.context("pool quote vault not found")?;
         let base_res = read_u64(&base.data, 64)? as u128;
@@ -744,7 +742,7 @@ impl PumpFunTrader {
     ) -> Result<(u128, u128)> {
         if let Some(r) = self.reserve_cache.get_fresh(
             mint,
-            std::time::Duration::from_millis(crate::constants::RESERVE_CACHE_MAX_AGE_MS),
+            std::time::Duration::from_millis(self.config.cache.reserve_max_age_ms),
             true,
         ) {
             return Ok(r);
@@ -893,7 +891,8 @@ fn read_pubkey(data: &[u8], off: usize) -> Result<Pubkey> {
     if data.len() < end {
         bail!("account data too short for pubkey at offset {}", off);
     }
-    Pubkey::try_from(&data[off..end]).map_err(|_| anyhow!("bad pubkey at offset {}", off))
+    Pubkey::try_from(&data[off..end])
+        .map_err(|_| TradeError::Other(format!("bad pubkey at offset {off}")))
 }
 
 fn read_u64(data: &[u8], off: usize) -> Result<u64> {
@@ -907,10 +906,8 @@ fn read_u64(data: &[u8], off: usize) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::{read_u64, AmmGlobalConfig, AmmPoolInfo, PumpFunTrader, BUY_DISC, SELL_DISC};
-    use crate::constants::{
-        COMPUTE_UNIT_LIMIT_AMM, COMPUTE_UNIT_PRICE_MICRO_LAMPORTS, TOKEN_2022_PROGRAM_ID,
-        TOKEN_PROGRAM_ID, WSOL_MINT,
-    };
+    use crate::config::ComputeBudgetCfg;
+    use crate::protocol::{self, TOKEN_2022_PROGRAM_ID};
     use crate::trader::TraderConfig;
     use solana_sdk::{
         compute_budget::ComputeBudgetInstruction, instruction::Instruction, message::Message,
@@ -951,12 +948,12 @@ mod tests {
     //     which is exactly why `amm_buy` uses a recent blockhash.
 
     fn dummy_trader() -> PumpFunTrader {
-        let config = Arc::new(TraderConfig {
-            rpc_url: "http://localhost".into(),
-            helius_sender_urls: vec!["http://localhost".into()],
-            keypair: Keypair::new(),
-            nonce_accounts: vec![Pubkey::new_unique().to_string()],
-        });
+        let config = Arc::new(TraderConfig::new(
+            "http://localhost".into(),
+            vec!["http://localhost".into()],
+            Arc::new(Keypair::new()),
+            vec![Pubkey::new_unique()],
+        ));
         PumpFunTrader::new(config)
     }
 
@@ -976,7 +973,7 @@ mod tests {
         AmmPoolInfo {
             pool: Pubkey::new_unique(),
             base_mint: Pubkey::new_unique(),
-            quote_mint: Pubkey::from_str(WSOL_MINT).unwrap(),
+            quote_mint: protocol::WSOL_MINT,
             base_token_program: Pubkey::from_str(TOKEN_2022_PROGRAM_ID).unwrap(),
             pool_base_token_account: Pubkey::new_unique(),
             pool_quote_token_account: Pubkey::new_unique(),
@@ -987,15 +984,16 @@ mod tests {
     }
 
     fn compute_budget_ixs() -> Vec<Instruction> {
+        let c = ComputeBudgetCfg::default();
         vec![
-            ComputeBudgetInstruction::set_compute_unit_limit(COMPUTE_UNIT_LIMIT_AMM),
-            ComputeBudgetInstruction::set_compute_unit_price(COMPUTE_UNIT_PRICE_MICRO_LAMPORTS),
+            ComputeBudgetInstruction::set_compute_unit_limit(c.amm_cu),
+            ComputeBudgetInstruction::set_compute_unit_price(c.price_micro_lamports),
         ]
     }
 
     fn build_buy_ixs(t: &PumpFunTrader, user: &Pubkey) -> Vec<Instruction> {
-        let legacy = Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap();
-        let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
+        let legacy = protocol::TOKEN;
+        let wsol = protocol::WSOL_MINT;
         let pool = worst_case_pool();
         let user_base =
             get_associated_token_address_with_program_id(user, &pool.base_mint, &pool.base_token_program);
@@ -1025,8 +1023,8 @@ mod tests {
     }
 
     fn build_sell_ixs(t: &PumpFunTrader, user: &Pubkey) -> Vec<Instruction> {
-        let legacy = Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap();
-        let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
+        let legacy = protocol::TOKEN;
+        let wsol = protocol::WSOL_MINT;
         let pool = worst_case_pool();
         let user_base =
             get_associated_token_address_with_program_id(user, &pool.base_mint, &pool.base_token_program);

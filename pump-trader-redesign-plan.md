@@ -1,5 +1,14 @@
 # pump-trader standalone redesign
 
+> **STATUS: IMPLEMENTED.** All four levers shipped — `protocol.rs` (Tier-1 const
+> Pubkeys, no init parse/unwrap), `config.rs` (Tier-2 `TraderConfig` + 7 `Default`
+> sub-structs), `error.rs` (`TradeError` thiserror, `anyhow` dropped),
+> `Arc<dyn Signer>`, and `probe`/`claim` cargo features (off by default).
+> `pump-constants` was already folded in. `cargo check` clean on `pump-trader`
+> (default / `--no-default-features` / `--all-features`) and `live`; 31 unit tests
+> pass. `constants.rs` retained as a thin back-compat shim for `live`'s string
+> consumers. See [@arch/trade-execution.md](@arch/trade-execution.md).
+
 ## Context
 
 `pump-trader` is the real buy/sell executor (no simulation of SOL — `sim.rs` only does dry-run `simulateTransaction`). The goal is to make it a **totally isolated, drop-in library** reusable in other projects. Today it is ~95% standalone but has three couplings and one mis-categorised-constants problem:

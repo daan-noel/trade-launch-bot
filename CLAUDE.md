@@ -19,7 +19,7 @@ Six Rust workspace crates + `frontend-react` SPA. The old single `backend` crate
 | Crate | Kind | Role |
 | --- | --- | --- |
 | `trading_core` | lib | config, models, storage, core services/state (`CoreState`), api framework + auth + SSE bridge, core handlers, strategy domain (`tpsl_rules_core`), **ingest contract** (`trading_core::ingest`) |
-| `pump-trader` | lib | buy/sell executor; owns protocol/tuning constants in-crate (`pump_trader::constants`, folded in from the former `pump-constants`) |
+| `pump-trader` | lib | buy/sell executor; **standalone drop-in library** (no workspace deps). Three tiers: `protocol` (Tier-1 `const Pubkey` invariants), `config` (Tier-2 `TraderConfig` + 7 `Default` sub-structs), per-call args. Signs via `Arc<dyn Signer>` (HSM/remote-ready); typed `error::TradeError` (no `anyhow`). `probe`/`claim` are off-by-default cargo features; `constants.rs` is a thin back-compat shim |
 | `ingest-laserstream` | lib | Helius LaserStream gRPC transport (client→pipeline→db_writer) + watchdog; exposes `spawn(…) -> IngestHandles` |
 | `ingest-websocket` | lib | **empty scaffold** — `spawn(…) -> IngestHandles` stub mirroring laserstream so `live` can swap transports later (not yet implemented) |
 | `live` | **bin** | LIVE box: strategies, trader, deploy services/state (`DeployState`), live/trading handlers, `probe`. Ships to EC2 |

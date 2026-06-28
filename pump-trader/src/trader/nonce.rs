@@ -10,12 +10,8 @@
 // ============================================================
 
 use super::PumpFunTrader;
-use crate::constants::{
-    NONCE_MAX_WAIT_ITERS, NONCE_REFRESH_MAX_ATTEMPTS, NONCE_REFRESH_RETRY_MS, NONCE_WAIT_SLEEP_MS,
-};
-use anyhow::{Context, Result};
+use crate::error::{bail, Context, Result};
 use solana_client::nonce_utils;
-use solana_sdk::signature::Signer;
 use solana_sdk::{hash::Hash, nonce::State, pubkey::Pubkey};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -40,12 +36,14 @@ impl PumpFunTrader {
     /// Acquire the next available nonce slot (round-robin, spin-wait if all busy).
     pub(super) async fn acquire_nonce(&self) -> Result<(Pubkey, Hash)> {
         if self.nonce_pubkeys.is_empty() {
-            anyhow::bail!("No nonce accounts configured");
+            bail!("No nonce accounts configured");
         }
 
+        let max_wait_iters = self.config.nonce.max_wait_iters;
+        let wait_sleep_ms = self.config.nonce.wait_sleep_ms;
         let mut waited = 0usize;
 
-        for _ in 0..NONCE_MAX_WAIT_ITERS {
+        for _ in 0..max_wait_iters {
             // Arm the wakeup BEFORE scanning, so a slot freed between our failed
             // scan and the await below still wakes us (no lost notification).
             let freed = self.nonce_available.notified();
@@ -92,14 +90,10 @@ impl PumpFunTrader {
             // Event-driven wait: wake the instant a slot is refreshed free, but
             // cap each wait so we still re-scan periodically as a safety net (and
             // to pick up a slot whose hash arrives without a notify race).
-            let _ = tokio::time::timeout(
-                Duration::from_millis(NONCE_WAIT_SLEEP_MS),
-                freed,
-            )
-            .await;
+            let _ = tokio::time::timeout(Duration::from_millis(wait_sleep_ms), freed).await;
         }
 
-        anyhow::bail!("All nonce slots busy after {} iters", NONCE_MAX_WAIT_ITERS)
+        bail!("All nonce slots busy after {max_wait_iters} iters")
     }
 
     /// After a tx is sent, refresh the nonce hash in the background and clear in_use.
@@ -107,6 +101,8 @@ impl PumpFunTrader {
         let rpc = Arc::clone(&self.rpc);
         let slots = Arc::clone(&self.nonce_slots);
         let available = Arc::clone(&self.nonce_available);
+        let refresh_max_attempts = self.config.nonce.refresh_max_attempts;
+        let refresh_retry_ms = self.config.nonce.refresh_retry_ms;
 
         tokio::spawn(async move {
             // The hash the just-sent tx spent — still cached (the slot stayed
@@ -126,15 +122,15 @@ impl PumpFunTrader {
             // hash is still valid and safe to re-arm; we fall back to it.
             let mut advanced: Option<Hash> = None;
             let mut last_ok: Option<Hash> = None;
-            for attempt in 0..NONCE_REFRESH_MAX_ATTEMPTS {
-                let result: anyhow::Result<Hash> = async {
+            for attempt in 0..refresh_max_attempts {
+                let result: Result<Hash> = async {
                     let account = rpc
                         .get_account(&nonce_pubkey)
                         .await
                         .with_context(|| format!("get_account failed for {}", nonce_pubkey))?;
                     match nonce_utils::state_from_account(&account)? {
                         State::Initialized(data) => Ok(data.blockhash()),
-                        _ => anyhow::bail!("Nonce account {} not initialized", nonce_pubkey),
+                        _ => bail!("Nonce account {} not initialized", nonce_pubkey),
                     }
                 }
                 .await;
@@ -154,7 +150,7 @@ impl PumpFunTrader {
                         );
                     }
                 }
-                tokio::time::sleep(Duration::from_millis(NONCE_REFRESH_RETRY_MS)).await;
+                tokio::time::sleep(Duration::from_millis(refresh_retry_ms)).await;
             }
 
             let mut guard = slots.lock().unwrap_or_else(|p| p.into_inner());
@@ -187,7 +183,7 @@ impl PumpFunTrader {
     /// them. A mismatched authority means a durable-nonce tx on that slot would
     /// fail `advance_nonce_account`.
     pub async fn check_nonce_authorities(&self) -> Vec<NonceAuthCheck> {
-        let wallet = self.config.keypair.pubkey();
+        let wallet = self.config.signer.pubkey();
         let mut out = Vec::with_capacity(self.nonce_pubkeys.len());
         for pk in &self.nonce_pubkeys {
             let check = match self.rpc.get_account(pk).await {
@@ -235,7 +231,7 @@ impl PumpFunTrader {
             .with_context(|| format!("Failed to fetch nonce account {}", pubkey))?;
         match nonce_utils::state_from_account(&account)? {
             State::Initialized(data) => Ok(data.blockhash()),
-            _ => anyhow::bail!("Nonce account {} not initialized", pubkey),
+            _ => bail!("Nonce account {} not initialized", pubkey),
         }
     }
 }

@@ -20,13 +20,13 @@
 // ============================================================
 
 use super::PumpFunTrader;
-use anyhow::{Context, Result};
+use crate::error::{bail, Context, Result};
 use base64::{engine::general_purpose, Engine as _};
 use solana_account_decoder::{UiAccountData, UiAccountEncoding};
 use solana_client::rpc_config::{RpcSimulateTransactionAccountsConfig, RpcSimulateTransactionConfig};
 use solana_sdk::{
     commitment_config::CommitmentConfig, instruction::Instruction, message::Message,
-    pubkey::Pubkey, signature::Signer, transaction::Transaction,
+    pubkey::Pubkey, transaction::Transaction,
 };
 use std::str::FromStr;
 
@@ -191,7 +191,7 @@ impl PumpFunTrader {
         slippage_bps: Option<u64>,
     ) -> Result<SimOutcome> {
         // Validate the size with the same guard the real buy uses.
-        let buy_lamports = super::buy_lamports_checked(sol_amount)?;
+        let buy_lamports = self.buy_lamports_checked(sol_amount)?;
 
         if !self.token_pdas.contains_key(token_mint) {
             self.ensure_token_pdas(token_mint).await?;
@@ -203,7 +203,7 @@ impl PumpFunTrader {
             .map(|r| *r)
             .context("PDAs not cached")?;
 
-        let wallet = self.config.keypair.pubkey();
+        let wallet = self.config.signer.pubkey();
         let ata = spl_associated_token_account::get_associated_token_address_with_program_id(
             &wallet,
             &mint,
@@ -228,8 +228,12 @@ impl PumpFunTrader {
             Some(_) => self.curve_reserves(token_mint, &pdas.bonding_curve).await.ok(),
             None => None,
         };
-        let min_tokens_out =
-            super::buy::compute_curve_buy_min_out(buy_lamports, slippage_bps, reserves);
+        let min_tokens_out = super::buy::compute_curve_buy_min_out(
+            buy_lamports,
+            slippage_bps,
+            reserves,
+            self.config.slippage.curve_fee_buffer_bps,
+        );
 
         let ixs = self.build_curve_buy_ixs(
             &mint,
@@ -266,7 +270,7 @@ impl PumpFunTrader {
         // build the correct creator_vault.
         self.ensure_token_pdas(token_mint).await?;
         if self.resolve_cached_token_account(token_mint).await?.is_none() {
-            anyhow::bail!("No token account cached/found for mint {token_mint}");
+            bail!("No token account cached/found for mint {token_mint}");
         }
         let mint = Pubkey::from_str(token_mint)?;
         let pdas = self
@@ -284,8 +288,12 @@ impl PumpFunTrader {
             Some(_) => self.curve_reserves(token_mint, &pdas.bonding_curve).await.ok(),
             None => None,
         };
-        let min_sol_output =
-            super::sell::compute_curve_sell_min_out(token_amount, slippage_bps, reserves);
+        let min_sol_output = super::sell::compute_curve_sell_min_out(
+            token_amount,
+            slippage_bps,
+            reserves,
+            self.config.slippage.curve_fee_buffer_bps,
+        );
 
         let ixs = self.build_curve_sell_ixs(
             &mint,
@@ -296,7 +304,7 @@ impl PumpFunTrader {
             is_cashback,
             0,
         )?;
-        let payer = self.config.keypair.pubkey();
+        let payer = self.config.signer.pubkey();
         self.simulate_ixs(ixs, &payer, &[payer, user_token_account])
             .await
     }
@@ -317,7 +325,7 @@ impl PumpFunTrader {
         pool_override: Option<&str>,
         slippage_bps: Option<u64>,
     ) -> Result<SimOutcome> {
-        let user = self.config.keypair.pubkey();
+        let user = self.config.signer.pubkey();
         let (core_ixs, user_base) = self
             .build_amm_buy_ixs(
                 token_mint,
@@ -351,7 +359,7 @@ impl PumpFunTrader {
         token_account_override: Option<&str>,
         slippage_bps: Option<u64>,
     ) -> Result<SimOutcome> {
-        let user = self.config.keypair.pubkey();
+        let user = self.config.signer.pubkey();
         let core_ixs = self
             .build_amm_sell_ixs(
                 token_mint,

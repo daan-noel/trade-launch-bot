@@ -8,16 +8,10 @@
 
 use super::jito_tip::refresh_tip_floor;
 use super::{GlobalAccount, NonceSlot, PumpFunTrader};
-use crate::constants::{
-    BLOCKHASH_REFRESH_MS, BUY_SEED_POOL_SIZE, COMPUTE_UNIT_LIMIT_AMM, COMPUTE_UNIT_LIMIT_CURVE_BUY,
-    COMPUTE_UNIT_LIMIT_CURVE_SELL, COMPUTE_UNIT_PRICE_MICRO_LAMPORTS, JITO_TIP_FLOOR_REFRESH_MS,
-    JITO_TIP_PERCENTILE, MAX_JITO_TIP_SOL, MIN_JITO_TIP_SOL,
-};
+use crate::error::{bail, Context, Result};
 use crate::types::TokenProgram;
-use anyhow::{Context, Result};
-use solana_sdk::{compute_budget::ComputeBudgetInstruction, pubkey::Pubkey, signature::Signer};
+use solana_sdk::{compute_budget::ComputeBudgetInstruction, pubkey::Pubkey};
 use std::collections::HashSet;
-use std::str::FromStr;
 use std::time::Duration;
 use tracing::{info, warn};
 
@@ -55,27 +49,28 @@ impl PumpFunTrader {
         // limit is sized per path (curve trades are far lighter than AMM swaps),
         // so the priority fee = price × limit isn't inflated by sizing every tx
         // for the heaviest path. Shared price ix, per-path limit ix.
+        let compute = &self.config.compute;
         let price_ix =
-            ComputeBudgetInstruction::set_compute_unit_price(COMPUTE_UNIT_PRICE_MICRO_LAMPORTS);
-        self.cu_ixs_curve_buy = vec![
-            ComputeBudgetInstruction::set_compute_unit_limit(COMPUTE_UNIT_LIMIT_CURVE_BUY),
+            ComputeBudgetInstruction::set_compute_unit_price(compute.price_micro_lamports);
+        let cu_ixs_curve_buy = vec![
+            ComputeBudgetInstruction::set_compute_unit_limit(compute.curve_buy_cu),
             price_ix.clone(),
         ];
-        self.cu_ixs_curve_sell = vec![
-            ComputeBudgetInstruction::set_compute_unit_limit(COMPUTE_UNIT_LIMIT_CURVE_SELL),
+        let cu_ixs_curve_sell = vec![
+            ComputeBudgetInstruction::set_compute_unit_limit(compute.curve_sell_cu),
             price_ix.clone(),
         ];
-        self.cu_ixs_amm = vec![
-            ComputeBudgetInstruction::set_compute_unit_limit(COMPUTE_UNIT_LIMIT_AMM),
+        let cu_ixs_amm = vec![
+            ComputeBudgetInstruction::set_compute_unit_limit(compute.amm_cu),
             price_ix,
         ];
         info!(
             "⚡ Priority fee: {} µlamports/cu | CU limit (buy/sell/amm): {}/{}/{}",
-            COMPUTE_UNIT_PRICE_MICRO_LAMPORTS,
-            COMPUTE_UNIT_LIMIT_CURVE_BUY,
-            COMPUTE_UNIT_LIMIT_CURVE_SELL,
-            COMPUTE_UNIT_LIMIT_AMM,
+            compute.price_micro_lamports, compute.curve_buy_cu, compute.curve_sell_cu, compute.amm_cu,
         );
+        self.cu_ixs_curve_buy = cu_ixs_curve_buy;
+        self.cu_ixs_curve_sell = cu_ixs_curve_sell;
+        self.cu_ixs_amm = cu_ixs_amm;
 
         // 4. Jito tip — sized per trade from Jito's live tip-floor feed (see
         // jito_tip.rs). Prime the cache once so the first trade is already warm,
@@ -86,9 +81,10 @@ impl PumpFunTrader {
         {
             let http = self.http.clone();
             let cache = self.jito_tip_cache.clone();
+            let refresh_ms = self.config.jito.floor_refresh_ms;
             tokio::spawn(async move {
                 loop {
-                    tokio::time::sleep(Duration::from_millis(JITO_TIP_FLOOR_REFRESH_MS)).await;
+                    tokio::time::sleep(Duration::from_millis(refresh_ms)).await;
                     if let Err(e) = refresh_tip_floor(&http, &cache).await {
                         warn!("Jito tip-floor refresh failed: {e}");
                     }
@@ -97,7 +93,10 @@ impl PumpFunTrader {
         }
         info!(
             "💸 Jito tip: dynamic — p{} of live tip-floor, clamped {}–{} SOL → {}",
-            JITO_TIP_PERCENTILE, MIN_JITO_TIP_SOL, MAX_JITO_TIP_SOL, self.jito_tip_account
+            self.config.jito.percentile,
+            self.config.jito.min_sol,
+            self.config.jito.max_sol,
+            self.jito_tip_account
         );
 
         // 5. Parse & deduplicate nonce accounts
@@ -132,7 +131,7 @@ impl PumpFunTrader {
         // 7. Pre-build buy seed pools for both token programs
         info!(
             "🌱 Pre-building buy seed pools (target={})",
-            BUY_SEED_POOL_SIZE
+            self.config.limits.buy_seed_pool_size
         );
         self.fill_buy_pool(TokenProgram::Legacy).await?;
         self.fill_buy_pool(TokenProgram::Token2022).await?;
@@ -147,9 +146,10 @@ impl PumpFunTrader {
         {
             let rpc = self.rpc.clone();
             let cache = self.blockhash_cache.clone();
+            let refresh_ms = self.config.cache.blockhash_refresh_ms;
             tokio::spawn(async move {
                 loop {
-                    tokio::time::sleep(Duration::from_millis(BLOCKHASH_REFRESH_MS)).await;
+                    tokio::time::sleep(Duration::from_millis(refresh_ms)).await;
                     match rpc.get_latest_blockhash().await {
                         Ok(hash) => cache.store(hash),
                         Err(e) => warn!("Blockhash refresh failed: {e}"),
@@ -161,7 +161,7 @@ impl PumpFunTrader {
 
         info!(
             "🚀 PumpFunTrader ready — wallet: {}",
-            self.config.keypair.pubkey()
+            self.config.signer.pubkey()
         );
         Ok(())
     }
@@ -230,7 +230,7 @@ impl PumpFunTrader {
                 .await
                 .context("Failed to fetch pump global account")?;
             if account.data.len() < OFF_FEE_RECIPIENT + 32 {
-                anyhow::bail!("Global account data too short");
+                bail!("Global account data too short");
             }
             let fee_recipient = Pubkey::try_from(&account.data[OFF_FEE_RECIPIENT..OFF_FEE_RECIPIENT + 32])
                 .context("Failed to parse fee_recipient")?;
@@ -245,7 +245,7 @@ impl PumpFunTrader {
         let (global_volume_accumulator, _) =
             Pubkey::find_program_address(&[b"global_volume_accumulator"], &pump);
 
-        let wallet = self.config.keypair.pubkey();
+        let wallet = self.config.signer.pubkey();
         let (user_volume_accumulator, _) =
             Pubkey::find_program_address(&[b"user_volume_accumulator", wallet.as_ref()], &pump);
 
@@ -269,21 +269,16 @@ impl PumpFunTrader {
 
     fn collect_nonce_pubkeys(&mut self) -> Result<()> {
         if self.config.nonce_accounts.is_empty() {
-            anyhow::bail!("At least one nonce account is required");
+            bail!("At least one nonce account is required");
         }
-        if BUY_SEED_POOL_SIZE == 0 {
-            anyhow::bail!("buy_seed_pool_size must be >= 1");
+        if self.config.limits.buy_seed_pool_size == 0 {
+            bail!("buy_seed_pool_size must be >= 1");
         }
 
+        // Nonce accounts arrive already parsed (`Vec<Pubkey>`); just deduplicate.
         let mut seen = HashSet::new();
         self.nonce_pubkeys.clear();
-
-        for raw in &self.config.nonce_accounts {
-            if raw.is_empty() {
-                anyhow::bail!("Nonce account string must not be empty");
-            }
-            let pk =
-                Pubkey::from_str(raw).with_context(|| format!("Invalid nonce pubkey: {}", raw))?;
+        for &pk in &self.config.nonce_accounts {
             if seen.insert(pk) {
                 self.nonce_pubkeys.push(pk);
             }

@@ -9,17 +9,20 @@
 // ============================================================
 
 use super::PumpFunTrader;
-use crate::constants::{BLOCKHASH_CACHE_MAX_AGE_MS, CONFIRM_POLL_MS, CONFIRM_POLL_SCHEDULE_MS};
-use anyhow::{Context, Result};
+use crate::error::{bail, Context, Result, TradeError};
 use base64::{engine::general_purpose, Engine as _};
 use serde_json::json;
+// `simulate_transaction` (and its config / commitment imports) is only built for
+// the cashback `claim` path.
+#[cfg(feature = "claim")]
 use solana_client::rpc_config::RpcSimulateTransactionConfig;
+#[cfg(feature = "claim")]
+use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::{
-    commitment_config::CommitmentConfig,
     hash::Hash,
     instruction::{Instruction, InstructionError},
     message::Message,
-    signature::{Keypair, Signature, Signer},
+    signature::{Signature, Signer},
     pubkey::Pubkey,
     transaction::{Transaction, TransactionError},
 };
@@ -42,41 +45,28 @@ const FANOUT_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 /// be unique per request, not a clock).
 static SEND_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
-/// A transaction that landed on-chain and then reverted — as opposed to one
-/// that never landed (dropped / lost the Jito auction / expired). The
-/// distinction matters for retries and budget: a tx that never lands costs
-/// *nothing*, so a blind re-send is free; a tx that landed-and-reverted already
-/// burned base + priority fee, and re-sending an identical tx just re-pays them
-/// for the same deterministic revert. `confirm_transaction` returns this so a
-/// caller's retry loop can stop early on the latter. Carried as an
-/// `anyhow::Error` cause — match it with `err.downcast_ref::<OnChainRevert>()`.
-#[derive(Debug)]
-pub(super) struct OnChainRevert(pub String);
-
-impl std::fmt::Display for OnChainRevert {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Transaction failed on-chain: {}", self.0)
-    }
-}
-
-impl std::error::Error for OnChainRevert {}
-
 impl PumpFunTrader {
+    // The signer is `&(dyn Signer + Send + Sync)` (not bare `&dyn Signer`) so a
+    // `&signer` held across the `.await` in `build_recent_tx` stays `Send` — i.e.
+    // the trade futures remain spawnable. The `as &dyn Signer` cast picks the
+    // `Signers for [&dyn Signer; 1]` impl when signing.
     pub(super) fn build_nonce_tx(
         &self,
         instructions: Vec<Instruction>,
         nonce_account: &Pubkey,
         nonce_hash: Hash,
-        keypair: &Keypair,
+        signer: &(dyn Signer + Send + Sync),
     ) -> Result<Transaction> {
         let msg = Message::new_with_nonce(
             instructions,
-            Some(&keypair.pubkey()),
+            Some(&signer.pubkey()),
             nonce_account,
-            &keypair.pubkey(),
+            &signer.pubkey(),
         );
         let mut tx = Transaction::new_unsigned(msg);
-        tx.sign(&[keypair], nonce_hash);
+        // `try_sign` (vs `sign`) so a remote/HSM signer surfaces a typed error
+        // instead of panicking; a durable-nonce signature is fixed locally here.
+        tx.try_sign(&[signer as &dyn Signer], nonce_hash)?;
         Ok(tx)
     }
 
@@ -91,11 +81,11 @@ impl PumpFunTrader {
     pub(super) async fn build_recent_tx(
         &self,
         instructions: Vec<Instruction>,
-        keypair: &Keypair,
+        signer: &(dyn Signer + Send + Sync),
     ) -> Result<Transaction> {
         let blockhash = match self
             .blockhash_cache
-            .get_fresh(Duration::from_millis(BLOCKHASH_CACHE_MAX_AGE_MS))
+            .get_fresh(Duration::from_millis(self.config.cache.blockhash_max_age_ms))
         {
             Some(hash) => hash,
             None => self
@@ -104,9 +94,9 @@ impl PumpFunTrader {
                 .await
                 .context("fetch recent blockhash")?,
         };
-        let msg = Message::new(&instructions, Some(&keypair.pubkey()));
+        let msg = Message::new(&instructions, Some(&signer.pubkey()));
         let mut tx = Transaction::new_unsigned(msg);
-        tx.sign(&[keypair], blockhash);
+        tx.try_sign(&[signer as &dyn Signer], blockhash)?;
         Ok(tx)
     }
 
@@ -136,8 +126,9 @@ impl PumpFunTrader {
     /// Simulate a tx (no SOL, no land) and return `(units_consumed, err, logs)`.
     /// `sig_verify: false` + `replace_recent_blockhash: true` so the node swaps in
     /// a current blockhash — the caller doesn't need a fresh hash or valid
-    /// signatures, only a correctly-built instruction set. Used by the simulate
-    /// probe to validate accounts / data / CU without sending.
+    /// signatures, only a correctly-built instruction set. Used by the cashback
+    /// claim path to validate accounts / data / CU without sending.
+    #[cfg(feature = "claim")]
     pub(super) async fn simulate_transaction(
         &self,
         tx: &Transaction,
@@ -201,9 +192,9 @@ impl PumpFunTrader {
                 .await
                 {
                     Ok(res) => res,
-                    Err(_) => Err(anyhow::anyhow!(
+                    Err(_) => Err(TradeError::Other(format!(
                         "sender {url} timed out after {FANOUT_SEND_TIMEOUT:?}"
-                    )),
+                    ))),
                 };
                 if let Err(ref e) = result {
                     debug!("sender fan-out endpoint {url} failed: {e}");
@@ -220,7 +211,8 @@ impl PumpFunTrader {
                 Err(e) => last_err = Some(e),
             }
         }
-        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no sender endpoints configured")))
+        Err(last_err
+            .unwrap_or_else(|| TradeError::Other("no sender endpoints configured".into())))
     }
 
     /// Poll the RPC until the transaction is confirmed or retries are exhausted.
@@ -233,20 +225,33 @@ impl PumpFunTrader {
         for i in 0..max_retries {
             match self.rpc.get_signature_status(&sig).await? {
                 Some(Ok(())) => return Ok(()),
-                Some(Err(e)) => return Err(anyhow::Error::new(OnChainRevert(format!("{e:?}")))),
+                // A tx that LANDED and reverted — carries the program's custom
+                // (Anchor) error code when present, so the sell retry path can
+                // tell a structural revert from a transient min-out miss.
+                Some(Err(e)) => {
+                    return Err(TradeError::Reverted {
+                        custom: custom_error_code(&e),
+                    })
+                }
                 None => {
                     if i + 1 < max_retries {
                         info!("⏳ Confirmation pending ({}/{})", i + 1, max_retries);
                         // Ramp the early polls (a confirmed tx usually lands in
                         // ~1–2 slots); fall back to the steady gap past the ramp.
-                        let gap = CONFIRM_POLL_SCHEDULE_MS.get(i).copied().unwrap_or(CONFIRM_POLL_MS);
+                        let gap = self
+                            .config
+                            .retry
+                            .confirm_poll_schedule_ms
+                            .get(i)
+                            .copied()
+                            .unwrap_or(self.config.retry.confirm_poll_ms);
                         tokio::time::sleep(Duration::from_millis(gap)).await;
                     }
                 }
             }
         }
 
-        anyhow::bail!("Confirmation timed out for {}", signature)
+        Err(TradeError::ConfirmTimeout)
     }
 
     /// One-shot signature status (no polling). Lets the snipe buy path classify a
@@ -313,6 +318,7 @@ pub(super) fn custom_error_code(err: &TransactionError) -> Option<u32> {
 /// drive it from detached tasks (no `&self` borrow to hold across the spawn).
 /// Serializes `body` itself — used by callers (the probe) that hold a `Value`
 /// and only hit a single endpoint, so the one-time serialize cost is irrelevant.
+#[cfg(feature = "probe")]
 pub(super) async fn post_tx(
     http: &reqwest::Client,
     url: &str,
@@ -338,12 +344,12 @@ pub(super) async fn post_tx_bytes(
         .await?;
 
     if !resp.status().is_success() {
-        anyhow::bail!("HTTP error from sender {url}: {}", resp.text().await?);
+        bail!("HTTP error from sender {url}: {}", resp.text().await?);
     }
 
     let json: serde_json::Value = resp.json().await?;
     if let Some(err) = json.get("error") {
-        anyhow::bail!("JSON-RPC error from {url}: {err:?}");
+        bail!("JSON-RPC error from {url}: {err:?}");
     }
 
     json.get("result")
@@ -401,12 +407,12 @@ mod tests {
     }
 
     fn trader_with(urls: Vec<String>) -> PumpFunTrader {
-        PumpFunTrader::new(Arc::new(TraderConfig {
-            rpc_url: "http://localhost".into(),
-            helius_sender_urls: urls,
-            keypair: Keypair::new(),
-            nonce_accounts: vec![solana_sdk::pubkey::Pubkey::new_unique().to_string()],
-        }))
+        PumpFunTrader::new(Arc::new(TraderConfig::new(
+            "http://localhost".into(),
+            urls,
+            Arc::new(Keypair::new()),
+            vec![solana_sdk::pubkey::Pubkey::new_unique()],
+        )))
     }
 
     fn dummy_signed_tx() -> Transaction {

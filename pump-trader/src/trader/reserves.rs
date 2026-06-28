@@ -16,7 +16,7 @@
 //   quote_lamports — lamports          (curve: virtual_sol;   AMM: pool quote/WSOL)
 // ============================================================
 
-use crate::constants::LAMPORTS_PER_SOL;
+use crate::protocol::LAMPORTS_PER_SOL;
 use dashmap::DashMap;
 use std::time::{Duration, Instant};
 

@@ -8,15 +8,23 @@ description = "Standalone Pump.fun trader: pre-built nonce/seed pools, Jito tips
 name = "pump_trader"
 path = "src/lib.rs"
 
+[features]
+# Off-hot-path tools, off by default so a minimal consumer compiles only the
+# buy/sell core. `live` enables both. `sim` stays in core (shares the ix builders).
+default = []
+probe = []
+claim = []
+
 [dependencies]
-# Protocol/tuning constants live in-crate at `src/constants.rs` (folded in from
-# the former `pump-constants` crate); exposed as `pump_trader::constants`.
+# Tier-1 protocol invariants live in `src/protocol.rs` (const Pubkeys via the
+# `pubkey!` macro); Tier-2 tuning in `src/config.rs`. `src/constants.rs` is a thin
+# back-compat shim for external string consumers.
 
 # Async runtime (consumer provides the runtime; the trader spawns background tasks).
 tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 
-# Error handling
-anyhow = "1"
+# Error handling — a crate-owned `thiserror` boundary (no `anyhow` leak).
+thiserror = "1"
 
 # Serialization (WalletHolding / TokenBalance derive Serialize)
 serde = { version = "1", features = ["derive"] }

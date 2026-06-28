@@ -436,13 +436,24 @@ async fn main() -> anyhow::Result<()> {
         "Configuration loaded"
     );
 
-    let trader_config = Arc::new(TraderConfig {
-        rpc_url: settings.helius_rpc_url.clone(),
-        helius_sender_urls: settings.helius_sender_urls.clone(),
-        keypair: parse_wallet_keypair(&settings.wallet_private_key)
+    // The trader takes an `Arc<dyn Signer>` (HSM/remote-signer-ready) and parsed
+    // nonce pubkeys, with all tuning at the crate's `Default`s (see `TraderConfig`).
+    let signer: Arc<dyn solana_sdk::signature::Signer + Send + Sync> = Arc::new(
+        parse_wallet_keypair(&settings.wallet_private_key)
             .context("Failed to parse trader wallet private key")?,
-        nonce_accounts: settings.nonce_accounts.clone(),
-    });
+    );
+    let nonce_accounts = settings
+        .nonce_accounts
+        .iter()
+        .map(|s| s.parse::<solana_sdk::pubkey::Pubkey>())
+        .collect::<Result<Vec<_>, _>>()
+        .context("Failed to parse NONCE_ACCOUNTS as pubkeys")?;
+    let trader_config = Arc::new(TraderConfig::new(
+        settings.helius_rpc_url.clone(),
+        settings.helius_sender_urls.clone(),
+        signer,
+        nonce_accounts,
+    ));
 
     let mut trader = PumpFunTrader::new(trader_config);
     trader

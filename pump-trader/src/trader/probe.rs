@@ -21,9 +21,8 @@
 
 use super::jito_tip::refresh_tip_floor;
 use super::PumpFunTrader;
-use crate::constants::CONFIRM_MAX_RETRIES;
-use anyhow::{Context, Result};
-use solana_sdk::{signature::Signer, system_instruction};
+use crate::error::{Context, Result};
+use solana_sdk::system_instruction;
 use std::time::Instant;
 
 /// One sender endpoint's outcome in a fan-out probe.
@@ -31,7 +30,9 @@ pub struct EndpointResult {
     pub url: String,
     pub elapsed_ms: u128,
     /// `Ok(signature)` if the endpoint accepted the tx, `Err(message)` otherwise.
-    pub outcome: Result<String, String>,
+    /// (Fully-qualified `std::result::Result` — the module's `Result` alias is the
+    /// crate's one-arg `Result<T, TradeError>`.)
+    pub outcome: std::result::Result<String, String>,
 }
 
 /// Result of a fan-out self-transfer probe.
@@ -40,7 +41,7 @@ pub struct FanoutReport {
     /// Confirmation latency (ms) if `do_confirm` and at least one send succeeded.
     pub confirm_ms: Option<u128>,
     /// Confirmation outcome (`Ok(())` = confirmed) if attempted.
-    pub confirmed: Option<Result<(), String>>,
+    pub confirmed: Option<std::result::Result<(), String>>,
 }
 
 impl PumpFunTrader {
@@ -68,15 +69,15 @@ impl PumpFunTrader {
         include_tip: bool,
         do_confirm: bool,
     ) -> Result<FanoutReport> {
-        let keypair = &self.config.keypair;
-        let me = keypair.pubkey();
+        let signer = self.config.signer.as_ref();
+        let me = signer.pubkey();
         let mut ixs = vec![system_instruction::transfer(&me, &me, lamports)];
         if include_tip {
             ixs.push(self.jito_tip_ix(0));
         }
 
         let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
-        let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, keypair)?;
+        let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, signer)?;
         let body = self.encode_send_body(&tx)?;
 
         // Submit to every endpoint concurrently and await *all* of them (unlike
@@ -110,7 +111,9 @@ impl PumpFunTrader {
         if do_confirm {
             if let Some(sig) = results.iter().find_map(|r| r.outcome.as_ref().ok()) {
                 let t = Instant::now();
-                let res = self.confirm_transaction(sig, CONFIRM_MAX_RETRIES).await;
+                let res = self
+                    .confirm_transaction(sig, self.config.retry.confirm_max_retries)
+                    .await;
                 confirm_ms = Some(t.elapsed().as_millis());
                 confirmed = Some(res.map_err(|e| e.to_string()));
             }

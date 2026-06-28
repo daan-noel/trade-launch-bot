@@ -31,11 +31,13 @@
 mod amm;
 mod blockhash;
 mod buy;
+#[cfg(feature = "claim")]
 pub mod claim;
 mod init;
 mod jito_tip;
 mod nonce;
 mod pool;
+#[cfg(feature = "probe")]
 pub mod probe;
 mod query;
 mod reserves;
@@ -53,52 +55,50 @@ pub use nonce::NonceAuthCheck;
 pub use sim::{AccountDelta, SimOutcome};
 pub use tx::SigStatus;
 
-use crate::constants::{
-    EVENT_AUTHORITY, FEE_PROGRAM_ID, JITO_TIP_ACCOUNTS, PUMP_AMM_BUYBACK_FEE_RECIPIENT,
-    PUMP_CURVE_FEE_RECIPIENT, PUMP_FUN_PROGRAM_ID, PUMP_SWAP_PROGRAM_ID, TOKEN_2022_ACCOUNT_SPACE,
-    TOKEN_ACCOUNT_RENT_PLACEHOLDER, TOKEN_ACCOUNT_SPACE, TOKEN_PROGRAM_ID, WSOL_MINT,
+// `TraderConfig` lives in `crate::config` now; re-export it here so the existing
+// `crate::trader::TraderConfig` paths (incl. unit tests) keep resolving.
+pub(crate) use crate::config::TraderConfig;
+use crate::error::{Result, TradeError};
+use crate::protocol::{
+    self, LAMPORTS_PER_SOL, TOKEN_2022_ACCOUNT_SPACE, TOKEN_ACCOUNT_RENT_PLACEHOLDER,
+    TOKEN_ACCOUNT_SPACE,
 };
 use rand::seq::SliceRandom;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::system_program;
 use solana_sdk::{
-    commitment_config::CommitmentConfig,
-    hash::Hash,
-    instruction::Instruction,
-    pubkey::Pubkey,
-    signature::{Keypair, Signer},
+    commitment_config::CommitmentConfig, hash::Hash, instruction::Instruction, pubkey::Pubkey,
 };
 use std::collections::HashMap;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
 
-use crate::constants::{LAMPORTS_PER_SOL, MAX_BUY_SOL};
-
-/// Validate a caller-supplied buy size in SOL and convert it to lamports for the
-/// on-chain spend. The public buy entry points (`buy_token`, `buy_token_snipe`,
-/// `amm_buy`) take an `f64` straight from the caller, so every value that would
-/// corrupt the real spend is rejected here — the crate's last-line guard,
-/// independent of any API-layer check:
+/// Validate a caller-supplied buy size in SOL and convert it to lamports. Pure
+/// (free fn so the unit tests can drive it with an explicit ceiling); the method
+/// [`PumpFunTrader::buy_lamports_checked`] supplies `config.limits.max_buy_sol`.
 ///
-/// - non-finite (`NaN`/`±∞`) → would cast to `0` or garbage lamports,
-/// - non-positive → wastes the tip + fee on a 0-lamport buy,
-/// - above [`MAX_BUY_SOL`] → a huge `f64` saturates the cast toward `u64::MAX`,
-/// - rounds to `0` lamports → sub-dust amount that can't actually buy anything.
-///
-/// The configurable *business* ceiling lives in the API layer; [`MAX_BUY_SOL`]
-/// is only a fat-finger / hostile-input backstop.
-fn buy_lamports_checked(sol_amount: f64) -> anyhow::Result<u64> {
+/// The public buy entry points (`buy_token`, `buy_token_snipe`, `amm_buy`) take
+/// an `f64` straight from the caller, so every value that would corrupt the real
+/// spend is rejected — the crate's last-line guard, independent of any API check:
+/// non-finite (casts to garbage), non-positive (wastes tip+fee), above
+/// `max_buy_sol` (a huge `f64` saturates the cast), or rounds to 0 lamports.
+fn buy_lamports_checked(sol_amount: f64, max_buy_sol: f64) -> Result<u64> {
     if !sol_amount.is_finite() || sol_amount <= 0.0 {
-        anyhow::bail!("invalid buy amount {sol_amount} SOL: must be finite and > 0");
+        return Err(TradeError::InvalidBuyAmount(format!(
+            "{sol_amount} SOL: must be finite and > 0"
+        )));
     }
-    if sol_amount > MAX_BUY_SOL {
-        anyhow::bail!("buy amount {sol_amount} SOL exceeds the {MAX_BUY_SOL} SOL sanity ceiling");
+    if sol_amount > max_buy_sol {
+        return Err(TradeError::InvalidBuyAmount(format!(
+            "{sol_amount} SOL exceeds the {max_buy_sol} SOL sanity ceiling"
+        )));
     }
     let lamports = (sol_amount * LAMPORTS_PER_SOL as f64) as u64;
     if lamports == 0 {
-        anyhow::bail!("buy amount {sol_amount} SOL rounds to 0 lamports");
+        return Err(TradeError::InvalidBuyAmount(format!(
+            "{sol_amount} SOL rounds to 0 lamports"
+        )));
     }
     Ok(lamports)
 }
@@ -143,7 +143,8 @@ pub struct GlobalAccount {
     /// `whitelisted_quote_mints[0]` from the on-chain `Global` account — the
     /// non-WSOL quote enabled for cashback (the "stable" mint). `None` if the
     /// account is older/shorter than that field or the slot is unset. Used only
-    /// off the hot path by the stable cashback claim.
+    /// off the hot path by the stable cashback claim (the `claim` feature).
+    #[cfg_attr(not(feature = "claim"), allow(dead_code))]
     pub stable_quote_mint: Option<Pubkey>,
 }
 
@@ -175,21 +176,6 @@ pub(crate) struct AmmGlobalConfig {
     pub protocol_fee_bps: u64,
     pub coin_creator_fee_bps: u64,
     pub protocol_fee_recipient: Pubkey,
-}
-
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
-
-#[derive(Debug)]
-pub struct TraderConfig {
-    pub rpc_url: String,
-    /// One or more Helius Sender endpoints. A transaction is fanned out to all of
-    /// them concurrently (same signature → on-chain dedup, Jito tip paid once);
-    /// a single entry is the plain single-endpoint path. Must be non-empty.
-    pub helius_sender_urls: Vec<String>,
-    pub keypair: Keypair,
-    pub nonce_accounts: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -247,10 +233,10 @@ pub struct PumpFunTrader {
     token_2022_account_space: u64,
     token_2022_account_rent: u64,
 
-    // Static program IDs (parsed once)
+    // Program IDs (copied once from the `protocol` const Pubkeys — no parse,
+    // no unwrap). Held in fields so the hot path is a plain field read.
     pump_program: Pubkey,
     /// Legacy SPL Token program — the WSOL (quote) program on every AMM swap.
-    /// Parsed once here so the AMM hot path doesn't `Pubkey::from_str` it per trade.
     token_program: Pubkey,
     system_program: Pubkey,
     event_authority: Pubkey,
@@ -323,10 +309,13 @@ impl PumpFunTrader {
             CommitmentConfig::confirmed(),
         ));
 
-        // Program ids parsed once, reused below to derive the constant AMM PDAs.
-        let pump_swap_program = Pubkey::from_str(PUMP_SWAP_PROGRAM_ID).unwrap();
-        let fee_program = Pubkey::from_str(FEE_PROGRAM_ID).unwrap();
-        let wallet = config.keypair.pubkey();
+        // Program ids are `const Pubkey` in `protocol` — no parse, no unwrap.
+        let pump_swap_program = protocol::PUMP_SWAP;
+        let fee_program = protocol::FEE_PROGRAM;
+        let wallet = config.signer.pubkey();
+        // Clone the Jito tuning out before `config` is moved into the struct below
+        // (the tip cache owns its own copy to size tips without touching config).
+        let jito_cfg = config.jito.clone();
 
         // PumpSwap PDAs that never change for this wallet — derived once here so
         // `amm_swap_accounts` is a few field reads instead of ~5 `find_program_address`.
@@ -344,12 +333,12 @@ impl PumpFunTrader {
         )
         .0;
 
-        // Jito tip account — one chosen at random per trader instance; the tip
-        // *amount* is sized per trade from the live tip-floor cache (jito_tip.rs).
-        let jito_tip_account = JITO_TIP_ACCOUNTS
+        // Jito tip account — one chosen at random per trader instance from the
+        // `const [Pubkey; 10]`; the tip *amount* is sized per trade (jito_tip.rs).
+        let jito_tip_account = protocol::JITO_TIP_ACCOUNTS
             .choose(&mut rand::thread_rng())
-            .and_then(|s| Pubkey::from_str(s).ok())
-            .expect("JITO_TIP_ACCOUNTS must be non-empty and contain valid pubkeys");
+            .copied()
+            .expect("JITO_TIP_ACCOUNTS is a non-empty const array");
 
         // Configured HTTP client (vs `Client::new()`): `tcp_nodelay` removes
         // Nagle delay on the small JSON-RPC sends, and a generous
@@ -372,7 +361,7 @@ impl PumpFunTrader {
             cu_ixs_curve_sell: Vec::new(),
             cu_ixs_amm: Vec::new(),
             jito_tip_account,
-            jito_tip_cache: Arc::new(JitoTipCache::default()),
+            jito_tip_cache: Arc::new(JitoTipCache::new(jito_cfg)),
             nonce_pubkeys: Vec::new(),
             nonce_cursor: AtomicUsize::new(0),
             nonce_slots: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -388,15 +377,15 @@ impl PumpFunTrader {
             token_account_rent: TOKEN_ACCOUNT_RENT_PLACEHOLDER,
             token_2022_account_space: TOKEN_2022_ACCOUNT_SPACE,
             token_2022_account_rent: TOKEN_ACCOUNT_RENT_PLACEHOLDER,
-            pump_program: Pubkey::from_str(PUMP_FUN_PROGRAM_ID).unwrap(),
-            token_program: Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap(),
+            pump_program: protocol::PUMP_FUN,
+            token_program: protocol::TOKEN,
             system_program: system_program::id(),
-            event_authority: Pubkey::from_str(EVENT_AUTHORITY).unwrap(),
+            event_authority: protocol::EVENT_AUTHORITY,
             fee_program,
-            curve_fee_recipient: Pubkey::from_str(PUMP_CURVE_FEE_RECIPIENT).unwrap(),
-            amm_buyback_fee_recipient: Pubkey::from_str(PUMP_AMM_BUYBACK_FEE_RECIPIENT).unwrap(),
+            curve_fee_recipient: protocol::PUMP_CURVE_FEE_RECIPIENT,
+            amm_buyback_fee_recipient: protocol::PUMP_AMM_BUYBACK_FEE_RECIPIENT,
             pump_swap_program,
-            wsol_mint: Pubkey::from_str(WSOL_MINT).unwrap(),
+            wsol_mint: protocol::WSOL_MINT,
             amm_global_config_pda,
             amm_event_authority,
             amm_fee_config,
@@ -417,7 +406,14 @@ impl PumpFunTrader {
 
     /// Wallet public key for trade correlation.
     pub fn wallet_pubkey(&self) -> String {
-        self.config.keypair.pubkey().to_string()
+        self.config.signer.pubkey().to_string()
+    }
+
+    /// Validate a caller-supplied buy size against `config.limits.max_buy_sol` and
+    /// convert to lamports. The crate's last-line spend guard — see the free
+    /// [`buy_lamports_checked`] for the rejected cases.
+    pub(super) fn buy_lamports_checked(&self, sol_amount: f64) -> Result<u64> {
+        buy_lamports_checked(sol_amount, self.config.limits.max_buy_sol)
     }
 
     /// Feed a post-trade reserve snapshot into the live cache. Called by the WS
@@ -499,32 +495,41 @@ impl PumpFunTrader {
 
 #[cfg(test)]
 mod tests {
-    use super::{buy_lamports_checked, LAMPORTS_PER_SOL, MAX_BUY_SOL};
+    use super::{buy_lamports_checked, LAMPORTS_PER_SOL};
+
+    /// The default `config.limits.max_buy_sol` the live trader uses.
+    const MAX_BUY_SOL: f64 = 5.0;
 
     #[test]
     fn rejects_non_finite_and_non_positive() {
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -1.0] {
-            assert!(buy_lamports_checked(bad).is_err(), "{bad} should be rejected");
+            assert!(
+                buy_lamports_checked(bad, MAX_BUY_SOL).is_err(),
+                "{bad} should be rejected"
+            );
         }
     }
 
     #[test]
     fn rejects_above_ceiling() {
-        assert!(buy_lamports_checked(MAX_BUY_SOL + 1.0).is_err());
+        assert!(buy_lamports_checked(MAX_BUY_SOL + 1.0, MAX_BUY_SOL).is_err());
         // A huge value that would otherwise saturate the lamports cast.
-        assert!(buy_lamports_checked(1e30).is_err());
+        assert!(buy_lamports_checked(1e30, MAX_BUY_SOL).is_err());
     }
 
     #[test]
     fn rejects_sub_dust_rounding_to_zero() {
         // Positive but far below one lamport → casts to 0 lamports.
-        assert!(buy_lamports_checked(1e-12).is_err());
+        assert!(buy_lamports_checked(1e-12, MAX_BUY_SOL).is_err());
     }
 
     #[test]
     fn accepts_valid_amounts() {
-        assert_eq!(buy_lamports_checked(1.0).unwrap(), LAMPORTS_PER_SOL);
-        assert_eq!(buy_lamports_checked(0.5).unwrap(), LAMPORTS_PER_SOL / 2);
-        assert_eq!(buy_lamports_checked(MAX_BUY_SOL).unwrap(), MAX_BUY_SOL as u64 * LAMPORTS_PER_SOL);
+        assert_eq!(buy_lamports_checked(1.0, MAX_BUY_SOL).unwrap(), LAMPORTS_PER_SOL);
+        assert_eq!(buy_lamports_checked(0.5, MAX_BUY_SOL).unwrap(), LAMPORTS_PER_SOL / 2);
+        assert_eq!(
+            buy_lamports_checked(MAX_BUY_SOL, MAX_BUY_SOL).unwrap(),
+            MAX_BUY_SOL as u64 * LAMPORTS_PER_SOL
+        );
     }
 }

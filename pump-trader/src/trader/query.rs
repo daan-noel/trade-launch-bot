@@ -8,9 +8,9 @@
 // ============================================================
 
 use super::{PumpFunTrader, TokenPDAs};
-use crate::constants::{TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
+use crate::error::{bail, Result, TradeError};
+use crate::protocol::{TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Signer;
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -33,8 +33,8 @@ pub(super) struct CurveRouting {
 impl PumpFunTrader {
     /// Fetch the on-chain lamport balance of the trader's wallet. Intended for the
     /// background SOL-balance refresh task; never called inline on the buy hot path.
-    pub async fn get_sol_balance(&self) -> anyhow::Result<u64> {
-        let wallet = self.config.keypair.pubkey();
+    pub async fn get_sol_balance(&self) -> Result<u64> {
+        let wallet = self.config.signer.pubkey();
         Ok(self.rpc.get_balance(&wallet).await?)
     }
 
@@ -42,7 +42,7 @@ impl PumpFunTrader {
     /// Uses raw JSON-RPC via reqwest to avoid extra Solana SDK dependencies.
     pub async fn get_all_token_accounts(
         &self,
-    ) -> anyhow::Result<Vec<crate::types::WalletHolding>> {
+    ) -> Result<Vec<crate::types::WalletHolding>> {
         let wallet = self.wallet_pubkey();
         let rpc_url = self.rpc_url();
 
@@ -73,7 +73,7 @@ impl PumpFunTrader {
                     .await?
                     .json()
                     .await?;
-                anyhow::Ok::<serde_json::Value>(resp)
+                Ok::<serde_json::Value, TradeError>(resp)
             },
             async {
                 let resp: serde_json::Value = self
@@ -84,7 +84,7 @@ impl PumpFunTrader {
                     .await?
                     .json()
                     .await?;
-                anyhow::Ok::<serde_json::Value>(resp)
+                Ok::<serde_json::Value, TradeError>(resp)
             },
         );
 
@@ -139,7 +139,7 @@ impl PumpFunTrader {
     pub async fn get_token_account_for_mint(
         &self,
         mint: &str,
-    ) -> anyhow::Result<Option<crate::types::WalletHolding>> {
+    ) -> Result<Option<crate::types::WalletHolding>> {
         let wallet = self.wallet_pubkey();
         let rpc_url = self.rpc_url();
         let body = serde_json::json!({
@@ -204,7 +204,7 @@ impl PumpFunTrader {
     pub async fn resolve_cached_token_account(
         &self,
         mint: &str,
-    ) -> anyhow::Result<Option<Pubkey>> {
+    ) -> Result<Option<Pubkey>> {
         if let Some(pk) = self.user_token_accounts.get(mint).map(|r| *r) {
             return Ok(Some(pk));
         }
@@ -228,20 +228,20 @@ impl PumpFunTrader {
     pub(crate) async fn curve_virtual_reserves(
         &self,
         bonding_curve: &Pubkey,
-    ) -> anyhow::Result<(u128, u128)> {
+    ) -> Result<(u128, u128)> {
         let acct = self
             .rpc
             .get_account(bonding_curve)
             .await
-            .map_err(|e| anyhow::anyhow!("read bonding curve {bonding_curve}: {e}"))?;
+            .map_err(|e| TradeError::Other(format!("read bonding curve {bonding_curve}: {e}")))?;
         let d = &acct.data;
         if d.len() < 24 {
-            anyhow::bail!("bonding curve account too short: {} bytes", d.len());
+            bail!("bonding curve account too short: {} bytes", d.len());
         }
         let vt = u64::from_le_bytes(d[8..16].try_into().unwrap()) as u128;
         let vq = u64::from_le_bytes(d[16..24].try_into().unwrap()) as u128;
         if vt == 0 || vq == 0 {
-            anyhow::bail!("bonding curve has zero virtual reserves");
+            bail!("bonding curve has zero virtual reserves");
         }
         Ok((vt, vq))
     }
@@ -254,10 +254,10 @@ impl PumpFunTrader {
         &self,
         mint: &str,
         bonding_curve: &Pubkey,
-    ) -> anyhow::Result<(u128, u128)> {
+    ) -> Result<(u128, u128)> {
         if let Some(r) = self.reserve_cache.get_fresh(
             mint,
-            std::time::Duration::from_millis(crate::constants::RESERVE_CACHE_MAX_AGE_MS),
+            std::time::Duration::from_millis(self.config.cache.reserve_max_age_ms),
             false,
         ) {
             return Ok(r);
@@ -271,7 +271,7 @@ impl PumpFunTrader {
         &self,
         wallet: &str,
         mint: &str,
-    ) -> anyhow::Result<crate::types::TokenBalance> {
+    ) -> Result<crate::types::TokenBalance> {
         // FIX: don't derive ATA — look up actual on-chain account. Serve from
         // the cache, or do a single wallet scan (which also warms the cache for
         // every other held mint).
@@ -304,7 +304,7 @@ impl PumpFunTrader {
                     token_program_id: String::new(),
                 })
             }
-            Err(e) => anyhow::bail!("Failed to get token balance: {e}"),
+            Err(e) => bail!("Failed to get token balance: {e}"),
         }
     }
 
@@ -348,7 +348,7 @@ impl PumpFunTrader {
     /// `complete: bool` @48, `creator: Pubkey` @49, cashback flag @82; the
     /// token program is the mint account's owner. Shared by
     /// [`Self::resolve_buy_routing`] and [`Self::get_creator_from_mint_pda`].
-    async fn read_curve_routing(&self, mint: &Pubkey) -> anyhow::Result<CurveRouting> {
+    async fn read_curve_routing(&self, mint: &Pubkey) -> Result<CurveRouting> {
         let key = mint.to_string();
 
         // creator / token_program / cashback are fixed at creation and migration
@@ -373,7 +373,7 @@ impl PumpFunTrader {
                 .reserve_cache
                 .get_fresh(
                     &key,
-                    std::time::Duration::from_millis(crate::constants::RESERVE_CACHE_MAX_AGE_MS),
+                    std::time::Duration::from_millis(self.config.cache.reserve_max_age_ms),
                     true,
                 )
                 .is_some();
@@ -394,17 +394,19 @@ impl PumpFunTrader {
         let accounts = self.rpc.get_multiple_accounts(&[bonding_curve, *mint]).await?;
         let [bonding_acct, mint_acct]: [Option<_>; 2] = accounts
             .try_into()
-            .map_err(|_| anyhow::anyhow!("getMultipleAccounts returned an unexpected count"))?;
-        let account =
-            bonding_acct.ok_or_else(|| anyhow::anyhow!("bonding curve account not found"))?;
+            .map_err(|_| {
+                TradeError::Other("getMultipleAccounts returned an unexpected count".into())
+            })?;
+        let account = bonding_acct
+            .ok_or_else(|| TradeError::Other("bonding curve account not found".into()))?;
         let mint_account =
-            mint_acct.ok_or_else(|| anyhow::anyhow!("mint account not found"))?;
+            mint_acct.ok_or_else(|| TradeError::Other("mint account not found".into()))?;
 
         const COMPLETE_OFFSET: usize = 48;
         const CREATOR_OFFSET: usize = 49;
         const CASHBACK_OFFSET: usize = 82;
         if account.data.len() < CREATOR_OFFSET + 32 {
-            anyhow::bail!("Bonding curve account data too short");
+            bail!("Bonding curve account data too short");
         }
         let creator_bytes: [u8; 32] =
             account.data[CREATOR_OFFSET..CREATOR_OFFSET + 32].try_into()?;
@@ -434,7 +436,7 @@ impl PumpFunTrader {
     pub async fn resolve_buy_routing(
         &self,
         mint_address: &str,
-    ) -> anyhow::Result<crate::types::BuyRouting> {
+    ) -> Result<crate::types::BuyRouting> {
         let mint = Pubkey::from_str(mint_address)?;
         let routing = self.read_curve_routing(&mint).await?;
         Ok(crate::types::BuyRouting {
@@ -511,7 +513,7 @@ impl PumpFunTrader {
     /// allocating the creator `String`. The sell hot path only needs the PDAs
     /// cached, not the creator text, so it calls this instead of
     /// [`Self::get_creator_from_mint_pda`] to skip the wasted `to_string`.
-    pub(super) async fn ensure_token_pdas(&self, mint_address: &str) -> anyhow::Result<()> {
+    pub(super) async fn ensure_token_pdas(&self, mint_address: &str) -> Result<()> {
         let mint = Pubkey::from_str(mint_address)?;
         let routing = self.read_curve_routing(&mint).await?;
 
@@ -533,7 +535,7 @@ impl PumpFunTrader {
     /// Returns the creator as a String. Also warms the [`TokenPDAs`] cache; callers
     /// that only need the cache warmed (not the creator text) should use the
     /// String-free [`Self::ensure_token_pdas`] instead.
-    pub async fn get_creator_from_mint_pda(&self, mint_address: &str) -> anyhow::Result<String> {
+    pub async fn get_creator_from_mint_pda(&self, mint_address: &str) -> Result<String> {
         let mint = Pubkey::from_str(mint_address)?;
         let routing = self.read_curve_routing(&mint).await?;
 
@@ -561,11 +563,13 @@ impl PumpFunTrader {
     /// fresh, not served from cache) and overwrites the cached PDAs, so the next sell
     /// attempt builds with the current vault. OFF the hot path — the exit loop calls
     /// this only after a sell poll window failed AND the on-chain revert code is 2006.
-    pub async fn refresh_curve_creator_vault(&self, mint_address: &str) -> anyhow::Result<Pubkey> {
+    pub async fn refresh_curve_creator_vault(&self, mint_address: &str) -> Result<Pubkey> {
         self.ensure_token_pdas(mint_address).await?;
         self.token_pdas
             .get(mint_address)
             .map(|r| r.creator_vault)
-            .ok_or_else(|| anyhow::anyhow!("creator_vault missing after refresh for {mint_address}"))
+            .ok_or_else(|| {
+                TradeError::Other(format!("creator_vault missing after refresh for {mint_address}"))
+            })
     }
 }

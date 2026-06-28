@@ -16,18 +16,16 @@
 // ============================================================
 
 use super::PumpFunTrader;
-use crate::constants::{CLAIM_CASHBACK_DISC, CLAIM_CASHBACK_V2_DISC, SYNC_UVA_DISC};
-use anyhow::{Context, Result};
+use crate::error::{Context, Result, TradeError};
+use crate::protocol::{self, CLAIM_CASHBACK_DISC, CLAIM_CASHBACK_V2_DISC, SYNC_UVA_DISC};
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
-    signature::Signer,
 };
 use spl_associated_token_account::{
     get_associated_token_address_with_program_id,
     instruction::create_associated_token_account_idempotent,
 };
-use std::str::FromStr;
 
 /// Per-pot cashback status read from a `UserVolumeAccumulator` account.
 #[derive(Debug, Clone, Copy)]
@@ -90,7 +88,7 @@ impl PumpFunTrader {
         let global = self
             .global_account
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Not initialized"))?;
+            .ok_or(TradeError::NotInitialized)?;
 
         let pots = [
             ("curve", global.user_volume_accumulator),
@@ -186,11 +184,10 @@ impl PumpFunTrader {
     /// Pure construction — no RPC, no signing — so the probe simulates the exact
     /// bytes a real claim sends.
     fn build_claim_ixs(&self, p: &PotClaim) -> Result<Vec<Instruction>> {
-        let user = self.config.keypair.pubkey();
+        let user = self.config.signer.pubkey();
         let token_prog = p.quote_token_program; // WSOL = legacy SPL; stable = read on-chain
         let mint = p.quote_mint;
-        let atoken_program = Pubkey::from_str(crate::constants::ASSOCIATED_TOKEN_PROGRAM_ID)
-            .expect("valid ASSOCIATED_TOKEN_PROGRAM_ID");
+        let atoken_program = protocol::ASSOCIATED_TOKEN_PROGRAM;
 
         // Both layouts move the quote from ATA(uva) -> ATA(user).
         let uva_quote_ata =
@@ -361,7 +358,7 @@ impl PumpFunTrader {
             }
 
             let ixs = self.build_claim_ixs(pot)?;
-            let tx = self.build_recent_tx(ixs, &self.config.keypair).await?;
+            let tx = self.build_recent_tx(ixs, self.config.signer.as_ref()).await?;
 
             let outcome = if execute {
                 match self.rpc.send_transaction(&tx).await {
@@ -408,18 +405,18 @@ impl PumpFunTrader {
 #[cfg(test)]
 mod tests {
     use crate::trader::{GlobalAccount, PumpFunTrader, TraderConfig};
-    use solana_sdk::{message::Message, pubkey::Pubkey, signature::Keypair, signature::Signer};
+    use solana_sdk::{message::Message, pubkey::Pubkey, signature::Keypair};
     use std::sync::Arc;
 
     const TX_LIMIT: usize = 1232;
 
     fn dummy_trader() -> PumpFunTrader {
-        let mut t = PumpFunTrader::new(Arc::new(TraderConfig {
-            rpc_url: "http://localhost".into(),
-            helius_sender_urls: vec!["http://localhost".into()],
-            keypair: Keypair::new(),
-            nonce_accounts: vec![Pubkey::new_unique().to_string()],
-        }));
+        let mut t = PumpFunTrader::new(Arc::new(TraderConfig::new(
+            "http://localhost".into(),
+            vec!["http://localhost".into()],
+            Arc::new(Keypair::new()),
+            vec![Pubkey::new_unique()],
+        )));
         t.global_account = Some(GlobalAccount {
             global_pda: Pubkey::new_unique(),
             fee_recipient: Pubkey::new_unique(),
@@ -441,7 +438,7 @@ mod tests {
     #[test]
     fn claim_txs_fit() {
         let t = dummy_trader();
-        let payer = t.config.keypair.pubkey();
+        let payer = t.config.signer.pubkey();
         // The two WSOL pots plus a synthetic stable pot (mirrors what
         // `stable_claim_pot` builds, minus the on-chain token-program read).
         let global = t.global_account.as_ref().expect("global");
@@ -452,7 +449,7 @@ mod tests {
             user_volume_accumulator: global.user_volume_accumulator,
             global_volume_accumulator: global.global_volume_accumulator,
             event_authority: t.event_authority,
-            claim_disc: crate::constants::CLAIM_CASHBACK_V2_DISC,
+            claim_disc: crate::protocol::CLAIM_CASHBACK_V2_DISC,
             include_atoken_program: true,
             quote_mint: global.stable_quote_mint.expect("stable mint set in dummy"),
             quote_token_program: t.token_program,

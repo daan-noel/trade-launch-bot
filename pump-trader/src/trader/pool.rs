@@ -13,14 +13,10 @@
 // ============================================================
 
 use super::{BuyTemplate, PumpFunTrader};
-use crate::constants::BUY_SEED_POOL_SIZE;
+use crate::error::Result;
 use crate::types::TokenProgram;
-use anyhow::Result;
+use solana_sdk::pubkey::Pubkey;
 use solana_sdk::system_instruction;
-use solana_sdk::{
-    pubkey::Pubkey,
-    signature::{Keypair, Signer},
-};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash as StdHash, Hasher};
 use std::sync::atomic::Ordering;
@@ -63,12 +59,12 @@ impl PumpFunTrader {
         let program_id = token_program.pubkey();
         let seed = self.next_seed();
         let (space, rent) = self.space_rent_for(token_program);
-        build_template_with_seed(&self.config.keypair, &program_id, &seed, space, rent)
+        build_template_with_seed(&self.config.signer.pubkey(), &program_id, &seed, space, rent)
     }
 
     pub(super) async fn fill_buy_pool(&self, token_program: TokenProgram) -> Result<()> {
         let pool = self.pool_for(token_program);
-        let target = BUY_SEED_POOL_SIZE;
+        let target = self.config.limits.buy_seed_pool_size;
         loop {
             if pool.lock().await.len() >= target {
                 break;
@@ -121,8 +117,12 @@ impl PumpFunTrader {
     /// sync path uses, so there's a single copy of the seed/derivation logic.
     pub(super) fn replenish_pool_async(&self, token_program: TokenProgram) {
         let pool = Arc::clone(self.pool_for(token_program));
-        let target = BUY_SEED_POOL_SIZE;
-        let kp = self.config.keypair.insecure_clone();
+        let target = self.config.limits.buy_seed_pool_size;
+        // A template is a pure create-with-seed instruction — building it needs
+        // only the wallet pubkey, not the signing key. `Pubkey` is `Copy`, so the
+        // background task captures it directly (no key clone, cleaner than the
+        // former `insecure_clone()`).
+        let owner = self.config.signer.pubkey();
         let (space, rent) = self.space_rent_for(token_program);
         let program_id = token_program.pubkey();
 
@@ -140,7 +140,7 @@ impl PumpFunTrader {
                     .map(|d| d.as_nanos())
                     .unwrap_or_default()
             );
-            if let Ok(template) = build_template_with_seed(&kp, &program_id, &seed, space, rent) {
+            if let Ok(template) = build_template_with_seed(&owner, &program_id, &seed, space, rent) {
                 pool.lock().await.push(template);
             }
         });
@@ -152,18 +152,17 @@ impl PumpFunTrader {
 /// ([`PumpFunTrader::build_template`]) and the background replenisher so the
 /// derivation lives in exactly one place.
 fn build_template_with_seed(
-    keypair: &Keypair,
+    owner: &Pubkey,
     program_id: &Pubkey,
     seed: &str,
     space: u64,
     rent: u64,
 ) -> Result<BuyTemplate> {
-    let owner = keypair.pubkey();
-    let user_token_account = Pubkey::create_with_seed(&owner, seed, program_id)?;
+    let user_token_account = Pubkey::create_with_seed(owner, seed, program_id)?;
     let ix = system_instruction::create_account_with_seed(
-        &owner,
+        owner,
         &user_token_account,
-        &owner,
+        owner,
         seed,
         rent,
         space,
@@ -183,12 +182,12 @@ mod tests {
     use std::time::Duration;
 
     fn dummy_trader() -> PumpFunTrader {
-        let config = Arc::new(TraderConfig {
-            rpc_url: "http://localhost".into(),
-            helius_sender_urls: vec!["http://localhost".into()],
-            keypair: Keypair::new(),
-            nonce_accounts: vec![Pubkey::new_unique().to_string()],
-        });
+        let config = Arc::new(TraderConfig::new(
+            "http://localhost".into(),
+            vec!["http://localhost".into()],
+            Arc::new(Keypair::new()),
+            vec![Pubkey::new_unique()],
+        ));
         PumpFunTrader::new(config)
     }
 
@@ -200,7 +199,7 @@ mod tests {
     #[tokio::test]
     async fn replenish_refills_the_slot_a_buy_consumed() {
         let t = dummy_trader();
-        let target = BUY_SEED_POOL_SIZE;
+        let target = t.config.limits.buy_seed_pool_size;
 
         // Seed one short of target — the pool state immediately after a buy pops
         // a template.

@@ -8,13 +8,11 @@
 // ============================================================
 
 use super::PumpFunTrader;
-use crate::constants::{CONFIRM_MAX_RETRIES, CURVE_FEE_BUFFER_BPS};
+use crate::error::{Context, Result, TradeError};
 use crate::types::TokenProgram;
-use anyhow::{Context, Result};
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
-    signature::Signer,
 };
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::future::Future;
@@ -145,13 +143,15 @@ impl PumpFunTrader {
         // check rejects a NaN/∞, non-positive, oversized, or rounds-to-zero
         // `sol_amount` for both. API callers are also validated up front; this
         // is the crate's own backstop.
-        let buy_lamports = super::buy_lamports_checked(sol_amount)?;
-        let keypair = &self.config.keypair;
+        let buy_lamports = self.buy_lamports_checked(sol_amount)?;
+        let signer = self.config.signer.as_ref();
 
         async {
             // Fail fast if the trader isn't initialized (the buy ix builder needs
             // the global account); the actual read happens inside the builder.
-            anyhow::ensure!(self.global_account.is_some(), "Not initialized");
+            if self.global_account.is_none() {
+                return Err(TradeError::NotInitialized);
+            }
 
             let token_program_pk = token_program.pubkey();
             // Cache keys are the mint's base58 string; compute it once.
@@ -173,7 +173,7 @@ impl PumpFunTrader {
             // no account for this just-created mint, so we skip the RPC and go
             // straight to the seed-account (template) path.
             let ata = get_associated_token_address_with_program_id(
-                &keypair.pubkey(),
+                &signer.pubkey(),
                 mint,
                 &token_program_pk,
             );
@@ -230,13 +230,13 @@ impl PumpFunTrader {
                         &token_program_pk,
                         &user_token_account,
                         mint,
-                        &keypair.pubkey(),
+                        &signer.pubkey(),
                     )?,
                     TokenProgram::Token2022 => spl_token_2022::instruction::initialize_account3(
                         &token_program_pk,
                         &user_token_account,
                         mint,
-                        &keypair.pubkey(),
+                        &signer.pubkey(),
                     )?,
                 };
                 account_creation_ixs.push(init_ix);
@@ -267,7 +267,12 @@ impl PumpFunTrader {
                 }
                 (Some(_), None) => None,
             };
-            let min_tokens_out = compute_curve_buy_min_out(buy_lamports, slippage_bps, reserves);
+            let min_tokens_out = compute_curve_buy_min_out(
+                buy_lamports,
+                slippage_bps,
+                reserves,
+                self.config.slippage.curve_fee_buffer_bps,
+            );
 
             // Assemble the curve-buy ix set (compute budget + account creation +
             // `buy` + Jito tip) through the shared builder, so the simulate path
@@ -288,7 +293,7 @@ impl PumpFunTrader {
             // block always falls through to `schedule_nonce_refresh`.
             let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
             let sent: Result<String> = async {
-                let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, keypair)?;
+                let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, signer)?;
                 // Write-ahead persist (Phase 2): the durable-nonce signature is
                 // fixed the instant we sign — before any network round-trip — so
                 // hand it to the hook to durably record the "buy in flight" marker
@@ -316,7 +321,7 @@ impl PumpFunTrader {
                 );
 
                 if !skip_confirm {
-                    self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES)
+                    self.confirm_transaction(&sig, self.config.retry.confirm_max_retries)
                         .await?;
                     info!(
                         "✅ Buy confirmed — sig: {} | {}ms",
@@ -373,7 +378,7 @@ impl PumpFunTrader {
                 AccountMeta::new(pdas.bonding_curve, false),
                 AccountMeta::new(pdas.associated_bonding_curve, false),
                 AccountMeta::new(*user_token_account, false),
-                AccountMeta::new(self.config.keypair.pubkey(), true),
+                AccountMeta::new(self.config.signer.pubkey(), true),
                 AccountMeta::new_readonly(self.system_program, false),
                 AccountMeta::new_readonly(pdas.token_program, false),
                 AccountMeta::new(pdas.creator_vault, false),
@@ -407,11 +412,12 @@ pub(super) fn compute_curve_buy_min_out(
     buy_lamports: u64,
     slippage_bps: Option<u64>,
     reserves: Option<(u128, u128)>,
+    curve_fee_buffer_bps: u128,
 ) -> u64 {
     match (slippage_bps, reserves) {
         (Some(slip), Some((vt, vq))) => {
             let net = (buy_lamports as u128)
-                .saturating_mul(10_000u128.saturating_sub(CURVE_FEE_BUFFER_BPS))
+                .saturating_mul(10_000u128.saturating_sub(curve_fee_buffer_bps))
                 / 10_000;
             // Saturating throughout on untrusted reserve reads; a zero
             // denominator (both reserves read as 0) falls back to the
@@ -433,21 +439,24 @@ pub(super) fn compute_curve_buy_min_out(
 mod tests {
     use super::compute_curve_buy_min_out;
 
+    /// Default `config.slippage.curve_fee_buffer_bps`.
+    const FEE_BUF: u128 = 200;
+
     #[test]
     fn min_out_is_unprotected_without_slippage_or_reserves() {
         // No slippage tolerance → no floor.
-        assert_eq!(compute_curve_buy_min_out(1_000_000, None, Some((1_000, 2_000))), 1);
+        assert_eq!(compute_curve_buy_min_out(1_000_000, None, Some((1_000, 2_000)), FEE_BUF), 1);
         // Slippage set but no reserves in hand → no floor (never blocks the buy).
-        assert_eq!(compute_curve_buy_min_out(1_000_000, Some(500), None), 1);
+        assert_eq!(compute_curve_buy_min_out(1_000_000, Some(500), None, FEE_BUF), 1);
         // Zero reserves (degenerate read) → no floor rather than a panic.
-        assert_eq!(compute_curve_buy_min_out(1_000_000, Some(500), Some((0, 0))), 1);
+        assert_eq!(compute_curve_buy_min_out(1_000_000, Some(500), Some((0, 0)), FEE_BUF), 1);
     }
 
     #[test]
     fn tighter_slippage_raises_the_floor() {
         let reserves = Some((1_000_000_000u128, 30_000_000u128));
-        let loose = compute_curve_buy_min_out(1_000_000, Some(5_000), reserves); // 50%
-        let tight = compute_curve_buy_min_out(1_000_000, Some(100), reserves); // 1%
+        let loose = compute_curve_buy_min_out(1_000_000, Some(5_000), reserves, FEE_BUF); // 50%
+        let tight = compute_curve_buy_min_out(1_000_000, Some(100), reserves, FEE_BUF); // 1%
         assert!(tight >= loose, "tighter slippage must demand at least as many tokens");
         assert!(loose >= 1 && tight >= 1, "floor is always >= 1");
     }

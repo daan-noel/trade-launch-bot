@@ -26,6 +26,13 @@ impl TraderHook for TraderHookBridge {
         mint: &'a str,
         token_program: &'a str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(self.0.prewarm_amm_pool(mint, token_program))
+        // `prewarm_amm_pool` now returns `pump_trader::TradeError`; map it into the
+        // `anyhow::Result` the `TraderHook` trait expects.
+        Box::pin(async move {
+            self.0
+                .prewarm_amm_pool(mint, token_program)
+                .await
+                .map_err(anyhow::Error::from)
+        })
     }
 }

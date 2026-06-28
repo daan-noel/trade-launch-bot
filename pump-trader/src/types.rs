@@ -1,7 +1,6 @@
-use crate::constants::{TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
+use crate::protocol::{self, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
 use serde::Serialize;
 use solana_sdk::pubkey::Pubkey;
-use std::str::FromStr;
 
 /// The SPL token program a mint uses. Resolved once at the trade boundary so the
 /// hot path branches on a two-variant enum the compiler exhaustively checks,
@@ -28,9 +27,10 @@ impl TokenProgram {
 
     /// Classify a token program's `Pubkey` (a mint account's owner).
     pub fn from_pubkey(owner: &Pubkey) -> Self {
-        match Pubkey::from_str(TOKEN_PROGRAM_ID) {
-            Ok(legacy) if owner == &legacy => Self::Legacy,
-            _ => Self::Token2022,
+        if *owner == protocol::TOKEN {
+            Self::Legacy
+        } else {
+            Self::Token2022
         }
     }
 
@@ -42,10 +42,12 @@ impl TokenProgram {
         }
     }
 
-    /// The program id parsed to a `Pubkey`. The constants are valid base58, so
-    /// this never fails in practice.
+    /// The program id as a `const Pubkey` (no parse — sourced from `protocol`).
     pub fn pubkey(self) -> Pubkey {
-        Pubkey::from_str(self.as_id()).expect("token program id constant is valid base58")
+        match self {
+            Self::Legacy => protocol::TOKEN,
+            Self::Token2022 => protocol::TOKEN_2022,
+        }
     }
 }
 

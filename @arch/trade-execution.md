@@ -1,13 +1,15 @@
 # Trade execution — `pump-trader` crate
 
-File-level map of `pump-trader/` (crate `pump_trader`; has `lib.rs` + unit tests). Backend re-exports via `backend/src/trader/mod.rs`.
-Deep-dive detail: `@plans/trade-execution/module-details.md`, `@plans/trade-execution/slippage-logic-buy-sell.md`, `@plans/trade-execution/buy-in-flight-recovery.md`.
+File-level map of `pump-trader/` (crate `pump_trader`; has `lib.rs` + unit tests). `live` re-exports via `live/src/trader/mod.rs`.
+Deep-dive detail: `@plans/trade-execution/module-details.md`, `@plans/trade-execution/slippage-logic-buy-sell.md`, `@plans/trade-execution/buy-in-flight-recovery.md`. Redesign rationale (three-tier consts/config/error, `Arc<dyn Signer>`, feature gates): [pump-trader-redesign-plan.md](../pump-trader-redesign-plan.md).
+
+**Standalone & reusable:** the crate is a drop-in library — a consumer supplies a `TraderConfig` (sane `Default`s, `Arc<dyn Signer>` for HSM/remote-signer support), gets a typed `TradeError`, and never forks source to tune. No workspace deps.
 
 ## Modules — `src/trader/`
 
 | File | Responsibility |
 | --- | --- |
-| `mod.rs` | `PumpFunTrader` struct + construction; SOL-exposure tracking (`commit_sol_for_position`, `release_sol_for_position`, `can_commit_buy`); `buy_lamports_checked` validation |
+| `mod.rs` | `PumpFunTrader` struct + construction (program IDs sourced from `protocol` const Pubkeys — **no init-time parse/unwrap**); SOL-exposure tracking (`commit_sol_for_position`, `release_sol_for_position`, `can_commit_buy`); `buy_lamports_checked` validation (reads `config.limits.max_buy_sol`) |
 | `buy.rs` | Bonding-curve buys; `buy_token_snipe_write_ahead` (Phase 2 write-ahead: hook fires on sign, before submit); `build_curve_buy_ixs` + `compute_curve_buy_min_out` (pure, reused by sim) |
 | `sell.rs` | Durable-nonce curve sells; per-attempt Jito tip escalation; `close_token_account` (off-path rent reclaim) |
 | `amm.rs` | PumpSwap AMM swaps (post-migration); WSOL wrap/unwrap; cached `GlobalConfig` (freshness-bounded) |
@@ -20,16 +22,19 @@ Deep-dive detail: `@plans/trade-execution/module-details.md`, `@plans/trade-exec
 | `query.rs` | Read-only RPC: `get_sol_balance`, `get_all_token_accounts`, `resolve_buy_routing`, `resolve_curve_facts_batch` |
 | `reserves.rs` | `ReserveCache` — WS-fed reserve snapshots, freshness-bounded, venue-tagged |
 | `sim.rs` | **Simulation engine** — `simulate_ixs` (zero SOL, unsigned); `simulate_curve_{buy,sell}`, `simulate_amm_{buy,sell}`; reuses same ix builders as live trades |
-| `probe.rs` | Diagnostics backing `probe` subcommands; curve + AMM simulations |
-| `claim.rs` | Off-path cashback sweep (curve WSOL pot + AMM buyback pot + curve stable pot) |
+| `probe.rs` | Diagnostics backing `probe` subcommands; curve + AMM simulations. **Behind `feature = "probe"`** (off by default) |
+| `claim.rs` | Off-path cashback sweep (curve WSOL pot + AMM buyback pot + curve stable pot). **Behind `feature = "claim"`** (off by default) |
 
 ## Other modules
 
 | File | Responsibility |
 | --- | --- |
-| `lib.rs` | Public facade re-exports |
+| `lib.rs` | Public facade re-exports (`config::*`, `error::{Result, TradeError}`, `protocol`; `claim`/`probe` re-exports are feature-gated) |
 | `types.rs` | `TokenProgram`, `WalletHolding`, `BuyRouting`, `TokenBalance`, `CurveFacts` |
-| `constants.rs` | Program IDs, CU limits, Jito tip bounds, `MAX_BUY_SOL`, **two distinct fee recipients** (`PUMP_CURVE_FEE_RECIPIENT` slot-17 exact match; `PUMP_AMM_BUYBACK_FEE_RECIPIENT` whitelist — do NOT swap them) |
+| `protocol.rs` | **Tier 1 — compile-time invariants.** Program IDs / WSOL mint / fee recipients as `const Pubkey` (via `pubkey!`); discriminators, AMM byte offsets, account spaces, `LAMPORTS_PER_SOL`. **Two distinct fee recipients** (`PUMP_CURVE_FEE_RECIPIENT` slot-17 exact match; `PUMP_AMM_BUYBACK_FEE_RECIPIENT` whitelist — do NOT swap them) |
+| `config.rs` | **Tier 2 — operational tuning.** `TraderConfig` (4 required fields incl. `signer: Arc<dyn Signer + Send + Sync>` + `nonce_accounts: Vec<Pubkey>`) + 7 `Default` sub-structs (`ComputeBudgetCfg`/`JitoTipCfg`/`RetryCfg`/`NonceCfg`/`CacheCfg`/`SlippageCfg`/`LimitsCfg`). `TraderConfig::new(..)` builds with all tuning at defaults |
+| `error.rs` | Crate-owned `TradeError` (`thiserror`, **no `anyhow`**) + `Result<T>` alias; local `Context` trait + `bail!` macro preserve the migrated call-site ergonomics. Large source errors (`ClientError`, nonce-utils) are boxed so the hot-path `Result` stays small |
+| `constants.rs` | Thin back-compat shim re-exporting `LAMPORTS_PER_SOL`/`TOKEN_PROGRAM_ID` + a `&str` `WSOL_MINT` for external string consumers (`live`) |
 
 ## Key behaviors
 

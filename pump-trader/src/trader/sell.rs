@@ -8,15 +8,12 @@
 // assembles, signs, sends, and confirms one sell tx.
 // ============================================================
 
-use super::tx::OnChainRevert;
 use super::{PumpFunTrader, TokenPDAs};
-use crate::constants::{CONFIRM_MAX_RETRIES, CURVE_FEE_BUFFER_BPS, MAX_SELL_ATTEMPTS};
+use crate::error::{bail, Context, Result, TradeError};
 use crate::types::TokenProgram;
-use anyhow::{Context, Result};
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
-    signature::Signer,
 };
 use std::str::FromStr;
 use std::time::{Duration, Instant};
@@ -41,9 +38,10 @@ impl PumpFunTrader {
         // resend immediately (see the retry loop below).
         const SELL_NETWORK_RETRY_BACKOFF: Duration = Duration::from_millis(250);
 
-        let mut last_err: Option<anyhow::Error> = None;
+        let max_sell_attempts = self.config.retry.max_sell_attempts;
+        let mut last_err: Option<TradeError> = None;
 
-        for attempt in 0..MAX_SELL_ATTEMPTS {
+        for attempt in 0..max_sell_attempts {
             match self
                 .sell_token_once(
                     token_mint,
@@ -69,7 +67,7 @@ impl PumpFunTrader {
                     // so don't sit on a fixed backoff while the token dumps. Loop
                     // straight into the next attempt, which escalates the tip and
                     // takes a fresh nonce.
-                    let e = anyhow::anyhow!("Sell returned false on attempt {}", attempt + 1);
+                    let e = TradeError::Other(format!("Sell returned false on attempt {}", attempt + 1));
                     error!("❌ {}", e);
                     last_err = Some(e);
                 }
@@ -82,7 +80,7 @@ impl PumpFunTrader {
                     // base + priority fee. Stop now. (With slippage set, a revert
                     // may be a transient min-out miss that next attempt's
                     // fresh-reserve recompute clears, so those still retry.)
-                    let landed_revert = e.downcast_ref::<OnChainRevert>().is_some();
+                    let landed_revert = matches!(e, TradeError::Reverted { .. });
                     if slippage_bps.is_none() && landed_revert {
                         warn!("⛔ Sell reverted on-chain; not retrying (would only re-pay fees)");
                         return Err(e);
@@ -92,15 +90,16 @@ impl PumpFunTrader {
                     // attempt's fresh-reserve recompute, so resend it immediately.
                     // Only a genuine network/transport fault warrants a brief backoff
                     // before resending, so we don't hammer a degraded endpoint.
-                    if !landed_revert && attempt < MAX_SELL_ATTEMPTS - 1 {
+                    if !landed_revert && attempt < max_sell_attempts - 1 {
                         tokio::time::sleep(SELL_NETWORK_RETRY_BACKOFF).await;
                     }
                 }
             }
         }
 
-        Err(last_err
-            .unwrap_or_else(|| anyhow::anyhow!("Sell failed after {} attempts", MAX_SELL_ATTEMPTS)))
+        Err(last_err.unwrap_or_else(|| {
+            TradeError::Other(format!("Sell failed after {max_sell_attempts} attempts"))
+        }))
     }
 
     /// One curve-sell attempt: ensure the mint's PDAs and the wallet's token
@@ -175,7 +174,7 @@ impl PumpFunTrader {
             self.user_token_accounts
                 .insert(token_mint.to_string(), pk);
         } else if self.resolve_cached_token_account(token_mint).await?.is_none() {
-            anyhow::bail!("No token account found for mint {token_mint}");
+            bail!("No token account found for mint {token_mint}");
         }
 
         // `execute_sell` acquires the nonce itself, *after* its account/reserve
@@ -215,7 +214,7 @@ impl PumpFunTrader {
         } else {
             match self.resolve_cached_token_account(token_mint).await? {
                 Some(pk) => pk,
-                None => anyhow::bail!("No token account found for mint {token_mint}; nothing to close"),
+                None => bail!("No token account found for mint {token_mint}; nothing to close"),
             }
         };
 
@@ -236,7 +235,7 @@ impl PumpFunTrader {
         // convention (`!= TOKEN_PROGRAM_ID ⇒ 2022`) as `from_id`/`from_pubkey`
         // everywhere else — owner == destination == wallet, returning the rent to
         // the wallet; empty signer slice (the fee-payer signs).
-        let owner = self.config.keypair.pubkey();
+        let owner = self.config.signer.pubkey();
         let close_ix = match TokenProgram::from_pubkey(&pdas.token_program) {
             TokenProgram::Token2022 => spl_token_2022::instruction::close_account(
                 &pdas.token_program,
@@ -257,7 +256,7 @@ impl PumpFunTrader {
         // RECENT BLOCKHASH, no durable nonce — this runs off the exit hot path so
         // it never competes for a nonce slot. No Jito tip ix is appended.
         let tx = self
-            .build_recent_tx(vec![close_ix], &self.config.keypair)
+            .build_recent_tx(vec![close_ix], self.config.signer.as_ref())
             .await?;
 
         // Send via the RPC `sendTransaction` path with PREFLIGHT ENABLED (the
@@ -287,7 +286,7 @@ impl PumpFunTrader {
         confirm: bool,
     ) -> Result<Option<String>> {
         let t0 = Instant::now();
-        let keypair = &self.config.keypair;
+        let signer = self.config.signer.as_ref();
 
         let mint = Pubkey::from_str(token_mint)?;
 
@@ -339,7 +338,12 @@ impl PumpFunTrader {
             },
             None => None,
         };
-        let min_sol_output = compute_curve_sell_min_out(token_amount, slippage_bps, reserves);
+        let min_sol_output = compute_curve_sell_min_out(
+            token_amount,
+            slippage_bps,
+            reserves,
+            self.config.slippage.curve_fee_buffer_bps,
+        );
 
         let ixs = self.build_curve_sell_ixs(
             &mint,
@@ -360,7 +364,7 @@ impl PumpFunTrader {
         info!("🔁 Sell — token: {} nonce: {}", token_mint, nonce_pubkey);
 
         let res: Result<Option<String>> = async {
-            let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, keypair)?;
+            let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, signer)?;
             let sig = self.send_transaction(&tx).await?;
 
             info!(
@@ -376,7 +380,8 @@ impl PumpFunTrader {
             // Manual/API callers keep the RPC confirm (and its `OnChainRevert`
             // budget signal).
             if confirm {
-                self.confirm_transaction(&sig, CONFIRM_MAX_RETRIES).await?;
+                self.confirm_transaction(&sig, self.config.retry.confirm_max_retries)
+                    .await?;
                 info!(
                     "✅ Sell confirmed — sig: {} | {}ms",
                     sig,
@@ -433,7 +438,7 @@ impl PumpFunTrader {
             AccountMeta::new(pdas.bonding_curve, false),
             AccountMeta::new(pdas.associated_bonding_curve, false),
             AccountMeta::new(*user_token_account, false),
-            AccountMeta::new(self.config.keypair.pubkey(), true),
+            AccountMeta::new(self.config.signer.pubkey(), true),
             AccountMeta::new_readonly(self.system_program, false),
             AccountMeta::new(pdas.creator_vault, false),
             AccountMeta::new_readonly(pdas.token_program, false),
@@ -478,6 +483,7 @@ pub(super) fn compute_curve_sell_min_out(
     token_amount: u64,
     slippage_bps: Option<u64>,
     reserves: Option<(u128, u128)>,
+    curve_fee_buffer_bps: u128,
 ) -> u64 {
     match (slippage_bps, reserves) {
         (Some(slip), Some((vt, vq))) => {
@@ -488,7 +494,7 @@ pub(super) fn compute_curve_sell_min_out(
                 1
             } else {
                 let gross = vq.saturating_mul(token_amount as u128) / denom;
-                let net = gross.saturating_mul(10_000u128.saturating_sub(CURVE_FEE_BUFFER_BPS))
+                let net = gross.saturating_mul(10_000u128.saturating_sub(curve_fee_buffer_bps))
                     / 10_000;
                 ((net.saturating_mul(10_000u128.saturating_sub(slip as u128)) / 10_000) as u64)
                     .max(1)
@@ -502,21 +508,21 @@ pub(super) fn compute_curve_sell_min_out(
 mod tests {
     use super::compute_curve_sell_min_out;
     use crate::trader::{GlobalAccount, PumpFunTrader, TokenPDAs, TraderConfig};
-    use solana_sdk::{
-        message::Message, pubkey::Pubkey, signature::Keypair, signature::Signer,
-    };
+    use solana_sdk::{message::Message, pubkey::Pubkey, signature::Keypair};
     use std::sync::Arc;
 
     /// Hard Solana transaction wire-size limit (bytes).
     const TX_LIMIT: usize = 1232;
+    /// Default `config.slippage.curve_fee_buffer_bps`.
+    const FEE_BUF: u128 = 200;
 
     fn dummy_trader() -> PumpFunTrader {
-        let mut t = PumpFunTrader::new(Arc::new(TraderConfig {
-            rpc_url: "http://localhost".into(),
-            helius_sender_urls: vec!["http://localhost".into()],
-            keypair: Keypair::new(),
-            nonce_accounts: vec![Pubkey::new_unique().to_string()],
-        }));
+        let mut t = PumpFunTrader::new(Arc::new(TraderConfig::new(
+            "http://localhost".into(),
+            vec!["http://localhost".into()],
+            Arc::new(Keypair::new()),
+            vec![Pubkey::new_unique()],
+        )));
         // `build_curve_sell_ixs` needs the global account + compute-budget ixs
         // that `initialize()` would populate; set the minimum it reads here.
         t.global_account = Some(GlobalAccount {
@@ -536,16 +542,16 @@ mod tests {
 
     #[test]
     fn sell_min_out_is_unprotected_without_slippage_or_reserves() {
-        assert_eq!(compute_curve_sell_min_out(1_000_000, None, Some((1_000, 2_000))), 1);
-        assert_eq!(compute_curve_sell_min_out(1_000_000, Some(500), None), 1);
-        assert_eq!(compute_curve_sell_min_out(1_000_000, Some(500), Some((0, 0))), 1);
+        assert_eq!(compute_curve_sell_min_out(1_000_000, None, Some((1_000, 2_000)), FEE_BUF), 1);
+        assert_eq!(compute_curve_sell_min_out(1_000_000, Some(500), None, FEE_BUF), 1);
+        assert_eq!(compute_curve_sell_min_out(1_000_000, Some(500), Some((0, 0)), FEE_BUF), 1);
     }
 
     #[test]
     fn sell_tighter_slippage_raises_the_floor() {
         let reserves = Some((1_000_000_000u128, 30_000_000u128));
-        let loose = compute_curve_sell_min_out(1_000_000, Some(5_000), reserves); // 50%
-        let tight = compute_curve_sell_min_out(1_000_000, Some(100), reserves); // 1%
+        let loose = compute_curve_sell_min_out(1_000_000, Some(5_000), reserves, FEE_BUF); // 50%
+        let tight = compute_curve_sell_min_out(1_000_000, Some(100), reserves, FEE_BUF); // 1%
         assert!(tight >= loose, "tighter slippage must demand at least as many lamports");
         assert!(loose >= 1 && tight >= 1, "floor is always >= 1");
     }
@@ -574,7 +580,7 @@ mod tests {
     #[test]
     fn curve_sell_with_nonce_fits() {
         let t = dummy_trader();
-        let user = t.config.keypair.pubkey();
+        let user = t.config.signer.pubkey();
         let mint = Pubkey::new_unique();
         let pdas = worst_case_pdas();
         let uta = Pubkey::new_unique();
@@ -598,7 +604,7 @@ mod tests {
     #[test]
     fn standalone_close_tx_fits() {
         let t = dummy_trader();
-        let owner = t.config.keypair.pubkey();
+        let owner = t.config.signer.pubkey();
         let uta = Pubkey::new_unique();
         let close_ix = spl_token::instruction::close_account(
             &spl_token::id(),

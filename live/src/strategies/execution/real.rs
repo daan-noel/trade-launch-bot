@@ -239,11 +239,14 @@ impl SnipeExecutor for PumpFunTrader {
         reserves: Option<(u128, u128)>,
         on_signed: pump_trader::BuySignedHook,
     ) -> anyhow::Result<String> {
+        // The trader returns `pump_trader::TradeError`; this trait method is
+        // `anyhow::Result`, so lift it (the `?` would also work via `From`).
         self.buy_token_snipe_write_ahead(mint, creator, token_program_id, amount, slippage_bps, reserves, on_signed)
             .await
+            .map_err(anyhow::Error::from)
     }
     async fn check_signature(&self, signature: &str) -> anyhow::Result<Option<bool>> {
-        self.signature_state(signature).await
+        self.signature_state(signature).await.map_err(anyhow::Error::from)
     }
 }
 
@@ -809,7 +812,9 @@ async fn sell_until_balance_cleared(
             }
         };
         let sell_result = match tokio::time::timeout(SELL_SEND_TIMEOUT, send).await {
-            Ok(res) => res,
+            // The trader returns `pump_trader::TradeError`; lift it into `anyhow`
+            // so this arm unifies with the timeout arm below.
+            Ok(res) => res.map_err(anyhow::Error::from),
             Err(_) => Err(anyhow::anyhow!("sell send timed out after {SELL_SEND_TIMEOUT:?}")),
         };
         match sell_result {

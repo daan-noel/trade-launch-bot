@@ -11,14 +11,12 @@
 // ============================================================
 
 use super::PumpFunTrader;
-use crate::constants::{
-    JITO_TIP_ESCALATION_TAIL_MULT, JITO_TIP_FLOOR_MAX_AGE_MS, JITO_TIP_FLOOR_URL,
-    JITO_TIP_PERCENTILE, LAMPORTS_PER_SOL, MAX_JITO_TIP_SOL, MIN_JITO_TIP_SOL,
-};
-use anyhow::{Context, Result};
+use crate::config::JitoTipCfg;
+use crate::error::{Context, Result};
+use crate::protocol::LAMPORTS_PER_SOL;
 use serde::Deserialize;
 use solana_sdk::instruction::Instruction;
-use solana_sdk::{signature::Signer, system_instruction};
+use solana_sdk::system_instruction;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -36,9 +34,9 @@ pub struct TipFloor {
 }
 
 impl TipFloor {
-    /// The configured base percentile (`JITO_TIP_PERCENTILE`) — the level-0 tip.
-    fn base(&self) -> u64 {
-        match JITO_TIP_PERCENTILE {
+    /// The configured base percentile (`cfg.percentile`) — the level-0 tip.
+    fn base(&self, cfg: &JitoTipCfg) -> u64 {
+        match cfg.percentile {
             25 => self.p25,
             50 => self.p50,
             95 => self.p95,
@@ -48,15 +46,26 @@ impl TipFloor {
     }
 }
 
-/// Latest tip-floor snapshot + when it was fetched. Plain `std::sync::Mutex`:
-/// the critical section is a single read/write with no `.await` held (same
-/// rationale as `BlockhashCache`).
-#[derive(Default)]
+/// Latest tip-floor snapshot + when it was fetched, plus the Jito tuning that
+/// sizes each tip. Plain `std::sync::Mutex` on the snapshot: the critical
+/// section is a single read/write with no `.await` held (same rationale as
+/// `BlockhashCache`). The `cfg` is immutable after construction.
 pub struct JitoTipCache {
     inner: Mutex<Option<(TipFloor, Instant)>>,
+    /// Jito tuning (percentile / clamp bounds / floor feed) copied from
+    /// `TraderConfig.jito` so the trade path sizes tips without touching config.
+    pub(super) cfg: JitoTipCfg,
 }
 
 impl JitoTipCache {
+    /// Build an empty cache that sizes tips per `cfg`.
+    pub fn new(cfg: JitoTipCfg) -> Self {
+        Self {
+            inner: Mutex::new(None),
+            cfg,
+        }
+    }
+
     /// Store a freshly-fetched tip-floor snapshot, stamped with the current time.
     pub fn store(&self, floor: TipFloor) {
         if let Ok(mut guard) = self.inner.lock() {
@@ -66,12 +75,9 @@ impl JitoTipCache {
 
     /// The cached snapshot if it was fetched within the max-age window.
     fn fresh(&self) -> Option<TipFloor> {
+        let max_age = Duration::from_millis(self.cfg.floor_max_age_ms);
         self.inner.lock().ok().and_then(|guard| match *guard {
-            Some((floor, at))
-                if at.elapsed() <= Duration::from_millis(JITO_TIP_FLOOR_MAX_AGE_MS) =>
-            {
-                Some(floor)
-            }
+            Some((floor, at)) if at.elapsed() <= max_age => Some(floor),
             _ => None,
         })
     }
@@ -86,25 +92,26 @@ impl JitoTipCache {
     /// per-trade cost guardrail, so escalation can never overspend. (A tx that
     /// never lands costs nothing, so bidding up only costs more once it wins.)
     pub fn tip_lamports_for_level(&self, level: u8) -> u64 {
-        let floor = sol_to_lamports(MIN_JITO_TIP_SOL);
-        let ceil = sol_to_lamports(MAX_JITO_TIP_SOL).max(floor);
+        let floor = sol_to_lamports(self.cfg.min_sol);
+        let ceil = sol_to_lamports(self.cfg.max_sol).max(floor);
+        let mult = self.cfg.escalation_tail_mult;
         let raw = match self.fresh() {
             Some(tf) => match level {
-                0 => tf.base(),
-                1 => tf.p95.max(tf.base()),
+                0 => tf.base(&self.cfg),
+                1 => tf.p95.max(tf.base(&self.cfg)),
                 2 => tf.p99.max(tf.p95),
-                n => scale(tf.p99, (n - 2) as i32),
+                n => scale(tf.p99, (n - 2) as i32, mult),
             },
-            None => scale(floor, level as i32),
+            None => scale(floor, level as i32, mult),
         };
         raw.clamp(floor, ceil)
     }
 }
 
-/// `base × JITO_TIP_ESCALATION_TAIL_MULT^exp`, saturating to `u64::MAX`. `exp`
-/// is clamped non-negative so a stray level can't shrink the tip.
-fn scale(base: u64, exp: i32) -> u64 {
-    let scaled = base as f64 * JITO_TIP_ESCALATION_TAIL_MULT.powi(exp.max(0));
+/// `base × mult^exp`, saturating to `u64::MAX`. `exp` is clamped non-negative so
+/// a stray level can't shrink the tip.
+fn scale(base: u64, exp: i32, mult: f64) -> u64 {
+    let scaled = base as f64 * mult.powi(exp.max(0));
     if scaled >= u64::MAX as f64 {
         u64::MAX
     } else {
@@ -126,7 +133,7 @@ struct TipFloorRow {
 /// once to prime the cache, then on a background interval (see `init.rs`).
 pub(super) async fn refresh_tip_floor(http: &reqwest::Client, cache: &JitoTipCache) -> Result<()> {
     let rows: Vec<TipFloorRow> = http
-        .get(JITO_TIP_FLOOR_URL)
+        .get(&cache.cfg.floor_url)
         .send()
         .await?
         .error_for_status()?
@@ -162,7 +169,7 @@ impl PumpFunTrader {
     /// escalation level. See [`JitoTipCache::tip_lamports_for_level`].
     pub(super) fn jito_tip_ix(&self, level: u8) -> Instruction {
         system_instruction::transfer(
-            &self.config.keypair.pubkey(),
+            &self.config.signer.pubkey(),
             &self.jito_tip_account,
             self.jito_tip_cache.tip_lamports_for_level(level),
         )
@@ -172,6 +179,16 @@ impl PumpFunTrader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Default Jito tuning the tests size against.
+    fn cfg() -> JitoTipCfg {
+        JitoTipCfg::default()
+    }
+    fn cache() -> JitoTipCache {
+        JitoTipCache::new(cfg())
+    }
+    const MIN_JITO_TIP_SOL: f64 = 0.0002;
+    const MAX_JITO_TIP_SOL: f64 = 0.005;
 
     fn lamports(sol: f64) -> u64 {
         (sol * LAMPORTS_PER_SOL as f64) as u64
@@ -191,13 +208,13 @@ mod tests {
 
     #[test]
     fn cold_cache_level_0_is_the_floor() {
-        let c = JitoTipCache::default();
+        let c = cache();
         assert_eq!(c.tip_lamports_for_level(0), lamports(MIN_JITO_TIP_SOL));
     }
 
     #[test]
     fn cold_cache_escalates_then_saturates_at_ceiling() {
-        let c = JitoTipCache::default();
+        let c = cache();
         let ceil = lamports(MAX_JITO_TIP_SOL);
         assert!(
             c.tip_lamports_for_level(1) > c.tip_lamports_for_level(0),
@@ -209,10 +226,10 @@ mod tests {
 
     #[test]
     fn fresh_cache_climbs_the_percentile_ladder() {
-        let c = JitoTipCache::default();
+        let c = cache();
         let tf = sample_floor();
         c.store(tf);
-        assert_eq!(c.tip_lamports_for_level(0), tf.base()); // configured p75
+        assert_eq!(c.tip_lamports_for_level(0), tf.base(&cfg())); // configured p75
         assert_eq!(c.tip_lamports_for_level(1), tf.p95);
         assert_eq!(c.tip_lamports_for_level(2), tf.p99);
         assert!(
@@ -223,7 +240,7 @@ mod tests {
 
     #[test]
     fn escalation_never_decreases_with_level() {
-        let c = JitoTipCache::default();
+        let c = cache();
         c.store(sample_floor());
         let mut prev = 0;
         for level in 0..10u8 {
@@ -235,7 +252,7 @@ mod tests {
 
     #[test]
     fn every_level_stays_within_the_clamp() {
-        let c = JitoTipCache::default();
+        let c = cache();
         c.store(sample_floor());
         let floor = lamports(MIN_JITO_TIP_SOL);
         let ceil = lamports(MAX_JITO_TIP_SOL);
