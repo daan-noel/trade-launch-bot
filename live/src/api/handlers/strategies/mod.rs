@@ -1,6 +1,7 @@
-//! Deploy strategy handlers. Per the T11/T12 split (Option A), the tpsl1/tpsl2
-//! rule CRUD + simulate handlers (which also take `LocalState`) stay in `backend`
-//! / later `lab`; only the live position read handlers move here.
+//! Deploy strategy handlers. Position reads run over the unified `StrategyRepo`
+//! (`strategy_positions`) through one set of handlers keyed by a `{strategy}`
+//! path segment — see [`positions`]. The legacy per-strategy `tpsl{1,2}_positions`
+//! modules were retired in Phase 3.
 
-pub mod tpsl1_positions;
-pub mod tpsl2_positions;
+pub mod positions;
+pub mod rules;

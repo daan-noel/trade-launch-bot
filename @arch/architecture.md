@@ -74,10 +74,12 @@ injected with. Handlers take the **narrowest** state they need:
 
 ### `DeployState` — `live/src/state/deploy_state.rs`
 
-`core: Arc<CoreState>` + `trader` · `tpsl1_cache` / `tpsl2_cache` (runtime caches) ·
-`pool_index` + `pools_changed` (live pool→mint index) · `trade_signals` (confirm-loop
-wakeup hub) · `sync_gate` (`SyncGate`, per-mint dedup + concurrency for `/token/sync`) ·
-`live_mode` (watch).
+`core: Arc<CoreState>` + `trader` · `strategy: StrategyService` (the **one** unified,
+registry-dispatched live service — holds the single `StrategyRuntimeCache` + `StrategyRepo` and owns
+the rule lifecycle; `strategy_cache()` exposes the cache; replaced the per-strategy
+`tpsl1_cache`/`tpsl2_cache`, Phase 3) · `pool_index` + `pools_changed` (live pool→mint index) ·
+`trade_signals` (confirm-loop wakeup hub) · `sync_gate` (`SyncGate`, per-mint dedup + concurrency for
+`/token/sync`) · `live_mode` (watch).
 
 ### `LocalState` — `lab/src/state/local_state.rs`
 
@@ -150,8 +152,8 @@ Both bins serve `GET /api/system/capabilities → {has_live_trading, has_analysi
 | `handlers/tokens/sync.rs` | `sync_token`, `preview_sync` (RPC backfill, gated by `SyncGate`) |
 | `handlers/trading/solana.rs` | `manual_buy`, `manual_sell` (Sell All), `get_wallet_tokens`, `get_wallet_token(_balance)`, `get_prices` |
 | `handlers/trading/cashback.rs` | `get_cashback_status`, `claim_cashback` |
-| `handlers/strategies/tpsl1_positions.rs` | tpsl1 position reads (by rule / mint / wallet / id) |
-| `handlers/strategies/tpsl2_positions.rs` | identical surface for tpsl2 |
+| `handlers/strategies/positions.rs` | **unified** position reads over `StrategyRepo`, keyed by the `{strategy}` path segment (`tpsl1`/`tpsl2` aliases or canonical ids) — by rule / mint / wallet / id. Replaced the per-strategy `tpsl{1,2}_positions.rs` (Phase 3) |
+| `handlers/strategies/rules.rs` | **unified** rule CRUD + lifecycle (list/get/create/update/delete · activate/pause/stop), keyed by `{strategy}`, over the `StrategyService` + `strategies::rules` domain. Edge appends cache reload + `rules_changed` SSE (Phase 3) |
 
 ### Local routes (`lab`, take `LocalState`)
 

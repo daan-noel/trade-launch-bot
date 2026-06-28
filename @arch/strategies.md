@@ -7,41 +7,61 @@ Backtesting is strategy-agnostic — the sweep engine only sees `Strategy`/`Para
 
 ## Unified core domain — `trading_core::strategies` (Phase 2)
 
-The strategy domain is being unified behind one enum-dispatched registry in
-`trading_core` (live-lab remake Phase 2 — see [live-lab-remake-plan.md](../live-lab-remake-plan.md)).
+The strategy domain is unified behind one enum-dispatched registry in
+`trading_core` (live-lab remake — see [live-lab-remake-plan.md](../live-lab-remake-plan.md)).
 The decision logic in `tpsl_sniper_1`/`tpsl_sniper_2` is **unchanged** (still intentional clones); the
 new modules only route by `strategy_id` and parse params once, so they run the identical code path
-(exact parity). The live edge below still consumes the old per-strategy caches/handlers until Phase 3
-rewires it onto these.
+(exact parity). **Phase 3 rewired the live edge onto these** — the `live` bin now drives one
+strategy-agnostic, registry-dispatched orchestration (`live/src/strategies/{service,runner,execution}`)
+over the single `StrategyRuntimeCache` + `StrategyRepo`, and the cloned `live` `tpsl_sniper_{1,2}`
+orchestration (caches, services, handlers, lifecycle, execution) was deleted. `lab` still consumes the
+old per-strategy CRUD/backtest domain (`tpsl_rules_core`, `Tpsl1Rule`/`Tpsl2Rule`, the old repos) — its
+migration is a later remake phase, so those core types survive until then.
 
 | Module | Role |
 | --- | --- |
 | `registry.rs` | `StrategyImpl{Tpsl1,Tpsl2}` (`from_id`/`id`/`parse_params`); typed `Tpsl1Params`/`Tpsl2Params` (serde, `to_rule`/`from_rule`) parsed once from the `strategy_rules.params` JSONB; `StrategyParams`; enum-dispatched `matches_entry` / `resolve_entry` / `resolve_exit` over the unchanged tpsl1/2 fns |
 | `kernel.rs` | `simulate_rule(StrategyImpl, &StrategyParams, &[&[T]], &SimConfig) -> RunMetrics` + `simulate_token`; `RunMetrics` ≡ the `strategy_run_metrics` columns (`to_run_metrics(run_id)`); `CostModel`/`round_trip_with_costs` + `QuantileSketch`/`RunAgg` (ported from `lab/sweep`; Phase 4 repoints the sweep here and drops the dup) |
-| `runtime_cache.rs` | strategy-agnostic `StrategyRuntimeCache`: active rules + parsed params, holding-by-mint index, per-rule cap counters, `RuleClosedStats`, paper-run pointer, `ExitGuard`/`EntryGuard` RAII. DB/SSE-free (Phase-3 edge wraps those). **Deferred to Phase 3:** the per-position clock exit-state memo + time-exit index (tied to the live token-cache trade source) |
-| `rules.rs` | `strategy_id`-dispatched rule-CRUD domain: `validate` (percent ranges + tpsl2 entry-window/scalp-gate), `build_rule(RuleDraft) -> StrategyRule`, `create`/`save` against `StrategyRepo`. Replaces the cloned `tpsl_rules_core` split |
+| `runtime_cache.rs` | strategy-agnostic `StrategyRuntimeCache`: active rules + parsed params, holding-by-mint index, per-rule cap counters, `RuleClosedStats`, run pointer, `ExitGuard`/`EntryGuard` RAII, **the per-position clock exit-state memo + time-exit index** (`exit_state_advance_and_find_exit` / `exit_state_clock_check`, Phase-3), and the bounded until-dead armer set. DB loaders + run lifecycle (`load_from_db`/`reload_rules`/`start_run`/`stop_run`) over `StrategyRepo`; SSE-free (the live edge emits) |
+| `exit_state.rs` | `CachedExitStateImpl` enum-wrapped per-strategy exit memo + `clock_entry_time` — the incremental trade-gate + clock-sweep the cache drives |
+| `rules.rs` | `strategy_id`-dispatched rule-CRUD domain: `validate` (percent ranges + tpsl2 entry-window/scalp-gate), `build_rule(RuleDraft) -> StrategyRule`, `create`/`save` against `StrategyRepo`. Replaces the cloned `tpsl_rules_core` split. The calling **edge** (live `api/handlers/strategies/rules.rs`) appends cache `reload_rules` + `rules_changed` SSE via the service |
 
 Universal knobs (`buy_amount`, `trade_mode`, caps) are the typed columns on `StrategyRule`; only the
 strategy-specific gates live in `params`. `StrategyPosition` gained PnL/status helpers
 (`is_win`/`realized_pnl_sol`/`pnl_pct`/`is_closed`/…) mirroring the `strategy_position_pnl` view.
 
-## Dispatch — `runner.rs`
+## Dispatch — `live/src/strategies/runner.rs` (Phase 3)
 
-`StrategyRunner` consumes `strategy_rx` in a `select!` loop and routes to both strategy services:
+`StrategyRunner` consumes `strategy_rx` in a `select!` loop and routes to the **one** unified
+`StrategyService` (which dispatches each per-rule decision through `StrategyImpl` keyed by
+`rule.strategy_id` — no more per-strategy services):
 
-- `on_token_created(mint)` → entry gating + inline cap/holding-index claim → **spawn** DB insert + buy
-- `on_trade_executed(mint)` → exit evaluation → spawn sell
+- `on_token_created(mint)` → entry gating (`matches_entry`) + run ensured + inline cap/holding-index claim → tpsl1 immediate buy / tpsl2 scalp-arm then buy
+- `on_trade_executed(mint)` → exit evaluation via the core exit-state memo → paper close / real sell
 - 1s clock tick → `sweep_time_exits()` (deadline exits that come due in silence)
 
 The `select!` **serializes** all position transitions (no Holding→ExitPending interleave). In-memory transitions happen inline; slow DB/chain work is spawned.
 
 **Position lifecycle:** `Arming → BuySubmitted → Holding → ExitPending → End/ExitFailed`
 
+**Live orchestration files** (`live/src/strategies/`): `service.rs` (the unified service: entry gate,
+trade/time exit ladder, real sell, manual-sell close, recovery reapers, rule CRUD + activate/pause/
+stop lifecycle), `runner.rs` (the `select!` dispatch), `execution/{real,paper,scalp}.rs` (real on-chain
+exec + double-buy/sell invariants · paper mirror fill-poll · tpsl2 scalp-arming).
+
 ## Shared — `sim_progress.rs`
 
 `SimProgress` — per-backtest progress reporter shared by both snipers' `backtest.rs`. Simulate is a **start→wait→fetch** job (POST → 202, result stored in `AppState.sim_results`, client collects via SSE + `GET /api/jobs/simulations/{rule_id}/result`).
 
 ## Per-strategy module map (`tpsl_sniper_1/`, mirrored in `tpsl_sniper_2/`)
+
+> **Phase 3 note.** The **decision** modules (`entry/`, `exit/`, `cohort.rs`, `util.rs`) live in
+> `trading_core::strategies::tpsl_sniper_{1,2}` and are consumed by both the registry (live) and the
+> sweep/backtest (lab). The **orchestration** files below (`mod.rs` handler, `handler.rs`,
+> `execution/`, `service.rs`, `lifecycle.rs`, `runtime_cache.rs`, `paper_run.rs`, `backtest.rs`) were
+> **deleted from `live`** — that path is now the single unified `live/src/strategies/{service,runner,
+> execution}`. They remain in `lab` (which still runs the old per-strategy CRUD + backtest) until lab's
+> migration phase. The table describes those still-present (lab/decision) modules.
 
 | File | Responsibility |
 | --- | --- |

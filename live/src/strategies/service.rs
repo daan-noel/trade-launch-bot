@@ -33,6 +33,7 @@ use trading_core::storage::repositories::strategy_repo::StrategyRepo;
 use trading_core::storage::repositories::trade_repo::TradeRepo;
 use trading_core::strategies::exit_state::clock_entry_time;
 use trading_core::strategies::registry::{StrategyImpl, StrategyParams};
+use trading_core::strategies::rules::{self, RuleDraft, RuleError};
 use trading_core::strategies::runtime_cache::{ExitGuard, StrategyRuntimeCache};
 
 use crate::state::token_cache::TokenCache;
@@ -1081,5 +1082,45 @@ impl StrategyService {
         }
 
         Ok((rule, count))
+    }
+
+    // ── Rule CRUD (validate via the core `rules` domain, then append the live
+    //    side effects the domain deliberately leaves to the edge: cache
+    //    `reload_rules` + `rules_changed` SSE) ──────────────────────────────────
+
+    /// Validate + persist a new (inactive) rule, then refresh the rules cache and
+    /// notify SSE. A lifecycle endpoint activates it afterward.
+    pub async fn create_rule(&self, draft: &RuleDraft) -> Result<StrategyRule, RuleError> {
+        let rule = rules::create(&self.repo, draft).await?;
+        self.runtime.reload_rules(&self.repo).await.map_err(RuleError::Repo)?;
+        self.emit_rules_changed(&rule.strategy_id);
+        Ok(rule)
+    }
+
+    /// Re-validate + persist an edited rule (the edge merges its request patch and
+    /// enforces any frozen-field guard first), then refresh the cache + notify SSE.
+    pub async fn save_rule(&self, rule: &StrategyRule) -> Result<(), RuleError> {
+        rules::save(&self.repo, rule).await?;
+        self.runtime.reload_rules(&self.repo).await.map_err(RuleError::Repo)?;
+        self.emit_rules_changed(&rule.strategy_id);
+        Ok(())
+    }
+
+    /// Delete a rule. An active rule is stopped-and-closed first (so no open real
+    /// position is orphaned), then its in-memory run state is purged and the row
+    /// deleted; finally the cache is refreshed and SSE notified. Returns `false`
+    /// if the rule did not exist.
+    pub async fn delete_rule(&self, rule_id: Uuid) -> anyhow::Result<bool> {
+        let Some(rule) = self.repo.find_rule(rule_id).await? else {
+            return Ok(false);
+        };
+        if rule.is_active {
+            self.stop_and_close_rule(rule_id).await?;
+        }
+        self.runtime.clear_rule(rule_id);
+        self.repo.delete_rule(rule_id).await?;
+        self.runtime.reload_rules(&self.repo).await?;
+        self.emit_rules_changed(&rule.strategy_id);
+        Ok(true)
     }
 }

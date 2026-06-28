@@ -654,6 +654,118 @@ impl StrategyRepo {
         Ok(rows.into_iter().map(StrategyPosition::from).collect())
     }
 
+    // -- HTTP read views (page-bounded, newest first) -------------------------
+    // Back the live position-read endpoints. Every query is `LIMIT/OFFSET`-bound
+    // and the list/by-mint/by-wallet views are scoped by `strategy_id` so a
+    // growing `strategy_positions` table is never fetched whole.
+
+    /// Page-bounded positions for one run — the by-rule view resolves a paper
+    /// rule's latest run to this (paper retains only the current run's bag).
+    pub async fn find_positions_by_run_paged(
+        &self,
+        run_id: Uuid,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<StrategyPosition>> {
+        let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
+            "SELECT {POSITION_COLS} FROM strategy_positions WHERE run_id = $1 \
+             ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+        ))
+        .bind(run_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(StrategyPosition::from).collect())
+    }
+
+    /// Page-bounded positions for a rule across all its runs — the by-rule view
+    /// for a real rule (full lifetime history, newest first).
+    pub async fn find_positions_by_rule_paged(
+        &self,
+        rule_id: Uuid,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<StrategyPosition>> {
+        let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
+            "SELECT {POSITION_COLS} FROM strategy_positions WHERE rule_id = $1 \
+             ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+        ))
+        .bind(rule_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(StrategyPosition::from).collect())
+    }
+
+    /// Page-bounded positions for a strategy family — the HTTP list view.
+    pub async fn find_positions_by_strategy(
+        &self,
+        strategy_id: &str,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<StrategyPosition>> {
+        let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
+            "SELECT {POSITION_COLS} FROM strategy_positions WHERE strategy_id = $1 \
+             ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+        ))
+        .bind(strategy_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(StrategyPosition::from).collect())
+    }
+
+    /// Page-bounded in-holding-index positions (`Arming`/`BuySubmitted`/`Holding`)
+    /// for one mint within a strategy — the HTTP by-mint view.
+    pub async fn find_holding_by_mint(
+        &self,
+        strategy_id: &str,
+        mint: &str,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<StrategyPosition>> {
+        let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
+            "SELECT {POSITION_COLS} FROM strategy_positions \
+             WHERE strategy_id = $1 AND mint = $2 \
+               AND status IN ('Holding', 'Arming', 'BuySubmitted') \
+             ORDER BY created_at DESC LIMIT $3 OFFSET $4"
+        ))
+        .bind(strategy_id)
+        .bind(mint)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(StrategyPosition::from).collect())
+    }
+
+    /// Page-bounded in-holding-index positions for one wallet within a strategy —
+    /// the HTTP by-wallet view.
+    pub async fn find_holding_by_wallet(
+        &self,
+        strategy_id: &str,
+        wallet: &str,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<StrategyPosition>> {
+        let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
+            "SELECT {POSITION_COLS} FROM strategy_positions \
+             WHERE strategy_id = $1 AND wallet = $2 \
+               AND status IN ('Holding', 'Arming', 'BuySubmitted') \
+             ORDER BY created_at DESC LIMIT $3 OFFSET $4"
+        ))
+        .bind(strategy_id)
+        .bind(wallet)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(StrategyPosition::from).collect())
+    }
+
     pub async fn find_open_positions(&self) -> anyhow::Result<Vec<StrategyPosition>> {
         let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
             "SELECT {POSITION_COLS} FROM strategy_positions \

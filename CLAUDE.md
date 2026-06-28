@@ -111,5 +111,5 @@ Copy-Item .env .env.backup -Force   # always do this first
 ## Gotchas
 
 - **Sell-confirm timing:** the exit loop polls the **full** window before retrying — buffers the gRPC feed's index lag. Without it, duplicate sells fire. Preserve when editing `execution/real.rs` or the sell retry path.
-- `tpsl_sniper_1`/`tpsl_sniper_2` are intentional clones — a fix in one usually belongs in both.
+- `tpsl_sniper_1`/`tpsl_sniper_2` **decision** modules (`entry`/`exit`/`cohort`, in `trading_core`) are intentional clones — a fix in one usually belongs in both. (The live *orchestration* is no longer cloned: Phase 3 unified it into one registry-dispatched `live/src/strategies/{service,runner,execution}`.)
 - `.env` required (see `.env.example`); secrets/keys there only, never in code.

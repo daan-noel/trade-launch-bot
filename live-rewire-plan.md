@@ -219,17 +219,28 @@ modules stay separate behind the enum) while collapsing orchestration to one pat
   clones) + their `pub mod` decls — nothing outside referenced them (decision logic is in
   `trading_core`; handlers use core repos directly).
   - **KNOWN GAPS for T5/T6 (not regressions — expected mid-cutover):**
-    1. **Position-read handlers** (`api/handlers/strategies/tpsl{1,2}_positions.rs`) STILL read the
-       OLD `Tpsl{1,2}PositionRepo`/old tables — but the unified service now writes
-       `strategy_positions`. T5 must rewrite them over `StrategyRepo` keyed by the `strategy_id`
-       path segment (old tables may not even exist in the rebuilt schema → runtime-empty until then).
-    2. **Rule-CRUD edge NOT wired in `live`** — `api/mod.rs` registers only position-READ routes
-       (its T11/T12 "rule CRUD lives in lab" comment is STALE for the remake). T5 adds the rule-CRUD
-       routes that call core `strategies::rules` + the unified `service.{activate,pause,stop_and_close}_rule`.
-    3. **SSE `TpslPositionsChanged` delta dropped** — the unified `StrategyRuntimeCache.sync_position`
-       is decoupled from SSE (T2 design), so live position deltas aren't broadcast. Restore in T5/T6
-       (inject an `Option<broadcast::Sender<SseEvent>>` + port `emit_position_changed`/`RuleNotifSnapshot`,
-       or emit from the service edge). Frontend falls back to fetch until then.
+    1. ✅ **RESOLVED (T5)** — position-read handlers rewritten as one unified
+       `api/handlers/strategies/positions.rs` over `StrategyRepo` keyed by the `{strategy}` path
+       segment (`StrategyImpl::from_id` accepts `tpsl1`/`tpsl2` aliases + canonical ids). Added repo
+       read views (`find_positions_by_run_paged`/`_by_rule_paged`/`_by_strategy`/`find_holding_by_mint`/
+       `_by_wallet`). Old `tpsl{1,2}_positions.rs` deleted; routes use `{strategy}` (URLs stable).
+    2. ✅ **RESOLVED (T5)** — rule-CRUD + lifecycle wired in `live` as one unified
+       `api/handlers/strategies/rules.rs` (list/get/create/update/delete · activate/pause/stop) keyed
+       by `{strategy}`, over the new `service.{create_rule,save_rule,delete_rule,activate_rule,
+       pause_rule,stop_and_close_rule}` (which wrap core `strategies::rules` + append cache
+       `reload_rules` + `rules_changed` SSE). Live-edit freeze guard (hot set only) in the edge.
+       Stale "CRUD lives in lab" comment in `api/mod.rs` replaced. FE contract preserved (flat `p_*`
+       body ⇄ params; response = params + universal cols + live counters + derived `lifecycle`).
+    3. **STILL OPEN — SSE `TpslPositionsChanged` delta dropped.** The event payload is built on the
+       OLD `Position` + flat `RuleNotifSnapshot`, fired at every transition across `service.rs` +
+       `execution/{paper,real}.rs`. Restoring under the unified `StrategyPosition` is contract-sensitive
+       (change the event type → FE deser, or add a `StrategyPosition→Position` adapter) across many emit
+       points. UX degradation only (live row-patch vs refetch); FE falls back to fetch. Deferred to a
+       focused follow-up. `TpslRulesChanged` IS emitted (rule list refetch works).
+    4. **DEFERRED (blocked) — core orphan deletion.** `Tpsl1Rule`/`Tpsl2Rule`, the old per-strategy
+       repos, and `tpsl_rules_core` are STILL consumed by `lab` (CRUD/simulate/backtest/paper-result)
+       and core `seed.rs`/`wallet_reconcile.rs`. Cannot be deleted until lab is migrated off them (a
+       later remake phase). T6's "delete only once grep-clean" guard correctly keeps them for now.
   - **DONE so far (live compiles + tests green):** `StrategyRepo` gained `#[derive(Clone)]` +
     `mark_buy_submitted` (atomic `WHERE entry_price IS NULL` RETURNING) + `record_entry_fill`
     (atomic entry RETURNING); new `live/src/strategies/execution/{mod,real,scalp}.rs` wired into
