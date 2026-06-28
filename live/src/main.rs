@@ -557,6 +557,9 @@ async fn main() -> anyhow::Result<()> {
     // rules are dispatched by `strategy_id` through the registry inside it.
     let strategy_cache =
         Arc::new(trading_core::strategies::runtime_cache::StrategyRuntimeCache::new());
+    // Install the cold-lane sender so position transitions broadcast
+    // `tpsl_positions_changed` deltas straight from the cache funnel.
+    strategy_cache.set_sse_sender(sse_tx.clone());
     strategy_cache
         .load_from_db(&trading_core::storage::repositories::strategy_repo::StrategyRepo::new(
             db.clone(),

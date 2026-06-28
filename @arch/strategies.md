@@ -74,7 +74,7 @@ exec + double-buy/sell invariants · paper mirror fill-poll · tpsl2 scalp-armin
 | `execution/paper.rs` | Mirror feed, no tx sent; bounded 64 concurrent; count-gated re-walk |
 | `service.rs` | Wires entry/exit/execution; `ExitGuard`/`EntryGuard` RAII interlocks; recovery reapers; SOL balance-floor guard |
 | `lifecycle.rs` | `activate_rule`, `pause_rule`, `stop_and_close_rule` — rule state transitions |
-| `runtime_cache.rs` | In-memory rules/positions/counters/paper-runs/exit-memos; `exiting`/`entering` guard sets; `ladder_params_by_id` (no full Rule clone on hot path) |
+| `runtime_cache.rs` | In-memory rules/positions/counters/paper-runs/exit-memos; `exiting`/`entering` guard sets; `ladder_params_by_id` (no full Rule clone on hot path); **emits `tpsl_positions_changed` SSE deltas from the `sync_position`/`remove_position` funnel** via an optional sender (`set_sse_sender`; unset in tests/`lab` ⇒ no-op) — every transition funnels here, so no delta is missed |
 | `paper_run.rs` | `finish_paper_run_if_complete` |
 | `backtest.rs` | `run_backtest` — replay using same exit fns as live; cross-run `BacktestTradeCache`; detached + 202 |
 | `util.rs` | `none_if_zero_f64/u64` |

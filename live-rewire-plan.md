@@ -231,12 +231,16 @@ modules stay separate behind the enum) while collapsing orchestration to one pat
        `reload_rules` + `rules_changed` SSE). Live-edit freeze guard (hot set only) in the edge.
        Stale "CRUD lives in lab" comment in `api/mod.rs` replaced. FE contract preserved (flat `p_*`
        body ⇄ params; response = params + universal cols + live counters + derived `lifecycle`).
-    3. **STILL OPEN — SSE `TpslPositionsChanged` delta dropped.** The event payload is built on the
-       OLD `Position` + flat `RuleNotifSnapshot`, fired at every transition across `service.rs` +
-       `execution/{paper,real}.rs`. Restoring under the unified `StrategyPosition` is contract-sensitive
-       (change the event type → FE deser, or add a `StrategyPosition→Position` adapter) across many emit
-       points. UX degradation only (live row-patch vs refetch); FE falls back to fetch. Deferred to a
-       focused follow-up. `TpslRulesChanged` IS emitted (rule list refetch works).
+    3. ✅ **RESOLVED (follow-up) — SSE `TpslPositionsChanged` delta restored.** Rather than thread a
+       `broadcast::Sender` through every transition site (the boxed `on_signed` buy hook + deep
+       real/paper helpers), the delta is emitted from the **cache's position-transition funnel**
+       (`StrategyRuntimeCache::sync_position`/`remove_position`) via an *optional* sender installed at
+       boot (`set_sse_sender`; unset in tests/`lab` ⇒ no-op). Every transition funnels through those two
+       methods by construction, so coverage is guaranteed and future-proof (an edge that forgot to emit
+       would silently drop one). **FE contract unchanged**: a new `impl From<&StrategyPosition> for
+       Position` (core) adapts the row back to the legacy wire shape the stream bridge already renders
+       via `PositionResponse`; the rule snapshot + cap counters are read from the cache. Module doc +
+       `@arch/strategies.md` updated; 2 funnel unit tests added.
     4. **DEFERRED (blocked) — core orphan deletion.** `Tpsl1Rule`/`Tpsl2Rule`, the old per-strategy
        repos, and `tpsl_rules_core` are STILL consumed by `lab` (CRUD/simulate/backtest/paper-result)
        and core `seed.rs`/`wallet_reconcile.rs`. Cannot be deleted until lab is migrated off them (a

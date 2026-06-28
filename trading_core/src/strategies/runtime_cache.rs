@@ -14,10 +14,18 @@
 //!   • the in-flight entry/exit RAII guards (the no-double-buy / no-double-sell
 //!     interlocks).
 //!
-//! Decoupled from DB and SSE on purpose: it mutates only in-memory state, so it is
-//! trivially unit-testable. The live edge (Phase 3) wraps DB loads + SSE emission
-//! around [`set_rules`](StrategyRuntimeCache::set_rules) /
-//! [`sync_position`](StrategyRuntimeCache::sync_position).
+//! DB loads stay at the live edge (it wraps DB reads around
+//! [`set_rules`](StrategyRuntimeCache::set_rules) / position writes). SSE position
+//! deltas, by contrast, are emitted **here** from the position-transition funnel
+//! ([`sync_position`](StrategyRuntimeCache::sync_position) /
+//! [`remove_position`](StrategyRuntimeCache::remove_position)) via an *optional*
+//! sender ([`set_sse_sender`](StrategyRuntimeCache::set_sse_sender)): every
+//! transition flows through exactly these two methods by construction, so emitting
+//! at the funnel guarantees no delta is ever missed (an edge that forgot to emit
+//! would silently drop one). Unit tests and the `lab` bin never set a sender, so
+//! emission is a no-op there — the "trivially unit-testable, in-memory only"
+//! property is preserved. All the delta needs (legacy [`Position`] adapter, rule
+//! snapshot, cap counters) is already core-local.
 //!
 //! Also holds the live hot-path exit machinery (ported here in Phase 3): the
 //! per-position clock-driven **exit-state memo** (`exit_state_by_position`, strategy-
@@ -27,13 +35,15 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use chrono::{DateTime, Utc};
 use dashmap::{DashMap, DashSet};
-use tokio::sync::Semaphore;
+use tokio::sync::{broadcast, Semaphore};
 use uuid::Uuid;
 
+use crate::models::ingest::{RuleNotifSnapshot, SseEvent};
+use crate::models::position::Position;
 use crate::models::{StrategyPosition, StrategyRule, StrategyRun};
 use crate::state::token_cache::CachedTrade;
 use crate::storage::repositories::strategy_repo::StrategyRepo;
@@ -216,6 +226,11 @@ pub struct StrategyRuntimeCache {
     until_dead_armers: Arc<DashMap<Uuid, UntilDeadArmerSlot>>,
     /// Monotonic counter assigning each until-dead armer its eviction-order `seq`.
     armer_seq: Arc<AtomicU64>,
+    /// Optional cold-lane SSE sender for `tpsl_positions_changed` deltas, set once at
+    /// boot by the live edge ([`set_sse_sender`](Self::set_sse_sender)). Unset in unit
+    /// tests and the `lab` bin, where [`emit_position_delta`](Self::emit_position_delta)
+    /// is a no-op — keeping the cache usable with no SSE plumbing.
+    sse_tx: OnceLock<broadcast::Sender<SseEvent>>,
 }
 
 impl Default for StrategyRuntimeCache {
@@ -243,7 +258,16 @@ impl StrategyRuntimeCache {
             entering: Arc::new(DashSet::new()),
             until_dead_armers: Arc::new(DashMap::new()),
             armer_seq: Arc::new(AtomicU64::new(0)),
+            sse_tx: OnceLock::new(),
         }
+    }
+
+    /// Install the cold-lane SSE sender so position transitions broadcast
+    /// `tpsl_positions_changed` deltas. Called once at boot by the live edge (before
+    /// the cache is shared); idempotent (a second call is ignored). Leaving it unset
+    /// (tests, `lab`) makes [`emit_position_delta`](Self::emit_position_delta) a no-op.
+    pub fn set_sse_sender(&self, sse_tx: broadcast::Sender<SseEvent>) {
+        let _ = self.sse_tx.set(sse_tx);
     }
 
     /// Shared semaphore bounding concurrent paper fill-poll tasks.
@@ -814,6 +838,10 @@ impl StrategyRuntimeCache {
         if current.is_closed() && !prev_closed {
             self.closed_stats_by_rule.entry(rule_id).or_default().apply(current, 1);
         }
+
+        // Cold-lane: broadcast the post-transition row + refreshed cap counters so
+        // SSE clients patch one row + the badge in place. No-op without a sender.
+        self.emit_position_delta(current, false);
     }
 
     /// Roll a position fully out of the cache (a failed insert rollback, or a
@@ -840,6 +868,40 @@ impl StrategyRuntimeCache {
                 e.apply(position, -1);
             }
         }
+
+        // Cold-lane: tell SSE clients to drop this row (`removed`). No-op without a sender.
+        self.emit_position_delta(position, true);
+    }
+
+    /// Broadcast a `tpsl_positions_changed` delta for `position` — the changed row
+    /// (adapted to the legacy [`Position`] wire shape so the frontend contract is
+    /// unchanged) plus the owning rule's snapshot + live cap counters. `removed`
+    /// flags a row the client should drop. No-op when no sender is installed
+    /// (tests / `lab`), no SSE client is connected, or the position carries no rule.
+    /// Called only from the position-transition funnel, after all in-memory state is
+    /// updated and every internal lock/guard is released.
+    fn emit_position_delta(&self, position: &StrategyPosition, removed: bool) {
+        let Some(tx) = self.sse_tx.get() else {
+            return;
+        };
+        if tx.receiver_count() == 0 {
+            return;
+        }
+        let Some(rule_id) = position.rule_id else {
+            return;
+        };
+        let rule_snapshot = self.rule_by_id(rule_id).map(|rule| {
+            Box::new(rule_notif_snapshot(&rule, self.params_by_id(rule_id).as_ref()))
+        });
+        let _ = tx.send(SseEvent::TpslPositionsChanged {
+            strategy: fe_strategy_label(&position.strategy_id).to_string(),
+            rule_id,
+            rule_snapshot,
+            position: Some(Box::new(Position::from(position))),
+            removed,
+            open_positions: self.holding_count_by_rule(rule_id),
+            total_positions: self.total_count_by_rule(rule_id),
+        });
     }
 
     fn purge_rule_from_holding_index(&self, rule_id: Uuid) {
@@ -915,6 +977,63 @@ impl StrategyRuntimeCache {
             self.total_count_by_rule.remove(&rule_id);
         }
     }
+}
+
+/// Frontend strategy label ("tpsl1" / "tpsl2") for the SSE `strategy` field. The
+/// frontend mode strings are intentionally unchanged in this remake phase.
+fn fe_strategy_label(strategy_id: &str) -> &'static str {
+    match StrategyImpl::from_id(strategy_id) {
+        Some(StrategyImpl::Tpsl2) => "tpsl2",
+        _ => "tpsl1",
+    }
+}
+
+/// Build the compact rule snapshot attached to each position delta from the rule's
+/// typed columns (`rule_name` / `trade_mode`) + its parsed params. Both param
+/// variants carry the same `p_*` notification fields; an absent/unparsed params map
+/// degrades to neutral defaults rather than dropping the snapshot.
+fn rule_notif_snapshot(rule: &StrategyRule, params: Option<&StrategyParams>) -> RuleNotifSnapshot {
+    macro_rules! from_params {
+        ($p:expr) => {
+            RuleNotifSnapshot {
+                rule_name: rule.rule_name.clone(),
+                trade_mode: rule.trade_mode.clone(),
+                p_token_initial_buy_sol: $p.p_token_initial_buy_sol,
+                tolerance_pct: $p.tolerance_pct,
+                p_token_cu_limit: $p.p_token_cu_limit,
+                p_token_cu_price: $p.p_token_cu_price,
+                p_token_max_sol_cost: $p.p_token_max_sol_cost,
+                p_token_spendable_sol_in: $p.p_token_spendable_sol_in,
+                p_token_ix_labels: json_str_array(&$p.p_token_ix_labels),
+                p_exit_take_profit: $p.p_exit_take_profit,
+                p_exit_stop_loss: $p.p_exit_stop_loss,
+            }
+        };
+    }
+    match params {
+        Some(StrategyParams::Tpsl1(p)) => from_params!(p),
+        Some(StrategyParams::Tpsl2(p)) => from_params!(p),
+        None => RuleNotifSnapshot {
+            rule_name: rule.rule_name.clone(),
+            trade_mode: rule.trade_mode.clone(),
+            p_token_initial_buy_sol: None,
+            tolerance_pct: 0.0,
+            p_token_cu_limit: None,
+            p_token_cu_price: None,
+            p_token_max_sol_cost: None,
+            p_token_spendable_sol_in: None,
+            p_token_ix_labels: Vec::new(),
+            p_exit_take_profit: 0.0,
+            p_exit_stop_loss: 0.0,
+        },
+    }
+}
+
+/// Decode a JSON string-array `Value` into a `Vec<String>` (non-strings skipped).
+fn json_str_array(v: &serde_json::Value) -> Vec<String> {
+    v.as_array()
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -1020,6 +1139,62 @@ mod tests {
         cache.remove_position(&pos);
         assert_eq!(cache.holding_by_mint("MintA").len(), 0);
         assert!(!cache.is_mint_held("MintA"));
+    }
+
+    #[test]
+    fn sse_funnel_emits_delta_on_transition_and_removal() {
+        let cache = StrategyRuntimeCache::new();
+        let r = rule(
+            "tpsl_sniper_1",
+            json!({ "p_exit_take_profit": 50.0, "p_exit_stop_loss": 20.0 }),
+        );
+        let rid = r.id;
+        cache.set_rules(vec![r]);
+
+        let (tx, mut rx) = broadcast::channel::<SseEvent>(8);
+        cache.set_sse_sender(tx);
+
+        // A new Arming position → one delta, not removed, scoped to the rule, carrying
+        // the rule snapshot (proves the params lookup wired through).
+        let pos = position(rid, "MintA", "Arming");
+        cache.sync_position(None, &pos);
+        match rx.try_recv().expect("a position delta") {
+            SseEvent::TpslPositionsChanged {
+                rule_id,
+                strategy,
+                removed,
+                position,
+                rule_snapshot,
+                ..
+            } => {
+                assert_eq!(rule_id, rid);
+                assert_eq!(strategy, "tpsl1");
+                assert!(!removed);
+                let p = position.expect("position payload");
+                assert_eq!(p.mint, "MintA");
+                assert_eq!(p.status.to_string(), "Arming");
+                let snap = rule_snapshot.expect("rule snapshot");
+                assert_eq!(snap.p_exit_take_profit, 50.0);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        // Removal → a `removed` delta for the same row.
+        cache.remove_position(&pos);
+        match rx.try_recv().expect("a removal delta") {
+            SseEvent::TpslPositionsChanged { removed, .. } => assert!(removed),
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sse_funnel_is_noop_without_sender() {
+        // No sender installed (the unit-test / `lab` default) → transitions don't panic
+        // and emit nothing.
+        let cache = StrategyRuntimeCache::new();
+        let rid = Uuid::new_v4();
+        cache.sync_position(None, &position(rid, "MintA", "Arming"));
+        cache.remove_position(&position(rid, "MintA", "Arming"));
     }
 
     #[test]

@@ -405,6 +405,45 @@ impl From<Position> for PositionResponse {
     }
 }
 
+/// Adapt a unified [`StrategyPosition`] (the `strategy_positions` row) back into
+/// the legacy [`Position`] wire shape. The SSE `tpsl_positions_changed` delta is
+/// rendered through `PositionResponse::from(Position)` in the stream bridge, so
+/// keeping this adapter lets the live edge emit position deltas under the new
+/// schema **without changing the frontend wire contract** (the rendered JSON is
+/// byte-for-byte the old shape). `rule_id` is non-optional here — a live position
+/// always carries one; the `None` fallback (`Uuid::nil`) only guards malformed
+/// rows. `strategy` carries the canonical `strategy_id`; the frontend uses it
+/// only as a trade-mode fallback when the richer rule snapshot is absent.
+impl From<&crate::models::StrategyPosition> for Position {
+    fn from(p: &crate::models::StrategyPosition) -> Self {
+        Self {
+            id: p.id,
+            mint: p.mint.clone(),
+            wallet: p.wallet.clone(),
+            token_program_id: p.token_program_id.clone(),
+            target_price: p.target_price,
+            target_token_amount: p.target_token_amount,
+            target_time: p.target_time,
+            target_tx: p.target_tx.clone(),
+            entry_price: p.entry_price,
+            entry_token_amount: p.entry_token_amount,
+            entry_time: p.entry_time,
+            entry_tx_signatures: p.entry_tx_sigs(),
+            exit_price: p.exit_price,
+            exit_token_amount: p.exit_token_amount,
+            exit_time: p.exit_time,
+            exit_tx_signatures: p.exit_tx_sigs(),
+            submitted_buy_signatures: p.submitted_buy_signatures.clone(),
+            status: p.status.parse().unwrap_or(PositionStatus::Holding),
+            strategy: p.strategy_id.clone(),
+            rule_id: p.rule_id.unwrap_or_default(),
+            exit_reason: p.exit_reason.clone(),
+            created_at: p.created_at,
+            updated_at: p.updated_at,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
