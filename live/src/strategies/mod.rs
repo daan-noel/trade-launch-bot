@@ -8,9 +8,16 @@
 //! Re-exported here so existing `crate::strategies::analysis::…` /
 //! `tpsl_sniper_N::{entry,exit,…}` paths keep resolving.
 
+//! The trading-free **decision** layer (`analysis`, and each strategy's
+//! `entry`/`exit`/`util`/`cohort`) lives in `trading_core::strategies`; the live
+//! crate now holds only the unified, registry-dispatched orchestration
+//! (`execution` / `service` / `runner`). The hand-cloned `tpsl_sniper_{1,2}` live
+//! modules were retired in Phase 3.
 pub use trading_core::strategies::analysis;
+
+pub mod execution;
 pub mod runner;
-pub mod tpsl_sniper_1;
-pub mod tpsl_sniper_2;
+pub mod service;
 
 pub use runner::StrategyRunner;
+pub use service::{PaperActivation, StrategyService};

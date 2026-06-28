@@ -379,6 +379,7 @@ fn signed_tokens<T: TradeRow>(t: &T) -> f64 {
 /// predicate ([`ladder_reason`]) is a pure function of state + trade + params. Lets
 /// the full re-walk and the incremental [`CachedExitState::advance_and_find_exit`]
 /// share one ladder definition that can never drift.
+#[derive(Clone)]
 pub struct LadderParams {
     take_profit_pct: f64,
     stop_loss_pct: f64,

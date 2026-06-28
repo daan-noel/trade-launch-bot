@@ -12,6 +12,7 @@
 //! belongs in both.
 
 pub mod analysis;
+pub mod exit_state;
 pub mod kernel;
 pub mod registry;
 pub mod rules;

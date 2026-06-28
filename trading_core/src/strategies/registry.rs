@@ -395,6 +395,58 @@ impl StrategyImpl {
             _ => None,
         }
     }
+
+    /// Resolve the paper exit fill for the **live fill-poll** — the trade-driven
+    /// exit plus an optional **firing slot** that tells the poll when to record it.
+    ///
+    /// - `None` slot ⇒ record on first find (tpsl1: the resolver already returns the
+    ///   final fill, so there is no worst-case window to wait out).
+    /// - `Some(S)` ⇒ a slot-windowed worst-case fill (tpsl2) that can only *improve*
+    ///   (drop) until slot `S + MAX_FILL_WAIT_SLOTS` indexes, so the poll keeps the
+    ///   freshest fill and records once a trade past the window lands.
+    ///
+    /// A params/impl mismatch returns `None`.
+    pub fn resolve_paper_exit<T: TradeRow>(
+        &self,
+        trades: &[T],
+        entry_time: DateTime<Utc>,
+        entry_price: f64,
+        params: &StrategyParams,
+    ) -> Option<(ResolvedExit, Option<u64>)> {
+        match (self, params) {
+            (Self::Tpsl1, StrategyParams::Tpsl1(p)) => {
+                let f = t1::exit::find_trade_driven_exit(
+                    trades,
+                    entry_time,
+                    entry_price,
+                    &p.to_rule(),
+                )?;
+                let exit = ResolvedExit {
+                    price: f.price,
+                    tx_signature: f.tx_signature,
+                    block_time: f.block_time,
+                    reason: f.reason.as_str(),
+                };
+                Some((exit, None))
+            }
+            (Self::Tpsl2, StrategyParams::Tpsl2(p)) => {
+                let (f, fire_slot) = t2::exit::find_trade_driven_exit_with_slot(
+                    trades,
+                    entry_time,
+                    entry_price,
+                    &p.to_rule(),
+                )?;
+                let exit = ResolvedExit {
+                    price: f.price,
+                    tx_signature: f.tx_signature,
+                    block_time: f.block_time,
+                    reason: f.reason.as_str(),
+                };
+                Some((exit, Some(fire_slot)))
+            }
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]

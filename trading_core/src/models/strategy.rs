@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 /// A configured strategy rule — the authored knobs that spawn runs.
@@ -167,4 +167,146 @@ impl StrategyPosition {
     pub fn is_win(&self) -> bool {
         self.status == "End" && self.realized_pnl_sol().map(|p| p > 0.0).unwrap_or(false)
     }
+
+    // ── Lifecycle ctor + mutators (the unified-schema twin of the old `Position`
+    //    in-memory API; pure, no DB) ───────────────────────────────────────────
+
+    /// A fresh `Arming` position within `run_id` (no fills yet). Mode/strategy are
+    /// copied from the owning rule; `wallet` is the bot wallet (real) or a sentinel
+    /// (paper).
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        run_id: Uuid,
+        strategy_id: String,
+        rule_id: Uuid,
+        mode: String,
+        mint: String,
+        wallet: String,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4(),
+            run_id,
+            strategy_id,
+            rule_id: Some(rule_id),
+            mode,
+            mint,
+            wallet,
+            token_program_id: None,
+            target_price: None,
+            target_token_amount: None,
+            target_time: None,
+            target_tx: None,
+            entry_price: None,
+            entry_token_amount: None,
+            entry_sol: None,
+            entry_time: None,
+            entry_tx_signatures: json!([]),
+            exit_price: None,
+            exit_token_amount: None,
+            exit_sol: None,
+            exit_time: None,
+            exit_tx_signatures: json!([]),
+            submitted_buy_signatures: Vec::new(),
+            status: "Arming".to_string(),
+            exit_reason: None,
+            extra: json!({}),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Record the target (trigger-trade) snapshot that armed this position.
+    pub fn set_target(&mut self, price: f64, amount: f64, time: DateTime<Utc>, tx: String) {
+        self.target_price = Some(price);
+        self.target_token_amount = Some(amount);
+        self.target_time = Some(time);
+        self.target_tx = Some(tx);
+        self.updated_at = Utc::now();
+    }
+
+    /// Append a submitted snipe-buy signature and flip to `BuySubmitted` (the
+    /// durable "buy in flight" marker; every attempt is recoverable).
+    pub fn mark_buy_submitted(&mut self, signature: String) {
+        self.submitted_buy_signatures.push(signature);
+        self.status = "BuySubmitted".to_string();
+        self.updated_at = Utc::now();
+    }
+
+    /// Record the entry fill + flip to `Holding`.
+    pub fn set_entry(
+        &mut self,
+        price: f64,
+        token_amount: f64,
+        sol: f64,
+        time: DateTime<Utc>,
+        tx_signatures: Vec<String>,
+    ) {
+        self.entry_price = Some(price);
+        self.entry_token_amount = Some(token_amount);
+        self.entry_sol = Some(sol);
+        self.entry_time = Some(time);
+        self.entry_tx_signatures = json!(tx_signatures);
+        self.status = "Holding".to_string();
+        self.updated_at = Utc::now();
+    }
+
+    /// Flip to `Holding` (fill adopted/stamped elsewhere).
+    pub fn mark_entry_filled(&mut self) {
+        self.status = "Holding".to_string();
+        self.updated_at = Utc::now();
+    }
+
+    /// Flip to `ExitPending` while the sell is in flight.
+    pub fn mark_exit_pending(&mut self) {
+        self.status = "ExitPending".to_string();
+        self.updated_at = Utc::now();
+    }
+
+    /// Terminally mark the exit failed, recording the hypothetical exit price/time
+    /// (so the row still carries a PnL for analysis).
+    pub fn mark_exit_failed(&mut self, exit_price: f64, exit_time: DateTime<Utc>) {
+        self.exit_price = Some(exit_price);
+        self.exit_time = Some(exit_time);
+        self.status = "ExitFailed".to_string();
+        self.updated_at = Utc::now();
+    }
+
+    /// Close with a confirmed exit fill (`End`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn close(
+        &mut self,
+        exit_price: f64,
+        exit_sol: f64,
+        exit_token_amount: f64,
+        exit_tx_signatures: Vec<String>,
+        exit_time: DateTime<Utc>,
+        reason: &str,
+    ) {
+        self.exit_price = Some(exit_price);
+        self.exit_sol = Some(exit_sol);
+        self.exit_token_amount = Some(exit_token_amount);
+        self.exit_tx_signatures = json!(exit_tx_signatures);
+        self.exit_time = Some(exit_time);
+        self.exit_reason = Some(reason.to_string());
+        self.status = "End".to_string();
+        self.updated_at = Utc::now();
+    }
+
+    /// Entry fill signatures (the JSONB array decoded to a `Vec`).
+    pub fn entry_tx_sigs(&self) -> Vec<String> {
+        json_str_array(&self.entry_tx_signatures)
+    }
+
+    /// Exit fill signatures (the JSONB array decoded to a `Vec`).
+    pub fn exit_tx_sigs(&self) -> Vec<String> {
+        json_str_array(&self.exit_tx_signatures)
+    }
+}
+
+/// Decode a JSON string-array `Value` into a `Vec<String>` (non-strings skipped).
+fn json_str_array(v: &Value) -> Vec<String> {
+    v.as_array()
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+        .unwrap_or_default()
 }

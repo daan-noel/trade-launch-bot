@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use serde_json::Value;
+use serde_json::{json, Value};
 use sqlx::{types::Json, PgPool};
 use uuid::Uuid;
 
@@ -9,6 +9,7 @@ use crate::models::strategy::{
 
 /// Repo spanning the unified strategy schema: `strategy_rules`,
 /// `strategy_runs`, `strategy_run_metrics`, `strategy_positions`.
+#[derive(Clone)]
 pub struct StrategyRepo {
     pool: PgPool,
 }
@@ -239,6 +240,12 @@ const POSITION_COLS: &str = "id, run_id, strategy_id, rule_id, mode, mint, walle
 impl StrategyRepo {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    /// The underlying pool — for the few callers that need a free-function query
+    /// (e.g. `trade_repo::find_tx_by_fill` on the paper fill-recovery path).
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
     }
 
     // -- Rules ----------------------------------------------------------------
@@ -655,5 +662,201 @@ impl StrategyRepo {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(StrategyPosition::from).collect())
+    }
+
+    pub async fn delete_position(&self, id: Uuid) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM strategy_positions WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Append a submitted snipe-buy signature and flip the row to `BuySubmitted`
+    /// (the durable write-ahead "buy in flight" marker), returning the updated row.
+    /// Guarded by `entry_price IS NULL` so a concurrent fill that already advanced
+    /// the row to `Holding` is never clobbered back — returns `None` in that benign
+    /// case. Single round-trip (`RETURNING`) so the caller syncs the cache off it.
+    pub async fn mark_buy_submitted(
+        &self,
+        id: Uuid,
+        signature: &str,
+    ) -> anyhow::Result<Option<StrategyPosition>> {
+        let row = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
+            "UPDATE strategy_positions \
+             SET status = 'BuySubmitted', \
+                 submitted_buy_signatures = array_append(submitted_buy_signatures, $2), \
+                 updated_at = now() \
+             WHERE id = $1 AND entry_price IS NULL \
+             RETURNING {POSITION_COLS}"
+        ))
+        .bind(id)
+        .bind(signature)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(StrategyPosition::from))
+    }
+
+    /// Record the entry fill atomically (entry tx/amount/price/sol/time + flip to
+    /// `Holding`) and return the fresh row in one round-trip. The single-leg entry
+    /// signature is stored as a JSONB array. Mirrors the old per-strategy
+    /// `update_entry`; the `RETURNING` lets the caller sync the cache without a
+    /// follow-up read.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_entry_fill(
+        &self,
+        id: Uuid,
+        entry_tx: &str,
+        entry_token_amount: f64,
+        entry_price: f64,
+        entry_sol: f64,
+        entry_time: DateTime<Utc>,
+    ) -> anyhow::Result<StrategyPosition> {
+        let row = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
+            "UPDATE strategy_positions \
+             SET entry_tx_signatures = $2, entry_token_amount = $3, entry_price = $4, \
+                 entry_sol = $5, entry_time = $6, status = 'Holding', updated_at = now() \
+             WHERE id = $1 \
+             RETURNING {POSITION_COLS}"
+        ))
+        .bind(id)
+        .bind(Json(json!([entry_tx])))
+        .bind(entry_token_amount)
+        .bind(entry_price)
+        .bind(entry_sol)
+        .bind(entry_time)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(StrategyPosition::from(row))
+    }
+
+    // -- Recovery reaper queries (mode-scoped) --------------------------------
+    // The live service runs these per mode ('real' / 'paper'); they replace the
+    // per-strategy real/paper repos' reaper queries. Small result sets in normal
+    // operation (index-served by the status predicates).
+
+    /// Positions stranded in `ExitPending` for a mode — the exit-recovery reaper
+    /// re-drives a sell whose task panicked / was lost to a restart (the holding
+    /// cache only loads open rows, so these are otherwise invisible).
+    pub async fn find_all_exit_pending(&self, mode: &str) -> anyhow::Result<Vec<StrategyPosition>> {
+        let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
+            "SELECT {POSITION_COLS} FROM strategy_positions \
+             WHERE status = 'ExitPending' AND mode = $1 ORDER BY updated_at ASC"
+        ))
+        .bind(mode)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(StrategyPosition::from).collect())
+    }
+
+    /// Positions stuck in `BuySubmitted` for a mode — the buy-recovery reaper
+    /// checks each row's submitted signatures against the feed/chain and
+    /// adopts/waits/drops (never blindly deletes — tokens may exist on-chain).
+    pub async fn find_all_buy_submitted(&self, mode: &str) -> anyhow::Result<Vec<StrategyPosition>> {
+        let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
+            "SELECT {POSITION_COLS} FROM strategy_positions \
+             WHERE status = 'BuySubmitted' AND mode = $1 ORDER BY updated_at ASC"
+        ))
+        .bind(mode)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(StrategyPosition::from).collect())
+    }
+
+    /// Open (`Holding`, entry-recorded) positions for one mint in a mode — drives
+    /// the manual-sell reconcile (an externally-cleared bag closed without a sell).
+    pub async fn find_open_by_mint(
+        &self,
+        mint: &str,
+        mode: &str,
+    ) -> anyhow::Result<Vec<StrategyPosition>> {
+        let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
+            "SELECT {POSITION_COLS} FROM strategy_positions \
+             WHERE mint = $1 AND mode = $2 AND status = 'Holding' AND entry_price IS NOT NULL"
+        ))
+        .bind(mint)
+        .bind(mode)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(StrategyPosition::from).collect())
+    }
+
+    /// Terminally fail positions stuck in `ExitPending` past `stale_after` (orphaned
+    /// mid-exit). Re-arming a half-done real exit risks a double-sell, so fail it.
+    /// Returns rows affected.
+    pub async fn fail_stale_exit_pending(
+        &self,
+        mode: &str,
+        stale_after: std::time::Duration,
+    ) -> anyhow::Result<u64> {
+        let cutoff = Utc::now() - chrono::Duration::from_std(stale_after)?;
+        let res = sqlx::query(
+            "UPDATE strategy_positions SET status = 'ExitFailed', updated_at = now() \
+             WHERE status = 'ExitPending' AND mode = $1 AND updated_at < $2",
+        )
+        .bind(mode)
+        .bind(cutoff)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
+    }
+
+    /// Delete positions left `Arming` with no entry fill past `stale_after` — they
+    /// matched a rule but never sent a buy (no SOL, no tokens), so they're safe to
+    /// drop. Scoped to `Arming` only: a `BuySubmitted` row may own tokens and is the
+    /// buy-recovery reaper's responsibility. Returns rows deleted.
+    pub async fn delete_stale_unentered(
+        &self,
+        mode: &str,
+        stale_after: std::time::Duration,
+    ) -> anyhow::Result<u64> {
+        let cutoff = Utc::now() - chrono::Duration::from_std(stale_after)?;
+        let res = sqlx::query(
+            "DELETE FROM strategy_positions \
+             WHERE status = 'Arming' AND entry_price IS NULL AND mode = $1 AND created_at < $2",
+        )
+        .bind(mode)
+        .bind(cutoff)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
+    }
+
+    /// Distinct mints with an entry-recorded `Holding` real position whose net traded
+    /// balance (Σbuys − Σsells) has fallen to ≤ `threshold_raw` — the bag was cleared
+    /// outside the strategy exit path (a manual sell). Drives the boot/maintenance
+    /// manual-sell reaper. `threshold_raw` is in **raw token base units** (the new
+    /// `trades.token_amount` is BIGINT raw units, not decimal tokens). Joins
+    /// `wallet_dict` to resolve the interned `wallet_id`.
+    pub async fn find_externally_cleared_holding_mints(
+        &self,
+        threshold_raw: f64,
+    ) -> anyhow::Result<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            r#"
+            SELECT DISTINCT p.mint
+            FROM strategy_positions p
+            JOIN wallet_dict w ON w.address = p.wallet
+            WHERE p.mode = 'real' AND p.status = 'Holding' AND p.entry_price IS NOT NULL
+              -- Require a sell on record: else a position whose BUY merely aged out of
+              -- the rolling buffer (net = 0, no sell) would be falsely "cleared".
+              AND EXISTS (
+                    SELECT 1 FROM trades s
+                    WHERE s.wallet_id = w.id AND s.mint_address = p.mint
+                      AND s.trade_type = 'sell'
+                  )
+              AND COALESCE((
+                    SELECT SUM(CASE WHEN t.trade_type = 'buy'  THEN t.token_amount
+                                    WHEN t.trade_type = 'sell' THEN -t.token_amount
+                                    ELSE 0 END)
+                    FROM trades t
+                    WHERE t.wallet_id = w.id AND t.mint_address = p.mint
+                  ), 0)::double precision <= $1
+            "#,
+        )
+        .bind(threshold_raw)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(m,)| m).collect())
     }
 }

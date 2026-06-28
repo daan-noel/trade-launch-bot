@@ -17,25 +17,48 @@
 //! Decoupled from DB and SSE on purpose: it mutates only in-memory state, so it is
 //! trivially unit-testable. The live edge (Phase 3) wraps DB loads + SSE emission
 //! around [`set_rules`](StrategyRuntimeCache::set_rules) /
-//! [`sync_position`](StrategyRuntimeCache::sync_position). The per-position
-//! clock-driven exit-state memo (`exit_state_by_position`) and the time-exit
-//! secondary index are a live-trade-gate optimization tied to the live token
-//! cache's trade source, so they land with the Phase-3 wiring.
+//! [`sync_position`](StrategyRuntimeCache::sync_position).
+//!
+//! Also holds the live hot-path exit machinery (ported here in Phase 3): the
+//! per-position clock-driven **exit-state memo** (`exit_state_by_position`, strategy-
+//! dispatched via [`CachedExitStateImpl`](super::exit_state)) and the **time-exit
+//! secondary index** (`time_exit_holding`), so the per-second sweep never re-walks a
+//! token's retained history. Both are kept in lockstep with the holding index.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
+use chrono::{DateTime, Utc};
 use dashmap::{DashMap, DashSet};
+use tokio::sync::Semaphore;
 use uuid::Uuid;
 
-use crate::models::{StrategyPosition, StrategyRule};
+use crate::models::{StrategyPosition, StrategyRule, StrategyRun};
+use crate::state::token_cache::CachedTrade;
+use crate::storage::repositories::strategy_repo::StrategyRepo;
 
+use super::exit_state::{clock_entry_time, CachedExitStateImpl, LadderParamsImpl};
 use super::registry::{StrategyImpl, StrategyParams};
 
-/// Pointer to a paper rule's current run — the run new paper positions are stamped
-/// with and the run the result view surfaces.
+/// Max concurrent paper fill-poll tasks (entry + exit) across all strategies — the
+/// shared semaphore the live paper executor acquires before each fill-poll spawn, so
+/// a fill burst can't spawn an unbounded number of feed-polling DB tasks at once.
+const PAPER_POLL_CONCURRENCY: usize = 64;
+
+/// Max concurrent **until-dead** scalp armers (real + paper) — entry watches with
+/// no `p_entry_max_age_secs` ceiling. A healthy pumping token never satisfies
+/// `is_dead`, so an until-dead watch on one could pin its `token_cache` entry
+/// forever; this caps how many such watches run at once. When full,
+/// [`begin_until_dead_armer`](StrategyRuntimeCache::begin_until_dead_armer) evicts
+/// the oldest un-entered armer. Bounded (max-age) armers don't count against this.
+const MAX_UNTIL_DEAD_ARMERS: usize = 32;
+
+/// Pointer to a rule's current run — the run new positions are stamped with and the
+/// run the result view surfaces. Both modes carry a run now (real *and* paper), so
+/// this is mode-agnostic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PaperRunRef {
+pub struct RunRef {
     pub run_id: Uuid,
 }
 
@@ -108,6 +131,44 @@ impl Drop for EntryGuard {
     }
 }
 
+/// RAII slot for an **until-dead** scalp armer — an entry watch with no
+/// `p_entry_max_age_secs` ceiling, which would otherwise pin a never-dying token
+/// (and its `token_cache` entry / `paper_poll_sem` permit) indefinitely. While
+/// held, `position_id` occupies one of the [`MAX_UNTIL_DEAD_ARMERS`] slots; the
+/// armer polls [`is_cancelled`](UntilDeadArmerGuard::is_cancelled) each tick and
+/// bails if a newer armer evicted it. Dropping it — normal return, eviction, or a
+/// panic — frees the slot. A max-age-bounded armer is self-limiting (its deadline)
+/// and takes no slot. Strategy-agnostic in mechanism, used only by the tpsl2 scalp
+/// entry watch today (tpsl1 buys immediately and never arms).
+pub struct UntilDeadArmerGuard {
+    registry: Arc<DashMap<Uuid, UntilDeadArmerSlot>>,
+    position_id: Uuid,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl UntilDeadArmerGuard {
+    /// True once a newer armer evicted this one because the cap was reached. The
+    /// watch loop checks this each tick and returns (dropping its unentered
+    /// position), so the freed slot is reclaimed promptly.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for UntilDeadArmerGuard {
+    fn drop(&mut self) {
+        self.registry.remove(&self.position_id);
+    }
+}
+
+/// Registry value behind an [`UntilDeadArmerGuard`]: a monotonic `seq` (the
+/// eviction order — smallest = oldest) and the shared cancel flag.
+#[derive(Clone)]
+struct UntilDeadArmerSlot {
+    seq: u64,
+    cancelled: Arc<AtomicBool>,
+}
+
 /// In-memory strategy state for the hot path (rules + parsed params + open
 /// positions + per-rule counters), shared across all strategies.
 ///
@@ -121,13 +182,40 @@ pub struct StrategyRuntimeCache {
     /// Each active rule's params, parsed once at [`set_rules`] time so the hot
     /// path reads a typed [`StrategyParams`] with zero per-event JSON cost.
     params_by_id: Arc<RwLock<HashMap<Uuid, StrategyParams>>>,
+    /// Each active rule's resolved exit ladder ([`LadderParamsImpl`]), built once at
+    /// [`set_rules`] time so the per-trade exit gate + the clock sweep read it with a
+    /// cheap clone (scalar fields) instead of rebuilding it from the rule per event.
+    ladder_by_id: Arc<RwLock<HashMap<Uuid, LadderParamsImpl>>>,
     holding_by_mint: Arc<DashMap<String, Vec<Arc<StrategyPosition>>>>,
     holding_count_by_rule: Arc<DashMap<Uuid, i64>>,
     total_count_by_rule: Arc<DashMap<Uuid, i64>>,
     closed_stats_by_rule: Arc<DashMap<Uuid, RuleClosedStats>>,
-    paper_run_by_rule: Arc<DashMap<Uuid, PaperRunRef>>,
+    current_run_by_rule: Arc<DashMap<Uuid, RunRef>>,
+    /// Memoized clock-driven exit walk state per holding position (strategy-dispatched
+    /// via [`CachedExitStateImpl`]). Seeded once and advanced as trades print, so the
+    /// per-second time-exit sweep never re-walks a token's full history. An entry is
+    /// dropped when its position leaves the holding index.
+    exit_state_by_position: Arc<DashMap<Uuid, CachedExitStateImpl>>,
+    /// Secondary index over the holdings: only the positions whose rule currently
+    /// carries a time-based exit (TimeStop / Stall). The per-second sweep iterates
+    /// *this* set (usually far smaller, often empty) instead of cloning every holding
+    /// `Arc` each tick. Kept in lockstep with the holding index on every add/remove,
+    /// and rebuilt wholesale on a rule reload (a rule's time-exit config can change).
+    time_exit_holding: Arc<DashMap<Uuid, Arc<StrategyPosition>>>,
+    /// Shared semaphore bounding concurrent paper fill-poll tasks (see
+    /// [`PAPER_POLL_CONCURRENCY`]).
+    paper_poll_sem: Arc<Semaphore>,
     exiting: Arc<DashSet<Uuid>>,
     entering: Arc<DashSet<Uuid>>,
+    /// Active **until-dead** scalp armers (entry watches with no `max_age`
+    /// ceiling), keyed by position id. Bounded to [`MAX_UNTIL_DEAD_ARMERS`]: when
+    /// full, the oldest un-entered armer is evicted so a never-dying token can't pin
+    /// an unbounded number of watches (and their `token_cache` entries). A
+    /// max-age-bounded armer is self-limiting and never registers here. Used only by
+    /// the tpsl2 scalp entry watch; tpsl1 buys immediately and never arms.
+    until_dead_armers: Arc<DashMap<Uuid, UntilDeadArmerSlot>>,
+    /// Monotonic counter assigning each until-dead armer its eviction-order `seq`.
+    armer_seq: Arc<AtomicU64>,
 }
 
 impl Default for StrategyRuntimeCache {
@@ -142,14 +230,31 @@ impl StrategyRuntimeCache {
             active_rules: Arc::new(RwLock::new(Arc::new(Vec::new()))),
             rules_by_id: Arc::new(RwLock::new(HashMap::new())),
             params_by_id: Arc::new(RwLock::new(HashMap::new())),
+            ladder_by_id: Arc::new(RwLock::new(HashMap::new())),
             holding_by_mint: Arc::new(DashMap::new()),
             holding_count_by_rule: Arc::new(DashMap::new()),
             total_count_by_rule: Arc::new(DashMap::new()),
             closed_stats_by_rule: Arc::new(DashMap::new()),
-            paper_run_by_rule: Arc::new(DashMap::new()),
+            current_run_by_rule: Arc::new(DashMap::new()),
+            exit_state_by_position: Arc::new(DashMap::new()),
+            time_exit_holding: Arc::new(DashMap::new()),
+            paper_poll_sem: Arc::new(Semaphore::new(PAPER_POLL_CONCURRENCY)),
             exiting: Arc::new(DashSet::new()),
             entering: Arc::new(DashSet::new()),
+            until_dead_armers: Arc::new(DashMap::new()),
+            armer_seq: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Shared semaphore bounding concurrent paper fill-poll tasks.
+    pub fn paper_poll_sem(&self) -> Arc<Semaphore> {
+        self.paper_poll_sem.clone()
+    }
+
+    /// Number of live exit-state memos (test/observability helper).
+    #[cfg(test)]
+    pub fn exit_state_len(&self) -> usize {
+        self.exit_state_by_position.len()
     }
 
     // ── Rules + parsed params ─────────────────────────────────────────────────
@@ -162,6 +267,7 @@ impl StrategyRuntimeCache {
     pub fn set_rules(&self, rules: Vec<StrategyRule>) -> usize {
         let mut by_id = HashMap::with_capacity(rules.len());
         let mut params = HashMap::with_capacity(rules.len());
+        let mut ladders = HashMap::with_capacity(rules.len());
         let mut kept = Vec::with_capacity(rules.len());
         let mut dropped = 0usize;
 
@@ -170,6 +276,7 @@ impl StrategyRuntimeCache {
                 .and_then(|s| s.parse_params(&rule.params).ok());
             match parsed {
                 Some(p) => {
+                    ladders.insert(rule.id, LadderParamsImpl::from_params(&p));
                     params.insert(rule.id, p);
                     by_id.insert(rule.id, rule.clone());
                     kept.push(rule);
@@ -181,6 +288,10 @@ impl StrategyRuntimeCache {
         *self.active_rules.write().unwrap() = Arc::new(kept);
         *self.rules_by_id.write().unwrap() = by_id;
         *self.params_by_id.write().unwrap() = params;
+        *self.ladder_by_id.write().unwrap() = ladders;
+        // A rule's time-exit config may have changed, flipping membership for its
+        // open positions — rebuild the time-exit index against the new ladders.
+        self.rebuild_time_exit_index();
         dropped
     }
 
@@ -207,6 +318,123 @@ impl StrategyRuntimeCache {
             .unwrap()
             .get(&rule_id)
             .and_then(|r| StrategyImpl::from_id(&r.strategy_id))
+    }
+
+    /// The resolved exit ladder for a rule (a cheap clone — scalar fields). `None`
+    /// if the rule isn't active. The per-trade exit gate + clock sweep read this
+    /// instead of rebuilding the ladder from the rule per event.
+    pub fn ladder_params_by_id(&self, rule_id: Uuid) -> Option<LadderParamsImpl> {
+        self.ladder_by_id.read().unwrap().get(&rule_id).cloned()
+    }
+
+    /// Whether a rule currently carries a time-based exit (TimeStop / Stall) — the
+    /// time-exit secondary-index membership gate.
+    fn rule_has_time_exit(&self, rule_id: Uuid) -> bool {
+        self.ladder_by_id
+            .read()
+            .unwrap()
+            .get(&rule_id)
+            .map(LadderParamsImpl::has_time_exit)
+            .unwrap_or(false)
+    }
+
+    // ── Clock-driven exit memo + time-exit index ──────────────────────────────
+
+    /// Snapshot of only the holdings whose rule carries a time-based exit. The
+    /// per-second sweep iterates this (usually small/empty) set instead of every
+    /// holding. Pointer-clones, no DashMap guard held across the await that follows.
+    pub fn time_exit_holding_positions(&self) -> Vec<Arc<StrategyPosition>> {
+        self.time_exit_holding.iter().map(|e| e.value().clone()).collect()
+    }
+
+    /// Rebuild the time-exit index from the current holdings + ladders. Cheap
+    /// (holdings are small); called on bulk holding loads and rule reloads.
+    fn rebuild_time_exit_index(&self) {
+        self.time_exit_holding.clear();
+        for entry in self.holding_by_mint.iter() {
+            for pos in entry.value() {
+                if pos.rule_id.is_some_and(|r| self.rule_has_time_exit(r)) {
+                    self.time_exit_holding.insert(pos.id, pos.clone());
+                }
+            }
+        }
+    }
+
+    /// **Trade-gate**: fold the newly-printed trades into the position's memoized
+    /// exit-walk state (seeding it on first sight) and evaluate the exit ladder
+    /// against only those new trades, returning the first exit reason that fires.
+    /// Strategy-dispatched via the rule's stored ladder; `None` if the rule is
+    /// inactive. Replaces the per-ping full re-walk with an incremental,
+    /// decision-equivalent fold (see [`CachedExitStateImpl`]).
+    pub fn exit_state_advance_and_find_exit(
+        &self,
+        position_id: Uuid,
+        rule_id: Uuid,
+        entry_price: f64,
+        entry_time: DateTime<Utc>,
+        trades: &[CachedTrade],
+        trades_base: u64,
+    ) -> Option<&'static str> {
+        let ladder = self.ladder_params_by_id(rule_id)?;
+        use dashmap::mapref::entry::Entry;
+        match self.exit_state_by_position.entry(position_id) {
+            Entry::Occupied(mut e) => {
+                e.get_mut().advance_and_find_exit(trades, trades_base, &ladder)
+            }
+            Entry::Vacant(v) => {
+                // First sight: an unfolded state at the window front, then fold +
+                // evaluate the whole retained window in one pass (reproducing a full
+                // re-walk on the position's first ping while memoizing for later).
+                let mut cached = CachedExitStateImpl::build_unfolded(
+                    trades_base,
+                    entry_price,
+                    entry_time,
+                    trades,
+                    &ladder,
+                );
+                let reason = cached.advance_and_find_exit(trades, trades_base, &ladder);
+                v.insert(cached);
+                reason
+            }
+        }
+    }
+
+    /// **Clock sweep**: should this Holding position exit on the wall-clock tick
+    /// (E2 TimeStop / E3 Stall)? Reads the memoized peaks (seeding from `trades` only
+    /// on first sight) so the sweep never re-walks history. Cheap-exits when the rule
+    /// has no time features or the entry fill isn't indexed yet. `None` if the
+    /// position has no owning rule / inactive rule.
+    pub fn exit_state_clock_check(
+        &self,
+        position: &StrategyPosition,
+        trades: &[CachedTrade],
+        trades_base: u64,
+        now: DateTime<Utc>,
+    ) -> Option<&'static str> {
+        let rule_id = position.rule_id?;
+        let ladder = self.ladder_params_by_id(rule_id)?;
+        if !ladder.has_time_exit() {
+            return None;
+        }
+        let entry_time = clock_entry_time(position)?;
+        let entry_price = position.entry_price.unwrap_or(0.0);
+        let strategy = ladder.strategy();
+        use dashmap::mapref::entry::Entry;
+        match self.exit_state_by_position.entry(position.id) {
+            Entry::Occupied(e) => e.get().clock_exit_reason(entry_time, &ladder, now),
+            Entry::Vacant(v) => {
+                let cached = CachedExitStateImpl::build(
+                    strategy,
+                    trades,
+                    trades_base,
+                    entry_price,
+                    entry_time,
+                );
+                let reason = cached.clock_exit_reason(entry_time, &ladder, now);
+                v.insert(cached);
+                reason
+            }
+        }
     }
 
     // ── In-flight guards ──────────────────────────────────────────────────────
@@ -236,6 +464,50 @@ impl StrategyRuntimeCache {
     /// Whether a buy is in flight for `position_id`.
     pub fn is_entering(&self, position_id: Uuid) -> bool {
         self.entering.contains(&position_id)
+    }
+
+    /// Claim an **until-dead** scalp-armer slot for `position_id` (an entry watch
+    /// with no `max_age` ceiling). Bounded to [`MAX_UNTIL_DEAD_ARMERS`]: when full,
+    /// the OLDEST un-entered armer is evicted — its
+    /// [`is_cancelled`](UntilDeadArmerGuard::is_cancelled) flips true so its watch
+    /// loop bails and drops its unentered position — and the eviction is logged (no
+    /// silent cap; data-scale guardrail). The returned guard frees this slot on drop
+    /// (normal return, eviction, or panic). Hold it only for the watch's duration:
+    /// once armed (an entry is found), drop it so the slot frees while the buy runs.
+    pub fn begin_until_dead_armer(&self, position_id: Uuid) -> UntilDeadArmerGuard {
+        // A position re-arming reuses its own slot — clear any stale entry first so
+        // it never evicts itself or double-counts against the cap.
+        self.until_dead_armers.remove(&position_id);
+        // Evict oldest while at capacity. Copy out the key + cancel flag before
+        // `remove`, so no DashMap ref is held across the mutation.
+        while self.until_dead_armers.len() >= MAX_UNTIL_DEAD_ARMERS {
+            let oldest = self
+                .until_dead_armers
+                .iter()
+                .min_by_key(|e| e.value().seq)
+                .map(|e| (*e.key(), e.value().cancelled.clone()));
+            match oldest {
+                Some((id, cancelled)) => {
+                    cancelled.store(true, Ordering::Release);
+                    self.until_dead_armers.remove(&id);
+                    tracing::warn!(
+                        evicted_position = %id,
+                        cap = MAX_UNTIL_DEAD_ARMERS,
+                        "until-dead scalp-armer cap reached; evicting the oldest un-entered armer"
+                    );
+                }
+                None => break,
+            }
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let seq = self.armer_seq.fetch_add(1, Ordering::Relaxed);
+        self.until_dead_armers
+            .insert(position_id, UntilDeadArmerSlot { seq, cancelled: cancelled.clone() });
+        UntilDeadArmerGuard {
+            registry: self.until_dead_armers.clone(),
+            position_id,
+            cancelled,
+        }
     }
 
     // ── Holding index + counters ──────────────────────────────────────────────
@@ -270,27 +542,226 @@ impl StrategyRuntimeCache {
         self.closed_stats_by_rule.get(&rule_id).map(|e| *e.value()).unwrap_or_default()
     }
 
-    // ── Paper-run pointer ─────────────────────────────────────────────────────
+    // ── Current-run pointer ───────────────────────────────────────────────────
 
-    /// The current run for a paper rule (None until a run has started).
-    pub fn current_paper_run(&self, rule_id: Uuid) -> Option<PaperRunRef> {
-        self.paper_run_by_rule.get(&rule_id).map(|e| *e.value())
+    /// The current run for a rule (None until a run has started). Mode-agnostic.
+    pub fn current_run(&self, rule_id: Uuid) -> Option<RunRef> {
+        self.current_run_by_rule.get(&rule_id).map(|e| *e.value())
     }
 
     /// Point a rule at its current run (set on activation / resume).
-    pub fn set_paper_run(&self, rule_id: Uuid, run_id: Uuid) {
-        self.paper_run_by_rule.insert(rule_id, PaperRunRef { run_id });
+    pub fn set_current_run(&self, rule_id: Uuid, run_id: Uuid) {
+        self.current_run_by_rule.insert(rule_id, RunRef { run_id });
     }
 
     /// Drop every in-memory trace of a rule's run — holdings, counters, stats, and
-    /// the run pointer — so a fresh run starts from zero (the prior run's positions
-    /// were deleted in the DB). The in-memory twin of `start_paper_run`'s purge.
+    /// the run pointer — so a fresh run starts from zero. The in-memory twin of
+    /// [`start_run`](Self::start_run)'s reset.
     pub fn clear_rule(&self, rule_id: Uuid) {
         self.purge_rule_from_holding_index(rule_id);
         self.holding_count_by_rule.remove(&rule_id);
         self.total_count_by_rule.remove(&rule_id);
         self.closed_stats_by_rule.remove(&rule_id);
-        self.paper_run_by_rule.remove(&rule_id);
+        self.current_run_by_rule.remove(&rule_id);
+    }
+
+    // ── DB load / reload (boot + rule-change edges) ───────────────────────────
+
+    /// Hydrate the whole cache from the DB: active rules (+ parsed params/ladders),
+    /// each active rule's current run, and that run's positions (holding index + cap
+    /// counters + realized stats). Caps are per current run for **both** modes (every
+    /// position carries a run now), so counters warm from the rule's latest `Running`
+    /// run only — positions from prior stopped/finished runs are history and never
+    /// gate new entries.
+    pub async fn load_from_db(&self, repo: &StrategyRepo) -> anyhow::Result<()> {
+        let rules = repo.find_active_rules().await?;
+        self.set_rules(rules.clone());
+
+        // Reset the per-run counters/stats/run-pointers before warming.
+        self.total_count_by_rule.clear();
+        self.closed_stats_by_rule.clear();
+        self.current_run_by_rule.clear();
+
+        let mut open: Vec<StrategyPosition> = Vec::new();
+        for rule in &rules {
+            let Some(run) = repo.latest_run(rule.id, &rule.trade_mode).await? else {
+                continue;
+            };
+            if run.status != "Running" {
+                continue;
+            }
+            self.set_current_run(rule.id, run.id);
+
+            let mut entered = 0i64;
+            let mut stats = RuleClosedStats::default();
+            for p in repo.find_positions_by_run(run.id).await? {
+                if p.is_entered() {
+                    entered += 1;
+                }
+                if p.is_closed() {
+                    stats.apply(&p, 1);
+                }
+                if p.is_in_holding_index() {
+                    open.push(p);
+                }
+            }
+            if entered > 0 {
+                self.total_count_by_rule.insert(rule.id, entered);
+            }
+            if stats.closed() > 0 {
+                self.closed_stats_by_rule.insert(rule.id, stats);
+            }
+        }
+
+        // Rebuild the holding index (+ holding_count + time-exit index) from the
+        // collected current-run open positions.
+        self.set_holding_positions(open);
+        Ok(())
+    }
+
+    /// Reload just the active rule set (on rule CRUD). Rebuilds parsed params,
+    /// ladders, and the time-exit index against the new rules.
+    pub async fn reload_rules(&self, repo: &StrategyRepo) -> anyhow::Result<()> {
+        self.set_rules(repo.find_active_rules().await?);
+        Ok(())
+    }
+
+    /// Reload the holding index from each active rule's current run (on external
+    /// position changes — e.g. the reaper). Counters/stats are left as-is (carried
+    /// live); only the open-position index is refreshed.
+    pub async fn reload_holding(&self, repo: &StrategyRepo) -> anyhow::Result<()> {
+        let runs: Vec<Uuid> = self
+            .current_run_by_rule
+            .iter()
+            .map(|e| e.value().run_id)
+            .collect();
+        let mut open: Vec<StrategyPosition> = Vec::new();
+        for run_id in runs {
+            for p in repo.find_positions_by_run(run_id).await? {
+                if p.is_in_holding_index() {
+                    open.push(p);
+                }
+            }
+        }
+        self.set_holding_positions(open);
+        Ok(())
+    }
+
+    /// Replace the holding index (and its derived holding_count + time-exit index)
+    /// from a fresh open-position set, dropping memos for positions no longer held.
+    /// Does not touch total_count / closed_stats (warmed separately).
+    fn set_holding_positions(&self, positions: Vec<StrategyPosition>) {
+        self.holding_by_mint.clear();
+        self.holding_count_by_rule.clear();
+
+        let mut by_mint: HashMap<String, Vec<Arc<StrategyPosition>>> = HashMap::new();
+        let mut holding_by_rule: HashMap<Uuid, i64> = HashMap::new();
+        for pos in positions {
+            // holding_count tracks entered + Holding positions (cap enforcement).
+            if let Some(rid) = pos.rule_id {
+                if pos.is_entered() && pos.is_holding() {
+                    *holding_by_rule.entry(rid).or_insert(0) += 1;
+                }
+            }
+            by_mint.entry(pos.mint.clone()).or_default().push(Arc::new(pos));
+        }
+
+        let live_ids: std::collections::HashSet<Uuid> = by_mint
+            .values()
+            .flat_map(|l| l.iter().map(|p| p.id))
+            .collect();
+        for (mint, list) in by_mint {
+            self.holding_by_mint.insert(mint, list);
+        }
+        for (rid, count) in holding_by_rule {
+            self.holding_count_by_rule.insert(rid, count);
+        }
+        // Drop memos for positions no longer holding; survivors keep theirs.
+        self.exit_state_by_position.retain(|id, _| live_ids.contains(id));
+        self.rebuild_time_exit_index();
+    }
+
+    // ── Run lifecycle ─────────────────────────────────────────────────────────
+
+    /// Start a fresh run for a rule: persist a new `Running` run (params frozen),
+    /// reset the rule's in-memory run state, and point the rule at it. Runs are
+    /// immutable history — prior runs + their positions are kept, not deleted.
+    pub async fn start_run(
+        &self,
+        repo: &StrategyRepo,
+        rule: &StrategyRule,
+    ) -> anyhow::Result<StrategyRun> {
+        let run_seq = repo.next_run_seq(rule.id, &rule.trade_mode).await?;
+        let now = Utc::now();
+        let run = StrategyRun {
+            id: Uuid::new_v4(),
+            strategy_id: rule.strategy_id.clone(),
+            rule_id: Some(rule.id),
+            mode: rule.trade_mode.clone(),
+            run_seq,
+            status: "Running".to_string(),
+            params_snapshot: rule.params.clone(),
+            max_total_tokens: rule.max_total_tokens,
+            started_at: now,
+            finished_at: None,
+        };
+        repo.insert_run(&run).await?;
+        // Fresh run ⇒ fresh in-memory state (the prior run's counters/holdings are
+        // history); then point the rule at the new run.
+        self.clear_rule(rule.id);
+        self.set_current_run(rule.id, run.id);
+        Ok(run)
+    }
+
+    /// Mark a rule's current run `Stopped` (manual deactivation). Open positions are
+    /// left to drain. No-op if there's no current `Running` run.
+    pub async fn stop_run(&self, repo: &StrategyRepo, rule_id: Uuid) -> anyhow::Result<()> {
+        if let Some(r) = self.current_run(rule_id) {
+            if let Some(run) = repo.find_run(r.run_id).await? {
+                if run.status == "Running" {
+                    repo.set_run_status(run.id, "Stopped", Some(Utc::now())).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Resume a rule's latest run (flip back to `Running`) and point the rule at it,
+    /// preserving its recorded positions/counters. Returns the run, or `None` if the
+    /// rule has no prior run (caller should [`start_run`](Self::start_run) instead).
+    /// `mode` is the rule's `trade_mode`.
+    pub async fn resume_run(
+        &self,
+        repo: &StrategyRepo,
+        rule_id: Uuid,
+        mode: &str,
+    ) -> anyhow::Result<Option<StrategyRun>> {
+        let Some(run) = repo.latest_run(rule_id, mode).await? else {
+            return Ok(None);
+        };
+        if run.status != "Running" {
+            repo.set_run_status(run.id, "Running", None).await?;
+        }
+        self.set_current_run(rule_id, run.id);
+        Ok(Some(run))
+    }
+
+    /// Mark a rule's current run `Finished` (cap reached + all exited). Returns the
+    /// run if it transitioned, else `None`.
+    pub async fn finish_run(
+        &self,
+        repo: &StrategyRepo,
+        rule_id: Uuid,
+    ) -> anyhow::Result<Option<StrategyRun>> {
+        if let Some(r) = self.current_run(rule_id) {
+            if let Some(run) = repo.find_run(r.run_id).await? {
+                if run.status == "Running" {
+                    repo.set_run_status(run.id, "Finished", Some(Utc::now())).await?;
+                    return Ok(Some(run));
+                }
+            }
+        }
+        Ok(None)
     }
 
     // ── Position transitions ──────────────────────────────────────────────────
@@ -304,6 +775,12 @@ impl StrategyRuntimeCache {
 
         if prev_in_index {
             self.remove_from_holding_index(prev.unwrap());
+            if !curr_in_index {
+                // Position is leaving the holding index — its memoized exit state
+                // (and time-exit index entry, dropped in `remove_from_holding_index`)
+                // is dead.
+                self.exit_state_by_position.remove(&prev.unwrap().id);
+            }
         }
         if curr_in_index {
             self.upsert_in_holding_index(current);
@@ -345,6 +822,10 @@ impl StrategyRuntimeCache {
         if position.is_in_holding_index() {
             self.remove_from_holding_index(position);
         }
+        // Drop the memoized exit state + time-exit index entry (the latter is also
+        // cleared in `remove_from_holding_index`, harmless to repeat).
+        self.exit_state_by_position.remove(&position.id);
+        self.time_exit_holding.remove(&position.id);
         let Some(rule_id) = position.rule_id else {
             return;
         };
@@ -363,8 +844,16 @@ impl StrategyRuntimeCache {
 
     fn purge_rule_from_holding_index(&self, rule_id: Uuid) {
         let mut emptied: Vec<String> = Vec::new();
+        let mut purged_ids: Vec<Uuid> = Vec::new();
         for mut entry in self.holding_by_mint.iter_mut() {
-            entry.value_mut().retain(|p| p.rule_id != Some(rule_id));
+            entry.value_mut().retain(|p| {
+                if p.rule_id == Some(rule_id) {
+                    purged_ids.push(p.id);
+                    false
+                } else {
+                    true
+                }
+            });
             if entry.value().is_empty() {
                 emptied.push(entry.key().clone());
             }
@@ -372,19 +861,34 @@ impl StrategyRuntimeCache {
         for mint in emptied {
             self.holding_by_mint.remove(&mint);
         }
+        // The purged positions are gone from the holding index — drop their memoized
+        // exit states + time-exit index entries so neither map leaks across runs.
+        for id in purged_ids {
+            self.exit_state_by_position.remove(&id);
+            self.time_exit_holding.remove(&id);
+        }
     }
 
     fn upsert_in_holding_index(&self, position: &StrategyPosition) {
         let arc = Arc::new(position.clone());
-        let mut entry = self.holding_by_mint.entry(position.mint.clone()).or_default();
-        if let Some(slot) = entry.iter_mut().find(|p| p.id == position.id) {
-            *slot = arc;
+        {
+            let mut entry = self.holding_by_mint.entry(position.mint.clone()).or_default();
+            if let Some(slot) = entry.iter_mut().find(|p| p.id == position.id) {
+                *slot = arc.clone();
+            } else {
+                entry.push(arc.clone());
+            }
+        }
+        // Keep the time-exit index in lockstep with the holding entry.
+        if position.rule_id.is_some_and(|r| self.rule_has_time_exit(r)) {
+            self.time_exit_holding.insert(position.id, arc);
         } else {
-            entry.push(arc);
+            self.time_exit_holding.remove(&position.id);
         }
     }
 
     fn remove_from_holding_index(&self, position: &StrategyPosition) {
+        self.time_exit_holding.remove(&position.id);
         if let Some(mut entry) = self.holding_by_mint.get_mut(&position.mint) {
             entry.retain(|p| p.id != position.id);
             if entry.is_empty() {
@@ -573,14 +1077,14 @@ mod tests {
         let cache = StrategyRuntimeCache::new();
         let rid = Uuid::new_v4();
         cache.sync_position(None, &entered(rid, "MintA", 0.001, 1.0));
-        cache.set_paper_run(rid, Uuid::new_v4());
+        cache.set_current_run(rid, Uuid::new_v4());
         assert_eq!(cache.total_count_by_rule(rid), 1);
-        assert!(cache.current_paper_run(rid).is_some());
+        assert!(cache.current_run(rid).is_some());
 
         cache.clear_rule(rid);
         assert_eq!(cache.total_count_by_rule(rid), 0);
         assert_eq!(cache.holding_count_by_rule(rid), 0);
-        assert!(cache.current_paper_run(rid).is_none());
+        assert!(cache.current_run(rid).is_none());
         assert!(cache.all_holding_positions().is_empty());
     }
 
@@ -607,6 +1111,161 @@ mod tests {
         assert!(cache.try_begin_entry(id).is_none());
         drop(guard);
         assert!(!cache.is_entering(id));
+    }
+
+    // ── exit-state memo + time-exit index ─────────────────────────────────────
+
+    fn t0() -> chrono::DateTime<Utc> {
+        chrono::DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap()
+    }
+
+    fn cached_buy(price: f64, slot: u64, secs: i64) -> CachedTrade {
+        CachedTrade {
+            wallet: 0,
+            is_buy: true,
+            sol_amount: 1.0,
+            token_amount: 1.0 / price.max(1e-9),
+            price_per_token: price,
+            slot,
+            leg_index: 0,
+            block_time: t0() + chrono::Duration::seconds(secs),
+            virtual_sol_reserves: Some(100.0),
+            virtual_token_reserves: Some(100.0),
+            real_sol_reserves: None,
+        }
+    }
+
+    /// An entered, Holding position with a recorded entry price + time (so the
+    /// clock/trade gates evaluate it).
+    fn entered_at(rule_id: Uuid, mint: &str, entry_price: f64) -> StrategyPosition {
+        let mut p = entered(rule_id, mint, entry_price, 1.0);
+        p.entry_time = Some(t0());
+        p
+    }
+
+    /// The trade gate folds new trades into the memo and fires the ladder: a
+    /// +100% print clears a 50% take-profit and returns the reason string.
+    #[test]
+    fn trade_gate_advance_fires_take_profit() {
+        let cache = StrategyRuntimeCache::new();
+        let r = rule(
+            "tpsl_sniper_1",
+            json!({ "p_exit_take_profit": 50.0, "p_exit_stop_loss": 90.0 }),
+        );
+        let rid = r.id;
+        cache.set_rules(vec![r]);
+
+        let pos_id = Uuid::new_v4();
+        let reason = cache.exit_state_advance_and_find_exit(
+            pos_id,
+            rid,
+            1.0,
+            t0(),
+            &[cached_buy(2.0, 3, 5)],
+            0,
+        );
+        assert_eq!(reason, Some("TakeProfit"));
+        assert_eq!(cache.exit_state_len(), 1, "memo seeded on first sight");
+        // An inactive/unknown rule has no ladder → no eval, no memo.
+        assert_eq!(
+            cache.exit_state_advance_and_find_exit(Uuid::new_v4(), Uuid::new_v4(), 1.0, t0(), &[], 0),
+            None
+        );
+    }
+
+    /// A rule with a time-stop lands its entered holdings in the time-exit index;
+    /// a price-only rule never does. The clock sweep fires once the deadline passes.
+    #[test]
+    fn time_exit_index_membership_and_clock_fire() {
+        let cache = StrategyRuntimeCache::new();
+        let timed = rule(
+            "tpsl_sniper_1",
+            json!({ "p_exit_take_profit": 50.0, "p_exit_stop_loss": 90.0, "p_exit_time_stop_secs": 60 }),
+        );
+        let priced = rule(
+            "tpsl_sniper_1",
+            json!({ "p_exit_take_profit": 50.0, "p_exit_stop_loss": 90.0 }),
+        );
+        let timed_id = timed.id;
+        let priced_id = priced.id;
+        cache.set_rules(vec![timed, priced]);
+
+        let tp = entered_at(timed_id, "MintTimed", 1.0);
+        let pp = entered_at(priced_id, "MintPriced", 1.0);
+        cache.sync_position(None, &tp);
+        cache.sync_position(None, &pp);
+
+        let indexed: Vec<_> = cache.time_exit_holding_positions();
+        assert_eq!(indexed.len(), 1, "only the time-exit rule's holding is indexed");
+        assert_eq!(indexed[0].id, tp.id);
+
+        // Before the deadline: no fire. After it: TimeStop.
+        assert_eq!(
+            cache.exit_state_clock_check(&tp, &[], 0, t0() + chrono::Duration::seconds(30)),
+            None
+        );
+        assert_eq!(
+            cache.exit_state_clock_check(&tp, &[], 0, t0() + chrono::Duration::seconds(120)),
+            Some("TimeStop")
+        );
+        // The price-only position is never a clock-exit candidate.
+        assert_eq!(
+            cache.exit_state_clock_check(&pp, &[], 0, t0() + chrono::Duration::seconds(120)),
+            None
+        );
+    }
+
+    /// Closing a position drops its memo + time-exit index entry (no leak).
+    #[test]
+    fn memo_and_index_dropped_when_position_leaves_holding() {
+        let cache = StrategyRuntimeCache::new();
+        let r = rule(
+            "tpsl_sniper_1",
+            json!({ "p_exit_take_profit": 50.0, "p_exit_stop_loss": 90.0, "p_exit_time_stop_secs": 60 }),
+        );
+        let rid = r.id;
+        cache.set_rules(vec![r]);
+
+        let prev = entered_at(rid, "MintX", 1.0);
+        cache.sync_position(None, &prev);
+        // Seed the memo via a clock check.
+        let _ = cache.exit_state_clock_check(&prev, &[], 0, t0() + chrono::Duration::seconds(10));
+        assert_eq!(cache.exit_state_len(), 1);
+        assert_eq!(cache.time_exit_holding_positions().len(), 1);
+
+        // Close it → leaves the holding index.
+        let mut closed = prev.clone();
+        closed.status = "End".into();
+        closed.exit_price = Some(2.0);
+        closed.exit_sol = Some(2.0);
+        cache.sync_position(Some(&prev), &closed);
+
+        assert_eq!(cache.exit_state_len(), 0, "memo dropped on close");
+        assert_eq!(cache.time_exit_holding_positions().len(), 0, "index entry dropped");
+    }
+
+    /// Reloading rules so a position's rule loses its time-exit removes it from the
+    /// time-exit index (and adds it when the config gains one).
+    #[test]
+    fn rule_reload_rebuilds_time_exit_index() {
+        let cache = StrategyRuntimeCache::new();
+        let mut r = rule(
+            "tpsl_sniper_1",
+            json!({ "p_exit_take_profit": 50.0, "p_exit_stop_loss": 90.0, "p_exit_time_stop_secs": 60 }),
+        );
+        let rid = r.id;
+        cache.set_rules(vec![r.clone()]);
+        cache.sync_position(None, &entered_at(rid, "MintR", 1.0));
+        assert_eq!(cache.time_exit_holding_positions().len(), 1);
+
+        // Drop the time-stop from the rule and reload → no longer indexed.
+        r.params = json!({ "p_exit_take_profit": 50.0, "p_exit_stop_loss": 90.0 });
+        cache.set_rules(vec![r]);
+        assert_eq!(
+            cache.time_exit_holding_positions().len(),
+            0,
+            "rebuilt index drops the now-price-only holding"
+        );
     }
 
     #[tokio::test]

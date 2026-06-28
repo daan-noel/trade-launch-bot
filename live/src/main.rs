@@ -553,16 +553,16 @@ async fn main() -> anyhow::Result<()> {
 
     let (sol_price_tx, _sol_price_rx) = tokio::sync::watch::channel::<Option<f64>>(None);
     let sol_price = Arc::new(sol_price_tx);
-    let tpsl1_cache = Arc::new(strategies::tpsl_sniper_1::Tpsl1RuntimeCache::new(sse_tx.clone()));
-    tpsl1_cache
-        .load_from_db(&db)
+    // One unified, strategy-agnostic runtime cache (replaces the tpsl1/tpsl2 caches);
+    // rules are dispatched by `strategy_id` through the registry inside it.
+    let strategy_cache =
+        Arc::new(trading_core::strategies::runtime_cache::StrategyRuntimeCache::new());
+    strategy_cache
+        .load_from_db(&trading_core::storage::repositories::strategy_repo::StrategyRepo::new(
+            db.clone(),
+        ))
         .await
-        .context("Failed to load TPSL1 runtime cache")?;
-    let tpsl2_cache = Arc::new(strategies::tpsl_sniper_2::Tpsl2RuntimeCache::new(sse_tx.clone()));
-    tpsl2_cache
-        .load_from_db(&db)
-        .await
-        .context("Failed to load TPSL2 runtime cache")?;
+        .context("Failed to load strategy runtime cache")?;
 
     // Shared (wallet, mint) wakeup hub: the DbWriter signals it once a trade is
     // persisted; the live buy/sell confirm loops await it instead of polling the
@@ -599,13 +599,12 @@ async fn main() -> anyhow::Result<()> {
     // so no DB round trip and no coupling into `strategies/`.
     {
         let token_cache = token_cache.clone();
-        let tpsl1 = tpsl1_cache.clone();
-        let tpsl2 = tpsl2_cache.clone();
+        let sc = strategy_cache.clone();
         let evict_repo =
             trading_core::storage::repositories::token_info_repo::TokenInfoRepo::new(db.clone());
         tokio::spawn(state::token_cache::run_token_cache_eviction(
             token_cache,
-            move |mint: &str| tpsl1.is_mint_held(mint) || tpsl2.is_mint_held(mint),
+            move |mint: &str| sc.is_mint_held(mint),
             evict_repo,
         ));
     }
@@ -627,11 +626,24 @@ async fn main() -> anyhow::Result<()> {
         settings_tx.clone(),
         sol_price.clone(),
     ));
+    // The one unified live service: owns the runtime cache + repo and the rule-CRUD
+    // lifecycle. Its background reapers are spawned here so `DeployState` and the
+    // runner can share the same handle (cheap Arc-backed clones).
+    let strategy_service = strategies::StrategyService::new(
+        db.clone(),
+        trader.clone(),
+        strategy_cache.clone(),
+        token_cache.clone(),
+        sse_tx.clone(),
+        trade_signals.clone(),
+        settings_tx.subscribe(),
+    );
+    strategy_service.spawn_background_tasks();
+
     let deploy_state = Arc::new(state::deploy_state::DeployState::new(
         core_state.clone(),
         trader.clone(),
-        tpsl1_cache.clone(),
-        tpsl2_cache.clone(),
+        strategy_service.clone(),
         pool_index,
         pools_changed,
         trade_signals.clone(),
@@ -646,16 +658,7 @@ async fn main() -> anyhow::Result<()> {
         core_state.token_list.clone(),
     ));
 
-    let strategy_runner = strategies::StrategyRunner::new(
-        db.clone(),
-        trader.clone(),
-        token_cache.clone(),
-        tpsl1_cache,
-        tpsl2_cache,
-        sse_tx.clone(),
-        trade_signals.clone(),
-        settings_tx.subscribe(),
-    );
+    let strategy_runner = strategies::StrategyRunner::new(strategy_service, token_cache.clone());
     let strategy_task = tokio::spawn(strategy_runner.run(strategy_rx));
 
     // Initialize SOL price cache immediately, then start the poller.

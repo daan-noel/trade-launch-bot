@@ -4,8 +4,8 @@ use dashmap::{DashMap, DashSet};
 use tokio::sync::{watch, Notify, OwnedSemaphorePermit, Semaphore};
 
 use trading_core::storage::repositories::settings_repo::AppSettings;
-use crate::strategies::tpsl_sniper_1::Tpsl1RuntimeCache;
-use crate::strategies::tpsl_sniper_2::Tpsl2RuntimeCache;
+use trading_core::strategies::runtime_cache::StrategyRuntimeCache;
+use crate::strategies::StrategyService;
 use crate::trader::PumpFunTrader;
 
 use super::core_state::CoreState;
@@ -22,8 +22,11 @@ const MAX_CONCURRENT_SYNCS: usize = 4;
 pub struct DeployState {
     pub core: Arc<CoreState>,
     pub trader: Arc<PumpFunTrader>,
-    pub tpsl1_cache: Arc<Tpsl1RuntimeCache>,
-    pub tpsl2_cache: Arc<Tpsl2RuntimeCache>,
+    /// The unified, strategy-agnostic live service — holds the one
+    /// [`StrategyRuntimeCache`] + [`StrategyRepo`](trading_core::storage::repositories::strategy_repo::StrategyRepo)
+    /// and owns the rule-CRUD lifecycle (activate / pause / stop-and-close) the
+    /// handlers call. Cheaply `Clone` (Arc-backed); the runner holds a sibling clone.
+    pub strategy: StrategyService,
     /// Live PumpSwap pool → mint index (shared with the ingest pipeline and WS
     /// task). A token sync registers a migrated token's pool here to subscribe.
     pub pool_index: Arc<DashMap<String, String>>,
@@ -42,8 +45,7 @@ impl DeployState {
     pub fn new(
         core: Arc<CoreState>,
         trader: Arc<PumpFunTrader>,
-        tpsl1_cache: Arc<Tpsl1RuntimeCache>,
-        tpsl2_cache: Arc<Tpsl2RuntimeCache>,
+        strategy: StrategyService,
         pool_index: Arc<DashMap<String, String>>,
         pools_changed: Arc<Notify>,
         trade_signals: Arc<TradeSignals>,
@@ -52,14 +54,19 @@ impl DeployState {
         Self {
             core,
             trader,
-            tpsl1_cache,
-            tpsl2_cache,
+            strategy,
             pool_index,
             pools_changed,
             trade_signals,
             sync_gate: Arc::new(SyncGate::new(MAX_CONCURRENT_SYNCS)),
             live_mode,
         }
+    }
+
+    /// The shared strategy runtime cache (held by the service) — for handlers that
+    /// only read the in-memory holding index / cap counters.
+    pub fn strategy_cache(&self) -> &Arc<StrategyRuntimeCache> {
+        self.strategy.runtime()
     }
 
     pub fn is_live(&self) -> bool {

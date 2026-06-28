@@ -281,31 +281,24 @@ pub async fn manual_sell(
     // Retries briefly so the recorded exit price is the real sell once it indexes;
     // each strategy's boot/maintenance reaper is the ultimate backstop.
     {
-        use crate::strategies::{tpsl_sniper_1, tpsl_sniper_2};
+        use crate::strategies::execution::real::reconcile_externally_cleared_mint;
         let state = app_state.get_ref().clone();
         let mint = body.mint.clone();
         tokio::spawn(async move {
             for _ in 0..RECONCILE_MAX_ATTEMPTS {
-                let r1 = tpsl_sniper_1::execution::real::reconcile_externally_cleared_mint(
+                // One unified reconcile (real positions, both strategies — the repo
+                // filters `mode='real'` internally).
+                let r = reconcile_externally_cleared_mint(
                     &mint,
-                    &state.tpsl1_position_repo(),
+                    state.strategy.repo(),
                     &state.trade_repo(),
-                    &state.tpsl1_cache,
+                    state.strategy.runtime(),
                     &state.trader,
                 )
                 .await;
-                let r2 = tpsl_sniper_2::execution::real::reconcile_externally_cleared_mint(
-                    &mint,
-                    &state.tpsl2_position_repo(),
-                    &state.trade_repo(),
-                    &state.tpsl2_cache,
-                    &state.trader,
-                )
-                .await;
-                // Stop once a position closed, or once neither strategy has an open
-                // position for the mint (`None` = nothing to reconcile).
-                let closed = r1.unwrap_or(0) + r2.unwrap_or(0);
-                if closed > 0 || (r1.is_none() && r2.is_none()) {
+                // Stop once a position closed, or once there's no open position for
+                // the mint (`None` = nothing to reconcile).
+                if r.unwrap_or(0) > 0 || r.is_none() {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(RECONCILE_RETRY_SECS)).await;
