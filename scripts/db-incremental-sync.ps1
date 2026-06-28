@@ -1,37 +1,60 @@
 <#
 .SYNOPSIS
-  Append the EC2 server's newer data into the local meme_bot DB -- directly,
-  DB->DB, over an SSH tunnel. No CSV, no scp, no temp files.
+  Append the EC2 server's newer **sealed daily** data into the local meme_bot DB --
+  directly, DB->DB, over an SSH tunnel. No CSV, no scp, no temp files.
 
 .DESCRIPTION
-  Supersedes db-incremental-csv-{dump.sh,restore.ps1} (the CSV pipeline). Instead
-  of exporting CSVs and shipping them, this:
+  This is the `lab` data-pipeline hop 1 (EC2-PG -> local-PG) for the clean-rebuild
+  TimescaleDB schema (live/lab remake, Phase 1/4). It supersedes the old CSV pipeline
+  and the pre-rebuild version of this script (which targeted the dropped
+  tokens_analysis / creator_profiles tables, the dropped ensure_trades_partition()
+  function, and the old trades unique key). It:
 
     1. Opens an SSH tunnel to the server's published Postgres host port.
     2. Attaches the server as a postgres_fdw foreign server (schema ec2_sync_src).
     3. Verifies local vs remote column parity (aborts on schema drift).
-    4. Ensures local `trades` day-partitions exist for the incoming window.
-    5. Per table: INSERT INTO <local> SELECT * FROM ec2_sync_src.<t>
-       WHERE <ts-col> >= <local watermark>  ON CONFLICT ...
+    4. Per table: INSERT INTO <local> SELECT * FROM ec2_sync_src.<t>
+       WHERE <watermark predicate>  ON CONFLICT ...
        The watermark is a literal, so postgres_fdw PUSHES IT DOWN to the server
-       (remote partition pruning) -- only new rows are fetched.
+       (remote chunk pruning) -- only new rows are fetched.
 
-  Non-destructive: existing local rows (sweep results, positions, settings,
-  raw_transactions, your 4.5 days of trades) are never touched. Conflicts:
-    trades          UNIQUE(tx_signature, leg_index, block_time) -> DO NOTHING
-    tokens          UNIQUE(mint_address)                        -> DO NOTHING
-    tokens_info     UNIQUE(mint_address)                        -> DO UPDATE (newer updated_at wins)
-    tokens_analysis UNIQUE(mint_address, analyzer_name)         -> DO UPDATE (newer computed_at wins)
-    creator_profiles UNIQUE(wallet_address)                     -> DO UPDATE (full upsert; no monotonic ts)
+  **Sealed daily semantics.** High-volume hypertables (trades, raw_txs) are pulled
+  only up to the start of *today* (UTC) -- i.e. yesterday-and-older, the days whose
+  Timescale chunks are sealed (no longer receiving writes). Today stays open on the
+  server and is pulled on the next run once it has sealed. Both bounds are literals,
+  so the server prunes to exactly the sealed window. TimescaleDB auto-creates the
+  destination chunks on insert, so there is no partition-ensure step anymore.
 
-  Requires: ssh + psql on PATH; local Postgres >= 16 with postgres_fdw available;
-  connect as a SUPERUSER local role (CREATE EXTENSION / USER MAPPING). Stop any
-  local backend writing to meme_bot first. Server creds are read from the remote
-  .env automatically (POSTGRES_HOST_PORT/USER/PASSWORD/DB).
+  Non-destructive & idempotent: existing local rows are never deleted; the dedup PKs
+  + ON CONFLICT make re-running over an overlapping window a no-op. Conflict policy:
+    wallet_dict      PK(id) / UNIQUE(address)                    -> DO NOTHING (immutable)
+    tokens           PK(mint_address)                            -> DO NOTHING (write-once)
+    tokens_info      PK(mint_address)                            -> DO UPDATE (newer updated_at wins)
+    token_sync_state PK(mint_address, venue)                     -> DO UPDATE (newer last_synced_at wins)
+    trades           PK(block_time, tx_signature, leg_index)     -> DO NOTHING (append-only)
+    raw_txs          PK(block_time, tx_signature)                -> DO NOTHING (append-only; opt-in)
+
+  wallet_dict ids are GENERATED ALWAYS AS IDENTITY. The local DB is a read-mirror of
+  the server's market data (lab has no ingest, so it never mints its own ids), so we
+  copy the server ids verbatim with OVERRIDING SYSTEM VALUE -- trades.wallet_id then
+  resolves against the same dictionary on both boxes. Order matters for the FKs:
+  wallet_dict + tokens first, then tokens_info / token_sync_state / trades.
+
+  Strategy tables (strategy_rules/runs/run_metrics/positions) are NOT synced -- those
+  are per-box authoring/run state, not shared market data.
+
+  Requires: ssh + psql on PATH; local Postgres >= 16 with postgres_fdw + TimescaleDB;
+  connect as a SUPERUSER local role (CREATE EXTENSION / USER MAPPING). Stop any local
+  backend writing to meme_bot first. Server creds are read from the remote .env
+  automatically (POSTGRES_HOST_PORT/USER/PASSWORD/DB).
 
 .EXAMPLE
   $env:PGPASSWORD = 'your_LOCAL_pw'
   ./scripts/db-incremental-sync.ps1 -SshTarget ubuntu@1.2.3.4
+
+.EXAMPLE
+  # Also pull the short-lived raw_txs feed (BYTEA payloads, large):
+  ./scripts/db-incremental-sync.ps1 -SshTarget ubuntu@1.2.3.4 -IncludeRawTxs
 #>
 param(
   [Parameter(Mandatory = $true)][string]$SshTarget,                       # user@host of the EC2 box
@@ -43,17 +66,22 @@ param(
   [string]$LocalPgUser     = 'postgres',
   [int]   $TunnelLocalPort = 5433,                                        # local end of the SSH tunnel (must be free)
   [int]   $RemotePgPort    = 0,                                           # 0 = auto-detect from remote .env (default 5555)
-  [int]   $PartitionDays   = 40,                                          # >= server KEEP_DAYS + margin
-  [switch]$NoCreatorProfiles,                                             # skip the creator_profiles full upsert
+  [switch]$IncludeRawTxs,                                                 # also sync raw_txs (BYTEA payloads, large; off by default)
   [string]$LocalPgPassword = $env:PGPASSWORD
 )
 $ErrorActionPreference = 'Stop'
 if (-not $LocalPgPassword) { throw "Set the LOCAL DB password: `$env:PGPASSWORD='...'  (or -LocalPgPassword)" }
 
-# Force UTC so ensure_trades_partition creates bounds in UTC regardless of OS tz.
+# Force UTC so the sealed-day boundary (start-of-today) is computed in UTC
+# regardless of the workstation's OS timezone.
 $env:PGOPTIONS = '-c timezone=UTC'
 $localPg = @('-h', $LocalPgHost, '-p', "$LocalPgPort", '-U', $LocalPgUser, '-d', $Database, '-v', 'ON_ERROR_STOP=1')
 $sshOpts = @('-i', $SshKey, '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=10')
+
+# Tables to mirror, in FK-safe order. raw_txs is appended only with -IncludeRawTxs.
+$syncTables = @('wallet_dict', 'tokens', 'tokens_info', 'token_sync_state', 'trades')
+if ($IncludeRawTxs) { $syncTables += 'raw_txs' }
+$importList = ($syncTables -join ', ')
 
 $Utf8NoBom = New-Object System.Text.UTF8Encoding $false   # psql chokes on a UTF-8 BOM
 function Use-LocalPw { $env:PGPASSWORD = $LocalPgPassword }
@@ -130,7 +158,7 @@ try {
   Write-Host "  tunnel up + server Postgres reachable."
 
   # ---- 4. Attach the server as a foreign server (fresh each run) -------------
-  Write-Host "Attaching server via postgres_fdw ..."
+  Write-Host "Attaching server via postgres_fdw (tables: $importList) ..."
   $pwEsc = $remotePw -replace "'", "''"
   Invoke-LocalSqlFile @"
 CREATE EXTENSION IF NOT EXISTS postgres_fdw;
@@ -142,16 +170,18 @@ CREATE USER MAPPING FOR CURRENT_USER SERVER ec2_sync
 DROP SCHEMA IF EXISTS ec2_sync_src CASCADE;
 CREATE SCHEMA ec2_sync_src;
 IMPORT FOREIGN SCHEMA public
-  LIMIT TO (trades, tokens, tokens_info, tokens_analysis, creator_profiles)
+  LIMIT TO ($importList)
   FROM SERVER ec2_sync INTO ec2_sync_src;
 "@
 
   # ---- 5. Schema-parity guard (abort before moving any data) -----------------
-  Invoke-LocalSqlFile @'
-DO $$
+  # Build the table-array literal from $syncTables so it tracks -IncludeRawTxs.
+  $parityArray = "ARRAY[" + (($syncTables | ForEach-Object { "'$_'" }) -join ',') + "]"
+  Invoke-LocalSqlFile @"
+DO `$`$
 DECLARE t text;
 BEGIN
-  FOREACH t IN ARRAY ARRAY['trades','tokens','tokens_info','tokens_analysis','creator_profiles'] LOOP
+  FOREACH t IN ARRAY $parityArray LOOP
     IF (SELECT string_agg(column_name, ',' ORDER BY ordinal_position)
           FROM information_schema.columns WHERE table_schema='public' AND table_name=t)
        IS DISTINCT FROM
@@ -160,61 +190,51 @@ BEGIN
     THEN RAISE EXCEPTION 'Column mismatch local vs server for table %; aborting (schema drift)', t;
     END IF;
   END LOOP;
-END $$;
-'@
-
-  # ---- 6. Local watermarks ---------------------------------------------------
-  Write-Host "Local watermarks:"
-  $tradesWm   = Get-LocalScalar "SELECT COALESCE(MAX(block_time), '1970-01-01 00:00:00+00')::text FROM trades"
-  $tokensWm   = Get-LocalScalar "SELECT COALESCE(MAX(created_at), '1970-01-01 00:00:00+00')::text FROM tokens"
-  $tinfoWm    = Get-LocalScalar "SELECT COALESCE(MAX(updated_at), '1970-01-01 00:00:00+00')::text FROM tokens_info"
-  $analysisWm = Get-LocalScalar "SELECT COALESCE(MAX(computed_at), '1970-01-01 00:00:00+00')::text FROM tokens_analysis"
-  Write-Host "  trades >=   $tradesWm"
-  Write-Host "  tokens >=   $tokensWm"
-  Write-Host "  tok_info >= $tinfoWm"
-  Write-Host "  analysis >= $analysisWm"
-
-  # ---- 7. Ensure local trades partitions cover the incoming window -----------
-  # Scope the ensure to the incoming window: start at the trades watermark (floored
-  # to PartitionDays back so an empty local DB doesn't create thousands), end at
-  # today+2, all in UTC. Each ensure is overlap-tolerant -- a pre-existing partition
-  # with different bounds (e.g. legacy local-timezone day-aligned) already covers
-  # that day, so skip it instead of aborting the whole run.
-  Write-Host "Ensuring trades partitions ..."
-  Invoke-LocalSqlFile @"
-DO `$`$
-DECLARE
-  d date := (GREATEST('$tradesWm'::timestamptz, now() - interval '$PartitionDays days') AT TIME ZONE 'UTC')::date - 1;
-  e date := ((now() AT TIME ZONE 'UTC')::date + 2);
-BEGIN
-  WHILE d <= e LOOP
-    BEGIN
-      PERFORM ensure_trades_partition(d);
-    EXCEPTION WHEN others THEN
-      RAISE NOTICE 'partition % skipped (already covered): %', d, SQLERRM;
-    END;
-    d := d + 1;
-  END LOOP;
-END
-`$`$;
+END `$`$;
 "@
 
-  # ---- 8. Upserts (predicate pushed to server; psql prints each row count) ----
+  # ---- 6. Sealed-day boundary + local watermarks -----------------------------
+  # The sealed cutoff: midnight UTC today. Hypertable pulls use [watermark, cutoff)
+  # so only fully-sealed days move; today is left open for the next run.
+  $sealedCutoff = Get-LocalScalar "SELECT date_trunc('day', now() AT TIME ZONE 'UTC')::text"
+  Write-Host "Sealed-day cutoff (exclusive upper bound): $sealedCutoff UTC"
+
+  Write-Host "Local watermarks:"
+  $walletWm  = Get-LocalScalar "SELECT COALESCE(MAX(id), 0) FROM wallet_dict"
+  $tradesWm  = Get-LocalScalar "SELECT COALESCE(MAX(block_time), '1970-01-01 00:00:00+00')::text FROM trades"
+  $tokensWm  = Get-LocalScalar "SELECT COALESCE(MAX(created_at), '1970-01-01 00:00:00+00')::text FROM tokens"
+  $tinfoWm   = Get-LocalScalar "SELECT COALESCE(MAX(updated_at), '1970-01-01 00:00:00+00')::text FROM tokens_info"
+  $syncWm    = Get-LocalScalar "SELECT COALESCE(MAX(last_synced_at), '1970-01-01 00:00:00+00')::text FROM token_sync_state"
+  Write-Host "  wallet_dict id >    $walletWm"
+  Write-Host "  trades >=           $tradesWm"
+  Write-Host "  tokens >=           $tokensWm"
+  Write-Host "  tokens_info >=      $tinfoWm"
+  Write-Host "  token_sync_state >= $syncWm"
+  if ($IncludeRawTxs) {
+    $rawWm = Get-LocalScalar "SELECT COALESCE(MAX(block_time), '1970-01-01 00:00:00+00')::text FROM raw_txs"
+    Write-Host "  raw_txs >=          $rawWm"
+  }
+
+  # ---- 7. Upserts (predicate pushed to server; psql prints each row count) ----
+  # Order: wallet_dict + tokens first (referenced), then dependents + the
+  # sealed-window hypertable pulls. TimescaleDB routes inserts to chunks (creating
+  # them as needed) -- no partition-ensure step.
   Write-Host "Appending new rows ..."
-  $creatorSql = if ($NoCreatorProfiles) { "\echo 'creator_profiles: skipped'" } else { @"
-\echo '-- creator_profiles'
-INSERT INTO creator_profiles SELECT * FROM ec2_sync_src.creator_profiles
-ON CONFLICT (wallet_address) DO UPDATE SET
-  tokens_created = EXCLUDED.tokens_created, total_volume_sol = EXCLUDED.total_volume_sol,
-  suspiciousness_score = EXCLUDED.suspiciousness_score, wash_trade_score = EXCLUDED.wash_trade_score,
-  last_analyzed_at = EXCLUDED.last_analyzed_at, indicators = EXCLUDED.indicators;
-"@ }
+
+  $rawTxsSql = if ($IncludeRawTxs) { @"
+\echo '-- raw_txs (sealed days only)'
+INSERT INTO raw_txs SELECT * FROM ec2_sync_src.raw_txs
+WHERE block_time >= '$rawWm'::timestamptz AND block_time < '$sealedCutoff'::timestamptz
+ON CONFLICT (block_time, tx_signature) DO NOTHING;
+"@ } else { "\echo 'raw_txs: skipped (pass -IncludeRawTxs to sync)'" }
 
   Invoke-LocalSqlFile @"
-\echo '-- trades'
-INSERT INTO trades SELECT * FROM ec2_sync_src.trades
-WHERE block_time >= '$tradesWm'::timestamptz
-ON CONFLICT (tx_signature, leg_index, block_time) DO NOTHING;
+\echo '-- wallet_dict (id-preserving mirror)'
+INSERT INTO wallet_dict (id, address)
+OVERRIDING SYSTEM VALUE
+SELECT id, address FROM ec2_sync_src.wallet_dict
+WHERE id > $walletWm
+ON CONFLICT DO NOTHING;
 
 \echo '-- tokens'
 INSERT INTO tokens SELECT * FROM ec2_sync_src.tokens
@@ -225,30 +245,33 @@ ON CONFLICT (mint_address) DO NOTHING;
 INSERT INTO tokens_info SELECT * FROM ec2_sync_src.tokens_info
 WHERE updated_at >= '$tinfoWm'::timestamptz
 ON CONFLICT (mint_address) DO UPDATE SET
-  ath_price = EXCLUDED.ath_price, ath_timestamp = EXCLUDED.ath_timestamp, age = EXCLUDED.age,
-  volume = EXCLUDED.volume, market_cap = EXCLUDED.market_cap, trade_count = EXCLUDED.trade_count,
-  last_trade_at = EXCLUDED.last_trade_at, current_price = EXCLUDED.current_price,
+  current_price = EXCLUDED.current_price, ath_price = EXCLUDED.ath_price,
+  ath_timestamp = EXCLUDED.ath_timestamp, volume = EXCLUDED.volume,
+  trade_count = EXCLUDED.trade_count, last_trade_at = EXCLUDED.last_trade_at,
   is_dead = EXCLUDED.is_dead, is_migrated = EXCLUDED.is_migrated,
-  last_synced_at = EXCLUDED.last_synced_at, last_synced_curve_sig = EXCLUDED.last_synced_curve_sig,
-  last_synced_amm_sig = EXCLUDED.last_synced_amm_sig, last_synced_curve_slot = EXCLUDED.last_synced_curve_slot,
-  last_synced_amm_slot = EXCLUDED.last_synced_amm_slot, lifetime_secs = EXCLUDED.lifetime_secs,
-  updated_at = EXCLUDED.updated_at
+  lifetime_secs = EXCLUDED.lifetime_secs, updated_at = EXCLUDED.updated_at
 WHERE EXCLUDED.updated_at >= tokens_info.updated_at;
 
-\echo '-- tokens_analysis'
-INSERT INTO tokens_analysis SELECT * FROM ec2_sync_src.tokens_analysis
-WHERE computed_at >= '$analysisWm'::timestamptz
-ON CONFLICT (mint_address, analyzer_name) DO UPDATE SET
-  score = EXCLUDED.score, indicators = EXCLUDED.indicators, computed_at = EXCLUDED.computed_at
-WHERE EXCLUDED.computed_at >= tokens_analysis.computed_at;
+\echo '-- token_sync_state'
+INSERT INTO token_sync_state SELECT * FROM ec2_sync_src.token_sync_state
+WHERE last_synced_at >= '$syncWm'::timestamptz
+ON CONFLICT (mint_address, venue) DO UPDATE SET
+  last_sig = EXCLUDED.last_sig, last_slot = EXCLUDED.last_slot,
+  last_synced_at = EXCLUDED.last_synced_at
+WHERE EXCLUDED.last_synced_at >= token_sync_state.last_synced_at;
 
-$creatorSql
+\echo '-- trades (sealed days only)'
+INSERT INTO trades SELECT * FROM ec2_sync_src.trades
+WHERE block_time >= '$tradesWm'::timestamptz AND block_time < '$sealedCutoff'::timestamptz
+ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING;
+
+$rawTxsSql
 "@
 
-  # ---- 9. Sync _sqlx_migrations so local backend doesn't re-apply applied migrations ---
+  # ---- 8. Sync _sqlx_migrations so local backend doesn't re-apply applied migrations ---
   # The server's checksum records are authoritative (same files, same binary).
   # Without this, _sqlx_migrations is empty locally and sqlx re-runs all migrations
-  # on every startup, failing on non-idempotent steps (e.g. CREATE INDEX without IF NOT EXISTS).
+  # on every startup, failing on non-idempotent steps.
   Write-Host "Syncing _sqlx_migrations from server ..."
   $env:PGPASSWORD = $remotePw
   $remoteMigrations = & psql -h 127.0.0.1 -p $TunnelLocalPort -U $remoteUser -d $remoteDb `
@@ -274,10 +297,10 @@ $creatorSql
     Write-Warning "_sqlx_migrations sync skipped (server query failed or empty -- run backend once to apply migrations manually)."
   }
 
-  # ---- 10. Detach (drops the stored server password from the local catalog) ---
+  # ---- 9. Detach (drops the stored server password from the local catalog) ---
   Invoke-LocalSqlFile "DROP SERVER IF EXISTS ec2_sync CASCADE; DROP SCHEMA IF EXISTS ec2_sync_src CASCADE;"
   Write-Host ""
-  Write-Host "Incremental sync complete (server credentials removed from local catalog)."
+  Write-Host "Incremental sync complete (sealed days through $sealedCutoff UTC; server credentials removed from local catalog)."
 }
 finally {
   if ($tunnel -and -not $tunnel.HasExited) { Stop-Process -Id $tunnel.Id -Force -ErrorAction SilentlyContinue }

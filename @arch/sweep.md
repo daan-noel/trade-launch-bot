@@ -39,6 +39,21 @@ Tables per strategy: `<strategy>_grouped_sweep_{runs,groups,combos,results}`. Ge
 
 API: `POST /api/strategies/sweeps` (start, detached → 202 with `run_id`), `POST .../cancel`, `DELETE .../sweeps/{run_id}`, `PATCH .../sweeps/{run_id}` (rename), `DELETE .../sweeps?before=` (prune), `GET` for runs/groups/results.
 
+## Parquet lake + DuckDB corpus (Phase 4 — `lab/src/lake/`)
+
+The 3-hop analysis pipeline that feeds the sweep on the workstation:
+`EC2-PG → local-PG → Parquet lake → DuckDB`.
+
+| Hop | What | Where |
+| --- | --- | --- |
+| 1 · sync | Sealed daily Timescale chunks (yesterday-and-older) pulled EC2→local PG over postgres_fdw/SSH; `wallet_dict` id-preserving, no partition loop (Timescale auto-chunks) | `scripts/db-incremental-sync.ps1` |
+| 2 · lake export | Each newly-sealed local day → **immutable** `trades/dt=YYYY-MM-DD/data.parquet` (write-once, temp+rename); `tokens/tokens.parquet` dimension (fingerprint cols) rewritten each run. Streamed + row-group-flushed. Units mirror `trade_repo`'s `TradeDbRow` exactly (lamports→SOL ÷1e9; raw token f64; vsol raw→f64; `real_*` dropped) | `lab/src/lake/export.rs` (`export_lake`), `lab/src/lake/mod.rs` (layout) |
+| 3 · DuckDB corpus | `LakeSource: CorpusSource` reads the lake via an in-memory DuckDB: candidate select + per-mint `ROW_NUMBER` cap over the trades glob (`hive_partitioning=true`), fingerprints from the dimension → same `TokenTrades`/`SweepTrade` output as `DbSource`. Uses DuckDB's **row API** only (not `query_arrow`) so its bundled arrow never clashes with lab's `arrow 53` | `lab/src/lake/duck.rs` |
+
+CLI: `cargo run -p lab -- lake-export` (batch job; reads `SWEEP_LAKE_DIR`, default OS-temp `pumpfun-lake`). `duckdb = { features=["bundled"] }` is a lab-only dep (lab never ships to EC2).
+
+**Cutover (deferred, needs DB/EC2):** `LakeSource` is wired as an alternative `CorpusSource`, not yet the default — the grouped-sweep handler still calls `load_grouped_corpus` (PG + Parquet cache) at `grouped_sweep.rs:~429`. Switching that to `LakeSource` is gated on the Phase-4 "done-when" check (lake-sourced `strategy_run_metrics` must match a PG-sourced baseline), which requires the live pipeline to run.
+
 ## Adding a strategy
 
 `strategies/<x>.rs` (`Strategy`+`ParamSpace`+`AxesSpec`) + `registry.rs` arm (table triple + dispatch) + `<x>_grouped_sweep_*` migration + frontend param-key list + axes defs. Engine, grouping, repo, handler, and page are reused unchanged.

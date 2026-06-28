@@ -14,6 +14,7 @@ pub use trading_core::models;
 
 pub mod api;
 pub mod analyzers;
+pub mod lake;
 pub mod state;
 pub mod storage;
 pub mod strategies;

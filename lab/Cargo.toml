@@ -67,3 +67,7 @@ parquet = "53"
 memory-stats = "1"
 # Deterministic sampling in the sweep grid / cost model.
 rand = "0.8"
+# DuckDB query engine over the Parquet lake (Phase 4 corpus layer). `bundled`
+# compiles libduckdb in-tree so there's no system dependency — lab is
+# workstation-only (never shipped to EC2), so the heavy native build is local-only.
+duckdb = { version = "1", features = ["bundled"] }

@@ -187,14 +187,18 @@ Parquet lake ──(query/attach)──▶ DuckDB ──▶ sweep corpus        
 | **1 · Schema + core data layer** ✅ DONE | New migration (clean rebuild, TimescaleDB) on fresh **local** DB. New `core` models + repos for tokens/trades/strategy/settings. Swap maintenance → Timescale policies. | Migration applies on fresh local DB; repos round-trip; `cargo check -p core` |
 | **2 · Strategy unify (core)** ✅ DONE | `StrategyImpl`/`StrategyParams` registry; `simulate_rule` kernel + shared `RunMetrics`; unified `StrategyRuntimeCache`; unified rule-CRUD domain. Keep tpsl1/tpsl2 logic modules. | Parity unit tests vs old tpsl1/2 decisions on fixtures; `cargo check -p core` |
 | **3 · `live` rewire** ✅ DONE | Strategy-agnostic `StrategyRunner` + generalized position execution; ingest via `core::ingest`; unified strategy handlers keyed by `strategy_id`. | `cargo check -p live`; probe `ladder`/`simulate-sell`; manual buy/sell; sell-confirm still feed-driven (no new RPC) |
-| **4 · `lab` pipeline** 🟡 IN PROGRESS | Sealed-daily PG sync; lake export; DuckDB corpus; sweep calls core's kernel. **Sub-task ✅ DONE: sweep repoint/dedup** — `ComboAgg` now wraps `trading_core::strategies::kernel::RunAgg`; lab's duplicate `QuantileSketch`/`robust_score`/`exit_index`/`CostModel`/`round_trip_with_costs`/`ExitCode` deleted (re-exported from core). **Remaining:** sealed-daily PG sync rework (new schema), Parquet lake export, DuckDB corpus layer. | `cargo check -p lab`; grouped sweep runs off the lake; metrics match a PG-sourced baseline |
+| **4 · `lab` pipeline** 🟡 BUILD-DONE (runtime-verify pending) | Sealed-daily PG sync; lake export; DuckDB corpus; sweep calls core's kernel. **All four sub-tasks built + unit-verified:** (a) ✅ sweep repoint/dedup — `ComboAgg` wraps `kernel::RunAgg`, lab's duplicate sketch/cost code deleted; (b) ✅ sync rework — `db-incremental-sync.ps1` now targets the new schema (wallet_dict id-preserving → tokens → tokens_info/token_sync_state → trades; sealed-day upper bound; partition loop removed); (c) ✅ lake export — `lab/src/lake/export.rs` writes immutable day-partitioned Parquet + tokens dimension (`cargo run -p lab -- lake-export`); (d) ✅ DuckDB corpus — `lab/src/lake/duck.rs` `LakeSource: CorpusSource` via bundled `duckdb` (row API). **Deferred (needs DB/EC2):** run the pipeline end-to-end and flip the grouped-sweep handler from `load_grouped_corpus` to `LakeSource`; confirm metrics match a PG baseline. | `cargo check -p lab` ✅; lab 72 tests ✅; grouped sweep runs off the lake + metrics match a PG-sourced baseline ⏳ (DB-gated) |
 | **5 · EC2 cutover** | Apply schema rebuild + TimescaleDB on EC2; deploy `live` + `ingest-laserstream`; watch RAM/heartbeat/compression. | Stable ingest + trading on EC2; RAM within budget |
 | **6 · (deferred)** | Frontend rename `@deploy`/`@analysis` → `@live`/`@lab` + flip capabilities mode strings. | out of scope this remake |
 
 > **Status (2026-06-28):** Phases **0** (`4d68d82`), **1** (`d62111f`), **2** (`6c46110`), **3**
 > (`395dd86`/`0043ba3`/`2d76127`) complete; `cargo check --workspace` clean. **Phase 4 (`lab`
-> pipeline) in progress** — the sweep repoint/dedup sub-task is done (lab's `aggregate.rs` cost/sketch
-> duplicate removed, folded into core's `RunAgg`); sync/lake/DuckDB remain.
+> pipeline) build-complete, runtime-verify pending** — all four sub-tasks are implemented and
+> unit-verified (`cargo check -p lab` ✅, lab 72 tests ✅, clippy ✅): sweep dedup (`21c6f38`),
+> sealed-daily sync rework, Parquet lake export (`lab/src/lake/export.rs`), and the DuckDB
+> `LakeSource` corpus (`lab/src/lake/duck.rs`, bundled `duckdb` v1.2.2). **Not yet done — gated on
+> DB/EC2:** run the EC2→local→lake→DuckDB pipeline end-to-end, flip the grouped-sweep handler from
+> `load_grouped_corpus` to `LakeSource`, and confirm lake-sourced metrics match a PG baseline.
 >
 > **Carried into later phases:**
 > - **Phase 3** also absorbs the one Phase-2 carve-out: the per-position clock exit-state memo

@@ -77,6 +77,13 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    // `lab lake-export` — batch job (data-pipeline hop 2): export newly-sealed days
+    // from local PG into the Parquet lake, then exit. Runs before any server wiring
+    // (mirrors `live -- probe`). All other args fall through to the HTTP server.
+    if std::env::args().nth(1).as_deref() == Some("lake-export") {
+        return run_lake_export().await;
+    }
+
     let settings = config::Settings::from_env_local().context("Failed to load configuration")?;
     info!(host = %settings.host, port = settings.port, "Local (analysis) configuration loaded");
 
@@ -230,6 +237,33 @@ async fn main() -> anyhow::Result<()> {
         error!("Fatal: {e} — exiting non-zero so the supervisor restarts the process");
     }
     outcome
+}
+
+/// `lab lake-export`: connect the batch pool, export sealed days into the lake, exit.
+/// Reads `DATABASE_URL` (via `Settings`) for local PG and `SWEEP_LAKE_DIR` for the
+/// lake root. A batch job — no HTTP, no pollers.
+async fn run_lake_export() -> anyhow::Result<()> {
+    let settings = config::Settings::from_env_local().context("Failed to load configuration")?;
+    let storage::postgres::DbPools { batch: batch_db, .. } =
+        storage::postgres::connect(&settings).await?;
+
+    let root = lab::lake::lake_root();
+    info!(lake = %root.display(), "lake-export: starting");
+    let summary = lab::lake::export::export_lake(&batch_db, &root).await?;
+    info!(
+        days_written = summary.days_written.len(),
+        days_skipped = summary.days_skipped,
+        tokens = summary.tokens_written,
+        "lake-export: done"
+    );
+    println!(
+        "lake-export complete: {} day(s) written, {} skipped, {} token rows -> {}",
+        summary.days_written.len(),
+        summary.days_skipped,
+        summary.tokens_written,
+        root.display()
+    );
+    Ok(())
 }
 
 /// Classify a long-lived task's `JoinHandle` result as a fatal error.

@@ -53,6 +53,7 @@ cargo test  -p live -- --ignored       # integration; needs DATABASE_URL + HELIU
 cargo test  -p pump-trader             # trader crate tests
 cargo run   -p live                    # live box: loads .env; needs Postgres + Helius gRPC
 cargo run   -p lab                     # analysis box: needs Postgres; NO keys / NO gRPC
+cargo run   -p lab -- lake-export       # batch: export sealed days local-PG -> Parquet lake ($SWEEP_LAKE_DIR)
 cargo run   -p live -- probe <ladder|fanout|simulate-sell|holdings> [args]
 cd frontend-react; npm run dev         # both builds: deploy at /, analysis at /analysis.html (:5173, proxies /api -> :8081)
 npm run dev:local                      # analysis build only (opens /analysis.html) — pair with lab
@@ -82,7 +83,7 @@ Stay in the owning crate (`trading_core` / `pump-trader` / `ingest-laserstream` 
 
 ## Deployed server (EC2: 2vCPU / 4GB RAM — IO-bound, RAM-constrained)
 
-- **Ship `live` + `ingest-laserstream` to EC2 only.** `lab` (sweep/arrow/parquet/rayon) stays on the workstation — never deploy it.
+- **Ship `live` + `ingest-laserstream` to EC2 only.** `lab` (sweep/arrow/parquet/rayon + bundled `duckdb`, and the `lab/src/lake/` Parquet-lake pipeline) stays on the workstation — never deploy it.
 - Sweeps/backtests: **local only** (server = 7-day rolling ingest buffer)
 - Analysis: dump→local (`db-snapshot-dump.sh` + `db-snapshot-restore.ps1`)
 - No new infra spend (box stays fixed)
