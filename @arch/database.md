@@ -14,7 +14,7 @@
 > sqlx is **runtime-checked** (no compile-time SQL validation). The prose below is the pre-rebuild
 > shape and is being migrated; trust the storage plans + `0001_init.sql`.
 
-sqlx + Postgres. Raw SQL lives **only** in `trading_core/src/storage/repositories/*`. Migrations in `trading_core/migrations/` (`0001_init.sql` = clean TimescaleDB baseline; add `00NN_*.sql`). Runner: `sqlx::migrate!("./migrations")` in `storage/postgres.rs` (then `timescale::setup_caggs`).
+sqlx + Postgres. Raw SQL lives **only** in `trading_core/src/storage/repositories/*`. Migrations in `trading_core/migrations/` (`0001_init.sql` = clean TimescaleDB baseline; `0002_lab_grouped_sweep.sql` = the lab-local `tpsl{1,2}_grouped_sweep_*` tables the rebuild's init omitted — written by `lab` only, created empty/unused on EC2 since the migration runner is shared; add further `00NN_*.sql`). Runner: `sqlx::migrate!("./migrations")` in `storage/postgres.rs` (then `timescale::setup_caggs`).
 Deep-dive detail: `@plans/database/db-pool-routing.md`, `@plans/database/db-patterns.md`.
 
 ## Connection pools
