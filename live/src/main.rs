@@ -3,7 +3,7 @@
 //! deploy HTTP surface (core routes + deploy routes). Mirrors the old
 //! `backend/src/main.rs` minus all sweep/backtest/local-only wiring.
 
-use live::{api, seed, services, state, strategies, trader};
+use live::{api, ingest, seed, services, state, strategies, trader};
 
 use trading_core::{config, models};
 use config::constants;
@@ -587,10 +587,9 @@ async fn main() -> anyhow::Result<()> {
     // Feeds the shared token cache / strategy / SSE / DB. Yields the pool→mint
     // index + migration signal (for DeployState), the strategy receiver, and the
     // long-lived task handles the supervising select watches.
-    let ingest_handles = ingest_laserstream::spawn(
+    let ingest_result = ingest::spawn_ingest(
         settings.helius_laserstream_url.clone(),
         settings.helius_api_key.clone(),
-        constants::PUMP_FUN_PROGRAM_ID.to_string(),
         db.clone(),
         token_cache.clone(),
         sse_tx.clone(),
@@ -598,13 +597,12 @@ async fn main() -> anyhow::Result<()> {
         live_rx,
         Arc::new(trader::TraderHookBridge(trader.clone())),
         trade_signals.clone(),
-    );
-    let pool_index = ingest_handles.pool_index;
-    let pools_changed = ingest_handles.pools_changed;
-    let strategy_rx = ingest_handles.strategy_rx;
-    let producer_task = ingest_handles.producer_task;
-    let pipeline_task = ingest_handles.pipeline_task;
-    let db_writer_task = ingest_handles.db_writer_task;
+    ).await;
+    let pool_index = ingest_result.pool_index;
+    let pools_changed = ingest_result.pools_changed;
+    let strategy_rx = ingest_result.strategy_rx;
+    let consumer_task = ingest_result.consumer_task;
+    let db_writer_task = ingest_result.db_writer_task;
 
     // Bound the in-memory token cache: evict mints that have gone quiet beyond the
     // activity window and hold no open position, so the cache doesn't grow one
@@ -752,8 +750,7 @@ async fn main() -> anyhow::Result<()> {
     // panicked. Bind each arm's `JoinHandle` result and surface a fault as an
     // `Err`, so `main` exits non-zero and a supervisor restarts the process.
     let outcome: anyhow::Result<()> = tokio::select! {
-        res = producer_task => Err(task_fault("Ingest producer", res)),
-        res = pipeline_task  => Err(task_fault("Ingest pipeline", res)),
+        res = consumer_task  => Err(task_fault("Ingest consumer", res)),
         res = db_writer_task => Err(task_fault("DbWriter", res)),
         res = strategy_task => Err(task_fault("Strategy runner", res)),
         res = price_task    => Err(task_fault("SOL price poller", res)),

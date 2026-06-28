@@ -9,7 +9,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use ingest_laserstream::TraderHook;
+use trading_core::ingest::TraderHook;
 use pump_trader::PumpFunTrader;
 
 /// Newtype wrapper so `backend` can implement the external `TraderHook` trait

@@ -27,7 +27,7 @@ use serde_json::json;
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
-    system_instruction,
+    system_instruction, system_program,
 };
 use spl_associated_token_account::{
     get_associated_token_address_with_program_id,
@@ -276,11 +276,11 @@ impl PumpFunTrader {
             }
         };
 
-        let quote_tp = self.token_program; // WSOL is legacy SPL
+        let quote_tp = protocol::TOKEN; // WSOL is legacy SPL
         let user_base =
             get_associated_token_address_with_program_id(user, &pool.base_mint, &pool.base_token_program);
         let user_quote =
-            get_associated_token_address_with_program_id(user, &self.wsol_mint, &quote_tp);
+            get_associated_token_address_with_program_id(user, &protocol::WSOL_MINT, &quote_tp);
 
         let mut ixs = Vec::with_capacity(6);
         // Ensure the base-token account exists (tokens land here).
@@ -294,7 +294,7 @@ impl PumpFunTrader {
         ixs.push(create_associated_token_account_idempotent(
             user,
             user,
-            &self.wsol_mint,
+            &protocol::WSOL_MINT,
             &quote_tp,
         ));
         ixs.push(system_instruction::transfer(user, &user_quote, spendable));
@@ -308,7 +308,7 @@ impl PumpFunTrader {
         // initialized, so default off for non-cashback tokens.
         data.push(u8::from(pool.is_cashback_coin));
         ixs.push(Instruction {
-            program_id: self.pump_swap_program,
+            program_id: protocol::PUMP_SWAP,
             accounts: self.amm_swap_accounts(
                 &pool, user, &cfg, user_base, user_quote, quote_tp, true,
             ),
@@ -364,19 +364,19 @@ impl PumpFunTrader {
             }
         };
 
-        let quote_tp = self.token_program;
+        let quote_tp = protocol::TOKEN;
         let user_base = self
             .resolve_user_base_account(token_mint, token_account_override)
             .await?;
         let user_quote =
-            get_associated_token_address_with_program_id(user, &self.wsol_mint, &quote_tp);
+            get_associated_token_address_with_program_id(user, &protocol::WSOL_MINT, &quote_tp);
 
         let mut ixs = Vec::with_capacity(3);
         // Ensure a WSOL account exists to receive proceeds.
         ixs.push(create_associated_token_account_idempotent(
             user,
             user,
-            &self.wsol_mint,
+            &protocol::WSOL_MINT,
             &quote_tp,
         ));
 
@@ -384,7 +384,7 @@ impl PumpFunTrader {
         data.extend_from_slice(&token_amount.to_le_bytes());
         data.extend_from_slice(&min_quote_out.to_le_bytes());
         ixs.push(Instruction {
-            program_id: self.pump_swap_program,
+            program_id: protocol::PUMP_SWAP,
             accounts: self.amm_swap_accounts(
                 &pool, user, &cfg, user_base, user_quote, quote_tp, false,
             ),
@@ -421,7 +421,7 @@ impl PumpFunTrader {
         let cc_authority = self.amm_coin_creator_vault_authority(&pool.coin_creator);
         let cc_ata = get_associated_token_address_with_program_id(
             &cc_authority,
-            &self.wsol_mint,
+            &protocol::WSOL_MINT,
             &quote_token_program,
         );
         let fee_config = self.amm_fee_config;
@@ -429,7 +429,7 @@ impl PumpFunTrader {
         let pf_recipient = cfg.protocol_fee_recipient;
         let pf_recipient_ta = get_associated_token_address_with_program_id(
             &pf_recipient,
-            &self.wsol_mint,
+            &protocol::WSOL_MINT,
             &quote_token_program,
         );
 
@@ -447,10 +447,10 @@ impl PumpFunTrader {
             AccountMeta::new(pf_recipient_ta, false),                 // 10 protocol_fee_recipient_token_account
             AccountMeta::new_readonly(pool.base_token_program, false), // 11 base_token_program
             AccountMeta::new_readonly(quote_token_program, false),    // 12 quote_token_program
-            AccountMeta::new_readonly(self.system_program, false),    // 13 system_program
+            AccountMeta::new_readonly(system_program::id(), false),    // 13 system_program
             AccountMeta::new_readonly(spl_associated_token_account::id(), false), // 14 associated_token_program
             AccountMeta::new_readonly(event_authority, false),        // 15 event_authority
-            AccountMeta::new_readonly(self.pump_swap_program, false), // 16 program
+            AccountMeta::new_readonly(protocol::PUMP_SWAP, false),    // 16 program
             AccountMeta::new(cc_ata, false),                          // 17 coin_creator_vault_ata
             AccountMeta::new_readonly(cc_authority, false),           // 18 coin_creator_vault_authority
         ];
@@ -466,7 +466,7 @@ impl PumpFunTrader {
             accounts.push(AccountMeta::new(self.amm_user_volume_accumulator, false)); // 20
         }
         accounts.push(AccountMeta::new_readonly(fee_config, false)); // fee_config
-        accounts.push(AccountMeta::new_readonly(self.fee_program, false)); // fee_program
+        accounts.push(AccountMeta::new_readonly(protocol::FEE_PROGRAM, false)); // fee_program
 
         // Cashback pools append the user's cashback accumulator + a fixed pfee
         // marker before the buyback pair. The layout differs by side (both
@@ -479,7 +479,7 @@ impl PumpFunTrader {
         if pool.is_cashback_coin {
             let uva = self.amm_user_volume_accumulator;
             let cashback_ata =
-                get_associated_token_address_with_program_id(&uva, &self.wsol_mint, &quote_token_program);
+                get_associated_token_address_with_program_id(&uva, &protocol::WSOL_MINT, &quote_token_program);
             accounts.push(AccountMeta::new(cashback_ata, false)); // writable
             if !with_volume {
                 accounts.push(AccountMeta::new(uva, false)); // writable, sell-only
@@ -499,10 +499,10 @@ impl PumpFunTrader {
         // and that recipient's WSOL ATA (writable). Verified against live
         // on-chain swaps. The recipient rotates across a whitelist; we use
         // buyback_fee_recipients[0], which the program accepts.
-        let fee_recipient = self.amm_buyback_fee_recipient;
+        let fee_recipient = protocol::PUMP_AMM_BUYBACK_FEE_RECIPIENT;
         let fee_recipient_wsol = get_associated_token_address_with_program_id(
             &fee_recipient,
-            &self.wsol_mint,
+            &protocol::WSOL_MINT,
             &quote_token_program,
         );
         accounts.push(AccountMeta::new_readonly(fee_recipient, false));
@@ -519,7 +519,7 @@ impl PumpFunTrader {
     /// under the pump.fun program.
     fn derive_amm_pool(&self, mint: &Pubkey) -> Pubkey {
         let (authority, _) =
-            Pubkey::find_program_address(&[b"pool-authority", mint.as_ref()], &self.pump_program);
+            Pubkey::find_program_address(&[b"pool-authority", mint.as_ref()], &protocol::PUMP_FUN);
         let index: u16 = 0;
         Pubkey::find_program_address(
             &[
@@ -527,9 +527,9 @@ impl PumpFunTrader {
                 &index.to_le_bytes(),
                 authority.as_ref(),
                 mint.as_ref(),
-                self.wsol_mint.as_ref(),
+                protocol::WSOL_MINT.as_ref(),
             ],
-            &self.pump_swap_program,
+            &protocol::PUMP_SWAP,
         )
         .0
     }
@@ -605,7 +605,7 @@ impl PumpFunTrader {
         let sigs = self
             .rpc_json("getSignaturesForAddress", json!([pool_str, { "limit": 15 }]))
             .await?;
-        let program_str = self.pump_swap_program.to_string();
+        let program_str = protocol::PUMP_SWAP.to_string();
 
         // The marker is per-coin constant, so *any* successful swap yields it.
         // Fetch the candidate transactions concurrently and take the first marker
@@ -795,7 +795,7 @@ impl PumpFunTrader {
     fn amm_coin_creator_vault_authority(&self, coin_creator: &Pubkey) -> Pubkey {
         Pubkey::find_program_address(
             &[b"creator_vault", coin_creator.as_ref()],
-            &self.pump_swap_program,
+            &protocol::PUMP_SWAP,
         )
         .0
     }

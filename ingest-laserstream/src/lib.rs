@@ -1,8 +1,18 @@
-//! LaserStream (Yellowstone gRPC) ingest transport.
+//! LaserStream (Yellowstone gRPC) ingest crate — standalone drop-in.
 //!
-//! Committed prost/tonic bindings generated from `proto/geyser.proto` (+
-//! solana-storage.proto). There is no build-time protoc step; regenerate via the
-//! documented Docker one-shot only if the `.proto` files change.
+//! ```text
+//! Ingest::builder()
+//!     .endpoint(url)
+//!     .api_key(key)
+//!     .protocol(Protocol::pump_fun())
+//!     .config(IngestConfig::default())
+//!     .build()?
+//!     .start()
+//! -> (Receiver<IngestEvent>, IngestHandle)
+//! ```
+//!
+//! The host owns all sinks (DB, cache, SSE, strategy, watchdog). The crate emits
+//! decoded [`event::IngestEvent`]s out a bounded mpsc channel and never reads env.
 #![allow(dead_code)]
 
 #[allow(clippy::all)]
@@ -11,139 +21,295 @@ pub mod proto {
     include!("generated/mod.rs");
 }
 
-pub mod adapter;
-pub mod adapter_rpc;
-pub mod client;
-pub mod db_writer;
-pub mod decoder;
-pub mod ingest_health;
-pub mod pipeline;
+#[cfg(feature = "rpc-backfill")]
+pub mod backfill;
+pub mod config;
+pub mod decode;
+pub mod error;
+pub mod event;
+pub mod health;
+pub mod pool;
+pub mod protocol;
 
-// The transport-agnostic ingest contract lives in `trading_core::ingest`.
-// Re-export so existing `ingest_laserstream::{IngestHandles, TraderHook}` paths
-// keep resolving and the websocket transport returns the same `IngestHandles`.
-pub use trading_core::ingest::{IngestHandles, TraderHook};
+mod transport;
+
+#[cfg(feature = "raw-json")]
+mod raw_json;
+
+pub use config::{Commitment, IngestConfig};
+pub use error::{IngestError, Result};
+pub use event::IngestEvent;
+pub use health::HealthSnapshot;
+pub use pool::PoolIndex;
+pub use protocol::Protocol;
 
 use std::sync::Arc;
 
-use tokio::sync::watch;
-use tracing::info;
+use dashmap::DashMap;
+use tokio::sync::{mpsc, watch, Notify};
+use tracing::warn;
 
-use trading_core::{
-    models::ingest::SseEvent,
-    state::{token_cache::TokenCache, trade_signals::TradeSignals},
-    storage::repositories::settings_repo::AppSettings,
-};
+use decode::{DecodeOutput, Decoder, TxRelevance};
+use health::HealthState;
+use proto::geyser::{CommitmentLevel, SubscribeUpdateTransaction};
+use transport::TransportConfig;
 
-/// Spawn all ingest tasks and return handles for the supervising `select!`.
-///
-/// - `helius_laserstream_url` / `helius_api_key` — Helius credentials.
-/// - `pump_program_id` — pump.fun bonding-curve program address.
-/// - `db` — hot-path Postgres pool.
-/// - `token_cache` — shared live token state.
-/// - `sse_tx` — SSE broadcast channel.
-/// - `settings_rx` — live settings watch channel.
-/// - `live_rx` — watch receiver; consumed by the client (pauses on `false`).
-/// - `trader` — TraderHook impl for reserve updates + pool pre-warming.
-/// - `trade_signals` — (wallet, mint) wakeup hub for confirm loops.
-#[allow(clippy::too_many_arguments)]
-pub fn spawn(
-    helius_laserstream_url: String,
-    helius_api_key: String,
-    pump_program_id: String,
-    db: sqlx::PgPool,
-    token_cache: Arc<TokenCache>,
-    sse_tx: tokio::sync::broadcast::Sender<SseEvent>,
-    settings_rx: watch::Receiver<AppSettings>,
-    live_rx: watch::Receiver<bool>,
-    trader: Arc<dyn TraderHook>,
-    trade_signals: Arc<TradeSignals>,
-) -> IngestHandles {
-    info!("Ingest transport: LaserStream (gRPC)");
+// ── Builder ───────────────────────────────────────────────────────────────────
 
-    let (db_tx, db_rx, strategy_tx, strategy_rx) =
-        pipeline::IngestPipeline::channel_pair();
+/// Validated, ready-to-start ingest session.
+pub struct Ingest {
+    endpoint: String,
+    api_key: String,
+    protocol: Arc<Protocol>,
+    config: IngestConfig,
+}
 
-    // Tier B: typed protobuf update (shared via Arc), not a pre-built Value.
-    // Buffer sized to absorb short volume bursts without stalling the gRPC socket.
-    let (update_tx, update_rx) = tokio::sync::mpsc::channel::<(
-        Arc<proto::geyser::SubscribeUpdateTransaction>,
-        decoder::TxRelevance,
-    )>(4096);
+/// Fluent builder for [`Ingest`].
+#[derive(Default)]
+pub struct IngestBuilder {
+    endpoint: Option<String>,
+    api_key: Option<String>,
+    protocol: Option<Protocol>,
+    config: Option<IngestConfig>,
+}
 
-    // Weak sender handles for the queue-depth diagnostics logger.
-    let update_tx_weak = update_tx.downgrade();
-    let db_tx_weak = db_tx.downgrade();
-    let strategy_tx_weak = strategy_tx.downgrade();
+impl IngestBuilder {
+    pub fn endpoint(mut self, url: impl Into<String>) -> Self {
+        self.endpoint = Some(url.into());
+        self
+    }
 
-    let ingest_pipeline = pipeline::IngestPipeline::new(
-        pump_program_id.clone(),
-        token_cache.clone(),
-        db_tx,
-        strategy_tx,
-        sse_tx,
-        settings_rx.clone(),
-        trader,
-        trade_signals.clone(),
-    );
-    let pool_index = ingest_pipeline.pool_index();
-    let pools_changed = ingest_pipeline.pools_changed();
-    let shed_counters = ingest_pipeline.shed_counters();
+    pub fn api_key(mut self, key: impl Into<String>) -> Self {
+        self.api_key = Some(key.into());
+        self
+    }
 
-    // End-to-end ingest liveness heartbeat + watchdog.
-    let heartbeat = ingest_health::IngestHeartbeat::new();
-    let db_tx_pending = db_tx_weak.clone();
-    ingest_health::spawn_watchdog(
-        heartbeat.clone(),
-        live_rx.clone(),
-        settings_rx.clone(),
-        move || {
-            db_tx_pending
-                .upgrade()
-                .map(|tx| tx.capacity() < tx.max_capacity())
-                .unwrap_or(false)
-        },
-    );
+    pub fn protocol(mut self, p: Protocol) -> Self {
+        self.protocol = Some(p);
+        self
+    }
 
-    let producer_task = tokio::spawn(client::run(
-        helius_laserstream_url,
-        helius_api_key,
-        pump_program_id.clone(),
-        update_tx,
-        live_rx,
-        pool_index.clone(),
-        pools_changed.clone(),
-    ));
+    pub fn config(mut self, c: IngestConfig) -> Self {
+        self.config = Some(c);
+        self
+    }
 
-    tokio::spawn(pipeline::run_pool_subscription_refresh(
-        token_cache,
-        pool_index.clone(),
-        pools_changed.clone(),
-        pump_program_id,
-        settings_rx,
-    ));
+    pub fn build(self) -> Result<Ingest> {
+        let endpoint = self.endpoint.ok_or_else(|| {
+            IngestError::InvalidEndpoint("endpoint() not set".into())
+        })?;
+        let api_key = self.api_key.ok_or_else(|| {
+            IngestError::InvalidEndpoint("api_key() not set".into())
+        })?;
+        Ok(Ingest {
+            endpoint,
+            api_key,
+            protocol: Arc::new(self.protocol.unwrap_or_else(Protocol::pump_fun)),
+            config: self.config.unwrap_or_default(),
+        })
+    }
+}
 
-    tokio::spawn(pipeline::run_queue_depth_logger(
-        update_tx_weak,
-        db_tx_weak,
-        strategy_tx_weak,
-        shed_counters,
-    ));
+impl Ingest {
+    pub fn builder() -> IngestBuilder {
+        IngestBuilder::default()
+    }
 
-    // Partition maintenance removed: TimescaleDB retention + compression policies
-    // (defined in the migration) now manage chunk lifecycle declaratively. See
-    // `trades-storage-plan.md` / `timescaledb-plan.md`.
+    /// Spawn the transport + decode tasks and return the event receiver + handle.
+    ///
+    /// `live` — initial live-mode state (pass `true` to start streaming
+    ///   immediately; `false` pauses until `handle.set_live(true)` is called).
+    pub fn start(self, live: bool) -> (mpsc::Receiver<IngestEvent>, IngestHandle) {
+        let cfg = &self.config;
+        let protocol = self.protocol.clone();
 
-    let pipeline_task = tokio::spawn(ingest_pipeline.run(update_rx));
-    let db_writer = db_writer::DbWriter::new(db, trade_signals, heartbeat);
-    let db_writer_task = tokio::spawn(db_writer.run(db_rx));
+        // Internal transport→decode channel.
+        let (update_tx, mut update_rx) = mpsc::channel::<(
+            Arc<SubscribeUpdateTransaction>,
+            TxRelevance,
+            chrono::DateTime<chrono::Utc>,
+        )>(cfg.update_channel_cap);
 
-    IngestHandles {
-        pool_index,
-        pools_changed,
-        strategy_rx,
-        producer_task,
-        pipeline_task,
-        db_writer_task,
+        // Host-facing event channel.
+        let (event_tx, event_rx) = mpsc::channel::<IngestEvent>(cfg.event_channel_cap);
+
+        // Shared pool→mint index (transport resubscribes when it changes).
+        let pool_index: PoolIndex = Arc::new(DashMap::new());
+        let pools_changed = Arc::new(Notify::new());
+
+        // Live-mode gate.
+        let (live_tx, live_rx) = watch::channel(live);
+
+        // Health state.
+        let (health_state, health_rx) = HealthState::new();
+
+        // Transport config (extracted from IngestConfig).
+        let transport_cfg = Arc::new(TransportConfig {
+            connect_timeout: cfg.connect_timeout,
+            reconnect_base: cfg.reconnect_base,
+            reconnect_max_backoff: cfg.reconnect_max_backoff,
+            idle_reconnect_timeout: cfg.idle_reconnect_timeout,
+            idle_check_interval: cfg.idle_check_interval,
+            http2_keepalive: cfg.http2_keepalive,
+            tcp_keepalive: cfg.tcp_keepalive,
+            max_decoding_message_size: cfg.max_decoding_message_size,
+            pipeline_send_timeout: cfg.pipeline_send_timeout,
+            resubscribe_debounce: cfg.resubscribe_debounce,
+            commitment: commitment_level(cfg.commitment),
+        });
+
+        // Decoder: gets the pool index + pools_changed Notify.
+        let decoder = {
+            let mut d = Decoder::new(protocol.clone()).with_pools_changed(pools_changed.clone());
+            if cfg.track_amm {
+                d = d.with_pool_index(pool_index.clone());
+            }
+            Arc::new(d)
+        };
+
+        let health_state_decode = health_state.clone();
+
+        // Spawn transport task.
+        tokio::spawn(transport::run(
+            self.endpoint.clone(),
+            self.api_key.clone(),
+            protocol,
+            update_tx,
+            live_rx,
+            pool_index.clone(),
+            pools_changed.clone(),
+            transport_cfg,
+        ));
+
+        // Spawn decode task.
+        let event_tx_clone = event_tx.clone();
+        tokio::spawn(async move {
+            while let Some((update, relevance, received_at)) = update_rx.recv().await {
+                health_state_decode.set_slot(update.slot);
+
+                let output = decoder.decode_relevant_pb(&update, relevance, received_at);
+
+                let events = match output {
+                    DecodeOutput::Events(v) => v,
+                    DecodeOutput::Ignored => continue,
+                };
+
+                // Optionally append raw-json event (under feature gate).
+                #[cfg(feature = "raw-json")]
+                let events = {
+                    let mut v = events;
+                    if let Some(raw_ev) = raw_json::build_raw_tx_event(&update, received_at) {
+                        v.push(raw_ev);
+                    }
+                    v
+                };
+
+                for ev in events {
+                    match event_tx_clone.try_send(ev) {
+                        Ok(()) => health_state_decode.on_event_emitted(),
+                        Err(mpsc::error::TrySendError::Full(ev)) => {
+                            health_state_decode.on_dropped();
+                            warn!("ingest: event channel full — dropping event");
+                            // Retry with timeout to avoid silent loss on brief back-pressure.
+                            let _ = event_tx_clone.send_timeout(ev, std::time::Duration::from_millis(100)).await;
+                        }
+                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                            return; // Host dropped the receiver — stop.
+                        }
+                    }
+                }
+            }
+        });
+
+        let handle = IngestHandle {
+            live_tx,
+            pool_index,
+            pools_changed,
+            protocol: self.protocol,
+            health_state,
+            health_rx,
+        };
+
+        (event_rx, handle)
+    }
+}
+
+// ── IngestHandle ──────────────────────────────────────────────────────────────
+
+/// Control handle returned by [`Ingest::start`]. Clone-safe; all methods are
+/// lock-free (atomic writes or channel sends).
+pub struct IngestHandle {
+    live_tx: watch::Sender<bool>,
+    pool_index: PoolIndex,
+    pools_changed: Arc<Notify>,
+    protocol: Arc<Protocol>,
+    health_state: Arc<HealthState>,
+    health_rx: watch::Receiver<HealthSnapshot>,
+}
+
+impl IngestHandle {
+    /// Pause (`false`) or resume (`true`) the transport stream.
+    pub fn set_live(&self, live: bool) {
+        let _ = self.live_tx.send(live);
+    }
+
+    /// Register pool PDAs for the given mints and signal the transport to
+    /// resubscribe. Idempotent — already-registered mints are skipped.
+    pub fn track_pools(&self, mints: &[String]) {
+        let mut added = false;
+        for mint in mints {
+            if pool::register_pool(&self.pool_index, mint, &self.protocol) {
+                added = true;
+            }
+        }
+        if added {
+            self.pools_changed.notify_one();
+        }
+    }
+
+    /// Remove the given mint pool PDAs from the subscription set.
+    pub fn untrack_pools(&self, mints: &[String]) {
+        let mut removed = false;
+        for mint in mints {
+            if let Some(pool) = pool::pool_for_mint(mint, &self.protocol) {
+                if self.pool_index.remove(&pool).is_some() {
+                    removed = true;
+                }
+            }
+        }
+        if removed {
+            self.pools_changed.notify_one();
+        }
+    }
+
+    /// Point-in-time health snapshot (atomic reads — no contention).
+    pub fn health(&self) -> HealthSnapshot {
+        self.health_state.snapshot()
+    }
+
+    /// Watch receiver for push-based health monitoring (host watchdog).
+    pub fn health_watch(&self) -> watch::Receiver<HealthSnapshot> {
+        self.health_rx.clone()
+    }
+
+    /// Direct access to the shared pool→mint index (for host backfill paths
+    /// that need to query the live tracked set without going through the handle).
+    pub fn pool_index(&self) -> PoolIndex {
+        self.pool_index.clone()
+    }
+
+    /// Notify handle — fires when a pool is added/removed (auto or manual).
+    pub fn pools_changed(&self) -> Arc<Notify> {
+        self.pools_changed.clone()
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn commitment_level(c: Commitment) -> CommitmentLevel {
+    match c {
+        Commitment::Processed => CommitmentLevel::Processed,
+        Commitment::Confirmed => CommitmentLevel::Confirmed,
+        Commitment::Finalized => CommitmentLevel::Finalized,
     }
 }

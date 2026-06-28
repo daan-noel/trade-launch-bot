@@ -65,7 +65,6 @@ use crate::protocol::{
 };
 use rand::seq::SliceRandom;
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::system_program;
 use solana_sdk::{
     commitment_config::CommitmentConfig, hash::Hash, instruction::Instruction, pubkey::Pubkey,
 };
@@ -233,23 +232,7 @@ pub struct PumpFunTrader {
     token_2022_account_space: u64,
     token_2022_account_rent: u64,
 
-    // Program IDs (copied once from the `protocol` const Pubkeys — no parse,
-    // no unwrap). Held in fields so the hot path is a plain field read.
-    pump_program: Pubkey,
-    /// Legacy SPL Token program — the WSOL (quote) program on every AMM swap.
-    token_program: Pubkey,
-    system_program: Pubkey,
-    event_authority: Pubkey,
-    fee_program: Pubkey,
-    /// Exact slot-[17] fee recipient for curve buy/sell (pump.fun program).
-    curve_fee_recipient: Pubkey,
-    /// Trailing buyback-fee recipient for AMM swaps (pump_amm program); a
-    /// whitelist member, distinct from `curve_fee_recipient`.
-    amm_buyback_fee_recipient: Pubkey,
-
     // PumpSwap AMM (migrated tokens)
-    pump_swap_program: Pubkey,
-    wsol_mint: Pubkey,
     // Program-constant PumpSwap PDAs, derived once in `new()` (they never depend
     // on the token, only on the program / fee-program / this wallet) instead of
     // re-running `find_program_address` on every AMM swap.
@@ -309,9 +292,6 @@ impl PumpFunTrader {
             CommitmentConfig::confirmed(),
         ));
 
-        // Program ids are `const Pubkey` in `protocol` — no parse, no unwrap.
-        let pump_swap_program = protocol::PUMP_SWAP;
-        let fee_program = protocol::FEE_PROGRAM;
         let wallet = config.signer.pubkey();
         // Clone the Jito tuning out before `config` is moved into the struct below
         // (the tip cache owns its own copy to size tips without touching config).
@@ -320,16 +300,16 @@ impl PumpFunTrader {
         // PumpSwap PDAs that never change for this wallet — derived once here so
         // `amm_swap_accounts` is a few field reads instead of ~5 `find_program_address`.
         let amm_global_config_pda =
-            Pubkey::find_program_address(&[b"global_config"], &pump_swap_program).0;
+            Pubkey::find_program_address(&[b"global_config"], &protocol::PUMP_SWAP).0;
         let amm_event_authority =
-            Pubkey::find_program_address(&[b"__event_authority"], &pump_swap_program).0;
+            Pubkey::find_program_address(&[b"__event_authority"], &protocol::PUMP_SWAP).0;
         let amm_fee_config =
-            Pubkey::find_program_address(&[b"fee_config", pump_swap_program.as_ref()], &fee_program).0;
+            Pubkey::find_program_address(&[b"fee_config", protocol::PUMP_SWAP.as_ref()], &protocol::FEE_PROGRAM).0;
         let amm_global_volume_accumulator =
-            Pubkey::find_program_address(&[b"global_volume_accumulator"], &pump_swap_program).0;
+            Pubkey::find_program_address(&[b"global_volume_accumulator"], &protocol::PUMP_SWAP).0;
         let amm_user_volume_accumulator = Pubkey::find_program_address(
             &[b"user_volume_accumulator", wallet.as_ref()],
-            &pump_swap_program,
+            &protocol::PUMP_SWAP,
         )
         .0;
 
@@ -377,15 +357,6 @@ impl PumpFunTrader {
             token_account_rent: TOKEN_ACCOUNT_RENT_PLACEHOLDER,
             token_2022_account_space: TOKEN_2022_ACCOUNT_SPACE,
             token_2022_account_rent: TOKEN_ACCOUNT_RENT_PLACEHOLDER,
-            pump_program: protocol::PUMP_FUN,
-            token_program: protocol::TOKEN,
-            system_program: system_program::id(),
-            event_authority: protocol::EVENT_AUTHORITY,
-            fee_program,
-            curve_fee_recipient: protocol::PUMP_CURVE_FEE_RECIPIENT,
-            amm_buyback_fee_recipient: protocol::PUMP_AMM_BUYBACK_FEE_RECIPIENT,
-            pump_swap_program,
-            wsol_mint: protocol::WSOL_MINT,
             amm_global_config_pda,
             amm_event_authority,
             amm_fee_config,

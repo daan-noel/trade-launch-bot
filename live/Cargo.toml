@@ -13,7 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 trading_core = { path = "../trading_core" }
-ingest-laserstream = { path = "../ingest-laserstream" }
+ingest-laserstream = { path = "../ingest-laserstream", features = ["raw-json"] }
 # `probe`/`claim` are off by default in the crate; the live box uses both.
 pump-trader = { path = "../pump-trader", features = ["probe", "claim"] }
 

@@ -10,10 +10,12 @@
 
 use super::{PumpFunTrader, TokenPDAs};
 use crate::error::{bail, Context, Result, TradeError};
+use crate::protocol;
 use crate::types::TokenProgram;
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
+    system_program,
 };
 use std::str::FromStr;
 use std::time::{Duration, Instant};
@@ -302,7 +304,7 @@ impl PumpFunTrader {
             let creator = Pubkey::from_str(creator_str)?;
             let (vault, _) = Pubkey::find_program_address(
                 &[b"creator-vault", creator.as_ref()],
-                &self.pump_program,
+                &protocol::PUMP_FUN,
             );
             if pdas.creator_vault != vault {
                 info!(
@@ -439,13 +441,13 @@ impl PumpFunTrader {
             AccountMeta::new(pdas.associated_bonding_curve, false),
             AccountMeta::new(*user_token_account, false),
             AccountMeta::new(self.config.signer.pubkey(), true),
-            AccountMeta::new_readonly(self.system_program, false),
+            AccountMeta::new_readonly(system_program::id(), false),
             AccountMeta::new(pdas.creator_vault, false),
             AccountMeta::new_readonly(pdas.token_program, false),
-            AccountMeta::new_readonly(self.event_authority, false),
-            AccountMeta::new_readonly(self.pump_program, false),
+            AccountMeta::new_readonly(protocol::EVENT_AUTHORITY, false),
+            AccountMeta::new_readonly(protocol::PUMP_FUN, false),
             AccountMeta::new_readonly(global.fee_config, false),
-            AccountMeta::new_readonly(self.fee_program, false),
+            AccountMeta::new_readonly(protocol::FEE_PROGRAM, false),
         ];
 
         // Include the cashback account if the caller knows the token is
@@ -457,10 +459,10 @@ impl PumpFunTrader {
         }
 
         accounts.push(AccountMeta::new_readonly(pdas.bonding_curve_v2, false));
-        accounts.push(AccountMeta::new(self.curve_fee_recipient, false));
+        accounts.push(AccountMeta::new(protocol::PUMP_CURVE_FEE_RECIPIENT, false));
 
         ixs.push(Instruction {
-            program_id: self.pump_program,
+            program_id: protocol::PUMP_FUN,
             accounts,
             data: sell_data,
         });

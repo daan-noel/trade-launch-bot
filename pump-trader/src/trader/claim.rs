@@ -18,6 +18,7 @@
 use super::PumpFunTrader;
 use crate::error::{Context, Result, TradeError};
 use crate::protocol::{self, CLAIM_CASHBACK_DISC, CLAIM_CASHBACK_V2_DISC, SYNC_UVA_DISC};
+use solana_sdk::system_program;
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
@@ -228,7 +229,7 @@ impl PumpFunTrader {
         }
         claim_accounts.push(AccountMeta::new(uva_quote_ata, false));
         claim_accounts.push(AccountMeta::new(user_quote_ata, false));
-        claim_accounts.push(AccountMeta::new_readonly(self.system_program, false));
+        claim_accounts.push(AccountMeta::new_readonly(system_program::id(), false));
         claim_accounts.push(AccountMeta::new_readonly(p.event_authority, false));
         claim_accounts.push(AccountMeta::new_readonly(p.program, false));
         ixs.push(Instruction {
@@ -262,28 +263,28 @@ impl PumpFunTrader {
         Ok([
             PotClaim {
                 label: "curve",
-                program: self.pump_program,
+                program: protocol::PUMP_FUN,
                 user_volume_accumulator: global.user_volume_accumulator,
                 global_volume_accumulator: global.global_volume_accumulator,
-                event_authority: self.event_authority,
+                event_authority: protocol::EVENT_AUTHORITY,
                 // pump (curve) uses the v2 WSOL layout.
                 claim_disc: CLAIM_CASHBACK_V2_DISC,
                 include_atoken_program: true,
-                quote_mint: self.wsol_mint,
-                quote_token_program: self.token_program,
+                quote_mint: protocol::WSOL_MINT,
+                quote_token_program: protocol::TOKEN,
                 unwrap: true,
                 is_stable: false,
             },
             PotClaim {
                 label: "amm",
-                program: self.pump_swap_program,
+                program: protocol::PUMP_SWAP,
                 user_volume_accumulator: self.amm_user_volume_accumulator,
                 global_volume_accumulator: self.amm_global_volume_accumulator,
                 event_authority: self.amm_event_authority,
                 claim_disc: CLAIM_CASHBACK_DISC,
                 include_atoken_program: false,
-                quote_mint: self.wsol_mint,
-                quote_token_program: self.token_program,
+                quote_mint: protocol::WSOL_MINT,
+                quote_token_program: protocol::TOKEN,
                 unwrap: true,
                 is_stable: false,
             },
@@ -306,10 +307,10 @@ impl PumpFunTrader {
         };
         Ok(Some(PotClaim {
             label: "curve-stable",
-            program: self.pump_program,
+            program: protocol::PUMP_FUN,
             user_volume_accumulator: global.user_volume_accumulator,
             global_volume_accumulator: global.global_volume_accumulator,
-            event_authority: self.event_authority,
+            event_authority: protocol::EVENT_AUTHORITY,
             // Same v2 instruction as the curve WSOL claim — the quote_mint selects
             // the stable pot on-chain.
             claim_disc: CLAIM_CASHBACK_V2_DISC,

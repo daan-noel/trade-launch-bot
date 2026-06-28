@@ -9,7 +9,7 @@
 
 use super::{PumpFunTrader, TokenPDAs};
 use crate::error::{bail, Result, TradeError};
-use crate::protocol::{TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
+use crate::protocol::{self, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
 use solana_sdk::pubkey::Pubkey;
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::collections::HashMap;
@@ -312,7 +312,7 @@ impl PumpFunTrader {
     /// `find_program_address(&[b"bonding-curve", ..])` previously inlined across
     /// the buy and query paths.
     pub(super) fn bonding_curve_pda(&self, mint: &Pubkey) -> Pubkey {
-        Pubkey::find_program_address(&[b"bonding-curve", mint.as_ref()], &self.pump_program).0
+        Pubkey::find_program_address(&[b"bonding-curve", mint.as_ref()], &protocol::PUMP_FUN).0
     }
 
     /// All curve PDAs needed to build a buy/sell for `mint`, given its `creator`
@@ -327,11 +327,11 @@ impl PumpFunTrader {
     ) -> TokenPDAs {
         let bonding_curve = self.bonding_curve_pda(mint);
         let (bonding_curve_v2, _) =
-            Pubkey::find_program_address(&[b"bonding-curve-v2", mint.as_ref()], &self.pump_program);
+            Pubkey::find_program_address(&[b"bonding-curve-v2", mint.as_ref()], &protocol::PUMP_FUN);
         let associated_bonding_curve =
             get_associated_token_address_with_program_id(&bonding_curve, mint, token_program);
         let (creator_vault, _) =
-            Pubkey::find_program_address(&[b"creator-vault", creator.as_ref()], &self.pump_program);
+            Pubkey::find_program_address(&[b"creator-vault", creator.as_ref()], &protocol::PUMP_FUN);
         TokenPDAs {
             token_program: *token_program,
             bonding_curve,

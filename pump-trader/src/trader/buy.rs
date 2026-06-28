@@ -9,10 +9,12 @@
 
 use super::PumpFunTrader;
 use crate::error::{Context, Result, TradeError};
+use crate::protocol;
 use crate::types::TokenProgram;
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
+    system_program,
 };
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::future::Future;
@@ -370,7 +372,7 @@ impl PumpFunTrader {
         buy_data.extend_from_slice(&buy_lamports.to_le_bytes());
         buy_data.extend_from_slice(&min_tokens_out.to_le_bytes());
         ixs.push(Instruction {
-            program_id: self.pump_program,
+            program_id: protocol::PUMP_FUN,
             accounts: vec![
                 AccountMeta::new_readonly(global.global_pda, false),
                 AccountMeta::new(global.fee_recipient, false),
@@ -379,17 +381,17 @@ impl PumpFunTrader {
                 AccountMeta::new(pdas.associated_bonding_curve, false),
                 AccountMeta::new(*user_token_account, false),
                 AccountMeta::new(self.config.signer.pubkey(), true),
-                AccountMeta::new_readonly(self.system_program, false),
+                AccountMeta::new_readonly(system_program::id(), false),
                 AccountMeta::new_readonly(pdas.token_program, false),
                 AccountMeta::new(pdas.creator_vault, false),
-                AccountMeta::new_readonly(self.event_authority, false),
-                AccountMeta::new_readonly(self.pump_program, false),
+                AccountMeta::new_readonly(protocol::EVENT_AUTHORITY, false),
+                AccountMeta::new_readonly(protocol::PUMP_FUN, false),
                 AccountMeta::new(global.global_volume_accumulator, false),
                 AccountMeta::new(global.user_volume_accumulator, false),
                 AccountMeta::new_readonly(global.fee_config, false),
-                AccountMeta::new_readonly(self.fee_program, false),
+                AccountMeta::new_readonly(protocol::FEE_PROGRAM, false),
                 AccountMeta::new_readonly(pdas.bonding_curve_v2, false),
-                AccountMeta::new(self.curve_fee_recipient, false),
+                AccountMeta::new(protocol::PUMP_CURVE_FEE_RECIPIENT, false),
             ],
             data: buy_data,
         });

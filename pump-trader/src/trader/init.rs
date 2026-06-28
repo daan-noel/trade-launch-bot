@@ -9,6 +9,7 @@
 use super::jito_tip::refresh_tip_floor;
 use super::{GlobalAccount, NonceSlot, PumpFunTrader};
 use crate::error::{bail, Context, Result};
+use crate::protocol;
 use crate::types::TokenProgram;
 use solana_sdk::{compute_budget::ComputeBudgetInstruction, pubkey::Pubkey};
 use std::collections::HashSet;
@@ -213,8 +214,7 @@ impl PumpFunTrader {
     // -----------------------------------------------------------------------
 
     async fn fetch_global_account(&self) -> Result<GlobalAccount> {
-        let pump = self.pump_program;
-        let (global_pda, _) = Pubkey::find_program_address(&[b"global"], &pump);
+        let (global_pda, _) = Pubkey::find_program_address(&[b"global"], &protocol::PUMP_FUN);
 
         // Fetch fee_recipient (offset 41) + the stable quote mint from chain in
         // one read. Layout (after the 8-byte discriminator): the
@@ -243,15 +243,14 @@ impl PumpFunTrader {
         };
 
         let (global_volume_accumulator, _) =
-            Pubkey::find_program_address(&[b"global_volume_accumulator"], &pump);
+            Pubkey::find_program_address(&[b"global_volume_accumulator"], &protocol::PUMP_FUN);
 
         let wallet = self.config.signer.pubkey();
         let (user_volume_accumulator, _) =
-            Pubkey::find_program_address(&[b"user_volume_accumulator", wallet.as_ref()], &pump);
+            Pubkey::find_program_address(&[b"user_volume_accumulator", wallet.as_ref()], &protocol::PUMP_FUN);
 
-        let fee_prog = self.fee_program;
         let (fee_config, _) =
-            Pubkey::find_program_address(&[b"fee_config", pump.as_ref()], &fee_prog);
+            Pubkey::find_program_address(&[b"fee_config", protocol::PUMP_FUN.as_ref()], &protocol::FEE_PROGRAM);
 
         Ok(GlobalAccount {
             global_pda,
