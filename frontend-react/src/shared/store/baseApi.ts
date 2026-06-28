@@ -5,7 +5,7 @@ import { API_BASE } from 'services/config';
 
 /**
  * Central RTK Query cache **shell**. Endpoint definitions are attached from
- * per-mode modules (`sharedEndpoints` / `deployEndpoints` / `analysisEndpoints`)
+ * per-mode modules (`sharedEndpoints` / `liveEndpoints` / `labEndpoints`)
  * via `injectEndpoints`, so each build bundles only the endpoints its mode needs.
  *
  * `keepUnusedDataFor` retains a cache entry for 5 minutes after the last

@@ -5,7 +5,7 @@ import {
   useBackgroundJobsState,
   type BackgroundJob,
   type PhaseProgress,
-} from '@analysis/context/BackgroundJobsContext';
+} from '@lab/context/BackgroundJobsContext';
 
 /**
  * App-wide floating indicator for in-flight background jobs (grouped sweep, rule

@@ -20,7 +20,7 @@ export type NavEntry = NavLeaf | NavGroup;
 /**
  * Per-mode nav configuration consumed by the shared `Header`. The split replaces
  * the old runtime `useCapabilities` gating with a static, build-time nav list:
- * each mode's `App` passes its own config, so the deploy build literally cannot
+ * each mode's `App` passes its own config, so the live build literally cannot
  * render an analysis route and vice-versa.
  */
 export interface NavConfig {

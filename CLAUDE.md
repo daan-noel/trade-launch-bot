@@ -27,7 +27,7 @@ Six Rust workspace crates + `frontend-react` SPA. The old single `backend` crate
 
 The transport-agnostic ingest contract (`IngestHandles`, `TraderHook`, re-exports of `StrategyPing`/`TradeSignals`) lives in `trading_core::ingest`; both ingest crates depend on `trading_core` and expose the same `spawn(…)`. `ingest-laserstream` re-exports the contract types for back-compat.
 
-Each bin is its own composition root (`tokio::select!` over long-lived tasks). `live/main.rs` calls `ingest_laserstream::spawn(…)` + trading + strategy + HTTP; `lab/main.rs` is thin (SOL-price poller + token-cache seed + HTTP, no ingest/trader). Helius LaserStream (gRPC) is the **sole** live transport; the `trades` table *is* that feed. Both serve `configure_core_routes` plus their own route config; `GET /api/system/capabilities` advertises which bin (frontend gates nav/routes on it). **Frontend mode strings (`@deploy`/`@analysis`) are intentionally unchanged** (frontend rename is deferred to a later phase).
+Each bin is its own composition root (`tokio::select!` over long-lived tasks). `live/main.rs` calls `ingest_laserstream::spawn(…)` + trading + strategy + HTTP; `lab/main.rs` is thin (SOL-price poller + token-cache seed + HTTP, no ingest/trader). Helius LaserStream (gRPC) is the **sole** live transport; the `trades` table *is* that feed. Both serve `configure_core_routes` plus their own route config; `GET /api/system/capabilities` advertises which bin (diagnostic only — the frontend split is build-time, so the SPA no longer gates nav/routes on it at runtime). **The frontend now uses `live`/`lab` vocabulary throughout** (`@live`/`@lab` aliases, `src/live`/`src/lab` trees, `liveApi`/`labApi`); the backend capabilities contract fields (`has_live_trading`/`has_analysis`) are unchanged.
 
 **Read `@arch/` docs instead of re-exploring source. Deep-dive detail lives in `@plans/`.**
 
@@ -55,18 +55,21 @@ cargo run   -p live                    # live box: loads .env; needs Postgres + 
 cargo run   -p lab                     # analysis box: needs Postgres; NO keys / NO gRPC
 cargo run   -p lab -- lake-export       # batch: export sealed days local-PG -> Parquet lake ($SWEEP_LAKE_DIR)
 cargo run   -p live -- probe <ladder|fanout|simulate-sell|holdings> [args]
-cd frontend-react; npm run dev         # both builds: deploy at /, analysis at /analysis.html (:5173, proxies /api -> :8081)
-npm run dev:local                      # analysis build only (opens /analysis.html) — pair with lab
-npm run build                          # tsc (checks BOTH trees) && vite build → DEPLOY-ONLY dist/index.html
+cd frontend-react; npm run dev         # both apps concurrently: live :5173, lab :5174 (separate dev servers)
+npm run dev:live                       # live app only (:5173, proxies /api -> live bin :8081)
+npm run dev:lab                        # lab app only  (:5174, proxies /api -> lab bin :8082) — pair with `PORT=8082 cargo run -p lab`
+npm run build                          # tsc (checks BOTH trees) && vite build (live config) → LIVE-ONLY dist/index.html
 ```
 
-**Frontend is two builds over a shared core** (mirrors the backend two-bin split): `src/shared` ·
-`src/deploy` (`@deploy/*`) · `src/analysis` (`@analysis/*`), two Vite entries
-(`index.html`→deploy, `analysis.html`→analysis, dev-only). Mode is build-time, not runtime — no
-`useCapabilities` gating. Ship the **deploy** build to EC2 (`npm run build` emits analysis-free
-`dist/index.html`). One split `createApi`: `baseApi` shell + per-mode `injectEndpoints`; import mode
-hooks from `@deploy|@analysis/store/*Endpoints`, never the shared `store/apiSlice` barrel, so a
-mode's side effect never leaks across builds. See [@arch/frontend.md](@arch/frontend.md).
+**Frontend is two apps over a shared core** (mirrors the backend two-bin split): `src/shared` ·
+`src/live` (`@live/*`) · `src/lab` (`@lab/*`), two Vite entries + **two dev servers**
+(`index.html`→live `vite.live.config.ts` :5173, `lab.html`→lab `vite.lab.config.ts` :5174;
+`lab.html` is dev-only — never built for prod). Each app runs independently (`dev:live`/`dev:lab`)
+or both at once (`dev`). Mode is build-time, not runtime — no `useCapabilities` gating. Ship the
+**live** build to EC2 (`npm run build` emits lab-free `dist/index.html`). One split `createApi`:
+`baseApi` shell + per-mode `injectEndpoints`; import mode hooks from `@live|@lab/store/*Endpoints`,
+never the shared `store/apiSlice` barrel, so a mode's side effect never leaks across builds. See
+[@arch/frontend.md](@arch/frontend.md).
 
 Stay in the owning crate (`trading_core` / `pump-trader` / `ingest-laserstream` / `ingest-websocket` / `live` / `lab`). Use `--target-dir target-check` if a bin `.exe` is running (locks `target/`). Clippy `too_many_arguments` is `#[allow]`-ed on trade-path fns by design.
 

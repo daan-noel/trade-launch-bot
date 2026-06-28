@@ -18,8 +18,8 @@
     "noUncheckedSideEffectImports": true,
     "paths": {
       "@shared/*": ["./src/shared/*"],
-      "@deploy/*": ["./src/deploy/*"],
-      "@analysis/*": ["./src/analysis/*"],
+      "@live/*": ["./src/live/*"],
+      "@lab/*": ["./src/lab/*"],
       "components/*": ["./src/shared/components/*"],
       "pages/*": ["./src/pages/*"],
       "services/*": ["./src/shared/services/*"],

@@ -1,5 +1,5 @@
 ﻿import type { RuleRecord } from 'types';
-import type { SweepResultRecord } from '@analysis/components/sweep/types';
+import type { SweepResultRecord } from '@lab/components/sweep/types';
 
 export type Strategy = 'tpsl1' | 'tpsl2';
 export type PasteMode = 'merge' | 'replace';

@@ -1,8 +1,8 @@
 /**
  * Per-mode accent token. The frontend split keeps both builds visually nearly
  * identical (same chrome + Tailwind theme); only the **active-nav highlight** and
- * the **logo badge** differ by one accent color — teal for the deploy (live)
- * build, violet for the analysis build. Full class strings (not interpolated)
+ * the **logo badge** differ by one accent color — teal for the live
+ * build, violet for the lab build. Full class strings (not interpolated)
  * so Tailwind's scanner keeps them.
  */
 export type AccentColor = 'teal' | 'violet';

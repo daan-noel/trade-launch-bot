@@ -1,4 +1,4 @@
-﻿import type { SweepResultRecord } from '@analysis/components/sweep/types';
+﻿import type { SweepResultRecord } from '@lab/components/sweep/types';
 
 /** Per-param-column tinting plan for the grouped-sweep combo table. */
 export interface ParamColumnColor {

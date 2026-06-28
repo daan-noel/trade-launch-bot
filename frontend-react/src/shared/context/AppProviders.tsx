@@ -5,8 +5,8 @@ import { ToastProvider } from 'components/ui/Toast';
 
 /**
  * Shared root providers — timezone, price-unit, and toast — wrapped by both
- * builds. The analysis-only `BackgroundJobsProvider` is NOT here; the analysis
- * `App` nests it itself so its analysis-only SSE wiring stays out of the deploy
+ * builds. The lab-only `BackgroundJobsProvider` is NOT here; the analysis
+ * `App` nests it itself so its lab-only SSE wiring stays out of the live
  * bundle.
  */
 export function AppProviders({ children }: { children: ReactNode }) {

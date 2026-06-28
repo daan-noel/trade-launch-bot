@@ -25,9 +25,9 @@ import {
 import { formatWithCommas } from 'utils/format';
 
 /**
- * Shared dashboard (heatmap + creation trend). The analysis build injects its
+ * Shared dashboard (heatmap + creation trend). The lab build injects its
  * per-fingerprint grouped section via `extraSections` — a render-prop, not a
- * direct import, so the deploy build never pulls the analysis-only
+ * direct import, so the live build never pulls the lab-only
  * `GroupedCreationSection` (and its `getGroupedCreationStats` endpoint) into its
  * bundle.
  */
@@ -205,9 +205,9 @@ export function DashboardPage({
         )}
       </section>
 
-      {/* Panel C — per-fingerprint creation activity (analysis build only),
+      {/* Panel C — per-fingerprint creation activity (lab build only),
           injected via render-prop so it shares the control bar's
-          window / timezone / segment while staying out of the deploy bundle. */}
+          window / timezone / segment while staying out of the live bundle. */}
       {extraSections?.({ tz: timezone, segment })}
     </div>
   );

@@ -36,8 +36,8 @@ function NavItem({
 
 /**
  * Shared app header. The nav set is fully data-driven from the per-mode
- * `NavConfig` (no more runtime `useCapabilities` gating), and the deploy-only
- * live-mode kill switch is injected via `rightSlot` so the analysis build never
+ * `NavConfig` (no more runtime `useCapabilities` gating), and the live-only
+ * live-mode kill switch is injected via `rightSlot` so the lab build never
  * imports the live-mode hooks. Shared everywhere: the SOL/USD mirror, timezone
  * selector, and price-unit toggle.
  */

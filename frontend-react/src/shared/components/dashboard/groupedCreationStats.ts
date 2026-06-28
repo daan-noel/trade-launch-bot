@@ -11,7 +11,7 @@ import {
   GROUP_FIELDS,
   GROUP_FIELD_LABELS,
   type GroupField,
-} from '@analysis/components/sweep/groupedTypes';
+} from '@lab/components/sweep/groupedTypes';
 import { WALLET_MARKER_COLORS } from 'components/token-price-chart/constants';
 import type { CreationBucket, CreationSegment } from './creationStats';
 

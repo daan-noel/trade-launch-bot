@@ -5,12 +5,12 @@ import { skipToken } from '@reduxjs/toolkit/query/react';
 import { Button } from 'components/ui/Button';
 import { Select } from 'components/ui/Select';
 import { apiErrorMessage } from 'store/apiSlice';
-import { useGetGroupedCreationStatsQuery } from '@analysis/store/analysisEndpoints';
-import { parseNumbers, parseIxLabelsFilter } from '@analysis/components/sweep/fingerprintFilters';
+import { useGetGroupedCreationStatsQuery } from '@lab/store/labEndpoints';
+import { parseNumbers, parseIxLabelsFilter } from '@lab/components/sweep/fingerprintFilters';
 import {
   FingerprintGroupPicker,
   type CashbackFilter,
-} from '@analysis/components/sweep/FingerprintGroupPicker';
+} from '@lab/components/sweep/FingerprintGroupPicker';
 import { formatWithCommas } from 'utils/format';
 import { cn } from 'lib/cn';
 import { CreationHeatmap } from './CreationHeatmap';

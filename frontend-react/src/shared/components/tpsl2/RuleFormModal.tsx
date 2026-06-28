@@ -8,7 +8,7 @@ import { InfoTooltip } from 'components/ui/InfoTooltip';
 import { TPSL_PARAM_HELP, type TpslParamKey } from 'lib/tpslParamHelp';
 import { cn } from 'lib/cn';
 import { EXAMPLE_IX_LABELS, parseIxLabels } from './utils';
-import { PasteParamsSection } from '@analysis/components/strategy/PasteParamsSection';
+import { PasteParamsSection } from '@lab/components/strategy/PasteParamsSection';
 import { applyParamsToForm } from 'lib/ruleParams';
 
 /** A field label with the standard uppercase styling plus a â“˜ tooltip that

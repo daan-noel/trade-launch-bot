@@ -7,12 +7,12 @@ import type { NavConfig } from './navTypes';
 /**
  * Shared app shell — chrome is identical across both builds; the mode-specific
  * bits are passed in as slots:
- * - `rightSlot`   → header right side (deploy: the live-mode kill switch)
- * - `beforeMain`  → mounted above the header (deploy: position notifications)
+ * - `rightSlot`   → header right side (live: the live-mode kill switch)
+ * - `beforeMain`  → mounted above the header (live: position notifications)
  * - `footer`      → below the content (analysis: the background-jobs indicator)
  *
- * Keeping these as slots (instead of conditionals) means the deploy build never
- * imports the analysis-only footer and vice-versa.
+ * Keeping these as slots (instead of conditionals) means the live build never
+ * imports the lab-only footer and vice-versa.
  */
 export function AppLayout({
   nav,
