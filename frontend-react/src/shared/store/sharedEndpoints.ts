@@ -6,7 +6,7 @@ import { datetimeLocalToUtcWallClock } from 'utils/date';
 import type {
   CreationStatsArgs,
   CreationStatsResponse,
-} from 'components/dashboard/creationStats';
+} from 'components/creation-stats/creationStats';
 import type {
   TokenDetailRecord,
   TokenRecord,

@@ -9,7 +9,7 @@ import type {
 import type {
   GroupedCreationArgs,
   GroupedCreationResponse,
-} from 'components/dashboard/groupedCreationStats';
+} from 'components/creation-stats/groupedCreationStats';
 import type {
   MatchedTokensResponse,
   PaperResultResponse,

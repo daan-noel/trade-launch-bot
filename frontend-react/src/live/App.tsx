@@ -11,13 +11,13 @@ import { liveNav } from './nav';
 // Code-split each route into its own chunk. Pages export named (not default)
 // components, so map the named export onto `default` in each lazy() call.
 const HomePage = lazy(() => import('pages/home/HomePage').then((m) => ({ default: m.HomePage })));
-const DashboardPage = lazy(() => import('pages/dashboard/DashboardPage').then((m) => ({ default: m.DashboardPage })));
 const TokensPage = lazy(() => import('pages/tokens/TokensPage').then((m) => ({ default: m.TokensPage })));
 const SyncTokenPage = lazy(() => import('@live/pages/tokens/SyncTokenPage').then((m) => ({ default: m.SyncTokenPage })));
-const TransactionsPage = lazy(() => import('@live/pages/transactions/TransactionsPage').then((m) => ({ default: m.TransactionsPage })));
 const MyWalletPage = lazy(() => import('@live/pages/profiles/MyWalletPage').then((m) => ({ default: m.MyWalletPage })));
 const OtherProfilesPage = lazy(() => import('pages/profiles/OtherProfilesPage').then((m) => ({ default: m.OtherProfilesPage })));
 const SettingsPage = lazy(() => import('pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
+const Tpsl1Page = lazy(() => import('@live/pages/strategies/TpslPage').then((m) => ({ default: () => m.TpslPage({ strategy: 'tpsl1' }) })));
+const Tpsl2Page = lazy(() => import('@live/pages/strategies/TpslPage').then((m) => ({ default: () => m.TpslPage({ strategy: 'tpsl2' }) })));
 const NotFoundPage = lazy(() => import('pages/not-found/NotFoundPage').then((m) => ({ default: m.NotFoundPage })));
 
 /** Mounts the global position-notification toasts (live-only). */
@@ -43,10 +43,10 @@ export default function App() {
                 }
               >
                 <Route index element={<HomePage />} />
-                <Route path="dashboard" element={<DashboardPage />} />
                 <Route path="tokens" element={<TokensPage />} />
                 <Route path="token/sync" element={<SyncTokenPage />} />
-                <Route path="transactions" element={<TransactionsPage />} />
+                <Route path="strategies/tpsl1" element={<Tpsl1Page />} />
+                <Route path="strategies/tpsl2" element={<Tpsl2Page />} />
                 <Route path="wallet" element={<Navigate to="/profiles/mine" replace />} />
                 <Route path="profiles/mine" element={<MyWalletPage />} />
                 <Route path="profiles/other" element={<OtherProfilesPage />} />

@@ -8,8 +8,8 @@ import { useGetCreationStatsQuery } from 'store/apiSlice';
 import { apiErrorMessage } from 'store/apiSlice';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { STORAGE_KEYS } from 'lib/storage';
-import { CreationHeatmap } from 'components/dashboard/CreationHeatmap';
-import { CreationTrendChart } from 'components/dashboard/CreationTrendChart';
+import { CreationHeatmap } from 'components/creation-stats/CreationHeatmap';
+import { CreationTrendChart } from 'components/creation-stats/CreationTrendChart';
 import {
   METRIC_OPTIONS,
   RANGE_OPTIONS,
@@ -21,17 +21,11 @@ import {
   type CreationBucket,
   type CreationMetric,
   type CreationSegment,
-} from 'components/dashboard/creationStats';
+} from 'components/creation-stats/creationStats';
 import { formatWithCommas } from 'utils/format';
 
-/**
- * Shared dashboard (heatmap + creation trend). The lab build injects its
- * per-fingerprint grouped section via `extraSections` — a render-prop, not a
- * direct import, so the live build never pulls the lab-only
- * `GroupedCreationSection` (and its `getGroupedCreationStats` endpoint) into its
- * bundle.
- */
-export function DashboardPage({
+/** Token creation analysis: heatmap + trend. */
+export function CreationStatsPage({
   extraSections,
 }: {
   extraSections?: (ctx: { tz: string; segment: CreationSegment }) => ReactNode;

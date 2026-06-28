@@ -9,7 +9,7 @@ export const labNav: NavConfig = {
   accent: 'violet',
   items: [
     { kind: 'item', to: '/', label: 'Home' },
-    { kind: 'item', to: '/dashboard', label: 'Dashboard' },
+    { kind: 'item', to: '/creation-stats', label: 'Creation Stats' },
     {
       kind: 'group',
       label: 'Tokens',

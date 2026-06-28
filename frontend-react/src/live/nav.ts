@@ -8,7 +8,6 @@ export const liveNav: NavConfig = {
   accent: 'teal',
   items: [
     { kind: 'item', to: '/', label: 'Home' },
-    { kind: 'item', to: '/dashboard', label: 'Dashboard' },
     {
       kind: 'group',
       label: 'Tokens',
@@ -18,7 +17,15 @@ export const liveNav: NavConfig = {
         { to: '/token/sync', label: 'Sync token' },
       ],
     },
-    { kind: 'item', to: '/transactions', label: 'Transactions' },
+    {
+      kind: 'group',
+      label: 'Strategies',
+      basePath: '/strategies',
+      items: [
+        { to: '/strategies/tpsl1', label: 'TP / SL Sniper 1' },
+        { to: '/strategies/tpsl2', label: 'TP / SL Sniper 2' },
+      ],
+    },
     {
       kind: 'group',
       label: 'Profiles',

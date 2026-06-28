@@ -26,6 +26,8 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
         web::scope("/api")
             // Capability advertisement (frontend nav/route gating)
             .route("/system/capabilities", web::get().to(get_capabilities))
+            // Token list (no swing-chain stats on the live bin)
+            .route("/tokens", web::get().to(handlers::tokens::list_tokens))
             // Token sync
             .route("/token/sync", web::post().to(handlers::tokens::sync_token))
             .route("/token/sync/preview", web::post().to(handlers::tokens::preview_sync))

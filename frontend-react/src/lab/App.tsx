@@ -6,13 +6,13 @@ import { RouteErrorBoundary } from 'components/ui/ErrorBoundary';
 import { SuspenseFallback } from 'components/ui/SuspenseFallback';
 import { BackgroundJobsProvider } from '@lab/context/BackgroundJobsContext';
 import { BackgroundJobsIndicator } from 'components/layout/BackgroundJobsIndicator';
-import { GroupedCreationSection } from 'components/dashboard/GroupedCreationSection';
+import { GroupedCreationSection } from 'components/creation-stats/GroupedCreationSection';
 import { labNav } from './nav';
 
 // Code-split each route into its own chunk. Pages export named (not default)
 // components, so map the named export onto `default` in each lazy() call.
 const HomePage = lazy(() => import('pages/home/HomePage').then((m) => ({ default: m.HomePage })));
-const DashboardPage = lazy(() => import('pages/dashboard/DashboardPage').then((m) => ({ default: m.DashboardPage })));
+const CreationStatsPage = lazy(() => import('@lab/pages/creation-stats/CreationStatsPage').then((m) => ({ default: m.CreationStatsPage })));
 const TokensPage = lazy(() => import('pages/tokens/TokensPage').then((m) => ({ default: m.TokensPage })));
 const SwingDetectionPage = lazy(() => import('@lab/pages/analysis/SwingDetectionPage').then((m) => ({ default: m.SwingDetectionPage })));
 const OtherProfilesPage = lazy(() => import('pages/profiles/OtherProfilesPage').then((m) => ({ default: m.OtherProfilesPage })));
@@ -37,9 +37,9 @@ export default function App() {
                 >
                   <Route index element={<HomePage />} />
                   <Route
-                    path="dashboard"
+                    path="creation-stats"
                     element={
-                      <DashboardPage
+                      <CreationStatsPage
                         extraSections={({ tz, segment }) => (
                           <GroupedCreationSection tz={tz} segment={segment} />
                         )}
