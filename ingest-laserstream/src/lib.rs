@@ -19,39 +19,22 @@ pub mod decoder;
 pub mod ingest_health;
 pub mod maintenance;
 pub mod pipeline;
-pub mod trader_hook;
 
-pub use trader_hook::TraderHook;
+// The transport-agnostic ingest contract lives in `trading_core::ingest`.
+// Re-export so existing `ingest_laserstream::{IngestHandles, TraderHook}` paths
+// keep resolving and the websocket transport returns the same `IngestHandles`.
+pub use trading_core::ingest::{IngestHandles, TraderHook};
 
 use std::sync::Arc;
 
-use dashmap::DashMap;
-use tokio::sync::{watch, Notify};
+use tokio::sync::watch;
 use tracing::info;
 
-use backend_core::{
-    models::ingest::{SseEvent, StrategyPing},
+use trading_core::{
+    models::ingest::SseEvent,
     state::{token_cache::TokenCache, trade_signals::TradeSignals},
     storage::repositories::settings_repo::AppSettings,
 };
-
-/// Handles returned from [`spawn`] for the supervising `select!` in `main`.
-pub struct IngestHandles {
-    /// Pool → mint index shared with `DeployState` / `AppState`. A token sync
-    /// registers a migrated token's pool here so live ingest subscribes immediately.
-    pub pool_index: Arc<DashMap<String, String>>,
-    /// Pinged when `pool_index` changes; consumed by the LaserStream client to
-    /// resubscribe without dropping the connection.
-    pub pools_changed: Arc<Notify>,
-    /// Strategy ping receiver — feed into the StrategyRunner.
-    pub strategy_rx: tokio::sync::mpsc::Receiver<StrategyPing>,
-    /// LaserStream gRPC producer task.
-    pub producer_task: tokio::task::JoinHandle<()>,
-    /// Ingest pipeline decode task.
-    pub pipeline_task: tokio::task::JoinHandle<()>,
-    /// DB writer flush task.
-    pub db_writer_task: tokio::task::JoinHandle<()>,
-}
 
 /// Spawn all ingest tasks and return handles for the supervising `select!`.
 ///

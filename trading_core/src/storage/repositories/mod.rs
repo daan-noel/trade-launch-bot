@@ -1,0 +1,17 @@
+pub mod creation_stats_repo;
+// `grouped_sweep_repo` stays in `backend`: it depends on the sweep engine's
+// `ComboMetrics` aggregate (local), so it lands in `lab`, not core.
+pub mod settings_repo;
+pub mod token_info_repo;
+pub mod token_repo;
+pub mod trade_repo;
+pub mod transaction_repo;
+pub mod tpsl1_paper_trading_repo;
+pub mod tpsl1_position_repo;
+pub mod tpsl1_strategy_rule_repo;
+pub mod tpsl2_paper_trading_repo;
+pub mod tpsl2_position_repo;
+pub mod tpsl2_strategy_rule_repo;
+pub mod wallet_profile_repo;
+pub mod wallet_profile_tag_repo;
+pub mod wallet_repo;

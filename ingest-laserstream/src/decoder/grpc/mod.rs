@@ -17,12 +17,12 @@ use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use backend_core::config::constants::{
+use trading_core::config::constants::{
     CREATE_INSTRUCTION_DISCRIMINATOR, CREATE_V2_INSTRUCTION_DISCRIMINATOR,
     MIGRATE_INSTRUCTION_DISCRIMINATOR, MIGRATE_V2_INSTRUCTION_DISCRIMINATOR, PUMP_FUN_PROGRAM_ID,
     PUMP_SWAP_PROGRAM_ID,
 };
-use backend_core::models::{
+use trading_core::models::{
     events::{InternalEvent, TradeExecutedEvent},
     trade::{Trade, TradeType},
     transaction::RawTransaction,
@@ -657,13 +657,13 @@ mod tests {
     };
     use super::super::super::proto::solana::storage::confirmed_block as scb;
     use super::super::{DecodeOutput, HeliusDecoder};
-    use backend_core::config::constants::{
+    use trading_core::config::constants::{
         ANCHOR_EVENT_CPI_DISCRIMINATOR, BUY_DISCRIMINATOR, COMPUTE_BUDGET_PROGRAM_ID,
         CREATE_EVENT_DISCRIMINATOR, CREATE_INSTRUCTION_DISCRIMINATOR,
         MIGRATE_INSTRUCTION_DISCRIMINATOR, PUMP_FUN_PROGRAM_ID, TOKEN_PROGRAM_ID,
         TRADE_EVENT_DISCRIMINATOR,
     };
-    use backend_core::models::events::InternalEvent;
+    use trading_core::models::events::InternalEvent;
 
     fn id_bytes(s: &str) -> Vec<u8> {
         bs58::decode(s).into_vec().unwrap()
@@ -843,7 +843,7 @@ mod tests {
             program_id_index: 1,
             accounts: vec![0],
             data: {
-                use backend_core::config::constants::SELL_DISCRIMINATOR;
+                use trading_core::config::constants::SELL_DISCRIMINATOR;
                 let mut d = SELL_DISCRIMINATOR.to_vec();
                 d.extend([0u8; 16]);
                 d

@@ -9,7 +9,7 @@ name = "ingest_laserstream"
 path = "src/lib.rs"
 
 [dependencies]
-backend-core = { path = "../backend-core" }
+trading_core = { path = "../trading_core" }
 
 # gRPC transport
 tonic = { version = "0.10", features = ["tls", "tls-webpki-roots"] }

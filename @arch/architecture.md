@@ -1,20 +1,20 @@
 # Architecture — workspace skeleton
 
 File-level map of the backend workspace. Read this instead of re-exploring source.
-The old single `backend` crate was split into five crates: one constants lib, one shared
-core lib, one ingest-transport lib, and two binaries (`backend-deploy` = live trading,
-`backend-local` = analysis). Deep-dive detail: `@plans/`.
+The old single `backend` crate was split over a shared core and then renamed to the
+`live`/`lab` topology: a shared core lib, the trader lib, two ingest-transport libs, and
+two binaries (`live` = live trading, `lab` = analysis). Deep-dive detail: `@plans/`.
 
 ## Crate map
 
 | Crate | Kind | Owns | Depends on |
 | --- | --- | --- | --- |
-| `pump-constants` | lib | Pure literal constants: program IDs, unit conversions, CU/tuning values. Zero deps. Re-exported as `pump_trader::constants`. | — |
-| `pump-trader` | lib | Trade execution (`PumpFunTrader`, sims, cashback). See [@arch/trade-execution.md](@arch/trade-execution.md) | `pump-constants` |
-| `backend-core` | lib | Everything shared by both bins: `config`, `models`, `storage` (pools + repos), core `services`, core `state`, the actix api framework + auth + SSE bridge, **core handlers**, and the trading-free **strategy domain** (`tpsl_rules_core` + `strategies/`). Exposes `configure_core_routes`. | `pump-constants` (NOT `pump-trader`) |
-| `ingest-laserstream` | lib | Helius LaserStream gRPC live transport: client→pipeline→db_writer + heartbeat/watchdog + partition maintenance. Exposes `spawn(...) -> IngestHandles`. See [@arch/ingest.md](@arch/ingest.md) | `backend-core` + tonic/prost/tokio-stream (NOT `pump-trader`) |
-| `backend-deploy` | **bin** | Live-trading box: `strategies/` (runner + tpsl_sniper_{1,2} runtime), `trader/` (pump-trader shim), deploy services/state/handlers, the `probe` subcommand, deploy `main.rs`. Serves core + deploy routes. | `backend-core` + `ingest-laserstream` + `pump-trader` |
-| `backend-local` | **bin** | Analysis box (no trading keys, no gRPC): `sweep/` engine, `analyzers/`, local state/handlers, backtest harness, local `main.rs`. Serves core + local routes. See [@arch/sweep.md](@arch/sweep.md) | `backend-core` + `pump-constants` + rayon/arrow/parquet (NOT `pump-trader`, NOT `ingest-laserstream`) |
+| `trading_core` | lib | Everything shared by both bins: `config` (incl. protocol/CU constants), `models`, `storage` (pools + repos), core `services`, core `state`, the actix api framework + auth + SSE bridge, **core handlers**, the trading-free **strategy domain** (`tpsl_rules_core` + `strategies/`), and the **ingest contract** (`ingest`). Exposes `configure_core_routes`. | — (NOT `pump-trader`) |
+| `pump-trader` | lib | Trade execution (`PumpFunTrader`, sims, cashback). Owns protocol/tuning constants in-crate (`constants`, folded in from the former `pump-constants`). See [@arch/trade-execution.md](@arch/trade-execution.md) | — |
+| `ingest-laserstream` | lib | Helius LaserStream gRPC live transport: client→pipeline→db_writer + heartbeat/watchdog + partition maintenance. Exposes `spawn(...) -> IngestHandles`; re-exports the `trading_core::ingest` contract types. See [@arch/ingest.md](@arch/ingest.md) | `trading_core` + tonic/prost/tokio-stream (NOT `pump-trader`) |
+| `ingest-websocket` | lib | **Empty scaffold** — `spawn(...) -> IngestHandles` stub mirroring laserstream behind the `trading_core::ingest` contract, so `live` can swap transports later. Wire protocol/decoder not yet implemented. | `trading_core` |
+| `live` | **bin** | Live-trading box: `strategies/` (runner + tpsl_sniper_{1,2} runtime), `trader/` (pump-trader shim), deploy services/state/handlers, the `probe` subcommand, deploy `main.rs`. Serves core + deploy routes. | `trading_core` + `ingest-laserstream` + `pump-trader` |
+| `lab` | **bin** | Analysis box (no trading keys, no gRPC): `sweep/` engine, `analyzers/`, local state/handlers, backtest harness, local `main.rs`. Serves core + local routes. See [@arch/sweep.md](@arch/sweep.md) | `trading_core` + rayon/arrow/parquet (NOT `pump-trader`, NOT `ingest-laserstream`) |
 
 ## Composition roots — the two `main.rs` files
 
@@ -24,7 +24,7 @@ non-zero so a supervisor restarts. `TokenCache` seed runs in a spawned backgroun
 (not on the boot path). Both bins gate the HTTP server on `HTTP_ENABLED` and wrap it with
 the bearer-auth middleware (fail-closed on mutating requests) + CORS.
 
-### `backend-deploy/src/main.rs` — live trading
+### `live/src/main.rs` — live trading
 
 Builds trader → DB pools → caches → `CoreState` → `DeployState`. Long-lived tasks:
 
@@ -38,7 +38,7 @@ Plus fire-and-forget spawns off the boot path: boot wallet reconcile, SOL-balanc
 subcommand (`probe <ladder|fanout|check-nonces|simulate-*|holdings|cashback-*>`) runs a
 one-shot validation against live infra and exits before any DB/ingest/HTTP startup.
 
-### `backend-local/src/main.rs` — analysis
+### `lab/src/main.rs` — analysis
 
 No trader, no ingest, no strategy runner; loads `Settings::from_env_local` (no trading
 keys / no HELIUS gRPC required). Builds DB pools → empty `TokenCache` → `CoreState` →
@@ -61,7 +61,7 @@ injected with. Handlers take the **narrowest** state they need:
 - deploy handlers → `web::Data<DeployState>`
 - local handlers → `web::Data<LocalState>`
 
-### `CoreState` — `backend-core/src/state/core_state.rs`
+### `CoreState` — `trading_core/src/state/core_state.rs`
 
 | Field / accessor | Owns |
 | --- | --- |
@@ -72,14 +72,14 @@ injected with. Handlers take the **narrowest** state they need:
 | `settings` (watch), `sol_price` (watch) | in-memory settings source-of-truth + SOL/USD |
 | `*_repo()` accessors | thin per-call repo handles (token/trade/settings/analysis/creation-stats/wallet/profile/tag/tpsl{1,2} rule+position+paper) |
 
-### `DeployState` — `backend-deploy/src/state/deploy_state.rs`
+### `DeployState` — `live/src/state/deploy_state.rs`
 
 `core: Arc<CoreState>` + `trader` · `tpsl1_cache` / `tpsl2_cache` (runtime caches) ·
 `pool_index` + `pools_changed` (live pool→mint index) · `trade_signals` (confirm-loop
 wakeup hub) · `sync_gate` (`SyncGate`, per-mint dedup + concurrency for `/token/sync`) ·
 `live_mode` (watch).
 
-### `LocalState` — `backend-local/src/state/local_state.rs`
+### `LocalState` — `lab/src/state/local_state.rs`
 
 `core: Arc<CoreState>` + `backtest_trade_cache` · `sweep_running` / `sweep_cancel` /
 `sweep_progress` (single-flight grouped sweep) · `sim_cancels` / `sim_progress` /
@@ -87,11 +87,13 @@ wakeup hub) · `sync_gate` (`SyncGate`, per-mint dedup + concurrency for `/token
 `swing_progress` / `swing_results` / `swing_runs` (swing runs) · `sweep_corpus_cache`
 (`SweepCorpusCache`, warm-path corpus reuse).
 
-## Ingest crate interface — `ingest_laserstream::spawn(...)`
+## Ingest contract — `trading_core::ingest` + `<transport>::spawn(...)`
 
-Each ingest source is its own crate exposing one `spawn(...)` of this shape (a WebSocket
-RPC sibling is planned; no shared trait until runtime switching is needed). The deploy
-`main.rs` is the only caller.
+The transport-agnostic contract lives in `trading_core::ingest`: `IngestHandles`, the
+`TraderHook` trait (IoC, keeps transport crates free of `pump-trader`), and re-exports of
+`StrategyPing` / `TradeSignals`. Each ingest crate depends on `trading_core` and exposes one
+`spawn(...)` of this shape; `ingest-laserstream` is the live transport, `ingest-websocket` is
+an empty scaffold mirroring it. The deploy `main.rs` is the only caller.
 
 ```text
 spawn(helius_laserstream_url, helius_api_key, pump_program_id, db, token_cache,
@@ -112,22 +114,22 @@ split across crates so the live and backtest paths can never drift:
 
 | Layer | Lives in | Holds |
 | --- | --- | --- |
-| **Domain** (decision logic, rule repo + validation + DTO) | `backend-core` | `strategies/` (`analysis`, per-strategy `entry`/`exit`/`util`/`cohort`) + `api/handlers/strategies/tpsl_rules_core.rs`. Written once; used by both edges. See [@arch/strategies.md](@arch/strategies.md) |
-| **Runtime edge — deploy** | `backend-deploy` | live runner + runtime cache (`cache.reload_rules`) + lifecycle + execution + position reads |
-| **Runtime edge — local** | `backend-local` | backtest harness + simulate/paper-result + sweep strategy adapters |
+| **Domain** (decision logic, rule repo + validation + DTO) | `trading_core` | `strategies/` (`analysis`, per-strategy `entry`/`exit`/`util`/`cohort`) + `api/handlers/strategies/tpsl_rules_core.rs`. Written once; used by both edges. See [@arch/strategies.md](@arch/strategies.md) |
+| **Runtime edge — deploy** | `live` | live runner + runtime cache (`cache.reload_rules`) + lifecycle + execution + position reads |
+| **Runtime edge — local** | `lab` | backtest harness + simulate/paper-result + sweep strategy adapters |
 
 CRUD = a core helper (write + DTO) wrapped by a ~5-line per-bin handler whose only
 difference is the runtime side effect (deploy reloads the live cache; local does nothing).
 
 ## HTTP API — handlers by crate
 
-`backend-core/src/api/mod.rs` `configure_core_routes` registers mode-agnostic routes with
+`trading_core/src/api/mod.rs` `configure_core_routes` registers mode-agnostic routes with
 full `/api/...` paths (no nested scope, so configs compose). Each bin then `.configure`s
 its own route set (`configure_deploy_routes` / `configure_local_routes`, both `web::scope("/api")`).
 Both bins serve `GET /api/system/capabilities → {has_live_trading, has_analysis}` (deploy
 `true/false`, local `false/true`); the frontend gates nav + lazy routes on it. See [@arch/frontend.md](@arch/frontend.md).
 
-### Core routes (`backend-core`, take `Arc<CoreState>`)
+### Core routes (`trading_core`, take `Arc<CoreState>`)
 
 | Handler file | Owns |
 | --- | --- |
@@ -139,7 +141,7 @@ Both bins serve `GET /api/system/capabilities → {has_live_trading, has_analysi
 | `handlers/system/wallets.rs` | profile / wallet / tag CRUD |
 | `handlers/strategies/tpsl_rules_core.rs` | shared rule-domain helpers (DTO + validation + repo write) used by both CRUD edges |
 
-### Deploy routes (`backend-deploy`, take `DeployState`)
+### Deploy routes (`live`, take `DeployState`)
 
 | Handler file | Owns |
 | --- | --- |
@@ -150,7 +152,7 @@ Both bins serve `GET /api/system/capabilities → {has_live_trading, has_analysi
 | `handlers/strategies/tpsl1_positions.rs` | tpsl1 position reads (by rule / mint / wallet / id) |
 | `handlers/strategies/tpsl2_positions.rs` | identical surface for tpsl2 |
 
-### Local routes (`backend-local`, take `LocalState`)
+### Local routes (`lab`, take `LocalState`)
 
 | Handler file | Owns |
 | --- | --- |
@@ -162,7 +164,7 @@ Both bins serve `GET /api/system/capabilities → {has_live_trading, has_analysi
 | `handlers/strategies/tpsl2.rs` | identical surface for tpsl2 |
 | `handlers/strategies/grouped_sweep.rs` | generic grouped param-sweep handler set. See [@arch/sweep.md](@arch/sweep.md) |
 
-## Other shared state — `backend-core/src/state/`
+## Other shared state — `trading_core/src/state/`
 
 | File | Owns |
 | --- | --- |
@@ -173,5 +175,5 @@ Both bins serve `GET /api/system/capabilities → {has_live_trading, has_analysi
 
 `IngestHeartbeat` + watchdog live in `ingest-laserstream/src/ingest_health.rs` (not in
 `state/`). Local-only state (`backtest_trade_cache`, `job_progress`, `sim_results`,
-`swing_results`, `swing_run_cache`) lives in `backend-local/src/state/`. See
+`swing_results`, `swing_run_cache`) lives in `lab/src/state/`. See
 [@arch/database.md](@arch/database.md) for pools + repos.

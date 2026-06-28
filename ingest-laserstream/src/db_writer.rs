@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use super::adapter::build_raw_blob;
 use super::proto::geyser::SubscribeUpdateTransaction;
-use backend_core::{
+use trading_core::{
     models::{token::Token, trade::Trade, transaction::RawTransaction},
     state::token_metrics::TokenMetricsWrite,
     state::trade_signals::TradeSignals,

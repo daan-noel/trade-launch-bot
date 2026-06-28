@@ -14,17 +14,20 @@ Meme-coin trading bot — **massive token + trade volume**. Performance outranks
 
 ## Architecture
 
-Five Rust workspace crates + `frontend-react` SPA. The old single `backend` crate was split into two bins over a shared core (see [@plans/modes/crate-split.md](@plans/modes/crate-split.md)):
+Six Rust workspace crates + `frontend-react` SPA. The old single `backend` crate was split into two bins over a shared core, then renamed to the `live`/`lab` topology (see [@plans/modes/crate-split.md](@plans/modes/crate-split.md) and [live-lab-remake-plan.md](live-lab-remake-plan.md)):
 
 | Crate | Kind | Role |
 | --- | --- | --- |
-| `pump-constants` | lib | zero-dep literal constants (program IDs, CU tunables); `pump-trader` re-exports as `pump_trader::constants` |
-| `backend-core` | lib | config, models, storage, core services/state (`CoreState`), api framework + auth + SSE bridge, core handlers, strategy domain (`tpsl_rules_core`) |
+| `trading_core` | lib | config, models, storage, core services/state (`CoreState`), api framework + auth + SSE bridge, core handlers, strategy domain (`tpsl_rules_core`), **ingest contract** (`trading_core::ingest`) |
+| `pump-trader` | lib | buy/sell executor; owns protocol/tuning constants in-crate (`pump_trader::constants`, folded in from the former `pump-constants`) |
 | `ingest-laserstream` | lib | Helius LaserStream gRPC transport (client→pipeline→db_writer) + watchdog; exposes `spawn(…) -> IngestHandles` |
-| `backend-deploy` | **bin** | LIVE box: strategies, trader, deploy services/state (`DeployState`), live/trading handlers, `probe`. Ships to EC2 |
-| `backend-local` | **bin** | ANALYSIS box: sweep/backtest, swing analyzer, local state (`LocalState`), rule-authoring + sweep handlers. Runs with NO keys / NO gRPC |
+| `ingest-websocket` | lib | **empty scaffold** — `spawn(…) -> IngestHandles` stub mirroring laserstream so `live` can swap transports later (not yet implemented) |
+| `live` | **bin** | LIVE box: strategies, trader, deploy services/state (`DeployState`), live/trading handlers, `probe`. Ships to EC2 |
+| `lab` | **bin** | ANALYSIS box: sweep/backtest, swing analyzer, local state (`LocalState`), rule-authoring + sweep handlers. Runs with NO keys / NO gRPC; never depends on `pump-trader` |
 
-Each bin is its own composition root (`tokio::select!` over long-lived tasks). `backend-deploy/main.rs` calls `ingest_laserstream::spawn(…)` + trading + strategy + HTTP; `backend-local/main.rs` is thin (SOL-price poller + token-cache seed + HTTP, no ingest/trader). Helius LaserStream (gRPC) is the **sole** live transport; the `trades` table *is* that feed. Both serve `configure_core_routes` plus their own route config; `GET /api/system/capabilities` advertises which bin (frontend gates nav/routes on it).
+The transport-agnostic ingest contract (`IngestHandles`, `TraderHook`, re-exports of `StrategyPing`/`TradeSignals`) lives in `trading_core::ingest`; both ingest crates depend on `trading_core` and expose the same `spawn(…)`. `ingest-laserstream` re-exports the contract types for back-compat.
+
+Each bin is its own composition root (`tokio::select!` over long-lived tasks). `live/main.rs` calls `ingest_laserstream::spawn(…)` + trading + strategy + HTTP; `lab/main.rs` is thin (SOL-price poller + token-cache seed + HTTP, no ingest/trader). Helius LaserStream (gRPC) is the **sole** live transport; the `trades` table *is* that feed. Both serve `configure_core_routes` plus their own route config; `GET /api/system/capabilities` advertises which bin (frontend gates nav/routes on it). **Frontend mode strings (`@deploy`/`@analysis`) are intentionally unchanged** (frontend rename is deferred to a later phase).
 
 **Read `@arch/` docs instead of re-exploring source. Deep-dive detail lives in `@plans/`.**
 
@@ -41,18 +44,18 @@ Each bin is its own composition root (`tokio::select!` over long-lived tasks). `
 ## Commands
 
 ```powershell
-cargo check -p backend-deploy          # typecheck the live bin
-cargo check -p backend-local           # typecheck the analysis bin
-cargo check -p backend-core            # typecheck the shared lib
-cargo test  -p backend-deploy          # deploy unit tests (strategies, trader edge)
-cargo test  -p backend-local           # local unit tests (sweep, swing)
-cargo test  -p backend-deploy -- --ignored  # integration; needs DATABASE_URL + HELIUS_RPC_URL
+cargo check -p live                    # typecheck the live bin
+cargo check -p lab                     # typecheck the analysis bin
+cargo check -p trading_core            # typecheck the shared lib
+cargo test  -p live                    # live unit tests (strategies, trader edge)
+cargo test  -p lab                     # lab unit tests (sweep, swing)
+cargo test  -p live -- --ignored       # integration; needs DATABASE_URL + HELIUS_RPC_URL
 cargo test  -p pump-trader             # trader crate tests
-cargo run   -p backend-deploy          # live box: loads .env; needs Postgres + Helius gRPC
-cargo run   -p backend-local           # analysis box: needs Postgres; NO keys / NO gRPC
-cargo run   -p backend-deploy -- probe <ladder|fanout|simulate-sell|holdings> [args]
+cargo run   -p live                    # live box: loads .env; needs Postgres + Helius gRPC
+cargo run   -p lab                     # analysis box: needs Postgres; NO keys / NO gRPC
+cargo run   -p live -- probe <ladder|fanout|simulate-sell|holdings> [args]
 cd frontend-react; npm run dev         # both builds: deploy at /, analysis at /analysis.html (:5173, proxies /api -> :8081)
-npm run dev:local                      # analysis build only (opens /analysis.html) — pair with backend-local
+npm run dev:local                      # analysis build only (opens /analysis.html) — pair with lab
 npm run build                          # tsc (checks BOTH trees) && vite build → DEPLOY-ONLY dist/index.html
 ```
 
@@ -64,7 +67,7 @@ npm run build                          # tsc (checks BOTH trees) && vite build �
 hooks from `@deploy|@analysis/store/*Endpoints`, never the shared `store/apiSlice` barrel, so a
 mode's side effect never leaks across builds. See [@arch/frontend.md](@arch/frontend.md).
 
-Stay in the owning crate (`pump-constants` / `backend-core` / `ingest-laserstream` / `backend-deploy` / `backend-local`). Use `--target-dir target-check` if a bin `.exe` is running (locks `target/`). Clippy `too_many_arguments` is `#[allow]`-ed on trade-path fns by design.
+Stay in the owning crate (`trading_core` / `pump-trader` / `ingest-laserstream` / `ingest-websocket` / `live` / `lab`). Use `--target-dir target-check` if a bin `.exe` is running (locks `target/`). Clippy `too_many_arguments` is `#[allow]`-ed on trade-path fns by design.
 
 ## Performance budgets (hot path — violation = bug)
 
@@ -79,7 +82,7 @@ Stay in the owning crate (`pump-constants` / `backend-core` / `ingest-laserstrea
 
 ## Deployed server (EC2: 2vCPU / 4GB RAM — IO-bound, RAM-constrained)
 
-- **Ship `backend-deploy` + `ingest-laserstream` to EC2 only.** `backend-local` (sweep/arrow/parquet/rayon) stays on the workstation — never deploy it.
+- **Ship `live` + `ingest-laserstream` to EC2 only.** `lab` (sweep/arrow/parquet/rayon) stays on the workstation — never deploy it.
 - Sweeps/backtests: **local only** (server = 7-day rolling ingest buffer)
 - Analysis: dump→local (`db-snapshot-dump.sh` + `db-snapshot-restore.ps1`)
 - No new infra spend (box stays fixed)
@@ -89,7 +92,7 @@ Stay in the owning crate (`pump-constants` / `backend-core` / `ingest-laserstrea
 
 ## Definition of done
 
-- **Backend:** `cargo check -p backend-deploy` + `cargo check -p backend-local` clean; clippy on touched code; test when logic changed
+- **Backend:** `cargo check -p live` + `cargo check -p lab` clean; clippy on touched code; test when logic changed
 - **Frontend:** `npm run build` clean; no extra re-render on SOL/USD tick or live-trade stream
 - **Docs — update ALL affected tiers:**
   - Rules/commands/constraints changed → **CLAUDE.md**

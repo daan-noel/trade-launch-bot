@@ -24,7 +24,7 @@ use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 use tonic::{Request, Status};
 use tracing::{error, info, warn};
 
-use backend_core::config::constants::PUMP_SWAP_PROGRAM_ID;
+use trading_core::config::constants::PUMP_SWAP_PROGRAM_ID;
 
 use super::decoder::TxRelevance;
 use super::proto::geyser::geyser_client::GeyserClient;

@@ -91,7 +91,7 @@ One `frontend-react` package, **three source trees** + **two Vite entries** — 
   it **depends on the backend follow-up** below.
 - **Backend follow-up:** register rule **CRUD + activate/pause/stop** (and `/matched`) on the
   **deploy** bin; until then a deploy Live-Strategies page would 404. See
-  `backend-deploy/src/strategies/tpsl_sniper_1/lifecycle.rs` (logic exists, no HTTP route).
+  `live/src/strategies/tpsl_sniper_1/lifecycle.rs` (logic exists, no HTTP route).
 - **Cosmetic deviation:** shared store core lives in `src/shared/store` but the legacy `store/*`
   alias still resolves there; the `deploy/services/strategyApi.ts` / `analysis/services/analysisApi.ts`
   file-level split was skipped (tree-shaking over one shared `services/api.ts` achieves the same

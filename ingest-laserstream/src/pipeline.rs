@@ -9,7 +9,7 @@ use tracing::{debug, info, warn};
 
 use serde_json::Value;
 
-use backend_core::{
+use trading_core::{
     config::constants::{POOL_REFRESH_INTERVAL_SECONDS, POOL_SUBSCRIBE_ACTIVITY_WINDOW_SECONDS},
     models::{
         events::{

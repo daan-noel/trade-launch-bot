@@ -10,13 +10,13 @@ use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use tracing::{debug, warn};
 
-use backend_core::config::constants::{
+use trading_core::config::constants::{
     BUY_DISCRIMINATOR, BUY_EXACT_QUOTE_IN_DISCRIMINATOR, BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR,
     BUY_EXACT_SOL_IN_DISCRIMINATOR, BUY_V2_DISCRIMINATOR, CREATE_EVENT_DISCRIMINATOR,
     CREATE_INSTRUCTION_DISCRIMINATOR, CREATE_V2_INSTRUCTION_DISCRIMINATOR, TOKEN_2022_PROGRAM_ID,
     TOKEN_PROGRAM_ID,
 };
-use backend_core::models::{
+use trading_core::models::{
     events::{CreatorActivityEvent, CreatorActivityKind, InternalEvent, TokenCreatedEvent},
     token::Token,
     transaction::RawTransaction,

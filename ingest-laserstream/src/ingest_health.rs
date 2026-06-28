@@ -37,13 +37,13 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tracing::error;
 
-use backend_core::storage::repositories::settings_repo::AppSettings;
+use trading_core::storage::repositories::settings_repo::AppSettings;
 
 // The watchdog floor constants live in `config::constants` (core) so the core
 // settings handler (`update_settings`) can clamp writes to them without depending
 // on this ingest module; re-exported here to keep the long-standing
 // `state::ingest_health::WATCHDOG_*` paths (and this module's own uses) resolving.
-pub use backend_core::config::constants::{
+pub use trading_core::config::constants::{
     WATCHDOG_CHECK_INTERVAL_FLOOR_SECS, WATCHDOG_STALL_TIMEOUT_FLOOR_SECS,
 };
 

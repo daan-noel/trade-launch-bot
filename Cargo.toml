@@ -1,5 +1,5 @@
 [workspace]
-members = ["backend-core", "backend-deploy", "backend-local", "ingest-laserstream", "pump-constants", "pump-trader"]
+members = ["trading_core", "live", "lab", "ingest-laserstream", "ingest-websocket", "pump-trader"]
 resolver = "1"
 
 [workspace.package]
