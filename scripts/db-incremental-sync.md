@@ -15,11 +15,12 @@ rows are added (and a few metadata rows refreshed).
 
 ```powershell
 $env:PGPASSWORD = 'your_LOCAL_postgres_password'
-./scripts/db-incremental-sync.ps1 -SshTarget ubuntu@54.93.174.192
+./scripts/db-incremental-sync.ps1
 ```
 
-If your **local** `meme_bot` runs in Docker (port `5555`) instead of a native
-install (`5432`), add `-LocalPgPort 5555`.
+`-SshTarget` (defaults to `ubuntu@54.93.174.192`) and `-LocalPgPort` (defaults to
+`5555`, the dockerized local DB) are now baked in — pass `-LocalPgPort 5432` if you
+run a native local Postgres instead.
 
 ---
 
@@ -60,21 +61,22 @@ EC2 box (per the data-scale guardrails in `CLAUDE.md`).
 2. **Reads server DB creds** (`POSTGRES_HOST_PORT/USER/PASSWORD/DB`) from the server's `.env` over SSH.
 3. **Opens an SSH tunnel** `localhost:5433 → server:<POSTGRES_HOST_PORT>` (background) and waits until it's reachable.
 4. **Attaches the server** as a `postgres_fdw` foreign server (schema `ec2_sync_src`), rebuilt fresh each run.
-5. **Schema-parity guard** — compares local vs. server columns for all 5 tables and **aborts on drift** before moving any data.
-6. **Ensures local `trades` day-partitions** exist for the incoming window.
-7. **Computes local watermarks** (`MAX(block_time)`, `MAX(created_at)`, …).
-8. **Upserts each table** with the watermark as a pushed-down literal (see table below).
+5. **Schema-parity guard** — compares local vs. server columns for every synced table and **aborts on drift** before moving any data.
+6. **Computes local watermarks** (`MAX(block_time)`, `MAX(created_at)`, …) and the sealed-day cutoff (midnight UTC today). TimescaleDB auto-creates destination chunks on insert — no partition-ensure step.
+7. **Upserts each table** with the watermark as a pushed-down literal (see table below); hypertables pull only sealed days `[watermark, cutoff)`.
+8. **Syncs `_sqlx_migrations`** from the server so the local backend doesn't re-apply migrations.
 9. **Detaches** — drops the foreign server (removing the server password from the local catalog) and kills the tunnel (in a `finally`, so it's cleaned up even on error).
 
 ### Conflict handling
 
 | Table | Conflict key | Action |
 | --- | --- | --- |
-| `trades` | `(tx_signature, leg_index, block_time)` | DO NOTHING |
+| `wallet_dict` | `id` / `address` | DO NOTHING (immutable; ids mirrored verbatim) |
 | `tokens` | `mint_address` | DO NOTHING |
 | `tokens_info` | `mint_address` | DO UPDATE — newer `updated_at` wins |
-| `tokens_analysis` | `(mint_address, analyzer_name)` | DO UPDATE — newer `computed_at` wins |
-| `creator_profiles` | `wallet_address` | Full upsert (no monotonic timestamp; skip with `-NoCreatorProfiles`) |
+| `token_sync_state` | `(mint_address, venue)` | DO UPDATE — newer `last_synced_at` wins |
+| `trades` | `(block_time, tx_signature, leg_index)` | DO NOTHING (append-only) |
+| `raw_txs` | `(block_time, tx_signature)` | DO NOTHING (opt-in via `-IncludeRawTxs`) |
 
 ---
 
@@ -82,17 +84,17 @@ EC2 box (per the data-scale guardrails in `CLAUDE.md`).
 
 | Param | Default | Notes |
 | --- | --- | --- |
-| `-SshTarget` | *(required)* | e.g. `ubuntu@54.93.174.192` |
+| `-SshTarget` | `ubuntu@54.93.174.192` | user@host of the EC2 box |
 | `-SshKey` | `../aws-ec2-key.pem` | Path to the EC2 private key |
 | `-RemoteDir` | `~/projects/meme-trading` | Where the server's `.env` lives |
 | `-Database` | `meme_bot` | Local + remote DB name |
 | `-LocalPgHost` | `localhost` | |
-| `-LocalPgPort` | `5432` | Use `5555` if your local DB is the dockerized one |
+| `-LocalPgPort` | `5555` | Dockerized local DB; use `5432` for a native local Postgres |
 | `-LocalPgUser` | `postgres` | Must be a superuser role |
 | `-TunnelLocalPort` | `5433` | Local end of the SSH tunnel (must be free) |
+| `-FdwTunnelHost` | `host.docker.internal` | How the **local** Postgres reaches the tunnel. Dockerized DB → `host.docker.internal`; native local Postgres → `127.0.0.1` |
 | `-RemotePgPort` | `0` (auto) | `0` = read `POSTGRES_HOST_PORT` from server `.env` (fallback `5555`) |
-| `-PartitionDays` | `40` | Days of `trades` partitions to pre-create (≥ server `KEEP_DAYS` + margin) |
-| `-NoCreatorProfiles` | *(off)* | Skip the `creator_profiles` full upsert |
+| `-IncludeRawTxs` | *(off)* | Also sync the heavy `raw_txs` BYTEA feed |
 | `-LocalPgPassword` | `$env:PGPASSWORD` | Local DB password |
 
 ---
@@ -133,18 +135,13 @@ After that the key stays loaded across sessions and the script never prompts.
 - **`CREATE EXTENSION`/`USER MAPPING` permission denied** — connect as a Postgres
   superuser (`-LocalPgUser postgres`).
 - **Can't connect to local DB** — wrong `-LocalPgPort` (native `5432` vs docker `5555`).
+- **`could not connect to server "ec2_sync" ... port 5433 ... Connection refused`** — your local
+  Postgres is dockerized and `postgres_fdw` (which connects from *inside* the container) can't see
+  the host's tunnel on `127.0.0.1`. Fixed by the defaults: the tunnel binds `0.0.0.0` and
+  `-FdwTunnelHost` is `host.docker.internal`. If you switched to a native local Postgres, pass
+  `-FdwTunnelHost 127.0.0.1`. (Windows Firewall may prompt once to allow `ssh` to bind `0.0.0.0`.)
 
 The run is safe to re-execute at any point — watermarks + `ON CONFLICT` make it idempotent.
-
----
-
-## Which DB script do I want?
-
-| Goal | Script |
-| --- | --- |
-| **Append** the server's new data, keep everything local | **`db-incremental-sync.ps1`** ← this one |
-| **Full refresh** — replace local tokens/trades/etc. with the server snapshot | `db-snapshot-restore.ps1` (+ `db-snapshot-dump.sh` on the server) |
-| Legacy CSV append (fallback only, no direct tunnel) | `db-incremental-csv-restore.ps1` (+ `db-incremental-csv-dump.sh`) |
 
 ---
 

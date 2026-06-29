@@ -1,0 +1,113 @@
+# ---------------------------------------------------------------------------
+# LOCAL DEV stack: postgres (TimescaleDB) + live + lab as separate services
+# over ONE shared database. No nginx/TLS — the two SPA dev servers run natively
+# (`npm run dev:live` -> live :8081, `npm run dev:lab` -> lab :8082).
+#
+# This file is DEV-ONLY and is never deployed. The EC2/prod stack lives in
+# docker-compose.yml (live + nginx only). `lab` must never ship to EC2
+# (arrow/parquet/rayon + bundled duckdb) — see CLAUDE.md "Deployed server".
+#
+# Run everything:        docker compose -f docker-compose.dev.yml up -d --build
+# Run live only:         docker compose -f docker-compose.dev.yml up -d postgres live
+# Run lab only:          docker compose -f docker-compose.dev.yml up -d postgres lab
+# Lake export (batch):   docker compose -f docker-compose.dev.yml run --rm lab lab lake-export
+# Logs:                  docker compose -f docker-compose.dev.yml logs -f lab
+# Stop:                  docker compose -f docker-compose.dev.yml down   (data persists)
+#
+# Postgres uses the SAME named volume (pgdata) as docker-compose.yml, so the two
+# files share data on this host. Config comes from .env (see .env.example).
+# ---------------------------------------------------------------------------
+
+services:
+  postgres:
+    # TimescaleDB extension bundled for pg16 (hypertables + compression + retention).
+    # Use the standard image, NOT *-ha (Spilo/Patroni): the HA image rewrites
+    # pg_hba.conf itself (no entry for the docker bridge net -> "no pg_hba.conf
+    # entry for host ..." on connect) and defaults PGDATA to /home/postgres/pgdata
+    # (so the volume mount below wouldn't persist anything). The standard image is
+    # built on the official postgres entrypoint: honors POSTGRES_*, PGDATA matches
+    # the mount, and ships `host all all all scram-sha-256` so the bridge net works.
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_preload_libraries=timescaledb"
+      - "-c"
+      - "timescaledb.max_background_workers=${TIMESCALEDB_MAX_BG_WORKERS:-2}"
+      - "-c"
+      - "max_connections=${POSTGRES_MAX_CONNECTIONS:-80}"
+      - "-c"
+      - "shared_buffers=${POSTGRES_SHARED_BUFFERS:-1GB}"
+      - "-c"
+      - "effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-2GB}"
+      - "-c"
+      - "work_mem=${POSTGRES_WORK_MEM:-16MB}"
+      - "-c"
+      - "maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-256MB}"
+      - "-c"
+      - "random_page_cost=${POSTGRES_RANDOM_PAGE_COST:-1.1}"
+      - "-c"
+      - "effective_io_concurrency=${POSTGRES_EFFECTIVE_IO_CONCURRENCY:-200}"
+      - "-c"
+      - "max_parallel_workers_per_gather=${POSTGRES_MAX_PARALLEL_PER_GATHER:-1}"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-meme_bot}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_HOST_PORT:-5555}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-meme_bot}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # LIVE bin: ingest + strategies + trader + HTTP API. Published on 8081 so the
+  # native live SPA dev server (:5173) can proxy /api here.
+  live:
+    build:
+      context: .
+      dockerfile: live/Dockerfile
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      # OVERRIDE .env: bind all interfaces + point at the postgres service.
+      HOST: 0.0.0.0
+      PORT: 8081
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-meme_bot}
+    ports:
+      - "${LIVE_HOST_PORT:-8081}:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # LAB bin: sweep/backtest + swing + Parquet-lake pipeline + HTTP API. NO keys /
+  # NO gRPC. Published on 8082 so the native lab SPA dev server (:5174) can proxy here.
+  lab:
+    build:
+      context: .
+      dockerfile: lab/Dockerfile
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8082
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-meme_bot}
+      # Parquet lake lives on a named volume so it survives `down`.
+      SWEEP_LAKE_DIR: /lake
+    volumes:
+      - lakedata:/lake
+    ports:
+      - "${LAB_HOST_PORT:-8082}:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  lakedata:

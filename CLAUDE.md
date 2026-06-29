@@ -88,7 +88,7 @@ Stay in the owning crate (`trading_core` / `pump-trader` / `ingest-laserstream` 
 
 - **Ship `live` + `ingest-laserstream` to EC2 only.** `lab` (sweep/arrow/parquet/rayon + bundled `duckdb`, and the `lab/src/lake/` Parquet-lake pipeline) stays on the workstation — never deploy it.
 - Sweeps/backtests: **local only** (server = 7-day rolling ingest buffer)
-- Analysis: dump→local (`db-snapshot-dump.sh` + `db-snapshot-restore.ps1`)
+- Analysis: server→local DB sync (`scripts/db-incremental-sync.ps1` — incremental DB→DB over an SSH tunnel)
 - No new infra spend (box stays fixed)
 - Every new write path must justify IO cost; follow partition+retention pattern
 - Connection counts are load-bearing; new pools require shrinking something else

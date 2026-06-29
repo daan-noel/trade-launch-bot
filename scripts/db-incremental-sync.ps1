@@ -57,14 +57,15 @@
   ./scripts/db-incremental-sync.ps1 -SshTarget ubuntu@1.2.3.4 -IncludeRawTxs
 #>
 param(
-  [Parameter(Mandatory = $true)][string]$SshTarget,                       # user@host of the EC2 box
+  [string]$SshTarget       = 'ubuntu@54.93.174.192',                      # user@host of the EC2 box
   [string]$SshKey          = "$PSScriptRoot/../aws-ec2-key.pem",
   [string]$RemoteDir       = '~/projects/meme-trading',                   # where the server's .env lives
   [string]$Database        = 'meme_bot',
   [string]$LocalPgHost     = 'localhost',
-  [int]   $LocalPgPort     = 5432,                                        # local meme_bot port (5555 if dockerized)
+  [int]   $LocalPgPort     = 5555,                                        # local meme_bot port (5555 dockerized, 5432 native)
   [string]$LocalPgUser     = 'postgres',
   [int]   $TunnelLocalPort = 5433,                                        # local end of the SSH tunnel (must be free)
+  [string]$FdwTunnelHost   = 'host.docker.internal',                      # how the LOCAL postgres reaches the tunnel: 'host.docker.internal' if it runs in Docker, '127.0.0.1' if native
   [int]   $RemotePgPort    = 0,                                           # 0 = auto-detect from remote .env (default 5555)
   [switch]$IncludeRawTxs,                                                 # also sync raw_txs (BYTEA payloads, large; off by default)
   [string]$LocalPgPassword = $env:PGPASSWORD
@@ -131,7 +132,11 @@ if ($RemotePgPort -le 0) { $RemotePgPort = if ($renv['POSTGRES_HOST_PORT']) { [i
 Write-Host "  server postgres: 127.0.0.1:$RemotePgPort (db=$remoteDb user=$remoteUser)"
 
 # ---- 2. Open the SSH tunnel (background) -------------------------------------
-$fwd = "127.0.0.1:${TunnelLocalPort}:127.0.0.1:${RemotePgPort}"
+# Bind 0.0.0.0 (not just loopback) so a DOCKERIZED local postgres can reach the
+# tunnel via host.docker.internal -- postgres_fdw connects from INSIDE the
+# container, where 127.0.0.1 is the container, not this host. Host-side psql
+# checks below still reach it via 127.0.0.1 (0.0.0.0 includes loopback).
+$fwd = "0.0.0.0:${TunnelLocalPort}:127.0.0.1:${RemotePgPort}"
 Write-Host "Opening tunnel  local:$TunnelLocalPort  ->  $SshTarget : $RemotePgPort ..."
 Write-Host "  (if a passphrase prompt appears below, enter the key passphrase to open the tunnel)"
 $tunnelArgs = $sshOpts + @('-o', 'ExitOnForwardFailure=yes', '-o', 'ServerAliveInterval=30', '-N', '-L', $fwd, $SshTarget)
@@ -164,7 +169,7 @@ try {
 CREATE EXTENSION IF NOT EXISTS postgres_fdw;
 DROP SERVER IF EXISTS ec2_sync CASCADE;
 CREATE SERVER ec2_sync FOREIGN DATA WRAPPER postgres_fdw
-  OPTIONS (host '127.0.0.1', port '$TunnelLocalPort', dbname '$remoteDb', fetch_size '50000');
+  OPTIONS (host '$FdwTunnelHost', port '$TunnelLocalPort', dbname '$remoteDb', fetch_size '50000');
 CREATE USER MAPPING FOR CURRENT_USER SERVER ec2_sync
   OPTIONS (user '$remoteUser', password '$pwEsc');
 DROP SCHEMA IF EXISTS ec2_sync_src CASCADE;
