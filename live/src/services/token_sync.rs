@@ -23,7 +23,7 @@ use ingest_laserstream::{
     decode::{DecodeOutput, HeliusDecoder},
     event::{IngestEvent, Side, Venue},
     proto::geyser::SubscribeUpdateTransaction,
-    raw_json::build_raw_blob,
+    raw_tx::encode_payload,
     Protocol,
 };
 
@@ -32,15 +32,15 @@ use crate::state::{
     token_metrics::{self, metrics_from_state},
 };
 use trading_core::models::{
+    raw_tx::RawTx,
     token::Token,
     trade::{Trade, TradeType},
-    transaction::RawTransaction,
 };
 use trading_core::storage::repositories::{
+    raw_tx_repo::RawTxRepo,
     token_info_repo::TokenInfoRepo,
     token_repo::TokenRepo,
     trade_repo::TradeRepo,
-    transaction_repo::TransactionRepo,
     wallet_repo::WalletRepo,
 };
 
@@ -279,7 +279,7 @@ pub async fn run_token_sync(
     // page below; the incremental path decodes its (dedup-bounded) batch later.
     let token_repo = TokenRepo::new(ctx.db.clone());
     let trade_repo = TradeRepo::new(ctx.db.clone());
-    let tx_repo = TransactionRepo::new(ctx.db.clone());
+    let tx_repo = RawTxRepo::new(ctx.db.clone());
     let wallet_repo = WalletRepo::new(ctx.db.clone());
 
     let mut migrate_slot: Option<u64> = None;
@@ -288,7 +288,7 @@ pub async fn run_token_sync(
         .await
         .map_err(|e| SyncError::Internal(e.to_string()))?;
 
-    let mut curve_txs: Vec<Arc<RawTransaction>> = Vec::new();
+    let mut curve_txs: Vec<RawTx> = Vec::new();
     let mut curve_trades: Vec<Trade> = Vec::new();
     let mut curve_wallets: Vec<String> = Vec::new();
     let mut processed: usize = 0;
@@ -831,7 +831,7 @@ async fn sync_amm_trades(
     prev_amm_slot: Option<i64>,
     last_synced_at: Option<chrono::DateTime<Utc>>,
     trade_repo: &TradeRepo,
-    tx_repo: &TransactionRepo,
+    tx_repo: &RawTxRepo,
     wallet_repo: &WalletRepo,
     progress_tx: &mpsc::Sender<String>,
 ) -> Result<(Option<String>, Option<i64>), SyncError> {
@@ -870,7 +870,7 @@ async fn sync_amm_trades(
     // decoder's seeded {pool → mint} index, dropping swaps for any other pool. It
     // has no curve-priority gate (unlike `decode_protobuf`), so an aggregator tx
     // that also touches the curve program still yields our pool's AMM trade.
-    let mut amm_txs: Vec<Arc<RawTransaction>> = Vec::new();
+    let mut amm_txs: Vec<RawTx> = Vec::new();
     let mut amm_trades: Vec<Trade> = Vec::new();
     let mut amm_wallets: Vec<String> = Vec::new();
 
@@ -981,21 +981,20 @@ async fn sync_amm_trades(
 /// one venue and **propagate** any write failure to the caller. Centralizes the
 /// "never silently drop, never advance the watermark past a failed write" policy
 /// shared by the curve loop in `run_token_sync` and `sync_amm_trades`. `wallets`
-/// is sorted/deduped in place before the single bulk touch. Raw txs are tagged
-/// `source='sync'` (token_sync backfill — both "Fetch All" via gTFA and "Fetch
-/// New" via LaserStream replay); the live ingest pipeline tags its own
-/// `source='live'`.
+/// is sorted/deduped in place before the single bulk touch. Raw txs carry
+/// `source=1` (sync — both "Fetch All" via gTFA and "Fetch New" via LaserStream
+/// replay), stamped by `persist_tx`; the live ingest pipeline writes `source=0`.
 async fn persist_backfill(
     trade_repo: &TradeRepo,
-    tx_repo: &TransactionRepo,
+    tx_repo: &RawTxRepo,
     wallet_repo: &WalletRepo,
     venue: &str,
-    txs: &[Arc<RawTransaction>],
+    txs: &[RawTx],
     trades: &[Trade],
     wallets: &mut Vec<String>,
 ) -> Result<(), SyncError> {
     tx_repo
-        .insert_many(txs, "sync")
+        .insert_many(txs)
         .await
         .map_err(|e| SyncError::Internal(format!("{venue} tx bulk insert failed: {e}")))?;
     trade_repo
@@ -1077,23 +1076,19 @@ fn update_signature(update: &SubscribeUpdateTransaction) -> Option<String> {
         .map(|i| bs58::encode(&i.signature).into_string())
 }
 
-/// Build the persisted [`RawTransaction`] for a decoded backfill tx.
+/// Build the persisted [`RawTx`] for a decoded backfill tx (`source=1`, sync).
 ///
-/// `decode_protobuf` returns a carrier with `raw_data: Null` (the live path
-/// synthesises the blob off-thread in the DbWriter); token_sync has no DbWriter,
-/// so synthesise it here via the shared [`build_raw_blob`] — the same
-/// Helius-shaped blob the live gRPC path persists, keeping `raw_transactions`
-/// byte-consistent across sources for later analysis. `RawTransaction::new` stamps
-/// `received_at` to now, while `block_time` stays the real on-chain time from the
-/// carrier.
-fn persist_tx(update: &SubscribeUpdateTransaction, slot: u64, block_time: DateTime<Utc>) -> Arc<RawTransaction> {
-    let signature = update_signature(update).unwrap_or_default();
-    Arc::new(RawTransaction::new(
-        signature,
-        slot,
-        block_time,
-        build_raw_blob(update).unwrap_or(Value::Null),
-    ))
+/// The `payload` is the verbatim protobuf wire bytes via the shared
+/// [`encode_payload`] — the same byte format the live gRPC path persists, so
+/// live and historical `raw_txs` rows are byte-consistent for later replay.
+/// `block_time` is the real on-chain time from the carrier; `tx_index` is the
+/// frame's block position (a slot-ordered proxy on RPC-lowered frames, see
+/// [`stamp_proxy_tx_index`]).
+fn persist_tx(update: &SubscribeUpdateTransaction, slot: u64, block_time: DateTime<Utc>) -> RawTx {
+    let info = update.transaction.as_ref();
+    let signature = info.map(|i| i.signature.clone()).unwrap_or_default();
+    let tx_index = info.map(|i| i.index as i32).unwrap_or(0);
+    RawTx::new(signature, slot as i64, block_time, tx_index, encode_payload(update), 1)
 }
 
 /// Fetch ONE archival `getTransactionsForAddress` (gTFA) page for `address`,
@@ -1161,7 +1156,7 @@ async fn decode_curve_batch(
     info_repo: &TokenInfoRepo,
     migrate_slot: &mut Option<u64>,
     token_record: &mut Option<Token>,
-    txs: &mut Vec<Arc<RawTransaction>>,
+    txs: &mut Vec<RawTx>,
     trades: &mut Vec<Trade>,
     wallets: &mut Vec<String>,
     progress_tx: &mpsc::Sender<String>,
@@ -1233,7 +1228,7 @@ async fn decode_curve_batch(
 fn decode_amm_batch(
     decoder: &HeliusDecoder,
     batch: &[FetchedTx],
-    txs: &mut Vec<Arc<RawTransaction>>,
+    txs: &mut Vec<RawTx>,
     trades: &mut Vec<Trade>,
     wallets: &mut Vec<String>,
 ) {
@@ -1861,13 +1856,17 @@ mod backfill_persistence {
         format!("{prefix}{}", Uuid::new_v4().simple())
     }
 
-    fn raw_tx(sig: &str, slot: u64) -> Arc<RawTransaction> {
-        Arc::new(RawTransaction::new(
-            sig.to_string(),
-            slot,
+    fn raw_tx(sig: &str, slot: u64) -> RawTx {
+        // raw_txs.tx_signature is opaque BYTEA (no base58 validation), so the
+        // test's string sig is stored as its bytes; payload is a small stand-in.
+        RawTx::new(
+            sig.as_bytes().to_vec(),
+            slot as i64,
             Utc::now(),
-            serde_json::json!({"signature": sig}),
-        ))
+            0,
+            sig.as_bytes().to_vec(),
+            1,
+        )
     }
 
     fn trade(mint: &str, wallet: &str, sig: &str, slot: u64) -> Trade {
@@ -1888,8 +1887,9 @@ mod backfill_persistence {
             .bind(mint)
             .execute(pool)
             .await;
-        let _ = sqlx::query("DELETE FROM raw_transactions WHERE signature = ANY($1)")
-            .bind(sigs)
+        let sig_bytes: Vec<Vec<u8>> = sigs.iter().map(|s| s.as_bytes().to_vec()).collect();
+        let _ = sqlx::query("DELETE FROM raw_txs WHERE tx_signature = ANY($1)")
+            .bind(&sig_bytes)
             .execute(pool)
             .await;
     }
@@ -1904,7 +1904,7 @@ mod backfill_persistence {
     async fn persist_backfill_writes_whole_batch_and_returns_ok() {
         let Some(pool) = test_pool().await else { return };
         let trade_repo = TradeRepo::new(pool.clone());
-        let tx_repo = TransactionRepo::new(pool.clone());
+        let tx_repo = RawTxRepo::new(pool.clone());
         let wallet_repo = WalletRepo::new(pool.clone());
 
         let mint = uniq("MINT-pb-");
@@ -1940,8 +1940,8 @@ mod backfill_persistence {
 
         for sig in [&sig_a, &sig_b] {
             let exists: bool =
-                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM raw_transactions WHERE signature=$1)")
-                    .bind(sig)
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM raw_txs WHERE tx_signature=$1)")
+                    .bind(sig.as_bytes())
                     .fetch_one(&pool)
                     .await
                     .expect("check raw tx");
@@ -1961,7 +1961,7 @@ mod backfill_persistence {
     async fn persist_backfill_propagates_insert_failure() {
         let Some(pool) = test_pool().await else { return };
         let trade_repo = TradeRepo::new(pool.clone());
-        let tx_repo = TransactionRepo::new(pool.clone());
+        let tx_repo = RawTxRepo::new(pool.clone());
         let wallet_repo = WalletRepo::new(pool.clone());
 
         let mint = uniq("MINT-pbfail-");

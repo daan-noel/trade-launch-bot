@@ -1,4 +1,3 @@
-pub mod events;
 pub mod grouped_sweep;
 pub mod ingest;
 pub mod paper_run;
@@ -11,7 +10,6 @@ pub mod token_sync_state;
 pub mod tpsl1_strategy_rule;
 pub mod tpsl2_strategy_rule;
 pub mod trade;
-pub mod transaction;
 pub mod wallet;
 pub mod wallet_profile;
 pub mod wallet_profile_tag;

@@ -94,9 +94,9 @@ pub struct AppSettings {
     /// Persisted so a restart restores the operator's last on/off choice instead
     /// of always booting paused. Set via `PUT /api/system/live`.
     pub live: bool,
-    /// Persist raw transaction blobs to `raw_transactions`. When off, the ingest
-    /// pipeline skips the raw-blob enqueue (trades/metrics are still recorded) to
-    /// curb DB growth. Default off.
+    /// Persist raw transaction payloads to `raw_txs`. When off, the ingest
+    /// pipeline skips the raw-payload enqueue (trades/metrics are still recorded)
+    /// to curb DB growth. Default off.
     pub persist_raw: bool,
     /// Master switch for the ingest liveness watchdog. When off, the watchdog
     /// never force-exits the process on a stall. Default on.

@@ -143,9 +143,9 @@ impl IngestConsumer {
                                 self.enqueue_db_lossy(DbWriteOp::Raw(super::db_writer::RawBlobJob {
                                     signature: raw.signature,
                                     slot: raw.slot,
+                                    tx_index: raw.tx_index,
                                     block_time: raw.block_time,
-                                    received_at: raw.received_at,
-                                    raw_data: raw.raw_data,
+                                    payload: raw.payload,
                                 }));
                             }
                             tracked_in_current_tx = false;

@@ -47,15 +47,15 @@ Channels: `update_tx` cap 4096 · `event_rx` cap 8192 · `db_tx` cap 16384 · `s
 | `decode/trade.rs` | Borsh `RawTradeEvent`, trade helpers |
 | `decode/instructions.rs` | `InstructionKind`, labeler |
 | `decode/create.rs` | `decode_create_events_from_logs` |
-| `raw_json.rs` | `build_raw_blob` (protobuf → Helius JSON), `build_raw_tx_event` — **`raw-json` feature** |
+| `raw_tx.rs` | `encode_payload` (protobuf wire bytes), `build_raw_tx_event` — **`raw-tx` feature** |
 | `backfill.rs` | `rpc_to_protobuf` (RPC result → protobuf) — **`rpc-backfill` feature** |
 
 ### Feature gates
 
 | Feature | Unlocks |
 | --- | --- |
-| `raw-json` | `serde_json` dep, `IngestEvent::RawTx`, `raw_json::build_raw_blob` |
-| `rpc-backfill` | `backfill::rpc_to_protobuf` |
+| `raw-tx` | `IngestEvent::RawTx` (carries protobuf `payload` bytes), `raw_tx::encode_payload` |
+| `rpc-backfill` | `serde_json` dep, `backfill::rpc_to_protobuf` |
 
 `live` enables both. `IngestHandle` exposes `set_live`, `track_pools`, `untrack_pools`, `health`, `health_watch`, `pool_index`, `pools_changed`.
 

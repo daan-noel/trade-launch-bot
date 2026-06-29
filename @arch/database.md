@@ -34,7 +34,7 @@ Deep-dive detail: `@plans/database/db-pool-routing.md`, `@plans/database/db-patt
 
 - `tokens` — mint_address UNIQUE, creator_wallet, name/symbol, bonding_curve_address, initial_buy_sol, cu_limit/price, is_mayhem_mode, ix_labels(JSONB), created_at
 - `trades` *(PARTITIONED daily on block_time, ~1mo retention)* — mint, wallet, trade_type, sol/token amounts, price, tx_signature, slot, block_time, reserves, venue(`curve`/`amm`). UNIQUE(tx_signature, leg_index, block_time). **This table = the LaserStream feed.**
-- `raw_transactions` *(PARTITIONED daily on received_at, ~1mo retention)* — signature, slot, raw_data(JSONB), source(`live`/`sync`)
+- `raw_txs` *(TimescaleDB hypertable on block_time; compress 2d, retain 7d)* — tx_signature(BYTEA), slot, block_time, tx_index, payload(BYTEA = verbatim protobuf wire bytes, parse in Rust), source(SMALLINT: 0=live 1=sync). PK `(block_time, tx_signature)`. Source-of-truth feed; `trades` is a typed projection. Written by `RawTxRepo` from both the live ingest db_writer and the token_sync backfill.
 
 ### Token analysis
 
@@ -67,7 +67,7 @@ Deep-dive detail: `@plans/database/db-pool-routing.md`, `@plans/database/db-patt
 | --- | --- | --- |
 | `token_repo.rs` | tokens (+tokens_info) | `find_list_rows` (DB base for /api/tokens), `find_page_before` (keyset page for analysis scans), `find_by_mints` (chunked mint=ANY) |
 | `trade_repo.rs` | trades | `find_fill_by_signature`, `sum_legs_by_signatures` (per-sig attribution), `for_each_seed_mint` (cold-start seed), `find_by_mints_all` (batched per-mint grouped reads for backtests) |
-| `transaction_repo.rs` | raw_transactions | `insert_many`, `find_by_signature` |
+| `raw_tx_repo.rs` | raw_txs | `insert`, `insert_many` (ON CONFLICT DO NOTHING), `find_by_signature` (PK lookup) |
 | `token_info_repo.rs` | tokens_info | `upsert_metrics`, `get/update_sync_watermark` |
 | `analysis_repo.rs` | tokens_analysis, creator_profiles | find/list |
 | `creation_stats_repo.rs` | tokens (+tokens_info) | `heatmap`, `trend`, `grouped` — TZ-aware SQL, bucket granularities, per-field corpus filters |
@@ -81,6 +81,6 @@ Deep-dive detail: `@plans/database/db-pool-routing.md`, `@plans/database/db-patt
 
 ## Rules
 
-- Always bound queries — paginate/time-window/stream. Never `SELECT *` full `trades`/`raw_transactions`.
+- Always bound queries — paginate/time-window/stream. Never `SELECT *` full `trades`/`raw_txs`.
 - New high-volume tables → partition+retention pattern via `ingest_laserstream/maintenance.rs`.
 - Bulk-insert must chunk by `floor(65535 / binds_per_row)` — sqlx 0.6 has no guard against the 65535 bind-param ceiling.

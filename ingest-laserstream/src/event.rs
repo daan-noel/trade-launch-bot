@@ -12,7 +12,7 @@ pub enum IngestEvent {
     TokenMigrated(TokenMigrated),
     Liquidity(LiquidityEvent),
     CreatorActivity(CreatorActivityEvent),
-    #[cfg(feature = "raw-json")]
+    #[cfg(feature = "raw-tx")]
     RawTx(RawTx),
 }
 
@@ -142,14 +142,22 @@ pub enum CreatorActivityKind {
     Sell,
 }
 
-// ── RawTx (raw-json feature) ──────────────────────────────────────────────────
+// ── RawTx (raw-tx feature) ──────────────────────────────────────────────────
 
-#[cfg(feature = "raw-json")]
+/// The verbatim raw transaction, lowered for the `raw_txs` hypertable. Carries
+/// the prost-encoded wire bytes (`payload`) rather than a decoded/JSON shape —
+/// the source-of-truth feed parses on read, never in SQL.
+#[cfg(feature = "raw-tx")]
 #[derive(Debug)]
 pub struct RawTx {
-    pub signature: String,
+    /// Raw 64-byte transaction signature (`BYTEA` in the table).
+    pub signature: Vec<u8>,
     pub slot: u64,
+    /// Position of the transaction within its block (`info.index`).
+    pub tx_index: u32,
+    /// Partition/dedup axis. The gRPC stream carries no block time, so this is
+    /// the `received_at` approximation.
     pub block_time: DateTime<Utc>,
-    pub received_at: DateTime<Utc>,
-    pub raw_data: serde_json::Value,
+    /// prost-encoded `SubscribeUpdateTransaction` wire bytes (parse on read).
+    pub payload: Vec<u8>,
 }

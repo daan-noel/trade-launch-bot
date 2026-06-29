@@ -34,7 +34,7 @@ pub enum TxRelevance {
 /// Outcome of decoding one LaserStream transaction update.
 pub enum DecodeOutput {
     /// One or more events decoded; may include [`IngestEvent::RawTx`] when the
-    /// `raw-json` feature is enabled.
+    /// `raw-tx` feature is enabled.
     Events(Vec<IngestEvent>),
     /// Not relevant (other program, ping, parse failure, dust, etc.).
     Ignored,

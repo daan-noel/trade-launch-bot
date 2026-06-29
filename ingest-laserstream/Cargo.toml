@@ -10,12 +10,13 @@ path = "src/lib.rs"
 
 [features]
 default = []
-# Enables IngestEvent::RawTx and build_raw_blob (serde_json synthesis of the
-# Helius-shaped raw-tx blob for persistence in raw_transactions.raw_data).
-raw-json = ["dep:serde_json"]
+# Enables IngestEvent::RawTx + encode_payload: the verbatim protobuf wire bytes
+# of a SubscribeUpdateTransaction, persisted to raw_txs.payload (BYTEA). No JSON.
+raw-tx = []
 # Enables rpc_to_protobuf (backfill: RPC base64 → SubscribeUpdateTransaction).
-# Requires solana-sdk + bincode (already in the dep list for PDA derivation).
-rpc-backfill = []
+# Parses the RPC JSON result, so it owns the serde_json dep. Also needs
+# solana-sdk + bincode (already in the dep list for PDA derivation).
+rpc-backfill = ["dep:serde_json"]
 
 [dependencies]
 # gRPC transport
@@ -43,5 +44,5 @@ borsh = { version = "1", features = ["derive"] }
 solana-sdk = "1.17.27"
 bincode = "1.3"
 
-# serde_json: optional, only needed for raw-json feature
+# serde_json: optional, only needed for the rpc-backfill feature (RPC JSON parsing)
 serde_json = { version = "1", optional = true }

@@ -31,8 +31,8 @@ pub mod protocol;
 
 pub mod transport;
 
-#[cfg(feature = "raw-json")]
-pub mod raw_json;
+#[cfg(feature = "raw-tx")]
+pub mod raw_tx;
 
 pub use config::{Commitment, IngestConfig};
 pub use error::{IngestError, Result};
@@ -192,11 +192,11 @@ impl Ingest {
                     DecodeOutput::Ignored => continue,
                 };
 
-                // Optionally append raw-json event (under feature gate).
-                #[cfg(feature = "raw-json")]
+                // Optionally append the raw-tx event (under feature gate).
+                #[cfg(feature = "raw-tx")]
                 let events = {
                     let mut v = events;
-                    if let Some(raw_ev) = raw_json::build_raw_tx_event(&update, received_at) {
+                    if let Some(raw_ev) = raw_tx::build_raw_tx_event(&update, received_at) {
                         v.push(raw_ev);
                     }
                     v

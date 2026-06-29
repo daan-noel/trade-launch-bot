@@ -59,7 +59,7 @@ This is not enforced by the library — it will silently produce a malformed que
 |---|---|---|
 | `trades` | 17 | 3855 rows |
 | `tokens` | 14 | 4681 rows |
-| `raw_transactions` | 5 | 13 107 rows |
+| `raw_txs` | 6 | 8000 rows (`RawTxRepo::INSERT_CHUNK_ROWS`) |
 | `wallets` | 3 | 21 845 rows |
 
 If columns are added to these tables, recalculate `chunk_size = floor(65535 / binds_per_row)` and update the corresponding `insert_many`.

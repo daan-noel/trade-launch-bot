@@ -89,9 +89,10 @@ POST /api/token/sync ─▶ preflight (validate mint, bonding-curve check)
   RPC result (`encoding=base64`) to a `SubscribeUpdateTransaction` via `adapter_rpc::rpc_to_protobuf`
   (replay supplies the protobuf natively), then decodes it. It seeds the decoder's `pool_index` with
   the token's `{pool → mint}` up front, so post-migration AMM swaps resolve through the same
-  `decode_protobuf` call (no separate explicit-pool entry point). The persisted blob is synthesised
-  via `adapter::build_raw_blob` (inline, since token_sync has no DbWriter), identical to the live
-  path — backfill rows land in `raw_transactions` as `source='sync'` for later analysis.
+  `decode_protobuf` call (no separate explicit-pool entry point). The persisted payload is the
+  verbatim protobuf wire bytes via `raw_tx::encode_payload` (inline, since token_sync has no
+  DbWriter), identical to the live path — backfill rows land in `raw_txs` with `source=1` (sync)
+  for later analysis.
 - **`TokenMetricsWrite`** — token_sync builds it via `metrics_from_state` and writes through the same
   `TokenInfoRepo::upsert_metrics` the DbWriter uses, so metrics are computed identically. This is the
   shared surface noted in [[laserstream-ingest-migration]].

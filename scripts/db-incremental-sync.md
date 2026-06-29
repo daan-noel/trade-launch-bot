@@ -4,7 +4,7 @@ Pull the EC2 server's **newer** data and append it into your local `meme_bot` DB
 directly **DB → DB** over an SSH tunnel. No CSV files, no `scp`, no temp files.
 
 Safe to run repeatedly. **Non-destructive**: your local sweep results, positions,
-settings, `raw_transactions`, and existing trades are never touched — only new
+settings, `raw_txs`, and existing trades are never touched — only new
 rows are added (and a few metadata rows refreshed).
 
 > Run from the project root in PowerShell.
