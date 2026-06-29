@@ -56,7 +56,7 @@ analysis (the two replay mechanisms, only one drives trading).
 | B5 | [05-manual-buy-slippage-and-confirm.md](buy-sell-failures/05-manual-buy-slippage-and-confirm.md) | Fix 5 + 5b — buy retry + confirm-timeout | P1 | — | 5b plumbs the signature 5 needs |
 | B6 | [06-resolve-routing-retry.md](buy-sell-failures/06-resolve-routing-retry.md) | Fix 6 — `resolve_buy_routing` retry | P1 | ✅ done | — |
 | B7 | [07-constant-rot-nonce-monitoring.md](buy-sell-failures/07-constant-rot-nonce-monitoring.md) | Fix 7 — constant-rot + nonce metrics | P2 | — | — |
-| B8 | [08-slippage-doc-dead-const.md](buy-sell-failures/08-slippage-doc-dead-const.md) | Fix 8 — slippage doc + dead const | P2 | — | — |
+| B8 | [08-slippage-doc-dead-const.md](buy-sell-failures/08-slippage-doc-dead-const.md) | Fix 8 — slippage doc + dead const | P2 | ✅ done | — |
 
 Reference (read-only, not a fix):
 [00-failure-case-catalog.md](buy-sell-failures/00-failure-case-catalog.md) — the full

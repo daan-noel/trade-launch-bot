@@ -66,12 +66,12 @@ Two safety behaviors worth noting:
 
 ## PumpSwap AMM
 
-Different default semantics: `None` here means **use the default 5%**, not "no
-protection" — `AMM_DEFAULT_SLIPPAGE_BPS = 500` (`constants.rs`, ~L172). The AMM
-path is never the snipe path, so it always has reserves cached
-(`amm_reserves_cached`) and always applies a floor.
+Same semantics as the curve: **`None` → `min_out = 1`** (no floor). There is no
+AMM-specific default slippage — `AMM_DEFAULT_SLIPPAGE_BPS` was removed as dead
+code. Manual buys always pass `Some(500)` (5%) via the API layer; bot/manual
+sells intentionally pass `None` (fill at any price) via `resolve_sell_slippage_bps`.
 
-The AMM also accounts for the full fee stack —
+The AMM accounts for the full fee stack —
 `lp_fee_bps + protocol_fee_bps + coin_creator_fee_bps` — read from on-chain
 config, rather than the curve's fixed buffer.
 
@@ -97,13 +97,12 @@ min_quote_out = net * (10000 - slip) / 10000
 where `cp_amount_out` (`amm.rs:761`) is the standard constant-product output:
 `reserve_out * amount_in / (reserve_in + amount_in)`.
 
-## Summary of the semantic gotcha
+## Summary
 
-The one thing to keep straight: **`slippage_bps = None` means opposite things
-on the two venues.** On the curve it disables protection (min_out = 1) for
-snipe latency; on the AMM it falls back to a 5% default. So a caller that wants
-"no slippage limit" on the curve gets a hard 5% floor if the same token has
-migrated to the AMM.
+**`slippage_bps = None` means the same thing on both venues: `min_out = 1` (no
+floor).** There is no AMM default — the constant was removed. Callers that want
+a floor must pass `Some(bps)` explicitly; the API layer ensures manual buy/sell
+calls always supply one.
 
 Note the **API layer floors the value before it reaches the trader**: the
 manual buy/sell endpoints (`resolve_slippage` in `api/handlers/trading/solana.rs`)

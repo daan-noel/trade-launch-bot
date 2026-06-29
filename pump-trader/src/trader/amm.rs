@@ -64,8 +64,8 @@ impl PumpFunTrader {
     ///
     /// `base_token_program_id` is the token's SPL program (legacy or 2022).
     /// `pool_override` lets the caller supply the known pool address; when
-    /// `None` the canonical index-0 / WSOL pool is derived. `slippage_bps`
-    /// defaults to [`AMM_DEFAULT_SLIPPAGE_BPS`]. `confirm` mirrors
+    /// `None` the canonical index-0 / WSOL pool is derived. `slippage_bps = None`
+    /// means no floor (`min_out = 1`); pass `Some(bps)` for explicit protection. `confirm` mirrors
     /// `sell_token_once`/`amm_sell`: `true` blocks on the RPC signature poll
     /// (manual/API callers); `false` returns once the sender accepts and leaves
     /// confirmation to the caller's own feed — saving the ~4 s `confirm_transaction`
