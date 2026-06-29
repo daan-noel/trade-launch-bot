@@ -12,9 +12,9 @@ misaligned with the intended end-state:
 2. **Strategy domain is duplicated** — `tpsl1`/`tpsl2` are hand-cloned across models, repos,
    runtime caches, entry/exit modules, and handlers. The DB design already moved to **unified**
    `strategy_rules/runs/positions/metrics` (typed lifecycle + JSONB params); the code hasn't.
-3. **Schema is the old shape** — the four staged storage plans ([token](../../Videos/meme-trading/token-storage-plan.md),
-   [trades](../../Videos/meme-trading/trades-storage-plan.md), [raw-txs](../../Videos/meme-trading/raw-txs-storage-plan.md),
-   [strategy](../../Videos/meme-trading/strategy-storage-plan.md)) describe a clean rebuild on
+3. **Schema is the old shape** — the four staged storage plans ([token](@plans/database/token-storage.md),
+   [trades](@plans/database/trades-storage.md), [raw-txs](@plans/database/raw-txs-storage.md),
+   [strategy](@plans/database/strategy-storage.md)) describe a clean rebuild on
    TimescaleDB that isn't applied yet.
 
 **Goal:** one clear, optimized, concrete structure where `core` owns *all* CRUD + strategy logic
@@ -59,9 +59,9 @@ for now (sharing them with the websocket path is a later task — the scaffold i
 ### 1. CRUD for the main tables
 New repos replacing the tpsl1/2-specific ones, one module per table group under `trading_core/src/storage/repositories/`:
 
-- `token_repo` (`tokens`), `token_info_repo` (`tokens_info`), `token_sync_state_repo` (`token_sync_state`) — per [token-storage-plan.md](../../Videos/meme-trading/token-storage-plan.md)
-- `trade_repo` (`trades`, integer base units, `(block_time, tx_signature, leg_index)` PK) — per [trades-storage-plan.md](../../Videos/meme-trading/trades-storage-plan.md)
-- `strategy_repo` — one repo spanning `strategy_rules` / `strategy_runs` / `strategy_run_metrics` / `strategy_positions` — per [strategy-storage-plan.md](../../Videos/meme-trading/strategy-storage-plan.md)
+- `token_repo` (`tokens`), `token_info_repo` (`tokens_info`), `token_sync_state_repo` (`token_sync_state`) — per [@plans/database/token-storage.md](@plans/database/token-storage.md)
+- `trade_repo` (`trades`, integer base units, `(block_time, tx_signature, leg_index)` PK) — per [@plans/database/trades-storage.md](@plans/database/trades-storage.md)
+- `strategy_repo` — one repo spanning `strategy_rules` / `strategy_runs` / `strategy_run_metrics` / `strategy_positions` — per [@plans/database/strategy-storage.md](@plans/database/strategy-storage.md)
 - `settings_repo` (`app_settings`) — keep
 - (optional) `wallet_repo` dict if `wallet_address` interning is adopted (trades-plan lever 2)
 
@@ -240,7 +240,7 @@ Parquet lake ──(query/attach)──▶ DuckDB ──▶ sweep corpus        
 - **@arch/** — `architecture.md` (crate map, two roots, ingest contract), `database.md` (new schema +
   Timescale), `strategies.md` (registry + kernel), `ingest.md` (contract lift), `sweep.md` (DuckDB
   lake). `frontend.md` only when Phase 6 runs.
-- **@plans/** — supersede `@plans/modes/crate-split.md`; the four `*-storage-plan.md` +
+- **@plans/** — supersede `@plans/modes/crate-split.md`; the four `the four storage docs in @plans/database/` +
   `timescaledb-plan.md` become the schema source-of-truth referenced here.
 
 ## Progress tracking (rule)

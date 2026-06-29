@@ -1,12 +1,5 @@
 # Strategy storage — table design (DB-only)
 
-> **STATUS: IMPLEMENTED.** The `strategy_rules` / `strategy_runs` / `strategy_run_metrics` /
-> `strategy_positions` tables, indexes, and `strategy_position_pnl` view described here are
-> shipped as part of live-lab-remake Phase 1 (`d62111f`). This file is the canonical schema
-> reference. The unified `StrategyRepo` in `trading_core/src/storage/repositories/strategy_repo.rs`
-> spans all four tables. Note: `strategy_run_metrics` needs a `n_exit_next_kill` column when
-> `swing1` (Phase 1d of `swing1-plan.md`) is implemented.
-
 Shared tables keyed by `strategy_id` — **rules**, **runs** (+ a 1:1 **metrics**
 child), **positions** — so a new strategy adds **rows, not tables**.
 

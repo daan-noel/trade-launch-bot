@@ -1,18 +1,6 @@
 # Database — schema & repositories
 
-> **Live/lab remake Phase 1 (clean rebuild) applied.** `trading_core/migrations/0001_init.sql`
-> was rewritten as a **TimescaleDB** clean rebuild; the per-table designs below are superseded by
-> the four storage plans (now the source of truth): `token-storage-plan.md`, `trades-storage-plan.md`,
-> `raw-txs-storage-plan.md`, `strategy-storage-plan.md` + `timescaledb-plan.md`. Highlights:
-> `tokens`(mint PK)/`tokens_info`/`token_sync_state`; `trades` & `raw_txs` are **hypertables** on
-> `block_time` with `add_compression_policy`/`add_retention_policy` (trades 7d/30d, raw 2d/7d) — the
-> old `maintenance.rs` partition loop is deleted; integer base units, **BYTEA** signatures, wallet
-> interning (`wallet_dict` → `trades.wallet_id`), `real_*_reserves` dropped; unified
-> `strategy_rules`/`strategy_runs`/`strategy_run_metrics`/`strategy_positions` replace the tpsl1/2
-> tables; views `token_overview`/`trades_priced`/`strategy_position_pnl`; OHLCV continuous aggregates
-> (`trades_ohlcv_1m`/`_5m`/`_1h`) created at boot by `trading_core::storage::timescale::setup_caggs`.
-> sqlx is **runtime-checked** (no compile-time SQL validation). The prose below is the pre-rebuild
-> shape and is being migrated; trust the storage plans + `0001_init.sql`.
+> Deep-dive schema reference lives in `@plans/database/`: [token-storage.md](@plans/database/token-storage.md), [trades-storage.md](@plans/database/trades-storage.md), [raw-txs-storage.md](@plans/database/raw-txs-storage.md), [strategy-storage.md](@plans/database/strategy-storage.md). The overview below is the canonical map; the plans have column rationale, index decisions, TimescaleDB config, and open design questions.
 
 sqlx + Postgres. Raw SQL lives **only** in `trading_core/src/storage/repositories/*`. **Two migration sets, applied by separate runners so lab-only tables never reach EC2/live:**
 
@@ -25,8 +13,8 @@ Deep-dive detail: `@plans/database/db-pool-routing.md`, `@plans/database/db-patt
 `storage/postgres.rs::connect()` builds three workload-isolated `PgPool`s (`DbPools { hot, api, batch }`):
 
 - **hot** (default 64 conn) — ingest DbWriter, StrategyRunner, maintenance, seed. In `main.rs` as `db`.
-- **api** (default 32 conn) — `AppState.db`; fast HTTP handlers; 8s `statement_timeout`.
-- **batch** (default 16 conn) — `AppState.batch_db`; grouped sweeps, backtests, token_sync backfill. No statement timeout.
+- **api** (default 32 conn) — `CoreState.db()`; fast HTTP handlers; 8s `statement_timeout`.
+- **batch** (default 16 conn) — `CoreState.batch_db()`; grouped sweeps, backtests, token_sync backfill. No statement timeout.
 
 ## Amount typing — "type by real-world meaning"
 
@@ -60,12 +48,12 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
 - `tokens_analysis` — mint_address, analyzer_name, score, indicators(JSONB)
 - `creator_profiles` — wallet_address, tokens_created, suspiciousness_score, indicators(JSONB)
 
-### TPSL strategy (tpsl2 mirrors tpsl1 + extra scalp gate columns)
+### Strategy (unified across all strategies — rows not tables per strategy)
 
-- `tpsl1_strategy_rules` — entry params, exit params (trailing_stop_pct, time_stop_secs, stall_secs, liquidity_drop_pct, take_profit, stop_loss), buy_amount, trade_mode, is_active
-- `tpsl1_real_positions` — mint, wallet, status(`Arming`/`BuySubmitted`/`Holding`/`ExitPending`/`End`/`ExitFailed`), entry/exit tx_signatures(JSONB arrays), submitted_buy_signatures(TEXT[]), token amounts (not SOL)
-- `tpsl1_paper_test_run` / `tpsl1_paper_positions` — mirrors real, no tx uniqueness
-- `tpsl2_*` adds scalp gate columns + `target_*` columns (trigger trade, distinct from entry fill)
+- `strategy_rules` — `strategy_id` discriminator, `buy_amount`, `trade_mode`, `is_active`, `max_concurrent_tokens`, `max_total_tokens`, `params`(JSONB with strategy-specific gates). See [strategy-storage.md](@plans/database/strategy-storage.md).
+- `strategy_runs` — one activation session; `run_seq` monotonic per `(rule, mode)`; `params_snapshot` frozen at activation
+- `strategy_run_metrics` — 1:1 finalize-time rollup (`win_rate`, `total_pnl_sol`, exit-reason mix, etc.)
+- `strategy_positions` — one bot-opened position; `status`(`Arming`/`BuySubmitted`/`Holding`/`ExitPending`/`End`/`ExitFailed`); amounts as BIGINT (lamports/raw units); `submitted_buy_signatures TEXT[]` for in-flight recovery
 
 ### Grouped param-sweep (per-strategy triples; generic table-name-driven repo)
 
@@ -93,12 +81,10 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
 | `grouped_sweep_repo.rs` | `<strategy>_grouped_sweep_*` | incremental writes: `insert_run`, `append_group`, `finalize_completed`, `mark_cancelled`; compaction: `fetch_combo_metrics_for_group`, `delete_combos_except`, `vacuum_full_results` |
 | `wallet_repo.rs` | wallets | `touch_last_seen_many` |
 | `wallet_profile_repo.rs` / `wallet_profile_tag_repo.rs` | wallet_profiles, tags | CRUD |
-| `tpsl1_strategy_rule_repo.rs` / `tpsl2_*` | tpsl{1,2}_strategy_rules | `find_all`, `find_by_id`, `update`, `delete` |
-| `tpsl1_position_repo.rs` / `tpsl2_*` | tpsl{1,2}_real_positions | `update_entry`, `mark_buy_submitted`, `find_all_holding`, `find_all_exit_pending`, `find_all_buy_submitted`, `fail_stale_exit_pending`, `delete_stale_unentered` |
-| `tpsl1_paper_trading_repo.rs` / `tpsl2_*` | tpsl{1,2}_paper* | `start/current/resume/mark` run; position CRUD; `clear_runs` |
+| `strategy_repo.rs` | strategy_rules, strategy_runs, strategy_run_metrics, strategy_positions | `find_rule`, `insert_run`, `insert_position`, `update_position_status`, `mark_buy_submitted`, `find_all_holding`, `find_all_exit_pending`, `find_all_buy_submitted`, `fail_stale_exit_pending`, `finalize_run` |
 
 ## Rules
 
 - Always bound queries — paginate/time-window/stream. Never `SELECT *` full `trades`/`raw_txs`.
-- New high-volume tables → partition+retention pattern via `ingest_laserstream/maintenance.rs`.
+- New high-volume tables → TimescaleDB hypertable with `add_compression_policy` + `add_retention_policy` (see `@plans/database/trades-storage.md` for the pattern). `maintenance.rs` is deleted.
 - Bulk-insert must chunk by `floor(65535 / binds_per_row)` — sqlx 0.6 has no guard against the 65535 bind-param ceiling.

@@ -1,10 +1,5 @@
 # Raw transactions storage — table design (DB-only)
 
-> **STATUS: IMPLEMENTED.** The `raw_txs` hypertable, compression/retention policies,
-> and `BYTEA` payload design described here are shipped as part of live-lab-remake
-> Phase 1 (`d62111f`). This file is the canonical schema reference. Crate paths use
-> `ingest-laserstream/src/` and `trading_core/src/storage/repositories/`.
-
 The **source-of-truth feed**: the full, unparsed transaction payload. `trades` is a
 *typed projection* of this table — `ix_labels`, and anything else you didn't promote
 to a typed column, is **re-derived from here** by joining on `(block_time,
@@ -14,7 +9,7 @@ This is the **heaviest write table in the system** (every tx, full payload), so 
 whole design is "store the least possible, parse on demand, drop it soonest."
 
 Scope: **table structure only** (no repos / Rust / ingest pipeline). Partitioning via
-**TimescaleDB**, aligned with [trades-storage-plan.md](trades-storage-plan.md) so the
+**TimescaleDB**, aligned with [trades-storage.md](trades-storage.md) so the
 two feeds share a `block_time` axis (chunk-aligned joins, parallel retention).
 Replaces the old `raw_transactions` table.
 

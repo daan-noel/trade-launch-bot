@@ -100,8 +100,8 @@ Stay in the owning crate (`trading_core` / `pump-trader` / `ingest-laserstream` 
 - **Frontend:** `npm run build` clean; no extra re-render on SOL/USD tick or live-trade stream
 - **Docs — update ALL affected tiers:**
   - Rules/commands/constraints changed → **CLAUDE.md**
-  - Module structure/data flow/behavior changed → **@arch/[subsystem].md**
-  - Implementation detail/algorithm/decision changed → **@plans/[subsystem]/[topic].md**
+  - Module structure/data flow/behavior changed → **@arch/[subsystem].md** *(high-level map: crates, files, data flow)*
+  - Implementation detail/algorithm/decision changed → **@plans/[subsystem]/[topic].md** *(deep-dive: column rationale, invariants, tuning constants, design decisions — permanent reference docs, not temporary plans)*
 - Stayed in the owning crate, no new warnings, no secrets in code
 
 ## .env management

@@ -1,14 +1,8 @@
 # Trades storage — table design (DB-only)
 
-> **STATUS: IMPLEMENTED.** The `trades` hypertable, indexes, compression/retention
-> policies, `trades_ohlcv_1m` CAgg, and `trades_priced` view described here are shipped
-> as part of live-lab-remake Phase 1 (`d62111f`). This file is the canonical schema
-> reference. `ON CONFLICT DO NOTHING` is in effect (`trade_repo.rs`). `maintenance.rs`
-> is deleted. Crate paths use `trading_core/src/storage/repositories/`.
-
 The high-volume append-only feed (the LaserStream transport *is* this table), and
 **both live ingest and sync/backfill write to it**. It is a **typed projection of
-[raw_txs](raw-txs-storage-plan.md)** — anything not promoted to a typed column here is
+[raw_txs](raw-txs-storage.md)** — anything not promoted to a typed column here is
 re-derived from the raw payload. At massive write volume on a RAM-constrained box,
 every byte/row and every index is a cost — so the goal is the narrowest *exact* row
 that still serves mint/time reads, exactly-once dedup, **deterministic chain-execution
@@ -16,8 +10,8 @@ ordering**, and **wall-clock candle rollups**.
 
 Scope: **table structure only** (no repos / Rust / ingest pipeline). Partitioning is
 delegated to **TimescaleDB** (see below). Consistent with
-[strategy-storage-plan.md](strategy-storage-plan.md) and
-[token-storage-plan.md](token-storage-plan.md) conventions (natural keys, integer base
+[strategy-storage.md](strategy-storage.md) and
+[token-storage.md](token-storage.md) conventions (natural keys, integer base
 units, derive-don't-store).
 
 ---
@@ -31,7 +25,7 @@ units, derive-don't-store).
 2. **No surrogate key; the dedup key *is* the PK.** Nothing references a trade by `id`;
    the unique dedup key must exist anyway → make it the PK, drop the UUID.
 3. **Derive-don't-store.** `price_per_token = sol_amount / token_amount` is derived in a
-   read view; `ix_labels` is derived from [raw_txs](raw-txs-storage-plan.md). Neither is
+   read view; `ix_labels` is derived from [raw_txs](raw-txs-storage.md). Neither is
    stored per row.
 4. **One fact, one column.** No two columns encode the same thing (`trade_type` already
    carried direction → `ix_type` removed).
@@ -86,7 +80,7 @@ Anchored to a real row (`sol=0.444288877`, `token=11758458159300`,
 | `id UUID` | **drop** — unreferenced; PK is the dedup key |
 | `ix_type` (`'Sell'`) | **drop** — ≡ `trade_type` |
 | `price_per_token` | **drop → derive** (`= sol_amount / token_amount`) |
-| `ix_labels` | **drop → derive** from [raw_txs](raw-txs-storage-plan.md) on `(block_time, tx_signature)` |
+| `ix_labels` | **drop → derive** from [raw_txs](raw-txs-storage.md) on `(block_time, tx_signature)` |
 | `sol_amount` / `token_amount` / `*_reserves` | → `BIGINT` base units |
 | `block_time` | **keep, re-scoped** — partition + candle-bucket dimension (NOT an order key) |
 | `received_at` | **drop** — not an order key; was a dup of the ingest clock |
@@ -178,7 +172,7 @@ Gotchas
 - **Compressed chunks are append-tolerant but update/delete-hostile** — fine here
   (trades are immutable once written).
 - Apply the same hypertable treatment to the sibling
-  [raw_txs](raw-txs-storage-plan.md) feed (also on `block_time`, shorter retention).
+  [raw_txs](raw-txs-storage.md) feed (also on `block_time`, shorter retention).
 
 ---
 
@@ -215,7 +209,7 @@ SELECT add_continuous_aggregate_policy('trades_ohlcv_1m',
   not re-scans of `trades`.
 - **Feeds `tokens_info`:** `volume`/`ath_price` can be maintained incrementally off this
   rollup instead of scanning raw trades — ties into
-  [token-storage-plan.md](token-storage-plan.md).
+  [token-storage.md](token-storage.md).
 
 ---
 
@@ -247,7 +241,7 @@ roughly highest payoff first:
    per-block tx counts are well under 2³¹).
 4. **Reserves audit.** The four `*_reserves` are 32 bytes/row. `virtual_*` drive price;
    `real_*` track migration progress only. If nothing analyzes migration from `trades`,
-   drop `real_*` (re-derivable from [raw_txs](raw-txs-storage-plan.md)). Keep `virtual_*`
+   drop `real_*` (re-derivable from [raw_txs](raw-txs-storage.md)). Keep `virtual_*`
    on the hot read path. Domain call.
 5. **Keep `trade_type`/`venue` as TEXT** — low-cardinality, compression makes them ~free;
    an enum buys almost nothing and costs ergonomics.
@@ -256,7 +250,7 @@ roughly highest payoff first:
 
 ## Open design questions
 
-- **`ix_labels`** — derived from [raw_txs](raw-txs-storage-plan.md) (chosen). Promote a
+- **`ix_labels`** — derived from [raw_txs](raw-txs-storage.md) (chosen). Promote a
   specific label back to a typed `trades` column only if you `WHERE` on it at volume *and*
   the derive window (raw_txs retention) is too short for that query.
 - **`real_*_reserves`** — keep vs drop-and-derive (lever 4).

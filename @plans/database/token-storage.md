@@ -1,10 +1,5 @@
 # Token storage — table design (DB-only)
 
-> **STATUS: IMPLEMENTED.** The `tokens` / `tokens_info` / `token_sync_state` tables,
-> indexes, and `token_overview` view described here are shipped as part of live-lab-remake
-> Phase 1 (`d62111f`). This file is the canonical schema reference — consult it when
-> adding columns or repos. Crate paths use `trading_core/src/storage/repositories/`.
-
 Three tables, one row per token, **keyed by `mint_address` (natural key)** —
 split by **write pattern**, not just by concept:
 
@@ -15,7 +10,7 @@ split by **write pattern**, not just by concept:
 | `token_sync_state` | hot-updated (every sync) | per-venue ingest watermarks |
 
 Scope: **table structure only** (no repos / Rust / API / frontend). Designed for
-a clean rebuild — consistent with [strategy-storage-plan.md](strategy-storage-plan.md)
+a clean rebuild — consistent with [strategy-storage.md](strategy-storage.md)
 conventions (natural keys, typed-when-sorted, JSONB-when-variable, derive-don't-store,
 child table for repeated groups).
 
