@@ -86,6 +86,10 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 "/strategies/tpsl1/rules/{rule_id}/paper-result",
                 web::delete().to(handlers::strategies::tpsl1::clear_paper_result_tpsl_rule),
             )
+            .route(
+                "/strategies/tpsl1/rules/{rule_id}/matched",
+                web::get().to(handlers::strategies::tpsl1::get_matched_tokens),
+            )
             // ── Strategy rule authoring + backtest — tpsl_sniper_2 ──
             .route(
                 "/strategies/tpsl2/rules",
@@ -122,6 +126,10 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
             .route(
                 "/strategies/tpsl2/rules/{rule_id}/paper-result",
                 web::delete().to(handlers::strategies::tpsl2::clear_paper_result_tpsl_rule),
+            )
+            .route(
+                "/strategies/tpsl2/rules/{rule_id}/matched",
+                web::get().to(handlers::strategies::tpsl2::get_matched_tokens),
             )
             // ── Grouped param-sweeps (generic across strategies) ──
             .route(

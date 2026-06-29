@@ -9,9 +9,12 @@
 //!     decision layer.
 //!   - `paper-result` (read) + `clear_paper-result` — read/clear the persisted
 //!     paper runs (authored on the deploy box, restored here via a DB snapshot).
+//!   - `matched` — the whole-`tokens`-table entry-criteria scan backing the page's
+//!     "Matched Tokens" view. Pure DB analysis (no keys / no gRPC), so it lives on
+//!     the analysis box alongside `simulate`, sharing its candidate predicate.
 //!
-//! Live-only concerns (lifecycle activate/pause/stop, matched tokens, real
-//! positions) are deploy's and are not served here. Runtime performance counters
+//! Live-only concerns (lifecycle activate/pause/stop, real positions) are deploy's
+//! and are not served here. Runtime performance counters
 //! (open/total/win/loss) are always zero locally — there is no runtime cache — so
 //! the rule list reflects authoring state, not live activity.
 
@@ -322,6 +325,127 @@ where
     DateTime::parse_from_rfc3339(&iso)
         .map(|d| Some(d.with_timezone(&Utc)))
         .map_err(serde::de::Error::custom)
+}
+
+// ---------------------------------------------------------------------------
+// Matched tokens (whole-table entry-criteria scan)
+// ---------------------------------------------------------------------------
+
+/// Upper bound on matched rows returned to the page. When hit, the true total is
+/// included in the response so the frontend can inform the user. Mirrors the
+/// paper-result cap (`PAPER_RESULT_MAX_TOKENS`).
+const MATCHED_RESULT_CAP: usize = 5_000;
+
+/// Sparse projection of a matched token sent to the page (enrichment columns are
+/// hydrated client-side via the batch endpoint). Field-for-field the frontend's
+/// `MatchedTokenRecord`.
+#[derive(Serialize)]
+pub struct MatchedTokenResult {
+    pub mint: String,
+    pub symbol: String,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    pub initial_buy_sol: Option<f64>,
+    pub cu_limit: Option<u64>,
+    pub cu_price: Option<u64>,
+}
+
+#[derive(Serialize)]
+pub struct MatchedTokensResponse {
+    pub tokens: Vec<MatchedTokenResult>,
+    pub total: usize,
+    pub capped: bool,
+}
+
+/// Return the tokens in the database that satisfy a rule's **entry** criteria.
+///
+/// Scans the **whole** `tokens` table (keyset-streamed via
+/// [`analysis::collect_matching_tokens`], decoupled from any live cache so an old,
+/// evicted-but-matching mint is still found), optionally bounded to `?from=&to=`
+/// by `created_at`. Only the sparse matches stay resident. Same `keep` predicate
+/// the backtest uses (`token_matches_buy_rule`), so matched and simulate agree.
+/// Runs on the dedicated `batch_db` pool so the scan never starves dashboard reads.
+///
+/// GET /api/strategies/tpsl1/rules/{rule_id}/matched
+pub async fn get_matched_tokens(
+    app_state: web::Data<Arc<LocalState>>,
+    rule_id: web::Path<Uuid>,
+    range: web::Query<AnalysisRange>,
+) -> impl Responder {
+    let rule_id = rule_id.into_inner();
+
+    // Load the unified rule and rebuild the typed decision rule. A rule_id that
+    // resolves to a different strategy is "not found" for this tpsl1 endpoint.
+    let strategy_rule = match app_state.strategy_repo().find_rule(rule_id).await {
+        Ok(Some(r)) if r.strategy_id == STRATEGY_ID => r,
+        Ok(_) => {
+            return HttpResponse::NotFound().json(json!({"error": "Rule not found"}));
+        }
+        Err(e) => {
+            tracing::error!("Failed to get rule {rule_id}: {e}");
+            return HttpResponse::InternalServerError().json(json!({"error": "Failed to get rule"}));
+        }
+    };
+    let rule = match trading_core::strategies::registry::tpsl1_decision_rule(&strategy_rule) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("invalid tpsl1 rule params for {rule_id}: {e}");
+            return HttpResponse::InternalServerError()
+                .json(json!({"error": "Invalid rule params"}));
+        }
+    };
+
+    // Heavy whole-table scan on the batch pool. Exclude Mayhem-Mode tokens to match
+    // the backtest's candidate set exactly (see `tpsl_sniper_1::backtest`).
+    let repo = trading_core::storage::repositories::token_repo::TokenRepo::new(
+        app_state.batch_db.clone(),
+    );
+    let matched = trading_core::strategies::analysis::collect_matching_tokens(
+        &repo,
+        range.from,
+        range.to,
+        |t| {
+            !t.is_mayhem_mode
+                && trading_core::strategies::tpsl_sniper_1::entry::token_matches_buy_rule(t, &rule)
+        },
+    )
+    .await;
+
+    let mut tokens = match matched {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!("matched-token scan failed: {e}");
+            return HttpResponse::InternalServerError()
+                .json(json!({"error": "Failed to build matched tokens"}));
+        }
+    };
+
+    let total = tokens.len();
+    let capped = total > MATCHED_RESULT_CAP;
+    if capped {
+        tracing::warn!(
+            rule_id = %rule_id,
+            matched = total,
+            cap = MATCHED_RESULT_CAP,
+            "matched-token result capped; narrow the from/to range to see the rest"
+        );
+        tokens.truncate(MATCHED_RESULT_CAP);
+    }
+
+    let results: Vec<MatchedTokenResult> = tokens
+        .into_iter()
+        .map(|t| MatchedTokenResult {
+            mint: t.mint_address,
+            symbol: t.symbol,
+            name: t.name,
+            created_at: t.created_at,
+            initial_buy_sol: t.initial_buy_sol,
+            cu_limit: t.cu_limit,
+            cu_price: t.cu_price,
+        })
+        .collect();
+
+    HttpResponse::Ok().json(MatchedTokensResponse { tokens: results, total, capped })
 }
 
 /// Start a TPSL1 rule backtest as a detached background job and return at once.

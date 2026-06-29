@@ -7,9 +7,11 @@
 //!     `rules_changed` SSE, and **no** live-freeze guard.
 //!   - `simulate` / `cancel_simulate` — the detached backtest.
 //!   - `paper-result` (read) + `clear_paper-result`.
+//!   - `matched` — the whole-`tokens`-table entry-criteria scan (uses the same
+//!     `token_criteria_satisfied` pre-filter as the tpsl2 backtest).
 //!
-//! Live-only concerns (lifecycle, matched, real positions) are deploy's. Runtime
-//! counters are always 0 locally — there is no runtime cache.
+//! Live-only concerns (lifecycle, real positions) are deploy's. Runtime counters
+//! are always 0 locally — there is no runtime cache.
 
 use actix_web::{web, HttpResponse, Responder};
 use chrono::{DateTime, Utc};
@@ -307,6 +309,123 @@ where
     DateTime::parse_from_rfc3339(&iso)
         .map(|d| Some(d.with_timezone(&Utc)))
         .map_err(serde::de::Error::custom)
+}
+
+// ---------------------------------------------------------------------------
+// Matched tokens (whole-table entry-criteria scan)
+// ---------------------------------------------------------------------------
+
+/// Upper bound on matched rows returned to the page; the true total still rides
+/// in the response so the frontend can flag the cap. Mirrors the tpsl1 cap.
+const MATCHED_RESULT_CAP: usize = 5_000;
+
+/// Sparse projection of a matched token (enrichment hydrated client-side via the
+/// batch endpoint). Field-for-field the frontend's `MatchedTokenRecord`.
+#[derive(Serialize)]
+pub struct MatchedTokenResult {
+    pub mint: String,
+    pub symbol: String,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    pub initial_buy_sol: Option<f64>,
+    pub cu_limit: Option<u64>,
+    pub cu_price: Option<u64>,
+}
+
+#[derive(Serialize)]
+pub struct MatchedTokensResponse {
+    pub tokens: Vec<MatchedTokenResult>,
+    pub total: usize,
+    pub capped: bool,
+}
+
+/// Return the tokens that satisfy a tpsl2 rule's token-level entry criteria.
+///
+/// Scans the **whole** `tokens` table (keyset-streamed via
+/// [`analysis::collect_matching_tokens`], decoupled from any live cache),
+/// optionally bounded to `?from=&to=` by `created_at`. Only sparse matches stay
+/// resident. Uses the **same** `token_criteria_satisfied` pre-filter the tpsl2
+/// backtest uses (NOT `token_matches_buy_rule`): tpsl2's real gating is the
+/// scalp trade-window logic, so the token-level filter passes a no-criteria rule
+/// vacuously — matched must agree with simulate's candidate set. Runs on the
+/// `batch_db` pool so the scan never starves dashboard reads.
+///
+/// GET /api/strategies/tpsl2/rules/{rule_id}/matched
+pub async fn get_matched_tokens(
+    app_state: web::Data<Arc<LocalState>>,
+    rule_id: web::Path<Uuid>,
+    range: web::Query<AnalysisRange>,
+) -> impl Responder {
+    let rule_id = rule_id.into_inner();
+
+    let strategy_rule = match app_state.strategy_repo().find_rule(rule_id).await {
+        Ok(Some(r)) if r.strategy_id == STRATEGY_ID => r,
+        Ok(_) => {
+            return HttpResponse::NotFound().json(json!({"error": "Rule not found"}));
+        }
+        Err(e) => {
+            tracing::error!("Failed to get rule {rule_id}: {e}");
+            return HttpResponse::InternalServerError().json(json!({"error": "Failed to get rule"}));
+        }
+    };
+    let rule = match trading_core::strategies::registry::tpsl2_decision_rule(&strategy_rule) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("invalid tpsl2 rule params for {rule_id}: {e}");
+            return HttpResponse::InternalServerError()
+                .json(json!({"error": "Invalid rule params"}));
+        }
+    };
+
+    let repo = trading_core::storage::repositories::token_repo::TokenRepo::new(
+        app_state.batch_db.clone(),
+    );
+    let matched = trading_core::strategies::analysis::collect_matching_tokens(
+        &repo,
+        range.from,
+        range.to,
+        |t| {
+            !t.is_mayhem_mode
+                && trading_core::strategies::tpsl_sniper_2::entry::token_criteria_satisfied(t, &rule)
+        },
+    )
+    .await;
+
+    let mut tokens = match matched {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!("matched-token scan failed: {e}");
+            return HttpResponse::InternalServerError()
+                .json(json!({"error": "Failed to build matched tokens"}));
+        }
+    };
+
+    let total = tokens.len();
+    let capped = total > MATCHED_RESULT_CAP;
+    if capped {
+        tracing::warn!(
+            rule_id = %rule_id,
+            matched = total,
+            cap = MATCHED_RESULT_CAP,
+            "matched-token result capped; narrow the from/to range to see the rest"
+        );
+        tokens.truncate(MATCHED_RESULT_CAP);
+    }
+
+    let results: Vec<MatchedTokenResult> = tokens
+        .into_iter()
+        .map(|t| MatchedTokenResult {
+            mint: t.mint_address,
+            symbol: t.symbol,
+            name: t.name,
+            created_at: t.created_at,
+            initial_buy_sol: t.initial_buy_sol,
+            cu_limit: t.cu_limit,
+            cu_price: t.cu_price,
+        })
+        .collect();
+
+    HttpResponse::Ok().json(MatchedTokensResponse { tokens: results, total, capped })
 }
 
 /// Start a TPSL2 rule backtest as a detached background job and return at once.

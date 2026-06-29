@@ -33,7 +33,14 @@ docker compose -f docker-compose.dev.yml down -v             # stop + WIPE volum
 
 # Lake export (batch, one-off container):
 docker compose -f docker-compose.dev.yml run --rm lab lab lake-export
+docker compose -f docker-compose.dev.yml run --rm lab lab lake-export --include-today
 ```
+
+> `lake-export` exports only **sealed** (settled, strictly-before-today UTC) days
+> into the Parquet lake, skipping any day whose immutable file already exists.
+> Add `--include-today` to also export today's still-open day as a non-immutable
+> snapshot (force-overwriting it each run). The lake is the sole sweep corpus, so
+> `--include-today` is the **only** way to sweep current-day data.
 
 Published ports (override via `LIVE_HOST_PORT` / `LAB_HOST_PORT` in `.env`):
 `live` → `:8081`, `lab` → `:8082`, postgres → `:5555` (`POSTGRES_HOST_PORT`).
@@ -53,7 +60,8 @@ Needs a Postgres reachable at `DATABASE_URL`. Run bins directly:
 cargo run -p live                 # needs Postgres + Helius gRPC
 cargo run -p lab                  # needs Postgres only (NO keys / NO gRPC)
 $env:PORT=8082; cargo run -p lab  # run lab beside live (live keeps 8081)
-cargo run -p lab -- lake-export   # export sealed days -> Parquet lake
+cargo run -p lab -- lake-export                  # export sealed days -> Parquet lake
+cargo run -p lab -- lake-export --include-today  # also export today's open day (sweep current-day data)
 ```
 
 ---
