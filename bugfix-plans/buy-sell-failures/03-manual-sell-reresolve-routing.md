@@ -1,5 +1,10 @@
 # B3 — Manual-sell: re-resolve routing inside the clear loop (Fix 2) — P0
 
+> ✅ **DONE** (2026-06-29, branch `split`). `resolve_buy_routing` (retried, B6) now runs at the top of
+> each clear-loop pass in [live/src/api/handlers/trading/solana.rs](../../live/src/api/handlers/trading/solana.rs);
+> `is_cashback`/`is_migrated` are re-read per pass, so a mid-loop migration re-routes to AMM instead of
+> looping `Custom(6005)`. Landed together with B1 + B6. `cargo check -p live` clean.
+>
 > Workstream B (buy-sell-failures). Builds on [Fix 01](01-manual-sell-6024-cashback.md) — it
 > relocates the same `routing` resolution. Land 01 first, then this.
 > Paths are pre-crate-split — see [../README.md](../README.md#-path-caveat--line-refs-predate-the-crate-split).

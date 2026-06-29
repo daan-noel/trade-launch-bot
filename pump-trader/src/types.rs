@@ -70,6 +70,12 @@ pub struct BuyRouting {
     pub creator: String,
     pub token_program_id: String,
     pub is_migrated: bool,
+    /// Cashback flag read live from the bonding curve (create_v2 byte @82). Gates
+    /// the curve **sell**'s `user_volume_accumulator` account; resolved here so a
+    /// manual sell never has to fall back to a stale `token_cache` value (the
+    /// `Custom(6024)` missing-UVA bug). The AMM reads cashback from the pool, so
+    /// this only matters pre-migration.
+    pub cashback_enabled: bool,
     /// Parsed forms of the fields above, carried so the curve-buy path reuses the
     /// parse [`crate::PumpFunTrader::resolve_buy_routing`] already did instead of
     /// re-parsing the same strings. (Skipped in the serialized view, which only

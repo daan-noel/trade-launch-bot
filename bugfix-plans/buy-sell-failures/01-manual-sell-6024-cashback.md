@@ -1,5 +1,12 @@
 # B1 — Manual-sell `Custom(6024)`: missing UVA on cashback token (Fix 1) — P0
 
+> ✅ **DONE** (2026-06-29, branch `split`). Implemented together with [B3](03-manual-sell-reresolve-routing.md)
+> + [B6](06-resolve-routing-retry.md). `BuyRouting` gained a `cashback_enabled` field
+> (`resolve_buy_routing` dropped it, so the plan's "1-line `routing.cashback_enabled`" wasn't literally
+> available); `manual_sell` now reads `is_cashback = routing.cashback_enabled` per clear-loop pass in
+> [live/src/api/handlers/trading/solana.rs](../../live/src/api/handlers/trading/solana.rs). Verified:
+> `cargo check -p live -p pump-trader` clean, `cargo test -p pump-trader` 30/30.
+>
 > Workstream B (buy-sell-failures). **The 1-line fix** for the reported 6024. This file replaces
 > the old standalone `fix-6024-cashback-sell-bug.md` (its Fix 1) — that file was a subset of the
 > audit and has been removed. Bot-path equivalent is [Fix 04](04-bot-curve-sell-revert-recovery.md).

@@ -47,6 +47,32 @@ pub struct SellRequest {
     pub slippage_bps: Option<u64>,
 }
 
+/// `resolve_buy_routing` with a tiny retry (B6). It does one `getMultipleAccounts`;
+/// a transient RPC blip would otherwise fail the whole manual trade with a 400/500.
+/// Off the hot path (manual handlers only), bounded to 2 attempts with a short
+/// backoff. Returns the last error untouched so the caller's status mapping is
+/// unchanged on a real (non-transient) failure.
+async fn resolve_buy_routing_retry(
+    trader: &pump_trader::PumpFunTrader,
+    mint: &str,
+) -> Result<pump_trader::BuyRouting, pump_trader::TradeError> {
+    const ATTEMPTS: usize = 2;
+    let mut last_err = None;
+    for attempt in 1..=ATTEMPTS {
+        match trader.resolve_buy_routing(mint).await {
+            Ok(r) => return Ok(r),
+            Err(e) => {
+                if attempt < ATTEMPTS {
+                    tracing::debug!("resolve_buy_routing attempt {attempt} failed for {mint}: {e}; retrying");
+                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                }
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.expect("loop runs at least once"))
+}
+
 fn resolve_buy_slippage(app_state: &DeployState, request: Option<u64>) -> Option<u64> {
     let s = app_state.settings();
     resolve_buy_slippage_bps(s.buy_slippage_bps, s.slippage_bps, request)
@@ -96,7 +122,7 @@ pub async fn manual_buy(
     // Resolve routing facts (creator, token program, migration status) from
     // chain — the source of truth, so a typed-in mint the cache has never seen,
     // a just-migrated token, or a Token-2022 mint all route correctly.
-    let routing = match app_state.trader.resolve_buy_routing(&body.mint).await {
+    let routing = match resolve_buy_routing_retry(&app_state.trader, &body.mint).await {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!("manual_buy: resolve_buy_routing failed for {}: {e}", body.mint);
@@ -163,28 +189,6 @@ pub async fn manual_sell(
     }
     let token_account_override = body.token_account.as_deref();
 
-    // Resolve routing live on-chain — same as manual_buy. The in-memory
-    // token_cache can be stale or empty for a freshly-migrated token, and a
-    // false `is_migrated` would misroute a migrated sell to the bonding curve,
-    // which the on-chain program rejects with BondingCurveComplete (6005).
-    let routing = match app_state.trader.resolve_buy_routing(&body.mint).await {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!("manual_sell: resolve_buy_routing failed for {}: {e}", body.mint);
-            return HttpResponse::BadRequest()
-                .json(serde_json::json!({ "error": format!("Could not resolve token: {e}") }));
-        }
-    };
-
-    // is_cashback only gates the bonding-curve sell's cashback account; the AMM
-    // reads it from the pool on-chain. Pull it from the cache when present (the
-    // Ref is dropped within this statement, never held across an await).
-    let is_cashback = app_state
-        .token_cache
-        .get(&body.mint)
-        .map(|e| e.token.is_cashback_enabled)
-        .unwrap_or(false);
-
     let slippage = resolve_sell_slippage(&app_state, body.slippage_bps);
     let wallet = app_state.trader.wallet_pubkey();
 
@@ -197,6 +201,27 @@ pub async fn manual_sell(
     let mut sold_any = false;
     let mut last_err: Option<String> = None;
     for pass in 0..SELL_ALL_MAX_PASSES {
+        // Resolve routing live on-chain EACH pass (B3). The in-memory token_cache
+        // can be stale/empty for a freshly-migrated token, and a token can migrate
+        // mid-loop — a once-resolved `is_migrated=false` would route every pass to
+        // the bonding curve, which the program rejects with BondingCurveComplete
+        // (6005). Re-resolving per pass also keeps `is_cashback` fresh. Retried (B6)
+        // so a transient getMultipleAccounts blip doesn't fail the trade.
+        let routing = match resolve_buy_routing_retry(&app_state.trader, &body.mint).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("manual_sell: resolve_buy_routing failed for {}: {e}", body.mint);
+                last_err = Some(format!("Could not resolve token: {e}"));
+                break;
+            }
+        };
+        // is_cashback gates only the bonding-curve sell's user_volume_accumulator
+        // account; the AMM reads cashback from the pool on-chain. Take it from the
+        // live routing read (B1) — NOT the token_cache, which is empty/stale for a
+        // manual sell with no buy this session and caused the Custom(6024) missing-UVA
+        // revert.
+        let is_cashback = routing.cashback_enabled;
+
         let amount = match app_state.trader.get_token_balance(&wallet, &body.mint).await {
             Ok(b) => b.amount,
             Err(e) => {

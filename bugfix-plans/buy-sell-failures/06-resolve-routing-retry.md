@@ -1,5 +1,9 @@
 # B6 — `resolve_buy_routing` small retry (Fix 6) — P1
 
+> ✅ **DONE** (2026-06-29, branch `split`). Added `resolve_buy_routing_retry` (2 attempts, 150ms backoff)
+> in [live/src/api/handlers/trading/solana.rs](../../live/src/api/handlers/trading/solana.rs); both
+> `manual_buy` and `manual_sell` now call it instead of the bare `resolve_buy_routing`. `cargo check -p live` clean.
+>
 > Workstream B (buy-sell-failures). Independent; no dependencies.
 > Paths are pre-crate-split — see [../README.md](../README.md#-path-caveat--line-refs-predate-the-crate-split).
 
