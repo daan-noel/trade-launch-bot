@@ -2,7 +2,6 @@
 import type {
   GroupedSweepRunRecord,
   GroupedSweepGroupRecord,
-  GroupedSweepResultRecord,
   GroupedSweepStartArgs,
   ComboTokenResult,
 } from '@lab/components/sweep/groupedTypes';
@@ -116,14 +115,9 @@ export const labApi = baseApi.injectEndpoints({
         `/api/strategies/sweeps/${encodeURIComponent(runId)}/groups?strategy_id=${encodeURIComponent(strategyId)}`,
       keepUnusedDataFor: 120,
     }),
-    getGroupedSweepResults: builder.query<
-      GroupedSweepResultRecord[],
-      { strategyId: string; runId: string; groupId: string }
-    >({
-      query: ({ strategyId, runId, groupId }) =>
-        `/api/strategies/sweeps/${encodeURIComponent(runId)}/groups/${encodeURIComponent(groupId)}/results?strategy_id=${encodeURIComponent(strategyId)}`,
-      keepUnusedDataFor: 120,
-    }),
+    // NOTE: per-group results are read via the NDJSON streaming reader in
+    // `useStreamedSweepResults` (the backend `results` route streams
+    // application/x-ndjson and needs page/limit/sort) — not an RTK query.
     getComboTokenResults: builder.query<
       ComboTokenResult[],
       { strategyId: string; runId: string; groupId: string; comboId: number }
@@ -220,7 +214,6 @@ export const {
   useGetGroupedCreationStatsQuery,
   useGetGroupedSweepRunsQuery,
   useGetGroupedSweepGroupsQuery,
-  useGetGroupedSweepResultsQuery,
   useGetComboTokenResultsQuery,
   useStartGroupedSweepMutation,
   useDeleteGroupedSweepRunMutation,

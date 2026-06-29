@@ -42,6 +42,12 @@ pub struct UpdateSettingsRequest {
     /// Default trade slippage in basis points (100 = 1%); clamped to
     /// `[SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS]`. Present = set the global default.
     pub slippage_bps: Option<u64>,
+    /// Buy-side slippage in bps; clamped to `[SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS]`.
+    /// Present = set the buy default (supersedes legacy `slippage_bps` on the buy path).
+    pub buy_slippage_bps: Option<u64>,
+    /// Sell-side slippage in bps; clamped to `[SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS]`.
+    /// Present = set the sell default. `0` = no floor (always fills).
+    pub sell_slippage_bps: Option<u64>,
     /// Persist raw transaction blobs. Present = flip the ingest raw-persist toggle.
     pub persist_raw: Option<bool>,
     /// Master switch for the ingest liveness watchdog.
@@ -70,6 +76,8 @@ pub async fn update_settings(
         timezone,
         price_unit,
         slippage_bps,
+        buy_slippage_bps,
+        sell_slippage_bps,
         persist_raw,
         watchdog_enabled,
         watchdog_stall_timeout_secs,
@@ -87,6 +95,10 @@ pub async fn update_settings(
 
     // Clamp before both the DB row and the in-memory view see the value.
     let slippage_clamped = slippage_bps.map(|v| v.clamp(SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS));
+    let buy_slippage_clamped =
+        buy_slippage_bps.map(|v| v.clamp(SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS));
+    let sell_slippage_clamped =
+        sell_slippage_bps.map(|v| v.clamp(SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS));
 
     // Watchdog clamps: floor the stall window (a too-short window restarts the
     // process on a normal lull), then floor the check cadence and cap it at the
@@ -116,6 +128,12 @@ pub async fn update_settings(
     }
     if let Some(v) = slippage_clamped {
         entries.push((keys::SLIPPAGE_BPS.key, json!(v)));
+    }
+    if let Some(v) = buy_slippage_clamped {
+        entries.push((keys::BUY_SLIPPAGE_BPS.key, json!(v)));
+    }
+    if let Some(v) = sell_slippage_clamped {
+        entries.push((keys::SELL_SLIPPAGE_BPS.key, json!(v)));
     }
     if let Some(v) = persist_raw {
         entries.push((keys::PERSIST_RAW.key, json!(v)));
@@ -163,6 +181,12 @@ pub async fn update_settings(
         }
         if let Some(v) = slippage_clamped {
             s.slippage_bps = Some(v);
+        }
+        if let Some(v) = buy_slippage_clamped {
+            s.buy_slippage_bps = Some(v);
+        }
+        if let Some(v) = sell_slippage_clamped {
+            s.sell_slippage_bps = Some(v);
         }
         if let Some(v) = persist_raw {
             s.persist_raw = v;
