@@ -1,5 +1,11 @@
 # Trades storage — table design (DB-only)
 
+> **STATUS: IMPLEMENTED.** The `trades` hypertable, indexes, compression/retention
+> policies, `trades_ohlcv_1m` CAgg, and `trades_priced` view described here are shipped
+> as part of live-lab-remake Phase 1 (`d62111f`). This file is the canonical schema
+> reference. `ON CONFLICT DO NOTHING` is in effect (`trade_repo.rs`). `maintenance.rs`
+> is deleted. Crate paths use `trading_core/src/storage/repositories/`.
+
 The high-volume append-only feed (the LaserStream transport *is* this table), and
 **both live ingest and sync/backfill write to it**. It is a **typed projection of
 [raw_txs](raw-txs-storage-plan.md)** — anything not promoted to a typed column here is

@@ -11,14 +11,14 @@ See also: [laserstream-workflow.md](./laserstream-workflow.md).
 
 | File | Purpose |
 | ------ | --------- |
-| [services/token_sync.rs](../../backend/src/services/token_sync.rs) | Orchestration: `run_token_sync`, `preview_sync`, `sync_amm_trades`, `persist_backfill` |
-| [api/handlers/tokens/sync.rs](../../backend/src/api/handlers/tokens/sync.rs) | HTTP handlers for `POST /api/token/sync` and `/sync/preview` |
-| [services/helius_rpc.rs](../../backend/src/services/helius_rpc.rs) | `getSignaturesForAddress`, `getTransaction`, `getTransactionsForAddress` (gTFA) |
-| [services/laserstream_replay.rs](../../backend/src/services/laserstream_replay.rs) | gRPC replay path for free incremental syncs |
-| [storage/repositories/token_info_repo.rs](../../backend/src/storage/repositories/token_info_repo.rs) | Sync watermarks, `upsert_metrics`, migration status |
-| [storage/repositories/trade_repo.rs](../../backend/src/storage/repositories/trade_repo.rs) | Trade inserts, `saved_signatures()`, `ON CONFLICT DO UPDATE` |
-| [ingest_laserstream/decoder/mod.rs](../../backend/src/ingest_laserstream/decoder/mod.rs) | **Shared** `HeliusDecoder` |
-| [ingest_laserstream/db_writer.rs](../../backend/src/ingest_laserstream/db_writer.rs) | **Shared** `TokenMetricsWrite` struct |
+| `trading_core/src/services/token_sync.rs` | Orchestration: `run_token_sync`, `preview_sync`, `sync_amm_trades`, `persist_backfill` |
+| `live/src/api/handlers/tokens/sync.rs` | HTTP handlers for `POST /api/token/sync` and `/sync/preview` |
+| `trading_core/src/services/helius_rpc.rs` | `getSignaturesForAddress`, `getTransaction`, `getTransactionsForAddress` (gTFA) |
+| `trading_core/src/services/laserstream_replay.rs` | gRPC replay path for free incremental syncs |
+| `trading_core/src/storage/repositories/token_info_repo.rs` | Sync watermarks, `upsert_metrics`, migration status |
+| `trading_core/src/storage/repositories/trade_repo.rs` | Trade inserts, `saved_signatures()`, `ON CONFLICT DO UPDATE` |
+| `ingest-laserstream/src/decoder/mod.rs` | **Shared** `HeliusDecoder` |
+| `ingest-laserstream/src/db_writer.rs` | **Shared** `TokenMetricsWrite` struct |
 
 ## Two modes
 
@@ -99,7 +99,7 @@ POST /api/token/sync ─▶ preflight (validate mint, bonding-curve check)
 
 ## Entry points
 
-- **`POST /api/token/sync`** → `sync_token()` ([sync.rs](../../backend/src/api/handlers/tokens/sync.rs)).
+- **`POST /api/token/sync`** → `sync_token()` (`live/src/api/handlers/tokens/sync.rs`).
   Body `SyncTokenBody { mint_address, include_post_migrate, incremental }`. Streams NDJSON progress
   events, ending in `complete` or `error`.
   - **Dedup gate** `state.sync_gate.try_begin()` rejects a concurrent sync of the same mint (409),
@@ -122,7 +122,7 @@ Stored in `tokens_info`: `last_synced_at`, `last_synced_curve_sig/slot`, `last_s
 - **Batch fallback** — a failed 100-tx JSON-RPC batch falls back to per-signature fetch (one transient
   error doesn't drop up to 100 txs).
 
-## Tuning constants ([token_sync.rs](../../backend/src/services/token_sync.rs))
+## Tuning constants (`trading_core/src/services/token_sync.rs`)
 
 | Constant | Value | Purpose |
 | ---------- | ------- | --------- |

@@ -1,6 +1,6 @@
 # TPSL Strategy Invariants
 
-All 7 invariants that must be preserved when editing `backend/src/strategies/`. See [@arch/strategies.md](@arch/strategies.md) for the module map. Both `tpsl_sniper_1` and `tpsl_sniper_2` share these invariants.
+All 9 invariants that must be preserved when editing `live/src/strategies/` and `trading_core/src/strategies/`. See [@arch/strategies.md](@arch/strategies.md) for the module map. Both `tpsl_sniper_1` and `tpsl_sniper_2` share these invariants.
 
 ## 1. No double-buy
 
@@ -66,7 +66,7 @@ tokio::select! {
 
 ## 5. Strategy eval reads runtime_cache only — never DB-per-event
 
-**Rule:** Every call inside the `select!` hot path (entry gating, exit evaluation) must read from `Tpsl1RuntimeCache` / `Tpsl2RuntimeCache` only. No `sqlx` queries.
+**Rule:** Every call inside the `select!` hot path (entry gating, exit evaluation) must read from `StrategyRuntimeCache` only. No `sqlx` queries.
 
 **What's cached:**
 - All active rules (`Arc<Vec<Rule>>`)

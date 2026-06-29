@@ -1,5 +1,10 @@
 # Token storage — table design (DB-only)
 
+> **STATUS: IMPLEMENTED.** The `tokens` / `tokens_info` / `token_sync_state` tables,
+> indexes, and `token_overview` view described here are shipped as part of live-lab-remake
+> Phase 1 (`d62111f`). This file is the canonical schema reference — consult it when
+> adding columns or repos. Crate paths use `trading_core/src/storage/repositories/`.
+
 Three tables, one row per token, **keyed by `mint_address` (natural key)** —
 split by **write pattern**, not just by concept:
 

@@ -28,7 +28,7 @@ A **lower confidence bound** on the combo's true average return. It answers:
 - High mean + many trades + tight returns → high score (reliable edge)
 - Score is `None` (shown as `—`) when fewer than 2 trades have closed
 
-**Source:** `backend/src/sweep/aggregate.rs` → `robust_score()`
+**Source:** `lab/src/sweep/aggregate.rs` → `robust_score()`
 
 ---
 

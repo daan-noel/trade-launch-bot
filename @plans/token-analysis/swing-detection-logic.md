@@ -6,8 +6,8 @@
 >
 > **Key files**
 >
-> - Backend algorithm: [`backend/src/analyzers/swing_analyzer.rs`](../../backend/src/analyzers/swing_analyzer.rs)
-> - API handlers: [`backend/src/api/handlers/tokens/swing.rs`](../../backend/src/api/handlers/tokens/swing.rs)
+> - Backend algorithm: `lab/src/analyzers/swing_analyzer.rs`
+> - API handlers: `lab/src/api/handlers/tokens/swing.rs`
 > - Params UI / form coercion: [`frontend-react/src/components/analysis/swingParams.tsx`](../../frontend-react/src/components/analysis/swingParams.tsx)
 > - Post-detection visibility filter (client only): [`frontend-react/src/components/analysis/swingFilter.ts`](../../frontend-react/src/components/analysis/swingFilter.ts)
 > - Chain-of-swings grouping (client only): [`frontend-react/src/components/analysis/swingChains.ts`](../../frontend-react/src/components/analysis/swingChains.ts)

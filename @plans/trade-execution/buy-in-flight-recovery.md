@@ -1,8 +1,8 @@
 # Buy-in-flight recovery
 
 How the buy path survives a crash without ever buying twice.
-Code maps: [@docs/strategies.md](../../@docs/strategies.md),
-[@docs/trade-execution.md](../../@docs/trade-execution.md).
+Code maps: [@arch/strategies.md](@arch/strategies.md),
+[@arch/trade-execution.md](@arch/trade-execution.md).
 
 ## The problem
 

@@ -1,5 +1,10 @@
 # Raw transactions storage — table design (DB-only)
 
+> **STATUS: IMPLEMENTED.** The `raw_txs` hypertable, compression/retention policies,
+> and `BYTEA` payload design described here are shipped as part of live-lab-remake
+> Phase 1 (`d62111f`). This file is the canonical schema reference. Crate paths use
+> `ingest-laserstream/src/` and `trading_core/src/storage/repositories/`.
+
 The **source-of-truth feed**: the full, unparsed transaction payload. `trades` is a
 *typed projection* of this table — `ix_labels`, and anything else you didn't promote
 to a typed column, is **re-derived from here** by joining on `(block_time,

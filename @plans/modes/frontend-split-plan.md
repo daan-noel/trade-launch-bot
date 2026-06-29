@@ -1,5 +1,9 @@
 # Frontend split: two builds (deploy + analysis) over a shared core
 
+> **STATUS: Phases 0–6 DONE** (committed). Phase 7 deferred — see the status section at the
+> bottom. The old crate names (`backend-deploy`, `backend-local`, `backend-core`) in this doc
+> refer to the state *at plan-write time* — the current names are `live`, `lab`, `trading_core`.
+
 ## Context
 
 The Rust backend was split into two bins over a shared lib — `backend-deploy` (LIVE box:

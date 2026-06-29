@@ -4,24 +4,24 @@ LaserStream / Yellowstone gRPC is the **sole** live ingest transport (the old We
 was fully removed 2026-06-11). This doc describes how a transaction goes from the gRPC stream
 to persisted trades, token metrics, and strategy pings.
 
-Code lives in [backend/src/ingest_laserstream/](../../backend/src/ingest_laserstream/).
+Code lives in `ingest-laserstream/src/`. Token-sync service lives in `trading_core/src/services/token_sync.rs`.
 
 ## Module layout
 
 | File | Purpose |
 | ------ | --------- |
-| [client.rs](../../backend/src/ingest_laserstream/client.rs) | gRPC connect, TLS + `x-token` auth, subscription, reconnect backoff, pool resubscribe; forwards the typed `Arc<SubscribeUpdateTransaction>` (no `Value` build) |
-| [adapter.rs](../../backend/src/ingest_laserstream/adapter.rs) | Protobuf `SubscribeUpdateTransaction` → Helius-shaped JSON `Value` (`build_raw_blob` = persisted blob; off-thread in DbWriter for real-time `source='live'`, inline in token_sync for backfill `source='sync'`) |
-| [adapter_rpc.rs](../../backend/src/ingest_laserstream/adapter_rpc.rs) | **Inverse**: base64 RPC result → `SubscribeUpdateTransaction` (`rpc_to_protobuf`), so token_sync runs `decode_protobuf` like the live path |
-| [pipeline.rs](../../backend/src/ingest_laserstream/pipeline.rs) | Main event loop: decode dispatch, cache updates, strategy pings, pool refresh |
-| [db_writer.rs](../../backend/src/ingest_laserstream/db_writer.rs) | Batch queue, partition-by-type, dedup-keep-last, bulk inserts, signal notify; synthesises the raw blob via `build_raw_blob` off the hot path |
-| [decoder/mod.rs](../../backend/src/ingest_laserstream/decoder/mod.rs) | `HeliusDecoder` API + `DecodeOutput`, `decode_migrate`; module wiring |
-| [decoder/grpc/](../../backend/src/ingest_laserstream/decoder/grpc/) | **The decoder** — protobuf-native `decode_protobuf` (+ `grpc/trade.rs`), reads the Yellowstone structs directly, no `Value`. Serves both live ingest and token_sync |
-| [decoder/trade.rs](../../backend/src/ingest_laserstream/decoder/trade.rs) | Shared: bonding-curve `TradeEvent` + PumpSwap `BuyEvent`/`SellEvent` Borsh decode, `build_amm_trade`, `compute_sol_change` |
-| [decoder/create.rs](../../backend/src/ingest_laserstream/decoder/create.rs) | Shared: `Create`/`Create_v2` instruction + creator resolution (byte-source-agnostic) |
-| [decoder/instructions.rs](../../backend/src/ingest_laserstream/decoder/instructions.rs) | Shared: instruction kinds/labels + compute-unit extraction (plain byte slices) |
+| `ingest-laserstream/src/client.rs` | gRPC connect, TLS + `x-token` auth, subscription, reconnect backoff, pool resubscribe; forwards the typed `Arc<SubscribeUpdateTransaction>` (no `Value` build) |
+| `ingest-laserstream/src/adapter.rs` | Protobuf `SubscribeUpdateTransaction` → Helius-shaped JSON `Value` (`build_raw_blob` = persisted blob; off-thread in DbWriter for real-time `source='live'`, inline in token_sync for backfill `source='sync'`) |
+| `ingest-laserstream/src/adapter_rpc.rs` | **Inverse**: base64 RPC result → `SubscribeUpdateTransaction` (`rpc_to_protobuf`), so token_sync runs `decode_protobuf` like the live path |
+| `ingest-laserstream/src/pipeline.rs` | Main event loop: decode dispatch, cache updates, strategy pings, pool refresh |
+| `ingest-laserstream/src/db_writer.rs` | Batch queue, partition-by-type, dedup-keep-last, bulk inserts, signal notify; synthesises the raw blob via `build_raw_blob` off the hot path |
+| `ingest-laserstream/src/decoder/mod.rs` | `HeliusDecoder` API + `DecodeOutput`, `decode_migrate`; module wiring |
+| `ingest-laserstream/src/decoder/grpc/` | **The decoder** — protobuf-native `decode_protobuf` (+ `grpc/trade.rs`), reads the Yellowstone structs directly, no `Value`. Serves both live ingest and token_sync |
+| `ingest-laserstream/src/decoder/trade.rs` | Shared: bonding-curve `TradeEvent` + PumpSwap `BuyEvent`/`SellEvent` Borsh decode, `build_amm_trade`, `compute_sol_change` |
+| `ingest-laserstream/src/decoder/create.rs` | Shared: `Create`/`Create_v2` instruction + creator resolution (byte-source-agnostic) |
+| `ingest-laserstream/src/decoder/instructions.rs` | Shared: instruction kinds/labels + compute-unit extraction (plain byte slices) |
 
-The two decode paths are parity-tested siblings (a fix to a path-specific step usually belongs in both `grpc` and `json`); only the **byte source** differs — see [@docs/ingest.md](../../@docs/ingest.md) for the fork rationale.
+Only one decode path exists (protobuf-native `grpc/`); the old JSON `Value` path was removed. See [@arch/ingest.md](@arch/ingest.md) for the current file map.
 
 ## End-to-end data flow
 
@@ -38,7 +38,7 @@ LaserStream gRPC  ──Arc<protobuf>──▶  IngestPipeline  ──┬─DbWr
 ### 1. Stream (client + adapter)
 
 - `connect(endpoint, api_key)` — TLS endpoint, `x-token` auth via `XTokenInterceptor`,
-  64 MiB max message, 30 s HTTP/2 + TCP keepalive. ([client.rs](../../backend/src/ingest_laserstream/client.rs))
+  64 MiB max message, 30 s HTTP/2 + TCP keepalive. (`ingest-laserstream/src/client.rs`)
 - `build_subscribe_request(account_include, from_slot)` — subscribes to the **Pump.fun program**
   plus currently-tracked **PumpSwap pool accounts**. Commitment = `processed`. On reconnect it
   replays from `from_slot` when recent enough, else falls back to a live subscription.
@@ -68,7 +68,7 @@ LaserStream gRPC  ──Arc<protobuf>──▶  IngestPipeline  ──┬─DbWr
 Both live gRPC **and** token_sync use the single `decode_protobuf(&SubscribeUpdateTransaction,
 received_at) -> DecodeOutput` (`decoder/grpc/`) — protobuf-native, no `Value`; token_sync
 lowers its base64 RPC results via `adapter_rpc::rpc_to_protobuf` first. The old `Value`
-`decode_result` path has been removed (see `@docs/ingest.md`).
+`decode_result` path has been removed (see [@arch/ingest.md](@arch/ingest.md)).
 
 - **Bonding-curve trades** — preferred source is `Program data:` logs → base64 → Borsh
   `RawTradeEvent` (matched on `TRADE_EVENT_DISCRIMINATOR`). Fallback when logs are truncated:

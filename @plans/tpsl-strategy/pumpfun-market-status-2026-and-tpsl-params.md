@@ -1,10 +1,10 @@
 # Pump.fun Market Status (Mid-2026) & TPSL Param Recommendations
 
 > ⚠️ **Strategy/params superseded.** The current entry/exit strategy and starting param values
-> now live in [`tpsl-scalp-continuation-plan.md`](tpsl-scalp-continuation-plan.md). This doc is
+> now live in [`tpsl2-entry-exit-params.md`](tpsl2-entry-exit-params.md). This doc is
 > kept for its **market data (§1–§2, §5)**, **Mayhem analysis**, and **sources**, which the
-> scalp plan still cites. The §4 launch-sniper param table is historical — use the scalp plan's
-> table instead.
+> scalp plan still cites. The §4 launch-sniper param table is historical — use
+> `tpsl2-entry-exit-params.md` instead.
 
 > Snapshot date: **2026-06-08**. Companion to `pumpfun-sniper-strategy-research.md` (which set the
 > 2025→early-2026 baseline). This doc updates that baseline to the **current** regime and converts it
@@ -139,7 +139,7 @@ already correct: **LiquidityExit → StopLoss → TakeProfit → TrailingStop �
 Config alone couldn't do it: token matching never read `is_mayhem_mode`, and the `p_ix_labels`
 filter only checks labels are non-empty (not content), so `p_ix_labels=["Create"]` wouldn't exclude
 `"Create_v2"`/Mayhem. Fixed with a `!t.is_mayhem_mode` filter in the backtest entry path —
-now in [`tpsl_sniper_2/backtest.rs`](../../backend/src/strategies/tpsl_sniper_2/backtest.rs) (and
+now in `trading_core/src/strategies/tpsl_sniper_2/backtest.rs` (and
 tpsl1's `backtest.rs`). *(Originally `simulation_tpsl.rs:326`; that file was removed when the
 strategies were modularized into `entry/ exit/ execution/ backtest.rs`.)* Mayhem tokens are now
 excluded from every backtest. (If real-mode trading later needs the same gate as a toggle, promote
@@ -149,7 +149,7 @@ it to a `p_exclude_mayhem: bool` param.)
 
 ## 5. Code / data caveats (verified in this repo)
 
-1. **`TOKEN_TOTAL_SUPPLY` is hardcoded to 1B** — `backend/src/config/constants.rs:146`
+1. **`TOKEN_TOTAL_SUPPLY` is hardcoded to 1B** — `trading_core/src/config/constants.rs`
    (`1_000_000_000_000_000` = 1e9 × 1e6). **Mayhem tokens have 2B total supply.** Consequences:
    - Market cap (`TOKEN_TOTAL_SUPPLY × price`) is **2× too high** for Mayhem tokens
      (`token_cache.rs:115`, `trade_repo.rs:304`, and the frontend chart's `TOKEN_TOTAL_SUPPLY`).

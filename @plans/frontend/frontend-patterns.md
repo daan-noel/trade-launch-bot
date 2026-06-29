@@ -2,9 +2,17 @@
 
 Deep-dive on component behavior, state management, SSE handling, and perf patterns. See [@arch/frontend.md](@arch/frontend.md) for the file-level map and pages overview.
 
-## RTK Query — `store/apiSlice.ts`
+## RTK Query — split store (`shared/store/baseApi.ts`)
 
-All REST queries and mutations go through one RTK Query `apiSlice`. Key behaviors:
+The store is split across three modules (see [@arch/frontend.md](@arch/frontend.md)):
+- `src/shared/store/baseApi.ts` — one `createApi` shell; all 9 `tagTypes` declared here.
+- `src/shared/store/sharedEndpoints.ts` — tokens, settings, profiles, sol-price, creation-stats, etc.
+- `src/live/store/liveEndpoints.ts` — wallet holdings, buy/sell, cashback, live-mode, tpsl positions.
+- `src/lab/store/labEndpoints.ts` — grouped-sweep, simulate/paper, grouped-creation-stats.
+
+Import mode-specific hooks from `@live/store/*Endpoints` or `@lab/store/*Endpoints`, never from the shared barrel, so a mode's side-effects never leak across builds.
+
+Key behaviors:
 
 - **`keepUnusedDataFor: 300`** (5 min) — cached query results survive route changes; no re-fetch on tab switch
 - **`skipPollingIfUnfocused: true`** — polling hooks (rules, positions) pause when the tab is hidden; resumes on focus

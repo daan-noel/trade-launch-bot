@@ -35,11 +35,11 @@ backend (nginx in prod, the Vite dev proxy in dev) injects the bearer
 
 | Concern | Location |
 | --- | --- |
-| Fail-closed middleware | `backend/src/main.rs` — `require_bearer_auth` |
-| Token required at startup | `backend/src/config/settings.rs` — `required_non_empty("API_AUTH_TOKEN")` |
+| Fail-closed middleware | `live/src/main.rs` — `require_bearer_auth` |
+| Token required at startup | `trading_core/src/config/settings.rs` — `required_non_empty("API_AUTH_TOKEN")` |
 | Prod bearer injection | `nginx/default.conf.template` — `proxy_set_header Authorization "Bearer ${API_AUTH_TOKEN}"` |
 | envsubst wiring | `frontend-react/Dockerfile` (template → `/etc/nginx/templates/`) + `docker-compose.yml` (`API_AUTH_TOKEN`, `NGINX_ENVSUBST_FILTER`) |
-| Dev bearer injection | `frontend-react/vite.config.ts` — dev proxy `headers` |
+| Dev bearer injection | `frontend-react/vite.live.config.ts` / `vite.lab.config.ts` — dev proxy `headers` |
 
 ### The middleware rule (`require_bearer_auth`)
 
@@ -100,8 +100,9 @@ the browser.
 
 ## Dev mode (no nginx)
 
-`npm run dev` + `cargo run -p backend`. There's no proxy container, so the **Vite
-dev proxy** does the injection: `vite.config.ts` reads `API_AUTH_TOKEN` from the
+`npm run dev:live` + `cargo run -p live` (or `dev:lab` + `cargo run -p lab`).
+There's no proxy container, so the **Vite dev proxy** does the injection:
+`vite.live.config.ts` / `vite.lab.config.ts` reads `API_AUTH_TOKEN` from the
 root `.env` via `loadEnv(mode, '..', '')` (non-`VITE_` vars stay server-side, in
 the Node dev server — never in the bundle) and adds the `Authorization: Bearer`
 header to every proxied `/api` call.

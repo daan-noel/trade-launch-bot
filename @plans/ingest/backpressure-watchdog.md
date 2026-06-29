@@ -1,6 +1,6 @@
 # Ingest — Backpressure, Watchdog & Decoder Detail
 
-Deep-dive on `backend/src/ingest_laserstream/` internal mechanics. See [@arch/ingest.md](@arch/ingest.md) for the file-level map and channel caps.
+Deep-dive on `ingest-laserstream/src/` internal mechanics. See [@arch/ingest.md](@arch/ingest.md) for the file-level map and channel caps.
 
 ## Backpressure — `pipeline.rs`
 

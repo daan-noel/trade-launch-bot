@@ -1,7 +1,7 @@
 # Pump.fun Launch-Sniper TPSL — Entry/Exit Strategy (research-grounded)
 
 > ⚠️ **Strategy superseded.** The active strategy is now the scalp/continuation model in
-> [`tpsl-scalp-continuation-plan.md`](tpsl-scalp-continuation-plan.md) (it replaces the
+> [`tpsl2-entry-exit-params.md`](tpsl2-entry-exit-params.md) (it replaces the
 > launch-sniper N1–N10 approach). This doc is retained as the **research baseline + sources**
 > that ground that work — the market reality, academic predictors, and bundle/sniper findings
 > below still hold.
