@@ -221,6 +221,7 @@ pub(crate) trait SnipeExecutor: Send + Sync {
         slippage_bps: Option<u64>,
         reserves: Option<(u128, u128)>,
         on_signed: pump_trader::BuySignedHook,
+        cashback_enabled: bool,
     ) -> anyhow::Result<String>;
     async fn check_signature(&self, signature: &str) -> anyhow::Result<Option<bool>>;
 }
@@ -239,10 +240,11 @@ impl SnipeExecutor for PumpFunTrader {
         slippage_bps: Option<u64>,
         reserves: Option<(u128, u128)>,
         on_signed: pump_trader::BuySignedHook,
+        cashback_enabled: bool,
     ) -> anyhow::Result<String> {
         // The trader returns `pump_trader::TradeError`; this trait method is
         // `anyhow::Result`, so lift it (the `?` would also work via `From`).
-        self.buy_token_snipe_write_ahead(mint, creator, token_program_id, amount, slippage_bps, reserves, on_signed)
+        self.buy_token_snipe_write_ahead(mint, creator, token_program_id, amount, slippage_bps, reserves, on_signed, cashback_enabled)
             .await
             .map_err(anyhow::Error::from)
     }
@@ -291,6 +293,7 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
     cfg: BuyRetryCfg,
     slippage_bps: Option<u64>,
     reserves: Option<(u128, u128)>,
+    cashback_enabled: bool,
 ) {
     let wallet = trader.wallet();
     let max_attempts = cfg.max_attempts;
@@ -343,7 +346,7 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
         // Snipe send WITHOUT the blocking RPC confirm — the WS/DB trade feed below is
         // the sole confirmation and the entry-price source.
         let send_result = trader
-            .send_snipe_buy(&mint, &creator, &token_program_id, buy_amount, slippage_bps, reserves, on_signed)
+            .send_snipe_buy(&mint, &creator, &token_program_id, buy_amount, slippage_bps, reserves, on_signed, cashback_enabled)
             .await;
 
         // The signature is known the instant the tx was signed (captured by the hook

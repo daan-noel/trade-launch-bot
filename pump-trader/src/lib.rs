@@ -18,7 +18,7 @@
 //! };
 //! let mut trader = pump_trader::PumpFunTrader::new(Arc::new(config));
 //! trader.initialize().await?;
-//! trader.buy_token(&mint, &creator, token_program, sol_amount, slippage).await?;
+//! trader.buy_token(&mint, &creator, token_program, sol_amount, slippage, cashback_enabled).await?;
 //! ```
 
 pub mod config;

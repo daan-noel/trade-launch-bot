@@ -155,7 +155,7 @@ pub async fn manual_buy(
         };
         app_state
             .trader
-            .buy_token(&routing.mint, &routing.creator_pubkey, token_program, sol_amount, slippage)
+            .buy_token(&routing.mint, &routing.creator_pubkey, token_program, sol_amount, slippage, routing.cashback_enabled)
             .await
     };
     match buy_result {

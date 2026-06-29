@@ -44,10 +44,11 @@ impl PumpFunTrader {
         token_program: TokenProgram,
         sol_amount: f64,
         slippage_bps: Option<u64>,
+        cashback_enabled: bool,
     ) -> Result<bool> {
         // Manual buy: no triggering-event reserves in hand, so `buy_token_inner`
         // reads the curve on-chain for the slippage floor (snipe_reserves = None).
-        self.buy_token_inner(mint, creator, token_program, sol_amount, slippage_bps, None, false, false, None)
+        self.buy_token_inner(mint, creator, token_program, sol_amount, slippage_bps, None, false, false, None, cashback_enabled)
             .await
             .map(|_sig| true)
     }
@@ -77,13 +78,14 @@ impl PumpFunTrader {
         sol_amount: f64,
         slippage_bps: Option<u64>,
         reserves: Option<(u128, u128)>,
+        cashback_enabled: bool,
     ) -> Result<String> {
         // Parse the feed/DB strings once here (the snipe path's only source is
         // strings); `buy_token_inner` then works purely in parsed forms.
         let mint = Pubkey::from_str(token_mint)?;
         let creator_pubkey = Pubkey::from_str(creator)?;
         let token_program = TokenProgram::from_id(token_program_id);
-        self.buy_token_inner(&mint, &creator_pubkey, token_program, sol_amount, slippage_bps, reserves, true, true, None)
+        self.buy_token_inner(&mint, &creator_pubkey, token_program, sol_amount, slippage_bps, reserves, true, true, None, cashback_enabled)
             .await
     }
 
@@ -109,11 +111,12 @@ impl PumpFunTrader {
         slippage_bps: Option<u64>,
         reserves: Option<(u128, u128)>,
         on_signed: BuySignedHook,
+        cashback_enabled: bool,
     ) -> Result<String> {
         let mint = Pubkey::from_str(token_mint)?;
         let creator_pubkey = Pubkey::from_str(creator)?;
         let token_program = TokenProgram::from_id(token_program_id);
-        self.buy_token_inner(&mint, &creator_pubkey, token_program, sol_amount, slippage_bps, reserves, true, true, Some(on_signed))
+        self.buy_token_inner(&mint, &creator_pubkey, token_program, sol_amount, slippage_bps, reserves, true, true, Some(on_signed), cashback_enabled)
             .await
     }
 
@@ -138,6 +141,11 @@ impl PumpFunTrader {
         // persist a recovery marker ahead of the on-chain side effect. `None` on
         // the manual/legacy paths that don't need it.
         on_signed: Option<BuySignedHook>,
+        // The true cashback flag from routing (create_v2 tokens). Threaded here so
+        // the cached PDAs carry the correct `cashback_enabled`, preventing a future
+        // sell that reads only `pdas.cashback_enabled` from silently dropping the
+        // UVA account and reverting with pump.fun error 6024.
+        cashback_enabled: bool,
     ) -> Result<String> {
         let t0 = Instant::now();
         // Guard the real spend before any work: both curve public entries
@@ -162,7 +170,7 @@ impl PumpFunTrader {
             // Curve PDAs via the shared derivation (same source of truth as the
             // query path). `Pubkey` is `Copy`, so the locals below are copies and
             // `pdas` is still moved into the cache.
-            let pdas = self.derive_token_pdas(mint, creator_pubkey, &token_program_pk, false);
+            let pdas = self.derive_token_pdas(mint, creator_pubkey, &token_program_pk, cashback_enabled);
             // `bonding_curve` is read below for the manual-path slippage reserve
             // read; the rest of the curve PDAs are consumed inside
             // `build_curve_buy_ixs` straight off `pdas` (it's `Copy`, so the insert

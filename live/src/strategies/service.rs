@@ -316,6 +316,7 @@ impl StrategyService {
             // Resolve slippage before the spawn (the watch borrow isn't held across an
             // await); reserves are read inside the task at buy time.
             let slippage_bps = self.buy_slippage();
+            let cashback_enabled = token.is_cashback_enabled;
             let creator = token.creator_wallet.clone();
             let token_program_id = position
                 .token_program_id
@@ -420,6 +421,7 @@ impl StrategyService {
                             real::BuyRetryCfg::production(),
                             slippage_bps,
                             reserves,
+                            cashback_enabled,
                         )
                         .await;
                     }
