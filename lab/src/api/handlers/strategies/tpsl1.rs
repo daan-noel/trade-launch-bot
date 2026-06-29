@@ -710,7 +710,7 @@ pub(crate) fn paper_position_to_sim_result(
 ) -> BacktestTokenResult {
     let pnl_percent = p.pnl_pct();
     let exit_reason = exit_reason_or_derived(&p).unwrap_or_else(|| "Open".to_string());
-    let pnl_sol = pnl_percent.and_then(|pct| p.entry_token_amount.map(|a| a * (pct / 100.0)));
+    let pnl_sol = pnl_percent.and_then(|pct| p.entry_token_amount.map(|a| a as f64 * (pct / 100.0)));
     let holding_secs = match (p.entry_time, p.exit_time) {
         (Some(e), Some(x)) => Some((x - e).num_seconds()),
         _ => None,
@@ -728,7 +728,7 @@ pub(crate) fn paper_position_to_sim_result(
         mint: p.mint,
         entry_price: p.entry_price.unwrap_or(0.0),
         ath_price,
-        entry_token_amount: p.entry_token_amount.unwrap_or(0.0),
+        entry_token_amount: p.entry_token_amount.map(|a| a as f64).unwrap_or(0.0),
         entry_tx,
         entry_time: p.entry_time.unwrap_or(p.created_at),
         exit_price: p.exit_price,
@@ -759,7 +759,7 @@ mod tests {
         );
         p.entry_price = Some(entry);
         p.entry_tx_signatures = json!(["etx"]);
-        p.entry_token_amount = Some(0.05);
+        p.entry_token_amount = Some(1);
         p.entry_time = Some(Utc::now());
         p.exit_price = Some(exit);
         p.exit_sol = Some(0.05);
@@ -797,7 +797,7 @@ mod tests {
         );
         p.entry_price = Some(1.0);
         p.entry_tx_signatures = json!(["etx"]);
-        p.entry_token_amount = Some(0.05);
+        p.entry_token_amount = Some(1);
         p.entry_time = Some(Utc::now());
         let r = paper_position_to_sim_result(p, &HashMap::new());
         assert_eq!(r.exit_reason, "Open");

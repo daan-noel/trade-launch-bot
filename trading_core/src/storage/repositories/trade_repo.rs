@@ -75,9 +75,10 @@ impl TryFrom<TradeDbRow> for Trade {
             other => anyhow::bail!("Unknown trade_type in DB: {other}"),
         };
 
-        // Reconstruct the f64 model amounts from the integer columns.
+        // Reconstruct the model amounts from the integer columns. SOL is f64 (human
+        // SOL from lamports); token_amount stays an exact integer (no f64 round-trip).
         let sol_amount = lamports_to_sol(r.sol_amount);
-        let token_amount = raw_to_f64(r.token_amount);
+        let token_amount = r.token_amount as u64;
 
         Ok(Self {
             // Synthesized: the new table has no `id` column.
@@ -87,8 +88,9 @@ impl TryFrom<TradeDbRow> for Trade {
             trade_type,
             sol_amount,
             token_amount,
-            // Derived: the new table has no `price_per_token` column.
-            price_per_token: price_of(sol_amount, token_amount),
+            // Derived: the new table has no `price_per_token` column. The ratio is
+            // computed in f64 (token cast at the divide).
+            price_per_token: price_of(sol_amount, token_amount as f64),
             tx_signature: sig_bytes_to_base58(&r.tx_signature),
             tx_index: r.tx_index as u32,
             leg_index: r.leg_index as u32,
@@ -96,8 +98,8 @@ impl TryFrom<TradeDbRow> for Trade {
             block_time: r.block_time,
             // Synthesized: the new table has no `received_at`; reuse block_time.
             received_at: r.block_time,
-            virtual_sol_reserves: r.virtual_sol_reserves.map(raw_opt_to_f64),
-            virtual_token_reserves: r.virtual_token_reserves.map(raw_opt_to_f64),
+            virtual_sol_reserves: r.virtual_sol_reserves.map(lamports_to_sol),
+            virtual_token_reserves: r.virtual_token_reserves.map(|v| v as u64),
             // The new table dropped the real_* reserve columns.
             real_sol_reserves: None,
             real_token_reserves: None,
@@ -163,9 +165,9 @@ impl TradeRepo {
         .bind(trade_type_str(trade.trade_type))
         .bind(&trade.venue)
         .bind(sol_to_lamports(trade.sol_amount))
-        .bind(f64_to_raw(trade.token_amount))
-        .bind(trade.virtual_sol_reserves.map(f64_opt_to_raw))
-        .bind(trade.virtual_token_reserves.map(f64_opt_to_raw))
+        .bind(trade.token_amount as i64)
+        .bind(trade.virtual_sol_reserves.map(sol_to_lamports_opt))
+        .bind(trade.virtual_token_reserves.map(|v| v as i64))
         .bind(trade.slot as i64)
         .bind(trade.tx_index as i32)
         .bind(trade.leg_index as i16)
@@ -234,9 +236,9 @@ impl TradeRepo {
                     .push_bind(trade_type_str(t.trade_type))
                     .push_bind(&t.venue)
                     .push_bind(sol_to_lamports(t.sol_amount))
-                    .push_bind(f64_to_raw(t.token_amount))
-                    .push_bind(t.virtual_sol_reserves.map(f64_opt_to_raw))
-                    .push_bind(t.virtual_token_reserves.map(f64_opt_to_raw))
+                    .push_bind(t.token_amount as i64)
+                    .push_bind(t.virtual_sol_reserves.map(sol_to_lamports_opt))
+                    .push_bind(t.virtual_token_reserves.map(|v| v as i64))
                     .push_bind(t.slot as i64)
                     .push_bind(t.tx_index as i32)
                     .push_bind(t.leg_index as i16)
@@ -535,29 +537,29 @@ impl TradeRepo {
             return Ok(None);
         }
         Ok(Some(SigLegs {
-            // Convert the integer sums back to the f64 model units.
-            token_amount: raw_to_f64(token_sum),
+            // token_amount stays an exact integer (raw units); SOL → human f64.
+            token_amount: token_sum as u64,
             sol_amount: lamports_to_sol(lamports_sum),
             first_block_time: first.unwrap_or_else(Utc::now),
             last_block_time: last.unwrap_or_else(Utc::now),
         }))
     }
 
-    /// Net token balance for `(wallet, mint)` (Σbuys − Σsells), as f64 raw units.
+    /// Net token balance for `(wallet, mint)` (Σbuys − Σsells), as **signed raw
+    /// integer units** (`i64` — a partially-cleared bag can be negative mid-state).
     /// No longer on the sell-confirm hot path (replaced by per-signature
     /// attribution); used for external-clear detection (ManualSell path) and ad-hoc
-    /// balance lookups. An unknown wallet has no trades, so returns 0.0 without
+    /// balance lookups. An unknown wallet has no trades, so returns 0 without
     /// touching `trades`.
     pub async fn net_token_amount_by_wallet_and_mint(
         &self,
         wallet: &str,
         mint: &str,
-    ) -> anyhow::Result<f64> {
+    ) -> anyhow::Result<i64> {
         let Some(wallet_id) = WalletDictRepo::new(self.pool.clone()).id_for(wallet).await? else {
-            return Ok(0.0);
+            return Ok(0);
         };
-        // Sum the integer token_amount column with a buy/sell sign, then convert the
-        // raw-unit balance to f64.
+        // Sum the integer token_amount column with a buy/sell sign — exact raw units.
         let balance: i64 = sqlx::query_scalar(
             "SELECT COALESCE(SUM(CASE WHEN trade_type = 'buy' THEN token_amount WHEN trade_type = 'sell' THEN -token_amount ELSE 0 END), 0)::bigint FROM trades WHERE wallet_id = $1 AND mint_address = $2",
         )
@@ -566,7 +568,7 @@ impl TradeRepo {
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(raw_to_f64(balance))
+        Ok(balance)
     }
 
     /// Stream the cache-seed trade history for the given mints, grouped per mint,
@@ -721,8 +723,8 @@ pub async fn find_tx_by_fill(
 /// clear.
 #[derive(Debug, Clone)]
 pub struct SigLegs {
-    /// Σ token_amount across the legs.
-    pub token_amount: f64,
+    /// Σ token_amount across the legs — exact raw integer units.
+    pub token_amount: u64,
     /// Σ sol_amount across the legs.
     pub sol_amount: f64,
     /// Earliest leg's block time (the fill's entry time).
@@ -734,8 +736,8 @@ pub struct SigLegs {
 impl SigLegs {
     /// Weighted-average execution price (Σsol / Σtokens), or 0 when no tokens.
     pub fn price_per_token(&self) -> f64 {
-        if self.token_amount > 0.0 {
-            self.sol_amount / self.token_amount
+        if self.token_amount > 0 {
+            self.sol_amount / self.token_amount as f64
         } else {
             0.0
         }
@@ -755,14 +757,14 @@ pub struct SeedAgg {
 }
 
 // ---------------------------------------------------------------------------
-// Conversion helpers — the I/O boundary between the runtime `Trade` model (f64
-// amounts, base58 signature) and the new integer/BYTEA `trades` schema.
+// Conversion helpers — the I/O boundary between the runtime `Trade` model and the
+// integer/BYTEA `trades` schema.
 //
-// NOTE (Phase-1 boundary approximation): the `virtual_*_reserves` round-trip
-// treats the model's f64 as the raw on-chain integer value and converts via
-// round / `as f64`. For very large reserve counts this can lose precision at the
-// f64↔i64 boundary; it is an accepted Phase-1 approximation until the model
-// itself carries integer reserves.
+// SOL: the model carries `sol_amount` / `virtual_sol_reserves` as human SOL (f64),
+// so the SOL side round-trips through `sol_to_lamports`/`lamports_to_sol` (exact
+// lamport precision in the BIGINT column). Token amounts and token reserves are
+// now exact integers (`u64`) in the model too, so they bind/read as `i64` directly
+// — no float helper, no precision loss above 2^53.
 // ---------------------------------------------------------------------------
 
 /// SOL (human-readable f64) → lamports (i64).
@@ -770,30 +772,14 @@ fn sol_to_lamports(sol: f64) -> i64 {
     (sol * 1_000_000_000.0).round() as i64
 }
 
+/// SOL reserve (human-readable f64) → lamports (i64); `.map(..)`-friendly.
+fn sol_to_lamports_opt(sol: f64) -> i64 {
+    sol_to_lamports(sol)
+}
+
 /// Lamports (i64) → SOL (human-readable f64).
 fn lamports_to_sol(lamports: i64) -> f64 {
     lamports as f64 / 1_000_000_000.0
-}
-
-/// Token amount f64 → raw i64 units.
-fn f64_to_raw(v: f64) -> i64 {
-    v.round() as i64
-}
-
-/// Raw i64 units → f64.
-fn raw_to_f64(v: i64) -> f64 {
-    v as f64
-}
-
-/// `Option<f64>` reserve → raw i64 (used inside `.map(..)`); see the Phase-1
-/// approximation note above.
-fn f64_opt_to_raw(v: f64) -> i64 {
-    v.round() as i64
-}
-
-/// Raw i64 reserve → f64 (used inside `.map(..)`).
-fn raw_opt_to_f64(v: i64) -> f64 {
-    v as f64
 }
 
 /// Derived execution price (`sol / token`), or 0 when no tokens.
@@ -850,6 +836,18 @@ mod tests {
         );
     }
 
+    /// `virtual_sol_reserves` is human SOL in the model but lamports in the
+    /// BIGINT column — the SOL↔lamports round-trip must preserve fractional SOL
+    /// (the old `f64_opt_to_raw` path rounded 30.5 SOL to the integer 31).
+    #[test]
+    fn virtual_sol_reserves_round_trips_through_lamports() {
+        let sol = 30.123_456_789_f64;
+        let stored = sol_to_lamports_opt(sol);
+        assert_eq!(stored, 30_123_456_789, "SOL → lamports keeps 9-decimal precision");
+        let back = lamports_to_sol(stored);
+        assert!((back - sol).abs() < 1e-9, "lamports → SOL recovers the value");
+    }
+
     async fn test_pool() -> Option<PgPool> {
         let url = std::env::var("DATABASE_URL").ok()?;
         PgPoolOptions::new().max_connections(2).connect(&url).await.ok()
@@ -871,7 +869,7 @@ mod tests {
         sig: &str,
         leg_index: u32,
         sol: f64,
-        tokens: f64,
+        tokens: u64,
     ) {
         let mut trade = Trade::new(
             mint.to_string(),
@@ -902,18 +900,18 @@ mod tests {
         let (wallet, mint, sig) = (unique("W"), unique("M"), unique("buysig-"));
 
         // One buy that landed as two legs (e.g. a split route) under one signature.
-        insert_leg(&repo, &wallet, &mint, TradeType::Buy, &sig, 0, 0.6, 600.0).await;
-        insert_leg(&repo, &wallet, &mint, TradeType::Buy, &sig, 1, 0.4, 400.0).await;
+        insert_leg(&repo, &wallet, &mint, TradeType::Buy, &sig, 0, 0.6, 600).await;
+        insert_leg(&repo, &wallet, &mint, TradeType::Buy, &sig, 1, 0.4, 400).await;
         // A foreign buy on the SAME (wallet, mint) under a different signature —
         // a concurrent same-token position's fill (decision #2). Must NOT leak in.
-        insert_leg(&repo, &wallet, &mint, TradeType::Buy, &unique("foreign-"), 0, 9.9, 9999.0).await;
+        insert_leg(&repo, &wallet, &mint, TradeType::Buy, &unique("foreign-"), 0, 9.9, 9999).await;
 
         let legs = repo
             .find_fill_by_signature(&wallet, &mint, &sig)
             .await
             .expect("query")
             .expect("the signature's legs are summed, not None");
-        assert!((legs.token_amount - 1000.0).abs() < 1e-6, "Σtokens across both legs");
+        assert_eq!(legs.token_amount, 1000, "Σtokens across both legs");
         assert!((legs.sol_amount - 1.0).abs() < 1e-6, "Σsol across both legs");
         // Weighted-average price = Σsol / Σtokens, not a per-leg price.
         assert!((legs.price_per_token() - 0.001).abs() < 1e-9, "weighted-avg fill price");
@@ -930,10 +928,10 @@ mod tests {
         let (mine_a, mine_b, theirs) = (unique("sellA-"), unique("sellB-"), unique("sellX-"));
 
         // This position's exit landed across two sell signatures…
-        insert_leg(&repo, &wallet, &mint, TradeType::Sell, &mine_a, 0, 0.3, 300.0).await;
-        insert_leg(&repo, &wallet, &mint, TradeType::Sell, &mine_b, 0, 0.2, 200.0).await;
+        insert_leg(&repo, &wallet, &mint, TradeType::Sell, &mine_a, 0, 0.3, 300).await;
+        insert_leg(&repo, &wallet, &mint, TradeType::Sell, &mine_b, 0, 0.2, 200).await;
         // …while a concurrent same-token position sold under its own signature.
-        insert_leg(&repo, &wallet, &mint, TradeType::Sell, &theirs, 0, 5.0, 5000.0).await;
+        insert_leg(&repo, &wallet, &mint, TradeType::Sell, &theirs, 0, 5.0, 5000).await;
 
         // Empty signature set short-circuits to None (never a full-table scan).
         assert!(
@@ -954,7 +952,7 @@ mod tests {
             .await
             .expect("query")
             .expect("own sell legs summed");
-        assert!((legs.token_amount - 500.0).abs() < 1e-6, "only THIS position's sells summed");
+        assert_eq!(legs.token_amount, 500, "only THIS position's sells summed");
         assert!((legs.sol_amount - 0.5).abs() < 1e-6, "concurrent position's sell excluded");
 
         // Side filter holds: no Buy legs exist, so a Buy query over the sell sigs is None.

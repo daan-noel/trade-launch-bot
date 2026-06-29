@@ -779,7 +779,7 @@ mod tests {
             "wallet".into(),
             TradeType::Buy,
             price, // sol_amount
-            1.0,   // token_amount → price_per_token = price
+            1,   // token_amount → price_per_token = price
             format!("sig-{slot}-{secs}"),
             slot,
             base_time() + Duration::seconds(secs),
@@ -802,7 +802,7 @@ mod tests {
             wallet.into(),
             side,
             sol,
-            tokens,
+            tokens as u64,
             format!("sig-{wallet}-{slot}-{secs}"),
             slot,
             base_time() + Duration::seconds(secs),
@@ -845,7 +845,7 @@ mod tests {
         let mut p = Position::new("mint".into(), "wallet".into(), "TPSL2".into(), rule_id);
         p.entry_price = Some(entry_price);
         p.entry_tx_signatures = vec!["entry-sig".into()];
-        p.entry_token_amount = Some(1.0);
+        p.entry_token_amount = Some(1);
         p.entry_time = Some(base_time());
         p
     }

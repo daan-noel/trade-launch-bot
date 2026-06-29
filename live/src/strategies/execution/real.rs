@@ -109,7 +109,7 @@ pub(crate) async fn close_externally_cleared_position(
     // The position is terminal from this point — release the SOL commitment
     // regardless of whether the DB write below succeeds.
     trader.release_sol_for_position(&position.id.to_string());
-    let entry_amount = position.entry_token_amount.unwrap_or(0.0);
+    let entry_amount = position.entry_token_amount.unwrap_or(0);
     let mint = position.mint.clone();
     // Rent reclaim: the token account is already empty — fire-and-forget close.
     {
@@ -122,7 +122,8 @@ pub(crate) async fn close_externally_cleared_position(
         });
     }
     let prev = position.clone();
-    position.close(exit_price, exit_price * entry_amount, entry_amount, vec![], exit_time, reason);
+    // price is SOL per raw unit → exit_sol (human SOL) = price × raw tokens.
+    position.close(exit_price, exit_price * entry_amount as f64, entry_amount, vec![], exit_time, reason);
     if let Err(err) = repo.update_position(position).await {
         warn!(
             position_id = %position.id, mint = %mint,
@@ -534,8 +535,8 @@ pub(crate) async fn sell_and_close_position(
     // Position is terminal from this point — release the SOL commitment. Idempotent.
     trader.release_sol_for_position(&position.id.to_string());
     let mint = position.mint.clone();
-    let target_tokens = position.entry_token_amount.unwrap_or(0.0);
-    let amount = target_tokens as u64;
+    let target_tokens = position.entry_token_amount.unwrap_or(0);
+    let amount = target_tokens;
     let base_token_program = position
         .token_program_id
         .clone()
@@ -547,7 +548,7 @@ pub(crate) async fn sell_and_close_position(
             "No entry token amount recorded — closing position without sell TX"
         );
         let prev = position.clone();
-        position.close(trigger_price, 0.0, 0.0, Vec::new(), trigger_time, &exit_reason);
+        position.close(trigger_price, 0.0, 0, Vec::new(), trigger_time, &exit_reason);
         if let Err(err) = repo.update_position(&position).await {
             warn!(
                 position_id = %position.id, mint = %mint,
@@ -757,9 +758,9 @@ async fn sell_until_balance_cleared(
         info!(mint = %mint, "sell skipped because amount is zero");
         return SellOutcome::Cleared { sigs: Vec::new(), legs: None };
     }
-    // Total tokens this position is selling out. Confirmed by summing OUR own sell
-    // signatures' token legs against this target.
-    let target_tokens = amount as f64;
+    // Total tokens this position is selling out (raw units). Confirmed by summing OUR
+    // own sell signatures' token legs against this target.
+    let target_tokens = amount;
 
     // Resolve the token account once (cache-first) and reuse it across attempts.
     let token_account_override = trader
@@ -855,9 +856,9 @@ async fn sell_until_balance_cleared(
                             .await
                         {
                             Ok(legs) => {
-                                let sold = legs.as_ref().map(|l| l.token_amount).unwrap_or(0.0);
-                                let remaining = (target_tokens - sold).max(0.0);
-                                if remaining <= super::PARTIAL_FILL_THRESHOLD {
+                                let sold = legs.as_ref().map(|l| l.token_amount).unwrap_or(0);
+                                let remaining = target_tokens.saturating_sub(sold);
+                                if (remaining as i64) <= super::PARTIAL_FILL_THRESHOLD {
                                     info!(mint = %mint, attempt, "sell cleared the balance");
                                     cleared = true;
                                     confirmed_legs = legs;

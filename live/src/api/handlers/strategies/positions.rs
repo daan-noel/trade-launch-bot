@@ -44,8 +44,10 @@ pub struct PositionResponse {
     pub strategy: String,
     /// Owning rule (`None` if the rule was deleted — `ON DELETE SET NULL`).
     pub rule_id: Option<Uuid>,
-    pub entry_token_amount: Option<f64>,
-    pub exit_token_amount: Option<f64>,
+    /// Raw token units (exact integer; the frontend scales for display).
+    pub entry_token_amount: Option<u64>,
+    /// Raw token units (exact integer; the frontend scales for display).
+    pub exit_token_amount: Option<u64>,
     pub pnl_percent: Option<f64>,
     pub entry_time: Option<DateTime<Utc>>,
     pub exit_time: Option<DateTime<Utc>>,

@@ -24,7 +24,8 @@ pub struct Trade {
     pub wallet: String,
     pub side: Side,
     pub sol: f64,
-    pub tokens: f64,
+    /// Raw token units — exact on-chain integer count (`u64`).
+    pub tokens: u64,
     pub price: f64,
     pub signature: String,
     /// Position of this trade's transaction within its block (`info.index` from
@@ -56,9 +57,9 @@ pub enum Venue {
 #[derive(Debug, Clone, Default)]
 pub struct Reserves {
     pub virtual_sol: Option<f64>,
-    pub virtual_token: Option<f64>,
+    pub virtual_token: Option<u64>,
     pub real_sol: Option<f64>,
-    pub real_token: Option<f64>,
+    pub real_token: Option<u64>,
 }
 
 // ── TokenCreated ──────────────────────────────────────────────────────────────

@@ -556,7 +556,7 @@ mod tests {
             "wallet".into(),
             TradeType::Buy,
             price,
-            1.0,
+            1,
             format!("sig-{slot}-{secs}"),
             slot,
             base_time() + Duration::seconds(secs),

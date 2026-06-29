@@ -127,7 +127,7 @@ export const SWING_OVERLAY_SERIES_OPTIONS: DeepPartial<LineSeriesOptions> = {
 };
 
 /** Pump.fun bonding-curve initial reserves (SOL and raw token units). */
-const PUMP_INITIAL_VIRTUAL_SOL = 30;
+export const PUMP_INITIAL_VIRTUAL_SOL = 30;
 const PUMP_INITIAL_VIRTUAL_TOKEN = 1_073_000_000_000_000;
 const PUMP_INITIAL_REAL_TOKEN = 793_100_000_000_000;
 

@@ -312,12 +312,12 @@ mod tests {
                 wallet.clone(),
                 TradeType::Buy,
                 i as f64,                          // sol_amount
-                10.0,                              // token_amount → price = i/10
+                10,                                // token_amount → price = i/10
                 sig,
                 i as u64,                          // slot
                 base + chrono::Duration::seconds(i),
             );
-            t.virtual_token_reserves = Some(100.0 + i as f64);
+            t.virtual_token_reserves = Some(100 + i as u64);
             trade_repo.insert(&t).await.expect("insert trade");
         }
 

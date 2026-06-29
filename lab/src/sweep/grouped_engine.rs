@@ -626,7 +626,7 @@ mod tests {
             "w".into(),
             TradeType::Buy,
             1.0,
-            1.0,
+            1,
             "sig".into(),
             1,
             Utc::now(),

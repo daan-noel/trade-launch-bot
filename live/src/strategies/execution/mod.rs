@@ -27,11 +27,11 @@ pub(crate) const BUY_POLL_INTERVAL_MS: u64 = 1_000;
 pub(crate) const SELL_MAX_ATTEMPTS: usize = 6;
 pub(crate) const SELL_POLL_MAX_ATTEMPTS: usize = 10;
 pub(crate) const SELL_POLL_INTERVAL_MS: u64 = 500;
-/// Dust threshold (raw token base units) below which a remaining balance counts as
-/// cleared. `trades.token_amount` is raw-unit-valued in both the model and the DB
-/// (no decimal scaling — `raw_to_f64` is identity), so this is a near-zero check
-/// independent of token decimals.
-pub(crate) const PARTIAL_FILL_THRESHOLD: f64 = 0.0001;
+/// Dust threshold (raw token base units) at or below which a remaining balance
+/// counts as cleared. `net_token_amount_by_wallet_and_mint` returns exact signed
+/// raw units (`i64`), so "essentially empty" is simply `<= 0` — any leftover of one
+/// or more raw units is a non-empty bag. Independent of token decimals.
+pub(crate) const PARTIAL_FILL_THRESHOLD: i64 = 0;
 /// Wall-clock window the paper exit-fill poll watches the feed for a confirming
 /// exit trade before giving up and marking the position ExitFailed.
 pub(crate) const PAPER_EXIT_POLL_WINDOW_SECS: u64 = 10;

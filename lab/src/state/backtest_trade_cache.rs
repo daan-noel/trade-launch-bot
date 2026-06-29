@@ -122,7 +122,7 @@ mod tests {
                         "W".to_string(),
                         TradeType::Buy,
                         0.1,
-                        100.0,
+                        100,
                         format!("{mint}-{i}"),
                         i as u64,
                         Utc::now(),

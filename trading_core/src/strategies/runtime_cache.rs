@@ -1099,7 +1099,7 @@ mod tests {
         let mut p = position(rule_id, mint, "Holding");
         p.entry_price = Some(entry_price);
         p.entry_sol = Some(entry_sol);
-        p.entry_token_amount = Some(entry_sol / entry_price);
+        p.entry_token_amount = Some((entry_sol / entry_price) as u64);
         p
     }
 

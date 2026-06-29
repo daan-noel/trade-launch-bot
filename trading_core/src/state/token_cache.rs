@@ -75,13 +75,17 @@ impl CachedTrade {
             wallet,
             is_buy: matches!(t.trade_type, TradeType::Buy),
             sol_amount: t.sol_amount,
-            token_amount: t.token_amount,
+            // The cache row keeps token amounts/reserves as `f64` — it's the
+            // short-lived hot-path projection feeding ratio math (cohort flow, spot
+            // price), not storage. Exact integers live in the `Trade` model + DB; we
+            // cast at this boundary.
+            token_amount: t.token_amount as f64,
             price_per_token: t.price_per_token,
             slot: t.slot,
             leg_index: t.leg_index,
             block_time: t.block_time,
             virtual_sol_reserves: t.virtual_sol_reserves,
-            virtual_token_reserves: t.virtual_token_reserves,
+            virtual_token_reserves: t.virtual_token_reserves.map(|v| v as f64),
             real_sol_reserves: t.real_sol_reserves,
         }
     }
@@ -673,7 +677,7 @@ mod tests {
             "buyer".into(),
             TradeType::Buy,
             sol,
-            tokens,
+            tokens as u64,
             "sig".into(),
             1,
             at,
@@ -812,14 +816,14 @@ mod tests {
             "wallet-parity".into(),
             TradeType::Sell,
             1.25,
-            42_000.0,
+            42_000,
             "sig-parity".into(),
             999,
             now,
         );
         t.leg_index = 3;
         t.virtual_sol_reserves = Some(31.0);
-        t.virtual_token_reserves = Some(900_000.0);
+        t.virtual_token_reserves = Some(900_000);
         t.real_sol_reserves = Some(7.5);
         t.venue = "amm".into();
 

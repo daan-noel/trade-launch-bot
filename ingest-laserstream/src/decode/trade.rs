@@ -32,13 +32,14 @@ pub(super) struct RawTradeEvent {
 pub(super) struct DecodedTradeEvent {
     pub(super) mint: String,
     pub(super) sol_amount: f64,
-    pub(super) token_amount: f64,
+    /// Raw token units — exact on-chain `u64` (never cast through `f64`).
+    pub(super) token_amount: u64,
     pub(super) is_buy: bool,
     pub(super) user: String,
     pub(super) virtual_sol_reserves: f64,
-    pub(super) virtual_token_reserves: f64,
+    pub(super) virtual_token_reserves: u64,
     pub(super) real_sol_reserves: f64,
-    pub(super) real_token_reserves: f64,
+    pub(super) real_token_reserves: u64,
 }
 
 impl DecodedTradeEvent {
@@ -46,13 +47,13 @@ impl DecodedTradeEvent {
         Self {
             mint: bs58::encode(raw.mint).into_string(),
             sol_amount: raw.sol_amount as f64 / lamports_per_sol,
-            token_amount: raw.token_amount as f64,
+            token_amount: raw.token_amount,
             is_buy: raw.is_buy,
             user: bs58::encode(raw.user).into_string(),
             virtual_sol_reserves: raw.virtual_sol_reserves as f64 / lamports_per_sol,
-            virtual_token_reserves: raw.virtual_token_reserves as f64,
+            virtual_token_reserves: raw.virtual_token_reserves,
             real_sol_reserves: raw.real_sol_reserves as f64 / lamports_per_sol,
-            real_token_reserves: raw.real_token_reserves as f64,
+            real_token_reserves: raw.real_token_reserves,
         }
     }
 }
@@ -146,11 +147,13 @@ struct RawPumpSwapSellEvent {
 
 pub(super) struct DecodedAmmTrade {
     pub(super) is_buy: bool,
-    pub(super) base_amount: f64,
+    /// Raw base-token units — exact on-chain `u64`.
+    pub(super) base_amount: u64,
     pub(super) quote_amount: f64,
     pub(super) pool: String,
     pub(super) user: String,
-    pub(super) pool_base_reserves: f64,
+    /// Post-swap base-token reserves — raw `u64` units.
+    pub(super) pool_base_reserves: u64,
     pub(super) pool_quote_reserves: f64,
 }
 
@@ -185,11 +188,11 @@ pub(super) fn decode_pump_swap_trades_from_logs(
                         .saturating_add(e.quote_amount_in_with_lp_fee);
                     out.push(DecodedAmmTrade {
                         is_buy: true,
-                        base_amount: e.base_amount_out as f64,
+                        base_amount: e.base_amount_out,
                         quote_amount: e.user_quote_amount_in as f64 / lps,
                         pool: bs58::encode(e.pool).into_string(),
                         user: bs58::encode(e.user).into_string(),
-                        pool_base_reserves: post_base as f64,
+                        pool_base_reserves: post_base,
                         pool_quote_reserves: post_quote as f64 / lps,
                     });
                 }
@@ -203,11 +206,11 @@ pub(super) fn decode_pump_swap_trades_from_logs(
                         .saturating_sub(e.quote_amount_out_without_lp_fee);
                     out.push(DecodedAmmTrade {
                         is_buy: false,
-                        base_amount: e.base_amount_in as f64,
+                        base_amount: e.base_amount_in,
                         quote_amount: e.user_quote_amount_out as f64 / lps,
                         pool: bs58::encode(e.pool).into_string(),
                         user: bs58::encode(e.user).into_string(),
-                        pool_base_reserves: post_base as f64,
+                        pool_base_reserves: post_base,
                         pool_quote_reserves: post_quote as f64 / lps,
                     });
                 }
@@ -232,8 +235,8 @@ pub(super) fn build_amm_trade(
     leg_index: u32,
 ) -> Trade {
     let side = if ev.is_buy { Side::Buy } else { Side::Sell };
-    let price = if ev.base_amount > 0.0 {
-        ev.quote_amount / ev.base_amount
+    let price = if ev.base_amount > 0 {
+        ev.quote_amount / ev.base_amount as f64
     } else {
         0.0
     };

@@ -22,7 +22,8 @@ struct TokenDbRow {
     token_program_id: Option<String>,
     bonding_curve_address: Option<String>,
     initial_supply_token: Option<i64>,
-    initial_buy_sol: Option<f64>,
+    /// Lamports (BIGINT); converted to human SOL on read.
+    initial_buy_sol: Option<i64>,
     initial_buy_instruction: Option<Json<Value>>,
     cu_limit: Option<i64>,
     cu_price: Option<i64>,
@@ -88,7 +89,8 @@ impl From<TokenDbRow> for Token {
             token_program_id: r.token_program_id,
             bonding_curve_address: r.bonding_curve_address,
             initial_supply_token: r.initial_supply_token.map(|v| v as u64),
-            initial_buy_sol: r.initial_buy_sol,
+            // Lamports (BIGINT) → human SOL f64 on read.
+            initial_buy_sol: r.initial_buy_sol.map(lamports_to_sol),
             initial_buy_instruction: r.initial_buy_instruction.map(|v| v.0),
             cu_limit: r.cu_limit.map(|v| v as u64),
             cu_price: r.cu_price.map(|v| v as u64),
@@ -99,6 +101,21 @@ impl From<TokenDbRow> for Token {
             created_at: r.created_at,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// SOL ↔ lamports — `initial_buy_sol` is human SOL (f64) in the model but stored
+// as exact lamports (BIGINT) in the column, mirroring `trades.sol_amount`.
+// ---------------------------------------------------------------------------
+
+/// Human SOL (f64) → lamports (i64).
+fn sol_to_lamports(sol: f64) -> i64 {
+    (sol * 1_000_000_000.0).round() as i64
+}
+
+/// Lamports (i64) → human SOL (f64).
+fn lamports_to_sol(lamports: i64) -> f64 {
+    lamports as f64 / 1_000_000_000.0
 }
 
 // ---------------------------------------------------------------------------
@@ -141,7 +158,7 @@ impl TokenRepo {
                 .push_bind(t.token_program_id.as_ref())
                 .push_bind(&t.bonding_curve_address)
                 .push_bind(t.initial_supply_token.map(|v| v as i64))
-                .push_bind(t.initial_buy_sol)
+                .push_bind(t.initial_buy_sol.map(sol_to_lamports))
                 .push_bind(t.initial_buy_instruction.as_ref().map(Json))
                 .push_bind(t.cu_limit.map(|v| v as i64))
                 .push_bind(t.cu_price.map(|v| v as i64))
@@ -175,7 +192,7 @@ impl TokenRepo {
         .bind(token.token_program_id.as_ref())
         .bind(&token.bonding_curve_address)
         .bind(token.initial_supply_token.map(|v| v as i64))
-        .bind(token.initial_buy_sol)
+        .bind(token.initial_buy_sol.map(sol_to_lamports))
         .bind(token.initial_buy_instruction.as_ref().map(|v| Json(v)))
         .bind(token.cu_limit.map(|v| v as i64))
         .bind(token.cu_price.map(|v| v as i64))
@@ -224,7 +241,7 @@ impl TokenRepo {
         .bind(token.token_program_id.as_ref())
         .bind(&token.bonding_curve_address)
         .bind(token.initial_supply_token.map(|v| v as i64))
-        .bind(token.initial_buy_sol)
+        .bind(token.initial_buy_sol.map(sol_to_lamports))
         .bind(token.initial_buy_instruction.as_ref().map(|v| Json(v)))
         .bind(token.cu_limit.map(|v| v as i64))
         .bind(token.cu_price.map(|v| v as i64))
@@ -329,7 +346,8 @@ impl TokenRepo {
             r#"
             SELECT t.mint_address, t.creator_wallet, t.name, t.symbol,
                    t.bonding_curve_address,
-                   t.initial_supply_token, t.initial_buy_sol, t.initial_buy_instruction,
+                   t.initial_supply_token,
+                   t.initial_buy_sol::float8 / 1e9 AS initial_buy_sol, t.initial_buy_instruction,
                    t.cu_limit, t.cu_price, t.is_mayhem_mode, t.is_cashback_enabled,
                    t.ix_labels, t.creation_tx_signature, t.created_at,
                    i.ath_price, i.ath_timestamp, i.volume,
@@ -388,7 +406,8 @@ impl TokenRepo {
             r#"
             SELECT t.mint_address, t.creator_wallet, t.name, t.symbol,
                    t.bonding_curve_address,
-                   t.initial_supply_token, t.initial_buy_sol, t.initial_buy_instruction,
+                   t.initial_supply_token,
+                   t.initial_buy_sol::float8 / 1e9 AS initial_buy_sol, t.initial_buy_instruction,
                    t.cu_limit, t.cu_price, t.is_mayhem_mode, t.is_cashback_enabled,
                    t.ix_labels, t.creation_tx_signature, t.created_at,
                    i.ath_price, i.ath_timestamp, i.volume,
@@ -416,7 +435,8 @@ impl TokenRepo {
             r#"
             SELECT t.mint_address, t.creator_wallet, t.name, t.symbol,
                    t.bonding_curve_address,
-                   t.initial_supply_token, t.initial_buy_sol, t.initial_buy_instruction,
+                   t.initial_supply_token,
+                   t.initial_buy_sol::float8 / 1e9 AS initial_buy_sol, t.initial_buy_instruction,
                    t.cu_limit, t.cu_price, t.is_mayhem_mode, t.is_cashback_enabled,
                    t.ix_labels, t.creation_tx_signature, t.created_at,
                    i.ath_price, i.ath_timestamp, i.volume,

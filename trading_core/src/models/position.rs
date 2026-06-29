@@ -22,13 +22,14 @@ pub struct Position {
     /// stored — derived at display as `price × tokens`. The gap vs. `entry_*` is
     /// derived later, not stored.
     pub target_price: Option<f64>,
-    pub target_token_amount: Option<f64>,
+    /// Raw token units (exact integer).
+    pub target_token_amount: Option<u64>,
     pub target_time: Option<DateTime<Utc>>,
     pub target_tx: Option<String>,
-    /// Entry price (SOL per token) when the position was opened.
+    /// Entry price (SOL per raw token unit) when the position was opened.
     pub entry_price: Option<f64>,
-    /// Amount of tokens bought at entry.
-    pub entry_token_amount: Option<f64>,
+    /// Amount of tokens bought at entry — raw units (exact integer).
+    pub entry_token_amount: Option<u64>,
     /// On-chain block time of the confirmed buy trade.
     pub entry_time: Option<DateTime<Utc>>,
     /// Transaction signature(s) that made up the entry fill. Single-leg today (one
@@ -37,10 +38,10 @@ pub struct Position {
     /// attribution — each concurrent same-token position tracks its OWN buy tx, so
     /// the shared `(wallet, mint)` feed can never adopt another position's fill).
     pub entry_tx_signatures: Vec<String>,
-    /// Exit price (SOL per token) when the position was closed.
+    /// Exit price (SOL per raw token unit) when the position was closed.
     pub exit_price: Option<f64>,
-    /// Amount of tokens sold at exit.
-    pub exit_token_amount: Option<f64>,
+    /// Amount of tokens sold at exit — raw units (exact integer).
+    pub exit_token_amount: Option<u64>,
     /// On-chain block time of the confirmed sell trade.
     pub exit_time: Option<DateTime<Utc>>,
     /// Transaction signature(s) that made up the exit fill — genuinely multi-leg
@@ -179,7 +180,7 @@ impl Position {
     pub fn set_target(
         &mut self,
         price: f64,
-        amount: f64,
+        amount: u64,
         time: DateTime<Utc>,
         tx: String,
     ) {
@@ -239,7 +240,7 @@ impl Position {
         &mut self,
         exit_price: f64,
         exit_tx_signatures: Vec<String>,
-        exit_token_amount: f64,
+        exit_token_amount: u64,
         exit_time: DateTime<Utc>,
     ) {
         self.exit_price = Some(exit_price);
@@ -279,8 +280,10 @@ impl Position {
     pub fn pnl_sol(&self) -> Option<f64> {
         match (self.entry_price, self.entry_token_amount, self.exit_price) {
             (Some(entry_price), Some(entry_tokens), Some(exit_price)) => {
-                let proceeds = exit_price * self.exit_token_amount.unwrap_or(0.0);
-                Some(proceeds - entry_price * entry_tokens)
+                // price is SOL per RAW token unit; cast the raw-unit counts to f64 at
+                // the multiply so the product is human SOL (not a 1e9-scaled value).
+                let proceeds = exit_price * self.exit_token_amount.unwrap_or(0) as f64;
+                Some(proceeds - entry_price * entry_tokens as f64)
             }
             _ => None,
         }
@@ -343,16 +346,19 @@ pub struct PositionResponse {
     /// this position, distinct from the actual entry fill. `None` until armed.
     /// The gap vs. the `entry_*` columns is derived client-side, not stored.
     pub target_price: Option<f64>,
-    pub target_token_amount: Option<f64>,
+    /// Raw token units (exact integer; the frontend scales for display).
+    pub target_token_amount: Option<u64>,
     pub target_time: Option<DateTime<Utc>>,
     pub target_tx: Option<String>,
     pub entry_price: Option<f64>,
-    pub entry_token_amount: Option<f64>,
+    /// Raw token units (exact integer; the frontend scales for display).
+    pub entry_token_amount: Option<u64>,
     pub entry_time: Option<DateTime<Utc>>,
     /// First entry leg's signature (display/back-compat); empty until adopted.
     pub entry_tx: String,
     pub exit_price: Option<f64>,
-    pub exit_token_amount: Option<f64>,
+    /// Raw token units (exact integer; the frontend scales for display).
+    pub exit_token_amount: Option<u64>,
     pub exit_time: Option<DateTime<Utc>>,
     /// Last exit leg's signature (display/back-compat); `None` until a sell lands.
     pub exit_tx: Option<String>,
@@ -501,8 +507,8 @@ mod tests {
     fn pnl_and_win_for_clean_profitable_exit() {
         let mut p = make_position();
         p.entry_price = Some(1.0);
-        p.entry_token_amount = Some(100.0);
-        p.close(2.0, vec!["sig".into()], 100.0, Utc::now());
+        p.entry_token_amount = Some(100);
+        p.close(2.0, vec!["sig".into()], 100, Utc::now());
         assert!(p.is_closed());
         assert!(p.is_win());
         assert_eq!(p.pnl_percentage(), Some(100.0));
@@ -515,15 +521,15 @@ mod tests {
     fn loss_and_breakeven_are_not_wins() {
         let mut loss = make_position();
         loss.entry_price = Some(1.0);
-        loss.entry_token_amount = Some(100.0);
-        loss.close(0.5, vec!["sig".into()], 100.0, Utc::now());
+        loss.entry_token_amount = Some(100);
+        loss.close(0.5, vec!["sig".into()], 100, Utc::now());
         assert!(loss.is_closed() && !loss.is_win());
         assert_eq!(loss.pnl_sol(), Some(-50.0));
 
         let mut breakeven = make_position();
         breakeven.entry_price = Some(1.0);
-        breakeven.entry_token_amount = Some(100.0);
-        breakeven.close(1.0, vec!["sig".into()], 100.0, Utc::now());
+        breakeven.entry_token_amount = Some(100);
+        breakeven.close(1.0, vec!["sig".into()], 100, Utc::now());
         assert!(!breakeven.is_win(), "0% is a loss, not a win");
     }
 
@@ -533,7 +539,7 @@ mod tests {
     fn failed_exit_is_closed_loss_with_sol_loss() {
         let mut p = make_position();
         p.entry_price = Some(1.0);
-        p.entry_token_amount = Some(100.0);
+        p.entry_token_amount = Some(100);
         p.mark_exit_failed(0.0, Utc::now()); // paper total loss: no exit tokens
         assert!(p.is_closed());
         assert!(!p.is_win());
@@ -549,7 +555,7 @@ mod tests {
 
         let mut holding = make_position();
         holding.entry_price = Some(1.0);
-        holding.entry_token_amount = Some(100.0);
+        holding.entry_token_amount = Some(100);
         holding.mark_entry_filled();
         assert!(!holding.is_closed(), "Holding is not closed");
         assert_eq!(holding.pnl_sol(), None, "no exit price yet");

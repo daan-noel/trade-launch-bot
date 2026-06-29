@@ -54,9 +54,11 @@ CREATE TABLE IF NOT EXISTS tokens (
     bonding_curve_address   TEXT,
     token_program_id        TEXT,
 
-    -- launch economics
+    -- launch economics (amounts are exact integers: supply = raw token units,
+    -- initial_buy_sol = lamports; model keeps SOL as human f64, ÷1e9 on read.
+    -- See @arch/database.md "Amount typing".)
     initial_supply_token    BIGINT,
-    initial_buy_sol         DOUBLE PRECISION,
+    initial_buy_sol         BIGINT,                 -- lamports
 
     -- creation-tx compute budget
     cu_limit                BIGINT,

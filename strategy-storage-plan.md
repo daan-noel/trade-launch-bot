@@ -181,23 +181,28 @@ CREATE TABLE IF NOT EXISTS strategy_positions (
     wallet                  TEXT        NOT NULL,
     token_program_id        TEXT,
 
+    -- Amount type-by-meaning (see @arch/database.md): price = SOL per RAW token
+    -- unit (ratio → float); *_token_amount = raw token units (BIGINT, exact integer);
+    -- *_sol = lamports (BIGINT, exact). Models keep SOL as human f64 and convert at the
+    -- repo boundary; *_token_amount is u64 end-to-end. Frontend scales for display.
+
     -- Optional trigger trade (someone else's trade that armed entry; scalp-style).
     target_price            DOUBLE PRECISION,
-    target_token_amount     DOUBLE PRECISION,
+    target_token_amount     BIGINT,                        -- raw token units
     target_time             TIMESTAMPTZ,
     target_tx               TEXT,
 
     -- Entry fill (NULL until the buy lands).
     entry_price             DOUBLE PRECISION,
-    entry_token_amount      DOUBLE PRECISION,               -- TOKEN count, not SOL
-    entry_sol               DOUBLE PRECISION,               -- realized SOL spent (true cost; incl. fees/slippage)
+    entry_token_amount      BIGINT,                        -- raw token units (not SOL)
+    entry_sol               BIGINT,                        -- lamports spent (true cost; incl. fees/slippage)
     entry_time              TIMESTAMPTZ,
     entry_tx_signatures     JSONB       NOT NULL DEFAULT '[]',
 
     -- Exit fill.
     exit_price              DOUBLE PRECISION,
-    exit_token_amount       DOUBLE PRECISION,
-    exit_sol                DOUBLE PRECISION,               -- realized SOL received
+    exit_token_amount       BIGINT,                        -- raw token units
+    exit_sol                BIGINT,                        -- lamports received
     exit_time               TIMESTAMPTZ,
     exit_tx_signatures      JSONB       NOT NULL DEFAULT '[]',
 
@@ -255,7 +260,9 @@ PnL stays derived, never stored:
 CREATE OR REPLACE VIEW strategy_position_pnl AS
 SELECT
     p.*,
-    (p.exit_sol - p.entry_sol)                                        AS realized_pnl_sol,
+    -- exit_sol/entry_sol are lamports (BIGINT); ÷1e9 back to human SOL so the view
+    -- matches StrategyPosition::realized_pnl_sol() (f64 SOL).
+    ((p.exit_sol - p.entry_sol)::float8 / 1e9)                        AS realized_pnl_sol,
     CASE WHEN p.entry_price > 0
          THEN (p.exit_price - p.entry_price) / p.entry_price * 100.0 END AS pnl_pct,
     CASE WHEN p.entry_time IS NOT NULL AND p.exit_time IS NOT NULL

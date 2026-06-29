@@ -107,12 +107,14 @@ pub(crate) fn spawn_entry_fill_poll(
                 if let Ok(Some(mut pos)) = repo.find_position(position_id).await {
                     let prev = pos.clone();
                     if let Some((tp, ta, tt, ttx)) = e.target {
-                        pos.set_target(tp, ta, tt, ttx);
+                        // Position token amounts are raw integer units; paper computes
+                        // a fractional estimate, so round to whole raw units here.
+                        pos.set_target(tp, ta.round() as u64, tt, ttx);
                     }
                     // SOL is display-derived (`price × amount_tokens`); store it so the
                     // unified row carries a consistent entry cost.
                     let sol = e.price * e.token_amount;
-                    pos.set_entry(e.price, e.token_amount, sol, e.time, vec![e.tx.clone()]);
+                    pos.set_entry(e.price, e.token_amount.round() as u64, sol, e.time, vec![e.tx.clone()]);
                     if repo.update_position(&pos).await.is_ok() {
                         runtime.sync_position(Some(&prev), &pos);
                     }
@@ -363,8 +365,8 @@ pub(crate) fn spawn_exit_fill_poll(
             if let Ok(Some(mut pos)) = repo.find_position(position_id).await {
                 let prev = pos.clone();
                 // Full-bag exit: the exit token amount is the entry token count.
-                let amt = pos.entry_token_amount.unwrap_or(0.0);
-                pos.close(price, price * amt, amt, vec![exit_tx.clone()], block_time, reason);
+                let amt = pos.entry_token_amount.unwrap_or(0);
+                pos.close(price, price * amt as f64, amt, vec![exit_tx.clone()], block_time, reason);
                 if repo.update_position(&pos).await.is_ok() {
                     runtime.sync_position(Some(&prev), &pos);
                 }
@@ -427,8 +429,8 @@ pub(crate) async fn record_time_exit(
     // no on-chain trade ever matches — skip the `trades` lookup entirely. Full-bag
     // exit: the exit token amount is the entry token count.
     let prev = position.clone();
-    let amt = position.entry_token_amount.unwrap_or(0.0);
-    position.close(exit_price, exit_price * amt, amt, vec![String::new()], exit_time, &reason);
+    let amt = position.entry_token_amount.unwrap_or(0);
+    position.close(exit_price, exit_price * amt as f64, amt, vec![String::new()], exit_time, &reason);
     if let Err(err) = repo.update_position(&position).await {
         warn!(position_id = %position.id, "Failed to record paper time exit: {err}");
         return;

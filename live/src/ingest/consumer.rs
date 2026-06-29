@@ -260,7 +260,9 @@ impl IngestConsumer {
         }
 
         if let Some((token_reserves, sol_reserves)) = reserve_snapshot {
-            self.trader.update_live_reserves(&mint, token_reserves, sol_reserves, is_amm);
+            // The trader takes reserves as `f64` (spot-price ratio math; it's a
+            // standalone lib). Cast the raw token reserves at this boundary.
+            self.trader.update_live_reserves(&mint, token_reserves as f64, sol_reserves, is_amm);
         }
 
         if let Some(token_program) = to_warm {

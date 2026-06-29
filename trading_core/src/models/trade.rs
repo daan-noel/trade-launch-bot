@@ -13,7 +13,10 @@ pub struct Trade {
     pub trade_type: TradeType,
     /// SOL amount (human-readable, already divided by lamports).
     pub sol_amount: f64,
-    pub token_amount: f64,
+    /// Raw token units — an exact on-chain integer count (never fractional).
+    /// Stored as `u64` so large legs (>2^53 raw units) keep every digit on the
+    /// way to the `BIGINT` column; ratio consumers cast to `f64` at the divide.
+    pub token_amount: u64,
     /// Average execution price for this swap (`sol_amount / token_amount`).
     pub price_per_token: f64,
     pub tx_signature: String,
@@ -34,11 +37,15 @@ pub struct Trade {
 
     // ── On-chain state snapshot (from TradeEvent "Program data:" log) ─────────
     /// Virtual SOL reserves on the bonding curve at the time of the trade.
+    /// SOL stays `f64` (small magnitude, no precision risk); the exactness lives
+    /// in the lamports column.
     pub virtual_sol_reserves: Option<f64>,
-    pub virtual_token_reserves: Option<f64>,
+    /// Virtual token reserves — raw on-chain integer units (`u64`, sits near 2^53).
+    pub virtual_token_reserves: Option<u64>,
     /// Real (non-virtual) SOL reserves — used for graduation progress.
     pub real_sol_reserves: Option<f64>,
-    pub real_token_reserves: Option<f64>,
+    /// Real token reserves — raw on-chain integer units (`u64`).
+    pub real_token_reserves: Option<u64>,
 
     // ── Instruction context ───────────────────────────────────────────────────
     /// Trade-side label for executed trades: "Buy" or "Sell".
@@ -69,7 +76,7 @@ impl Trade {
     /// Spot price from bonding-curve reserves (`virtual_sol / virtual_token`).
     pub fn curve_spot_price(&self) -> Option<f64> {
         match (self.virtual_sol_reserves, self.virtual_token_reserves) {
-            (Some(vsol), Some(vtok)) if vtok > 0.0 => Some(vsol / vtok),
+            (Some(vsol), Some(vtok)) if vtok > 0 => Some(vsol / vtok as f64),
             _ => None,
         }
     }
@@ -78,7 +85,7 @@ impl Trade {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn pool_spot_price(&self) -> Option<f64> {
         match (self.real_sol_reserves, self.real_token_reserves) {
-            (Some(sol), Some(tok)) if tok > 0.0 => Some(sol / tok),
+            (Some(sol), Some(tok)) if tok > 0 => Some(sol / tok as f64),
             _ => None,
         }
     }
@@ -97,8 +104,8 @@ impl Trade {
 
     /// Average execution price for this swap (`sol_amount / token_amount`).
     pub fn execution_price(&self) -> f64 {
-        if self.token_amount > 0.0 {
-            self.sol_amount / self.token_amount
+        if self.token_amount > 0 {
+            self.sol_amount / self.token_amount as f64
         } else {
             self.price_per_token
         }
@@ -109,13 +116,13 @@ impl Trade {
         wallet_address: String,
         trade_type: TradeType,
         sol_amount: f64,
-        token_amount: f64,
+        token_amount: u64,
         tx_signature: String,
         slot: u64,
         block_time: DateTime<Utc>,
     ) -> Self {
-        let price_per_token = if token_amount > 0.0 {
-            sol_amount / token_amount
+        let price_per_token = if token_amount > 0 {
+            sol_amount / token_amount as f64
         } else {
             0.0
         };
@@ -197,7 +204,7 @@ impl TradeRow for Trade {
         self.sol_amount
     }
     fn token_amount(&self) -> f64 {
-        self.token_amount
+        self.token_amount as f64
     }
     fn price_per_token(&self) -> f64 {
         self.price_per_token
@@ -215,7 +222,7 @@ impl TradeRow for Trade {
         self.virtual_sol_reserves
     }
     fn virtual_token_reserves(&self) -> Option<f64> {
-        self.virtual_token_reserves
+        self.virtual_token_reserves.map(|v| v as f64)
     }
     fn real_sol_reserves(&self) -> Option<f64> {
         self.real_sol_reserves
@@ -233,7 +240,7 @@ mod tests {
     use super::*;
     use chrono::Utc;
 
-    fn buy_with_reserves(sol: f64, tokens: f64, vsol_post: f64, vtok_post: f64) -> Trade {
+    fn buy_with_reserves(sol: f64, tokens: u64, vsol_post: f64, vtok_post: u64) -> Trade {
         let mut t = Trade::new(
             "mint".into(),
             "user".into(),
@@ -251,7 +258,7 @@ mod tests {
 
     #[test]
     fn price_per_token_is_execution_not_curve_spot() {
-        let t = buy_with_reserves(10.0, 1_000_000.0, 110.0, 900_000.0);
+        let t = buy_with_reserves(10.0, 1_000_000, 110.0, 900_000);
         assert!((t.price_per_token - 10.0 / 1_000_000.0).abs() < 1e-12);
         assert!((t.execution_price() - t.price_per_token).abs() < 1e-15);
         let spot = t.curve_spot_price().unwrap();
@@ -267,7 +274,7 @@ mod tests {
 
     #[test]
     fn chart_spot_price_prefers_curve_then_pool_then_execution() {
-        let curve = buy_with_reserves(1.0, 100.0, 50.0, 500.0);
+        let curve = buy_with_reserves(1.0, 100, 50.0, 500);
         assert_eq!(curve.chart_spot_price(), curve.curve_spot_price());
 
         let mut amm = Trade::new(
@@ -275,14 +282,14 @@ mod tests {
             "user".into(),
             TradeType::Buy,
             1.0,
-            100.0,
+            100,
             "sig".into(),
             1,
             Utc::now(),
         );
         amm.venue = "amm".into();
         amm.real_sol_reserves = Some(25.0);
-        amm.real_token_reserves = Some(250.0);
+        amm.real_token_reserves = Some(250);
         assert!((amm.chart_spot_price().unwrap() - 0.1).abs() < 1e-12);
 
         let bare = Trade::new(
@@ -290,7 +297,7 @@ mod tests {
             "user".into(),
             TradeType::Buy,
             2.0,
-            200.0,
+            200,
             "sig".into(),
             1,
             Utc::now(),

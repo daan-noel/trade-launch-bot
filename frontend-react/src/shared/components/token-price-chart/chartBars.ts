@@ -1,5 +1,10 @@
 import type { SeriesMarker, UTCTimestamp } from 'lightweight-charts';
-import { CHART_COLORS, PUMP_MIGRATION_SPOT_PRICE_SOL, TOKEN_TOTAL_SUPPLY } from './constants';
+import {
+  CHART_COLORS,
+  PUMP_INITIAL_VIRTUAL_SOL,
+  PUMP_MIGRATION_SPOT_PRICE_SOL,
+  TOKEN_TOTAL_SUPPLY,
+} from './constants';
 import type {
   ChartGroupMode,
   ChartMetric,
@@ -106,20 +111,32 @@ export function preTradeSpotPriceSol(trade: ChartTrade): number | null {
   return preSpot > 0 && Number.isFinite(preSpot) ? preSpot : null;
 }
 
-/** Bonding-curve liquidity in SOL (GMGN-style: 2× virtual SOL reserves). */
+/**
+ * Real SOL deposited in the bonding curve at the time of a trade.
+ *
+ * pump.fun seeds the curve with {@link PUMP_INITIAL_VIRTUAL_SOL} virtual SOL
+ * before any depositor SOL exists, so the actual SOL locked in the pool is
+ * `virtual_sol_reserves − initial virtual SOL`. This is the true liquidity
+ * (and the graduation-progress figure). Clamped at 0; null when the snapshot
+ * is missing.
+ */
 export function curveLiquiditySol(
   trade: Pick<ChartTrade, 'virtual_sol_reserves'>,
 ): number | null {
   const vsol = trade.virtual_sol_reserves;
   if (vsol == null || vsol <= 0) return null;
-  return vsol * 2;
+  return Math.max(0, vsol - PUMP_INITIAL_VIRTUAL_SOL);
 }
 
-/** Pool or curve liquidity in SOL (2× quote/virtual SOL reserves). */
+/**
+ * Real SOL liquidity at a trade: post-migration AMM pool reserves when present,
+ * else the curve's depositor SOL. The `trades` table only carries `virtual_*`
+ * (no `real_*` columns), so the curve branch is the live path.
+ */
 export function tradeLiquiditySol(trade: ChartTrade): number | null {
   const sol = trade.real_sol_reserves;
-  if (sol == null || sol <= 0) return null;
-  return sol;
+  if (sol != null && sol > 0) return sol;
+  return curveLiquiditySol(trade);
 }
 
 /** FDV in SOL: total supply × spot price (GMGN-style MC). */

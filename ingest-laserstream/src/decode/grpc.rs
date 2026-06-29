@@ -160,7 +160,7 @@ impl Decoder {
                 continue;
             }
             let side = if ev.is_buy { Side::Buy } else { Side::Sell };
-            let price = if ev.token_amount > 0.0 { ev.sol_amount / ev.token_amount } else { 0.0 };
+            let price = if ev.token_amount > 0 { ev.sol_amount / ev.token_amount as f64 } else { 0.0 };
             events.push(IngestEvent::Trade(Trade {
                 mint: ev.mint.clone(),
                 wallet: ev.user.clone(),
@@ -360,7 +360,7 @@ impl Decoder {
             return None;
         }
 
-        let price = if token_amount > 0.0 { sol_amount / token_amount } else { 0.0 };
+        let price = if token_amount > 0 { sol_amount / token_amount as f64 } else { 0.0 };
 
         Some(IngestEvent::Trade(Trade {
             mint,
@@ -391,19 +391,23 @@ fn compute_token_change_pb(
     account_keys: &[&str],
     pre: &[scb::TokenBalance],
     post: &[scb::TokenBalance],
-) -> f64 {
+) -> u64 {
     let ata_idx = match account_keys.iter().position(|k| *k == user_ata) {
         Some(i) => i as u32,
-        None => return 0.0,
+        None => return 0,
     };
-    let find_amount = |balances: &[scb::TokenBalance]| -> f64 {
+    // `ui_token_amount.amount` is the RAW integer balance as a string (the chain's
+    // u64); `uiAmount` is the decimal-scaled view. Parse the raw form to `u64` so the
+    // delta stays exact — no `f64` round-trip.
+    let find_amount = |balances: &[scb::TokenBalance]| -> u64 {
         balances.iter()
             .find(|tb| tb.account_index == ata_idx && tb.mint == mint)
             .and_then(|tb| tb.ui_token_amount.as_ref())
-            .and_then(|u| u.amount.parse::<f64>().ok())
-            .unwrap_or(0.0)
+            .and_then(|u| u.amount.parse::<u64>().ok())
+            .unwrap_or(0)
     };
-    (find_amount(post) - find_amount(pre)).abs()
+    // Balance moves down on a sell, up on a buy; the magnitude is the trade size.
+    find_amount(post).abs_diff(find_amount(pre))
 }
 
 // ── Inner-instruction TradeEvent decode ───────────────────────────────────────

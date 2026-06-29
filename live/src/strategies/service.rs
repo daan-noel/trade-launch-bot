@@ -280,7 +280,7 @@ impl StrategyService {
             );
             position.token_program_id = token.token_program_id.clone();
             // Inert target defaults (tpsl2 real overwrites with the trigger snapshot).
-            position.set_target(0.0, 0.0, token.created_at, String::new());
+            position.set_target(0.0, 0, token.created_at, String::new());
 
             let buy_amount = rule.buy_amount;
             let position_id = position.id;
@@ -370,7 +370,9 @@ impl StrategyService {
                                     let prev = position.clone();
                                     position.set_target(
                                         target.price,
-                                        target.amount_tokens,
+                                        // amount_tokens is raw units as f64 (TradeRow
+                                        // accessor); store the exact integer count.
+                                        target.amount_tokens.round() as u64,
                                         target.block_time,
                                         target.tx_signature,
                                     );

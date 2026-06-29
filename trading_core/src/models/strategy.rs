@@ -98,18 +98,23 @@ pub struct StrategyPosition {
     pub token_program_id: Option<String>,
     // Target (arming) snapshot.
     pub target_price: Option<f64>,
-    pub target_token_amount: Option<f64>,
+    /// Raw token units (exact integer).
+    pub target_token_amount: Option<u64>,
     pub target_time: Option<DateTime<Utc>>,
     pub target_tx: Option<String>,
     // Entry fill.
     pub entry_price: Option<f64>,
-    pub entry_token_amount: Option<f64>,
+    /// Raw token units (exact integer).
+    pub entry_token_amount: Option<u64>,
+    /// Human SOL (f64) in the model; stored as exact lamports (BIGINT) in the column.
     pub entry_sol: Option<f64>,
     pub entry_time: Option<DateTime<Utc>>,
     pub entry_tx_signatures: Value,
     // Exit fill.
     pub exit_price: Option<f64>,
-    pub exit_token_amount: Option<f64>,
+    /// Raw token units (exact integer).
+    pub exit_token_amount: Option<u64>,
+    /// Human SOL (f64) in the model; stored as exact lamports (BIGINT) in the column.
     pub exit_sol: Option<f64>,
     pub exit_time: Option<DateTime<Utc>>,
     pub exit_tx_signatures: Value,
@@ -217,7 +222,7 @@ impl StrategyPosition {
     }
 
     /// Record the target (trigger-trade) snapshot that armed this position.
-    pub fn set_target(&mut self, price: f64, amount: f64, time: DateTime<Utc>, tx: String) {
+    pub fn set_target(&mut self, price: f64, amount: u64, time: DateTime<Utc>, tx: String) {
         self.target_price = Some(price);
         self.target_token_amount = Some(amount);
         self.target_time = Some(time);
@@ -237,7 +242,7 @@ impl StrategyPosition {
     pub fn set_entry(
         &mut self,
         price: f64,
-        token_amount: f64,
+        token_amount: u64,
         sol: f64,
         time: DateTime<Utc>,
         tx_signatures: Vec<String>,
@@ -278,7 +283,7 @@ impl StrategyPosition {
         &mut self,
         exit_price: f64,
         exit_sol: f64,
-        exit_token_amount: f64,
+        exit_token_amount: u64,
         exit_tx_signatures: Vec<String>,
         exit_time: DateTime<Utc>,
         reason: &str,

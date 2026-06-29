@@ -214,7 +214,9 @@ fn group_field_sql(f: GroupField) -> &'static str {
         GroupField::SpendableSolIn => {
             "COALESCE(t.initial_buy_instruction->>'spendable_sol_in', '∅')"
         }
-        GroupField::InitialBuySol => "COALESCE(t.initial_buy_sol::text, '∅')",
+        // initial_buy_sol is lamports (BIGINT); group on the human-SOL value so the
+        // displayed label matches the rest of the UI (÷1e9).
+        GroupField::InitialBuySol => "COALESCE((t.initial_buy_sol::float8 / 1e9)::text, '∅')",
         // Labels joined with " | " in on-chain order (NOT alphabetised) so the
         // displayed/copied set mirrors the real instruction sequence. Ordinality
         // preserves array position; duplicates are kept intentionally.

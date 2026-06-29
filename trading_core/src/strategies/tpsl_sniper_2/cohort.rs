@@ -111,7 +111,7 @@ mod tests {
             wallet.into(),
             side,
             sol,
-            tokens,
+            tokens as u64,
             format!("sig-{wallet}-{slot}"),
             slot,
             base_time(),

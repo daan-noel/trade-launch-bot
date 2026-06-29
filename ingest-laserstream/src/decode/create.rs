@@ -65,7 +65,7 @@ impl Decoder {
             .iter()
             .find(|ev| ev.is_buy && ev.user == buy_user && ev.mint == mint);
 
-        let initial_supply = initial_create_event.map(|ev| ev.token_amount as u64);
+        let initial_supply = initial_create_event.map(|ev| ev.token_amount);
         let initial_buy_sol = initial_create_event.map(|ev| ev.sol_amount);
 
         let name = create_log.map(|e| e.name.clone())

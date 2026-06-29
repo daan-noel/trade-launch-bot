@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS tokens (
     token_program_id        TEXT,
 
     initial_supply_token    BIGINT,
-    initial_buy_sol         DOUBLE PRECISION,
+    initial_buy_sol         BIGINT,                 -- lamports (exact; display ÷1e9)
 
     cu_limit                BIGINT,
     cu_price                BIGINT,
@@ -306,22 +306,24 @@ CREATE TABLE IF NOT EXISTS strategy_positions (
     token_program_id        TEXT,
 
     -- optional trigger trade (scalp-style entry arming)
+    -- price = SOL per raw token unit (ratio, float); amounts = exact integers:
+    -- *_token_amount = raw token units (BIGINT), *_sol = lamports (BIGINT).
     target_price            DOUBLE PRECISION,
-    target_token_amount     DOUBLE PRECISION,
+    target_token_amount     BIGINT,                 -- raw token units
     target_time             TIMESTAMPTZ,
     target_tx               TEXT,
 
     -- entry fill (NULL until the buy lands)
     entry_price             DOUBLE PRECISION,
-    entry_token_amount      DOUBLE PRECISION,
-    entry_sol               DOUBLE PRECISION,
+    entry_token_amount      BIGINT,                 -- raw token units
+    entry_sol               BIGINT,                 -- lamports
     entry_time              TIMESTAMPTZ,
     entry_tx_signatures     JSONB       NOT NULL DEFAULT '[]',
 
     -- exit fill
     exit_price              DOUBLE PRECISION,
-    exit_token_amount       DOUBLE PRECISION,
-    exit_sol                DOUBLE PRECISION,
+    exit_token_amount       BIGINT,                 -- raw token units
+    exit_sol                BIGINT,                 -- lamports
     exit_time               TIMESTAMPTZ,
     exit_tx_signatures      JSONB       NOT NULL DEFAULT '[]',
 
@@ -359,7 +361,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_strategy_positions_exit_sig0
 CREATE OR REPLACE VIEW strategy_position_pnl AS
 SELECT
     p.*,
-    (p.exit_sol - p.entry_sol)                                        AS realized_pnl_sol,
+    -- exit_sol/entry_sol are lamports (BIGINT); divide back to human SOL so the
+    -- view's realized_pnl_sol matches StrategyPosition::realized_pnl_sol() (f64 SOL).
+    ((p.exit_sol - p.entry_sol)::float8 / 1e9)                        AS realized_pnl_sol,
     CASE WHEN p.entry_price > 0
          THEN (p.exit_price - p.entry_price) / p.entry_price * 100.0 END AS pnl_pct,
     CASE WHEN p.entry_time IS NOT NULL AND p.exit_time IS NOT NULL

@@ -7,6 +7,20 @@ use crate::models::strategy::{
     StrategyPosition, StrategyRule, StrategyRun, StrategyRunMetrics,
 };
 
+// `entry_sol`/`exit_sol` are human SOL (f64) in the model but stored as exact
+// lamports (BIGINT) in the column, mirroring `trades.sol_amount`. Token amounts are
+// already exact integers (`u64`) and bind/read as `i64` directly.
+
+/// Human SOL (f64) → lamports (i64).
+fn sol_to_lamports(sol: f64) -> i64 {
+    (sol * 1_000_000_000.0).round() as i64
+}
+
+/// Lamports (i64) → human SOL (f64).
+fn lamports_to_sol(lamports: i64) -> f64 {
+    lamports as f64 / 1_000_000_000.0
+}
+
 /// Repo spanning the unified strategy schema: `strategy_rules`,
 /// `strategy_runs`, `strategy_run_metrics`, `strategy_positions`.
 #[derive(Clone)]
@@ -154,17 +168,19 @@ struct StrategyPositionDbRow {
     wallet: String,
     token_program_id: Option<String>,
     target_price: Option<f64>,
-    target_token_amount: Option<f64>,
+    // Raw token units (BIGINT) → u64 in the model.
+    target_token_amount: Option<i64>,
     target_time: Option<DateTime<Utc>>,
     target_tx: Option<String>,
     entry_price: Option<f64>,
-    entry_token_amount: Option<f64>,
-    entry_sol: Option<f64>,
+    entry_token_amount: Option<i64>,
+    // Lamports (BIGINT) → human SOL f64 in the model.
+    entry_sol: Option<i64>,
     entry_time: Option<DateTime<Utc>>,
     entry_tx_signatures: Json<Value>,
     exit_price: Option<f64>,
-    exit_token_amount: Option<f64>,
-    exit_sol: Option<f64>,
+    exit_token_amount: Option<i64>,
+    exit_sol: Option<i64>,
     exit_time: Option<DateTime<Utc>>,
     exit_tx_signatures: Json<Value>,
     submitted_buy_signatures: Vec<String>,
@@ -187,17 +203,17 @@ impl From<StrategyPositionDbRow> for StrategyPosition {
             wallet: r.wallet,
             token_program_id: r.token_program_id,
             target_price: r.target_price,
-            target_token_amount: r.target_token_amount,
+            target_token_amount: r.target_token_amount.map(|v| v as u64),
             target_time: r.target_time,
             target_tx: r.target_tx,
             entry_price: r.entry_price,
-            entry_token_amount: r.entry_token_amount,
-            entry_sol: r.entry_sol,
+            entry_token_amount: r.entry_token_amount.map(|v| v as u64),
+            entry_sol: r.entry_sol.map(lamports_to_sol),
             entry_time: r.entry_time,
             entry_tx_signatures: r.entry_tx_signatures.0,
             exit_price: r.exit_price,
-            exit_token_amount: r.exit_token_amount,
-            exit_sol: r.exit_sol,
+            exit_token_amount: r.exit_token_amount.map(|v| v as u64),
+            exit_sol: r.exit_sol.map(lamports_to_sol),
             exit_time: r.exit_time,
             exit_tx_signatures: r.exit_tx_signatures.0,
             submitted_buy_signatures: r.submitted_buy_signatures,
@@ -526,17 +542,17 @@ impl StrategyRepo {
         .bind(&p.wallet)
         .bind(p.token_program_id.as_ref())
         .bind(p.target_price)
-        .bind(p.target_token_amount)
+        .bind(p.target_token_amount.map(|v| v as i64))
         .bind(p.target_time)
         .bind(p.target_tx.as_ref())
         .bind(p.entry_price)
-        .bind(p.entry_token_amount)
-        .bind(p.entry_sol)
+        .bind(p.entry_token_amount.map(|v| v as i64))
+        .bind(p.entry_sol.map(sol_to_lamports))
         .bind(p.entry_time)
         .bind(Json(&p.entry_tx_signatures))
         .bind(p.exit_price)
-        .bind(p.exit_token_amount)
-        .bind(p.exit_sol)
+        .bind(p.exit_token_amount.map(|v| v as i64))
+        .bind(p.exit_sol.map(sol_to_lamports))
         .bind(p.exit_time)
         .bind(Json(&p.exit_tx_signatures))
         .bind(&p.submitted_buy_signatures)
@@ -592,17 +608,17 @@ impl StrategyRepo {
         .bind(&p.wallet)
         .bind(p.token_program_id.as_ref())
         .bind(p.target_price)
-        .bind(p.target_token_amount)
+        .bind(p.target_token_amount.map(|v| v as i64))
         .bind(p.target_time)
         .bind(p.target_tx.as_ref())
         .bind(p.entry_price)
-        .bind(p.entry_token_amount)
-        .bind(p.entry_sol)
+        .bind(p.entry_token_amount.map(|v| v as i64))
+        .bind(p.entry_sol.map(sol_to_lamports))
         .bind(p.entry_time)
         .bind(Json(&p.entry_tx_signatures))
         .bind(p.exit_price)
-        .bind(p.exit_token_amount)
-        .bind(p.exit_sol)
+        .bind(p.exit_token_amount.map(|v| v as i64))
+        .bind(p.exit_sol.map(sol_to_lamports))
         .bind(p.exit_time)
         .bind(Json(&p.exit_tx_signatures))
         .bind(&p.submitted_buy_signatures)
@@ -863,7 +879,7 @@ impl StrategyRepo {
         &self,
         id: Uuid,
         entry_tx: &str,
-        entry_token_amount: f64,
+        entry_token_amount: u64,
         entry_price: f64,
         entry_sol: f64,
         entry_time: DateTime<Utc>,
@@ -877,9 +893,9 @@ impl StrategyRepo {
         ))
         .bind(id)
         .bind(Json(json!([entry_tx])))
-        .bind(entry_token_amount)
+        .bind(entry_token_amount as i64)
         .bind(entry_price)
-        .bind(entry_sol)
+        .bind(sol_to_lamports(entry_sol))
         .bind(entry_time)
         .fetch_one(&self.pool)
         .await?;
@@ -986,7 +1002,7 @@ impl StrategyRepo {
     /// `wallet_dict` to resolve the interned `wallet_id`.
     pub async fn find_externally_cleared_holding_mints(
         &self,
-        threshold_raw: f64,
+        threshold_raw: i64,
     ) -> anyhow::Result<Vec<String>> {
         let rows: Vec<(String,)> = sqlx::query_as(
             r#"
@@ -1007,7 +1023,7 @@ impl StrategyRepo {
                                     ELSE 0 END)
                     FROM trades t
                     WHERE t.wallet_id = w.id AND t.mint_address = p.mint
-                  ), 0)::double precision <= $1
+                  ), 0)::bigint <= $1
             "#,
         )
         .bind(threshold_raw)

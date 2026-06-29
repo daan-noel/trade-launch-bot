@@ -1648,7 +1648,7 @@ mod amm_verification {
             }
             let t = &trades[0];
             assert_eq!(t.venue, "amm");
-            assert!(t.sol_amount > 0.0 && t.token_amount > 0.0);
+            assert!(t.sol_amount > 0.0 && t.token_amount > 0);
             if verified < 3 {
                 println!(
                     "OK mint={base_mint}\n   derived_pool={derived}\n   {:?} sol={:.6} tokens_raw={} price={:.3e} wallet={}",
@@ -1808,7 +1808,7 @@ mod amm_verification {
                 for e in &events {
                     if let IngestEvent::Trade(t) = e {
                         assert!(
-                            t.sol > 0.0 && t.tokens > 0.0,
+                            t.sol > 0.0 && t.tokens > 0,
                             "decoded trade has non-positive amounts: {t:?}",
                         );
                         trade_legs += 1;
@@ -1875,7 +1875,7 @@ mod backfill_persistence {
             wallet.to_string(),
             TradeType::Buy,
             0.5,
-            1_000.0,
+            1_000,
             sig.to_string(),
             slot,
             Utc::now(),

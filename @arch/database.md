@@ -28,12 +28,30 @@ Deep-dive detail: `@plans/database/db-pool-routing.md`, `@plans/database/db-patt
 - **api** (default 32 conn) — `AppState.db`; fast HTTP handlers; 8s `statement_timeout`.
 - **batch** (default 16 conn) — `AppState.batch_db`; grouped sweeps, backtests, token_sync backfill. No statement timeout.
 
+## Amount typing — "type by real-world meaning"
+
+Every on-chain quantity is stored as an **exact integer**; only ratios/statistics are
+float. This holds across `trades`, `tokens`, and `strategy_positions`:
+
+- **Token amounts** → raw units, `BIGINT` column **and** `u64` in the model end-to-end
+  (`Trade.token_amount`, token reserves, `strategy_positions.*_token_amount`,
+  `SigLegs`). The old `f64` model field silently lost precision above 2^53 on large
+  legs — that was the bug this convention fixes.
+- **SOL** → lamports, `BIGINT` column. The model keeps SOL as human `f64`; conversion
+  (`sol_to_lamports`/`lamports_to_sol`) happens at the repo boundary — exactness lives
+  in the column (`trades.sol_amount`, `tokens.initial_buy_sol`, `*.entry_sol/exit_sol`).
+- **Prices/stats** → `f64` (genuine ratios: SOL per raw token unit; PnL %, win rate,
+  volume). Any `price × tokens` casts the `u64` count `as f64` at the multiply.
+- **Views** divide lamports back to SOL (`strategy_position_pnl.realized_pnl_sol`,
+  `trades_priced.price_per_token`). **Frontend** receives integer JSON numbers and
+  scales for display ("store integer, display float").
+
 ## Tables
 
 ### Core trading
 
-- `tokens` — mint_address UNIQUE, creator_wallet, name/symbol, bonding_curve_address, initial_buy_sol, cu_limit/price, is_mayhem_mode, ix_labels(JSONB), created_at
-- `trades` *(PARTITIONED daily on block_time, ~1mo retention)* — mint, wallet, trade_type, sol/token amounts, price, tx_signature, slot, block_time, reserves, venue(`curve`/`amm`). UNIQUE(tx_signature, leg_index, block_time). **This table = the LaserStream feed.**
+- `tokens` — mint_address UNIQUE, creator_wallet, name/symbol, bonding_curve_address, initial_buy_sol(BIGINT lamports), cu_limit/price, is_mayhem_mode, ix_labels(JSONB), created_at
+- `trades` *(TimescaleDB hypertable on block_time, ~1mo retention)* — mint, wallet, trade_type, sol_amount(BIGINT lamports) / token_amount(BIGINT raw units), tx_signature(BYTEA), slot, block_time, virtual_*_reserves(BIGINT), venue(`curve`/`amm`); price derived in `trades_priced` view. PK `(block_time, tx_signature, leg_index)`. **This table = the LaserStream feed.**
 - `raw_txs` *(TimescaleDB hypertable on block_time; compress 2d, retain 7d)* — tx_signature(BYTEA), slot, block_time, tx_index, payload(BYTEA = verbatim protobuf wire bytes, parse in Rust), source(SMALLINT: 0=live 1=sync). PK `(block_time, tx_signature)`. Source-of-truth feed; `trades` is a typed projection. Written by `RawTxRepo` from both the live ingest db_writer and the token_sync backfill.
 
 ### Token analysis
