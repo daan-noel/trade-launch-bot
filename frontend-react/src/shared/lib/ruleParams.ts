@@ -106,8 +106,8 @@ export function parseParamsBlob(raw: string): RuleParamsBlob | null {
 /**
  * Apply a parsed blob to a form state (represented as a string-value map).
  *
- * merge  â€” overwrite only the fields present in the blob.
- * replace â€” reset to emptyForm first, then apply; ruleName is always kept.
+ * merge  — overwrite only the fields present in the blob.
+ * replace — reset to emptyForm first, then apply; ruleName is always kept.
  *
  * When `live` is true, only sizing-group params are applied; all other groups
  * are skipped to match the modal's lock-group guards.

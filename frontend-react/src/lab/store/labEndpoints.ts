@@ -23,7 +23,7 @@ export interface StrategyRuleArg {
   ruleId: string;
   /**
    * Optional transient creation-time window for `matched` / `simulate` only
-   * (ISO strings; empty = all-time). Not persisted on the rule â€” it scopes the
+   * (ISO strings; empty = all-time). Not persisted on the rule — it scopes the
    * backend's full-`tokens`-table scan. Part of the arg, so different ranges
    * cache separately while a rule edit still invalidates the whole pair.
    * Ignored by `paper-result`.
@@ -41,13 +41,13 @@ const withAnalysisRange = (url: string, { from, to }: StrategyRuleArg): string =
   return s ? `${url}?${s}` : url;
 };
 
-/** Cache tag for a rule's `matched` + `simulate` results â€” both derive from the
+/** Cache tag for a rule's `matched` + `simulate` results — both derive from the
  *  rule's entry criteria, so editing the rule invalidates the pair. */
 const strategyResultTag = (a: StrategyRuleArg) =>
   ({ type: 'StrategyResult', id: `${a.strategy}:${a.ruleId}` }) as const;
 
 /**
- * Lab-only RTK Query endpoints â€” bundled exclusively in the lab
+ * Lab-only RTK Query endpoints — bundled exclusively in the lab
  * (local) build: grouped param-sweeps, per-rule strategy simulate/paper reads,
  * grouped creation stats, and the creators/analysis page lists. The live
  * backend serves none of these.
@@ -72,13 +72,13 @@ export const labApi = baseApi.injectEndpoints({
     }),
     // Collect a finished backtest's result. The simulation is started separately
     // (`startSimulation`, a detached job) and its result stored server-side, so
-    // this endpoint just picks it up once the `simulation_finished` SSE fires â€”
+    // this endpoint just picks it up once the `simulation_finished` SSE fires —
     // no long-held connection that a minutes-long run could fail with a
     // `FETCH_ERROR`. Strategy-agnostic URL (keyed by `rule_id`), but the cache key
     // / tag stays per `strategy:ruleId` so a rule edit invalidates it and tpsl1 /
     // tpsl2 don't share an entry. A cancelled run resolves to `{ cancelled: true }`;
     // callers type-guard on the shape. Driven imperatively from
-    // `fetchSimulateCached` â€” see `store/strategyResultCache.ts`.
+    // `fetchSimulateCached` — see `store/strategyResultCache.ts`.
     getStrategySimulateResult: builder.query<
       SimulatedTokenResult[] | { cancelled: true },
       StrategyRuleArg
@@ -132,10 +132,10 @@ export const labApi = baseApi.injectEndpoints({
         `/api/strategies/sweeps/${encodeURIComponent(runId)}/groups/${encodeURIComponent(groupId)}/token-results?strategy_id=${encodeURIComponent(strategyId)}&combo_id=${comboId}`,
       keepUnusedDataFor: 60,
     }),
-    // Trigger a grouped DB-range sweep (single-flight on the backend â€” a 409 means
+    // Trigger a grouped DB-range sweep (single-flight on the backend — a 409 means
     // a sweep is already running). Invalidating `GroupedSweep` refetches the runs.
     // Returns AS SOON AS the run is admitted (`202 { run_id }`) rather than holding
-    // the request open for the whole sweep â€” that prevented a concurrent cancel POST
+    // the request open for the whole sweep — that prevented a concurrent cancel POST
     // from queueing behind it on the browser's per-host connection cap. The run then
     // fills in live via per-group writes + SSE; its terminal state (done / cancelled)
     // arrives over the `SweepFinished` SSE frame, which refetches `GroupedSweep`.
@@ -188,7 +188,7 @@ export const labApi = baseApi.injectEndpoints({
     }),
     // Per-fingerprint creation activity (dashboard "Creation by token group").
     // Server-side partition by a compound fingerprint key + top-N by volume;
-    // returns each group's dayÃ—hour fold + calendar trend (count only). Cached
+    // returns each group's day×hour fold + calendar trend (count only). Cached
     // 120s; the page floors `from` to the hour so the cache key stays stable.
     getGroupedCreationStats: builder.query<
       GroupedCreationResponse,

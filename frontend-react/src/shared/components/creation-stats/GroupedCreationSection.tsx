@@ -41,7 +41,7 @@ interface GroupedCreationSectionProps {
   segment: CreationSegment;
 }
 
-/** Default grouping â€” CU limit + instruction-label set: the two fields that
+/** Default grouping — CU limit + instruction-label set: the two fields that
  *  separate the bulk of launch fingerprints (validated against live data). */
 const DEFAULT_GROUP_BY: GroupField[] = ['cu_limit', 'ix_labels'];
 
@@ -64,7 +64,7 @@ function toHeatCell(c: GroupedCreationCell): CreationHeatCell {
 
 /**
  * Dashboard section: partition token creation by a fingerprint key and show each
- * group's recurring time-of-day bias (small-multiple dayÃ—hour heatmaps) plus its
+ * group's recurring time-of-day bias (small-multiple day×hour heatmaps) plus its
  * calendar trend (multi-series line chart). Reuses the page's window / timezone /
  * segment; owns its own group-by, value filters, bucket, and top-N. Count only.
  *
@@ -126,7 +126,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   useEffect(() => setIsolatedGroup(null), [applied]);
 
   // "Dirty" = the draft differs from what's applied (or nothing applied yet).
-  // Same builder on both sides â‡’ key order is stable, so a string compare works.
+  // Same builder on both sides ⇒ key order is stable, so a string compare works.
   const dirty = !applied || JSON.stringify(draftArgs) !== JSON.stringify(applied);
 
   // Partition cells by group rank so each heatmap gets only its own cells.
@@ -154,7 +154,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
         <div className="flex flex-wrap items-center gap-2.5">
           <h3 className="text-sm font-semibold text-text">Creation by token group</h3>
           <span className="text-[10px] text-text-dim">
-            when each fingerprint group launches â€” pick fields, filter values, then Analyze
+            when each fingerprint group launches — pick fields, filter values, then Analyze
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -204,12 +204,12 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
             onClick={() => setApplied(draftArgs)}
             title={ixFilter.error ?? 'Run the analysis with the current settings'}
           >
-            {isFetching ? 'Analyzingâ€¦' : dirty ? 'Analyze' : 'Analyzed'}
+            {isFetching ? 'Analyzing…' : dirty ? 'Analyze' : 'Analyzed'}
           </Button>
         </div>
       </div>
 
-      {/* Group-by + value filters â€” shared with the sweep page's fingerprint
+      {/* Group-by + value filters — shared with the sweep page's fingerprint
           control so both read identically. */}
       <div className="mb-3 rounded-md border border-white/8 bg-white/2 p-2.5">
         <FingerprintGroupPicker
@@ -222,7 +222,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
           ixLabelsText={ixLabelsText}
           onSetIxLabels={setIxLabelsText}
           ixFilter={ixFilter}
-          emptyHint='No fields selected â†’ one "ALL" group (every token in the window).'
+          emptyHint='No fields selected → one "ALL" group (every token in the window).'
         />
       </div>
 
@@ -235,12 +235,12 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
       {!applied ? (
         <p className="text-text-dim">Set your grouping and filters, then click Analyze.</p>
       ) : isFetching ? (
-        <p className="text-text-dim">Loadingâ€¦</p>
+        <p className="text-text-dim">Loading…</p>
       ) : groups.length === 0 ? (
         <p className="text-text-dim">No tokens match this grouping in the window.</p>
       ) : (
         <>
-          {/* Color legend â€” click an entry to isolate its line; click again to
+          {/* Color legend — click an entry to isolate its line; click again to
               restore. Shared rank colors tie the trend lines to the cards. */}
           <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1">
             {groups.map((g) => {
@@ -263,7 +263,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
                     style={{ background: groupColor(g.g) }}
                   />
                   <GroupKeyInline group={g} />
-                  <span className="text-text-dim/70">Â· {formatWithCommas(g.total)}</span>
+                  <span className="text-text-dim/70">· {formatWithCommas(g.total)}</span>
                 </button>
               );
             })}
@@ -276,7 +276,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
             isolatedGroup={isolatedGroup}
           />
 
-          {/* Small-multiple dayÃ—hour heatmaps (recurring active hours per group). */}
+          {/* Small-multiple day×hour heatmaps (recurring active hours per group). */}
           <div className="mt-4 grid gap-3 xl:grid-cols-2">
             {groups.map((g) => (
               <div key={g.g} className="rounded-md border border-white/8 bg-white/2 p-2.5">
@@ -315,11 +315,11 @@ function GroupKeyInline({ group }: { group: GroupedCreationGroup }) {
     <span className="text-text">
       {entries.map(([k, v], i) => (
         <Fragment key={k}>
-          {i > 0 && <span className="text-text-dim"> Â· </span>}
+          {i > 0 && <span className="text-text-dim"> · </span>}
           <span className="text-text-dim">{GROUP_FIELD_LABELS[k as GroupField] ?? k}=</span>
           {k === 'ix_labels' ? (
             <span className="font-mono">
-              {v === MISSING_VALUE ? 'âˆ…' : `${groupValueParts(k, v).length} ix`}
+              {v === MISSING_VALUE ? '∅' : `${groupValueParts(k, v).length} ix`}
             </span>
           ) : (
             <span className="font-mono">{v}</span>

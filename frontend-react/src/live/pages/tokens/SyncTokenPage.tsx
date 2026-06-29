@@ -75,7 +75,7 @@ function buildProfileWallets(profiles: WalletProfile[]): ProfileWalletInfo[] {
         address: wallet.address,
         label: wallet.comment
           ? wallet.comment.slice(0, 12)
-          : `${wallet.address.slice(0, 4)}â€¦${wallet.address.slice(-4)}`,
+          : `${wallet.address.slice(0, 4)}…${wallet.address.slice(-4)}`,
         color: WALLET_MARKER_COLORS[colorIdx % WALLET_MARKER_COLORS.length],
         profileName: profile.name,
         tags: profile.tags.map((t) => ({ name: t.name, color: t.color })),
@@ -202,7 +202,7 @@ function syncedTokenColumns(
       label: 'Migrated',
       width: '70px',
       sortable: true,
-      render: (r) => (r.token?.is_migrated ? 'âœ“' : ''),
+      render: (r) => (r.token?.is_migrated ? '✓' : ''),
       sortValue: (r) => (r.token?.is_migrated ? 1 : 0),
       searchValue: (r) => String(r.token?.is_migrated ?? ''),
     },
@@ -258,7 +258,7 @@ export function SyncTokenPage() {
   const tradeColumns = useMemo(() => tokenTradeColumns(price.unitLabel), [price.unitLabel]);
 
   // Synced output lives in Redux so it survives navigation (the route unmounts
-  // on leave). The in-flight sync state below stays local â€” it's tied to a
+  // on leave). The in-flight sync state below stays local — it's tied to a
   // specific request and isn't meaningful to persist.
   const dispatch = useDispatch<AppDispatch>();
   const results = useSelector((s: RootState) => s.syncToken.results);
@@ -366,7 +366,7 @@ export function SyncTokenPage() {
     setMint((prev) => parseMints(prev).filter((m) => m !== target).join('\n'));
   }, []);
 
-  // Bulk-remove (e.g. "Remove synced") â€” drop every listed mint from the textarea.
+  // Bulk-remove (e.g. "Remove synced") — drop every listed mint from the textarea.
   const handleRemoveMints = useCallback((targets: string[]) => {
     const drop = new Set(targets);
     setMint((prev) => parseMints(prev).filter((m) => !drop.has(m)).join('\n'));
@@ -518,7 +518,7 @@ export function SyncTokenPage() {
               variant="primary"
               onClick={() => handleSync(true)}
               disabled={mints.length === 0}
-              title="Quick update: downloads only transactions newer than the last sync. Fast and cheap â€” use this for routine refreshes."
+              title="Quick update: downloads only transactions newer than the last sync. Fast and cheap — use this for routine refreshes."
             >
               Fetch New
             </Button>
@@ -526,7 +526,7 @@ export function SyncTokenPage() {
               variant="ghost"
               onClick={handleFetchAll}
               disabled={mints.length === 0}
-              title="Full re-sync: re-downloads the entire transaction history from Helius, even data already in the database. Slow and uses more RPC credits â€” only needed to rebuild from scratch."
+              title="Full re-sync: re-downloads the entire transaction history from Helius, even data already in the database. Slow and uses more RPC credits — only needed to rebuild from scratch."
             >
               Fetch All
             </Button>
@@ -544,7 +544,7 @@ export function SyncTokenPage() {
           />
           {/* Inner bar: the current token's tx-fetch / stage status. */}
           <ProgressBar
-            label={progress ? stageLabel(progress.stage) : 'Startingâ€¦'}
+            label={progress ? stageLabel(progress.stage) : 'Starting…'}
             detail={
               progress && progress.stage === 'fetching_transactions' && progress.total > 0
                 ? `${progress.current} / ${progress.total} tx`

@@ -126,7 +126,7 @@ const DEFAULT_CHAIN_LATENCY_MS = 60_000;
  * signal is the `swing_detection_finished` SSE; a `jobs/status` poll is a backstop
  * for a missed frame (e.g. a brief SSE reconnect) and the source of progress
  * updates: once a run we saw running drops off the in-flight `swings` list, it
- * ended. No premature timeout â€” an uncapped run may legitimately take many
+ * ended. No premature timeout — an uncapped run may legitimately take many
  * minutes; the generous ceiling only guards against a wedged backend so the caller
  * can't hang forever. Mirrors `waitForSimulationFinish` in `strategyResultCache`.
  */
@@ -159,11 +159,11 @@ function waitForSwingDetectionFinish(
             sawRunning = true;
             onProgress(entry.processed, entry.total);
           } else if (sawRunning) {
-            finish(); // was running, now gone â†’ finished
+            finish(); // was running, now gone → finished
           }
         })
         .catch(() => {
-          /* backend blip â€” keep waiting for the SSE */
+          /* backend blip — keep waiting for the SSE */
         });
     }, 2000);
     const ceiling = window.setTimeout(
@@ -206,7 +206,7 @@ interface StoredSwingCriteria {
   windowStartSec: number | null;
   windowEndSec: number | null;
   curveOnly: boolean;
-  // Single-token panel state â€” kept fully independent of the global panel so
+  // Single-token panel state — kept fully independent of the global panel so
   // tuning one never affects the other.
   singleParams: SwingParams;
   singleChainLatencyMs: number;
@@ -333,16 +333,16 @@ export function SwingDetectionPage() {
 
   // Chain-of-swings latency budget (ms) for the global "All" run. Declared here
   // (above queryArgs) so the tokens-page query can send it when sorting a chain
-  // column â€” the backend re-groups the run's raw legs at this latency.
+  // column — the backend re-groups the run's raw legs at this latency.
   const [chainLatencyMs, setChainLatencyMs] = useState<number | ''>(
     storedSwingCriteria.chainLatencyMs,
   );
   const chainLatencyValue = typeof chainLatencyMs === 'number' ? chainLatencyMs : 0;
 
   // Debounced copy of the global chain latency. The raw input stays responsive
-  // (it drives `value={chainLatencyMs}`), but the expensive consumers â€” the
+  // (it drives `value={chainLatencyMs}`), but the expensive consumers — the
   // O(n) `chainStatsByMint` grouping over every mint and the server-side query
-  // re-group â€” read this settled value so a burst of keystrokes coalesces into
+  // re-group — read this settled value so a burst of keystrokes coalesces into
   // one recompute instead of one per character.
   const [debouncedChainLatency, setDebouncedChainLatency] = useState(chainLatencyValue);
   useEffect(() => {
@@ -407,7 +407,7 @@ export function SwingDetectionPage() {
           address: wallet.address,
           label: wallet.comment
             ? wallet.comment.slice(0, 12)
-            : `${wallet.address.slice(0, 4)}â€¦${wallet.address.slice(-4)}`,
+            : `${wallet.address.slice(0, 4)}…${wallet.address.slice(-4)}`,
           color: WALLET_MARKER_COLORS[colorIdx % WALLET_MARKER_COLORS.length],
           profileName: profile.name,
           tags: profile.tags.map((t) => ({ name: t.name, color: t.color })),
@@ -450,7 +450,7 @@ export function SwingDetectionPage() {
   const [showSwingResultsTable, setShowSwingResultsTable] = useState(false);
   const [connectSwings, setConnectSwings] = useState(storedSwingCriteria.connectSwings);
 
-  // Single-token panel parameters â€” independent copies of the global panel's
+  // Single-token panel parameters — independent copies of the global panel's
   // controls (Analysis / Chain of Swings / Time Range / Leg Thresholds) so the
   // single token can be tuned and run on its own.
   const [singleSwingParams, setSingleSwingParams] = useState<SwingParamsForm>(
@@ -467,7 +467,7 @@ export function SwingDetectionPage() {
   );
   const [singleCurveOnly, setSingleCurveOnly] = useState(storedSwingCriteria.singleCurveOnly);
 
-  // "Swing Detection All" â€” global detection across every filtered token. Raw
+  // "Swing Detection All" — global detection across every filtered token. Raw
   // swings per mint are kept so tuning the chain latency re-groups instantly
   // without re-fetching.
   const [showSwingAll, setShowSwingAll] = useState(false);
@@ -481,7 +481,7 @@ export function SwingDetectionPage() {
     storedSwingCriteria.windowEndSec ?? '',
   );
   // When set, the window is fixed to each token's bonding-curve phase
-  // (creation â†’ migration), overriding the manual start/end seconds.
+  // (creation → migration), overriding the manual start/end seconds.
   const [curveOnly, setCurveOnly] = useState(storedSwingCriteria.curveOnly);
   const [swingAllLoading, setSwingAllLoading] = useState(false);
   const [swingAllError, setSwingAllError] = useState<string | null>(null);
@@ -602,7 +602,7 @@ export function SwingDetectionPage() {
 
   // Monotonic id identifying the in-flight "Run All". Starting a new run or
   // unmounting the page bumps it; the running workers check it after every await
-  // and bail before applying stale results â€” so a re-run or navigating away never
+  // and bail before applying stale results — so a re-run or navigating away never
   // keeps firing batch calls against the old set or dispatches a superseded result.
   const swingAllRunIdRef = useRef(0);
   useEffect(
@@ -615,13 +615,13 @@ export function SwingDetectionPage() {
   // Run detection across all currently-filtered tokens, then keep the raw swings
   // per mint for client-side chain grouping. With server-side paging only the
   // visible page is in memory, so the full filtered mint set is fetched here on
-  // demand (one large request, reusing the table's exact filter args) â€” the heavy
+  // demand (one large request, reusing the table's exact filter args) — the heavy
   // full-list load now happens only on an explicit Run, never on page view.
   //
   // The whole set runs as one detached backend job (uncapped, minutes-long): this
   // starts it, waits for the `swing_detection_finished` SSE (with a `jobs/status`
   // poll backstop that also drives the progress bar), then collects the stored
-  // result â€” instead of holding HTTP connections open per chunk, which made any
+  // result — instead of holding HTTP connections open per chunk, which made any
   // mid-run drop surface as a `FETCH_ERROR`.
   const handleRunAllSwings = useCallback(async () => {
     const myRun = ++swingAllRunIdRef.current;
@@ -671,7 +671,7 @@ export function SwingDetectionPage() {
     } catch (e) {
       if (!isStale()) setSwingAllError(e instanceof Error ? e.message : 'Swing detection failed');
     } finally {
-      // Only the current run owns the busy state â€” a superseded run (re-run /
+      // Only the current run owns the busy state — a superseded run (re-run /
       // unmount) leaves it for the new owner and avoids a post-unmount setState.
       if (!isStale()) {
         setSwingAllLoading(false);
@@ -744,7 +744,7 @@ export function SwingDetectionPage() {
 
   // Selecting a token after a global ("Swing Detection All") run promotes that
   // token's batch swings into `swingResult`, so the per-token Analysis/Filter
-  // panel and chart treat them exactly like a single-token "Run" â€” which is what
+  // panel and chart treat them exactly like a single-token "Run" — which is what
   // lets the user filter them. A genuine per-token Run for this mint already sets
   // `swingResult` (mint matches), so it's left untouched here.
   useEffect(() => {
@@ -849,7 +849,7 @@ export function SwingDetectionPage() {
   }, [trades, selectedSwingLeg]);
 
   const swingTimeLabel = selectedSwingLeg
-    ? `${formatTimestampMs(selectedSwingLeg.start_at, timezone)} â†’ ${formatTimestampMs(selectedSwingLeg.end_at, timezone)}`
+    ? `${formatTimestampMs(selectedSwingLeg.start_at, timezone)} → ${formatTimestampMs(selectedSwingLeg.end_at, timezone)}`
     : '';
 
   const filteredSwings = useMemo(() => {
@@ -886,7 +886,7 @@ export function SwingDetectionPage() {
     connectSwings,
   ]);
 
-  // Memoized subtrees â€” each reads this component's scope directly (no props to
+  // Memoized subtrees — each reads this component's scope directly (no props to
   // thread) but only rebuilds when the inputs it actually reads change, so a
   // keystroke in an unrelated field (e.g. chain latency) doesn't re-render the
   // ~300-line "Swing Detection All" panel.
@@ -944,7 +944,7 @@ export function SwingDetectionPage() {
     if (!loaded || !showSwingAll) return false;
     const tokenCount = total;
     const runLabel = swingAllLoading
-      ? 'Runningâ€¦'
+      ? 'Running…'
       : `Run on ${tokenCount} token${tokenCount === 1 ? '' : 's'}`;
 
     return (
@@ -985,10 +985,10 @@ export function SwingDetectionPage() {
 
           <TabsPanel value="chain" className="px-4">
             <p className="mb-3 text-[11px] text-text-dim">
-              Two consecutive highâ†’low pairs stay in the same chain when the idle gap
+              Two consecutive high→low pairs stay in the same chain when the idle gap
               between them (one pair's low ending to the next pair's high starting) is
               within this latency. A chain needs at least 2 linked pairs. Changing it
-              re-groups instantly â€” no need to re-run detection.
+              re-groups instantly — no need to re-run detection.
             </p>
             <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <label className={labelClassName}>
@@ -1020,7 +1020,7 @@ export function SwingDetectionPage() {
             <p className="mb-3 text-[11px] text-text-dim">
               Restrict detection to a window measured in seconds from each token's
               first trade (its launch). Leave a field blank to leave that side
-              open. This window applies to every Run on this panel â€” re-run
+              open. This window applies to every Run on this panel — re-run
               detection after changing it.
             </p>
             <label className="mb-4 flex items-center gap-2 text-[12px] text-text">
@@ -1028,9 +1028,9 @@ export function SwingDetectionPage() {
                 checked={curveOnly}
                 onChange={(e) => setCurveOnly(e.target.checked)}
               />
-              Token create â†’ migration (bonding-curve trades only)
+              Token create → migration (bonding-curve trades only)
               <span className="text-[11px] text-text-dim">
-                â€” ignores the seconds window below
+                — ignores the seconds window below
               </span>
             </label>
             <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -1074,9 +1074,9 @@ export function SwingDetectionPage() {
           <TabsPanel value="thresholds" className="px-4">
             <p className="mb-3 text-[11px] text-text-dim">
               Bound each detected leg by its price change (delta %) and net flow
-              rate (SOL per second), compared by magnitude â€” enter positive
-              values (e.g. 30 keeps swing lows that drop â‰¥ 30%). 0 = ignore that
-              bound. Applies during detection â€” re-run after changing.
+              rate (SOL per second), compared by magnitude — enter positive
+              values (e.g. 30 keeps swing lows that drop ≥ 30%). 0 = ignore that
+              bound. Applies during detection — re-run after changing.
             </p>
             <div className="mb-4 grid gap-6 sm:grid-cols-2">
               <div>
@@ -1157,8 +1157,8 @@ export function SwingDetectionPage() {
         {swingAllLoading && (
           <p className="mt-4 text-[12px] text-text-dim">
             {swingAllProgress
-              ? `Running swing detectionâ€¦ ${swingAllProgress.done} / ${swingAllProgress.total} tokens`
-              : `Running swing detection on ${tokenCount} tokensâ€¦`}
+              ? `Running swing detection… ${swingAllProgress.done} / ${swingAllProgress.total} tokens`
+              : `Running swing detection on ${tokenCount} tokens…`}
           </p>
         )}
       </div>
@@ -1207,7 +1207,7 @@ export function SwingDetectionPage() {
           />
         </label>
         <Button variant="primary" onClick={handleRefresh} disabled={loading}>
-          {loading ? 'Refreshingâ€¦' : 'Fetch'}
+          {loading ? 'Refreshing…' : 'Fetch'}
         </Button>
         {(createdFrom || createdTo) && (
           <Button variant="ghost" onClick={() => dispatch(clearCreatedRange())}>
@@ -1335,10 +1335,10 @@ export function SwingDetectionPage() {
 
               <TabsPanel value="chain" className="px-4">
                 <p className="mb-3 text-[11px] text-text-dim">
-                  Two consecutive highâ†’low pairs stay in the same chain when the idle gap
+                  Two consecutive high→low pairs stay in the same chain when the idle gap
                   between them (one pair's low ending to the next pair's high starting) is
                   within this latency. A chain needs at least 2 linked pairs. Changing it
-                  re-groups instantly â€” no need to re-run detection.
+                  re-groups instantly — no need to re-run detection.
                 </p>
                 <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                   <label className={labelClassName}>
@@ -1386,16 +1386,16 @@ export function SwingDetectionPage() {
                 <p className="mb-3 text-[11px] text-text-dim">
                   Restrict detection to a window measured in seconds from the token's
                   first trade (its launch). Leave a field blank to leave that side open.
-                  Applies during detection â€” re-run after changing it.
+                  Applies during detection — re-run after changing it.
                 </p>
                 <label className="mb-4 flex items-center gap-2 text-[12px] text-text">
                   <Checkbox
                     checked={singleCurveOnly}
                     onChange={(e) => setSingleCurveOnly(e.target.checked)}
                   />
-                  Token create â†’ migration (bonding-curve trades only)
+                  Token create → migration (bonding-curve trades only)
                   <span className="text-[11px] text-text-dim">
-                    â€” ignores the seconds window below
+                    — ignores the seconds window below
                   </span>
                 </label>
                 <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -1439,9 +1439,9 @@ export function SwingDetectionPage() {
               <TabsPanel value="thresholds" className="px-4">
                 <p className="mb-3 text-[11px] text-text-dim">
                   Bound each detected leg by its price change (delta %) and net flow rate
-                  (SOL per second), compared by magnitude â€” enter positive values (e.g. 30
-                  keeps swing lows that drop â‰¥ 30%). 0 = ignore that bound. Applies during
-                  detection â€” re-run after changing.
+                  (SOL per second), compared by magnitude — enter positive values (e.g. 30
+                  keeps swing lows that drop ≥ 30%). 0 = ignore that bound. Applies during
+                  detection — re-run after changing.
                 </p>
                 <div className="mb-4 grid gap-6 sm:grid-cols-2">
                   <div>
@@ -1516,7 +1516,7 @@ export function SwingDetectionPage() {
                 {swingResult && (
                   <>
                     <p className="mb-3 text-[11px] text-text-dim">
-                      Narrow detected legs for display only â€” does not re-run detection. 0 =
+                      Narrow detected legs for display only — does not re-run detection. 0 =
                       ignore that bound.
                     </p>
                     <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -1680,7 +1680,7 @@ export function SwingDetectionPage() {
                     disabled={!selectedMint || swingLoading}
                     onClick={handleRunSwing}
                   >
-                    {swingLoading ? 'Runningâ€¦' : 'Run'}
+                    {swingLoading ? 'Running…' : 'Run'}
                   </Button>
                 </div>
 
@@ -1688,7 +1688,7 @@ export function SwingDetectionPage() {
 
                 <div className="mt-4">
                   {swingLoading && (
-                    <p className="text-[12px] text-text-dim">Running swing detectionâ€¦</p>
+                    <p className="text-[12px] text-text-dim">Running swing detection…</p>
                   )}
                   {!swingLoading && !swingError && !swingResult && (
                     <p className="rounded-md border border-dashed border-white/10 px-3 py-6 text-center text-[12px] text-text-dim">

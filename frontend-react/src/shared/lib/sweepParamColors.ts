@@ -2,11 +2,11 @@
 
 /** Per-param-column tinting plan for the grouped-sweep combo table. */
 export interface ParamColumnColor {
-  /** True when every combo in the group shares one value for this knob â€” the
+  /** True when every combo in the group shares one value for this knob — the
    *  column carries no signal, so it renders dimmed with no per-cell tint. */
   constant: boolean;
-  /** Distinct value â†’ background class (varying columns only; empty when
-   *  `constant`). `null`/unset values are not tinted (they render 'â€”'). */
+  /** Distinct value → background class (varying columns only; empty when
+   *  `constant`). `null`/unset values are not tinted (they render '—'). */
   byValue: Map<number, string>;
 }
 
@@ -25,7 +25,7 @@ const PALETTE = [
   'bg-rose-400/12',
 ];
 
-/** Shared color-plan builder: distinct values get a palette slot, single value â†’ constant. */
+/** Shared color-plan builder: distinct values get a palette slot, single value → constant. */
 function buildColorPlan(seen: Set<number | null>): ParamColumnColor {
   if (seen.size <= 1) return { constant: true, byValue: new Map() };
   const values = [...seen].sort((a, b) => (a == null ? 1 : b == null ? -1 : a - b));
@@ -44,7 +44,7 @@ function buildColorPlan(seen: Set<number | null>): ParamColumnColor {
  * is identical across every combo is marked `constant` (dimmed in the table so the
  * fixed knobs recede); a column that varies gets each distinct value a stable
  * palette color (assigned in ascending value order, so colors are sort-stable and
- * identical across renders). Mirrors `ruleColorGroups` but on the *column* axis â€”
+ * identical across renders). Mirrors `ruleColorGroups` but on the *column* axis —
  * here every row is already in the same group, so the signal is per-value, not
  * per-row-cluster.
  */
@@ -61,7 +61,7 @@ export function computeParamColumnColors(
   return out;
 }
 
-// PnL metric fields to color â€” column keys in buildSweepColumns that live in
+// PnL metric fields to color — column keys in buildSweepColumns that live in
 // the `pnl` group and are likely to repeat across combos (clustered results).
 const PNL_COLOR_KEYS = [
   'score', 'win_rate', 'total_pnl_sol', 'expectancy_sol',
@@ -71,7 +71,7 @@ const PNL_COLOR_KEYS = [
 
 /**
  * Build per-column tint plans for the PnL metric columns. Same palette/logic as
- * param columns â€” rows sharing an identical metric value get the same cell band so
+ * param columns — rows sharing an identical metric value get the same cell band so
  * clusters of equivalent combos are visible at a glance.
  */
 export function computePnlColumnColors(

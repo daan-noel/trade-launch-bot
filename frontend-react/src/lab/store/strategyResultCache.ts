@@ -43,10 +43,10 @@ export function fetchMatchedCached(
 
 /**
  * Resolve once the backtest for `ruleId` has finished. Primary signal is the
- * `simulation_finished` SSE â€” the same frame that clears the progress bar â€” so a
+ * `simulation_finished` SSE — the same frame that clears the progress bar — so a
  * fast run resolves on the event. A `jobs/status` poll is a backstop for a missed
  * frame (e.g. a brief SSE reconnect): once a rule we saw running drops off the
- * in-flight list, the run ended. No premature timeout â€” an uncapped sim may
+ * in-flight list, the run ended. No premature timeout — an uncapped sim may
  * legitimately run for many minutes; the generous ceiling only guards against a
  * wedged/dead backend so the caller can't hang forever.
  */
@@ -73,10 +73,10 @@ function waitForSimulationFinish(ruleId: string): Promise<void> {
         .then((status) => {
           const running = status.simulations.some((s) => s.rule_id === ruleId);
           if (running) sawRunning = true;
-          else if (sawRunning) finish(); // was running, now gone â†’ finished
+          else if (sawRunning) finish(); // was running, now gone → finished
         })
         .catch(() => {
-          /* backend blip â€” keep waiting for the SSE */
+          /* backend blip — keep waiting for the SSE */
         });
     }, 2000);
     const ceiling = window.setTimeout(
@@ -96,7 +96,7 @@ function waitForSimulationFinish(ruleId: string): Promise<void> {
  *
  * The simulation is uncapped and can take minutes, so it runs as a detached
  * backend job: this starts it, waits for the `simulation_finished` SSE (with a
- * `jobs/status` poll backstop), then fetches the stored result â€” instead of
+ * `jobs/status` poll backstop), then fetches the stored result — instead of
  * holding one HTTP connection open for the whole run, which made any mid-run drop
  * surface as a `FETCH_ERROR`.
  *

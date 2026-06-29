@@ -68,7 +68,7 @@ function TypeBadge({ type }: { type: ProfileType }) {
 }
 
 function shortAddr(address: string) {
-  return `${address.slice(0, 6)}â€¦${address.slice(-4)}`;
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
 }
 
 interface TagChipProps {
@@ -93,7 +93,7 @@ function TagChip({ tag, onRemove }: TagChipProps) {
           className="ml-0.5 opacity-60 hover:opacity-100 leading-none"
           title="Remove tag"
         >
-          Ã—
+          ×
         </button>
       )}
     </span>
@@ -207,7 +207,7 @@ function ManageTagsModal({ open, tags, onClose, onCreated, onUpdated, onDeleted 
       onDeleted(id);
       setDeleteConfirm(null);
     } catch {
-      // silent â€” tag stays
+      // silent — tag stays
     }
   };
 
@@ -246,7 +246,7 @@ function ManageTagsModal({ open, tags, onClose, onCreated, onUpdated, onDeleted 
                           autoFocus
                         />
                         <Button size="xs" variant="primary" onClick={() => saveEdit(tag)} disabled={saving === tag.id}>
-                          {saving === tag.id ? 'â€¦' : 'Save'}
+                          {saving === tag.id ? '…' : 'Save'}
                         </Button>
                         <Button size="xs" variant="ghost" onClick={() => cancelEdit(tag.id)}>Cancel</Button>
                       </div>
@@ -282,7 +282,7 @@ function ManageTagsModal({ open, tags, onClose, onCreated, onUpdated, onDeleted 
                         </span>
                       )}
                       <Button size="xs" variant="ghost" onClick={() => startEdit(tag)}>Edit</Button>
-                      <Button size="xs" variant="danger" onClick={() => setDeleteConfirm(tag.id)}>âœ•</Button>
+                      <Button size="xs" variant="danger" onClick={() => setDeleteConfirm(tag.id)}>✕</Button>
                     </div>
                   )}
                 </div>
@@ -312,7 +312,7 @@ function ManageTagsModal({ open, tags, onClose, onCreated, onUpdated, onDeleted 
           {addError && <InlineAlert variant="error">{addError}</InlineAlert>}
           <div className="flex justify-end">
             <Button size="sm" variant="primary" onClick={handleAdd} disabled={adding}>
-              {adding ? 'Addingâ€¦' : '+ Add tag'}
+              {adding ? 'Adding…' : '+ Add tag'}
             </Button>
           </div>
         </div>
@@ -448,7 +448,7 @@ function ProfileModal({ open, initial, onClose, onSaved }: ProfileModalProps) {
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
           <Button variant="primary" onClick={submit} disabled={saving}>
-            {saving ? 'Savingâ€¦' : 'Save'}
+            {saving ? 'Saving…' : 'Save'}
           </Button>
         </div>
       </div>
@@ -531,7 +531,7 @@ function AddWalletModal({ open, profileId, onClose, onAdded }: AddWalletModalPro
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
           <Button variant="primary" onClick={submit} disabled={saving}>
-            {saving ? 'Addingâ€¦' : 'Add wallet'}
+            {saving ? 'Adding…' : 'Add wallet'}
           </Button>
         </div>
       </div>
@@ -610,7 +610,7 @@ function EditWalletModal({ open, wallet, onClose, onSaved }: EditWalletModalProp
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
           <Button variant="primary" onClick={submit} disabled={saving}>
-            {saving ? 'Savingâ€¦' : 'Save'}
+            {saving ? 'Saving…' : 'Save'}
           </Button>
         </div>
       </div>
@@ -658,7 +658,7 @@ function ConfirmDeleteModal({ open, label, onClose, onConfirm }: ConfirmDeleteMo
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
           <Button variant="danger" onClick={go} disabled={busy}>
-            {busy ? 'Deletingâ€¦' : 'Delete'}
+            {busy ? 'Deleting…' : 'Delete'}
           </Button>
         </div>
       </div>
@@ -694,7 +694,7 @@ function WalletRow({ wallet, onEdit, onDelete, onToggleTracked, toggling }: Wall
       <button
         onClick={() => onToggleTracked(wallet)}
         disabled={toggling}
-        title={wallet.is_tracked ? 'Tracked â€” click to untrack' : 'Untracked â€” click to track'}
+        title={wallet.is_tracked ? 'Tracked — click to untrack' : 'Untracked — click to track'}
         className={[
           'flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors select-none',
           toggling ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:bg-white/8',
@@ -722,7 +722,7 @@ function WalletRow({ wallet, onEdit, onDelete, onToggleTracked, toggling }: Wall
       )}
       <div className="flex items-center gap-1 shrink-0">
         <Button size="xs" variant="ghost" onClick={() => onEdit(wallet)}>Edit</Button>
-        <Button size="xs" variant="danger" onClick={() => onDelete(wallet)}>âœ•</Button>
+        <Button size="xs" variant="danger" onClick={() => onDelete(wallet)}>✕</Button>
       </div>
     </div>
   );
@@ -823,7 +823,7 @@ const ProfileCard = memo(function ProfileCard({
 export function OtherProfilesPage() {
   const dispatch = useDispatch<AppDispatch>();
 
-  // Profiles live in the shared RTK Query cache (`getProfiles`) â€” the same one
+  // Profiles live in the shared RTK Query cache (`getProfiles`) — the same one
   // the Swing-detection / Sync chart markers read, so an edit here propagates to
   // those overlays without a re-fetch. CRUD still goes through the imperative
   // `services/api` helpers; we patch the cache optimistically with
@@ -1000,7 +1000,7 @@ export function OtherProfilesPage() {
       )}
 
       {/* States */}
-      {loading && <p className="text-sm text-text-dim">Loadingâ€¦</p>}
+      {loading && <p className="text-sm text-text-dim">Loading…</p>}
       {error && <InlineAlert variant="error">{error}</InlineAlert>}
 
       {/* Profile cards */}

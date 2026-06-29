@@ -35,7 +35,7 @@ import type { ColumnDef, SortEntry, TableQuery } from 'components/table/types';
 import { sweepComboToParamsJson, type Strategy } from 'lib/ruleParams';
 import type { SweepResultRecord } from '@lab/components/sweep/types';
 
-/** The grouped-sweep view is strategy-agnostic â€” the API/data layer and column
+/** The grouped-sweep view is strategy-agnostic — the API/data layer and column
  *  builders are all driven by `strategyId` + a swept-param-key list. Each
  *  strategy supplies its own keys + axes via a thin child page (see this
  *  folder's `Tpsl1GroupedSweepPage` / `Tpsl2GroupedSweepPage`). */
@@ -66,8 +66,8 @@ export interface GroupedSweepViewProps {
 /**
  * Grouped param-sweep view: select tokens by a created-at range, partition them
  * by a fingerprint key, sweep each group, and rank combos by expectancy per
- * trade. Flow: configure + Run â†’ pick a run â†’ group-summary table â†’ click a
- * group â†’ drill into its full ranked combo table.
+ * trade. Flow: configure + Run → pick a run → group-summary table → click a
+ * group → drill into its full ranked combo table.
  */
 export function GroupedSweepView({
   strategyId,
@@ -120,7 +120,7 @@ export function GroupedSweepView({
           title="Copy combo params to clipboard"
           className={isCopied ? 'text-green' : 'text-text-dim hover:text-text'}
         >
-          {isCopied ? 'âœ“' : 'âŽ˜'}
+          {isCopied ? '✓' : '⎘'}
         </button>
       );
     },
@@ -148,7 +148,7 @@ export function GroupedSweepView({
 
   // Re-run: bumping this nonce makes the config form adopt the selected run's
   // stored settings; `formRef` scrolls it back into view so the user can review
-  // before clicking Run (re-run never auto-fires â€” a sweep is expensive).
+  // before clicking Run (re-run never auto-fires — a sweep is expensive).
   const [reuseNonce, setReuseNonce] = useState(0);
   const formRef = useRef<HTMLDivElement>(null);
 
@@ -181,7 +181,7 @@ export function GroupedSweepView({
     markStarting('sweep', 'sweep', 'Grouped sweep');
     try {
       // The backend returns as soon as the run is admitted (`202 { run_id }`)
-      // instead of holding this request open for the whole sweep â€” that keeps a
+      // instead of holding this request open for the whole sweep — that keeps a
       // later Cancel POST from queueing behind it on the browser's per-host
       // connection cap. Jump straight to the new run; it fills in live via the
       // per-group writes + SSE progress, and `connectSweepFinished` refreshes the
@@ -200,7 +200,7 @@ export function GroupedSweepView({
   const groups = groupsQuery.data ?? [];
   const activeGroup = groups.find((g) => g.id === activeGroupId) ?? null;
   const activeRun = runs.find((r) => r.id === activeRunId) ?? null;
-  // Tokens covered by the persisted groups (Î£ group token_count). For a partial
+  // Tokens covered by the persisted groups (Σ group token_count). For a partial
   // run this is below the run's total token_count; the history Population row shows
   // it as done/total. `null` while groups are still loading so the row falls back
   // to the plain total instead of flashing "0/total".
@@ -232,7 +232,7 @@ export function GroupedSweepView({
   const groupColumns = useMemo(() => buildGroupColumns(paramKeys), [paramKeys]);
   // Per-column tint plan for the drill-in combo table: constant knobs dim out,
   // varying knobs get a per-value cell band so near-identical combos read at a
-  // glance. Recomputed per group (cheap, O(rowsÃ—params)).
+  // glance. Recomputed per group (cheap, O(rows×params)).
   const paramColors = useMemo(
     () => computeParamColumnColors(results, paramKeys),
     [results, paramKeys],
@@ -278,7 +278,7 @@ export function GroupedSweepView({
         key: 'symbol',
         label: 'Symbol',
         group: 'identity',
-        render: (r) => <span className="font-mono text-xs">{r.symbol || 'â€”'}</span>,
+        render: (r) => <span className="font-mono text-xs">{r.symbol || '—'}</span>,
         searchValue: (r) => r.symbol,
         filterValue: (r) => r.symbol,
         sortValue: (r) => r.symbol,
@@ -290,7 +290,7 @@ export function GroupedSweepView({
         group: 'identity',
         render: (r) => (
           <span className="font-mono text-xs text-text-dim" title={r.mint}>
-            {r.mint.slice(0, 8)}â€¦{r.mint.slice(-4)}
+            {r.mint.slice(0, 8)}…{r.mint.slice(-4)}
           </span>
         ),
         searchValue: (r) => r.mint,
@@ -304,10 +304,10 @@ export function GroupedSweepView({
         render: (r) =>
           r.creator_wallet ? (
             <span className="font-mono text-xs text-text-dim" title={r.creator_wallet}>
-              {r.creator_wallet.slice(0, 6)}â€¦{r.creator_wallet.slice(-4)}
+              {r.creator_wallet.slice(0, 6)}…{r.creator_wallet.slice(-4)}
             </span>
           ) : (
-            <span className="text-text-dim">â€”</span>
+            <span className="text-text-dim">—</span>
           ),
         searchValue: (r) => r.creator_wallet ?? '',
         filterValue: (r) => r.creator_wallet ?? '',
@@ -325,7 +325,7 @@ export function GroupedSweepView({
               {new Date(r.created_at).toLocaleString()}
             </span>
           ) : (
-            <span className="text-text-dim">â€”</span>
+            <span className="text-text-dim">—</span>
           ),
         searchValue: () => '',
         sortValue: (r) => (r.created_at ? new Date(r.created_at).getTime() : 0),
@@ -337,7 +337,7 @@ export function GroupedSweepView({
         group: 'activity',
         render: (r) => (
           <span className="text-xs text-text-dim">
-            {r.trade_count != null ? r.trade_count.toLocaleString() : 'â€”'}
+            {r.trade_count != null ? r.trade_count.toLocaleString() : '—'}
           </span>
         ),
         searchValue: () => '',
@@ -352,7 +352,7 @@ export function GroupedSweepView({
         group: 'price',
         render: (r) => (
           <span className="text-xs text-text-dim">
-            {r.ath_price != null ? r.ath_price.toExponential(3) : 'â€”'}
+            {r.ath_price != null ? r.ath_price.toExponential(3) : '—'}
           </span>
         ),
         searchValue: () => '',
@@ -370,7 +370,7 @@ export function GroupedSweepView({
               {new Date(r.ath_timestamp).toLocaleString()}
             </span>
           ) : (
-            <span className="text-text-dim">â€”</span>
+            <span className="text-text-dim">—</span>
           ),
         searchValue: () => '',
         sortValue: (r) => (r.ath_timestamp ? new Date(r.ath_timestamp).getTime() : 0),
@@ -382,7 +382,7 @@ export function GroupedSweepView({
         group: 'price',
         render: (r) => (
           <span className="text-xs text-text-dim">
-            {r.current_price != null ? r.current_price.toExponential(3) : 'â€”'}
+            {r.current_price != null ? r.current_price.toExponential(3) : '—'}
           </span>
         ),
         searchValue: () => '',
@@ -397,7 +397,7 @@ export function GroupedSweepView({
         group: 'market',
         render: (r) => (
           <span className="text-xs text-text-dim">
-            {r.market_cap != null ? `$${(r.market_cap / 1000).toFixed(1)}k` : 'â€”'}
+            {r.market_cap != null ? `$${(r.market_cap / 1000).toFixed(1)}k` : '—'}
           </span>
         ),
         searchValue: () => '',
@@ -411,7 +411,7 @@ export function GroupedSweepView({
         group: 'market',
         render: (r) => (
           <span className="text-xs text-text-dim">
-            {r.volume_sol != null ? r.volume_sol.toFixed(1) : 'â€”'}
+            {r.volume_sol != null ? r.volume_sol.toFixed(1) : '—'}
           </span>
         ),
         searchValue: () => '',
@@ -426,7 +426,7 @@ export function GroupedSweepView({
         group: 'flags',
         render: (r) =>
           r.is_migrated == null ? (
-            <span className="text-text-dim">â€”</span>
+            <span className="text-text-dim">—</span>
           ) : (
             <span className={r.is_migrated ? 'text-primary' : 'text-text-dim'}>
               {r.is_migrated ? 'Yes' : 'No'}
@@ -443,7 +443,7 @@ export function GroupedSweepView({
         group: 'flags',
         render: (r) =>
           r.is_dead == null ? (
-            <span className="text-text-dim">â€”</span>
+            <span className="text-text-dim">—</span>
           ) : (
             <span className={r.is_dead ? 'text-danger' : 'text-text-dim'}>
               {r.is_dead ? 'Yes' : 'No'}
@@ -475,7 +475,7 @@ export function GroupedSweepView({
         group: 'sim',
         render: (r) => (
           <span className={r.pnl_sol > 0 ? 'text-success' : r.pnl_sol < 0 ? 'text-danger' : 'text-text-dim'}>
-            {r.fired ? r.pnl_sol.toFixed(4) : 'â€”'}
+            {r.fired ? r.pnl_sol.toFixed(4) : '—'}
           </span>
         ),
         searchValue: () => '',
@@ -489,7 +489,7 @@ export function GroupedSweepView({
         group: 'sim',
         render: (r) => (
           <span className={r.pnl_pct > 0 ? 'text-success' : r.pnl_pct < 0 ? 'text-danger' : 'text-text-dim'}>
-            {r.fired ? `${r.pnl_pct.toFixed(1)}%` : 'â€”'}
+            {r.fired ? `${r.pnl_pct.toFixed(1)}%` : '—'}
           </span>
         ),
         searchValue: () => '',
@@ -503,7 +503,7 @@ export function GroupedSweepView({
         group: 'sim',
         render: (r) => (
           <span className="text-text-dim">
-            {r.fired ? r.holding_secs : 'â€”'}
+            {r.fired ? r.holding_secs : '—'}
           </span>
         ),
         searchValue: () => '',
@@ -533,7 +533,7 @@ export function GroupedSweepView({
       <div className="mb-3.5 flex flex-wrap items-center gap-2.5">
         <h2 className="text-base font-bold text-primary">{title}</h2>
         <Badge variant="primary" className="font-mono">
-          {runs.length} runs Â· {groups.length} groups
+          {runs.length} runs · {groups.length} groups
         </Badge>
       </div>
 
@@ -552,7 +552,7 @@ export function GroupedSweepView({
       </Accordion>
 
       {startErr && <InlineAlert variant="error">{startErr}</InlineAlert>}
-      {runsQuery.isLoading && <p className="text-text-dim">Loading sweep runsâ€¦</p>}
+      {runsQuery.isLoading && <p className="text-text-dim">Loading sweep runs…</p>}
       {runsErr && <InlineAlert variant="error">{runsErr}</InlineAlert>}
 
       {!runsQuery.isLoading && !runsErr && runs.length === 0 && (
@@ -583,10 +583,10 @@ export function GroupedSweepView({
                 >
                   {runs.map((r) => (
                     <option key={r.id} value={r.id}>
-                      {r.label ? `${r.label} Â· ` : ''}
-                      {new Date(r.created_at).toLocaleString()} Â· {r.method} Â·{' '}
-                      {r.grouping_spec.length ? r.grouping_spec.join('+') : 'ALL'} Â·{' '}
-                      {r.token_count} tokens Â· {runGroupsLabel(r)} Ã— {r.combo_count} combos
+                      {r.label ? `${r.label} · ` : ''}
+                      {new Date(r.created_at).toLocaleString()} · {r.method} ·{' '}
+                      {r.grouping_spec.length ? r.grouping_spec.join('+') : 'ALL'} ·{' '}
+                      {r.token_count} tokens · {runGroupsLabel(r)} × {r.combo_count} combos
                     </option>
                   ))}
                 </select>
@@ -597,7 +597,7 @@ export function GroupedSweepView({
                   disabled={!activeRunId || deleteState.isLoading}
                   onClick={onDeleteRun}
                 >
-                  {deleteState.isLoading ? 'Deletingâ€¦' : 'Delete Run'}
+                  {deleteState.isLoading ? 'Deleting…' : 'Delete Run'}
                 </Button>
 
                 <span className="ml-auto flex items-center gap-2">
@@ -617,7 +617,7 @@ export function GroupedSweepView({
                     disabled={!pruneBefore || pruneState.isLoading}
                     onClick={onPrune}
                   >
-                    {pruneState.isLoading ? 'Clearingâ€¦' : 'Clear All OLD'}
+                    {pruneState.isLoading ? 'Clearing…' : 'Clear All OLD'}
                   </Button>
                 </span>
               </div>}
@@ -636,11 +636,11 @@ export function GroupedSweepView({
 
           {activeRun && activeRun.status !== 'completed' && (
             <InlineAlert variant="warning">
-              {activeRun.status === 'running' ? 'In-progress' : 'Partial'} run â€”{' '}
+              {activeRun.status === 'running' ? 'In-progress' : 'Partial'} run —{' '}
               {activeRun.groups_done} of {activeRun.group_count} groups
               {activeRun.status === 'running'
                 ? ' persisted so far. The sweep is still running; more groups will appear as they finish.'
-                : ' completed before the run was cancelled. The remaining groups were not swept â€” this is not a full sweep.'}
+                : ' completed before the run was cancelled. The remaining groups were not swept — this is not a full sweep.'}
             </InlineAlert>
           )}
 
@@ -673,9 +673,9 @@ export function GroupedSweepView({
                     {Object.keys(activeGroup.group_key).length
                       ? Object.entries(activeGroup.group_key)
                         .map(([k, v]) => `${k}=${v}`)
-                        .join(' Â· ')
+                        .join(' · ')
                       : 'ALL tokens'}{' '}
-                    Â· {activeGroup.token_count} tokens
+                    · {activeGroup.token_count} tokens
                   </span>
                 )}
               </div>
@@ -717,7 +717,7 @@ export function GroupedSweepView({
                     <h3 className="text-sm font-bold text-secondary">Tokens for combo #{activeComboId}</h3>
                     <span className="text-xs text-text-dim">
                       {tokenResultsQuery.isFetching
-                        ? 'Simulatingâ€¦'
+                        ? 'Simulating…'
                         : `${visibleTokenResults.length}${!showNotFired ? ` / ${tokenResults.length}` : ''} tokens`}
                     </span>
                     <div className="flex-grow" />
@@ -732,7 +732,7 @@ export function GroupedSweepView({
                       className="text-xs text-text-dim hover:text-primary"
                       onClick={() => setActiveComboId(null)}
                     >
-                      âœ• Close
+                      ✕ Close
                     </button>
                   </div>
 

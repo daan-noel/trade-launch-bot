@@ -37,8 +37,8 @@ interface SellDialog {
 }
 
 /// Parse a slippage percent string into basis points (1% = 100 bps), shared by
-/// the buy and sell dialogs. Blank â†’ `{}` (let the backend use its default);
-/// out-of-range/non-numeric â†’ `{ error }` for the caller to surface.
+/// the buy and sell dialogs. Blank → `{}` (let the backend use its default);
+/// out-of-range/non-numeric → `{ error }` for the caller to surface.
 function parseSlippageBps(raw: string): { bps?: number; error?: string } {
   const trimmed = raw.trim();
   if (!trimmed) return {};
@@ -105,9 +105,9 @@ export function MyWalletPage() {
 
   // After a confirmed trade the wallet's new on-chain balance can lag the RPC
   // read by a moment. Rather than re-fetching (and re-pricing) the entire
-  // wallet repeatedly, poll just the traded mint â€” one cheap RPC + price each
-  // attempt â€” until its raw amount actually moves (buy â†’ up / new token
-  // appears, sell â†’ down), then patch that single row into the cached list.
+  // wallet repeatedly, poll just the traded mint — one cheap RPC + price each
+  // attempt — until its raw amount actually moves (buy → up / new token
+  // appears, sell → down), then patch that single row into the cached list.
   // No full wallet re-scan. If the change never lands within the window, fall
   // back to one authoritative refresh so the table can't sit on stale data.
   const confirmTrade = useCallback(
@@ -131,7 +131,7 @@ export function MyWalletPage() {
                 }
               }),
             );
-            setActionSuccess(`${label} successful â€” holdings updated.`);
+            setActionSuccess(`${label} successful — holdings updated.`);
             return;
           }
         } catch {
@@ -144,7 +144,7 @@ export function MyWalletPage() {
       }
       dispatch(liveApi.util.invalidateTags(['WalletHoldings']));
       setActionSuccess(
-        `${label} confirmed. Balances took a moment to update on-chain â€” refreshed.`,
+        `${label} confirmed. Balances took a moment to update on-chain — refreshed.`,
       );
     },
     [dispatch],
@@ -168,7 +168,7 @@ export function MyWalletPage() {
           ...(tokenAccount ? { token_account: tokenAccount } : {}),
           ...(slippageBps !== undefined ? { slippage_bps: slippageBps } : {}),
         }).unwrap();
-        setActionSuccess('Sell submitted â€” confirming on-chainâ€¦');
+        setActionSuccess('Sell submitted — confirming on-chain…');
         void confirmTrade(mint, prevAmount, 'Sell');
       } catch (e) {
         setActionError(
@@ -267,13 +267,13 @@ export function MyWalletPage() {
       await buyToken({
         mint,
         sol_amount: solAmount,
-        // Omit for manual buys â€” the backend resolves the token program on-chain.
+        // Omit for manual buys — the backend resolves the token program on-chain.
         ...(buyDialog.tokenProgramId
           ? { token_program_id: buyDialog.tokenProgramId }
           : {}),
         ...(slippageBps !== undefined ? { slippage_bps: slippageBps } : {}),
       }).unwrap();
-      setActionSuccess('Buy submitted â€” confirming on-chainâ€¦');
+      setActionSuccess('Buy submitted — confirming on-chain…');
       void confirmTrade(mint, prevAmount, 'Buy');
     } catch (e) {
       setActionError(
@@ -306,7 +306,7 @@ export function MyWalletPage() {
           {holdings.length} tokens
         </Badge>
         <Button variant="subtle" size="sm" onClick={() => refetch()} disabled={isFetching}>
-          {isFetching ? 'Loadingâ€¦' : 'â†» Refresh'}
+          {isFetching ? 'Loading…' : '↻ Refresh'}
         </Button>
         <div className='flex-grow' />
         <Button variant="primary" size="md" onClick={handleManualBuyOpen}>
@@ -324,7 +324,7 @@ export function MyWalletPage() {
       {actionSuccess && <InlineAlert variant="success">{actionSuccess}</InlineAlert>}
 
       {isLoading ? (
-        <p className="py-10 text-center text-text-dim">Loading wallet holdings from Solanaâ€¦</p>
+        <p className="py-10 text-center text-text-dim">Loading wallet holdings from Solana…</p>
       ) : (
         <DataTable
           columns={columns}

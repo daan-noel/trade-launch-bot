@@ -10,7 +10,7 @@ import {
 /**
  * App-wide floating indicator for in-flight background jobs (grouped sweep, rule
  * simulations). Driven entirely by `BackgroundJobsContext`, so it stays visible
- * and live as the user navigates between pages â€” the job runs on the backend
+ * and live as the user navigates between pages — the job runs on the backend
  * regardless, and this is the one place the UI tracks it. Renders nothing when
  * idle. Each row shows `processed / total`, a ticking ETA + elapsed time, and a
  * Cancel button.

@@ -29,7 +29,7 @@ interface TokenTradeChartProps {
   tableId?: string;
 }
 
-/** Maps tx signature â†’ kind for entry/exit row highlighting in the trades table. */
+/** Maps tx signature → kind for entry/exit row highlighting in the trades table. */
 function buildEntryExitMap(markers: ChartEventMarker[] | null | undefined): Map<string, 'entry' | 'exit'> {
   const m = new Map<string, 'entry' | 'exit'>();
   if (!markers) return m;
@@ -68,8 +68,8 @@ function tradesInRange(
  * Trade-history price chart for the selected token's detail panel. Pulls the
  * per-mint trades from the shared RTK Query cache (same key as the Swing
  * detection page, so a token already viewed there renders instantly) and feeds
- * them to the reusable {@link TokenPriceChart}. Clicking a candle â€” or
- * drag-selecting a time range â€” lists the underlying trades in a table below.
+ * them to the reusable {@link TokenPriceChart}. Clicking a candle — or
+ * drag-selecting a time range — lists the underlying trades in a table below.
  */
 export function TokenTradeChart({ detail, eventMarkers = null, tableId }: TokenTradeChartProps) {
   const { unit, usdRate } = usePriceUnit();
@@ -137,8 +137,8 @@ export function TokenTradeChart({ detail, eventMarkers = null, tableId }: TokenT
 
   const selectionLabel = selectedRange
     ? selectedRange.groupMode === 'slot'
-      ? `Slot ${Math.min(selectedRange.lo, selectedRange.hi)} â†’ ${Math.max(selectedRange.lo, selectedRange.hi)}`
-      : `${formatTimestampMs(Math.min(selectedRange.lo, selectedRange.hi) * 1000, timezone)} â†’ ${formatTimestampMs(Math.max(selectedRange.lo, selectedRange.hi) * 1000, timezone)}`
+      ? `Slot ${Math.min(selectedRange.lo, selectedRange.hi)} → ${Math.max(selectedRange.lo, selectedRange.hi)}`
+      : `${formatTimestampMs(Math.min(selectedRange.lo, selectedRange.hi) * 1000, timezone)} → ${formatTimestampMs(Math.max(selectedRange.lo, selectedRange.hi) * 1000, timezone)}`
     : selectedBar
       ? selectedBar.groupMode === 'slot'
         ? `Slot ${selectedBar.slot}`

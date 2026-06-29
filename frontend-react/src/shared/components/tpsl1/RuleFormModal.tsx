@@ -11,7 +11,7 @@ import { EXAMPLE_IX_LABELS, parseIxLabels } from './utils';
 import { PasteParamsSection } from 'components/strategy/PasteParamsSection';
 import { applyParamsToForm } from 'lib/ruleParams';
 
-/** A field label with the standard uppercase styling plus a â“˜ tooltip that
+/** A field label with the standard uppercase styling plus a ⓘ tooltip that
  *  explains the parameter (copy lives in {@link TPSL_PARAM_HELP}). The tooltip
  *  renders in a viewport-clamped portal, so it never overflows the modal. */
 function FieldLabel({
@@ -38,9 +38,9 @@ function FieldLabel({
 }
 
 /** Lock groups, aligned 1:1 with the modal's section dividers. Each group gets
- *  its own ðŸ”“/ðŸ”’ toggle when editing (locked by default, to prevent accidental
+ *  its own 🔓/🔒 toggle when editing (locked by default, to prevent accidental
  *  edits). `sizing` is the only group that stays unlockable while the rule is
- *  live (running or holding positions) â€” buy amount + concurrency are the "hot"
+ *  live (running or holding positions) — buy amount + concurrency are the "hot"
  *  knobs safe to retune mid-flight; everything else is frozen until idle. */
 export type LockGroup = 'fingerprint' | 'sizing' | 'exit';
 export type LockGroupState = Record<LockGroup, boolean>;
@@ -171,7 +171,7 @@ export function RuleFormModal({
     exit: false,
   });
 
-  // Every group starts LOCKED on each (re)open â€” an unlock from a prior edit (or
+  // Every group starts LOCKED on each (re)open — an unlock from a prior edit (or
   // a just-saved rule) never carries over. Keyed on `open` so saving (which
   // closes the modal) resets the locks before the next open.
   useEffect(() => {
@@ -188,7 +188,7 @@ export function RuleFormModal({
   const fieldCls = (g: LockGroup, extra?: string) =>
     cn('font-mono', !editable(g) && 'cursor-not-allowed opacity-50', extra);
 
-  /** Per-section ðŸ”“/ðŸ”’ toggle. Only rendered when editing; disabled (with a
+  /** Per-section 🔓/🔒 toggle. Only rendered when editing; disabled (with a
    *  reason) when the group is frozen because the rule is live. */
   const lockToggle = (g: LockGroup): ReactNode =>
     isEdit ? (
@@ -205,7 +205,7 @@ export function RuleFormModal({
               : 'Unlock to edit'
         }
       >
-        {unlocked[g] ? 'ðŸ”’' : 'ðŸ”“'}
+        {unlocked[g] ? '🔒' : '🔓'}
       </button>
     ) : undefined;
 
@@ -253,8 +253,8 @@ export function RuleFormModal({
           }}
         />
 
-        {/* â”€â”€ Token fingerprint: which token this rule matches at creation
-            (p_token_*). Locked behind the ðŸ”“ toggle when editing. â”€â”€ */}
+        {/* ── Token fingerprint: which token this rule matches at creation
+            (p_token_*). Locked behind the 🔓 toggle when editing. ── */}
         <SectionHeader
           title="Token Fingerprint"
           hint="which token to match"
@@ -264,7 +264,7 @@ export function RuleFormModal({
         <div className="grid grid-cols-2 gap-3">
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="initialBuy">Initial Buy SOL</FieldLabel>
-            <Input type="number" fieldSize="md" step="0.001" unit="â—Ž" value={form.initialBuy} readOnly={!editable('fingerprint')} blankZero
+            <Input type="number" fieldSize="md" step="0.001" unit="◎" value={form.initialBuy} readOnly={!editable('fingerprint')} blankZero
               onChange={(e) => set({ initialBuy: e.target.value })} className={fieldCls('fingerprint')} />
           </label>
           <label className="flex flex-col gap-1.5">
@@ -284,12 +284,12 @@ export function RuleFormModal({
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="maxSolCost">Max SOL Cost</FieldLabel>
-            <Input type="number" fieldSize="md" step="0.001" unit="â—Ž" value={form.maxSolCost} readOnly={!editable('fingerprint')} blankZero
+            <Input type="number" fieldSize="md" step="0.001" unit="◎" value={form.maxSolCost} readOnly={!editable('fingerprint')} blankZero
               onChange={(e) => set({ maxSolCost: e.target.value })} className={fieldCls('fingerprint')} />
           </label>
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="spendableSolIn">Spendable SOL In</FieldLabel>
-            <Input type="number" fieldSize="md" step="0.001" unit="â—Ž" value={form.spendableSolIn} readOnly={!editable('fingerprint')} blankZero
+            <Input type="number" fieldSize="md" step="0.001" unit="◎" value={form.spendableSolIn} readOnly={!editable('fingerprint')} blankZero
               onChange={(e) => set({ spendableSolIn: e.target.value })} className={fieldCls('fingerprint')} />
           </label>
         </div>
@@ -304,7 +304,7 @@ export function RuleFormModal({
                 className="rounded-lg border border-white/12 bg-white/4 px-2 py-1 text-xs"
                 title="Insert example labels"
               >
-                âŽ˜
+                ⎘
               </button>
             )}
           </div>
@@ -319,17 +319,17 @@ export function RuleFormModal({
           />
         </div>
 
-        {/* â”€â”€ Sizing & limits: position size + concurrency caps (unprefixed). â”€â”€ */}
+        {/* ── Sizing & limits: position size + concurrency caps (unprefixed). ── */}
         <SectionHeader
           title="Sizing & Limits"
-          hint="position size + concurrency Â· editable while live"
+          hint="position size + concurrency · editable while live"
           accent="text-text-dim"
           right={lockToggle('sizing')}
         />
         <div className="grid grid-cols-3 gap-3">
           <label className="flex flex-col gap-1.5">
             <FieldLabel help="buyAmount" accent="text-primary">Buy Amount (SOL)</FieldLabel>
-            <Input type="number" fieldSize="md" step="0.001" unit="â—Ž" value={form.buyAmount} readOnly={!editable('sizing')}
+            <Input type="number" fieldSize="md" step="0.001" unit="◎" value={form.buyAmount} readOnly={!editable('sizing')}
               onChange={(e) => set({ buyAmount: e.target.value })} className={fieldCls('sizing')} />
           </label>
           <label className="flex flex-col gap-1.5">
@@ -344,7 +344,7 @@ export function RuleFormModal({
           </label>
         </div>
 
-        {/* â”€â”€ Exit gates: when to sell (p_exit_*). 0 = off. â”€â”€ */}
+        {/* ── Exit gates: when to sell (p_exit_*). 0 = off. ── */}
         <SectionHeader
           title="Exit Gates"
           hint="when to sell"
@@ -395,7 +395,7 @@ export function RuleFormModal({
             Cancel
           </Button>
           <Button variant="primary" onClick={() => onSave(unlocked)} disabled={loading}>
-            {loading ? 'Savingâ€¦' : 'Save Rule'}
+            {loading ? 'Saving…' : 'Save Rule'}
           </Button>
         </div>
       </div>
@@ -429,7 +429,7 @@ export function buildCreatePayload(form: RuleFormData) {
 }
 
 /** Build the PUT body from only the UNLOCKED groups. A locked group contributes
- *  no keys, so the backend's Option-based merge leaves those fields untouched â€”
+ *  no keys, so the backend's Option-based merge leaves those fields untouched —
  *  a locked param can never be accidentally cleared/zeroed. `rule_name` and
  *  `trade_mode` are administrative and always sent. */
 export function buildUpdatePayload(form: RuleFormData, unlocked: LockGroupState) {

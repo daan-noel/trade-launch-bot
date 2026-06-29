@@ -55,7 +55,7 @@ export function useStreamedSweepResults(
     setLoading(true);
     setError(null);
 
-    // Multi-key sort: ordered `col:dir,â€¦` list (index 0 = primary). The backend
+    // Multi-key sort: ordered `col:dir,…` list (index 0 = primary). The backend
     // applies every level in order with a stable tiebreak; sending only the
     // primary would silently drop the secondary keys the user picked.
     const sortParams =

@@ -35,7 +35,7 @@ const LS_LIVE_KEY = STORAGE_KEYS.tokensLive;
 /** Stable empty reference so derived memos don't recompute every render. */
 const EMPTY_TOKENS: TokenRecord[] = [];
 
-/** Stable row-key accessor â€” hoisted so the DataTable receives the same
+/** Stable row-key accessor — hoisted so the DataTable receives the same
  *  reference every render instead of a fresh inline closure each time. */
 const tokenRowKey = (r: TokenRecord) => r.mint_address;
 
@@ -56,7 +56,7 @@ export function TokensPage() {
   const dispatch = useDispatch<AppDispatch>();
   // Built once and held stable: the rate-dependent cells read the unit/USD-rate
   // from context themselves (see priceCells), so a rate tick no longer rebuilds
-  // every column def and re-renders the whole grid â€” only the price cells update.
+  // every column def and re-renders the whole grid — only the price cells update.
   const columns = useMemo(() => tokenColumns(), []);
 
   const [live, setLive] = useState(loadLive);
@@ -69,7 +69,7 @@ export function TokensPage() {
   // `filters` panel as query args.
   const [tableQuery, setTableQuery] = useState<TableQuery>(INITIAL_QUERY);
 
-  // Selected project timezone â€” sent so datetime-range filters normalize from
+  // Selected project timezone — sent so datetime-range filters normalize from
   // picker wall-clock to the exact UTC instant at the query boundary.
   const { timezone } = useTimezone();
 
@@ -100,11 +100,11 @@ export function TokensPage() {
   } = useGetTokensPageQuery(queryArgs, {
     // SSE drives the live view now: `trade_executed` frames patch each row's
     // stats in place (see the trade-stream effect below) and `token_created`
-    // pulls in new rows. This poll is just a slow safety-net resync â€” it heals
+    // pulls in new rows. This poll is just a slow safety-net resync — it heals
     // dropped/lagged frames and re-applies the server sort that in-place patches
     // can't. Hence FALLBACK (30s) rather than the old 5s POLL_INTERVAL_MS.
     pollingInterval: live ? FALLBACK_POLL_INTERVAL_MS : 0,
-    // Don't keep polling a background tab â€” the SSE refetch below catches it up
+    // Don't keep polling a background tab — the SSE refetch below catches it up
     // the moment it regains focus, and the timer resumes then.
     skipPollingIfUnfocused: true,
   });
@@ -118,7 +118,7 @@ export function TokensPage() {
   if (tokensData?.items) lastItemsRef.current = tokensData.items;
   const tokens = tokensData?.items ?? lastItemsRef.current;
   const total = tokensData?.total ?? 0;
-  // Live, cache-tracked subset of `total` (â‰¤ total) â€” shown beside it so the
+  // Live, cache-tracked subset of `total` (≤ total) — shown beside it so the
   // page reports both the whole universe and the actively-tracked count.
   const tracked = tokensData?.tracked ?? 0;
   const error = apiErrorMessage(tokensError, 'Failed to load tokens');
@@ -141,7 +141,7 @@ export function TokensPage() {
   // Resets the table to page 1 when the global filter panel or tracked-only mode changes.
   const filtersResetKey = useMemo(() => JSON.stringify({ filters, trackedOnly }), [filters, trackedOnly]);
   const filterCount = activeFilterCount(filters);
-  // Whether any reduction is active â€” drives the "matched" vs "total" badge.
+  // Whether any reduction is active — drives the "matched" vs "total" badge.
   // Unfiltered, `total` is the whole DB-backed token universe (not just the
   // cache-tracked subset); with any reduction it's the filtered count.
   const anyActive =
@@ -179,9 +179,9 @@ export function TokensPage() {
 
   // Mints currently on screen, held in a ref so the global trade stream can
   // discard frames for off-page mints WITHOUT re-subscribing. The feed carries
-  // every mint's trades; only this page's rows (â‰¤ pageSize) can be patched, so
+  // every mint's trades; only this page's rows (≤ pageSize) can be patched, so
   // buffering the rest is pure waste. Rebuilt whenever the page contents change
-  // â€” including a pageSize change, since `tokens` reflects the live page size.
+  // — including a pageSize change, since `tokens` reflects the live page size.
   const visibleMints = useMemo(
     () => new Set(tokens.map((t) => t.mint_address)),
     [tokens],
@@ -191,7 +191,7 @@ export function TokensPage() {
 
   // Push-driven row updates: every `trade_executed` frame carries the mint's
   // fresh stats (price / volume / market-cap / trade-count / ATH). Patch them
-  // straight into the visible page's cache so the grid ticks in real time â€” no
+  // straight into the visible page's cache so the grid ticks in real time — no
   // poll round-trip. Trades are bursty, so coalesce: stash the latest stats per
   // mint and flush them in one cache write on a short timer. Mints not on the
   // current page are skipped; the fallback poll above re-sorts periodically.

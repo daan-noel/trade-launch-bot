@@ -29,26 +29,26 @@ import type { SimulationProgressEvent, SweepProgressEvent } from 'types';
  * simulation) and their live progress.
  *
  * Why a context (not page state): a sweep/backtest runs entirely on the backend
- * inside its still-open HTTP request â€” navigating away or refreshing the SPA
+ * inside its still-open HTTP request — navigating away or refreshing the SPA
  * never stops it, but page-local `isLoading` + the page's SSE subscription die
  * with the unmounted page, so the UI loses the running job. Mounted once at the
  * app root, this provider:
- *   â€¢ keeps ONE set of SSE subscriptions alive for the whole session, so it sees
+ *   • keeps ONE set of SSE subscriptions alive for the whole session, so it sees
  *     every `*_progress` / `*_finished` frame regardless of the active route;
- *   â€¢ seeds itself from `GET /api/jobs/status` on first load, recovering a job
- *     that was already running before the page (re)loaded â€” SSE only replays
+ *   • seeds itself from `GET /api/jobs/status` on first load, recovering a job
+ *     that was already running before the page (re)loaded — SSE only replays
  *     future frames;
- *   â€¢ drives a global indicator (and any page's controls) from that single
+ *   • drives a global indicator (and any page's controls) from that single
  *     source of truth, so progress survives navigation.
  *
- * Keys: the sweep is single-flight â†’ one fixed `'sweep'` slot. Simulations are
- * per-rule â†’ keyed by `rule_id`. The map is only touched on sweep/sim SSE frames
+ * Keys: the sweep is single-flight → one fixed `'sweep'` slot. Simulations are
+ * per-rule → keyed by `rule_id`. The map is only touched on sweep/sim SSE frames
  * (never on the SOL/USD or live-trade streams), so consumers don't re-render on
  * the high-frequency ticks.
  *
  * Split into two contexts so a progress tick re-renders only what reads the
  * live job *state*: the **actions** context ({@link useBackgroundJobActions})
- * exposes the stable `markStarting`/`cancel` callbacks (identity never changes â†’
+ * exposes the stable `markStarting`/`cancel` callbacks (identity never changes →
  * the heavy strategy pages that only *start* jobs never re-render on a tick);
  * the **state** context ({@link useBackgroundJobsState}) carries the changing
  * `jobs`/`isRunning` and is consumed by the global indicator (and the sweep
@@ -101,7 +101,7 @@ export interface BackgroundJob {
 /** Singleton key for the single-flight grouped sweep. */
 const SWEEP_KEY = 'sweep';
 
-/** Stable job actions â€” the value identity never changes across progress ticks,
+/** Stable job actions — the value identity never changes across progress ticks,
  *  so consumers that only fire jobs (the strategy pages) don't re-render. */
 interface BackgroundJobActions {
   /** Optimistically register a job the moment its request is fired, so the
@@ -117,7 +117,7 @@ interface BackgroundJobActions {
   cancel: (job: BackgroundJob) => void;
 }
 
-/** Live job state â€” changes on every `*_progress` frame; consumed only by the
+/** Live job state — changes on every `*_progress` frame; consumed only by the
  *  global indicator and the sweep page's run-state check. */
 interface BackgroundJobsState {
   jobs: BackgroundJob[];
@@ -223,7 +223,7 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
         }
       })
       .catch(() => {
-        /* no jobs / backend down â€” nothing to recover */
+        /* no jobs / backend down — nothing to recover */
       });
 
     const offSweepProgress = sseSubscribe('sweep_progress', (e) => {
@@ -246,7 +246,7 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
     });
     const sweepFinished = connectSweepFinished(() => {
       remove('sweep', SWEEP_KEY);
-      // A finished sweep persisted a new run â€” refresh the runs list app-wide.
+      // A finished sweep persisted a new run — refresh the runs list app-wide.
       dispatch(apiSlice.util.invalidateTags(['GroupedSweep']));
     });
     const simFinished = connectSimulationFinished((ev) => remove('simulation', ev.rule_id));
@@ -288,7 +288,7 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
   );
 
   // `markStarting`/`cancel` depend only on the stable `upsert`, so this value is
-  // referentially stable â€” action-only consumers skip the progress-tick renders.
+  // referentially stable — action-only consumers skip the progress-tick renders.
   const actions = useMemo<BackgroundJobActions>(
     () => ({ markStarting, markFinished, cancel }),
     [markStarting, markFinished, cancel],
@@ -308,14 +308,14 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
   );
 }
 
-/** Stable job actions (`markStarting`, `cancel`) â€” does not re-render on ticks. */
+/** Stable job actions (`markStarting`, `cancel`) — does not re-render on ticks. */
 export function useBackgroundJobActions() {
   const ctx = useContext(BackgroundJobActionsContext);
   if (!ctx) throw new Error('useBackgroundJobActions must be used within BackgroundJobsProvider');
   return ctx;
 }
 
-/** Live job state (`jobs`, `isRunning`) â€” re-renders on each progress frame. */
+/** Live job state (`jobs`, `isRunning`) — re-renders on each progress frame. */
 export function useBackgroundJobsState() {
   const ctx = useContext(BackgroundJobsStateContext);
   if (!ctx) throw new Error('useBackgroundJobsState must be used within BackgroundJobsProvider');

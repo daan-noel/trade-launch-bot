@@ -77,7 +77,7 @@ const keyById = (r: { id: string }) => r.id;
 
 /** Heading for a section: a colored marker bar + title + optional count badge,
  *  subtitle, and right-aligned actions. Reused across the page so every section
- *  reads at a glance â€” content sits directly below it, with no surrounding card
+ *  reads at a glance — content sits directly below it, with no surrounding card
  *  chrome, so only the real tables look like tables. */
 function SectionHeading({
   title,
@@ -123,7 +123,7 @@ function SectionHeading({
 }
 
 /** Inline (margin-free) variant of the section heading, sized to sit inside an
- *  Accordion's custom header row â€” the marker bar + title + count badge +
+ *  Accordion's custom header row — the marker bar + title + count badge +
  *  subtitle, with the Accordion supplying the chevron toggle. */
 function RuleTableHeader({
   title,
@@ -200,7 +200,7 @@ function PaperResultSection({
               onClick={onClose}
               className="text-text-dim transition hover:text-text"
             >
-              âœ•
+              ✕
             </button>
           }
         />
@@ -218,13 +218,13 @@ function PaperResultSection({
     <>
       <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-text-dim">
         <Badge variant={statusVariant} size="sm" pill className="uppercase">
-          {run.status === 'Running' ? 'â— Running' : run.status}
+          {run.status === 'Running' ? '● Running' : run.status}
         </Badge>
         <span className="font-mono">Run #{run.run_seq}</span>
         <span>
           Cap:{' '}
           <span className="font-mono text-text">
-            {run.max_total_tokens != null ? run.max_total_tokens : 'âˆž'}
+            {run.max_total_tokens != null ? run.max_total_tokens : '∞'}
           </span>
         </span>
         <span>
@@ -240,7 +240,7 @@ function PaperResultSection({
           <span className="flex items-center gap-1">
             <span className="font-semibold text-red">Clear results?</span>
             <Button variant="danger" size="xs" disabled={clearing} onClick={onClear}>
-              {clearing ? 'Clearingâ€¦' : 'Yes'}
+              {clearing ? 'Clearing…' : 'Yes'}
             </Button>
             <Button
               variant="ghost"
@@ -259,12 +259,12 @@ function PaperResultSection({
             onClick={() => setConfirmClear(true)}
             title={
               canClear
-                ? 'Clear results â€” delete this ruleâ€™s paper run history'
+                ? 'Clear results — delete this rule’s paper run history'
                 : 'Stop the rule before clearing its results'
             }
             className="text-red"
           >
-            ðŸ—‘ Clear results
+            🗑 Clear results
           </Button>
         )}
       </div>
@@ -359,8 +359,8 @@ function positionToSimResult(p: RulePositionRecord): SimulatedTokenResult {
   // simply read as an Open row in the summary.
   const entryPrice = p.entry_price ?? 0;
   const entryTokens = p.entry_token_amount ?? 0;
-  // entry_token_amount is a TOKEN count; SOL invested = entry_price Ã— tokens, so
-  // PnL in SOL = (entry_price Ã— entry_token_amount) Ã— pnl%.
+  // entry_token_amount is a TOKEN count; SOL invested = entry_price × tokens, so
+  // PnL in SOL = (entry_price × entry_token_amount) × pnl%.
   const pnlSol = pnlPercent != null ? entryPrice * entryTokens * (pnlPercent / 100) : null;
   const holdingSecs =
     p.entry_time && p.exit_time
@@ -424,7 +424,7 @@ function StopConfirmDialog({
   const open = rule.open_positions;
   const real = rule.trade_mode === 'real';
   return (
-    <Modal title={`Stop & close â€œ${rule.rule_name}â€?`} open onClose={onCancel}>
+    <Modal title={`Stop & close “${rule.rule_name}”?`} open onClose={onCancel}>
       <div className="space-y-4 text-sm text-text">
         {open > 0 ? (
           <p>
@@ -437,7 +437,7 @@ function StopConfirmDialog({
         )}
         {real && open > 0 && (
           <InlineAlert variant="error">
-            âš  REAL mode â€” this sends live on-chain sell transactions.
+            ⚠ REAL mode — this sends live on-chain sell transactions.
           </InlineAlert>
         )}
         <div className="flex justify-end gap-2">
@@ -445,7 +445,7 @@ function StopConfirmDialog({
             Cancel
           </Button>
           <Button variant="danger" onClick={() => onConfirm(rule)} disabled={busy}>
-            {busy ? 'Stoppingâ€¦' : 'Stop & close'}
+            {busy ? 'Stopping…' : 'Stop & close'}
           </Button>
         </div>
       </div>
@@ -456,7 +456,7 @@ function StopConfirmDialog({
 /** Re-activate prompt for a paper rule: loads the prior run so the user can
  *  choose a fresh run vs continuing it. Defaults to Continue for a resumable
  *  (non-finished) run, Fresh otherwise; warns that continuing a capped run takes
- *  no new entries. Real rules never reach this â€” they activate directly. */
+ *  no new entries. Real rules never reach this — they activate directly. */
 function ReactivateDialog({
   rule,
   busy,
@@ -497,18 +497,18 @@ function ReactivateDialog({
   const finished = run?.status === 'Finished';
 
   return (
-    <Modal title={`Activate â€œ${rule.rule_name}â€`} open onClose={onCancel}>
+    <Modal title={`Activate “${rule.rule_name}”`} open onClose={onCancel}>
       {loading ? (
-        <p className="text-text-dim">Loading previous runâ€¦</p>
+        <p className="text-text-dim">Loading previous run…</p>
       ) : !run ? (
         <div className="space-y-4 text-sm text-text">
-          <p>No previous run â€” a fresh paper run will start.</p>
+          <p>No previous run — a fresh paper run will start.</p>
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={onCancel} disabled={busy}>
               Cancel
             </Button>
             <Button variant="primary" onClick={() => onActivate(rule, 'fresh')} disabled={busy}>
-              {busy ? 'Activatingâ€¦' : 'Activate'}
+              {busy ? 'Activating…' : 'Activate'}
             </Button>
           </div>
         </div>
@@ -530,7 +530,7 @@ function ReactivateDialog({
               />
               <span>
                 <span className="font-semibold">Fresh run</span>
-                <span className="text-text-dim"> â€” reset counters, clear run #{run.run_seq}â€™s positions.</span>
+                <span className="text-text-dim"> — reset counters, clear run #{run.run_seq}’s positions.</span>
               </span>
             </label>
             <label className="flex cursor-pointer items-start gap-2">
@@ -543,13 +543,13 @@ function ReactivateDialog({
               />
               <span>
                 <span className="font-semibold">Continue #{run.run_seq}</span>
-                <span className="text-text-dim"> â€” keep its tokens &amp; counters, resume taking entries.</span>
+                <span className="text-text-dim"> — keep its tokens &amp; counters, resume taking entries.</span>
               </span>
             </label>
           </div>
           {finished && mode === 'continue' && (
             <InlineAlert variant="error">
-              âš  Run #{run.run_seq} hit its token cap â€” continuing wonâ€™t take new entries until you
+              ⚠ Run #{run.run_seq} hit its token cap — continuing won’t take new entries until you
               raise Max Total Tokens.
             </InlineAlert>
           )}
@@ -558,7 +558,7 @@ function ReactivateDialog({
               Cancel
             </Button>
             <Button variant="primary" onClick={() => onActivate(rule, mode)} disabled={busy}>
-              {busy ? 'Activatingâ€¦' : 'Activate'}
+              {busy ? 'Activating…' : 'Activate'}
             </Button>
           </div>
         </div>
@@ -569,7 +569,7 @@ function ReactivateDialog({
 
 /** The per-row action buttons, split out and memoized so a change to one row's
  *  state (or a global loading flag) only re-renders the rows whose buttons
- *  actually change â€” not every row's button subtree. The handlers are stable
+ *  actually change — not every row's button subtree. The handlers are stable
  *  useCallbacks from the page; the booleans are pre-narrowed per row so an
  *  unaffected row's props stay shallow-equal and `memo` skips it. */
 const RuleActionsCell = memo(function RuleActionsCell({
@@ -617,32 +617,32 @@ const RuleActionsCell = memo(function RuleActionsCell({
   }
   // Rule-management actions only (edit / delete). The read-only analysis tools
   // (simulate / matched / paper) live in their own `Analyze` column so the two
-  // intents read as separate groups. Icon-only â€” tooltips name each action.
+  // intents read as separate groups. Icon-only — tooltips name each action.
   return (
     <div className="flex items-center justify-center gap-1">
       <IconButton
         onClick={() => onEdit(rule)}
         title={
           rule.is_active || rule.open_positions > 0
-            ? 'Live â€” only sizing (buy amount + concurrency) is editable'
+            ? 'Live — only sizing (buy amount + concurrency) is editable'
             : 'Edit rule'
         }
         className="text-info"
       >
-        âœŽ
+        ✎
       </IconButton>
       <IconButton
         onClick={() => onDuplicate(rule)}
-        title="Duplicate â€” open a new rule pre-filled from this one"
+        title="Duplicate — open a new rule pre-filled from this one"
       >
-        â§‰
+        ⧉
       </IconButton>
       <IconButton
         onClick={handleCopy}
         title="Copy params to clipboard"
         className={copied ? 'text-green' : undefined}
       >
-        {copied ? 'âœ“' : 'âŽ˜'}
+        {copied ? '✓' : '⎘'}
       </IconButton>
       <IconButton
         variant="danger"
@@ -654,7 +654,7 @@ const RuleActionsCell = memo(function RuleActionsCell({
             : 'Delete rule'
         }
       >
-        âœ•
+        ✕
       </IconButton>
     </div>
   );
@@ -728,7 +728,7 @@ export function Tpsl2Page() {
   // Transient banner shown when a paper test finishes (cap reached + all exited).
   const [paperNotice, setPaperNotice] = useState<PaperTestFinishedEvent | null>(null);
   // Mirror of the rule whose paper result is open, read by the SSE handler so it
-  // can refresh that view (status â†’ Finished) without re-subscribing the stream.
+  // can refresh that view (status → Finished) without re-subscribing the stream.
   const openPaperRuleId = useRef<string | null>(null);
   useEffect(() => {
     openPaperRuleId.current = paperResult?.ruleId ?? null;
@@ -743,7 +743,7 @@ export function Tpsl2Page() {
       setPaperNotice(ev);
       loadRules(true);
       if (openPaperRuleId.current === ev.rule_id) {
-        // The run just changed (status â†’ Finished) â€” force-refetch past any
+        // The run just changed (status → Finished) — force-refetch past any
         // cached entry so the open view reflects the final state.
         fetchPaperResultCached(dispatch, { strategy: 'tpsl2', ruleId: ev.rule_id }, true)
           .then((data) => setPaperResult({ ruleId: ev.rule_id, data }))
@@ -756,7 +756,7 @@ export function Tpsl2Page() {
   // Keep the open paper-result view live while its run is in progress by patching
   // its token rows from the position deltas (coalesced) instead of refetching the
   // whole run on each fill. The one-time open fetch seeds the rows; run-meta
-  // (status â†’ Finished) arrives via `paper_test_finished` above. Without this the
+  // (status → Finished) arrives via `paper_test_finished` above. Without this the
   // summary froze at open-time. Notify over poll, zero refetch during the run.
   useEffect(() => {
     const pending: import('types').TpslPositionDelta[] = [];
@@ -873,7 +873,7 @@ export function Tpsl2Page() {
     }),
     [lifecycleBusyId, handlePause, handleActivate, handleActivateClick],
   );
-  // positionColumns/simColumns are now referentially-stable module constants â€”
+  // positionColumns/simColumns are now referentially-stable module constants —
   // their price cells read the unit/rate from context, so a USD-rate tick no
   // longer rebuilds the column arrays or re-renders the whole table.
   const posCols = positionColumns;
@@ -914,7 +914,7 @@ export function Tpsl2Page() {
     setModalOpen(true);
   }, []);
 
-  // Duplicate: open the form in CREATE mode (no editRule â†’ every field editable,
+  // Duplicate: open the form in CREATE mode (no editRule → every field editable,
   // no locks) pre-filled from the source rule, with a distinct name so the copy
   // saves as a brand-new rule via the create path.
   const openDuplicate = useCallback((rule: RuleRecord) => {
@@ -941,7 +941,7 @@ export function Tpsl2Page() {
       }
     }
     // Entry window [Min Age, Max Age]: when both bounds are set (non-zero), the
-    // ceiling must sit above the floor â€” the backend rejects max <= min with 400.
+    // ceiling must sit above the floor — the backend rejects max <= min with 400.
     const minAge = parseInt(form.minAgeSecs, 10);
     const maxAge = parseInt(form.maxAgeSecs, 10);
     if (minAge > 0 && maxAge > 0 && maxAge <= minAge) {
@@ -957,7 +957,7 @@ export function Tpsl2Page() {
           buildUpdatePayload(form, unlocked),
         );
         setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
-        // The rule's entry criteria may have changed â€” drop its cached
+        // The rule's entry criteria may have changed — drop its cached
         // matched/simulate results so the next open re-runs.
         invalidateStrategyResult(dispatch, { strategy: 'tpsl2', ruleId: updated.id });
       } else {
@@ -1013,7 +1013,7 @@ export function Tpsl2Page() {
           ...analysisRange,
         });
         if ('cancelled' in tokens) {
-          // User cancelled â€” drop the cached cancel marker so a re-run refetches.
+          // User cancelled — drop the cached cancel marker so a re-run refetches.
           invalidateStrategyResult(dispatch, { strategy: 'tpsl2', ruleId: rule.id });
           return;
         }
@@ -1134,7 +1134,7 @@ export function Tpsl2Page() {
       handlePaperResult,
     ],
   );
-  // Single context value for the Run/Analyze cells â€” `ruleColumns` is now a
+  // Single context value for the Run/Analyze cells — `ruleColumns` is now a
   // static array, so only the cells (not the column defs) re-read these.
   const rowContext = useMemo(
     () => ({ controls: ruleControls, analysis: ruleAnalysis }),
@@ -1161,7 +1161,7 @@ export function Tpsl2Page() {
     [confirmDeleteId, deleteLoading, openEdit, openDuplicate, handleDelete, cancelDelete],
   );
 
-  // The rule whose paper result is open â€” used to gate "Clear results" (idle only).
+  // The rule whose paper result is open — used to gate "Clear results" (idle only).
   const paperCanClear = useMemo(() => {
     if (!paperResult) return false;
     const r = rules.find((x) => x.id === paperResult.ruleId);
@@ -1178,7 +1178,7 @@ export function Tpsl2Page() {
     [selectedRuleId, rules],
   );
 
-  // Which table owns the selected rule â€” the Positions section renders directly
+  // Which table owns the selected rule — the Positions section renders directly
   // under that table (real positions below the Real table, paper positions below
   // the Paper table) so it stays visually attached to the rule it belongs to.
   const selectedRuleMode = useMemo(
@@ -1192,7 +1192,7 @@ export function Tpsl2Page() {
 
   // Sim-shaped view of the live positions, feeding the Positions summary card.
   // Exclude pre-fill rows (Arming = watching for the entry trigger; BuySubmitted =
-  // buy in flight) â€” they haven't filled yet and skew W/L/open tallies.
+  // buy in flight) — they haven't filled yet and skew W/L/open tallies.
   const isPreFill = (s: string) => s === 'Arming' || s === 'BuySubmitted';
   const positionSummaryTokens = useMemo(
     () => positions.filter((p) => !isPreFill(p.status)).map(positionToSimResult),
@@ -1211,7 +1211,7 @@ export function Tpsl2Page() {
 
   // Split the single rule list into real vs paper so each renders in its own
   // table (real on top, flagged as live). Pure client-side partition of the
-  // already-fetched rows â€” no extra fetch, same RuleRecord objects.
+  // already-fetched rows — no extra fetch, same RuleRecord objects.
   const realRules = useMemo(() => rules.filter((r) => r.trade_mode === 'real'), [rules]);
   const paperRules = useMemo(() => rules.filter((r) => r.trade_mode !== 'real'), [rules]);
 
@@ -1288,7 +1288,7 @@ export function Tpsl2Page() {
             onClick={() => { void handleSellPosition(row.mint); }}
             className="rounded border border-red/50 bg-red/12 px-2 py-0.5 text-[11px] font-semibold text-red hover:bg-red/22 disabled:opacity-45"
           >
-            {isSelling ? 'Sellingâ€¦' : 'Sell ALL'}
+            {isSelling ? 'Selling…' : 'Sell ALL'}
           </button>
         </div>
       );
@@ -1297,7 +1297,7 @@ export function Tpsl2Page() {
   );
 
   // Positions for the selected rule. Built once and rendered under whichever
-  // table owns the rule (real â†’ below Real table, paper â†’ below Paper table).
+  // table owns the rule (real → below Real table, paper → below Paper table).
   // Only one of isReal/isPaperRuleSelected is true at a time, so it renders once.
   const positionsSection = (
     <>
@@ -1321,7 +1321,7 @@ export function Tpsl2Page() {
             ) : undefined
           }
         />
-        {positionsLoading && <p className="text-text-dim">Loading positionsâ€¦</p>}
+        {positionsLoading && <p className="text-text-dim">Loading positions…</p>}
         {positionsError && <InlineAlert variant="error">{positionsError}</InlineAlert>}
         {!positionsLoading && !positionsError && positionSummaryTokens.length > 0 && (
           <SimSummaryCard
@@ -1354,10 +1354,10 @@ export function Tpsl2Page() {
     <div>
       {paperNotice && (
         <div className="mb-4 flex items-center gap-3 rounded-lg border border-primary/40 bg-primary/10 px-4 py-3">
-          <span className="text-base text-primary">âœ“</span>
+          <span className="text-base text-primary">✓</span>
           <div className="flex-1 text-sm text-text">
             <span className="font-bold text-primary">Paper test finished</span>
-            <span className="text-text-dim"> â€” </span>
+            <span className="text-text-dim"> — </span>
             <span className="font-mono">{paperNotice.rule_name}</span>
             <span className="text-text-dim">
               {' '}(run #{paperNotice.run_seq}, {paperNotice.tokens_traded} tokens). Rule
@@ -1369,7 +1369,7 @@ export function Tpsl2Page() {
             onClick={() => setPaperNotice(null)}
             className="text-text-dim transition hover:text-text"
           >
-            âœ•
+            ✕
           </button>
         </div>
       )}
@@ -1386,7 +1386,7 @@ export function Tpsl2Page() {
       />
 
       {actionError && <InlineAlert variant="error">{actionError}</InlineAlert>}
-      {loading && <p className="text-text-dim">Loading rulesâ€¦</p>}
+      {loading && <p className="text-text-dim">Loading rules…</p>}
       {error && <InlineAlert variant="error">{error}</InlineAlert>}
 
       {/* Transient creation-time window for Matched + Simulate (not saved on any
@@ -1438,7 +1438,7 @@ export function Tpsl2Page() {
                   marker="bg-red"
                   badge="danger"
                   count={realRules.length}
-                  subtitle="Live on-chain â€” buys & sells execute for real"
+                  subtitle="Live on-chain — buys & sells execute for real"
                 />
               }
             >
@@ -1473,7 +1473,7 @@ export function Tpsl2Page() {
                 marker="bg-info"
                 badge="info"
                 count={paperRules.length}
-                subtitle="Simulated â€” no on-chain execution"
+                subtitle="Simulated — no on-chain execution"
               />
             }
           >
@@ -1500,7 +1500,7 @@ export function Tpsl2Page() {
       )}
 
       {(matchedLoading || matchedError || matchedResult) && <SectionDivider />}
-      {matchedLoading && <p className="text-text-dim">Loading matched tokensâ€¦</p>}
+      {matchedLoading && <p className="text-text-dim">Loading matched tokens…</p>}
       {matchedError && <InlineAlert variant="error">{matchedError}</InlineAlert>}
       {matchedResult && !matchedLoading && (
         <section>
@@ -1517,14 +1517,14 @@ export function Tpsl2Page() {
                 onClick={() => setMatchedResult(null)}
                 className="text-text-dim transition hover:text-text"
               >
-                âœ•
+                ✕
               </button>
             }
           />
           {matchedResult.capped && (
             <p className="mb-2 text-sm text-amber-400">
               Showing first 5,000 of {matchedResult.total.toLocaleString()} total matches.
-              Matched scans all-time historical tokens â€” use the date range above to narrow
+              Matched scans all-time historical tokens — use the date range above to narrow
               results to a recent window.
             </p>
           )}
@@ -1591,7 +1591,7 @@ export function Tpsl2Page() {
       )}
 
       {(paperLoading || paperError || paperResult) && <SectionDivider />}
-      {paperLoading && <p className="text-text-dim">Loading paper-test resultâ€¦</p>}
+      {paperLoading && <p className="text-text-dim">Loading paper-test result…</p>}
       {paperError && <InlineAlert variant="error">{paperError}</InlineAlert>}
       {paperResult && !paperLoading && (
         <PaperResultSection

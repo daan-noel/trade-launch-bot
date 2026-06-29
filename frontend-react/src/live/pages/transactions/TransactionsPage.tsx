@@ -22,7 +22,7 @@ export function TransactionsPage() {
       </div>
 
       {events.length === 0 ? (
-        <p className="text-text-dim">Waiting for live trades from streamâ€¦</p>
+        <p className="text-text-dim">Waiting for live trades from stream…</p>
       ) : (
         <DataTable
           tableId="transactions"
@@ -33,7 +33,7 @@ export function TransactionsPage() {
           searchable
           colFilters
           hoverable
-          emptyMessage="Waiting for live tradesâ€¦"
+          emptyMessage="Waiting for live trades…"
         />
       )}
     </div>

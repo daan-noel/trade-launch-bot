@@ -1,7 +1,7 @@
-﻿// Per-fingerprint creation-activity dashboard â€” shared types + helpers.
+﻿// Per-fingerprint creation-activity dashboard — shared types + helpers.
 // Mirrors the backend `GET /api/tokens/creation-stats/grouped` response (handler
 // `creation_stats.rs::get_grouped_creation_stats`). Count-only: each fingerprint
-// group gets a dayÃ—hour fold (`cells`, reused by `CreationHeatmap`) and a calendar
+// group gets a day×hour fold (`cells`, reused by `CreationHeatmap`) and a calendar
 // trend (`points`, drawn by `GroupedCreationTrendChart`).
 //
 // The grouping fields reuse the sweep page's canonical fingerprint list
@@ -26,7 +26,7 @@ export interface GroupedCreationGroup {
   total: number;
 }
 
-/** One day-of-week Ã— hour-of-day cell for group `g`. `dow`: 0=Sun â€¦ 6=Sat. */
+/** One day-of-week × hour-of-day cell for group `g`. `dow`: 0=Sun … 6=Sat. */
 export interface GroupedCreationCell {
   g: number;
   dow: number;
@@ -70,9 +70,9 @@ export interface GroupedCreationArgs {
   top: number;
   /** Per-field value filters restricting the corpus before partitioning (keys =
    *  GroupField tags, values = allowed string forms). Independent of `groupBy`.
-   *  Empty/omitted â‡’ no filter. `ix_labels` uses `ixLabelsFilter` instead. */
+   *  Empty/omitted ⇒ no filter. `ix_labels` uses `ixLabelsFilter` instead. */
   fieldFilters?: Record<string, string[]>;
-  /** Exact instruction-label set filter (set-equality). Omitted â‡’ no filter. */
+  /** Exact instruction-label set filter (set-equality). Omitted ⇒ no filter. */
   ixLabelsFilter?: string[];
 }
 
@@ -84,8 +84,8 @@ export const TOP_OPTIONS: { value: number; label: string }[] = [
   { value: 16, label: 'Top 16' },
 ];
 
-/** The `âˆ…` sentinel the backend renders for a missing fingerprint value. */
-export const MISSING_VALUE = 'âˆ…';
+/** The `∅` sentinel the backend renders for a missing fingerprint value. */
+export const MISSING_VALUE = '∅';
 
 /** Stable per-group color (rank-indexed) shared by the trend series + legend +
  *  heatmap card accents so a group reads as the same color everywhere. */
@@ -95,7 +95,7 @@ export function groupColor(g: number): string {
 
 /**
  * Render one group-key field value for display. `ix_labels` arrives as a
- * `" | "`-joined list â€” split it so the caller can stack each label; everything
+ * `" | "`-joined list — split it so the caller can stack each label; everything
  * else is a scalar. Returns the list (length 1 for scalars).
  */
 export function groupValueParts(field: string, value: string): string[] {
@@ -116,5 +116,5 @@ export function groupShortLabel(group: GroupedCreationGroup): string {
       }
       return `${label}=${v}`;
     })
-    .join(' Â· ');
+    .join(' · ');
 }

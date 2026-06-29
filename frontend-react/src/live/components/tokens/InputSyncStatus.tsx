@@ -26,11 +26,11 @@ const PREVIEW_CONCURRENCY = 4;
 
 type MintStatus =
   | { state: 'loading' }
-  /** Mint not present in the database â€” a "Fetch All" would pull full history. */
+  /** Mint not present in the database — a "Fetch All" would pull full history. */
   | { state: 'missing' }
   | { state: 'found'; symbol: string; lastSyncedAt: string | null };
 
-/** Estimated transactions a sync would download â€” see {@link fetchSyncPreview}. */
+/** Estimated transactions a sync would download — see {@link fetchSyncPreview}. */
 type PreviewState =
   | { state: 'loading' }
   | { state: 'error' }
@@ -50,7 +50,7 @@ function fmtCount(n: number, capped: boolean): string {
 /**
  * For every mint currently typed in the sync textarea, look up its database
  * record (when it was last synced) and estimate how many transactions a sync
- * would download â€” "new" since the last sync vs. the "total" history. Lets the
+ * would download — "new" since the last sync vs. the "total" history. Lets the
  * user decide between "Fetch New" (resume) and "Fetch All" (full re-pull) before
  * kicking off a sync.
  *
@@ -79,7 +79,7 @@ export function InputSyncStatus({
 
   // Tokens synced this session carry their just-updated record, so a mint that
   // finishes in a running batch shows its fresh symbol/last-synced time here
-  // immediately â€” ahead of (and overriding) the slower DB freshness fetch below.
+  // immediately — ahead of (and overriding) the slower DB freshness fetch below.
   const syncedTokens = useSelector((s: RootState) => s.syncToken.syncedTokens);
   const syncedByMint = useMemo(() => {
     const out: Record<string, MintStatus> = {};
@@ -111,7 +111,7 @@ export function InputSyncStatus({
   // duplicate request for the same mint.
   const inFlight = useRef<Set<string>>(new Set());
 
-  // Database freshness (cheap, no RPC) â€” populates the Symbol/Status/Last synced
+  // Database freshness (cheap, no RPC) — populates the Symbol/Status/Last synced
   // columns. Kept independent of the preview so the panel renders instantly even
   // if Helius is slow.
   useEffect(() => {
@@ -130,9 +130,9 @@ export function InputSyncStatus({
       });
       // Drain the mint list through a bounded pool of workers (instead of one
       // request per mint at once). Each lookup goes through the shared RTK
-      // `getTokenDetail` cache â€” deduped with the Tokens/TPSL detail views and
+      // `getTokenDetail` cache — deduped with the Tokens/TPSL detail views and
       // retained, so re-typing or revisiting a mint resolves without a refetch
-      // â€” and commits its row as it lands so the table fills in progressively.
+      // — and commits its row as it lands so the table fills in progressively.
       const queue = mints.slice();
       const worker = async () => {
         for (;;) {
@@ -167,7 +167,7 @@ export function InputSyncStatus({
   // whose count isn't already cached for the current post-migrate setting, so
   // adding a mint, toggling the setting back, or revisiting the page reuses
   // prior results instead of re-counting. `refreshSignal` triggers a re-fetch
-  // after a sync â€” the parent invalidates the synced mints' cache entries first,
+  // after a sync — the parent invalidates the synced mints' cache entries first,
   // so they read as missing here and get re-counted.
   useEffect(() => {
     if (mints.length === 0) return;
@@ -185,7 +185,7 @@ export function InputSyncStatus({
       });
       // Drain the missing mints through a bounded pool, committing each result
       // the moment it resolves so a row's count shows as soon as it's fetched
-      // instead of waiting for the whole batch â€” without firing every Helius
+      // instead of waiting for the whole batch — without firing every Helius
       // count request at once.
       const queue = missing.slice();
       const worker = async () => {
@@ -207,7 +207,7 @@ export function InputSyncStatus({
                 },
               }),
             );
-            // Drop the loading marker â€” the cached value now drives the row.
+            // Drop the loading marker — the cached value now drives the row.
             setPending((prev) => {
               const next = { ...prev };
               delete next[key];
@@ -243,7 +243,7 @@ export function InputSyncStatus({
 
   if (mints.length === 0) return null;
 
-  // Mints that already have a recorded sync â€” the "Remove synced" bulk action
+  // Mints that already have a recorded sync — the "Remove synced" bulk action
   // strips these so only tokens still needing a sync are left in the input.
   const syncedMints = mints.filter((m) => {
     const s = statusOf(m);
@@ -252,7 +252,7 @@ export function InputSyncStatus({
 
   // Mints whose preview reports nothing new to fetch ("up to date"). The
   // "Remove up to date" action strips these so only tokens with pending trades
-  // remain â€” a tighter filter than "synced" (which keeps stale-but-synced ones).
+  // remain — a tighter filter than "synced" (which keeps stale-but-synced ones).
   const upToDateMints = mints.filter((m) => {
     const p = previews[m];
     return p?.state === 'loaded' && p.newCount === 0;
@@ -272,7 +272,7 @@ export function InputSyncStatus({
           {mints.length}
         </Badge>
         <span className="min-w-0 flex-1 truncate text-[11px] text-text-dim">
-          Freshness of each input mint â€” use Fetch New to resume, Fetch All to re-pull everything
+          Freshness of each input mint — use Fetch New to resume, Fetch All to re-pull everything
         </span>
         <Button
           variant="link"
@@ -341,7 +341,7 @@ export function InputSyncStatus({
                   </td>
                   <td className="px-3 py-1.5">
                     {!s || s.state === 'loading' ? (
-                      <span className="text-[11px] text-text-dim">checkingâ€¦</span>
+                      <span className="text-[11px] text-text-dim">checking…</span>
                     ) : s.state === 'missing' ? (
                       <Badge variant="neutral" size="sm">
                         Not in DB
@@ -365,31 +365,31 @@ export function InputSyncStatus({
                   </td>
                   <td className="px-3 py-1.5">
                     {!p || p.state === 'loading' ? (
-                      <span className="text-[11px] text-text-dim">â€¦</span>
+                      <span className="text-[11px] text-text-dim">…</span>
                     ) : p.state === 'error' ? (
                       <span
                         className="text-[11px] text-text-dim"
                         title="Couldn't estimate (invalid mint or RPC error)"
                       >
-                        â€”
+                        —
                       </span>
                     ) : p.newCount === 0 ? (
                       <Badge variant="neutral" size="sm">
                         up to date
                       </Badge>
                     ) : p.newCount >= p.totalCount ? (
-                      // Nothing synced yet â€” the whole history is "new", so a Fetch
+                      // Nothing synced yet — the whole history is "new", so a Fetch
                       // would download everything. Flagged distinctly (no "/ total",
                       // since it's redundant) as a full first-time pull.
                       <Badge
                         variant="accent"
                         size="sm"
-                        title="Never synced â€” Fetch All would download the entire history"
+                        title="Never synced — Fetch All would download the entire history"
                       >
-                        â†“ {fmtCount(p.newCount, p.newCapped)} all new
+                        ↓ {fmtCount(p.newCount, p.newCapped)} all new
                       </Badge>
                     ) : (
-                      // Partial top-up â€” only the trades since the last sync.
+                      // Partial top-up — only the trades since the last sync.
                       <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
                         <Badge variant="primary" size="sm" title="Transactions Fetch New would download">
                           +{fmtCount(p.newCount, p.newCapped)} new
@@ -411,7 +411,7 @@ export function InputSyncStatus({
                       title="Remove from input"
                       aria-label={`Remove ${mint} from input`}
                     >
-                      âœ•
+                      ✕
                     </button>
                   </td>
                 </tr>

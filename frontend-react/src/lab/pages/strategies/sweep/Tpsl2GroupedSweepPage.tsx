@@ -2,7 +2,7 @@
 import { STORAGE_KEYS } from 'lib/storage';
 import { GroupedSweepView } from './GroupedSweepView';
 
-/** TPSL2 swept knobs â€” this array IS the param column order in the combo table
+/** TPSL2 swept knobs — this array IS the param column order in the combo table
  *  (`buildSweepColumns` renders them in this order). Kept stable (not
  *  data-derived) so the columns exist on first render (colToggle persistence).
  *  Ordered to match the rule modal: TP/SL lead, entry gates next, then the
@@ -26,7 +26,7 @@ const TPSL2_PARAM_KEYS = [
   'exit_cohort_ratio',
 ];
 
-/** TPSL2 grouped sweep â€” the full entry-gate + exit-ladder param space. */
+/** TPSL2 grouped sweep — the full entry-gate + exit-ladder param space. */
 export function Tpsl2GroupedSweepPage() {
   return (
     <GroupedSweepView
@@ -34,7 +34,7 @@ export function Tpsl2GroupedSweepPage() {
       paramKeys={TPSL2_PARAM_KEYS}
       axes={TPSL2_AXES}
       storageKey={STORAGE_KEYS.sweepConfig}
-      title="Grouped Param Sweep Â· TPSL2"
+      title="Grouped Param Sweep · TPSL2"
     />
   );
 }
