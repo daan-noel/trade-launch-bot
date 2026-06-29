@@ -573,4 +573,26 @@ impl PumpFunTrader {
                 TradeError::Other(format!("creator_vault missing after refresh for {mint_address}"))
             })
     }
+
+    /// Re-read bonding-curve state from chain and return the fresh [`crate::types::CurveFacts`]
+    /// (`is_migrated` + `cashback_enabled`). Also overwrites the cached [`TokenPDAs`] so the
+    /// next sell attempt builds with current PDAs. OFF the hot path — called only after a
+    /// structural sell revert (6024 or 6005) to recover without marking ExitFailed.
+    pub async fn refresh_curve_facts(&self, mint_address: &str) -> Result<crate::types::CurveFacts> {
+        let mint = Pubkey::from_str(mint_address)?;
+        let routing = self.read_curve_routing(&mint).await?;
+        self.token_pdas.insert(
+            mint_address.to_string(),
+            self.derive_token_pdas(
+                &mint,
+                &routing.creator,
+                &routing.token_program,
+                routing.cashback_enabled,
+            ),
+        );
+        Ok(crate::types::CurveFacts {
+            is_migrated: routing.is_migrated,
+            cashback_enabled: routing.cashback_enabled,
+        })
+    }
 }

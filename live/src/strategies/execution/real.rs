@@ -695,20 +695,33 @@ enum SellOutcome {
 const CURVE_TOO_LITTLE_SOL_RECEIVED: u32 = 6003;
 /// PumpSwap AMM `ExceededSlippage` (Anchor 6004) — the AMM-side slippage floor.
 const AMM_EXCEEDED_SLIPPAGE: u32 = 6004;
+/// pump.fun `BondingCurveComplete` (6005): token already migrated to AMM but our
+/// cache still had `is_migrated = false`. Re-read curve state and re-route.
+const BONDING_CURVE_COMPLETE: u32 = 6005;
 /// Anchor `ConstraintSeeds` (2006): on a curve sell it means pump.fun rotated
 /// `bonding_curve.creator` after our buy cached the vault — refresh + retry.
 const ANCHOR_CONSTRAINT_SEEDS: u32 = 2006;
+/// pump.fun `MissingUserVolumeAccumulator` (6024): cashback UVA account not
+/// included in the tx because our cache had `is_cashback = false`. Re-read the
+/// curve's cashback flag and retry with the UVA included.
+const CURVE_MISSING_USER_VOLUME_ACCUMULATOR: u32 = 6024;
 
 /// After a feed-confirm sell's poll window elapses without clearing, one
 /// `signature_state_detailed` check decides whether re-sending is worth the fee,
 /// using the on-chain **program error code**: a slippage-floor revert retries; a
 /// structural/unknown revert on a venue the retry would reuse stops; a curve 2006
-/// refreshes the creator vault; a mid-exit migration always re-routes. Pure.
+/// refreshes the creator vault; 6024 refreshes the cashback flag; 6005 re-routes
+/// to the AMM after confirming migration; a mid-exit migration always re-routes.
+/// Pure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SellRetryDecision {
     Retry,
     StopFeeBurn,
     RefreshCreator,
+    /// Curve 6024: cashback UVA was missing — re-read cashback flag, retry.
+    RefreshCashback,
+    /// Curve 6005: token already migrated — re-read migration state, re-route.
+    RerouteMigrated,
 }
 
 /// Map a landed-and-reverted sell to a retry decision using the on-chain error code.
@@ -730,6 +743,10 @@ fn classify_sell_revert<E>(
                 SellRetryDecision::Retry
             } else if *custom == Some(ANCHOR_CONSTRAINT_SEEDS) && !used_migrated {
                 SellRetryDecision::RefreshCreator
+            } else if *custom == Some(CURVE_MISSING_USER_VOLUME_ACCUMULATOR) && !used_migrated {
+                SellRetryDecision::RefreshCashback
+            } else if *custom == Some(BONDING_CURVE_COMPLETE) && !used_migrated {
+                SellRetryDecision::RerouteMigrated
             } else {
                 SellRetryDecision::StopFeeBurn
             }
@@ -919,6 +936,55 @@ async fn sell_until_balance_cleared(
                                 }
                             }
                         }
+                        SellRetryDecision::RefreshCashback => {
+                            match trader.refresh_curve_facts(&mint).await {
+                                Ok(facts) => {
+                                    // Update cache so next attempt's is_cashback read
+                                    // picks up the toggled-on value (and toggle-OFF too).
+                                    if let Some(mut e) = cache.get_mut(&mint) {
+                                        e.token.is_cashback_enabled = facts.cashback_enabled;
+                                    }
+                                    warn!(mint = %mint, attempt, sig = %sig,
+                                        cashback_enabled = facts.cashback_enabled,
+                                        "sell reverted 6024 (missing UVA); refreshed cashback \
+                                         flag, retrying with a higher tip");
+                                }
+                                Err(err) => {
+                                    warn!(mint = %mint, attempt, sig = %sig,
+                                        "curve-facts refresh failed after 6024 revert: {err}; \
+                                         marking ExitFailed");
+                                    return SellOutcome::Failed { sigs: sell_sigs };
+                                }
+                            }
+                        }
+                        SellRetryDecision::RerouteMigrated => {
+                            match trader.refresh_curve_facts(&mint).await {
+                                Ok(facts) => {
+                                    if facts.is_migrated {
+                                        // Update cache so the next loop iteration's
+                                        // `is_migrated` read re-routes the sell to the AMM.
+                                        if let Some(mut e) = cache.get_mut(&mint) {
+                                            e.is_migrated = true;
+                                        }
+                                        warn!(mint = %mint, attempt, sig = %sig,
+                                            "sell reverted 6005 (BondingCurveComplete); token \
+                                             confirmed migrated — re-routing to AMM");
+                                    } else {
+                                        // 6005 but chain still says not migrated: structural.
+                                        warn!(mint = %mint, attempt, sig = %sig,
+                                            "sell reverted 6005 but chain reports not migrated; \
+                                             marking ExitFailed");
+                                        return SellOutcome::Failed { sigs: sell_sigs };
+                                    }
+                                }
+                                Err(err) => {
+                                    warn!(mint = %mint, attempt, sig = %sig,
+                                        "curve-facts refresh failed after 6005 revert: {err}; \
+                                         marking ExitFailed");
+                                    return SellOutcome::Failed { sigs: sell_sigs };
+                                }
+                            }
+                        }
                         SellRetryDecision::Retry => {
                             warn!(mint = %mint, attempt, remaining = remaining_amount,
                                 "sell not cleared within poll window; retrying with a higher tip");
@@ -1036,6 +1102,45 @@ mod tests {
         assert_eq!(
             classify_sell_revert(&reverted(Some(ANCHOR_CONSTRAINT_SEEDS)), false, false),
             SellRetryDecision::RefreshCreator
+        );
+    }
+
+    #[test]
+    fn missing_uva_refreshes_cashback() {
+        assert_eq!(
+            classify_sell_revert(
+                &reverted(Some(CURVE_MISSING_USER_VOLUME_ACCUMULATOR)),
+                false,
+                false
+            ),
+            SellRetryDecision::RefreshCashback
+        );
+    }
+
+    #[test]
+    fn bonding_curve_complete_reroutes_migrated() {
+        assert_eq!(
+            classify_sell_revert(&reverted(Some(BONDING_CURVE_COMPLETE)), false, false),
+            SellRetryDecision::RerouteMigrated
+        );
+    }
+
+    #[test]
+    fn curve_only_codes_do_not_trigger_on_amm_route() {
+        // 6024 and 6005 are pump.fun curve errors — they must fall through to
+        // StopFeeBurn if we somehow get them on an AMM route (shouldn't happen,
+        // but the guard must hold).
+        assert_eq!(
+            classify_sell_revert(
+                &reverted(Some(CURVE_MISSING_USER_VOLUME_ACCUMULATOR)),
+                true,
+                true
+            ),
+            SellRetryDecision::StopFeeBurn
+        );
+        assert_eq!(
+            classify_sell_revert(&reverted(Some(BONDING_CURVE_COMPLETE)), true, true),
+            SellRetryDecision::StopFeeBurn
         );
     }
 

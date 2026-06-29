@@ -52,7 +52,7 @@ analysis (the two replay mechanisms, only one drives trading).
 | B1 | [01-manual-sell-6024-cashback.md](buy-sell-failures/01-manual-sell-6024-cashback.md) | Fix 1 — manual-sell 6024 | P0 | ✅ done | — |
 | B2 | [02-buy-path-cashback-hardening.md](buy-sell-failures/02-buy-path-cashback-hardening.md) | Fix 4 — cache the true cashback flag at buy | P0 | — | (defense for B1) |
 | B3 | [03-manual-sell-reresolve-routing.md](buy-sell-failures/03-manual-sell-reresolve-routing.md) | Fix 2 — re-resolve routing inside clear loop | P0 | ✅ done | B1 (moves the same line) |
-| B4 | [04-bot-curve-sell-revert-recovery.md](buy-sell-failures/04-bot-curve-sell-revert-recovery.md) | Fix 3 — bot 6024+6005 recovery | P0 | — | — |
+| B4 | [04-bot-curve-sell-revert-recovery.md](buy-sell-failures/04-bot-curve-sell-revert-recovery.md) | Fix 3 — bot 6024+6005 recovery | P0 | ✅ done | — |
 | B5 | [05-manual-buy-slippage-and-confirm.md](buy-sell-failures/05-manual-buy-slippage-and-confirm.md) | Fix 5 + 5b — buy retry + confirm-timeout | P1 | — | 5b plumbs the signature 5 needs |
 | B6 | [06-resolve-routing-retry.md](buy-sell-failures/06-resolve-routing-retry.md) | Fix 6 — `resolve_buy_routing` retry | P1 | ✅ done | — |
 | B7 | [07-constant-rot-nonce-monitoring.md](buy-sell-failures/07-constant-rot-nonce-monitoring.md) | Fix 7 — constant-rot + nonce metrics | P2 | — | — |
