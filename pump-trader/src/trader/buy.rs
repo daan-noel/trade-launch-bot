@@ -37,6 +37,7 @@ impl PumpFunTrader {
     /// Manual/API curve buy. Takes already-parsed routing pubkeys (the manual
     /// path resolves them once in `resolve_buy_routing`) so nothing on this path
     /// re-parses the mint/creator/program strings.
+    /// Returns the submitted transaction signature on success.
     pub async fn buy_token(
         &self,
         mint: &Pubkey,
@@ -45,12 +46,11 @@ impl PumpFunTrader {
         sol_amount: f64,
         slippage_bps: Option<u64>,
         cashback_enabled: bool,
-    ) -> Result<bool> {
+    ) -> Result<String> {
         // Manual buy: no triggering-event reserves in hand, so `buy_token_inner`
         // reads the curve on-chain for the slippage floor (snipe_reserves = None).
         self.buy_token_inner(mint, creator, token_program, sol_amount, slippage_bps, None, false, false, None, cashback_enabled)
             .await
-            .map(|_sig| true)
     }
 
     /// Latency-optimized buy for fresh-token snipes. Identical to [`buy_token`]

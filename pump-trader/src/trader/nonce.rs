@@ -67,6 +67,15 @@ impl PumpFunTrader {
                                         self.nonce_wait_events.fetch_add(1, Ordering::Relaxed) + 1;
                                     self.nonce_wait_iters_total
                                         .fetch_add(waited, Ordering::Relaxed);
+                                    // Every wait event is worth surfacing — a single
+                                    // contention hit means the pool is close to its
+                                    // capacity for current trade throughput.
+                                    warn!(
+                                        wait_iters = waited,
+                                        total_events = events,
+                                        "⏳ Nonce contention: waited {waited} iters for a free slot \
+                                         (lifetime events={events})"
+                                    );
                                     if events % 50 == 0 {
                                         let avg = self
                                             .nonce_wait_iters_total
@@ -93,6 +102,16 @@ impl PumpFunTrader {
             let _ = tokio::time::timeout(Duration::from_millis(wait_sleep_ms), freed).await;
         }
 
+        // Every busy-bail is a signal the pool is undersized for current
+        // trade throughput. Check nonce pool size and consider adding accounts
+        // (mind the EC2 connection-count guardrail — new pools require
+        // shrinking something else).
+        warn!(
+            nonce_pool_size = self.nonce_pubkeys.len(),
+            max_wait_iters,
+            "🚨 Nonce pool exhausted — all slots busy after {max_wait_iters} iters; \
+             buy/sell blocked. If this is frequent, the nonce pool needs resizing."
+        );
         bail!("All nonce slots busy after {max_wait_iters} iters")
     }
 

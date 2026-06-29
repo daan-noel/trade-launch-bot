@@ -920,9 +920,29 @@ async fn sell_until_balance_cleared(
                                 Ok(SigStatus::Reverted { custom }) => *custom,
                                 _ => None,
                             };
-                            warn!(mint = %mint, attempt, sig = %sig, raw_error_code = ?raw_code,
-                                "sell reverted on-chain (structural/unknown) on a route the retry \
-                                 would reuse; stopping (a blind re-send would only re-pay fees)");
+                            // Error 6000 = pump.fun InvalidFeeRecipient — the
+                            // PUMP_CURVE_FEE_RECIPIENT constant no longer matches what
+                            // the program expects. If this appears across many distinct
+                            // mints in a short window it signals a fee-recipient
+                            // rotation: grep logs for `constant_rot_candidate=true` and
+                            // verify the new account against a live swap before shipping
+                            // an updated constant. Do NOT auto-discover on-chain.
+                            if raw_code == Some(6000) {
+                                warn!(
+                                    mint = %mint,
+                                    sig = %sig,
+                                    is_migrated,
+                                    constant_rot_candidate = true,
+                                    "sell reverted with InvalidFeeRecipient (6000) — possible \
+                                     pump.fun fee-recipient rotation; if this appears across many \
+                                     mints, update PUMP_CURVE_FEE_RECIPIENT after verifying the \
+                                     new account on-chain"
+                                );
+                            } else {
+                                warn!(mint = %mint, attempt, sig = %sig, raw_error_code = ?raw_code,
+                                    "sell reverted on-chain (structural/unknown) on a route the retry \
+                                     would reuse; stopping (a blind re-send would only re-pay fees)");
+                            }
                             return SellOutcome::Failed { sigs: sell_sigs };
                         }
                         SellRetryDecision::RefreshCreator => {

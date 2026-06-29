@@ -71,6 +71,7 @@ impl PumpFunTrader {
     /// confirmation to the caller's own feed — saving the ~4 s `confirm_transaction`
     /// poll on the latency-critical path. The base ATA is cached regardless, so a
     /// `confirm=false` caller can still sell.
+    /// Returns the submitted transaction signature.
     #[allow(clippy::too_many_arguments)]
     pub async fn amm_buy(
         &self,
@@ -80,7 +81,7 @@ impl PumpFunTrader {
         pool_override: Option<&str>,
         slippage_bps: Option<u64>,
         confirm: bool,
-    ) -> Result<bool> {
+    ) -> Result<String> {
         let t0 = Instant::now();
         let user = self.config.signer.pubkey();
 
@@ -123,7 +124,7 @@ impl PumpFunTrader {
                 t0.elapsed().as_millis()
             );
         }
-        Ok(true)
+        Ok(sig)
     }
 
     /// Sell `token_amount` raw base-token units of a migrated token on the AMM.

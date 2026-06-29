@@ -138,33 +138,97 @@ pub async fn manual_buy(
         .unwrap_or_else(|| routing.token_program_id.clone());
     let slippage = resolve_buy_slippage(&app_state, body.slippage_bps);
 
-    let buy_result = if routing.is_migrated {
-        // Migrated → PumpSwap AMM (canonical pool derived).
-        // Mayhem tokens never migrate, so the AMM path needs no mayhem handling.
-        app_state
-            .trader
-            .amm_buy(&body.mint, &token_program_id, sol_amount, None, slippage, true)
-            .await
-    } else {
-        // Still on the bonding curve. Pass the pubkeys `resolve_buy_routing`
-        // already parsed so the trade path doesn't re-parse them; a caller
-        // override re-derives the program enum from its string.
-        let token_program = match &body.token_program_id {
-            Some(id) => pump_trader::TokenProgram::from_id(id),
-            None => routing.token_program,
-        };
-        app_state
-            .trader
-            .buy_token(&routing.mint, &routing.creator_pubkey, token_program, sol_amount, slippage, routing.cashback_enabled)
-            .await
+    // Buy with bounded slippage-revert retry (B5) + confirm-timeout classification
+    // (B5b). AMM uses a recent blockhash (not a durable nonce), so a
+    // confirm-timeout there is always ambiguous — treat it as pending rather than
+    // surfacing a 500. Curve buys use a durable nonce whose signature is fixed at
+    // signing, so a `ConfirmTimeout` is similarly safe to surface as pending.
+    //
+    // Only retry on a proven on-chain revert (6003 curve / 6004 AMM) — mirrors
+    // `classify_silent_send`: `Reverted` → resend (no tokens bought, safe); any
+    // other error → stop (durable-nonce tx may have landed, re-sending risks a
+    // double-buy). The AMM path uses a recent-blockhash tx so a timeout truly is
+    // ambiguous; the curve path uses a durable nonce so the same caution applies.
+    const BUY_MAX_ATTEMPTS: usize = 3;
+    // Pump.fun curve slippage-floor revert; PumpSwap AMM slippage revert.
+    const CURVE_SLIPPAGE_ERR: u32 = 6003;
+    const AMM_SLIPPAGE_ERR: u32 = 6004;
+
+    let token_program = match &body.token_program_id {
+        Some(id) => pump_trader::TokenProgram::from_id(id),
+        None => routing.token_program,
     };
-    match buy_result {
-        Ok(success) => HttpResponse::Ok().json(serde_json::json!({ "success": success })),
-        Err(e) => {
-            tracing::warn!("manual_buy failed mint={}: {e}", body.mint);
-            HttpResponse::InternalServerError().json(serde_json::json!({ "error": e.to_string() }))
+
+    let mut last_err: Option<pump_trader::TradeError> = None;
+    let mut sig_on_timeout: Option<String> = None;
+
+    'retry: for attempt in 0..BUY_MAX_ATTEMPTS {
+        if attempt > 0 {
+            tracing::info!("manual_buy: retry attempt {attempt} for {}", body.mint);
+        }
+        let result = if routing.is_migrated {
+            // Migrated → PumpSwap AMM (canonical pool derived).
+            app_state
+                .trader
+                .amm_buy(&body.mint, &token_program_id, sol_amount, None, slippage, true)
+                .await
+        } else {
+            // Still on the bonding curve.
+            app_state
+                .trader
+                .buy_token(&routing.mint, &routing.creator_pubkey, token_program, sol_amount, slippage, routing.cashback_enabled)
+                .await
+        };
+
+        match result {
+            Ok(sig) => {
+                return HttpResponse::Ok().json(serde_json::json!({ "success": true, "signature": sig }));
+            }
+            Err(pump_trader::TradeError::ConfirmTimeout) => {
+                // The tx was submitted but didn't confirm within the poll window.
+                // It may land later — do NOT retry (double-buy risk). Surface a
+                // pending response so the UI can show "submitted, confirming" instead
+                // of a hard 500.
+                //
+                // We don't have the signature here (confirm_transaction discards it
+                // after the timeout), but the UI can reconcile via wallet balance.
+                tracing::warn!("manual_buy: confirm timeout for {} (attempt {attempt})", body.mint);
+                sig_on_timeout = Some(String::new()); // sentinel: timed out
+                last_err = Some(pump_trader::TradeError::ConfirmTimeout);
+                break 'retry;
+            }
+            Err(pump_trader::TradeError::Reverted { custom: Some(code) })
+                if code == CURVE_SLIPPAGE_ERR || code == AMM_SLIPPAGE_ERR =>
+            {
+                // Proven on-chain revert with no tokens bought — safe to retry.
+                tracing::warn!(
+                    "manual_buy: slippage revert (error {code}) on attempt {attempt} for {}",
+                    body.mint
+                );
+                last_err = Some(pump_trader::TradeError::Reverted { custom: Some(code) });
+                // continue to next attempt
+            }
+            Err(e) => {
+                // Any other error (structural revert, RPC failure, etc.) — stop.
+                tracing::warn!("manual_buy failed mint={}: {e}", body.mint);
+                return HttpResponse::InternalServerError()
+                    .json(serde_json::json!({ "error": e.to_string() }));
+            }
         }
     }
+
+    // Reached only on timeout or exhausted slippage retries.
+    if sig_on_timeout.is_some() {
+        return HttpResponse::Ok()
+            .json(serde_json::json!({ "success": false, "pending": true }));
+    }
+
+    // All slippage-revert attempts exhausted.
+    let err_msg = last_err
+        .map(|e| e.to_string())
+        .unwrap_or_else(|| "buy failed".to_string());
+    tracing::warn!("manual_buy: all {BUY_MAX_ATTEMPTS} attempts failed for {}: {err_msg}", body.mint);
+    HttpResponse::InternalServerError().json(serde_json::json!({ "error": err_msg }))
 }
 
 /// POST /api/solana/wallet/sell — "Sell All": clear the wallet's entire balance
