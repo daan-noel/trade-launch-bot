@@ -1368,6 +1368,7 @@ fn trade_from_ingest_event(e: &ingest_laserstream::event::Trade) -> Trade {
         token_amount: e.tokens,
         price_per_token: e.price,
         tx_signature: e.signature.clone(),
+        tx_index: e.tx_index,
         leg_index: e.leg_index,
         slot: e.slot,
         block_time: e.block_time,

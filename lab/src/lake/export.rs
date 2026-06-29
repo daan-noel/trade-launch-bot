@@ -58,6 +58,10 @@ fn trades_schema() -> Schema {
         Field::new("leg_index", DataType::Int32, false),
         Field::new("vsol", DataType::Float64, true),
         Field::new("venue", DataType::Utf8, false),
+        // Intra-block execution order. Carried so the lake's per-mint ordering
+        // (slot, tx_index, leg_index) reproduces PG's exactly — many trades share a
+        // slot, and block_time alone can't break those ties (corpus-parity bug fix).
+        Field::new("tx_index", DataType::Int32, false),
     ])
 }
 
@@ -89,17 +93,28 @@ fn tokens_schema() -> Schema {
 /// Export every newly-sealed day plus the current token dimension into the lake at
 /// `root`. Idempotent: a day whose immutable file already exists is skipped, so
 /// re-running only writes days that landed since the last run.
-pub async fn export_lake(pool: &PgPool, root: &Path) -> Result<ExportSummary> {
+///
+/// `include_today` also exports today's still-open UTC day as a non-immutable
+/// snapshot, force-overwriting it so a re-run refreshes rather than keeping a stale
+/// file. The lake is the sole sweep corpus source, so this is the only way to sweep
+/// *current-day* data; off by default to keep a plain export limited to sealed days.
+pub async fn export_lake(pool: &PgPool, root: &Path, include_today: bool) -> Result<ExportSummary> {
     let mut summary = ExportSummary::default();
 
-    for day in sealed_days(pool).await? {
+    // Today's UTC day is NOT immutable (ingest is still writing it), so the
+    // skip-if-exists guard below must not apply to it under `include_today` — else a
+    // re-export silently keeps a stale snapshot. Always rewrite today's file.
+    let today = Utc::now().date_naive();
+
+    for day in sealed_days(pool, include_today).await? {
         let path = trades_day_file(root, day);
-        if path.exists() {
+        let force = include_today && day == today;
+        if path.exists() && !force {
             summary.days_skipped += 1;
             continue;
         }
         let n = export_day(pool, root, day).await?;
-        tracing::info!(day = %day, trades = n, "lake: exported sealed day");
+        tracing::info!(day = %day, trades = n, force, "lake: exported day");
         summary.days_written.push(day);
     }
 
@@ -115,15 +130,23 @@ pub async fn export_lake(pool: &PgPool, root: &Path) -> Result<ExportSummary> {
 
 /// Distinct UTC days present in `trades` that are **sealed** — strictly before the
 /// start of today (today's chunk is still open on the server). Ordered oldest-first.
-async fn sealed_days(pool: &PgPool) -> Result<Vec<NaiveDate>> {
-    let rows: Vec<(NaiveDate,)> = sqlx::query_as(
+async fn sealed_days(pool: &PgPool, include_today: bool) -> Result<Vec<NaiveDate>> {
+    // Cutoff = start of today (UTC). `include_today` pushes it to start of tomorrow so
+    // today's open day is selected too (current-day export — see `export_lake`).
+    let cutoff = if include_today {
+        "date_trunc('day', now() AT TIME ZONE 'UTC') + interval '1 day'"
+    } else {
+        "date_trunc('day', now() AT TIME ZONE 'UTC')"
+    };
+    let sql = format!(
         r#"
         SELECT DISTINCT (block_time AT TIME ZONE 'UTC')::date AS d
         FROM trades
-        WHERE block_time < date_trunc('day', now() AT TIME ZONE 'UTC')
+        WHERE block_time < {cutoff}
         ORDER BY d
-        "#,
-    )
+        "#
+    );
+    let rows: Vec<(NaiveDate,)> = sqlx::query_as(&sql)
     .fetch_all(pool)
     .await
     .context("listing sealed trade days")?;
@@ -146,6 +169,7 @@ struct LakeTradeRow {
     token_amount: i64,
     virtual_sol_reserves: Option<i64>,
     slot: i64,
+    tx_index: i32,
     leg_index: i16,
     block_time: DateTime<Utc>,
 }
@@ -178,11 +202,11 @@ async fn export_day(pool: &PgPool, root: &Path, day: NaiveDate) -> Result<usize>
         r#"
         SELECT t.mint_address, w.address AS wallet, t.trade_type, t.venue,
                t.sol_amount, t.token_amount, t.virtual_sol_reserves,
-               t.slot, t.leg_index, t.block_time
+               t.slot, t.tx_index, t.leg_index, t.block_time
         FROM trades t
         JOIN wallet_dict w ON w.id = t.wallet_id
         WHERE t.block_time >= $1 AND t.block_time < $2
-        ORDER BY t.mint_address ASC, t.slot ASC, t.tx_index ASC, t.leg_index ASC
+        ORDER BY t.mint_address ASC, t.slot ASC, t.tx_index ASC, t.leg_index ASC, t.block_time ASC
         "#,
     )
     .bind(start)
@@ -223,6 +247,7 @@ struct TradeBuilders {
     leg_index: Int32Builder,
     vsol: Float64Builder,
     venue: StringBuilder,
+    tx_index: Int32Builder,
 }
 
 impl TradeBuilders {
@@ -237,10 +262,15 @@ impl TradeBuilders {
         self.token_amount.append_value(token);
         self.price.append_value(price);
         self.slot.append_value(r.slot);
-        self.block_time.append_value(r.block_time.timestamp());
+        // Microseconds, not seconds: PG `block_time` is timestamptz (µs precision) and
+        // the sweep's time gates (min_age/stall/time_stop) compare these timestamps.
+        // Truncating to whole seconds shifts edge-case entry/exit ticks → metric drift
+        // vs a fresh PG read (corpus-parity fix).
+        self.block_time.append_value(r.block_time.timestamp_micros());
         self.leg_index.append_value(r.leg_index as i32);
         self.vsol.append_option(r.virtual_sol_reserves.map(|v| v as f64));
         self.venue.append_value(&r.venue);
+        self.tx_index.append_value(r.tx_index);
     }
 
     fn finish(&mut self, schema: &Arc<Schema>) -> Result<RecordBatch> {
@@ -258,6 +288,7 @@ impl TradeBuilders {
                 Arc::new(self.leg_index.finish()),
                 Arc::new(self.vsol.finish()),
                 Arc::new(self.venue.finish()),
+                Arc::new(self.tx_index.finish()),
             ],
         )?)
     }
@@ -370,7 +401,10 @@ async fn export_tokens(pool: &PgPool, root: &Path) -> Result<usize> {
             .append_option(extract_lamports(r.initial_buy_instruction.as_ref(), "spendable_sol_in"));
         ix_labels.append_option(labels_json.as_deref());
         mayhem.append_value(r.is_mayhem_mode);
-        created.append_value(r.created_at.timestamp());
+        // Microseconds, not seconds: PG `tokens.created_at` is timestamptz, and the
+        // candidate window/`ORDER BY created_at DESC LIMIT` must match it — second
+        // truncation creates spurious ties that shift the capped candidate set.
+        created.append_value(r.created_at.timestamp_micros());
         pending += 1;
         total += 1;
         if pending >= FLUSH_ROWS {
@@ -403,6 +437,7 @@ mod tests {
             token_amount: raw_tok,
             virtual_sol_reserves: Some(42),
             slot: 7,
+            tx_index: 0,
             leg_index: 0,
             block_time: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
         }

@@ -169,6 +169,7 @@ impl Decoder {
                 tokens: ev.token_amount,
                 price,
                 signature: signature.clone(),
+                tx_index: info.index as u32,
                 leg_index: leg_index as u32,
                 slot,
                 block_time: received_at,
@@ -196,7 +197,7 @@ impl Decoder {
                 if let Some(pump_ix) = pump_ixs.first() {
                     let ix_accounts = resolve_pump_accounts_pb(pump_ix, &keys);
                     if let Some(ev) = self.decode_trade_from_balances_pb(
-                        *kind, &signature, slot, received_at,
+                        *kind, &signature, info.index as u32, slot, received_at,
                         &ix_accounts, &all_keys,
                         &meta.pre_balances, &meta.post_balances,
                         &meta.pre_token_balances, &meta.post_token_balances,
@@ -286,7 +287,7 @@ impl Decoder {
         for (i, (ev, mint)) in resolved.iter().enumerate() {
             events.push(IngestEvent::Trade(build_amm_trade(
                 ev, mint, &signature, slot, received_at, received_at,
-                labels.clone(), i as u32,
+                labels.clone(), info.index as u32, i as u32,
             )));
         }
 
@@ -330,6 +331,7 @@ impl Decoder {
         &self,
         kind: InstructionKind,
         signature: &str,
+        tx_index: u32,
         slot: u64,
         received_at: DateTime<Utc>,
         pump_accounts: &[String],
@@ -368,6 +370,7 @@ impl Decoder {
             tokens: token_amount,
             price,
             signature: signature.to_string(),
+            tx_index,
             leg_index: 0,
             slot,
             block_time: received_at,

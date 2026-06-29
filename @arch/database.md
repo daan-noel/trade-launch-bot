@@ -66,7 +66,7 @@ Deep-dive detail: `@plans/database/db-pool-routing.md`, `@plans/database/db-patt
 | File | Table(s) | Notable fns |
 | --- | --- | --- |
 | `token_repo.rs` | tokens (+tokens_info) | `find_list_rows` (DB base for /api/tokens), `find_page_before` (keyset page for analysis scans), `find_by_mints` (chunked mint=ANY) |
-| `trade_repo.rs` | trades | `find_fill_by_signature`, `sum_legs_by_signatures` (per-sig attribution), `for_each_seed_mint` (cold-start seed) |
+| `trade_repo.rs` | trades | `find_fill_by_signature`, `sum_legs_by_signatures` (per-sig attribution), `for_each_seed_mint` (cold-start seed), `find_by_mints_all` (batched per-mint grouped reads for backtests) |
 | `transaction_repo.rs` | raw_transactions | `insert_many`, `find_by_signature` |
 | `token_info_repo.rs` | tokens_info | `upsert_metrics`, `get/update_sync_watermark` |
 | `analysis_repo.rs` | tokens_analysis, creator_profiles | find/list |

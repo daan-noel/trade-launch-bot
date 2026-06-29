@@ -228,6 +228,7 @@ pub(super) fn build_amm_trade(
     block_time: DateTime<Utc>,
     received_at: DateTime<Utc>,
     instruction_labels: Vec<String>,
+    tx_index: u32,
     leg_index: u32,
 ) -> Trade {
     let side = if ev.is_buy { Side::Buy } else { Side::Sell };
@@ -244,6 +245,7 @@ pub(super) fn build_amm_trade(
         tokens: ev.base_amount,
         price,
         signature: signature.to_string(),
+        tx_index,
         leg_index,
         slot,
         block_time,

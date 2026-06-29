@@ -27,6 +27,10 @@ pub struct Trade {
     pub tokens: f64,
     pub price: f64,
     pub signature: String,
+    /// Position of this trade's transaction within its block (`info.index` from
+    /// the LaserStream update). 0 on the RPC backfill path, which has no block
+    /// position (see `backfill::rpc_to_protobuf`).
+    pub tx_index: u32,
     pub leg_index: u32,
     pub slot: u64,
     pub block_time: DateTime<Utc>,

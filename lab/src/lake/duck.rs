@@ -75,11 +75,16 @@ fn sql_str(s: &str) -> String {
 }
 
 /// DuckDB partition ordering for the per-mint `ROW_NUMBER` cap. Mirrors
-/// [`DbSource`](crate::sweep::corpus)'s window, minus the dropped `tx_index`.
+/// [`DbSource`](crate::sweep::corpus)'s window exactly — `(slot, tx_index, leg_index,
+/// block_time)`. `block_time` is the final tiebreaker because ingest leaves
+/// `tx_index`/`leg_index` = 0 for many trades, so the first three columns are NOT a
+/// unique order; without `block_time`, Postgres and DuckDB resolve the ties in
+/// different relative orders and the sweep replays a different sequence. The 4-tuple
+/// IS unique per mint (verified), so both sources walk the identical trade order.
 fn partition_order(window: TradeWindow) -> &'static str {
     match window {
-        TradeWindow::LaunchWindow => "slot ASC, block_time ASC, leg_index ASC",
-        TradeWindow::Recent => "slot DESC, block_time DESC, leg_index DESC",
+        TradeWindow::LaunchWindow => "slot ASC, tx_index ASC, leg_index ASC, block_time ASC",
+        TradeWindow::Recent => "slot DESC, tx_index DESC, leg_index DESC, block_time DESC",
     }
 }
 
@@ -100,8 +105,14 @@ impl CorpusSource for LakeSource {
         // 2. Stage the selected mints in a temp table the trade + fp queries join to.
         stage_mints(&conn, candidates.iter().map(|(m, _)| m.as_str()))?;
 
-        // 3. Per-mint capped, ordered trade pull → per-token slim buffers.
+        // 3. Per-mint capped, ordered trade pull → per-token slim buffers. The SQL
+        //    returns tokens in `mint ASC`; reorder to the candidate order
+        //    (`created_at DESC`) so the corpus token order matches `DbSource` exactly
+        //    — within-group fold order then matches, down to f64 summation.
         let mut tokens = load_token_trades(&conn, &trades_lit, &candidates, sel)?;
+        let rank: HashMap<&str, usize> =
+            candidates.iter().enumerate().map(|(i, (m, _))| (m.as_str(), i)).collect();
+        tokens.sort_by_key(|t| rank.get(t.mint.as_str()).copied().unwrap_or(usize::MAX));
 
         // 4. Attach grouping fingerprints from the token dimension (one query).
         attach_fingerprints(&conn, &tokens_lit, &mut tokens)?;
@@ -166,8 +177,10 @@ fn resolve_candidates(
             .map(|m| (m.clone(), by_mint.get(m).cloned().unwrap_or_default()))
             .collect())
     } else {
-        let after = sel.created_after.map(|t| t.timestamp()).unwrap_or(i64::MIN);
-        let before = sel.created_before.map(|t| t.timestamp()).unwrap_or(i64::MAX);
+        // Microseconds — `export_tokens` writes `created_at` as µs to match PG's
+        // timestamptz precision (seconds would create spurious LIMIT-clipping ties).
+        let after = sel.created_after.map(|t| t.timestamp_micros()).unwrap_or(i64::MIN);
+        let before = sel.created_before.map(|t| t.timestamp_micros()).unwrap_or(i64::MAX);
         let sql = format!(
             "SELECT mint, symbol FROM read_parquet({tokens_lit}) \
              WHERE is_mayhem_mode = false AND created_at >= ? AND created_at < ? \
@@ -214,14 +227,14 @@ fn load_token_trades(
     let sql = format!(
         "WITH ranked AS ( \
             SELECT t.mint, t.wallet, t.is_buy, t.sol_amount, t.token_amount, t.price, \
-                   t.slot, t.block_time, t.leg_index, t.vsol, \
+                   t.slot, t.tx_index, t.block_time, t.leg_index, t.vsol, \
                    ROW_NUMBER() OVER (PARTITION BY t.mint ORDER BY {order}) AS rn \
             FROM read_parquet({trades_lit}, hive_partitioning=true) t \
             WHERE t.mint IN (SELECT mint FROM sel_mints) {curve_filter} \
          ) \
          SELECT mint, wallet, is_buy, sol_amount, token_amount, price, slot, block_time, leg_index, vsol \
          FROM ranked WHERE rn <= ? \
-         ORDER BY mint ASC, slot ASC, leg_index ASC"
+         ORDER BY mint ASC, slot ASC, tx_index ASC, leg_index ASC, block_time ASC"
     );
 
     let mut stmt = conn.prepare(&sql)?;
@@ -334,9 +347,11 @@ fn attach_fingerprints(conn: &Connection, tokens_lit: &str, tokens: &mut [TokenT
     Ok(())
 }
 
-/// Epoch seconds → `DateTime<Utc>` (falls back to now on the impossible overflow).
-fn ts(secs: i64) -> DateTime<Utc> {
-    DateTime::<Utc>::from_timestamp(secs, 0).unwrap_or_else(Utc::now)
+/// Epoch **microseconds** → `DateTime<Utc>` (falls back to now on the impossible
+/// overflow). Matches `export.rs`, which writes `block_time` as µs to preserve PG's
+/// timestamptz precision for the sweep's time gates.
+fn ts(micros: i64) -> DateTime<Utc> {
+    DateTime::<Utc>::from_timestamp_micros(micros).unwrap_or_else(Utc::now)
 }
 
 #[cfg(test)]

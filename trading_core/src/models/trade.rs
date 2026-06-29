@@ -17,6 +17,9 @@ pub struct Trade {
     /// Average execution price for this swap (`sol_amount / token_amount`).
     pub price_per_token: f64,
     pub tx_signature: String,
+    /// Position of this trade's transaction within its block. Real on the live
+    /// LaserStream feed; 0 on the RPC backfill path (no block position available).
+    pub tx_index: u32,
     /// Index of this trade within the transaction (0 = first pump leg).
     pub leg_index: u32,
     pub slot: u64,
@@ -122,6 +125,7 @@ impl Trade {
             token_amount,
             price_per_token,
             tx_signature,
+            tx_index: 0,
             leg_index: 0,
             slot,
             block_time,

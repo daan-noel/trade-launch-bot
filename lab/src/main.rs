@@ -81,7 +81,13 @@ async fn main() -> anyhow::Result<()> {
     // from local PG into the Parquet lake, then exit. Runs before any server wiring
     // (mirrors `live -- probe`). All other args fall through to the HTTP server.
     if std::env::args().nth(1).as_deref() == Some("lake-export") {
-        return run_lake_export().await;
+        // `lab lake-export --include-today` also exports today's still-open UTC day
+        // (force-overwriting its non-immutable file). Since the lake is now the sole
+        // sweep corpus source, this is the only way to sweep *current-day* data — the
+        // default sealed-only export never includes the open day. Off by default so a
+        // plain `lake-export` keeps the lake to immutable, settled days.
+        let include_today = std::env::args().any(|a| a == "--include-today");
+        return run_lake_export(include_today).await;
     }
 
     let settings = config::Settings::from_env_local().context("Failed to load configuration")?;
@@ -249,14 +255,14 @@ async fn main() -> anyhow::Result<()> {
 /// `lab lake-export`: connect the batch pool, export sealed days into the lake, exit.
 /// Reads `DATABASE_URL` (via `Settings`) for local PG and `SWEEP_LAKE_DIR` for the
 /// lake root. A batch job — no HTTP, no pollers.
-async fn run_lake_export() -> anyhow::Result<()> {
+async fn run_lake_export(include_today: bool) -> anyhow::Result<()> {
     let settings = config::Settings::from_env_local().context("Failed to load configuration")?;
     let storage::postgres::DbPools { batch: batch_db, .. } =
         storage::postgres::connect(&settings).await?;
 
     let root = lab::lake::lake_root();
-    info!(lake = %root.display(), "lake-export: starting");
-    let summary = lab::lake::export::export_lake(&batch_db, &root).await?;
+    info!(lake = %root.display(), include_today, "lake-export: starting");
+    let summary = lab::lake::export::export_lake(&batch_db, &root, include_today).await?;
     info!(
         days_written = summary.days_written.len(),
         days_skipped = summary.days_skipped,

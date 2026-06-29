@@ -53,6 +53,10 @@ struct TradeDbRow {
     sol_amount: i64,
     token_amount: i64,
     tx_signature: Vec<u8>,
+    // Defaulted so the read paths that don't project `tx_index` (it's not consumed
+    // downstream — ordering is resolved in SQL) still map cleanly to 0.
+    #[sqlx(default)]
+    tx_index: i32,
     leg_index: i16,
     slot: i64,
     block_time: DateTime<Utc>,
@@ -86,6 +90,7 @@ impl TryFrom<TradeDbRow> for Trade {
             // Derived: the new table has no `price_per_token` column.
             price_per_token: price_of(sol_amount, token_amount),
             tx_signature: sig_bytes_to_base58(&r.tx_signature),
+            tx_index: r.tx_index as u32,
             leg_index: r.leg_index as u32,
             slot: r.slot as u64,
             block_time: r.block_time,
@@ -108,68 +113,6 @@ fn trade_type_str(t: TradeType) -> &'static str {
     match t {
         TradeType::Buy => "buy",
         TradeType::Sell => "sell",
-    }
-}
-
-/// **Phase-4 compatibility shim.** The `lab` sweep's DB corpus (`sweep::corpus`)
-/// still reads trades from Postgres with the *old* column shape (float amounts,
-/// base58 `tx_signature`, `id`/`price_per_token`/`received_at`/`ix_type`/
-/// `real_*_reserves`). That DB-sourced corpus is slated to be replaced by the
-/// Parquet-lake + DuckDB path in Phase 4 (live-lab-remake-plan.md), at which point
-/// this shim and the lab DB corpus go away together. It is kept here only so the
-/// workspace compiles; against the new `trades` schema it is runtime-stale.
-#[derive(sqlx::FromRow)]
-pub struct TradeSlimRow {
-    pub id: Uuid,
-    pub mint_address: String,
-    pub wallet_address: String,
-    pub trade_type: String,
-    pub sol_amount: f64,
-    pub token_amount: f64,
-    pub price_per_token: f64,
-    pub tx_signature: String,
-    pub leg_index: i32,
-    pub slot: i64,
-    pub block_time: DateTime<Utc>,
-    pub received_at: DateTime<Utc>,
-    pub virtual_sol_reserves: Option<f64>,
-    pub virtual_token_reserves: Option<f64>,
-    pub real_sol_reserves: Option<f64>,
-    pub real_token_reserves: Option<f64>,
-    pub ix_type: String,
-    pub venue: String,
-}
-
-impl TryFrom<TradeSlimRow> for Trade {
-    type Error = anyhow::Error;
-
-    fn try_from(r: TradeSlimRow) -> Result<Self, Self::Error> {
-        let trade_type = match r.trade_type.as_str() {
-            "buy" => TradeType::Buy,
-            "sell" => TradeType::Sell,
-            other => anyhow::bail!("Unknown trade_type in DB: {other}"),
-        };
-        Ok(Self {
-            id: r.id,
-            mint_address: r.mint_address,
-            wallet_address: r.wallet_address,
-            trade_type,
-            sol_amount: r.sol_amount,
-            token_amount: r.token_amount,
-            price_per_token: r.price_per_token,
-            tx_signature: r.tx_signature,
-            leg_index: r.leg_index as u32,
-            slot: r.slot as u64,
-            block_time: r.block_time,
-            received_at: r.received_at,
-            virtual_sol_reserves: r.virtual_sol_reserves,
-            virtual_token_reserves: r.virtual_token_reserves,
-            real_sol_reserves: r.real_sol_reserves,
-            real_token_reserves: r.real_token_reserves,
-            instruction_type: r.ix_type,
-            instruction_labels: serde_json::Value::Null,
-            venue: r.venue,
-        })
     }
 }
 
@@ -224,9 +167,7 @@ impl TradeRepo {
         .bind(trade.virtual_sol_reserves.map(f64_opt_to_raw))
         .bind(trade.virtual_token_reserves.map(f64_opt_to_raw))
         .bind(trade.slot as i64)
-        // tx_index is not on the model yet — Phase 3 wires the real value from the
-        // transaction's block meta; bind 0 for now.
-        .bind(0i32)
+        .bind(trade.tx_index as i32)
         .bind(trade.leg_index as i16)
         .bind(trade.block_time)
         .bind(sig_base58_to_bytes(&trade.tx_signature)?)
@@ -297,8 +238,7 @@ impl TradeRepo {
                     .push_bind(t.virtual_sol_reserves.map(f64_opt_to_raw))
                     .push_bind(t.virtual_token_reserves.map(f64_opt_to_raw))
                     .push_bind(t.slot as i64)
-                    // tx_index: Phase 3 wires the real value from block meta.
-                    .push_bind(0i32)
+                    .push_bind(t.tx_index as i32)
                     .push_bind(t.leg_index as i16)
                     .push_bind(t.block_time)
                     .push_bind(sig_base58_to_bytes(&t.tx_signature).unwrap_or_default());
@@ -410,7 +350,7 @@ impl TradeRepo {
             SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
                    t.sol_amount, t.token_amount,
                    t.virtual_sol_reserves, t.virtual_token_reserves,
-                   t.slot, t.leg_index, t.block_time, t.tx_signature
+                   t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature
             FROM trades t
             JOIN wallet_dict w ON w.id = t.wallet_id
             WHERE t.wallet_id = $1 AND t.mint_address = $2 AND t.trade_type = $3
@@ -435,7 +375,7 @@ impl TradeRepo {
             SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
                    t.sol_amount, t.token_amount,
                    t.virtual_sol_reserves, t.virtual_token_reserves,
-                   t.slot, t.leg_index, t.block_time, t.tx_signature
+                   t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature
             FROM trades t
             JOIN wallet_dict w ON w.id = t.wallet_id
             WHERE t.mint_address = $1
@@ -469,7 +409,7 @@ impl TradeRepo {
             SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
                    t.sol_amount, t.token_amount,
                    t.virtual_sol_reserves, t.virtual_token_reserves,
-                   t.slot, t.leg_index, t.block_time, t.tx_signature
+                   t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature
             FROM trades t
             JOIN wallet_dict w ON w.id = t.wallet_id
             WHERE t.mint_address = ANY($1)
@@ -506,7 +446,7 @@ impl TradeRepo {
             SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
                    t.sol_amount, t.token_amount,
                    t.virtual_sol_reserves, t.virtual_token_reserves,
-                   t.slot, t.leg_index, t.block_time, t.tx_signature
+                   t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature
             FROM trades t
             JOIN wallet_dict w ON w.id = t.wallet_id
             WHERE t.mint_address = $1
@@ -683,7 +623,7 @@ impl TradeRepo {
                     SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
                            t.sol_amount, t.token_amount,
                            t.virtual_sol_reserves, t.virtual_token_reserves,
-                           t.slot, t.leg_index, t.block_time, t.tx_signature,
+                           t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature,
                            ROW_NUMBER()                          OVER w  AS rn,
                            COUNT(*)                              OVER wp AS lifetime_count,
                            COALESCE(SUM(t.sol_amount) OVER wp, 0)::bigint AS lifetime_volume,
@@ -701,7 +641,7 @@ impl TradeRepo {
                 SELECT mint_address, wallet_address, trade_type, venue,
                        sol_amount, token_amount,
                        virtual_sol_reserves, virtual_token_reserves,
-                       slot, leg_index, block_time, tx_signature,
+                       slot, tx_index, leg_index, block_time, tx_signature,
                        lifetime_count, lifetime_volume, newest_block_time, newest_price, newest_reserves
                 FROM ranked
                 WHERE rn <= $2

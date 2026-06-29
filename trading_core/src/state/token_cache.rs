@@ -773,11 +773,11 @@ mod tests {
         let now = Utc::now();
         let mut state =
             TokenState::new(token_with_launch(now - ChronoDuration::hours(2), 1.0, 1000));
-        // Newest by time: healthy reserves (5.0), dust sol.
-        state.add_trade(trade_at(now - ChronoDuration::seconds(20), 0.001, 0.002, 5.0));
+        // Newest by time: healthy reserves (above DEAD_MAX_LIQUIDITY_SOL), dust sol.
+        state.add_trade(trade_at(now - ChronoDuration::seconds(20), 0.001, 0.002, 50.0));
         // Appended later but timestamped earlier: low reserves — must not win.
         state.add_trade(trade_at(now - ChronoDuration::seconds(120), 0.001, 1.0, 0.2));
-        // current_real_sol_reserves stays at 5.0 → not dead.
+        // current_real_sol_reserves stays at 50.0 (>= threshold) → not dead.
         assert!(!state.is_dead(now));
     }
 

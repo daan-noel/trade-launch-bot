@@ -27,10 +27,7 @@ use crate::state::local_state::LocalState;
 use crate::storage::repositories::grouped_sweep_repo::{GroupedSweepRepo, GroupedSweepTables};
 use crate::sweep::aggregate::ComboMetrics;
 use crate::lake::duck::LakeSource;
-use crate::sweep::corpus::{
-    attach_fingerprints, corpus_cache_dir, load_corpus_for_mints, load_grouped_corpus,
-    read_corpus_parquet, sweep_per_mint_cap, CorpusSource, Selection,
-};
+use crate::sweep::corpus::{sweep_per_mint_cap, CorpusSource, Selection};
 use crate::sweep::grouped_engine::{CoverageFloor, GroupResult, GroupSink};
 use crate::sweep::grouping::{group_key, normalize_label_vec, GroupField};
 use crate::sweep::registry;
@@ -90,11 +87,6 @@ pub struct StartGroupedSweepBody {
     /// server-side to `HARD_MAX_COMBOS` so a typo can't run away.
     #[serde(default)]
     pub max_combos: Option<usize>,
-    /// Bypass the corpus Parquet cache: force a fresh DB load (and rewrite the
-    /// cache) even for a cacheable closed/settled window. Open/recent windows are
-    /// never cached regardless. Default `false`.
-    #[serde(default)]
-    pub fresh: bool,
     /// Notional (SOL) to price every simulated round-trip at. Affects the fixed
     /// per-leg cost (Jito tip + priority fee) as a fraction of the trade size —
     /// set this to the live `buy_amount` so backtest PnL% matches live results.
@@ -128,16 +120,6 @@ fn default_axes() -> serde_json::Value {
 }
 fn default_buy_amount_sol() -> f64 {
     1.0
-}
-
-/// Corpus-source toggle for the grouped sweep (Phase 4 lake cutover). Returns true
-/// when `SWEEP_CORPUS_SOURCE` is set to `lake` (case-insensitive, trimmed); any other
-/// value or unset keeps the default Postgres + Parquet-cache path. Read per-request so
-/// the source can be flipped without a rebuild for the lake-vs-PG baseline comparison.
-fn corpus_source_is_lake() -> bool {
-    std::env::var("SWEEP_CORPUS_SOURCE")
-        .map(|v| v.trim().eq_ignore_ascii_case("lake"))
-        .unwrap_or(false)
 }
 
 #[derive(serde::Deserialize)]
@@ -432,53 +414,25 @@ async fn run_grouped_sweep_job(
         curve_only: b.curve_only,
     };
 
-    // Load the corpus, reusing the selection-keyed Parquet cache for a closed/
-    // settled window (Rec 3) so repeated sweeps over the same window skip the DB
-    // load; an open/recent window always loads fresh. Fingerprints are attached
-    // separately below (the trade cache is fingerprint-free) so caching trades
-    // doesn't complicate grouping.
-    // Corpus source toggle (Phase 4 lake cutover): `SWEEP_CORPUS_SOURCE=lake` reads
-    // the immutable Parquet lake via DuckDB; anything else (default) keeps the PG +
-    // Parquet-cache path. Keeping both behind a flag lets the *same* sweep run either
-    // way so lake-sourced metrics can be diffed against a PG baseline before the lake
-    // becomes the default source.
-    let mut corpus = if corpus_source_is_lake() {
-        let root = crate::lake::lake_root();
-        tracing::info!(lake = %root.display(), "grouped sweep: corpus source = Parquet lake (DuckDB)");
-        match LakeSource::new(root).load(&sel).await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!("grouped sweep: lake corpus load failed: {e}");
-                let _ = early_tx.send(HttpResponse::InternalServerError()
-                    .json(serde_json::json!({"error": e.to_string()})));
-                return;
-            }
-        }
-    } else {
-        match load_grouped_corpus(state.batch_db.clone(), &sel, &corpus_cache_dir(), b.fresh).await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!("grouped sweep: corpus load failed: {e}");
-                let _ = early_tx.send(HttpResponse::InternalServerError()
-                    .json(serde_json::json!({"error": e.to_string()})));
-                return;
-            }
+    // Load the corpus from the immutable Parquet lake via DuckDB (the sole sweep
+    // corpus source). The lake embeds grouping fingerprints (`has_fingerprints`), so
+    // no separate `tokens` lookup is needed; trades arrive as slim, wallet-interned
+    // `SweepTrade` buffers in the same launch-window order the engine expects.
+    let root = crate::lake::lake_root();
+    tracing::info!(lake = %root.display(), "grouped sweep: corpus source = Parquet lake (DuckDB)");
+    let mut corpus = match LakeSource::new(root).load(&sel).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("grouped sweep: lake corpus load failed: {e}");
+            let _ = early_tx.send(HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": e.to_string()})));
+            return;
         }
     };
     if corpus.tokens.is_empty() {
         let _ = early_tx.send(HttpResponse::BadRequest()
             .json(serde_json::json!({"error": "no tokens in that date range — widen the selection"})));
         return;
-    }
-    // Fingerprints: the lake source embeds them (`has_fingerprints`), so only the
-    // PG/Parquet-cache path needs the separate chunked `tokens` lookup.
-    if !corpus.has_fingerprints {
-        if let Err(e) = attach_fingerprints(&state.batch_db, &mut corpus).await {
-            tracing::error!("grouped sweep: attach_fingerprints failed: {e}");
-            let _ = early_tx.send(HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": e.to_string()})));
-            return;
-        }
     }
 
     // Option A: stash the **unfiltered** selection corpus (trades + fingerprints) in
@@ -1294,86 +1248,28 @@ pub async fn list_token_results(
     let tokens = if let Some(t) = tokens {
         t
     } else {
-        // --- Option B: Parquet cache with embedded fp columns ---
-        let cache_key = crate::sweep::corpus::selection_cache_key(&Selection {
+        // Option A missed — reload from the Parquet lake (DuckDB), the sole corpus
+        // source. Prefer the group's stored mints for a targeted load; otherwise fall
+        // back to the run's full selection window. The lake embeds fingerprints, so no
+        // separate `attach_fingerprints` pass is needed.
+        let group_mints = repo.get_group_mints(group_id).await.unwrap_or(None);
+        let sel = Selection {
+            mints: group_mints.filter(|m| !m.is_empty()),
             created_after: run.created_after,
             created_before: run.created_before,
             curve_only: run.curve_only,
             token_cap: run.token_cap.map(|n| n as usize).unwrap_or(5_000),
             window: crate::sweep::corpus::TradeWindow::LaunchWindow,
             per_mint_cap: sweep_per_mint_cap(),
-            ..Default::default()
-        });
-        let parquet_path = corpus_cache_dir().join(format!("{cache_key}.parquet"));
-
-        let from_parquet: Option<Vec<crate::sweep::corpus::TokenTrades>> =
-            if parquet_path.exists() {
-                match read_corpus_parquet(&parquet_path) {
-                    Ok(c) if c.has_fingerprints => {
-                        tracing::debug!("token-results: Option B Parquet+fp hit");
-                        Some(apply_filters(c.tokens))
-                    }
-                    _ => None,
-                }
-            } else {
-                None
-            };
-
-        if let Some(t) = from_parquet {
-            t
-        } else {
-            // --- Option C: targeted DB load via stored group mints ---
-            let group_mints = repo.get_group_mints(group_id).await.unwrap_or(None);
-
-            let mut corpus = if let Some(mints) = group_mints.filter(|m| !m.is_empty()) {
-                tracing::debug!(n = mints.len(), "token-results: Option C targeted mint load");
-                match load_corpus_for_mints(
-                    state.batch_db.clone(),
-                    mints,
-                    run.curve_only,
-                    sweep_per_mint_cap(),
-                )
-                .await
-                {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::error!("Failed to load corpus for token-results (mints): {e}");
-                        return HttpResponse::InternalServerError()
-                            .json(serde_json::json!({"error": "corpus load failed"}));
-                    }
-                }
-            } else {
-                // Fallback: full corpus load (old groups without stored mints,
-                // or uncacheable open windows).
-                tracing::debug!("token-results: full corpus fallback");
-                let sel = Selection {
-                    created_after: run.created_after,
-                    created_before: run.created_before,
-                    curve_only: run.curve_only,
-                    token_cap: run.token_cap.map(|n| n as usize).unwrap_or(5_000),
-                    window: crate::sweep::corpus::TradeWindow::LaunchWindow,
-                    ..Default::default()
-                };
-                match load_grouped_corpus(state.batch_db.clone(), &sel, &corpus_cache_dir(), false)
-                    .await
-                {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::error!("Failed to load corpus for token-results: {e}");
-                        return HttpResponse::InternalServerError()
-                            .json(serde_json::json!({"error": "corpus load failed"}));
-                    }
-                }
-            };
-
-            if !corpus.has_fingerprints {
-                if let Err(e) = attach_fingerprints(&state.batch_db, &mut corpus).await {
-                    tracing::error!("Failed to attach fingerprints: {e}");
-                    return HttpResponse::InternalServerError()
-                        .json(serde_json::json!({"error": "fingerprint error"}));
-                }
+        };
+        let root = crate::lake::lake_root();
+        match LakeSource::new(root).load(&sel).await {
+            Ok(c) => apply_filters(c.tokens),
+            Err(e) => {
+                tracing::error!("Failed to load corpus for token-results from lake: {e}");
+                return HttpResponse::InternalServerError()
+                    .json(serde_json::json!({"error": "corpus load failed"}));
             }
-            apply_filters(corpus.tokens)
         }
     };
 
