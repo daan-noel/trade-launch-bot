@@ -192,6 +192,85 @@ impl PumpFunTrader {
         Ok(None)
     }
 
+    /// Return **every** token account the wallet holds for a single `mint`, with
+    /// each account's raw balance — `Vec<(account_pubkey, raw_amount)>`. Unlike
+    /// [`Self::get_token_account_for_mint`] (first non-zero account only), this
+    /// surfaces ALL accounts, including non-canonical ones spawned by the
+    /// create-with-seed template pool, so a "sell all" / consolidation can drain
+    /// each one rather than orphaning funds in a stray account.
+    ///
+    /// Zero-balance accounts are included (amount 0) — the caller decides whether
+    /// to skip them for selling or close them for rent reclaim. A single
+    /// mint-filtered `getTokenAccountsByOwner` covers both token programs (the
+    /// owning program is implied by the mint). Manual-only path — the extra RPC is
+    /// acceptable off the hot path.
+    pub async fn get_all_token_accounts_for_mint(
+        &self,
+        mint: &str,
+    ) -> Result<Vec<(Pubkey, u64)>> {
+        let wallet = self.wallet_pubkey();
+        let rpc_url = self.rpc_url();
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getTokenAccountsByOwner",
+            "params": [
+                wallet,
+                { "mint": mint },
+                { "encoding": "jsonParsed", "commitment": "confirmed" }
+            ]
+        });
+
+        let resp: serde_json::Value = self
+            .http
+            .post(rpc_url)
+            .json(&body)
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        let mut out = Vec::new();
+        let Some(accounts) = resp["result"]["value"].as_array() else {
+            return Ok(out);
+        };
+        for account in accounts {
+            let Some(pubkey_str) = account["pubkey"].as_str() else {
+                continue;
+            };
+            let pk = match Pubkey::from_str(pubkey_str) {
+                Ok(pk) => pk,
+                Err(_) => continue,
+            };
+            let amount: u64 = account["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"]
+                .as_str()
+                .unwrap_or("0")
+                .parse()
+                .unwrap_or(0);
+            out.push((pk, amount));
+        }
+        Ok(out)
+    }
+
+    /// The in-memory cached token account for `mint`, if a buy/sell on this trader
+    /// has already resolved one. Pure (no RPC) — the buy path inserts the account it
+    /// used into `user_token_accounts`, so this returns the exact account a just-
+    /// completed buy landed into. Used by the strategy fill path to persist that
+    /// address on the position row (so the sell/next buy reuse it across restarts).
+    pub fn cached_token_account(&self, mint: &str) -> Option<String> {
+        self.user_token_accounts.get(mint).map(|r| r.to_string())
+    }
+
+    /// Raw on-chain balance of a single, already-known token account. A thin
+    /// wrapper over `getTokenAccountBalance` for callers (e.g. the manual sweep
+    /// sell) that hold a specific account pubkey and must re-read ITS balance per
+    /// pass — the cache-first resolvers can only target "the mint's account", not
+    /// a chosen one. Returns 0 if the account is gone/empty. Off the hot path.
+    pub async fn get_account_balance_raw(&self, account: &Pubkey) -> Result<u64> {
+        let ui = self.rpc.get_token_account_balance(account).await?;
+        Ok(ui.amount.parse::<u64>().unwrap_or(0))
+    }
+
     /// Resolve the wallet's token account for `mint` with at most one on-chain
     /// lookup. Serves from the in-memory cache when the account is already known
     /// (populated by a prior buy/sell on this trader), otherwise performs a

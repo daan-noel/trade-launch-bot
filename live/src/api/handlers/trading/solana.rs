@@ -36,11 +36,13 @@ pub struct BuyRequest {
 #[derive(Deserialize)]
 pub struct SellRequest {
     pub mint: String,
-    /// Optional hint of the wallet's token account for `mint`. Supplied by a
-    /// row-triggered "Sell All" to skip a wallet scan; omitted by a manual sell
-    /// (entered by mint), where the backend resolves it cache-first. The amount
-    /// is NOT taken from the client — `manual_sell` reads the live on-chain
-    /// balance and sells all of it.
+    /// Legacy hint of the wallet's token account for `mint` (row-triggered "Sell
+    /// All"). No longer used for routing: `manual_sell` now enumerates EVERY
+    /// account the wallet holds for the mint and sweeps each, so a single-account
+    /// hint can't represent the multi-account case it was orphaning. Kept for wire
+    /// back-compat (the field is simply ignored). The amount is never taken from
+    /// the client — each account's live on-chain balance is sold in full.
+    #[allow(dead_code)]
     pub token_account: Option<String>,
     /// Optional per-trade slippage tolerance in basis points (100 = 1%). See
     /// [`BuyRequest::slippage_bps`].
@@ -137,6 +139,22 @@ pub async fn manual_buy(
         .clone()
         .unwrap_or_else(|| routing.token_program_id.clone());
     let slippage = resolve_buy_slippage(&app_state, body.slippage_bps);
+
+    // Pre-buy consolidation: sweep any non-canonical accounts for this mint into
+    // the canonical ATA (and close them) BEFORE buying, so tokens always land in
+    // one place. Happy path (only the canonical ATA exists) is a single
+    // enumeration RPC and zero writes. Failure here is logged but non-fatal — the
+    // buy still proceeds; orphaned funds are caught by the next sweep-sell.
+    if let Err(e) = app_state
+        .trader
+        .consolidate_token_accounts(&body.mint, routing.token_program)
+        .await
+    {
+        tracing::warn!(
+            "manual_buy: pre-buy consolidation failed for {} (proceeding with buy): {e}",
+            body.mint
+        );
+    }
 
     // Buy with bounded slippage-revert retry (B5) + confirm-timeout classification
     // (B5b). AMM uses a recent blockhash (not a durable nonce), so a
@@ -251,116 +269,163 @@ pub async fn manual_sell(
         return HttpResponse::BadRequest()
             .json(serde_json::json!({ "error": format!("invalid mint: {e}") }));
     }
-    let token_account_override = body.token_account.as_deref();
 
     let slippage = resolve_sell_slippage(&app_state, body.slippage_bps);
-    let wallet = app_state.trader.wallet_pubkey();
 
-    // Clear loop: read the live balance and sell all of it, bounded by
-    // SELL_ALL_MAX_PASSES. One pass normally clears (the inner sell confirms and
-    // retries); extra passes only mop up a partial fill. `sold_any` lets a sell
-    // that succeeded-but-left-dust still report success, while a hard error
-    // before any sell landed surfaces as a 500 like the old path.
-    let mut cleared = false;
-    let mut sold_any = false;
-    let mut last_err: Option<String> = None;
-    for pass in 0..SELL_ALL_MAX_PASSES {
-        // Resolve routing live on-chain EACH pass (B3). The in-memory token_cache
-        // can be stale/empty for a freshly-migrated token, and a token can migrate
-        // mid-loop — a once-resolved `is_migrated=false` would route every pass to
-        // the bonding curve, which the program rejects with BondingCurveComplete
-        // (6005). Re-resolving per pass also keeps `is_cashback` fresh. Retried (B6)
-        // so a transient getMultipleAccounts blip doesn't fail the trade.
-        let routing = match resolve_buy_routing_retry(&app_state.trader, &body.mint).await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!("manual_sell: resolve_buy_routing failed for {}: {e}", body.mint);
-                last_err = Some(format!("Could not resolve token: {e}"));
+    // Enumerate EVERY token account the wallet holds for this mint — not just the
+    // first. Solana can spawn multiple non-canonical accounts for one mint (the
+    // create-with-seed template pool used by the snipe buy path), and a "sell all"
+    // that drained only the first account silently orphaned funds in the rest.
+    // Sweep them all. Retried (B6) so a transient RPC blip doesn't fail the trade.
+    let accounts = {
+        const ATTEMPTS: usize = 2;
+        let mut last: Result<Vec<(_, _)>, _> = Ok(Vec::new());
+        for attempt in 1..=ATTEMPTS {
+            last = app_state
+                .trader
+                .get_all_token_accounts_for_mint(&body.mint)
+                .await;
+            if last.is_ok() {
                 break;
             }
-        };
-        // is_cashback gates only the bonding-curve sell's user_volume_accumulator
-        // account; the AMM reads cashback from the pool on-chain. Take it from the
-        // live routing read (B1) — NOT the token_cache, which is empty/stale for a
-        // manual sell with no buy this session and caused the Custom(6024) missing-UVA
-        // revert.
-        let is_cashback = routing.cashback_enabled;
-
-        let amount = match app_state.trader.get_token_balance(&wallet, &body.mint).await {
-            Ok(b) => b.amount,
-            Err(e) => {
-                last_err = Some(e.to_string());
-                break;
-            }
-        };
-        if amount == 0 {
-            cleared = true;
-            break;
-        }
-        let sell_result = if routing.is_migrated {
-            app_state
-                .trader
-                .amm_sell(
-                    &body.mint,
-                    amount,
-                    &routing.token_program_id,
-                    None,
-                    token_account_override,
-                    slippage,
-                    // Escalate the Jito tip per pass: a sell that lost the auction
-                    // didn't land (cost nothing), so bid up rather than re-send it.
-                    pass as u8,
-                    // Manual API sell: block on RPC confirm (no feed loop here).
-                    true,
-                )
-                .await
-                // `amm_sell` now returns the submitted signature for the feed path;
-                // this manual handler only needs "did it submit", so collapse to bool
-                // to match the `sell_token` branch.
-                .map(|sig| sig.is_some())
-        } else {
-            app_state
-                .trader
-                .sell_token(
-                    &body.mint,
-                    amount,
-                    Some(&routing.creator),
-                    is_cashback,
-                    token_account_override,
-                    slippage,
-                )
-                .await
-        };
-        match sell_result {
-            Ok(_) => sold_any = true,
-            Err(e) => {
-                tracing::warn!("manual_sell failed mint={} pass={pass}: {e}", body.mint);
-                last_err = Some(e.to_string());
-                break;
+            if attempt < ATTEMPTS {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
             }
         }
+        match last {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::warn!("manual_sell: account enumeration failed for {}: {e}", body.mint);
+                return HttpResponse::InternalServerError()
+                    .json(serde_json::json!({ "error": format!("Could not list token accounts: {e}") }));
+            }
+        }
+    };
+
+    // No accounts at all → nothing to sell; treat as already cleared (idempotent).
+    if accounts.is_empty() {
+        return HttpResponse::Ok().json(serde_json::json!({ "success": true }));
     }
 
-    if !cleared && !sold_any {
+    // Per-account clear loop. For each account, read its live balance and sell all
+    // of it, bounded by SELL_ALL_MAX_PASSES (one pass normally clears; extra passes
+    // mop up a partial fill). Each sell passes the account's OWN address as the
+    // override so the right account is drained, and each cleared account is closed
+    // for rent reclaim. `sold_any` lets a sell that left sub-threshold dust still
+    // report success; a hard error before any sell landed surfaces as a 500.
+    let mut sold_any = false;
+    let mut last_err: Option<String> = None;
+    for (account_pk, initial_amount) in &accounts {
+        // Skip an account already empty at enumeration time — nothing to sell, but
+        // still close it below for rent reclaim.
+        if *initial_amount > 0 {
+            let account_str = account_pk.to_string();
+            for pass in 0..SELL_ALL_MAX_PASSES {
+                // Resolve routing live on-chain EACH pass (B3). The in-memory
+                // token_cache can be stale/empty for a freshly-migrated token, and a
+                // token can migrate mid-loop — a once-resolved `is_migrated=false`
+                // would route every pass to the bonding curve, which the program
+                // rejects with BondingCurveComplete (6005). Re-resolving per pass also
+                // keeps `is_cashback` fresh. Retried (B6) so a transient
+                // getMultipleAccounts blip doesn't fail the trade.
+                let routing = match resolve_buy_routing_retry(&app_state.trader, &body.mint).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!("manual_sell: resolve_buy_routing failed for {}: {e}", body.mint);
+                        last_err = Some(format!("Could not resolve token: {e}"));
+                        break;
+                    }
+                };
+                // is_cashback gates only the bonding-curve sell's
+                // user_volume_accumulator account; the AMM reads cashback from the
+                // pool on-chain. Take it from the live routing read (B1) — NOT the
+                // token_cache, which is empty/stale for a manual sell with no buy this
+                // session and caused the Custom(6024) missing-UVA revert.
+                let is_cashback = routing.cashback_enabled;
+
+                // Read THIS account's live balance directly (not the cache-first
+                // single-account resolver, which can't target a specific account).
+                let amount = match app_state.trader.get_account_balance_raw(account_pk).await {
+                    Ok(a) => a,
+                    Err(e) => {
+                        last_err = Some(e.to_string());
+                        break;
+                    }
+                };
+                if amount == 0 {
+                    break;
+                }
+                let sell_result = if routing.is_migrated {
+                    app_state
+                        .trader
+                        .amm_sell(
+                            &body.mint,
+                            amount,
+                            &routing.token_program_id,
+                            None,
+                            Some(account_str.as_str()),
+                            slippage,
+                            // Escalate the Jito tip per pass: a sell that lost the
+                            // auction didn't land (cost nothing), so bid up rather than
+                            // re-send it.
+                            pass as u8,
+                            // Manual API sell: block on RPC confirm (no feed loop here).
+                            true,
+                        )
+                        .await
+                        // `amm_sell` returns the submitted signature for the feed path;
+                        // this manual handler only needs "did it submit", so collapse to
+                        // bool to match the `sell_token` branch.
+                        .map(|sig| sig.is_some())
+                } else {
+                    app_state
+                        .trader
+                        .sell_token(
+                            &body.mint,
+                            amount,
+                            Some(&routing.creator),
+                            is_cashback,
+                            Some(account_str.as_str()),
+                            slippage,
+                        )
+                        .await
+                };
+                match sell_result {
+                    Ok(_) => sold_any = true,
+                    Err(e) => {
+                        tracing::warn!(
+                            "manual_sell failed mint={} account={account_str} pass={pass}: {e}",
+                            body.mint
+                        );
+                        last_err = Some(e.to_string());
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Rent reclaim (off the hot path): close this now-empty account to recover
+        // its ~0.002 SOL rent. Fire-and-forget — recent-blockhash, preflight on, no
+        // Jito tip — so it never blocks the response and cheaply no-ops if
+        // sub-threshold dust kept the account funded. Mirrors the strategy exit's
+        // close step (see tpsl_sniper_* `sell_and_close_position`).
+        let trader = app_state.trader.clone();
+        let mint = body.mint.clone();
+        let account_str = account_pk.to_string();
+        tokio::spawn(async move {
+            if let Err(err) = trader.close_token_account(&mint, Some(account_str.as_str())).await {
+                tracing::debug!(mint = %mint, account = %account_str, "rent-reclaim close skipped: {err}");
+            }
+        });
+    }
+
+    // Every account was already empty at enumeration (initial_amount==0 each) →
+    // nothing to sell, but the closes above still reclaim rent. Report success.
+    let all_empty = accounts.iter().all(|(_, amt)| *amt == 0);
+    if !all_empty && !sold_any {
         return HttpResponse::InternalServerError().json(serde_json::json!({
             "error": last_err.unwrap_or_else(|| "Sell failed".to_string()),
         }));
-    }
-
-    // Rent reclaim (off the hot path): close the now-empty token account to
-    // recover its ~0.002 SOL rent. Fire-and-forget — recent-blockhash, preflight
-    // on, no Jito tip — so it never blocks the response and cheaply no-ops if
-    // sub-threshold dust kept the account funded. Mirrors the strategy exit's
-    // close step (see tpsl_sniper_* `sell_and_close_position`).
-    {
-        let trader = app_state.trader.clone();
-        let mint = body.mint.clone();
-        let token_account = body.token_account.clone();
-        tokio::spawn(async move {
-            if let Err(err) = trader.close_token_account(&mint, token_account.as_deref()).await {
-                tracing::debug!(mint = %mint, "rent-reclaim close skipped: {err}");
-            }
-        });
     }
 
     // Position reconcile (off the response path): the bag is cleared on-chain, so

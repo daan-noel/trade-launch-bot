@@ -212,6 +212,7 @@ pub(crate) trait SnipeExecutor: Send + Sync {
     /// — so `on_signed` is invoked with it *before* submit, to durably record the
     /// `BuySubmitted` marker ahead of the on-chain side effect. Returns the submitted
     /// signature.
+    #[allow(clippy::too_many_arguments)]
     async fn send_snipe_buy(
         &self,
         mint: &str,
@@ -222,8 +223,15 @@ pub(crate) trait SnipeExecutor: Send + Sync {
         reserves: Option<(u128, u128)>,
         on_signed: pump_trader::BuySignedHook,
         cashback_enabled: bool,
+        // When `Some`, buy directly into this already-existing account (a prior
+        // position on the same mint persisted it) — skip the template pool so both
+        // buys land in ONE account. `None` = first buy: template mints a fresh one.
+        user_token_account_override: Option<&str>,
     ) -> anyhow::Result<String>;
     async fn check_signature(&self, signature: &str) -> anyhow::Result<Option<bool>>;
+    /// The trader's in-memory cached token account for `mint` (the account the last
+    /// buy landed into), or `None`. Captured after a fill to persist on the row.
+    fn cached_token_account(&self, mint: &str) -> Option<String>;
 }
 
 #[async_trait::async_trait]
@@ -241,15 +249,25 @@ impl SnipeExecutor for PumpFunTrader {
         reserves: Option<(u128, u128)>,
         on_signed: pump_trader::BuySignedHook,
         cashback_enabled: bool,
+        user_token_account_override: Option<&str>,
     ) -> anyhow::Result<String> {
+        // Parse the persisted override (base58) into a Pubkey for the buy path. A
+        // malformed stored value falls back to `None` (template path) rather than
+        // failing the buy — the next fill re-persists a valid address.
+        let override_pk = user_token_account_override
+            .and_then(|s| std::str::FromStr::from_str(s).ok());
         // The trader returns `pump_trader::TradeError`; this trait method is
         // `anyhow::Result`, so lift it (the `?` would also work via `From`).
-        self.buy_token_snipe_write_ahead(mint, creator, token_program_id, amount, slippage_bps, reserves, on_signed, cashback_enabled)
+        self.buy_token_snipe_write_ahead(mint, creator, token_program_id, amount, slippage_bps, reserves, on_signed, cashback_enabled, override_pk)
             .await
             .map_err(anyhow::Error::from)
     }
     async fn check_signature(&self, signature: &str) -> anyhow::Result<Option<bool>> {
         self.signature_state(signature).await.map_err(anyhow::Error::from)
+    }
+    fn cached_token_account(&self, mint: &str) -> Option<String> {
+        // Inherent method on PumpFunTrader (query.rs).
+        PumpFunTrader::cached_token_account(self, mint)
     }
 }
 
@@ -304,10 +322,33 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
     // can't adopt each other's fill.
     let mut sent_sigs: Vec<String> = Vec::new();
 
+    // Reuse a token account already persisted for this (wallet, mint) by a prior
+    // position — so a second buy into the same mint lands in ONE account instead of
+    // the template pool minting a second (which a later "sell all" could orphan).
+    // `None` (the common case: first buy into this mint) → template path as before.
+    let reuse_account: Option<String> = match repo
+        .find_reusable_token_account(&wallet, &mint, "real")
+        .await
+    {
+        Ok(a) => a,
+        Err(err) => {
+            warn!(mint = %mint, "failed to look up reusable token account (using template path): {err}");
+            None
+        }
+    };
+    if let Some(acct) = &reuse_account {
+        info!(mint = %mint, account = %acct, "reusing persisted token account for re-buy");
+    }
+    // The account to persist on the fill: the reused one if any, else whatever the
+    // template minted (read from the trader cache after the buy below).
+    let persist_account = |trader: &Arc<E>| -> Option<String> {
+        reuse_account.clone().or_else(|| trader.cached_token_account(&mint))
+    };
+
     for attempt in 1..=max_attempts {
         // Never double-send: if a previous attempt's buy has since landed + indexed,
         // adopt that fill instead of firing another buy.
-        if adopt_existing_fill_if_present(&mint, &wallet, position_id, &repo, &trade_repo, &runtime, &sent_sigs)
+        if adopt_existing_fill_if_present(&mint, &wallet, position_id, &repo, &trade_repo, &runtime, &sent_sigs, persist_account(&trader).as_deref())
             .await
         {
             return;
@@ -344,9 +385,10 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
         };
 
         // Snipe send WITHOUT the blocking RPC confirm — the WS/DB trade feed below is
-        // the sole confirmation and the entry-price source.
+        // the sole confirmation and the entry-price source. `reuse_account` (if set)
+        // routes the buy straight into the existing account, skipping the template.
         let send_result = trader
-            .send_snipe_buy(&mint, &creator, &token_program_id, buy_amount, slippage_bps, reserves, on_signed, cashback_enabled)
+            .send_snipe_buy(&mint, &creator, &token_program_id, buy_amount, slippage_bps, reserves, on_signed, cashback_enabled, reuse_account.as_deref())
             .await;
 
         // The signature is known the instant the tx was signed (captured by the hook
@@ -380,8 +422,10 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
                  (no re-send unless it reverts on-chain): {err}"),
         }
 
-        // Poll the WS-fed trade feed for this wallet's buy row.
-        if poll_feed_until_entry_fill(&mint, &wallet, position_id, &repo, &trade_repo, &runtime, &trade_signals, &cfg, &sent_sigs)
+        // Poll the WS-fed trade feed for this wallet's buy row. The buy has been
+        // sent, so the trader cache now holds the account it landed into — capture
+        // it to persist on the fill.
+        if poll_feed_until_entry_fill(&mint, &wallet, position_id, &repo, &trade_repo, &runtime, &trade_signals, &cfg, &sent_sigs, persist_account(&trader).as_deref())
             .await
         {
             return;
@@ -397,7 +441,7 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
             SilentSendOutcome::WaitThenSettle => {
                 warn!(mint = %mint, sig = %signature,
                     "buy landed but not yet indexed; awaiting fill without re-send");
-                if poll_feed_until_entry_fill(&mint, &wallet, position_id, &repo, &trade_repo, &runtime, &trade_signals, &cfg, &sent_sigs)
+                if poll_feed_until_entry_fill(&mint, &wallet, position_id, &repo, &trade_repo, &runtime, &trade_signals, &cfg, &sent_sigs, persist_account(&trader).as_deref())
                     .await
                 {
                     return;
@@ -442,6 +486,7 @@ async fn poll_feed_until_entry_fill(
     trade_signals: &Arc<TradeSignals>,
     cfg: &BuyRetryCfg,
     sent_sigs: &[String],
+    token_account: Option<&str>,
 ) -> bool {
     let guard = trade_signals.register(wallet, mint);
     let deadline = Instant::now() + cfg.poll_interval * cfg.poll_attempts as u32;
@@ -452,7 +497,7 @@ async fn poll_feed_until_entry_fill(
         tokio::pin!(notified);
         notified.as_mut().enable();
 
-        if adopt_existing_fill_if_present(mint, wallet, position_id, repo, trade_repo, runtime, sent_sigs).await {
+        if adopt_existing_fill_if_present(mint, wallet, position_id, repo, trade_repo, runtime, sent_sigs, token_account).await {
             return true;
         }
 
@@ -473,6 +518,7 @@ async fn poll_feed_until_entry_fill(
 /// time summed from that signature's legs) and return true; otherwise return false
 /// without sleeping. Per-signature attribution: we adopt only a fill the bot itself
 /// submitted, so a concurrent same-token position never adopts the other's buy.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn adopt_existing_fill_if_present(
     mint: &str,
     wallet: &str,
@@ -481,6 +527,10 @@ pub(crate) async fn adopt_existing_fill_if_present(
     trade_repo: &TradeRepo,
     runtime: &Arc<StrategyRuntimeCache>,
     sent_sigs: &[String],
+    // The wallet's token account for this mint (reused or template-minted), persisted
+    // on the row so the sell / next buy reuse it across restarts. `None` keeps any
+    // existing value (COALESCE) — e.g. the recovery reaper has nothing fresher.
+    token_account: Option<&str>,
 ) -> bool {
     for sig in sent_sigs {
         let fill = match trade_repo.find_fill_by_signature(wallet, mint, sig).await {
@@ -502,6 +552,7 @@ pub(crate) async fn adopt_existing_fill_if_present(
                     fill.price_per_token(),
                     fill.sol_amount,
                     fill.first_block_time,
+                    token_account,
                 )
                 .await
             {
@@ -544,6 +595,9 @@ pub(crate) async fn sell_and_close_position(
         .token_program_id
         .clone()
         .unwrap_or_else(|| trading_core::config::constants::TOKEN_PROGRAM_ID.to_string());
+    // The token account persisted at entry-fill time — the sell targets this exact
+    // account (restart-safe), not whatever the in-memory cache happens to hold.
+    let persisted_token_account = position.token_account.clone();
 
     if amount == 0 {
         warn!(
@@ -580,6 +634,7 @@ pub(crate) async fn sell_and_close_position(
         trade_signals,
         base_token_program,
         slippage_bps,
+        persisted_token_account,
     )
     .await
     {
@@ -759,6 +814,7 @@ fn classify_sell_revert<E>(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 async fn sell_until_balance_cleared(
     trader: Arc<PumpFunTrader>,
     mint: String,
@@ -768,6 +824,11 @@ async fn sell_until_balance_cleared(
     trade_signals: Arc<TradeSignals>,
     base_token_program: String,
     slippage_bps: Option<u64>,
+    // The token account persisted on the position row (Part 3). Preferred over the
+    // cache-first resolve so the sell targets the SAME account the buy landed into —
+    // no in-memory-cache dependency, correct across a process restart. `None` (legacy
+    // rows / unrecorded) falls back to the cache-first lookup as before.
+    persisted_token_account: Option<String>,
 ) -> SellOutcome {
     let mut attempt = 0usize;
     let max_attempts = super::SELL_MAX_ATTEMPTS;
@@ -782,13 +843,19 @@ async fn sell_until_balance_cleared(
     // own sell signatures' token legs against this target.
     let target_tokens = amount;
 
-    // Resolve the token account once (cache-first) and reuse it across attempts.
-    let token_account_override = trader
-        .resolve_cached_token_account(&mint)
-        .await
-        .ok()
-        .flatten()
-        .map(|pk| pk.to_string());
+    // Resolve the token account once and reuse it across attempts. Prefer the
+    // address persisted on the position row (restart-safe, targets the exact account
+    // the buy used); fall back to the cache-first on-chain resolve for legacy rows
+    // that predate the persisted column.
+    let token_account_override = match persisted_token_account {
+        Some(acct) => Some(acct),
+        None => trader
+            .resolve_cached_token_account(&mint)
+            .await
+            .ok()
+            .flatten()
+            .map(|pk| pk.to_string()),
+    };
 
     // Register interest in this (wallet, mint) once for the whole exit so the feed's
     // trade-sequence is observed continuously: the confirm loop only re-runs the

@@ -300,6 +300,93 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
                 .await?;
             print_sim_outcome(&outcome);
         }
+        "consolidate-dryrun" => {
+            // Zero-SOL verification of the pre-buy consolidation path: enumerate
+            // every account for the mint, derive the canonical ATA, and simulate the
+            // `[create_ata_idempotent, transfer_checked, close]` tx for each orphan
+            // against live chain state. No tx is sent.
+            let mint = args
+                .get(1)
+                .context("usage: probe consolidate-dryrun <mint>")?;
+            let routing = trader.resolve_buy_routing(mint).await?;
+            let accounts = trader.get_all_token_accounts_for_mint(mint).await?;
+            println!(
+                "Accounts held for {mint} ({}): token_program={}",
+                accounts.len(),
+                routing.token_program_id
+            );
+            for (pk, bal) in &accounts {
+                println!("  acct={pk}  balance={bal} raw");
+            }
+            let sims = trader
+                .simulate_consolidation(mint, routing.token_program)
+                .await?;
+            if sims.is_empty() {
+                println!("✅ No orphans — only the canonical ATA (or nothing). Consolidation is a no-op.");
+            } else {
+                println!("Simulating {} orphan consolidation tx(s):", sims.len());
+                for (orphan, balance, outcome) in &sims {
+                    println!("\n  orphan={orphan}  balance={balance} raw");
+                    print_sim_outcome(outcome);
+                }
+            }
+        }
+        "sweep-sell-dryrun" => {
+            // Zero-SOL verification of the manual sweep-sell path: enumerate every
+            // account for the mint and simulate a full sell FROM EACH (passing the
+            // account as the override), routed curve vs AMM by live migration status.
+            // No tx is sent.
+            let mint = args
+                .get(1)
+                .context("usage: probe sweep-sell-dryrun <mint> [slippage_bps]")?;
+            let positional: Vec<&String> =
+                args.iter().skip(2).filter(|s| !s.starts_with("--")).collect();
+            let slippage_bps: Option<u64> = match positional.first() {
+                Some(s) => Some(s.parse().context("slippage_bps must be a u64")?),
+                None => None,
+            };
+            let routing = trader.resolve_buy_routing(mint).await?;
+            let accounts = trader.get_all_token_accounts_for_mint(mint).await?;
+            println!(
+                "Sweep-sell dry-run for {mint} ({} account(s)) — migrated={}, token_program={}",
+                accounts.len(),
+                routing.is_migrated,
+                routing.token_program_id
+            );
+            let mut simulated_any = false;
+            for (pk, bal) in &accounts {
+                if *bal == 0 {
+                    println!("\n  acct={pk}  balance=0 — skip (nothing to sell, would just be closed)");
+                    continue;
+                }
+                simulated_any = true;
+                let acct_str = pk.to_string();
+                println!("\n  acct={pk}  balance={bal} raw — simulating full sell:");
+                let outcome = if routing.is_migrated {
+                    trader
+                        .simulate_amm_sell(
+                            mint,
+                            *bal,
+                            &routing.token_program_id,
+                            None,
+                            Some(acct_str.as_str()),
+                            slippage_bps,
+                        )
+                        .await?
+                } else {
+                    // Curve sim resolves the account cache-first; warm the cache to THIS
+                    // account so the simulated sell targets the swept account.
+                    trader.resolve_cached_token_account(mint).await.ok();
+                    trader
+                        .simulate_curve_sell(mint, *bal, slippage_bps, routing.cashback_enabled)
+                        .await?
+                };
+                print_sim_outcome(&outcome);
+            }
+            if !simulated_any {
+                println!("\n✅ No non-empty accounts — nothing to sweep-sell.");
+            }
+        }
         "cashback-status" => {
             let pots = trader.cashback_status().await?;
             println!("Cashback status (read-only):");
@@ -372,8 +459,8 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
         }
         other => anyhow::bail!(
             "unknown probe '{other}'. Use: ladder | fanout | check-nonces | simulate-buy | \
-             simulate-sell | simulate-amm-buy | simulate-amm-sell | holdings | cashback-status | \
-             claim-cashback [--execute]"
+             simulate-sell | simulate-amm-buy | simulate-amm-sell | consolidate-dryrun | \
+             sweep-sell-dryrun | holdings | cashback-status | claim-cashback [--execute]"
         ),
     }
     Ok(())

@@ -167,6 +167,7 @@ struct StrategyPositionDbRow {
     mint: String,
     wallet: String,
     token_program_id: Option<String>,
+    token_account: Option<String>,
     target_price: Option<f64>,
     // Raw token units (BIGINT) → u64 in the model.
     target_token_amount: Option<i64>,
@@ -202,6 +203,7 @@ impl From<StrategyPositionDbRow> for StrategyPosition {
             mint: r.mint,
             wallet: r.wallet,
             token_program_id: r.token_program_id,
+            token_account: r.token_account,
             target_price: r.target_price,
             target_token_amount: r.target_token_amount.map(|v| v as u64),
             target_time: r.target_time,
@@ -244,7 +246,7 @@ const METRICS_COLS: &str = "run_id, rolled_up_at, n_fired, n_open, n_closed, win
     n_exit_liquidity, n_exit_cohort, n_exit_open";
 
 const POSITION_COLS: &str = "id, run_id, strategy_id, rule_id, mode, mint, wallet, \
-    token_program_id, target_price, target_token_amount, target_time, target_tx, \
+    token_program_id, token_account, target_price, target_token_amount, target_time, target_tx, \
     entry_price, entry_token_amount, entry_sol, entry_time, entry_tx_signatures, \
     exit_price, exit_token_amount, exit_sol, exit_time, exit_tx_signatures, \
     submitted_buy_signatures, status, exit_reason, extra, created_at, updated_at";
@@ -883,11 +885,18 @@ impl StrategyRepo {
         entry_price: f64,
         entry_sol: f64,
         entry_time: DateTime<Utc>,
+        // The wallet's token account for this mint, captured from the trader cache
+        // at fill time. Persisted so subsequent buys reuse one account and the sell
+        // reads it from the row (survives restarts). `None` keeps the existing value
+        // (`COALESCE`) — a later fill never blanks an already-recorded account.
+        token_account: Option<&str>,
     ) -> anyhow::Result<StrategyPosition> {
         let row = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
             "UPDATE strategy_positions \
              SET entry_tx_signatures = $2, entry_token_amount = $3, entry_price = $4, \
-                 entry_sol = $5, entry_time = $6, status = 'Holding', updated_at = now() \
+                 entry_sol = $5, entry_time = $6, \
+                 token_account = COALESCE($7, token_account), \
+                 status = 'Holding', updated_at = now() \
              WHERE id = $1 \
              RETURNING {POSITION_COLS}"
         ))
@@ -897,6 +906,7 @@ impl StrategyRepo {
         .bind(entry_price)
         .bind(sol_to_lamports(entry_sol))
         .bind(entry_time)
+        .bind(token_account)
         .fetch_one(&self.pool)
         .await?;
         Ok(StrategyPosition::from(row))
@@ -951,6 +961,33 @@ impl StrategyRepo {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(StrategyPosition::from).collect())
+    }
+
+    /// The persisted `token_account` for any open position on the same
+    /// `(wallet, mint)` in a mode — so a subsequent bot buy into a mint already
+    /// held reuses that one account instead of the template pool minting a second.
+    /// Scans `Arming`/`BuySubmitted`/`Holding` rows (any in-flight or held
+    /// position), newest first, returning the first non-null account. `None` =
+    /// nothing held with a recorded account, so the buy proceeds as today.
+    pub async fn find_reusable_token_account(
+        &self,
+        wallet: &str,
+        mint: &str,
+        mode: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let acct: Option<String> = sqlx::query_scalar(
+            "SELECT token_account FROM strategy_positions \
+             WHERE wallet = $1 AND mint = $2 AND mode = $3 \
+               AND status IN ('Arming','BuySubmitted','Holding') \
+               AND token_account IS NOT NULL \
+             ORDER BY updated_at DESC LIMIT 1",
+        )
+        .bind(wallet)
+        .bind(mint)
+        .bind(mode)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(acct)
     }
 
     /// Terminally fail positions stuck in `ExitPending` past `stale_after` (orphaned

@@ -31,6 +31,7 @@
 mod amm;
 mod blockhash;
 mod buy;
+mod consolidate;
 #[cfg(feature = "claim")]
 pub mod claim;
 mod init;

@@ -548,8 +548,15 @@ export function SettingsPage() {
         <h3 className="text-sm font-semibold text-text">Gap-replay on reconnect</h3>
         <p className="mt-0.5 mb-3.5 text-xs text-text-dim">
           When enabled, LaserStream replays missed transactions after a reconnect by sending
-          the last seen slot as <code>from_slot</code>. Default off — replayed creates carry
-          stale block_time and are filtered by the 30 s freshness gate anyway.
+          the last seen slot as <code>from_slot</code>, backfilling the gap so charts and the{' '}
+          <code>trades</code> table stay complete. Default off.
+        </p>
+        <p className="mt-0.5 mb-3.5 text-xs text-text-dim">
+          This only controls <em>data completeness</em> — it never affects trading. Replayed creates
+          are still subject to the hard-coded <strong>30 s freshness gate</strong>: the sniper buys a
+          coin only if it is under 30 s old, regardless of replay. So a reconnect may replay dozens of
+          missed coins into the database while the bot buys only the one or two still fresh enough to
+          snipe. Larger gaps you can tune below.
         </p>
 
         {loading ? (
@@ -558,7 +565,7 @@ export function SettingsPage() {
           <div className="flex flex-col gap-2.5">
             <ToggleRow
               title="Enable gap-replay"
-              description="When on, reconnects replay missed transactions from the last seen slot. Filtered by freshness gate (30 s). Keep off unless you need gap coverage."
+              description="When on, reconnects replay missed transactions from the last seen slot to backfill the data gap. Does not change what the bot buys — the 30 s freshness gate still applies. Keep off unless you need gap coverage."
               checked={settings.gap_replay_on_reconnect}
               disabled={saving}
               onChange={(gap_replay_on_reconnect) => update({ gap_replay_on_reconnect })}
@@ -582,7 +589,9 @@ export function SettingsPage() {
               />
             </label>
             <p className="text-[11px] text-text-dim">
-              Gaps larger than this fall back to a live re-subscribe (no replay). Minimum 60 s.
+              How far back a reconnect bothers to replay. Gaps within this window backfill from the
+              last seen slot; larger gaps fall back to a live re-subscribe (no replay) to avoid
+              dumping a huge backlog. Affects data coverage only, not trade safety. Minimum 60 s.
             </p>
           </div>
         ) : null}

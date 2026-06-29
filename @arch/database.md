@@ -53,7 +53,7 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
 - `strategy_rules` — `strategy_id` discriminator, `buy_amount`, `trade_mode`, `is_active`, `max_concurrent_tokens`, `max_total_tokens`, `params`(JSONB with strategy-specific gates). See [strategy-storage.md](@plans/database/strategy-storage.md).
 - `strategy_runs` — one activation session; `run_seq` monotonic per `(rule, mode)`; `params_snapshot` frozen at activation
 - `strategy_run_metrics` — 1:1 finalize-time rollup (`win_rate`, `total_pnl_sol`, exit-reason mix, etc.)
-- `strategy_positions` — one bot-opened position; `status`(`Arming`/`BuySubmitted`/`Holding`/`ExitPending`/`End`/`ExitFailed`); amounts as BIGINT (lamports/raw units); `submitted_buy_signatures TEXT[]` for in-flight recovery
+- `strategy_positions` — one bot-opened position; `status`(`Arming`/`BuySubmitted`/`Holding`/`ExitPending`/`End`/`ExitFailed`); amounts as BIGINT (lamports/raw units); `submitted_buy_signatures TEXT[]` for in-flight recovery; `token_account TEXT` (nullable, `0002_*.sql`) — the wallet's token account for the mint, persisted on the entry fill so a re-buy reuses one account and the sell reads it from the row (restart-safe, no in-memory-cache dependency)
 
 ### Grouped param-sweep (per-strategy triples; generic table-name-driven repo)
 
@@ -81,7 +81,7 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
 | `grouped_sweep_repo.rs` | `<strategy>_grouped_sweep_*` | incremental writes: `insert_run`, `append_group`, `finalize_completed`, `mark_cancelled`; compaction: `fetch_combo_metrics_for_group`, `delete_combos_except`, `vacuum_full_results` |
 | `wallet_repo.rs` | wallets | `touch_last_seen_many` |
 | `wallet_profile_repo.rs` / `wallet_profile_tag_repo.rs` | wallet_profiles, tags | CRUD |
-| `strategy_repo.rs` | strategy_rules, strategy_runs, strategy_run_metrics, strategy_positions | `find_rule`, `insert_run`, `insert_position`, `update_position_status`, `mark_buy_submitted`, `find_all_holding`, `find_all_exit_pending`, `find_all_buy_submitted`, `fail_stale_exit_pending`, `finalize_run` |
+| `strategy_repo.rs` | strategy_rules, strategy_runs, strategy_run_metrics, strategy_positions | `find_rule`, `insert_run`, `insert_position`, `update_position_status`, `mark_buy_submitted`, `find_all_holding`, `find_all_exit_pending`, `find_all_buy_submitted`, `find_reusable_token_account`, `fail_stale_exit_pending`, `finalize_run` |
 
 ## Rules
 

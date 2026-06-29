@@ -1071,6 +1071,7 @@ mod tests {
             mint: mint.into(),
             wallet: "w".into(),
             token_program_id: None,
+            token_account: None,
             target_price: None,
             target_token_amount: None,
             target_time: None,

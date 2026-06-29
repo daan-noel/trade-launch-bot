@@ -879,6 +879,10 @@ impl StrategyService {
                 &self.trade_repo,
                 &self.runtime,
                 &position.submitted_buy_signatures,
+                // The recovery reaper has no fresher account than the row itself;
+                // pass it through (COALESCE no-ops if unchanged, repopulates if the
+                // trader cache later warms it elsewhere).
+                position.token_account.as_deref(),
             )
             .await
             {

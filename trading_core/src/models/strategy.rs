@@ -96,6 +96,12 @@ pub struct StrategyPosition {
     pub mint: String,
     pub wallet: String,
     pub token_program_id: Option<String>,
+    /// The wallet's token account address for `mint` (base58). Persisted after the
+    /// entry fill so subsequent buys reuse one account and the sell reads it from
+    /// the row — no in-memory-cache dependency, survives restarts. `None` until the
+    /// first fill, or on legacy rows predating this column (callers fall back to the
+    /// cache-first resolver).
+    pub token_account: Option<String>,
     // Target (arming) snapshot.
     pub target_price: Option<f64>,
     /// Raw token units (exact integer).
@@ -198,6 +204,7 @@ impl StrategyPosition {
             mint,
             wallet,
             token_program_id: None,
+            token_account: None,
             target_price: None,
             target_token_amount: None,
             target_time: None,

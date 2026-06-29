@@ -49,7 +49,7 @@ impl PumpFunTrader {
     ) -> Result<String> {
         // Manual buy: no triggering-event reserves in hand, so `buy_token_inner`
         // reads the curve on-chain for the slippage floor (snipe_reserves = None).
-        self.buy_token_inner(mint, creator, token_program, sol_amount, slippage_bps, None, false, false, None, cashback_enabled)
+        self.buy_token_inner(mint, creator, token_program, sol_amount, slippage_bps, None, false, false, None, cashback_enabled, None)
             .await
     }
 
@@ -85,7 +85,7 @@ impl PumpFunTrader {
         let mint = Pubkey::from_str(token_mint)?;
         let creator_pubkey = Pubkey::from_str(creator)?;
         let token_program = TokenProgram::from_id(token_program_id);
-        self.buy_token_inner(&mint, &creator_pubkey, token_program, sol_amount, slippage_bps, reserves, true, true, None, cashback_enabled)
+        self.buy_token_inner(&mint, &creator_pubkey, token_program, sol_amount, slippage_bps, reserves, true, true, None, cashback_enabled, None)
             .await
     }
 
@@ -112,11 +112,17 @@ impl PumpFunTrader {
         reserves: Option<(u128, u128)>,
         on_signed: BuySignedHook,
         cashback_enabled: bool,
+        // When `Some`, buy directly into this already-existing token account —
+        // skip the create-with-seed template pool entirely. Set on a subsequent
+        // bot buy into a mint already held (the account was persisted on the first
+        // fill), so both buys land in ONE account. `None` = first buy: the template
+        // mints (and caches) a fresh account as before.
+        user_token_account_override: Option<Pubkey>,
     ) -> Result<String> {
         let mint = Pubkey::from_str(token_mint)?;
         let creator_pubkey = Pubkey::from_str(creator)?;
         let token_program = TokenProgram::from_id(token_program_id);
-        self.buy_token_inner(&mint, &creator_pubkey, token_program, sol_amount, slippage_bps, reserves, true, true, Some(on_signed), cashback_enabled)
+        self.buy_token_inner(&mint, &creator_pubkey, token_program, sol_amount, slippage_bps, reserves, true, true, Some(on_signed), cashback_enabled, user_token_account_override)
             .await
     }
 
@@ -146,6 +152,11 @@ impl PumpFunTrader {
         // sell that reads only `pdas.cashback_enabled` from silently dropping the
         // UVA account and reverting with pump.fun error 6024.
         cashback_enabled: bool,
+        // When `Some` (subsequent bot buy into a held mint), buy directly into this
+        // existing account — no template pool, no create-with-seed prefix — so both
+        // buys land in ONE account. `None` = first buy / manual path: resolve the
+        // account via template (snipe) or ATA probe (manual) as before.
+        user_token_account_override: Option<Pubkey>,
     ) -> Result<String> {
         let t0 = Instant::now();
         // Guard the real spend before any work: both curve public entries
@@ -188,12 +199,17 @@ impl PumpFunTrader {
                 &token_program_pk,
             );
             // Resolve the user token account + (if needed) its create template.
-            // The snipe path provably holds no account for this just-created mint,
-            // so it skips the RPC entirely. The manual path must probe — but the
-            // probe's RPC RTT is overlapped with template acquisition (a buy needs
-            // one unless the ATA already exists), so the round-trip hides behind
-            // work we'd do anyway; an unneeded template is handed straight back.
-            let (user_token_account, template_opt) = if skip_ata_check {
+            // A caller-supplied override (subsequent bot buy into a held mint) wins:
+            // the account already exists, so buy straight into it — no template, no
+            // create-with-seed prefix. Otherwise: the snipe path provably holds no
+            // account for this just-created mint, so it skips the RPC entirely; the
+            // manual path must probe — but the probe's RPC RTT is overlapped with
+            // template acquisition (a buy needs one unless the ATA already exists),
+            // so the round-trip hides behind work we'd do anyway; an unneeded
+            // template is handed straight back.
+            let (user_token_account, template_opt) = if let Some(existing) = user_token_account_override {
+                (existing, None)
+            } else if skip_ata_check {
                 let template = self.acquire_buy_template(token_program).await?;
                 let account = template.user_token_account;
                 self.replenish_pool_async(token_program);
