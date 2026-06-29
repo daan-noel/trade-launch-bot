@@ -676,6 +676,34 @@ async fn main() -> anyhow::Result<()> {
         live_tx.clone(),
     ));
 
+    // Pin a SlotAnchor once at startup so incremental token-sync replay paths can
+    // estimate accurate block_time for historical frames (instead of stamping now()).
+    // Best-effort: an RPC failure just leaves the anchor as None and the replay path
+    // falls back to now() — the same behavior as before this fix.
+    {
+        let rpc = trading_core::services::helius_rpc::HeliusRpc::new(
+            settings.helius_rpc_url.clone(),
+        );
+        let ds = deploy_state.clone();
+        tokio::spawn(async move {
+            match rpc.get_slot().await {
+                Ok(slot) => match rpc.get_block_time(slot).await {
+                    Ok(Some(unix_ts)) => {
+                        use chrono::TimeZone;
+                        if let Some(time) = chrono::Utc.timestamp_opt(unix_ts, 0).single() {
+                            let anchor = ingest_laserstream::slot_anchor::SlotAnchor::new(slot, time);
+                            ds.set_slot_anchor(anchor).await;
+                            info!(slot, "SlotAnchor pinned for replay block_time estimation");
+                        }
+                    }
+                    Ok(None) => warn!("getBlockTime returned null for slot {slot} — anchor not pinned"),
+                    Err(e) => warn!("getBlockTime failed — replay block_time will use now(): {e}"),
+                },
+                Err(e) => warn!("getSlot failed — replay block_time will use now(): {e}"),
+            }
+        });
+    }
+
     // Keep the token-list DB base fresh so `GET /api/tokens` reflects the whole
     // seeded universe (tokens + persisted stats), not just mints still resident in
     // the live cache after idle eviction. Fire-and-forget like the eviction sweep.

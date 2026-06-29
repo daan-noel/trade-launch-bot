@@ -29,6 +29,7 @@ pub mod health;
 pub mod pool;
 pub mod protocol;
 
+pub mod slot_anchor;
 pub mod transport;
 
 #[cfg(feature = "raw-tx")]
@@ -167,6 +168,12 @@ impl Ingest {
 
         let health_state_decode = health_state.clone();
 
+        // Gap-replay config channel: host sends (gap_replay_on_reconnect,
+        // gap_replay_max_window_secs) whenever the operator changes the settings.
+        // Default: off (false, 300 s). The sender is exposed via IngestHandle so
+        // the host can push updates without restarting ingest.
+        let (gap_replay_tx, gap_replay_rx) = watch::channel::<(bool, u64)>((false, 300));
+
         // Spawn transport task.
         tokio::spawn(transport::run(
             self.endpoint.clone(),
@@ -177,6 +184,7 @@ impl Ingest {
             pool_index.clone(),
             pools_changed.clone(),
             transport_cfg,
+            gap_replay_rx,
         ));
 
         // Spawn decode task.
@@ -221,6 +229,7 @@ impl Ingest {
 
         let handle = IngestHandle {
             live_tx,
+            gap_replay_tx,
             pool_index,
             pools_changed,
             protocol: self.protocol,
@@ -238,6 +247,10 @@ impl Ingest {
 /// lock-free (atomic writes or channel sends).
 pub struct IngestHandle {
     live_tx: watch::Sender<bool>,
+    /// Gap-replay settings: (gap_replay_on_reconnect, gap_replay_max_window_secs).
+    /// Push a new value whenever the operator changes the settings; the transport
+    /// picks it up on the next reconnect.
+    gap_replay_tx: watch::Sender<(bool, u64)>,
     pool_index: PoolIndex,
     pools_changed: Arc<Notify>,
     protocol: Arc<Protocol>,
@@ -249,6 +262,12 @@ impl IngestHandle {
     /// Pause (`false`) or resume (`true`) the transport stream.
     pub fn set_live(&self, live: bool) {
         let _ = self.live_tx.send(live);
+    }
+
+    /// Push updated gap-replay settings to the transport. Takes effect on the
+    /// next reconnect; no-op if the transport task has already stopped.
+    pub fn set_gap_replay(&self, on: bool, max_window_secs: u64) {
+        let _ = self.gap_replay_tx.send((on, max_window_secs));
     }
 
     /// Register pool PDAs for the given mints and signal the transport to

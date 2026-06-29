@@ -150,6 +150,12 @@ pub const WATCHDOG_STALL_TIMEOUT_FLOOR_SECS: u64 = 90;
 /// OS thread for no detection benefit.
 pub const WATCHDOG_CHECK_INTERVAL_FLOOR_SECS: u64 = 5;
 
+/// Maximum age of a newly-created token that the snipe entry gate will buy.
+/// A `TokenCreated` event older than this is rejected before criteria matching
+/// — prevents gap-replayed 10h-old creates from being sniped. Requires A3
+/// (accurate `created_at` on replayed creates) to be effective.
+pub const MAX_SNIPE_AGE_SECS: i64 = 30;
+
 /// Keyset page size for analysis scans (tpsl matched / simulate) that stream
 /// the whole `tokens` table one page at a time.
 pub const ANALYSIS_SCAN_PAGE: i64 = 5_000;

@@ -32,6 +32,10 @@ export interface AppSettings {
   watchdog_check_interval_secs: number;
   /** Hard ceiling (SOL) on total SOL committed to open real positions; null = no ceiling. */
   max_committed_sol: number | null;
+  /** Enable gap-replay on LaserStream reconnect (default false — replayed creates get stale block_time). */
+  gap_replay_on_reconnect: boolean;
+  /** Max gap-replay window (seconds); gaps beyond this use a full re-subscribe. Default 300. */
+  gap_replay_max_window_secs: number;
 }
 
 export async function fetchTokens(

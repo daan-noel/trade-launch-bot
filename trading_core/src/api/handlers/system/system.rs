@@ -60,6 +60,10 @@ pub struct UpdateSettingsRequest {
     /// Hard ceiling (SOL) on total SOL committed across all open real positions.
     /// `None` = no explicit ceiling (balance-floor guard still applies).
     pub max_committed_sol: Option<f64>,
+    /// Enable gap-replay on LaserStream reconnect. Present = toggle the setting.
+    pub gap_replay_on_reconnect: Option<bool>,
+    /// Maximum gap-replay window in seconds. Gaps beyond this use a full re-subscribe.
+    pub gap_replay_max_window_secs: Option<u64>,
 }
 
 pub async fn get_settings(state: web::Data<Arc<CoreState>>) -> impl Responder {
@@ -83,6 +87,8 @@ pub async fn update_settings(
         watchdog_stall_timeout_secs,
         watchdog_check_interval_secs,
         max_committed_sol,
+        gap_replay_on_reconnect,
+        gap_replay_max_window_secs,
     } = req.into_inner();
 
     if let Some(pu) = &price_unit {
@@ -150,6 +156,12 @@ pub async fn update_settings(
     if let Some(v) = max_committed_sol {
         entries.push((keys::MAX_COMMITTED_SOL.key, json!(v)));
     }
+    if let Some(v) = gap_replay_on_reconnect {
+        entries.push((keys::GAP_REPLAY_ON_RECONNECT.key, json!(v)));
+    }
+    if let Some(v) = gap_replay_max_window_secs {
+        entries.push((keys::GAP_REPLAY_MAX_WINDOW_SECS.key, json!(v)));
+    }
 
     // Persist (one transaction) first; only publish to the watch channel if the
     // write succeeds, so a failed save never leaves the runtime diverged from the
@@ -202,6 +214,12 @@ pub async fn update_settings(
         }
         if let Some(v) = max_committed_sol {
             s.max_committed_sol = Some(v);
+        }
+        if let Some(v) = gap_replay_on_reconnect {
+            s.gap_replay_on_reconnect = v;
+        }
+        if let Some(v) = gap_replay_max_window_secs {
+            s.gap_replay_max_window_secs = v;
         }
         updated = Some(s.clone());
     });

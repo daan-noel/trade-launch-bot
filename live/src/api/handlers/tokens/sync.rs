@@ -73,6 +73,7 @@ pub async fn sync_token(
         pump_program_id: state.pump_program_id.clone(),
         pool_index: state.pool_index.clone(),
         pools_changed: state.pools_changed.clone(),
+        slot_anchor: state.get_slot_anchor().await,
     };
 
     let req = TokenSyncRequest {
@@ -159,6 +160,7 @@ pub async fn preview_sync(
         pump_program_id: state.pump_program_id.clone(),
         pool_index: state.pool_index.clone(),
         pools_changed: state.pools_changed.clone(),
+        slot_anchor: state.get_slot_anchor().await,
     };
 
     let req = TokenSyncRequest {

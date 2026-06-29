@@ -1,12 +1,14 @@
 use std::sync::Arc;
 
 use dashmap::{DashMap, DashSet};
-use tokio::sync::{watch, Notify, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{watch, Notify, OwnedSemaphorePermit, RwLock, Semaphore};
 
 use trading_core::storage::repositories::settings_repo::AppSettings;
 use trading_core::strategies::runtime_cache::StrategyRuntimeCache;
 use crate::strategies::StrategyService;
 use crate::trader::PumpFunTrader;
+
+use ingest_laserstream::slot_anchor::SlotAnchor;
 
 use super::core_state::CoreState;
 use super::trade_signals::TradeSignals;
@@ -38,6 +40,10 @@ pub struct DeployState {
     /// Concurrency + per-mint dedup gate for `POST /api/token/sync` backfills.
     pub sync_gate: Arc<SyncGate>,
     pub live_mode: watch::Sender<bool>,
+    /// Pinned (slot, time) pair from `getBlockTime` at startup/reconnect.
+    /// Used by token-sync replay paths to estimate accurate `block_time` for
+    /// historical frames that carry only a slot number (not a real blockTime).
+    pub slot_anchor: Arc<RwLock<Option<SlotAnchor>>>,
 }
 
 impl DeployState {
@@ -60,6 +66,7 @@ impl DeployState {
             trade_signals,
             sync_gate: Arc::new(SyncGate::new(MAX_CONCURRENT_SYNCS)),
             live_mode,
+            slot_anchor: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -83,6 +90,17 @@ impl DeployState {
 
     pub fn modify_settings(&self, f: impl FnOnce(&mut AppSettings)) {
         self.core.modify_settings(f);
+    }
+
+    /// Replace the slot anchor used by replay paths for block_time estimation.
+    /// Called once at startup and after each reconnect (best-effort; no-op on RPC error).
+    pub async fn set_slot_anchor(&self, anchor: SlotAnchor) {
+        *self.slot_anchor.write().await = Some(anchor);
+    }
+
+    /// Read the current slot anchor (cloned; None until first RPC pin).
+    pub async fn get_slot_anchor(&self) -> Option<SlotAnchor> {
+        *self.slot_anchor.read().await
     }
 }
 

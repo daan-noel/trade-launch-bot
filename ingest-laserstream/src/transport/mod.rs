@@ -16,6 +16,7 @@ use std::time::Duration;
 use chrono::Utc;
 use dashmap::DashMap;
 use tokio::sync::{mpsc, watch, Notify};
+use tokio::time::Instant;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::metadata::{Ascii, MetadataValue};
 use tonic::service::interceptor::InterceptedService;
@@ -226,6 +227,12 @@ impl Default for TransportConfig {
 /// Transport task entry point. Loops: (wait for live) → connect → subscribe →
 /// stream → reconnect. Forwards `(Arc<SubscribeUpdateTransaction>, TxRelevance,
 /// DateTime<Utc>)` to `event_tx` for the decode task.
+///
+/// `gap_replay_rx` carries `(gap_replay_on_reconnect, gap_replay_max_window_secs)`.
+/// When `gap_replay_on_reconnect` is false (default), reconnects always use live
+/// mode (no `from_slot`). When true, a `from_slot` is sent only if the gap since
+/// last progress is within `gap_replay_max_window_secs`; larger gaps re-subscribe
+/// live to avoid replaying a huge backlog.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     endpoint: String,
@@ -236,6 +243,7 @@ pub async fn run(
     pool_index: Arc<DashMap<String, String>>,
     pools_changed: Arc<Notify>,
     cfg: Arc<TransportConfig>,
+    mut gap_replay_rx: watch::Receiver<(bool, u64)>,
 ) {
     let pump_fun_id = protocol.programs.pump_fun.base58.clone();
     let pump_swap_id = protocol.programs.pump_swap.base58.clone();
@@ -243,6 +251,7 @@ pub async fn run(
     let mut from_slot: Option<u64> = None;
     let mut backoff = cfg.reconnect_base;
     let mut counts = ReconnectCounts::default();
+    let mut last_progress_at = Instant::now();
 
     loop {
         while !*live_rx.borrow() {
@@ -269,15 +278,32 @@ pub async fn run(
         .await;
 
         let seen = last_slot.load(Ordering::Relaxed);
-        from_slot = if seen > 0
-            && !matches!(
-                reason,
-                DisconnectReason::PipelineBackpressure
-                    | DisconnectReason::StreamError(tonic::Code::ResourceExhausted)
-            )
+        if seen > 0 {
+            last_progress_at = Instant::now();
+        }
+
+        let is_billing_reason = matches!(
+            reason,
+            DisconnectReason::PipelineBackpressure
+                | DisconnectReason::StreamError(tonic::Code::ResourceExhausted)
+        );
+
+        let (gap_replay_on, gap_max_secs) = *gap_replay_rx.borrow_and_update();
+        let gap_secs = last_progress_at.elapsed().as_secs();
+
+        from_slot = if seen > 0 && !is_billing_reason && gap_replay_on && gap_secs <= gap_max_secs
         {
             Some(seen + 1)
         } else {
+            if seen > 0 && !is_billing_reason && !gap_replay_on {
+                // gap-replay disabled by operator — reconnecting live
+            } else if gap_replay_on && gap_secs > gap_max_secs {
+                warn!(
+                    gap_secs,
+                    gap_max_secs,
+                    "LaserStream: gap exceeds replay window — reconnecting live (no from_slot)"
+                );
+            }
             None
         };
 

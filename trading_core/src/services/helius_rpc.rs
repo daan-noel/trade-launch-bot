@@ -389,6 +389,28 @@ impl HeliusRpc {
     /// the raw instruction `data` jsonParsed pre-parses away. That the endpoint
     /// honors base64 (incl. `meta.loadedAddresses` for versioned txs) is confirmed
     /// by the `--ignored` `gtfa_base64_matches_jsonparsed_decode` harness.
+    /// Fetch the current slot (the chain tip). Used to pin the `SlotAnchor` at
+    /// stream startup before any replay frames arrive.
+    pub async fn get_slot(&self) -> anyhow::Result<u64> {
+        let result = self
+            .call("getSlot", json!([{"commitment": "confirmed"}]))
+            .await?;
+        result
+            .as_u64()
+            .ok_or_else(|| anyhow!("getSlot: unexpected result type"))
+    }
+
+    /// Fetch the on-chain `blockTime` (Unix seconds) for `slot`. Returns `None`
+    /// when the slot is not yet finalized or is too old for the node's ledger.
+    /// Used once at startup/reconnect to pin the `SlotAnchor`.
+    pub async fn get_block_time(&self, slot: u64) -> anyhow::Result<Option<i64>> {
+        let result = self.call("getBlockTime", json!([slot])).await?;
+        if result.is_null() {
+            return Ok(None);
+        }
+        Ok(result.as_i64())
+    }
+
     pub async fn get_transactions_for_address_full_page_enc(
         &self,
         address: &str,

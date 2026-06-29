@@ -17,7 +17,7 @@ use tracing::warn;
 use uuid::Uuid;
 
 use super::util::{none_if_zero_f64, none_if_zero_u64};
-use crate::config::constants::LAMPORTS_PER_SOL;
+use crate::config::constants::{LAMPORTS_PER_SOL, MAX_SNIPE_AGE_SECS};
 use crate::models::{Tpsl2Rule, Token};
 
 mod scalp;
@@ -39,6 +39,7 @@ enum CriterionOutcome {
 /// Every entry criterion, evaluated in order. Adding a filter = add its
 /// `check_*` here; nothing else changes.
 const CRITERIA: &[fn(&Token, &Tpsl2Rule) -> CriterionOutcome] = &[
+    check_token_freshness,
     check_initial_buy_sol,
     check_compute_unit_limit,
     check_compute_unit_price,
@@ -111,10 +112,18 @@ pub fn rule_configures_any_criterion(rule: &Tpsl2Rule) -> bool {
         || rule.p_token_ix_labels.as_array().map_or(false, |a| !a.is_empty())
 }
 
-// ── Criteria ─────────────────────────────────────────────────────────────────
-// Each reads its rule param (None/zero ⇒ NotConfigured), then compares the
-// token's value within the rule's `tolerance_pct` band. `eps` absorbs float
-// rounding and is preserved per-criterion from the original matcher.
+/// Reject tokens whose `created_at` is more than `MAX_SNIPE_AGE_SECS` old.
+/// Always configured (never returns `NotConfigured`) — this is a hard
+/// safety gate, not an optional rule param. Requires A3 (accurate `created_at`
+/// on replayed creates) for gap-replay protection to work.
+fn check_token_freshness(token: &Token, _rule: &Tpsl2Rule) -> CriterionOutcome {
+    let age = Utc::now().signed_duration_since(token.created_at);
+    if age.num_seconds() > MAX_SNIPE_AGE_SECS {
+        CriterionOutcome::Rejected
+    } else {
+        CriterionOutcome::Satisfied
+    }
+}
 
 /// True when `token_val` is within the rule's tolerance band around `rule_val`.
 fn within_tolerance(token_val: f64, rule_val: f64, tolerance_pct: f64, eps: f64) -> bool {

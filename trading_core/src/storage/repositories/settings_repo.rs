@@ -59,6 +59,17 @@ pub mod keys {
     /// balance-floor guard still applies).
     pub const MAX_COMMITTED_SOL: Setting<Option<f64>> =
         Setting::new("trade.max_committed_sol", || None);
+    /// Enable gap-replay on LaserStream reconnect: send `from_slot` so the server
+    /// replays missed transactions since the last seen slot. Default OFF — replayed
+    /// TokenCreated events have stale block_time until the SlotAnchor is pinned
+    /// (A3), and any replay is filtered by A4's 30 s freshness gate anyway.
+    pub const GAP_REPLAY_ON_RECONNECT: Setting<bool> =
+        Setting::new("ingest.gap_replay_on_reconnect", || false);
+    /// Maximum gap-replay window (seconds). If the gap since last progress exceeds
+    /// this, reconnect without `from_slot` (full re-subscribe) instead of replaying
+    /// a huge backlog. Default 300 s (5 min).
+    pub const GAP_REPLAY_MAX_WINDOW_SECS: Setting<u64> =
+        Setting::new("ingest.gap_replay_max_window_secs", || 300);
 }
 
 /// Global, server-wide settings — the assembled, strongly-typed view of the
@@ -110,6 +121,12 @@ pub struct AppSettings {
     /// a new real buy that would push committed total over this is blocked. `None`
     /// = no explicit ceiling.
     pub max_committed_sol: Option<f64>,
+    /// Enable gap-replay on LaserStream reconnect. Default false (safe default:
+    /// replayed TokenCreated events use stale block_time and are filtered by A4).
+    pub gap_replay_on_reconnect: bool,
+    /// Maximum gap-replay window in seconds. Gaps beyond this trigger a clean
+    /// re-subscribe instead of replaying a large backlog. Default 300 s.
+    pub gap_replay_max_window_secs: u64,
 }
 
 impl Default for AppSettings {
@@ -138,6 +155,8 @@ impl AppSettings {
             watchdog_stall_timeout_secs: pick(map, &keys::WATCHDOG_STALL_TIMEOUT_SECS),
             watchdog_check_interval_secs: pick(map, &keys::WATCHDOG_CHECK_INTERVAL_SECS),
             max_committed_sol: pick(map, &keys::MAX_COMMITTED_SOL),
+            gap_replay_on_reconnect: pick(map, &keys::GAP_REPLAY_ON_RECONNECT),
+            gap_replay_max_window_secs: pick(map, &keys::GAP_REPLAY_MAX_WINDOW_SECS),
         }
     }
 }

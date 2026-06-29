@@ -426,17 +426,13 @@ impl StrategyService {
                         .await;
                     }
 
-                    if let Ok(Some(pos)) = repo.find_position(position_id).await {
-                        if pos.entry_price.is_none() {
-                            // No fill — release the SOL commitment and clean up.
-                            // Positions that DID fill stay Holding; their commitment is
-                            // released in sell_and_close_position.
-                            trader.release_sol_for_position(&position_id.to_string());
-                            let _ = repo.delete_position(position_id).await;
-                            runtime.remove_position(&pos);
-                            info!("[REAL] Removed position {position_id} for mint {mint}: no entry recorded");
-                        }
-                    }
+                    // Do NOT inline-delete unentered positions here. A buy that lands
+                    // on-chain but isn't yet indexed returns unentered from
+                    // buy_until_filled_or_give_up, and deleting it would orphan real
+                    // tokens with no position tracking them. The periodic
+                    // redrive_orphaned_buy_submitted reaper is the safe owner: it
+                    // adopts indexed fills and only drops when EVERY submitted sig is a
+                    // confirmed revert. SOL is released there on confirmed revert.
                 } else {
                     paper::spawn_entry_fill_poll(
                         repo, runtime, token_cache, mint, position_id, rule, params,
@@ -911,6 +907,11 @@ impl StrategyService {
             if all_reverted {
                 match self.repo.delete_position(position.id).await {
                     Ok(()) => {
+                        // Release the SOL commitment now that we know no tokens were
+                        // acquired. This is the only drop path for BuySubmitted rows
+                        // (the inline cleanup was removed); without it the budget
+                        // tracker permanently holds the committed SOL until restart.
+                        self.trader.release_sol_for_position(&position.id.to_string());
                         self.runtime.remove_position(&position);
                         info!(position_id = %position.id, mint = %position.mint,
                             "[REAL] Dropped reverted BuySubmitted position (every buy reverted; no tokens)");

@@ -24,6 +24,7 @@ use ingest_laserstream::{
     event::{IngestEvent, Side, Venue},
     proto::geyser::SubscribeUpdateTransaction,
     raw_tx::encode_payload,
+    slot_anchor::SlotAnchor,
     Protocol,
 };
 
@@ -158,6 +159,9 @@ pub struct TokenSyncContext {
     pub pool_index: Arc<DashMap<String, String>>,
     /// Pinged after registering a new pool, waking the WS task to subscribe.
     pub pools_changed: Arc<Notify>,
+    /// Pinned (slot, time) anchor for estimating `block_time` on replayed frames.
+    /// `None` until the first `getBlockTime` RPC call succeeds at startup.
+    pub slot_anchor: Option<SlotAnchor>,
 }
 
 pub fn derive_bonding_curve(mint: &str, pump_program_id: &str) -> anyhow::Result<String> {
@@ -776,10 +780,10 @@ async fn try_replay(
     };
 
     // Newest signature + slot among the replayed txs (slot-ascending). Replay
-    // frames carry no on-chain blockTime (exactly as the live path), so their
-    // backfilled trades use `now()` as block_time — unchanged from the prior
-    // `Value` replay path, which fell back to `now()` too.
-    let now = Utc::now();
+    // frames carry no on-chain blockTime. Use the SlotAnchor to estimate the
+    // real block_time from each frame's slot; fall back to now() when no anchor
+    // is pinned yet (first sync before startup RPC call completed).
+    let anchor = ctx.slot_anchor;
     let mut newest_sig: Option<String> = None;
     let mut newest_slot: Option<u64> = None;
     let mut txs: Vec<FetchedTx> = Vec::with_capacity(replayed.len());
@@ -788,9 +792,12 @@ async fn try_replay(
             newest_slot = Some(r.slot);
             newest_sig = update_signature(&r.update);
         }
+        let block_time = anchor
+            .map(|a| a.estimate_block_time(r.slot))
+            .unwrap_or_else(Utc::now);
         txs.push(FetchedTx {
             slot: r.slot,
-            block_time: now,
+            block_time,
             update: r.update,
         });
     }

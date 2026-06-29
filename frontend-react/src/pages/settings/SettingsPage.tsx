@@ -228,6 +228,7 @@ export function SettingsPage() {
   const [stallText, setStallText] = useState('');
   const [intervalText, setIntervalText] = useState('');
   const [maxSolText, setMaxSolText] = useState('');
+  const [gapWindowText, setGapWindowText] = useState('');
 
   useEffect(() => {
     setBuySlipText(
@@ -252,6 +253,10 @@ export function SettingsPage() {
   useEffect(() => {
     setMaxSolText(settings?.max_committed_sol != null ? String(settings.max_committed_sol) : '');
   }, [settings?.max_committed_sol]);
+
+  useEffect(() => {
+    if (settings) setGapWindowText(String(settings.gap_replay_max_window_secs));
+  }, [settings?.gap_replay_max_window_secs]);
 
   function commitWatchdogSecs(
     text: string,
@@ -314,6 +319,19 @@ export function SettingsPage() {
     }
     const bps = Math.round(pct * 100);
     if (bps !== settings.sell_slippage_bps) update({ sell_slippage_bps: bps });
+  }
+
+  function commitGapWindow() {
+    if (!settings) return;
+    const raw = gapWindowText.trim();
+    if (raw === '') return;
+    const secs = parseInt(raw, 10);
+    if (!Number.isInteger(secs) || secs < 60) {
+      setError('Gap-replay window must be at least 60 seconds');
+      return;
+    }
+    if (secs !== settings.gap_replay_max_window_secs)
+      update({ gap_replay_max_window_secs: secs });
   }
 
   // The shared cache is patched optimistically inside the mutation, so toggles
@@ -521,6 +539,50 @@ export function SettingsPage() {
             <p className="text-[11px] text-text-dim">
               Server floors: timeout ≥ 52s, interval ≥ 5s. Out-of-range values are
               clamped on save.
+            </p>
+          </div>
+        ) : null}
+      </section>
+
+      <section className="max-w-2xl rounded-xl border border-white/8 bg-bg-panel p-4">
+        <h3 className="text-sm font-semibold text-text">Gap-replay on reconnect</h3>
+        <p className="mt-0.5 mb-3.5 text-xs text-text-dim">
+          When enabled, LaserStream replays missed transactions after a reconnect by sending
+          the last seen slot as <code>from_slot</code>. Default off — replayed creates carry
+          stale block_time and are filtered by the 30 s freshness gate anyway.
+        </p>
+
+        {loading ? (
+          <p className="text-xs text-text-dim">Loading…</p>
+        ) : settings ? (
+          <div className="flex flex-col gap-2.5">
+            <ToggleRow
+              title="Enable gap-replay"
+              description="When on, reconnects replay missed transactions from the last seen slot. Filtered by freshness gate (30 s). Keep off unless you need gap coverage."
+              checked={settings.gap_replay_on_reconnect}
+              disabled={saving}
+              onChange={(gap_replay_on_reconnect) => update({ gap_replay_on_reconnect })}
+            />
+            <label className="flex max-w-[220px] flex-col gap-1.5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
+                Max window (s)
+              </span>
+              <Input
+                type="number"
+                fieldSize="md"
+                min={60}
+                step={30}
+                value={gapWindowText}
+                disabled={saving || !settings.gap_replay_on_reconnect}
+                onChange={(e) => setGapWindowText(e.target.value)}
+                onBlur={commitGapWindow}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                }}
+              />
+            </label>
+            <p className="text-[11px] text-text-dim">
+              Gaps larger than this fall back to a live re-subscribe (no replay). Minimum 60 s.
             </p>
           </div>
         ) : null}

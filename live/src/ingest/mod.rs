@@ -92,7 +92,7 @@ pub async fn spawn_ingest(
     spawn_watchdog(
         heartbeat,
         live_rx,
-        settings_rx,
+        settings_rx.clone(),
         move || {
             db_tx_weak
                 .upgrade()
@@ -100,6 +100,25 @@ pub async fn spawn_ingest(
                 .unwrap_or(false)
         },
     );
+
+    // Forward gap-replay settings to the ingest transport whenever the operator
+    // changes them via the settings page. Reads the current value immediately so
+    // the initial state is always applied before the first reconnect.
+    {
+        let h = handle.clone();
+        let mut s_rx = settings_rx.clone();
+        tokio::spawn(async move {
+            loop {
+                {
+                    let s = s_rx.borrow_and_update();
+                    h.set_gap_replay(s.gap_replay_on_reconnect, s.gap_replay_max_window_secs);
+                }
+                if s_rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
 
     let pool_index = handle.pool_index();
     let pools_changed = handle.pools_changed();
