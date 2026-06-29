@@ -43,7 +43,7 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   **all 9 `tagTypes` declared up front** (`injectEndpoints` can't add tag types), `endpoints:()=>({})`.
 - Three `injectEndpoints` modules attach onto it, each bundled only in its app:
   `shared/store/sharedEndpoints.ts` (tokens, profiles, settings+optimistic, solPrice, creation
-  heatmap, capabilities), `live/store/liveEndpoints.ts` (wallet holdings/prices, buy/sell,
+  heatmap), `live/store/liveEndpoints.ts` (wallet holdings/prices, buy/sell,
   cashback, **live-mode**), `lab/store/labEndpoints.ts` (grouped sweeps, strategy
   simulate/paper, grouped creation stats, creators/analysis).
 - `shared/store/apiSlice.ts` is a **barrel re-exporting SHARED endpoints only** (+ `apiErrorMessage`,

@@ -14,17 +14,6 @@ import type {
   WalletProfile,
 } from 'types';
 
-/**
- * Per-backend feature advertisement (`GET /api/system/capabilities`). The live
- * bin reports `{ has_live_trading: true, has_analysis: false }`; the local bin the
- * inverse. (Legacy: the split SPA no longer gates on this at runtime — kept for
- * diagnostics / the capabilities probe.)
- */
-export interface Capabilities {
-  has_live_trading: boolean;
-  has_analysis: boolean;
-}
-
 export interface TokensArgs {
   search: string;
   limit: number;
@@ -123,7 +112,7 @@ function withCreatedMs(r: TokensResponse): TokensResponse {
 /**
  * Shared RTK Query endpoints — read by both the live and lab builds:
  * tokens (list / paged / batch / detail / trades), profiles, settings, SOL
- * price, the creation-stats heatmap, and capabilities. Injected onto `baseApi`
+ * price, and the creation-stats heatmap. Injected onto `baseApi`
  * so each build's store registers them for side-effect.
  */
 export const sharedApi = baseApi.injectEndpoints({
@@ -235,11 +224,6 @@ export const sharedApi = baseApi.injectEndpoints({
       providesTags: ['Profiles'],
       keepUnusedDataFor: 120,
     }),
-    // Per-backend capability flags (live = live trading, lab = analysis).
-    // Static per backend, so it is subscribed once and never refetched.
-    getCapabilities: builder.query<Capabilities, void>({
-      query: () => '/api/system/capabilities',
-    }),
     // System reads shared app-wide (header + price toggle). Folding them into
     // RTK Query collapses the StrictMode double-fire and the multiple
     // independent callers into a single deduped request per cache key.
@@ -290,7 +274,6 @@ export const {
   useGetCreationStatsQuery,
   useGetTokenDetailQuery,
   useGetTokenTradesQuery,
-  useGetCapabilitiesQuery,
   useGetSolPriceQuery,
   useLazyGetSolPriceQuery,
   useGetSettingsQuery,

@@ -129,8 +129,8 @@ difference is the runtime side effect (deploy reloads the live cache; local does
 `trading_core/src/api/mod.rs` `configure_core_routes` registers mode-agnostic routes with
 full `/api/...` paths (no nested scope, so configs compose). Each bin then `.configure`s
 its own route set (`configure_deploy_routes` / `configure_local_routes`, both `web::scope("/api")`).
-Both bins serve `GET /api/system/capabilities → {has_live_trading, has_analysis}` (deploy
-`true/false`, local `false/true`); the frontend gates nav + lazy routes on it. See [@arch/frontend.md](@arch/frontend.md).
+The frontend split is build-time, so there is no runtime capability advertisement — each bin
+is built into its own SPA (`@live`/`@lab`) with a static nav. See [@arch/frontend.md](@arch/frontend.md).
 
 ### Core routes (`trading_core`, take `Arc<CoreState>`)
 

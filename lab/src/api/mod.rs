@@ -1,16 +1,6 @@
 pub mod handlers;
 
-use actix_web::{web, HttpResponse};
-
-/// Static capability advertisement for the local bin: analysis (sweeps/backtests/
-/// swing) on, live trading off. The frontend fetches this once at boot to gate
-/// nav + lazy routes (T16). Mirror of the deploy bin's inverse response.
-async fn get_capabilities() -> HttpResponse {
-    HttpResponse::Ok().json(serde_json::json!({
-        "has_live_trading": false,
-        "has_analysis": true,
-    }))
-}
+use actix_web::web;
 
 /// Register local-only (analysis box) routes: the swing-aware token list, swing
 /// detection, background-job control, the tpsl1/tpsl2 rule authoring + backtest
@@ -24,8 +14,6 @@ async fn get_capabilities() -> HttpResponse {
 pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/api")
-            // Capability advertisement (frontend nav/route gating)
-            .route("/system/capabilities", web::get().to(get_capabilities))
             // Token list (swing-aware)
             .route("/tokens", web::get().to(handlers::tokens::list_tokens))
             // Swing detection
