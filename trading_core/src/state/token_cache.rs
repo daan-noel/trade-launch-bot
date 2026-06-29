@@ -697,10 +697,11 @@ mod tests {
 
     #[test]
     fn alive_when_liquidity_present() {
-        // Reserves healthy → Signal 1 fails → not dead regardless of quiet.
+        // Reserves healthy (>= DEAD_MAX_LIQUIDITY_SOL) → Signal 1 fails → not dead
+        // regardless of quiet.
         let now = Utc::now();
         let mut state = TokenState::new(token_with_launch(now - ChronoDuration::hours(2), 1.0, 1000));
-        state.add_trade(trade_at(now - ChronoDuration::seconds(DEAD_QUIET_SECS + 60), 0.001, 1.0, 5.0));
+        state.add_trade(trade_at(now - ChronoDuration::seconds(DEAD_QUIET_SECS + 60), 0.001, 1.0, 50.0));
         assert!(!state.is_dead(now));
     }
 

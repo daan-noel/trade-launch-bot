@@ -1038,6 +1038,37 @@ fn fetched_from_rpc(slot: u64, wrapped: &Value) -> Option<FetchedTx> {
     })
 }
 
+/// Stamp a proxy `tx_index` on RPC-lowered backfill frames (in-place).
+///
+/// `rpc_to_protobuf` can't recover a transaction's real position within its block —
+/// single-tx `getTransaction` / gTFA pages don't carry it — so every lowered frame
+/// has `info.index == 0`. Live ingest and LaserStream-replay frames keep their real
+/// feed index; only these RPC frames need a fill, hence stamping here (not in the
+/// shared decoder). We assign a per-slot running counter in the frames' existing
+/// order: gTFA returns oldest-first (chain order), so within a slot the proxy
+/// matches on-chain tx order, giving a stable `(slot, tx_index, leg_index)` sort key
+/// for backfilled trades. It is NOT the absolute block position — only a
+/// monotonic-within-slot proxy — so never join/compare it against live `tx_index`.
+///
+/// `frames` MUST be slot-ascending (every caller sorts first). The counter is
+/// per-call, so a single slot split across two streamed gTFA pages restarts at 0 —
+/// negligible for one account's history, and at worst reorders that one boundary
+/// slot's intra-slot ties.
+fn stamp_proxy_tx_index(frames: &mut [FetchedTx]) {
+    let mut cur_slot: Option<u64> = None;
+    let mut next: u64 = 0;
+    for ft in frames.iter_mut() {
+        if cur_slot != Some(ft.slot) {
+            cur_slot = Some(ft.slot);
+            next = 0;
+        }
+        if let Some(info) = ft.update.transaction.as_mut() {
+            info.index = next;
+        }
+        next += 1;
+    }
+}
+
 /// Base58 signature of a lowered frame (for the sync watermark).
 fn update_signature(update: &SubscribeUpdateTransaction) -> Option<String> {
     update
@@ -1099,6 +1130,8 @@ async fn gtfa_fetch_page(
     }
     // Guarantee in-page slot order (the gate + cross-page watermark assume it).
     page.sort_by_key(|t| t.slot);
+    // RPC frames carry no block position; fill a slot-ordered proxy tx_index.
+    stamp_proxy_tx_index(&mut page);
     Ok((page, next))
 }
 
@@ -1294,6 +1327,8 @@ async fn fetch_transactions(
 
     let mut out: Vec<FetchedTx> = results.into_iter().flatten().collect();
     out.sort_by_key(|t| t.slot);
+    // RPC frames carry no block position; fill a slot-ordered proxy tx_index.
+    stamp_proxy_tx_index(&mut out);
     Ok(out)
 }
 

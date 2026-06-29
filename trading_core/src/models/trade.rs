@@ -18,7 +18,11 @@ pub struct Trade {
     pub price_per_token: f64,
     pub tx_signature: String,
     /// Position of this trade's transaction within its block. Real on the live
-    /// LaserStream feed; 0 on the RPC backfill path (no block position available).
+    /// LaserStream feed and on LaserStream-replay backfill. On the RPC backfill path
+    /// the true block position is unavailable, so token_sync stamps a per-slot
+    /// monotonic proxy in gTFA chain order (`stamp_proxy_tx_index`): it orders trades
+    /// within a slot but is NOT the absolute block index — don't compare it across
+    /// sources.
     pub tx_index: u32,
     /// Index of this trade within the transaction (0 = first pump leg).
     pub leg_index: u32,
