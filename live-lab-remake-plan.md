@@ -33,7 +33,7 @@ scaffold `ingest-websocket` · **frontend rename deferred** (keep `@deploy`/`@an
 
 | Crate | Kind | Role | From |
 | --- | --- | --- | --- |
-| `core` | lib | config · models · storage (CRUD for all main tables) · **all** strategy logic (registry, entry/exit kernel, simulation kernel) · external-API micro-services · api framework + shared handlers · `CoreState` · **ingest contract** | rename `backend-core` |
+| `trading_core` | lib | config · models · storage (CRUD for all main tables) · **all** strategy logic (registry, entry/exit kernel, simulation kernel) · external-API micro-services · api framework + shared handlers · `CoreState` · **ingest contract** | rename `backend-core` |
 | `pump-trader` | lib | buy/sell executor. Absorbs `pump-constants` as a `constants` module | + fold `pump-constants` |
 | `ingest-laserstream` | lib | Helius LaserStream gRPC transport: connect → decode → hand off via the core ingest contract | unchanged |
 | `ingest-websocket` | lib | **new, empty scaffold** — `spawn(...) -> IngestHandles` stub mirroring laserstream so `live` can swap transports later | new |
@@ -46,18 +46,18 @@ depends on it directly (today only `pump-trader` does).
 
 ### The ingest contract (enables two transports)
 
-Lift the transport-agnostic types out of `ingest-laserstream` into **`core::ingest`**:
+Lift the transport-agnostic types out of `ingest-laserstream` into **`trading_core::ingest`**:
 `IngestHandles`, the `TraderHook` trait, `StrategyPing`, and `TradeSignals`. Both ingest crates then
-depend on `core` and expose the **same** `spawn(...) -> IngestHandles`. Each transport keeps only its
+depend on `trading_core` and expose the **same** `spawn(...) -> IngestHandles`. Each transport keeps only its
 wire protocol + decoder; the decoded event model + `pipeline`/`db_writer` stay in `ingest-laserstream`
 for now (sharing them with the websocket path is a later task — the scaffold is empty).
 
 ---
 
-## `core` — the shared contract (what `live` and `lab` both call)
+## `trading_core` — the shared contract (what `live` and `lab` both call)
 
 ### 1. CRUD for the main tables
-New repos replacing the tpsl1/2-specific ones, one module per table group under `core/src/storage/repositories/`:
+New repos replacing the tpsl1/2-specific ones, one module per table group under `trading_core/src/storage/repositories/`:
 
 - `token_repo` (`tokens`), `token_info_repo` (`tokens_info`), `token_sync_state_repo` (`token_sync_state`) — per [token-storage-plan.md](../../Videos/meme-trading/token-storage-plan.md)
 - `trade_repo` (`trades`, integer base units, `(block_time, tx_signature, leg_index)` PK) — per [trades-storage-plan.md](../../Videos/meme-trading/trades-storage-plan.md)
@@ -72,7 +72,7 @@ Replace the cloned tpsl1/tpsl2 orchestration with one enum-dispatched registry. 
 (enum, no `dyn`/vtable)** to respect the hot-path budget.
 
 ```
-core/src/strategies/
+trading_core/src/strategies/
   registry.rs        // enum StrategyImpl { Tpsl1, Tpsl2 }; from_id(&str)->Option<Self>
                      // enum StrategyParams { Tpsl1(Tpsl1Params), Tpsl2(Tpsl2Params) }
                      // methods: parse_params, matches_entry, find_entry_fill,
@@ -91,8 +91,8 @@ Key properties:
 - **Unified runtime cache** `StrategyRuntimeCache` (active rules, `holding_by_mint`, per-rule
   counters, paper-run refs, `exit_state_by_position`, in-flight guards) — strategy-agnostic; eval is
   dispatched via `rule.strategy_id`. Replaces `Tpsl1RuntimeCache`/`Tpsl2RuntimeCache`. Lives in
-  `core` (so `lab`'s paper-replay and `live`'s runner share it).
-- **One simulation kernel** in `core::strategies::kernel` — a lean trade-walk calling the decision
+  `trading_core` (so `lab`'s paper-replay and `live`'s runner share it).
+- **One simulation kernel** in `trading_core::strategies::kernel` — a lean trade-walk calling the decision
   functions, emitting the shared `RunMetrics`. `lab`'s sweep calls it per param-combo; paper-trading
   replays call it; `live` uses the same decision functions incrementally. `lab` adds **only**
   orchestration around it (never logic).
@@ -101,7 +101,7 @@ Key properties:
   effects (cache reload + `rules_changed` on `live`, nothing on `lab`).
 
 ### 3. External-API micro-services
-Keep in `core::services`: `sol_price` poller (CoinGecko → Jupiter fallback) + the `coingecko` /
+Keep in `trading_core::services`: `sol_price` poller (CoinGecko → Jupiter fallback) + the `coingecko` /
 `jupiter` / `helius_rpc` / `http` clients. Move the **RPC token-detail/sync** service here too (it's
 external-API + CRUD, no signing keys), leaving the `live` handler to call it. Key-requiring,
 trade-adjacent services (e.g. boot `wallet_reconcile`) stay in `live`.
@@ -137,14 +137,14 @@ locally), validate a stable week, then apply on EC2 during the `live` cutover.
 wiring):
 1. **boot** — load token cache + settings + active `strategy_rules` (parse params once) into
    `StrategyRuntimeCache`; init trader.
-2. **ingest** — `core::ingest`-contract `spawn(...)` (laserstream by default) → decode → `TokenCache`
+2. **ingest** — `trading_core::ingest`-contract `spawn(...)` (laserstream by default) → decode → `TokenCache`
    update → fan-out.
 3. **strategy runner** — one **strategy-agnostic** `StrategyRunner` consuming `StrategyPing`s,
    dispatching entry/exit via `StrategyImpl::from_id(rule.strategy_id)`; opens/closes
    `StrategyPosition`s; executes buy/sell through `pump-trader`.
 4. **persist** — `DbWriter` batches decoded data to Postgres concurrently (channels only).
 5. **services** — SOL/USD poller; HTTP server (core routes + live routes).
-6. **UI CRUD** — handled separately on request via `core` repos.
+6. **UI CRUD** — handled separately on request via `trading_core` repos.
 
 Hot-path budgets unchanged: **sell-confirm via the `trades` gRPC feed, never a new RPC poll**; the
 exit loop still polls the full window before retry (dup-sell guard in `execution/real.rs`); strategy

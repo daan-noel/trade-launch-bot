@@ -1,5 +1,13 @@
 # Crate split — `backend` → `backend-deploy` + `backend-local`
 
+> **STATUS: SUPERSEDED.** This doc records the *why* of the initial split (single `backend`
+> → two bins over a shared core). The crate topology it describes (`backend-core`,
+> `backend-deploy`, `backend-local`, `pump-constants`) has since been renamed to the
+> **`trading_core` / `live` / `lab`** topology — see [live-lab-remake-plan.md](../../live-lab-remake-plan.md)
+> (Phases 0–3 complete). The architectural reasoning (dep partition, three state structs,
+> ingest crate pattern, strategy layering) remains valid; the crate names and file paths
+> are stale.
+
 Design + decision record for the workspace split that replaced the single binary
 `backend` crate. Navigation map lives in [@arch/architecture.md](@arch/architecture.md);
 this doc is the *why* and the patterns to follow when extending it.

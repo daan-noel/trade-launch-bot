@@ -1,5 +1,12 @@
 # TimescaleDB Adoption Plan
 
+> **STATUS: IMPLEMENTED.** Hypertables, compression/retention policies, `DO NOTHING` upsert,
+> and `maintenance.rs` deletion are all shipped as part of live-lab-remake Phase 1 (`d62111f`).
+> File paths below still reference the old `backend/` monorepo layout — the live codebase uses
+> `trading_core/`, `ingest-laserstream/`, `live/`. Phase 2 (continuous aggregates / server-side
+> candles) and Phase 3 (EC2 cutover) remain; EC2 cutover tracks as Phase 5 in
+> [live-lab-remake-plan.md](../../live-lab-remake-plan.md).
+
 ## Context
 
 Goal: reduce DB size/disk, improve query speed, simplify partition ops — on both local analysis box and EC2 (2vCPU/4GB). Starting from an **empty DB**, so no in-place migration needed. Hypertables replace native `PARTITION BY RANGE` from day one.
