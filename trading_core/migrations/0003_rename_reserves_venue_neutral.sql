@@ -14,5 +14,23 @@
 -- sol_amount / token_amount), so a plain RENAME COLUMN has no dependents to drop.
 -- ===========================================================================
 
-ALTER TABLE trades RENAME COLUMN virtual_sol_reserves   TO reserve_sol;
-ALTER TABLE trades RENAME COLUMN virtual_token_reserves TO reserve_token;
+-- Idempotent: `0001_init.sql` was later updated to create the columns with their
+-- venue-neutral names directly, so on a FRESH database the columns already exist
+-- as reserve_sol/reserve_token and there is nothing to rename. Only a legacy DB
+-- created by the pre-rename 0001 still has virtual_*; rename only in that case so
+-- this migration is a safe no-op everywhere else.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'trades' AND column_name = 'virtual_sol_reserves'
+    ) THEN
+        ALTER TABLE trades RENAME COLUMN virtual_sol_reserves   TO reserve_sol;
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'trades' AND column_name = 'virtual_token_reserves'
+    ) THEN
+        ALTER TABLE trades RENAME COLUMN virtual_token_reserves TO reserve_token;
+    END IF;
+END $$;
