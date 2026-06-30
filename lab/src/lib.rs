@@ -19,3 +19,4 @@ pub mod state;
 pub mod storage;
 pub mod strategies;
 pub mod sweep;
+pub mod swing_probe;

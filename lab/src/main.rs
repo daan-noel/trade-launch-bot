@@ -90,6 +90,20 @@ async fn main() -> anyhow::Result<()> {
         return run_lake_export(include_today).await;
     }
 
+    // `lab swing-probe [N] [created_after_rfc3339]` — diagnose the swing1 entry
+    // funnel over the first N lake tokens, then exit. No DB pool, no HTTP.
+    if std::env::args().nth(1).as_deref() == Some("swing-probe") {
+        let n = std::env::args()
+            .nth(2)
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(8);
+        let after = std::env::args()
+            .nth(3)
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc));
+        return lab::swing_probe::run(n, after).await;
+    }
+
     let settings = config::Settings::from_env_local().context("Failed to load configuration")?;
     info!(host = %settings.host, port = settings.port, "Local (analysis) configuration loaded");
 

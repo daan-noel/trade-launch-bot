@@ -24,6 +24,19 @@ use super::classifier::LowFeatures;
 use super::swing::{detect_swing_legs_raw, SwingType};
 use super::{exit_next_kill_profile, swing_params_from_rule};
 
+/// Canonical price for an exit decision: the shared GMGN spot
+/// ([`chart_spot_price`](TradeRow::chart_spot_price), reserve pair → pool → exec
+/// fallback), exactly as the leg detector ([`super::swing::sanitize_and_order`])
+/// prices. The execution fallback covers rows without a reserve pair. This is the
+/// counterpart of the entry's spot-priced fill — both avoid execution
+/// `price_per_token`, which is **zeroed** in the Parquet-lake `SweepTrade` rows
+/// swing1 sweeps over (it carries the reserve pair, not the exec price), so reading
+/// it yielded a ~0 exit price and garbage PnL. Pricing off the spot keeps live and
+/// sweep byte-identical (Step 0 canonical-price contract).
+fn spot_price<T: TradeRow>(t: &T) -> f64 {
+    t.chart_spot_price().unwrap_or_else(|| t.execution_price())
+}
+
 /// The typed reason a swing1 position exited. swing1-specific (intentional clone
 /// of the tpsl ladders' reasons) so the **NextKill** top arm has a home; the
 /// reason strings match the kernel's [`ExitCode::from_reason`] wire form.
@@ -108,7 +121,7 @@ impl WalkState {
     }
 
     fn update_with_trade<T: TradeRow>(&mut self, t: &T) {
-        let price = t.price_per_token();
+        let price = spot_price(t);
         if price > self.peak_price {
             self.peak_price = price;
             self.last_higher_high_time = t.block_time();
@@ -151,7 +164,7 @@ fn ladder_reason<T: TradeRow>(
     params: &LadderParams,
     next_kill_ms: Option<i64>,
 ) -> Option<ExitReason> {
-    let price = t.price_per_token();
+    let price = spot_price(t);
     let block_time = t.block_time();
     let pct = ((price - entry_price) / entry_price) * 100.0;
     None
@@ -245,12 +258,12 @@ pub fn find_trade_driven_exit_with_slot<T: TradeRow>(
                         || next_slot.is_some_and(|ns| s == ns && ns <= exit_slot + MAX_FILL_WAIT_SLOTS)
                 }
             })
-            .min_by(|a, b| a.price_per_token().total_cmp(&b.price_per_token()));
+            .min_by(|a, b| spot_price(*a).total_cmp(&spot_price(*b)));
 
         if let Some(et) = exit_trade {
             return Some((
                 ExitFill {
-                    price: et.price_per_token(),
+                    price: spot_price(et),
                     tx_signature: et.tx_signature().to_string(),
                     block_time: et.block_time(),
                     reason,

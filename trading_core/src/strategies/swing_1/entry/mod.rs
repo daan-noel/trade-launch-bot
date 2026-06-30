@@ -21,9 +21,7 @@ use chrono::Duration;
 
 use crate::models::trade::TradeRow;
 use crate::models::{Swing1Rule, Token};
-use crate::strategies::tpsl_sniper_2::entry::{
-    find_worst_case_paper_entry_at, higher_low_confirmed_index,
-};
+use crate::strategies::tpsl_sniper_2::entry::{higher_low_confirmed_index, EntryFill};
 
 use super::swing::detect_swing_legs_raw;
 use super::{classifier, phase_profile_from_rule, rule_configures_any_entry_gate, swing_params_from_rule};
@@ -87,12 +85,65 @@ pub fn find_phase_entry<T: TradeRow>(
         }
     }
 
-    // 4. Worst-case paper fill at the trigger (shared with tpsl2 + the sweep).
-    let fill = find_worst_case_paper_entry_at(trades, trigger_idx)?;
+    // 4. Worst-case paper fill at the trigger, priced off the **canonical GMGN
+    //    spot** (`chart_spot_price`), not execution `price_per_token`. swing1 is
+    //    validated against the Parquet lake, whose `SweepTrade` rows carry the
+    //    reserve pair but a **zeroed `price_per_token`** — tpsl2's shared
+    //    `find_worst_case_paper_entry_at` reads `price_per_token` and so returns a
+    //    ~0 fill there, which the sweep then discards (zero fires). Pricing the fill
+    //    off the same spot the leg detector uses keeps live/sweep parity (Step 0).
+    let fill = find_worst_case_spot_entry_at(trades, trigger_idx)?;
     if fill.price <= 0.0 {
         return None;
     }
     Some((trigger_idx, fill))
+}
+
+/// Worst-case paper entry fill at `target_idx`, priced by the shared
+/// [`chart_spot_price`](TradeRow::chart_spot_price) (reserve pair → pool → exec
+/// fallback) instead of execution `price_per_token`. Mirrors tpsl2's
+/// `find_worst_case_paper_entry_at` slot-window selection exactly — the trigger
+/// slot plus the first post-trigger buy slot if within `MAX_FILL_WAIT_SLOTS` — but
+/// every price read (the candidate filter AND the worst-case max) goes through the
+/// canonical spot so the fill matches the leg-detector / live price. "Worst case" =
+/// the highest spot among the qualifying buys in the fill window.
+fn find_worst_case_spot_entry_at<T: TradeRow>(
+    trades: &[T],
+    target_idx: usize,
+) -> Option<EntryFill> {
+    use crate::config::constants::MAX_FILL_WAIT_SLOTS;
+    use crate::models::trade::Trade;
+
+    let trigger_slot = trades[target_idx].slot();
+    let post = trades.get(target_idx + 1..).unwrap_or(&[]);
+
+    // Canonical spot, gating on a finite positive price.
+    let spot = |t: &T| t.chart_spot_price().filter(|p| p.is_finite() && *p > 0.0);
+
+    // First slot > trigger with a qualifying buy — only for the proximity check.
+    let next_slot = post
+        .iter()
+        .filter(|t| t.slot() > trigger_slot && t.is_buy() && spot(t).is_some() && !Trade::is_dust(t.sol_amount()))
+        .map(|t| t.slot())
+        .next();
+
+    // Fill window: trigger slot (always) + next_slot if close enough.
+    let best = post
+        .iter()
+        .filter(|t| {
+            let s = t.slot();
+            let in_s = s == trigger_slot;
+            let in_next = next_slot.is_some_and(|ns| s == ns && ns <= trigger_slot + MAX_FILL_WAIT_SLOTS);
+            (in_s || in_next) && t.is_buy() && spot(t).is_some() && !Trade::is_dust(t.sol_amount())
+        })
+        .max_by(|a, b| spot(a).unwrap().total_cmp(&spot(b).unwrap()))?;
+
+    Some(EntryFill {
+        price: spot(best).unwrap(),
+        amount_tokens: best.token_amount(),
+        tx_signature: best.tx_signature().to_string(),
+        block_time: best.block_time(),
+    })
 }
 
 #[cfg(test)]
