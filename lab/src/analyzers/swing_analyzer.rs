@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::models::trade::{Trade, TradeType};
+use crate::models::trade::{Trade, TradeRow, TradeType};
 
 // ---------------------------------------------------------------------------
 // Parameters
@@ -348,10 +348,10 @@ fn sanitize_and_order(trades: &[Trade]) -> Vec<Tx> {
     ordered
         .into_iter()
         .map(|t| {
-            let execution_price = t.execution_price();
-            // Post-trade curve spot (virtual_sol / virtual_token); falls back to
-            // the execution price when reserves are absent.
-            let post_spot = t.curve_spot_price().unwrap_or(execution_price);
+            // Post-trade GMGN spot via the single shared definition (curve virtual
+            // reserves → pool → execution). Identical to the chart, live strategies,
+            // and the sweep, so a leg detected here is the leg detected live.
+            let post_spot = t.chart_spot_price().unwrap_or_else(|| t.execution_price());
             // Spot just before this trade = the previous trade's post-trade spot.
             // The very first trade has no prior state, so fall back to its own
             // post-trade spot.

@@ -32,7 +32,15 @@ pub struct SweepTrade {
     pub token_amount: f64,
     pub price_per_token: f64,
     pub virtual_sol_reserves: Option<f64>,
+    /// Virtual TOKEN reserves — carried (vs the live `Trade`'s `None` default on the
+    /// sweep row historically) so the backtest computes the **same** GMGN curve-spot
+    /// as live + chart instead of silently falling back to execution price. Costs
+    /// ~+8 B/row; accepted as the price of price parity (swing1 Step 0).
+    pub virtual_token_reserves: Option<f64>,
     pub real_sol_reserves: Option<f64>,
+    /// Real TOKEN reserves — feeds the pool-spot fallback of the shared
+    /// [`chart_spot_price`](TradeRow::chart_spot_price). ~+8 B/row.
+    pub real_token_reserves: Option<f64>,
     pub slot: u64,
     /// Token-local interned wallet id (index into the token's `wallets` table).
     pub wallet: u32,
@@ -67,8 +75,14 @@ impl TradeRow for SweepTrade {
     fn virtual_sol_reserves(&self) -> Option<f64> {
         self.virtual_sol_reserves
     }
+    fn virtual_token_reserves(&self) -> Option<f64> {
+        self.virtual_token_reserves
+    }
     fn real_sol_reserves(&self) -> Option<f64> {
         self.real_sol_reserves
+    }
+    fn real_token_reserves(&self) -> Option<f64> {
+        self.real_token_reserves
     }
     fn wallet(&self) -> &u32 {
         &self.wallet
@@ -108,7 +122,9 @@ pub fn project_trades<T: TradeRow<Wallet = String>>(
             token_amount: t.token_amount(),
             price_per_token: t.price_per_token(),
             virtual_sol_reserves: t.virtual_sol_reserves(),
+            virtual_token_reserves: t.virtual_token_reserves(),
             real_sol_reserves: t.real_sol_reserves(),
+            real_token_reserves: t.real_token_reserves(),
             slot: t.slot(),
             wallet: interner.intern(t.wallet()),
             leg_index: t.leg_index(),
@@ -116,4 +132,62 @@ pub fn project_trades<T: TradeRow<Wallet = String>>(
         })
         .collect();
     (rows, interner.into_table())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use trading_core::models::trade::{Trade, TradeType};
+    use trading_core::state::token_cache::CachedTrade;
+
+    /// A `Trade` carrying virtual curve reserves (curve-spot) — the live-curve shape.
+    fn curve_trade(sol: f64, tokens: u64, vsol: f64, vtok: u64) -> Trade {
+        let mut t = Trade::new(
+            "mint".into(),
+            "wallet".into(),
+            TradeType::Buy,
+            sol,
+            tokens,
+            "sig".into(),
+            1,
+            Utc::now(),
+        );
+        t.virtual_sol_reserves = Some(vsol);
+        t.virtual_token_reserves = Some(vtok);
+        t
+    }
+
+    /// Step-0 parity guard: the **same** trades produce an identical GMGN
+    /// `chart_spot_price()` series across the live `Trade`, the live cache row
+    /// `CachedTrade`, and the sweep's `SweepTrade` — so a swing leg detected offline
+    /// is the leg detected live. Covers curve-spot rows and the execution fallback.
+    #[test]
+    fn chart_spot_price_identical_across_trade_cached_and_sweep() {
+        let trades = vec![
+            curve_trade(1.0, 1_000_000, 30.0, 900_000),
+            curve_trade(2.0, 2_000_000, 31.0, 880_000),
+            // Bare row: no reserves → execution-price fallback on all three.
+            Trade::new(
+                "mint".into(),
+                "wallet".into(),
+                TradeType::Sell,
+                0.5,
+                250_000,
+                "sig2".into(),
+                2,
+                Utc::now(),
+            ),
+        ];
+
+        let (sweep_rows, _) = project_trades(&trades);
+        let cached: Vec<CachedTrade> =
+            trades.iter().map(|t| CachedTrade::from_trade(t, 0)).collect();
+
+        for (i, t) in trades.iter().enumerate() {
+            let want = t.chart_spot_price();
+            assert_eq!(want, cached[i].chart_spot_price(), "CachedTrade row {i}");
+            assert_eq!(want, sweep_rows[i].chart_spot_price(), "SweepTrade row {i}");
+        }
+    }
 }

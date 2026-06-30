@@ -44,7 +44,8 @@ pub struct ExportSummary {
 
 /// Day-partitioned trade file schema — the f64 *decimal* fields the sweep reads
 /// (no `tx_signature`, no `real_*_reserves`, no fingerprint: those live in the
-/// `tokens` dimension or are dropped by the new schema).
+/// `tokens` dimension or are dropped by the new schema). Carries `vsol`+`vtok` so
+/// the sweep prices the GMGN curve-spot (`vsol / vtok`) the same as live + chart.
 fn trades_schema() -> Schema {
     Schema::new(vec![
         Field::new("mint", DataType::Utf8, false),
@@ -57,6 +58,12 @@ fn trades_schema() -> Schema {
         Field::new("block_time", DataType::Int64, false),
         Field::new("leg_index", DataType::Int32, false),
         Field::new("vsol", DataType::Float64, true),
+        // Virtual TOKEN reserves — carried so the sweep computes the same GMGN
+        // curve-spot (`vsol / vtok`) as live + chart. `real_*_reserves` are NOT in
+        // the `trades` table (dropped, re-derivable from raw_txs), so the lake can't
+        // carry the pool-spot fallback; curve rows lack real reserves live too, so
+        // curve-spot + execution fallback is full parity for the curve phase.
+        Field::new("vtok", DataType::Float64, true),
         Field::new("venue", DataType::Utf8, false),
         // Intra-block execution order. Carried so the lake's per-mint ordering
         // (slot, tx_index, leg_index) reproduces PG's exactly — many trades share a
@@ -168,6 +175,7 @@ struct LakeTradeRow {
     sol_amount: i64,
     token_amount: i64,
     virtual_sol_reserves: Option<i64>,
+    virtual_token_reserves: Option<i64>,
     slot: i64,
     tx_index: i32,
     leg_index: i16,
@@ -201,7 +209,7 @@ async fn export_day(pool: &PgPool, root: &Path, day: NaiveDate) -> Result<usize>
     let mut stream = sqlx::query_as::<_, LakeTradeRow>(
         r#"
         SELECT t.mint_address, w.address AS wallet, t.trade_type, t.venue,
-               t.sol_amount, t.token_amount, t.virtual_sol_reserves,
+               t.sol_amount, t.token_amount, t.virtual_sol_reserves, t.virtual_token_reserves,
                t.slot, t.tx_index, t.leg_index, t.block_time
         FROM trades t
         JOIN wallet_dict w ON w.id = t.wallet_id
@@ -246,6 +254,7 @@ struct TradeBuilders {
     block_time: Int64Builder,
     leg_index: Int32Builder,
     vsol: Float64Builder,
+    vtok: Float64Builder,
     venue: StringBuilder,
     tx_index: Int32Builder,
 }
@@ -269,6 +278,7 @@ impl TradeBuilders {
         self.block_time.append_value(r.block_time.timestamp_micros());
         self.leg_index.append_value(r.leg_index as i32);
         self.vsol.append_option(r.virtual_sol_reserves.map(|v| v as f64));
+        self.vtok.append_option(r.virtual_token_reserves.map(|v| v as f64));
         self.venue.append_value(&r.venue);
         self.tx_index.append_value(r.tx_index);
     }
@@ -287,6 +297,7 @@ impl TradeBuilders {
                 Arc::new(self.block_time.finish()),
                 Arc::new(self.leg_index.finish()),
                 Arc::new(self.vsol.finish()),
+                Arc::new(self.vtok.finish()),
                 Arc::new(self.venue.finish()),
                 Arc::new(self.tx_index.finish()),
             ],
@@ -436,6 +447,7 @@ mod tests {
             sol_amount: lamports,
             token_amount: raw_tok,
             virtual_sol_reserves: Some(42),
+            virtual_token_reserves: Some(84),
             slot: 7,
             tx_index: 0,
             leg_index: 0,
@@ -455,10 +467,12 @@ mod tests {
         let token = batch.column(4).as_any().downcast_ref::<Float64Array>().unwrap();
         let price = batch.column(5).as_any().downcast_ref::<Float64Array>().unwrap();
         let vsol = batch.column(9).as_any().downcast_ref::<Float64Array>().unwrap();
+        let vtok = batch.column(10).as_any().downcast_ref::<Float64Array>().unwrap();
         assert!((sol.value(0) - 1.5).abs() < 1e-12, "lamports→SOL ÷1e9");
         assert!((token.value(0) - 3_000_000.0).abs() < 1e-6, "raw token units kept as f64");
         assert!((price.value(0) - 1.5 / 3_000_000.0).abs() < 1e-18, "price = sol/token");
         assert!((vsol.value(0) - 42.0).abs() < 1e-12, "vsol raw→f64");
+        assert!((vtok.value(0) - 84.0).abs() < 1e-12, "vtok raw→f64");
     }
 
     #[test]

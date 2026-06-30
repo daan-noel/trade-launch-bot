@@ -73,44 +73,6 @@ impl Trade {
         sol_amount < MIN_TRADE_SOL
     }
 
-    /// Spot price from bonding-curve reserves (`virtual_sol / virtual_token`).
-    pub fn curve_spot_price(&self) -> Option<f64> {
-        match (self.virtual_sol_reserves, self.virtual_token_reserves) {
-            (Some(vsol), Some(vtok)) if vtok > 0 => Some(vsol / vtok as f64),
-            _ => None,
-        }
-    }
-
-    /// PumpSwap pool spot from post-swap reserves (`real_sol / real_token`).
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn pool_spot_price(&self) -> Option<f64> {
-        match (self.real_sol_reserves, self.real_token_reserves) {
-            (Some(sol), Some(tok)) if tok > 0 => Some(sol / tok as f64),
-            _ => None,
-        }
-    }
-
-    /// GMGN-style chart spot: curve virtual reserves, pool reserves, then execution.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn chart_spot_price(&self) -> Option<f64> {
-        self.curve_spot_price()
-            .or_else(|| self.pool_spot_price())
-            .filter(|p| p.is_finite() && *p > 0.0)
-            .or_else(|| {
-                let exec = self.execution_price();
-                (exec.is_finite() && exec > 0.0).then_some(exec)
-            })
-    }
-
-    /// Average execution price for this swap (`sol_amount / token_amount`).
-    pub fn execution_price(&self) -> f64 {
-        if self.token_amount > 0 {
-            self.sol_amount / self.token_amount as f64
-        } else {
-            self.price_per_token
-        }
-    }
-
     pub fn new(
         mint_address: String,
         wallet_address: String,
@@ -189,9 +151,61 @@ pub trait TradeRow {
     }
     /// Real (non-virtual) SOL reserves (tpsl2's E4 + scalp liquidity gates read this).
     fn real_sol_reserves(&self) -> Option<f64>;
+    /// Real (non-virtual) TOKEN reserves — used for the PumpSwap pool spot fallback
+    /// in [`chart_spot_price`](TradeRow::chart_spot_price). Only rows that carry the
+    /// real-reserve pair price via the pool branch; the default is `None`.
+    fn real_token_reserves(&self) -> Option<f64> {
+        None
+    }
     /// Borrowed wallet identity — borrowed so cohort membership never clones.
     fn wallet(&self) -> &Self::Wallet;
     fn tx_signature(&self) -> &str;
+
+    // ── Shared GMGN price (single definition: chart == analyzer == live == sweep) ──
+
+    /// Average execution price (`sol_amount / token_amount`), `price_per_token` when
+    /// `token_amount` is zero.
+    fn execution_price(&self) -> f64 {
+        let tok = self.token_amount();
+        if tok > 0.0 {
+            self.sol_amount() / tok
+        } else {
+            self.price_per_token()
+        }
+    }
+
+    /// Bonding-curve spot (`virtual_sol / virtual_token`), `None` if either reserve
+    /// is absent or the token reserve is non-positive.
+    fn curve_spot_price(&self) -> Option<f64> {
+        match (self.virtual_sol_reserves(), self.virtual_token_reserves()) {
+            (Some(vsol), Some(vtok)) if vtok > 0.0 => Some(vsol / vtok),
+            _ => None,
+        }
+    }
+
+    /// PumpSwap pool spot from real reserves (`real_sol / real_token`).
+    fn pool_spot_price(&self) -> Option<f64> {
+        match (self.real_sol_reserves(), self.real_token_reserves()) {
+            (Some(sol), Some(tok)) if tok > 0.0 => Some(sol / tok),
+            _ => None,
+        }
+    }
+
+    /// **The** canonical GMGN chart spot: curve virtual reserves → pool real
+    /// reserves → execution price. This one definition is what the chart, the swing
+    /// analyzer, the live strategies, and the backtest sweep all price from, so a
+    /// leg detected offline is the leg detected live. Always returns a finite,
+    /// positive number (the execution fallback) unless the row carries no usable
+    /// price at all.
+    fn chart_spot_price(&self) -> Option<f64> {
+        self.curve_spot_price()
+            .or_else(|| self.pool_spot_price())
+            .filter(|p| p.is_finite() && *p > 0.0)
+            .or_else(|| {
+                let exec = self.execution_price();
+                (exec.is_finite() && exec > 0.0).then_some(exec)
+            })
+    }
 }
 
 impl TradeRow for Trade {
@@ -226,6 +240,9 @@ impl TradeRow for Trade {
     }
     fn real_sol_reserves(&self) -> Option<f64> {
         self.real_sol_reserves
+    }
+    fn real_token_reserves(&self) -> Option<f64> {
+        self.real_token_reserves.map(|v| v as f64)
     }
     fn wallet(&self) -> &String {
         &self.wallet_address

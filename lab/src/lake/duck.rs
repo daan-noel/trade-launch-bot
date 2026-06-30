@@ -227,12 +227,12 @@ fn load_token_trades(
     let sql = format!(
         "WITH ranked AS ( \
             SELECT t.mint, t.wallet, t.is_buy, t.sol_amount, t.token_amount, t.price, \
-                   t.slot, t.tx_index, t.block_time, t.leg_index, t.vsol, \
+                   t.slot, t.tx_index, t.block_time, t.leg_index, t.vsol, t.vtok, \
                    ROW_NUMBER() OVER (PARTITION BY t.mint ORDER BY {order}) AS rn \
             FROM read_parquet({trades_lit}, hive_partitioning=true) t \
             WHERE t.mint IN (SELECT mint FROM sel_mints) {curve_filter} \
          ) \
-         SELECT mint, wallet, is_buy, sol_amount, token_amount, price, slot, block_time, leg_index, vsol \
+         SELECT mint, wallet, is_buy, sol_amount, token_amount, price, slot, block_time, leg_index, vsol, vtok \
          FROM ranked WHERE rn <= ? \
          ORDER BY mint ASC, slot ASC, tx_index ASC, leg_index ASC, block_time ASC"
     );
@@ -256,6 +256,7 @@ fn load_token_trades(
         let block_time: i64 = row.get(7)?;
         let leg_index: i32 = row.get(8)?;
         let vsol: Option<f64> = row.get(9)?;
+        let vtok: Option<f64> = row.get(10)?;
 
         if cur_mint.as_deref() != Some(mint.as_str()) {
             if let Some(prev) = cur_mint.take() {
@@ -269,8 +270,12 @@ fn load_token_trades(
             token_amount,
             price_per_token: price,
             virtual_sol_reserves: vsol,
-            // The new schema dropped real_*_reserves — not in the lake either.
+            virtual_token_reserves: vtok,
+            // `real_*_reserves` aren't in the `trades` table (dropped, re-derivable
+            // from raw_txs) so the lake can't carry them; curve rows lack them live
+            // too, so the GMGN curve-spot (vsol/vtok) is full parity for the curve phase.
             real_sol_reserves: None,
+            real_token_reserves: None,
             slot: slot as u64,
             wallet: interner.intern(&wallet),
             leg_index: leg_index as u32,
