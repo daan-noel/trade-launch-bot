@@ -92,7 +92,10 @@ fn check_token_freshness(token: &Token, _rule: &Tpsl1Rule) -> CriterionOutcome {
     if age.num_seconds() > MAX_SNIPE_AGE_SECS {
         CriterionOutcome::Rejected
     } else {
-        CriterionOutcome::Satisfied
+        // A safety gate, not a user-configured criterion: passing it must NOT
+        // flip `any_configured`, or a rule with no real filters would match every
+        // fresh token. Report inert when fresh; only ever reject.
+        CriterionOutcome::NotConfigured
     }
 }
 
@@ -261,8 +264,12 @@ mod tests {
     use crate::models::trade::{Trade, TradeType};
     use serde_json::{json, Value};
 
+    // Anchored to wall-clock so test tokens stay within `MAX_SNIPE_AGE_SECS` of
+    // `Utc::now()` — the freshness gate in `token_matches_buy_rule` rejects a
+    // token older than 30s, so a fixed past timestamp would make every match
+    // test fail once that timestamp aged out.
     fn base_time() -> DateTime<Utc> {
-        DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap()
+        Utc::now()
     }
 
     fn token_with(
