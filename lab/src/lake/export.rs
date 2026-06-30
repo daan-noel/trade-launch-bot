@@ -385,7 +385,8 @@ async fn export_tokens(pool: &PgPool, root: &Path) -> Result<usize> {
     let mut stream = sqlx::query_as::<_, LakeTokenRow>(
         r#"
         SELECT mint_address, symbol, creator_wallet, token_program_id,
-               initial_buy_sol, cu_limit, cu_price, is_cashback_enabled,
+               initial_buy_sol::float8 / 1e9 AS initial_buy_sol,
+               cu_limit, cu_price, is_cashback_enabled,
                is_mayhem_mode, created_at, initial_buy_instruction, ix_labels
         FROM tokens
         "#,

@@ -242,8 +242,13 @@ WHERE id > $walletWm
 ON CONFLICT DO NOTHING;
 
 \echo '-- tokens'
-INSERT INTO tokens SELECT * FROM ec2_sync_src.tokens
-WHERE created_at >= '$tokensWm'::timestamptz
+-- created_at>=watermark is the fast path (FDW pushes it down), but server tokens
+-- can arrive with a created_at EARLIER than the local max (out-of-order discovery,
+-- backfills). Those would be skipped, yet their tokens_info row may still be pulled
+-- below -> FK violation. So also pull any server token whose mint is missing locally.
+INSERT INTO tokens SELECT t.* FROM ec2_sync_src.tokens t
+WHERE t.created_at >= '$tokensWm'::timestamptz
+   OR NOT EXISTS (SELECT 1 FROM tokens l WHERE l.mint_address = t.mint_address)
 ON CONFLICT (mint_address) DO NOTHING;
 
 \echo '-- tokens_info'
