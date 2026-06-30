@@ -174,8 +174,8 @@ struct LakeTradeRow {
     venue: String,
     sol_amount: i64,
     token_amount: i64,
-    virtual_sol_reserves: Option<i64>,
-    virtual_token_reserves: Option<i64>,
+    reserve_sol: Option<i64>,
+    reserve_token: Option<i64>,
     slot: i64,
     tx_index: i32,
     leg_index: i16,
@@ -209,7 +209,7 @@ async fn export_day(pool: &PgPool, root: &Path, day: NaiveDate) -> Result<usize>
     let mut stream = sqlx::query_as::<_, LakeTradeRow>(
         r#"
         SELECT t.mint_address, w.address AS wallet, t.trade_type, t.venue,
-               t.sol_amount, t.token_amount, t.virtual_sol_reserves, t.virtual_token_reserves,
+               t.sol_amount, t.token_amount, t.reserve_sol, t.reserve_token,
                t.slot, t.tx_index, t.leg_index, t.block_time
         FROM trades t
         JOIN wallet_dict w ON w.id = t.wallet_id
@@ -277,8 +277,8 @@ impl TradeBuilders {
         // vs a fresh PG read (corpus-parity fix).
         self.block_time.append_value(r.block_time.timestamp_micros());
         self.leg_index.append_value(r.leg_index as i32);
-        self.vsol.append_option(r.virtual_sol_reserves.map(|v| v as f64));
-        self.vtok.append_option(r.virtual_token_reserves.map(|v| v as f64));
+        self.vsol.append_option(r.reserve_sol.map(|v| v as f64));
+        self.vtok.append_option(r.reserve_token.map(|v| v as f64));
         self.venue.append_value(&r.venue);
         self.tx_index.append_value(r.tx_index);
     }
@@ -446,8 +446,8 @@ mod tests {
             venue: "curve".into(),
             sol_amount: lamports,
             token_amount: raw_tok,
-            virtual_sol_reserves: Some(42),
-            virtual_token_reserves: Some(84),
+            reserve_sol: Some(42),
+            reserve_token: Some(84),
             slot: 7,
             tx_index: 0,
             leg_index: 0,

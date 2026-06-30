@@ -60,8 +60,8 @@ struct TradeDbRow {
     leg_index: i16,
     slot: i64,
     block_time: DateTime<Utc>,
-    virtual_sol_reserves: Option<i64>,
-    virtual_token_reserves: Option<i64>,
+    reserve_sol: Option<i64>,
+    reserve_token: Option<i64>,
     venue: String,
 }
 
@@ -98,8 +98,8 @@ impl TryFrom<TradeDbRow> for Trade {
             block_time: r.block_time,
             // Synthesized: the new table has no `received_at`; reuse block_time.
             received_at: r.block_time,
-            virtual_sol_reserves: r.virtual_sol_reserves.map(lamports_to_sol),
-            virtual_token_reserves: r.virtual_token_reserves.map(|v| v as u64),
+            reserve_sol: r.reserve_sol.map(lamports_to_sol),
+            reserve_token: r.reserve_token.map(|v| v as u64),
             // The new table dropped the real_* reserve columns.
             real_sol_reserves: None,
             real_token_reserves: None,
@@ -154,7 +154,7 @@ impl TradeRepo {
             INSERT INTO trades
                 (mint_address, wallet_id, trade_type, venue,
                  sol_amount, token_amount,
-                 virtual_sol_reserves, virtual_token_reserves,
+                 reserve_sol, reserve_token,
                  slot, tx_index, leg_index, block_time, tx_signature)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING
@@ -166,8 +166,8 @@ impl TradeRepo {
         .bind(&trade.venue)
         .bind(sol_to_lamports(trade.sol_amount))
         .bind(trade.token_amount as i64)
-        .bind(trade.virtual_sol_reserves.map(sol_to_lamports_opt))
-        .bind(trade.virtual_token_reserves.map(|v| v as i64))
+        .bind(trade.reserve_sol.map(sol_to_lamports_opt))
+        .bind(trade.reserve_token.map(|v| v as i64))
         .bind(trade.slot as i64)
         .bind(trade.tx_index as i32)
         .bind(trade.leg_index as i16)
@@ -220,7 +220,7 @@ impl TradeRepo {
             let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
                 "INSERT INTO trades \
                  (mint_address, wallet_id, trade_type, venue, sol_amount, token_amount, \
-                  virtual_sol_reserves, virtual_token_reserves, slot, tx_index, leg_index, \
+                  reserve_sol, reserve_token, slot, tx_index, leg_index, \
                   block_time, tx_signature) ",
             );
             // `push_values` cannot bubble a Result, so pre-resolve the fallible
@@ -237,8 +237,8 @@ impl TradeRepo {
                     .push_bind(&t.venue)
                     .push_bind(sol_to_lamports(t.sol_amount))
                     .push_bind(t.token_amount as i64)
-                    .push_bind(t.virtual_sol_reserves.map(sol_to_lamports_opt))
-                    .push_bind(t.virtual_token_reserves.map(|v| v as i64))
+                    .push_bind(t.reserve_sol.map(sol_to_lamports_opt))
+                    .push_bind(t.reserve_token.map(|v| v as i64))
                     .push_bind(t.slot as i64)
                     .push_bind(t.tx_index as i32)
                     .push_bind(t.leg_index as i16)
@@ -351,7 +351,7 @@ impl TradeRepo {
             r#"
             SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
                    t.sol_amount, t.token_amount,
-                   t.virtual_sol_reserves, t.virtual_token_reserves,
+                   t.reserve_sol, t.reserve_token,
                    t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature
             FROM trades t
             JOIN wallet_dict w ON w.id = t.wallet_id
@@ -376,7 +376,7 @@ impl TradeRepo {
             r#"
             SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
                    t.sol_amount, t.token_amount,
-                   t.virtual_sol_reserves, t.virtual_token_reserves,
+                   t.reserve_sol, t.reserve_token,
                    t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature
             FROM trades t
             JOIN wallet_dict w ON w.id = t.wallet_id
@@ -410,7 +410,7 @@ impl TradeRepo {
             r#"
             SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
                    t.sol_amount, t.token_amount,
-                   t.virtual_sol_reserves, t.virtual_token_reserves,
+                   t.reserve_sol, t.reserve_token,
                    t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature
             FROM trades t
             JOIN wallet_dict w ON w.id = t.wallet_id
@@ -447,7 +447,7 @@ impl TradeRepo {
             r#"
             SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
                    t.sol_amount, t.token_amount,
-                   t.virtual_sol_reserves, t.virtual_token_reserves,
+                   t.reserve_sol, t.reserve_token,
                    t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature
             FROM trades t
             JOIN wallet_dict w ON w.id = t.wallet_id
@@ -603,7 +603,7 @@ impl TradeRepo {
         /// aggregates carried by the window functions. `lifetime_volume` is in
         /// lamports (SUM of the integer column) and converted to f64 SOL on read;
         /// `newest_price` is already a float (sol/token ratio computed in SQL);
-        /// `newest_reserves` is the raw integer virtual_token_reserves as f64.
+        /// `newest_reserves` is the raw integer reserve_token as f64.
         #[derive(sqlx::FromRow)]
         struct SeedTradeRow {
             #[sqlx(flatten)]
@@ -624,14 +624,14 @@ impl TradeRepo {
                 WITH ranked AS (
                     SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
                            t.sol_amount, t.token_amount,
-                           t.virtual_sol_reserves, t.virtual_token_reserves,
+                           t.reserve_sol, t.reserve_token,
                            t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature,
                            ROW_NUMBER()                          OVER w  AS rn,
                            COUNT(*)                              OVER wp AS lifetime_count,
                            COALESCE(SUM(t.sol_amount) OVER wp, 0)::bigint AS lifetime_volume,
                            FIRST_VALUE(t.block_time)             OVER w  AS newest_block_time,
                            FIRST_VALUE(t.sol_amount::float8 / NULLIF(t.token_amount, 0)) OVER w AS newest_price,
-                           FIRST_VALUE(t.virtual_token_reserves::float8) OVER w AS newest_reserves
+                           FIRST_VALUE(t.reserve_token::float8) OVER w AS newest_reserves
                     FROM trades t
                     JOIN wallet_dict w ON w.id = t.wallet_id
                     WHERE t.mint_address = ANY($1)
@@ -642,7 +642,7 @@ impl TradeRepo {
                 )
                 SELECT mint_address, wallet_address, trade_type, venue,
                        sol_amount, token_amount,
-                       virtual_sol_reserves, virtual_token_reserves,
+                       reserve_sol, reserve_token,
                        slot, tx_index, leg_index, block_time, tx_signature,
                        lifetime_count, lifetime_volume, newest_block_time, newest_price, newest_reserves
                 FROM ranked
@@ -760,7 +760,7 @@ pub struct SeedAgg {
 // Conversion helpers — the I/O boundary between the runtime `Trade` model and the
 // integer/BYTEA `trades` schema.
 //
-// SOL: the model carries `sol_amount` / `virtual_sol_reserves` as human SOL (f64),
+// SOL: the model carries `sol_amount` / `reserve_sol` as human SOL (f64),
 // so the SOL side round-trips through `sol_to_lamports`/`lamports_to_sol` (exact
 // lamport precision in the BIGINT column). Token amounts and token reserves are
 // now exact integers (`u64`) in the model too, so they bind/read as `i64` directly
@@ -822,7 +822,7 @@ mod tests {
     use sqlx::postgres::PgPoolOptions;
 
     /// `insert_many` binds 13 params/row (mint_address, wallet_id, trade_type,
-    /// venue, sol_amount, token_amount, virtual_sol_reserves, virtual_token_reserves,
+    /// venue, sol_amount, token_amount, reserve_sol, reserve_token,
     /// slot, tx_index, leg_index, block_time, tx_signature); one Postgres statement
     /// is capped at 65535 (sqlx 0.6 wraps `len() as i16` past it → a Postgres parse
     /// error). Pin the chunk so adding a bound column re-checks the ceiling here
@@ -836,11 +836,11 @@ mod tests {
         );
     }
 
-    /// `virtual_sol_reserves` is human SOL in the model but lamports in the
-    /// BIGINT column — the SOL↔lamports round-trip must preserve fractional SOL
-    /// (the old `f64_opt_to_raw` path rounded 30.5 SOL to the integer 31).
+    /// `reserve_sol` is human SOL in the model but lamports in the BIGINT column —
+    /// the SOL↔lamports round-trip must preserve fractional SOL (the old
+    /// `f64_opt_to_raw` path rounded 30.5 SOL to the integer 31).
     #[test]
-    fn virtual_sol_reserves_round_trips_through_lamports() {
+    fn reserve_sol_round_trips_through_lamports() {
         let sol = 30.123_456_789_f64;
         let stored = sol_to_lamports_opt(sol);
         assert_eq!(stored, 30_123_456_789, "SOL → lamports keeps 9-decimal precision");

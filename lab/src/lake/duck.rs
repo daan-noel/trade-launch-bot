@@ -269,8 +269,8 @@ fn load_token_trades(
             sol_amount,
             token_amount,
             price_per_token: price,
-            virtual_sol_reserves: vsol,
-            virtual_token_reserves: vtok,
+            reserve_sol: vsol,
+            reserve_token: vtok,
             // `real_*_reserves` aren't in the `trades` table (dropped, re-derivable
             // from raw_txs) so the lake can't carry them; curve rows lack them live
             // too, so the GMGN curve-spot (vsol/vtok) is full parity for the curve phase.

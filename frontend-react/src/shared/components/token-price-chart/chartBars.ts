@@ -42,14 +42,18 @@ export function tradeBarSlot(trade: Pick<ChartTrade, 'slot'>): UTCTimestamp | nu
 /** Matches backend `MIN_TRADE_SOL` (10k lamports); safety net for pre-filter data. */
 const MIN_CHART_SOL = 1e-5;
 
-/** Bonding-curve spot price: virtual SOL / virtual tokens (GMGN-style). */
+/**
+ * Spot price from the venue-neutral reserve pair: reserve_sol / reserve_token
+ * (GMGN-style). Curve virtual reserves on curve rows, pool real reserves on amm
+ * rows — the backend stores both in the same `reserve_*` pair.
+ */
 export function curveSpotPriceSol(
-  trade: Pick<ChartTrade, 'virtual_sol_reserves' | 'virtual_token_reserves'>,
+  trade: Pick<ChartTrade, 'reserve_sol' | 'reserve_token'>,
 ): number | null {
-  const vsol = trade.virtual_sol_reserves;
-  const vtoken = trade.virtual_token_reserves;
-  if (vsol == null || vtoken == null || vtoken <= 0) return null;
-  return vsol / vtoken;
+  const sol = trade.reserve_sol;
+  const token = trade.reserve_token;
+  if (sol == null || token == null || token <= 0) return null;
+  return sol / token;
 }
 
 /** PumpSwap pool spot: quote SOL / base tokens (post-migration). */
@@ -87,8 +91,8 @@ export function tradeSpotPriceSol(trade: ChartTrade): number | null {
  * missing or non-finite, so callers fall back to the post-trade price.
  */
 export function preTradeSpotPriceSol(trade: ChartTrade): number | null {
-  const postVsol = trade.virtual_sol_reserves ?? trade.real_sol_reserves;
-  const postVtoken = trade.virtual_token_reserves ?? trade.real_token_reserves;
+  const postVsol = trade.reserve_sol ?? trade.real_sol_reserves;
+  const postVtoken = trade.reserve_token ?? trade.real_token_reserves;
   const tokenAmount = trade.token_amount;
   if (
     postVsol == null ||
@@ -116,14 +120,13 @@ export function preTradeSpotPriceSol(trade: ChartTrade): number | null {
  *
  * pump.fun seeds the curve with {@link PUMP_INITIAL_VIRTUAL_SOL} virtual SOL
  * before any depositor SOL exists, so the actual SOL locked in the pool is
- * `virtual_sol_reserves − initial virtual SOL`. This is the true liquidity
- * (and the graduation-progress figure). Clamped at 0; null when the snapshot
- * is missing.
+ * `reserve_sol − initial virtual SOL`. This is the true liquidity (and the
+ * graduation-progress figure). Clamped at 0; null when the snapshot is missing.
  */
 export function curveLiquiditySol(
-  trade: Pick<ChartTrade, 'virtual_sol_reserves'>,
+  trade: Pick<ChartTrade, 'reserve_sol'>,
 ): number | null {
-  const vsol = trade.virtual_sol_reserves;
+  const vsol = trade.reserve_sol;
   if (vsol == null || vsol <= 0) return null;
   return Math.max(0, vsol - PUMP_INITIAL_VIRTUAL_SOL);
 }
@@ -141,7 +144,7 @@ export function tradeLiquiditySol(trade: ChartTrade): number | null {
 
 /** FDV in SOL: total supply × spot price (GMGN-style MC). */
 export function curveMarketCapSol(
-  trade: Pick<ChartTrade, 'virtual_sol_reserves' | 'virtual_token_reserves'>,
+  trade: Pick<ChartTrade, 'reserve_sol' | 'reserve_token'>,
 ): number | null {
   const spot = curveSpotPriceSol(trade);
   if (spot == null) return null;
@@ -258,9 +261,9 @@ export function compareTradesChronologically(a: ChartTrade, b: ChartTrade): numb
   return (a.leg_index ?? 0) - (b.leg_index ?? 0);
 }
 
-/** Token reserves after a trade (curve virtual, else AMM pool real). */
+/** Token reserves after a trade (the venue-neutral reserve pair, else AMM pool real). */
 function tradeTokenReserve(trade: ChartTrade): number | null {
-  const reserve = trade.virtual_token_reserves ?? trade.real_token_reserves;
+  const reserve = trade.reserve_token ?? trade.real_token_reserves;
   return reserve != null && Number.isFinite(reserve) ? reserve : null;
 }
 

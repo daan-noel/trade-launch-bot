@@ -403,8 +403,8 @@ impl StrategyService {
                         let reserves = token_cache.get(&mint).and_then(|e| {
                             let st = e.value();
                             real::snipe_reserves_from_cache(
-                                st.current_virtual_token_reserves,
-                                st.current_virtual_sol_reserves,
+                                st.current_reserve_token,
+                                st.current_reserve_sol,
                             )
                         });
                         real::buy_until_filled_or_give_up(

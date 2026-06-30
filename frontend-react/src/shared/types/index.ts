@@ -514,8 +514,10 @@ export interface TradeRecord {
   slot: number;
   block_time: string;
   received_at?: string;
-  virtual_sol_reserves?: number | null;
-  virtual_token_reserves?: number | null;
+  /** Reserve pair this row prices from (venue-neutral): curve virtual reserves on
+   *  curve rows, pool real reserves on amm rows. Spot = reserve_sol / reserve_token. */
+  reserve_sol?: number | null;
+  reserve_token?: number | null;
   real_sol_reserves?: number | null;
   real_token_reserves?: number | null;
   /** Trading venue: 'curve' (bonding curve) or 'amm' (post-migration PumpSwap). */

@@ -14,8 +14,10 @@ export interface ChartTrade {
   tx_signature?: string;
   /** Leg index within the transaction (0 = first) — chronological tiebreaker. */
   leg_index?: number;
-  virtual_sol_reserves?: number | null;
-  virtual_token_reserves?: number | null;
+  /** SOL side of the reserve pair this row prices from (curve virtual reserves on
+   *  curve rows, pool real reserves on amm rows). Spot = reserve_sol / reserve_token. */
+  reserve_sol?: number | null;
+  reserve_token?: number | null;
   real_sol_reserves?: number | null;
   real_token_reserves?: number | null;
   venue?: 'curve' | 'amm';

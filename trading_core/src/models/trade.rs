@@ -36,15 +36,20 @@ pub struct Trade {
     pub received_at: DateTime<Utc>,
 
     // ── On-chain state snapshot (from TradeEvent "Program data:" log) ─────────
-    /// Virtual SOL reserves on the bonding curve at the time of the trade.
-    /// SOL stays `f64` (small magnitude, no precision risk); the exactness lives
-    /// in the lamports column.
-    pub virtual_sol_reserves: Option<f64>,
-    /// Virtual token reserves — raw on-chain integer units (`u64`, sits near 2^53).
-    pub virtual_token_reserves: Option<u64>,
-    /// Real (non-virtual) SOL reserves — used for graduation progress.
+    /// SOL side of the reserve pair this row prices from (venue-neutral): the
+    /// bonding curve's *virtual* SOL reserves on curve rows, the PumpSwap pool's
+    /// *real* SOL reserves on amm rows (the decoder copies pool reserves here for
+    /// migrated tokens). Spot price = `reserve_sol / reserve_token`. SOL stays
+    /// `f64` (small magnitude); the exactness lives in the lamports column.
+    pub reserve_sol: Option<f64>,
+    /// Token side of the reserve pair — raw on-chain integer units (`u64`, near 2^53).
+    pub reserve_token: Option<u64>,
+    /// Real (non-virtual) SOL reserves — used for graduation progress. Distinct
+    /// from `reserve_sol`: on curve rows this is the *real* deposited SOL, not the
+    /// virtual reserve the price derives from. Not persisted (DB keeps only the
+    /// price pair); set by the live decoder.
     pub real_sol_reserves: Option<f64>,
-    /// Real token reserves — raw on-chain integer units (`u64`).
+    /// Real token reserves — raw on-chain integer units (`u64`). Not persisted.
     pub real_token_reserves: Option<u64>,
 
     // ── Instruction context ───────────────────────────────────────────────────
@@ -107,8 +112,8 @@ impl Trade {
             // it with the raw-tx receipt time; default to now (not block_time) so
             // any path that doesn't override isn't mislabeled with chain time.
             received_at: Utc::now(),
-            virtual_sol_reserves: None,
-            virtual_token_reserves: None,
+            reserve_sol: None,
+            reserve_token: None,
             real_sol_reserves: None,
             real_token_reserves: None,
             instruction_type: "Unknown".to_string(),
@@ -141,12 +146,14 @@ pub trait TradeRow {
     fn slot(&self) -> u64;
     fn leg_index(&self) -> u32;
     fn block_time(&self) -> DateTime<Utc>;
-    /// Virtual bonding-curve SOL reserves (tpsl1's E4 liquidity exit reads this).
-    fn virtual_sol_reserves(&self) -> Option<f64>;
-    /// Virtual bonding-curve TOKEN reserves. Only the live `Trade`/`CachedTrade`
-    /// carry this (used to maintain `TokenState::current_virtual_token_reserves`);
-    /// the sweep row drops it, so the default is `None`.
-    fn virtual_token_reserves(&self) -> Option<f64> {
+    /// SOL side of the venue-neutral reserve pair this row prices from — curve
+    /// virtual SOL reserves on curve rows, pool real SOL reserves on amm rows
+    /// (tpsl1's E4 liquidity exit reads this).
+    fn reserve_sol(&self) -> Option<f64>;
+    /// Token side of the reserve pair. Only the live `Trade`/`CachedTrade` carry it
+    /// (used to maintain `TokenState::current_reserve_token`); the sweep row that
+    /// drops reserves defaults to `None`.
+    fn reserve_token(&self) -> Option<f64> {
         None
     }
     /// Real (non-virtual) SOL reserves (tpsl2's E4 + scalp liquidity gates read this).
@@ -174,11 +181,12 @@ pub trait TradeRow {
         }
     }
 
-    /// Bonding-curve spot (`virtual_sol / virtual_token`), `None` if either reserve
-    /// is absent or the token reserve is non-positive.
-    fn curve_spot_price(&self) -> Option<f64> {
-        match (self.virtual_sol_reserves(), self.virtual_token_reserves()) {
-            (Some(vsol), Some(vtok)) if vtok > 0.0 => Some(vsol / vtok),
+    /// Venue-neutral spot from the reserve pair (`reserve_sol / reserve_token`) —
+    /// curve virtual reserves on curve rows, pool real reserves on amm rows. `None`
+    /// if either reserve is absent or the token reserve is non-positive.
+    fn spot_price(&self) -> Option<f64> {
+        match (self.reserve_sol(), self.reserve_token()) {
+            (Some(sol), Some(tok)) if tok > 0.0 => Some(sol / tok),
             _ => None,
         }
     }
@@ -191,14 +199,17 @@ pub trait TradeRow {
         }
     }
 
-    /// **The** canonical GMGN chart spot: curve virtual reserves → pool real
-    /// reserves → execution price. This one definition is what the chart, the swing
-    /// analyzer, the live strategies, and the backtest sweep all price from, so a
-    /// leg detected offline is the leg detected live. Always returns a finite,
+    /// **The** canonical GMGN chart spot: the venue-neutral reserve-pair spot →
+    /// pool real-reserve fallback → execution price. This one definition is what the
+    /// chart, the swing analyzer, the live strategies, and the backtest sweep all
+    /// price from, so a leg detected offline is the leg detected live. The
+    /// `reserve_*` pair already holds pool reserves on amm rows, so `spot_price()`
+    /// covers both venues; the `pool_spot_price` rung only fires for a row that
+    /// carries `real_*` but not the `reserve_*` pair. Always returns a finite,
     /// positive number (the execution fallback) unless the row carries no usable
     /// price at all.
     fn chart_spot_price(&self) -> Option<f64> {
-        self.curve_spot_price()
+        self.spot_price()
             .or_else(|| self.pool_spot_price())
             .filter(|p| p.is_finite() && *p > 0.0)
             .or_else(|| {
@@ -232,11 +243,11 @@ impl TradeRow for Trade {
     fn block_time(&self) -> DateTime<Utc> {
         self.block_time
     }
-    fn virtual_sol_reserves(&self) -> Option<f64> {
-        self.virtual_sol_reserves
+    fn reserve_sol(&self) -> Option<f64> {
+        self.reserve_sol
     }
-    fn virtual_token_reserves(&self) -> Option<f64> {
-        self.virtual_token_reserves.map(|v| v as f64)
+    fn reserve_token(&self) -> Option<f64> {
+        self.reserve_token.map(|v| v as f64)
     }
     fn real_sol_reserves(&self) -> Option<f64> {
         self.real_sol_reserves
@@ -268,8 +279,8 @@ mod tests {
             1,
             Utc::now(),
         );
-        t.virtual_sol_reserves = Some(vsol_post);
-        t.virtual_token_reserves = Some(vtok_post);
+        t.reserve_sol = Some(vsol_post);
+        t.reserve_token = Some(vtok_post);
         t
     }
 
@@ -278,7 +289,7 @@ mod tests {
         let t = buy_with_reserves(10.0, 1_000_000, 110.0, 900_000);
         assert!((t.price_per_token - 10.0 / 1_000_000.0).abs() < 1e-12);
         assert!((t.execution_price() - t.price_per_token).abs() < 1e-15);
-        let spot = t.curve_spot_price().unwrap();
+        let spot = t.spot_price().unwrap();
         assert!((t.price_per_token - spot).abs() > 1e-15);
     }
 
@@ -292,7 +303,7 @@ mod tests {
     #[test]
     fn chart_spot_price_prefers_curve_then_pool_then_execution() {
         let curve = buy_with_reserves(1.0, 100, 50.0, 500);
-        assert_eq!(curve.chart_spot_price(), curve.curve_spot_price());
+        assert_eq!(curve.chart_spot_price(), curve.spot_price());
 
         let mut amm = Trade::new(
             "mint".into(),

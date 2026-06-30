@@ -105,7 +105,7 @@ impl ExitWalkState {
             self.peak_price = price;
             self.last_higher_high_time = trade.block_time();
         }
-        if let Some(reserves) = trade.virtual_sol_reserves() {
+        if let Some(reserves) = trade.reserve_sol() {
             if reserves > self.peak_reserves {
                 self.peak_reserves = reserves;
             }
@@ -318,7 +318,7 @@ fn ladder_reason<T: TradeRow>(
             // E4: reserves crash below the peak-since-entry. Highest priority —
             // a reserve crash leads the price move the others catch later.
             params.liquidity_drop_pct.and_then(|drop| {
-                t.virtual_sol_reserves().and_then(|reserves| {
+                t.reserve_sol().and_then(|reserves| {
                     (state.peak_reserves > 0.0
                         && reserves < state.peak_reserves * (1.0 - drop / 100.0))
                     .then_some(ExitReason::LiquidityExit)
@@ -530,10 +530,10 @@ mod tests {
         )
     }
 
-    /// A buy carrying explicit virtual SOL reserves (price still equals `price`).
+    /// A buy carrying explicit SOL reserves (price still equals `price`).
     fn buy_resv(price: f64, slot: u64, secs: i64, reserves: f64) -> Trade {
         let mut t = buy(price, slot, secs);
-        t.virtual_sol_reserves = Some(reserves);
+        t.reserve_sol = Some(reserves);
         t
     }
 

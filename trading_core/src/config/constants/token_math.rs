@@ -3,7 +3,7 @@ use super::protocol::LAMPORTS_PER_SOL;
 // ---------------------------------------------------------------------------
 // Static initial reserve values for Pump.fun tokens
 // On-chain defaults observed for newly-created mints; used to compute
-// circulating supply = initial_virtual_token_reserves - current_virtual_token_reserves.
+// circulating supply = initial_virtual_token_reserves - current_reserve_token.
 // Values are raw token units (no decimal scaling applied here).
 // ---------------------------------------------------------------------------
 

@@ -151,7 +151,9 @@ SELECT add_retention_policy('raw_txs', drop_after => INTERVAL '7 days');
 -- ===========================================================================
 -- trades — high-volume append-only feed (the LaserStream transport IS this
 --   table). Integer base units, BYTEA signature, interned wallet_id, no
---   surrogate key (the dedup key is the PK), no real_*_reserves.
+--   surrogate key (the dedup key is the PK). Reserves stored as a single
+--   venue-neutral pair (reserve_sol/reserve_token): curve virtual reserves on
+--   curve rows, pool real reserves on amm rows. No separate real_*_reserves.
 --
 --   Ordering key (execution order): (slot, tx_index, leg_index).
 --   block_time: wall-clock partition + candle-bucket axis (NOT an order key).
@@ -166,8 +168,10 @@ CREATE TABLE IF NOT EXISTS trades (
     -- amounts as integer base units (exact, matches chain u64)
     sol_amount             BIGINT      NOT NULL,   -- lamports
     token_amount           BIGINT      NOT NULL,   -- raw token units
-    virtual_sol_reserves   BIGINT,
-    virtual_token_reserves BIGINT,
+    -- Reserve pair this row prices from (venue-neutral): curve virtual reserves
+    -- on curve rows, PumpSwap pool real reserves on amm rows. spot = sol/token.
+    reserve_sol            BIGINT,
+    reserve_token          BIGINT,
 
     -- ordering key; block_time = bucket/partition axis
     slot                   BIGINT      NOT NULL,

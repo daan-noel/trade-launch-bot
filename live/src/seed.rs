@@ -154,8 +154,8 @@ fn build_state(
         state
             .initial_virtual_token_reserves
             .get_or_insert(INITIAL_VIRTUAL_TOKEN_RESERVES);
-        if state.current_virtual_token_reserves.is_none() {
-            state.current_virtual_token_reserves = agg.current_reserves;
+        if state.current_reserve_token.is_none() {
+            state.current_reserve_token = agg.current_reserves;
         }
         if state.market_cap.is_none() {
             if let Some(price) = agg.newest_price {
@@ -259,7 +259,7 @@ mod tests {
         assert_eq!(state.trade_count, 50, "agg lifetime_count overrides info");
         assert_eq!(state.volume_sol_total, 500.0, "agg volume overrides info");
         assert_eq!(state.market_cap, Some(42.0), "persisted market_cap wins");
-        assert_eq!(state.current_virtual_token_reserves, Some(1234.0));
+        assert_eq!(state.current_reserve_token, Some(1234.0));
         assert!(state.is_migrated, "is_migrated carried from info");
         assert_eq!(state.ath_price, Some(9.0));
 
@@ -317,7 +317,7 @@ mod tests {
                 i as u64,                          // slot
                 base + chrono::Duration::seconds(i),
             );
-            t.virtual_token_reserves = Some(100 + i as u64);
+            t.reserve_token = Some(100 + i as u64);
             trade_repo.insert(&t).await.expect("insert trade");
         }
 

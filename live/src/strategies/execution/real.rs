@@ -74,17 +74,18 @@ pub(crate) fn classify_submitted_buy<E>(status: &Result<Option<bool>, E>) -> Buy
     }
 }
 
-/// Convert the token cache's in-memory virtual reserves — token side in raw units,
+/// Convert the token cache's in-memory reserve pair — token side in raw units,
 /// SOL side in SOL — into the `(virtual_token, virtual_quote=lamports)` pair the
-/// snipe buy's slippage `min_out` expects. `None` when either snapshot is missing or
-/// non-positive, so the buy proceeds unprotected (`min_out=1`) rather than blocking
-/// on an inline reserve RPC (the latency budget forbids it on this path).
+/// snipe buy's slippage `min_out` expects (the trade-math arg names mirror pump.fun's
+/// on-chain curve fields). `None` when either snapshot is missing or non-positive, so
+/// the buy proceeds unprotected (`min_out=1`) rather than blocking on an inline
+/// reserve RPC (the latency budget forbids it on this path).
 pub(crate) fn snipe_reserves_from_cache(
-    virtual_token_reserves: Option<f64>,
-    virtual_sol_reserves: Option<f64>,
+    reserve_token: Option<f64>,
+    reserve_sol: Option<f64>,
 ) -> Option<(u128, u128)> {
-    let vt = virtual_token_reserves?;
-    let vsol = virtual_sol_reserves?;
+    let vt = reserve_token?;
+    let vsol = reserve_sol?;
     if vt <= 0.0 || vsol <= 0.0 {
         return None;
     }

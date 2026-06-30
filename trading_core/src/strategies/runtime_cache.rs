@@ -1305,8 +1305,8 @@ mod tests {
             slot,
             leg_index: 0,
             block_time: t0() + chrono::Duration::seconds(secs),
-            virtual_sol_reserves: Some(100.0),
-            virtual_token_reserves: Some(100.0),
+            reserve_sol: Some(100.0),
+            reserve_token: Some(100.0),
             real_sol_reserves: None,
         }
     }

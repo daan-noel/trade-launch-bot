@@ -60,8 +60,8 @@ pub struct CachedTrade {
     pub slot: u64,
     pub leg_index: u32,
     pub block_time: DateTime<Utc>,
-    pub virtual_sol_reserves: Option<f64>,
-    pub virtual_token_reserves: Option<f64>,
+    pub reserve_sol: Option<f64>,
+    pub reserve_token: Option<f64>,
     pub real_sol_reserves: Option<f64>,
 }
 
@@ -84,8 +84,8 @@ impl CachedTrade {
             slot: t.slot,
             leg_index: t.leg_index,
             block_time: t.block_time,
-            virtual_sol_reserves: t.virtual_sol_reserves,
-            virtual_token_reserves: t.virtual_token_reserves.map(|v| v as f64),
+            reserve_sol: t.reserve_sol,
+            reserve_token: t.reserve_token.map(|v| v as f64),
             real_sol_reserves: t.real_sol_reserves,
         }
     }
@@ -115,11 +115,11 @@ impl TradeRow for CachedTrade {
     fn block_time(&self) -> DateTime<Utc> {
         self.block_time
     }
-    fn virtual_sol_reserves(&self) -> Option<f64> {
-        self.virtual_sol_reserves
+    fn reserve_sol(&self) -> Option<f64> {
+        self.reserve_sol
     }
-    fn virtual_token_reserves(&self) -> Option<f64> {
-        self.virtual_token_reserves
+    fn reserve_token(&self) -> Option<f64> {
+        self.reserve_token
     }
     fn real_sol_reserves(&self) -> Option<f64> {
         self.real_sol_reserves
@@ -173,15 +173,18 @@ pub struct TokenState {
     /// they cannot keep a dead token alive. Falls back to `token.created_at` in the
     /// `is_dead` check when None (no meaningful trade has ever arrived).
     pub last_meaningful_trade_at: Option<DateTime<Utc>>,
-    /// Initial virtual token reserves for circulating supply computation.
+    /// Initial virtual token reserves for circulating supply computation. Seeded
+    /// from the on-chain launch constant `INITIAL_VIRTUAL_TOKEN_RESERVES`; this is
+    /// genuinely the curve's *virtual* baseline (supply math), distinct from the
+    /// venue-neutral `current_reserve_*` price pair below.
     pub initial_virtual_token_reserves: Option<f64>,
-    /// Latest virtual token reserves snapshot.
-    pub current_virtual_token_reserves: Option<f64>,
-    /// Latest virtual **SOL** reserves snapshot (in SOL, as the decoder stores it —
-    /// lamports ÷ 1e9). Maintained newest-by-block_time alongside
-    /// `current_virtual_token_reserves` so the strategy snipe buy can derive a
-    /// slippage `min_out` from the in-memory curve price without an inline RPC.
-    pub current_virtual_sol_reserves: Option<f64>,
+    /// Latest token-reserve snapshot from the priced reserve pair (`reserve_token`).
+    pub current_reserve_token: Option<f64>,
+    /// Latest **SOL**-reserve snapshot from the priced reserve pair (`reserve_sol`,
+    /// in SOL — lamports ÷ 1e9 as the decoder stores it). Maintained newest-by-
+    /// block_time alongside `current_reserve_token` so the strategy snipe buy can
+    /// derive a slippage `min_out` from the in-memory spot price without an inline RPC.
+    pub current_reserve_sol: Option<f64>,
     /// Latest known **real** SOL reserves — the dead-token liquidity signal
     /// (`is_dead` Signal 1). Maintained from the chronologically newest trade that
     /// carries a snapshot, NOT `trades.last()`, so a lag-inverted older trade
@@ -237,8 +240,8 @@ impl TokenState {
             last_trade_at: None,
             last_meaningful_trade_at: None,
             initial_virtual_token_reserves: None,
-            current_virtual_token_reserves: None,
-            current_virtual_sol_reserves: None,
+            current_reserve_token: None,
+            current_reserve_sol: None,
             current_real_sol_reserves: None,
             market_cap: None,
             current_price: initial_price,
@@ -375,20 +378,20 @@ impl TokenState {
     }
 
     fn update_reserves<T: TradeRow>(&mut self, trade: &T) {
-        if let Some(current) = trade.virtual_token_reserves() {
+        if let Some(current) = trade.reserve_token() {
             // Use the configured static initial virtual token reserves as the
             // baseline. Do not attempt to reconstruct initial reserves from
             // the first trade — it's constant for Pump.fun tokens.
             if self.initial_virtual_token_reserves.is_none() {
                 self.initial_virtual_token_reserves = Some(INITIAL_VIRTUAL_TOKEN_RESERVES);
             }
-            self.current_virtual_token_reserves = Some(current);
+            self.current_reserve_token = Some(current);
         }
-        // Newest virtual SOL reserves, maintained in lockstep with the token side
-        // above (same newest-by-block_time guard) so the snipe buy's slippage
-        // min_out reads a consistent (token, sol) reserve pair from memory.
-        if let Some(vsol) = trade.virtual_sol_reserves() {
-            self.current_virtual_sol_reserves = Some(vsol);
+        // Newest SOL reserves, maintained in lockstep with the token side above
+        // (same newest-by-block_time guard) so the snipe buy's slippage min_out
+        // reads a consistent (token, sol) reserve pair from memory.
+        if let Some(sol) = trade.reserve_sol() {
+            self.current_reserve_sol = Some(sol);
         }
         // Newest known real SOL reserves for the dead-token liquidity signal. Only
         // overwrite when this trade carries a snapshot, so a reserve-less newest
@@ -822,8 +825,8 @@ mod tests {
             now,
         );
         t.leg_index = 3;
-        t.virtual_sol_reserves = Some(31.0);
-        t.virtual_token_reserves = Some(900_000);
+        t.reserve_sol = Some(31.0);
+        t.reserve_token = Some(900_000);
         t.real_sol_reserves = Some(7.5);
         t.venue = "amm".into();
 
@@ -840,8 +843,8 @@ mod tests {
         assert_eq!(c.slot(), t.slot());
         assert_eq!(c.leg_index(), t.leg_index());
         assert_eq!(c.block_time(), t.block_time());
-        assert_eq!(c.virtual_sol_reserves(), t.virtual_sol_reserves());
-        assert_eq!(c.virtual_token_reserves(), t.virtual_token_reserves());
+        assert_eq!(c.reserve_sol(), t.reserve_sol());
+        assert_eq!(c.reserve_token(), t.reserve_token());
         assert_eq!(c.real_sol_reserves(), t.real_sol_reserves());
         // The cache wallet is an interned `u32`; the interner table maps it back to
         // the source `Trade`'s wallet address.

@@ -31,12 +31,12 @@ pub struct SweepTrade {
     pub sol_amount: f64,
     pub token_amount: f64,
     pub price_per_token: f64,
-    pub virtual_sol_reserves: Option<f64>,
-    /// Virtual TOKEN reserves — carried (vs the live `Trade`'s `None` default on the
-    /// sweep row historically) so the backtest computes the **same** GMGN curve-spot
-    /// as live + chart instead of silently falling back to execution price. Costs
-    /// ~+8 B/row; accepted as the price of price parity (swing1 Step 0).
-    pub virtual_token_reserves: Option<f64>,
+    pub reserve_sol: Option<f64>,
+    /// Token side of the priced reserve pair — carried (vs the sweep row's historic
+    /// `None`) so the backtest computes the **same** GMGN spot (`reserve_sol /
+    /// reserve_token`) as live + chart instead of silently falling back to execution
+    /// price. Costs ~+8 B/row; accepted as the price of price parity (swing1 Step 0).
+    pub reserve_token: Option<f64>,
     pub real_sol_reserves: Option<f64>,
     /// Real TOKEN reserves — feeds the pool-spot fallback of the shared
     /// [`chart_spot_price`](TradeRow::chart_spot_price). ~+8 B/row.
@@ -72,11 +72,11 @@ impl TradeRow for SweepTrade {
     fn block_time(&self) -> DateTime<Utc> {
         self.block_time
     }
-    fn virtual_sol_reserves(&self) -> Option<f64> {
-        self.virtual_sol_reserves
+    fn reserve_sol(&self) -> Option<f64> {
+        self.reserve_sol
     }
-    fn virtual_token_reserves(&self) -> Option<f64> {
-        self.virtual_token_reserves
+    fn reserve_token(&self) -> Option<f64> {
+        self.reserve_token
     }
     fn real_sol_reserves(&self) -> Option<f64> {
         self.real_sol_reserves
@@ -121,8 +121,8 @@ pub fn project_trades<T: TradeRow<Wallet = String>>(
             sol_amount: t.sol_amount(),
             token_amount: t.token_amount(),
             price_per_token: t.price_per_token(),
-            virtual_sol_reserves: t.virtual_sol_reserves(),
-            virtual_token_reserves: t.virtual_token_reserves(),
+            reserve_sol: t.reserve_sol(),
+            reserve_token: t.reserve_token(),
             real_sol_reserves: t.real_sol_reserves(),
             real_token_reserves: t.real_token_reserves(),
             slot: t.slot(),
@@ -153,8 +153,8 @@ mod tests {
             1,
             Utc::now(),
         );
-        t.virtual_sol_reserves = Some(vsol);
-        t.virtual_token_reserves = Some(vtok);
+        t.reserve_sol = Some(vsol);
+        t.reserve_token = Some(vtok);
         t
     }
 
