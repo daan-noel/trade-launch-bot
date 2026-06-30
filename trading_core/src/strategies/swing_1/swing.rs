@@ -341,6 +341,16 @@ pub fn detect_swings<T: TradeRow>(trades: &[T], params: &SwingParams) -> Vec<Swi
     apply_quality_filter(ledger, params)
 }
 
+/// Run swing detection and return the **raw, unfiltered** alternating ledger
+/// (the [`scan`] output finalized to [`SwingLeg`]s, WITHOUT
+/// [`apply_quality_filter`]'s non-causal pair-drop). This is the input the swing1
+/// phase classifier walks — keeping it causal so the live-incremental machine and
+/// the backtest-batch run produce identical legs.
+pub fn detect_swing_legs_raw<T: TradeRow>(trades: &[T], params: &SwingParams) -> Vec<SwingLeg> {
+    let txs = sanitize_and_order(trades);
+    scan(&txs, params).into_iter().map(LegAcc::finalize).collect()
+}
+
 /// Map trades to internal transactions, skip invalid ones, and apply the
 /// canonical ordering: `timestamp_ms ASC, slot ASC, position ASC`.
 pub(crate) fn sanitize_and_order<T: TradeRow>(trades: &[T]) -> Vec<Tx> {

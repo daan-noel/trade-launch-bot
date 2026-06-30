@@ -11,4 +11,5 @@
 //! Pricing is the shared GMGN spot ([`crate::models::trade::TradeRow::chart_spot_price`])
 //! so a leg detected offline (sweep) is the leg detected live.
 
+pub mod classifier;
 pub mod swing;
