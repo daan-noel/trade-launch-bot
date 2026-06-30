@@ -55,6 +55,11 @@
 .EXAMPLE
   # Also pull the short-lived raw_txs feed (BYTEA payloads, large):
   ./scripts/db-incremental-sync.ps1 -SshTarget ubuntu@1.2.3.4 -IncludeRawTxs
+
+.EXAMPLE
+  # Pull today's still-open chunk too (partial day; re-run later to backfill the rest).
+  # Drops the sealed-day upper bound on trades/raw_txs for this run only.
+  ./scripts/db-incremental-sync.ps1 -SshTarget ubuntu@1.2.3.4 -IncludeToday
 #>
 param(
   [string]$SshTarget       = 'ubuntu@54.93.174.192',                      # user@host of the EC2 box
@@ -68,6 +73,7 @@ param(
   [string]$FdwTunnelHost   = 'host.docker.internal',                      # how the LOCAL postgres reaches the tunnel: 'host.docker.internal' if it runs in Docker, '127.0.0.1' if native
   [int]   $RemotePgPort    = 0,                                           # 0 = auto-detect from remote .env (default 5555)
   [switch]$IncludeRawTxs,                                                 # also sync raw_txs (BYTEA payloads, large; off by default)
+  [switch]$IncludeToday,                                                  # also pull today's still-open chunk (partial day; default = sealed days only)
   [string]$LocalPgPassword = $env:PGPASSWORD
 )
 $ErrorActionPreference = 'Stop'
@@ -78,6 +84,49 @@ if (-not $LocalPgPassword) { throw "Set the LOCAL DB password: `$env:PGPASSWORD=
 $env:PGOPTIONS = '-c timezone=UTC'
 $localPg = @('-h', $LocalPgHost, '-p', "$LocalPgPort", '-U', $LocalPgUser, '-d', $Database, '-v', 'ON_ERROR_STOP=1')
 $sshOpts = @('-i', $SshKey, '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=10')
+
+# ---- SSH passphrase handling (Windows-safe, no agent / no admin) -------------
+# The script SSHes twice (read .env, then open the backgrounded tunnel). On Windows
+# OpenSSH, ControlMaster multiplexing fails ("getsockname failed: Not a socket") and
+# the ssh-agent service is often Disabled (enabling needs admin). The backgrounded
+# tunnel's passphrase prompt is also invisible -> looks like an idle hang.
+#
+# Fix: if the key is passphrase-protected, ask ONCE here (masked), then feed every
+# ssh call the passphrase via SSH_ASKPASS + SSH_ASKPASS_REQUIRE=force (OpenSSH >=8.4).
+# No interactive prompts at all -> nothing to hang on. The passphrase lives only in a
+# user-only temp helper that `finally` shreds. If the key has no passphrase, this is
+# skipped (ssh just won't call the helper).
+$script:askpassFile = $null
+function Initialize-SshPassphrase {
+  # Does the key need a passphrase? BatchMode=yes forbids prompts: if auth is
+  # impossible without one, ssh-keygen -y -P '' fails on the encrypted key.
+  $needs = $true
+  try { & ssh-keygen -y -P '' -f $SshKey 2>$null | Out-Null; if ($LASTEXITCODE -eq 0) { $needs = $false } } catch {}
+  if (-not $needs) { Write-Host "  ssh key has no passphrase (no prompt needed)."; return }
+
+  # Non-interactive override: $env:SSH_KEY_PASSPHRASE lets automation supply it
+  # without a prompt. Otherwise ask once, masked.
+  if ($env:SSH_KEY_PASSPHRASE) {
+    $pp = $env:SSH_KEY_PASSPHRASE
+  } else {
+    $sec = Read-Host -AsSecureString "Enter SSH key passphrase for $SshKey (entered ONCE; used for all ssh calls)"
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+    try { $pp = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+  }
+
+  # Helper prints ONLY the passphrase. .cmd so Windows ssh can exec it directly.
+  $script:askpassFile = Join-Path $env:TEMP ("dbsync-askpass-{0}.cmd" -f $PID)
+  Set-Content -Path $script:askpassFile -Value ("@echo " + $pp) -Encoding ascii
+  # Lock to the current user, but grant READ+EXECUTE -- ssh must EXEC this helper,
+  # so read-only (RX missing) makes CreateProcess fail with "error:5".
+  try { icacls $script:askpassFile /inheritance:r /grant:r "$($env:USERNAME):(RX)" | Out-Null } catch {}
+  $env:SSH_ASKPASS         = $script:askpassFile
+  $env:SSH_ASKPASS_REQUIRE = 'force'
+  if (-not $env:DISPLAY) { $env:DISPLAY = 'localhost:0' }   # older ssh wants DISPLAY set
+  Write-Host "  passphrase captured; ssh calls will authenticate non-interactively."
+}
+Initialize-SshPassphrase
 
 # Tables to mirror, in FK-safe order. raw_txs is appended only with -IncludeRawTxs.
 $syncTables = @('wallet_dict', 'tokens', 'tokens_info', 'token_sync_state', 'trades')
@@ -201,8 +250,16 @@ END `$`$;
   # ---- 6. Sealed-day boundary + local watermarks -----------------------------
   # The sealed cutoff: midnight UTC today. Hypertable pulls use [watermark, cutoff)
   # so only fully-sealed days move; today is left open for the next run.
-  $sealedCutoff = Get-LocalScalar "SELECT date_trunc('day', now() AT TIME ZONE 'UTC')::text"
-  Write-Host "Sealed-day cutoff (exclusive upper bound): $sealedCutoff UTC"
+  # Default: exclude today's still-open chunk (start-of-today UTC). With -IncludeToday,
+  # push the upper bound to now() so today's partial day is pulled too. Either way the
+  # bound is a literal, so postgres_fdw pushes it down for remote chunk pruning.
+  if ($IncludeToday) {
+    $sealedCutoff = Get-LocalScalar "SELECT (now() AT TIME ZONE 'UTC')::text"
+    Write-Host "Cutoff (exclusive upper bound): $sealedCutoff UTC  [-IncludeToday: pulling today's open chunk]"
+  } else {
+    $sealedCutoff = Get-LocalScalar "SELECT date_trunc('day', now() AT TIME ZONE 'UTC')::text"
+    Write-Host "Sealed-day cutoff (exclusive upper bound): $sealedCutoff UTC"
+  }
 
   Write-Host "Local watermarks:"
   $walletWm  = Get-LocalScalar "SELECT COALESCE(MAX(id), 0) FROM wallet_dict"
@@ -226,8 +283,10 @@ END `$`$;
   # them as needed) -- no partition-ensure step.
   Write-Host "Appending new rows ..."
 
+  $windowLabel = if ($IncludeToday) { 'incl. today' } else { 'sealed days only' }
+
   $rawTxsSql = if ($IncludeRawTxs) { @"
-\echo '-- raw_txs (sealed days only)'
+\echo '-- raw_txs ($windowLabel)'
 INSERT INTO raw_txs SELECT * FROM ec2_sync_src.raw_txs
 WHERE block_time >= '$rawWm'::timestamptz AND block_time < '$sealedCutoff'::timestamptz
 ON CONFLICT (block_time, tx_signature) DO NOTHING;
@@ -252,8 +311,14 @@ WHERE t.created_at >= '$tokensWm'::timestamptz
 ON CONFLICT (mint_address) DO NOTHING;
 
 \echo '-- tokens_info'
-INSERT INTO tokens_info SELECT * FROM ec2_sync_src.tokens_info
-WHERE updated_at >= '$tinfoWm'::timestamptz
+-- Guard the FK: the server can hold a tokens_info row whose parent tokens row is
+-- absent on the server too (orphaned info -> the tokens pull above can't backfill a
+-- parent that doesn't exist). Only insert info rows whose mint is present in LOCAL
+-- tokens (which by now holds everything pullable); skip server-side orphans instead
+-- of aborting the whole sync on a single tokens_info_mint_address_fkey violation.
+INSERT INTO tokens_info SELECT i.* FROM ec2_sync_src.tokens_info i
+WHERE i.updated_at >= '$tinfoWm'::timestamptz
+  AND EXISTS (SELECT 1 FROM tokens l WHERE l.mint_address = i.mint_address)
 ON CONFLICT (mint_address) DO UPDATE SET
   current_price = EXCLUDED.current_price, ath_price = EXCLUDED.ath_price,
   ath_timestamp = EXCLUDED.ath_timestamp, volume = EXCLUDED.volume,
@@ -263,14 +328,16 @@ ON CONFLICT (mint_address) DO UPDATE SET
 WHERE EXCLUDED.updated_at >= tokens_info.updated_at;
 
 \echo '-- token_sync_state'
-INSERT INTO token_sync_state SELECT * FROM ec2_sync_src.token_sync_state
-WHERE last_synced_at >= '$syncWm'::timestamptz
+-- Same FK guard as tokens_info: skip rows whose mint isn't in local tokens.
+INSERT INTO token_sync_state SELECT s.* FROM ec2_sync_src.token_sync_state s
+WHERE s.last_synced_at >= '$syncWm'::timestamptz
+  AND EXISTS (SELECT 1 FROM tokens l WHERE l.mint_address = s.mint_address)
 ON CONFLICT (mint_address, venue) DO UPDATE SET
   last_sig = EXCLUDED.last_sig, last_slot = EXCLUDED.last_slot,
   last_synced_at = EXCLUDED.last_synced_at
 WHERE EXCLUDED.last_synced_at >= token_sync_state.last_synced_at;
 
-\echo '-- trades (sealed days only)'
+\echo '-- trades ($windowLabel)'
 INSERT INTO trades SELECT * FROM ec2_sync_src.trades
 WHERE block_time >= '$tradesWm'::timestamptz AND block_time < '$sealedCutoff'::timestamptz
 ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING;
@@ -310,8 +377,18 @@ $rawTxsSql
   # ---- 9. Detach (drops the stored server password from the local catalog) ---
   Invoke-LocalSqlFile "DROP SERVER IF EXISTS ec2_sync CASCADE; DROP SCHEMA IF EXISTS ec2_sync_src CASCADE;"
   Write-Host ""
-  Write-Host "Incremental sync complete (sealed days through $sealedCutoff UTC; server credentials removed from local catalog)."
+  $doneWindow = if ($IncludeToday) { "through $sealedCutoff UTC, incl. today's partial chunk" } else { "sealed days through $sealedCutoff UTC" }
+  Write-Host "Incremental sync complete ($doneWindow; server credentials removed from local catalog)."
 }
 finally {
   if ($tunnel -and -not $tunnel.HasExited) { Stop-Process -Id $tunnel.Id -Force -ErrorAction SilentlyContinue }
+  # Shred the passphrase helper and clear the env so the secret doesn't linger.
+  # The file was locked to (RX) for ssh to exec it; restore (F) first or the
+  # overwrite/delete is denied (UnauthorizedAccessException).
+  if ($script:askpassFile -and (Test-Path $script:askpassFile)) {
+    try { icacls $script:askpassFile /grant:r "$($env:USERNAME):(F)" | Out-Null } catch {}
+    Set-Content -Path $script:askpassFile -Value '@echo.' -Encoding ascii -ErrorAction SilentlyContinue
+    Remove-Item $script:askpassFile -Force -ErrorAction SilentlyContinue
+  }
+  Remove-Item Env:SSH_ASKPASS, Env:SSH_ASKPASS_REQUIRE -ErrorAction SilentlyContinue
 }
