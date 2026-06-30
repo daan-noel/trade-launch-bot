@@ -14,13 +14,16 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 
 use crate::models::grouped_sweep::ComboTokenResult;
-use crate::models::{Tpsl1Rule, Tpsl2Rule};
+use crate::models::{Swing1Rule, Tpsl1Rule, Tpsl2Rule};
 use crate::storage::repositories::grouped_sweep_repo::GroupedSweepTables;
 use crate::sweep::corpus::{Corpus, TokenTrades};
 use crate::sweep::engine::fill_outcomes;
 use crate::sweep::grouped_engine::{run_grouped_with_refine, CoverageFloor, GroupResult, GroupSink};
 use crate::sweep::grouping::GroupField;
 use crate::sweep::progress::SweepObserver;
+use crate::sweep::strategies::swing1::{
+    AxesSpec as Swing1AxesSpec, Swing1Axes, Swing1Strategy,
+};
 use crate::sweep::strategies::tpsl1::{
     AxesSpec as Tpsl1AxesSpec, Tpsl1Axes, Tpsl1Strategy,
 };
@@ -102,19 +105,30 @@ const TPSL1_TABLES: GroupedSweepTables = GroupedSweepTables {
     combos: "tpsl1_grouped_sweep_combos",
 };
 
+/// swing1's own grouped-sweep tables (same four-table shape, separate per the
+/// per-strategy-tables design). Mirror these names in the `0002` migration. The
+/// `_results` table additionally carries `n_exit_next_kill`.
+const SWING1_TABLES: GroupedSweepTables = GroupedSweepTables {
+    runs: "swing_1_grouped_sweep_runs",
+    groups: "swing_1_grouped_sweep_groups",
+    results: "swing_1_grouped_sweep_results",
+    combos: "swing_1_grouped_sweep_combos",
+};
+
 /// The DB table triple for a strategy's grouped sweeps, or `None` for an unknown
 /// / not-yet-wired strategy.
 pub fn tables_for(strategy_id: &str) -> Option<GroupedSweepTables> {
     match strategy_id {
         "tpsl1" => Some(TPSL1_TABLES),
         "tpsl2" => Some(TPSL2_TABLES),
+        "swing_1" => Some(SWING1_TABLES),
         _ => None,
     }
 }
 
 /// Strategy ids with a grouped-sweep implementation (for error messages / UI).
 pub fn strategy_ids() -> &'static [&'static str] {
-    &["tpsl1", "tpsl2"]
+    &["tpsl1", "tpsl2", "swing_1"]
 }
 
 // ---------------------------------------------------------------------------
@@ -175,6 +189,13 @@ pub async fn run_grouped(
         }
         "tpsl2" => {
             sweep_tpsl2(
+                axes_json, method, refine, corpus, fields, min_tokens, floor, max_combos,
+                buy_amount_sol, coarse_observer, observer, sink,
+            )
+            .await
+        }
+        "swing_1" => {
+            sweep_swing1(
                 axes_json, method, refine, corpus, fields, min_tokens, floor, max_combos,
                 buy_amount_sol, coarse_observer, observer, sink,
             )
@@ -343,6 +364,119 @@ fn sweep_base_rule_tpsl2(buy_amount_sol: f64) -> Tpsl2Rule {
 }
 
 // ---------------------------------------------------------------------------
+// swing1 strategy entry point
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+async fn sweep_swing1(
+    axes_json: Value,
+    method: SweepMethod,
+    refine: Option<RefineSpec>,
+    corpus: Corpus,
+    fields: Vec<GroupField>,
+    min_tokens: usize,
+    floor: CoverageFloor,
+    max_combos: Option<usize>,
+    buy_amount_sol: f64,
+    coarse_observer: Arc<dyn SweepObserver + Send>,
+    observer: Arc<dyn SweepObserver + Send>,
+    sink: Arc<dyn GroupSink + Send + Sync>,
+) -> Result<GroupedSweepOutput> {
+    let cap = effective_cap(max_combos);
+
+    // Resolve the page-supplied axes (omitted/empty axes fall back to defaults).
+    let spec: Swing1AxesSpec =
+        serde_json::from_value(axes_json).context("invalid swing1 axes spec")?;
+    let axes = Swing1Axes::from_spec(&spec);
+
+    // Grid guard: reject an explosive full grid before doing any sweep work. swing1
+    // has ~25 axes — a full grid is almost never sane (use LHS/refine); this guard
+    // surfaces that instead of churning.
+    if matches!(method, SweepMethod::Grid) {
+        let n = axes.combo_count();
+        if n > cap {
+            bail!("grid has {n} combos, over the {cap} cap — narrow the axes, raise max_combos, or use random:N / lhs:N");
+        }
+    }
+    // Store the resolved axes (post-defaults/dedup) so the run is reproducible.
+    let axes_json = serde_json::to_value(&axes).context("serializing resolved swing1 axes")?;
+
+    let strategy = Swing1Strategy::new(sweep_base_rule_swing1(buy_amount_sol), axes);
+    let mut params = strategy.sample(method);
+    if params.is_empty() {
+        bail!("param space is empty");
+    }
+    // Random/LHS draws can request any `n`; clamp to the cap (grid is pre-checked).
+    if params.len() > cap {
+        tracing::warn!(
+            combos = params.len(),
+            cap,
+            "grouped sweep: clamping sampled combos to cap"
+        );
+        params.truncate(cap);
+    }
+
+    let threads = bounded_threads();
+
+    let (combo_count, groups) = tokio::task::spawn_blocking(
+        move || -> Result<(usize, Vec<GroupResult>)> {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .thread_name(|i| format!("grouped-sweep-{i}"))
+                .stack_size(8 * 1024 * 1024)
+                .build()
+                .map_err(|e| anyhow!("rayon pool build failed: {e}"))?;
+            pool.install(|| {
+                let (final_params, groups) = run_grouped_with_refine(
+                    &strategy,
+                    params,
+                    refine,
+                    &corpus,
+                    &fields,
+                    min_tokens,
+                    floor,
+                    cap,
+                    coarse_observer.as_ref(),
+                    observer.as_ref(),
+                    sink.as_ref(),
+                )?;
+                Ok((final_params.len(), groups))
+            })
+        },
+    )
+    .await??;
+
+    Ok(GroupedSweepOutput { combo_count, axes_json, groups })
+}
+
+/// Synthetic swing1 base rule the swept params overlay. As with tpsl1/2, only
+/// `buy_amount` is meaningful — every other field is overwritten by the swept axes
+/// or unused in the grouped sweep. swing1 has no token-creation gate, so the
+/// token-filter fields stay inert.
+fn sweep_base_rule_swing1(buy_amount_sol: f64) -> Swing1Rule {
+    Swing1Rule::new(
+        "sweep-synthetic-base".into(),
+        None,                  // p_token_initial_buy_sol — unused (no creation gate)
+        None,                  // p_token_cu_limit        — unused
+        None,                  // p_token_cu_price        — unused
+        serde_json::json!([]), // p_token_ix_labels       — unused
+        "paper".into(),        // trade_mode              — unused in sweep
+        buy_amount_sol,
+        0.0,                   // p_exit_take_profit      — overlaid per combo
+        0.0,                   // p_exit_stop_loss        — overlaid per combo
+        None,                  // p_token_max_sol_cost    — unused
+        None,                  // p_token_spendable_sol_in — unused
+        None,                  // p_max_concurrent_tokens — unused in grouped sweep
+        None,                  // p_max_total_tokens      — unused in grouped sweep
+        None,                  // tolerance_pct           — unused
+        None,                  // p_exit_trailing_stop_pct — overlaid per combo
+        None,                  // p_exit_time_stop_secs    — overlaid per combo
+        None,                  // p_exit_stall_secs        — overlaid per combo
+        None,                  // p_exit_liquidity_drop_pct — overlaid per combo
+    )
+}
+
+// ---------------------------------------------------------------------------
 // TPSL1 strategy entry point
 // ---------------------------------------------------------------------------
 
@@ -449,6 +583,7 @@ pub fn simulate_one_combo(
     match strategy_id {
         "tpsl2" => simulate_tpsl2_one_combo(tokens, params_json, buy_amount_sol),
         "tpsl1" => simulate_tpsl1_one_combo(tokens, params_json, buy_amount_sol),
+        "swing_1" => simulate_swing1_one_combo(tokens, params_json, buy_amount_sol),
         other => bail!(
             "strategy '{other}' has no single-combo simulation (supported: {:?})",
             strategy_ids()
@@ -522,6 +657,50 @@ fn simulate_tpsl1_one_combo(
     buy_amount_sol: f64,
 ) -> Result<Vec<ComboTokenResult>> {
     let strategy = Tpsl1Strategy::for_replay(sweep_base_rule_tpsl1(buy_amount_sol));
+    let combo = strategy.combo_from_params_json(params_json)?;
+    let params = std::slice::from_ref(&combo);
+    let noop = Noop;
+    let mut results = Vec::with_capacity(tokens.len());
+    for tt in tokens {
+        let mut outs = Vec::with_capacity(1);
+        let _ = fill_outcomes(&strategy, params, &tt.trades, &noop, &mut outs);
+        let o = outs
+            .into_iter()
+            .next()
+            .unwrap_or_else(crate::sweep::strategy::TokenOutcome::no_entry);
+        results.push(ComboTokenResult {
+            mint: tt.mint.clone(),
+            symbol: tt.symbol.clone(),
+            fired: o.fired,
+            pnl_sol: o.pnl_sol,
+            pnl_pct: o.pnl_percent,
+            holding_secs: o.holding_secs,
+            exit: exit_label(o.exit).to_string(),
+            entry_time: o.entry_time.map(|t| t.to_rfc3339()),
+            entry_price: o.entry_price,
+            exit_time: o.exit_time.map(|t| t.to_rfc3339()),
+            exit_price: o.exit_price,
+            created_at: None,
+            creator_wallet: None,
+            ath_price: None,
+            ath_timestamp: None,
+            current_price: None,
+            market_cap: None,
+            volume_sol: None,
+            trade_count: None,
+            is_migrated: None,
+            is_dead: None,
+        });
+    }
+    Ok(results)
+}
+
+fn simulate_swing1_one_combo(
+    tokens: &[TokenTrades],
+    params_json: &Value,
+    buy_amount_sol: f64,
+) -> Result<Vec<ComboTokenResult>> {
+    let strategy = Swing1Strategy::for_replay(sweep_base_rule_swing1(buy_amount_sol));
     let combo = strategy.combo_from_params_json(params_json)?;
     let params = std::slice::from_ref(&combo);
     let noop = Noop;

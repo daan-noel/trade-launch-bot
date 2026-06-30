@@ -4,5 +4,6 @@
 //! strategy by adding a module here and registering it in
 //! [`registry`](crate::sweep::registry).
 
+pub mod swing1;
 pub mod tpsl1;
 pub mod tpsl2;

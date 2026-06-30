@@ -90,6 +90,9 @@ pub struct ComboMetrics {
     pub n_exit_time: u32,
     pub n_exit_liquidity: u32,
     pub n_exit_cohort: u32,
+    /// swing1's symmetric next-kill flee count. 0 for tpsl1/tpsl2 (they never
+    /// produce `ExitCode::NextKill`).
+    pub n_exit_next_kill: u32,
     pub n_exit_open: u32,
 }
 
@@ -122,6 +125,7 @@ impl ComboMetrics {
             n_exit_time: m.n_exit_time,
             n_exit_liquidity: m.n_exit_liquidity,
             n_exit_cohort: m.n_exit_cohort,
+            n_exit_next_kill: m.n_exit_next_kill,
             n_exit_open: m.n_exit_open,
         }
     }

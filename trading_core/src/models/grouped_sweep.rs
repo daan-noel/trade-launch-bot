@@ -119,6 +119,8 @@ pub struct GroupedSweepResult {
     pub n_exit_time: i32,
     pub n_exit_liquidity: i32,
     pub n_exit_cohort: i32,
+    /// swing1's symmetric next-kill flee count; 0 for tpsl1/tpsl2.
+    pub n_exit_next_kill: i32,
     pub n_exit_open: i32,
 }
 
