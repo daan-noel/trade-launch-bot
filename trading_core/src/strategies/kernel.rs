@@ -46,6 +46,10 @@ pub enum ExitCode {
     TimeStop = 6,
     LiquidityExit = 7,
     CohortExit = 8,
+    /// swing1's symmetric next-kill exit: a post-entry leg reverting to the kill
+    /// profile (deep + short) — the dev starting another intentional kill/rug.
+    /// Top-priority in the swing1 ladder.
+    NextKill = 9,
 }
 
 impl ExitCode {
@@ -60,6 +64,7 @@ impl ExitCode {
             "TimeStop" => ExitCode::TimeStop,
             "LiquidityExit" => ExitCode::LiquidityExit,
             "CohortExit" => ExitCode::CohortExit,
+            "NextKill" => ExitCode::NextKill,
             "Open" => ExitCode::Open,
             _ => ExitCode::Open,
         }
@@ -198,6 +203,11 @@ pub struct RunMetrics {
     pub n_exit_time: u32,
     pub n_exit_liquidity: u32,
     pub n_exit_cohort: u32,
+    /// swing1 symmetric next-kill exits. Surfaced by the grouped sweep
+    /// (`ComboMetrics`); the live `StrategyRunMetrics` rollup does NOT carry this
+    /// column (NextKill only fires from swing1, which is backtest-only in Phase 1),
+    /// so `to_run_metrics` drops it — see that fn.
+    pub n_exit_next_kill: u32,
     pub n_exit_open: u32,
 }
 
@@ -323,7 +333,7 @@ pub struct RunAgg {
     closed_pct_sum_sq: f64,
     holding_sum: i64,
     holding_sketch: QuantileSketch,
-    exit_counts: [u32; 8],
+    exit_counts: [u32; 9],
 }
 
 impl Default for RunAgg {
@@ -343,7 +353,7 @@ impl Default for RunAgg {
             closed_pct_sum_sq: 0.0,
             holding_sum: 0,
             holding_sketch: QuantileSketch::default(),
-            exit_counts: [0; 8],
+            exit_counts: [0; 9],
         }
     }
 }
@@ -430,6 +440,7 @@ impl RunAgg {
             n_exit_liquidity: self.exit_counts[5],
             n_exit_cohort: self.exit_counts[6],
             n_exit_open: self.exit_counts[7],
+            n_exit_next_kill: self.exit_counts[8],
         }
     }
 }
@@ -458,6 +469,7 @@ fn exit_index(e: ExitCode) -> usize {
         ExitCode::LiquidityExit => 5,
         ExitCode::CohortExit => 6,
         ExitCode::Open | ExitCode::NoEntry => 7,
+        ExitCode::NextKill => 8,
     }
 }
 
