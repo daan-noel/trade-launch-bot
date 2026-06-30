@@ -46,6 +46,12 @@ impl LadderParamsImpl {
             StrategyParams::Tpsl2(p) => {
                 Self::Tpsl2(t2::exit::LadderParams::from_rule(&p.to_rule()))
             }
+            // swing1's incremental live memo is Phase 2 (the backtest path uses the
+            // registry's batch resolve_exit). swing1 rules are backtest/paper-only
+            // in Phase 1 and never reach this live ladder dispatcher.
+            StrategyParams::Swing1(_) => {
+                unimplemented!("swing1 live incremental exit is Phase 2 (backtest-only in Phase 1)")
+            }
         }
     }
 
@@ -78,6 +84,7 @@ impl LadderParamsImpl {
             Self::Tpsl2(_) => StrategyImpl::Tpsl2,
         }
     }
+    // NB: no `Swing1` arm — `LadderParamsImpl` has no Swing1 variant (Phase 2).
 }
 
 /// Strategy-dispatched per-position exit-walk memo (the running peaks + E5 cohort
@@ -105,6 +112,9 @@ impl CachedExitStateImpl {
             }
             StrategyImpl::Tpsl2 => {
                 Self::Tpsl2(t2::exit::CachedExitState::build(trades, base, entry_price, entry_time))
+            }
+            StrategyImpl::Swing1 => {
+                unimplemented!("swing1 live incremental exit is Phase 2 (backtest-only in Phase 1)")
             }
         }
     }

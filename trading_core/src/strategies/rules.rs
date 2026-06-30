@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::models::StrategyRule;
 use crate::storage::repositories::strategy_repo::StrategyRepo;
 
-use super::registry::{StrategyImpl, StrategyParams, Tpsl1Params, Tpsl2Params};
+use super::registry::{StrategyImpl, StrategyParams, Swing1Params, Tpsl1Params, Tpsl2Params};
 
 /// Outcome of a rule CRUD write, mapped to an HTTP status by the calling edge.
 #[derive(Debug)]
@@ -46,6 +46,7 @@ pub fn params_to_value(params: &StrategyParams) -> Value {
     match params {
         StrategyParams::Tpsl1(p) => serde_json::to_value(p).unwrap_or(Value::Null),
         StrategyParams::Tpsl2(p) => serde_json::to_value(p).unwrap_or(Value::Null),
+        StrategyParams::Swing1(p) => serde_json::to_value(p).unwrap_or(Value::Null),
     }
 }
 
@@ -55,6 +56,7 @@ pub fn validate(params: &StrategyParams) -> Result<(), String> {
     match params {
         StrategyParams::Tpsl1(p) => validate_tpsl1(p),
         StrategyParams::Tpsl2(p) => validate_tpsl2(p),
+        StrategyParams::Swing1(p) => validate_swing1(p),
     }
 }
 
@@ -100,6 +102,85 @@ fn validate_tpsl2(p: &Tpsl2Params) -> Result<(), String> {
     // At least one scalp entry gate — reuse the canonical check.
     if !super::tpsl_sniper_2::entry::rule_configures_any_scalp_gate(&p.to_rule()) {
         return Err("Rule configures no scalp entry gate".into());
+    }
+    Ok(())
+}
+
+/// swing1 validation: percent params bounded `0–100`; fractional depth params
+/// bounded `0–1`; require ≥1 swing **and** ≥1 kill/volume axis configured; and two
+/// shape-sanity checks — a kill must be at least as deep as the volume ceiling, and
+/// a volume low must last at least as long as the kill cap.
+fn validate_swing1(p: &Swing1Params) -> Result<(), String> {
+    if p.p_exit_take_profit <= 0.0 {
+        return Err("Take Profit % must be greater than 0".into());
+    }
+    check_bounded(&[
+        ("Stop Loss %", p.p_exit_stop_loss),
+        ("Tolerance %", p.tolerance_pct),
+        ("Trailing Stop %", p.p_exit_trailing_stop_pct.unwrap_or(0.0)),
+        ("Liquidity Drop %", p.p_exit_liquidity_drop_pct.unwrap_or(0.0)),
+        ("Pullback %", p.p_entry_pullback_pct.unwrap_or(0.0)),
+        ("Max Cohort Held %", p.p_entry_max_cohort_held.unwrap_or(0.0)),
+    ])?;
+    // Fractional depth params (0–1).
+    for (name, v) in [
+        ("Kill Depth Min", p.p_kill_depth_min_pct.unwrap_or(0.0)),
+        ("Volume Depth Max", p.p_vol_depth_max_pct.unwrap_or(0.0)),
+        ("Next-Kill Depth Min", p.p_exit_next_kill_depth_min_pct.unwrap_or(0.0)),
+    ] {
+        if !(0.0..=1.0).contains(&v) {
+            return Err(format!("{name} (fractional) must be between 0 and 1"));
+        }
+    }
+
+    // Require at least one swing-detection axis and one kill/volume axis so the
+    // classifier has something to latch on (never a silent enter-everything path).
+    let nz_f = |v: Option<f64>| v.filter(|&x| x != 0.0).is_some();
+    let nz_i = |v: Option<i64>| v.filter(|&x| x != 0).is_some();
+    let nz_u = |v: Option<u32>| v.filter(|&x| x != 0).is_some();
+    let any_swing = nz_f(p.p_swing_high_to_low_sol)
+        || nz_f(p.p_swing_high_to_low_pct)
+        || nz_f(p.p_swing_low_to_high_sol)
+        || nz_f(p.p_swing_low_to_high_pct)
+        || nz_u(p.p_swing_min_leg_trades);
+    let any_kill = nz_f(p.p_kill_depth_min_pct)
+        || nz_i(p.p_kill_max_duration_ms)
+        || nz_f(p.p_kill_min_net_flow_per_sec);
+    let any_volume = nz_f(p.p_vol_depth_max_pct)
+        || nz_i(p.p_vol_min_duration_ms)
+        || nz_i(p.p_vol_min_up_duration_ms);
+    if !any_swing {
+        return Err("swing1 configures no swing-detection axis".into());
+    }
+    if !any_kill && !any_volume {
+        return Err("swing1 configures no kill or volume profile axis".into());
+    }
+    // Entry needs a higher-low confirmation to fire.
+    if !nz_f(p.p_entry_pullback_pct) {
+        return Err("swing1 configures no entry higher-low (pullback %) gate".into());
+    }
+
+    // Shape sanity: a kill is deeper than the volume ceiling; a volume low lasts
+    // at least as long as the kill cap. Only checked when both sides are set.
+    if let (Some(kd), Some(vd)) = (
+        p.p_kill_depth_min_pct.filter(|&x| x != 0.0),
+        p.p_vol_depth_max_pct.filter(|&x| x != 0.0),
+    ) {
+        if kd < vd {
+            return Err(format!(
+                "Kill Depth Min ({kd}) must be ≥ Volume Depth Max ({vd})"
+            ));
+        }
+    }
+    if let (Some(km), Some(vm)) = (
+        p.p_kill_max_duration_ms.filter(|&x| x != 0),
+        p.p_vol_min_duration_ms.filter(|&x| x != 0),
+    ) {
+        if vm < km {
+            return Err(format!(
+                "Volume Min Duration ({vm}ms) must be ≥ Kill Max Duration ({km}ms)"
+            ));
+        }
     }
     Ok(())
 }
@@ -253,6 +334,74 @@ mod tests {
         let with_gate = StrategyParams::Tpsl2(Tpsl2Params::from_rule(&rule));
         let d = draft(StrategyImpl::Tpsl2, with_gate);
         assert!(build_rule(&d).is_ok());
+    }
+
+    fn swing1_rule_min() -> crate::models::Swing1Rule {
+        let mut r = crate::models::Swing1Rule::new(
+            "r".into(), None, None, None, json!([]), "paper".into(), 1.0,
+            50.0, 20.0, None, None, None, None, Some(0.0), None, None, None, None,
+        );
+        // A minimal valid config: one swing axis, kill+volume axes, entry pullback.
+        r.p_swing_min_leg_trades = Some(2);
+        r.p_kill_depth_min_pct = Some(0.6);
+        r.p_kill_max_duration_ms = Some(5_000);
+        r.p_vol_depth_max_pct = Some(0.3);
+        r.p_vol_min_duration_ms = Some(10_000);
+        r.p_entry_pullback_pct = Some(15.0);
+        r
+    }
+
+    #[test]
+    fn valid_swing1_rule_builds() {
+        let p = StrategyParams::Swing1(Swing1Params::from_rule(&swing1_rule_min()));
+        let d = draft(StrategyImpl::Swing1, p);
+        let rule = build_rule(&d).expect("valid swing1");
+        assert_eq!(rule.strategy_id, "swing_1");
+    }
+
+    #[test]
+    fn swing1_requires_swing_and_profile_and_entry() {
+        // No swing axis → rejected.
+        let mut r = swing1_rule_min();
+        r.p_swing_min_leg_trades = None;
+        let d = draft(StrategyImpl::Swing1, StrategyParams::Swing1(Swing1Params::from_rule(&r)));
+        assert!(matches!(build_rule(&d), Err(e) if e.contains("swing-detection")));
+
+        // No kill/volume axis → rejected.
+        let mut r = swing1_rule_min();
+        r.p_kill_depth_min_pct = None;
+        r.p_kill_max_duration_ms = None;
+        r.p_vol_depth_max_pct = None;
+        r.p_vol_min_duration_ms = None;
+        r.p_vol_min_up_duration_ms = None;
+        let d = draft(StrategyImpl::Swing1, StrategyParams::Swing1(Swing1Params::from_rule(&r)));
+        assert!(matches!(build_rule(&d), Err(e) if e.contains("kill or volume")));
+
+        // No entry pullback → rejected.
+        let mut r = swing1_rule_min();
+        r.p_entry_pullback_pct = None;
+        let d = draft(StrategyImpl::Swing1, StrategyParams::Swing1(Swing1Params::from_rule(&r)));
+        assert!(matches!(build_rule(&d), Err(e) if e.contains("higher-low")));
+    }
+
+    #[test]
+    fn swing1_shape_sanity_kill_deeper_than_volume() {
+        let mut r = swing1_rule_min();
+        r.p_kill_depth_min_pct = Some(0.2); // shallower than the 0.3 volume ceiling
+        r.p_vol_depth_max_pct = Some(0.3);
+        let d = draft(StrategyImpl::Swing1, StrategyParams::Swing1(Swing1Params::from_rule(&r)));
+        assert!(matches!(build_rule(&d), Err(e) if e.contains("Kill Depth Min")));
+    }
+
+    #[test]
+    fn swing1_params_jsonb_round_trip() {
+        let p = Swing1Params::from_rule(&swing1_rule_min());
+        let v = serde_json::to_value(&p).unwrap();
+        let back: Swing1Params = serde_json::from_value(v).unwrap();
+        assert_eq!(p, back);
+        // And through the registry.
+        let reparsed = StrategyImpl::Swing1.parse_params(&params_to_value(&StrategyParams::Swing1(p.clone()))).unwrap();
+        assert_eq!(reparsed, StrategyParams::Swing1(p));
     }
 
     #[test]

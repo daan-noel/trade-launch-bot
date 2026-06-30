@@ -198,7 +198,7 @@ pub fn higher_low_confirmed(prefix: &[Trade], pullback_pct: f64, min_span_secs: 
 /// records the original trade index of the turn-up that completes the confirming
 /// higher low — so `find_scalp_entry` can gate on `i >= idx` instead of re-walking
 /// the prefix per candidate (the confirmation is monotonic in prefix length).
-fn higher_low_confirmed_index<T: TradeRow>(
+pub fn higher_low_confirmed_index<T: TradeRow>(
     trades: &[T],
     pullback_pct: f64,
     min_span_secs: i64,

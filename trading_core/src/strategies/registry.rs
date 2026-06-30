@@ -21,15 +21,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::models::trade::TradeRow;
-use crate::models::{StrategyRule, Token, Tpsl1Rule, Tpsl2Rule};
+use crate::models::{StrategyRule, Swing1Rule, Token, Tpsl1Rule, Tpsl2Rule};
 
-use super::{tpsl_sniper_1 as t1, tpsl_sniper_2 as t2};
+use super::{swing_1 as sw1, tpsl_sniper_1 as t1, tpsl_sniper_2 as t2};
 
 /// Which strategy family a rule belongs to. `strategy_id` string ⇄ enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StrategyImpl {
     Tpsl1,
     Tpsl2,
+    Swing1,
 }
 
 impl StrategyImpl {
@@ -39,6 +40,7 @@ impl StrategyImpl {
         match id {
             "tpsl_sniper_1" | "tpsl1" => Some(Self::Tpsl1),
             "tpsl_sniper_2" | "tpsl2" => Some(Self::Tpsl2),
+            "swing_1" | "swing1" => Some(Self::Swing1),
             _ => None,
         }
     }
@@ -48,6 +50,7 @@ impl StrategyImpl {
         match self {
             Self::Tpsl1 => "tpsl_sniper_1",
             Self::Tpsl2 => "tpsl_sniper_2",
+            Self::Swing1 => "swing_1",
         }
     }
 
@@ -57,6 +60,7 @@ impl StrategyImpl {
         Ok(match self {
             Self::Tpsl1 => StrategyParams::Tpsl1(serde_json::from_value(params.clone())?),
             Self::Tpsl2 => StrategyParams::Tpsl2(serde_json::from_value(params.clone())?),
+            Self::Swing1 => StrategyParams::Swing1(serde_json::from_value(params.clone())?),
         })
     }
 }
@@ -89,6 +93,22 @@ pub fn tpsl1_decision_rule(sr: &StrategyRule) -> Result<Tpsl1Rule, serde_json::E
 pub fn tpsl2_decision_rule(sr: &StrategyRule) -> Result<Tpsl2Rule, serde_json::Error> {
     let StrategyParams::Tpsl2(p) = StrategyImpl::Tpsl2.parse_params(&sr.params)? else {
         unreachable!("Tpsl2.parse_params always yields Tpsl2 params")
+    };
+    let mut r = p.to_rule();
+    r.id = sr.id;
+    r.rule_name = sr.rule_name.clone();
+    r.buy_amount = sr.buy_amount;
+    r.trade_mode = sr.trade_mode.clone();
+    r.p_max_concurrent_tokens = sr.max_concurrent_tokens.map(|v| v as u64);
+    r.p_max_total_tokens = sr.max_total_tokens.map(|v| v as u64);
+    Ok(r)
+}
+
+/// swing1 twin of [`tpsl1_decision_rule`] — rebuild the `Swing1Rule` from a
+/// unified [`StrategyRule`].
+pub fn swing1_decision_rule(sr: &StrategyRule) -> Result<Swing1Rule, serde_json::Error> {
+    let StrategyParams::Swing1(p) = StrategyImpl::Swing1.parse_params(&sr.params)? else {
+        unreachable!("Swing1.parse_params always yields Swing1 params")
     };
     let mut r = p.to_rule();
     r.id = sr.id;
@@ -300,11 +320,173 @@ impl Tpsl2Params {
     }
 }
 
+/// swing1 strategy-specific gate params — the exit ladder plus the four swing1
+/// axis groups (swing detection, kill profile, volume profile + transition,
+/// entry confirmation + symmetric next-kill exit). Field names match the
+/// `Swing1Rule` `p_*` fields so the `params` JSONB deserializes straight in.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Swing1Params {
+    #[serde(default)]
+    pub p_token_initial_buy_sol: Option<f64>,
+    #[serde(default)]
+    pub p_token_cu_limit: Option<u64>,
+    #[serde(default)]
+    pub p_token_cu_price: Option<u64>,
+    #[serde(default)]
+    pub p_token_max_sol_cost: Option<f64>,
+    #[serde(default)]
+    pub p_token_spendable_sol_in: Option<f64>,
+    #[serde(default = "empty_array")]
+    pub p_token_ix_labels: Value,
+    #[serde(default)]
+    pub tolerance_pct: f64,
+    pub p_exit_take_profit: f64,
+    pub p_exit_stop_loss: f64,
+    #[serde(default)]
+    pub p_exit_trailing_stop_pct: Option<f64>,
+    #[serde(default)]
+    pub p_exit_time_stop_secs: Option<u64>,
+    #[serde(default)]
+    pub p_exit_stall_secs: Option<u64>,
+    #[serde(default)]
+    pub p_exit_liquidity_drop_pct: Option<f64>,
+    // Swing detection.
+    #[serde(default)]
+    pub p_swing_high_to_low_sol: Option<f64>,
+    #[serde(default)]
+    pub p_swing_high_to_low_pct: Option<f64>,
+    #[serde(default)]
+    pub p_swing_low_to_high_sol: Option<f64>,
+    #[serde(default)]
+    pub p_swing_low_to_high_pct: Option<f64>,
+    #[serde(default)]
+    pub p_swing_min_leg_trades: Option<u32>,
+    // Kill profile.
+    #[serde(default)]
+    pub p_kill_depth_min_pct: Option<f64>,
+    #[serde(default)]
+    pub p_kill_max_duration_ms: Option<i64>,
+    #[serde(default)]
+    pub p_kill_min_net_flow_per_sec: Option<f64>,
+    // Volume profile + transition.
+    #[serde(default)]
+    pub p_vol_depth_max_pct: Option<f64>,
+    #[serde(default)]
+    pub p_vol_min_duration_ms: Option<i64>,
+    #[serde(default)]
+    pub p_vol_min_up_duration_ms: Option<i64>,
+    #[serde(default)]
+    pub p_min_kills_before_volume: Option<u32>,
+    // Entry confirmation.
+    #[serde(default)]
+    pub p_entry_pullback_pct: Option<f64>,
+    #[serde(default)]
+    pub p_entry_higher_low_secs: Option<u64>,
+    #[serde(default)]
+    pub p_entry_max_age_secs: Option<u64>,
+    #[serde(default)]
+    pub p_entry_min_liquidity_sol: Option<f64>,
+    #[serde(default)]
+    pub p_entry_max_cohort_held: Option<f64>,
+    // Symmetric next-kill exit.
+    #[serde(default)]
+    pub p_exit_next_kill_depth_min_pct: Option<f64>,
+    #[serde(default)]
+    pub p_exit_next_kill_max_duration_ms: Option<i64>,
+}
+
+impl Swing1Params {
+    /// Lift the gate params out of a full rule (the inverse of [`to_rule`]).
+    pub fn from_rule(r: &Swing1Rule) -> Self {
+        Self {
+            p_token_initial_buy_sol: r.p_token_initial_buy_sol,
+            p_token_cu_limit: r.p_token_cu_limit,
+            p_token_cu_price: r.p_token_cu_price,
+            p_token_max_sol_cost: r.p_token_max_sol_cost,
+            p_token_spendable_sol_in: r.p_token_spendable_sol_in,
+            p_token_ix_labels: r.p_token_ix_labels.clone(),
+            tolerance_pct: r.tolerance_pct,
+            p_exit_take_profit: r.p_exit_take_profit,
+            p_exit_stop_loss: r.p_exit_stop_loss,
+            p_exit_trailing_stop_pct: r.p_exit_trailing_stop_pct,
+            p_exit_time_stop_secs: r.p_exit_time_stop_secs,
+            p_exit_stall_secs: r.p_exit_stall_secs,
+            p_exit_liquidity_drop_pct: r.p_exit_liquidity_drop_pct,
+            p_swing_high_to_low_sol: r.p_swing_high_to_low_sol,
+            p_swing_high_to_low_pct: r.p_swing_high_to_low_pct,
+            p_swing_low_to_high_sol: r.p_swing_low_to_high_sol,
+            p_swing_low_to_high_pct: r.p_swing_low_to_high_pct,
+            p_swing_min_leg_trades: r.p_swing_min_leg_trades,
+            p_kill_depth_min_pct: r.p_kill_depth_min_pct,
+            p_kill_max_duration_ms: r.p_kill_max_duration_ms,
+            p_kill_min_net_flow_per_sec: r.p_kill_min_net_flow_per_sec,
+            p_vol_depth_max_pct: r.p_vol_depth_max_pct,
+            p_vol_min_duration_ms: r.p_vol_min_duration_ms,
+            p_vol_min_up_duration_ms: r.p_vol_min_up_duration_ms,
+            p_min_kills_before_volume: r.p_min_kills_before_volume,
+            p_entry_pullback_pct: r.p_entry_pullback_pct,
+            p_entry_higher_low_secs: r.p_entry_higher_low_secs,
+            p_entry_max_age_secs: r.p_entry_max_age_secs,
+            p_entry_min_liquidity_sol: r.p_entry_min_liquidity_sol,
+            p_entry_max_cohort_held: r.p_entry_max_cohort_held,
+            p_exit_next_kill_depth_min_pct: r.p_exit_next_kill_depth_min_pct,
+            p_exit_next_kill_max_duration_ms: r.p_exit_next_kill_max_duration_ms,
+        }
+    }
+
+    /// Rebuild the `Swing1Rule` the decision fns consume — base knobs via `new`,
+    /// then the swing1 axes set post-construction (mirroring the tpsl2 API).
+    pub fn to_rule(&self) -> Swing1Rule {
+        let mut r = Swing1Rule::new(
+            String::new(),
+            self.p_token_initial_buy_sol,
+            self.p_token_cu_limit,
+            self.p_token_cu_price,
+            self.p_token_ix_labels.clone(),
+            "paper".into(),
+            0.0,
+            self.p_exit_take_profit,
+            self.p_exit_stop_loss,
+            self.p_token_max_sol_cost,
+            self.p_token_spendable_sol_in,
+            None,
+            None,
+            Some(self.tolerance_pct),
+            self.p_exit_trailing_stop_pct,
+            self.p_exit_time_stop_secs,
+            self.p_exit_stall_secs,
+            self.p_exit_liquidity_drop_pct,
+        );
+        r.p_swing_high_to_low_sol = self.p_swing_high_to_low_sol;
+        r.p_swing_high_to_low_pct = self.p_swing_high_to_low_pct;
+        r.p_swing_low_to_high_sol = self.p_swing_low_to_high_sol;
+        r.p_swing_low_to_high_pct = self.p_swing_low_to_high_pct;
+        r.p_swing_min_leg_trades = self.p_swing_min_leg_trades;
+        r.p_kill_depth_min_pct = self.p_kill_depth_min_pct;
+        r.p_kill_max_duration_ms = self.p_kill_max_duration_ms;
+        r.p_kill_min_net_flow_per_sec = self.p_kill_min_net_flow_per_sec;
+        r.p_vol_depth_max_pct = self.p_vol_depth_max_pct;
+        r.p_vol_min_duration_ms = self.p_vol_min_duration_ms;
+        r.p_vol_min_up_duration_ms = self.p_vol_min_up_duration_ms;
+        r.p_min_kills_before_volume = self.p_min_kills_before_volume;
+        r.p_entry_pullback_pct = self.p_entry_pullback_pct;
+        r.p_entry_higher_low_secs = self.p_entry_higher_low_secs;
+        r.p_entry_max_age_secs = self.p_entry_max_age_secs;
+        r.p_entry_min_liquidity_sol = self.p_entry_min_liquidity_sol;
+        r.p_entry_max_cohort_held = self.p_entry_max_cohort_held;
+        r.p_exit_next_kill_depth_min_pct = self.p_exit_next_kill_depth_min_pct;
+        r.p_exit_next_kill_max_duration_ms = self.p_exit_next_kill_max_duration_ms;
+        r.is_active = true;
+        r
+    }
+}
+
 /// The parsed, typed params for a rule — one variant per [`StrategyImpl`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum StrategyParams {
     Tpsl1(Tpsl1Params),
     Tpsl2(Tpsl2Params),
+    Swing1(Swing1Params),
 }
 
 impl StrategyParams {
@@ -313,6 +495,7 @@ impl StrategyParams {
         match self {
             Self::Tpsl1(_) => StrategyImpl::Tpsl1,
             Self::Tpsl2(_) => StrategyImpl::Tpsl2,
+            Self::Swing1(_) => StrategyImpl::Swing1,
         }
     }
 }
@@ -345,6 +528,9 @@ impl StrategyImpl {
             }
             (Self::Tpsl2, StrategyParams::Tpsl2(p)) => {
                 t2::entry::token_matches_buy_rule(token, &p.to_rule())
+            }
+            (Self::Swing1, StrategyParams::Swing1(p)) => {
+                sw1::entry::token_matches_buy_rule(token, &p.to_rule())
             }
             _ => false,
         }
@@ -384,6 +570,14 @@ impl StrategyImpl {
                     block_time: f.block_time,
                 })
             }
+            (Self::Swing1, StrategyParams::Swing1(p)) => {
+                let (_trigger_idx, f) = sw1::entry::find_phase_entry(trades, &p.to_rule())?;
+                Some(ResolvedEntry {
+                    price: f.price,
+                    tx_signature: f.tx_signature,
+                    block_time: f.block_time,
+                })
+            }
             _ => None,
         }
     }
@@ -415,6 +609,20 @@ impl StrategyImpl {
             }
             (Self::Tpsl2, StrategyParams::Tpsl2(p)) => {
                 let f = t2::exit::find_trade_driven_exit(
+                    trades,
+                    entry_time,
+                    entry_price,
+                    &p.to_rule(),
+                )?;
+                Some(ResolvedExit {
+                    price: f.price,
+                    tx_signature: f.tx_signature,
+                    block_time: f.block_time,
+                    reason: f.reason.as_str(),
+                })
+            }
+            (Self::Swing1, StrategyParams::Swing1(p)) => {
+                let f = sw1::exit::find_trade_driven_exit(
                     trades,
                     entry_time,
                     entry_price,
@@ -466,6 +674,21 @@ impl StrategyImpl {
             }
             (Self::Tpsl2, StrategyParams::Tpsl2(p)) => {
                 let (f, fire_slot) = t2::exit::find_trade_driven_exit_with_slot(
+                    trades,
+                    entry_time,
+                    entry_price,
+                    &p.to_rule(),
+                )?;
+                let exit = ResolvedExit {
+                    price: f.price,
+                    tx_signature: f.tx_signature,
+                    block_time: f.block_time,
+                    reason: f.reason.as_str(),
+                };
+                Some((exit, Some(fire_slot)))
+            }
+            (Self::Swing1, StrategyParams::Swing1(p)) => {
+                let (f, fire_slot) = sw1::exit::find_trade_driven_exit_with_slot(
                     trades,
                     entry_time,
                     entry_price,

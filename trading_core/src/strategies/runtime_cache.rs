@@ -1013,6 +1013,7 @@ fn rule_notif_snapshot(rule: &StrategyRule, params: Option<&StrategyParams>) -> 
     match params {
         Some(StrategyParams::Tpsl1(p)) => from_params!(p),
         Some(StrategyParams::Tpsl2(p)) => from_params!(p),
+        Some(StrategyParams::Swing1(p)) => from_params!(p),
         None => RuleNotifSnapshot {
             rule_name: rule.rule_name.clone(),
             trade_mode: rule.trade_mode.clone(),
