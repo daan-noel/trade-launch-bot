@@ -33,6 +33,7 @@ import { datetimeLocalToUtcWallClock, formatIso } from 'utils/date';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { usePolledRules } from 'hooks/usePolledRules';
 import { useRulePositions } from 'hooks/useRulePositions';
+import { useLocalStorage } from 'hooks/useLocalStorage';
 import { useDispatch } from 'react-redux';
 import {
   activateTpsl2Rule,
@@ -68,6 +69,7 @@ import type {
   SimulatedTokenResult,
 } from 'types';
 import { cn } from 'lib/cn';
+import { STORAGE_KEYS } from 'lib/storage';
 import { computeRuleColorClasses } from 'lib/ruleColorGroups';
 
 const TPSL2_SPEC = getSpec('tpsl2');
@@ -1193,7 +1195,7 @@ export function Tpsl2Page() {
   const isRealRuleSelected = selectedRuleMode === 'real';
   const isPaperRuleSelected = selectedRuleId != null && selectedRuleMode != null && !isRealRuleSelected;
 
-  const [showPending, setShowPending] = useState(false);
+  const [showPending, setShowPending] = useLocalStorage(`${STORAGE_KEYS.showPending}.tpsl2_lab`, false);
 
   // Sim-shaped view of the live positions, feeding the Positions summary card.
   // Exclude pre-fill rows (Arming = watching for the entry trigger; BuySubmitted =

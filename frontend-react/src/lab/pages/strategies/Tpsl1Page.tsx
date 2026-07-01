@@ -31,6 +31,7 @@ import { datetimeLocalToUtcWallClock, formatIso } from 'utils/date';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { usePolledRules } from 'hooks/usePolledRules';
 import { useRulePositions } from 'hooks/useRulePositions';
+import { useLocalStorage } from 'hooks/useLocalStorage';
 import { useDispatch } from 'react-redux';
 import {
   activateTpsl1Rule,
@@ -66,6 +67,7 @@ import type {
   SimulatedTokenResult,
 } from 'types';
 import { cn } from 'lib/cn';
+import { STORAGE_KEYS } from 'lib/storage';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 
 const TPSL1_SPEC = getSpec('tpsl1');
@@ -1184,7 +1186,7 @@ export function Tpsl1Page() {
   const isRealRuleSelected = selectedRuleMode === 'real';
   const isPaperRuleSelected = selectedRuleId != null && selectedRuleMode != null && !isRealRuleSelected;
 
-  const [showPending, setShowPending] = useState(false);
+  const [showPending, setShowPending] = useLocalStorage(`${STORAGE_KEYS.showPending}.tpsl1_lab`, false);
 
   // Split the single rule list into real vs paper so each renders in its own
   // table (real on top, flagged as live). Pure client-side partition of the

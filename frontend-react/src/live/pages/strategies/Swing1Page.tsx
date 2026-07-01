@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { memo, useCallback, useMemo, useState, type ReactNode } from 'react';
 import { DataTable } from 'components/table/DataTable';
 import { Accordion } from 'components/ui/Accordion';
 import { Badge, type BadgeVariant } from 'components/ui/Badge';
@@ -31,14 +31,15 @@ import {
   stopSwing1Rule,
   updateSwing1Rule,
 } from 'services/api';
-import { connectTpslPositionsChanged } from 'services/sse';
 import { apiErrorMessage, useGetTokensByMintsQuery } from 'store/apiSlice';
 import { useSellTokenMutation } from '@live/store/liveEndpoints';
 import { mergeTokenData } from 'components/tokens/sharedTokenColumns';
 import { usePolledRules } from 'hooks/usePolledRules';
 import { useRulePositions } from 'hooks/useRulePositions';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
+import { useLocalStorage } from 'hooks/useLocalStorage';
 import { cn } from 'lib/cn';
+import { STORAGE_KEYS } from 'lib/storage';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 import type { RulePositionRecord, RuleRecord } from 'types';
 import type { ColumnDef } from 'components/table/types';
@@ -327,10 +328,7 @@ export function Swing1Page() {
     [],
   );
 
-  const { rules, setRules, loading, error, refresh: loadRules } = usePolledRules(
-    fetchSwing1Rules,
-    STRATEGY,
-  );
+  const { rules, setRules, loading, error } = usePolledRules(fetchSwing1Rules, STRATEGY);
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
   const { positions, loading: positionsLoading, error: positionsError } =
     useRulePositions(selectedRuleId, rules, fetchSwing1RulePositions, STRATEGY);
@@ -350,19 +348,17 @@ export function Swing1Page() {
   const [reactivate, setReactivate] = useState<RuleRecord | null>(null);
 
   const [inspect, setInspect] = useState<{ key: string; target: InspectTarget } | null>(null);
-  const [showPending, setShowPending] = useState(false);
+  const [showPending, setShowPending] = useLocalStorage(`${STORAGE_KEYS.showPending}.${STRATEGY}`, false);
 
   const [sellToken] = useSellTokenMutation();
   const [sellingPositionMint, setSellingPositionMint] = useState<string | null>(null);
 
-  // SSE: position deltas for the selected rule keep the positions list live.
-  useEffect(() => {
-    const handle = connectTpslPositionsChanged(STRATEGY, (delta) => {
-      if (delta.ruleId !== selectedRuleId) return;
-      void loadRules(false);
-    });
-    return () => handle.close();
-  }, [selectedRuleId, loadRules]);
+  // Position deltas keep both lists live via the hooks themselves:
+  // `usePolledRules` patches each rule's counts/lifecycle in place and
+  // `useRulePositions` patches the positions list in place — both off the same
+  // `tpsl_positions_changed` push, no refetch. (A previous effect here called
+  // the NON-silent `loadRules(false)` on every delta, flipping `loading` true
+  // and unmounting the whole rule-table region — the "page reload" flash.)
 
   const applyRuleUpdate = useCallback((updated: RuleRecord) => {
     setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));

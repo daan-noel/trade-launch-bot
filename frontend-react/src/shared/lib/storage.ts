@@ -33,6 +33,8 @@ export const STORAGE_KEYS = {
   tablePrefs: `${PREFIX}table.prefs`,
   /** Notification preferences (real/paper toggles, status filter, fp-param display). */
   notificationPrefs: `${PREFIX}notifications`,
+  /** Base key for the per-strategy-page "show pending positions" toggle; append `.${pageId}` for a per-page key. */
+  showPending: `${PREFIX}strategy.showPending`,
   // Dashboard page controls
   dashboardMetric: `${PREFIX}dashboard.metric`,
   dashboardSegment: `${PREFIX}dashboard.segment`,
