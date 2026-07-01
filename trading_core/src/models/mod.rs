@@ -17,7 +17,7 @@ pub mod wallet_profile_tag;
 
 // Re-export types for convenience
 pub use paper_run::{PaperRun, PaperRunStatus};
-pub use position::{Position, PositionStatus};
+pub use position::{Position, PositionResponse, PositionStatus};
 pub use raw_tx::RawTx;
 pub use strategy::{StrategyPosition, StrategyRule, StrategyRun, StrategyRunMetrics};
 pub use token::Token;

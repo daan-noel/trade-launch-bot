@@ -28,7 +28,7 @@ use crate::{
     strategies::tpsl_sniper_2::backtest::BacktestTokenResult,
 };
 
-use trading_core::models::{StrategyPosition, StrategyRule};
+use trading_core::models::{Position, PositionResponse, StrategyPosition, StrategyRule};
 use trading_core::storage::repositories::strategy_repo::StrategyRepo;
 use trading_core::strategies::registry::StrategyImpl;
 use trading_core::strategies::rules::{self, params_to_value, RuleDraft, RuleError};
@@ -518,6 +518,57 @@ pub async fn cancel_simulate_tpsl_rule(
         None => false,
     };
     HttpResponse::Ok().json(serde_json::json!({ "cancelling": cancelling }))
+}
+
+// ---------------------------------------------------------------------------
+// Positions (lab view: latest paper run's bag)
+// ---------------------------------------------------------------------------
+
+const POSITIONS_MAX: i64 = 1000;
+
+/// GET /api/strategies/tpsl2/rules/{rule_id}/positions
+///
+/// Lab twin of the live `get_positions_by_rule`: serves the latest paper run's
+/// bag via the shared `PositionResponse` wire shape.
+pub async fn get_positions_by_rule_tpsl2(
+    app_state: web::Data<Arc<LocalState>>,
+    rule_id: web::Path<Uuid>,
+) -> impl Responder {
+    let rule_id = rule_id.into_inner();
+    let repo = app_state.strategy_repo();
+
+    match repo.find_rule(rule_id).await {
+        Ok(Some(r)) if r.strategy_id == STRATEGY_ID => {}
+        Ok(_) => return HttpResponse::Ok().json(Vec::<PositionResponse>::new()),
+        Err(e) => {
+            tracing::error!("Failed to get rule {rule_id}: {e}");
+            return HttpResponse::InternalServerError().json(json!({"error": "Failed to get rule"}));
+        }
+    }
+
+    let run = match repo.latest_run(rule_id, "paper").await {
+        Ok(Some(run)) => run,
+        Ok(None) => return HttpResponse::Ok().json(Vec::<PositionResponse>::new()),
+        Err(e) => {
+            tracing::error!("Failed to load paper run for {rule_id}: {e}");
+            return HttpResponse::InternalServerError()
+                .json(json!({"error": "Failed to load paper run"}));
+        }
+    };
+
+    match repo.find_positions_by_run_paged(run.id, POSITIONS_MAX, 0).await {
+        Ok(positions) => {
+            let responses: Vec<PositionResponse> = positions
+                .iter()
+                .map(|p| PositionResponse::from(Position::from(p)))
+                .collect();
+            HttpResponse::Ok().json(responses)
+        }
+        Err(e) => {
+            tracing::error!("Failed to load positions for run {}: {e}", run.id);
+            HttpResponse::InternalServerError().json(json!({"error": "Failed to load positions"}))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
