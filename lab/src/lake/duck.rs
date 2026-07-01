@@ -27,6 +27,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use duckdb::Connection;
 
+use trading_core::config::constants::approx_real_sol_reserves;
+
 use crate::sweep::corpus::{Corpus, CorpusSource, Selection, TradeWindow};
 use crate::sweep::grouping::TokenFingerprint;
 use crate::sweep::projection::{SweepTrade, WalletInterner};
@@ -227,12 +229,12 @@ fn load_token_trades(
     let sql = format!(
         "WITH ranked AS ( \
             SELECT t.mint, t.wallet, t.is_buy, t.sol_amount, t.token_amount, t.price, \
-                   t.slot, t.tx_index, t.block_time, t.leg_index, t.vsol, t.vtok, \
+                   t.slot, t.tx_index, t.block_time, t.leg_index, t.vsol, t.vtok, t.venue, \
                    ROW_NUMBER() OVER (PARTITION BY t.mint ORDER BY {order}) AS rn \
             FROM read_parquet({trades_lit}, hive_partitioning=true) t \
             WHERE t.mint IN (SELECT mint FROM sel_mints) {curve_filter} \
          ) \
-         SELECT mint, wallet, is_buy, sol_amount, token_amount, price, slot, block_time, leg_index, vsol, vtok \
+         SELECT mint, wallet, is_buy, sol_amount, token_amount, price, slot, block_time, leg_index, vsol, vtok, venue \
          FROM ranked WHERE rn <= ? \
          ORDER BY mint ASC, slot ASC, tx_index ASC, leg_index ASC, block_time ASC"
     );
@@ -257,6 +259,7 @@ fn load_token_trades(
         let leg_index: i32 = row.get(8)?;
         let vsol: Option<f64> = row.get(9)?;
         let vtok: Option<f64> = row.get(10)?;
+        let venue: String = row.get(11)?;
 
         if cur_mint.as_deref() != Some(mint.as_str()) {
             if let Some(prev) = cur_mint.take() {
@@ -271,10 +274,15 @@ fn load_token_trades(
             price_per_token: price,
             reserve_sol: vsol,
             reserve_token: vtok,
-            // `real_*_reserves` aren't in the `trades` table (dropped, re-derivable
-            // from raw_txs) so the lake can't carry them; curve rows lack them live
-            // too, so the GMGN curve-spot (vsol/vtok) is full parity for the curve phase.
-            real_sol_reserves: None,
+            // The program-emitted `real_*_reserves` aren't in the `trades` table
+            // (dropped, re-derivable from raw_txs), so the lake **approximates**
+            // real SOL from the priced reserve pair per venue: AMM → reserve_sol,
+            // curve → reserve_sol − 30 (the initial virtual SOL), clamped at 0.
+            // Same "true liquidity" the frontend chart shows; lets the sim's
+            // real-reserve gates (e.g. tpsl2 `min_liq_sol`) resolve. This is an
+            // approximation of the live/paper value, not lamport-identical.
+            // `real_token_reserves` stays None — no configured gate reads it.
+            real_sol_reserves: vsol.map(|s| approx_real_sol_reserves(s, &venue)),
             real_token_reserves: None,
             slot: slot as u64,
             wallet: interner.intern(&wallet),

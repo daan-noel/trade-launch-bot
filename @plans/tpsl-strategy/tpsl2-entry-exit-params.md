@@ -125,6 +125,15 @@ The pool's **real** SOL reserves (from the on-chain `real_sol_reserves` field, N
 
 Uses the most recent trade in the prefix that carries a `real_sol_reserves` snapshot.
 
+> **Data source per path.** Live/paper use the program-emitted `real_sol_reserves`
+> (exact: curve = the curve `TradeEvent` field, AMM = pool quote reserve). The
+> **sim/backtest** corpus doesn't carry that field (dropped from `trades`), so the
+> lake **approximates** it from the priced reserve pair per venue — AMM →
+> `reserve_sol`, curve → `reserve_sol − 30` (the initial virtual SOL), clamped ≥0
+> (`approx_real_sol_reserves`, `lab::lake::duck`). Same "true liquidity" the chart
+> shows. Consequence: on the curve this gate is effectively "virtual reserve ≥ 30 + N
+> SOL", and sim is a close-but-not-lamport-identical proxy for the live gate.
+
 ---
 
 **6. `p_entry_min_organic_liq` — Organic Liquidity Floor**
