@@ -943,11 +943,14 @@ impl StrategyService {
 // (re)starts a run for real rules too — `on_token_created` stamps new positions with
 // the current run and caps are per current run.
 impl StrategyService {
-    /// Frontend strategy label for [`SseEvent::TpslRulesChanged`] ("tpsl1" / "tpsl2").
-    /// The frontend mode strings are intentionally unchanged in this phase.
+    /// Frontend strategy label for [`SseEvent::TpslRulesChanged`]
+    /// ("tpsl1" / "tpsl2" / "swing_1"). Must match the string the corresponding
+    /// frontend page filters on — swing1 filters `swing_1`, so it can't collapse
+    /// into the tpsl1 catch-all or its rule-list refetch would never fire.
     fn strat_label(strategy_id: &str) -> String {
         match StrategyImpl::from_id(strategy_id) {
             Some(StrategyImpl::Tpsl2) => "tpsl2".to_string(),
+            Some(StrategyImpl::Swing1) => "swing_1".to_string(),
             _ => "tpsl1".to_string(),
         }
     }

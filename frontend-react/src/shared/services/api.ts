@@ -395,6 +395,83 @@ export async function fetchTpsl2Position(
 }
 
 // ---------------------------------------------------------------------------
+// swing1 rules + positions (live) — mirrors the tpsl2 block over the generic
+// `/api/strategies/{strategy}/…` live routes (`strategy` seg = `swing1`).
+// ---------------------------------------------------------------------------
+
+export async function fetchSwing1Rules(): Promise<import('types').RuleRecord[]> {
+  return request(`${API_BASE}/api/strategies/swing1/rules`);
+}
+
+export async function createSwing1Rule(
+  req: Record<string, unknown>,
+): Promise<import('types').RuleRecord> {
+  return request(`${API_BASE}/api/strategies/swing1/rules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+}
+
+export async function updateSwing1Rule(
+  ruleId: string,
+  req: Record<string, unknown>,
+): Promise<import('types').RuleRecord> {
+  return request(`${API_BASE}/api/strategies/swing1/rules/${ruleId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+}
+
+export async function deleteSwing1Rule(ruleId: string): Promise<void> {
+  await request(`${API_BASE}/api/strategies/swing1/rules/${ruleId}`, { method: 'DELETE' });
+}
+
+/** `activate` — entries on. For paper rules, `paperRun` chooses fresh vs continue. */
+export async function activateSwing1Rule(
+  ruleId: string,
+  paperRun: 'fresh' | 'continue' = 'fresh',
+): Promise<import('types').RuleRecord> {
+  return request(`${API_BASE}/api/strategies/swing1/rules/${ruleId}/activate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paper_run: paperRun }),
+  });
+}
+
+/** `pause` — entries off; open positions drain via the exit ladder. */
+export async function pauseSwing1Rule(ruleId: string): Promise<import('types').RuleRecord> {
+  return request(`${API_BASE}/api/strategies/swing1/rules/${ruleId}/pause`, { method: 'POST' });
+}
+
+/** `stop` — pause and force-close every open position now. */
+export async function stopSwing1Rule(ruleId: string): Promise<import('types').RuleRecord> {
+  return request(`${API_BASE}/api/strategies/swing1/rules/${ruleId}/stop`, { method: 'POST' });
+}
+
+export async function fetchSwing1RulePositions(
+  ruleId: string,
+  signal?: AbortSignal,
+): Promise<import('types').RulePositionRecord[]> {
+  return request(`${API_BASE}/api/strategies/swing1/rules/${ruleId}/positions`, { signal });
+}
+
+export async function fetchSwing1PaperResult(
+  ruleId: string,
+): Promise<import('types').PaperResultResponse> {
+  return request(`${API_BASE}/api/strategies/swing1/rules/${ruleId}/paper-result`);
+}
+
+/** Clear a swing1 paper rule's recorded run history (runs + positions). Paper-only
+ *  and only valid while the rule is idle; the backend rejects live rules. */
+export async function clearSwing1PaperResult(ruleId: string): Promise<void> {
+  await request(`${API_BASE}/api/strategies/swing1/rules/${ruleId}/paper-result`, {
+    method: 'DELETE',
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Profiles & Wallets
 // ---------------------------------------------------------------------------
 
@@ -510,7 +587,7 @@ export async function cancelGroupedSweep(): Promise<void> {
  *  (empty = all-time). This decoupling is what stops a long sim failing the client
  *  with `FETCH_ERROR`. */
 export async function startSimulation(
-  strategy: 'tpsl1' | 'tpsl2',
+  strategy: 'tpsl1' | 'tpsl2' | 'swing1',
   ruleId: string,
   range: { from?: string; to?: string },
 ): Promise<void> {

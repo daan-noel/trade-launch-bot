@@ -98,6 +98,7 @@ export const Input = forwardRef<
     integer,
     onChange,
     onBlur,
+    onFocus,
     ...props
   },
   ref,
@@ -115,6 +116,10 @@ export const Input = forwardRef<
   // aren't destroyed by re-parsing `numericValue` back into the field. `null`
   // draft ⇒ not editing, render the canonical value. Cleared on blur.
   const [draft, setDraft] = useState<string | null>(null);
+  // Track focus so display-only reformatting (e.g. `blankZero`) never rewrites
+  // the field while the user is mid-typing — that swallows a leading `0` and
+  // turns `0.4` into `.4`.
+  const [focused, setFocused] = useState(false);
   if (numeric) {
     // Preserve any caller-supplied handlers: numeric mode manages the draft and
     // reports the parsed value via `onNumericChange`, but still forwards the raw
@@ -143,10 +148,24 @@ export const Input = forwardRef<
     };
   }
 
+  // Wrap focus/blur to track editing state. Composed here — after the numeric
+  // block above may have reassigned `onBlur` — so both handlers still fire.
+  const callerFocus = onFocus;
+  onFocus = (e) => {
+    setFocused(true);
+    callerFocus?.(e);
+  };
+  const composedBlur = onBlur;
+  onBlur = (e) => {
+    setFocused(false);
+    composedBlur?.(e);
+  };
+
   // `blankZero`: render a literal 0 as an empty field (for "0 = off" params, so
   // an unset gate reads blank). Display-only — the bound value is untouched, so
-  // an unedited 0 still saves as 0.
-  if (blankZero && (value === 0 || value === '0')) value = '';
+  // an unedited 0 still saves as 0. Skipped while focused so it never rewrites
+  // the field mid-edit (which would drop a leading `0`, e.g. `0.4` → `.4`).
+  if (blankZero && !focused && (value === 0 || value === '0')) value = '';
 
   const fieldCls = fieldClassName({ size: fieldSize, variant, type, className });
 
@@ -167,6 +186,7 @@ export const Input = forwardRef<
         value={value}
         onChange={onChange}
         onBlur={onBlur}
+        onFocus={onFocus}
         className={fieldCls}
         {...props}
       />
@@ -183,6 +203,7 @@ export const Input = forwardRef<
         value={value}
         onChange={onChange}
         onBlur={onBlur}
+        onFocus={onFocus}
         className={cn(fieldCls, 'w-full')}
         {...props}
       />

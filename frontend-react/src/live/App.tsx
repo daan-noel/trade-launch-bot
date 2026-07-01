@@ -18,6 +18,7 @@ const OtherProfilesPage = lazy(() => import('pages/profiles/OtherProfilesPage').
 const SettingsPage = lazy(() => import('pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
 const Tpsl1Page = lazy(() => import('@live/pages/strategies/TpslPage').then((m) => ({ default: () => m.TpslPage({ strategy: 'tpsl1' }) })));
 const Tpsl2Page = lazy(() => import('@live/pages/strategies/TpslPage').then((m) => ({ default: () => m.TpslPage({ strategy: 'tpsl2' }) })));
+const Swing1Page = lazy(() => import('@live/pages/strategies/Swing1Page').then((m) => ({ default: m.Swing1Page })));
 const NotFoundPage = lazy(() => import('pages/not-found/NotFoundPage').then((m) => ({ default: m.NotFoundPage })));
 
 /** Mounts the global position-notification toasts (live-only). */
@@ -47,6 +48,7 @@ export default function App() {
                 <Route path="token/sync" element={<SyncTokenPage />} />
                 <Route path="strategies/tpsl1" element={<Tpsl1Page />} />
                 <Route path="strategies/tpsl2" element={<Tpsl2Page />} />
+                <Route path="strategies/swing1" element={<Swing1Page />} />
                 <Route path="wallet" element={<Navigate to="/profiles/mine" replace />} />
                 <Route path="profiles/mine" element={<MyWalletPage />} />
                 <Route path="profiles/other" element={<OtherProfilesPage />} />

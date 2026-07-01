@@ -18,7 +18,7 @@ import type {
 /** Args for the per-rule strategy result reads (matched / simulate / paper),
  *  shared by both strategy pages so tpsl1 and tpsl2 keep distinct cache keys. */
 export interface StrategyRuleArg {
-  strategy: 'tpsl1' | 'tpsl2';
+  strategy: 'tpsl1' | 'tpsl2' | 'swing1';
   ruleId: string;
   /**
    * Optional transient creation-time window for `matched` / `simulate` only

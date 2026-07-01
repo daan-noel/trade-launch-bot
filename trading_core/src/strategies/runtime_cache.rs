@@ -983,6 +983,10 @@ impl StrategyRuntimeCache {
 fn fe_strategy_label(strategy_id: &str) -> &'static str {
     match StrategyImpl::from_id(strategy_id) {
         Some(StrategyImpl::Tpsl2) => "tpsl2",
+        // swing1's own frontend page filters SSE frames on `swing_1`, so it must
+        // NOT collapse into the tpsl1 catch-all (that would misroute its deltas to
+        // the tpsl1 page and starve the swing1 page).
+        Some(StrategyImpl::Swing1) => "swing_1",
         _ => "tpsl1",
     }
 }

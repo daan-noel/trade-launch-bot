@@ -48,7 +48,7 @@ export function useRulePositions(
   selectedRuleId: string | null,
   rules: RuleRecord[],
   fetchPositions: (ruleId: string, signal: AbortSignal) => Promise<RulePositionRecord[]>,
-  strategy: 'tpsl1' | 'tpsl2',
+  strategy: 'tpsl1' | 'tpsl2' | 'swing_1',
 ): RulePositions {
   const [positions, setPositions] = useState<RulePositionRecord[]>([]);
   const [loading, setLoading] = useState(false);

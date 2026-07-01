@@ -42,7 +42,7 @@ export interface PolledRules {
  */
 export function usePolledRules(
   fetchRules: () => Promise<RuleRecord[]>,
-  strategy: 'tpsl1' | 'tpsl2',
+  strategy: 'tpsl1' | 'tpsl2' | 'swing_1',
 ): PolledRules {
   const [rules, setRules] = useState<RuleRecord[]>([]);
   const [loading, setLoading] = useState(true);

@@ -154,7 +154,10 @@ export function connectPaperTestStream(
   return { close: unsub };
 }
 
-type TpslStrategy = 'tpsl1' | 'tpsl2';
+// The client filters `tpsl_rules_changed` / `tpsl_positions_changed` frames by the
+// payload's `strategy` string; the server already emits `swing_1` for swing1 rules
+// (canonical `StrategyImpl::id`), so widening this type is all that's needed.
+type TpslStrategy = 'tpsl1' | 'tpsl2' | 'swing_1';
 
 /**
  * Rule-list change signal for `strategy` — fires when a rule is created /

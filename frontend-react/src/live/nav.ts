@@ -24,6 +24,7 @@ export const liveNav: NavConfig = {
       items: [
         { to: '/strategies/tpsl1', label: 'TP / SL Sniper 1' },
         { to: '/strategies/tpsl2', label: 'TP / SL Sniper 2' },
+        { to: '/strategies/swing1', label: 'Swing 1' },
       ],
     },
     {

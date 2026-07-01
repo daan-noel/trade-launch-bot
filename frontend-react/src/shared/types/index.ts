@@ -78,6 +78,23 @@ export interface RuleRecord {
   p_entry_min_liquidity_sol: number | null;
   p_entry_min_organic_liq: number | null;
   p_exit_cohort_ratio: number | null;
+  // ── swing1-only params (null on tpsl1/tpsl2). Merged flat into the rule JSON by
+  //    the backend `rule_to_json`; 0/null = that knob is off. ──
+  p_swing_high_to_low_sol?: number | null;
+  p_swing_high_to_low_pct?: number | null;
+  p_swing_low_to_high_sol?: number | null;
+  p_swing_low_to_high_pct?: number | null;
+  p_swing_min_leg_trades?: number | null;
+  p_dust_frac?: number | null;
+  p_kill_depth_min_pct?: number | null;
+  p_kill_max_duration_ms?: number | null;
+  p_kill_min_net_flow_per_sec?: number | null;
+  p_vol_depth_max_pct?: number | null;
+  p_vol_min_duration_ms?: number | null;
+  p_vol_min_up_duration_ms?: number | null;
+  p_min_kills_before_volume?: number | null;
+  p_exit_next_kill_depth_min_pct?: number | null;
+  p_exit_next_kill_max_duration_ms?: number | null;
   tolerance_pct: number;
   is_active: boolean;
   /** Derived lifecycle for the UI: 'Active' | 'Draining' | 'Idle' | 'Finished'.
