@@ -105,9 +105,10 @@ pub async fn run_backtest(
     let max_total_tokens = none_if_zero_u64(rule.p_max_total_tokens).map(|v| v as usize);
 
     // Candidate tokens are scanned from the whole `tokens` table (keyset-streamed
-    // within the optional `[since, until)` window). swing1 has no token-creation
-    // gate (`token_matches_buy_rule` is always true), so this admits every non-
-    // Mayhem fingerprinted candidate; the entry latch decides from the trade stream.
+    // within the optional `[since, until)` window). swing1's token-creation gate is
+    // the **optional** dev fingerprint (`token_matches_buy_rule`, vacuous-true when
+    // no fingerprint is set), so this admits every non-Mayhem token that passes any
+    // configured fingerprint; the entry latch then decides from the trade stream.
     let repo = TokenRepo::new(app_state.batch_db.clone());
     let tokens: Vec<Token> = crate::strategies::analysis::collect_matching_tokens(
         &repo,

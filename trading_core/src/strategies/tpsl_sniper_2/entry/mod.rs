@@ -131,7 +131,8 @@ pub fn rule_configures_any_criterion(rule: &Tpsl2Rule) -> bool {
 }
 
 /// True when `token_val` is within the rule's tolerance band around `rule_val`.
-fn within_tolerance(token_val: f64, rule_val: f64, tolerance_pct: f64, eps: f64) -> bool {
+/// Public so swing1's fingerprint pre-filter reuses the exact tpsl2 semantics.
+pub fn within_tolerance(token_val: f64, rule_val: f64, tolerance_pct: f64, eps: f64) -> bool {
     let tol = rule_val.abs() * (tolerance_pct * 0.01);
     (token_val - rule_val).abs() <= tol + eps
 }
@@ -214,8 +215,9 @@ fn check_instruction_labels(token: &Token, rule: &Tpsl2Rule) -> CriterionOutcome
 }
 
 /// Read a lamports field from the token's creation-instruction args (accepting a
-/// number or a numeric string) and convert it to SOL.
-fn instruction_arg_as_sol(token: &Token, key: &str) -> Option<f64> {
+/// number or a numeric string) and convert it to SOL. Public so swing1's
+/// fingerprint pre-filter reads `max_sol_cost`/`spendable_sol_in` identically.
+pub fn instruction_arg_as_sol(token: &Token, key: &str) -> Option<f64> {
     let lamports = token.initial_buy_instruction.as_ref()?.get(key).and_then(|v| {
         v.as_u64()
             .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))

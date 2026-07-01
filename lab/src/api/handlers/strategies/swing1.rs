@@ -8,9 +8,10 @@
 //!   - `simulate` / `cancel_simulate` — the detached backtest over the shared
 //!     swing1 decision layer.
 //!   - `paper-result` (read) + `clear_paper-result`.
-//!   - `matched` — the whole-`tokens`-table entry-criteria scan. swing1 has no
-//!     token-creation gate (`token_matches_buy_rule` is always true), so this
-//!     returns every non-Mayhem fingerprinted candidate.
+//!   - `matched` — the whole-`tokens`-table entry-criteria scan. swing1's
+//!     token-creation gate is the **optional** dev fingerprint
+//!     (`token_matches_buy_rule`, vacuous-true when unset), so this returns every
+//!     non-Mayhem token passing any configured fingerprint.
 
 use actix_web::{web, HttpResponse, Responder};
 use chrono::{DateTime, Utc};
@@ -342,10 +343,11 @@ pub struct MatchedTokensResponse {
 
 /// Return the tokens in the database that satisfy a rule's **entry** criteria.
 ///
-/// swing1 has no token-creation gate (`token_matches_buy_rule` is always true), so
-/// this returns every non-Mayhem fingerprinted candidate in the window — the same
-/// candidate set the backtest resolves against (the latch then decides per token
-/// from the trade stream). Runs on the dedicated `batch_db` pool.
+/// swing1's token-creation gate is the **optional** dev fingerprint
+/// (`token_matches_buy_rule`, vacuous-true when no fingerprint is set), so this
+/// returns every non-Mayhem token in the window that passes any configured
+/// fingerprint — the same candidate set the backtest resolves against (the latch
+/// then decides per token from the trade stream). Runs on the `batch_db` pool.
 ///
 /// GET /api/strategies/swing1/rules/{rule_id}/matched
 pub async fn get_matched_tokens(

@@ -66,7 +66,7 @@ exec + double-buy/sell invariants · paper mirror fill-poll · tpsl2 scalp-armin
 | File | Responsibility |
 | --- | --- |
 | `mod.rs` | `TPSL1StrategyHandler`, `Tpsl1RuntimeCache`, `Tpsl1StrategyService`, `run_backtest`, `activate_rule`, `pause_rule`, `stop_and_close_rule` |
-| `entry/mod.rs` | `token_matches_buy_rule`, `find_first_matching_buy_rule`, `find_entry_fill_in_trades` — all configured criteria must pass |
+| `entry/mod.rs` | `token_matches_buy_rule`, `find_first_matching_buy_rule`, `find_entry_fill_in_trades` — all configured criteria must pass. `token_is_fresh` (30s `MAX_SNIPE_AGE_SECS` gate) is **live-only**, applied by `find_all_matching_buy_rules`/`matches_entry`, NOT by the shared matcher — so the historical matched/simulate scan isn't emptied by token age |
 | `exit/mod.rs` | `ExitWalkState`, `CachedExitState`, `LadderParams`, `find_trade_driven_exit`, `find_clock_driven_exit` — incremental ladder eval |
 | `handler.rs` | Thin rule holder over `Arc<Vec<Rule>>`, rebuilt per token |
 | `execution/mod.rs` | Dispatch real vs paper by `rule.trade_mode`; retry consts |

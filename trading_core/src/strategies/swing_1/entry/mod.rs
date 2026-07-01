@@ -1,5 +1,7 @@
-//! swing1 entry resolution — gate on the kill→volume latch, then take the first
-//! confirmed higher-low in the volume phase (minimal lag), filling worst-case.
+//! swing1 entry resolution — an **optional** dev-fingerprint pre-filter
+//! ([`token_matches_buy_rule`], vacuous-true when unset), then gate on the
+//! kill→volume latch and take the first confirmed higher-low in the volume phase
+//! (minimal lag), filling worst-case.
 //!
 //! Sequence (all causal, so backtest == live):
 //!   1. Scan the raw alternating leg ledger ([`detect_swing_legs_raw`]).
@@ -21,15 +23,68 @@ use chrono::Duration;
 
 use crate::models::trade::TradeRow;
 use crate::models::{Swing1Rule, Token};
-use crate::strategies::tpsl_sniper_2::entry::{higher_low_confirmed_index, EntryFill};
+use crate::strategies::tpsl_sniper_2::entry::{
+    higher_low_confirmed_index, instruction_arg_as_sol, within_tolerance, EntryFill,
+};
+use crate::strategies::tpsl_sniper_2::util::{none_if_zero_f64, none_if_zero_u64};
 
 use super::swing::detect_swing_legs_raw;
 use super::{classifier, phase_profile_from_rule, rule_configures_any_entry_gate, swing_params_from_rule};
 
-/// swing1 has **no** token-creation gate — the dev-fingerprint filter is applied
-/// upstream and the strategy decides entirely from the trade stream. Always
-/// `true` (kept for registry symmetry with tpsl1/tpsl2's `matches_entry`).
-pub fn token_matches_buy_rule(_token: &Token, _rule: &Swing1Rule) -> bool {
+/// swing1's token-creation pre-filter. Unlike tpsl1/tpsl2 the dev fingerprint is
+/// **optional** here (the swing latch is the real gate), so this is the
+/// **vacuous-true** variant: a token is admitted unless it *fails* a
+/// **configured** fingerprint criterion. A rule that sets no fingerprint admits
+/// every token — the trade-stream latch (`find_phase_entry`) then decides.
+///
+/// Criterion semantics match tpsl2 exactly (same tolerance band, same
+/// instruction-arg reads) so an authored fingerprint means the same thing across
+/// strategies.
+pub fn token_matches_buy_rule(token: &Token, rule: &Swing1Rule) -> bool {
+    // initial_buy_sol — tolerance band around the configured value.
+    if let Some(rule_val) = none_if_zero_f64(rule.p_token_initial_buy_sol) {
+        match token.initial_buy_sol {
+            Some(v) if within_tolerance(v, rule_val, rule.tolerance_pct, 1e-9) => {}
+            _ => return false,
+        }
+    }
+    // cu_limit / cu_price — exact match.
+    if let Some(rule_val) = none_if_zero_u64(rule.p_token_cu_limit) {
+        if token.cu_limit != Some(rule_val) {
+            return false;
+        }
+    }
+    if let Some(rule_val) = none_if_zero_u64(rule.p_token_cu_price) {
+        if token.cu_price != Some(rule_val) {
+            return false;
+        }
+    }
+    // max_sol_cost / spendable_sol_in — read from the creation-instruction args,
+    // tolerance band.
+    if let Some(rule_val) = none_if_zero_f64(rule.p_token_max_sol_cost) {
+        match instruction_arg_as_sol(token, "max_sol_cost") {
+            Some(sol) if within_tolerance(sol, rule_val, rule.tolerance_pct, 1e-15) => {}
+            _ => return false,
+        }
+    }
+    if let Some(rule_val) = none_if_zero_f64(rule.p_token_spendable_sol_in) {
+        match instruction_arg_as_sol(token, "spendable_sol_in") {
+            Some(sol) if within_tolerance(sol, rule_val, rule.tolerance_pct, 1e-15) => {}
+            _ => return false,
+        }
+    }
+    // Instruction labels — exact ordered match when configured.
+    if let Some(rule_labels) = rule.p_token_ix_labels.as_array().filter(|a| !a.is_empty()) {
+        let token_labels = match token.instruction_labels.as_array() {
+            Some(a) => a,
+            None => return false,
+        };
+        if rule_labels.len() != token_labels.len()
+            || !rule_labels.iter().zip(token_labels.iter()).all(|(r, t)| r == t)
+        {
+            return false;
+        }
+    }
     true
 }
 
@@ -179,5 +234,61 @@ mod tests {
         );
         let trades = vec![t(TradeType::Buy, 0, 1.0, 1_000, 30.0, 1_000_000, 1)];
         assert!(find_phase_entry(&trades, &rule).is_none());
+    }
+
+    fn token_with(
+        initial_buy_sol: Option<f64>,
+        cu_limit: Option<u64>,
+        cu_price: Option<u64>,
+        instruction_labels: serde_json::Value,
+    ) -> Token {
+        Token::new(
+            "mint".into(), "creator".into(), "name".into(), "SYM".into(),
+            None, None, None, initial_buy_sol, None, cu_limit, cu_price,
+            false, false, instruction_labels, "create-sig".into(), Utc::now(),
+        )
+    }
+
+    /// Fingerprint pre-filter: a rule that configures **no** fingerprint admits
+    /// every token (the swing latch is the real gate).
+    #[test]
+    fn no_fingerprint_admits_every_token() {
+        let rule = Swing1Rule::new(
+            "r".into(), None, None, None, serde_json::json!([]), "paper".into(),
+            1.0, 50.0, 20.0, None, None, None, None, None, None, None, None, None,
+        );
+        assert!(token_matches_buy_rule(&token_with(Some(9.9), Some(7), Some(3), serde_json::json!(["X"])), &rule));
+    }
+
+    /// A configured fingerprint gates the token — `initial_buy_sol` within
+    /// tolerance passes, outside the band rejects. `cu_limit` mismatch rejects.
+    #[test]
+    fn configured_fingerprint_gates_token() {
+        // init_buy_sol=1.0, tolerance=10% ⇒ band [0.9, 1.1]; cu_limit=100_000 exact.
+        let mut rule = Swing1Rule::new(
+            "r".into(), Some(1.0), Some(100_000), None, serde_json::json!([]), "paper".into(),
+            1.0, 50.0, 20.0, None, None, None, None, Some(10.0), None, None, None, None,
+        );
+        rule.is_active = true;
+        // In band + exact cu_limit ⇒ pass.
+        assert!(token_matches_buy_rule(&token_with(Some(1.05), Some(100_000), None, serde_json::json!([])), &rule));
+        // init_buy_sol outside band ⇒ reject.
+        assert!(!token_matches_buy_rule(&token_with(Some(1.2), Some(100_000), None, serde_json::json!([])), &rule));
+        // cu_limit mismatch ⇒ reject.
+        assert!(!token_matches_buy_rule(&token_with(Some(1.0), Some(99_999), None, serde_json::json!([])), &rule));
+        // token missing a configured field ⇒ reject.
+        assert!(!token_matches_buy_rule(&token_with(Some(1.0), None, None, serde_json::json!([])), &rule));
+    }
+
+    /// Instruction labels gate on exact ordered match when configured.
+    #[test]
+    fn configured_ix_labels_exact_match() {
+        let rule = Swing1Rule::new(
+            "r".into(), None, None, None, serde_json::json!(["A", "B"]), "paper".into(),
+            1.0, 50.0, 20.0, None, None, None, None, None, None, None, None, None,
+        );
+        assert!(token_matches_buy_rule(&token_with(None, None, None, serde_json::json!(["A", "B"])), &rule));
+        assert!(!token_matches_buy_rule(&token_with(None, None, None, serde_json::json!(["A", "C"])), &rule));
+        assert!(!token_matches_buy_rule(&token_with(None, None, None, serde_json::json!(["A"])), &rule));
     }
 }

@@ -1,11 +1,12 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import type { RuleRecord } from 'types';
 import { Button } from 'components/ui/Button';
-import { Input } from 'components/ui/Input';
+import { Input, Textarea } from 'components/ui/Input';
 import { Modal, InlineAlert } from 'components/ui/Modal';
 import { Select } from 'components/ui/Select';
 import { Accordion } from 'components/ui/Accordion';
 import { cn } from 'lib/cn';
+import { EXAMPLE_IX_LABELS, parseIxLabels } from '@shared/components/tpsl2/utils';
 import {
   SWING1_AXES,
   groupAxesBySubgroup,
@@ -18,11 +19,12 @@ import {
  *  knobs. When editing, every group is locked by default (🔓 to unlock). `sizing`
  *  is the ONLY group that stays unlockable while the rule is live — the other
  *  groups shape entry/exit and are frozen until the rule is idle. */
-export type LockGroup = 'sizing' | AxisSubgroup;
+export type LockGroup = 'fingerprint' | 'sizing' | AxisSubgroup;
 export type LockGroupState = Record<LockGroup, boolean>;
 
 function freshLocks(): LockGroupState {
   return {
+    fingerprint: false,
     sizing: false,
     swing: false,
     kill: false,
@@ -91,6 +93,15 @@ export interface RuleFormData {
   buyAmount: string;
   maxConcurrentTokens: string;
   maxTotalTokens: string;
+  // Optional dev-fingerprint pre-filter (blank ⇒ unset; the swing latch is the
+  // real gate). `tolerance` is the shared band for the SOL-valued knobs.
+  initialBuy: string;
+  tolerance: string;
+  cuLimit: string;
+  cuPrice: string;
+  maxSolCost: string;
+  spendableSolIn: string;
+  ixLabels: string;
   /** One value per SWING1_AXES entry, keyed by axis `key`. */
   axes: Record<string, string>;
 }
@@ -108,6 +119,13 @@ export function emptyForm(): RuleFormData {
     buyAmount: '',
     maxConcurrentTokens: '',
     maxTotalTokens: '',
+    initialBuy: '',
+    tolerance: '0',
+    cuLimit: '',
+    cuPrice: '',
+    maxSolCost: '',
+    spendableSolIn: '',
+    ixLabels: '',
     axes: emptyAxes(),
   };
 }
@@ -119,12 +137,22 @@ export function formFromRule(rule: RuleRecord): RuleFormData {
     const v = rule[col] as number | null | undefined;
     axes[a.key] = v == null ? '' : v.toString();
   }
+  const labels = Array.isArray(rule.p_token_ix_labels)
+    ? JSON.stringify(rule.p_token_ix_labels)
+    : '';
   return {
     ruleName: rule.rule_name,
     tradeMode: rule.trade_mode,
     buyAmount: rule.buy_amount.toString(),
     maxConcurrentTokens: rule.p_max_concurrent_tokens?.toString() ?? '',
     maxTotalTokens: rule.p_max_total_tokens?.toString() ?? '',
+    initialBuy: rule.p_token_initial_buy_sol?.toString() ?? '',
+    tolerance: rule.tolerance_pct.toString(),
+    cuLimit: rule.p_token_cu_limit?.toString() ?? '',
+    cuPrice: rule.p_token_cu_price?.toString() ?? '',
+    maxSolCost: rule.p_token_max_sol_cost?.toString() ?? '',
+    spendableSolIn: rule.p_token_spendable_sol_in?.toString() ?? '',
+    ixLabels: labels,
     axes,
   };
 }
@@ -134,24 +162,26 @@ const parseAxis = (key: string, s: string): number | null => {
   return INT_KEYS.has(key) ? parseInt(s, 10) : parseFloat(s);
 };
 
-/** Full create body — every axis param plus the universals. Token-fingerprint
- *  knobs go null (swing1 has no creation gate); `p_token_ix_labels` → []. */
+/** Full create body — every axis param plus the universals. The token-fingerprint
+ *  knobs are an **optional** pre-filter (blank ⇒ null ⇒ unset; the swing latch is
+ *  the real gate); `p_token_ix_labels` parses to a JSON array. */
 export function buildCreatePayload(form: RuleFormData): Record<string, unknown> {
   const parseOptU = (s: string) => (s.trim() ? parseInt(s, 10) : null);
+  const parseOptF = (s: string) => (s.trim() ? parseFloat(s) : null);
   const payload: Record<string, unknown> = {
     rule_name: form.ruleName,
     trade_mode: form.tradeMode,
     buy_amount: parseFloat(form.buyAmount),
     p_max_concurrent_tokens: parseOptU(form.maxConcurrentTokens),
     p_max_total_tokens: parseOptU(form.maxTotalTokens),
-    // swing1 has no token fingerprint gate.
-    p_token_initial_buy_sol: null,
-    p_token_cu_limit: null,
-    p_token_cu_price: null,
-    p_token_max_sol_cost: null,
-    p_token_spendable_sol_in: null,
-    p_token_ix_labels: [],
-    tolerance_pct: 0,
+    // Optional dev-fingerprint pre-filter.
+    p_token_initial_buy_sol: parseOptF(form.initialBuy),
+    p_token_cu_limit: parseOptU(form.cuLimit),
+    p_token_cu_price: parseOptU(form.cuPrice),
+    p_token_max_sol_cost: parseOptF(form.maxSolCost),
+    p_token_spendable_sol_in: parseOptF(form.spendableSolIn),
+    p_token_ix_labels: parseIxLabels(form.ixLabels),
+    tolerance_pct: parseOptF(form.tolerance) ?? 0,
   };
   for (const a of SWING1_AXES) {
     payload[axisCol(a.key)] = parseAxis(a.key, form.axes[a.key] ?? '');
@@ -179,6 +209,18 @@ export function buildUpdatePayload(
     payload.p_max_total_tokens = form.maxTotalTokens.trim()
       ? parseInt(form.maxTotalTokens, 10)
       : 0;
+  }
+  if (unlocked.fingerprint) {
+    // Blank ⇒ 0 (the ignore_zero convention disables that criterion).
+    const u = (s: string) => (s.trim() ? parseInt(s, 10) : 0);
+    const f = (s: string) => (s.trim() ? parseFloat(s) : 0);
+    payload.p_token_initial_buy_sol = f(form.initialBuy);
+    payload.p_token_cu_limit = u(form.cuLimit);
+    payload.p_token_cu_price = u(form.cuPrice);
+    payload.p_token_max_sol_cost = f(form.maxSolCost);
+    payload.p_token_spendable_sol_in = f(form.spendableSolIn);
+    payload.p_token_ix_labels = parseIxLabels(form.ixLabels);
+    payload.tolerance_pct = f(form.tolerance);
   }
   for (const a of SWING1_AXES) {
     const g = a.subgroup;
@@ -342,6 +384,71 @@ export function Swing1RuleAccordion({
               onChange={(e) => set({ maxTotalTokens: e.target.value })} className={fieldCls('sizing')} />
           </label>
         </div>
+
+        {/* ── Token fingerprint (optional pre-filter · p_token_*) ── */}
+        <div className="flex items-center justify-between border-t border-white/10 pt-3">
+          <div className="flex items-baseline gap-2">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-info">Token Fingerprint</span>
+            <span className="text-[10px] lowercase text-text-dim">optional · which token to match · blank = off</span>
+          </div>
+          {lockToggle('fingerprint')}
+        </div>
+        <div className="grid grid-cols-6 gap-3 items-end">
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Initial Buy SOL</span>
+            <Input type="number" fieldSize="md" step="0.001" unit="◎" value={form.initialBuy} readOnly={!editable('fingerprint')} blankZero
+              onChange={(e) => set({ initialBuy: e.target.value })} className={fieldCls('fingerprint')} />
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Tolerance %</span>
+            <Input type="number" fieldSize="md" step="0.1" min={0} max={100} unit="%" value={form.tolerance} readOnly={!editable('fingerprint')} blankZero
+              onChange={(e) => set({ tolerance: e.target.value })} className={fieldCls('fingerprint')} />
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">CU Limit</span>
+            <Input type="number" fieldSize="md" value={form.cuLimit} readOnly={!editable('fingerprint')} blankZero
+              onChange={(e) => set({ cuLimit: e.target.value })} className={fieldCls('fingerprint')} />
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">CU Price</span>
+            <Input type="number" fieldSize="md" value={form.cuPrice} readOnly={!editable('fingerprint')} blankZero
+              onChange={(e) => set({ cuPrice: e.target.value })} className={fieldCls('fingerprint')} />
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Max SOL Cost</span>
+            <Input type="number" fieldSize="md" step="0.001" unit="◎" value={form.maxSolCost} readOnly={!editable('fingerprint')} blankZero
+              onChange={(e) => set({ maxSolCost: e.target.value })} className={fieldCls('fingerprint')} />
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Spendable SOL In</span>
+            <Input type="number" fieldSize="md" step="0.001" unit="◎" value={form.spendableSolIn} readOnly={!editable('fingerprint')} blankZero
+              onChange={(e) => set({ spendableSolIn: e.target.value })} className={fieldCls('fingerprint')} />
+          </label>
+        </div>
+        <label className="flex flex-col gap-1.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Instruction Labels</span>
+            {!isEdit && (
+              <button
+                type="button"
+                onClick={() => set({ ixLabels: EXAMPLE_IX_LABELS })}
+                className="rounded-lg border border-white/12 bg-white/4 px-2 py-1 text-xs"
+                title="Insert example labels"
+              >
+                ⎘
+              </button>
+            )}
+          </div>
+          <Textarea
+            fieldSize="md"
+            rows={4}
+            value={form.ixLabels}
+            readOnly={!editable('fingerprint')}
+            onChange={(e) => set({ ixLabels: e.target.value })}
+            placeholder='blank = off · e.g. ["CreateIdempotent","Create","ExtendAccount","Buy"]'
+            className={fieldCls('fingerprint', 'text-xs')}
+          />
+        </label>
 
         {/* ── Param subgroups — one accordion section each, pipeline order ── */}
         <div className="flex flex-col gap-2">
