@@ -6,5 +6,6 @@
 pub use trading_core::strategies::analysis;
 
 pub mod sim_progress;
+pub mod swing_1;
 pub mod tpsl_sniper_1;
 pub mod tpsl_sniper_2;

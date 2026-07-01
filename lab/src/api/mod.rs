@@ -123,6 +123,47 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 "/strategies/tpsl2/rules/{rule_id}/matched",
                 web::get().to(handlers::strategies::tpsl2::get_matched_tokens),
             )
+            // ── Strategy rule authoring + backtest — swing_1 ──
+            .route(
+                "/strategies/swing1/rules",
+                web::get().to(handlers::strategies::swing1::list_swing1_rules),
+            )
+            .route(
+                "/strategies/swing1/rules",
+                web::post().to(handlers::strategies::swing1::create_swing1_rule),
+            )
+            .route(
+                "/strategies/swing1/rules/{rule_id}",
+                web::get().to(handlers::strategies::swing1::get_swing1_rule),
+            )
+            .route(
+                "/strategies/swing1/rules/{rule_id}",
+                web::put().to(handlers::strategies::swing1::update_swing1_rule),
+            )
+            .route(
+                "/strategies/swing1/rules/{rule_id}",
+                web::delete().to(handlers::strategies::swing1::delete_swing1_rule),
+            )
+            .route(
+                "/strategies/swing1/rules/{rule_id}/simulate",
+                web::post().to(handlers::strategies::swing1::simulate_swing1_rule),
+            )
+            .route(
+                "/strategies/swing1/rules/{rule_id}/simulate/cancel",
+                web::post().to(handlers::strategies::swing1::cancel_simulate_swing1_rule),
+            )
+            .route(
+                "/strategies/swing1/rules/{rule_id}/paper-result",
+                web::get().to(handlers::strategies::swing1::paper_result_swing1_rule),
+            )
+            .route(
+                "/strategies/swing1/rules/{rule_id}/paper-result",
+                web::delete().to(handlers::strategies::swing1::clear_paper_result_swing1_rule),
+            )
+            .route(
+                "/strategies/swing1/rules/{rule_id}/matched",
+                web::get().to(handlers::strategies::swing1::get_matched_tokens),
+            )
             // ── Grouped param-sweeps (generic across strategies) ──
             .route(
                 "/strategies/sweeps",
