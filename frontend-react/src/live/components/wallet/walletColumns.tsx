@@ -5,6 +5,7 @@ import { formatCompact } from 'utils/format';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Badge } from 'components/ui/Badge';
 import { DateCell } from 'components/table/DateCell';
+import { appendedTokenColumns } from 'components/tokens/sharedTokenColumns';
 import { LiquidityCell, PriceCell, ValueCell } from './walletPriceCells';
 
 export interface WalletActions {
@@ -12,6 +13,14 @@ export interface WalletActions {
   onSell: (mint: string) => void;
   sellingMint: string | null;
 }
+
+// Keys the wallet table already renders — excluded from the appended
+// full-token columns so enrichment never duplicates a column. `is_migrated`
+// and `is_cashback_enabled` come from live wallet/Jupiter state (fresher than
+// the tokens-table copy), so we keep the wallet's own version and drop the DB
+// one. Everything else in the appended set (creator, ATH, volume, mcap, CU
+// params, ix labels, …) is purely additive.
+const WALLET_KEYS = new Set(['mint', 'symbol', 'migrated', 'cashback']);
 
 // `price` is intentionally NOT a parameter: the rate-aware cells read the
 // PriceUnit context themselves, so the column array stays referentially stable
@@ -234,5 +243,6 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       },
       searchValue: () => '',
     },
+    ...appendedTokenColumns(WALLET_KEYS),
   ];
 }

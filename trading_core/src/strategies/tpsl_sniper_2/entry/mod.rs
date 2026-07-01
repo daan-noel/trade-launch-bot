@@ -218,10 +218,16 @@ fn check_instruction_labels(token: &Token, rule: &Tpsl2Rule) -> CriterionOutcome
 /// number or a numeric string) and convert it to SOL. Public so swing1's
 /// fingerprint pre-filter reads `max_sol_cost`/`spendable_sol_in` identically.
 pub fn instruction_arg_as_sol(token: &Token, key: &str) -> Option<f64> {
-    let lamports = token.initial_buy_instruction.as_ref()?.get(key).and_then(|v| {
-        v.as_u64()
-            .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
-    })?;
+    // Persisted `initial_buy_instruction` rows use camelCase keys (the ingest
+    // writer's `buy_ix_to_json`), so accept both snake_case and camelCase.
+    let obj = token.initial_buy_instruction.as_ref()?;
+    let lamports = obj
+        .get(key)
+        .or_else(|| crate::grouping::buy_arg_camel(key).and_then(|camel| obj.get(camel)))
+        .and_then(|v| {
+            v.as_u64()
+                .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+        })?;
     Some(lamports as f64 / LAMPORTS_PER_SOL as f64)
 }
 

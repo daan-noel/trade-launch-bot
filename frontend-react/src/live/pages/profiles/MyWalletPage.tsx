@@ -9,7 +9,8 @@ import { Input } from 'components/ui/Input';
 import { InlineAlert, Modal } from 'components/ui/Modal';
 import { walletColumns } from '@live/components/wallet/walletColumns';
 import { CashbackCard } from '@live/components/wallet/CashbackCard';
-import { apiErrorMessage } from 'store/apiSlice';
+import { mergeTokenData } from 'components/tokens/sharedTokenColumns';
+import { apiErrorMessage, useGetTokensByMintsQuery } from 'store/apiSlice';
 import {
   liveApi,
   useGetWalletHoldingsQuery,
@@ -75,25 +76,38 @@ export function MyWalletPage() {
     skipPollingIfUnfocused: true,
   });
 
-  // Overlay the latest polled prices onto each balance row. Falls back to the
-  // price the balances endpoint returned at load time until the first poll
-  // lands (and for any mint Jupiter doesn't return).
-  const rows = useMemo(
-    () =>
-      holdings.map((h) => {
-        const p = prices?.[h.mint];
-        if (!p) return h;
-        return {
-          ...h,
-          price_usd: p.price_usd,
-          value_usd: p.price_usd != null ? p.price_usd * h.ui_amount : null,
-          liquidity: p.liquidity,
-          price_change_24h: p.price_change_24h,
-          token_created_at: p.token_created_at,
-        };
-      }),
-    [holdings, prices],
+  // Full token metadata for the held mints — enriches the holdings table with
+  // the same complete field set the All-Tokens / strategy tables show (creator,
+  // ATH, volume, mcap, CU params, ix labels, …). One batch fetch keyed on the
+  // held mints; cached across visits by RTK Query. Not a hot path — refreshes
+  // on wallet poll, not per trade.
+  const { data: tokenBatch } = useGetTokensByMintsQuery(mints, {
+    skip: mints.length === 0,
+  });
+  const tokenMap = useMemo(
+    () => new Map((tokenBatch ?? []).map((t) => [t.mint_address, t])),
+    [tokenBatch],
   );
+
+  // Overlay the latest polled prices onto each balance row (falling back to the
+  // load-time price until the first poll lands), then merge in the full token
+  // metadata. `mergeTokenData` does `{...token, ...row}` so the wallet's own
+  // live fields (price, migrated, cashback) always win over the DB copy.
+  const rows = useMemo(() => {
+    const priced = holdings.map((h) => {
+      const p = prices?.[h.mint];
+      if (!p) return h;
+      return {
+        ...h,
+        price_usd: p.price_usd,
+        value_usd: p.price_usd != null ? p.price_usd * h.ui_amount : null,
+        liquidity: p.liquidity,
+        price_change_24h: p.price_change_24h,
+        token_created_at: p.token_created_at,
+      };
+    });
+    return mergeTokenData(priced, tokenMap);
+  }, [holdings, prices, tokenMap]);
 
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);

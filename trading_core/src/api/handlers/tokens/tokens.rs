@@ -13,10 +13,26 @@ use crate::{
     state::{core_state::CoreState, token_cache::TokenState},
 };
 
+/// Map a snake_case buy-arg key to the camelCase form actually persisted by the
+/// ingest writer (`buy_ix_to_json` in `live/src/ingest/consumer.rs`), e.g.
+/// `max_sol_cost` → `maxSolCost`. Historical `initial_buy_instruction` rows are
+/// all camelCase, so readers must accept both; new rows are written snake_case.
+fn buy_arg_camel(field: &str) -> Option<&'static str> {
+    Some(match field {
+        "max_sol_cost" => "maxSolCost",
+        "spendable_sol_in" => "spendableSolIn",
+        "token_amount" => "tokenAmount",
+        "min_tokens_out" => "minTokensOut",
+        _ => return None,
+    })
+}
+
+/// Read a `u64` buy-instruction arg by its snake_case name, tolerating the
+/// legacy camelCase key that older persisted rows carry (see [`buy_arg_camel`]).
 fn extract_buy_arg_u64(value: &Option<Value>, field: &str) -> Option<u64> {
-    value
-        .as_ref()
-        .and_then(|obj| obj.get(field))
+    let obj = value.as_ref()?;
+    obj.get(field)
+        .or_else(|| buy_arg_camel(field).and_then(|camel| obj.get(camel)))
         .and_then(|v| v.as_u64())
 }
 
@@ -446,6 +462,15 @@ pub async fn get_token(state: web::Data<Arc<CoreState>>, path: web::Path<String>
     let repo = state.token_repo();
     match repo.find_list_row_by_mint(&mint).await {
         Ok(Some(token)) => {
+            // Read a buy-arg by snake_case name, falling back to the legacy
+            // camelCase key older rows carry (see `extract_buy_arg_u64`).
+            let buy_arg = |field: &str| {
+                token.initial_buy_instruction.as_ref().and_then(|ix| {
+                    ix.get(field)
+                        .or_else(|| buy_arg_camel(field).and_then(|camel| ix.get(camel)))
+                        .and_then(|v| v.as_u64())
+                })
+            };
             HttpResponse::Ok().json(serde_json::json!({
                 "mint_address": token.mint_address,
                 "name": token.name,
@@ -454,10 +479,10 @@ pub async fn get_token(state: web::Data<Arc<CoreState>>, path: web::Path<String>
                 "bonding_curve_address": token.bonding_curve_address,
                 "initial_supply_token": token.initial_supply_token,
                 "initial_buy_sol": token.initial_buy_sol,
-                "token_amount": token.initial_buy_instruction.as_ref().and_then(|ix| ix.get("token_amount")).and_then(|v| v.as_u64()),
-                "max_sol_cost": token.initial_buy_instruction.as_ref().and_then(|ix| ix.get("max_sol_cost")).and_then(|v| v.as_u64()),
-                "spendable_sol_in": token.initial_buy_instruction.as_ref().and_then(|ix| ix.get("spendable_sol_in")).and_then(|v| v.as_u64()),
-                "min_tokens_out": token.initial_buy_instruction.as_ref().and_then(|ix| ix.get("min_tokens_out")).and_then(|v| v.as_u64()),
+                "token_amount": buy_arg("token_amount"),
+                "max_sol_cost": buy_arg("max_sol_cost"),
+                "spendable_sol_in": buy_arg("spendable_sol_in"),
+                "min_tokens_out": buy_arg("min_tokens_out"),
                 "cu_limit": token.cu_limit,
                 "cu_price": token.cu_price,
                 "is_mayhem_mode": token.is_mayhem_mode,
