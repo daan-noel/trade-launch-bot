@@ -37,10 +37,12 @@ enum CriterionOutcome {
     Rejected,
 }
 
-/// Every entry criterion, evaluated in order. Adding a filter = add its
-/// `check_*` here; nothing else changes.
+/// Every **user-configured** entry criterion, evaluated in order. Adding a
+/// filter = add its `check_*` here; nothing else changes. The `MAX_SNIPE_AGE_SECS`
+/// freshness gate is deliberately **not** here — it's a live-only safety rail
+/// (see [`token_is_fresh`]), so the shared matcher can be reused by the historical
+/// matched/simulate scan without rejecting every non-live token.
 const CRITERIA: &[fn(&Token, &Tpsl2Rule) -> CriterionOutcome] = &[
-    check_token_freshness,
     check_initial_buy_sol,
     check_compute_unit_limit,
     check_compute_unit_price,
@@ -78,11 +80,26 @@ pub fn token_criteria_satisfied(token: &Token, rule: &Tpsl2Rule) -> bool {
     true
 }
 
+/// Live-only freshness gate: reject tokens whose `created_at` is more than
+/// `MAX_SNIPE_AGE_SECS` old. This is a hard safety rail (don't snipe an already-old
+/// token / a gap-replayed create), **not** a user criterion — so it lives outside
+/// [`CRITERIA`] and is applied only on the live entry path
+/// ([`find_all_matching_buy_rules`] / `StrategyImpl::matches_entry`). The historical
+/// matched/simulate scan intentionally skips it. Requires A3 (accurate `created_at`
+/// on replayed creates) to work.
+pub fn token_is_fresh(token: &Token) -> bool {
+    Utc::now().signed_duration_since(token.created_at).num_seconds() <= MAX_SNIPE_AGE_SECS
+}
+
 /// All active rules whose criteria the token satisfies, in rule-list order. A
 /// rule that configures no criterion is skipped with a warning rather than
-/// matching every token.
+/// matching every token. This is a **live** entry path, so the [`token_is_fresh`]
+/// safety gate applies.
 pub fn find_all_matching_buy_rules(token: &Token, rules: &[Tpsl2Rule]) -> Vec<Uuid> {
     let mut matched = Vec::new();
+    if !token_is_fresh(token) {
+        return matched;
+    }
     for rule in rules {
         if !rule.is_active {
             continue;
@@ -111,22 +128,6 @@ pub fn rule_configures_any_criterion(rule: &Tpsl2Rule) -> bool {
         || none_if_zero_f64(rule.p_token_max_sol_cost).is_some()
         || none_if_zero_f64(rule.p_token_spendable_sol_in).is_some()
         || rule.p_token_ix_labels.as_array().map_or(false, |a| !a.is_empty())
-}
-
-/// Reject tokens whose `created_at` is more than `MAX_SNIPE_AGE_SECS` old.
-/// Always configured (never returns `NotConfigured`) — this is a hard
-/// safety gate, not an optional rule param. Requires A3 (accurate `created_at`
-/// on replayed creates) for gap-replay protection to work.
-fn check_token_freshness(token: &Token, _rule: &Tpsl2Rule) -> CriterionOutcome {
-    let age = Utc::now().signed_duration_since(token.created_at);
-    if age.num_seconds() > MAX_SNIPE_AGE_SECS {
-        CriterionOutcome::Rejected
-    } else {
-        // A safety gate, not a user-configured criterion: passing it must NOT
-        // flip `any_configured`, or a rule with no real filters would match every
-        // fresh token. Report inert when fresh; only ever reject.
-        CriterionOutcome::NotConfigured
-    }
 }
 
 /// True when `token_val` is within the rule's tolerance band around `rule_val`.
@@ -246,10 +247,9 @@ mod tests {
     use super::*;
     use serde_json::{json, Value};
 
-    // Anchored to wall-clock so test tokens stay within `MAX_SNIPE_AGE_SECS` of
-    // `Utc::now()` — the freshness gate in `token_matches_buy_rule` rejects a
-    // token older than 30s, so a fixed past timestamp would make every match
-    // test fail once that timestamp aged out.
+    // The `token_matches_buy_rule` matcher no longer applies a freshness gate
+    // (that moved to the live-only `token_is_fresh`), so criteria tests are
+    // timestamp-independent. `token_is_fresh` is exercised separately below.
     fn base_time() -> DateTime<Utc> {
         Utc::now()
     }
@@ -322,6 +322,26 @@ mod tests {
         let far = token_with(Some(1.2), None, None, None, json!([]));
         assert!(token_matches_buy_rule(&near, &rule));
         assert!(!token_matches_buy_rule(&far, &rule));
+    }
+
+    #[test]
+    fn freshness_is_live_only_not_a_matcher_criterion() {
+        use chrono::Duration;
+        // An old token still matches the pure criteria (analysis/backtest path)…
+        let rule = rule_with_entry(Some(1.0), None, None, json!([]), None, None, 10.0);
+        let mut old = token_with(Some(1.0), None, None, None, json!([]));
+        old.created_at = Utc::now() - Duration::seconds(MAX_SNIPE_AGE_SECS + 60);
+        assert!(token_matches_buy_rule(&old, &rule));
+        // …but the live-only freshness gate rejects it.
+        assert!(!token_is_fresh(&old));
+        let fresh = token_with(Some(1.0), None, None, None, json!([]));
+        assert!(token_is_fresh(&fresh));
+        // find_all_matching (a live path) drops the stale token entirely.
+        assert!(find_all_matching_buy_rules(&old, std::slice::from_ref(&rule)).is_empty());
+        assert_eq!(
+            find_all_matching_buy_rules(&fresh, std::slice::from_ref(&rule)),
+            vec![rule.id]
+        );
     }
 
     #[test]

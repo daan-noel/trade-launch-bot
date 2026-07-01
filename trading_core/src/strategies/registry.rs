@@ -524,10 +524,12 @@ impl StrategyImpl {
     pub fn matches_entry(&self, token: &Token, params: &StrategyParams) -> bool {
         match (self, params) {
             (Self::Tpsl1, StrategyParams::Tpsl1(p)) => {
-                t1::entry::token_matches_buy_rule(token, &p.to_rule())
+                t1::entry::token_is_fresh(token)
+                    && t1::entry::token_matches_buy_rule(token, &p.to_rule())
             }
             (Self::Tpsl2, StrategyParams::Tpsl2(p)) => {
-                t2::entry::token_matches_buy_rule(token, &p.to_rule())
+                t2::entry::token_is_fresh(token)
+                    && t2::entry::token_matches_buy_rule(token, &p.to_rule())
             }
             (Self::Swing1, StrategyParams::Swing1(p)) => {
                 sw1::entry::token_matches_buy_rule(token, &p.to_rule())
