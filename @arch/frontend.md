@@ -79,6 +79,33 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   Sweep ×2 (+ `analysis/`, `sweep/`, `strategy/` components; `useStreamedSweepResults`;
   `swingDetectionSlice`, `strategyResultCache`, `BackgroundJobsContext`).
 
+## Rule forms + copy/paste params — `lib/params/` (one engine, one spec/strategy)
+
+All 3 strategies (tpsl1, tpsl2, swing_1) share ONE rule-form + copy/paste path. The
+canonical key everywhere — form state, clipboard blob, create/update payloads — is
+the backend **column** (`p_exit_take_profit`, `buy_amount`, `trade_mode`, …), so
+there are no camelCase/axis/prefix translators.
+
+- `lib/params/types.ts` — `ParamField` (column · group · section · kind · required ·
+  `comboKey`? · `detectKey`? · presentation) and `StrategySpec` (fields + ordered
+  accordion `sections`).
+- `lib/params/engine.ts` — generic, spec-driven: `emptyForm` / `formFromRule` /
+  `serializeRule(Json)` / `serializeCombo(Json)` (maps a sweep combo's bare key →
+  column via `comboKey`) / `parseBlob` / `applyBlob` (live ⇒ sizing-only) /
+  `buildCreatePayload` (blank→null, or 0 via `createBlankZero`) / `buildUpdatePayload`
+  (locked section sends no keys; blank→0). No React imports — pure + unit-testable.
+- `lib/params/specs/{tpsl1,tpsl2,swing1}.ts` — standalone hand-written specs; `index.ts`
+  re-exports + `getSpec` + the swing1 **detect** adapter (`blobToDetectParams` /
+  `detectParamsToBlob`, spec-derived via `detectKey`).
+- `components/strategy/SpecRuleForm.tsx` — ONE inline (non-modal) form: Mode+Name row,
+  `PasteParamsSection`, then one collapsible `Accordion` per `spec.sections`. Same chrome
+  for every strategy; lock groups + live-freeze read off the spec. Rendered in-page by
+  Tpsl{1,2}Page / Swing1Page (live + lab) — the old `tpsl{1,2}/RuleFormModal.tsx` +
+  `Swing1RuleAccordion.tsx` + `lib/ruleParams.ts` are gone.
+- Combo ⎘ (`sweep/GroupedSweepView`) and the swing1 detect ⎘/paste all go through the
+  same engine, so a blob copied anywhere pastes anywhere (blob format unchanged: `p_*`,
+  version 1; cross-strategy paste rejected by `PasteParamsSection`).
+
 ## Services / hooks (shared, tree-shaken per entry)
 
 - `services/http.ts` — shared `request<T>` fetch wrapper (throws backend `{error}`; 204→undefined).
@@ -105,8 +132,8 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   **live** bin; until then a live Live-Strategies page would 404. See
   `live/src/strategies/tpsl_sniper_1/lifecycle.rs` (logic exists, no HTTP route).
 - **No enforced boundary:** a few `src/shared/*` files do real value imports from `@lab` (e.g.
-  `tpsl{1,2}/RuleFormModal.tsx` → `PasteParamsSection`, `dashboard/GroupedCreationSection.tsx` →
-  `labEndpoints`); they stay out of the live bundle only because no live route reaches them (tree-shaking),
+  `dashboard/GroupedCreationSection.tsx` → `labEndpoints`); they stay out of the live bundle only
+  because no live route reaches them (tree-shaking),
   not because anything forbids it. An ESLint `no-restricted-imports` guard banning `shared/`+`live/`
   from importing `@lab` would make the seam enforced rather than incidental.
 - **Cosmetic deviation:** shared store core lives in `src/shared/store` but the legacy `store/*`

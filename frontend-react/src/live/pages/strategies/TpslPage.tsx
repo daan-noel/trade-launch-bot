@@ -8,22 +8,18 @@ import { InlineAlert, Modal } from 'components/ui/Modal';
 import { SimSummaryCard } from 'components/tpsl1/SimSummaryCard';
 import { TokenInspectModal, type InspectTarget } from 'components/tpsl1/TokenInspectModal';
 import { positionColumns } from 'components/tpsl1/tableColumns';
+import { SpecRuleForm } from 'components/strategy/SpecRuleForm';
 import {
-  buildCreatePayload as buildCreate1,
-  buildUpdatePayload as buildUpdate1,
-  emptyForm as emptyForm1,
-  formFromRule as formFromRule1,
-  RuleFormModal as RuleFormModal1,
-  type RuleFormData,
-  type LockGroupState,
-} from 'components/tpsl1/RuleFormModal';
-import {
-  buildCreatePayload as buildCreate2,
-  buildUpdatePayload as buildUpdate2,
-  emptyForm as emptyForm2,
-  formFromRule as formFromRule2,
-  RuleFormModal as RuleFormModal2,
-} from 'components/tpsl2/RuleFormModal';
+  buildCreatePayload,
+  buildUpdatePayload,
+  emptyForm,
+  formFromRule,
+  getSpec,
+  serializeRuleJson,
+  RULE_NAME_KEY,
+  type FormState,
+  type LockState,
+} from 'lib/params';
 import { ruleColumns as ruleCols1, RuleRowProvider as RuleRowProvider1 } from 'components/tpsl1/ruleColumns';
 import { ruleColumns as ruleCols2, RuleRowProvider as RuleRowProvider2 } from 'components/tpsl2/ruleColumns';
 import {
@@ -51,7 +47,6 @@ import { mergeTokenData } from 'components/tokens/sharedTokenColumns';
 import { usePolledRules } from 'hooks/usePolledRules';
 import { useRulePositions } from 'hooks/useRulePositions';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
-import { ruleToParamsJson } from 'lib/ruleParams';
 import { cn } from 'lib/cn';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 import type { RulePositionRecord, RuleRecord } from 'types';
@@ -236,7 +231,7 @@ const RuleActionsCell = memo(function RuleActionsCell({
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
-    const json = ruleToParamsJson(rule, strategy);
+    const json = serializeRuleJson(getSpec(strategy), rule);
     try {
       await navigator.clipboard.writeText(json);
       setCopied(true);
@@ -344,10 +339,7 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
   const pauseRule = is1 ? pauseTpsl1Rule : pauseTpsl2Rule;
   const stopRule = is1 ? stopTpsl1Rule : stopTpsl2Rule;
   const fetchPositions = is1 ? fetchTpsl1RulePositions : fetchTpsl2RulePositions;
-  const buildCreate = is1 ? buildCreate1 : buildCreate2;
-  const buildUpdate = is1 ? buildUpdate1 : buildUpdate2;
-  const emptyForm = is1 ? emptyForm1 : emptyForm2;
-  const formFromRule = is1 ? formFromRule1 : formFromRule2;
+  const spec = getSpec(strategy);
   // Filter out the 'analyze' column — no sim/matched/paper on the live bin.
   const ruleColumns = useMemo(
     () => (is1 ? ruleCols1 : ruleCols2).filter((c: ColumnDef<RuleRecord>) => c.key !== 'analyze'),
@@ -361,7 +353,7 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editRule, setEditRule] = useState<RuleRecord | null>(null);
-  const [form, setForm] = useState<RuleFormData>(emptyForm());
+  const [form, setForm] = useState<FormState>(() => emptyForm(spec));
   const [formError, setFormError] = useState<string | null>(null);
   const [formLoading, setFormLoading] = useState(false);
 
@@ -438,33 +430,34 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
 
   const openAdd = () => {
     setEditRule(null);
-    setForm(emptyForm());
+    setForm(emptyForm(spec));
     setFormError(null);
     setModalOpen(true);
   };
 
   const openEdit = useCallback((rule: RuleRecord) => {
     setEditRule(rule);
-    setForm(formFromRule(rule) as RuleFormData);
+    setForm(formFromRule(spec, rule));
     setFormError(null);
     setModalOpen(true);
-  }, [formFromRule]);
+  }, [spec]);
 
   const openDuplicate = useCallback((rule: RuleRecord) => {
     setEditRule(null);
-    setForm({ ...formFromRule(rule), ruleName: `${rule.rule_name} (copy)` } as RuleFormData);
+    setForm({ ...formFromRule(spec, rule), [RULE_NAME_KEY]: `${rule.rule_name} (copy)` });
     setFormError(null);
     setModalOpen(true);
-  }, [formFromRule]);
+  }, [spec]);
 
-  const handleSave = async (unlocked: LockGroupState) => {
+  const handleSave = async (unlocked: LockState) => {
     setFormError(null);
-    if (!form.ruleName.trim()) { setFormError('Rule name is required'); return; }
-    for (const [label, val] of [
-      ['buy amount', form.buyAmount],
-      ['take profit', form.takeProfit],
-      ['stop loss', form.stopLoss],
+    if (!(form[RULE_NAME_KEY] ?? '').trim()) { setFormError('Rule name is required'); return; }
+    for (const [label, col] of [
+      ['buy amount', 'buy_amount'],
+      ['take profit', 'p_exit_take_profit'],
+      ['stop loss', 'p_exit_stop_loss'],
     ] as const) {
+      const val = form[col] ?? '';
       if (!val.trim() || Number.isNaN(parseFloat(val))) {
         setFormError(`Invalid ${label}`);
         return;
@@ -473,10 +466,10 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
     setFormLoading(true);
     try {
       if (editRule) {
-        const updated = await updateRule(editRule.id, buildUpdate(form as any, unlocked as any));
+        const updated = await updateRule(editRule.id, buildUpdatePayload(spec, form, unlocked));
         setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
       } else {
-        const created = await createRule(buildCreate(form as any));
+        const created = await createRule(buildCreatePayload(spec, form));
         setRules((prev) => [...prev, created]);
       }
       setModalOpen(false);
@@ -630,7 +623,6 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
   );
 
   const label = strategy === 'tpsl1' ? 'TPSL1' : 'TPSL2';
-  const FormModal = is1 ? RuleFormModal1 : RuleFormModal2;
   // tpsl1/tpsl2 ruleColumns each define their OWN RuleRowContext, and a row's
   // RunControls cell reads its own strategy's context — so the page must provide
   // the provider that matches the columns being rendered, else the tpsl2 control
@@ -649,6 +641,22 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
       {actionError && <InlineAlert variant="error">{actionError}</InlineAlert>}
       {loading && <p className="text-text-dim">Loading rules…</p>}
       {error && <InlineAlert variant="error">{error}</InlineAlert>}
+
+      {modalOpen && (
+        <div className="mb-5">
+          <SpecRuleForm
+            spec={spec}
+            open={modalOpen}
+            editRule={editRule}
+            loading={formLoading}
+            error={formError}
+            form={form}
+            onChange={setForm}
+            onClose={() => setModalOpen(false)}
+            onSave={handleSave}
+          />
+        </div>
+      )}
 
       {!loading && !error && (
         <RuleRowProvider value={rowContext}>
@@ -720,14 +728,6 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
           onActivate={handleActivate}
         />
       )}
-
-      <FormModal
-        open={modalOpen} editRule={editRule}
-        loading={formLoading} error={formError}
-        form={form as any} onChange={setForm as any}
-        onClose={() => setModalOpen(false)}
-        onSave={handleSave}
-      />
 
       {inspect && (
         <TokenInspectModal target={inspect.target} onClose={() => setInspect(null)} />

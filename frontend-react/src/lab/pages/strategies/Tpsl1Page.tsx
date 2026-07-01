@@ -6,15 +6,18 @@ import { SectionDivider } from 'components/ui/SectionDivider';
 import { Button } from 'components/ui/Button';
 import { Input } from 'components/ui/Input';
 import { InlineAlert, Modal } from 'components/ui/Modal';
+import { SpecRuleForm } from 'components/strategy/SpecRuleForm';
 import {
   buildCreatePayload,
   buildUpdatePayload,
   emptyForm,
   formFromRule,
-  RuleFormModal,
-  type RuleFormData,
-  type LockGroupState,
-} from 'components/tpsl1/RuleFormModal';
+  getSpec,
+  serializeRuleJson,
+  RULE_NAME_KEY,
+  type FormState,
+  type LockState,
+} from 'lib/params';
 import { ruleColumns, RuleRowProvider } from 'components/tpsl1/ruleColumns';
 import { SimSummaryCard } from 'components/tpsl1/SimSummaryCard';
 import { TokenInspectModal, type InspectTarget } from 'components/tpsl1/TokenInspectModal';
@@ -64,7 +67,8 @@ import type {
 } from 'types';
 import { cn } from 'lib/cn';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
-import { ruleToParamsJson } from 'lib/ruleParams';
+
+const TPSL1_SPEC = getSpec('tpsl1');
 
 // Module-level, referentially-stable rowKey fns: each only reads the row, so a
 // single shared identity lets DataTable's page/select effects (and the row
@@ -590,7 +594,7 @@ const RuleActionsCell = memo(function RuleActionsCell({
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
-    const json = ruleToParamsJson(rule, 'tpsl1');
+    const json = serializeRuleJson(TPSL1_SPEC, rule);
     try {
       await navigator.clipboard.writeText(json);
       setCopied(true);
@@ -691,7 +695,7 @@ export function Tpsl1Page() {
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editRule, setEditRule] = useState<RuleRecord | null>(null);
-  const [form, setForm] = useState<RuleFormData>(emptyForm());
+  const [form, setForm] = useState<FormState>(() => emptyForm(TPSL1_SPEC));
   const [formError, setFormError] = useState<string | null>(null);
   const [formLoading, setFormLoading] = useState(false);
 
@@ -903,14 +907,14 @@ export function Tpsl1Page() {
 
   const openAdd = () => {
     setEditRule(null);
-    setForm(emptyForm());
+    setForm(emptyForm(TPSL1_SPEC));
     setFormError(null);
     setModalOpen(true);
   };
 
   const openEdit = useCallback((rule: RuleRecord) => {
     setEditRule(rule);
-    setForm(formFromRule(rule));
+    setForm(formFromRule(TPSL1_SPEC, rule));
     setFormError(null);
     setModalOpen(true);
   }, []);
@@ -920,22 +924,23 @@ export function Tpsl1Page() {
   // saves as a brand-new rule via the create path.
   const openDuplicate = useCallback((rule: RuleRecord) => {
     setEditRule(null);
-    setForm({ ...formFromRule(rule), ruleName: `${rule.rule_name} (copy)` });
+    setForm({ ...formFromRule(TPSL1_SPEC, rule), [RULE_NAME_KEY]: `${rule.rule_name} (copy)` });
     setFormError(null);
     setModalOpen(true);
   }, []);
 
-  const handleSave = async (unlocked: LockGroupState) => {
+  const handleSave = async (unlocked: LockState) => {
     setFormError(null);
-    if (!form.ruleName.trim()) {
+    if (!(form[RULE_NAME_KEY] ?? '').trim()) {
       setFormError('Rule name is required');
       return;
     }
-    for (const [label, val] of [
-      ['buy amount', form.buyAmount],
-      ['take profit', form.takeProfit],
-      ['stop loss', form.stopLoss],
+    for (const [label, col] of [
+      ['buy amount', 'buy_amount'],
+      ['take profit', 'p_exit_take_profit'],
+      ['stop loss', 'p_exit_stop_loss'],
     ] as const) {
+      const val = form[col] ?? '';
       if (!val.trim() || Number.isNaN(parseFloat(val))) {
         setFormError(`Invalid ${label}`);
         return;
@@ -947,14 +952,14 @@ export function Tpsl1Page() {
       if (editRule) {
         const updated = await updateTpsl1Rule(
           editRule.id,
-          buildUpdatePayload(form, unlocked),
+          buildUpdatePayload(TPSL1_SPEC, form, unlocked),
         );
         setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
         // The rule's entry criteria may have changed — drop its cached
         // matched/simulate results so the next open re-runs.
         invalidateStrategyResult(dispatch, { strategy: 'tpsl1', ruleId: updated.id });
       } else {
-        const created = await createTpsl1Rule(buildCreatePayload(form));
+        const created = await createTpsl1Rule(buildCreatePayload(TPSL1_SPEC, form));
         setRules((prev) => [...prev, created]);
       }
       setModalOpen(false);
@@ -1368,6 +1373,22 @@ export function Tpsl1Page() {
       {loading && <p className="text-text-dim">Loading rules…</p>}
       {error && <InlineAlert variant="error">{error}</InlineAlert>}
 
+      {modalOpen && (
+        <div className="mb-5">
+          <SpecRuleForm
+            spec={TPSL1_SPEC}
+            open={modalOpen}
+            editRule={editRule}
+            loading={formLoading}
+            error={formError}
+            form={form}
+            onChange={setForm}
+            onClose={() => setModalOpen(false)}
+            onSave={handleSave}
+          />
+        </div>
+      )}
+
       {/* Transient creation-time window for Matched + Simulate (not saved on any
           rule). Empty = all-time; set a range to bound the full-table scan. */}
       <div className="mb-3 flex flex-wrap items-end gap-3 text-[11px] text-text-dim">
@@ -1612,16 +1633,6 @@ export function Tpsl1Page() {
         />
       )}
 
-      <RuleFormModal
-        open={modalOpen}
-        editRule={editRule}
-        loading={formLoading}
-        error={formError}
-        form={form}
-        onChange={setForm}
-        onClose={() => setModalOpen(false)}
-        onSave={handleSave}
-      />
     </div>
   );
 }

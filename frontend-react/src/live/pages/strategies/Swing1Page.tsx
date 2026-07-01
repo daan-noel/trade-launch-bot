@@ -9,15 +9,18 @@ import { SimSummaryCard } from 'components/tpsl1/SimSummaryCard';
 import { TokenInspectModal, type InspectTarget } from 'components/tpsl1/TokenInspectModal';
 import { positionColumns } from 'components/tpsl1/tableColumns';
 import { ruleColumns as ruleCols1, RuleRowProvider } from 'components/tpsl1/ruleColumns';
+import { SpecRuleForm } from 'components/strategy/SpecRuleForm';
 import {
   buildCreatePayload,
   buildUpdatePayload,
   emptyForm,
   formFromRule,
-  Swing1RuleAccordion,
-  type RuleFormData,
-  type LockGroupState,
-} from './Swing1RuleAccordion';
+  getSpec,
+  serializeRuleJson,
+  RULE_NAME_KEY,
+  type FormState,
+  type LockState,
+} from 'lib/params';
 import {
   activateSwing1Rule,
   createSwing1Rule,
@@ -32,7 +35,6 @@ import { connectTpslPositionsChanged } from 'services/sse';
 import { apiErrorMessage, useGetTokensByMintsQuery } from 'store/apiSlice';
 import { useSellTokenMutation } from '@live/store/liveEndpoints';
 import { mergeTokenData } from 'components/tokens/sharedTokenColumns';
-import { swing1RuleToParamsJson } from 'lib/ruleParams';
 import { usePolledRules } from 'hooks/usePolledRules';
 import { useRulePositions } from 'hooks/useRulePositions';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
@@ -43,6 +45,7 @@ import type { ColumnDef } from 'components/table/types';
 
 /** swing1's SSE / positions filter key — the backend emits `swing_1`. */
 const STRATEGY = 'swing_1';
+const SWING1_SPEC = getSpec('swing_1');
 
 // Stable row-key functions (no inline lambdas — keeps DataTable memoization clean).
 const keyById = (r: { id: string }) => r.id;
@@ -222,7 +225,7 @@ const RuleActionsCell = memo(function RuleActionsCell({
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(swing1RuleToParamsJson(rule));
+      await navigator.clipboard.writeText(serializeRuleJson(SWING1_SPEC, rule));
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch { /* clipboard blocked — ignore */ }
@@ -334,7 +337,7 @@ export function Swing1Page() {
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editRule, setEditRule] = useState<RuleRecord | null>(null);
-  const [form, setForm] = useState<RuleFormData>(emptyForm());
+  const [form, setForm] = useState<FormState>(() => emptyForm(SWING1_SPEC));
   const [formError, setFormError] = useState<string | null>(null);
   const [formLoading, setFormLoading] = useState(false);
 
@@ -409,34 +412,35 @@ export function Swing1Page() {
 
   const openAdd = () => {
     setEditRule(null);
-    setForm(emptyForm());
+    setForm(emptyForm(SWING1_SPEC));
     setFormError(null);
     setModalOpen(true);
   };
 
   const openEdit = useCallback((rule: RuleRecord) => {
     setEditRule(rule);
-    setForm(formFromRule(rule));
+    setForm(formFromRule(SWING1_SPEC, rule));
     setFormError(null);
     setModalOpen(true);
   }, []);
 
   const openDuplicate = useCallback((rule: RuleRecord) => {
     setEditRule(null);
-    setForm({ ...formFromRule(rule), ruleName: `${rule.rule_name} (copy)` });
+    setForm({ ...formFromRule(SWING1_SPEC, rule), [RULE_NAME_KEY]: `${rule.rule_name} (copy)` });
     setFormError(null);
     setModalOpen(true);
   }, []);
 
-  const handleSave = async (unlocked: LockGroupState) => {
+  const handleSave = async (unlocked: LockState) => {
     setFormError(null);
-    if (!form.ruleName.trim()) { setFormError('Rule name is required'); return; }
-    for (const [label, val] of [
-      ['buy amount', form.buyAmount],
-      ['take profit', form.axes.take_profit],
-      ['stop loss', form.axes.stop_loss],
+    if (!(form[RULE_NAME_KEY] ?? '').trim()) { setFormError('Rule name is required'); return; }
+    for (const [label, col] of [
+      ['buy amount', 'buy_amount'],
+      ['take profit', 'p_exit_take_profit'],
+      ['stop loss', 'p_exit_stop_loss'],
     ] as const) {
-      if (!val?.trim() || Number.isNaN(parseFloat(val))) {
+      const val = form[col] ?? '';
+      if (!val.trim() || Number.isNaN(parseFloat(val))) {
         setFormError(`Invalid ${label}`);
         return;
       }
@@ -444,10 +448,10 @@ export function Swing1Page() {
     setFormLoading(true);
     try {
       if (editRule) {
-        const updated = await updateSwing1Rule(editRule.id, buildUpdatePayload(form, unlocked));
+        const updated = await updateSwing1Rule(editRule.id, buildUpdatePayload(SWING1_SPEC, form, unlocked));
         setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
       } else {
-        const created = await createSwing1Rule(buildCreatePayload(form));
+        const created = await createSwing1Rule(buildCreatePayload(SWING1_SPEC, form));
         setRules((prev) => [...prev, created]);
       }
       setModalOpen(false);
@@ -613,6 +617,22 @@ export function Swing1Page() {
       {loading && <p className="text-text-dim">Loading rules…</p>}
       {error && <InlineAlert variant="error">{error}</InlineAlert>}
 
+      {modalOpen && (
+        <div className="mb-5">
+          <SpecRuleForm
+            spec={SWING1_SPEC}
+            open={modalOpen}
+            editRule={editRule}
+            loading={formLoading}
+            error={formError}
+            form={form}
+            onChange={setForm}
+            onClose={() => setModalOpen(false)}
+            onSave={handleSave}
+          />
+        </div>
+      )}
+
       {!loading && !error && (
         <RuleRowProvider value={rowContext}>
           {realRules.length > 0 && (
@@ -683,14 +703,6 @@ export function Swing1Page() {
           onActivate={handleActivate}
         />
       )}
-
-      <Swing1RuleAccordion
-        open={modalOpen} editRule={editRule}
-        loading={formLoading} error={formError}
-        form={form} onChange={setForm}
-        onClose={() => setModalOpen(false)}
-        onSave={handleSave}
-      />
 
       {inspect && (
         <TokenInspectModal target={inspect.target} onClose={() => setInspect(null)} />

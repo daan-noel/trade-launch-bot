@@ -142,57 +142,11 @@ export const SWING1_AXES: AxisDef[] = [
     desc: 'how fast that fresh drop must be to count as a next-kill flee trigger' },
 ];
 
-// --- axis ⇄ backend-column mapping ------------------------------------------
-
-/** Axis `key`s whose backend `p_*` column is spelled out rather than derived by
- *  role-prefix. The exit-ladder knobs get an `exit_` infix, and a couple of
- *  standalone knobs don't follow any role prefix. */
-const AXIS_TO_COL: Record<string, string> = {
-  take_profit: 'p_exit_take_profit',
-  stop_loss: 'p_exit_stop_loss',
-  trailing_stop_pct: 'p_exit_trailing_stop_pct',
-  time_stop_secs: 'p_exit_time_stop_secs',
-  stall_secs: 'p_exit_stall_secs',
-  liquidity_drop_pct: 'p_exit_liquidity_drop_pct',
-  dust_frac: 'p_dust_frac',
-  min_kills_before_volume: 'p_min_kills_before_volume',
-};
-
-/** Resolve the backend `Swing1Rule` column for an axis `key` (explicit override,
- *  else the role-prefix rule: swing_*→p_swing_*, kill_*→p_kill_*, vol_*→p_vol_*,
- *  entry_*→p_entry_*, exit_next_kill_*→p_exit_next_kill_*, else p_<key>). Shared by
- *  the swing1 rule accordion (payload keys + form reads) and the params copy/paste
- *  round-trip so both sides map identically. */
-export function swing1AxisCol(key: string): string {
-  return AXIS_TO_COL[key] ?? `p_${key}`;
-}
-
-/** Reverse of [`swing1AxisCol`]: backend column → axis `key`, or `undefined` if
- *  the column isn't a swing1 axis param. Built once from [`SWING1_AXES`]. */
-const COL_TO_AXIS: Record<string, string> = Object.fromEntries(
-  SWING1_AXES.map((a) => [swing1AxisCol(a.key), a.key]),
-);
-export function swing1ColToAxis(col: string): string | undefined {
-  return COL_TO_AXIS[col];
-}
-
-/** Axis keys parsed as integers (the ms / secs / leg-trades / min-kills knobs).
- *  Mirrors the Rust integer-Option columns; every other axis is a float. */
-export const SWING1_INT_KEYS = new Set([
-  'swing_min_leg_trades',
-  'kill_max_duration_ms',
-  'vol_min_duration_ms',
-  'vol_min_up_duration_ms',
-  'min_kills_before_volume',
-  'entry_higher_low_secs',
-  'entry_max_age_secs',
-  'time_stop_secs',
-  'stall_secs',
-  'exit_next_kill_max_duration_ms',
-]);
-
-/** Axes that are required (non-nullable) numbers on the backend. */
-export const SWING1_REQUIRED_KEYS = new Set(['take_profit', 'stop_loss']);
+// The axis⇄backend-column mapping, integer-key set, and required-key set that
+// used to live here have moved into the unified params engine's swing1 spec
+// (`@shared/lib/params/specs/swing1.ts`), which now owns copy/paste + the rule
+// form. This module stays the source for the sweep-config + detect axis GRID
+// (its labels, defaults, subgroup layout) only.
 
 // --- subgroup metadata + bucketing helper -----------------------------------
 

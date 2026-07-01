@@ -33,7 +33,7 @@ import {
 } from '@lab/store/labEndpoints';
 import { useStreamedSweepResults, COMBO_PAGE_SIZE } from '@lab/hooks/useStreamedSweepResults';
 import type { ColumnDef, SortEntry, TableQuery } from 'components/table/types';
-import { sweepComboToParamsJson, type Strategy } from 'lib/ruleParams';
+import { getSpec, serializeComboJson, type Strategy } from 'lib/params';
 import type { SweepResultRecord } from '@lab/components/sweep/types';
 
 /** The grouped-sweep view is strategy-agnostic — the API/data layer and column
@@ -111,7 +111,7 @@ export function GroupedSweepView({
           type="button"
           onClick={async (e) => {
             e.stopPropagation();
-            const json = sweepComboToParamsJson(row, strategyId as Strategy);
+            const json = serializeComboJson(getSpec(strategyId as Strategy), row);
             try {
               await navigator.clipboard.writeText(json);
               setCopiedComboId(row.combo_id);

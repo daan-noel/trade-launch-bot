@@ -23,7 +23,7 @@ import {
 } from 'store/apiSlice';
 import { SWING1_AXES, groupAxesBySubgroup } from '@lab/components/sweep/groupedTypes';
 import { PasteParamsSection } from 'components/strategy/PasteParamsSection';
-import { swing1BlobToDetectParams, swing1DetectParamsToJson } from 'lib/ruleParams';
+import { blobToDetectParams, detectParamsToJson } from 'lib/params';
 import {
   fetchSwing1Detect,
   type Swing1DetectParams,
@@ -150,8 +150,8 @@ export function Swing1DetectPage() {
   // Paste a swing1 combo/rule blob (copied via the sweep page's ⎘) into the form.
   // `merge` overwrites only the blob's keys; `replace` resets to defaults first.
   const handlePasteParams = useCallback(
-    (blob: Parameters<typeof swing1BlobToDetectParams>[0], mode: 'merge' | 'replace') => {
-      const { params: patch, applied, dropped } = swing1BlobToDetectParams(blob, paramKeySet);
+    (blob: Parameters<typeof blobToDetectParams>[0], mode: 'merge' | 'replace') => {
+      const { params: patch, applied, dropped } = blobToDetectParams(blob, paramKeySet);
       setParams((prev) => {
         const base = mode === 'replace' ? { ...DEFAULT_PARAMS } : { ...prev };
         const updated = { ...base, ...patch } as Swing1DetectParams;
@@ -169,7 +169,7 @@ export function Swing1DetectPage() {
   const handleCopyParams = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(
-        swing1DetectParamsToJson(params as Record<string, number | null | undefined>),
+        detectParamsToJson(params as Record<string, number | null | undefined>),
       );
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);

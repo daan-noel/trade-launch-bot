@@ -6,15 +6,18 @@ import { SectionDivider } from 'components/ui/SectionDivider';
 import { Button } from 'components/ui/Button';
 import { Input } from 'components/ui/Input';
 import { InlineAlert, Modal } from 'components/ui/Modal';
+import { SpecRuleForm } from 'components/strategy/SpecRuleForm';
 import {
   buildCreatePayload,
   buildUpdatePayload,
   emptyForm,
   formFromRule,
-  Swing1RuleAccordion,
-  type RuleFormData,
-  type LockGroupState,
-} from '@live/pages/strategies/Swing1RuleAccordion';
+  getSpec,
+  serializeRuleJson,
+  RULE_NAME_KEY,
+  type FormState,
+  type LockState,
+} from 'lib/params';
 // swing1 rules carry the generic RuleRecord shape, so it reuses tpsl1's rule /
 // position / sim / matched column sets (the fingerprint-only columns just render
 // `-`). This mirrors the live Swing1Page, which reuses the same columns.
@@ -66,8 +69,9 @@ import type {
   SimulatedTokenResult,
 } from 'types';
 import { cn } from 'lib/cn';
-import { swing1RuleToParamsJson } from 'lib/ruleParams';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
+
+const SWING1_SPEC = getSpec('swing_1');
 
 // swing1 carries TWO identities that must not be conflated:
 //  • STRATEGY — the strategy STRING the backend emits over SSE (`swing_1`);
@@ -581,9 +585,9 @@ function ReactivateDialog({
  *  useCallbacks from the page; the booleans are pre-narrowed per row so an
  *  unaffected row's props stay shallow-equal and `memo` skips it.
  *
- *  Copy-params serializes via the swing1-native `swing1RuleToParamsJson` (its
- *  axis-keyed columns aren't covered by the tpsl `ruleToParamsJson`); the blob
- *  pastes back into the swing1 rule accordion or a swing1 sweep. */
+ *  Copy-params serializes via the unified `serializeRuleJson(SWING1_SPEC, …)`
+ *  (every swing1 `p_*` column); the blob pastes back into the swing1 rule form or
+ *  a swing1 sweep. */
 const RuleActionsCell = memo(function RuleActionsCell({
   rule,
   confirmingDelete,
@@ -607,7 +611,7 @@ const RuleActionsCell = memo(function RuleActionsCell({
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(swing1RuleToParamsJson(rule));
+      await navigator.clipboard.writeText(serializeRuleJson(SWING1_SPEC, rule));
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch { /* clipboard blocked — ignore */ }
@@ -707,7 +711,7 @@ export function Swing1Page() {
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editRule, setEditRule] = useState<RuleRecord | null>(null);
-  const [form, setForm] = useState<RuleFormData>(emptyForm());
+  const [form, setForm] = useState<FormState>(() => emptyForm(SWING1_SPEC));
   const [formError, setFormError] = useState<string | null>(null);
   const [formLoading, setFormLoading] = useState(false);
 
@@ -920,14 +924,14 @@ export function Swing1Page() {
 
   const openAdd = () => {
     setEditRule(null);
-    setForm(emptyForm());
+    setForm(emptyForm(SWING1_SPEC));
     setFormError(null);
     setModalOpen(true);
   };
 
   const openEdit = useCallback((rule: RuleRecord) => {
     setEditRule(rule);
-    setForm(formFromRule(rule));
+    setForm(formFromRule(SWING1_SPEC, rule));
     setFormError(null);
     setModalOpen(true);
   }, []);
@@ -937,28 +941,25 @@ export function Swing1Page() {
   // saves as a brand-new rule via the create path.
   const openDuplicate = useCallback((rule: RuleRecord) => {
     setEditRule(null);
-    setForm({ ...formFromRule(rule), ruleName: `${rule.rule_name} (copy)` });
+    setForm({ ...formFromRule(SWING1_SPEC, rule), [RULE_NAME_KEY]: `${rule.rule_name} (copy)` });
     setFormError(null);
     setModalOpen(true);
   }, []);
 
-  const handleSave = async (unlocked: LockGroupState) => {
+  const handleSave = async (unlocked: LockState) => {
     setFormError(null);
-    if (!form.ruleName.trim()) {
+    if (!(form[RULE_NAME_KEY] ?? '').trim()) {
       setFormError('Rule name is required');
       return;
     }
     // buy amount is universal; the swing exit ladder requires take-profit +
-    // stop-loss (the axis-keyed required fields).
-    if (!form.buyAmount.trim() || Number.isNaN(parseFloat(form.buyAmount))) {
-      setFormError('Invalid buy amount');
-      return;
-    }
-    for (const [label, key] of [
-      ['take profit', 'take_profit'],
-      ['stop loss', 'stop_loss'],
+    // stop-loss (the required exit-ladder columns).
+    for (const [label, col] of [
+      ['buy amount', 'buy_amount'],
+      ['take profit', 'p_exit_take_profit'],
+      ['stop loss', 'p_exit_stop_loss'],
     ] as const) {
-      const val = form.axes[key] ?? '';
+      const val = form[col] ?? '';
       if (!val.trim() || Number.isNaN(parseFloat(val))) {
         setFormError(`Invalid ${label}`);
         return;
@@ -970,14 +971,14 @@ export function Swing1Page() {
       if (editRule) {
         const updated = await updateSwing1Rule(
           editRule.id,
-          buildUpdatePayload(form, unlocked),
+          buildUpdatePayload(SWING1_SPEC, form, unlocked),
         );
         setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
         // The rule's entry criteria may have changed — drop its cached
         // matched/simulate results so the next open re-runs.
         invalidateStrategyResult(dispatch, { strategy: STRATEGY_SEG, ruleId: updated.id });
       } else {
-        const created = await createSwing1Rule(buildCreatePayload(form));
+        const created = await createSwing1Rule(buildCreatePayload(SWING1_SPEC, form));
         setRules((prev) => [...prev, created]);
       }
       setModalOpen(false);
@@ -1392,6 +1393,22 @@ export function Swing1Page() {
       {loading && <p className="text-text-dim">Loading rules…</p>}
       {error && <InlineAlert variant="error">{error}</InlineAlert>}
 
+      {modalOpen && (
+        <div className="mb-5">
+          <SpecRuleForm
+            spec={SWING1_SPEC}
+            open={modalOpen}
+            editRule={editRule}
+            loading={formLoading}
+            error={formError}
+            form={form}
+            onChange={setForm}
+            onClose={() => setModalOpen(false)}
+            onSave={handleSave}
+          />
+        </div>
+      )}
+
       {/* Transient creation-time window for Matched + Simulate (not saved on any
           rule). Empty = all-time; set a range to bound the full-table scan. */}
       <div className="mb-3 flex flex-wrap items-end gap-3 text-[11px] text-text-dim">
@@ -1636,16 +1653,6 @@ export function Swing1Page() {
         />
       )}
 
-      <Swing1RuleAccordion
-        open={modalOpen}
-        editRule={editRule}
-        loading={formLoading}
-        error={formError}
-        form={form}
-        onChange={setForm}
-        onClose={() => setModalOpen(false)}
-        onSave={handleSave}
-      />
     </div>
   );
 }

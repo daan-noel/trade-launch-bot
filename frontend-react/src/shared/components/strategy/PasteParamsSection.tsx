@@ -1,12 +1,12 @@
 import { useState } from 'react';
 import { cn } from 'lib/cn';
 import {
-  parseParamsBlob,
+  parseBlob,
   type ApplyResult,
   type RuleParamsBlob,
   type Strategy,
   type PasteMode,
-} from 'lib/ruleParams';
+} from 'lib/params';
 
 interface Props {
   strategy: Strategy;
@@ -29,7 +29,7 @@ export function PasteParamsSection({ strategy, live, onApply }: Props) {
   const applyText = (raw: string) => {
     setError(null);
     setResult(null);
-    const blob = parseParamsBlob(raw);
+    const blob = parseBlob(raw);
     if (!blob) {
       setError('Invalid JSON — paste a blob copied from a rule or sweep combo');
       return;

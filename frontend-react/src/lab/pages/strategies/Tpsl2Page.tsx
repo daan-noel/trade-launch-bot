@@ -8,15 +8,18 @@ import { IconButton } from 'components/ui/IconButton';
 import { Input } from 'components/ui/Input';
 import { InlineAlert, Modal } from 'components/ui/Modal';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
+import { SpecRuleForm } from 'components/strategy/SpecRuleForm';
 import {
   buildCreatePayload,
   buildUpdatePayload,
   emptyForm,
   formFromRule,
-  RuleFormModal,
-  type RuleFormData,
-  type LockGroupState,
-} from 'components/tpsl2/RuleFormModal';
+  getSpec,
+  serializeRuleJson,
+  RULE_NAME_KEY,
+  type FormState,
+  type LockState,
+} from 'lib/params';
 import { ruleColumns, RuleRowProvider } from 'components/tpsl2/ruleColumns';
 import { SimSummaryCard } from 'components/tpsl2/SimSummaryCard';
 import { TokenInspectModal, type InspectTarget } from 'components/tpsl2/TokenInspectModal';
@@ -66,7 +69,8 @@ import type {
 } from 'types';
 import { cn } from 'lib/cn';
 import { computeRuleColorClasses } from 'lib/ruleColorGroups';
-import { ruleToParamsJson } from 'lib/ruleParams';
+
+const TPSL2_SPEC = getSpec('tpsl2');
 
 // Module-level, referentially-stable rowKey fns: each only reads the row, so a
 // single shared identity lets DataTable's page/select effects (and the row
@@ -594,7 +598,7 @@ const RuleActionsCell = memo(function RuleActionsCell({
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
-    const json = ruleToParamsJson(rule, 'tpsl2');
+    const json = serializeRuleJson(TPSL2_SPEC, rule);
     try {
       await navigator.clipboard.writeText(json);
       setCopied(true);
@@ -686,7 +690,7 @@ export function Tpsl2Page() {
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editRule, setEditRule] = useState<RuleRecord | null>(null);
-  const [form, setForm] = useState<RuleFormData>(emptyForm());
+  const [form, setForm] = useState<FormState>(() => emptyForm(TPSL2_SPEC));
   const [formError, setFormError] = useState<string | null>(null);
   const [formLoading, setFormLoading] = useState(false);
 
@@ -902,14 +906,14 @@ export function Tpsl2Page() {
 
   const openAdd = () => {
     setEditRule(null);
-    setForm(emptyForm());
+    setForm(emptyForm(TPSL2_SPEC));
     setFormError(null);
     setModalOpen(true);
   };
 
   const openEdit = useCallback((rule: RuleRecord) => {
     setEditRule(rule);
-    setForm(formFromRule(rule));
+    setForm(formFromRule(TPSL2_SPEC, rule));
     setFormError(null);
     setModalOpen(true);
   }, []);
@@ -919,22 +923,23 @@ export function Tpsl2Page() {
   // saves as a brand-new rule via the create path.
   const openDuplicate = useCallback((rule: RuleRecord) => {
     setEditRule(null);
-    setForm({ ...formFromRule(rule), ruleName: `${rule.rule_name} (copy)` });
+    setForm({ ...formFromRule(TPSL2_SPEC, rule), [RULE_NAME_KEY]: `${rule.rule_name} (copy)` });
     setFormError(null);
     setModalOpen(true);
   }, []);
 
-  const handleSave = async (unlocked: LockGroupState) => {
+  const handleSave = async (unlocked: LockState) => {
     setFormError(null);
-    if (!form.ruleName.trim()) {
+    if (!(form[RULE_NAME_KEY] ?? '').trim()) {
       setFormError('Rule name is required');
       return;
     }
-    for (const [label, val] of [
-      ['buy amount', form.buyAmount],
-      ['take profit', form.takeProfit],
-      ['stop loss', form.stopLoss],
+    for (const [label, col] of [
+      ['buy amount', 'buy_amount'],
+      ['take profit', 'p_exit_take_profit'],
+      ['stop loss', 'p_exit_stop_loss'],
     ] as const) {
+      const val = form[col] ?? '';
       if (!val.trim() || Number.isNaN(parseFloat(val))) {
         setFormError(`Invalid ${label}`);
         return;
@@ -942,8 +947,8 @@ export function Tpsl2Page() {
     }
     // Entry window [Min Age, Max Age]: when both bounds are set (non-zero), the
     // ceiling must sit above the floor — the backend rejects max <= min with 400.
-    const minAge = parseInt(form.minAgeSecs, 10);
-    const maxAge = parseInt(form.maxAgeSecs, 10);
+    const minAge = parseInt(form.p_entry_min_age_secs ?? '', 10);
+    const maxAge = parseInt(form.p_entry_max_age_secs ?? '', 10);
     if (minAge > 0 && maxAge > 0 && maxAge <= minAge) {
       setFormError(`Max Age (${maxAge}s) must be greater than Min Age (${minAge}s)`);
       return;
@@ -954,14 +959,14 @@ export function Tpsl2Page() {
       if (editRule) {
         const updated = await updateTpsl2Rule(
           editRule.id,
-          buildUpdatePayload(form, unlocked),
+          buildUpdatePayload(TPSL2_SPEC, form, unlocked),
         );
         setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
         // The rule's entry criteria may have changed — drop its cached
         // matched/simulate results so the next open re-runs.
         invalidateStrategyResult(dispatch, { strategy: 'tpsl2', ruleId: updated.id });
       } else {
-        const created = await createTpsl2Rule(buildCreatePayload(form));
+        const created = await createTpsl2Rule(buildCreatePayload(TPSL2_SPEC, form));
         setRules((prev) => [...prev, created]);
       }
       setModalOpen(false);
@@ -1389,6 +1394,22 @@ export function Tpsl2Page() {
       {loading && <p className="text-text-dim">Loading rules…</p>}
       {error && <InlineAlert variant="error">{error}</InlineAlert>}
 
+      {modalOpen && (
+        <div className="mb-5">
+          <SpecRuleForm
+            spec={TPSL2_SPEC}
+            open={modalOpen}
+            editRule={editRule}
+            loading={formLoading}
+            error={formError}
+            form={form}
+            onChange={setForm}
+            onClose={() => setModalOpen(false)}
+            onSave={handleSave}
+          />
+        </div>
+      )}
+
       {/* Transient creation-time window for Matched + Simulate (not saved on any
           rule). Empty = all-time; set a range to bound the full-table scan. */}
       <div className="mb-3 flex flex-wrap items-end gap-3 text-[11px] text-text-dim">
@@ -1635,16 +1656,6 @@ export function Tpsl2Page() {
         />
       )}
 
-      <RuleFormModal
-        open={modalOpen}
-        editRule={editRule}
-        loading={formLoading}
-        error={formError}
-        form={form}
-        onChange={setForm}
-        onClose={() => setModalOpen(false)}
-        onSave={handleSave}
-      />
     </div>
   );
 }
