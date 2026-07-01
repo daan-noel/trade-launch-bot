@@ -9,10 +9,15 @@ import { cn } from 'lib/cn';
 import { EXAMPLE_IX_LABELS, parseIxLabels } from '@shared/components/tpsl2/utils';
 import {
   SWING1_AXES,
+  SWING1_INT_KEYS,
+  SWING1_REQUIRED_KEYS,
   groupAxesBySubgroup,
+  swing1AxisCol,
   type AxisDef,
   type AxisSubgroup,
 } from '@shared/lib/swing1Axes';
+import { PasteParamsSection } from 'components/strategy/PasteParamsSection';
+import { applyBlobToSwing1Form } from 'lib/ruleParams';
 
 /** Lock groups, aligned 1:1 with the accordion's sections. Each param subgroup is
  *  its own lock group; `sizing` covers the universal buy-amount + concurrency
@@ -35,55 +40,13 @@ function freshLocks(): LockGroupState {
   };
 }
 
-/** Map an axis `key` → its backend `p_*` rule-param column. Most keys map by a
- *  role-prefix rule (swing_*→p_swing_*, kill_*→p_kill_*, vol_*→p_vol_*,
- *  entry_*→p_entry_*, exit_next_kill_*→p_exit_next_kill_*); the exit-ladder knobs
- *  and a few standalone knobs are spelled out. Drives both the create/update
- *  payload keys and `formFromRule` reads. */
-const AXIS_TO_COL: Record<string, string> = {
-  take_profit: 'p_exit_take_profit',
-  stop_loss: 'p_exit_stop_loss',
-  trailing_stop_pct: 'p_exit_trailing_stop_pct',
-  time_stop_secs: 'p_exit_time_stop_secs',
-  stall_secs: 'p_exit_stall_secs',
-  liquidity_drop_pct: 'p_exit_liquidity_drop_pct',
-  dust_frac: 'p_dust_frac',
-  min_kills_before_volume: 'p_min_kills_before_volume',
-};
-
-/** Resolve the backend column for an axis key (table override, else role prefix). */
-function axisCol(key: string): string {
-  const mapped = AXIS_TO_COL[key];
-  if (mapped) return mapped;
-  if (key.startsWith('exit_next_kill_')) return `p_${key}`;
-  if (
-    key.startsWith('swing_') ||
-    key.startsWith('kill_') ||
-    key.startsWith('vol_') ||
-    key.startsWith('entry_')
-  ) {
-    return `p_${key}`;
-  }
-  return `p_${key}`;
-}
-
-/** Axes that are required numbers on the backend (everything else is nullable). */
-const REQUIRED_KEYS = new Set(['take_profit', 'stop_loss']);
-
-/** Integer-typed axes (parseInt vs parseFloat). Mirrors the Rust integer-Option
- *  columns; the ms / secs / leg-trades / min-kills knobs are whole numbers. */
-const INT_KEYS = new Set([
-  'swing_min_leg_trades',
-  'kill_max_duration_ms',
-  'vol_min_duration_ms',
-  'vol_min_up_duration_ms',
-  'min_kills_before_volume',
-  'entry_higher_low_secs',
-  'entry_max_age_secs',
-  'time_stop_secs',
-  'stall_secs',
-  'exit_next_kill_max_duration_ms',
-]);
+// The axis⇄column map (`swing1AxisCol`), the required-axis set
+// (`SWING1_REQUIRED_KEYS`), and the integer-axis set (`SWING1_INT_KEYS`) now live
+// in `@shared/lib/swing1Axes` — shared with the params copy/paste round-trip so
+// both sides map axis keys to the same `p_*` columns and parse them identically.
+const axisCol = swing1AxisCol;
+const REQUIRED_KEYS = SWING1_REQUIRED_KEYS;
+const INT_KEYS = SWING1_INT_KEYS;
 
 /** Universal (non-axis) form fields plus one string entry per swing1 axis, keyed
  *  by the axis `key`. String-typed like the tpsl2 form so blanks are preserved. */
@@ -358,6 +321,33 @@ export function Swing1RuleAccordion({
             />
           </label>
         </div>
+
+        {/* ── Paste params (rule ⎘ / sweep combo ⎘ / detect ⎘ → this form) ── */}
+        <PasteParamsSection
+          strategy="swing_1"
+          live={live}
+          onApply={(blob, mode) => {
+            // Split the typed form into its universal fields (everything except
+            // `axes`) and the axis map — the shared apply routes blob columns to
+            // one half or the other, then we reassemble the typed form.
+            const { axes: curAxes, ...universals } = form;
+            const { universals: nextU, axes: nextA, result } = applyBlobToSwing1Form(
+              universals as unknown as Record<string, string>,
+              () => {
+                const { axes: _a, ...u } = emptyForm();
+                void _a;
+                return u as unknown as Record<string, string>;
+              },
+              curAxes,
+              emptyAxes,
+              blob,
+              live,
+              mode,
+            );
+            onChange({ ...(nextU as unknown as Omit<RuleFormData, 'axes'>), axes: nextA });
+            return result;
+          }}
+        />
 
         {/* ── Sizing & limits (universal · editable while live) ── */}
         <div className="flex items-center justify-between border-t border-white/10 pt-3">

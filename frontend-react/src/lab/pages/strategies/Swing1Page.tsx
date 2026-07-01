@@ -66,6 +66,7 @@ import type {
   SimulatedTokenResult,
 } from 'types';
 import { cn } from 'lib/cn';
+import { swing1RuleToParamsJson } from 'lib/ruleParams';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 
 // swing1 carries TWO identities that must not be conflated:
@@ -580,8 +581,9 @@ function ReactivateDialog({
  *  useCallbacks from the page; the booleans are pre-narrowed per row so an
  *  unaffected row's props stay shallow-equal and `memo` skips it.
  *
- *  swing1 has no copy-params action (its axis-keyed form isn't covered by the
- *  tpsl `ruleToParamsJson`), so this drops the copy button tpsl1 carries. */
+ *  Copy-params serializes via the swing1-native `swing1RuleToParamsJson` (its
+ *  axis-keyed columns aren't covered by the tpsl `ruleToParamsJson`); the blob
+ *  pastes back into the swing1 rule accordion or a swing1 sweep. */
 const RuleActionsCell = memo(function RuleActionsCell({
   rule,
   confirmingDelete,
@@ -601,6 +603,16 @@ const RuleActionsCell = memo(function RuleActionsCell({
   onRequestDelete: (ruleId: string) => void;
   onCancelDelete: () => void;
 }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(swing1RuleToParamsJson(rule));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* clipboard blocked — ignore */ }
+  };
+
   if (confirmingDelete) {
     return (
       <div className="flex items-center justify-center gap-1">
@@ -641,6 +653,15 @@ const RuleActionsCell = memo(function RuleActionsCell({
         className="text-text-dim hover:text-text"
       >
         ⧉
+      </Button>
+      <Button
+        variant="ghost"
+        size="xs"
+        onClick={handleCopy}
+        title="Copy params to clipboard"
+        className={copied ? 'text-green' : 'text-text-dim hover:text-text'}
+      >
+        {copied ? '✔' : '⎘'}
       </Button>
       <Button
         variant="ghost"

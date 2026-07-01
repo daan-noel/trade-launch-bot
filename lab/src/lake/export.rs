@@ -277,7 +277,13 @@ impl TradeBuilders {
         // vs a fresh PG read (corpus-parity fix).
         self.block_time.append_value(r.block_time.timestamp_micros());
         self.leg_index.append_value(r.leg_index as i32);
-        self.vsol.append_option(r.reserve_sol.map(|v| v as f64));
+        // `reserve_sol` is lamports in the BIGINT column but the model contract
+        // (and every `TradeRow::reserve_sol` consumer: `spot_price`,
+        // `approx_real_sol_reserves`) is **human SOL** — so convert ÷1e9 exactly
+        // like `sol_amount` above. Without this `vsol` was 1e9× too large, which
+        // silently cancelled in the `vsol/vtok` price ratio but corrupted any
+        // absolute-SOL use of the reserve (the real-liquidity reconstruction).
+        self.vsol.append_option(r.reserve_sol.map(|v| v as f64 / 1_000_000_000.0));
         self.vtok.append_option(r.reserve_token.map(|v| v as f64));
         self.venue.append_value(&r.venue);
         self.tx_index.append_value(r.tx_index);
@@ -447,7 +453,7 @@ mod tests {
             venue: "curve".into(),
             sol_amount: lamports,
             token_amount: raw_tok,
-            reserve_sol: Some(42),
+            reserve_sol: Some(30_000_000_000), // 30 SOL in lamports
             reserve_token: Some(84),
             slot: 7,
             tx_index: 0,
@@ -472,7 +478,7 @@ mod tests {
         assert!((sol.value(0) - 1.5).abs() < 1e-12, "lamports→SOL ÷1e9");
         assert!((token.value(0) - 3_000_000.0).abs() < 1e-6, "raw token units kept as f64");
         assert!((price.value(0) - 1.5 / 3_000_000.0).abs() < 1e-18, "price = sol/token");
-        assert!((vsol.value(0) - 42.0).abs() < 1e-12, "vsol raw→f64");
+        assert!((vsol.value(0) - 30.0).abs() < 1e-12, "vsol lamports→SOL ÷1e9");
         assert!((vtok.value(0) - 84.0).abs() < 1e-12, "vtok raw→f64");
     }
 

@@ -476,7 +476,19 @@ impl TradeRepo {
         let mut grouped: std::collections::HashMap<String, Vec<Trade>> =
             std::collections::HashMap::with_capacity(mints.len());
         for row in rows {
-            let trade = Trade::try_from(row)?;
+            let mut trade = Trade::try_from(row)?;
+            // BACKTEST-ONLY approximation of `real_sol_reserves`. The `trades` table
+            // dropped the program-emitted real-reserve column, so `Trade::try_from`
+            // leaves it `None`. This method feeds the offline backtest/sim ONLY (the
+            // live/paper decision path uses `CachedTrade` from the decoder, which
+            // carries the exact emitted value), so it's safe to reconstruct the
+            // approximate real SOL here from the priced reserve pair + venue so the
+            // sim's real-reserve gates (tpsl2 `min_liq_sol`/organic-liq, dead-token)
+            // resolve instead of always seeing 0. Same formula as the lake corpus
+            // (`approx_real_sol_reserves`); an approximation, not lamport-identical.
+            trade.real_sol_reserves = trade
+                .reserve_sol
+                .map(|s| crate::config::constants::approx_real_sol_reserves(s, &trade.venue));
             grouped
                 .entry(trade.mint_address.clone())
                 .or_default()

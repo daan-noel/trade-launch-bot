@@ -127,12 +127,21 @@ Uses the most recent trade in the prefix that carries a `real_sol_reserves` snap
 
 > **Data source per path.** Live/paper use the program-emitted `real_sol_reserves`
 > (exact: curve = the curve `TradeEvent` field, AMM = pool quote reserve). The
-> **sim/backtest** corpus doesn't carry that field (dropped from `trades`), so the
-> lake **approximates** it from the priced reserve pair per venue — AMM →
-> `reserve_sol`, curve → `reserve_sol − 30` (the initial virtual SOL), clamped ≥0
-> (`approx_real_sol_reserves`, `lab::lake::duck`). Same "true liquidity" the chart
-> shows. Consequence: on the curve this gate is effectively "virtual reserve ≥ 30 + N
-> SOL", and sim is a close-but-not-lamport-identical proxy for the live gate.
+> `trades` table **dropped** that column, so BOTH offline paths that read it back
+> **approximate** it from the priced reserve pair + `venue` via the shared
+> `approx_real_sol_reserves` — AMM → `reserve_sol`, curve → `reserve_sol − 30` (the
+> initial virtual SOL), clamped ≥0:
+>
+> - **Single-rule simulate** (`.../simulate`, the per-rule backtest) reads from
+>   Postgres via `TradeRepo::find_by_mints_all`, which now reconstructs the value
+>   after `Trade::try_from` (backtest-only method — never on the live path).
+> - **Grouped sweep** reads the Parquet lake; `lab::lake::duck` reconstructs it there.
+>
+> Same "true liquidity" the chart shows. Consequence: on the curve this gate is
+> effectively "virtual reserve ≥ 30 + N SOL", and sim is a close-but-not-lamport-
+> identical proxy for the live gate. **Before this, both offline paths hardcoded
+> `real_sol_reserves = None → 0`, so any `min_liq_sol > 0` silently rejected 100% of
+> candidates (empty sim despite matched tokens).**
 
 ---
 

@@ -1,5 +1,6 @@
 ﻿import type { RuleRecord } from 'types';
 import type { SweepResultRecord } from '@lab/components/sweep/types';
+import { SWING1_AXES, swing1AxisCol, swing1ColToAxis } from 'lib/swing1Axes';
 
 export type Strategy = 'tpsl1' | 'tpsl2' | 'swing_1';
 export type PasteMode = 'merge' | 'replace';
@@ -90,6 +91,117 @@ export function sweepComboToParamsJson(combo: SweepResultRecord, strategy: Strat
     params[sweepKeyToParamKey(k)] = v;
   }
   return JSON.stringify({ strategy, version: 1, params } satisfies RuleParamsBlob, null, 2);
+}
+
+// --- swing1 rule page copy/paste --------------------------------------------
+//
+// The swing1 rule accordion keys its form by bare axis names (`form.axes[key]`)
+// plus a handful of universals, NOT the camelCase `SHARED_PARAMS` fields the tpsl
+// modals use. So swing1 gets its own serialize + apply pair driven by
+// `SWING1_AXES` + `swing1AxisCol`, producing/consuming the same `p_*`-keyed blob
+// as `ruleToParamsJson`/`sweepComboToParamsJson` (so a swing1 sweep-combo ⎘ pastes
+// here too). The universals below map the same `p_token_*` / sizing / tolerance
+// columns as `SHARED_PARAMS`, but onto the accordion's own field names.
+
+/** universal (non-axis) swing1 form fields ⇄ their backend column + group. */
+const SWING1_UNIVERSALS: Record<string, { field: string; group: Group; isArray?: boolean }> = {
+  buy_amount:               { field: 'buyAmount',           group: 'sizing' },
+  p_max_concurrent_tokens:  { field: 'maxConcurrentTokens', group: 'sizing' },
+  p_max_total_tokens:       { field: 'maxTotalTokens',      group: 'sizing' },
+  p_token_initial_buy_sol:  { field: 'initialBuy',          group: 'fingerprint' },
+  tolerance_pct:            { field: 'tolerance',           group: 'fingerprint' },
+  p_token_cu_limit:         { field: 'cuLimit',             group: 'fingerprint' },
+  p_token_cu_price:         { field: 'cuPrice',             group: 'fingerprint' },
+  p_token_max_sol_cost:     { field: 'maxSolCost',          group: 'fingerprint' },
+  p_token_spendable_sol_in: { field: 'spendableSolIn',      group: 'fingerprint' },
+  p_token_ix_labels:        { field: 'ixLabels',            group: 'fingerprint', isArray: true },
+  trade_mode:               { field: 'tradeMode',           group: 'mode' },
+};
+
+/** Serialize a swing1 rule's editable params to a clipboard-ready JSON blob —
+ *  every swing-detection/exit axis column plus the universals. Mirrors
+ *  `ruleToParamsJson` but covers the swing1-only `p_swing_*`/`p_kill_*`/… columns
+ *  that `SHARED_PARAMS` omits. */
+export function swing1RuleToParamsJson(rule: RuleRecord): string {
+  const r = rule as unknown as Record<string, unknown>;
+  const params: Record<string, unknown> = {};
+  for (const a of SWING1_AXES) {
+    const col = swing1AxisCol(a.key);
+    params[col] = r[col] ?? null;
+  }
+  for (const col of Object.keys(SWING1_UNIVERSALS)) {
+    params[col] = r[col] ?? null;
+  }
+  return JSON.stringify(
+    { strategy: 'swing_1', version: 1, params } satisfies RuleParamsBlob,
+    null,
+    2,
+  );
+}
+
+/**
+ * Apply a swing1 params blob onto the accordion's form. Unlike
+ * `applyParamsToForm` (flat camelCase fields), swing1 fields split into axes
+ * (bare-key strings under `axes`) and universals. This walks the blob's `p_*`
+ * columns, routing each to either an axis slot or a universal field, honoring the
+ * same live/merge/replace semantics as the tpsl path.
+ *
+ * `current`/`empty` are the string-valued universal fields (everything on
+ * `RuleFormData` except `axes`); `currentAxes`/`emptyAxes` are the axis map. The
+ * caller reassembles the typed form from the two returned halves.
+ */
+export function applyBlobToSwing1Form(
+  current: Record<string, string>,
+  empty: () => Record<string, string>,
+  currentAxes: Record<string, string>,
+  emptyAxes: () => Record<string, string>,
+  blob: RuleParamsBlob,
+  live: boolean,
+  mode: PasteMode,
+): {
+  universals: Record<string, string>;
+  axes: Record<string, string>;
+  result: ApplyResult;
+} {
+  const universals: Record<string, string> =
+    mode === 'replace' ? { ...empty() } : { ...current };
+  const axes: Record<string, string> =
+    mode === 'replace' ? { ...emptyAxes() } : { ...currentAxes };
+  // Rule name is administrative — always preserved across a paste.
+  universals.ruleName = current.ruleName;
+
+  let applied = 0;
+  let skipped = 0;
+  let dropped = 0;
+
+  for (const [col, value] of Object.entries(blob.params)) {
+    // An axis column?
+    const axisKey = swing1ColToAxis(col);
+    if (axisKey) {
+      // Axes are all entry/exit shape params → frozen while live.
+      if (live) { skipped++; continue; }
+      axes[axisKey] =
+        value === null || value === undefined ? '' : String(value);
+      applied++;
+      continue;
+    }
+    // A universal?
+    const u = SWING1_UNIVERSALS[col];
+    if (!u) { dropped++; continue; }
+    if (live && u.group !== 'sizing') { skipped++; continue; }
+    let strVal: string;
+    if (u.isArray) {
+      strVal = Array.isArray(value) ? JSON.stringify(value) : '';
+    } else if (value === null || value === undefined) {
+      strVal = '';
+    } else {
+      strVal = String(value);
+    }
+    universals[u.field] = strVal;
+    applied++;
+  }
+
+  return { universals, axes, result: { applied, skipped, dropped } };
 }
 
 /** Serialize the swing1 **detect page's** flat param map to a clipboard-ready

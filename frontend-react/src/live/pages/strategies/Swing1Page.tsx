@@ -32,6 +32,7 @@ import { connectTpslPositionsChanged } from 'services/sse';
 import { apiErrorMessage, useGetTokensByMintsQuery } from 'store/apiSlice';
 import { useSellTokenMutation } from '@live/store/liveEndpoints';
 import { mergeTokenData } from 'components/tokens/sharedTokenColumns';
+import { swing1RuleToParamsJson } from 'lib/ruleParams';
 import { usePolledRules } from 'hooks/usePolledRules';
 import { useRulePositions } from 'hooks/useRulePositions';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
@@ -217,6 +218,16 @@ const RuleActionsCell = memo(function RuleActionsCell({
   onRequestDelete: (ruleId: string) => void;
   onCancelDelete: () => void;
 }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(swing1RuleToParamsJson(rule));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* clipboard blocked — ignore */ }
+  };
+
   if (confirmingDelete) {
     return (
       <div className="flex items-center justify-center gap-1">
@@ -241,6 +252,13 @@ const RuleActionsCell = memo(function RuleActionsCell({
         className="text-text-dim hover:text-text"
       >
         ⧉
+      </Button>
+      <Button
+        variant="ghost" size="xs" onClick={handleCopy}
+        title="Copy params to clipboard"
+        className={copied ? 'text-green' : 'text-text-dim hover:text-text'}
+      >
+        {copied ? '✔' : '⎘'}
       </Button>
       <Button
         variant="ghost" size="xs"
