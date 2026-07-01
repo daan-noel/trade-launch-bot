@@ -281,7 +281,7 @@ function positionToSimResult(p: RulePositionRecord) {
   const pnlPercent = p.pnl_percent;
   const entryPrice = p.entry_price ?? 0;
   const entryTokens = p.entry_token_amount ?? 0;
-  const pnlSol = pnlPercent != null ? entryTokens * (pnlPercent / 100) : null;
+  const pnlSol = pnlPercent != null ? entryPrice * entryTokens * (pnlPercent / 100) : null;
   const holdingSecs =
     p.entry_time && p.exit_time
       ? Math.round((new Date(p.exit_time).getTime() - new Date(p.entry_time).getTime()) / 1000)
