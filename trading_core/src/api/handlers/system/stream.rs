@@ -173,6 +173,7 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
             position,
             removed,
             open_positions,
+            pending_positions,
             total_positions,
         } => {
             // Not mint-scoped: scoped to the owning rule, not a token. The changed
@@ -196,6 +197,7 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
                     "position": position_json,
                     "removed": removed,
                     "open_positions": open_positions,
+                    "pending_positions": pending_positions,
                     "total_positions": total_positions,
                 }),
             )

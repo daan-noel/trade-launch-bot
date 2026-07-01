@@ -198,6 +198,9 @@ pub struct StrategyRuntimeCache {
     ladder_by_id: Arc<RwLock<HashMap<Uuid, LadderParamsImpl>>>,
     holding_by_mint: Arc<DashMap<String, Vec<Arc<StrategyPosition>>>>,
     holding_count_by_rule: Arc<DashMap<Uuid, i64>>,
+    /// Not-yet-filled positions per rule (`Arming` | `BuySubmitted`) — the
+    /// "pending entry" count surfaced next to `open_positions` in the rules table.
+    pending_count_by_rule: Arc<DashMap<Uuid, i64>>,
     total_count_by_rule: Arc<DashMap<Uuid, i64>>,
     closed_stats_by_rule: Arc<DashMap<Uuid, RuleClosedStats>>,
     current_run_by_rule: Arc<DashMap<Uuid, RunRef>>,
@@ -248,6 +251,7 @@ impl StrategyRuntimeCache {
             ladder_by_id: Arc::new(RwLock::new(HashMap::new())),
             holding_by_mint: Arc::new(DashMap::new()),
             holding_count_by_rule: Arc::new(DashMap::new()),
+            pending_count_by_rule: Arc::new(DashMap::new()),
             total_count_by_rule: Arc::new(DashMap::new()),
             closed_stats_by_rule: Arc::new(DashMap::new()),
             current_run_by_rule: Arc::new(DashMap::new()),
@@ -555,6 +559,12 @@ impl StrategyRuntimeCache {
         self.holding_count_by_rule.get(&rule_id).map(|e| *e.value()).unwrap_or(0)
     }
 
+    /// Not-yet-filled positions for a rule (`Arming` | `BuySubmitted`) — armed or
+    /// buy-in-flight, but not yet holding.
+    pub fn pending_count_by_rule(&self, rule_id: Uuid) -> i64 {
+        self.pending_count_by_rule.get(&rule_id).map(|e| *e.value()).unwrap_or(0)
+    }
+
     /// Total entered positions for a rule — the total-token-cap count.
     pub fn total_count_by_rule(&self, rule_id: Uuid) -> i64 {
         self.total_count_by_rule.get(&rule_id).map(|e| *e.value()).unwrap_or(0)
@@ -583,6 +593,7 @@ impl StrategyRuntimeCache {
     pub fn clear_rule(&self, rule_id: Uuid) {
         self.purge_rule_from_holding_index(rule_id);
         self.holding_count_by_rule.remove(&rule_id);
+        self.pending_count_by_rule.remove(&rule_id);
         self.total_count_by_rule.remove(&rule_id);
         self.closed_stats_by_rule.remove(&rule_id);
         self.current_run_by_rule.remove(&rule_id);
@@ -676,14 +687,19 @@ impl StrategyRuntimeCache {
     fn set_holding_positions(&self, positions: Vec<StrategyPosition>) {
         self.holding_by_mint.clear();
         self.holding_count_by_rule.clear();
+        self.pending_count_by_rule.clear();
 
         let mut by_mint: HashMap<String, Vec<Arc<StrategyPosition>>> = HashMap::new();
         let mut holding_by_rule: HashMap<Uuid, i64> = HashMap::new();
+        let mut pending_by_rule: HashMap<Uuid, i64> = HashMap::new();
         for pos in positions {
             // holding_count tracks entered + Holding positions (cap enforcement).
             if let Some(rid) = pos.rule_id {
                 if pos.is_entered() && pos.is_holding() {
                     *holding_by_rule.entry(rid).or_insert(0) += 1;
+                } else if pos.is_in_holding_index() && !pos.is_holding() {
+                    // Arming / BuySubmitted — armed or buy in flight, not yet filled.
+                    *pending_by_rule.entry(rid).or_insert(0) += 1;
                 }
             }
             by_mint.entry(pos.mint.clone()).or_default().push(Arc::new(pos));
@@ -698,6 +714,9 @@ impl StrategyRuntimeCache {
         }
         for (rid, count) in holding_by_rule {
             self.holding_count_by_rule.insert(rid, count);
+        }
+        for (rid, count) in pending_by_rule {
+            self.pending_count_by_rule.insert(rid, count);
         }
         // Drop memos for positions no longer holding; survivors keep theirs.
         self.exit_state_by_position.retain(|id, _| live_ids.contains(id));
@@ -832,6 +851,17 @@ impl StrategyRuntimeCache {
             self.adjust_holding_count(rule_id, -1);
         }
 
+        // pending_count: in the holding index but not yet filled (Arming/BuySubmitted).
+        let prev_pending = prev
+            .map(|p| p.is_in_holding_index() && !p.is_holding())
+            .unwrap_or(false);
+        let curr_pending = curr_in_index && !current.is_holding();
+        if curr_pending && !prev_pending {
+            self.adjust_pending_count(rule_id, 1);
+        } else if prev_pending && !curr_pending {
+            self.adjust_pending_count(rule_id, -1);
+        }
+
         // Realized stats: accumulate once on the transition into a closed state.
         let prev_closed = prev.map(StrategyPosition::is_closed).unwrap_or(false);
         if current.is_closed() && !prev_closed {
@@ -861,6 +891,9 @@ impl StrategyRuntimeCache {
                 self.adjust_holding_count(rule_id, -1);
             }
             self.adjust_total_count(rule_id, -1);
+        } else if position.is_in_holding_index() {
+            // Not yet entered (Arming/BuySubmitted) — pending, not holding.
+            self.adjust_pending_count(rule_id, -1);
         }
         if position.is_closed() {
             if let Some(mut e) = self.closed_stats_by_rule.get_mut(&rule_id) {
@@ -899,6 +932,7 @@ impl StrategyRuntimeCache {
             position: Some(Box::new(Position::from(position))),
             removed,
             open_positions: self.holding_count_by_rule(rule_id),
+            pending_positions: self.pending_count_by_rule(rule_id),
             total_positions: self.total_count_by_rule(rule_id),
         });
     }
@@ -965,6 +999,15 @@ impl StrategyRuntimeCache {
         if *entry == 0 {
             drop(entry);
             self.holding_count_by_rule.remove(&rule_id);
+        }
+    }
+
+    fn adjust_pending_count(&self, rule_id: Uuid, delta: i64) {
+        let mut entry = self.pending_count_by_rule.entry(rule_id).or_insert(0);
+        *entry = (*entry + delta).max(0);
+        if *entry == 0 {
+            drop(entry);
+            self.pending_count_by_rule.remove(&rule_id);
         }
     }
 

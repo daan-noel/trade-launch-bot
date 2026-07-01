@@ -364,7 +364,11 @@ function SwingRuleInspectModal({
     fetchSwing1Detect(target.mint, params as Swing1DetectParams, {
       startMs: null,
       endMs: null,
-      curveOnly: true,
+      // The real backtest/paper-run evaluates ALL trades (curve + AMM, see
+      // `find_by_mints_all` — no venue filter) — curve-only here would only see
+      // the pre-graduation trickle and miss the legs that actually drove this
+      // row's entry/exit for tokens that graduated to AMM.
+      curveOnly: false,
     })
       .then((res) => {
         if (!cancelled) setLegs(res.legs as unknown as ChartSwingLeg[]);

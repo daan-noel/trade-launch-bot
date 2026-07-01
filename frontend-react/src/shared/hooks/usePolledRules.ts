@@ -97,7 +97,7 @@ export function usePolledRules(
   // above (a real refetch). Coalesced so a stop-and-close burst is one update.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const pending = new Map<string, { open: number; total: number }>();
+    const pending = new Map<string, { open: number; pendingCount: number; total: number }>();
     const flush = () => {
       timer = null;
       const updates = new Map(pending);
@@ -109,6 +109,7 @@ export function usePolledRules(
           return {
             ...r,
             open_positions: u.open,
+            pending_positions: u.pendingCount,
             total_positions: u.total,
             lifecycle: deriveLifecycle(r, u.open),
           };
@@ -116,7 +117,11 @@ export function usePolledRules(
       );
     };
     const handle = connectTpslPositionsChanged(strategy, (delta) => {
-      pending.set(delta.ruleId, { open: delta.openPositions, total: delta.totalPositions });
+      pending.set(delta.ruleId, {
+        open: delta.openPositions,
+        pendingCount: delta.pendingPositions,
+        total: delta.totalPositions,
+      });
       if (!timer) timer = setTimeout(flush, REFRESH_DEBOUNCE_MS);
     });
     return () => {

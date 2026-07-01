@@ -104,6 +104,9 @@ export interface RuleRecord {
   /** Positions this rule currently holds open (drives the 'Draining (N)' badge
    *  and gates the Stop & close action). */
   open_positions: number;
+  /** Not-yet-filled positions this rule currently has armed or buy-in-flight
+   *  (`Arming` | `BuySubmitted`) — distinct from `open_positions` (`Holding` only). */
+  pending_positions: number;
   /** Realized-performance stats from the runtime cache (all-time for real rules,
    *  current-run for paper). `total_positions` counts entered positions;
    *  `win_count`/`loss_count` cover only closed positions; `win_rate` (0-100) and
@@ -208,6 +211,7 @@ export interface TpslPositionDelta {
   position: RulePositionRecord | null;
   removed: boolean;
   openPositions: number;
+  pendingPositions: number;
   totalPositions: number;
 }
 

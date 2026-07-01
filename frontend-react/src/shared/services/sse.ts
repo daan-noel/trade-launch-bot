@@ -47,6 +47,7 @@ export function connectAllPositionsChanged(
         position?: import('types').RulePositionRecord | null;
         removed?: boolean;
         open_positions?: number;
+        pending_positions?: number;
         total_positions?: number;
       };
       if (p.strategy && p.rule_id) {
@@ -57,6 +58,7 @@ export function connectAllPositionsChanged(
           position: p.position ?? null,
           removed: !!p.removed,
           openPositions: p.open_positions ?? 0,
+          pendingPositions: p.pending_positions ?? 0,
           totalPositions: p.total_positions ?? 0,
         });
       }
@@ -263,6 +265,7 @@ export function connectTpslPositionsChanged(
         position?: import('types').RulePositionRecord | null;
         removed?: boolean;
         open_positions?: number;
+        pending_positions?: number;
         total_positions?: number;
       };
       if (p.strategy === strategy && p.rule_id) {
@@ -272,6 +275,7 @@ export function connectTpslPositionsChanged(
           position: p.position ?? null,
           removed: !!p.removed,
           openPositions: p.open_positions ?? 0,
+          pendingPositions: p.pending_positions ?? 0,
           totalPositions: p.total_positions ?? 0,
         });
       }

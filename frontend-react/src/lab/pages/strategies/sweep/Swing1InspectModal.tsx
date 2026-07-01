@@ -18,11 +18,12 @@ interface Swing1InspectModalProps {
 /**
  * Lab wrapper around the shared {@link TokenInspectModal} that adds the swing1
  * leg overlay. Owns the detect fetch so the shared modal stays mode-agnostic.
- * Runs the SAME funnel the combo sim ran (curve-only, full history) and draws
- * the legs exactly like the swing1 detect page: one isolated `perLeg` segment
- * spanning each leg's full `start_at`→`end_at` (`perLegFullSpanEnd`). A
- * `connected` path here bridged the idle gaps between legs with misleading
- * diagonals — that was the wrong graph.
+ * Runs the SAME funnel the combo sim ran (all trades, full history — the
+ * backtest's `find_by_mints_all` has no venue filter) and draws the legs
+ * exactly like the swing1 detect page: one isolated `perLeg` segment spanning
+ * each leg's full `start_at`→`end_at` (`perLegFullSpanEnd`). A `connected` path
+ * here bridged the idle gaps between legs with misleading diagonals — that was
+ * the wrong graph.
  */
 export function Swing1InspectModal({ target, params, onClose }: Swing1InspectModalProps) {
   const [legs, setLegs] = useState<ChartSwingLeg[] | null>(null);
@@ -33,7 +34,7 @@ export function Swing1InspectModal({ target, params, onClose }: Swing1InspectMod
     fetchSwing1Detect(target.mint, params as Swing1DetectParams, {
       startMs: null,
       endMs: null,
-      curveOnly: true,
+      curveOnly: false,
     })
       .then((res) => {
         if (!cancelled) setLegs(res.legs as unknown as ChartSwingLeg[]);

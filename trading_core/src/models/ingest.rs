@@ -105,6 +105,7 @@ pub enum SseEvent {
         position: Option<Box<crate::models::Position>>,
         removed: bool,
         open_positions: i64,
+        pending_positions: i64,
         total_positions: i64,
     },
     /// Progress of an in-flight simulation (backtest) for `rule_id`: `processed`

@@ -469,6 +469,16 @@ export const ruleColumns: ColumnDef<RuleRecord>[] = [
       searchValue: (r) => String(r.open_positions),
     },
     {
+      key: 'pending_positions',
+      label: 'Pending',
+      tooltip: 'Armed or buy-in-flight positions not yet filled (Arming / BuySubmitted).',
+      group: 'performance',
+      sortable: true,
+      render: (r) => <span className="font-mono text-warning">{dashNum(r.pending_positions)}</span>,
+      sortValue: (r) => r.pending_positions,
+      searchValue: (r) => String(r.pending_positions),
+    },
+    {
       key: 'win_count',
       label: 'Win',
       tooltip: 'Closed positions that sold above entry.',

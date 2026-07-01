@@ -77,6 +77,7 @@ fn rule_to_json(rule: &StrategyRule, cache: &StrategyRuntimeCache) -> Value {
 
     // Live runtime counters (per current run).
     let open = cache.holding_count_by_rule(rule.id);
+    let pending = cache.pending_count_by_rule(rule.id);
     let total = cache.total_count_by_rule(rule.id);
     let stats = cache.closed_stats_by_rule(rule.id);
     let closed = stats.closed();
@@ -84,6 +85,7 @@ fn rule_to_json(rule: &StrategyRule, cache: &StrategyRuntimeCache) -> Value {
     let avg_pnl_pct = if closed > 0 { stats.sum_pnl_pct / closed as f64 } else { 0.0 };
 
     obj.insert("open_positions".into(), json!(open));
+    obj.insert("pending_positions".into(), json!(pending));
     obj.insert("total_positions".into(), json!(total));
     obj.insert("win_count".into(), json!(stats.wins));
     obj.insert("loss_count".into(), json!(stats.losses));

@@ -94,6 +94,7 @@ fn rule_to_json(rule: &StrategyRule, paper_finished: bool) -> Value {
 
     // No runtime cache locally → all live counters are zero.
     obj.insert("open_positions".into(), json!(0));
+    obj.insert("pending_positions".into(), json!(0));
     obj.insert("total_positions".into(), json!(0));
     obj.insert("win_count".into(), json!(0));
     obj.insert("loss_count".into(), json!(0));
