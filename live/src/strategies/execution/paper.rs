@@ -23,8 +23,9 @@ use trading_core::models::ingest::SseEvent;
 use trading_core::models::{StrategyPosition, StrategyRule};
 use trading_core::storage::repositories::strategy_repo::StrategyRepo;
 use trading_core::storage::repositories::trade_repo;
-use trading_core::strategies::registry::{StrategyImpl, StrategyParams, Tpsl2Params};
+use trading_core::strategies::registry::{StrategyImpl, StrategyParams, Swing1Params, Tpsl2Params};
 use trading_core::strategies::runtime_cache::{ExitGuard, StrategyRuntimeCache};
+use trading_core::strategies::swing_1::entry as sw_entry;
 use trading_core::strategies::tpsl_sniper_1::entry as t1_entry;
 use trading_core::strategies::tpsl_sniper_2::entry as t2_entry;
 
@@ -89,6 +90,18 @@ pub(crate) fn spawn_entry_fill_poll(
             }
             (Some(StrategyImpl::Tpsl2), StrategyParams::Tpsl2(p)) => {
                 resolve_paper_entry_tpsl2(
+                    &repo,
+                    &runtime,
+                    &token_cache,
+                    &mint,
+                    position_id,
+                    buy_amount,
+                    p,
+                )
+                .await
+            }
+            (Some(StrategyImpl::Swing1), StrategyParams::Swing1(p)) => {
+                resolve_paper_entry_swing1(
                     &repo,
                     &runtime,
                     &token_cache,
@@ -269,6 +282,89 @@ async fn resolve_paper_entry_tpsl2(
                     token_amount,
                     tx: entry_tx,
                     time: entry.block_time,
+                });
+            }
+        }
+        if dead {
+            return None;
+        }
+    }
+}
+
+/// swing1 paper entry: watch the live feed for the kill→volume latch + higher-low
+/// confirmation (same causal decision as backtest — `find_phase_entry`), bounded the
+/// same way as tpsl2 (a `p_entry_max_age_secs` ceiling is self-limiting; else an
+/// until-dead armer slot). Unlike tpsl2 there is **no target↔entry gap**: swing1's
+/// `find_phase_entry` already returns the worst-case, canonical-spot-priced fill at
+/// the trigger, so we record that directly with `target: None`.
+async fn resolve_paper_entry_swing1(
+    repo: &StrategyRepo,
+    runtime: &Arc<StrategyRuntimeCache>,
+    token_cache: &TokenCache,
+    mint: &str,
+    position_id: Uuid,
+    buy_amount: f64,
+    params: &Swing1Params,
+) -> Option<PaperEntry> {
+    let rule = params.to_rule();
+    // A set entry-window ceiling self-limits the watch; without one, take a bounded
+    // armer slot so a never-dying token can't pin the `paper_poll_sem` permit forever.
+    let window = params
+        .p_entry_max_age_secs
+        .filter(|&s| s != 0)
+        .map(Duration::from_secs);
+    let _armer_guard = match window {
+        Some(_) => None,
+        None => Some(runtime.begin_until_dead_armer(position_id)),
+    };
+    let deadline = window.map(|max| std::time::Instant::now() + max);
+    let mut last_count: Option<u64> = None;
+    loop {
+        sleep(Duration::from_millis(super::SCALP_ENTRY_WAIT_INTERVAL_MS)).await;
+        // Stop conditions mirror the real watch: max-age deadline, eviction by the
+        // until-dead armer cap, or token death.
+        if let Some(dl) = deadline {
+            if std::time::Instant::now() >= dl {
+                return None;
+            }
+        }
+        if let Some(g) = &_armer_guard {
+            if g.is_cancelled() {
+                return None;
+            }
+        }
+        let dead = token_cache
+            .get(mint)
+            .map(|e| e.value().is_dead(Utc::now()))
+            .unwrap_or(false);
+        let Some((trades, trade_count)) = cache_trades(token_cache, mint) else {
+            if dead {
+                return None;
+            }
+            continue;
+        };
+        if last_count != Some(trade_count) {
+            last_count = Some(trade_count);
+            // The full causal resolver: swing-leg scan → kill→volume latch → first
+            // confirmed higher-low → worst-case spot fill at the trigger. Byte-identical
+            // to the backtest path (both run over `trades` oldest-first).
+            if let Some((_trigger_idx, fill)) = sw_entry::find_phase_entry(&trades, &rule) {
+                // Recover the real tx_signature from the DB (the cache strips it); the
+                // fill is a real on-chain trade ingested into `trades`. "" if not found.
+                let entry_tx =
+                    trade_repo::find_tx_by_fill(repo.pool(), mint, fill.block_time, fill.price)
+                        .await
+                        .unwrap_or_default()
+                        .unwrap_or_default();
+                // Paper entry size is the token count `buy_amount / entry_price` (SOL is
+                // display-derived); guard a 0 price so we never divide by ~0.
+                let token_amount = if fill.price > 0.0 { buy_amount / fill.price } else { 0.0 };
+                return Some(PaperEntry {
+                    target: None,
+                    price: fill.price,
+                    token_amount,
+                    tx: entry_tx,
+                    time: fill.block_time,
                 });
             }
         }
