@@ -98,20 +98,6 @@ impl PumpFunTrader {
         self.build_template(token_program)
     }
 
-    /// Hand an unused template back to the pool. A [`BuyTemplate`] is just a
-    /// precomputed create-account-with-seed instruction plus its derived address —
-    /// no on-chain account exists yet — so returning an unconsumed one is a pure
-    /// in-memory push. Used when the manual buy path optimistically acquires a
-    /// template concurrently with the ATA-existence probe and the ATA turns out to
-    /// already exist (template unneeded).
-    pub(super) async fn return_buy_template(
-        &self,
-        token_program: TokenProgram,
-        template: BuyTemplate,
-    ) {
-        self.pool_for(token_program).lock().await.push(template);
-    }
-
     /// Refill the pool back up to target in the background after a buy consumed a
     /// template. Builds one (a buy consumes one), reusing the same builder the
     /// sync path uses, so there's a single copy of the seed/derivation logic.

@@ -16,7 +16,10 @@ use solana_sdk::{
     pubkey::Pubkey,
     system_program,
 };
-use spl_associated_token_account::get_associated_token_address_with_program_id;
+use spl_associated_token_account::{
+    get_associated_token_address_with_program_id,
+    instruction::create_associated_token_account_idempotent,
+};
 use std::future::Future;
 use std::pin::Pin;
 use std::str::FromStr;
@@ -155,7 +158,7 @@ impl PumpFunTrader {
         // When `Some` (subsequent bot buy into a held mint), buy directly into this
         // existing account — no template pool, no create-with-seed prefix — so both
         // buys land in ONE account. `None` = first buy / manual path: resolve the
-        // account via template (snipe) or ATA probe (manual) as before.
+        // account via template (snipe) or the real ATA (manual) as below.
         user_token_account_override: Option<Pubkey>,
     ) -> Result<String> {
         let t0 = Instant::now();
@@ -190,23 +193,19 @@ impl PumpFunTrader {
 
             self.token_pdas.insert(mint_str.clone(), pdas);
 
-            // Check if ATA exists. On the snipe path the wallet provably holds
-            // no account for this just-created mint, so we skip the RPC and go
-            // straight to the seed-account (template) path.
-            let ata = get_associated_token_address_with_program_id(
-                &signer.pubkey(),
-                mint,
-                &token_program_pk,
-            );
-            // Resolve the user token account + (if needed) its create template.
-            // A caller-supplied override (subsequent bot buy into a held mint) wins:
-            // the account already exists, so buy straight into it — no template, no
-            // create-with-seed prefix. Otherwise: the snipe path provably holds no
-            // account for this just-created mint, so it skips the RPC entirely; the
-            // manual path must probe — but the probe's RPC RTT is overlapped with
-            // template acquisition (a buy needs one unless the ATA already exists),
-            // so the round-trip hides behind work we'd do anyway; an unneeded
-            // template is handed straight back.
+            // Resolve the user token account + (if needed) its account-creation
+            // prefix. Three cases:
+            //   - caller-supplied override (subsequent bot buy into a held mint):
+            //     the account already exists, so buy straight into it — no
+            //     template, no create prefix;
+            //   - snipe path (`skip_ata_check`): the wallet provably holds no
+            //     account for this just-created mint, so skip any existence probe
+            //     and go straight to the seed-account (template) pool — this is
+            //     the latency-critical path the pool exists for;
+            //   - manual path: not latency-sensitive (an RPC round trip already
+            //     happens either way), so always target the real ATA and prefix
+            //     an idempotent create-ATA ix — a no-op if it already exists, and
+            //     no create-with-seed account for indexers like GMGN to miss.
             let (user_token_account, template_opt) = if let Some(existing) = user_token_account_override {
                 (existing, None)
             } else if skip_ata_check {
@@ -215,26 +214,12 @@ impl PumpFunTrader {
                 self.replenish_pool_async(token_program);
                 (account, Some(template))
             } else {
-                let (ata_exists, template) = tokio::join!(
-                    async { self.rpc.get_account(&ata).await.is_ok() },
-                    self.acquire_buy_template(token_program),
+                let ata = get_associated_token_address_with_program_id(
+                    &signer.pubkey(),
+                    mint,
+                    &token_program_pk,
                 );
-                let template = template?;
-                if ata_exists {
-                    // ATA already exists (re-buy): the template is unconsumed and
-                    // holds no on-chain resource, so return it to the pool.
-                    self.return_buy_template(token_program, template).await;
-                    (ata, None)
-                } else {
-                    let account = template.user_token_account;
-                    // A template was just consumed — kick the background refill off
-                    // here so it rebuilds concurrently with the tx assembly + send +
-                    // confirm below, instead of only after the buy returns. The
-                    // rebuild gets a head start of the whole send/confirm window, so
-                    // the next buy is more likely to hit a warm pool.
-                    self.replenish_pool_async(token_program);
-                    (account, Some(template))
-                }
+                (ata, None)
             };
 
             // Cache for sell
@@ -243,12 +228,13 @@ impl PumpFunTrader {
 
             // Account-creation prefix: when the wallet held no token account, the
             // just-acquired template carries the create-with-seed + initialize ixs
-            // that must run before the buy. Empty on a re-buy (ATA already exists).
+            // that must run before the buy. Empty on a re-buy (ATA already exists)
+            // and on the manual path, which uses an idempotent create-ATA ix
+            // instead (always safe to include; a no-op if the ATA already exists).
             // Built here (not in `build_curve_buy_ixs`) because only the live buy
             // path consumes a pooled template; the simulate path mints its own ATA.
             let mut account_creation_ixs: Vec<Instruction> = Vec::new();
             if let Some(template) = template_opt {
-                // FIX: use the same template we already acquired above
                 account_creation_ixs.push(template.create_with_seed_ix);
 
                 let init_ix = match token_program {
@@ -266,6 +252,13 @@ impl PumpFunTrader {
                     )?,
                 };
                 account_creation_ixs.push(init_ix);
+            } else if user_token_account_override.is_none() && !skip_ata_check {
+                account_creation_ixs.push(create_associated_token_account_idempotent(
+                    &signer.pubkey(),
+                    &signer.pubkey(),
+                    mint,
+                    &token_program_pk,
+                ));
             }
 
             // `buy_exact_sol_in(spendable_quote_in, min_tokens_out)`: slippage

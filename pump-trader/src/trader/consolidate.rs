@@ -1,11 +1,13 @@
 // ============================================================
 // Pre-buy account consolidation — OFF the hot path.
 //
-// Solana can leave a wallet holding several token accounts for one mint:
-// the snipe buy path mints non-canonical accounts via the create-with-seed
-// template pool, and repeated manual buys before this fix each created their
-// own. A later "sell all" that drained only the first account silently
-// orphaned funds in the rest.
+// Solana can leave a wallet holding several token accounts for one mint: the
+// snipe buy path (and bot re-buys) mint non-canonical accounts via the
+// create-with-seed template pool — manual buys always target the real ATA
+// (see `buy_token_inner` in `buy.rs`), but a wallet can still pick up
+// non-canonical accounts from bot activity on a mint later bought manually.
+// A later "sell all" that drained only the first account silently orphaned
+// funds in the rest.
 //
 // `consolidate_token_accounts` sweeps every non-canonical (orphan) account's
 // balance into the wallet's canonical ATA and closes each orphan (rent
