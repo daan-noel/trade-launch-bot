@@ -279,6 +279,57 @@ impl TradeRepo {
         Ok(bytes.map(|b| sig_bytes_to_base58(&b)))
     }
 
+    /// Resolve the real base58 `tx_signature` for a batch of fill rows, each keyed
+    /// by `(mint, slot, side)`. The sweep walks a slim `SweepTrade` that carries no
+    /// signature, so its entry/exit fills only know the slot; the grouped-sweep
+    /// drill-in calls this to recover the actual signature for chart/table linking.
+    ///
+    /// `keys` is `(mint, slot, is_buy)`. The query over-selects by `(mint, slot)`
+    /// set membership (Postgres has no ergonomic tuple-array bind) and the exact
+    /// `(mint, slot, side)` match is done in Rust — the drill-in set is small
+    /// (one group's tokens × at most 2 slots each), so the over-fetch is bounded.
+    /// Returns a map keyed by `(mint, slot, is_buy)` → base58 signature. A fill
+    /// whose slot has no matching row (or multiple) is simply absent from the map.
+    pub async fn resolve_fill_signatures(
+        &self,
+        keys: &[(String, u64, bool)],
+    ) -> anyhow::Result<std::collections::HashMap<(String, u64, bool), String>> {
+        use std::collections::HashMap;
+        if keys.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mints: Vec<String> = keys.iter().map(|(m, _, _)| m.clone()).collect();
+        let slots: Vec<i64> = keys.iter().map(|(_, s, _)| *s as i64).collect();
+        let wanted: HashSet<(String, u64, bool)> = keys.iter().cloned().collect();
+
+        let rows: Vec<(String, i64, String, Vec<u8>)> = sqlx::query_as(
+            r#"
+            SELECT t.mint_address, t.slot, t.trade_type, t.tx_signature
+            FROM trades t
+            WHERE t.mint_address = ANY($1)
+              AND t.slot = ANY($2)
+            "#,
+        )
+        .bind(&mints)
+        .bind(&slots)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut out: HashMap<(String, u64, bool), String> = HashMap::new();
+        for (mint, slot, trade_type, sig_bytes) in rows {
+            let is_buy = trade_type == "buy";
+            let key = (mint, slot as u64, is_buy);
+            if !wanted.contains(&key) {
+                continue;
+            }
+            // A fill maps to one trade; if the slot+side has several rows (multi-leg
+            // or multiple buys in the fill slot) the first resolved signature wins —
+            // any of them links the chart bar to the right candle.
+            out.entry(key).or_insert_with(|| sig_bytes_to_base58(&sig_bytes));
+        }
+        Ok(out)
+    }
+
     /// All transaction signatures already saved for a token on a venue
     /// (`"curve"` or `"amm"`). The incremental sync uses this to skip
     /// `getTransaction` for trades it already has, so it doesn't re-spend Helius

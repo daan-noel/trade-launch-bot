@@ -1050,28 +1050,43 @@ fn fetched_from_rpc(slot: u64, wrapped: &Value) -> Option<FetchedTx> {
 /// single-tx `getTransaction` / gTFA pages don't carry it — so every lowered frame
 /// has `info.index == 0`. Live ingest and LaserStream-replay frames keep their real
 /// feed index; only these RPC frames need a fill, hence stamping here (not in the
-/// shared decoder). We assign a per-slot running counter in the frames' existing
-/// order: gTFA returns oldest-first (chain order), so within a slot the proxy
-/// matches on-chain tx order, giving a stable `(slot, tx_index, leg_index)` sort key
-/// for backfilled trades. It is NOT the absolute block position — only a
-/// monotonic-within-slot proxy — so never join/compare it against live `tx_index`.
+/// shared decoder). We assign a per-slot running counter so the trades sort by a
+/// stable `(slot, tx_index, leg_index)` key. It is NOT the absolute block position —
+/// only a monotonic-within-slot proxy — so never join/compare it against live
+/// `tx_index`.
+///
+/// **Within-slot direction.** gTFA's `"asc"` orders *across slots* (oldest-first),
+/// but within one slot the page returns transactions **newest-first** — verified
+/// against the curve reserve chain (DB: same-slot rows chain correctly under
+/// `tx_index DESC`, never `ASC`, when stamped in incoming order). So we assign the
+/// counter **in reverse within each slot**: the last frame of a slot run gets index
+/// 0, the first gets the highest. That makes `tx_index ASC` match true on-chain
+/// execution order, so every downstream consumer (swing scan, chart, sweep) can
+/// trust `slot ASC → tx_index ASC → leg_index ASC` with no reserve-chain
+/// reconstruction.
 ///
 /// `frames` MUST be slot-ascending (every caller sorts first). The counter is
-/// per-call, so a single slot split across two streamed gTFA pages restarts at 0 —
+/// per-call, so a single slot split across two streamed gTFA pages restarts —
 /// negligible for one account's history, and at worst reorders that one boundary
 /// slot's intra-slot ties.
 fn stamp_proxy_tx_index(frames: &mut [FetchedTx]) {
-    let mut cur_slot: Option<u64> = None;
-    let mut next: u64 = 0;
-    for ft in frames.iter_mut() {
-        if cur_slot != Some(ft.slot) {
-            cur_slot = Some(ft.slot);
-            next = 0;
+    let mut i = 0;
+    while i < frames.len() {
+        // Find the run of frames sharing this slot (frames are slot-ascending).
+        let slot = frames[i].slot;
+        let mut j = i + 1;
+        while j < frames.len() && frames[j].slot == slot {
+            j += 1;
         }
-        if let Some(info) = ft.update.transaction.as_mut() {
-            info.index = next;
+        // gTFA returns the slot's txs newest-first, so reverse: the run's LAST
+        // frame is the slot's first on-chain tx (index 0).
+        let run_len = (j - i) as u64;
+        for (k, ft) in frames[i..j].iter_mut().enumerate() {
+            if let Some(info) = ft.update.transaction.as_mut() {
+                info.index = run_len - 1 - k as u64;
+            }
         }
-        next += 1;
+        i = j;
     }
 }
 

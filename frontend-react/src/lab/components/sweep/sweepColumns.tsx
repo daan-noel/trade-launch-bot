@@ -245,6 +245,9 @@ export function buildSweepColumns(
     count('n_exit_time', 'Time', 'exits', 'text-text-mid', (r) => r.n_exit_time, { tooltip: 'Exited on time stop' }),
     count('n_exit_liquidity', 'Liq', 'exits', 'text-text-mid', (r) => r.n_exit_liquidity, { defaultVisible: false }),
     count('n_exit_cohort', 'Cohort', 'exits', 'text-text-mid', (r) => r.n_exit_cohort, { defaultVisible: false }),
+    count('n_exit_next_kill', 'NextKill', 'exits', 'text-text-mid', (r) => r.n_exit_next_kill, {
+      tooltip: 'Exited on swing1 symmetric next-kill flee',
+    }),
     count('n_exit_open', 'Still open', 'exits', 'text-text-dim', (r) => r.n_exit_open, { defaultVisible: false }),
   ];
 

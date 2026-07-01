@@ -663,10 +663,6 @@ export function TokenPriceChart({
     },
     [metric, toValue, formatChartPrice],
   );
-  const formatSwingAmount = useCallback(
-    (sol: number) => formatChartPrice(toValue(sol)),
-    [toValue, formatChartPrice],
-  );
   const formatBarTime = useCallback(
     (barTime: UTCTimestamp) => {
       if (groupMode === 'slot') return `Slot ${barTime}`;
@@ -1611,6 +1607,7 @@ export function TokenPriceChart({
         toValue,
         groupMode,
         sortedTrades,
+        swingOverlay.gapBreakMs,
       );
       const pointCount = data.filter((p) => 'value' in p).length;
       if (pointCount < 2) return;
@@ -1624,7 +1621,14 @@ export function TokenPriceChart({
 
     if (segmentMode === 'perLeg') {
       for (const leg of swingOverlay.legs) {
-        const segment = buildLegSegment(leg, metric, toValue, groupMode, sortedTrades);
+        const segment = buildLegSegment(
+          leg,
+          metric,
+          toValue,
+          groupMode,
+          sortedTrades,
+          swingOverlay.perLegFullSpanEnd ?? false,
+        );
         if (!segment) continue;
         const series = chart.addSeries(LineSeries, {
           ...SWING_HIGH_OVERLAY_SERIES_OPTIONS,
@@ -1782,14 +1786,14 @@ export function TokenPriceChart({
           <SwingCrosshairTooltip
             tooltip={swingTooltip}
             formatPrice={formatSwingPrice}
-            formatAmount={formatSwingAmount}
+            formatAmount={formatVol}
           />
         )}
         {chainTooltip && (
           <ChainHighlightTooltip
             tooltip={chainTooltip}
             tradeCounts={chainTradeCounts}
-            formatAmount={formatSwingAmount}
+            formatAmount={formatVol}
             formatPrice={formatSwingPrice}
           />
         )}
@@ -1799,7 +1803,7 @@ export function TokenPriceChart({
         {rangeTooltip && (
           <RangeSelectTooltip
             tooltip={rangeTooltip}
-            formatAmount={formatSwingAmount}
+            formatAmount={formatVol}
             formatPrice={formatSwingPrice}
           />
         )}

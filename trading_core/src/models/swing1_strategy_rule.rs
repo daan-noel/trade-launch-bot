@@ -52,6 +52,10 @@ pub struct Swing1Rule {
     pub p_swing_low_to_high_sol: Option<f64>,
     pub p_swing_low_to_high_pct: Option<f64>,
     pub p_swing_min_leg_trades: Option<u32>,
+    /// Dynamic dust floor (fraction): a trade is dropped during leg detection if
+    /// its SOL is `< p_dust_frac * active_leg_max_sol`, i.e. trivially small
+    /// relative to that leg's own activity. Scale-free. `None`/`0` = off.
+    pub p_dust_frac: Option<f64>,
 
     // ── Kill-low profile (deep + short) ───────────────────────────────────────
     pub p_kill_depth_min_pct: Option<f64>,
@@ -129,6 +133,7 @@ impl Swing1Rule {
             p_swing_low_to_high_sol: None,
             p_swing_low_to_high_pct: None,
             p_swing_min_leg_trades: None,
+            p_dust_frac: None,
             p_kill_depth_min_pct: None,
             p_kill_max_duration_ms: None,
             p_kill_min_net_flow_per_sec: None,

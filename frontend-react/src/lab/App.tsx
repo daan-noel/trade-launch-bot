@@ -15,11 +15,13 @@ const HomePage = lazy(() => import('pages/home/HomePage').then((m) => ({ default
 const CreationStatsPage = lazy(() => import('@lab/pages/creation-stats/CreationStatsPage').then((m) => ({ default: m.CreationStatsPage })));
 const TokensPage = lazy(() => import('pages/tokens/TokensPage').then((m) => ({ default: m.TokensPage })));
 const SwingDetectionPage = lazy(() => import('@lab/pages/analysis/SwingDetectionPage').then((m) => ({ default: m.SwingDetectionPage })));
+const Swing1DetectPage = lazy(() => import('@lab/pages/analysis/Swing1DetectPage').then((m) => ({ default: m.Swing1DetectPage })));
 const OtherProfilesPage = lazy(() => import('pages/profiles/OtherProfilesPage').then((m) => ({ default: m.OtherProfilesPage })));
 const Tpsl1Page = lazy(() => import('@lab/pages/strategies/Tpsl1Page').then((m) => ({ default: m.Tpsl1Page })));
 const Tpsl2Page = lazy(() => import('@lab/pages/strategies/Tpsl2Page').then((m) => ({ default: m.Tpsl2Page })));
 const Tpsl1GroupedSweepPage = lazy(() => import('@lab/pages/strategies/sweep/Tpsl1GroupedSweepPage').then((m) => ({ default: m.Tpsl1GroupedSweepPage })));
 const Tpsl2GroupedSweepPage = lazy(() => import('@lab/pages/strategies/sweep/Tpsl2GroupedSweepPage').then((m) => ({ default: m.Tpsl2GroupedSweepPage })));
+const Swing1GroupedSweepPage = lazy(() => import('@lab/pages/strategies/sweep/Swing1GroupedSweepPage').then((m) => ({ default: m.Swing1GroupedSweepPage })));
 const SettingsPage = lazy(() => import('pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
 const NotFoundPage = lazy(() => import('pages/not-found/NotFoundPage').then((m) => ({ default: m.NotFoundPage })));
 
@@ -49,11 +51,13 @@ export default function App() {
                   <Route path="tokens" element={<TokensPage />} />
                   <Route path="analysis" element={<Navigate to="/analysis/swing-detection" replace />} />
                   <Route path="analysis/swing-detection" element={<SwingDetectionPage />} />
+                  <Route path="analysis/swing1-detect" element={<Swing1DetectPage />} />
                   <Route path="profiles/other" element={<OtherProfilesPage />} />
                   <Route path="strategies/tpsl1" element={<Tpsl1Page />} />
                   <Route path="strategies/tpsl2" element={<Tpsl2Page />} />
                   <Route path="strategies/grouped-sweep-tpsl1" element={<Tpsl1GroupedSweepPage />} />
                   <Route path="strategies/grouped-sweep-tpsl2" element={<Tpsl2GroupedSweepPage />} />
+                  <Route path="strategies/grouped-sweep-swing1" element={<Swing1GroupedSweepPage />} />
                   <Route path="strategies" element={<Navigate to="/strategies/tpsl2" replace />} />
                   <Route path="settings" element={<SettingsPage />} />
                   <Route path="*" element={<NotFoundPage />} />

@@ -80,6 +80,100 @@ fn probe_rule() -> Swing1Rule {
     r
 }
 
+/// `lab swing-census [N] [created_after_rfc3339]` — corpus-wide prevalence sweep.
+///
+/// The single sweep that fired only one group raised the question: *is the
+/// kill→volume shape rare in the data, or is the strategy mis-tuned?* This answers
+/// it directly. For the first `N` tokens it counts, at several kill-depth
+/// thresholds, how many tokens have ≥1 kill low, ≥1 volume low, and a kill→volume
+/// latch (with `min_kills_before_volume = 1` — the real thesis). Prints a table so
+/// you can see whether the defining feature is common enough to ever trade.
+pub async fn census(n_tokens: usize, created_after: Option<DateTime<Utc>>) -> anyhow::Result<()> {
+    let _settings = config::Settings::from_env_local().context("config load")?;
+    let root = crate::lake::lake_root();
+    println!("swing-census: lake = {}", root.display());
+
+    let sel = Selection {
+        mints: None,
+        token_cap: n_tokens.max(1),
+        created_after,
+        created_before: None,
+        per_mint_cap: crate::sweep::corpus::sweep_per_mint_cap(),
+        window: TradeWindow::LaunchWindow,
+        curve_only: true,
+    };
+    let corpus = LakeSource::new(root).load(&sel).await.context("lake load")?;
+    println!(
+        "swing-census: {} token(s), {} trade(s)\n",
+        corpus.token_count(),
+        corpus.trade_count()
+    );
+
+    // Fixed swing-detection params (pct reversal, no SOL floor) — only the kill
+    // depth threshold varies across rows. Volume gate held constant (shallow+long).
+    let mut base = probe_rule();
+    base.p_min_kills_before_volume = Some(1); // the REAL thesis gate
+    base.p_vol_depth_max_pct = Some(0.4);
+    base.p_vol_min_duration_ms = Some(10_000);
+    base.p_kill_max_duration_ms = Some(8_000);
+    let sparams = swing_params_from_rule(&base);
+
+    // Only count tokens that *can* form a chain (≥1 swing low overall).
+    let chains: Vec<Vec<_>> = corpus
+        .tokens
+        .iter()
+        .map(|tok| detect_swing_legs_raw(tok.trades.as_ref(), &sparams))
+        .collect();
+    let with_low = chains
+        .iter()
+        .filter(|legs| legs.iter().any(|l| l.leg_type == SwingType::SwingLow))
+        .count();
+    println!(
+        "tokens with ≥1 swing-low leg: {with_low}/{} (rest are too short to classify)\n",
+        corpus.token_count()
+    );
+
+    println!("kill_depth   any_kill   any_vol   latched   (of {} tokens)", corpus.token_count());
+    println!("──────────   ────────   ───────   ───────");
+    for &kd in &[0.3_f64, 0.4, 0.5, 0.6, 0.7, 0.8] {
+        let mut profile = phase_profile_from_rule(&base);
+        profile.kill_depth_min_pct = kd;
+
+        let (mut n_kill, mut n_vol, mut n_latch) = (0usize, 0usize, 0usize);
+        for legs in &chains {
+            let mut prev_up: Option<i64> = None;
+            let (mut any_kill, mut any_vol) = (false, false);
+            for leg in legs {
+                match leg.leg_type {
+                    SwingType::SwingHigh => prev_up = Some(leg.duration_ms),
+                    SwingType::SwingLow => {
+                        if let Some(f) = LowFeatures::from_low(leg) {
+                            any_kill |= profile.is_kill_low(&f);
+                            any_vol |= profile.is_volume_low(&f, prev_up);
+                        }
+                        prev_up = None;
+                    }
+                }
+            }
+            if any_kill {
+                n_kill += 1;
+            }
+            if any_vol {
+                n_vol += 1;
+            }
+            if classifier::classify_phase(legs, &profile).volume_phase_latched {
+                n_latch += 1;
+            }
+        }
+        println!("   {kd:.2}        {n_kill:>5}     {n_vol:>5}     {n_latch:>5}");
+    }
+    println!(
+        "\n(latched = ≥1 kill seen before a shallow+long higher-low; \
+         min_kills=1, vol_depth≤0.40, vol_dur≥10s, kill_dur≤8s)"
+    );
+    Ok(())
+}
+
 /// `lab swing-probe [N] [created_after_rfc3339]` — diagnose the entry funnel for
 /// the first `N` tokens (default 8) of the lake selection.
 pub async fn run(n_tokens: usize, created_after: Option<DateTime<Utc>>) -> anyhow::Result<()> {

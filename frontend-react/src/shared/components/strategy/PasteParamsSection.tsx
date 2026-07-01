@@ -24,10 +24,12 @@ export function PasteParamsSection({ strategy, live, onApply }: Props) {
   const [result, setResult] = useState<ApplyResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const handleApply = () => {
+  // Validate + apply a JSON blob string. Shared by the textarea's Apply button
+  // and the one-click "From clipboard" button.
+  const applyText = (raw: string) => {
     setError(null);
     setResult(null);
-    const blob = parseParamsBlob(text);
+    const blob = parseParamsBlob(raw);
     if (!blob) {
       setError('Invalid JSON — paste a blob copied from a rule or sweep combo');
       return;
@@ -37,6 +39,23 @@ export function PasteParamsSection({ strategy, live, onApply }: Props) {
       return;
     }
     setResult(onApply(blob, mode));
+  };
+
+  const handleApply = () => applyText(text);
+
+  // Read the clipboard and apply in one click. Mirrors the ⎘ Copy buttons, so
+  // copy→paste is a two-click round-trip without touching the textarea. Fills
+  // the textarea too, so a failed parse is visible/editable.
+  const handleClipboard = async () => {
+    setError(null);
+    setResult(null);
+    try {
+      const raw = await navigator.clipboard.readText();
+      setText(raw);
+      applyText(raw);
+    } catch {
+      setError('Clipboard read blocked — paste into the box above and click Apply');
+    }
   };
 
   return (
@@ -78,6 +97,13 @@ export function PasteParamsSection({ strategy, live, onApply }: Props) {
               </button>
             ))}
             <div className="flex-1" />
+            <button
+              type="button"
+              onClick={handleClipboard}
+              className="rounded border border-white/10 px-3 py-1 text-[11px] font-semibold text-text-dim hover:border-white/20 hover:text-text"
+            >
+              ⎘ From clipboard
+            </button>
             <button
               type="button"
               onClick={handleApply}

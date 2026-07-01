@@ -48,6 +48,8 @@ pub fn swing_params_from_rule(r: &Swing1Rule) -> SwingParams {
         low_to_high_threshold_pct: nz_f64(r.p_swing_low_to_high_pct)
             .unwrap_or(d.low_to_high_threshold_pct),
         min_leg_trades: nz_u32(r.p_swing_min_leg_trades).unwrap_or(d.min_leg_trades),
+        // Dynamic dust floor (fraction of the active leg's max trade). `0`/`None` ⇒ off.
+        dust_frac: nz_f64(r.p_dust_frac).unwrap_or(d.dust_frac),
         ..SwingParams::default()
     }
 }

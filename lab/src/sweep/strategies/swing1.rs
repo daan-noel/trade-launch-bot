@@ -56,6 +56,7 @@ pub struct Swing1Params {
     pub swing_low_to_high_sol: Option<f64>,
     pub swing_low_to_high_pct: Option<f64>,
     pub swing_min_leg_trades: Option<u32>,
+    pub dust_frac: Option<f64>,
     // ── Kill-low profile (entry) ──────────────────────────────────────────────
     pub kill_depth_min_pct: Option<f64>,
     pub kill_max_duration_ms: Option<i64>,
@@ -99,6 +100,7 @@ pub struct Swing1EntryKey {
     swing_low_to_high_sol: Option<f64>,
     swing_low_to_high_pct: Option<f64>,
     swing_min_leg_trades: Option<u32>,
+    dust_frac: Option<f64>,
     kill_depth_min_pct: Option<f64>,
     kill_max_duration_ms: Option<i64>,
     kill_min_net_flow_per_sec: Option<f64>,
@@ -119,7 +121,7 @@ pub struct Swing1EntryKey {
 #[derive(Clone, Copy)]
 pub enum Swing1Entry {
     None,
-    Entered { price: f64, time: DateTime<Utc> },
+    Entered { price: f64, time: DateTime<Utc>, slot: u64 },
 }
 
 /// Declares the param axes and carries the base rule the swept params overlay.
@@ -146,6 +148,7 @@ pub struct Swing1Axes {
     pub swing_low_to_high_sol: Vec<Option<f64>>,
     pub swing_low_to_high_pct: Vec<Option<f64>>,
     pub swing_min_leg_trades: Vec<Option<u32>>,
+    pub dust_frac: Vec<Option<f64>>,
     pub kill_depth_min_pct: Vec<Option<f64>>,
     pub kill_max_duration_ms: Vec<Option<i64>>,
     pub kill_min_net_flow_per_sec: Vec<Option<f64>>,
@@ -183,6 +186,8 @@ impl Default for Swing1Axes {
             swing_low_to_high_sol: vec![None],
             swing_low_to_high_pct: vec![Some(20.0)],
             swing_min_leg_trades: vec![None],
+            // Dust floor OFF by default (only literally-zero trades dropped).
+            dust_frac: vec![None],
             // Kill profile: deep + short.
             kill_depth_min_pct: vec![Some(0.6)],
             kill_max_duration_ms: vec![Some(8_000)],
@@ -234,6 +239,8 @@ pub struct AxesSpec {
     pub swing_low_to_high_pct: Option<Vec<Option<f64>>>,
     #[serde(default)]
     pub swing_min_leg_trades: Option<Vec<Option<u32>>>,
+    #[serde(default)]
+    pub dust_frac: Option<Vec<Option<f64>>>,
     #[serde(default)]
     pub kill_depth_min_pct: Option<Vec<Option<f64>>>,
     #[serde(default)]
@@ -296,6 +303,7 @@ impl Swing1Axes {
             swing_low_to_high_sol: axis(&spec.swing_low_to_high_sol, d.swing_low_to_high_sol),
             swing_low_to_high_pct: axis(&spec.swing_low_to_high_pct, d.swing_low_to_high_pct),
             swing_min_leg_trades: axis(&spec.swing_min_leg_trades, d.swing_min_leg_trades),
+            dust_frac: axis(&spec.dust_frac, d.dust_frac),
             kill_depth_min_pct: axis(&spec.kill_depth_min_pct, d.kill_depth_min_pct),
             kill_max_duration_ms: axis(&spec.kill_max_duration_ms, d.kill_max_duration_ms),
             kill_min_net_flow_per_sec: axis(
@@ -332,7 +340,7 @@ impl Swing1Axes {
     /// sampler decodes against (the mixed-radix `combo_at` order, the LHS plan
     /// column order, and the `refine`/`order_for_entry_cache` walks). Defined once
     /// so those stay in lockstep.
-    fn axis_lens(&self) -> [usize; 25] {
+    fn axis_lens(&self) -> [usize; 26] {
         [
             self.take_profit.len(),
             self.stop_loss.len(),
@@ -345,6 +353,7 @@ impl Swing1Axes {
             self.swing_low_to_high_sol.len(),
             self.swing_low_to_high_pct.len(),
             self.swing_min_leg_trades.len(),
+            self.dust_frac.len(),
             self.kill_depth_min_pct.len(),
             self.kill_max_duration_ms.len(),
             self.kill_min_net_flow_per_sec.len(),
@@ -422,6 +431,7 @@ impl Swing1Strategy {
             swing_low_to_high_sol: take!(a.swing_low_to_high_sol),
             swing_low_to_high_pct: take!(a.swing_low_to_high_pct),
             swing_min_leg_trades: take!(a.swing_min_leg_trades),
+            dust_frac: take!(a.dust_frac),
             kill_depth_min_pct: take!(a.kill_depth_min_pct),
             kill_max_duration_ms: take!(a.kill_max_duration_ms),
             kill_min_net_flow_per_sec: take!(a.kill_min_net_flow_per_sec),
@@ -454,6 +464,7 @@ impl Swing1Strategy {
         r.p_swing_low_to_high_sol = p.swing_low_to_high_sol;
         r.p_swing_low_to_high_pct = p.swing_low_to_high_pct;
         r.p_swing_min_leg_trades = p.swing_min_leg_trades;
+        r.p_dust_frac = p.dust_frac;
         r.p_kill_depth_min_pct = p.kill_depth_min_pct;
         r.p_kill_max_duration_ms = p.kill_max_duration_ms;
         r.p_kill_min_net_flow_per_sec = p.kill_min_net_flow_per_sec;
@@ -506,6 +517,7 @@ impl Swing1Strategy {
             swing_low_to_high_sol: opt_f(v, "swing_low_to_high_sol"),
             swing_low_to_high_pct: opt_f(v, "swing_low_to_high_pct"),
             swing_min_leg_trades: opt_u32(v, "swing_min_leg_trades"),
+            dust_frac: opt_f(v, "dust_frac"),
             kill_depth_min_pct: opt_f(v, "kill_depth_min_pct"),
             kill_max_duration_ms: opt_i(v, "kill_max_duration_ms"),
             kill_min_net_flow_per_sec: opt_f(v, "kill_min_net_flow_per_sec"),
@@ -589,6 +601,7 @@ impl ParamSpace for Swing1Strategy {
                             swing_low_to_high_sol: take!(a.swing_low_to_high_sol),
                             swing_low_to_high_pct: take!(a.swing_low_to_high_pct),
                             swing_min_leg_trades: take!(a.swing_min_leg_trades),
+                            dust_frac: take!(a.dust_frac),
                             kill_depth_min_pct: take!(a.kill_depth_min_pct),
                             kill_max_duration_ms: take!(a.kill_max_duration_ms),
                             kill_min_net_flow_per_sec: take!(a.kill_min_net_flow_per_sec),
@@ -644,6 +657,7 @@ impl ParamSpace for Swing1Strategy {
             walk!(a.swing_low_to_high_sol, swing_low_to_high_sol);
             walk!(a.swing_low_to_high_pct, swing_low_to_high_pct);
             walk!(a.swing_min_leg_trades, swing_min_leg_trades);
+            walk!(a.dust_frac, dust_frac);
             walk!(a.kill_depth_min_pct, kill_depth_min_pct);
             walk!(a.kill_max_duration_ms, kill_max_duration_ms);
             walk!(a.kill_min_net_flow_per_sec, kill_min_net_flow_per_sec);
@@ -677,7 +691,7 @@ impl ParamSpace for Swing1Strategy {
 /// only needs to be injective on the candidate values: `Option`s map a present
 /// value to its bit pattern and `None` to a reserved sentinel. The axes never
 /// carry `NaN`/`-0.0`, so equal bits ⟺ equal value ⟺ equal `entry_key`.
-fn entry_order_key(p: &Swing1Params) -> [u64; 17] {
+fn entry_order_key(p: &Swing1Params) -> [u64; 18] {
     // `+1` keeps `None` (0) distinct from `Some(0)`; real ms/secs never hit MAX.
     fn ou64(o: Option<u64>) -> u64 {
         o.map(|v| v.wrapping_add(1)).unwrap_or(0)
@@ -698,6 +712,7 @@ fn entry_order_key(p: &Swing1Params) -> [u64; 17] {
         of64(p.swing_low_to_high_sol),
         of64(p.swing_low_to_high_pct),
         ou32(p.swing_min_leg_trades),
+        of64(p.dust_frac),
         of64(p.kill_depth_min_pct),
         oi64(p.kill_max_duration_ms),
         of64(p.kill_min_net_flow_per_sec),
@@ -728,6 +743,7 @@ impl Strategy for Swing1Strategy {
             swing_low_to_high_sol: p.swing_low_to_high_sol,
             swing_low_to_high_pct: p.swing_low_to_high_pct,
             swing_min_leg_trades: p.swing_min_leg_trades,
+            dust_frac: p.dust_frac,
             kill_depth_min_pct: p.kill_depth_min_pct,
             kill_max_duration_ms: p.kill_max_duration_ms,
             kill_min_net_flow_per_sec: p.kill_min_net_flow_per_sec,
@@ -756,7 +772,7 @@ impl Strategy for Swing1Strategy {
         // live (same `find_phase_entry` over the `TradeRow` abstraction).
         match entry::find_phase_entry(trades, &params.rule) {
             Some((_, fill)) if fill.price > 0.0 => {
-                Swing1Entry::Entered { price: fill.price, time: fill.block_time }
+                Swing1Entry::Entered { price: fill.price, time: fill.block_time, slot: fill.slot }
             }
             _ => Swing1Entry::None,
         }
@@ -769,7 +785,8 @@ impl Strategy for Swing1Strategy {
         entry: &Swing1Entry,
         params: &Swing1Combo,
     ) -> TokenOutcome {
-        let Swing1Entry::Entered { price: entry_price, time: entry_time } = *entry else {
+        let Swing1Entry::Entered { price: entry_price, time: entry_time, slot: entry_slot } = *entry
+        else {
             return TokenOutcome::no_entry();
         };
         let rule = &params.rule;
@@ -787,8 +804,10 @@ impl Strategy for Swing1Strategy {
                     exit: ExitCode::from_reason(f.reason.as_str()),
                     entry_time: Some(entry_time),
                     entry_price: Some(entry_price),
+                    entry_slot: Some(entry_slot),
                     exit_time: Some(f.block_time),
                     exit_price: Some(f.price),
+                    exit_slot: Some(f.slot),
                 }
             }
             None => {
@@ -804,8 +823,10 @@ impl Strategy for Swing1Strategy {
                     exit: ExitCode::Open,
                     entry_time: Some(entry_time),
                     entry_price: Some(entry_price),
+                    entry_slot: Some(entry_slot),
                     exit_time: None,
                     exit_price: None,
+                    exit_slot: None,
                 }
             }
         }
@@ -825,6 +846,7 @@ impl Strategy for Swing1Strategy {
             "swing_low_to_high_sol": p.swing_low_to_high_sol,
             "swing_low_to_high_pct": p.swing_low_to_high_pct,
             "swing_min_leg_trades": p.swing_min_leg_trades,
+            "dust_frac": p.dust_frac,
             "kill_depth_min_pct": p.kill_depth_min_pct,
             "kill_max_duration_ms": p.kill_max_duration_ms,
             "kill_min_net_flow_per_sec": p.kill_min_net_flow_per_sec,
@@ -907,8 +929,8 @@ mod tests {
         assert_eq!(before, after, "ordering must be a pure permutation of the combos");
 
         // Contiguity: each distinct entry key forms one unbroken run.
-        let mut seen: HashSet<[u64; 17]> = HashSet::new();
-        let mut prev: Option<[u64; 17]> = None;
+        let mut seen: HashSet<[u64; 18]> = HashSet::new();
+        let mut prev: Option<[u64; 18]> = None;
         for c in &combos {
             let k = entry_order_key(&c.raw);
             if Some(k) != prev {

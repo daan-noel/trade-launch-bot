@@ -142,6 +142,7 @@ fn find_worst_case_spot_entry_at<T: TradeRow>(
         price: spot(best).unwrap(),
         amount_tokens: best.token_amount(),
         tx_signature: best.tx_signature().to_string(),
+        slot: best.slot(),
         block_time: best.block_time(),
     })
 }

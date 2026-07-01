@@ -84,7 +84,7 @@ pub struct SwingBatchRequest {
 /// is set, allocating a filtered `Vec` only when a window actually clips it — so
 /// the common no-window swing scan reads the Arc-shared buffer in place with zero
 /// copy.
-fn filter_trades_to_window<'a>(
+pub(crate) fn filter_trades_to_window<'a>(
     trades: &'a [Trade],
     window_start_ms: Option<i64>,
     window_end_ms: Option<i64>,

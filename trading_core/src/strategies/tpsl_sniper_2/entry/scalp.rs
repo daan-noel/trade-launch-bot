@@ -457,6 +457,7 @@ pub fn find_scalp_entry_with_cohort_indexed<T: TradeRow>(
                 price: t.price_per_token(),
                 amount_tokens: t.token_amount(),
                 tx_signature: t.tx_signature().to_string(),
+                slot: t.slot(),
                 block_time,
             },
         ));
@@ -515,6 +516,7 @@ pub fn find_worst_case_paper_entry_at<T: TradeRow>(trades: &[T], target_idx: usi
         price: best.price_per_token(),
         amount_tokens: best.token_amount(),
         tx_signature: best.tx_signature().to_string(),
+        slot: best.slot(),
         block_time: best.block_time(),
     })
 }
@@ -708,6 +710,7 @@ mod tests {
                 // EntryFill.amount_tokens is f64; token_amount is exact raw u64.
                 amount_tokens: cand.token_amount as f64,
                 tx_signature: cand.tx_signature.clone(),
+                slot: cand.slot,
                 block_time: cand.block_time,
             });
         }

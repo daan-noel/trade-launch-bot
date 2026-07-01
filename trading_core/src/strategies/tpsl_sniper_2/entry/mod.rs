@@ -233,6 +233,11 @@ pub struct EntryFill {
     /// SOL is never stored; it's derived at display as `price × amount_tokens`.
     pub amount_tokens: f64,
     pub tx_signature: String,
+    /// Slot of the fill trade — the unambiguous key the sweep drill-in uses to
+    /// resolve this fill's real `tx_signature` from the `trades` table (the slim
+    /// `SweepTrade` carries no signature, so the in-row `tx_signature` is empty
+    /// on the sweep path). Live reads the signature directly and ignores this.
+    pub slot: u64,
     pub block_time: DateTime<Utc>,
 }
 

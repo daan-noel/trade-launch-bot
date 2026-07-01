@@ -56,8 +56,9 @@ The chart aggregates trades two ways, chosen by the **`groupMode`** toggle (`'ti
 - The computed `bars` array depends on `groupMode`, `intervalSec`, the sorted trades, and the
   active `metric`. Time-axis labels are timezone-aware in time mode and a plain `Slot N` in
   slot mode (see §10).
-- OHLC construction itself (continuous bars, reserve-chain ordering, dust filtering) is
-  documented in `chart-price-logic.md` §3–§6.
+- OHLC construction itself (continuous bars, canonical `slot → tx_index → leg_index`
+  trade ordering — `tx_index` is the authoritative intra-slot key, no reserve-chain
+  reconstruction — dust filtering) is documented in `chart-price-logic.md` §3–§6.
 
 ---
 

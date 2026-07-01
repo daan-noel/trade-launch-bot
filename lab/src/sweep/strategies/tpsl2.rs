@@ -85,7 +85,7 @@ pub struct Tpsl2EntryKey {
 #[derive(Clone, Copy)]
 pub enum Tpsl2Entry {
     None,
-    Entered { price: f64, time: DateTime<Utc> },
+    Entered { price: f64, time: DateTime<Utc>, slot: u64 },
 }
 
 /// Param-independent per-token state, computed once before a token's combo loop and
@@ -664,7 +664,11 @@ impl Strategy for Tpsl2Strategy {
         if entry_fill.price <= 0.0 {
             return Tpsl2Entry::None;
         }
-        Tpsl2Entry::Entered { price: entry_fill.price, time: entry_fill.block_time }
+        Tpsl2Entry::Entered {
+            price: entry_fill.price,
+            time: entry_fill.block_time,
+            slot: entry_fill.slot,
+        }
     }
 
     fn resolve_exit(
@@ -674,7 +678,8 @@ impl Strategy for Tpsl2Strategy {
         entry: &Tpsl2Entry,
         params: &Tpsl2Combo,
     ) -> TokenOutcome {
-        let Tpsl2Entry::Entered { price: entry_price, time: entry_time } = *entry else {
+        let Tpsl2Entry::Entered { price: entry_price, time: entry_time, slot: entry_slot } = *entry
+        else {
             return TokenOutcome::no_entry();
         };
         let rule = &params.rule;
@@ -701,8 +706,10 @@ impl Strategy for Tpsl2Strategy {
                     exit: ExitCode::from_reason(f.reason.as_str()),
                     entry_time: Some(entry_time),
                     entry_price: Some(entry_price),
+                    entry_slot: Some(entry_slot),
                     exit_time: Some(f.block_time),
                     exit_price: Some(f.price),
+                    exit_slot: Some(f.slot),
                 }
             }
             None => {
@@ -719,8 +726,10 @@ impl Strategy for Tpsl2Strategy {
                     exit: ExitCode::Open,
                     entry_time: Some(entry_time),
                     entry_price: Some(entry_price),
+                    entry_slot: Some(entry_slot),
                     exit_time: None,
                     exit_price: None,
+                    exit_slot: None,
                 }
             }
         }

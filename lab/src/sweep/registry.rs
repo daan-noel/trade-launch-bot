@@ -634,8 +634,14 @@ fn simulate_tpsl2_one_combo(
             exit: exit_label(o.exit).to_string(),
             entry_time: o.entry_time.map(|t| t.to_rfc3339()),
             entry_price: o.entry_price,
+            // tx left null here; the handler resolves the real signature from the
+            // `trades` table by (mint, slot, side) — the sweep row carries none.
+            entry_tx: None,
+            entry_slot: o.entry_slot,
             exit_time: o.exit_time.map(|t| t.to_rfc3339()),
             exit_price: o.exit_price,
+            exit_tx: None,
+            exit_slot: o.exit_slot,
             created_at: None,
             creator_wallet: None,
             ath_price: None,
@@ -678,8 +684,14 @@ fn simulate_tpsl1_one_combo(
             exit: exit_label(o.exit).to_string(),
             entry_time: o.entry_time.map(|t| t.to_rfc3339()),
             entry_price: o.entry_price,
+            // tx left null here; the handler resolves the real signature from the
+            // `trades` table by (mint, slot, side) — the sweep row carries none.
+            entry_tx: None,
+            entry_slot: o.entry_slot,
             exit_time: o.exit_time.map(|t| t.to_rfc3339()),
             exit_price: o.exit_price,
+            exit_tx: None,
+            exit_slot: o.exit_slot,
             created_at: None,
             creator_wallet: None,
             ath_price: None,
@@ -722,8 +734,14 @@ fn simulate_swing1_one_combo(
             exit: exit_label(o.exit).to_string(),
             entry_time: o.entry_time.map(|t| t.to_rfc3339()),
             entry_price: o.entry_price,
+            // tx left null here; the handler resolves the real signature from the
+            // `trades` table by (mint, slot, side) — the sweep row carries none.
+            entry_tx: None,
+            entry_slot: o.entry_slot,
             exit_time: o.exit_time.map(|t| t.to_rfc3339()),
             exit_price: o.exit_price,
+            exit_tx: None,
+            exit_slot: o.exit_slot,
             created_at: None,
             creator_wallet: None,
             ath_price: None,

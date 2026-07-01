@@ -82,6 +82,19 @@ pub struct SwingParams {
     // instead of the chronologically last (possibly dust) trade.
     #[serde(default)]
     pub big_tx_sol: f64,
+
+    // Dynamic "dust" floor as a FRACTION of the active leg's largest same-side
+    // trade. 0 = disabled (off). When > 0, a same-side trade is dropped during the
+    // scan if `sol_amount < dust_frac * active_leg.max_sol` — i.e. it's trivially
+    // small *relative to that leg's own real activity*. Scale-free (no per-token
+    // SOL amount to guess): on a 200-SOL token and a 2-SOL token the same
+    // `dust_frac` adapts automatically. This keeps a leg's endpoints anchored to
+    // real trades — a low ends at the last real SELL before a dust-only breakage,
+    // the next high starts at the first real BUY after it — and stops a stray dust
+    // trade from opening a spurious bridge leg across the gap. Each leg's first
+    // trade seeds `max_sol`, so it is never itself treated as dust.
+    #[serde(default)]
+    pub dust_frac: f64,
 }
 
 fn default_high_to_low_sol() -> f64 {
@@ -121,6 +134,7 @@ impl Default for SwingParams {
             swing_low_min_net_flow_per_sec: 0.0,
             swing_low_max_net_flow_per_sec: 0.0,
             big_tx_sol: 0.0,
+            dust_frac: 0.0,
         }
     }
 }
@@ -207,6 +221,12 @@ pub(crate) struct LegAcc {
     last_big_price: Option<f64>,
     extreme_at: i64,
     extreme_price: f64,
+    /// Largest same-side `sol_amount` seen on this leg so far. The dynamic dust
+    /// floor is `dust_frac * max_sol`: a same-side trade smaller than that is dust
+    /// *relative to this leg's own real activity* and is skipped by the scan. Only
+    /// grows, so the decision is causal/stable (never rescans). Seeded by the
+    /// leg's first trade, which is therefore never treated as dust.
+    max_sol: f64,
 }
 
 impl LegAcc {
@@ -225,6 +245,7 @@ impl LegAcc {
             last_big_price: None,
             extreme_at: tx.timestamp_ms,
             extreme_price: tx.price,
+            max_sol: tx.sol_amount,
         };
         leg.consider_pivot(tx, big_tx_sol);
         leg
@@ -245,6 +266,7 @@ impl LegAcc {
             last_big_price: None,
             extreme_at: tx.timestamp_ms,
             extreme_price: tx.price,
+            max_sol: tx.sol_amount,
         };
         leg.consider_pivot(tx, big_tx_sol);
         leg
@@ -255,8 +277,12 @@ impl LegAcc {
     }
 
     /// Update the terminal-pivot trackers from a same-side tx: advance the price
-    /// extreme, and record this tx as the last big one when it clears `big_tx_sol`.
+    /// extreme, record this tx as the last big one when it clears `big_tx_sol`, and
+    /// grow the leg's `max_sol` (the baseline for the dynamic dust floor).
     fn consider_pivot(&mut self, tx: &Tx, big_tx_sol: f64) {
+        if tx.sol_amount > self.max_sol {
+            self.max_sol = tx.sol_amount;
+        }
         let beats_extreme = match self.leg_type {
             SwingType::SwingHigh => tx.price > self.extreme_price,
             SwingType::SwingLow => tx.price < self.extreme_price,
@@ -351,17 +377,28 @@ pub fn detect_swing_legs_raw<T: TradeRow>(trades: &[T], params: &SwingParams) ->
     scan(&txs, params).into_iter().map(LegAcc::finalize).collect()
 }
 
-/// Map trades to internal transactions, skip invalid ones, and apply the
-/// canonical ordering: `timestamp_ms ASC, slot ASC, position ASC`.
+/// Map trades to internal transactions, skip invalid ones, and apply the **one
+/// canonical trade order** used project-wide: `slot ASC → tx_index ASC →
+/// leg_index ASC` (identical to the DB `ORDER BY`, the Parquet lake, and the
+/// frontend chart). `tx_index` is the real intra-block position of the tx; the
+/// DB shows it reproduces true on-chain execution order for ~99% of same-slot
+/// pairs, so it's the authoritative intra-slot key — no reserve-chain
+/// reconstruction. `block_time` is second-precision and a last-resort tiebreak.
+/// (A tiny minority of early-backfilled tokens carry a mis-stamped `tx_index`;
+/// the fix for those is a re-sync, not a read-time workaround.)
+///
+/// Only literally-non-positive trades are dropped here. The *dynamic* dust floor
+/// (`SwingParams.dust_frac`) is applied inside [`scan`], because "dust" is defined
+/// relative to the active leg's running max — which only exists during the scan.
 pub(crate) fn sanitize_and_order<T: TradeRow>(trades: &[T]) -> Vec<Tx> {
     let mut ordered: Vec<&T> = trades.iter().filter(|t| t.sol_amount() > 0.0).collect();
 
     ordered.sort_by(|a, b| {
-        a.block_time()
-            .timestamp_millis()
-            .cmp(&b.block_time().timestamp_millis())
-            .then(a.slot().cmp(&b.slot()))
+        a.slot()
+            .cmp(&b.slot())
+            .then(a.tx_index().cmp(&b.tx_index()))
             .then(a.leg_index().cmp(&b.leg_index()))
+            .then(a.block_time().cmp(&b.block_time()))
     });
 
     let mut prev_post_spot: Option<f64> = None;
@@ -408,6 +445,15 @@ pub(crate) fn scan(txs: &[Tx], params: &SwingParams) -> Vec<LegAcc> {
     // independent of the accumulated net-flow threshold.
     let is_big = |tx: &Tx| big > 0.0 && tx.sol_amount >= big;
 
+    // Dynamic dust floor: a trade is dust when it's a tiny fraction of the active
+    // real leg's largest trade so far (`dust_frac * leg.max_sol`). Scale-free, so
+    // no per-token SOL amount to guess. `0` (or no open leg yet) ⇒ off.
+    let dust_frac = params.dust_frac;
+    let is_dust = |tx: &Tx, active: Option<&LegAcc>| {
+        dust_frac > 0.0
+            && active.is_some_and(|leg| tx.sol_amount < dust_frac * leg.max_sol)
+    };
+
     // Initialization from the first transaction.
     let first = &txs[0];
     let mut phase = match first.side {
@@ -422,6 +468,18 @@ pub(crate) fn scan(txs: &[Tx], params: &SwingParams) -> Vec<LegAcc> {
     };
 
     for tx in &txs[1..] {
+        // Drop dust relative to the active real leg (the one this trade would
+        // extend or reverse). Skipping here means dust never applies, reverses, or
+        // merges back — so a leg ends at its last real trade and a stray dust trade
+        // can't open a spurious bridge leg across a breakage.
+        let active = match phase {
+            Phase::SwingHigh | Phase::TempSwingLow => current_high.as_ref(),
+            Phase::SwingLow | Phase::TempSwingHigh => current_low.as_ref(),
+        };
+        if is_dust(tx, active) {
+            continue;
+        }
+
         match phase {
             Phase::SwingHigh => match tx.side {
                 Side::Buy => current_high.as_mut().unwrap().apply_buy(tx, big),
@@ -714,6 +772,60 @@ mod tests {
         );
         t.block_time = chrono::DateTime::from_timestamp_millis(ms).unwrap();
         t
+    }
+
+    #[test]
+    fn dust_frac_drops_dust_relative_to_leg_max() {
+        // A real swing low (max real sell = 2.0 SOL) followed by DUST sells that
+        // would, without a dust floor, extend the leg's `end_at`/`trade_count` onto
+        // the dust tail. The dust floor is a FRACTION of the leg's biggest trade
+        // (2.0), so it adapts without a per-token SOL amount.
+        let trades = vec![
+            sell(1_000, 2.0, 100_000.0, 0.0, 0.0),
+            sell(2_000, 1.5, 80_000.0, 0.0, 0.0),
+            sell(3_000, 0.01, 500.0, 0.0, 0.0), // dust: 0.01 < 0.05*2.0 = 0.1
+            sell(4_000, 0.02, 900.0, 0.0, 0.0), // dust
+        ];
+        let mut params = SwingParams { min_leg_trades: 1, ..Default::default() };
+
+        // OFF (0): the dust extends the leg to t=4_000, 4 trades.
+        params.dust_frac = 0.0;
+        let off = detect_swings(&trades, &params);
+        let low_off = off.iter().find(|l| l.leg_type == SwingType::SwingLow).unwrap();
+        assert_eq!(low_off.end_at, 4_000, "dust extends the leg when the floor is off");
+        assert_eq!(low_off.trade_count, 4);
+
+        // ON (0.05): floor = 0.05 * leg_max(2.0) = 0.1, so the 0.01/0.02 trades are
+        // dust and skipped — the leg ends at the last real sell (t=2_000), 2 trades.
+        params.dust_frac = 0.05;
+        let on = detect_swings(&trades, &params);
+        let low_on = on.iter().find(|l| l.leg_type == SwingType::SwingLow).unwrap();
+        assert_eq!(low_on.end_at, 2_000, "dust no longer extends the leg");
+        assert_eq!(low_on.trade_count, 2);
+    }
+
+    #[test]
+    fn dust_frac_scale_free_across_token_sizes() {
+        // Same dust_frac works on a big-trade token and a small-trade token — the
+        // floor scales with the leg's own max, so no per-token amount is needed.
+        let mk = |big: f64, dust: f64| {
+            vec![
+                sell(1_000, big, 100_000.0, 0.0, 0.0),
+                sell(2_000, big * 0.75, 80_000.0, 0.0, 0.0),
+                sell(3_000, dust, 500.0, 0.0, 0.0), // < 0.05 * big ⇒ dust on both
+            ]
+        };
+        let params = SwingParams { min_leg_trades: 1, dust_frac: 0.05, ..Default::default() };
+
+        // 200-SOL token: dust at 1.0 SOL (still < 0.05*200 = 10) is dropped.
+        let big = detect_swings(&mk(200.0, 1.0), &params);
+        let big_low = big.iter().find(|l| l.leg_type == SwingType::SwingLow).unwrap();
+        assert_eq!(big_low.trade_count, 2, "1 SOL is dust on a 200-SOL-trade token");
+
+        // 2-SOL token: dust at 0.05 SOL (< 0.05*2 = 0.1) is dropped — same frac.
+        let small = detect_swings(&mk(2.0, 0.05), &params);
+        let small_low = small.iter().find(|l| l.leg_type == SwingType::SwingLow).unwrap();
+        assert_eq!(small_low.trade_count, 2, "0.05 SOL is dust on a 2-SOL-trade token");
     }
 
     #[test]

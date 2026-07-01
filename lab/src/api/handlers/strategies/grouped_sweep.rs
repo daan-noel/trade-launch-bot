@@ -1301,6 +1301,35 @@ pub async fn list_token_results(
         }
     };
 
+    // Resolve the real base58 entry/exit signatures the chart/table need to link a
+    // fill to its candle. The sweep walks a slim `SweepTrade` with no signature, so
+    // the fills only carry the slot; look the signatures up from the `trades` table
+    // by (mint, slot, side). Entry fills are buys, exit fills sells.
+    let fill_keys: Vec<(String, u64, bool)> = rows
+        .iter()
+        .flat_map(|r| {
+            let entry = r.entry_slot.map(|s| (r.mint.clone(), s, true));
+            let exit = r.exit_slot.map(|s| (r.mint.clone(), s, false));
+            entry.into_iter().chain(exit)
+        })
+        .collect();
+    if !fill_keys.is_empty() {
+        let repo = crate::storage::repositories::trade_repo::TradeRepo::new(state.db.clone());
+        match repo.resolve_fill_signatures(&fill_keys).await {
+            Ok(sigs) => {
+                for row in &mut rows {
+                    if let Some(s) = row.entry_slot {
+                        row.entry_tx = sigs.get(&(row.mint.clone(), s, true)).cloned();
+                    }
+                    if let Some(s) = row.exit_slot {
+                        row.exit_tx = sigs.get(&(row.mint.clone(), s, false)).cloned();
+                    }
+                }
+            }
+            Err(e) => tracing::warn!("token-results: fill signature resolve failed: {e}"),
+        }
+    }
+
     // Batch-join token metadata (tokens + tokens_info) for all mints so the
     // frontend table can show rich columns without per-row fetches.
     let mints: Vec<String> = rows.iter().map(|r| r.mint.clone()).collect();

@@ -25,6 +25,10 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 "/tokens/{mint}/swings",
                 web::post().to(handlers::tokens::detect_token_swings),
             )
+            .route(
+                "/tokens/{mint}/swing1-detect",
+                web::post().to(handlers::tokens::detect_token_swing1),
+            )
             // Background-job status + control (sweep / simulation / swing)
             .route("/jobs/status", web::get().to(handlers::system::job_status))
             .route(

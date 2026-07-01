@@ -10,6 +10,9 @@ export interface ChartTrade {
   /** Raw token units swapped — used to reconstruct the pre-trade (genesis) open. */
   token_amount?: number;
   slot?: number;
+  /** Position of this trade's transaction within its block — the real intra-slot
+   *  ordering key. Part of the canonical trade order `slot → tx_index → leg_index`. */
+  tx_index?: number;
   /** Transaction signature — chronological tiebreaker (keeps a tx's legs contiguous). */
   tx_signature?: string;
   /** Leg index within the transaction (0 = first) — chronological tiebreaker. */
@@ -241,6 +244,19 @@ export interface ChartSwingOverlay {
   segmentMode?: 'connected' | 'perLeg' | 'connectedSequential';
   /** Full detection order; required for `connectedSequential`. */
   allLegs?: ChartSwingLeg[];
+  /**
+   * Breakage gap (ms). When > 0, a `connected` path is split wherever a leg starts
+   * more than this many ms after the previous leg ended, so the overlay shows a
+   * visible break across a dust/idle breakage instead of a misleading diagonal.
+   * `undefined`/`0` = legacy bridging. Only applies to `connected`/`connectedSequential`.
+   */
+  gapBreakMs?: number;
+  /**
+   * `perLeg` only: end each leg's segment at its full-span `end_at`/`end_price`
+   * instead of its terminal pivot, so the line aligns with the full-span candle
+   * highlight. Default `false` (segments end at the pivot).
+   */
+  perLegFullSpanEnd?: boolean;
 }
 
 export interface TokenPriceChartProps {

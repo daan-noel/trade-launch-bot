@@ -23,6 +23,13 @@ pub struct LowFeatures {
     /// extreme / last big sell): `(start_price - pivot_end_price) / start_price`,
     /// in `[0, 1]`. Larger = deeper. `0` when `start_price <= 0`.
     pub depth_pct: f64,
+    /// Time from the leg's start to its terminal **pivot** (`pivot_end_at -
+    /// start_at`), NOT the full leg span (`end_at - start_at`). A kill is the
+    /// fast collapse to the bottom; the post-collapse dust tail of tiny sells
+    /// keeps advancing `end_at` but adds no real drop, so measuring to `end_at`
+    /// would inflate the duration and spuriously fail the short-kill gate. Pinned
+    /// to the same pivot `depth_pct`/`pivot_price` use so all three agree on the
+    /// terminus.
     pub duration_ms: i64,
     /// `|net_flow| / (duration_ms / 1000)`; `0` for instantaneous (0-duration) legs.
     pub net_flow_per_sec: f64,
@@ -43,14 +50,18 @@ impl LowFeatures {
         } else {
             0.0
         };
-        let net_flow_per_sec = if leg.duration_ms > 0 {
-            leg.net_flow.abs() / (leg.duration_ms as f64 / 1000.0)
+        // Measure to the price extreme (the collapse bottom), not the dust-extended
+        // `end_at`. `pivot_end_at` is monotonically ≥ `start_at` (it's a tx within
+        // the leg), so this is never negative.
+        let duration_ms = (leg.pivot_end_at - leg.start_at).max(0);
+        let net_flow_per_sec = if duration_ms > 0 {
+            leg.net_flow.abs() / (duration_ms as f64 / 1000.0)
         } else {
             0.0
         };
         Some(Self {
             depth_pct,
-            duration_ms: leg.duration_ms,
+            duration_ms,
             net_flow_per_sec,
             trade_count: leg.trade_count,
             pivot_price: leg.pivot_end_price,
@@ -249,6 +260,24 @@ mod tests {
         // shallow (20%) + short → not deep → not a kill.
         let f = LowFeatures::from_low(&low(100.0, 80.0, 2_000, -1.0, 4)).unwrap();
         assert!(!p.is_kill_low(&f));
+    }
+
+    #[test]
+    fn kill_duration_measured_to_pivot_not_dust_tail() {
+        // A 70% collapse to the bottom in 2s, then a long tail of dust sells that
+        // drag the leg's full span out to 120s. The kill is the fast collapse —
+        // `duration_ms` must be the 2s pivot span, not the 120s dust span, so the
+        // short-kill gate (≤5s) still fires.
+        let p = profile();
+        let mut leg = low(100.0, 30.0, 120_000, -3.0, 12); // full span 120s
+        leg.pivot_end_at = 2_000; // price extreme reached at 2s
+        let f = LowFeatures::from_low(&leg).unwrap();
+        assert_eq!(f.duration_ms, 2_000);
+        assert!(p.is_kill_low(&f), "fast collapse + dust tail must still be a kill");
+
+        // Sanity: without the fix (measuring to end_at=120s) this would be > 5s and
+        // fail. Confirm net_flow/s also uses the pivot span (fast drain, not diluted).
+        assert!((f.net_flow_per_sec - 3.0 / 2.0).abs() < 1e-9);
     }
 
     #[test]

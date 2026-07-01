@@ -67,7 +67,7 @@ pub struct Tpsl1Combo {
 #[derive(Clone, Copy)]
 pub enum Tpsl1Entry {
     None,
-    Entered { price: f64, time: DateTime<Utc> },
+    Entered { price: f64, time: DateTime<Utc>, slot: u64 },
 }
 
 /// Grid axes for the coarse pass. Each `Vec` is one knob's candidate values.
@@ -402,7 +402,11 @@ impl Strategy for Tpsl1Strategy {
         if entry_fill.price <= 0.0 {
             return Tpsl1Entry::None;
         }
-        Tpsl1Entry::Entered { price: entry_fill.price, time: entry_fill.block_time }
+        Tpsl1Entry::Entered {
+            price: entry_fill.price,
+            time: entry_fill.block_time,
+            slot: entry_fill.slot,
+        }
     }
 
     fn resolve_exit(
@@ -412,7 +416,8 @@ impl Strategy for Tpsl1Strategy {
         entry: &Tpsl1Entry,
         params: &Tpsl1Combo,
     ) -> TokenOutcome {
-        let Tpsl1Entry::Entered { price: entry_price, time: entry_time } = *entry else {
+        let Tpsl1Entry::Entered { price: entry_price, time: entry_time, slot: entry_slot } = *entry
+        else {
             return TokenOutcome::no_entry();
         };
         let rule = &params.rule;
@@ -431,8 +436,10 @@ impl Strategy for Tpsl1Strategy {
                     exit: ExitCode::from_reason(&f.reason.to_string()),
                     entry_time: Some(entry_time),
                     entry_price: Some(entry_price),
+                    entry_slot: Some(entry_slot),
                     exit_time: Some(f.block_time),
                     exit_price: Some(f.price),
+                    exit_slot: Some(f.slot),
                 }
             }
             None => {
@@ -449,8 +456,10 @@ impl Strategy for Tpsl1Strategy {
                     exit: ExitCode::Open,
                     entry_time: Some(entry_time),
                     entry_price: Some(entry_price),
+                    entry_slot: Some(entry_slot),
                     exit_time: None,
                     exit_price: None,
+                    exit_slot: None,
                 }
             }
         }

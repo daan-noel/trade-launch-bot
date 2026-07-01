@@ -290,8 +290,10 @@ mod tests {
                 exit: ExitCode::TakeProfit,
                 entry_time: None,
                 entry_price: None,
+                entry_slot: None,
                 exit_time: None,
                 exit_price: None,
+                exit_slot: None,
             }
         }
         fn params_json(&self, p: &f64) -> serde_json::Value {
@@ -387,8 +389,10 @@ mod tests {
                 exit: ExitCode::TakeProfit,
                 entry_time: None,
                 entry_price: None,
+                entry_slot: None,
                 exit_time: None,
                 exit_price: None,
+                exit_slot: None,
             }
         }
         fn params_json(&self, _p: &(i64, f64)) -> serde_json::Value {

@@ -510,6 +510,9 @@ export interface TradeRecord {
   token_amount: number;
   price_per_token: number;
   tx_signature: string;
+  /** Position of this trade's transaction within its block — the real intra-slot
+   *  ordering key. Part of the canonical trade order `slot → tx_index → leg_index`. */
+  tx_index: number;
   leg_index: number;
   slot: number;
   block_time: string;

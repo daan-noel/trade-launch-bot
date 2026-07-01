@@ -143,10 +143,24 @@ pub struct ComboTokenResult {
     pub entry_time: Option<String>,
     /// Simulated entry fill price in SOL/token; `None` when not fired.
     pub entry_price: Option<f64>,
+    /// Real `tx_signature` of the entry fill, resolved from the `trades` table by
+    /// (mint, `entry_slot`, buy) after the re-sim — the slim `SweepTrade` the sweep
+    /// walks carries no signature. `None` when not fired or unresolved.
+    pub entry_tx: Option<String>,
+    /// Slot of the entry fill trade — the join key for `entry_tx`. Kept on the
+    /// result so the handler can resolve the signature; not surfaced in the UI.
+    #[serde(skip_serializing)]
+    pub entry_slot: Option<u64>,
     /// RFC3339 block time of the simulated exit fill; `None` when open or not fired.
     pub exit_time: Option<String>,
     /// Simulated exit fill price in SOL/token; `None` when open or not fired.
     pub exit_price: Option<f64>,
+    /// Real `tx_signature` of the exit fill, resolved like `entry_tx` but by
+    /// (mint, `exit_slot`, sell). `None` when open, not fired, or unresolved.
+    pub exit_tx: Option<String>,
+    /// Slot of the exit fill trade — the join key for `exit_tx`.
+    #[serde(skip_serializing)]
+    pub exit_slot: Option<u64>,
     // --- Token metadata (batch-joined from tokens + tokens_info after sim) ---
     pub created_at: Option<String>,
     pub creator_wallet: Option<String>,

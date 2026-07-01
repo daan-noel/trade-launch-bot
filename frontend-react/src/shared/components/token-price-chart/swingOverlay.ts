@@ -114,6 +114,21 @@ function pushVertex(
   return t;
 }
 
+/**
+ * Is the idle gap between leg `i`'s end and leg `i+1`'s start a "breakage" that
+ * should split the line? `gapBreakMs <= 0`/`undefined` disables (legacy bridging).
+ * The gap is measured end→start in real ms (the same units the dust trades live in),
+ * so a dust-only or trade-less stretch longer than the threshold breaks the path.
+ */
+function isLegBreakage(
+  prev: ChartSwingLeg,
+  next: ChartSwingLeg,
+  gapBreakMs: number | undefined,
+): boolean {
+  if (!gapBreakMs || gapBreakMs <= 0) return false;
+  return next.start_at - legEndMs(prev) > gapBreakMs;
+}
+
 /** Connected reversal path — first leg start + each leg end. */
 function buildSwingPathVertices(
   swings: ChartSwingLeg[],
@@ -261,6 +276,9 @@ export function buildLegSegment(
   toValue: (sol: number) => number,
   groupMode: ChartGroupMode,
   trades: ChartTrade[],
+  /** End the segment at the leg's full-span `end_at`/`end_price` instead of its
+   *  terminal pivot — aligns the line with the full-span candle highlight. */
+  useFullSpanEnd = false,
 ): SwingLegLineSegment | null {
   const color = swingLegColor(leg.type);
   const data: SwingColoredLinePoint[] = [];
@@ -272,10 +290,12 @@ export function buildLegSegment(
     prevTime,
     color,
   );
+  const endMs = useFullSpanEnd ? leg.end_at : legEndMs(leg);
+  const endPrice = useFullSpanEnd ? leg.end_price : legEndPrice(leg);
   prevTime = pushColoredVertex(
     data,
-    resolveChartTime(legEndMs(leg), groupMode, trades),
-    swingPriceToChartY(legEndPrice(leg), metric, toValue),
+    resolveChartTime(endMs, groupMode, trades),
+    swingPriceToChartY(endPrice, metric, toValue),
     prevTime,
   );
   if (data.filter((p) => 'value' in p).length < 2) return null;
@@ -298,23 +318,63 @@ export function swingsToLegSegments(
   return segments;
 }
 
-/** Connected swing path with per-segment colors (full detection result). */
+/** Connected swing path with per-segment colors (full detection result).
+ *
+ * `gapBreakMs` (when > 0) splits the line at a breakage: if a leg starts more than
+ * `gapBreakMs` after the previous leg ended, a whitespace point is emitted at the
+ * new leg's start so lightweight-charts draws a visible gap instead of a diagonal
+ * bridging the breakage. The low still ends at its last real defining-side trade
+ * and the next high still starts at its first real one — the dust gap between them
+ * is simply not connected. */
 export function swingsToColoredLineData(
   swings: ChartSwingLeg[],
   metric: ChartMetric,
   toValue: (sol: number) => number,
   groupMode: ChartGroupMode,
   trades: ChartTrade[],
+  gapBreakMs?: number,
 ): SwingColoredLinePoint[] {
-  const vertices = buildSwingPathVertices(swings, metric, toValue, groupMode, trades);
+  const out: SwingColoredLinePoint[] = [];
+  let prevTime = -1;
 
-  return vertices.map((vertex, i) => {
-    const point: SwingColoredLinePoint = { time: vertex.time, value: vertex.value };
-    if (i < swings.length) {
-      point.color = swingLegColor(swings[i].type);
+  for (let i = 0; i < swings.length; i++) {
+    const leg = swings[i];
+    const startTime = resolveChartTime(leg.start_at, groupMode, trades);
+    const startVal = swingPriceToChartY(leg.start_price, metric, toValue);
+    const endTime = resolveChartTime(legEndMs(leg), groupMode, trades);
+    const endVal = swingPriceToChartY(legEndPrice(leg), metric, toValue);
+    // Forward-color convention: a point styles the segment to the NEXT point, so
+    // the vertex that OPENS a leg's segment carries that leg's color.
+    const color = swingLegColor(leg.type);
+
+    if (i === 0) {
+      // Open the path at the first leg's start — colors the leg0 segment.
+      prevTime = pushColoredVertex(out, startTime, startVal, prevTime, color);
+    } else if (startTime != null && isLegBreakage(swings[i - 1], leg, gapBreakMs)) {
+      // Breakage: emit a whitespace gap, then re-anchor at THIS leg's own start
+      // (its first real defining-side trade) so the segment never bridges the gap.
+      // The re-anchor point opens this leg's segment, so it carries this leg's color.
+      // Both points must be strictly after `prevTime` (lightweight-charts requires
+      // ascending, unique times): the whitespace sits one tick past the prior point,
+      // and the value point one tick past the whitespace (or at its real start time
+      // if that's already later).
+      const breakTime = (prevTime + 1) as UTCTimestamp;
+      out.push({ time: breakTime }); // whitespace → line break
+      prevTime = breakTime as number;
+      prevTime = pushColoredVertex(out, startTime, startVal, prevTime, color);
+    } else {
+      // No breakage: the previous leg's end vertex IS this leg's opening point;
+      // recolor it forward to this leg's color so the upcoming segment is styled
+      // correctly (matches the legacy connected path).
+      const last = out[out.length - 1];
+      if (last && 'value' in last) last.color = color;
     }
-    return point;
-  });
+    // This leg's end vertex — its forward color is set by the NEXT iteration (or
+    // left uncolored for the final leg, as in the legacy path).
+    prevTime = pushColoredVertex(out, endTime, endVal, prevTime);
+  }
+
+  return out;
 }
 
 export type SwingOverlayInteractionMeta = {

@@ -171,10 +171,17 @@ pub struct TokenOutcome {
     pub entry_time: Option<DateTime<Utc>>,
     /// Simulated entry fill price in SOL/token (`None` when not fired).
     pub entry_price: Option<f64>,
+    /// Slot of the entry fill trade (`None` when not fired). Lets the drill-in
+    /// endpoint resolve the fill's real `tx_signature` from the `trades` table —
+    /// the slim `SweepTrade` carries no signature, so it can't ride along here.
+    pub entry_slot: Option<u64>,
     /// Block time of the simulated exit fill (`None` when not fired or still open).
     pub exit_time: Option<DateTime<Utc>>,
     /// Simulated exit fill price in SOL/token (`None` when not fired or still open).
     pub exit_price: Option<f64>,
+    /// Slot of the exit fill trade (`None` when not fired or still open). See
+    /// [`Self::entry_slot`].
+    pub exit_slot: Option<u64>,
 }
 
 impl TokenOutcome {
@@ -188,8 +195,10 @@ impl TokenOutcome {
             exit: ExitCode::NoEntry,
             entry_time: None,
             entry_price: None,
+            entry_slot: None,
             exit_time: None,
             exit_price: None,
+            exit_slot: None,
         }
     }
 }

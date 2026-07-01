@@ -14,6 +14,7 @@ import { computeParamColumnColors, computePnlColumnColors } from 'lib/sweepParam
 import { SweepConfigForm } from '@lab/components/sweep/SweepConfigForm';
 import { SelectedSweepHistory } from '@lab/components/sweep/SelectedSweepHistory';
 import { TokenInspectModal } from 'components/tpsl2/TokenInspectModal';
+import { Swing1InspectModal } from '@lab/pages/strategies/sweep/Swing1InspectModal';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 import {
   type AxisDef,
@@ -270,6 +271,17 @@ export function GroupedSweepView({
   const selectedTokenResult = selectedTokenMint
     ? (tokenResults.find((r) => r.mint === selectedTokenMint) ?? null)
     : null;
+
+  // The drilled-in combo's swept params — fed to the swing1 inspect modal so the
+  // chart's swing overlay matches the exact funnel this combo simulated. Only
+  // meaningful for `swing_1`; other strategies show no swing overlay.
+  const activeComboParams = useMemo(
+    () =>
+      activeComboId !== null
+        ? (results.find((r) => r.combo_id === activeComboId)?.params ?? null)
+        : null,
+    [results, activeComboId],
+  );
 
   const tokenColumns = useMemo<ColumnDef<ComboTokenResult>[]>(
     () => [
@@ -767,20 +779,32 @@ export function GroupedSweepView({
                     emptyMessage="No token results for this combo."
                   />
 
-                  {selectedTokenResult && (
-                    <TokenInspectModal
-                      target={{
+                  {selectedTokenResult &&
+                    (() => {
+                      const target = {
                         mint: selectedTokenResult.mint,
                         symbol: selectedTokenResult.symbol,
                         entryTime: selectedTokenResult.entry_time ?? null,
                         entryPrice: selectedTokenResult.entry_price ?? null,
+                        entryTx: selectedTokenResult.entry_tx ?? null,
                         exitTime: selectedTokenResult.exit_time ?? null,
                         exitPrice: selectedTokenResult.exit_price ?? null,
+                        exitTx: selectedTokenResult.exit_tx ?? null,
                         exitLabel: selectedTokenResult.fired ? selectedTokenResult.exit : null,
-                      }}
-                      onClose={() => setSelectedTokenMint(null)}
-                    />
-                  )}
+                      };
+                      const onClose = () => setSelectedTokenMint(null);
+                      // swing1 combos overlay their detected swing legs on the
+                      // chart; other strategies use the plain modal.
+                      return strategyId === 'swing_1' && activeComboParams ? (
+                        <Swing1InspectModal
+                          target={target}
+                          params={activeComboParams}
+                          onClose={onClose}
+                        />
+                      ) : (
+                        <TokenInspectModal target={target} onClose={onClose} />
+                      );
+                    })()}
                 </div>
               )}
             </div>

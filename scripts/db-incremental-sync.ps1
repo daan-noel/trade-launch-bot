@@ -37,8 +37,10 @@
   wallet_dict ids are GENERATED ALWAYS AS IDENTITY. The local DB is a read-mirror of
   the server's market data (lab has no ingest, so it never mints its own ids), so we
   copy the server ids verbatim with OVERRIDING SYSTEM VALUE -- trades.wallet_id then
-  resolves against the same dictionary on both boxes. Order matters for the FKs:
-  wallet_dict + tokens first, then tokens_info / token_sync_state / trades.
+  resolves against the same dictionary on both boxes. After the copy we setval() the
+  IDENTITY sequence past MAX(id) -- explicit-id inserts don't advance it, and a stale
+  sequence makes the next local intern() collide on wallet_dict_pkey. Order matters
+  for the FKs: wallet_dict + tokens first, then tokens_info / token_sync_state / trades.
 
   Strategy tables (strategy_rules/runs/run_metrics/positions) are NOT synced -- those
   are per-box authoring/run state, not shared market data.
@@ -299,6 +301,11 @@ OVERRIDING SYSTEM VALUE
 SELECT id, address FROM ec2_sync_src.wallet_dict
 WHERE id > $walletWm
 ON CONFLICT DO NOTHING;
+-- OVERRIDING SYSTEM VALUE inserts explicit ids without advancing the IDENTITY
+-- sequence. Re-point it past MAX(id) so the next local intern() (token_sync)
+-- mints a fresh id instead of colliding on wallet_dict_pkey.
+SELECT setval(pg_get_serial_sequence('wallet_dict', 'id'),
+              (SELECT GREATEST(MAX(id), 1) FROM wallet_dict));
 
 \echo '-- tokens'
 -- created_at>=watermark is the fast path (FDW pushes it down), but server tokens

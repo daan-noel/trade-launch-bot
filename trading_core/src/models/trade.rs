@@ -144,6 +144,16 @@ pub trait TradeRow {
     fn token_amount(&self) -> f64;
     fn price_per_token(&self) -> f64;
     fn slot(&self) -> u64;
+    /// Position of this trade's transaction within its block — the real intra-slot
+    /// ordering key. Together with `slot` and `leg_index` it gives the one canonical
+    /// trade order (`slot → tx_index → leg_index`) the DB, lake, and every in-memory
+    /// consumer sort on. Defaults to `0` for slim rows that don't carry it
+    /// (`SweepTrade`/`CachedTrade`): they're built from an already DB-ordered slice
+    /// and never re-sorted, so they need no per-row copy (RAM budget). Only the live
+    /// `Trade` — which IS re-sorted in memory — overrides it with the real column.
+    fn tx_index(&self) -> u32 {
+        0
+    }
     fn leg_index(&self) -> u32;
     fn block_time(&self) -> DateTime<Utc>;
     /// SOL side of the venue-neutral reserve pair this row prices from — curve
@@ -236,6 +246,9 @@ impl TradeRow for Trade {
     }
     fn slot(&self) -> u64 {
         self.slot
+    }
+    fn tx_index(&self) -> u32 {
+        self.tx_index
     }
     fn leg_index(&self) -> u32 {
         self.leg_index

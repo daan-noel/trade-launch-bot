@@ -7,8 +7,10 @@ import { Select } from 'components/ui/Select';
 import { Checkbox } from 'components/ui/Checkbox';
 import { Badge } from 'components/ui/Badge';
 import { Accordion } from 'components/ui/Accordion';
+import { InfoTooltip } from 'components/ui/InfoTooltip';
 import {
   GROUP_FIELDS,
+  groupAxesBySubgroup,
   type AxisDef,
   type GroupField,
   type GroupedSweepRunRecord,
@@ -45,11 +47,14 @@ interface SweepConfigFormProps {
 function Field({
   label,
   hint,
+  desc,
   className,
   children,
 }: {
   label: string;
   hint?: string;
+  /** Plain-language explanation, shown as a hover ⓘ tooltip next to the label. */
+  desc?: string;
   className?: string;
   children: ReactNode;
 }) {
@@ -57,6 +62,7 @@ function Field({
     <div className={cn('flex flex-col gap-1', className)}>
       <span className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider text-text-dim/80">
         {label}
+        {desc && <InfoTooltip title={label} body={desc} />}
         {hint && <span className="font-normal normal-case tracking-normal text-text-dim/45">{hint}</span>}
       </span>
       {children}
@@ -64,8 +70,36 @@ function Field({
   );
 }
 
+/** A bare grid of axis inputs (no section header) — the leaf renderer shared by
+ *  the flat group layout and each labelled sub-bucket. */
+function AxisInputs({
+  axes,
+  axesText,
+  setAxesText,
+}: {
+  axes: AxisDef[];
+  axesText: Record<string, string>;
+  setAxesText: (fn: (prev: Record<string, string>) => Record<string, string>) => void;
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      {axes.map((a) => (
+        <Field key={a.key} label={a.label} desc={a.desc}>
+          <Input
+            value={axesText[a.key] ?? ''}
+            onChange={(e) => setAxesText((prev) => ({ ...prev, [a.key]: e.target.value }))}
+            placeholder={a.nullable ? 'off, 20, 35' : '50, 100, 200'}
+          />
+        </Field>
+      ))}
+    </div>
+  );
+}
+
 /** One labelled param-grid subsection (Entry / Exit), so the sweep grid groups
- *  the same way the TPSL2 rule modal does. */
+ *  the same way the TPSL2 rule modal does. When any axis carries a `subgroup`
+ *  (swing1), the inner grid is split into labelled rows (swing · kill · volume …);
+ *  otherwise (TPSL1/TPSL2) it stays one flat grid. */
 function AxisGroup({
   title,
   hint,
@@ -83,23 +117,33 @@ function AxisGroup({
   setAxesText: (fn: (prev: Record<string, string>) => Record<string, string>) => void;
   className?: string;
 }) {
+  const buckets = useMemo(() => groupAxesBySubgroup(axes), [axes]);
+  const subgrouped = buckets.some((b) => b.meta != null);
   return (
     <div className={className}>
       <span className="mb-1.5 flex items-baseline gap-1.5">
         <span className={cn('text-[10px] font-bold uppercase tracking-wider', accent)}>{title}</span>
         <span className="text-[9px] lowercase text-text-dim/50">{hint}</span>
       </span>
-      <div className="grid grid-cols-2 gap-2">
-        {axes.map((a) => (
-          <Field key={a.key} label={a.label}>
-            <Input
-              value={axesText[a.key] ?? ''}
-              onChange={(e) => setAxesText((prev) => ({ ...prev, [a.key]: e.target.value }))}
-              placeholder={a.nullable ? 'off, 20, 35' : '50, 100, 200'}
-            />
-          </Field>
-        ))}
-      </div>
+      {subgrouped ? (
+        <div className="flex flex-col gap-2.5">
+          {buckets.map((b, i) => (
+            <div key={b.meta?.key ?? `untagged-${i}`}>
+              {b.meta && (
+                <span className="mb-1 flex items-baseline gap-1.5">
+                  <span className={cn('text-[9px] font-bold uppercase tracking-wider', b.meta.accent)}>
+                    {b.meta.label}
+                  </span>
+                  <span className="text-[8px] lowercase text-text-dim/45">{b.meta.hint}</span>
+                </span>
+              )}
+              <AxisInputs axes={b.axes} axesText={axesText} setAxesText={setAxesText} />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <AxisInputs axes={axes} axesText={axesText} setAxesText={setAxesText} />
+      )}
     </div>
   );
 }
@@ -491,8 +535,12 @@ export function SweepConfigForm({
             type="number"
             min={0.001}
             step={0.01}
-            value={buyAmountSol}
-            onChange={(e) => setBuyAmountSol(Math.max(0.001, Number(e.target.value) || 1))}
+            // `numeric` mode holds the raw text while editing so a decimal point
+            // survives keystroke-by-keystroke (typing "0.001" no longer collapses
+            // to 0). Empty ⇒ fall back to the floor; the field snaps to it on blur.
+            numeric
+            numericValue={buyAmountSol}
+            onNumericChange={(n) => setBuyAmountSol(n == null ? 0.001 : Math.max(0.001, n))}
           />
         </Field>
 

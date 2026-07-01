@@ -104,6 +104,21 @@ async fn main() -> anyhow::Result<()> {
         return lab::swing_probe::run(n, after).await;
     }
 
+    // `lab swing-census [N] [created_after_rfc3339]` — corpus-wide kill→volume
+    // prevalence sweep over kill-depth thresholds. Answers "is the kill phenomenon
+    // common enough to trade?" with data, not one sweep cell. No DB pool, no HTTP.
+    if std::env::args().nth(1).as_deref() == Some("swing-census") {
+        let n = std::env::args()
+            .nth(2)
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(5000);
+        let after = std::env::args()
+            .nth(3)
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc));
+        return lab::swing_probe::census(n, after).await;
+    }
+
     let settings = config::Settings::from_env_local().context("Failed to load configuration")?;
     info!(host = %settings.host, port = settings.port, "Local (analysis) configuration loaded");
 

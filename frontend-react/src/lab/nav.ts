@@ -22,24 +22,34 @@ export const labNav: NavConfig = {
       basePath: '/analysis',
       items: [
         { to: '/analysis/swing-detection', label: 'Swing detection' },
+        { to: '/analysis/swing1-detect', label: 'swing1 detect' },
       ],
     },
+    {
+      kind: 'group',
+      label: 'Grouped Sweep',
+      basePath: '/strategies/grouped-sweep',
+      items: [
+        { to: '/strategies/grouped-sweep-tpsl1', label: 'TPSL1' },
+        { to: '/strategies/grouped-sweep-tpsl2', label: 'TPSL2' },
+        { to: '/strategies/grouped-sweep-swing1', label: 'swing1' },
+      ],
+    },
+    {
+      kind: 'group',
+      label: 'Strategies',
+      basePath: '/strategies/tpsl',
+      items: [
+        { to: '/strategies/tpsl1', label: 'TP / SL Sniper 1' },
+        { to: '/strategies/tpsl2', label: 'TP / SL Sniper 2' },
+      ],
+    },
+
     {
       kind: 'group',
       label: 'Profiles',
       basePath: '/profiles',
       items: [{ to: '/profiles/other', label: 'Other profiles' }],
-    },
-    {
-      kind: 'group',
-      label: 'Strategies',
-      basePath: '/strategies',
-      items: [
-        { to: '/strategies/tpsl1', label: 'TP / SL Sniper 1' },
-        { to: '/strategies/tpsl2', label: 'TP / SL Sniper 2' },
-        { to: '/strategies/grouped-sweep-tpsl1', label: 'Grouped Sweep · TPSL1' },
-        { to: '/strategies/grouped-sweep-tpsl2', label: 'Grouped Sweep · TPSL2' },
-      ],
     },
     { kind: 'item', to: '/settings', label: 'Settings' },
   ],

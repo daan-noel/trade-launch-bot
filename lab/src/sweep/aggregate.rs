@@ -145,8 +145,10 @@ mod tests {
             exit,
             entry_time: None,
             entry_price: None,
+            entry_slot: None,
             exit_time: None,
             exit_price: None,
+            exit_slot: None,
         }
     }
 

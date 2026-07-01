@@ -70,6 +70,11 @@ impl std::fmt::Display for ExitReason {
 pub struct ExitFill {
     pub price: f64,
     pub tx_signature: String,
+    /// Slot of the fill trade — the unambiguous key the sweep drill-in uses to
+    /// resolve this fill's real `tx_signature` from the `trades` table (the slim
+    /// `SweepTrade` carries no signature, so the in-row `tx_signature` is empty
+    /// on the sweep path). Live reads the signature directly and ignores this.
+    pub slot: u64,
     pub block_time: DateTime<Utc>,
     pub reason: ExitReason,
 }
@@ -423,6 +428,7 @@ pub fn find_trade_driven_exit<T: TradeRow>(
             return Some(ExitFill {
                 price: et.price_per_token(),
                 tx_signature: et.tx_signature().to_string(),
+                slot: et.slot(),
                 block_time: et.block_time(),
                 reason,
             });

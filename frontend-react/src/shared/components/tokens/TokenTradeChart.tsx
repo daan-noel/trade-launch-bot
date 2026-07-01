@@ -7,6 +7,7 @@ import {
   type ChartEventMarker,
   type ChartMetric,
   type ChartRangeSelectionDetail,
+  type ChartSwingOverlay,
 } from 'components/token-price-chart';
 import { DataTable } from 'components/table/DataTable';
 import { tokenTradeColumns } from 'components/tokens/tokenTradeColumns';
@@ -25,11 +26,17 @@ interface TokenTradeChartProps {
   detail: TokenDetailRecord | null;
   /** Strategy entry/exit points to overlay (TPSL result inspection). */
   eventMarkers?: ChartEventMarker[] | null;
+  /** Swing-detection legs to draw as an overlay line (swing1 result inspection). */
+  swingOverlay?: ChartSwingOverlay | null;
   /** Passed to DataTable so column visibility is persisted per call-site. */
   tableId?: string;
 }
 
-/** Maps tx signature → kind for entry/exit row highlighting in the trades table. */
+/** Maps tx signature → kind for entry/exit row highlighting in the trades table.
+ *  Every inspect source carries the real fill signature: TPSL sim/position results
+ *  read it off the position, and the grouped-sweep drill-in resolves it from the
+ *  `trades` table by (mint, slot, side) — the slim `SweepTrade` the sweep walks has
+ *  none, so the backend looks it up before returning the row. */
 function buildEntryExitMap(markers: ChartEventMarker[] | null | undefined): Map<string, 'entry' | 'exit'> {
   const m = new Map<string, 'entry' | 'exit'>();
   if (!markers) return m;
@@ -71,7 +78,12 @@ function tradesInRange(
  * them to the reusable {@link TokenPriceChart}. Clicking a candle — or
  * drag-selecting a time range — lists the underlying trades in a table below.
  */
-export function TokenTradeChart({ detail, eventMarkers = null, tableId }: TokenTradeChartProps) {
+export function TokenTradeChart({
+  detail,
+  eventMarkers = null,
+  swingOverlay = null,
+  tableId,
+}: TokenTradeChartProps) {
   const { unit, usdRate } = usePriceUnit();
   const { timezone } = useTimezone();
   const price = usePriceDisplay();
@@ -170,6 +182,7 @@ export function TokenTradeChart({ detail, eventMarkers = null, tableId }: TokenT
         isCashbackEnabled={detail.is_cashback_enabled}
         tokenCreatedAt={detail.created_at}
         eventMarkers={eventMarkers}
+        swingOverlay={swingOverlay}
       />
 
       {(selectedBar || selectedRange) && (

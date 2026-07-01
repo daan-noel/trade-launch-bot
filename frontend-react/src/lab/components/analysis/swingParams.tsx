@@ -171,7 +171,13 @@ export function RangeInputs({ label, left, right, separator = '–' }: RangeInpu
       step={side.step ?? 'any'}
       placeholder={side.placeholder}
       disabled={side.disabled}
-      value={side.value}
+      // `numeric` mode holds the raw in-progress text inside the Input, so a
+      // decimal point survives keystroke-by-keystroke even though callers store
+      // the parsed number back (`value: number | ''`). The caller's string-based
+      // `onChange(raw)` contract is preserved — we just hand it the raw text and
+      // let the Input own the display, so re-parsing no longer clobbers input.
+      numeric
+      numericValue={side.value === '' ? null : side.value}
       onChange={(e) => side.onChange(e.target.value)}
     />
   );

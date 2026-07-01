@@ -54,15 +54,52 @@ export function fieldClassName({
 
 export type FieldProps = { fieldSize?: FieldSize; variant?: FieldVariant };
 
+/** Opt-in numeric-field behavior (see the `numeric` prop on {@link Input}). */
+export type NumericProps = {
+  /**
+   * Turn the field into a "typed number" input: it holds the raw in-progress
+   * text internally while focused, so partial values (`0`, `0.`, `0.00`, `-`,
+   * `1e`) survive keystroke-by-keystroke instead of being clobbered by a parse.
+   * The parsed number is reported via `onNumericChange`; on blur the field snaps
+   * back to the canonical `numericValue`. Use this instead of stringifying a
+   * parsed number back into `value` (which fights the user's decimal point).
+   */
+  numeric?: true;
+  /** The canonical numeric value (`null`/`undefined` ⇒ empty field). */
+  numericValue?: number | null;
+  /** Parsed value on each edit: a finite number, or `null` for empty/`off`. */
+  onNumericChange?: (value: number | null) => void;
+  /** Parse with `parseInt` instead of `parseFloat` (integer-only fields). */
+  integer?: boolean;
+};
+
 // Safe stand-in handed back if a ref is read before the element mounts, so
 // imperative calls (`focus()`, `select()`) are no-ops instead of throwing on null.
 const NOOP_INPUT = { focus() {}, blur() {}, select() {}, value: '' };
 
+/** Empty or an explicit "no bound" sentinel ⇒ the numeric value is `null`. */
+const NUMERIC_NULL_RE = /^(off|null|none|-)$/i;
+
 export const Input = forwardRef<
   HTMLInputElement,
-  InputHTMLAttributes<HTMLInputElement> & FieldProps & { unit?: string; blankZero?: boolean }
+  InputHTMLAttributes<HTMLInputElement> & FieldProps & NumericProps & { unit?: string; blankZero?: boolean }
 >(function Input(
-  { className, type = 'text', fieldSize = 'sm', variant = 'default', unit, blankZero, value, ...props },
+  {
+    className,
+    type = 'text',
+    fieldSize = 'sm',
+    variant = 'default',
+    unit,
+    blankZero,
+    value,
+    numeric,
+    numericValue,
+    onNumericChange,
+    integer,
+    onChange,
+    onBlur,
+    ...props
+  },
   ref,
 ) {
   const innerRef = useRef<HTMLInputElement | null>(null);
@@ -73,6 +110,38 @@ export const Input = forwardRef<
     () => innerRef.current ?? (NOOP_INPUT as unknown as HTMLInputElement),
     [],
   );
+
+  // Numeric mode: hold the raw typed text while editing so partial numbers
+  // aren't destroyed by re-parsing `numericValue` back into the field. `null`
+  // draft ⇒ not editing, render the canonical value. Cleared on blur.
+  const [draft, setDraft] = useState<string | null>(null);
+  if (numeric) {
+    // Preserve any caller-supplied handlers: numeric mode manages the draft and
+    // reports the parsed value via `onNumericChange`, but still forwards the raw
+    // change/blur event so a caller keeping its own string-based `onChange`
+    // contract (e.g. RangeInputs) keeps working.
+    const callerChange = onChange;
+    const callerBlur = onBlur;
+    value = draft ?? (numericValue == null ? '' : String(numericValue));
+    onChange = (e) => {
+      const raw = e.target.value;
+      setDraft(raw);
+      const trimmed = raw.trim();
+      let parsed: number | null;
+      if (trimmed === '' || NUMERIC_NULL_RE.test(trimmed)) {
+        parsed = null;
+      } else {
+        const n = integer ? parseInt(trimmed, 10) : parseFloat(trimmed);
+        parsed = Number.isFinite(n) ? n : null;
+      }
+      onNumericChange?.(parsed);
+      callerChange?.(e);
+    };
+    onBlur = (e) => {
+      setDraft(null); // snap back to the canonical `numericValue`
+      callerBlur?.(e);
+    };
+  }
 
   // `blankZero`: render a literal 0 as an empty field (for "0 = off" params, so
   // an unset gate reads blank). Display-only — the bound value is untouched, so
@@ -91,14 +160,32 @@ export const Input = forwardRef<
   }, [unit, value, fieldCls]);
 
   if (!unit) {
-    return <input ref={innerRef} type={type} value={value} className={fieldCls} {...props} />;
+    return (
+      <input
+        ref={innerRef}
+        type={type}
+        value={value}
+        onChange={onChange}
+        onBlur={onBlur}
+        className={fieldCls}
+        {...props}
+      />
+    );
   }
 
   const hasValue = value != null && `${value}` !== '';
 
   return (
     <span className="relative inline-flex w-full items-center">
-      <input ref={innerRef} type={type} value={value} className={cn(fieldCls, 'w-full')} {...props} />
+      <input
+        ref={innerRef}
+        type={type}
+        value={value}
+        onChange={onChange}
+        onBlur={onBlur}
+        className={cn(fieldCls, 'w-full')}
+        {...props}
+      />
       <span
         ref={mirrorRef}
         aria-hidden

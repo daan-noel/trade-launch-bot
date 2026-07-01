@@ -210,6 +210,11 @@ fn instruction_arg_as_sol(token: &Token, key: &str) -> Option<f64> {
 pub struct EntryFill {
     pub price: f64,
     pub tx_signature: String,
+    /// Slot of the fill trade — the unambiguous key the sweep drill-in uses to
+    /// resolve this fill's real `tx_signature` from the `trades` table (the slim
+    /// `SweepTrade` carries no signature, so the in-row `tx_signature` is empty
+    /// on the sweep path). Live reads the signature directly and ignores this.
+    pub slot: u64,
     pub block_time: DateTime<Utc>,
 }
 
@@ -254,6 +259,7 @@ pub fn find_entry_fill_in_trades<T: TradeRow>(
         .map(|t| EntryFill {
             price: t.price_per_token(),
             tx_signature: t.tx_signature().to_string(),
+            slot: t.slot(),
             block_time: t.block_time(),
         })
 }

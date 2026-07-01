@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { Modal } from 'components/ui/Modal';
 import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
 import { TokenTradeChart } from 'components/tokens/TokenTradeChart';
-import type { ChartEventMarker } from 'components/token-price-chart';
+import type { ChartEventMarker, ChartSwingOverlay } from 'components/token-price-chart';
 import { apiErrorMessage, useGetTokenDetailQuery } from 'store/apiSlice';
 
 /** A token to inspect from a TPSL result table, with its strategy entry/exit
@@ -47,13 +47,17 @@ function buildEventMarkers(target: InspectTarget): ChartEventMarker[] {
 
 interface TokenInspectModalProps {
   target: InspectTarget;
+  /** Swing-detection legs to draw on the chart (swing1 sweep inspection). The
+   *  caller owns the fetch + leg→overlay shaping so this shared modal stays
+   *  mode-agnostic; absent for tpsl flows, which show no swing overlay. */
+  swingOverlay?: ChartSwingOverlay | null;
   onClose: () => void;
 }
 
 /** Modal showing a token's detail panel and trade-history chart, with the
  *  strategy's entry/exit points marked on the chart. Opened by selecting a row
  *  in a TPSL paper/simulation/position result table. */
-export function TokenInspectModal({ target, onClose }: TokenInspectModalProps) {
+export function TokenInspectModal({ target, swingOverlay = null, onClose }: TokenInspectModalProps) {
   const {
     data: detail,
     isFetching,
@@ -72,7 +76,12 @@ export function TokenInspectModal({ target, onClose }: TokenInspectModalProps) {
           loading={isFetching}
           error={apiErrorMessage(error, 'Failed to load detail')}
         />
-        <TokenTradeChart tableId="tpsl2_inspect_trades" detail={detail ?? null} eventMarkers={eventMarkers} />
+        <TokenTradeChart
+          tableId="tpsl2_inspect_trades"
+          detail={detail ?? null}
+          eventMarkers={eventMarkers}
+          swingOverlay={swingOverlay}
+        />
       </div>
     </Modal>
   );

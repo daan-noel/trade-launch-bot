@@ -6,6 +6,8 @@ pub use trading_core::api::handlers::tokens::*;
 
 mod list;
 mod swing;
+mod swing1_detect;
 
 pub use list::*;
 pub use swing::*;
+pub use swing1_detect::*;
