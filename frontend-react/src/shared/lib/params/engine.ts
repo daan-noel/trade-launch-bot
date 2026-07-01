@@ -14,6 +14,7 @@ import type {
   FormState,
   LockState,
   ParamField,
+  ParamGroup,
   PasteMode,
   RuleParamsBlob,
   StrategySpec,
@@ -144,10 +145,12 @@ export function applyBlob(
   let applied = 0;
   let skipped = 0;
   let dropped = 0;
+  const coveredGroups = new Set<ParamGroup>();
 
   for (const [col, value] of Object.entries(blob.params)) {
     const f = byColumn.get(col);
     if (!f) { dropped++; continue; }
+    coveredGroups.add(f.group);
     if (opts.live && f.group !== 'sizing') { skipped++; continue; }
     if (f.kind === 'array') {
       next[col] = Array.isArray(value) ? JSON.stringify(value) : '';
@@ -159,7 +162,15 @@ export function applyBlob(
     applied++;
   }
 
-  return { next, result: { applied, skipped, dropped } };
+  // Groups the spec defines that this blob never touched at all (as opposed to
+  // touched-but-blank) — e.g. a swing1 detect-page copy has no `sizing`/
+  // `fingerprint` keys, so those groups silently stay whatever the form already
+  // had. Surfacing this tells the user those params weren't part of the paste.
+  const emptyGroups = [...new Set(spec.fields.map((f) => f.group))].filter(
+    (g) => !coveredGroups.has(g),
+  );
+
+  return { next, result: { applied, skipped, dropped, emptyGroups } };
 }
 
 // ── build payloads (form → wire) ────────────────────────────────────────────

@@ -117,6 +117,12 @@ export interface ApplyResult {
   applied: number;
   skipped: number;
   dropped: number;
+  /** Groups the target spec defines that got ZERO fields from this blob — e.g.
+   *  pasting a swing1 detect-page copy (swing/kill/volume/exit only) into a rule
+   *  form never carries `sizing`/`fingerprint`, since the detect page has no
+   *  concept of position size or token matching. Empty when the blob's source
+   *  covers every group (e.g. a rule→rule or combo→rule copy). */
+  emptyGroups: ParamGroup[];
 }
 
 /** Form state: every field's raw string value, keyed by its canonical column. The

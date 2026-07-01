@@ -158,7 +158,9 @@ export function Swing1DetectPage() {
         setString(LS_KEY, JSON.stringify(updated));
         return updated;
       });
-      return { applied, skipped: 0, dropped };
+      // This page has no sizing/fingerprint fields to begin with, so a rule/combo
+      // blob's sizing+fingerprint keys are expected to drop — nothing to flag.
+      return { applied, skipped: 0, dropped, emptyGroups: [] };
     },
     [paramKeySet],
   );

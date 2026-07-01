@@ -3,10 +3,20 @@ import { cn } from 'lib/cn';
 import {
   parseBlob,
   type ApplyResult,
+  type ParamGroup,
   type RuleParamsBlob,
   type Strategy,
   type PasteMode,
 } from 'lib/params';
+
+/** Human label for a group called out in the "not included" warning. */
+const GROUP_LABEL: Record<ParamGroup, string> = {
+  fingerprint: 'token fingerprint',
+  sizing: 'sizing',
+  entry: 'entry',
+  exit: 'exit',
+  mode: 'mode',
+};
 
 interface Props {
   strategy: Strategy;
@@ -128,6 +138,14 @@ export function PasteParamsSection({ strategy, live, onApply }: Props) {
               )}
               {result.dropped > 0 && (
                 <> · <span className="text-red/80">dropped {result.dropped} (unknown)</span></>
+              )}
+              {result.emptyGroups.length > 0 && (
+                <>
+                  {' '}· <span className="text-warning">
+                    not included in this blob: {result.emptyGroups.map((g) => GROUP_LABEL[g]).join(', ')}
+                    {' '}(fill in manually)
+                  </span>
+                </>
               )}
             </p>
           )}
