@@ -65,8 +65,9 @@ export function mergeTokenData<T extends { mint: string }>(
 
 // ---------------------------------------------------------------------------
 // Shared column definitions — same set as tokenColumns.tsx for the token-info
-// group, all hidden by default. `appendedTokenColumns` filters out any key the
-// caller's existing column set already covers.
+// group. Most default to hidden; a subset (activity/price/initial/max_or_
+// spendable/compute/ix/flags highlights) default to visible. `appendedTokenColumns`
+// filters out any key the caller's existing column set already covers.
 // ---------------------------------------------------------------------------
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -104,7 +105,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     label: 'Token Trades',
     tooltip: 'Total trades ever recorded for this token (all time).',
     group: 'activity',
-    defaultVisible: false,
+    defaultVisible: true,
     sortable: true,
     render: (r: { trade_count?: number }) => r.trade_count ?? '—',
     sortValue: (r: { trade_count?: number }) => r.trade_count ?? null,
@@ -114,7 +115,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     key: 'last_trade',
     label: 'Last Trade',
     group: 'activity',
-    defaultVisible: false,
+    defaultVisible: true,
     sortable: true,
     render: (r: { last_trade_at?: string | null }) => <DateCell iso={r.last_trade_at ?? null} />,
     sortValue: (r: { last_trade_at?: string | null }) => r.last_trade_at ?? null,
@@ -135,7 +136,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     key: 'current_price',
     label: 'Price',
     group: 'price',
-    defaultVisible: false,
+    defaultVisible: true,
     sortable: true,
     render: (r: { current_price?: number | null }) => <CurrentPriceCell sol={r.current_price ?? null} />,
     sortValue: (r: { current_price?: number | null }) => r.current_price ?? null,
@@ -145,7 +146,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     key: 'ath_price',
     label: 'ATH',
     group: 'price',
-    defaultVisible: false,
+    defaultVisible: true,
     sortable: true,
     render: (r: { ath_price?: number | null }) => <PriceCell sol={r.ath_price ?? null} />,
     sortValue: (r: { ath_price?: number | null }) => r.ath_price ?? null,
@@ -187,7 +188,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     key: 'initial_buy',
     label: 'Init Buy',
     group: 'initial',
-    defaultVisible: false,
+    defaultVisible: true,
     sortable: true,
     render: (r: { initial_buy_sol?: number | null }) => <AmountCell sol={r.initial_buy_sol ?? null} />,
     sortValue: (r: { initial_buy_sol?: number | null }) => r.initial_buy_sol ?? null,
@@ -220,7 +221,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     key: 'max_sol_cost',
     label: 'Max SOL Cost',
     group: 'max_or_spendable',
-    defaultVisible: false,
+    defaultVisible: true,
     sortable: true,
     render: (r: { max_sol_cost?: number | null }) =>
       r.max_sol_cost != null ? formatDecimalTrim(r.max_sol_cost / 1e9, 3) : '—',
@@ -231,7 +232,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     key: 'spendable_sol_in',
     label: 'Spendable SOL In',
     group: 'max_or_spendable',
-    defaultVisible: false,
+    defaultVisible: true,
     sortable: true,
     render: (r: { spendable_sol_in?: number | null }) =>
       r.spendable_sol_in != null ? formatDecimalTrim(r.spendable_sol_in / 1e9, 3) : '—',
@@ -254,7 +255,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     key: 'cu_limit',
     label: 'CU Limit',
     group: 'compute',
-    defaultVisible: false,
+    defaultVisible: true,
     sortable: true,
     render: (r: { cu_limit?: number | null }) => (r.cu_limit != null ? r.cu_limit : '—'),
     sortValue: (r: { cu_limit?: number | null }) => r.cu_limit ?? null,
@@ -264,7 +265,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     key: 'cu_price',
     label: 'CU Price',
     group: 'compute',
-    defaultVisible: false,
+    defaultVisible: true,
     sortable: true,
     render: (r: { cu_price?: number | null }) =>
       r.cu_price != null ? formatWithCommas(r.cu_price) : '—',
@@ -276,7 +277,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     key: 'ix_count',
     label: 'IX Count',
     group: 'ix',
-    defaultVisible: false,
+    defaultVisible: true,
     sortable: true,
     render: (r: { ix_labels_count?: number }) => r.ix_labels_count ?? '—',
     sortValue: (r: { ix_labels_count?: number }) => r.ix_labels_count ?? null,
@@ -312,7 +313,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     key: 'migrated',
     label: 'Migrated',
     group: 'flags',
-    defaultVisible: false,
+    defaultVisible: true,
     sortable: true,
     render: (r: { is_migrated?: boolean }) => (r.is_migrated ? '✓' : ''),
     sortValue: (r: { is_migrated?: boolean }) => (r.is_migrated ? 1 : 0),
@@ -322,7 +323,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     key: 'dead',
     label: 'Dead',
     group: 'flags',
-    defaultVisible: false,
+    defaultVisible: true,
     sortable: true,
     render: (r: { is_dead?: boolean }) => (r.is_dead ? '💀' : ''),
     sortValue: (r: { is_dead?: boolean }) => (r.is_dead ? 1 : 0),
@@ -332,7 +333,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     key: 'mayhem_mode',
     label: 'Mayhem',
     group: 'flags',
-    defaultVisible: false,
+    defaultVisible: true,
     sortable: true,
     render: (r: { is_mayhem_mode?: boolean }) => (r.is_mayhem_mode ? '✓' : ''),
     sortValue: (r: { is_mayhem_mode?: boolean }) => (r.is_mayhem_mode ? 1 : 0),
@@ -342,7 +343,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     key: 'cashback',
     label: 'Cashback',
     group: 'flags',
-    defaultVisible: false,
+    defaultVisible: true,
     sortable: true,
     render: (r: { is_cashback_enabled?: boolean }) => (r.is_cashback_enabled ? '✓' : ''),
     sortValue: (r: { is_cashback_enabled?: boolean }) => (r.is_cashback_enabled ? 1 : 0),
@@ -394,8 +395,8 @@ export function coreTokenColumns(existingKeys?: Set<string>): ColumnDef<any>[] {
 }
 
 /**
- * Return token-info columns to append to a strategy result table. All columns
- * have `defaultVisible: false` so they don't show by default. Columns whose key
+ * Return token-info columns to append to a strategy result table. Each column's
+ * `defaultVisible` flag controls its initial show/hide state. Columns whose key
  * is already in `existingKeys` are filtered out to avoid duplicates.
  *
  * Callers should pass a Set that includes both the exact column keys already in
