@@ -442,17 +442,16 @@ impl StrategyRuntimeCache {
         }
         let entry_time = clock_entry_time(position)?;
         let entry_price = position.entry_price.unwrap_or(0.0);
-        let strategy = ladder.strategy();
         use dashmap::mapref::entry::Entry;
         match self.exit_state_by_position.entry(position.id) {
             Entry::Occupied(e) => e.get().clock_exit_reason(entry_time, &ladder, now),
             Entry::Vacant(v) => {
                 let cached = CachedExitStateImpl::build(
-                    strategy,
                     trades,
                     trades_base,
                     entry_price,
                     entry_time,
+                    &ladder,
                 );
                 let reason = cached.clock_exit_reason(entry_time, &ladder, now);
                 v.insert(cached);

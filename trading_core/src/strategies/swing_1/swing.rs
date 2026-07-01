@@ -194,6 +194,35 @@ pub(crate) struct Tx {
     pre_spot: f64,
 }
 
+impl Tx {
+    /// Build the internal [`Tx`] for one trade given the previous trade's post-trade
+    /// spot (`None` for the very first trade, which falls back to its own post spot).
+    /// The single-tx analogue of the per-row body of [`sanitize_and_order`], so the
+    /// live-incremental exit memo folds a stream of trades into the SAME `Tx`s the
+    /// batch builds. Returns `None` for a literally-non-positive trade (dropped by
+    /// [`sanitize_and_order`]'s `sol_amount() > 0.0` filter) so the two agree on
+    /// which trades exist at all.
+    pub(crate) fn from_trade<T: TradeRow>(t: &T, prev_post_spot: Option<f64>) -> Option<Self> {
+        if t.sol_amount() <= 0.0 {
+            return None;
+        }
+        let post_spot = t.chart_spot_price().unwrap_or_else(|| t.execution_price());
+        Some(Self {
+            timestamp_ms: t.block_time().timestamp_millis(),
+            side: if t.is_buy() { Side::Buy } else { Side::Sell },
+            sol_amount: t.sol_amount(),
+            price: post_spot,
+            pre_spot: prev_post_spot.unwrap_or(post_spot),
+        })
+    }
+
+    /// This trade's post-trade GMGN spot — the `prev_post_spot` seed for the next
+    /// [`from_trade`](Self::from_trade) in the incremental fold.
+    pub(crate) fn post_spot(&self) -> f64 {
+        self.price
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
     SwingHigh,
@@ -315,7 +344,7 @@ impl LegAcc {
         self.consider_pivot(tx, big_tx_sol);
     }
 
-    fn finalize(self) -> SwingLeg {
+    pub(crate) fn finalize(self) -> SwingLeg {
         // Terminal pivot: last big same-side tx, else the leg's price extreme.
         let (pivot_end_at, pivot_end_price) = match (self.last_big_at, self.last_big_price) {
             (Some(at), Some(price)) => (at, price),
@@ -401,165 +430,185 @@ pub(crate) fn sanitize_and_order<T: TradeRow>(trades: &[T]) -> Vec<Tx> {
             .then(a.block_time().cmp(&b.block_time()))
     });
 
+    // Post-trade GMGN spot via the single shared definition (reserve pair → pool →
+    // execution). Identical to the chart, live strategies, and the sweep, so a leg
+    // detected here is the leg detected live. The `sol_amount() > 0.0` filter above
+    // already dropped non-positive rows, so `Tx::from_trade` never returns `None`
+    // here — but the incremental exit memo relies on that same drop, so both go
+    // through the one constructor.
     let mut prev_post_spot: Option<f64> = None;
     ordered
         .into_iter()
-        .map(|t| {
-            // Post-trade GMGN spot via the single shared definition (reserve pair
-            // → pool → execution). Identical to the chart, live strategies, and
-            // the sweep, so a leg detected here is the leg detected live.
-            let post_spot = t.chart_spot_price().unwrap_or_else(|| t.execution_price());
-            // Spot just before this trade = the previous trade's post-trade spot.
-            // The very first trade has no prior state, so fall back to its own
-            // post-trade spot.
-            let pre_spot = prev_post_spot.unwrap_or(post_spot);
-            prev_post_spot = Some(post_spot);
-            Tx {
-                timestamp_ms: t.block_time().timestamp_millis(),
-                side: if t.is_buy() { Side::Buy } else { Side::Sell },
-                sol_amount: t.sol_amount(),
-                price: post_spot,
-                pre_spot,
-            }
+        .filter_map(|t| {
+            let tx = Tx::from_trade(t, prev_post_spot)?;
+            prev_post_spot = Some(tx.post_spot());
+            Some(tx)
         })
         .collect()
 }
 
-/// Core phase machine. Produces the pre-filter, strictly-alternating ledger.
-/// Finalized reversals are pushed during the scan; the active leg and any temp
-/// leg still open at end-of-history are appended as well.
-pub(crate) fn scan(txs: &[Tx], params: &SwingParams) -> Vec<LegAcc> {
-    let mut ledger: Vec<LegAcc> = Vec::new();
+/// The incremental swing-scan machine — the exact FSM `scan()` runs, extracted so
+/// the batch and the live-incremental exit memo (`swing_1::exit::CachedSwingExitState`)
+/// share ONE state machine and can never drift.
+///
+/// A [`ScanState`] carries the whole scan context (`current_high`/`current_low`/`temp`
+/// legs, the `phase` FSM, the `frozen_threshold`, and — implicitly through each leg's
+/// own `max_sol` — the per-leg dust floor). Feed it trades one at a time via
+/// [`step`](Self::step); once fed, [`snapshot_ledger`](Self::snapshot_ledger)
+/// reproduces the ledger `scan()` would return had history ended at the last fed tx
+/// (the finalized reversals in order + the open leg(s) trailing).
+///
+/// **Parity contract:** `scan(txs, params)` == folding every tx of `txs` through a
+/// fresh `ScanState` then calling `snapshot_ledger`. Pinned by
+/// [`scan_stepper_matches_batch`](tests::scan_stepper_matches_batch).
+#[derive(Clone)]
+pub(crate) struct ScanState {
+    current_high: Option<LegAcc>,
+    current_low: Option<LegAcc>,
+    temp: Option<LegAcc>,
+    frozen_threshold: f64,
+    /// `None` until the first tx seeds the FSM.
+    phase: Option<Phase>,
+    /// Count of finalized reversals already pushed to `finalized`. The stepper only
+    /// ever appends, so this is the live-incremental cursor into the finalized legs.
+    finalized: Vec<LegAcc>,
+}
 
-    if txs.is_empty() {
-        return ledger;
+impl ScanState {
+    pub(crate) fn new() -> Self {
+        Self {
+            current_high: None,
+            current_low: None,
+            temp: None,
+            frozen_threshold: 0.0,
+            phase: None,
+            finalized: Vec::new(),
+        }
     }
 
-    let mut current_high: Option<LegAcc> = None;
-    let mut current_low: Option<LegAcc> = None;
-    let mut temp: Option<LegAcc> = None;
-    let mut frozen_threshold: f64 = 0.0;
+    /// The finalized reversals pushed so far, in order (each a completed swing leg).
+    /// The still-open trailing leg(s) are NOT included — use
+    /// [`snapshot_ledger`](Self::snapshot_ledger) for the end-of-history view.
+    pub(crate) fn finalized(&self) -> &[LegAcc] {
+        &self.finalized
+    }
 
-    let big = params.big_tx_sol;
-    // A single tx clearing the big-tx threshold confirms a reversal on its own,
-    // independent of the accumulated net-flow threshold.
-    let is_big = |tx: &Tx| big > 0.0 && tx.sol_amount >= big;
+    /// Fold one transaction into the machine, appending to `finalized` when a
+    /// reversal completes. Byte-identical to the body of `scan`'s loop (plus the
+    /// first-tx seeding), so the two never drift.
+    pub(crate) fn step(&mut self, tx: &Tx, params: &SwingParams) {
+        let big = params.big_tx_sol;
+        // A single tx clearing the big-tx threshold confirms a reversal on its own,
+        // independent of the accumulated net-flow threshold.
+        let is_big = |tx: &Tx| big > 0.0 && tx.sol_amount >= big;
 
-    // Dynamic dust floor: a trade is dust when it's a tiny fraction of the active
-    // real leg's largest trade so far (`dust_frac * leg.max_sol`). Scale-free, so
-    // no per-token SOL amount to guess. `0` (or no open leg yet) ⇒ off.
-    let dust_frac = params.dust_frac;
-    let is_dust = |tx: &Tx, active: Option<&LegAcc>| {
-        dust_frac > 0.0
-            && active.is_some_and(|leg| tx.sol_amount < dust_frac * leg.max_sol)
-    };
-
-    // Initialization from the first transaction.
-    let first = &txs[0];
-    let mut phase = match first.side {
-        Side::Buy => {
-            current_high = Some(LegAcc::seed_high(first, big));
-            Phase::SwingHigh
-        }
-        Side::Sell => {
-            current_low = Some(LegAcc::seed_low(first, big));
-            Phase::SwingLow
-        }
-    };
-
-    for tx in &txs[1..] {
-        // Drop dust relative to the active real leg (the one this trade would
-        // extend or reverse). Skipping here means dust never applies, reverses, or
-        // merges back — so a leg ends at its last real trade and a stray dust trade
-        // can't open a spurious bridge leg across a breakage.
-        let active = match phase {
-            Phase::SwingHigh | Phase::TempSwingLow => current_high.as_ref(),
-            Phase::SwingLow | Phase::TempSwingHigh => current_low.as_ref(),
+        // Seed the FSM from the first transaction.
+        let Some(phase) = self.phase else {
+            self.phase = Some(match tx.side {
+                Side::Buy => {
+                    self.current_high = Some(LegAcc::seed_high(tx, big));
+                    Phase::SwingHigh
+                }
+                Side::Sell => {
+                    self.current_low = Some(LegAcc::seed_low(tx, big));
+                    Phase::SwingLow
+                }
+            });
+            return;
         };
-        if is_dust(tx, active) {
-            continue;
+
+        // Dynamic dust floor: a trade is dust when it's a tiny fraction of the active
+        // real leg's largest trade so far (`dust_frac * leg.max_sol`). Scale-free, so
+        // no per-token SOL amount to guess. `0` (or no open leg yet) ⇒ off.
+        let dust_frac = params.dust_frac;
+        let active = match phase {
+            Phase::SwingHigh | Phase::TempSwingLow => self.current_high.as_ref(),
+            Phase::SwingLow | Phase::TempSwingHigh => self.current_low.as_ref(),
+        };
+        if dust_frac > 0.0 && active.is_some_and(|leg| tx.sol_amount < dust_frac * leg.max_sol) {
+            return;
         }
 
         match phase {
             Phase::SwingHigh => match tx.side {
-                Side::Buy => current_high.as_mut().unwrap().apply_buy(tx, big),
+                Side::Buy => self.current_high.as_mut().unwrap().apply_buy(tx, big),
                 Side::Sell => {
-                    let snapshot = current_high.as_ref().unwrap().net_flow();
-                    frozen_threshold = reversal_threshold(
+                    let snapshot = self.current_high.as_ref().unwrap().net_flow();
+                    self.frozen_threshold = reversal_threshold(
                         params.high_to_low_threshold_sol,
                         params.high_to_low_threshold_pct,
                         snapshot.abs(),
                     );
-                    temp = Some(LegAcc::seed_low(tx, big));
-                    phase = Phase::TempSwingLow;
+                    self.temp = Some(LegAcc::seed_low(tx, big));
+                    self.phase = Some(Phase::TempSwingLow);
 
-                    if temp.as_ref().unwrap().outflow >= frozen_threshold || is_big(tx) {
-                        ledger.push(current_high.take().unwrap());
-                        current_low = temp.take();
-                        phase = Phase::SwingLow;
+                    if self.temp.as_ref().unwrap().outflow >= self.frozen_threshold || is_big(tx) {
+                        self.finalized.push(self.current_high.take().unwrap());
+                        self.current_low = self.temp.take();
+                        self.phase = Some(Phase::SwingLow);
                     }
                 }
             },
 
             Phase::TempSwingLow => match tx.side {
                 Side::Sell => {
-                    let t = temp.as_mut().unwrap();
+                    let t = self.temp.as_mut().unwrap();
                     t.apply_sell(tx, big);
-                    if t.outflow >= frozen_threshold || is_big(tx) {
-                        ledger.push(current_high.take().unwrap());
-                        current_low = temp.take();
-                        phase = Phase::SwingLow;
+                    if t.outflow >= self.frozen_threshold || is_big(tx) {
+                        self.finalized.push(self.current_high.take().unwrap());
+                        self.current_low = self.temp.take();
+                        self.phase = Some(Phase::SwingLow);
                     }
                 }
                 Side::Buy => {
                     // Sub-threshold: merge temp SELLs back into the swing high.
-                    let t = temp.take().unwrap();
-                    let h = current_high.as_mut().unwrap();
+                    let t = self.temp.take().unwrap();
+                    let h = self.current_high.as_mut().unwrap();
                     h.outflow += t.outflow;
                     h.trade_count += t.trade_count;
-                    phase = Phase::SwingHigh;
+                    self.phase = Some(Phase::SwingHigh);
                     // The triggering BUY is then counted exactly once here.
                     h.apply_buy(tx, big);
                 }
             },
 
             Phase::SwingLow => match tx.side {
-                Side::Sell => current_low.as_mut().unwrap().apply_sell(tx, big),
+                Side::Sell => self.current_low.as_mut().unwrap().apply_sell(tx, big),
                 Side::Buy => {
-                    let snapshot = current_low.as_ref().unwrap().net_flow(); // negative
-                    frozen_threshold = reversal_threshold(
+                    let snapshot = self.current_low.as_ref().unwrap().net_flow(); // negative
+                    self.frozen_threshold = reversal_threshold(
                         params.low_to_high_threshold_sol,
                         params.low_to_high_threshold_pct,
                         snapshot.abs(),
                     );
-                    temp = Some(LegAcc::seed_high(tx, big));
-                    phase = Phase::TempSwingHigh;
+                    self.temp = Some(LegAcc::seed_high(tx, big));
+                    self.phase = Some(Phase::TempSwingHigh);
 
-                    if temp.as_ref().unwrap().inflow >= frozen_threshold || is_big(tx) {
-                        ledger.push(current_low.take().unwrap());
-                        current_high = temp.take();
-                        phase = Phase::SwingHigh;
+                    if self.temp.as_ref().unwrap().inflow >= self.frozen_threshold || is_big(tx) {
+                        self.finalized.push(self.current_low.take().unwrap());
+                        self.current_high = self.temp.take();
+                        self.phase = Some(Phase::SwingHigh);
                     }
                 }
             },
 
             Phase::TempSwingHigh => match tx.side {
                 Side::Buy => {
-                    let t = temp.as_mut().unwrap();
+                    let t = self.temp.as_mut().unwrap();
                     t.apply_buy(tx, big);
-                    if t.inflow >= frozen_threshold || is_big(tx) {
-                        ledger.push(current_low.take().unwrap());
-                        current_high = temp.take();
-                        phase = Phase::SwingHigh;
+                    if t.inflow >= self.frozen_threshold || is_big(tx) {
+                        self.finalized.push(self.current_low.take().unwrap());
+                        self.current_high = self.temp.take();
+                        self.phase = Some(Phase::SwingHigh);
                     }
                 }
                 Side::Sell => {
                     // Sub-threshold: merge temp BUYs back into the swing low.
-                    let t = temp.take().unwrap();
-                    let l = current_low.as_mut().unwrap();
+                    let t = self.temp.take().unwrap();
+                    let l = self.current_low.as_mut().unwrap();
                     l.inflow += t.inflow;
                     l.trade_count += t.trade_count;
-                    phase = Phase::SwingLow;
+                    self.phase = Some(Phase::SwingLow);
                     // The triggering SELL is then counted exactly once here.
                     l.apply_sell(tx, big);
                 }
@@ -567,36 +616,54 @@ pub(crate) fn scan(txs: &[Tx], params: &SwingParams) -> Vec<LegAcc> {
         }
     }
 
-    match phase {
-        Phase::SwingHigh => {
-            if let Some(h) = current_high {
-                ledger.push(h);
+    /// The ledger `scan()` would return had history ended at the last fed tx: the
+    /// finalized reversals plus the open leg(s) trailing the current phase.
+    pub(crate) fn snapshot_ledger(&self) -> Vec<LegAcc> {
+        let mut ledger = self.finalized.clone();
+        match self.phase {
+            None => {}
+            Some(Phase::SwingHigh) => {
+                if let Some(h) = &self.current_high {
+                    ledger.push(h.clone());
+                }
+            }
+            Some(Phase::TempSwingLow) => {
+                if let Some(h) = &self.current_high {
+                    ledger.push(h.clone());
+                }
+                if let Some(t) = &self.temp {
+                    ledger.push(t.clone());
+                }
+            }
+            Some(Phase::SwingLow) => {
+                if let Some(l) = &self.current_low {
+                    ledger.push(l.clone());
+                }
+            }
+            Some(Phase::TempSwingHigh) => {
+                if let Some(l) = &self.current_low {
+                    ledger.push(l.clone());
+                }
+                if let Some(t) = &self.temp {
+                    ledger.push(t.clone());
+                }
             }
         }
-        Phase::TempSwingLow => {
-            if let Some(h) = current_high {
-                ledger.push(h);
-            }
-            if let Some(t) = temp {
-                ledger.push(t);
-            }
-        }
-        Phase::SwingLow => {
-            if let Some(l) = current_low {
-                ledger.push(l);
-            }
-        }
-        Phase::TempSwingHigh => {
-            if let Some(l) = current_low {
-                ledger.push(l);
-            }
-            if let Some(t) = temp {
-                ledger.push(t);
-            }
-        }
+        ledger
     }
+}
 
-    ledger
+/// Core phase machine. Produces the pre-filter, strictly-alternating ledger.
+/// Finalized reversals are pushed during the scan; the active leg and any temp
+/// leg still open at end-of-history are appended as well. A thin driver over the
+/// shared [`ScanState`] stepper (the batch and the live-incremental exit memo run
+/// the identical FSM).
+pub(crate) fn scan(txs: &[Tx], params: &SwingParams) -> Vec<LegAcc> {
+    let mut state = ScanState::new();
+    for tx in txs {
+        state.step(tx, params);
+    }
+    state.snapshot_ledger()
 }
 
 /// Post-processing pair-based quality filter. Forms fixed, non-overlapping
@@ -772,6 +839,58 @@ mod tests {
         );
         t.block_time = chrono::DateTime::from_timestamp_millis(ms).unwrap();
         t
+    }
+
+    /// The `ScanState` stepper, fed tx-by-tx, must reproduce `scan()` exactly —
+    /// the parity contract the live-incremental exit memo rests on.
+    fn assert_stepper_matches_batch(trades: &[Trade], params: &SwingParams) {
+        let txs = sanitize_and_order(trades);
+        let batch: Vec<SwingLeg> = scan(&txs, params).into_iter().map(LegAcc::finalize).collect();
+
+        let mut state = ScanState::new();
+        for tx in &txs {
+            state.step(tx, params);
+        }
+        let stepped: Vec<SwingLeg> =
+            state.snapshot_ledger().into_iter().map(LegAcc::finalize).collect();
+
+        assert_eq!(batch.len(), stepped.len(), "leg count differs");
+        for (b, s) in batch.iter().zip(&stepped) {
+            assert_eq!(b.leg_type, s.leg_type);
+            assert_eq!(b.start_at, s.start_at);
+            assert_eq!(b.end_at, s.end_at);
+            assert_eq!(b.pivot_end_at, s.pivot_end_at);
+            assert!((b.pivot_end_price - s.pivot_end_price).abs() < 1e-12);
+            assert!((b.net_flow - s.net_flow).abs() < 1e-12);
+            assert_eq!(b.trade_count, s.trade_count);
+        }
+    }
+
+    #[test]
+    fn scan_stepper_matches_batch() {
+        // A varied chain: reversals, sub-threshold merges, a big-tx confirm, dust,
+        // and trailing open legs — every FSM path the stepper must mirror.
+        let params = SwingParams {
+            high_to_low_threshold_sol: 1.0,
+            high_to_low_threshold_pct: 0.0,
+            low_to_high_threshold_sol: 1.0,
+            low_to_high_threshold_pct: 0.0,
+            min_leg_trades: 1,
+            big_tx_sol: 10.0,
+            dust_frac: 0.05,
+            ..Default::default()
+        };
+        let trades = vec![
+            buy(1_000, 3.0, 300_000.0, 0.0, 0.0, 0),
+            buy(2_000, 2.0, 200_000.0, 0.0, 0.0, 0),
+            sell(3_000, 0.5, 50_000.0, 0.0, 0.0), // sub-threshold sell → merges back
+            buy(4_000, 1.0, 100_000.0, 0.0, 0.0, 0),
+            sell(5_000, 2.0, 200_000.0, 0.0, 0.0), // crosses 1.0 → reversal to low
+            sell(6_000, 0.01, 900.0, 0.0, 0.0),    // dust vs leg max
+            buy(7_000, 12.0, 1_200_000.0, 0.0, 0.0, 0), // big tx → instant reversal to high
+            sell(8_000, 0.6, 60_000.0, 0.0, 0.0),  // opens a trailing temp low
+        ];
+        assert_stepper_matches_batch(&trades, &params);
     }
 
     #[test]

@@ -21,7 +21,7 @@ use crate::models::StrategyPosition;
 use crate::state::token_cache::CachedTrade;
 
 use super::registry::{StrategyImpl, StrategyParams};
-use super::{tpsl_sniper_1 as t1, tpsl_sniper_2 as t2};
+use super::{swing_1 as sw, tpsl_sniper_1 as t1, tpsl_sniper_2 as t2};
 
 /// Strategy-dispatched exit-ladder params, resolved once per active rule at
 /// [`set_rules`](super::runtime_cache::StrategyRuntimeCache::set_rules) time. The two
@@ -31,6 +31,10 @@ use super::{tpsl_sniper_1 as t1, tpsl_sniper_2 as t2};
 pub enum LadderParamsImpl {
     Tpsl1(t1::exit::LadderParams),
     Tpsl2(t2::exit::LadderParams),
+    /// Boxed: swing1's ladder carries the swing-scan params + next-kill profile (much
+    /// larger than the tpsl scalar ladders). The ladder is cloned per exit-event
+    /// (`ladder_params_by_id`), so boxing keeps that clone cheap for every strategy.
+    Swing1(Box<sw::exit::LadderParams>),
 }
 
 impl LadderParamsImpl {
@@ -46,11 +50,8 @@ impl LadderParamsImpl {
             StrategyParams::Tpsl2(p) => {
                 Self::Tpsl2(t2::exit::LadderParams::from_rule(&p.to_rule()))
             }
-            // swing1's incremental live memo is Phase 2 (the backtest path uses the
-            // registry's batch resolve_exit). swing1 rules are backtest/paper-only
-            // in Phase 1 and never reach this live ladder dispatcher.
-            StrategyParams::Swing1(_) => {
-                unimplemented!("swing1 live incremental exit is Phase 2 (backtest-only in Phase 1)")
+            StrategyParams::Swing1(p) => {
+                Self::Swing1(Box::new(sw::exit::LadderParams::from_rule(&p.to_rule())))
             }
         }
     }
@@ -60,6 +61,7 @@ impl LadderParamsImpl {
         match self {
             Self::Tpsl1(p) => p.time_stop_secs(),
             Self::Tpsl2(p) => p.time_stop_secs(),
+            Self::Swing1(p) => p.time_stop_secs(),
         }
     }
 
@@ -68,6 +70,7 @@ impl LadderParamsImpl {
         match self {
             Self::Tpsl1(p) => p.stall_secs(),
             Self::Tpsl2(p) => p.stall_secs(),
+            Self::Swing1(p) => p.stall_secs(),
         }
     }
 
@@ -82,9 +85,9 @@ impl LadderParamsImpl {
         match self {
             Self::Tpsl1(_) => StrategyImpl::Tpsl1,
             Self::Tpsl2(_) => StrategyImpl::Tpsl2,
+            Self::Swing1(_) => StrategyImpl::Swing1,
         }
     }
-    // NB: no `Swing1` arm — `LadderParamsImpl` has no Swing1 variant (Phase 2).
 }
 
 /// Strategy-dispatched per-position exit-walk memo (the running peaks + E5 cohort
@@ -92,6 +95,10 @@ impl LadderParamsImpl {
 pub enum CachedExitStateImpl {
     Tpsl1(t1::exit::CachedExitState),
     Tpsl2(t2::exit::CachedExitState<u32>),
+    /// Boxed: the swing memo carries the swing-scan machine (`SwingParams` + a `Vec`
+    /// of finalized legs), far larger than the tpsl variants — boxing keeps every
+    /// per-position slot small (the memo is stored, not passed on the hot path).
+    Swing1(Box<sw::exit::CachedSwingExitState>),
 }
 
 impl CachedExitStateImpl {
@@ -100,22 +107,22 @@ impl CachedExitStateImpl {
     /// clock path only checks TimeStop/Stall; the cohort is lazily attached if a
     /// later trade ping needs E5 (see [`advance_and_find_exit`](Self::advance_and_find_exit)).
     pub fn build(
-        strategy: StrategyImpl,
         trades: &[CachedTrade],
         base: u64,
         entry_price: f64,
         entry_time: DateTime<Utc>,
+        params: &LadderParamsImpl,
     ) -> Self {
-        match strategy {
-            StrategyImpl::Tpsl1 => {
+        match params {
+            LadderParamsImpl::Tpsl1(_) => {
                 Self::Tpsl1(t1::exit::CachedExitState::build(trades, base, entry_price, entry_time))
             }
-            StrategyImpl::Tpsl2 => {
+            LadderParamsImpl::Tpsl2(_) => {
                 Self::Tpsl2(t2::exit::CachedExitState::build(trades, base, entry_price, entry_time))
             }
-            StrategyImpl::Swing1 => {
-                unimplemented!("swing1 live incremental exit is Phase 2 (backtest-only in Phase 1)")
-            }
+            LadderParamsImpl::Swing1(p) => Self::Swing1(Box::new(
+                sw::exit::CachedSwingExitState::build(trades, base, entry_price, entry_time, p),
+            )),
         }
     }
 
@@ -143,6 +150,9 @@ impl CachedExitStateImpl {
                 entry_time,
                 p,
             )),
+            LadderParamsImpl::Swing1(p) => Self::Swing1(Box::new(
+                sw::exit::CachedSwingExitState::build_unfolded(base, entry_price, entry_time, p),
+            )),
         }
     }
 
@@ -166,6 +176,9 @@ impl CachedExitStateImpl {
                 c.ensure_cohort_seeded(trades, base, p);
                 c.advance_and_find_exit(trades, base, p).map(|r| r.as_str())
             }
+            (Self::Swing1(c), LadderParamsImpl::Swing1(p)) => {
+                c.advance_and_find_exit(trades, base, p).map(|r| r.as_str())
+            }
             _ => None,
         }
     }
@@ -185,6 +198,9 @@ impl CachedExitStateImpl {
             }
             (Self::Tpsl2(c), LadderParamsImpl::Tpsl2(p)) => {
                 t2::exit::find_clock_driven_exit(&c.state, entry_time, p, now).map(|r| r.as_str())
+            }
+            (Self::Swing1(c), LadderParamsImpl::Swing1(p)) => {
+                c.clock_exit_reason(entry_time, p, now).map(|r| r.as_str())
             }
             _ => None,
         }

@@ -20,8 +20,8 @@ use crate::config::constants::MAX_FILL_WAIT_SLOTS;
 use crate::models::trade::TradeRow;
 use crate::models::Swing1Rule;
 
-use super::classifier::LowFeatures;
-use super::swing::{detect_swing_legs_raw, SwingType};
+use super::classifier::{LowFeatures, PhaseProfile};
+use super::swing::{detect_swing_legs_raw, ScanState, SwingParams, SwingType, Tx};
 use super::{exit_next_kill_profile, swing_params_from_rule};
 
 /// Canonical price for an exit decision: the shared GMGN spot
@@ -84,18 +84,27 @@ pub struct ExitFill {
 }
 
 /// The swing1 exit-ladder params, resolved once from a [`Swing1Rule`] so the
-/// per-trade predicate is a pure function of state + trade + params.
-struct LadderParams {
+/// per-trade predicate is a pure function of state + trade + params. `pub` (mirroring
+/// [`tpsl_sniper_1::exit::LadderParams`](crate::strategies::tpsl_sniper_1::exit::LadderParams))
+/// so the live enum dispatch ([`LadderParamsImpl`](crate::strategies::exit_state))
+/// and the time-exit index can hold + query it.
+#[derive(Clone)]
+pub struct LadderParams {
     take_profit_pct: f64,
     stop_loss_pct: f64,
     trailing_stop_pct: Option<f64>, // E1
     time_stop_secs: Option<u64>,    // E2
     stall_secs: Option<u64>,        // E3
     liquidity_drop_pct: Option<f64>, // E4 (real reserves)
+    /// Swing-scan params for the incremental next-kill machine (resolved from the
+    /// same rule, so the live memo scans the identical legs the batch does).
+    sparams: SwingParams,
+    /// The next-kill kill-low profile; `None` when the arm is disabled.
+    next_kill_profile: Option<PhaseProfile>,
 }
 
 impl LadderParams {
-    fn from_rule(r: &Swing1Rule) -> Self {
+    pub fn from_rule(r: &Swing1Rule) -> Self {
         let nz_f64 = |v: Option<f64>| v.filter(|x| *x != 0.0);
         let nz_u64 = |v: Option<u64>| v.filter(|x| *x != 0);
         Self {
@@ -105,11 +114,30 @@ impl LadderParams {
             time_stop_secs: nz_u64(r.p_exit_time_stop_secs),
             stall_secs: nz_u64(r.p_exit_stall_secs),
             liquidity_drop_pct: nz_f64(r.p_exit_liquidity_drop_pct),
+            sparams: swing_params_from_rule(r),
+            next_kill_profile: exit_next_kill_profile(r),
         }
+    }
+
+    /// E2 TimeStop deadline (seconds since entry), if configured.
+    pub fn time_stop_secs(&self) -> Option<u64> {
+        self.time_stop_secs
+    }
+
+    /// E3 Stall deadline (seconds since last higher-high), if configured.
+    pub fn stall_secs(&self) -> Option<u64> {
+        self.stall_secs
+    }
+
+    /// Whether the rule carries any wall-clock exit (TimeStop or Stall) — the
+    /// time-exit secondary-index membership gate.
+    pub fn has_time_exit(&self) -> bool {
+        self.time_stop_secs.is_some() || self.stall_secs.is_some()
     }
 }
 
 /// Running peaks accumulated while walking post-entry trades.
+#[derive(Clone, Copy)]
 struct WalkState {
     peak_price: f64,
     last_higher_high_time: DateTime<Utc>,
@@ -158,6 +186,241 @@ fn next_kill_fire_ms<T: TradeRow>(trades: &[T], rule: &Swing1Rule, entry_time: D
         }
     }
     None
+}
+
+/// Whether a finalized swing-LOW leg qualifies as a post-entry next-kill, and if so
+/// the fire ms (`end_at.max(entry_ms + 1)`). Byte-identical to the per-leg body of
+/// [`next_kill_fire_ms`], so the batch scan and the incremental memo agree leg-for-leg.
+fn leg_next_kill_ms(leg: &super::swing::SwingLeg, profile: &PhaseProfile, entry_ms: i64) -> Option<i64> {
+    if leg.leg_type != SwingType::SwingLow || leg.end_at <= entry_ms {
+        return None;
+    }
+    let f = LowFeatures::from_low(leg).expect("SwingLow checked");
+    profile.is_kill_low(&f).then(|| leg.end_at.max(entry_ms + 1))
+}
+
+/// Live-incremental analogue of [`find_trade_driven_exit_with_slot`]: an O(1)-per-trade
+/// exit memo that reproduces the batch decision without re-walking a token's retained
+/// history each ping. Mirrors [`tpsl_sniper_1::exit::CachedExitState`](crate::strategies::tpsl_sniper_1::exit::CachedExitState),
+/// extended with the swing1-specific **incremental next-kill scan**.
+///
+/// The memo advances on **trades** (`&[T]`), folding each genuinely-new trade into:
+///   1. the [`WalkState`] peaks (identical to tpsl1), AND
+///   2. the shared swing [`ScanState`] machine — as a swing-LOW leg finalizes, the
+///      causal next-kill predicate ([`leg_next_kill_ms`]) runs on it, reproducing the
+///      batch [`next_kill_fire_ms`] one leg at a time.
+///
+/// `next_kill_ms` is the earliest qualifying **finalized** low (permanent once found).
+/// The batch also considers the trailing *open* low at each window end, so
+/// [`advance_and_find_exit`](Self::advance_and_find_exit) additionally checks the
+/// current open leg via [`ScanState::snapshot_ledger`] — that part is transient (a
+/// later trade may extend/merge the open leg), exactly as the batch recomputes it per
+/// call. `consumed_abs` is the absolute fold cursor (front-trim safety, identical
+/// arithmetic to tpsl1).
+pub struct CachedSwingExitState {
+    state: WalkState,
+    entry_time: DateTime<Utc>,
+    entry_price: f64,
+    consumed_abs: u64,
+    /// The scan machine + its `prev_post_spot` seed, folded incrementally.
+    scan: ScanState,
+    prev_post_spot: Option<f64>,
+    /// Count of `scan.finalized()` legs already checked for next-kill.
+    finalized_checked: usize,
+    /// Swing params + next-kill profile resolved once from the rule. `profile` is
+    /// `None` when next-kill is disabled (the arm is inert).
+    sparams: SwingParams,
+    profile: Option<PhaseProfile>,
+    /// Earliest qualifying finalized low's fire ms (sticky once set).
+    next_kill_ms_finalized: Option<i64>,
+    entry_ms: i64,
+}
+
+impl CachedSwingExitState {
+    /// An unfolded memo whose cursor sits at the window front (`base`), so the first
+    /// [`advance_and_find_exit`](Self::advance_and_find_exit) folds the entire retained
+    /// window (reproducing a full re-walk on the position's first ping). The swing scan
+    /// params + next-kill profile come off the resolved [`LadderParams`].
+    pub fn build_unfolded(
+        base: u64,
+        entry_price: f64,
+        entry_time: DateTime<Utc>,
+        params: &LadderParams,
+    ) -> Self {
+        Self {
+            state: WalkState::starting_at(entry_price, entry_time),
+            entry_time,
+            entry_price,
+            consumed_abs: base,
+            scan: ScanState::new(),
+            prev_post_spot: None,
+            finalized_checked: 0,
+            sparams: params.sparams.clone(),
+            profile: params.next_kill_profile,
+            next_kill_ms_finalized: None,
+            entry_ms: entry_time.timestamp_millis(),
+        }
+    }
+
+    /// A **fully-folded** memo seeded from the retained window (the clock-sweep's
+    /// first-sight seed). Folds every window trade into the scan + peaks so a later
+    /// clock check reads current peaks; the returned memo's cursor sits past the
+    /// window so a following advance only folds genuinely-new trades.
+    pub fn build(
+        trades: &[impl TradeRow],
+        base: u64,
+        entry_price: f64,
+        entry_time: DateTime<Utc>,
+        params: &LadderParams,
+    ) -> Self {
+        let mut s = Self::build_unfolded(base, entry_price, entry_time, params);
+        s.fold(trades, 0);
+        s.consumed_abs = base + trades.len() as u64;
+        s
+    }
+
+    /// Fold trades `[from..]` (window-relative) into the peaks + scan machine, keeping
+    /// the finalized-leg next-kill cursor current. Used by the clock-seed [`build`]
+    /// path, which needs current peaks but does not evaluate the ladder. The trade
+    /// gate ([`advance_and_find_exit`]) instead folds the scan up front then folds the
+    /// peaks step-by-step in the ladder walk (peak-based arms need the peak as-of each
+    /// trade). Does NOT touch `consumed_abs` — the callers set it.
+    fn fold(&mut self, trades: &[impl TradeRow], from: usize) {
+        for t in &trades[from..] {
+            if t.block_time() > self.entry_time {
+                self.state.update_with_trade(t);
+            }
+            self.fold_scan(t);
+        }
+        self.check_new_finalized();
+    }
+
+    /// Fold ONE trade into the swing scan machine only (not the peaks). The scan folds
+    /// ALL trades — the batch `next_kill_fire_ms` scans the whole window, then filters
+    /// legs by `end_at > entry`.
+    fn fold_scan(&mut self, t: &impl TradeRow) {
+        if let Some(tx) = Tx::from_trade(t, self.prev_post_spot) {
+            self.prev_post_spot = Some(tx.post_spot());
+            self.scan.step(&tx, &self.sparams);
+        }
+    }
+
+    /// Scan any newly-finalized legs for the earliest qualifying next-kill low.
+    fn check_new_finalized(&mut self) {
+        let Some(profile) = &self.profile else { return };
+        if self.next_kill_ms_finalized.is_some() {
+            self.finalized_checked = self.scan.finalized().len();
+            return;
+        }
+        let legs = self.scan.finalized();
+        for leg in &legs[self.finalized_checked..] {
+            if let Some(ms) = leg_next_kill_ms(&leg.clone().finalize(), profile, self.entry_ms) {
+                self.next_kill_ms_finalized = Some(ms);
+                break;
+            }
+        }
+        self.finalized_checked = legs.len();
+    }
+
+    /// The effective next-kill fire ms at the current window end: the earliest
+    /// qualifying finalized low, else the trailing open low if IT qualifies (transient,
+    /// recomputed each call — the batch does the same). Byte-identical to
+    /// [`next_kill_fire_ms`] over the same window.
+    fn effective_next_kill_ms(&self) -> Option<i64> {
+        let profile = self.profile.as_ref()?;
+        if let Some(ms) = self.next_kill_ms_finalized {
+            return Some(ms);
+        }
+        // No finalized qualifying low yet: check the trailing open leg(s). The
+        // snapshot ledger's finalized prefix is already known non-qualifying, so
+        // only the trailing legs (beyond `finalized().len()`) are new to check.
+        let ledger = self.scan.snapshot_ledger();
+        let n_final = self.scan.finalized().len();
+        ledger[n_final..]
+            .iter()
+            .find_map(|leg| leg_next_kill_ms(&leg.clone().finalize(), profile, self.entry_ms))
+    }
+
+    /// Wall-clock exit check (E2 TimeStop / E3 Stall) against the memoized peaks, for
+    /// the per-second sweep — never re-walks the trade history. Mirrors
+    /// [`tpsl_sniper_1::exit::find_clock_driven_exit`](crate::strategies::tpsl_sniper_1::exit::find_clock_driven_exit):
+    /// Stall (measured from the last higher-high) outranks TimeStop, matching the
+    /// trade-walk ladder order. Price/next-kill arms can't change between trades so
+    /// they stay on [`advance_and_find_exit`](Self::advance_and_find_exit).
+    pub fn clock_exit_reason(
+        &self,
+        entry_time: DateTime<Utc>,
+        params: &LadderParams,
+        now: DateTime<Utc>,
+    ) -> Option<ExitReason> {
+        if let Some(secs) = params.stall_secs {
+            if (now - self.state.last_higher_high_time).num_seconds() >= secs as i64 {
+                return Some(ExitReason::Stall);
+            }
+        }
+        if let Some(secs) = params.time_stop_secs {
+            if now >= entry_time + Duration::seconds(secs as i64) {
+                return Some(ExitReason::TimeStop);
+            }
+        }
+        None
+    }
+
+    /// Fold the genuinely-new trades into the memo AND evaluate the exit ladder against
+    /// each newly-folded post-entry trade, returning the first [`ExitReason`] that
+    /// fires. Decision-equivalent to a full [`find_trade_driven_exit`] re-walk (peaks +
+    /// scan fold identically; the ladder runs against the state as of each trade). `base`
+    /// is the token's current `trades_base`. A cursor past the window end (history
+    /// reset/over-trimmed) rebuilds the whole scan + peaks from the window.
+    pub fn advance_and_find_exit<T: TradeRow>(
+        &mut self,
+        trades: &[T],
+        base: u64,
+        params: &LadderParams,
+    ) -> Option<ExitReason> {
+        if self.entry_price <= 0.0 {
+            self.consumed_abs = base + trades.len() as u64;
+            return None;
+        }
+        let start = self.consumed_abs.saturating_sub(base);
+        let rebuild = start > trades.len() as u64;
+        if rebuild {
+            // Lost the cursor: re-fold the whole window from a fresh machine.
+            self.state = WalkState::starting_at(self.entry_price, self.entry_time);
+            self.scan = ScanState::new();
+            self.prev_post_spot = None;
+            self.finalized_checked = 0;
+            self.next_kill_ms_finalized = None;
+        }
+        let from = if rebuild { 0 } else { start as usize };
+        self.consumed_abs = base + trades.len() as u64;
+
+        // Fold the swing scan over every new trade FIRST, so the next-kill ms reflects
+        // the FULL window (the batch computes next-kill over the whole window, not just
+        // up to the firing trade).
+        for t in &trades[from..] {
+            self.fold_scan(t);
+        }
+        self.check_new_finalized();
+        let next_kill_ms = self.effective_next_kill_ms();
+
+        // Then walk the new trades against the ladder, folding the PEAKS step-by-step
+        // so each peak-based arm (trailing / liquidity) sees the peak as-of that trade
+        // — exactly as the batch `find_trade_driven_exit` interleaves fold + evaluate.
+        let mut fired = None;
+        for t in &trades[from..] {
+            if t.block_time() <= self.entry_time {
+                continue;
+            }
+            self.state.update_with_trade(t);
+            if fired.is_none() {
+                fired = ladder_reason(
+                    &self.state, t, self.entry_time, self.entry_price, params, next_kill_ms,
+                );
+            }
+        }
+        fired
+    }
 }
 
 /// The exit ladder for one trade. First feature that fires wins.
@@ -352,5 +615,174 @@ mod tests {
         ];
         let f = find_trade_driven_exit(&trades, base(), 1.0, &rule).expect("exit");
         assert_eq!(f.reason, ExitReason::NextKill);
+    }
+
+    // ── Incremental memo parity (Phase A DoD gate) ───────────────────────────
+
+    /// Reason-only reference walk: the first ladder-firing reason across the full
+    /// window, WITHOUT the fill-window resolution. This is what the incremental memo
+    /// returns (the live path resolves the fill separately, exactly like tpsl1's
+    /// `advance_and_find_exit`). Byte-identical firing logic to
+    /// [`find_trade_driven_exit_with_slot`] up to the fill lookup.
+    fn reference_reason(
+        trades: &[Trade],
+        entry_time: DateTime<Utc>,
+        entry_price: f64,
+        rule: &Swing1Rule,
+    ) -> Option<ExitReason> {
+        if entry_price <= 0.0 {
+            return None;
+        }
+        let params = LadderParams::from_rule(rule);
+        let next_kill_ms = next_kill_fire_ms(trades, rule, entry_time);
+        let mut state = WalkState::starting_at(entry_price, entry_time);
+        for t in trades.iter().filter(|t| t.block_time() > entry_time) {
+            state.update_with_trade(t);
+            if let Some(r) =
+                ladder_reason(&state, t, entry_time, entry_price, &params, next_kill_ms)
+            {
+                return Some(r);
+            }
+        }
+        None
+    }
+
+    /// A trade whose spot price AND swing volume are both `sol` (token_amount = 1, no
+    /// reserves ⇒ `execution_price() == sol_amount == sol`). In this simplified model
+    /// price and volume are coupled, exactly as in [`tr`] and the batch tests.
+    fn trx(kind: TradeType, secs: i64, sol: f64, slot: u64) -> Trade {
+        Trade::new(
+            "mint".into(), "w".into(), kind, sol, 1, format!("s-{secs}-{slot}"), slot,
+            base() + Duration::seconds(secs),
+        )
+    }
+
+    fn rule_next_kill() -> Swing1Rule {
+        let mut r = rule_tp_sl(500.0, 95.0); // TP/SL out of the way
+        r.p_exit_next_kill_depth_min_pct = Some(0.5);
+        r.p_exit_next_kill_max_duration_ms = Some(5_000);
+        r.p_swing_high_to_low_sol = Some(0.5);
+        r.p_swing_low_to_high_sol = Some(0.5);
+        r.p_swing_min_leg_trades = Some(1);
+        r
+    }
+
+    /// The memo, fed the full window in one advance from an unfolded seed, fires the
+    /// same reason as the reference walk — for every prefix of the sequence.
+    fn assert_memo_matches_reference_over_prefixes(trades: &[Trade], rule: &Swing1Rule) {
+        let entry = base();
+        let params = LadderParams::from_rule(rule);
+        for k in 1..=trades.len() {
+            let prefix = &trades[..k];
+            let expected = reference_reason(prefix, entry, 1.0, rule);
+            let mut memo = CachedSwingExitState::build_unfolded(0, 1.0, entry, &params);
+            let got = memo.advance_and_find_exit(prefix, 0, &params);
+            assert_eq!(
+                got, expected,
+                "prefix len {k}: memo {got:?} != reference {expected:?}"
+            );
+        }
+    }
+
+    /// The proven kill-low sequence (mirrors `next_kill_fires_on_post_entry_kill_leg`):
+    /// pump to 3.0, deep fast dump to 1.2 (−60% in ≤5s → kill low), then a reversal
+    /// that finalizes the low and prints trades past its pivot (the flee window).
+    fn next_kill_seq() -> Vec<Trade> {
+        vec![
+            trx(TradeType::Buy, 1, 1.0, 2),
+            trx(TradeType::Buy, 2, 3.0, 3),  // up-leg
+            trx(TradeType::Sell, 4, 1.2, 4), // deep dump → kill low
+            trx(TradeType::Buy, 6, 1.3, 5),  // reversal completes the low
+            trx(TradeType::Buy, 7, 1.3, 6),
+            trx(TradeType::Buy, 9, 1.35, 7),
+        ]
+    }
+
+    #[test]
+    fn memo_matches_reference_next_kill() {
+        assert_memo_matches_reference_over_prefixes(&next_kill_seq(), &rule_next_kill());
+    }
+
+    #[test]
+    fn memo_matches_reference_tp_sl_trailing() {
+        let mut rule = rule_tp_sl(50.0, 40.0);
+        rule.p_exit_trailing_stop_pct = Some(30.0);
+        let trades = vec![
+            trx(TradeType::Buy, 1, 1.0, 2),
+            trx(TradeType::Buy, 2, 1.6, 3), // +60% → TP fires here
+            trx(TradeType::Buy, 3, 1.5, 4),
+            trx(TradeType::Sell, 4, 0.5, 5),
+        ];
+        assert_memo_matches_reference_over_prefixes(&trades, &rule);
+    }
+
+    /// A cheap deterministic LCG so the property test is reproducible without a
+    /// rand dependency (Date/rand are unavailable in this crate's test harness).
+    fn lcg(seed: &mut u64) -> u64 {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *seed >> 33
+    }
+
+    #[test]
+    fn memo_property_matches_reference_random_sequences() {
+        let rule = rule_next_kill();
+        let mut seed = 0x5EED_1234_ABCDu64;
+        for _ in 0..200 {
+            let n = 3 + (lcg(&mut seed) % 12) as usize;
+            let mut trades = Vec::with_capacity(n);
+            let mut slot = 2u64;
+            for i in 0..n {
+                slot += 1 + (lcg(&mut seed) % 2); // mostly monotone slots
+                let is_buy = lcg(&mut seed) % 2 == 0;
+                // sol (= spot price = swing volume) in [0.2, 4.0]: some sub-threshold,
+                // some big, spanning deep dumps and shallow moves.
+                let sol = 0.2 + (lcg(&mut seed) % 380) as f64 / 100.0;
+                let kind = if is_buy { TradeType::Buy } else { TradeType::Sell };
+                trades.push(trx(kind, (i as i64) + 1, sol, slot));
+            }
+            assert_memo_matches_reference_over_prefixes(&trades, &rule);
+        }
+    }
+
+    /// Incremental multi-step fold (seed from a prefix, advance in steps) matches a
+    /// single full-window advance — and a front-trim (window slides, `base` grows)
+    /// preserves a next-kill leg detected before the trim.
+    #[test]
+    fn memo_incremental_and_front_trim() {
+        let rule = rule_next_kill();
+        let entry = base();
+        let params = LadderParams::from_rule(&rule);
+        let trades = next_kill_seq();
+
+        // Find the first prefix at which the reference fires NextKill — the memo,
+        // fed incrementally, must fire it by the same prefix (never later, never a
+        // different reason). This pins the incremental fold to the batch without
+        // hard-coding which trade forms the leg.
+        let first_fire = (1..=trades.len())
+            .find(|&k| reference_reason(&trades[..k], entry, 1.0, &rule) == Some(ExitReason::NextKill))
+            .expect("reference fires NextKill somewhere");
+
+        let mut inc = CachedSwingExitState::build_unfolded(0, 1.0, entry, &params);
+        let mut fired_at = None;
+        for k in 1..=trades.len() {
+            if let Some(r) = inc.advance_and_find_exit(&trades[k - 1..k], (k - 1) as u64, &params) {
+                fired_at = Some((k, r));
+                break;
+            }
+        }
+        assert_eq!(
+            fired_at,
+            Some((first_fire, ExitReason::NextKill)),
+            "incremental fold must fire NextKill at the same prefix as the batch"
+        );
+
+        // Front-trim: fold up to (but not including) the firing trade, then trim the
+        // whole window away and feed ONLY the firing trade with an advanced `base`.
+        // The next-kill ms was already memoized, so NextKill still fires post-trim.
+        let mut trimmed = CachedSwingExitState::build_unfolded(0, 1.0, entry, &params);
+        trimmed.advance_and_find_exit(&trades[..first_fire - 1], 0, &params);
+        let tail = &trades[first_fire - 1..first_fire];
+        let after = trimmed.advance_and_find_exit(tail, (first_fire - 1) as u64, &params);
+        assert_eq!(after, Some(ExitReason::NextKill), "next-kill survives a front trim");
     }
 }
