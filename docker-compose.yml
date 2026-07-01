@@ -13,8 +13,9 @@ services:
   postgres:
     # TimescaleDB (live/lab remake, Phase 1): hypertables + columnar compression +
     # declarative retention/compression policies replace the old hand-rolled daily
-    # partition maintenance. The -ha image bundles the timescaledb extension for pg16.
-    image: timescale/timescaledb-ha:pg16
+    # partition maintenance. Uses the standard image (NOT -ha): the -ha image defaults
+    # PGDATA to /home/postgres/pgdata so the volume mount below would not persist data.
+    image: timescale/timescaledb:latest-pg16
     restart: unless-stopped
     # Server tuning. Problem classes observed and addressed here:
     #
