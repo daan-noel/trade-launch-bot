@@ -143,15 +143,16 @@ impl Default for SwingParams {
 // Output
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SwingType {
     SwingHigh,
     SwingLow,
 }
 
-/// A finalized swing leg, ready for serialization.
-#[derive(Debug, Clone, Serialize)]
+/// A finalized swing leg, ready for serialization. `Deserialize` round-trips it
+/// back out of a position's `extra` JSONB (see `runtime_cache::merge_swing_legs_into_extra`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SwingLeg {
     #[serde(rename = "type")]
     pub leg_type: SwingType,

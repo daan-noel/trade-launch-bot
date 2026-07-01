@@ -16,6 +16,7 @@ use crate::state::deploy_state::DeployState;
 use trading_core::models::StrategyPosition;
 use trading_core::storage::repositories::strategy_repo::StrategyRepo;
 use trading_core::strategies::registry::StrategyImpl;
+use trading_core::strategies::swing_1::swing::SwingLeg;
 
 // ---------------------------------------------------------------------------
 // Response type
@@ -54,6 +55,11 @@ pub struct PositionResponse {
     pub exit_reason: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Swing1-only: legs harvested from the live exit memo at close (see
+    /// `runtime_cache::merge_swing_legs_into_extra`). `None` for tpsl1/tpsl2
+    /// positions (no such key in `extra`) and for still-open swing1 positions
+    /// (not harvested until the position leaves the holding index).
+    pub swing_legs: Option<Vec<SwingLeg>>,
 }
 
 impl From<StrategyPosition> for PositionResponse {
@@ -61,6 +67,12 @@ impl From<StrategyPosition> for PositionResponse {
         let pnl_percent = p.pnl_pct();
         let entry_sigs = p.entry_tx_sigs();
         let exit_sigs = p.exit_tx_sigs();
+        // Missing key or malformed JSON just means "no legs" (tpsl1/tpsl2 rows, or
+        // a swing1 row that hasn't closed yet) — never an error.
+        let swing_legs = p
+            .extra
+            .get("swing_legs")
+            .and_then(|v| serde_json::from_value::<Vec<SwingLeg>>(v.clone()).ok());
         Self {
             id: p.id,
             run_id: p.run_id,
@@ -83,6 +95,7 @@ impl From<StrategyPosition> for PositionResponse {
             exit_reason: p.exit_reason,
             created_at: p.created_at,
             updated_at: p.updated_at,
+            swing_legs,
         }
     }
 }

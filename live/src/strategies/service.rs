@@ -535,6 +535,16 @@ impl StrategyService {
                 };
                 let prev = position.clone();
                 position.mark_exit_pending();
+                // Swing1's exit memo is about to be evicted (leaving the holding
+                // index) — peek its legs now so they land in the SAME write as the
+                // status flip, no second round-trip. A peek, not the eviction: safe
+                // even if the write below fails.
+                if let Some(legs) = self.runtime.peek_swing_legs(position.id) {
+                    trading_core::strategies::runtime_cache::merge_swing_legs_into_extra(
+                        &mut position,
+                        legs,
+                    );
+                }
                 if let Err(err) = self.repo.update_position(&position).await {
                     warn!("Failed to mark position {} as ExitPending: {err}", position.id);
                     // The write failed → still Holding. Dropping `guard` releases the
@@ -685,6 +695,10 @@ impl StrategyService {
         };
         let prev = position.clone();
         position.mark_exit_pending();
+        // Peek (not evict) swing1's exit memo so its legs land in this same write.
+        if let Some(legs) = self.runtime.peek_swing_legs(position.id) {
+            trading_core::strategies::runtime_cache::merge_swing_legs_into_extra(&mut position, legs);
+        }
         if let Err(err) = self.repo.update_position(&position).await {
             warn!("Failed to mark position {} as ExitPending: {err}", position.id);
         } else {
@@ -760,6 +774,10 @@ impl StrategyService {
         let mut position = (*position).clone();
         let prev = position.clone();
         position.mark_exit_pending();
+        // Peek (not evict) swing1's exit memo so its legs land in this same write.
+        if let Some(legs) = self.runtime.peek_swing_legs(position.id) {
+            trading_core::strategies::runtime_cache::merge_swing_legs_into_extra(&mut position, legs);
+        }
         if let Err(err) = self.repo.update_position(&position).await {
             warn!(position_id = %position.id, mint = %mint,
                 "Failed to mark position ExitPending (ManualSell): {err}");

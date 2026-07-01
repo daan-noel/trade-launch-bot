@@ -376,7 +376,9 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
                     // for THIS process, so a failed persist only loses the cross-restart
                     // marker.
                     match repo.mark_buy_submitted(position_id, &sig).await {
-                        Ok(Some(updated)) => runtime.sync_position(None, &updated),
+                        Ok(Some(updated)) => {
+                            runtime.sync_position(None, &updated);
+                        }
                         Ok(None) => {} // already advanced to Holding concurrently
                         Err(err) => warn!(mint = %mint, sig = %sig,
                             "failed to persist BuySubmitted marker (continuing): {err}"),

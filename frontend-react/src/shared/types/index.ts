@@ -1,3 +1,5 @@
+import type { ChartSwingLeg } from 'components/token-price-chart';
+
 export type PriceUnit = 'SOL' | 'USD';
 
 export interface PriceUnitState {
@@ -183,6 +185,9 @@ export interface RulePositionRecord {
   is_dead?: boolean;
   last_trade_at?: string | null;
   last_synced_at?: string | null;
+  /** Swing1-only: legs harvested from the live exit memo at close. `null`/absent
+   *  for tpsl1/tpsl2 positions and for still-open swing1 positions. */
+  swing_legs?: ChartSwingLeg[] | null;
 }
 
 /** Rule context snapshot bundled with every `tpsl_positions_changed` SSE event

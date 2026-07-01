@@ -242,6 +242,24 @@ impl Default for StrategyRuntimeCache {
     }
 }
 
+/// Stamp harvested swing legs onto a position's `extra` JSONB, without clobbering
+/// any other key already there. No-op if `legs` is empty (nothing harvested — not
+/// a swing1 position, or its memo had no legs yet). Callers merge this in before
+/// their own `update_position` write, right after `sync_position` returns the legs.
+pub fn merge_swing_legs_into_extra(
+    position: &mut StrategyPosition,
+    legs: Vec<crate::strategies::swing_1::swing::SwingLeg>,
+) {
+    if legs.is_empty() {
+        return;
+    }
+    let Some(obj) = position.extra.as_object_mut() else {
+        position.extra = serde_json::json!({ "swing_legs": legs });
+        return;
+    };
+    obj.insert("swing_legs".to_string(), serde_json::json!(legs));
+}
+
 impl StrategyRuntimeCache {
     pub fn new() -> Self {
         Self {
@@ -808,20 +826,44 @@ impl StrategyRuntimeCache {
 
     // ── Position transitions ──────────────────────────────────────────────────
 
+    /// Non-evicting read of a swing1 position's currently-memoized swing legs — for
+    /// stamping onto `extra` BEFORE the closing `update_position` write (so it lands
+    /// in the same DB write as the status change, no second round-trip), without
+    /// disturbing the memo itself. The real eviction still happens at the following
+    /// [`sync_position`](Self::sync_position) call once the write is confirmed —
+    /// this is purely a peek, safe to call even if the write later fails (the memo
+    /// is untouched either way). `None` for non-swing1 positions or if no memo is
+    /// cached yet (e.g. never pinged).
+    pub fn peek_swing_legs(&self, position_id: Uuid) -> Option<Vec<crate::strategies::swing_1::swing::SwingLeg>> {
+        self.exit_state_by_position.get(&position_id)?.swing_legs()
+    }
+
     /// Apply a position transition to the in-memory index + counters. Call after
     /// the DB write that changed status / created the position. `prev` is the
-    /// pre-transition row (None when the position is brand new).
-    pub fn sync_position(&self, prev: Option<&StrategyPosition>, current: &StrategyPosition) {
+    /// pre-transition row (None when the position is brand new). Returns the
+    /// harvested swing legs when a swing1 position's exit memo was just evicted
+    /// (leaving the holding index) — `None` for every other strategy/transition.
+    /// Callers closing a swing1 position should merge this into `extra.swing_legs`
+    /// before their own `update_position` write; the memo is gone after this call.
+    pub fn sync_position(
+        &self,
+        prev: Option<&StrategyPosition>,
+        current: &StrategyPosition,
+    ) -> Option<Vec<crate::strategies::swing_1::swing::SwingLeg>> {
         let prev_in_index = prev.map(StrategyPosition::is_in_holding_index).unwrap_or(false);
         let curr_in_index = current.is_in_holding_index();
 
+        let mut harvested_swing_legs = None;
         if prev_in_index {
             self.remove_from_holding_index(prev.unwrap());
             if !curr_in_index {
                 // Position is leaving the holding index — its memoized exit state
                 // (and time-exit index entry, dropped in `remove_from_holding_index`)
-                // is dead.
-                self.exit_state_by_position.remove(&prev.unwrap().id);
+                // is dead. Harvest swing legs from it before the memo is gone for
+                // good (a no-op read for tpsl1/tpsl2 memos).
+                if let Some((_, evicted)) = self.exit_state_by_position.remove(&prev.unwrap().id) {
+                    harvested_swing_legs = evicted.swing_legs();
+                }
             }
         }
         if curr_in_index {
@@ -830,7 +872,7 @@ impl StrategyRuntimeCache {
 
         let Some(rule_id) = current.rule_id else {
             // No owning rule (deleted) → nothing to count.
-            return;
+            return harvested_swing_legs;
         };
 
         // total_count: bump exactly once when a position first takes a real entry.
@@ -871,6 +913,8 @@ impl StrategyRuntimeCache {
         // Cold-lane: broadcast the post-transition row + refreshed cap counters so
         // SSE clients patch one row + the badge in place. No-op without a sender.
         self.emit_position_delta(current, false);
+
+        harvested_swing_legs
     }
 
     /// Roll a position fully out of the cache (a failed insert rollback, or a

@@ -21,7 +21,7 @@ use crate::models::trade::TradeRow;
 use crate::models::Swing1Rule;
 
 use super::classifier::{LowFeatures, PhaseProfile};
-use super::swing::{detect_swing_legs_raw, ScanState, SwingParams, SwingType, Tx};
+use super::swing::{detect_swing_legs_raw, ScanState, SwingLeg, SwingParams, SwingType, Tx};
 use super::{exit_next_kill_profile, swing_params_from_rule};
 
 /// Canonical price for an exit decision: the shared GMGN spot
@@ -364,6 +364,14 @@ impl CachedSwingExitState {
             }
         }
         None
+    }
+
+    /// Snapshot the swing scan as finalized [`SwingLeg`]s (finalized reversals plus
+    /// the trailing open leg(s)) — for persisting onto the closed position's `extra`
+    /// so the frontend chart can render the same legs the live memo saw, with no
+    /// detector re-run. Pure read, does not mutate the memo.
+    pub fn finalized_swing_legs(&self) -> Vec<SwingLeg> {
+        self.scan.snapshot_ledger().into_iter().map(|leg| leg.finalize()).collect()
     }
 
     /// Fold the genuinely-new trades into the memo AND evaluate the exit ladder against

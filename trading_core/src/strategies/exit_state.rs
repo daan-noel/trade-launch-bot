@@ -205,6 +205,16 @@ impl CachedExitStateImpl {
             _ => None,
         }
     }
+
+    /// Snapshot the swing scan's finalized legs, for harvesting onto a swing1
+    /// position at the moment its memo is evicted (position leaving the holding
+    /// index). `None` for tpsl1/tpsl2 memos — they carry no swing legs.
+    pub fn swing_legs(&self) -> Option<Vec<sw::swing::SwingLeg>> {
+        match self {
+            Self::Swing1(c) => Some(c.finalized_swing_legs()),
+            _ => None,
+        }
+    }
 }
 
 /// Strategy-agnostic guard shared by both live exit gates: a position is evaluable

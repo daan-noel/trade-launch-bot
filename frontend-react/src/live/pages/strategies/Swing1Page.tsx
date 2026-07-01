@@ -6,8 +6,9 @@ import { SectionDivider } from 'components/ui/SectionDivider';
 import { Button } from 'components/ui/Button';
 import { InlineAlert, Modal } from 'components/ui/Modal';
 import { SimSummaryCard } from 'components/tpsl1/SimSummaryCard';
-import { TokenInspectModal, type InspectTarget } from 'components/tpsl1/TokenInspectModal';
+import { TokenInspectModal, type InspectTarget } from 'components/tpsl2/TokenInspectModal';
 import { positionColumns } from 'components/tpsl1/tableColumns';
+import type { ChartSwingOverlay } from 'components/token-price-chart';
 import { ruleColumns as ruleCols1, RuleRowProvider } from 'components/tpsl1/ruleColumns';
 import { SpecRuleForm } from 'components/strategy/SpecRuleForm';
 import {
@@ -347,7 +348,9 @@ export function Swing1Page() {
   const [stopConfirm, setStopConfirm] = useState<RuleRecord | null>(null);
   const [reactivate, setReactivate] = useState<RuleRecord | null>(null);
 
-  const [inspect, setInspect] = useState<{ key: string; target: InspectTarget } | null>(null);
+  const [inspect, setInspect] = useState<
+    { key: string; target: InspectTarget; swingOverlay: ChartSwingOverlay | null } | null
+  >(null);
   const [showPending, setShowPending] = useLocalStorage(`${STORAGE_KEYS.showPending}.${STRATEGY}`, false);
 
   const [sellToken] = useSellTokenMutation();
@@ -520,7 +523,14 @@ export function Swing1Page() {
 
   const onSelectPosition = useCallback((key: string | null) => {
     const row = key ? positions.find((p) => p.id === key) ?? null : null;
-    setInspect(row ? { key: row.id, target: inspectFromPosition(row) } : null);
+    if (!row) { setInspect(null); return; }
+    // Legs arrived with the position row itself (harvested from the live exit
+    // memo at close) — no detect-endpoint fetch needed on `live`.
+    const swingOverlay: ChartSwingOverlay | null =
+      row.swing_legs && row.swing_legs.length > 0
+        ? { legs: row.swing_legs, segmentMode: 'perLeg', perLegFullSpanEnd: true }
+        : null;
+    setInspect({ key: row.id, target: inspectFromPosition(row), swingOverlay });
   }, [positions]);
 
   const handleSellPosition = useCallback(async (mint: string) => {
@@ -701,7 +711,11 @@ export function Swing1Page() {
       )}
 
       {inspect && (
-        <TokenInspectModal target={inspect.target} onClose={() => setInspect(null)} />
+        <TokenInspectModal
+          target={inspect.target}
+          swingOverlay={inspect.swingOverlay}
+          onClose={() => setInspect(null)}
+        />
       )}
     </div>
   );
