@@ -8,11 +8,13 @@ import { Input } from 'components/ui/Input';
 import { InlineAlert, Modal } from 'components/ui/Modal';
 import { SpecRuleForm } from 'components/strategy/SpecRuleForm';
 import {
+  blobToDetectParams,
   buildCreatePayload,
   buildUpdatePayload,
   emptyForm,
   formFromRule,
   getSpec,
+  serializeRule,
   serializeRuleJson,
   RULE_NAME_KEY,
   type FormState,
@@ -23,7 +25,9 @@ import {
 // `-`). This mirrors the live Swing1Page, which reuses the same columns.
 import { ruleColumns, RuleRowProvider } from 'components/tpsl1/ruleColumns';
 import { SimSummaryCard } from 'components/tpsl1/SimSummaryCard';
-import { TokenInspectModal, type InspectTarget } from 'components/tpsl1/TokenInspectModal';
+import { TokenInspectModal, type InspectTarget } from 'components/tpsl2/TokenInspectModal';
+import type { ChartSwingLeg, ChartSwingOverlay } from 'components/token-price-chart';
+import { fetchSwing1Detect, type Swing1DetectParams } from '@lab/services/swing1Detect';
 import {
   matchedColumns,
   positionColumns,
@@ -321,7 +325,66 @@ type InspectState = {
   table: 'positions' | 'sim' | 'paper' | 'matched';
   key: string;
   target: InspectTarget;
+  /** The rule whose params produced this row — drives the swing-leg overlay
+   *  fetch (absent for `matched`, which runs no funnel yet). */
+  ruleId: string | null;
 };
+
+// Recognized detect-param keys == the swing1 spec's detect-keyed fields, so a
+// rule's serialized blob maps onto exactly the axes `fetchSwing1Detect` reads.
+const SWING1_DETECT_KEYS = new Set(
+  SWING1_SPEC.fields.filter((f) => f.detectKey).map((f) => f.detectKey!),
+);
+
+/** Wraps the shared {@link TokenInspectModal} with the swing1 leg overlay for a
+ *  rule/sim/paper/position result row. Runs the same detect funnel the rule's
+ *  own params drove (curve-only, full history) so the chart's swing legs match
+ *  what produced this row's entry/exit — mirrors the sweep's
+ *  {@link Swing1InspectModal} but keyed off a rule instead of a combo. */
+function SwingRuleInspectModal({
+  target,
+  rule,
+  onClose,
+}: {
+  target: InspectTarget;
+  rule: RuleRecord | undefined;
+  onClose: () => void;
+}) {
+  const [legs, setLegs] = useState<ChartSwingLeg[] | null>(null);
+
+  useEffect(() => {
+    if (!rule) {
+      setLegs(null);
+      return;
+    }
+    let cancelled = false;
+    setLegs(null);
+    const blob = serializeRule(SWING1_SPEC, rule);
+    const { params } = blobToDetectParams(blob, SWING1_DETECT_KEYS);
+    fetchSwing1Detect(target.mint, params as Swing1DetectParams, {
+      startMs: null,
+      endMs: null,
+      curveOnly: true,
+    })
+      .then((res) => {
+        if (!cancelled) setLegs(res.legs as unknown as ChartSwingLeg[]);
+      })
+      .catch(() => {
+        // Overlay is best-effort: on failure the modal still shows entry/exit.
+        if (!cancelled) setLegs(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [target.mint, rule]);
+
+  const swingOverlay = useMemo<ChartSwingOverlay | null>(() => {
+    if (!legs || !legs.length) return null;
+    return { legs, segmentMode: 'perLeg' as const, perLegFullSpanEnd: true };
+  }, [legs]);
+
+  return <TokenInspectModal target={target} swingOverlay={swingOverlay} onClose={onClose} />;
+}
 
 function inspectFromMatched(r: import('types').MatchedTokenRecord): InspectTarget {
   return {
@@ -719,6 +782,7 @@ export function Swing1Page() {
   const [deleteLoading, setDeleteLoading] = useState(false);
 
   const [simResult, setSimResult] = useState<{
+    ruleId: string;
     ruleName: string;
     tokens: SimulatedTokenResult[];
   } | null>(null);
@@ -1034,7 +1098,7 @@ export function Swing1Page() {
           invalidateStrategyResult(dispatch, { strategy: STRATEGY_SEG, ruleId: rule.id });
           return;
         }
-        setSimResult({ ruleName: rule.rule_name, tokens });
+        setSimResult({ ruleId: rule.id, ruleName: rule.rule_name, tokens });
       } catch (e) {
         setSimError(apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0], 'Simulation failed'));
       } finally {
@@ -1237,16 +1301,22 @@ export function Swing1Page() {
     (key: string | null) => {
       const row = key ? positions.find((p) => p.id === key) ?? null : null;
       setInspect(
-        row ? { table: 'positions', key: row.id, target: inspectFromPosition(row) } : null,
+        row
+          ? { table: 'positions', key: row.id, target: inspectFromPosition(row), ruleId: selectedRuleId }
+          : null,
       );
     },
-    [positions],
+    [positions, selectedRuleId],
   );
 
   const onSelectSim = useCallback(
     (key: string | null) => {
       const row = key ? simResult?.tokens.find((t) => t.mint === key) ?? null : null;
-      setInspect(row ? { table: 'sim', key: row.mint, target: inspectFromSim(row) } : null);
+      setInspect(
+        row
+          ? { table: 'sim', key: row.mint, target: inspectFromSim(row), ruleId: simResult?.ruleId ?? null }
+          : null,
+      );
     },
     [simResult],
   );
@@ -1254,14 +1324,23 @@ export function Swing1Page() {
   const onSelectMatched = useCallback(
     (key: string | null) => {
       const row = key ? matchedResult?.tokens.find((t) => t.mint === key) ?? null : null;
-      setInspect(row ? { table: 'matched', key: row.mint, target: inspectFromMatched(row) } : null);
+      setInspect(
+        row ? { table: 'matched', key: row.mint, target: inspectFromMatched(row), ruleId: null } : null,
+      );
     },
     [matchedResult],
   );
 
-  const onSelectPaperToken = useCallback((row: SimulatedTokenResult | null) => {
-    setInspect(row ? { table: 'paper', key: row.mint, target: inspectFromSim(row) } : null);
-  }, []);
+  const onSelectPaperToken = useCallback(
+    (row: SimulatedTokenResult | null) => {
+      setInspect(
+        row
+          ? { table: 'paper', key: row.mint, target: inspectFromSim(row), ruleId: paperResult?.ruleId ?? null }
+          : null,
+      );
+    },
+    [paperResult],
+  );
 
   const handleSellPosition = useCallback(
     async (mint: string) => {
@@ -1632,7 +1711,11 @@ export function Swing1Page() {
       )}
 
       {inspect && (
-        <TokenInspectModal target={inspect.target} onClose={() => setInspect(null)} />
+        <SwingRuleInspectModal
+          target={inspect.target}
+          rule={inspect.ruleId ? rules.find((r) => r.id === inspect.ruleId) : undefined}
+          onClose={() => setInspect(null)}
+        />
       )}
 
       {stopConfirm && (

@@ -5,9 +5,11 @@ import {
   LineSeries,
   LineStyle,
   type Coordinate,
+  type DeepPartial,
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
+  type LineSeriesOptions,
   type LogicalRangeChangeEventHandler,
   type SeriesMarker,
   type Time,
@@ -486,6 +488,15 @@ export function TokenPriceChart({
   const seriesRef = useRef<ISeriesApi<'Line' | 'Candlestick'> | null>(null);
   const swingSeriesRefs = useRef<ISeriesApi<'Line'>[]>([]);
   const swingSeriesLegRef = useRef(new Map<ISeriesApi<'Line'>, ChartSwingLeg>());
+  /** Last-applied {options, data, leg} per swing series so the candle-recreate
+   *  effect can re-add them on top without recomputing the overlay. */
+  const swingSeriesSnapshotsRef = useRef<
+    Array<{
+      options: DeepPartial<LineSeriesOptions>;
+      data: ReturnType<typeof swingsToColoredLineData>;
+      leg?: ChartSwingLeg;
+    }>
+  >([]);
   const swingOverlayMetaRef = useRef<{
     segmentMode: 'connected' | 'perLeg' | 'connectedSequential';
     groupMode: ChartGroupMode;
@@ -543,6 +554,8 @@ export function TokenPriceChart({
   const intervalSec = CHART_INTERVALS[interval];
   const groupingKey = groupMode === 'slot' ? 'slot' : intervalSec;
   const selectedBarTime = selectedBar?.barTime ?? null;
+  const selectedBarTimeRef = useRef(selectedBarTime);
+  selectedBarTimeRef.current = selectedBarTime;
 
   const shouldFitContentRef = useRef(true);
   const prevIdRef = useRef(id);
@@ -1051,6 +1064,10 @@ export function TokenPriceChart({
         onBarClickRef.current?.(null);
         return;
       }
+      if (selectedBarTimeRef.current === param.time) {
+        onBarClickRef.current?.(null);
+        return;
+      }
       const selection: ChartBarSelection =
         groupModeAtMount === 'slot'
           ? {
@@ -1232,6 +1249,23 @@ export function TokenPriceChart({
       series.setData(barsToLineData(bars));
     } else {
       series.setData(barsToCandleData(bars, highlightBarTimes));
+    }
+
+    // Recreating the main series appends it last, which would otherwise bury
+    // the swing overlay lines under the fresh candles/line — re-add the
+    // existing overlay series so they stay on top and stay hoverable.
+    if (swingSeriesSnapshotsRef.current.length > 0) {
+      for (const stale of swingSeriesRefs.current) {
+        chart.removeSeries(stale);
+      }
+      swingSeriesRefs.current = [];
+      swingSeriesLegRef.current.clear();
+      for (const snapshot of swingSeriesSnapshotsRef.current) {
+        const swingSeries = chart.addSeries(LineSeries, snapshot.options);
+        swingSeries.setData(snapshot.data);
+        swingSeriesRefs.current.push(swingSeries);
+        if (snapshot.leg) swingSeriesLegRef.current.set(swingSeries, snapshot.leg);
+      }
     }
 
     if (shouldFitContentRef.current) {
@@ -1578,6 +1612,7 @@ export function TokenPriceChart({
     }
     swingSeriesRefs.current = [];
     swingSeriesLegRef.current.clear();
+    swingSeriesSnapshotsRef.current = [];
     swingOverlayMetaRef.current = null;
     setSwingTooltip(null);
 
@@ -1611,12 +1646,14 @@ export function TokenPriceChart({
       );
       const pointCount = data.filter((p) => 'value' in p).length;
       if (pointCount < 2) return;
-      const series = chart.addSeries(LineSeries, {
+      const options: DeepPartial<LineSeriesOptions> = {
         ...SWING_HIGH_OVERLAY_SERIES_OPTIONS,
         priceFormat: createChartPriceFormat(priceUnit),
-      });
+      };
+      const series = chart.addSeries(LineSeries, options);
       series.setData(data);
       swingSeriesRefs.current.push(series);
+      swingSeriesSnapshotsRef.current.push({ options, data });
     };
 
     if (segmentMode === 'perLeg') {
@@ -1630,14 +1667,16 @@ export function TokenPriceChart({
           swingOverlay.perLegFullSpanEnd ?? false,
         );
         if (!segment) continue;
-        const series = chart.addSeries(LineSeries, {
+        const options: DeepPartial<LineSeriesOptions> = {
           ...SWING_HIGH_OVERLAY_SERIES_OPTIONS,
           color: segment.color,
           priceFormat: createChartPriceFormat(priceUnit),
-        });
+        };
+        const series = chart.addSeries(LineSeries, options);
         series.setData(segment.data);
         swingSeriesRefs.current.push(series);
         swingSeriesLegRef.current.set(series, leg);
+        swingSeriesSnapshotsRef.current.push({ options, data: segment.data, leg });
       }
     } else if (segmentMode === 'connectedSequential') {
       const chains = groupSequentialLegChains(
