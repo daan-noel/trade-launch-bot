@@ -754,9 +754,10 @@ impl TradeRepo {
 /// Returns `None` for time-driven exits where no real trade occurred.
 ///
 /// Price is derived now (the table has no `price_per_token` column), so the match
-/// computes `sol_amount::float8 / NULLIF(token_amount, 0)` and compares it to the
-/// requested `price_per_token`. Best-effort lookup; the raw signature bytes are
-/// decoded back to base58.
+/// converts the stored lamports to SOL (`sol_amount::float8 / 1e9`) before dividing
+/// by `token_amount`, matching the `price_of()`/`lamports_to_sol()` convention every
+/// caller uses to compute the requested `price_per_token` (SOL, not lamports, per
+/// token). Best-effort lookup; the raw signature bytes are decoded back to base58.
 pub async fn find_tx_by_fill(
     pool: &PgPool,
     mint: &str,
@@ -766,7 +767,7 @@ pub async fn find_tx_by_fill(
     let bytes: Option<Vec<u8>> = sqlx::query_scalar(
         "SELECT tx_signature FROM trades \
          WHERE mint_address = $1 AND block_time = $2 \
-           AND (sol_amount::float8 / NULLIF(token_amount, 0)) = $3 \
+           AND (sol_amount::float8 / 1e9 / NULLIF(token_amount, 0)) = $3 \
          LIMIT 1",
     )
     .bind(mint)
