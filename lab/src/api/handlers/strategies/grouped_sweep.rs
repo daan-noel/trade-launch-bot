@@ -1413,7 +1413,7 @@ fn bad_strategy(strategy_id: &str) -> HttpResponse {
 
 /// Return `true` if the token's fingerprint value for `field` is in `allowed`.
 /// `IxLabels` is handled by the `ix_labels_filter` path and never reaches here.
-/// `CreatorWallet` / `TokenProgramId` aren't offered in the frontend filter UI.
+/// `TokenProgramId` isn't offered in the frontend filter UI.
 fn matches_field_filter(
     fp: &crate::sweep::grouping::TokenFingerprint,
     field: crate::sweep::grouping::GroupField,
@@ -1449,7 +1449,7 @@ fn matches_field_filter(
             let v = fp.is_cashback_enabled;
             allowed.iter().any(|a| a.as_bool().map(|b| b == v).unwrap_or(false))
         }
-        CreatorWallet | TokenProgramId | IxLabels => false,
+        TokenProgramId | IxLabels => false,
     }
 }
 

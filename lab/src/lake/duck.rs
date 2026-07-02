@@ -319,7 +319,7 @@ fn push_token(
 /// dimension file, mirroring [`crate::sweep::corpus::attach_fingerprints`].
 fn attach_fingerprints(conn: &Connection, tokens_lit: &str, tokens: &mut [TokenTrades]) -> Result<()> {
     let sql = format!(
-        "SELECT mint, fp_creator_wallet, fp_token_program_id, fp_initial_buy_sol, \
+        "SELECT mint, fp_token_program_id, fp_initial_buy_sol, \
                 fp_cu_limit, fp_cu_price, fp_is_cashback_enabled, fp_max_sol_cost, \
                 fp_spendable_sol_in, fp_ix_labels \
          FROM read_parquet({tokens_lit}) WHERE mint IN (SELECT mint FROM sel_mints)"
@@ -329,18 +329,17 @@ fn attach_fingerprints(conn: &Connection, tokens_lit: &str, tokens: &mut [TokenT
     let mut by_mint: HashMap<String, TokenFingerprint> = HashMap::new();
     while let Some(row) = rows.next()? {
         let mint: String = row.get(0)?;
-        let ix_labels_json: Option<String> = row.get(9)?;
+        let ix_labels_json: Option<String> = row.get(8)?;
         by_mint.insert(
             mint,
             TokenFingerprint {
-                creator_wallet: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                token_program_id: row.get(2)?,
-                initial_buy_sol: row.get(3)?,
-                cu_limit: row.get(4)?,
-                cu_price: row.get(5)?,
-                is_cashback_enabled: row.get::<_, Option<bool>>(6)?.unwrap_or(false),
-                max_sol_cost: row.get(7)?,
-                spendable_sol_in: row.get(8)?,
+                token_program_id: row.get(1)?,
+                initial_buy_sol: row.get(2)?,
+                cu_limit: row.get(3)?,
+                cu_price: row.get(4)?,
+                is_cashback_enabled: row.get::<_, Option<bool>>(5)?.unwrap_or(false),
+                max_sol_cost: row.get(6)?,
+                spendable_sol_in: row.get(7)?,
                 ix_labels: ix_labels_json
                     .and_then(|s| serde_json::from_str(&s).ok())
                     .unwrap_or_default(),

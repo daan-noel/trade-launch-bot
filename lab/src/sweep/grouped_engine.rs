@@ -622,7 +622,7 @@ mod tests {
         }
     }
 
-    fn token(mint: &str, creator: &str) -> TokenTrades {
+    fn token(mint: &str, program: &str) -> TokenTrades {
         let t = Trade::new(
             mint.into(),
             "w".into(),
@@ -637,7 +637,7 @@ mod tests {
             mint.into(),
             mint.into(),
             TokenFingerprint {
-                creator_wallet: creator.into(),
+                token_program_id: Some(program.into()),
                 ..Default::default()
             },
             &[t],
@@ -693,14 +693,14 @@ mod tests {
     const OPEN_FLOOR: CoverageFloor = CoverageFloor { min_fired_abs: 1, fire_frac: 0.0 };
 
     #[test]
-    fn groups_by_exact_creator_and_picks_best_combo() {
+    fn groups_by_exact_field_and_picks_best_combo() {
         use crate::sweep::grouping::GroupField;
         let params = Mock.sample(SweepMethod::Grid);
         let groups = run_grouped_sweep(
             &Mock,
             &params,
             &corpus(),
-            &[GroupField::CreatorWallet],
+            &[GroupField::TokenProgramId],
             1,
             OPEN_FLOOR,
             &crate::sweep::progress::NoopObserver,
@@ -739,7 +739,7 @@ mod tests {
             &Mock,
             &params,
             &corpus,
-            &[GroupField::CreatorWallet],
+            &[GroupField::TokenProgramId],
             1,
             OPEN_FLOOR,
             &crate::sweep::progress::NoopObserver,
@@ -810,7 +810,7 @@ mod tests {
             &Mock,
             &params,
             &corpus(),
-            &[GroupField::CreatorWallet],
+            &[GroupField::TokenProgramId],
             2,
             OPEN_FLOOR,
             &crate::sweep::progress::NoopObserver,
@@ -842,7 +842,7 @@ mod tests {
             coarse,
             None,
             &corpus(),
-            &[crate::sweep::grouping::GroupField::CreatorWallet],
+            &[crate::sweep::grouping::GroupField::TokenProgramId],
             1,
             OPEN_FLOOR,
             100,
@@ -930,7 +930,7 @@ mod tests {
             &Mock,
             &params,
             &corpus(), // devA(2) + devB(1) → 2 surviving groups
-            &[GroupField::CreatorWallet],
+            &[GroupField::TokenProgramId],
             1,
             OPEN_FLOOR,
             &crate::sweep::progress::NoopObserver,

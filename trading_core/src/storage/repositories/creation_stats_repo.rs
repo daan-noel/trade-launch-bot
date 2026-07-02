@@ -205,7 +205,6 @@ pub struct GroupedTrendPointRow {
 /// user free-text), so interpolating these literals is injection-safe.
 fn group_field_sql(f: GroupField) -> &'static str {
     match f {
-        GroupField::CreatorWallet => "COALESCE(t.creator_wallet, '∅')",
         GroupField::TokenProgramId => "COALESCE(t.token_program_id, '∅')",
         GroupField::CuLimit => "COALESCE(t.cu_limit::text, '∅')",
         GroupField::CuPrice => "COALESCE(t.cu_price::text, '∅')",

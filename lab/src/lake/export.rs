@@ -79,7 +79,6 @@ fn tokens_schema() -> Schema {
     Schema::new(vec![
         Field::new("mint", DataType::Utf8, false),
         Field::new("symbol", DataType::Utf8, false),
-        Field::new("fp_creator_wallet", DataType::Utf8, false),
         Field::new("fp_token_program_id", DataType::Utf8, true),
         Field::new("fp_initial_buy_sol", DataType::Float64, true),
         Field::new("fp_cu_limit", DataType::Int64, true),
@@ -321,7 +320,6 @@ impl TradeBuilders {
 struct LakeTokenRow {
     mint_address: String,
     symbol: String,
-    creator_wallet: String,
     token_program_id: Option<String>,
     initial_buy_sol: Option<f64>,
     cu_limit: Option<i64>,
@@ -350,7 +348,6 @@ async fn export_tokens(pool: &PgPool, root: &Path) -> Result<usize> {
 
     let mut mint = StringBuilder::new();
     let mut symbol = StringBuilder::new();
-    let mut creator = StringBuilder::new();
     let mut program = StringBuilder::new();
     let mut buy_sol = Float64Builder::new();
     let mut cu_limit = Int64Builder::new();
@@ -371,7 +368,6 @@ async fn export_tokens(pool: &PgPool, root: &Path) -> Result<usize> {
                 vec![
                     Arc::new(mint.finish()),
                     Arc::new(symbol.finish()),
-                    Arc::new(creator.finish()),
                     Arc::new(program.finish()),
                     Arc::new(buy_sol.finish()),
                     Arc::new(cu_limit.finish()),
@@ -390,7 +386,7 @@ async fn export_tokens(pool: &PgPool, root: &Path) -> Result<usize> {
 
     let mut stream = sqlx::query_as::<_, LakeTokenRow>(
         r#"
-        SELECT mint_address, symbol, creator_wallet, token_program_id,
+        SELECT mint_address, symbol, token_program_id,
                initial_buy_sol::float8 / 1e9 AS initial_buy_sol,
                cu_limit, cu_price, is_cashback_enabled,
                is_mayhem_mode, created_at, initial_buy_instruction, ix_labels
@@ -408,7 +404,6 @@ async fn export_tokens(pool: &PgPool, root: &Path) -> Result<usize> {
         };
         mint.append_value(&r.mint_address);
         symbol.append_value(&r.symbol);
-        creator.append_value(&r.creator_wallet);
         program.append_option(r.token_program_id.as_deref());
         buy_sol.append_option(r.initial_buy_sol);
         cu_limit.append_option(r.cu_limit);

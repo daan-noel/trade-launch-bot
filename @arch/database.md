@@ -45,8 +45,6 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
 ### Token analysis
 
 - `tokens_info` — ATH, age, volume, market_cap, trade_count, is_dead, is_migrated, first_slot_buy_sol/first_slot_sell_sol(BIGINT lamports — same-creation-slot buy/sell totals, streamed in `TokenState`), sync watermarks
-- `tokens_analysis` — mint_address, analyzer_name, score, indicators(JSONB)
-- `creator_profiles` — wallet_address, tokens_created, suspiciousness_score, indicators(JSONB)
 
 ### Strategy (unified across all strategies — rows not tables per strategy)
 
@@ -75,7 +73,6 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
 | `trade_repo.rs` | trades | `find_fill_by_signature`, `sum_legs_by_signatures` (per-sig attribution), `for_each_seed_mint` (cold-start seed), `find_by_mints_all` (batched per-mint grouped reads for backtests; **reconstructs** the dropped `real_sol_reserves` via `approx_real_sol_reserves(reserve_sol, venue)` — backtest-only, never the live path) |
 | `raw_tx_repo.rs` | raw_txs | `insert`, `insert_many` (ON CONFLICT DO NOTHING), `find_by_signature` (PK lookup) |
 | `token_info_repo.rs` | tokens_info | `upsert_metrics`, `get/update_sync_watermark` |
-| `analysis_repo.rs` | tokens_analysis, creator_profiles | find/list |
 | `creation_stats_repo.rs` | tokens (+tokens_info) | `heatmap`, `trend`, `grouped` — TZ-aware SQL, bucket granularities, per-field corpus filters |
 | `settings_repo.rs` | app_settings | `load_all`, `get_one`, `set_one`, `set_many` |
 | `grouped_sweep_repo.rs` | `<strategy>_grouped_sweep_*` | incremental writes: `insert_run`, `append_group`, `finalize_completed`, `mark_cancelled`; compaction: `fetch_combo_metrics_for_group`, `delete_combos_except`, `vacuum_full_results` |

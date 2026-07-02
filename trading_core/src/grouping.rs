@@ -2,10 +2,15 @@
 //!
 //! A sweep can partition its corpus by a **compound fingerprint key** — the
 //! exact values of one or more token-creation fields the user picks on the page
-//! (creator, CU settings, the creation-instruction `max_sol_cost` /
-//! `spendable_sol_in`, the instruction-label set, …). Each surviving group is
-//! swept independently so the UI can answer "for tokens with *this* fingerprint,
-//! which param combo is best?".
+//! (CU settings, the creation-instruction `max_sol_cost` / `spendable_sol_in`,
+//! the instruction-label set, …). Each surviving group is swept independently so
+//! the UI can answer "for tokens with *this* fingerprint, which param combo is
+//! best?".
+//!
+//! Creator wallet is **deliberately not** a grouping dimension: on pump.fun
+//! creators rotate wallets constantly, so a creator key is un-trackable across
+//! tokens and only ever yields singleton groups. It was removed to keep any
+//! creator-wallet classification out of the project entirely.
 //!
 //! This module is intentionally strategy-blind: it only reads
 //! [`TokenFingerprint`] (carried on each corpus token) and never touches the
@@ -28,7 +33,6 @@ const MISSING: &str = "∅";
 /// pass with no extra DB hit in the sweep loop.
 #[derive(Clone, Debug, Default)]
 pub struct TokenFingerprint {
-    pub creator_wallet: String,
     pub token_program_id: Option<String>,
     pub initial_buy_sol: Option<f64>,
     pub cu_limit: Option<i64>,
@@ -95,7 +99,6 @@ pub fn normalize_label_vec(v: Vec<String>) -> Vec<String> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GroupField {
-    CreatorWallet,
     TokenProgramId,
     CuLimit,
     CuPrice,
@@ -110,7 +113,6 @@ impl GroupField {
     /// Stable key used in the `GroupKey` JSON object (matches the serde tag).
     pub fn as_str(self) -> &'static str {
         match self {
-            GroupField::CreatorWallet => "creator_wallet",
             GroupField::TokenProgramId => "token_program_id",
             GroupField::CuLimit => "cu_limit",
             GroupField::CuPrice => "cu_price",
@@ -126,7 +128,6 @@ impl GroupField {
     /// Used by query handlers that take a comma-separated `group_by` string.
     pub fn from_tag(tag: &str) -> Option<Self> {
         Some(match tag.trim() {
-            "creator_wallet" => GroupField::CreatorWallet,
             "token_program_id" => GroupField::TokenProgramId,
             "cu_limit" => GroupField::CuLimit,
             "cu_price" => GroupField::CuPrice,
@@ -148,8 +149,8 @@ impl GroupField {
 pub struct GroupKey(pub Vec<(GroupField, String)>);
 
 impl GroupKey {
-    /// `{"creator_wallet":"4f3a…","max_sol_cost":"12345"}` — stored on the group
-    /// row and rendered as chips by the page. Empty key ⇒ `{}`.
+    /// `{"token_program_id":"Tokenkeg…","max_sol_cost":"12345"}` — stored on the
+    /// group row and rendered as chips by the page. Empty key ⇒ `{}`.
     pub fn to_json(&self) -> Value {
         let mut map = serde_json::Map::with_capacity(self.0.len());
         for (f, v) in &self.0 {
@@ -169,7 +170,6 @@ pub fn group_key(fp: &TokenFingerprint, fields: &[GroupField]) -> GroupKey {
 fn render_field(fp: &TokenFingerprint, f: GroupField) -> String {
     let opt = |v: Option<i64>| v.map(|x| x.to_string()).unwrap_or_else(|| MISSING.to_string());
     match f {
-        GroupField::CreatorWallet => fp.creator_wallet.clone(),
         GroupField::TokenProgramId => {
             fp.token_program_id.clone().unwrap_or_else(|| MISSING.to_string())
         }
@@ -198,7 +198,6 @@ mod tests {
 
     fn fp() -> TokenFingerprint {
         TokenFingerprint {
-            creator_wallet: "devA".into(),
             token_program_id: Some("Tokenkeg".into()),
             initial_buy_sol: Some(1.5),
             cu_limit: Some(200_000),
@@ -212,9 +211,9 @@ mod tests {
 
     #[test]
     fn exact_single_field_key() {
-        let k = group_key(&fp(), &[GroupField::CreatorWallet]);
-        assert_eq!(k.0, vec![(GroupField::CreatorWallet, "devA".to_string())]);
-        assert_eq!(k.to_json(), json!({ "creator_wallet": "devA" }));
+        let k = group_key(&fp(), &[GroupField::TokenProgramId]);
+        assert_eq!(k.0, vec![(GroupField::TokenProgramId, "Tokenkeg".to_string())]);
+        assert_eq!(k.to_json(), json!({ "token_program_id": "Tokenkeg" }));
     }
 
     #[test]
@@ -241,7 +240,7 @@ mod tests {
     fn empty_fields_is_single_all_group() {
         let a = group_key(&fp(), &[]);
         let mut other = fp();
-        other.creator_wallet = "devB".into();
+        other.token_program_id = Some("OtherProgram".into());
         let b = group_key(&other, &[]);
         assert_eq!(a, b, "no grouping ⇒ every token shares the ALL key");
         assert_eq!(a.to_json(), json!({}));

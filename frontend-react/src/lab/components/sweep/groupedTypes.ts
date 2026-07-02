@@ -16,10 +16,10 @@ export { SWING1_AXES, SWING1_SUBGROUPS, groupAxesBySubgroup } from '@shared/lib/
 
 /** The selectable fingerprint fields, matching the backend `GroupField` serde
  *  tags (snake_case). Selection order is the compound-key order. */
-// Note: `creator_wallet` (near-unique per token → singleton groups) and
-// `token_program_id` (effectively constant on pump.fun → one group) are poor
-// grouping keys, so they're deliberately not offered here. The backend
-// `GroupField` enum still accepts them for any legacy run that stored them.
+// Note: `token_program_id` (effectively constant on pump.fun → one group) is a
+// poor grouping key, so it's deliberately not offered here. `creator_wallet` was
+// removed from the backend `GroupField` enum entirely — creators rotate wallets,
+// so a creator key is un-trackable and only ever yields singleton groups.
 export const GROUP_FIELDS = [
   'cu_limit',
   'cu_price',
