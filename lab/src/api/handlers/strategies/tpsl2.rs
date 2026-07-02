@@ -10,8 +10,9 @@
 //!   - `matched` — the whole-`tokens`-table entry-criteria scan (uses the same
 //!     `token_criteria_satisfied` pre-filter as the tpsl2 backtest).
 //!
-//! Live-only concerns (lifecycle, real positions) are deploy's. Runtime counters
-//! are always 0 locally — there is no runtime cache.
+//! Live-only concerns (lifecycle, real positions) are deploy's. The lab has no
+//! runtime cache, so the rule list's position counters come from the **synced**
+//! `strategy_positions` rows (latest paper run per rule), not live activity.
 
 use actix_web::{web, HttpResponse, Responder};
 use chrono::{DateTime, Utc};
@@ -29,7 +30,7 @@ use crate::{
 };
 
 use trading_core::models::{StrategyPosition, StrategyRule};
-use trading_core::storage::repositories::strategy_repo::StrategyRepo;
+use trading_core::storage::repositories::strategy_repo::{RuleCounters, StrategyRepo};
 use trading_core::strategies::registry::StrategyImpl;
 use trading_core::strategies::rules::{self, params_to_value, RuleDraft, RuleError};
 
@@ -66,10 +67,13 @@ fn rule_error(e: RuleError, ctx: &str) -> HttpResponse {
 // ---------------------------------------------------------------------------
 
 /// Build the flat frontend rule shape (params JSONB merged with the universal
-/// columns), the live runtime counters (always 0 locally — no runtime cache), and
-/// a derived lifecycle. `paper_finished` flags a paper rule whose latest run is
-/// `Finished`. Matches the deploy edge's `rule_to_json`.
-fn rule_to_json(rule: &StrategyRule, paper_finished: bool) -> Value {
+/// columns), the position counters, and a derived lifecycle. `paper_finished`
+/// flags a paper rule whose latest run is `Finished`. `counters` carries the
+/// per-rule position counts computed from the synced DB rows (the lab has no
+/// runtime cache, so these come from `strategy_positions`, not live state); pass
+/// `&RuleCounters::default()` for an all-zero row. Matches the deploy edge's
+/// `rule_to_json`.
+fn rule_to_json(rule: &StrategyRule, paper_finished: bool, counters: &RuleCounters) -> Value {
     let mut obj: Map<String, Value> = match &rule.params {
         Value::Object(m) => m.clone(),
         _ => Map::new(),
@@ -86,15 +90,15 @@ fn rule_to_json(rule: &StrategyRule, paper_finished: bool) -> Value {
     obj.insert("created_at".into(), json!(rule.created_at));
     obj.insert("updated_at".into(), json!(rule.updated_at));
 
-    // No runtime cache locally → all live counters are zero.
-    obj.insert("open_positions".into(), json!(0));
-    obj.insert("pending_positions".into(), json!(0));
-    obj.insert("total_positions".into(), json!(0));
-    obj.insert("win_count".into(), json!(0));
-    obj.insert("loss_count".into(), json!(0));
-    obj.insert("win_rate".into(), json!(0.0));
-    obj.insert("avg_pnl_pct".into(), json!(0.0));
-    obj.insert("total_pnl_sol".into(), json!(0.0));
+    // Counters from the synced DB positions (latest paper run per rule).
+    obj.insert("open_positions".into(), json!(counters.open_positions));
+    obj.insert("pending_positions".into(), json!(counters.pending_positions));
+    obj.insert("total_positions".into(), json!(counters.total_positions));
+    obj.insert("win_count".into(), json!(counters.win_count));
+    obj.insert("loss_count".into(), json!(counters.loss_count));
+    obj.insert("win_rate".into(), json!(counters.win_rate));
+    obj.insert("avg_pnl_pct".into(), json!(counters.avg_pnl_pct));
+    obj.insert("total_pnl_sol".into(), json!(counters.total_pnl_sol));
 
     let lifecycle = if rule.is_active {
         "Active"
@@ -139,9 +143,21 @@ pub async fn list_tpsl_rules(app_state: web::Data<Arc<LocalState>>) -> impl Resp
         .filter(|run| run.status == "Finished")
         .filter_map(|run| run.rule_id)
         .collect();
+    // One batched query for the per-rule position counters (latest paper run each).
+    let counters = repo
+        .rule_counters_for_latest_paper_runs(STRATEGY_ID)
+        .await
+        .unwrap_or_default();
+    let default_counters = RuleCounters::default();
     let out: Vec<Value> = rules
         .iter()
-        .map(|r| rule_to_json(r, finished.contains(&r.id)))
+        .map(|r| {
+            rule_to_json(
+                r,
+                finished.contains(&r.id),
+                counters.get(&r.id).unwrap_or(&default_counters),
+            )
+        })
         .collect();
     HttpResponse::Ok().json(out)
 }
@@ -156,7 +172,13 @@ pub async fn get_tpsl_rule(
     match repo.find_rule(rule_id).await {
         Ok(Some(rule)) if rule.strategy_id == STRATEGY_ID => {
             let pf = paper_finished(&repo, &rule).await;
-            HttpResponse::Ok().json(rule_to_json(&rule, pf))
+            let counters = repo
+                .rule_counters_for_latest_paper_runs(STRATEGY_ID)
+                .await
+                .ok()
+                .and_then(|m| m.get(&rule.id).cloned())
+                .unwrap_or_default();
+            HttpResponse::Ok().json(rule_to_json(&rule, pf, &counters))
         }
         Ok(_) => HttpResponse::NotFound().json(json!({"error": "Rule not found"})),
         Err(e) => {
@@ -194,7 +216,7 @@ pub async fn create_tpsl_rule(
     };
     let repo = app_state.strategy_repo();
     match rules::create(&repo, &draft).await {
-        Ok(rule) => HttpResponse::Created().json(rule_to_json(&rule, false)),
+        Ok(rule) => HttpResponse::Created().json(rule_to_json(&rule, false, &RuleCounters::default())),
         Err(e) => rule_error(e, "create rule"),
     }
 }
@@ -256,7 +278,13 @@ pub async fn update_tpsl_rule(
     match rules::save(&repo, &rule).await {
         Ok(()) => {
             let pf = paper_finished(&repo, &rule).await;
-            HttpResponse::Ok().json(rule_to_json(&rule, pf))
+            let counters = repo
+                .rule_counters_for_latest_paper_runs(STRATEGY_ID)
+                .await
+                .ok()
+                .and_then(|m| m.get(&rule.id).cloned())
+                .unwrap_or_default();
+            HttpResponse::Ok().json(rule_to_json(&rule, pf, &counters))
         }
         Err(e) => rule_error(e, "update rule"),
     }

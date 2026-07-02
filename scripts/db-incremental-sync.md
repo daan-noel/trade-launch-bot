@@ -70,7 +70,7 @@ EC2 box (per the data-scale guardrails in `CLAUDE.md`).
 5. **Schema-parity guard** — compares local vs. server columns for every synced table and **aborts on drift** before moving any data.
 6. **Computes local watermarks** (`MAX(block_time)`, `MAX(created_at)`, …) and the sealed-day cutoff (midnight UTC today). TimescaleDB auto-creates destination chunks on insert — no partition-ensure step.
 7. **Upserts each market-data table** with the watermark as a pushed-down literal (see table below); hypertables pull only sealed days `[watermark, cutoff)`.
-7b. **Mirrors the strategy tables** (`strategy_rules` → `strategy_runs` → `strategy_run_metrics` → `strategy_positions`, FK-safe order) **full-table, server wins** — no watermark (tiny vs. `trades`), `DO UPDATE` refreshes changed rows so status/exit-fill updates propagate.
+7b. **Mirrors the strategy tables** (`strategy_rules` → `strategy_runs` → `strategy_run_metrics` → `strategy_positions`, FK-safe order) **full-table, server wins** — no watermark (tiny vs. `trades`), `DO UPDATE` refreshes changed rows so status/exit-fill updates propagate. The lab reads these mirrored rows for both the positions table/summary **and** the rules-table counters (open/pending/total/win/loss): the lab has no runtime cache, so its `list_*_rules` handlers compute those counters in SQL via `StrategyRepo::rule_counters_for_latest_paper_runs` (latest paper run per rule) instead of a cache read. Without this sync the lab shows all-zero counters.
 8. **Syncs `_sqlx_migrations`** from the server so the local backend doesn't re-apply migrations.
 9. **Detaches** — drops the foreign server (removing the server password from the local catalog) and kills the tunnel (in a `finally`, so it's cleaned up even on error).
 

@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use sqlx::{types::Json, PgPool};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::models::strategy::{
@@ -226,6 +227,41 @@ impl From<StrategyPositionDbRow> for StrategyPosition {
             updated_at: r.updated_at,
         }
     }
+}
+
+/// Per-rule position counters for the rules-table columns (open/pending/total +
+/// win/loss + derived win-rate/avg-pct/pnl). Mirrors the runtime cache's live
+/// counters, but computed from the synced DB rows so the **lab** rules list
+/// (which has no runtime cache) can show them. Keyed by `rule_id` in the batched
+/// map. Defaults to all-zero (a rule with no positions).
+#[derive(Debug, Default, Clone)]
+pub struct RuleCounters {
+    /// Entered positions (`entry_price IS NOT NULL`) → `total_positions`.
+    pub total_positions: i64,
+    /// In the holding index (`Holding`/`Arming`/`BuySubmitted`) → `open_positions`.
+    pub open_positions: i64,
+    /// Armed but not yet filled (`Arming`/`BuySubmitted`) → `pending_positions`.
+    pub pending_positions: i64,
+    pub win_count: i64,
+    pub loss_count: i64,
+    pub win_rate: f64,
+    pub avg_pnl_pct: f64,
+    pub total_pnl_sol: f64,
+}
+
+/// Raw batched counter row (one per rule) behind
+/// [`StrategyRepo::rule_counters_for_latest_paper_runs`]. Same win/open/closed
+/// predicates as [`PositionsSummaryRow`], grouped by `rule_id`.
+#[derive(sqlx::FromRow)]
+struct RuleCountersRow {
+    rule_id: Uuid,
+    total: i64,
+    open: i64,
+    pending: i64,
+    win: i64,
+    loss: i64,
+    total_pnl_lamports: i64,
+    sum_pnl_pct: f64,
 }
 
 /// Raw aggregate row behind [`StrategyRepo::positions_summary`]. Lamport sums are
@@ -849,6 +885,71 @@ impl StrategyRepo {
             best_pct: row.best_pct,
             worst_pct: row.worst_pct,
         })
+    }
+
+    /// Batched per-rule position counters for a strategy, each scoped to the rule's
+    /// **latest paper run** — the DB-computed analogue of the live runtime cache's
+    /// per-rule counters, for the **lab** rules table (which has no runtime cache).
+    ///
+    /// One query: `DISTINCT ON (rule_id)` picks each rule's newest paper run, then
+    /// its positions are aggregated with the same win/open/closed predicates as
+    /// [`positions_summary`]. Returns a `rule_id → RuleCounters` map; rules with no
+    /// paper run / no positions are simply absent (caller defaults them to zero).
+    pub async fn rule_counters_for_latest_paper_runs(
+        &self,
+        strategy_id: &str,
+    ) -> anyhow::Result<HashMap<Uuid, RuleCounters>> {
+        // `latest` = each rule's newest paper run; join its positions and aggregate.
+        // Predicates mirror `positions_summary` exactly so the rule-row counts and
+        // the Positions Summary panel can't drift.
+        let sql = "\
+            WITH latest AS ( \
+                SELECT DISTINCT ON (rule_id) rule_id, id AS run_id \
+                FROM strategy_runs \
+                WHERE mode = 'paper' AND rule_id IS NOT NULL AND strategy_id = $1 \
+                ORDER BY rule_id, run_seq DESC \
+            ) \
+            SELECT l.rule_id AS rule_id, \
+              COUNT(p.*) FILTER (WHERE p.entry_price IS NOT NULL) AS total, \
+              COUNT(p.*) FILTER (WHERE p.status IN ('Holding','Arming','BuySubmitted')) AS open, \
+              COUNT(p.*) FILTER (WHERE p.status IN ('Arming','BuySubmitted')) AS pending, \
+              COUNT(p.*) FILTER (WHERE p.status = 'End' AND p.exit_sol > p.entry_sol) AS win, \
+              COUNT(p.*) FILTER (WHERE p.entry_price IS NOT NULL AND p.status IN ('End','ExitFailed') \
+                                   AND NOT (p.status = 'End' AND p.exit_sol > p.entry_sol)) AS loss, \
+              COALESCE(SUM(COALESCE(p.exit_sol,0) - p.entry_sol) \
+                       FILTER (WHERE p.entry_price IS NOT NULL AND p.status IN ('End','ExitFailed')), 0)::BIGINT AS total_pnl_lamports, \
+              COALESCE(SUM((p.exit_price - p.entry_price) / p.entry_price * 100.0) \
+                       FILTER (WHERE p.entry_price IS NOT NULL AND p.entry_price > 0 \
+                                 AND p.exit_price IS NOT NULL AND p.status IN ('End','ExitFailed')), 0)::DOUBLE PRECISION AS sum_pnl_pct \
+            FROM latest l \
+            LEFT JOIN strategy_positions p ON p.run_id = l.run_id \
+            GROUP BY l.rule_id";
+        let rows = sqlx::query_as::<_, RuleCountersRow>(sql)
+            .bind(strategy_id)
+            .fetch_all(&self.pool)
+            .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let closed = r.win + r.loss;
+                let win_rate = if closed > 0 { r.win as f64 / closed as f64 * 100.0 } else { 0.0 };
+                let avg_pnl_pct = if closed > 0 { r.sum_pnl_pct / closed as f64 } else { 0.0 };
+                (
+                    r.rule_id,
+                    RuleCounters {
+                        total_positions: r.total,
+                        open_positions: r.open,
+                        pending_positions: r.pending,
+                        win_count: r.win,
+                        loss_count: r.loss,
+                        win_rate,
+                        avg_pnl_pct,
+                        total_pnl_sol: lamports_to_sol(r.total_pnl_lamports),
+                    },
+                )
+            })
+            .collect())
     }
 
     /// Page-bounded positions for a strategy family — the HTTP list view.
