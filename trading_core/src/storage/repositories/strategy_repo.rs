@@ -4,6 +4,7 @@ use sqlx::{types::Json, PgPool};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::api::table_query::{FilterSpec, TableRequest};
 use crate::models::strategy::{
     PositionsSummary, StrategyPosition, StrategyRule, StrategyRun, StrategyRunMetrics,
 };
@@ -331,12 +332,26 @@ const POSITION_COLS_SP: &str = "sp.id, sp.run_id, sp.strategy_id, sp.rule_id, sp
 pub struct PositionQuery {
     /// Free-text search over mint / symbol / name (ILIKE). Empty = no search.
     pub search: String,
-    /// Per-column text filters as `(frontend_key, text)`. Non-whitelisted keys
-    /// are ignored.
-    pub filters: Vec<(String, String)>,
+    /// Per-column structured filters as `(frontend_key, spec)`. Non-whitelisted
+    /// keys — and specs whose operand shape doesn't fit the op/column type — are
+    /// dropped by the SQL builder (never interpolated).
+    pub filters: Vec<(String, FilterSpec)>,
     /// Ordered sort keys as `(frontend_key, descending?)`. Non-whitelisted keys are
     /// ignored; an empty resolved list falls back to `created_at DESC`.
     pub sort: Vec<(String, bool)>,
+}
+
+impl From<TableRequest> for PositionQuery {
+    /// Lower the JSON wire request into the repo query. Paging (`pagination`) is
+    /// resolved separately by the handler via [`Page::bounds`](crate::api::table_query::Page::bounds);
+    /// only the search / filter / sort view-state carries here.
+    fn from(req: TableRequest) -> Self {
+        PositionQuery {
+            search: req.search,
+            filters: req.filters.into_iter().collect(),
+            sort: req.sorting.into_iter().map(|s| (s.col, s.dir.is_desc())).collect(),
+        }
+    }
 }
 
 /// Map a frontend column key to its **trusted** SQL sort expression (with table
@@ -456,8 +471,11 @@ fn push_position_where(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, query: &Posi
             .push_bind(needle)
             .push(")");
     }
-    for (key, raw) in &query.filters {
-        let text = raw.trim();
+    for (key, spec) in &query.filters {
+        // Step 1 bridge: only the `Contains` (ILIKE substring) path is wired here,
+        // preserving the previous behavior. Step 2 replaces this with the full
+        // numeric-aware `FilterOp` switch over typed columns.
+        let text = spec.val.as_str().unwrap_or_default().trim();
         if text.is_empty() {
             continue;
         }

@@ -12,6 +12,7 @@ use actix_web::HttpResponse;
 use serde_json::json;
 use uuid::Uuid;
 
+use trading_core::api::table_query::{FilterOp, FilterSpec};
 use trading_core::models::{Position, PositionResponse};
 use trading_core::storage::repositories::strategy_repo::{PositionQuery, StrategyRepo};
 
@@ -65,7 +66,16 @@ impl PositionListParams {
                 if key.is_empty() || val.trim().is_empty() {
                     return None;
                 }
-                Some((key.to_string(), val.trim().to_string()))
+                // Step 1 bridge: keep the flat GET contract working by lowering
+                // each filter string into a `Contains` `FilterSpec`. Step 3 flips
+                // this handler to POST + `web::Json<TableRequest>` and drops
+                // `to_query` entirely (the JSON body deserializes into the DTO).
+                let spec = FilterSpec {
+                    op: FilterOp::Contains,
+                    val: serde_json::Value::String(val.trim().to_string()),
+                    ..Default::default()
+                };
+                Some((key.to_string(), spec))
             })
             .collect();
         PositionQuery { search: self.q.clone(), filters, sort }

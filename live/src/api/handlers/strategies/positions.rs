@@ -13,6 +13,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::state::deploy_state::DeployState;
+use trading_core::api::table_query::{FilterOp, FilterSpec};
 use trading_core::models::{PositionsSummary, StrategyPosition};
 use trading_core::storage::repositories::strategy_repo::{PositionQuery, StrategyRepo};
 use trading_core::strategies::registry::StrategyImpl;
@@ -157,7 +158,15 @@ impl PositionListParams {
                 if key.is_empty() || val.trim().is_empty() {
                     return None;
                 }
-                Some((key.to_string(), val.trim().to_string()))
+                // Live keeps the flat GET query-string contract: every per-column
+                // filter is a substring match, so lower each into a `Contains`
+                // `FilterSpec` (the only op the SQL builder honors on text cols).
+                let spec = FilterSpec {
+                    op: FilterOp::Contains,
+                    val: serde_json::Value::String(val.trim().to_string()),
+                    ..Default::default()
+                };
+                Some((key.to_string(), spec))
             })
             .collect();
         PositionQuery { search: self.q.clone(), filters, sort }

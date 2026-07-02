@@ -1,4 +1,5 @@
 pub mod handlers;
+pub mod table_query;
 
 use actix_web::web;
 
