@@ -205,7 +205,6 @@ export function PaperResultSection({
         <SimSummaryCard
           title="Paper Test Results"
           ruleName={data.rule_name}
-          tokens={[]}
           summary={positionsSummary}
           price={price}
           onClose={onClose}

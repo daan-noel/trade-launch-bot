@@ -551,7 +551,6 @@ export function Swing1Page() {
           <SimSummaryCard
             title="Positions Summary"
             ruleName={selectedRuleName ?? ''}
-            tokens={[]}
             summary={positionsSummary}
             price={price}
           />

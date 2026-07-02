@@ -1167,7 +1167,6 @@ export function Tpsl1Page() {
           <SimSummaryCard
             title="Positions Summary"
             ruleName={selectedRuleName ?? ''}
-            tokens={[]}
             summary={positionsSummary}
             price={price}
           />
@@ -1412,8 +1411,7 @@ export function Tpsl1Page() {
           {simCardSummary && (
             <SimSummaryCard
               ruleName={simRuleName}
-              tokens={[]}
-              summary={simCardSummary}
+                summary={simCardSummary}
               price={price}
               onClose={() => {
                 setSimReady(false);

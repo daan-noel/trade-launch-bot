@@ -1,58 +1,33 @@
 import { useMemo, type ReactNode } from 'react';
-import type { PositionsSummary, SimulatedTokenResult } from 'types';
+import type { PositionsSummary } from 'types';
 import { formatAge } from 'utils/format';
 import type { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { cn } from 'lib/cn';
 
 interface SimSummaryCardProps {
   ruleName: string;
-  tokens: SimulatedTokenResult[];
   price: ReturnType<typeof usePriceDisplay>;
   /** Dismiss handler. Omit to render the card without a ✕ (e.g. when it's an
    *  intrinsic part of a section, like the live Positions summary). */
   onClose?: () => void;
   /** Card heading; defaults to "Simulation Results". */
   title?: string;
-  /** Server-computed run/rule-wide aggregates. When provided, the card renders
-   *  THESE (correct over the whole run, and using the backend win rule) instead of
-   *  deriving from `tokens` — which, under server-side pagination, is only the
-   *  current page. Sim/backtest callers omit it and keep the client-side derivation
-   *  over the full in-memory token list. */
-  summary?: PositionsSummary | null;
-}
-
-/** Shape the card renders from — the same fields whether derived client-side (sim)
- *  or supplied by the server (live positions). */
-interface CardAggregates {
-  tokensMatched: number;
-  openCount: number;
-  winCount: number;
-  lossCount: number;
-  winRate: number;
-  totalEntry: number;
-  totalHolding: number;
-  totalGains: number;
-  totalLosses: number;
-  totalPnl: number;
-  avgPnl: number | null;
-  avgEntry: number | null;
-  avgHold: number | null;
-  best: number | null;
-  worst: number | null;
+  /** Server-computed run/rule-wide aggregates the card renders — correct over the
+   *  whole run (not just the current page) and using the backend win rule. All SOL
+   *  fields are already human SOL. */
+  summary: PositionsSummary;
 }
 
 export function SimSummaryCard({
   ruleName,
-  tokens,
   price,
   onClose,
   title = 'Simulation Results',
   summary,
 }: SimSummaryCardProps) {
-  // All aggregates are pure functions of the inputs, so derive them once and
-  // memoize: otherwise these passes re-run on every render (price-unit ticks,
-  // parent re-renders). When the server `summary` is supplied it wins — the
-  // client-side token derivation is only the current page under pagination.
+  // The server `summary` is the source of truth — correct over the whole run
+  // (not just the current page) and already in human SOL. Derive the display
+  // aggregates once and memoize so these don't recompute on price-unit ticks.
   const {
     tokensMatched,
     openCount,
@@ -69,83 +44,26 @@ export function SimSummaryCard({
     avgHold,
     best,
     worst,
-  } = useMemo<CardAggregates>(() => {
-    if (summary) {
-      return {
-        tokensMatched: summary.tokens,
-        openCount: summary.open,
-        winCount: summary.win,
-        lossCount: summary.loss,
-        winRate: summary.win_rate,
-        totalEntry: summary.total_entry_sol,
-        totalHolding: summary.total_holding_sol,
-        totalGains: summary.total_gains_sol,
-        totalLosses: summary.total_losses_sol,
-        totalPnl: summary.total_pnl_sol,
-        avgPnl: summary.closed > 0 ? summary.avg_pnl_pct : null,
-        avgEntry: summary.tokens > 0 ? summary.total_entry_sol / summary.tokens : null,
-        avgHold: summary.closed > 0 ? summary.avg_hold_secs : null,
-        best: summary.best_pct,
-        worst: summary.worst_pct,
-      };
-    }
-    const tokensMatched = tokens.length;
-    const openCount = tokens.filter((t) => t.exit_reason === 'Open').length;
-    const closed = tokens.filter((t) => t.exit_reason !== 'Open');
-    const closedCount = closed.length;
-    // Win/loss by realized-PnL sign — a TrailingStop (or any future exit reason)
-    // can resolve to either, so classify on PnL, not the exit reason.
-    const winCount = closed.filter((t) => (t.pnl_sol ?? 0) >= 0).length;
-    const lossCount = closedCount - winCount;
-    const winRate = closedCount > 0 ? (winCount / closedCount) * 100 : 0;
-
-    const totalEntry = tokens.reduce((s, t) => s + t.entry_token_amount, 0);
-    const totalHolding = tokens
-      .filter((t) => t.exit_reason === 'Open')
-      .reduce((s, t) => s + t.entry_token_amount, 0);
-    const totalGains = closed
-      .filter((t) => (t.pnl_sol ?? 0) >= 0)
-      .reduce((s, t) => s + (t.pnl_sol ?? 0), 0);
-    const totalLosses = closed
-      .filter((t) => (t.pnl_sol ?? 0) < 0)
-      .reduce((s, t) => s + Math.abs(t.pnl_sol ?? 0), 0);
-    const totalPnl = totalGains - totalLosses;
-    const avgPnl =
-      closed.length > 0
-        ? closed.reduce((s, t) => s + (t.pnl_percent ?? 0), 0) / closed.length
-        : null;
-    const avgEntry = tokensMatched > 0 ? totalEntry / tokensMatched : null;
-    const avgHold =
-      closed.length > 0
-        ? closed.reduce((s, t) => s + (t.holding_secs ?? 0), 0) / closed.length
-        : null;
-    const best = closed.reduce<number | null>((m, t) => {
-      if (t.pnl_percent == null) return m;
-      return m == null ? t.pnl_percent : Math.max(m, t.pnl_percent);
-    }, null);
-    const worst = closed.reduce<number | null>((m, t) => {
-      if (t.pnl_percent == null) return m;
-      return m == null ? t.pnl_percent : Math.min(m, t.pnl_percent);
-    }, null);
-
-    return {
-      tokensMatched,
-      openCount,
-      winCount,
-      lossCount,
-      winRate,
-      totalEntry,
-      totalHolding,
-      totalGains,
-      totalLosses,
-      totalPnl,
-      avgPnl,
-      avgEntry,
-      avgHold,
-      best,
-      worst,
-    };
-  }, [tokens, summary]);
+  } = useMemo(
+    () => ({
+      tokensMatched: summary.tokens,
+      openCount: summary.open,
+      winCount: summary.win,
+      lossCount: summary.loss,
+      winRate: summary.win_rate,
+      totalEntry: summary.total_entry_sol,
+      totalHolding: summary.total_holding_sol,
+      totalGains: summary.total_gains_sol,
+      totalLosses: summary.total_losses_sol,
+      totalPnl: summary.total_pnl_sol,
+      avgPnl: summary.closed > 0 ? summary.avg_pnl_pct : null,
+      avgEntry: summary.tokens > 0 ? summary.total_entry_sol / summary.tokens : null,
+      avgHold: summary.closed > 0 ? summary.avg_hold_secs : null,
+      best: summary.best_pct,
+      worst: summary.worst_pct,
+    }),
+    [summary],
+  );
 
   // Headline KPIs, shown large; the rest read as a lighter secondary strip.
   const heroStats = [

@@ -561,7 +561,6 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
           <SimSummaryCard
             title="Positions Summary"
             ruleName={selectedRuleName ?? ''}
-            tokens={[]}
             summary={positionsSummary}
             price={price}
           />
