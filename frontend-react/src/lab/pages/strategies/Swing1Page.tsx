@@ -754,9 +754,10 @@ export function Swing1Page() {
 
   const handleActivateClick = useCallback(
     (rule: RuleRecord) => {
-      // Paper rules prompt fresh-vs-continue; real rules activate immediately
-      // (swing1 is paper-only for now, so this always prompts).
-      if (rule.trade_mode === 'paper') setReactivate(rule);
+      // Only prompt fresh-vs-continue when there's an actual choice to make: a
+      // paper rule whose current/last run ever recorded a position. Otherwise
+      // (real rule, or a paper rule with nothing to continue) activate directly.
+      if (rule.trade_mode === 'paper' && rule.total_positions > 0) setReactivate(rule);
       else handleActivate(rule, 'fresh');
     },
     [handleActivate],
@@ -786,10 +787,10 @@ export function Swing1Page() {
       busyId: lifecycleBusyId,
       onPause: handlePause,
       onResume: (r: RuleRecord) => handleActivate(r, 'continue'),
-      onStop: (r: RuleRecord) => setStopConfirm(r),
+      onStop: (r: RuleRecord) => (r.open_positions === 0 ? void handleStopConfirm(r) : setStopConfirm(r)),
       onActivate: handleActivateClick,
     }),
-    [lifecycleBusyId, handlePause, handleActivate, handleActivateClick],
+    [lifecycleBusyId, handlePause, handleActivate, handleStopConfirm, handleActivateClick],
   );
   // positionColumns/simColumns are referentially-stable module constants — their
   // price cells read the unit/rate from context, so a USD-rate tick no longer

@@ -385,7 +385,10 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
   }, [applyRuleUpdate, activateRule]);
 
   const handleActivateClick = useCallback((rule: RuleRecord) => {
-    if (rule.trade_mode === 'paper') setReactivate(rule);
+    // Only prompt fresh-vs-continue when there's an actual choice to make: a
+    // paper rule whose current/last run ever recorded a position. Otherwise
+    // (real rule, or a paper rule with nothing to continue) activate directly.
+    if (rule.trade_mode === 'paper' && rule.total_positions > 0) setReactivate(rule);
     else void handleActivate(rule, 'fresh');
   }, [handleActivate]);
 
@@ -401,9 +404,9 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
     busyId: lifecycleBusyId,
     onPause: handlePause,
     onResume: (r: RuleRecord) => void handleActivate(r, 'continue'),
-    onStop: (r: RuleRecord) => setStopConfirm(r),
+    onStop: (r: RuleRecord) => (r.open_positions === 0 ? void handleStopConfirm(r) : setStopConfirm(r)),
     onActivate: handleActivateClick,
-  }), [lifecycleBusyId, handlePause, handleActivate, handleActivateClick]);
+  }), [lifecycleBusyId, handlePause, handleActivate, handleStopConfirm, handleActivateClick]);
 
   const rowContext = useMemo(
     () => ({ controls: ruleControls, analysis: NO_ANALYSIS }),

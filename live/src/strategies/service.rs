@@ -1050,6 +1050,10 @@ impl StrategyService {
         &self,
         rule_id: Uuid,
     ) -> anyhow::Result<(StrategyRule, usize)> {
+        // Grabbed before `pause_rule` (→ `stop_run` → `finalize_run`) so we can
+        // re-check emptiness below even if that first pass left the run `Stopped`
+        // because a since-deleted 0-entry position was still on it at the time.
+        let run_id_before_close = self.runtime.current_run(rule_id).map(|r| r.run_id);
         let rule = self.pause_rule(rule_id).await?;
 
         // Authoritative snapshot of this rule's open positions — the in-memory holding
@@ -1108,6 +1112,15 @@ impl StrategyService {
                 // spawns the slow sell off the request path.
                 self.trigger_real_exit(position, exit_price, now, MANUAL_CLOSE_REASON.to_string())
                     .await;
+            }
+        }
+
+        // Re-check emptiness: the loop above may have just deleted the last 0-entry
+        // (never-filled) position row that made the run look non-empty during
+        // `pause_rule`'s finalize pass.
+        if let Some(run_id) = run_id_before_close {
+            if self.repo.run_position_count(run_id).await? == 0 {
+                let _ = self.repo.delete_run(run_id).await;
             }
         }
 

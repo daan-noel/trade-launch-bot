@@ -904,6 +904,30 @@ impl StrategyRepo {
         Ok(())
     }
 
+    /// Count of `strategy_positions` ever recorded under a run — zero means the
+    /// run never held a position and is safe to [`delete_run`](Self::delete_run)
+    /// outright instead of finalizing it as history.
+    pub async fn run_position_count(&self, run_id: Uuid) -> anyhow::Result<i64> {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM strategy_positions WHERE run_id = $1")
+                .bind(run_id)
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(count)
+    }
+
+    /// Delete a single run outright (single-row form of
+    /// [`delete_runs_by_rule`](Self::delete_runs_by_rule)) — only safe when the run
+    /// currently holds zero `strategy_positions` rows (nothing references `run_id`
+    /// besides position rows, so cascade is a no-op).
+    pub async fn delete_run(&self, run_id: Uuid) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM strategy_runs WHERE id = $1")
+            .bind(run_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     // -- Metrics --------------------------------------------------------------
 
     pub async fn upsert_metrics(&self, m: &StrategyRunMetrics) -> anyhow::Result<()> {

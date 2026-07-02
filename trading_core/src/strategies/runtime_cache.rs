@@ -738,9 +738,29 @@ impl StrategyRuntimeCache {
 
     // ── Run lifecycle ─────────────────────────────────────────────────────────
 
+    /// Finalize a run to `status`: if it never held any position, delete it outright
+    /// (safe — nothing references an empty run) instead of leaving an empty
+    /// Stopped/Finished stub. Otherwise a normal status update, as before.
+    async fn finalize_run(
+        &self,
+        repo: &StrategyRepo,
+        rule_id: Uuid,
+        run_id: Uuid,
+        status: &str,
+    ) -> anyhow::Result<()> {
+        if repo.run_position_count(run_id).await? == 0 {
+            repo.delete_run(run_id).await?;
+            self.current_run_by_rule.remove(&rule_id); // drop the now-dangling pointer
+        } else {
+            repo.set_run_status(run_id, status, Some(Utc::now())).await?;
+        }
+        Ok(())
+    }
+
     /// Start a fresh run for a rule: persist a new `Running` run (params frozen),
     /// reset the rule's in-memory run state, and point the rule at it. Runs are
-    /// immutable history — prior runs + their positions are kept, not deleted.
+    /// immutable history — prior non-empty runs are kept; a run that never held a
+    /// position is deleted instead of finalized, not history.
     pub async fn start_run(
         &self,
         repo: &StrategyRepo,
@@ -774,7 +794,7 @@ impl StrategyRuntimeCache {
         if let Some(r) = self.current_run(rule_id) {
             if let Some(run) = repo.find_run(r.run_id).await? {
                 if run.status == "Running" {
-                    repo.set_run_status(run.id, "Stopped", Some(Utc::now())).await?;
+                    self.finalize_run(repo, rule_id, run.id, "Stopped").await?;
                 }
             }
         }
@@ -811,7 +831,10 @@ impl StrategyRuntimeCache {
         if let Some(r) = self.current_run(rule_id) {
             if let Some(run) = repo.find_run(r.run_id).await? {
                 if run.status == "Running" {
-                    repo.set_run_status(run.id, "Finished", Some(Utc::now())).await?;
+                    // `run` is captured before finalizing (which may delete it if it
+                    // never held a position) so the caller still gets its `run_seq` for
+                    // the `PaperTestFinished` notification either way.
+                    self.finalize_run(repo, rule_id, run.id, "Finished").await?;
                     return Ok(Some(run));
                 }
             }
