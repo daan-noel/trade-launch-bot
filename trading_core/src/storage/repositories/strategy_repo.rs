@@ -307,6 +307,193 @@ const POSITION_COLS: &str = "id, run_id, strategy_id, rule_id, mode, mint, walle
     exit_price, exit_token_amount, exit_sol, exit_time, exit_tx_signatures, \
     submitted_buy_signatures, status, exit_reason, extra, created_at, updated_at";
 
+/// `POSITION_COLS` qualified with the `sp` alias — for the paged read that JOINs
+/// `tokens` (so the server can sort/filter by token-enrichment columns too).
+const POSITION_COLS_SP: &str = "sp.id, sp.run_id, sp.strategy_id, sp.rule_id, sp.mode, sp.mint, \
+    sp.wallet, sp.token_program_id, sp.token_account, sp.target_price, sp.target_token_amount, \
+    sp.target_time, sp.target_tx, sp.entry_price, sp.entry_token_amount, sp.entry_sol, \
+    sp.entry_time, sp.entry_tx_signatures, sp.exit_price, sp.exit_token_amount, sp.exit_sol, \
+    sp.exit_time, sp.exit_tx_signatures, sp.submitted_buy_signatures, sp.status, sp.exit_reason, \
+    sp.extra, sp.created_at, sp.updated_at";
+
+// ---------------------------------------------------------------------------
+// Position list query: server-side sort / filter / search (whitelisted)
+// ---------------------------------------------------------------------------
+
+/// A sort/filter/search request for the HTTP positions list, built from the
+/// frontend `DataTable`'s emitted view-state. Only **whitelisted** column keys are
+/// honored — see [`position_sort_sql`] / [`position_filter_sql`]; anything else is
+/// dropped (never interpolated), so no user text ever reaches a SQL identifier.
+/// Text values bind as parameters. Applies to the paged list + its count so the
+/// pager stays consistent with the filtered view; the **summary** is intentionally
+/// left whole-run (it mirrors the strategy-table row).
+#[derive(Debug, Clone, Default)]
+pub struct PositionQuery {
+    /// Free-text search over mint / symbol / name (ILIKE). Empty = no search.
+    pub search: String,
+    /// Per-column text filters as `(frontend_key, text)`. Non-whitelisted keys
+    /// are ignored.
+    pub filters: Vec<(String, String)>,
+    /// Ordered sort keys as `(frontend_key, descending?)`. Non-whitelisted keys are
+    /// ignored; an empty resolved list falls back to `created_at DESC`.
+    pub sort: Vec<(String, bool)>,
+}
+
+/// Map a frontend column key to its **trusted** SQL sort expression (with table
+/// alias). `None` for keys that aren't sortable server-side. Aliases:
+///   `sp` = strategy_positions, `t` = LEFT-JOINed `tokens`, `i` = `tokens_info`.
+/// The token-enrichment keys mirror the frontend `sharedTokenColumns` set 1:1 so
+/// every sortable column on the positions table sorts server-side. `pnl_pct` is
+/// computed from the fill prices; the four buy-arg fields are extracted from the
+/// `initial_buy_instruction` JSONB (camelCase keys — see the ingest writer).
+fn position_sort_sql(key: &str) -> Option<&'static str> {
+    Some(match key {
+        // strategy_positions
+        "mint" => "sp.mint",
+        "entry_price" => "sp.entry_price",
+        "entry_time" => "sp.entry_time",
+        "exit_price" => "sp.exit_price",
+        "exit_time" => "sp.exit_time",
+        "pnl_pct" => "((sp.exit_price - sp.entry_price) / NULLIF(sp.entry_price, 0))",
+        "status" => "sp.status",
+        "exit_reason" => "sp.exit_reason",
+        // tokens
+        "symbol" => "t.symbol",
+        "name" => "t.name",
+        "creator" => "t.creator_wallet",
+        "created" => "t.created_at",
+        "initial_buy" => "t.initial_buy_sol",
+        "init_supply" => "t.initial_supply_token",
+        "cu_limit" => "t.cu_limit",
+        "cu_price" => "t.cu_price",
+        "mayhem_mode" => "t.is_mayhem_mode",
+        "cashback" => "t.is_cashback_enabled",
+        // tokens_info
+        "current_price" => "i.current_price",
+        "ath_price" => "i.ath_price",
+        "ath_timestamp" => "i.ath_timestamp",
+        "market_cap" => "(i.current_price * t.initial_supply_token)",
+        "volume" => "i.volume",
+        "trade_count" => "i.trade_count",
+        "last_trade" => "i.last_trade_at",
+        "migrated" => "i.is_migrated",
+        "dead" => "i.is_dead",
+        "first_slot_buy" => "i.first_slot_buy_sol",
+        "first_slot_sell" => "i.first_slot_sell_sol",
+        // initial_buy_instruction JSONB (camelCase keys)
+        "token_amount" => "(t.initial_buy_instruction->>'tokenAmount')::numeric",
+        "max_sol_cost" => "(t.initial_buy_instruction->>'maxSolCost')::numeric",
+        "spendable_sol_in" => "(t.initial_buy_instruction->>'spendableSolIn')::numeric",
+        "min_tokens_out" => "(t.initial_buy_instruction->>'minTokensOut')::numeric",
+        _ => return None,
+    })
+}
+
+/// Map a frontend column key to the **trusted** SQL expression a per-column text
+/// filter matches against (cast to text, `ILIKE`d). `None` = not filterable.
+/// Mirrors [`position_sort_sql`]'s columns (booleans/timestamps cast to text so the
+/// same substring semantics apply).
+fn position_filter_sql(key: &str) -> Option<&'static str> {
+    Some(match key {
+        // strategy_positions
+        "mint" => "sp.mint",
+        "status" => "sp.status",
+        "exit_reason" => "sp.exit_reason",
+        "entry_price" => "sp.entry_price::text",
+        "exit_price" => "sp.exit_price::text",
+        // tokens
+        "symbol" => "t.symbol",
+        "name" => "t.name",
+        "creator" => "t.creator_wallet",
+        "initial_buy" => "t.initial_buy_sol::text",
+        "init_supply" => "t.initial_supply_token::text",
+        "cu_limit" => "t.cu_limit::text",
+        "cu_price" => "t.cu_price::text",
+        // tokens_info
+        "current_price" => "i.current_price::text",
+        "ath_price" => "i.ath_price::text",
+        "market_cap" => "(i.current_price * t.initial_supply_token)::text",
+        "volume" => "i.volume::text",
+        "trade_count" => "i.trade_count::text",
+        "first_slot_buy" => "i.first_slot_buy_sol::text",
+        "first_slot_sell" => "i.first_slot_sell_sol::text",
+        // initial_buy_instruction JSONB (camelCase keys)
+        "token_amount" => "(t.initial_buy_instruction->>'tokenAmount')",
+        "max_sol_cost" => "(t.initial_buy_instruction->>'maxSolCost')",
+        "spendable_sol_in" => "(t.initial_buy_instruction->>'spendableSolIn')",
+        "min_tokens_out" => "(t.initial_buy_instruction->>'minTokensOut')",
+        _ => return None,
+    })
+}
+
+/// Escape a user search/filter needle for a `LIKE`/`ILIKE` pattern: the SQL
+/// wildcards `%` `_` and the escape char `\` are neutralized so they match
+/// literally (the value still binds as a parameter — this only affects semantics,
+/// not injection). Wrapped `%needle%` for a contains-match by the callers.
+fn like_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        if matches!(c, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Append the search + per-column-filter predicates to a positions query builder
+/// (the scope predicate is already pushed). Only whitelisted keys are honored;
+/// needles bind as parameters and are LIKE-escaped so wildcards match literally.
+fn push_position_where(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, query: &PositionQuery) {
+    let search = query.search.trim();
+    if !search.is_empty() {
+        let needle = format!("%{}%", like_escape(search));
+        qb.push(" AND (sp.mint ILIKE ")
+            .push_bind(needle.clone())
+            .push(" OR t.symbol ILIKE ")
+            .push_bind(needle.clone())
+            .push(" OR t.name ILIKE ")
+            .push_bind(needle)
+            .push(")");
+    }
+    for (key, raw) in &query.filters {
+        let text = raw.trim();
+        if text.is_empty() {
+            continue;
+        }
+        if let Some(col) = position_filter_sql(key) {
+            let needle = format!("%{}%", like_escape(text));
+            qb.push(" AND ").push(col).push(" ILIKE ").push_bind(needle);
+        }
+    }
+}
+
+/// Append the `ORDER BY` from the whitelisted sort keys, falling back to
+/// `sp.created_at DESC` when none resolve. `NULLS LAST` keeps empty fills at the
+/// bottom regardless of direction. A trailing `sp.id` tiebreaker makes paging
+/// stable when the sort column has ties.
+fn push_position_order(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, query: &PositionQuery) {
+    let resolved: Vec<(&'static str, bool)> = query
+        .sort
+        .iter()
+        .filter_map(|(key, desc)| position_sort_sql(key).map(|sql| (sql, *desc)))
+        .collect();
+    qb.push(" ORDER BY ");
+    if resolved.is_empty() {
+        qb.push("sp.created_at DESC, sp.id DESC");
+        return;
+    }
+    let mut first = true;
+    for (sql, desc) in resolved {
+        if !first {
+            qb.push(", ");
+        }
+        first = false;
+        qb.push(sql).push(if desc { " DESC NULLS LAST" } else { " ASC NULLS LAST" });
+    }
+    qb.push(", sp.id DESC");
+}
+
 // ---------------------------------------------------------------------------
 // Repo
 // ---------------------------------------------------------------------------
@@ -740,17 +927,9 @@ impl StrategyRepo {
         run_id: Uuid,
         limit: i64,
         offset: i64,
+        query: &PositionQuery,
     ) -> anyhow::Result<Vec<StrategyPosition>> {
-        let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
-            "SELECT {POSITION_COLS} FROM strategy_positions WHERE run_id = $1 \
-             ORDER BY created_at DESC LIMIT $2 OFFSET $3"
-        ))
-        .bind(run_id)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.into_iter().map(StrategyPosition::from).collect())
+        self.find_positions_paged("sp.run_id", run_id, limit, offset, query).await
     }
 
     /// Page-bounded positions for a rule across all its runs — the by-rule view
@@ -760,38 +939,75 @@ impl StrategyRepo {
         rule_id: Uuid,
         limit: i64,
         offset: i64,
+        query: &PositionQuery,
     ) -> anyhow::Result<Vec<StrategyPosition>> {
-        let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
-            "SELECT {POSITION_COLS} FROM strategy_positions WHERE rule_id = $1 \
-             ORDER BY created_at DESC LIMIT $2 OFFSET $3"
-        ))
-        .bind(rule_id)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await?;
+        self.find_positions_paged("sp.rule_id", rule_id, limit, offset, query).await
+    }
+
+    /// Shared page query behind the two paged views. LEFT-JOINs `tokens` so the
+    /// [`PositionQuery`] can sort/filter/search by token-enrichment columns too.
+    /// `scope_col` is a trusted literal (`"sp.run_id"` / `"sp.rule_id"`); the
+    /// where/order fragments come only from the whitelist resolvers (no user text in
+    /// identifiers). Falls back to `sp.created_at DESC` when no sort resolves.
+    async fn find_positions_paged(
+        &self,
+        scope_col: &str,
+        scope_id: Uuid,
+        limit: i64,
+        offset: i64,
+        query: &PositionQuery,
+    ) -> anyhow::Result<Vec<StrategyPosition>> {
+        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(format!(
+            "SELECT {POSITION_COLS_SP} FROM strategy_positions sp \
+             LEFT JOIN tokens t ON t.mint_address = sp.mint \
+             LEFT JOIN tokens_info i ON i.mint_address = sp.mint WHERE "
+        ));
+        qb.push(scope_col).push(" = ").push_bind(scope_id);
+        push_position_where(&mut qb, query);
+        push_position_order(&mut qb, query);
+        qb.push(" LIMIT ").push_bind(limit).push(" OFFSET ").push_bind(offset);
+        let rows = qb
+            .build_query_as::<StrategyPositionDbRow>()
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows.into_iter().map(StrategyPosition::from).collect())
     }
 
-    /// Count of positions for one run — pairs with [`find_positions_by_run_paged`]
-    /// so the HTTP list view can report `total` for the pager.
-    pub async fn count_positions_by_run(&self, run_id: Uuid) -> anyhow::Result<i64> {
-        let (n,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM strategy_positions WHERE run_id = $1")
-                .bind(run_id)
-                .fetch_one(&self.pool)
-                .await?;
-        Ok(n)
+    /// Count of positions for one run (matching `query`'s search/filters) — pairs
+    /// with [`find_positions_by_run_paged`] so the pager total tracks the view.
+    pub async fn count_positions_by_run(
+        &self,
+        run_id: Uuid,
+        query: &PositionQuery,
+    ) -> anyhow::Result<i64> {
+        self.count_positions("sp.run_id", run_id, query).await
     }
 
-    /// Count of positions for a rule across all its runs — pairs with
-    /// [`find_positions_by_rule_paged`] (real-rule lifetime history).
-    pub async fn count_positions_by_rule(&self, rule_id: Uuid) -> anyhow::Result<i64> {
-        let (n,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM strategy_positions WHERE rule_id = $1")
-                .bind(rule_id)
-                .fetch_one(&self.pool)
-                .await?;
+    /// Count of positions for a rule across all its runs (matching `query`).
+    pub async fn count_positions_by_rule(
+        &self,
+        rule_id: Uuid,
+        query: &PositionQuery,
+    ) -> anyhow::Result<i64> {
+        self.count_positions("sp.rule_id", rule_id, query).await
+    }
+
+    /// Shared count behind the two count views — same JOIN + WHERE as
+    /// [`find_positions_paged`], so `total` matches the filtered page exactly.
+    async fn count_positions(
+        &self,
+        scope_col: &str,
+        scope_id: Uuid,
+        query: &PositionQuery,
+    ) -> anyhow::Result<i64> {
+        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+            "SELECT COUNT(*) FROM strategy_positions sp \
+             LEFT JOIN tokens t ON t.mint_address = sp.mint \
+             LEFT JOIN tokens_info i ON i.mint_address = sp.mint WHERE ",
+        );
+        qb.push(scope_col).push(" = ").push_bind(scope_id);
+        push_position_where(&mut qb, query);
+        let (n,): (i64,) = qb.build_query_as().fetch_one(&self.pool).await?;
         Ok(n)
     }
 

@@ -37,7 +37,8 @@ import { apiErrorMessage, useGetTokensByMintsQuery } from 'store/apiSlice';
 import { useSellTokenMutation } from '@live/store/liveEndpoints';
 import { mergeTokenData } from 'components/tokens/sharedTokenColumns';
 import { usePolledRules } from 'hooks/usePolledRules';
-import { useRulePositions } from 'hooks/useRulePositions';
+import { useRulePositions, DEFAULT_POSITIONS_QUERY } from 'hooks/useRulePositions';
+import type { TableQuery } from 'components/table/types';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { cn } from 'lib/cn';
 import type { RulePositionRecord, RuleRecord } from 'types';
@@ -306,14 +307,13 @@ export function Swing1Page() {
 
   const { rules, setRules, loading, error } = usePolledRules(fetchSwing1Rules, STRATEGY);
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
-  // Server-side positions paging: the DataTable emits page/pageSize via
-  // `onQueryChange`, the hook fetches that page + the run-wide summary.
-  const [posPage, setPosPage] = useState(1);
-  const [posPageSize, setPosPageSize] = useState(20);
+  // Server-side positions view: the DataTable emits page/pageSize/sort/search/filter
+  // via `onQueryChange`; the hook fetches that page + the (whole-run) summary.
+  const [posQuery, setPosQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
   const { positions, total: positionsTotal, summary: positionsSummary,
     loading: positionsLoading, error: positionsError } =
     useRulePositions(selectedRuleId, rules, fetchSwing1RulePositions,
-      fetchSwing1RulePositionsSummary, STRATEGY, posPage, posPageSize);
+      fetchSwing1RulePositionsSummary, STRATEGY, posQuery);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editRule, setEditRule] = useState<RuleRecord | null>(null);
@@ -562,7 +562,7 @@ export function Swing1Page() {
             rowActions={isRealRuleSelected ? positionRowActions : undefined}
             serverSide
             serverTotal={positionsTotal}
-            onQueryChange={(q) => { setPosPage(q.page); setPosPageSize(q.pageSize); }}
+            onQueryChange={setPosQuery}
             loading={positionsLoading}
             resetKey={selectedRuleId ?? ''}
             defaultPageSize={20}

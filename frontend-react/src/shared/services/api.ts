@@ -38,10 +38,18 @@ export interface AppSettings {
   gap_replay_max_window_secs: number;
 }
 
-/** Options for a paginated rule-positions fetch. */
+/** Options for a paginated rule-positions fetch. `sort`/`search`/`filter` carry the
+ *  table's server-side view-state (empty = none); see the backend `PositionListParams`
+ *  for the `sort`/`q`/`filter` wire format. Non-whitelisted keys are dropped server-side. */
 export interface PositionsPageOpts {
   limit: number;
   offset: number;
+  /** Comma-separated `key:dir` (`entry_time:desc,pnl_pct:asc`). */
+  sort?: string;
+  /** Free-text search (mint / symbol / name). */
+  search?: string;
+  /** `|`-separated `key:value` per-column filters (`status:End|mint:abc`). */
+  filter?: string;
   signal?: AbortSignal;
 }
 
@@ -55,11 +63,14 @@ export interface PositionsPageOpts {
 async function fetchRulePositionsPage(
   strategySeg: string,
   ruleId: string,
-  { limit, offset, signal }: PositionsPageOpts,
+  { limit, offset, sort, search, filter, signal }: PositionsPageOpts,
 ): Promise<import('types').RulePositionsPage> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (sort) params.set('sort', sort);
+  if (search) params.set('q', search);
+  if (filter) params.set('filter', filter);
   const url =
-    `${API_BASE}/api/strategies/${strategySeg}/rules/${ruleId}/positions` +
-    `?limit=${limit}&offset=${offset}`;
+    `${API_BASE}/api/strategies/${strategySeg}/rules/${ruleId}/positions?${params.toString()}`;
   const resp = await fetch(url, { signal });
   if (!resp.ok) {
     const body = await resp.json().catch(() => null);

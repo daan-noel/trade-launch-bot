@@ -13,16 +13,23 @@ use serde_json::json;
 use uuid::Uuid;
 
 use trading_core::models::{Position, PositionResponse};
-use trading_core::storage::repositories::strategy_repo::StrategyRepo;
+use trading_core::storage::repositories::strategy_repo::{PositionQuery, StrategyRepo};
 
 /// Query params for the paginated positions list — mirrors the live
-/// `PositionListParams` (bounded window; the client pager drives page/pageSize).
+/// `PositionListParams` (bounded window + server-side sort/search/filter; see that
+/// struct's docs for the `sort`/`q`/`filter` wire format).
 #[derive(serde::Deserialize)]
 pub struct PositionListParams {
     #[serde(default = "default_positions_limit")]
     pub limit: i64,
     #[serde(default)]
     pub offset: i64,
+    #[serde(default)]
+    pub sort: String,
+    #[serde(default)]
+    pub q: String,
+    #[serde(default)]
+    pub filter: String,
 }
 
 fn default_positions_limit() -> i64 {
@@ -32,6 +39,36 @@ fn default_positions_limit() -> i64 {
 impl PositionListParams {
     fn bounds(&self) -> (i64, i64) {
         (self.limit.clamp(1, 1000), self.offset.max(0))
+    }
+
+    /// Parse the sort/search/filter fields into a repo [`PositionQuery`] (same
+    /// format as the live `PositionListParams::to_query`).
+    fn to_query(&self) -> PositionQuery {
+        let sort = self
+            .sort
+            .split(',')
+            .filter_map(|part| {
+                let (key, dir) = part.split_once(':')?;
+                let key = key.trim();
+                if key.is_empty() {
+                    return None;
+                }
+                Some((key.to_string(), dir.trim().eq_ignore_ascii_case("desc")))
+            })
+            .collect();
+        let filters = self
+            .filter
+            .split('|')
+            .filter_map(|part| {
+                let (key, val) = part.split_once(':')?;
+                let key = key.trim();
+                if key.is_empty() || val.trim().is_empty() {
+                    return None;
+                }
+                Some((key.to_string(), val.trim().to_string()))
+            })
+            .collect();
+        PositionQuery { search: self.q.clone(), filters, sort }
     }
 }
 
@@ -77,9 +114,10 @@ pub async fn positions_by_rule_paged(
         Err(resp) => return resp,
     };
     let (limit, offset) = query.bounds();
+    let pq = query.to_query();
     match (
-        repo.find_positions_by_run_paged(run_id, limit, offset).await,
-        repo.count_positions_by_run(run_id).await,
+        repo.find_positions_by_run_paged(run_id, limit, offset, &pq).await,
+        repo.count_positions_by_run(run_id, &pq).await,
     ) {
         (Ok(positions), Ok(total)) => {
             let responses: Vec<PositionResponse> = positions

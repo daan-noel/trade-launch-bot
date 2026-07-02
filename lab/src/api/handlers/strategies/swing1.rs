@@ -29,7 +29,7 @@ use crate::{
 };
 
 use trading_core::models::{StrategyPosition, StrategyRule};
-use trading_core::storage::repositories::strategy_repo::{RuleCounters, StrategyRepo};
+use trading_core::storage::repositories::strategy_repo::{PositionQuery, RuleCounters, StrategyRepo};
 use trading_core::strategies::registry::StrategyImpl;
 use trading_core::strategies::rules::{self, params_to_value, RuleDraft, RuleError};
 
@@ -641,7 +641,7 @@ pub async fn paper_result_swing1_rule(
     };
 
     let positions = match repo
-        .find_positions_by_run_paged(run.id, PAPER_RESULT_MAX_TOKENS, 0)
+        .find_positions_by_run_paged(run.id, PAPER_RESULT_MAX_TOKENS, 0, &PositionQuery::default())
         .await
     {
         Ok(p) => p,

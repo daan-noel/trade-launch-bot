@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::state::deploy_state::DeployState;
 use trading_core::models::{PositionsSummary, StrategyPosition};
-use trading_core::storage::repositories::strategy_repo::StrategyRepo;
+use trading_core::storage::repositories::strategy_repo::{PositionQuery, StrategyRepo};
 use trading_core::strategies::registry::StrategyImpl;
 use trading_core::strategies::swing_1::swing::SwingLeg;
 
@@ -102,12 +102,26 @@ impl From<StrategyPosition> for PositionResponse {
 
 /// Query params for the list views. Bounds every list query so a growing
 /// `strategy_positions` table can't be fetched whole in one request.
+///
+/// `sort`, `q` (search), and `filter` carry the table's server-side view-state:
+///   - `sort` = comma-separated `key:dir` (`entry_time:desc,pnl_pct:asc`);
+///   - `q`    = free-text search (mint / symbol / name);
+///   - `filter` = `|`-separated `key:value` per-column filters (`status:End|mint:abc`).
+///
+/// The repo whitelist drops any non-sortable/filterable key, so unknown/enrichment
+/// keys are simply ignored (never interpolated).
 #[derive(serde::Deserialize)]
 pub struct PositionListParams {
     #[serde(default = "default_positions_limit")]
     pub limit: i64,
     #[serde(default)]
     pub offset: i64,
+    #[serde(default)]
+    pub sort: String,
+    #[serde(default)]
+    pub q: String,
+    #[serde(default)]
+    pub filter: String,
 }
 
 fn default_positions_limit() -> i64 {
@@ -118,6 +132,35 @@ impl PositionListParams {
     /// Clamp to a sane window: limit in 1..=1000, offset >= 0.
     fn bounds(&self) -> (i64, i64) {
         (self.limit.clamp(1, 1000), self.offset.max(0))
+    }
+
+    /// Parse the sort/search/filter fields into a repo [`PositionQuery`].
+    pub fn to_query(&self) -> PositionQuery {
+        let sort = self
+            .sort
+            .split(',')
+            .filter_map(|part| {
+                let (key, dir) = part.split_once(':')?;
+                let key = key.trim();
+                if key.is_empty() {
+                    return None;
+                }
+                Some((key.to_string(), dir.trim().eq_ignore_ascii_case("desc")))
+            })
+            .collect();
+        let filters = self
+            .filter
+            .split('|')
+            .filter_map(|part| {
+                let (key, val) = part.split_once(':')?;
+                let key = key.trim();
+                if key.is_empty() || val.trim().is_empty() {
+                    return None;
+                }
+                Some((key.to_string(), val.trim().to_string()))
+            })
+            .collect();
+        PositionQuery { search: self.q.clone(), filters, sort }
     }
 }
 
@@ -180,6 +223,7 @@ pub async fn get_positions_by_rule(
         return resp;
     }
     let (limit, offset) = query.bounds();
+    let pq = query.to_query();
     let repo = repo(&app_state);
 
     let rule = match repo.find_rule(rule_id).await {
@@ -188,22 +232,22 @@ pub async fn get_positions_by_rule(
         Err(e) => return list_error("load rule", e),
     };
 
-    // Page the rows and count the full population for the pager. Paper rules page
-    // their latest run (they retain only the current run's bag); real rules page
-    // their full lifetime history.
+    // Page the rows and count the (filtered) population for the pager. Paper rules
+    // page their latest run (they retain only the current run's bag); real rules page
+    // their full lifetime history. Sort/search/filter apply to both list + count.
     let (result, total) = if rule.trade_mode == "paper" {
         match repo.latest_run(rule_id, "paper").await {
             Ok(Some(run)) => (
-                repo.find_positions_by_run_paged(run.id, limit, offset).await,
-                repo.count_positions_by_run(run.id).await,
+                repo.find_positions_by_run_paged(run.id, limit, offset, &pq).await,
+                repo.count_positions_by_run(run.id, &pq).await,
             ),
             Ok(None) => (Ok(Vec::new()), Ok(0)),
             Err(e) => return list_error("load paper run", e),
         }
     } else {
         (
-            repo.find_positions_by_rule_paged(rule_id, limit, offset).await,
-            repo.count_positions_by_rule(rule_id).await,
+            repo.find_positions_by_rule_paged(rule_id, limit, offset, &pq).await,
+            repo.count_positions_by_rule(rule_id, &pq).await,
         )
     };
 

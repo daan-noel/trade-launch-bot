@@ -31,7 +31,8 @@ import { useTimezone } from 'context/TimezoneContext';
 import { datetimeLocalToUtcWallClock, formatIso } from 'utils/date';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { usePolledRules } from 'hooks/usePolledRules';
-import { useRulePositions } from 'hooks/useRulePositions';
+import { useRulePositions, DEFAULT_POSITIONS_QUERY } from 'hooks/useRulePositions';
+import type { TableQuery } from 'components/table/types';
 import { useDispatch } from 'react-redux';
 import {
   activateTpsl2Rule,
@@ -680,10 +681,9 @@ export function Tpsl2Page() {
     usePolledRules(fetchTpsl2Rules, 'tpsl2');
 
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
-  // Positions for the selected rule: server-side paged page + run-wide summary,
-  // kept live via SSE / a settle-gated poll (mirrors the live page).
-  const [posPage, setPosPage] = useState(1);
-  const [posPageSize, setPosPageSize] = useState(20);
+  // Positions for the selected rule: server-side page/sort/search/filter + whole-run
+  // summary, kept live via SSE / a settle-gated poll (mirrors the live page).
+  const [posQuery, setPosQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
   const {
     positions,
     total: positionsTotal,
@@ -692,7 +692,7 @@ export function Tpsl2Page() {
     error: positionsError,
   } = useRulePositions(
     selectedRuleId, rules, fetchTpsl2RulePositions,
-    fetchTpsl2RulePositionsSummary, 'tpsl2', posPage, posPageSize,
+    fetchTpsl2RulePositionsSummary, 'tpsl2', posQuery,
   );
 
   const [modalOpen, setModalOpen] = useState(false);
@@ -1323,7 +1323,7 @@ export function Tpsl2Page() {
             rowActions={isRealRuleSelected ? positionRowActions : undefined}
             serverSide
             serverTotal={positionsTotal}
-            onQueryChange={(q) => { setPosPage(q.page); setPosPageSize(q.pageSize); }}
+            onQueryChange={setPosQuery}
             loading={positionsLoading}
             resetKey={selectedRuleId ?? ''}
             defaultPageSize={20}

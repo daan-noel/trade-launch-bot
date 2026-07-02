@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FALLBACK_POLL_INTERVAL_MS } from 'services/config';
 import { connectTpslPositionsChanged } from 'services/sse';
 import { useVisiblePolling } from './useVisiblePolling';
+import type { TableQuery } from 'components/table/types';
 import type {
   PositionsSummary,
   RulePositionRecord,
@@ -44,6 +45,17 @@ function isSettled(rule: RuleRecord | undefined): boolean {
   return !!rule && !rule.is_active && rule.open_positions === 0;
 }
 
+/** Initial view-state for a positions table: page 1, default size, no sort/filter.
+ *  Pages seed their `posQuery` state with this, then replace it wholesale from the
+ *  `DataTable`'s `onQueryChange`. */
+export const DEFAULT_POSITIONS_QUERY: TableQuery = {
+  page: 1,
+  pageSize: 20,
+  sortKeys: [],
+  search: '',
+  colFilters: {},
+};
+
 export interface RulePositions {
   positions: RulePositionRecord[];
   /** Run/rule-wide total (from `X-Total-Count`) for the pager to size itself. */
@@ -70,13 +82,29 @@ export function useRulePositions(
   rules: RuleRecord[],
   fetchPositions: (
     ruleId: string,
-    opts: { limit: number; offset: number; signal?: AbortSignal },
+    opts: {
+      limit: number;
+      offset: number;
+      sort?: string;
+      search?: string;
+      filter?: string;
+      signal?: AbortSignal;
+    },
   ) => Promise<RulePositionsPage>,
   fetchSummary: (ruleId: string, signal?: AbortSignal) => Promise<PositionsSummary>,
   strategy: 'tpsl1' | 'tpsl2' | 'swing_1',
-  page: number,
-  pageSize: number,
+  query: TableQuery,
 ): RulePositions {
+  const { page, pageSize } = query;
+  // Serialize the table's sort/search/per-column filters into the backend wire
+  // format (`sort=key:dir,…`, `q=…`, `filter=key:val|…`). The server whitelist drops
+  // any non-sortable/filterable key, so passing enrichment keys is harmless.
+  const sortParam = query.sortKeys.map((s) => `${s.col}:${s.dir}`).join(',');
+  const filterParam = Object.entries(query.colFilters)
+    .filter(([, v]) => v.trim())
+    .map(([k, v]) => `${k}:${v.trim()}`)
+    .join('|');
+  const searchParam = query.search;
   const [positions, setPositions] = useState<RulePositionRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [summary, setSummary] = useState<PositionsSummary | null>(null);
@@ -102,6 +130,9 @@ export function useRulePositions(
         const { items, total } = await fetchPositions(ruleId, {
           limit: pageSize,
           offset: (page - 1) * pageSize,
+          sort: sortParam,
+          search: searchParam,
+          filter: filterParam,
           signal: ctrl.signal,
         });
         if (ctrl.signal.aborted) return;
@@ -119,7 +150,7 @@ export function useRulePositions(
         if (inflight.current === ctrl) setLoading(false);
       }
     },
-    [fetchPositions, page, pageSize],
+    [fetchPositions, page, pageSize, sortParam, searchParam, filterParam],
   );
 
   const loadSummary = useCallback(
