@@ -133,9 +133,11 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
       render: (r) => {
         if (r.exit_price == null || r.pnl_sol == null)
           return <span className="text-text-dim">—</span>;
-        // `pnl_sol` is the backend's realized SOL PnL — render it directly rather
-        // than the raw `exit_token_amount` token count (which is NOT SOL).
-        const positive = (r.pnl_percent ?? 0) >= 0;
+        // `pnl_sol` is the backend's realized SOL PnL — the canonical win/loss
+        // basis (mirrors `StrategyPosition::is_win`/`positions_summary`), so
+        // color off `pnl_sol` itself rather than `pnl_percent` (price-basis;
+        // can disagree with SOL-basis under slippage/fees in real mode).
+        const positive = r.pnl_sol >= 0;
         return (
           <span className={cn('font-bold', positive ? 'text-green' : 'text-red')}>
             <AmountCell sol={r.pnl_sol} />

@@ -51,6 +51,9 @@ pub struct PositionResponse {
     /// Raw token units (exact integer; the frontend scales for display).
     pub exit_token_amount: Option<u64>,
     pub pnl_percent: Option<f64>,
+    /// Realized SOL PnL (`StrategyPosition::realized_pnl_sol`) — the canonical
+    /// win/loss basis mirroring `positions_summary`/`is_win`.
+    pub pnl_sol: Option<f64>,
     pub entry_time: Option<DateTime<Utc>>,
     pub exit_time: Option<DateTime<Utc>>,
     pub exit_reason: Option<String>,
@@ -66,6 +69,7 @@ pub struct PositionResponse {
 impl From<StrategyPosition> for PositionResponse {
     fn from(p: StrategyPosition) -> Self {
         let pnl_percent = p.pnl_pct();
+        let pnl_sol = p.realized_pnl_sol();
         let entry_sigs = p.entry_tx_sigs();
         let exit_sigs = p.exit_tx_sigs();
         // Missing key or malformed JSON just means "no legs" (tpsl1/tpsl2 rows, or
@@ -91,6 +95,7 @@ impl From<StrategyPosition> for PositionResponse {
             entry_token_amount: p.entry_token_amount,
             exit_token_amount: p.exit_token_amount,
             pnl_percent,
+            pnl_sol,
             entry_time: p.entry_time,
             exit_time: p.exit_time,
             exit_reason: p.exit_reason,

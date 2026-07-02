@@ -367,6 +367,10 @@ pub struct PositionResponse {
     /// All signatures that made up the exit fill (multi-leg: retries / re-routes).
     pub exit_tx_signatures: Vec<String>,
     pub pnl_percent: Option<f64>,
+    /// Realized SOL PnL (`Position::pnl_sol`) — the canonical win/loss basis
+    /// mirroring `StrategyPosition::is_win`/`positions_summary`; independent of
+    /// `pnl_percent` so the two can be compared/reconciled on the frontend.
+    pub pnl_sol: Option<f64>,
     pub status: String,
     pub strategy: String,
     pub rule_id: Uuid,
@@ -380,6 +384,7 @@ pub struct PositionResponse {
 impl From<Position> for PositionResponse {
     fn from(p: Position) -> Self {
         let pnl_percent = p.pnl_percentage();
+        let pnl_sol = p.pnl_sol();
         let exit_reason = p.exit_reason_or_derived();
         Self {
             id: p.id,
@@ -401,6 +406,7 @@ impl From<Position> for PositionResponse {
             entry_tx_signatures: p.entry_tx_signatures,
             exit_tx_signatures: p.exit_tx_signatures,
             pnl_percent,
+            pnl_sol,
             status: p.status.to_string(),
             strategy: p.strategy,
             rule_id: p.rule_id,
