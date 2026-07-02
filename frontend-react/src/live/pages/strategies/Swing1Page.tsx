@@ -38,9 +38,13 @@ import { useSellTokenMutation } from '@live/store/liveEndpoints';
 import { mergeTokenData } from 'components/tokens/sharedTokenColumns';
 import { usePolledRules } from 'hooks/usePolledRules';
 import { useRulePositions, DEFAULT_POSITIONS_QUERY } from 'hooks/useRulePositions';
+import { numericColKeys } from 'services/tableRequest';
 import type { TableQuery } from 'components/table/types';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { cn } from 'lib/cn';
+
+/** Positions columns that filter numerically (`>5`/`1..10` → structured ops). */
+const POSITION_NUMERIC_COLS = numericColKeys(positionColumns);
 import type { RulePositionRecord, RuleRecord } from 'types';
 import type { ColumnDef } from 'components/table/types';
 
@@ -313,7 +317,7 @@ export function Swing1Page() {
   const { positions, total: positionsTotal, summary: positionsSummary,
     loading: positionsLoading, error: positionsError } =
     useRulePositions(selectedRuleId, rules, fetchSwing1RulePositions,
-      fetchSwing1RulePositionsSummary, STRATEGY, posQuery);
+      fetchSwing1RulePositionsSummary, STRATEGY, posQuery, POSITION_NUMERIC_COLS);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editRule, setEditRule] = useState<RuleRecord | null>(null);

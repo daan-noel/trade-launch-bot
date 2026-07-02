@@ -117,27 +117,37 @@ there are no camelCase/axis/prefix translators.
 
 - Single SSE `EventSource` multiplexes all streams; positions/rules = delta patch + visibility-gated
   fallback poll. RTK Query structural sharing + 5min `keepUnusedDataFor` + `skipPollingIfUnfocused`.
-- **Positions = server-side paged, summary decoupled** (`useRulePositions`): the positions
-  `DataTable` runs in `serverSide` mode — the hook fetches one page (`limit`/`offset`) and reads the
-  run-wide total off the `X-Total-Count` header; live SSE deltas patch only rows *already on the page*
-  (a page not holding a delta's row picks it up on refetch/poll). The **Positions Summary** panel
-  (`SimSummaryCard`, optional `summary` prop) renders a **separate** server-computed aggregate
-  (`/rules/{id}/positions/summary`) over the *whole* run — so the panel never depends on page size and
-  uses the backend win rule (`End && exit_sol>entry_sol`), keeping it identical to the strategy-table
-  row. All five strategy pages (live `TpslPage`/`Swing1Page` + the 3 lab pages) share this path.
-- **Paper-test result table = same server-side path.** The lab pages' Paper Test section
-  (`@lab/components/strategies/PaperResultSection`, shared across all 3) renders its token table as a
-  **second** `useRulePositions` instance scoped to the paper rule id (its own `paperPosQuery` +
-  `positionColumns`), so paper positions page/sort/search/filter in Postgres exactly like the
-  Positions section — no client-side 5,000-row array, no bespoke `applyPaperDeltas`. The section keeps
-  only the run-meta chrome (status / run# / Clear) from the `/paper-result` payload; its summary card
-  reads the same `/positions/summary` aggregate.
+- **Unified server-side table contract (POST + JSON).** Every strategy token table (Positions /
+  Paper / Matched / Simulated) pages/sorts/filters/searches over **one** request body — `TableRequest`
+  (`{ pagination, sorting, search, filters, range? }`), serialized by `services/tableRequest.ts`
+  (`toTableRequest(query, numericCols, {range?})`). Per-column filters are structured `{op, val}`
+  (`FilterOp` = contains/eq/gt/gte/lt/lte/between): for a **numeric** column, `parseFilterSpec` turns
+  `>5` / `1..10` into `{op:'gt',val:5}` / `{op:'between',…}`, so numeric operators compare
+  **numerically server-side**. `numericColKeys(columns)` derives the numeric-key set from a column
+  list. All four tables read the run-wide `total` off the `X-Total-Count` header. Positions is POST on
+  **both** bins (live + lab) so the shared hook/fetchers are one code path.
+- **Positions/Paper = server-side paged, summary decoupled** (`useRulePositions`): the positions
+  `DataTable` runs in `serverSide` mode; the hook serializes its `TableQuery` (+ `numericCols`) into
+  the POST body, fetches one page, and reads the total off `X-Total-Count`; live SSE deltas patch only
+  rows *already on the page*. The **Positions Summary** panel renders a **separate** server-computed
+  aggregate (`/rules/{id}/positions/summary`, GET) over the *whole* run. All five strategy pages (live
+  `TpslPage`/`Swing1Page` + the 3 lab pages) share this path; the Paper Test section is a second
+  `useRulePositions` instance scoped to the paper rule.
+- **Matched/Simulated = server-side via `useServerTable`** (lab-only). A lean page+total+summary hook
+  (no SSE-delta patching / settle-poll — these results are static once computed) drives the two tables
+  over `fetchMatchedPage` / `fetchSimulatedPage` (POST, `{tokens}` body + `X-Total-Count`). **Matched**
+  materializes server-side: the first POST scans the whole `tokens` table for the matched mint set,
+  caches it, and pages the DB restricted to it (no 5,000-row cap). **Simulated** pages the finished
+  backtest's rows **in memory** on the server (already resident — lab is single-user), with a whole-run
+  `/simulate/result/summary` aggregate for its card; `reload()` refetches on the `simulation_finished`
+  SSE (collect → fetch-first-page).
 - **Numeric column filters** (`>5`, `1..10`, `>=`, `!=`) on the shared token-enrichment columns:
   `ALL_TOKEN_COLS` in `sharedTokenColumns.tsx` declares `filterNumber` on every numeric column
-  (mirrors the Tokens-page `tokenColumns.tsx`), so all strategy tables filter enrichment columns
-  numerically client-side (lamports→SOL normalized for `max_sol_cost`/`spendable_sol_in`). On the
-  server-side positions/paper tables, plain text still binds as an `ILIKE` substring backend-side —
-  numeric *operators* server-side are a future follow-up.
+  (mirrors the Tokens-page `tokenColumns.tsx`). The `DataTable` emits raw filter text; the serializer
+  (`toTableRequest` via `parseFilterSpec`) turns a numeric-column expression into a structured op that
+  compares **numerically server-side** (no longer client-only / `ILIKE`-substring). `!=` has no server
+  op and maps to `eq`; the legacy `parseNumericPredicate` (still used by any fully client-side table)
+  keeps the real `!=` negation.
 - Memoized column defs/price formatters; cells read context directly. localStorage via `lib/storage`
   (`mt:` namespace); column visibility in one `mt:table.cols` map keyed by `tableId`.
 

@@ -47,7 +47,11 @@ import { useSellTokenMutation } from '@live/store/liveEndpoints';
 import { mergeTokenData } from 'components/tokens/sharedTokenColumns';
 import { usePolledRules } from 'hooks/usePolledRules';
 import { useRulePositions, DEFAULT_POSITIONS_QUERY } from 'hooks/useRulePositions';
+import { numericColKeys } from 'services/tableRequest';
 import type { TableQuery } from 'components/table/types';
+
+/** Positions columns that filter numerically (`>5`/`1..10` → structured ops). */
+const POSITION_NUMERIC_COLS = numericColKeys(positionColumns);
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { cn } from 'lib/cn';
 import type { RulePositionRecord, RuleRecord } from 'types';
@@ -332,7 +336,7 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
   const [posQuery, setPosQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
   const { positions, total: positionsTotal, summary: positionsSummary,
     loading: positionsLoading, error: positionsError } =
-    useRulePositions(selectedRuleId, rules, fetchPositions, fetchSummary, strategy, posQuery);
+    useRulePositions(selectedRuleId, rules, fetchPositions, fetchSummary, strategy, posQuery, POSITION_NUMERIC_COLS);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editRule, setEditRule] = useState<RuleRecord | null>(null);

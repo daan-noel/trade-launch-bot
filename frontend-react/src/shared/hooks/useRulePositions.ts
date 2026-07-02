@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FALLBACK_POLL_INTERVAL_MS } from 'services/config';
 import { connectTpslPositionsChanged } from 'services/sse';
 import { useVisiblePolling } from './useVisiblePolling';
+import { toTableRequest, type TableRequestBody } from 'services/tableRequest';
 import type { TableQuery } from 'components/table/types';
 import type {
   PositionsSummary,
@@ -82,29 +83,32 @@ export function useRulePositions(
   rules: RuleRecord[],
   fetchPositions: (
     ruleId: string,
-    opts: {
-      limit: number;
-      offset: number;
-      sort?: string;
-      search?: string;
-      filter?: string;
-      signal?: AbortSignal;
-    },
+    body: TableRequestBody,
+    signal?: AbortSignal,
   ) => Promise<RulePositionsPage>,
   fetchSummary: (ruleId: string, signal?: AbortSignal) => Promise<PositionsSummary>,
   strategy: 'tpsl1' | 'tpsl2' | 'swing_1',
   query: TableQuery,
+  /** Column keys that filter numerically (so `>5`/`1..10` become structured ops).
+   *  Derive with `numericColKeys(columns)`; empty = every filter is substring. */
+  numericCols?: ReadonlySet<string>,
 ): RulePositions {
-  const { page, pageSize } = query;
-  // Serialize the table's sort/search/per-column filters into the backend wire
-  // format (`sort=key:dir,…`, `q=…`, `filter=key:val|…`). The server whitelist drops
-  // any non-sortable/filterable key, so passing enrichment keys is harmless.
-  const sortParam = query.sortKeys.map((s) => `${s.col}:${s.dir}`).join(',');
-  const filterParam = Object.entries(query.colFilters)
-    .filter(([, v]) => v.trim())
-    .map(([k, v]) => `${k}:${v.trim()}`)
-    .join('|');
-  const searchParam = query.search;
+  // Serialize the table view-state into the unified POST body. Numeric columns get
+  // structured `{op,val}` filters; the server whitelist drops any unknown key.
+  const numericKey = numericCols ? [...numericCols].sort().join(',') : '';
+  const body = useMemo(
+    () => toTableRequest(query, numericCols ?? new Set()),
+    // Rebuild only when the view-state or the numeric-col set actually changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      query.page,
+      query.pageSize,
+      query.search,
+      JSON.stringify(query.sortKeys),
+      JSON.stringify(query.colFilters),
+      numericKey,
+    ],
+  );
   const [positions, setPositions] = useState<RulePositionRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [summary, setSummary] = useState<PositionsSummary | null>(null);
@@ -127,14 +131,7 @@ export function useRulePositions(
       inflight.current = ctrl;
       if (!silent) setLoading(true);
       try {
-        const { items, total } = await fetchPositions(ruleId, {
-          limit: pageSize,
-          offset: (page - 1) * pageSize,
-          sort: sortParam,
-          search: searchParam,
-          filter: filterParam,
-          signal: ctrl.signal,
-        });
+        const { items, total } = await fetchPositions(ruleId, body, ctrl.signal);
         if (ctrl.signal.aborted) return;
         setPositions(items);
         setTotal(total);
@@ -150,7 +147,7 @@ export function useRulePositions(
         if (inflight.current === ctrl) setLoading(false);
       }
     },
-    [fetchPositions, page, pageSize, sortParam, searchParam, filterParam],
+    [fetchPositions, body],
   );
 
   const loadSummary = useCallback(

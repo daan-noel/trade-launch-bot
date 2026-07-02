@@ -51,7 +51,11 @@ exec + double-buy/sell invariants · paper mirror fill-poll · tpsl2 scalp-armin
 
 ## Shared — `sim_progress.rs`
 
-`SimProgress` — per-backtest progress reporter shared by both snipers' `backtest.rs`. Simulate is a **start→wait→fetch** job (POST → 202, result stored in `AppState.sim_results`, client collects via SSE + `GET /api/jobs/simulations/{rule_id}/result`).
+`SimProgress` — per-backtest progress reporter shared by both snipers' `backtest.rs`. Simulate is a **start→wait→fetch** job (POST → 202; the detached run stores its per-token results as `Vec<serde_json::Value>` in `LocalState.sim_results`; client collects via the `simulation_finished` SSE).
+
+**Simulated table = in-memory server-side paging** (`lab/src/strategies/sim_query.rs`). The finished backtest's rows are already resident (lab is single-user, workstation RAM), so `POST …/rules/{id}/simulate/result` (unified `TableRequest`) pages/sorts/filters them in Rust — numeric operators compare numerically, matching the SQL path's semantics — with a whole-run `GET …/simulate/result/summary` aggregate. No `sim_result_tokens` table: an in-RAM query fits the data. The legacy whole-blob `GET /api/jobs/simulations/{rule_id}/result` still serves (re-serializes on take).
+
+**Matched table = materialize-then-page** (`lab/src/state/matched_cache.rs`). The match predicate is a Rust closure (not SQL), so `POST …/rules/{id}/matched` (unified `TableRequest`) runs `collect_matching_tokens` once per `(rule_id, from, to)` to get the matched **mint set**, caches it on `LocalState` (`MatchedCache`, TTL/GC like `sim_results`), and pages the DB restricted to `mint = ANY(set)` via `StrategyRepo::find_tokens_by_mints_paged` (token-scoped whitelist). Removes the old 5,000-row display cap. tpsl2/swing1 delegate the paging to `tpsl1::matched_page_response` (strategy-agnostic).
 
 ## Per-strategy module map (`tpsl_sniper_1/`, mirrored in `tpsl_sniper_2/`)
 

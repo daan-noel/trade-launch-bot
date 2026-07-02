@@ -38,51 +38,97 @@ export interface AppSettings {
   gap_replay_max_window_secs: number;
 }
 
-/** Options for a paginated rule-positions fetch. `sort`/`search`/`filter` carry the
- *  table's server-side view-state (empty = none); see the backend `PositionListParams`
- *  for the `sort`/`q`/`filter` wire format. Non-whitelisted keys are dropped server-side. */
-export interface PositionsPageOpts {
-  limit: number;
-  offset: number;
-  /** Comma-separated `key:dir` (`entry_time:desc,pnl_pct:asc`). */
-  sort?: string;
-  /** Free-text search (mint / symbol / name). */
-  search?: string;
-  /** `|`-separated `key:value` per-column filters (`status:End|mint:abc`). */
-  filter?: string;
-  signal?: AbortSignal;
-}
+import type { TableRequestBody } from './tableRequest';
 
 /**
- * Fetch one page of a rule's positions for `strategySeg` (`tpsl1`/`tpsl2`/`swing1`),
- * reading the run/rule-wide `total` off the `X-Total-Count` header so the pager can
- * size itself without pulling the whole population. Kept as its own `fetch` (not the
- * shared `request` wrapper) precisely because it needs the response header. Error +
- * abort semantics mirror `request`.
+ * POST one page of a server-side table (`{strategy}/rules/{id}/{table}`), reading
+ * the full match `total` off the `X-Total-Count` header so the pager can size
+ * itself without pulling the whole population. Kept as its own `fetch` (not the
+ * shared `request` wrapper) because it needs the response header. `pluck` extracts
+ * the row array from the JSON body — positions return a bare array, matched/sim
+ * return `{tokens}`. Error + abort semantics mirror `request`.
  */
-async function fetchRulePositionsPage(
-  strategySeg: string,
-  ruleId: string,
-  { limit, offset, sort, search, filter, signal }: PositionsPageOpts,
-): Promise<import('types').RulePositionsPage> {
-  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-  if (sort) params.set('sort', sort);
-  if (search) params.set('q', search);
-  if (filter) params.set('filter', filter);
-  const url =
-    `${API_BASE}/api/strategies/${strategySeg}/rules/${ruleId}/positions?${params.toString()}`;
-  const resp = await fetch(url, { signal });
+async function postTablePage<R>(
+  path: string,
+  body: TableRequestBody,
+  pluck: (json: unknown) => R[],
+  signal?: AbortSignal,
+): Promise<{ items: R[]; total: number }> {
+  const resp = await fetch(`${API_BASE}${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  });
   if (!resp.ok) {
-    const body = await resp.json().catch(() => null);
+    const errBody = await resp.json().catch(() => null);
     const msg =
-      body && typeof body === 'object' && 'error' in body
-        ? String((body as { error: string }).error)
+      errBody && typeof errBody === 'object' && 'error' in errBody
+        ? String((errBody as { error: string }).error)
         : `HTTP ${resp.status}`;
     throw new Error(msg);
   }
-  const items = (await resp.json()) as import('types').RulePositionRecord[];
+  const items = pluck(await resp.json());
   const total = Number(resp.headers.get('X-Total-Count') ?? items.length);
   return { items, total: Number.isFinite(total) ? total : items.length };
+}
+
+/** POST one page of a rule's positions for `strategySeg` (`tpsl1`/`tpsl2`/`swing1`).
+ *  Body is the unified `TableRequestBody`; response is a bare positions array. */
+function fetchRulePositionsPage(
+  strategySeg: string,
+  ruleId: string,
+  body: TableRequestBody,
+  signal?: AbortSignal,
+): Promise<import('types').RulePositionsPage> {
+  return postTablePage(
+    `/api/strategies/${strategySeg}/rules/${ruleId}/positions`,
+    body,
+    (json) => json as import('types').RulePositionRecord[],
+    signal,
+  );
+}
+
+/** POST one page of a rule's matched tokens. Response body is `{tokens}`. */
+export function fetchMatchedPage(
+  strategySeg: string,
+  ruleId: string,
+  body: TableRequestBody,
+  signal?: AbortSignal,
+): Promise<{ items: import('types').MatchedTokenRecord[]; total: number }> {
+  return postTablePage(
+    `/api/strategies/${strategySeg}/rules/${ruleId}/matched`,
+    body,
+    (json) => (json as { tokens: import('types').MatchedTokenRecord[] }).tokens,
+    signal,
+  );
+}
+
+/** POST one page of a rule's finished-simulation tokens. Response body is `{tokens}`. */
+export function fetchSimulatedPage(
+  strategySeg: string,
+  ruleId: string,
+  body: TableRequestBody,
+  signal?: AbortSignal,
+): Promise<{ items: import('types').SimulatedTokenResult[]; total: number }> {
+  return postTablePage(
+    `/api/strategies/${strategySeg}/rules/${ruleId}/simulate/result`,
+    body,
+    (json) => (json as { tokens: import('types').SimulatedTokenResult[] }).tokens,
+    signal,
+  );
+}
+
+/** GET the whole-run aggregate for a rule's Simulated summary card. */
+export function fetchSimulatedSummary(
+  strategySeg: string,
+  ruleId: string,
+  signal?: AbortSignal,
+): Promise<import('types').SimulatedSummary> {
+  return request(
+    `${API_BASE}/api/strategies/${strategySeg}/rules/${ruleId}/simulate/result/summary`,
+    { signal },
+  );
 }
 
 export async function fetchTokens(
@@ -249,11 +295,6 @@ export async function simulateTpsl1Rule(
   return request(`${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/simulate`);
 }
 
-export async function fetchTpsl1MatchedTokens(
-  ruleId: string,
-): Promise<import('types').MatchedTokenRecord[]> {
-  return request(`${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/matched`);
-}
 
 /**
  * Latest paper-test run for a rule: run metadata + recorded positions aggregated
@@ -274,11 +315,12 @@ export async function clearTpsl1PaperResult(ruleId: string): Promise<void> {
   });
 }
 
-export async function fetchTpsl1RulePositions(
+export function fetchTpsl1RulePositions(
   ruleId: string,
-  opts: PositionsPageOpts,
+  body: TableRequestBody,
+  signal?: AbortSignal,
 ): Promise<import('types').RulePositionsPage> {
-  return fetchRulePositionsPage('tpsl1', ruleId, opts);
+  return fetchRulePositionsPage('tpsl1', ruleId, body, signal);
 }
 
 /** Run/rule-wide position aggregates for the tpsl1 Positions Summary panel. */
@@ -392,11 +434,6 @@ export async function simulateTpsl2Rule(
   return request(`${API_BASE}/api/strategies/tpsl2/rules/${ruleId}/simulate`);
 }
 
-export async function fetchTpsl2MatchedTokens(
-  ruleId: string,
-): Promise<import('types').MatchedTokenRecord[]> {
-  return request(`${API_BASE}/api/strategies/tpsl2/rules/${ruleId}/matched`);
-}
 
 export async function fetchTpsl2PaperResult(
   ruleId: string,
@@ -412,11 +449,12 @@ export async function clearTpsl2PaperResult(ruleId: string): Promise<void> {
   });
 }
 
-export async function fetchTpsl2RulePositions(
+export function fetchTpsl2RulePositions(
   ruleId: string,
-  opts: PositionsPageOpts,
+  body: TableRequestBody,
+  signal?: AbortSignal,
 ): Promise<import('types').RulePositionsPage> {
-  return fetchRulePositionsPage('tpsl2', ruleId, opts);
+  return fetchRulePositionsPage('tpsl2', ruleId, body, signal);
 }
 
 /** Run/rule-wide position aggregates for the tpsl2 Positions Summary panel. */
@@ -519,11 +557,12 @@ export async function stopSwing1Rule(ruleId: string): Promise<import('types').Ru
   return request(`${API_BASE}/api/strategies/swing1/rules/${ruleId}/stop`, { method: 'POST' });
 }
 
-export async function fetchSwing1RulePositions(
+export function fetchSwing1RulePositions(
   ruleId: string,
-  opts: PositionsPageOpts,
+  body: TableRequestBody,
+  signal?: AbortSignal,
 ): Promise<import('types').RulePositionsPage> {
-  return fetchRulePositionsPage('swing1', ruleId, opts);
+  return fetchRulePositionsPage('swing1', ruleId, body, signal);
 }
 
 /** Run/rule-wide position aggregates for the swing1 Positions Summary panel. */

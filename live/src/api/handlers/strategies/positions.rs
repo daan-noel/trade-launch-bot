@@ -13,7 +13,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::state::deploy_state::DeployState;
-use trading_core::api::table_query::{FilterOp, FilterSpec};
+use trading_core::api::table_query::TableRequest;
 use trading_core::models::{PositionsSummary, StrategyPosition};
 use trading_core::storage::repositories::strategy_repo::{PositionQuery, StrategyRepo};
 use trading_core::strategies::registry::StrategyImpl;
@@ -109,20 +109,15 @@ impl From<StrategyPosition> for PositionResponse {
 ///   - `q`    = free-text search (mint / symbol / name);
 ///   - `filter` = `|`-separated `key:value` per-column filters (`status:End|mint:abc`).
 ///
-/// The repo whitelist drops any non-sortable/filterable key, so unknown/enrichment
-/// keys are simply ignored (never interpolated).
+/// The `list`/`by-mint`/`by-wallet` position handlers only page (limit/offset) —
+/// they don't sort/filter/search. The **rule** positions table takes the unified
+/// [`TableRequest`] JSON body instead (see [`get_positions_by_rule`]).
 #[derive(serde::Deserialize)]
 pub struct PositionListParams {
     #[serde(default = "default_positions_limit")]
     pub limit: i64,
     #[serde(default)]
     pub offset: i64,
-    #[serde(default)]
-    pub sort: String,
-    #[serde(default)]
-    pub q: String,
-    #[serde(default)]
-    pub filter: String,
 }
 
 fn default_positions_limit() -> i64 {
@@ -133,43 +128,6 @@ impl PositionListParams {
     /// Clamp to a sane window: limit in 1..=1000, offset >= 0.
     fn bounds(&self) -> (i64, i64) {
         (self.limit.clamp(1, 1000), self.offset.max(0))
-    }
-
-    /// Parse the sort/search/filter fields into a repo [`PositionQuery`].
-    pub fn to_query(&self) -> PositionQuery {
-        let sort = self
-            .sort
-            .split(',')
-            .filter_map(|part| {
-                let (key, dir) = part.split_once(':')?;
-                let key = key.trim();
-                if key.is_empty() {
-                    return None;
-                }
-                Some((key.to_string(), dir.trim().eq_ignore_ascii_case("desc")))
-            })
-            .collect();
-        let filters = self
-            .filter
-            .split('|')
-            .filter_map(|part| {
-                let (key, val) = part.split_once(':')?;
-                let key = key.trim();
-                if key.is_empty() || val.trim().is_empty() {
-                    return None;
-                }
-                // Live keeps the flat GET query-string contract: every per-column
-                // filter is a substring match, so lower each into a `Contains`
-                // `FilterSpec` (the only op the SQL builder honors on text cols).
-                let spec = FilterSpec {
-                    op: FilterOp::Contains,
-                    val: serde_json::Value::String(val.trim().to_string()),
-                    ..Default::default()
-                };
-                Some((key.to_string(), spec))
-            })
-            .collect();
-        PositionQuery { search: self.q.clone(), filters, sort }
     }
 }
 
@@ -218,21 +176,24 @@ fn list_error(what: &str, e: anyhow::Error) -> HttpResponse {
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// GET /api/strategies/{strategy}/rules/{rule_id}/positions
+/// POST /api/strategies/{strategy}/rules/{rule_id}/positions
 ///
 /// Paper rules retain only the current run's bag, so they're served from the
-/// rule's latest paper run; real rules carry their full lifetime history.
+/// rule's latest paper run; real rules carry their full lifetime history. The JSON
+/// body is the unified `TableRequest` (paging + server-side sort/search/filter),
+/// shared byte-for-byte with the lab positions endpoint.
 pub async fn get_positions_by_rule(
     app_state: web::Data<Arc<DeployState>>,
     path: web::Path<(String, Uuid)>,
-    query: web::Query<PositionListParams>,
+    body: web::Json<TableRequest>,
 ) -> impl Responder {
     let (strategy, rule_id) = path.into_inner();
     if let Err(resp) = strategy_id(&strategy) {
         return resp;
     }
-    let (limit, offset) = query.bounds();
-    let pq = query.to_query();
+    let req = body.into_inner();
+    let (limit, offset) = req.pagination.bounds();
+    let pq = PositionQuery::from(req);
     let repo = repo(&app_state);
 
     let rule = match repo.find_rule(rule_id).await {

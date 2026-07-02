@@ -69,7 +69,7 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
             )
             .route(
                 "/strategies/{strategy}/rules/{rule_id}/positions",
-                web::get().to(handlers::strategies::positions::get_positions_by_rule),
+                web::post().to(handlers::strategies::positions::get_positions_by_rule),
             )
             .route(
                 "/strategies/{strategy}/positions",

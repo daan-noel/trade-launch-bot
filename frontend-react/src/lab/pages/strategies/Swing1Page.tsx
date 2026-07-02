@@ -39,6 +39,7 @@ import { datetimeLocalToUtcWallClock } from 'utils/date';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { usePolledRules } from 'hooks/usePolledRules';
 import { useRulePositions, DEFAULT_POSITIONS_QUERY } from 'hooks/useRulePositions';
+import { numericColKeys, toTableRequest, type TableRequestBody } from 'services/tableRequest';
 import type { TableQuery } from 'components/table/types';
 import { useDispatch } from 'react-redux';
 import {
@@ -46,33 +47,39 @@ import {
   clearSwing1PaperResult,
   createSwing1Rule,
   deleteSwing1Rule,
+  fetchMatchedPage,
+  fetchSimulatedPage,
+  fetchSimulatedSummary,
   fetchSwing1PaperResult,
   fetchSwing1RulePositions,
   fetchSwing1RulePositionsSummary,
   fetchSwing1Rules,
   pauseSwing1Rule,
+  startSimulation,
   stopSwing1Rule,
   updateSwing1Rule,
 } from 'services/api';
-import { connectPaperTestStream } from 'services/sse';
+import { connectPaperTestStream, connectSimulationFinished } from 'services/sse';
 import { useBackgroundJobActions } from '@lab/context/BackgroundJobsContext';
 import { apiErrorMessage, useGetTokensByMintsQuery } from 'store/apiSlice';
 import { useSellTokenMutation } from '@live/store/liveEndpoints';
 import { mergeTokenData } from 'components/tokens/sharedTokenColumns';
 import {
-  fetchMatchedCached,
   fetchPaperResultCached,
-  fetchSimulateCached,
   invalidatePaperResult,
   invalidateStrategyResult,
 } from '@lab/store/strategyResultCache';
+import { useServerTable } from 'hooks/useServerTable';
 import type { AppDispatch } from '@lab/store';
 import type {
+  MatchedTokenRecord,
   PaperResultResponse,
   PaperRunResponse,
   PaperTestFinishedEvent,
+  PositionsSummary,
   RulePositionRecord,
   RuleRecord,
+  SimulatedSummary,
   SimulatedTokenResult,
 } from 'types';
 import { cn } from 'lib/cn';
@@ -87,6 +94,36 @@ const SWING1_SPEC = getSpec('swing_1');
 // (tpsl1/tpsl2 happen to use the same token for both, so they carry one const.)
 const STRATEGY = 'swing_1' as const;
 const STRATEGY_SEG = 'swing1' as const;
+
+/** Matched / Simulated columns that filter numerically (same server-side contract
+ *  as Positions — `>5`/`1..10` → structured ops). */
+const MATCHED_NUMERIC_COLS = numericColKeys(matchedColumns);
+const SIM_NUMERIC_COLS = numericColKeys(simColumns);
+const POSITION_NUMERIC_COLS = numericColKeys(positionColumns);
+
+/** Adapt the server's Simulated whole-run aggregate onto the shape `SimSummaryCard`
+ *  renders (`PositionsSummary`); only the fields the sim summary reports are set. */
+function simSummaryToCard(s: SimulatedSummary): PositionsSummary {
+  const closed = s.closed_tokens;
+  const win = Math.round(s.win_rate * closed);
+  return {
+    tokens: s.total_tokens,
+    open: s.total_tokens - closed,
+    win,
+    loss: closed - win,
+    closed,
+    win_rate: s.win_rate * 100, // fraction (0..1) → percent for the card
+    avg_pnl_pct: s.avg_pnl_percent,
+    total_pnl_sol: s.total_pnl_sol,
+    total_entry_sol: 0,
+    total_holding_sol: 0,
+    total_gains_sol: 0,
+    total_losses_sol: 0,
+    avg_hold_secs: 0,
+    best_pct: null,
+    worst_pct: null,
+  };
+}
 
 // Module-level, referentially-stable rowKey fns: each only reads the row, so a
 // single shared identity lets DataTable's page/select effects (and the row
@@ -571,7 +608,7 @@ export function Swing1Page() {
     error: positionsError,
   } = useRulePositions(
     selectedRuleId, rules, fetchSwing1RulePositions,
-    fetchSwing1RulePositionsSummary, STRATEGY, posQuery,
+    fetchSwing1RulePositionsSummary, STRATEGY, posQuery, POSITION_NUMERIC_COLS,
   );
 
   const [modalOpen, setModalOpen] = useState(false);
@@ -583,22 +620,21 @@ export function Swing1Page() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
 
-  const [simResult, setSimResult] = useState<{
-    ruleId: string;
-    ruleName: string;
-    tokens: SimulatedTokenResult[];
-  } | null>(null);
+  // Simulated + Matched are now server-side tables (POST + JSON, paged/sorted/
+  // filtered on the backend), each driven by a `useServerTable` below. The page
+  // only holds the open/active rule, the per-table view-state query, and the sim
+  // start/error flags. `simRuleId` is set when the sim START POST fires and stays
+  // until the `simulation_finished` SSE flips `simReady`, which enables the table.
+  const [simRuleId, setSimRuleId] = useState<string | null>(null);
+  const [simRuleName, setSimRuleName] = useState('');
+  const [simReady, setSimReady] = useState(false);
+  const [simQuery, setSimQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
   const [simError, setSimError] = useState<string | null>(null);
   const [simLoading, setSimLoading] = useState(false);
 
-  const [matchedResult, setMatchedResult] = useState<{
-    ruleId: string;
-    tokens: import('types').MatchedTokenRecord[];
-    total: number;
-    capped: boolean;
-  } | null>(null);
-  const [matchedError, setMatchedError] = useState<string | null>(null);
-  const [matchedLoading, setMatchedLoading] = useState(false);
+  // Matched view: which rule's matched set is open (null = closed) + its query.
+  const [matchedRuleId, setMatchedRuleId] = useState<string | null>(null);
+  const [matchedQuery, setMatchedQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
   // Transient creation-time window for matched + simulate (NOT persisted on any
   // rule). Empty = all-time. `datetime-local` strings; converted to ISO before the
   // request so they ride the matched/simulate RTK cache key (different ranges cache
@@ -637,7 +673,7 @@ export function Swing1Page() {
     loading: paperPositionsLoading,
   } = useRulePositions(
     paperResult?.ruleId ?? null, rules, fetchSwing1RulePositions,
-    fetchSwing1RulePositionsSummary, STRATEGY, paperPosQuery,
+    fetchSwing1RulePositionsSummary, STRATEGY, paperPosQuery, POSITION_NUMERIC_COLS,
   );
 
   // Live paper-test completion: when a run finishes (cap reached + all exited)
@@ -761,14 +797,79 @@ export function Swing1Page() {
   const posCols = positionColumns;
   const simCols = simColumns;
 
+  // Resolve the transient picker window to ISO bounds (UTC wall-clock, tz-aware),
+  // omitting unset sides. Rides the matched/simulate request body so it both scopes
+  // the backend scan and re-keys the server-side fetch per range.
+  const analysisRange = useMemo(
+    () => ({
+      from: datetimeLocalToUtcWallClock(analysisFrom, timezone, 'lower') || undefined,
+      to: datetimeLocalToUtcWallClock(analysisTo, timezone, 'upper') || undefined,
+    }),
+    [analysisFrom, analysisTo, timezone],
+  );
+  // Only pass a `range` when at least one bound is set — an empty range object
+  // would still change the body key vs a truly all-time scan.
+  const analysisRangeExtras = useMemo(
+    () =>
+      analysisRange.from || analysisRange.to
+        ? { range: { from: analysisRange.from, to: analysisRange.to } }
+        : undefined,
+    [analysisRange],
+  );
+
+  // Serialized request bodies — memoized so a SOL/USD tick or unrelated re-render
+  // doesn't churn the fetch key (the hook re-fetches on body change).
+  const matchedBody = useMemo(
+    () => toTableRequest(matchedQuery, MATCHED_NUMERIC_COLS, analysisRangeExtras),
+    [matchedQuery, analysisRangeExtras],
+  );
+  const simBody = useMemo(
+    () => toTableRequest(simQuery, SIM_NUMERIC_COLS, analysisRangeExtras),
+    [simQuery, analysisRangeExtras],
+  );
+
+  // Matched table: enabled while its view is open for the active rule.
+  const {
+    items: matchedTokens,
+    total: matchedTotal,
+    loading: matchedLoading,
+    error: matchedError,
+  } = useServerTable<MatchedTokenRecord>(
+    matchedRuleId != null,
+    matchedBody,
+    (body, signal) =>
+      fetchMatchedPage(STRATEGY_SEG, matchedRuleId ?? '', body as TableRequestBody, signal),
+  );
+
+  // Simulated table: enabled once a finished sim result exists for the rule.
+  const {
+    items: simTokens,
+    total: simTotal,
+    summary: simSummary,
+    loading: simTableLoading,
+    error: simTableError,
+    reload: reloadSim,
+  } = useServerTable<SimulatedTokenResult, SimulatedSummary>(
+    simReady && simRuleId != null,
+    simBody,
+    (body, signal) =>
+      fetchSimulatedPage(STRATEGY_SEG, simRuleId ?? '', body as TableRequestBody, signal),
+    (signal) => fetchSimulatedSummary(STRATEGY_SEG, simRuleId ?? '', signal),
+  );
+
+  const simCardSummary = useMemo(
+    () => (simSummary ? simSummaryToCard(simSummary) : null),
+    [simSummary],
+  );
+
   const allMints = useMemo(() => {
     const s = new Set<string>();
-    matchedResult?.tokens.forEach((r) => s.add(r.mint));
-    simResult?.tokens.forEach((r) => s.add(r.mint));
+    matchedTokens.forEach((r) => s.add(r.mint));
+    simTokens.forEach((r) => s.add(r.mint));
     positions.forEach((r) => s.add(r.mint));
     paperPositions.forEach((r) => s.add(r.mint));
     return [...s].sort();
-  }, [matchedResult, simResult, positions, paperPositions]);
+  }, [matchedTokens, simTokens, positions, paperPositions]);
 
   const { data: tokenBatch } = useGetTokensByMintsQuery(allMints, {
     skip: allMints.length === 0,
@@ -863,74 +964,57 @@ export function Swing1Page() {
     [selectedRuleId, setRules],
   );
 
-  // Resolve the transient picker window to ISO bounds (UTC wall-clock, tz-aware),
-  // omitting unset sides. Part of the matched/simulate RTK arg, so it both scopes
-  // the backend scan and keys the cache per range.
-  const analysisRange = useMemo(
-    () => ({
-      from: datetimeLocalToUtcWallClock(analysisFrom, timezone, 'lower') || undefined,
-      to: datetimeLocalToUtcWallClock(analysisTo, timezone, 'upper') || undefined,
-    }),
-    [analysisFrom, analysisTo, timezone],
-  );
-
+  // Start (or restart) a rule's backtest. The result is NOT collected here — the
+  // sim table's `useServerTable` pages it from the server once `simulation_finished`
+  // (below) flips `simReady` + reloads. Reset the query so a fresh run starts on
+  // page 1. `markStarting`/`markFinished` drive the app-wide progress indicator.
   const handleSimulate = useCallback(
     async (rule: RuleRecord) => {
-      setSimResult(null);
+      setSimReady(false);
       setSimError(null);
+      setSimRuleId(rule.id);
+      setSimRuleName(rule.rule_name);
+      setSimQuery(DEFAULT_POSITIONS_QUERY);
       markStarting('simulation', rule.id, `Sim: ${rule.rule_name}`);
       setSimLoading(true);
       try {
-        const tokens = await fetchSimulateCached(dispatch, {
-          strategy: STRATEGY_SEG,
-          ruleId: rule.id,
-          ...analysisRange,
-        });
-        if ('cancelled' in tokens) {
-          // User cancelled — drop the cached cancel marker so a re-run refetches.
-          invalidateStrategyResult(dispatch, { strategy: STRATEGY_SEG, ruleId: rule.id });
-          return;
-        }
-        setSimResult({ ruleId: rule.id, ruleName: rule.rule_name, tokens });
+        await startSimulation(STRATEGY_SEG, rule.id, analysisRange);
       } catch (e) {
         setSimError(apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0], 'Simulation failed'));
-      } finally {
         setSimLoading(false);
-        // Clear the optimistic job ourselves: on a cache hit / cancel / missed
-        // SSE frame the backend's `simulation_finished` never arrives, so without
-        // this the progress bar would spin forever. Idempotent with the SSE.
         markFinished('simulation', rule.id);
       }
     },
-    [dispatch, markStarting, markFinished, analysisRange],
+    [markStarting, markFinished, analysisRange],
   );
 
+  // Open / close the Matched view for a rule (toggle). Paging is driven by
+  // `useServerTable` (enabled while `matchedRuleId` is set); switching rules resets
+  // the query to page 1 so the new set starts fresh.
   const handleMatched = useCallback(
-    async (rule: RuleRecord) => {
-      if (matchedResult?.ruleId === rule.id) {
-        setMatchedResult(null);
-        return;
-      }
-      setMatchedResult(null);
-      setMatchedError(null);
-      setMatchedLoading(true);
-      try {
-        const { tokens, total, capped } = await fetchMatchedCached(dispatch, {
-          strategy: STRATEGY_SEG,
-          ruleId: rule.id,
-          ...analysisRange,
-        });
-        setMatchedResult({ ruleId: rule.id, tokens, total, capped });
-      } catch (e) {
-        setMatchedError(
-          apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0], 'Failed to load matched tokens'),
-        );
-      } finally {
-        setMatchedLoading(false);
-      }
+    (rule: RuleRecord) => {
+      setMatchedRuleId((prev) => {
+        if (prev === rule.id) return null; // second click closes
+        setMatchedQuery(DEFAULT_POSITIONS_QUERY);
+        return rule.id;
+      });
     },
-    [matchedResult, dispatch, analysisRange],
+    [],
   );
+
+  // Collect the first sim page + summary once the backend reports the backtest
+  // finished (the same frame that clears the progress bar). Scoped to the rule the
+  // page kicked off; other rules' runs are ignored.
+  useEffect(() => {
+    const handle = connectSimulationFinished((ev) => {
+      if (ev.rule_id !== simRuleId) return;
+      setSimReady(true);
+      setSimLoading(false);
+      markFinished('simulation', ev.rule_id);
+      reloadSim();
+    });
+    return () => handle.close();
+  }, [simRuleId, markFinished, reloadSim]);
 
   const handlePaperResult = useCallback(
     async (rule: RuleRecord) => {
@@ -989,7 +1073,7 @@ export function Swing1Page() {
       simLoading,
       matchedLoading,
       paperLoading,
-      matchedActiveId: matchedResult?.ruleId ?? null,
+      matchedActiveId: matchedRuleId,
       paperActiveId: paperResult?.ruleId ?? null,
       onSimulate: handleSimulate,
       onMatched: handleMatched,
@@ -999,7 +1083,7 @@ export function Swing1Page() {
       simLoading,
       matchedLoading,
       paperLoading,
-      matchedResult,
+      matchedRuleId,
       paperResult,
       handleSimulate,
       handleMatched,
@@ -1041,8 +1125,8 @@ export function Swing1Page() {
   }, [paperResult, rules]);
 
   const matchedRuleName = useMemo(
-    () => (matchedResult ? rules.find((r) => r.id === matchedResult.ruleId)?.rule_name : null),
-    [matchedResult, rules],
+    () => (matchedRuleId ? rules.find((r) => r.id === matchedRuleId)?.rule_name : null),
+    [matchedRuleId, rules],
   );
 
   const selectedRuleName = useMemo(
@@ -1083,24 +1167,24 @@ export function Swing1Page() {
 
   const onSelectSim = useCallback(
     (key: string | null) => {
-      const row = key ? simResult?.tokens.find((t) => t.mint === key) ?? null : null;
+      const row = key ? simTokens.find((t) => t.mint === key) ?? null : null;
       setInspect(
         row
-          ? { table: 'sim', key: row.mint, target: inspectFromSim(row), ruleId: simResult?.ruleId ?? null }
+          ? { table: 'sim', key: row.mint, target: inspectFromSim(row), ruleId: simRuleId }
           : null,
       );
     },
-    [simResult],
+    [simTokens, simRuleId],
   );
 
   const onSelectMatched = useCallback(
     (key: string | null) => {
-      const row = key ? matchedResult?.tokens.find((t) => t.mint === key) ?? null : null;
+      const row = key ? matchedTokens.find((t) => t.mint === key) ?? null : null;
       setInspect(
         row ? { table: 'matched', key: row.mint, target: inspectFromMatched(row), ruleId: null } : null,
       );
     },
-    [matchedResult],
+    [matchedTokens],
   );
 
   // The paper table is now a server-side positions table (id-keyed rows), so this
@@ -1366,93 +1450,94 @@ export function Swing1Page() {
         </RuleRowProvider>
       )}
 
-      {(matchedLoading || matchedError || matchedResult) && <SectionDivider />}
-      {matchedLoading && <p className="text-text-dim">Loading matched tokens…</p>}
+      {(matchedRuleId || matchedError) && <SectionDivider />}
       {matchedError && <InlineAlert variant="error">{matchedError}</InlineAlert>}
-      {matchedResult && !matchedLoading && (
+      {matchedRuleId && !matchedError && (
         <section>
           <SectionHeading
             title="Matched Tokens"
             marker="bg-[#9370db]"
             badge="neutral"
             badgeClass="border-[#9370db]/40 bg-[#9370db]/12 text-[#9370db]"
-            count={matchedResult.total}
+            count={matchedTotal}
             subtitle={matchedRuleName ?? undefined}
             action={
               <button
                 type="button"
-                onClick={() => setMatchedResult(null)}
+                onClick={() => setMatchedRuleId(null)}
                 className="text-text-dim transition hover:text-text"
               >
                 ✕
               </button>
             }
           />
-          {matchedResult.capped && (
-            <p className="mb-2 text-sm text-amber-400">
-              Showing first 5,000 of {matchedResult.total.toLocaleString()} total matches.
-              Matched scans all-time historical tokens — use the date range above to narrow
-              results to a recent window.
-            </p>
-          )}
-          {matchedResult.tokens.length === 0 ? (
-            <p className="text-text-dim">
-              No tokens in the database match this rule&apos;s entry criteria.
-            </p>
-          ) : (
-            <DataTable
-              columns={matchedColumns}
-              rows={mergeTokenData(matchedResult.tokens, tokenMap)}
-              rowKey={keyByMint}
-              selectedKey={inspect?.table === 'matched' ? inspect.key : null}
-              onSelect={onSelectMatched}
-              defaultPageSize={5}
-              pageSizeOptions={[5, 10, 20, 50]}
-              searchable
-              colFilters
-              colToggle
-              tableId="swing1_matched"
-            />
-          )}
+          <DataTable
+            columns={matchedColumns}
+            rows={mergeTokenData(matchedTokens, tokenMap)}
+            rowKey={keyByMint}
+            selectedKey={inspect?.table === 'matched' ? inspect.key : null}
+            onSelect={onSelectMatched}
+            serverSide
+            serverTotal={matchedTotal}
+            onQueryChange={setMatchedQuery}
+            loading={matchedLoading}
+            resetKey={matchedRuleId}
+            defaultPageSize={5}
+            pageSizeOptions={[5, 10, 20, 50]}
+            searchable
+            colFilters
+            colToggle
+            tableId="swing1_matched"
+            emptyMessage="No tokens in the database match this rule's entry criteria."
+          />
         </section>
       )}
 
-      {(simError || simResult) && <SectionDivider />}
-      {simError && <InlineAlert variant="error">{simError}</InlineAlert>}
-      {simResult && !simLoading && (
+      {(simError || simTableError || simReady) && <SectionDivider />}
+      {(simError || simTableError) && (
+        <InlineAlert variant="error">{simError ?? simTableError}</InlineAlert>
+      )}
+      {simReady && !simError && (
         <>
-          <SimSummaryCard
-            ruleName={simResult.ruleName}
-            tokens={simResult.tokens}
-            price={price}
-            onClose={() => {
-              setSimResult(null);
-              setSimError(null);
-            }}
-          />
+          {/* Summary is server-computed over the whole run (not the visible page). */}
+          {simCardSummary && (
+            <SimSummaryCard
+              ruleName={simRuleName}
+              tokens={[]}
+              summary={simCardSummary}
+              price={price}
+              onClose={() => {
+                setSimReady(false);
+                setSimRuleId(null);
+                setSimError(null);
+              }}
+            />
+          )}
           <section>
             <SectionHeading
               title="Simulated Tokens"
-              count={simResult.tokens.length}
-              subtitle={simResult.ruleName}
+              count={simTotal}
+              subtitle={simRuleName}
             />
-            {simResult.tokens.length === 0 ? (
-              <p className="text-text-dim">No tokens matched this rule&apos;s entry criteria.</p>
-            ) : (
-              <DataTable
-                columns={simCols}
-                rows={mergeTokenData(simResult.tokens, tokenMap)}
-                rowKey={keyByMint}
-                selectedKey={inspect?.table === 'sim' ? inspect.key : null}
-                onSelect={onSelectSim}
-                defaultPageSize={20}
-                pageSizeOptions={[20, 50, 100]}
-                searchable
-                colFilters
-                colToggle
-                tableId="swing1_sim"
-              />
-            )}
+            <DataTable
+              columns={simCols}
+              rows={mergeTokenData(simTokens, tokenMap)}
+              rowKey={keyByMint}
+              selectedKey={inspect?.table === 'sim' ? inspect.key : null}
+              onSelect={onSelectSim}
+              serverSide
+              serverTotal={simTotal}
+              onQueryChange={setSimQuery}
+              loading={simTableLoading}
+              resetKey={simRuleId ?? ''}
+              defaultPageSize={20}
+              pageSizeOptions={[20, 50, 100]}
+              searchable
+              colFilters
+              colToggle
+              tableId="swing1_sim"
+              emptyMessage="No tokens matched this rule's entry criteria."
+            />
           </section>
         </>
       )}

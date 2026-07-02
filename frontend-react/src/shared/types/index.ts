@@ -353,6 +353,17 @@ export interface SimulatedTokenResult {
   last_synced_at?: string | null;
 }
 
+/** Whole-run aggregate for the Simulated summary card (server-side over the
+ *  finished backtest's rows). Mirrors the lab `sim_result_summary` handler. */
+export interface SimulatedSummary {
+  total_tokens: number;
+  closed_tokens: number;
+  /** Fraction of closed tokens with pnl_sol > 0 (0..1). */
+  win_rate: number;
+  avg_pnl_percent: number;
+  total_pnl_sol: number;
+}
+
 /** Metadata for one paper-test run (a single activate→finish cycle). */
 export interface PaperRunResponse {
   run_seq: number;
