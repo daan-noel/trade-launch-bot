@@ -4,7 +4,7 @@ use sqlx::{types::Json, PgPool};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::api::table_query::{FilterSpec, TableRequest};
+use crate::api::table_query::{FilterOp, FilterSpec, TableRequest};
 use crate::models::strategy::{
     PositionsSummary, StrategyPosition, StrategyRule, StrategyRun, StrategyRunMetrics,
 };
@@ -404,39 +404,52 @@ fn position_sort_sql(key: &str) -> Option<&'static str> {
     })
 }
 
-/// Map a frontend column key to the **trusted** SQL expression a per-column text
-/// filter matches against (cast to text, `ILIKE`d). `None` = not filterable.
-/// Mirrors [`position_sort_sql`]'s columns (booleans/timestamps cast to text so the
-/// same substring semantics apply).
-fn position_filter_sql(key: &str) -> Option<&'static str> {
+/// Filter-column type: decides which [`FilterOp`]s are legal and how the value
+/// binds. `Text` cols honor only `Contains`/`Eq` (string `ILIKE`); `Numeric` cols
+/// honor the comparison ops (`Eq`/`Gt`/`Gte`/`Lt`/`Lte`/`Between`) with the value
+/// bound as `f64` — the expr is the **uncast** numeric so the compare is numeric,
+/// not a `::text` substring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FilterKind {
+    Text,
+    Numeric,
+}
+
+/// Map a frontend column key to its **trusted** SQL expression + type. `None` =
+/// not filterable. `Numeric` columns return the **uncast** expr so numeric
+/// operators (`gt`, `between`, …) compare numerically; `Text` columns return the
+/// string col for `ILIKE`. Mirrors [`position_sort_sql`]'s columns.
+fn position_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
+    use FilterKind::{Numeric, Text};
     Some(match key {
         // strategy_positions
-        "mint" => "sp.mint",
-        "status" => "sp.status",
-        "exit_reason" => "sp.exit_reason",
-        "entry_price" => "sp.entry_price::text",
-        "exit_price" => "sp.exit_price::text",
+        "mint" => ("sp.mint", Text),
+        "status" => ("sp.status", Text),
+        "exit_reason" => ("sp.exit_reason", Text),
+        "entry_price" => ("sp.entry_price", Numeric),
+        "exit_price" => ("sp.exit_price", Numeric),
         // tokens
-        "symbol" => "t.symbol",
-        "name" => "t.name",
-        "creator" => "t.creator_wallet",
-        "initial_buy" => "t.initial_buy_sol::text",
-        "init_supply" => "t.initial_supply_token::text",
-        "cu_limit" => "t.cu_limit::text",
-        "cu_price" => "t.cu_price::text",
+        "symbol" => ("t.symbol", Text),
+        "name" => ("t.name", Text),
+        "creator" => ("t.creator_wallet", Text),
+        "initial_buy" => ("t.initial_buy_sol", Numeric),
+        "init_supply" => ("t.initial_supply_token", Numeric),
+        "cu_limit" => ("t.cu_limit", Numeric),
+        "cu_price" => ("t.cu_price", Numeric),
         // tokens_info
-        "current_price" => "i.current_price::text",
-        "ath_price" => "i.ath_price::text",
-        "market_cap" => "(i.current_price * t.initial_supply_token)::text",
-        "volume" => "i.volume::text",
-        "trade_count" => "i.trade_count::text",
-        "first_slot_buy" => "i.first_slot_buy_sol::text",
-        "first_slot_sell" => "i.first_slot_sell_sol::text",
-        // initial_buy_instruction JSONB (camelCase keys)
-        "token_amount" => "(t.initial_buy_instruction->>'tokenAmount')",
-        "max_sol_cost" => "(t.initial_buy_instruction->>'maxSolCost')",
-        "spendable_sol_in" => "(t.initial_buy_instruction->>'spendableSolIn')",
-        "min_tokens_out" => "(t.initial_buy_instruction->>'minTokensOut')",
+        "current_price" => ("i.current_price", Numeric),
+        "ath_price" => ("i.ath_price", Numeric),
+        "market_cap" => ("(i.current_price * t.initial_supply_token)", Numeric),
+        "volume" => ("i.volume", Numeric),
+        "trade_count" => ("i.trade_count", Numeric),
+        "first_slot_buy" => ("i.first_slot_buy_sol", Numeric),
+        "first_slot_sell" => ("i.first_slot_sell_sol", Numeric),
+        // initial_buy_instruction JSONB (camelCase keys) — text in JSONB, cast to
+        // numeric so the comparison ops work.
+        "token_amount" => ("(t.initial_buy_instruction->>'tokenAmount')::numeric", Numeric),
+        "max_sol_cost" => ("(t.initial_buy_instruction->>'maxSolCost')::numeric", Numeric),
+        "spendable_sol_in" => ("(t.initial_buy_instruction->>'spendableSolIn')::numeric", Numeric),
+        "min_tokens_out" => ("(t.initial_buy_instruction->>'minTokensOut')::numeric", Numeric),
         _ => return None,
     })
 }
@@ -456,9 +469,88 @@ fn like_escape(s: &str) -> String {
     out
 }
 
+/// Coerce a JSON filter operand to `f64`. Accepts a JSON number **or** a numeric
+/// string (the frontend serializer may send `"5"`); anything else → `None`, which
+/// makes the caller drop the predicate.
+fn as_number(v: &serde_json::Value) -> Option<f64> {
+    match v {
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::String(s) => s.trim().parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+/// Read a filter operand as trimmed text (for `Contains`/`Eq` on text columns).
+/// Accepts a JSON string or number (stringified); empty → `None`.
+fn as_text(v: &serde_json::Value) -> Option<String> {
+    let s = match v {
+        serde_json::Value::String(s) => s.trim().to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        _ => return None,
+    };
+    (!s.is_empty()).then_some(s)
+}
+
+/// Lower one structured filter into a bound `AND <predicate>` on `qb`. `col` is a
+/// **trusted** whitelisted expression; every operand `push_bind`s as a parameter
+/// (injection-safe). A shape/type mismatch (numeric op on a text col, non-numeric
+/// operand, missing `between` bound) is a no-op — the filter is silently dropped,
+/// matching the whitelist's "unknown key → ignored" contract. Reused by the
+/// position + token-scoped filter builders.
+fn push_filter_predicate(
+    qb: &mut sqlx::QueryBuilder<sqlx::Postgres>,
+    col: &str,
+    kind: FilterKind,
+    spec: &FilterSpec,
+) {
+    match (kind, spec.op) {
+        // -- Text columns: only substring / exact string match ------------------
+        (FilterKind::Text, FilterOp::Contains) => {
+            let Some(text) = as_text(&spec.val) else { return };
+            let needle = format!("%{}%", like_escape(&text));
+            qb.push(" AND ").push(col).push(" ILIKE ").push_bind(needle);
+        }
+        (FilterKind::Text, FilterOp::Eq) => {
+            // Exact (escaped, no wildcards) — case-insensitive to match Contains.
+            let Some(text) = as_text(&spec.val) else { return };
+            qb.push(" AND ").push(col).push(" ILIKE ").push_bind(like_escape(&text));
+        }
+        // A numeric op on a text column is meaningless → drop.
+        (FilterKind::Text, _) => {}
+
+        // -- Numeric columns: numeric comparisons -------------------------------
+        (FilterKind::Numeric, FilterOp::Between) => {
+            let (Some(min), Some(max)) = (as_number(&spec.min), as_number(&spec.max)) else {
+                return;
+            };
+            qb.push(" AND ")
+                .push(col)
+                .push(" BETWEEN ")
+                .push_bind(min)
+                .push(" AND ")
+                .push_bind(max);
+        }
+        (FilterKind::Numeric, op) => {
+            let Some(val) = as_number(&spec.val) else { return };
+            let sql_op = match op {
+                FilterOp::Eq => "=",
+                FilterOp::Gt => ">",
+                FilterOp::Gte => ">=",
+                FilterOp::Lt => "<",
+                FilterOp::Lte => "<=",
+                // `Contains` on a numeric col is treated as equality (a bare
+                // number typed into a numeric column filter).
+                FilterOp::Contains => "=",
+                FilterOp::Between => unreachable!("handled above"),
+            };
+            qb.push(" AND ").push(col).push(' ').push(sql_op).push(' ').push_bind(val);
+        }
+    }
+}
+
 /// Append the search + per-column-filter predicates to a positions query builder
 /// (the scope predicate is already pushed). Only whitelisted keys are honored;
-/// needles bind as parameters and are LIKE-escaped so wildcards match literally.
+/// every operand binds as a parameter (see [`push_filter_predicate`]).
 fn push_position_where(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, query: &PositionQuery) {
     let search = query.search.trim();
     if !search.is_empty() {
@@ -472,16 +564,8 @@ fn push_position_where(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, query: &Posi
             .push(")");
     }
     for (key, spec) in &query.filters {
-        // Step 1 bridge: only the `Contains` (ILIKE substring) path is wired here,
-        // preserving the previous behavior. Step 2 replaces this with the full
-        // numeric-aware `FilterOp` switch over typed columns.
-        let text = spec.val.as_str().unwrap_or_default().trim();
-        if text.is_empty() {
-            continue;
-        }
-        if let Some(col) = position_filter_sql(key) {
-            let needle = format!("%{}%", like_escape(text));
-            qb.push(" AND ").push(col).push(" ILIKE ").push_bind(needle);
+        if let Some((col, kind)) = position_filter_sql(key) {
+            push_filter_predicate(qb, col, kind, spec);
         }
     }
 }
@@ -1536,5 +1620,93 @@ impl StrategyRepo {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|(m,)| m).collect())
+    }
+}
+
+#[cfg(test)]
+mod filter_sql_tests {
+    //! Pure (no-DB) tests over the SQL that `push_position_where` emits for the new
+    //! structured [`FilterSpec`]s: numeric ops must lower to a numeric predicate
+    //! (not `::text ILIKE`), and an illegal op/column pairing must be dropped.
+    use super::*;
+    use crate::api::table_query::{FilterOp, FilterSpec};
+
+    /// Build the `WHERE` fragment `push_position_where` emits for one filter and
+    /// return the accumulated SQL string (bind params show as `$N`).
+    fn where_sql(key: &str, spec: FilterSpec) -> String {
+        let query = PositionQuery {
+            search: String::new(),
+            filters: vec![(key.to_string(), spec)],
+            sort: Vec::new(),
+        };
+        let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT 1 WHERE true");
+        push_position_where(&mut qb, &query);
+        qb.sql().to_string()
+    }
+
+    fn num(op: FilterOp, v: f64) -> FilterSpec {
+        FilterSpec { op, val: serde_json::json!(v), ..Default::default() }
+    }
+
+    #[test]
+    fn gt_on_numeric_col_emits_numeric_predicate() {
+        let sql = where_sql("volume", num(FilterOp::Gt, 100.0));
+        assert!(sql.contains("i.volume >"), "expected numeric compare, got: {sql}");
+        assert!(!sql.contains("::text"), "numeric op must not cast to text: {sql}");
+        assert!(!sql.contains("ILIKE"), "numeric op must not ILIKE: {sql}");
+    }
+
+    #[test]
+    fn between_on_numeric_col_emits_between() {
+        let spec = FilterSpec {
+            op: FilterOp::Between,
+            min: serde_json::json!(1),
+            max: serde_json::json!(10),
+            ..Default::default()
+        };
+        let sql = where_sql("market_cap", spec);
+        assert!(sql.contains("BETWEEN"), "expected BETWEEN, got: {sql}");
+        assert!(!sql.contains("::text"), "between must not cast to text: {sql}");
+    }
+
+    #[test]
+    fn numeric_op_on_text_col_is_dropped() {
+        // `symbol` is a Text column; a `gt` on it is meaningless → no predicate.
+        let sql = where_sql("symbol", num(FilterOp::Gt, 5.0));
+        assert!(!sql.contains(" AND "), "numeric op on text col must be dropped: {sql}");
+    }
+
+    #[test]
+    fn contains_on_text_col_still_ilikes() {
+        let spec = FilterSpec {
+            op: FilterOp::Contains,
+            val: serde_json::json!("pump"),
+            ..Default::default()
+        };
+        let sql = where_sql("symbol", spec);
+        assert!(sql.contains("t.symbol ILIKE"), "text contains must ILIKE: {sql}");
+    }
+
+    #[test]
+    fn numeric_op_with_non_number_val_is_dropped() {
+        let spec = FilterSpec {
+            op: FilterOp::Gt,
+            val: serde_json::json!("not-a-number"),
+            ..Default::default()
+        };
+        let sql = where_sql("volume", spec);
+        assert!(!sql.contains(" AND "), "non-numeric val on numeric op must be dropped: {sql}");
+    }
+
+    #[test]
+    fn numeric_string_val_is_accepted() {
+        // The serializer may send `"5"` as a string; still a valid numeric compare.
+        let spec = FilterSpec {
+            op: FilterOp::Gte,
+            val: serde_json::json!("5"),
+            ..Default::default()
+        };
+        let sql = where_sql("current_price", spec);
+        assert!(sql.contains("i.current_price >="), "numeric string must compare: {sql}");
     }
 }
