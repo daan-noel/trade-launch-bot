@@ -33,7 +33,7 @@ pub struct Tpsl2Rule {
     /// Trade mode: "paper" (paper test) or "real" (real trading)
     pub trade_mode: String,
     /// Amount of SOL to allocate per buy.
-    pub buy_amount: f64,
+    pub buy_amount_sol: f64,
     /// Take profit percentage (e.g., 50 for 50% gain).
     pub p_exit_take_profit: f64,
     /// Stop loss percentage (e.g., 20 for 20% loss).
@@ -103,7 +103,7 @@ impl Tpsl2Rule {
         p_token_cu_price: Option<u64>,
         p_token_ix_labels: Value,
         trade_mode: String,
-        buy_amount: f64,
+        buy_amount_sol: f64,
         p_exit_take_profit: f64,
         p_exit_stop_loss: f64,
         p_token_max_sol_cost: Option<f64>,
@@ -125,7 +125,7 @@ impl Tpsl2Rule {
             p_token_cu_price,
             p_token_ix_labels,
             trade_mode,
-            buy_amount,
+            buy_amount_sol,
             p_exit_take_profit,
             p_exit_stop_loss,
             p_exit_trailing_stop_pct,

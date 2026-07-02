@@ -301,8 +301,8 @@ export function FilterPanel({ filters, onApply, onClear }: FilterPanelProps) {
           <RangeField label="Init Buy (SOL)" minKey="init_buy_min" maxKey="init_buy_max" minValue={draft.init_buy_min} maxValue={draft.init_buy_max} set={set} step="0.001" />
           <RangeField label="Init Supply" minKey="init_supply_min" maxKey="init_supply_max" minValue={draft.init_supply_min} maxValue={draft.init_supply_max} set={set} step="1" />
           <RangeField label="Token Amount" minKey="token_amount_min" maxKey="token_amount_max" minValue={draft.token_amount_min} maxValue={draft.token_amount_max} set={set} step="1" />
-          <RangeField label="Max SOL Cost" minKey="max_sol_cost_min" maxKey="max_sol_cost_max" minValue={draft.max_sol_cost_min} maxValue={draft.max_sol_cost_max} set={set} step="0.001" />
-          <RangeField label="Spendable SOL In" minKey="spendable_sol_in_min" maxKey="spendable_sol_in_max" minValue={draft.spendable_sol_in_min} maxValue={draft.spendable_sol_in_max} set={set} step="0.001" />
+          <RangeField label="Max SOL Cost" minKey="max_cost_lamports_min" maxKey="max_cost_lamports_max" minValue={draft.max_cost_lamports_min} maxValue={draft.max_cost_lamports_max} set={set} step="0.001" />
+          <RangeField label="Spendable SOL In" minKey="spendable_lamports_in_min" maxKey="spendable_lamports_in_max" minValue={draft.spendable_lamports_in_min} maxValue={draft.spendable_lamports_in_max} set={set} step="0.001" />
           <RangeField label="Min Tokens Out" minKey="min_tokens_out_min" maxKey="min_tokens_out_max" minValue={draft.min_tokens_out_min} maxValue={draft.min_tokens_out_max} set={set} step="1" />
         </Section>
 

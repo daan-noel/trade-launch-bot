@@ -43,7 +43,7 @@ pub struct BacktestTokenResult {
     pub entry_price: f64,
     /// All-time-high price across every one of the token's trades.
     pub ath_price: f64,
-    /// Tokens bought at entry (`buy_amount / entry_price`); SOL derived at display.
+    /// Tokens bought at entry (`buy_amount_sol / entry_price`); SOL derived at display.
     pub entry_token_amount: f64,
     pub entry_tx: String,
     pub entry_time: DateTime<Utc>,
@@ -53,7 +53,7 @@ pub struct BacktestTokenResult {
     /// Seconds from entry to exit (None if still open).
     pub holding_secs: Option<i64>,
     pub pnl_percent: Option<f64>,
-    /// PnL in SOL based on the rule's buy_amount.
+    /// PnL in SOL based on the rule's buy_amount_sol.
     pub pnl_sol: Option<f64>,
     /// "LiquidityExit", "TakeProfit", "StopLoss", "TrailingStop", "Stall",
     /// "TimeStop", or "Open"
@@ -307,7 +307,7 @@ pub async fn run_backtest(
                             let (sol, pct) = round_trip_with_costs(
                                 entry_price,
                                 fill.price,
-                                rule.buy_amount,
+                                rule.buy_amount_sol,
                                 &CostModel::pumpfun_default(),
                             );
                             (
@@ -332,10 +332,10 @@ pub async fn run_backtest(
                     target_tx: Some(target_tx),
                     entry_price,
                     ath_price,
-                    // Token count `buy_amount / entry_price` (entry_price > 0 here —
+                    // Token count `buy_amount_sol / entry_price` (entry_price > 0 here —
                     // a 0-priced fill was dropped above). pnl_sol math is unchanged
-                    // because `buy_amount × pct == (buy_amount/entry)×exit − buy_amount`.
-                    entry_token_amount: rule.buy_amount / entry_price,
+                    // because `buy_amount_sol × pct == (buy_amount_sol/entry)×exit − buy_amount_sol`.
+                    entry_token_amount: rule.buy_amount_sol / entry_price,
                     entry_tx,
                     entry_time,
                     exit_price,

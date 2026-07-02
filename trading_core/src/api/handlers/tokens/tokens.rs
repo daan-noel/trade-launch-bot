@@ -42,8 +42,8 @@ pub struct TokenSummary {
     pub initial_buy_sol: Option<f64>,
     pub initial_supply_token: Option<u64>,
     pub token_amount: Option<u64>,
-    pub max_sol_cost: Option<u64>,
-    pub spendable_sol_in: Option<u64>,
+    pub max_cost_lamports: Option<u64>,
+    pub spendable_lamports_in: Option<u64>,
     pub min_tokens_out: Option<u64>,
     pub cu_limit: Option<u64>,
     pub cu_price: Option<u64>,
@@ -100,10 +100,10 @@ impl From<&TokenState> for TokenSummary {
             initial_buy_sol: s.token.initial_buy_sol,
             initial_supply_token: s.token.initial_supply_token,
             token_amount: extract_buy_arg_u64(&s.token.initial_buy_instruction, "token_amount"),
-            max_sol_cost: extract_buy_arg_u64(&s.token.initial_buy_instruction, "max_sol_cost"),
-            spendable_sol_in: extract_buy_arg_u64(
+            max_cost_lamports: extract_buy_arg_u64(&s.token.initial_buy_instruction, "max_cost_lamports"),
+            spendable_lamports_in: extract_buy_arg_u64(
                 &s.token.initial_buy_instruction,
-                "spendable_sol_in",
+                "spendable_lamports_in",
             ),
             min_tokens_out: extract_buy_arg_u64(&s.token.initial_buy_instruction, "min_tokens_out"),
             cu_limit: s.token.cu_limit,
@@ -150,15 +150,15 @@ impl From<crate::storage::repositories::token_repo::TokenListRow> for TokenSumma
             current_price: r.current_price,
             ath_price: r.ath_price,
             ath_timestamp: r.ath_timestamp,
-            volume_sol_total: r.volume.unwrap_or(0.0),
+            volume_sol_total: r.volume_sol.unwrap_or(0.0),
             first_slot_buy_sol: r.first_slot_buy_sol,
             first_slot_sell_sol: r.first_slot_sell_sol,
             market_cap: r.market_cap,
             initial_buy_sol: r.initial_buy_sol,
             initial_supply_token: r.initial_supply_token.map(|v| v as u64),
             token_amount: extract_buy_arg_u64(&buy_ix, "token_amount"),
-            max_sol_cost: extract_buy_arg_u64(&buy_ix, "max_sol_cost"),
-            spendable_sol_in: extract_buy_arg_u64(&buy_ix, "spendable_sol_in"),
+            max_cost_lamports: extract_buy_arg_u64(&buy_ix, "max_cost_lamports"),
+            spendable_lamports_in: extract_buy_arg_u64(&buy_ix, "spendable_lamports_in"),
             min_tokens_out: extract_buy_arg_u64(&buy_ix, "min_tokens_out"),
             cu_limit: r.cu_limit.map(|v| v as u64),
             cu_price: r.cu_price.map(|v| v as u64),
@@ -192,8 +192,8 @@ pub struct TokenDetail {
     pub initial_supply_token: Option<u64>,
     pub initial_buy_sol: Option<f64>,
     pub token_amount: Option<u64>,
-    pub max_sol_cost: Option<u64>,
-    pub spendable_sol_in: Option<u64>,
+    pub max_cost_lamports: Option<u64>,
+    pub spendable_lamports_in: Option<u64>,
     pub min_tokens_out: Option<u64>,
     pub cu_limit: Option<u64>,
     pub cu_price: Option<u64>,
@@ -227,10 +227,10 @@ impl From<&TokenState> for TokenDetail {
             initial_supply_token: s.token.initial_supply_token,
             initial_buy_sol: s.token.initial_buy_sol,
             token_amount: extract_buy_arg_u64(&s.token.initial_buy_instruction, "token_amount"),
-            max_sol_cost: extract_buy_arg_u64(&s.token.initial_buy_instruction, "max_sol_cost"),
-            spendable_sol_in: extract_buy_arg_u64(
+            max_cost_lamports: extract_buy_arg_u64(&s.token.initial_buy_instruction, "max_cost_lamports"),
+            spendable_lamports_in: extract_buy_arg_u64(
                 &s.token.initial_buy_instruction,
-                "spendable_sol_in",
+                "spendable_lamports_in",
             ),
             min_tokens_out: extract_buy_arg_u64(&s.token.initial_buy_instruction, "min_tokens_out"),
             cu_limit: s.token.cu_limit,
@@ -343,10 +343,10 @@ pub struct PaginationParams {
     pub f_init_supply_max: Option<String>,
     pub f_token_amount_min: Option<String>,
     pub f_token_amount_max: Option<String>,
-    pub f_max_sol_cost_min: Option<String>,
-    pub f_max_sol_cost_max: Option<String>,
-    pub f_spendable_sol_in_min: Option<String>,
-    pub f_spendable_sol_in_max: Option<String>,
+    pub f_max_cost_lamports_min: Option<String>,
+    pub f_max_cost_lamports_max: Option<String>,
+    pub f_spendable_lamports_in_min: Option<String>,
+    pub f_spendable_lamports_in_max: Option<String>,
     pub f_min_tokens_out_min: Option<String>,
     pub f_min_tokens_out_max: Option<String>,
     pub f_cu_limit_min: Option<String>,
@@ -474,8 +474,8 @@ pub async fn get_token(state: web::Data<Arc<CoreState>>, path: web::Path<String>
                 "initial_supply_token": token.initial_supply_token,
                 "initial_buy_sol": token.initial_buy_sol,
                 "token_amount": buy_arg("token_amount"),
-                "max_sol_cost": buy_arg("max_sol_cost"),
-                "spendable_sol_in": buy_arg("spendable_sol_in"),
+                "max_cost_lamports": buy_arg("max_cost_lamports"),
+                "spendable_lamports_in": buy_arg("spendable_lamports_in"),
                 "min_tokens_out": buy_arg("min_tokens_out"),
                 "cu_limit": token.cu_limit,
                 "cu_price": token.cu_price,
@@ -485,7 +485,7 @@ pub async fn get_token(state: web::Data<Arc<CoreState>>, path: web::Path<String>
                 "create_tx_address": token.creation_tx_signature,
                 "created_at": token.created_at,
                 "trade_count": token.trade_count,
-                "volume_sol_total": token.volume,
+                "volume_sol_total": token.volume_sol,
                 "first_slot_buy_sol": token.first_slot_buy_sol,
                 "first_slot_sell_sol": token.first_slot_sell_sol,
                 "market_cap": token.market_cap,
@@ -595,8 +595,8 @@ const NUMERIC_COLS: &[&str] = &[
     "initial_buy",
     "init_supply",
     "token_amount",
-    "max_sol_cost",
-    "spendable_sol_in",
+    "max_cost_lamports",
+    "spendable_lamports_in",
     "min_tokens_out",
     "cu_limit",
     "cu_price",
@@ -627,8 +627,8 @@ const SORTABLE_COLS: &[&str] = &[
     "initial_buy",
     "init_supply",
     "token_amount",
-    "max_sol_cost",
-    "spendable_sol_in",
+    "max_cost_lamports",
+    "spendable_lamports_in",
     "min_tokens_out",
     "cu_limit",
     "cu_price",
@@ -672,18 +672,18 @@ pub fn is_numeric_col(key: &str) -> bool {
 /// FEP entry price = initial_buy_sol(SOL) / initial_supply_token. NULL when either
 /// input is missing or supply is 0. ath_fep = ath_price / entry (entry>0).
 pub fn ath_fep_sql_expr() -> &'static str {
-    "(CASE WHEN t.initial_buy_sol IS NOT NULL AND t.initial_supply_token > 0 \
-            AND (t.initial_buy_sol::float8/1e9 / t.initial_supply_token) > 0 \
+    "(CASE WHEN t.initial_buy_lamports IS NOT NULL AND t.initial_supply_token > 0 \
+            AND (t.initial_buy_lamports::float8/1e9 / t.initial_supply_token) > 0 \
             AND i.ath_price IS NOT NULL \
-       THEN i.ath_price / (t.initial_buy_sol::float8/1e9 / t.initial_supply_token) END)"
+       THEN i.ath_price / (t.initial_buy_lamports::float8/1e9 / t.initial_supply_token) END)"
 }
 
 /// current_fep = current_price / entry (entry>0).
 pub fn cur_fep_sql_expr() -> &'static str {
-    "(CASE WHEN t.initial_buy_sol IS NOT NULL AND t.initial_supply_token > 0 \
-            AND (t.initial_buy_sol::float8/1e9 / t.initial_supply_token) > 0 \
+    "(CASE WHEN t.initial_buy_lamports IS NOT NULL AND t.initial_supply_token > 0 \
+            AND (t.initial_buy_lamports::float8/1e9 / t.initial_supply_token) > 0 \
             AND i.current_price IS NOT NULL \
-       THEN i.current_price / (t.initial_buy_sol::float8/1e9 / t.initial_supply_token) END)"
+       THEN i.current_price / (t.initial_buy_lamports::float8/1e9 / t.initial_supply_token) END)"
 }
 
 /// SQL numeric expression for a per-column numeric filter key (mirrors
@@ -695,14 +695,14 @@ pub fn col_filter_number_sql(key: &str) -> Option<String> {
             "ath_fep_ratio" => ath_fep_sql_expr().to_string(),
             "current_fep_ratio" => cur_fep_sql_expr().to_string(),
             "market_cap" => "(i.current_price * t.initial_supply_token)".into(),
-            "volume" => "COALESCE(i.volume, 0)".into(),
-            "first_slot_buy" => "i.first_slot_buy_sol::float8/1e9".into(),
-            "first_slot_sell" => "i.first_slot_sell_sol::float8/1e9".into(),
-            "initial_buy" => "t.initial_buy_sol::float8/1e9".into(),
+            "volume" => "COALESCE(i.volume_sol, 0)".into(),
+            "first_slot_buy" => "i.first_slot_buy_lamports::float8/1e9".into(),
+            "first_slot_sell" => "i.first_slot_sell_lamports::float8/1e9".into(),
+            "initial_buy" => "t.initial_buy_lamports::float8/1e9".into(),
             "init_supply" => "t.initial_supply_token::float8".into(),
             "token_amount" => buy_arg_sql("token_amount"),
-            "max_sol_cost" => format!("({}/1e9)", buy_arg_sql("max_sol_cost")),
-            "spendable_sol_in" => format!("({}/1e9)", buy_arg_sql("spendable_sol_in")),
+            "max_cost_lamports" => format!("({}/1e9)", buy_arg_sql("max_cost_lamports")),
+            "spendable_lamports_in" => format!("({}/1e9)", buy_arg_sql("spendable_lamports_in")),
             "min_tokens_out" => buy_arg_sql("min_tokens_out"),
             "cu_limit" => "t.cu_limit::float8".into(),
             "cu_price" => "t.cu_price::float8".into(),
@@ -734,14 +734,14 @@ pub fn col_filter_text_sql(key: &str) -> Option<String> {
         "current_price" => "COALESCE(i.current_price::text, '')".into(),
         "current_fep_ratio" => format!("COALESCE(({})::text, '')", cur_fep_sql_expr()),
         "market_cap" => "COALESCE((i.current_price * t.initial_supply_token)::text, '')".into(),
-        "volume" => "COALESCE(i.volume, 0)::text".into(),
-        "first_slot_buy" => "COALESCE((i.first_slot_buy_sol::float8/1e9)::text, '')".into(),
-        "first_slot_sell" => "COALESCE((i.first_slot_sell_sol::float8/1e9)::text, '')".into(),
-        "initial_buy" => "COALESCE((t.initial_buy_sol::float8/1e9)::text, '')".into(),
+        "volume" => "COALESCE(i.volume_sol, 0)::text".into(),
+        "first_slot_buy" => "COALESCE((i.first_slot_buy_lamports::float8/1e9)::text, '')".into(),
+        "first_slot_sell" => "COALESCE((i.first_slot_sell_lamports::float8/1e9)::text, '')".into(),
+        "initial_buy" => "COALESCE((t.initial_buy_lamports::float8/1e9)::text, '')".into(),
         "init_supply" => "COALESCE(t.initial_supply_token::text, '')".into(),
         "token_amount" => format!("COALESCE(({})::text, '')", buy_arg_sql("token_amount")),
-        "max_sol_cost" => format!("COALESCE(({}/1e9)::text, '')", buy_arg_sql("max_sol_cost")),
-        "spendable_sol_in" => format!("COALESCE(({}/1e9)::text, '')", buy_arg_sql("spendable_sol_in")),
+        "max_cost_lamports" => format!("COALESCE(({}/1e9)::text, '')", buy_arg_sql("max_cost_lamports")),
+        "spendable_lamports_in" => format!("COALESCE(({}/1e9)::text, '')", buy_arg_sql("spendable_lamports_in")),
         "min_tokens_out" => format!("COALESCE(({})::text, '')", buy_arg_sql("min_tokens_out")),
         "cu_limit" => "COALESCE(t.cu_limit::text, '')".into(),
         "cu_price" => "COALESCE(t.cu_price::text, '')".into(),
@@ -781,14 +781,14 @@ pub fn sort_sql_expr(col: &str) -> Option<(&'static str, bool)> {
         "current_price" => ("i.current_price", false),
         "current_fep_ratio" => (CUR_FEP_SORT, false),
         "market_cap" => ("(i.current_price * t.initial_supply_token)", false),
-        "volume" => ("COALESCE(i.volume, 0)", false),
-        "first_slot_buy" => ("i.first_slot_buy_sol", false),
-        "first_slot_sell" => ("i.first_slot_sell_sol", false),
-        "initial_buy" => ("t.initial_buy_sol", false),
+        "volume" => ("COALESCE(i.volume_sol, 0)", false),
+        "first_slot_buy" => ("i.first_slot_buy_lamports", false),
+        "first_slot_sell" => ("i.first_slot_sell_lamports", false),
+        "initial_buy" => ("t.initial_buy_lamports", false),
         "init_supply" => ("t.initial_supply_token", false),
         "token_amount" => (TOKEN_AMOUNT_SORT, false),
-        "max_sol_cost" => (MAX_SOL_COST_SORT, false),
-        "spendable_sol_in" => (SPENDABLE_SORT, false),
+        "max_cost_lamports" => (MAX_SOL_COST_SORT, false),
+        "spendable_lamports_in" => (SPENDABLE_SORT, false),
         "min_tokens_out" => (MIN_TOKENS_OUT_SORT, false),
         "cu_limit" => ("t.cu_limit", false),
         "cu_price" => ("t.cu_price", false),
@@ -802,11 +802,11 @@ pub fn sort_sql_expr(col: &str) -> Option<(&'static str, bool)> {
 }
 
 // Sort-expression constants that need a JSON/CASE body inline as a `&'static str`.
-const ATH_FEP_SORT: &str = "(CASE WHEN t.initial_buy_sol IS NOT NULL AND t.initial_supply_token > 0 AND (t.initial_buy_sol::float8/1e9 / t.initial_supply_token) > 0 AND i.ath_price IS NOT NULL THEN i.ath_price / (t.initial_buy_sol::float8/1e9 / t.initial_supply_token) END)";
-const CUR_FEP_SORT: &str = "(CASE WHEN t.initial_buy_sol IS NOT NULL AND t.initial_supply_token > 0 AND (t.initial_buy_sol::float8/1e9 / t.initial_supply_token) > 0 AND i.current_price IS NOT NULL THEN i.current_price / (t.initial_buy_sol::float8/1e9 / t.initial_supply_token) END)";
+const ATH_FEP_SORT: &str = "(CASE WHEN t.initial_buy_lamports IS NOT NULL AND t.initial_supply_token > 0 AND (t.initial_buy_lamports::float8/1e9 / t.initial_supply_token) > 0 AND i.ath_price IS NOT NULL THEN i.ath_price / (t.initial_buy_lamports::float8/1e9 / t.initial_supply_token) END)";
+const CUR_FEP_SORT: &str = "(CASE WHEN t.initial_buy_lamports IS NOT NULL AND t.initial_supply_token > 0 AND (t.initial_buy_lamports::float8/1e9 / t.initial_supply_token) > 0 AND i.current_price IS NOT NULL THEN i.current_price / (t.initial_buy_lamports::float8/1e9 / t.initial_supply_token) END)";
 const TOKEN_AMOUNT_SORT: &str = "(CASE WHEN t.initial_buy_instruction->>'token_amount' ~ '^[0-9]+$' THEN (t.initial_buy_instruction->>'token_amount')::float8 END)";
-const MAX_SOL_COST_SORT: &str = "(CASE WHEN t.initial_buy_instruction->>'max_sol_cost' ~ '^[0-9]+$' THEN (t.initial_buy_instruction->>'max_sol_cost')::float8 END)";
-const SPENDABLE_SORT: &str = "(CASE WHEN t.initial_buy_instruction->>'spendable_sol_in' ~ '^[0-9]+$' THEN (t.initial_buy_instruction->>'spendable_sol_in')::float8 END)";
+const MAX_SOL_COST_SORT: &str = "(CASE WHEN t.initial_buy_instruction->>'max_cost_lamports' ~ '^[0-9]+$' THEN (t.initial_buy_instruction->>'max_cost_lamports')::float8 END)";
+const SPENDABLE_SORT: &str = "(CASE WHEN t.initial_buy_instruction->>'spendable_lamports_in' ~ '^[0-9]+$' THEN (t.initial_buy_instruction->>'spendable_lamports_in')::float8 END)";
 const MIN_TOKENS_OUT_SORT: &str = "(CASE WHEN t.initial_buy_instruction->>'min_tokens_out' ~ '^[0-9]+$' THEN (t.initial_buy_instruction->>'min_tokens_out')::float8 END)";
 const IX_COUNT_SORT: &str = "COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(t.ix_labels) = 'array' THEN t.ix_labels WHEN jsonb_typeof(t.ix_labels->'instructions') = 'array' THEN t.ix_labels->'instructions' ELSE '[]'::jsonb END), 0)";
 
@@ -979,10 +979,10 @@ impl TokenQuery {
         put(&mut f, "init_supply_max", &q.f_init_supply_max);
         put(&mut f, "token_amount_min", &q.f_token_amount_min);
         put(&mut f, "token_amount_max", &q.f_token_amount_max);
-        put(&mut f, "max_sol_cost_min", &q.f_max_sol_cost_min);
-        put(&mut f, "max_sol_cost_max", &q.f_max_sol_cost_max);
-        put(&mut f, "spendable_sol_in_min", &q.f_spendable_sol_in_min);
-        put(&mut f, "spendable_sol_in_max", &q.f_spendable_sol_in_max);
+        put(&mut f, "max_cost_lamports_min", &q.f_max_cost_lamports_min);
+        put(&mut f, "max_cost_lamports_max", &q.f_max_cost_lamports_max);
+        put(&mut f, "spendable_lamports_in_min", &q.f_spendable_lamports_in_min);
+        put(&mut f, "spendable_lamports_in_max", &q.f_spendable_lamports_in_max);
         put(&mut f, "min_tokens_out_min", &q.f_min_tokens_out_min);
         put(&mut f, "min_tokens_out_max", &q.f_min_tokens_out_max);
         put(&mut f, "cu_limit_min", &q.f_cu_limit_min);
@@ -1123,18 +1123,18 @@ impl TokenQuery {
         ) {
             return false;
         }
-        // max_sol_cost / spendable_sol_in are lamports; filter in SOL.
+        // max_cost_lamports / spendable_lamports_in are lamports; filter in SOL.
         if !opt_f64(
-            t.max_sol_cost.map(|v| v as f64 / 1e9),
-            g(f, "max_sol_cost_min"),
-            g(f, "max_sol_cost_max"),
+            t.max_cost_lamports.map(|v| v as f64 / 1e9),
+            g(f, "max_cost_lamports_min"),
+            g(f, "max_cost_lamports_max"),
         ) {
             return false;
         }
         if !opt_f64(
-            t.spendable_sol_in.map(|v| v as f64 / 1e9),
-            g(f, "spendable_sol_in_min"),
-            g(f, "spendable_sol_in_max"),
+            t.spendable_lamports_in.map(|v| v as f64 / 1e9),
+            g(f, "spendable_lamports_in_min"),
+            g(f, "spendable_lamports_in_max"),
         ) {
             return false;
         }
@@ -1647,8 +1647,8 @@ fn col_filter_number(key: &str, t: &TokenSummary) -> Option<f64> {
         "initial_buy" => t.initial_buy_sol,
         "init_supply" => t.initial_supply_token.map(|v| v as f64),
         "token_amount" => t.token_amount.map(|v| v as f64),
-        "max_sol_cost" => t.max_sol_cost.map(|v| v as f64 / 1e9),
-        "spendable_sol_in" => t.spendable_sol_in.map(|v| v as f64 / 1e9),
+        "max_cost_lamports" => t.max_cost_lamports.map(|v| v as f64 / 1e9),
+        "spendable_lamports_in" => t.spendable_lamports_in.map(|v| v as f64 / 1e9),
         "min_tokens_out" => t.min_tokens_out.map(|v| v as f64),
         "cu_limit" => t.cu_limit.map(|v| v as f64),
         "cu_price" => t.cu_price.map(|v| v as f64),
@@ -1684,8 +1684,8 @@ fn col_filter_text(key: &str, t: &TokenSummary) -> String {
         "initial_buy" => opt_num_str(t.initial_buy_sol),
         "init_supply" => opt_num_str(t.initial_supply_token),
         "token_amount" => opt_num_str(t.token_amount),
-        "max_sol_cost" => opt_num_str(t.max_sol_cost.map(|v| v as f64 / 1e9)),
-        "spendable_sol_in" => opt_num_str(t.spendable_sol_in.map(|v| v as f64 / 1e9)),
+        "max_cost_lamports" => opt_num_str(t.max_cost_lamports.map(|v| v as f64 / 1e9)),
+        "spendable_lamports_in" => opt_num_str(t.spendable_lamports_in.map(|v| v as f64 / 1e9)),
         "min_tokens_out" => opt_num_str(t.min_tokens_out),
         "cu_limit" => opt_num_str(t.cu_limit),
         "cu_price" => opt_num_str(t.cu_price),
@@ -1749,8 +1749,8 @@ fn sort_key(col: &str, t: &TokenSummary) -> SortKey {
         "init_supply" => SortKey::Num(t.initial_supply_token.map(|v| v as f64)),
         "token_amount" => SortKey::Num(t.token_amount.map(|v| v as f64)),
         // raw lamports — monotonic with /1e9, so equivalent to the displayed sort.
-        "max_sol_cost" => SortKey::Num(t.max_sol_cost.map(|v| v as f64)),
-        "spendable_sol_in" => SortKey::Num(t.spendable_sol_in.map(|v| v as f64)),
+        "max_cost_lamports" => SortKey::Num(t.max_cost_lamports.map(|v| v as f64)),
+        "spendable_lamports_in" => SortKey::Num(t.spendable_lamports_in.map(|v| v as f64)),
         "min_tokens_out" => SortKey::Num(t.min_tokens_out.map(|v| v as f64)),
         "cu_limit" => SortKey::Num(t.cu_limit.map(|v| v as f64)),
         "cu_price" => SortKey::Num(t.cu_price.map(|v| v as f64)),

@@ -13,7 +13,7 @@ pub struct TokenMetricsWrite {
     pub ath_price: Option<f64>,
     pub ath_timestamp: Option<chrono::DateTime<Utc>>,
     pub age_seconds: Option<i64>,
-    pub volume: f64,
+    pub volume_sol: f64,
     pub market_cap: Option<f64>,
     pub trade_count: i64,
     pub last_trade_at: Option<chrono::DateTime<Utc>>,
@@ -22,7 +22,7 @@ pub struct TokenMetricsWrite {
     /// Cheap in-memory dead-token verdict computed at metrics time (see
     /// [`crate::state::token_cache::TokenState::is_dead`]); persisted as-is.
     pub is_dead: bool,
-    /// Seconds from token creation to the last meaningful trade (`sol_amount >=
+    /// Seconds from token creation to the last meaningful trade (`amount_sol >=
     /// DEAD_MEANINGFUL_TRADE_SOL`). `Some` only when `is_dead = true`; `None` while
     /// the token is still alive.
     pub lifetime_secs: Option<i64>,
@@ -67,7 +67,7 @@ pub fn metrics_from_state(mint: &str, state: &TokenState) -> TokenMetricsWrite {
         ath_price: state.ath_price,
         ath_timestamp: state.ath_timestamp,
         age_seconds: Some(age_seconds),
-        volume: state.volume_sol_total,
+        volume_sol: state.volume_sol_total,
         market_cap: state.market_cap,
         trade_count: state.trade_count as i64,
         last_trade_at: state.last_trade_at,

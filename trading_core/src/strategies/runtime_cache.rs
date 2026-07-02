@@ -1158,7 +1158,7 @@ mod tests {
             id: Uuid::new_v4(),
             strategy_id: strategy_id.into(),
             rule_name: "r".into(),
-            buy_amount: 1.0,
+            buy_amount_sol: 1.0,
             trade_mode: "paper".into(),
             is_active: true,
             max_concurrent_tokens: None,
@@ -1408,7 +1408,7 @@ mod tests {
         CachedTrade {
             wallet: 0,
             is_buy: true,
-            sol_amount: 1.0,
+            amount_sol: 1.0,
             token_amount: 1.0 / price.max(1e-9),
             price_per_token: price,
             slot,
@@ -1416,7 +1416,7 @@ mod tests {
             block_time: t0() + chrono::Duration::seconds(secs),
             reserve_sol: Some(100.0),
             reserve_token: Some(100.0),
-            real_sol_reserves: None,
+            real_reserve_sol: None,
         }
     }
 

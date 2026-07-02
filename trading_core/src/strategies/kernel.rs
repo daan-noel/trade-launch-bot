@@ -159,16 +159,16 @@ pub fn round_trip_with_costs(
 // ── Run configuration + metrics ───────────────────────────────────────────────
 
 /// What the kernel needs beyond the strategy params: the notional per entry
-/// (`buy_amount`, a universal `StrategyRule` column) and the cost model.
+/// (`buy_amount_sol`, a universal `StrategyRule` column) and the cost model.
 #[derive(Clone, Copy, Debug)]
 pub struct SimConfig {
-    pub buy_amount: f64,
+    pub buy_amount_sol: f64,
     pub costs: CostModel,
 }
 
 impl SimConfig {
-    pub fn new(buy_amount: f64) -> Self {
-        Self { buy_amount, costs: CostModel::pumpfun_default() }
+    pub fn new(buy_amount_sol: f64) -> Self {
+        Self { buy_amount_sol, costs: CostModel::pumpfun_default() }
     }
 }
 
@@ -275,7 +275,7 @@ pub fn simulate_token<T: TradeRow>(
     match strat.resolve_exit(trades, entry.block_time, entry.price, params) {
         Some(exit) => {
             let (pnl_sol, pnl_pct) =
-                round_trip_with_costs(entry.price, exit.price, cfg.buy_amount, &cfg.costs);
+                round_trip_with_costs(entry.price, exit.price, cfg.buy_amount_sol, &cfg.costs);
             TokenOutcome {
                 fired: true,
                 holding_secs: (exit.block_time - entry.block_time).num_seconds(),
@@ -288,7 +288,7 @@ pub fn simulate_token<T: TradeRow>(
             // Still open: mark to the last observed price.
             let last_price = trades.last().map(|t| t.price_per_token()).unwrap_or(entry.price);
             let (pnl_sol, pnl_pct) =
-                round_trip_with_costs(entry.price, last_price, cfg.buy_amount, &cfg.costs);
+                round_trip_with_costs(entry.price, last_price, cfg.buy_amount_sol, &cfg.costs);
             TokenOutcome {
                 fired: true,
                 holding_secs: 0,
@@ -616,7 +616,7 @@ mod tests {
             buy(0.5, 4, 3),   // fill slot
         ];
         let params = tpsl1_params(50.0, 20.0);
-        let cfg = SimConfig { buy_amount: 1.0, costs: CostModel::frictionless() };
+        let cfg = SimConfig { buy_amount_sol: 1.0, costs: CostModel::frictionless() };
 
         let tokens: Vec<&[Trade]> = vec![&token_a, &token_b];
         let m = simulate_rule(StrategyImpl::Tpsl1, &params, &tokens, &cfg);
@@ -652,7 +652,7 @@ mod tests {
         // TP(1000%)/SL(90%) → Open, marked to last price (1.1) → small +PnL.
         let token = vec![buy(1.0, 1, 0), buy(0.9, 2, 1), buy(1.1, 3, 2)];
         let params = tpsl1_params(1000.0, 90.0);
-        let cfg = SimConfig { buy_amount: 1.0, costs: CostModel::frictionless() };
+        let cfg = SimConfig { buy_amount_sol: 1.0, costs: CostModel::frictionless() };
         let tokens: Vec<&[Trade]> = vec![&token];
         let m = simulate_rule(StrategyImpl::Tpsl1, &params, &tokens, &cfg);
         assert_eq!(m.n_fired, 1);

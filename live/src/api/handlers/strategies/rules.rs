@@ -40,7 +40,7 @@ fn resolve_strategy(seg: &str) -> Result<StrategyImpl, HttpResponse> {
 /// Universal (typed-column) request keys — everything else in a body is a
 /// strategy-specific param. The mid-run editable ("hot") set is a subset of these.
 const RULE_NAME: &str = "rule_name";
-const BUY_AMOUNT: &str = "buy_amount";
+const BUY_AMOUNT: &str = "buy_amount_sol";
 const TRADE_MODE: &str = "trade_mode";
 const MAX_CONCURRENT: &str = "p_max_concurrent_tokens";
 const MAX_TOTAL: &str = "p_max_total_tokens";
@@ -67,7 +67,7 @@ fn rule_to_json(rule: &StrategyRule, cache: &StrategyRuntimeCache) -> Value {
     obj.insert("id".into(), json!(rule.id));
     obj.insert("strategy_id".into(), json!(rule.strategy_id));
     obj.insert(RULE_NAME.into(), json!(rule.rule_name));
-    obj.insert(BUY_AMOUNT.into(), json!(rule.buy_amount));
+    obj.insert(BUY_AMOUNT.into(), json!(rule.buy_amount_sol));
     obj.insert(TRADE_MODE.into(), json!(rule.trade_mode));
     obj.insert("is_active".into(), json!(rule.is_active));
     obj.insert(MAX_CONCURRENT.into(), json!(rule.max_concurrent_tokens));
@@ -188,12 +188,12 @@ pub async fn create_rule(
     };
 
     let rule_name = body.get(RULE_NAME).and_then(Value::as_str).unwrap_or("").to_string();
-    let buy_amount = body.get(BUY_AMOUNT).and_then(Value::as_f64).unwrap_or(0.0);
+    let buy_amount_sol = body.get(BUY_AMOUNT).and_then(Value::as_f64).unwrap_or(0.0);
     let trade_mode = body.get(TRADE_MODE).and_then(Value::as_str).unwrap_or("paper").to_string();
     let draft = RuleDraft {
         strategy,
         rule_name,
-        buy_amount,
+        buy_amount_sol,
         trade_mode,
         max_concurrent_tokens: body.get(MAX_CONCURRENT).and_then(opt_i64),
         max_total_tokens: body.get(MAX_TOTAL).and_then(opt_i64),
@@ -210,7 +210,7 @@ pub async fn create_rule(
 ///
 /// Partial update: present body keys overlay the rule's params (explicit JSON null
 /// clears an optional param); universal columns update if present. A **live**
-/// (active) rule freezes everything but the hot set (`rule_name`, `buy_amount`,
+/// (active) rule freezes everything but the hot set (`rule_name`, `buy_amount_sol`,
 /// concurrency caps) — `trade_mode` is frozen by value.
 pub async fn update_rule(
     app_state: web::Data<Arc<DeployState>>,
@@ -281,7 +281,7 @@ pub async fn update_rule(
             rule.rule_name = name.to_string();
         }
         if let Some(amount) = m.get(BUY_AMOUNT).and_then(Value::as_f64) {
-            rule.buy_amount = amount;
+            rule.buy_amount_sol = amount;
         }
         if let Some(mode) = m.get(TRADE_MODE).and_then(Value::as_str) {
             rule.trade_mode = mode.to_string();
@@ -402,4 +402,95 @@ fn lifecycle_error(rule_id: Uuid, action: &str, e: anyhow::Error) -> HttpRespons
     }
     tracing::error!("Failed to {action} rule {rule_id}: {e}");
     HttpResponse::InternalServerError().json(json!({"error": format!("Failed to {action} rule")}))
+}
+
+// ---------------------------------------------------------------------------
+// Bulk lifecycle (Pause All / Stop All — scoped to one `trade_mode` at a time,
+// mirroring the Real/Paper section split in the live rules pages)
+// ---------------------------------------------------------------------------
+
+/// `?mode=real|paper` query selector for the bulk lifecycle endpoints (mirrors
+/// the `PositionScope`/`ScopeParam` pattern in `positions.rs`).
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum TradeModeFilter {
+    Real,
+    Paper,
+}
+
+impl TradeModeFilter {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Real => "real",
+            Self::Paper => "paper",
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ModeParam {
+    pub mode: TradeModeFilter,
+}
+
+/// Split a batch of per-rule lifecycle results into the updated rules (as the
+/// frontend rule shape) and the failed ids + error strings.
+fn bulk_response<T>(
+    results: Vec<(Uuid, anyhow::Result<T>)>,
+    to_json: impl Fn(&T) -> Value,
+) -> HttpResponse {
+    let mut updated = Vec::new();
+    let mut failed = Vec::new();
+    for (id, res) in results {
+        match res {
+            Ok(v) => updated.push(to_json(&v)),
+            Err(e) => failed.push(json!({ "rule_id": id, "error": e.to_string() })),
+        }
+    }
+    HttpResponse::Ok().json(json!({ "updated": updated, "failed": failed }))
+}
+
+/// POST /api/strategies/{strategy}/rules/pause-all?mode=real|paper
+///
+/// Pauses every currently active rule of `mode` (entries off; open positions
+/// left to drain via the exit ladder — same as the per-row Pause button).
+pub async fn pause_all_rules(
+    app_state: web::Data<Arc<DeployState>>,
+    path: web::Path<String>,
+    query: web::Query<ModeParam>,
+) -> impl Responder {
+    let strategy = match resolve_strategy(&path) {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    let cache = cache(&app_state);
+    match app_state.strategy.pause_all_rules(strategy.id(), query.mode.as_str()).await {
+        Ok(results) => bulk_response(results, |r| rule_to_json(r, cache)),
+        Err(e) => {
+            tracing::error!("Failed to pause all rules: {e}");
+            HttpResponse::InternalServerError().json(json!({"error": "Failed to pause all rules"}))
+        }
+    }
+}
+
+/// POST /api/strategies/{strategy}/rules/stop-all?mode=real|paper
+///
+/// Stops and force-closes every rule of `mode` that is active or still holding
+/// open positions (same as the per-row Stop button, applied to a set).
+pub async fn stop_all_rules(
+    app_state: web::Data<Arc<DeployState>>,
+    path: web::Path<String>,
+    query: web::Query<ModeParam>,
+) -> impl Responder {
+    let strategy = match resolve_strategy(&path) {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    let cache = cache(&app_state);
+    match app_state.strategy.stop_all_rules(strategy.id(), query.mode.as_str()).await {
+        Ok(results) => bulk_response(results, |(r, _count)| rule_to_json(r, cache)),
+        Err(e) => {
+            tracing::error!("Failed to stop all rules: {e}");
+            HttpResponse::InternalServerError().json(json!({"error": "Failed to stop all rules"}))
+        }
+    }
 }

@@ -9,7 +9,7 @@
 //!     [`StrategyParams`] ([`Tpsl1Params`] / [`Tpsl2Params`]), and
 //!   • dispatches entry/exit resolution to the unchanged `find_*` fns.
 //!
-//! Universal knobs (`buy_amount`, `trade_mode`, caps) are the typed columns on
+//! Universal knobs (`buy_amount_sol`, `trade_mode`, caps) are the typed columns on
 //! [`StrategyRule`](crate::models::StrategyRule); only the strategy-specific
 //! gates live in params. [`Tpsl1Params::to_rule`] / [`Tpsl2Params::to_rule`]
 //! rebuild the `Tpsl1Rule` / `Tpsl2Rule` the decision fns expect (universal
@@ -71,7 +71,7 @@ fn empty_array() -> Value {
 
 /// Rebuild the `Tpsl1Rule` the tpsl1 decision/backtest layer consumes from a
 /// unified [`StrategyRule`]: the gate params come from the `params` JSONB (via
-/// [`Tpsl1Params::to_rule`]); the universal knobs (`id`, name, `buy_amount`,
+/// [`Tpsl1Params::to_rule`]); the universal knobs (`id`, name, `buy_amount_sol`,
 /// `trade_mode`, caps) are copied from the row's typed columns (`to_rule` leaves
 /// them as inert placeholders). Errors only if `params` isn't valid tpsl1 JSON.
 pub fn tpsl1_decision_rule(sr: &StrategyRule) -> Result<Tpsl1Rule, serde_json::Error> {
@@ -81,7 +81,7 @@ pub fn tpsl1_decision_rule(sr: &StrategyRule) -> Result<Tpsl1Rule, serde_json::E
     let mut r = p.to_rule();
     r.id = sr.id;
     r.rule_name = sr.rule_name.clone();
-    r.buy_amount = sr.buy_amount;
+    r.buy_amount_sol = sr.buy_amount_sol;
     r.trade_mode = sr.trade_mode.clone();
     r.p_max_concurrent_tokens = sr.max_concurrent_tokens.map(|v| v as u64);
     r.p_max_total_tokens = sr.max_total_tokens.map(|v| v as u64);
@@ -97,7 +97,7 @@ pub fn tpsl2_decision_rule(sr: &StrategyRule) -> Result<Tpsl2Rule, serde_json::E
     let mut r = p.to_rule();
     r.id = sr.id;
     r.rule_name = sr.rule_name.clone();
-    r.buy_amount = sr.buy_amount;
+    r.buy_amount_sol = sr.buy_amount_sol;
     r.trade_mode = sr.trade_mode.clone();
     r.p_max_concurrent_tokens = sr.max_concurrent_tokens.map(|v| v as u64);
     r.p_max_total_tokens = sr.max_total_tokens.map(|v| v as u64);
@@ -113,7 +113,7 @@ pub fn swing1_decision_rule(sr: &StrategyRule) -> Result<Swing1Rule, serde_json:
     let mut r = p.to_rule();
     r.id = sr.id;
     r.rule_name = sr.rule_name.clone();
-    r.buy_amount = sr.buy_amount;
+    r.buy_amount_sol = sr.buy_amount_sol;
     r.trade_mode = sr.trade_mode.clone();
     r.p_max_concurrent_tokens = sr.max_concurrent_tokens.map(|v| v as u64);
     r.p_max_total_tokens = sr.max_total_tokens.map(|v| v as u64);
@@ -171,7 +171,7 @@ impl Tpsl1Params {
     }
 
     /// Rebuild the `Tpsl1Rule` the decision fns consume. Universal fields are
-    /// inert placeholders the entry/exit gates never read (`buy_amount`,
+    /// inert placeholders the entry/exit gates never read (`buy_amount_sol`,
     /// `trade_mode`, caps live on `StrategyRule`); `is_active` is forced true so
     /// the single-rule match gate evaluates.
     pub fn to_rule(&self) -> Tpsl1Rule {

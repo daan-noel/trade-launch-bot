@@ -58,12 +58,12 @@ export function tradeColumns(unit: string): ColumnDef<LiveTrade>[] {
         const isBuy = ev.trade_type === 'buy';
         return (
           <span className={cn('font-semibold', isBuy ? 'text-primary' : 'text-red')}>
-            <AmountCell sol={ev.sol_amount} />
+            <AmountCell sol={ev.amount_sol} />
           </span>
         );
       },
-      sortValue: (ev) => ev.sol_amount,
-      searchValue: (ev) => String(ev.sol_amount),
+      sortValue: (ev) => ev.amount_sol,
+      searchValue: (ev) => String(ev.amount_sol),
     },
     {
       key: 'tokens',

@@ -234,7 +234,7 @@ pub async fn run_backtest(
                             Some(fill) => {
                                 let secs = (fill.block_time - entry_time).num_seconds();
                                 let pct = ((fill.price - entry_price) / entry_price) * 100.0;
-                                let sol = rule.buy_amount * (pct / 100.0);
+                                let sol = rule.buy_amount_sol * (pct / 100.0);
                                 (
                                     Some(fill.price),
                                     Some(fill.tx_signature),
@@ -253,7 +253,7 @@ pub async fn run_backtest(
                             symbol: token.symbol.clone(),
                             entry_price,
                             ath_price,
-                            entry_token_amount: rule.buy_amount,
+                            entry_token_amount: rule.buy_amount_sol,
                             entry_tx,
                             entry_time,
                             exit_price,

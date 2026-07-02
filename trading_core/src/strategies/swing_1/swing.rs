@@ -76,7 +76,7 @@ pub struct SwingParams {
     pub swing_low_max_net_flow_per_sec: f64,
 
     // "Big transaction" threshold (SOL). 0 = disabled. When > 0, a single tx with
-    // `sol_amount >= big_tx_sol` (a) confirms a reversal immediately, regardless of
+    // `amount_sol >= big_tx_sol` (a) confirms a reversal immediately, regardless of
     // the net-flow reversal threshold, and (b) anchors a leg's terminal pivot
     // (`pivot_end_*`) to the LAST such same-side tx — the real pump/dump point —
     // instead of the chronologically last (possibly dust) trade.
@@ -85,7 +85,7 @@ pub struct SwingParams {
 
     // Dynamic "dust" floor as a FRACTION of the active leg's largest same-side
     // trade. 0 = disabled (off). When > 0, a same-side trade is dropped during the
-    // scan if `sol_amount < dust_frac * active_leg.max_sol` — i.e. it's trivially
+    // scan if `amount_sol < dust_frac * active_leg.max_sol` — i.e. it's trivially
     // small *relative to that leg's own real activity*. Scale-free (no per-token
     // SOL amount to guess): on a 200-SOL token and a 2-SOL token the same
     // `dust_frac` adapts automatically. This keeps a leg's endpoints anchored to
@@ -162,7 +162,7 @@ pub struct SwingLeg {
     pub start_price: f64,
     pub end_price: f64,
     /// Terminal pivot for charting: timestamp/price of the leg's last "big" same-side
-    /// tx (`sol_amount >= big_tx_sol`), falling back to the leg's price extreme
+    /// tx (`amount_sol >= big_tx_sol`), falling back to the leg's price extreme
     /// (max spot for highs, min spot for lows) when the leg has no big tx. Distinct
     /// from `end_*`, which stays the full-leg span used by stats/filters.
     pub pivot_end_at: i64,
@@ -186,7 +186,7 @@ enum Side {
 pub(crate) struct Tx {
     timestamp_ms: i64,
     side: Side,
-    sol_amount: f64,
+    amount_sol: f64,
     /// Post-trade GMGN spot (`reserve_sol / reserve_token` → pool → execution),
     /// used for `end_price`.
     price: f64,
@@ -201,17 +201,17 @@ impl Tx {
     /// The single-tx analogue of the per-row body of [`sanitize_and_order`], so the
     /// live-incremental exit memo folds a stream of trades into the SAME `Tx`s the
     /// batch builds. Returns `None` for a literally-non-positive trade (dropped by
-    /// [`sanitize_and_order`]'s `sol_amount() > 0.0` filter) so the two agree on
+    /// [`sanitize_and_order`]'s `amount_sol() > 0.0` filter) so the two agree on
     /// which trades exist at all.
     pub(crate) fn from_trade<T: TradeRow>(t: &T, prev_post_spot: Option<f64>) -> Option<Self> {
-        if t.sol_amount() <= 0.0 {
+        if t.amount_sol() <= 0.0 {
             return None;
         }
         let post_spot = t.chart_spot_price().unwrap_or_else(|| t.execution_price());
         Some(Self {
             timestamp_ms: t.block_time().timestamp_millis(),
             side: if t.is_buy() { Side::Buy } else { Side::Sell },
-            sol_amount: t.sol_amount(),
+            amount_sol: t.amount_sol(),
             price: post_spot,
             pre_spot: prev_post_spot.unwrap_or(post_spot),
         })
@@ -244,14 +244,14 @@ pub(crate) struct LegAcc {
     outflow: f64,
     trade_count: u32,
     // Terminal-pivot tracking (does not affect stats/filters). `last_big_*` is the
-    // last same-side tx with `sol_amount >= big_tx_sol`; `extreme_*` is the price
+    // last same-side tx with `amount_sol >= big_tx_sol`; `extreme_*` is the price
     // extreme (max spot for highs, min spot for lows) used as the fallback when the
     // leg contains no big tx.
     last_big_at: Option<i64>,
     last_big_price: Option<f64>,
     extreme_at: i64,
     extreme_price: f64,
-    /// Largest same-side `sol_amount` seen on this leg so far. The dynamic dust
+    /// Largest same-side `amount_sol` seen on this leg so far. The dynamic dust
     /// floor is `dust_frac * max_sol`: a same-side trade smaller than that is dust
     /// *relative to this leg's own real activity* and is skipped by the scan. Only
     /// grows, so the decision is causal/stable (never rescans). Seeded by the
@@ -268,14 +268,14 @@ impl LegAcc {
             end_at: tx.timestamp_ms,
             start_price: tx.pre_spot,
             end_price: tx.price,
-            inflow: tx.sol_amount,
+            inflow: tx.amount_sol,
             outflow: 0.0,
             trade_count: 1,
             last_big_at: None,
             last_big_price: None,
             extreme_at: tx.timestamp_ms,
             extreme_price: tx.price,
-            max_sol: tx.sol_amount,
+            max_sol: tx.amount_sol,
         };
         leg.consider_pivot(tx, big_tx_sol);
         leg
@@ -290,13 +290,13 @@ impl LegAcc {
             start_price: tx.pre_spot,
             end_price: tx.price,
             inflow: 0.0,
-            outflow: tx.sol_amount,
+            outflow: tx.amount_sol,
             trade_count: 1,
             last_big_at: None,
             last_big_price: None,
             extreme_at: tx.timestamp_ms,
             extreme_price: tx.price,
-            max_sol: tx.sol_amount,
+            max_sol: tx.amount_sol,
         };
         leg.consider_pivot(tx, big_tx_sol);
         leg
@@ -310,8 +310,8 @@ impl LegAcc {
     /// extreme, record this tx as the last big one when it clears `big_tx_sol`, and
     /// grow the leg's `max_sol` (the baseline for the dynamic dust floor).
     fn consider_pivot(&mut self, tx: &Tx, big_tx_sol: f64) {
-        if tx.sol_amount > self.max_sol {
-            self.max_sol = tx.sol_amount;
+        if tx.amount_sol > self.max_sol {
+            self.max_sol = tx.amount_sol;
         }
         let beats_extreme = match self.leg_type {
             SwingType::SwingHigh => tx.price > self.extreme_price,
@@ -321,7 +321,7 @@ impl LegAcc {
             self.extreme_at = tx.timestamp_ms;
             self.extreme_price = tx.price;
         }
-        if big_tx_sol > 0.0 && tx.sol_amount >= big_tx_sol {
+        if big_tx_sol > 0.0 && tx.amount_sol >= big_tx_sol {
             self.last_big_at = Some(tx.timestamp_ms);
             self.last_big_price = Some(tx.price);
         }
@@ -329,7 +329,7 @@ impl LegAcc {
 
     /// Apply a same-side BUY to a swing-high leg.
     fn apply_buy(&mut self, tx: &Tx, big_tx_sol: f64) {
-        self.inflow += tx.sol_amount;
+        self.inflow += tx.amount_sol;
         self.end_at = tx.timestamp_ms;
         self.end_price = tx.price;
         self.trade_count += 1;
@@ -338,7 +338,7 @@ impl LegAcc {
 
     /// Apply a same-side SELL to a swing-low leg.
     fn apply_sell(&mut self, tx: &Tx, big_tx_sol: f64) {
-        self.outflow += tx.sol_amount;
+        self.outflow += tx.amount_sol;
         self.end_at = tx.timestamp_ms;
         self.end_price = tx.price;
         self.trade_count += 1;
@@ -421,7 +421,7 @@ pub fn detect_swing_legs_raw<T: TradeRow>(trades: &[T], params: &SwingParams) ->
 /// (`SwingParams.dust_frac`) is applied inside [`scan`], because "dust" is defined
 /// relative to the active leg's running max — which only exists during the scan.
 pub(crate) fn sanitize_and_order<T: TradeRow>(trades: &[T]) -> Vec<Tx> {
-    let mut ordered: Vec<&T> = trades.iter().filter(|t| t.sol_amount() > 0.0).collect();
+    let mut ordered: Vec<&T> = trades.iter().filter(|t| t.amount_sol() > 0.0).collect();
 
     ordered.sort_by(|a, b| {
         a.slot()
@@ -433,7 +433,7 @@ pub(crate) fn sanitize_and_order<T: TradeRow>(trades: &[T]) -> Vec<Tx> {
 
     // Post-trade GMGN spot via the single shared definition (reserve pair → pool →
     // execution). Identical to the chart, live strategies, and the sweep, so a leg
-    // detected here is the leg detected live. The `sol_amount() > 0.0` filter above
+    // detected here is the leg detected live. The `amount_sol() > 0.0` filter above
     // already dropped non-positive rows, so `Tx::from_trade` never returns `None`
     // here — but the incremental exit memo relies on that same drop, so both go
     // through the one constructor.
@@ -501,7 +501,7 @@ impl ScanState {
         let big = params.big_tx_sol;
         // A single tx clearing the big-tx threshold confirms a reversal on its own,
         // independent of the accumulated net-flow threshold.
-        let is_big = |tx: &Tx| big > 0.0 && tx.sol_amount >= big;
+        let is_big = |tx: &Tx| big > 0.0 && tx.amount_sol >= big;
 
         // Seed the FSM from the first transaction.
         let Some(phase) = self.phase else {
@@ -526,7 +526,7 @@ impl ScanState {
             Phase::SwingHigh | Phase::TempSwingLow => self.current_high.as_ref(),
             Phase::SwingLow | Phase::TempSwingHigh => self.current_low.as_ref(),
         };
-        if dust_frac > 0.0 && active.is_some_and(|leg| tx.sol_amount < dust_frac * leg.max_sol) {
+        if dust_frac > 0.0 && active.is_some_and(|leg| tx.amount_sol < dust_frac * leg.max_sol) {
             return;
         }
 

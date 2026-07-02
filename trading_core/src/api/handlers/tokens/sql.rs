@@ -144,19 +144,19 @@ pub fn build_where_and_order(q: &TokenQuery, now: DateTime<Utc>) -> BuiltQuery {
     // volume / trade_count / ix_count use range_f64 (present-or-0). volume &
     // trade_count are NOT NULL in tokens_info, but the LEFT JOIN can null them for a
     // token with no info row → COALESCE to 0 to match the in-RAM `.unwrap_or(0.0)`.
-    push_range(&mut clauses, "COALESCE(i.volume, 0)", q.f_get("volume_min"), q.f_get("volume_max"), &mut a);
-    push_opt_range(&mut clauses, "i.first_slot_buy_sol::float8/1e9", q.f_get("first_slot_buy_min"), q.f_get("first_slot_buy_max"), &mut a);
-    push_opt_range(&mut clauses, "i.first_slot_sell_sol::float8/1e9", q.f_get("first_slot_sell_min"), q.f_get("first_slot_sell_max"), &mut a);
+    push_range(&mut clauses, "COALESCE(i.volume_sol, 0)", q.f_get("volume_min"), q.f_get("volume_max"), &mut a);
+    push_opt_range(&mut clauses, "i.first_slot_buy_lamports::float8/1e9", q.f_get("first_slot_buy_min"), q.f_get("first_slot_buy_max"), &mut a);
+    push_opt_range(&mut clauses, "i.first_slot_sell_lamports::float8/1e9", q.f_get("first_slot_sell_min"), q.f_get("first_slot_sell_max"), &mut a);
     push_opt_range(&mut clauses, "(i.current_price * t.initial_supply_token)", q.f_get("mcap_min"), q.f_get("mcap_max"), &mut a);
     push_range(&mut clauses, "COALESCE(i.trade_count, 0)", q.f_get("trades_min"), q.f_get("trades_max"), &mut a);
     // initial_buy_sol stored lamports; model is human SOL → /1e9.
-    push_opt_range(&mut clauses, "t.initial_buy_sol::float8/1e9", q.f_get("init_buy_min"), q.f_get("init_buy_max"), &mut a);
+    push_opt_range(&mut clauses, "t.initial_buy_lamports::float8/1e9", q.f_get("init_buy_min"), q.f_get("init_buy_max"), &mut a);
     push_opt_range(&mut clauses, "t.initial_supply_token::float8", q.f_get("init_supply_min"), q.f_get("init_supply_max"), &mut a);
     // token_amount / min_tokens_out from the buy-ix JSON (raw units, no /1e9).
     push_opt_range(&mut clauses, &buy_arg_expr("token_amount"), q.f_get("token_amount_min"), q.f_get("token_amount_max"), &mut a);
-    // max_sol_cost / spendable_sol_in from the buy-ix JSON, lamports → SOL.
-    push_opt_range(&mut clauses, &format!("({}/1e9)", buy_arg_expr("max_sol_cost")), q.f_get("max_sol_cost_min"), q.f_get("max_sol_cost_max"), &mut a);
-    push_opt_range(&mut clauses, &format!("({}/1e9)", buy_arg_expr("spendable_sol_in")), q.f_get("spendable_sol_in_min"), q.f_get("spendable_sol_in_max"), &mut a);
+    // max_cost_lamports / spendable_lamports_in from the buy-ix JSON, lamports → SOL.
+    push_opt_range(&mut clauses, &format!("({}/1e9)", buy_arg_expr("max_cost_lamports")), q.f_get("max_cost_lamports_min"), q.f_get("max_cost_lamports_max"), &mut a);
+    push_opt_range(&mut clauses, &format!("({}/1e9)", buy_arg_expr("spendable_lamports_in")), q.f_get("spendable_lamports_in_min"), q.f_get("spendable_lamports_in_max"), &mut a);
     push_opt_range(&mut clauses, &buy_arg_expr("min_tokens_out"), q.f_get("min_tokens_out_min"), q.f_get("min_tokens_out_max"), &mut a);
 
     // --- Technical ---
@@ -358,7 +358,7 @@ fn search_clause(raw: &str, a: &mut SqlArgs) -> String {
     // Numerics → Rust to_string form. trade_count/volume always; ath/current/mcap when non-null.
     for c in [
         "COALESCE(i.trade_count, 0)::text",
-        rust_float_text("COALESCE(i.volume, 0)").as_str(),
+        rust_float_text("COALESCE(i.volume_sol, 0)").as_str(),
     ] {
         ors.push(format!("{c} LIKE '%' || {ph} || '%' ESCAPE '\\'"));
     }
@@ -618,9 +618,9 @@ mod tests {
 
     #[test]
     fn lamports_columns_filter_in_sol() {
-        let b = build_where_and_order(&query(serde_json::json!({"f_max_sol_cost_min": "0.5"})), now());
+        let b = build_where_and_order(&query(serde_json::json!({"f_max_cost_lamports_min": "0.5"})), now());
         // buy-ix JSON arg, lamports → SOL via /1e9
         assert!(b.where_sql.contains("/1e9"));
-        assert!(b.where_sql.contains("initial_buy_instruction->>'max_sol_cost'"));
+        assert!(b.where_sql.contains("initial_buy_instruction->>'max_cost_lamports'"));
     }
 }

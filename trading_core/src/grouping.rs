@@ -2,7 +2,7 @@
 //!
 //! A sweep can partition its corpus by a **compound fingerprint key** — the
 //! exact values of one or more token-creation fields the user picks on the page
-//! (CU settings, the creation-instruction `max_sol_cost` / `spendable_sol_in`,
+//! (CU settings, the creation-instruction `max_cost_lamports` / `spendable_lamports_in`,
 //! the instruction-label set, …). Each surviving group is swept independently so
 //! the UI can answer "for tokens with *this* fingerprint, which param combo is
 //! best?".
@@ -38,10 +38,10 @@ pub struct TokenFingerprint {
     pub cu_limit: Option<i64>,
     pub cu_price: Option<i64>,
     pub is_cashback_enabled: bool,
-    /// Creation-instruction `max_sol_cost`, in lamports.
-    pub max_sol_cost: Option<i64>,
-    /// Creation-instruction `spendable_sol_in`, in lamports.
-    pub spendable_sol_in: Option<i64>,
+    /// Creation-instruction `max_cost_lamports`, in lamports.
+    pub max_cost_lamports: Option<i64>,
+    /// Creation-instruction `spendable_lamports_in`, in lamports.
+    pub spendable_lamports_in: Option<i64>,
     /// Creation instruction-label set, sorted + deduped for a stable key.
     pub ix_labels: Vec<String>,
 }
@@ -86,8 +86,8 @@ pub enum GroupField {
     CuLimit,
     CuPrice,
     IsCashbackEnabled,
-    MaxSolCost,
-    SpendableSolIn,
+    MaxCostLamports,
+    SpendableLamportsIn,
     InitialBuySol,
     IxLabels,
 }
@@ -100,8 +100,8 @@ impl GroupField {
             GroupField::CuLimit => "cu_limit",
             GroupField::CuPrice => "cu_price",
             GroupField::IsCashbackEnabled => "is_cashback_enabled",
-            GroupField::MaxSolCost => "max_sol_cost",
-            GroupField::SpendableSolIn => "spendable_sol_in",
+            GroupField::MaxCostLamports => "max_cost_lamports",
+            GroupField::SpendableLamportsIn => "spendable_lamports_in",
             GroupField::InitialBuySol => "initial_buy_sol",
             GroupField::IxLabels => "ix_labels",
         }
@@ -115,8 +115,8 @@ impl GroupField {
             "cu_limit" => GroupField::CuLimit,
             "cu_price" => GroupField::CuPrice,
             "is_cashback_enabled" => GroupField::IsCashbackEnabled,
-            "max_sol_cost" => GroupField::MaxSolCost,
-            "spendable_sol_in" => GroupField::SpendableSolIn,
+            "max_cost_lamports" => GroupField::MaxCostLamports,
+            "spendable_lamports_in" => GroupField::SpendableLamportsIn,
             "initial_buy_sol" => GroupField::InitialBuySol,
             "ix_labels" => GroupField::IxLabels,
             _ => return None,
@@ -132,7 +132,7 @@ impl GroupField {
 pub struct GroupKey(pub Vec<(GroupField, String)>);
 
 impl GroupKey {
-    /// `{"token_program_id":"Tokenkeg…","max_sol_cost":"12345"}` — stored on the
+    /// `{"token_program_id":"Tokenkeg…","max_cost_lamports":"12345"}` — stored on the
     /// group row and rendered as chips by the page. Empty key ⇒ `{}`.
     pub fn to_json(&self) -> Value {
         let mut map = serde_json::Map::with_capacity(self.0.len());
@@ -159,8 +159,8 @@ fn render_field(fp: &TokenFingerprint, f: GroupField) -> String {
         GroupField::CuLimit => opt(fp.cu_limit),
         GroupField::CuPrice => opt(fp.cu_price),
         GroupField::IsCashbackEnabled => fp.is_cashback_enabled.to_string(),
-        GroupField::MaxSolCost => opt(fp.max_sol_cost),
-        GroupField::SpendableSolIn => opt(fp.spendable_sol_in),
+        GroupField::MaxCostLamports => opt(fp.max_cost_lamports),
+        GroupField::SpendableLamportsIn => opt(fp.spendable_lamports_in),
         GroupField::InitialBuySol => {
             fp.initial_buy_sol.map(|v| format!("{v}")).unwrap_or_else(|| MISSING.to_string())
         }
@@ -186,8 +186,8 @@ mod tests {
             cu_limit: Some(200_000),
             cu_price: None,
             is_cashback_enabled: true,
-            max_sol_cost: Some(1_000_000_000),
-            spendable_sol_in: None,
+            max_cost_lamports: Some(1_000_000_000),
+            spendable_lamports_in: None,
             ix_labels: vec!["Pump.Fun: Create".into(), "System: Transfer".into()],
         }
     }
@@ -201,10 +201,10 @@ mod tests {
 
     #[test]
     fn compound_key_in_selection_order() {
-        let k = group_key(&fp(), &[GroupField::MaxSolCost, GroupField::CuLimit]);
+        let k = group_key(&fp(), &[GroupField::MaxCostLamports, GroupField::CuLimit]);
         assert_eq!(
             k.to_json(),
-            json!({ "max_sol_cost": "1000000000", "cu_limit": "200000" })
+            json!({ "max_cost_lamports": "1000000000", "cu_limit": "200000" })
         );
     }
 
@@ -239,11 +239,11 @@ mod tests {
 
     #[test]
     fn lamports_from_number_or_string() {
-        let ix = json!({ "max_sol_cost": 1_000_000_000u64, "spendable_sol_in": "500" });
-        assert_eq!(extract_lamports(Some(&ix), "max_sol_cost"), Some(1_000_000_000));
-        assert_eq!(extract_lamports(Some(&ix), "spendable_sol_in"), Some(500));
+        let ix = json!({ "max_cost_lamports": 1_000_000_000u64, "spendable_lamports_in": "500" });
+        assert_eq!(extract_lamports(Some(&ix), "max_cost_lamports"), Some(1_000_000_000));
+        assert_eq!(extract_lamports(Some(&ix), "spendable_lamports_in"), Some(500));
         assert_eq!(extract_lamports(Some(&ix), "absent"), None);
-        assert_eq!(extract_lamports(None, "max_sol_cost"), None);
+        assert_eq!(extract_lamports(None, "max_cost_lamports"), None);
     }
 
 }

@@ -30,7 +30,7 @@ use crate::sweep::strategy::{
 /// The full TPSL1 swept param set — the exit ladder. `take_profit`/`stop_loss`
 /// are always-on; every other knob is `Option` and a `None` means "unbounded"
 /// (the gate is disabled and the live pure fns ignore it, same as `0`). The
-/// token-filter / concurrency / `buy_amount` fields stay inherited from the base
+/// token-filter / concurrency / `buy_amount_sol` fields stay inherited from the base
 /// rule template.
 #[derive(Clone, Copy, Debug)]
 pub struct Tpsl1Params {
@@ -421,7 +421,7 @@ impl Strategy for Tpsl1Strategy {
             return TokenOutcome::no_entry();
         };
         let rule = &params.rule;
-        let notional = rule.buy_amount;
+        let notional = rule.buy_amount_sol;
 
         // (2) Exit decision via the shared ladder.
         match exit::find_trade_driven_exit(trades, entry_time, entry_price, rule) {

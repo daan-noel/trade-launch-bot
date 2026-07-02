@@ -23,7 +23,7 @@ pub struct GroupedSweepRun {
     pub created_after: Option<DateTime<Utc>>,
     pub created_before: Option<DateTime<Utc>>,
     pub curve_only: bool,
-    /// The grouping fields, e.g. `["creator_wallet","max_sol_cost"]`.
+    /// The grouping fields, e.g. `["creator_wallet","max_cost_lamports"]`.
     pub grouping_spec: Value,
     /// The resolved param axes (post-defaults/dedup) for echo / re-run.
     pub axes_spec: Value,

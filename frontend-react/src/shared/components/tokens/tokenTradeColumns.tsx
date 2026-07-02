@@ -53,12 +53,12 @@ export function tokenTradeColumns(unit: string): ColumnDef<TradeRecord>[] {
         const isBuy = t.trade_type === 'buy';
         return (
           <span className={cn('font-semibold', isBuy ? 'text-primary' : 'text-red')}>
-            <AmountCell sol={t.sol_amount} />
+            <AmountCell sol={t.amount_sol} />
           </span>
         );
       },
-      sortValue: (t) => t.sol_amount,
-      searchValue: (t) => String(t.sol_amount),
+      sortValue: (t) => t.amount_sol,
+      searchValue: (t) => String(t.amount_sol),
     },
     {
       key: 'tokens',

@@ -39,7 +39,7 @@ use trading_core::strategies::swing_1::{entry, exit};
 /// The full swing1 rule param set, every knob swept. `take_profit`/`stop_loss` are
 /// always-on; every other knob is `Option` and a `None` (the default axis when the
 /// page leaves it blank, or an explicit `off`) means "unbounded / inert" — the gate
-/// is disabled and the live pure fns ignore it (same as `0`). `buy_amount` and the
+/// is disabled and the live pure fns ignore it (same as `0`). `buy_amount_sol` and the
 /// non-param rule fields stay inherited from the base rule template.
 #[derive(Clone, Copy, Debug)]
 pub struct Swing1Params {
@@ -775,7 +775,7 @@ impl Strategy for Swing1Strategy {
             return TokenOutcome::no_entry();
         };
         let rule = &params.rule;
-        let notional = rule.buy_amount;
+        let notional = rule.buy_amount_sol;
 
         match exit::find_trade_driven_exit(trades, entry_time, entry_price, rule) {
             Some(f) => {

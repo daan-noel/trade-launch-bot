@@ -160,7 +160,7 @@ impl WalkState {
             self.last_higher_high_time = t.block_time();
         }
         // E4 tracks **real** reserves (the tpsl2 variant).
-        if let Some(r) = t.real_sol_reserves() {
+        if let Some(r) = t.real_reserve_sol() {
             if r > self.peak_reserves {
                 self.peak_reserves = r;
             }
@@ -453,7 +453,7 @@ fn ladder_reason<T: TradeRow>(
         .or_else(|| {
             // E4: real reserves crash below the peak-since-entry.
             params.liquidity_drop_pct.and_then(|drop| {
-                t.real_sol_reserves().and_then(|reserves| {
+                t.real_reserve_sol().and_then(|reserves| {
                     (state.peak_reserves > 0.0
                         && reserves < state.peak_reserves * (1.0 - drop / 100.0))
                     .then_some(ExitReason::LiquidityExit)
@@ -563,7 +563,7 @@ mod tests {
     }
 
     fn tr(kind: TradeType, secs: i64, price: f64, slot: u64) -> Trade {
-        // price = sol/token; set token_amount=1 so price_per_token == sol_amount.
+        // price = sol/token; set token_amount=1 so price_per_token == amount_sol.
         Trade::new(
             "mint".into(),
             "w".into(),
@@ -656,7 +656,7 @@ mod tests {
     }
 
     /// A trade whose spot price AND swing volume are both `sol` (token_amount = 1, no
-    /// reserves ⇒ `execution_price() == sol_amount == sol`). In this simplified model
+    /// reserves ⇒ `execution_price() == amount_sol == sol`). In this simplified model
     /// price and volume are coupled, exactly as in [`tr`] and the batch tests.
     fn trx(kind: TradeType, secs: i64, sol: f64, slot: u64) -> Trade {
         Trade::new(

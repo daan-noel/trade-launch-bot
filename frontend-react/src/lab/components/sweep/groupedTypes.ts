@@ -23,8 +23,8 @@ export { SWING1_AXES, SWING1_SUBGROUPS, groupAxesBySubgroup } from '@shared/lib/
 export const GROUP_FIELDS = [
   'cu_limit',
   'cu_price',
-  'max_sol_cost',
-  'spendable_sol_in',
+  'max_cost_lamports',
+  'spendable_lamports_in',
   'initial_buy_sol',
   'is_cashback_enabled',
   'ix_labels',
@@ -36,8 +36,8 @@ export type GroupField = (typeof GROUP_FIELDS)[number];
 export const GROUP_FIELD_LABELS: Record<GroupField, string> = {
   cu_limit: 'CU limit',
   cu_price: 'CU price',
-  max_sol_cost: 'Max SOL cost',
-  spendable_sol_in: 'Spendable SOL in',
+  max_cost_lamports: 'Max SOL cost',
+  spendable_lamports_in: 'Spendable SOL in',
   initial_buy_sol: 'Initial buy SOL',
   ix_labels: 'Instruction labels',
   is_cashback_enabled: 'Cashback on',
@@ -169,7 +169,7 @@ export interface GroupedSweepRunRecord {
 export interface GroupedSweepGroupRecord {
   id: string;
   group_index: number;
-  /** `{ "creator_wallet": "4f3a…", "max_sol_cost": "12345" }`; `{}` = the ALL group. */
+  /** `{ "creator_wallet": "4f3a…", "max_cost_lamports": "12345" }`; `{}` = the ALL group. */
   group_key: Record<string, string>;
   token_count: number;
   /** The best combo's `n_fired` — sample size behind the headline pick. */
@@ -253,6 +253,6 @@ export interface GroupedSweepStartArgs {
    *  clamps to its hard backstop. */
   max_combos?: number;
   /** Notional (SOL) to price every simulated round-trip at. Set to the live
-   *  `buy_amount` so backtest PnL% matches live results. Omitted ⇒ 1.0 SOL. */
+   *  `buy_amount_sol` so backtest PnL% matches live results. Omitted ⇒ 1.0 SOL. */
   buy_amount_sol?: number;
 }

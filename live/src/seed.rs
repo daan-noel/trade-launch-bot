@@ -138,7 +138,7 @@ fn build_state(
             state.ath_price = Some(ath_price);
             state.ath_timestamp = info.ath_timestamp;
         }
-        state.volume_sol_total = info.volume;
+        state.volume_sol_total = info.volume_sol;
         state.trade_count = info.trade_count as u64;
         state.last_trade_at = info.last_trade_at;
         state.market_cap = info.market_cap;
@@ -189,9 +189,9 @@ fn build_state(
     state.current_real_sol_reserves = state
         .trades
         .iter()
-        .filter(|t| t.real_sol_reserves.is_some())
+        .filter(|t| t.real_reserve_sol.is_some())
         .max_by_key(|t| t.block_time)
-        .and_then(|t| t.real_sol_reserves);
+        .and_then(|t| t.real_reserve_sol);
 
     state
 }
@@ -325,7 +325,7 @@ mod tests {
                 mint.clone(),
                 wallet.clone(),
                 TradeType::Buy,
-                i as f64,                          // sol_amount
+                i as f64,                          // amount_sol
                 10,                                // token_amount → price = i/10
                 sig,
                 i as u64,                          // slot
@@ -347,8 +347,8 @@ mod tests {
         let (got_mint, trades, agg) = &seen[0];
         assert_eq!(got_mint, &mint);
         assert_eq!(trades.len(), 3, "capped to newest 3 of 5");
-        assert_eq!(trades[0].sol_amount, 3.0, "oldest kept = trade 3 (chronological)");
-        assert_eq!(trades[2].sol_amount, 5.0, "newest kept = trade 5");
+        assert_eq!(trades[0].amount_sol, 3.0, "oldest kept = trade 3 (chronological)");
+        assert_eq!(trades[2].amount_sol, 5.0, "newest kept = trade 5");
         assert_eq!(agg.lifetime_count, 5, "lifetime count spans full history");
         assert_eq!(agg.lifetime_volume, 15.0, "lifetime volume = 1+2+3+4+5");
         assert_eq!(agg.current_reserves, Some(105.0), "reserves from newest trade");

@@ -82,11 +82,11 @@ pub(crate) fn spawn_entry_fill_poll(
     tokio::spawn(async move {
         // Bound concurrent fill-poll tasks; held for the task's lifetime.
         let _permit = poll_sem.acquire_owned().await;
-        let buy_amount = rule.buy_amount;
+        let buy_amount_sol = rule.buy_amount_sol;
 
         let resolved = match (StrategyImpl::from_id(&rule.strategy_id), &params) {
             (Some(StrategyImpl::Tpsl1), _) => {
-                resolve_paper_entry_tpsl1(&repo, &token_cache, &mint, buy_amount).await
+                resolve_paper_entry_tpsl1(&repo, &token_cache, &mint, buy_amount_sol).await
             }
             (Some(StrategyImpl::Tpsl2), StrategyParams::Tpsl2(p)) => {
                 resolve_paper_entry_tpsl2(
@@ -95,7 +95,7 @@ pub(crate) fn spawn_entry_fill_poll(
                     &token_cache,
                     &mint,
                     position_id,
-                    buy_amount,
+                    buy_amount_sol,
                     p,
                 )
                 .await
@@ -107,7 +107,7 @@ pub(crate) fn spawn_entry_fill_poll(
                     &token_cache,
                     &mint,
                     position_id,
-                    buy_amount,
+                    buy_amount_sol,
                     p,
                 )
                 .await
@@ -157,13 +157,13 @@ pub(crate) fn spawn_entry_fill_poll(
 }
 
 /// tpsl1 paper entry: a fixed-count poll for the first indexed opening fill (cap 5),
-/// recording the token count `buy_amount / entry_price` (SOL is display-derived,
+/// recording the token count `buy_amount_sol / entry_price` (SOL is display-derived,
 /// same convention as tpsl2/swing1). No target, no scalp window.
 async fn resolve_paper_entry_tpsl1(
     repo: &StrategyRepo,
     token_cache: &TokenCache,
     mint: &str,
-    buy_amount: f64,
+    buy_amount_sol: f64,
 ) -> Option<PaperEntry> {
     let mut last_count: Option<u64> = None;
     for _ in 0..super::BUY_POLL_MAX_ATTEMPTS {
@@ -182,9 +182,9 @@ async fn resolve_paper_entry_tpsl1(
                 .await
                 .unwrap_or_default()
                 .unwrap_or_default();
-            // Paper entry size is the token count `buy_amount / entry_price` (SOL is
+            // Paper entry size is the token count `buy_amount_sol / entry_price` (SOL is
             // display-derived); guard a 0 price so we never divide by ~0.
-            let token_amount = if fill.price > 0.0 { buy_amount / fill.price } else { 0.0 };
+            let token_amount = if fill.price > 0.0 { buy_amount_sol / fill.price } else { 0.0 };
             return Some(PaperEntry {
                 target: None,
                 price: fill.price,
@@ -208,7 +208,7 @@ async fn resolve_paper_entry_tpsl2(
     token_cache: &TokenCache,
     mint: &str,
     position_id: Uuid,
-    buy_amount: f64,
+    buy_amount_sol: f64,
     params: &Tpsl2Params,
 ) -> Option<PaperEntry> {
     let rule = params.to_rule();
@@ -271,9 +271,9 @@ async fn resolve_paper_entry_tpsl2(
                     .await
                     .unwrap_or_default()
                     .unwrap_or_default();
-                // Paper entry size is the token count `buy_amount / entry_price` (SOL is
+                // Paper entry size is the token count `buy_amount_sol / entry_price` (SOL is
                 // display-derived); guard a 0 price so we never divide by ~0.
-                let token_amount = if entry.price > 0.0 { buy_amount / entry.price } else { 0.0 };
+                let token_amount = if entry.price > 0.0 { buy_amount_sol / entry.price } else { 0.0 };
                 return Some(PaperEntry {
                     target: Some((
                         target_fill.price,
@@ -306,7 +306,7 @@ async fn resolve_paper_entry_swing1(
     token_cache: &TokenCache,
     mint: &str,
     position_id: Uuid,
-    buy_amount: f64,
+    buy_amount_sol: f64,
     params: &Swing1Params,
 ) -> Option<PaperEntry> {
     let rule = params.to_rule();
@@ -359,9 +359,9 @@ async fn resolve_paper_entry_swing1(
                         .await
                         .unwrap_or_default()
                         .unwrap_or_default();
-                // Paper entry size is the token count `buy_amount / entry_price` (SOL is
+                // Paper entry size is the token count `buy_amount_sol / entry_price` (SOL is
                 // display-derived); guard a 0 price so we never divide by ~0.
-                let token_amount = if fill.price > 0.0 { buy_amount / fill.price } else { 0.0 };
+                let token_amount = if fill.price > 0.0 { buy_amount_sol / fill.price } else { 0.0 };
                 return Some(PaperEntry {
                     target: None,
                     price: fill.price,

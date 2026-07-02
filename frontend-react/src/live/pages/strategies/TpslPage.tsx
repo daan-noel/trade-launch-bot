@@ -5,7 +5,7 @@ import { Badge, type BadgeVariant } from 'components/ui/Badge';
 import { SectionDivider } from 'components/ui/SectionDivider';
 import { Button } from 'components/ui/Button';
 import { InlineAlert, Modal } from 'components/ui/Modal';
-import { SimSummaryCard } from 'components/tpsl1/SimSummaryCard';
+import { RunPositionsPanel } from 'components/strategy/RunPositionsPanel';
 import { TokenInspectModal, type InspectTarget } from 'components/tpsl1/TokenInspectModal';
 import { positionColumns } from 'components/tpsl1/tableColumns';
 import { SpecRuleForm } from 'components/strategy/SpecRuleForm';
@@ -37,25 +37,25 @@ import {
   fetchTpsl2Rules,
   pauseTpsl1Rule,
   pauseTpsl2Rule,
+  pauseAllTpsl1Rules,
+  pauseAllTpsl2Rules,
   stopTpsl1Rule,
   stopTpsl2Rule,
+  stopAllTpsl1Rules,
+  stopAllTpsl2Rules,
   updateTpsl1Rule,
   updateTpsl2Rule,
 } from 'services/api';
-import { apiErrorMessage, useGetTokensByMintsQuery } from 'store/apiSlice';
+import { apiErrorMessage } from 'store/apiSlice';
 import { useSellTokenMutation } from '@live/store/liveEndpoints';
-import { mergeTokenData } from 'components/tokens/sharedTokenColumns';
 import { usePolledRules } from 'hooks/usePolledRules';
-import { useRulePositions, DEFAULT_POSITIONS_QUERY } from 'hooks/useRulePositions';
-import { numericColKeys } from 'services/tableRequest';
-import type { TableQuery } from 'components/table/types';
-
-/** Positions columns that filter numerically (`>5`/`1..10` → structured ops). */
-const POSITION_NUMERIC_COLS = numericColKeys(positionColumns);
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { cn } from 'lib/cn';
-import type { RulePositionRecord, RuleRecord } from 'types';
+import type { BulkRuleResult, RulePositionRecord, RuleRecord } from 'types';
 import type { ColumnDef } from 'components/table/types';
+
+/** Trade-mode section a bulk lifecycle action targets — one section = one `trade_mode`. */
+type RuleMode = 'real' | 'paper';
 
 // Stable row-key functions (no inline lambdas — keeps DataTable memoization clean).
 const keyById = (r: { id: string }) => r.id;
@@ -107,12 +107,14 @@ function RuleTableHeader({
   marker,
   badge,
   subtitle,
+  action,
 }: {
   title: string;
   count: number;
   marker: string;
   badge: BadgeVariant;
   subtitle: string;
+  action?: ReactNode;
 }) {
   return (
     <div className="flex min-w-0 flex-1 items-center gap-2.5">
@@ -122,7 +124,96 @@ function RuleTableHeader({
         {count}
       </Badge>
       <span className="truncate font-mono text-[11px] text-text-dim">{subtitle}</span>
+      {action && (
+        <>
+          <span className="flex-1" />
+          {action}
+        </>
+      )}
     </div>
+  );
+}
+
+/** Pause All / Stop All for one Real/Paper rule section. Hidden entirely when
+ *  there's nothing to act on (no active and no draining rules). */
+function BulkRuleActions({
+  activeCount,
+  stoppableCount,
+  busy,
+  onPauseAll,
+  onStopAllClick,
+}: {
+  activeCount: number;
+  stoppableCount: number;
+  busy: boolean;
+  onPauseAll: () => void;
+  onStopAllClick: () => void;
+}) {
+  if (activeCount === 0 && stoppableCount === 0) return null;
+  return (
+    <div className="flex items-center gap-1.5">
+      <Button
+        variant="ghost" size="xs"
+        disabled={busy || activeCount === 0}
+        onClick={onPauseAll}
+        title="Pause every active rule here — stop new entries, let open positions drain"
+      >
+        {busy ? '…' : `⏸ Pause All (${activeCount})`}
+      </Button>
+      <Button
+        variant="danger" size="xs"
+        disabled={busy || stoppableCount === 0}
+        onClick={onStopAllClick}
+        title="Stop every rule here and force-close all open positions now"
+      >
+        {busy ? '…' : `■ Stop All (${stoppableCount})`}
+      </Button>
+    </div>
+  );
+}
+
+/** Confirms a bulk Stop All — summarizes how many rules/positions are affected
+ *  across the whole section (parallels `StopConfirmDialog` for a single rule). */
+function StopAllConfirmDialog({
+  modeLabel,
+  real,
+  rules,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  modeLabel: string;
+  real: boolean;
+  rules: RuleRecord[];
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const totalOpen = rules.reduce((sum, r) => sum + r.open_positions, 0);
+  return (
+    <Modal title={`Stop all ${modeLabel} rules`} open onClose={onCancel}>
+      <div className="space-y-4 text-sm text-text">
+        <p>
+          <span className="font-mono font-bold">{rules.length}</span> rule{rules.length === 1 ? '' : 's'} will be
+          stopped;{' '}
+          <span className="font-mono font-bold">{totalOpen}</span> open position{totalOpen === 1 ? '' : 's'} will be{' '}
+          <span className="font-semibold">exited now</span> at the current mark.
+        </p>
+        {real && totalOpen > 0 && (
+          <InlineAlert variant="error">
+            ⚠ REAL mode — this sends live on-chain sell transactions.
+          </InlineAlert>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onCancel} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="danger" onClick={onConfirm} disabled={busy}>
+            {busy ? 'Stopping…' : 'Stop & close all'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -320,6 +411,8 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
   const activateRule = is1 ? activateTpsl1Rule : activateTpsl2Rule;
   const pauseRule = is1 ? pauseTpsl1Rule : pauseTpsl2Rule;
   const stopRule = is1 ? stopTpsl1Rule : stopTpsl2Rule;
+  const pauseAllRule = is1 ? pauseAllTpsl1Rules : pauseAllTpsl2Rules;
+  const stopAllRule = is1 ? stopAllTpsl1Rules : stopAllTpsl2Rules;
   const fetchPositions = is1 ? fetchTpsl1RulePositions : fetchTpsl2RulePositions;
   const fetchSummary = is1 ? fetchTpsl1RulePositionsSummary : fetchTpsl2RulePositionsSummary;
   const spec = getSpec(strategy);
@@ -331,12 +424,6 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
 
   const { rules, setRules, loading, error } = usePolledRules(fetchRules, strategy);
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
-  // Server-side positions view: the DataTable emits page/pageSize/sort/search/filter
-  // via `onQueryChange`; the hook fetches that page + the (whole-run) summary.
-  const [posQuery, setPosQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
-  const { positions, total: positionsTotal, summary: positionsSummary,
-    loading: positionsLoading, error: positionsError } =
-    useRulePositions(selectedRuleId, rules, fetchPositions, fetchSummary, strategy, posQuery, POSITION_NUMERIC_COLS);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editRule, setEditRule] = useState<RuleRecord | null>(null);
@@ -351,6 +438,9 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [stopConfirm, setStopConfirm] = useState<RuleRecord | null>(null);
   const [reactivate, setReactivate] = useState<RuleRecord | null>(null);
+
+  const [bulkBusy, setBulkBusy] = useState<RuleMode | null>(null);
+  const [stopAllConfirm, setStopAllConfirm] = useState<{ mode: RuleMode; rules: RuleRecord[] } | null>(null);
 
   const [inspect, setInspect] = useState<{ key: string; target: InspectTarget } | null>(null);
 
@@ -400,6 +490,34 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
     finally { setLifecycleBusyId(null); }
   }, [applyRuleUpdate, stopRule]);
 
+  const applyBulkResult = useCallback((result: BulkRuleResult) => {
+    setRules((prev) => {
+      const byId = new Map(result.updated.map((r) => [r.id, r]));
+      return prev.map((r) => byId.get(r.id) ?? r);
+    });
+    if (result.failed.length > 0) {
+      setActionError(`Failed to update ${result.failed.length} rule${result.failed.length === 1 ? '' : 's'}`);
+    }
+  }, [setRules]);
+
+  const handlePauseAll = useCallback(async (mode: RuleMode) => {
+    setBulkBusy(mode);
+    setActionError(null);
+    try { applyBulkResult(await pauseAllRule(mode)); }
+    catch (e) { setActionError(e instanceof Error ? e.message : 'Failed to pause all rules'); }
+    finally { setBulkBusy(null); }
+  }, [applyBulkResult, pauseAllRule]);
+
+  const handleStopAllConfirm = useCallback(async () => {
+    if (!stopAllConfirm) return;
+    const { mode } = stopAllConfirm;
+    setBulkBusy(mode);
+    setActionError(null);
+    try { applyBulkResult(await stopAllRule(mode)); setStopAllConfirm(null); }
+    catch (e) { setActionError(e instanceof Error ? e.message : 'Failed to stop all rules'); }
+    finally { setBulkBusy(null); }
+  }, [applyBulkResult, stopAllConfirm, stopAllRule]);
+
   const ruleControls = useMemo(() => ({
     busyId: lifecycleBusyId,
     onPause: handlePause,
@@ -438,7 +556,7 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
     setFormError(null);
     if (!(form[RULE_NAME_KEY] ?? '').trim()) { setFormError('Rule name is required'); return; }
     for (const [label, col] of [
-      ['buy amount', 'buy_amount'],
+      ['buy amount', 'buy_amount_sol'],
       ['take profit', 'p_exit_take_profit'],
       ['stop loss', 'p_exit_stop_loss'],
     ] as const) {
@@ -492,6 +610,15 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
   const realRules = useMemo(() => rules.filter((r) => r.trade_mode === 'real'), [rules]);
   const paperRules = useMemo(() => rules.filter((r) => r.trade_mode !== 'real'), [rules]);
 
+  // Rules a bulk Stop All would target: active or still draining (mirrors the
+  // per-row Stop button's visibility — Idle/Finished rules have nothing to stop).
+  const realStoppable = useMemo(
+    () => realRules.filter((r) => r.is_active || r.open_positions > 0), [realRules],
+  );
+  const paperStoppable = useMemo(
+    () => paperRules.filter((r) => r.is_active || r.open_positions > 0), [paperRules],
+  );
+
   const selectedRuleMode = useMemo(
     () => rules.find((r) => r.id === selectedRuleId)?.trade_mode ?? null,
     [selectedRuleId, rules],
@@ -505,21 +632,6 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
   );
 
 
-  const allMints = useMemo(() => {
-    const s = new Set(positions.map((r) => r.mint));
-    return [...s].sort();
-  }, [positions]);
-  const { data: tokenBatch } = useGetTokensByMintsQuery(allMints, { skip: allMints.length === 0 });
-  const tokenMap = useMemo(
-    () => new Map((tokenBatch ?? []).map((t) => [t.mint_address, t])),
-    [tokenBatch],
-  );
-
-  const onSelectPosition = useCallback((key: string | null) => {
-    const row = key ? positions.find((p) => p.id === key) ?? null : null;
-    setInspect(row ? { key: row.id, target: inspectFromPosition(row) } : null);
-  }, [positions]);
-
   const handleSellPosition = useCallback(async (mint: string) => {
     setSellingPositionMint(mint);
     setActionError(null);
@@ -530,67 +642,28 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
     finally { setSellingPositionMint(null); }
   }, [sellToken]);
 
-  const positionRowActions = useCallback((row: RulePositionRecord) => {
-    if (row.status !== 'Holding') return null;
-    const isSelling = sellingPositionMint === row.mint;
-    return (
-      <div className="flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
-        <button
-          type="button" disabled={isSelling}
-          onClick={() => { void handleSellPosition(row.mint); }}
-          className="rounded border border-red/50 bg-red/12 px-2 py-0.5 text-[11px] font-semibold text-red hover:bg-red/22 disabled:opacity-45"
-        >
-          {isSelling ? 'Selling…' : 'Sell ALL'}
-        </button>
-      </div>
-    );
-  }, [sellingPositionMint, handleSellPosition]);
+  const handleInspect = useCallback((row: RulePositionRecord | null) => {
+    setInspect(row ? { key: row.id, target: inspectFromPosition(row) } : null);
+  }, []);
 
+  // Current run + old runs, each with its own summary + table. Rendered under the
+  // rule table that owns the selected rule (only one is selected at a time).
   const positionsSection = (
-    <>
-      <SectionDivider />
-      <section>
-        <SectionHeading
-          title="Positions"
-          marker="bg-info"
-          badge="info"
-          count={positionsError ? undefined : positionsTotal}
-          subtitle={selectedRuleName ?? undefined}
-        />
-        {positionsError && <InlineAlert variant="error">{positionsError}</InlineAlert>}
-        {/* Summary is server-computed over the whole run (not the visible page), so
-            it renders as long as a rule is selected — independent of paging. */}
-        {!positionsError && positionsSummary && positionsSummary.tokens > 0 && (
-          <SimSummaryCard
-            title="Positions Summary"
-            ruleName={selectedRuleName ?? ''}
-            summary={positionsSummary}
-            price={price}
-          />
-        )}
-        {!positionsError && (
-          <DataTable
-            columns={positionColumns}
-            rows={mergeTokenData(positions, tokenMap)}
-            rowKey={keyById}
-            selectedKey={inspect?.key ?? null}
-            onSelect={onSelectPosition}
-            rowActions={isRealRuleSelected ? positionRowActions : undefined}
-            serverSide
-            serverTotal={positionsTotal}
-            onQueryChange={setPosQuery}
-            loading={positionsLoading}
-            resetKey={selectedRuleId ?? ''}
-            defaultPageSize={20}
-            pageSizeOptions={[20, 50, 100]}
-            colFilters
-            colToggle
-            tableId={`${strategy}_positions`}
-            emptyMessage="No positions for this rule."
-          />
-        )}
-      </section>
-    </>
+    <RunPositionsPanel
+      strategy={strategy}
+      selectedRuleId={selectedRuleId}
+      selectedRuleName={selectedRuleName}
+      rules={rules}
+      columns={positionColumns}
+      fetchPositions={fetchPositions}
+      fetchSummary={fetchSummary}
+      price={price}
+      selectedKey={inspect?.key ?? null}
+      onInspect={handleInspect}
+      isReal={isRealRuleSelected}
+      sellingPositionMint={sellingPositionMint}
+      onSellPosition={handleSellPosition}
+    />
   );
 
   const label = strategy === 'tpsl1' ? 'TPSL1' : 'TPSL2';
@@ -640,6 +713,15 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
                   title="Real Trading" marker="bg-red" badge="danger"
                   count={realRules.length}
                   subtitle="Live on-chain — buys & sells execute for real"
+                  action={
+                    <BulkRuleActions
+                      activeCount={realRules.filter((r) => r.is_active).length}
+                      stoppableCount={realStoppable.length}
+                      busy={bulkBusy === 'real'}
+                      onPauseAll={() => void handlePauseAll('real')}
+                      onStopAllClick={() => setStopAllConfirm({ mode: 'real', rules: realStoppable })}
+                    />
+                  }
                 />
               }
             >
@@ -665,6 +747,15 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
                 title="Paper Trading" marker="bg-info" badge="info"
                 count={paperRules.length}
                 subtitle="Simulated — no on-chain execution"
+                action={
+                  <BulkRuleActions
+                    activeCount={paperRules.filter((r) => r.is_active).length}
+                    stoppableCount={paperStoppable.length}
+                    busy={bulkBusy === 'paper'}
+                    onPauseAll={() => void handlePauseAll('paper')}
+                    onStopAllClick={() => setStopAllConfirm({ mode: 'paper', rules: paperStoppable })}
+                  />
+                }
               />
             }
           >
@@ -688,6 +779,17 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
           busy={lifecycleBusyId === stopConfirm.id}
           onCancel={() => setStopConfirm(null)}
           onConfirm={handleStopConfirm}
+        />
+      )}
+
+      {stopAllConfirm && (
+        <StopAllConfirmDialog
+          modeLabel={stopAllConfirm.mode === 'real' ? 'Real' : 'Paper'}
+          real={stopAllConfirm.mode === 'real'}
+          rules={stopAllConfirm.rules}
+          busy={bulkBusy === stopAllConfirm.mode}
+          onCancel={() => setStopAllConfirm(null)}
+          onConfirm={() => void handleStopAllConfirm()}
         />
       )}
 

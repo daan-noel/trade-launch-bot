@@ -21,8 +21,8 @@ const TOKEN_ENRICH_FIELDS = [
   'initial_buy_sol',
   'initial_supply_token',
   'token_amount',
-  'max_sol_cost',
-  'spendable_sol_in',
+  'max_cost_lamports',
+  'spendable_lamports_in',
   'min_tokens_out',
   'cu_limit',
   'cu_price',
@@ -248,32 +248,32 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     filterNumber: (r: { token_amount?: number | null }) => r.token_amount ?? null,
   },
   {
-    key: 'max_sol_cost',
+    key: 'max_cost_lamports',
     label: 'Max SOL Cost',
     group: 'max_or_spendable',
     defaultVisible: true,
     sortable: true,
-    render: (r: { max_sol_cost?: number | null }) =>
-      r.max_sol_cost != null ? formatDecimalTrim(r.max_sol_cost / 1e9, 3) : '—',
-    sortValue: (r: { max_sol_cost?: number | null }) => r.max_sol_cost ?? null,
-    searchValue: (r: { max_sol_cost?: number | null }) => String(r.max_sol_cost ?? ''),
+    render: (r: { max_cost_lamports?: number | null }) =>
+      r.max_cost_lamports != null ? formatDecimalTrim(r.max_cost_lamports / 1e9, 3) : '—',
+    sortValue: (r: { max_cost_lamports?: number | null }) => r.max_cost_lamports ?? null,
+    searchValue: (r: { max_cost_lamports?: number | null }) => String(r.max_cost_lamports ?? ''),
     // Numeric filter compares in the *displayed* unit (SOL), so divide lamports by 1e9.
-    filterNumber: (r: { max_sol_cost?: number | null }) =>
-      r.max_sol_cost != null ? r.max_sol_cost / 1e9 : null,
+    filterNumber: (r: { max_cost_lamports?: number | null }) =>
+      r.max_cost_lamports != null ? r.max_cost_lamports / 1e9 : null,
   },
   {
-    key: 'spendable_sol_in',
+    key: 'spendable_lamports_in',
     label: 'Spendable SOL In',
     group: 'max_or_spendable',
     defaultVisible: true,
     sortable: true,
-    render: (r: { spendable_sol_in?: number | null }) =>
-      r.spendable_sol_in != null ? formatDecimalTrim(r.spendable_sol_in / 1e9, 3) : '—',
-    sortValue: (r: { spendable_sol_in?: number | null }) => r.spendable_sol_in ?? null,
-    searchValue: (r: { spendable_sol_in?: number | null }) => String(r.spendable_sol_in ?? ''),
+    render: (r: { spendable_lamports_in?: number | null }) =>
+      r.spendable_lamports_in != null ? formatDecimalTrim(r.spendable_lamports_in / 1e9, 3) : '—',
+    sortValue: (r: { spendable_lamports_in?: number | null }) => r.spendable_lamports_in ?? null,
+    searchValue: (r: { spendable_lamports_in?: number | null }) => String(r.spendable_lamports_in ?? ''),
     // Numeric filter compares in the *displayed* unit (SOL), so divide lamports by 1e9.
-    filterNumber: (r: { spendable_sol_in?: number | null }) =>
-      r.spendable_sol_in != null ? r.spendable_sol_in / 1e9 : null,
+    filterNumber: (r: { spendable_lamports_in?: number | null }) =>
+      r.spendable_lamports_in != null ? r.spendable_lamports_in / 1e9 : null,
   },
   {
     key: 'min_tokens_out',

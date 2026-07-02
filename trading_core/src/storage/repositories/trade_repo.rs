@@ -50,7 +50,7 @@ struct TradeDbRow {
     mint_address: String,
     wallet_address: String,
     trade_type: String,
-    sol_amount: i64,
+    amount_lamports: i64,
     token_amount: i64,
     tx_signature: Vec<u8>,
     // Defaulted so the read paths that don't project `tx_index` (it's not consumed
@@ -60,7 +60,7 @@ struct TradeDbRow {
     leg_index: i16,
     slot: i64,
     block_time: DateTime<Utc>,
-    reserve_sol: Option<i64>,
+    reserve_lamports: Option<i64>,
     reserve_token: Option<i64>,
     venue: String,
 }
@@ -77,7 +77,7 @@ impl TryFrom<TradeDbRow> for Trade {
 
         // Reconstruct the model amounts from the integer columns. SOL is f64 (human
         // SOL from lamports); token_amount stays an exact integer (no f64 round-trip).
-        let sol_amount = lamports_to_sol(r.sol_amount);
+        let amount_sol = lamports_to_sol(r.amount_lamports);
         let token_amount = r.token_amount as u64;
 
         Ok(Self {
@@ -86,11 +86,11 @@ impl TryFrom<TradeDbRow> for Trade {
             mint_address: r.mint_address,
             wallet_address: r.wallet_address,
             trade_type,
-            sol_amount,
+            amount_sol,
             token_amount,
             // Derived: the new table has no `price_per_token` column. The ratio is
             // computed in f64 (token cast at the divide).
-            price_per_token: price_of(sol_amount, token_amount as f64),
+            price_per_token: price_of(amount_sol, token_amount as f64),
             tx_signature: sig_bytes_to_base58(&r.tx_signature),
             tx_index: r.tx_index as u32,
             leg_index: r.leg_index as u32,
@@ -98,10 +98,10 @@ impl TryFrom<TradeDbRow> for Trade {
             block_time: r.block_time,
             // Synthesized: the new table has no `received_at`; reuse block_time.
             received_at: r.block_time,
-            reserve_sol: r.reserve_sol.map(lamports_to_sol),
+            reserve_sol: r.reserve_lamports.map(lamports_to_sol),
             reserve_token: r.reserve_token.map(|v| v as u64),
             // The new table dropped the real_* reserve columns.
-            real_sol_reserves: None,
+            real_reserve_sol: None,
             real_token_reserves: None,
             // Synthesized "Buy"/"Sell" instruction label from the trade side.
             instruction_type: ix_type_str(trade_type).to_string(),
@@ -153,8 +153,8 @@ impl TradeRepo {
             r#"
             INSERT INTO trades
                 (mint_address, wallet_id, trade_type, venue,
-                 sol_amount, token_amount,
-                 reserve_sol, reserve_token,
+                 amount_lamports, token_amount,
+                 reserve_lamports, reserve_token,
                  slot, tx_index, leg_index, block_time, tx_signature)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING
@@ -164,7 +164,7 @@ impl TradeRepo {
         .bind(wallet_id)
         .bind(trade_type_str(trade.trade_type))
         .bind(&trade.venue)
-        .bind(sol_to_lamports(trade.sol_amount))
+        .bind(sol_to_lamports(trade.amount_sol))
         .bind(trade.token_amount as i64)
         .bind(trade.reserve_sol.map(sol_to_lamports_opt))
         .bind(trade.reserve_token.map(|v| v as i64))
@@ -219,8 +219,8 @@ impl TradeRepo {
         for chunk in trades.chunks(TRADE_INSERT_CHUNK) {
             let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
                 "INSERT INTO trades \
-                 (mint_address, wallet_id, trade_type, venue, sol_amount, token_amount, \
-                  reserve_sol, reserve_token, slot, tx_index, leg_index, \
+                 (mint_address, wallet_id, trade_type, venue, amount_lamports, token_amount, \
+                  reserve_lamports, reserve_token, slot, tx_index, leg_index, \
                   block_time, tx_signature) ",
             );
             // `push_values` cannot bubble a Result, so pre-resolve the fallible
@@ -235,7 +235,7 @@ impl TradeRepo {
                     .push_bind(wallet_id)
                     .push_bind(trade_type_str(t.trade_type))
                     .push_bind(&t.venue)
-                    .push_bind(sol_to_lamports(t.sol_amount))
+                    .push_bind(sol_to_lamports(t.amount_sol))
                     .push_bind(t.token_amount as i64)
                     .push_bind(t.reserve_sol.map(sol_to_lamports_opt))
                     .push_bind(t.reserve_token.map(|v| v as i64))
@@ -401,8 +401,8 @@ impl TradeRepo {
         let row = sqlx::query_as::<_, TradeDbRow>(
             r#"
             SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
-                   t.sol_amount, t.token_amount,
-                   t.reserve_sol, t.reserve_token,
+                   t.amount_lamports, t.token_amount,
+                   t.reserve_lamports, t.reserve_token,
                    t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature
             FROM trades t
             JOIN wallet_dict w ON w.id = t.wallet_id
@@ -426,8 +426,8 @@ impl TradeRepo {
         let rows = sqlx::query_as::<_, TradeDbRow>(
             r#"
             SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
-                   t.sol_amount, t.token_amount,
-                   t.reserve_sol, t.reserve_token,
+                   t.amount_lamports, t.token_amount,
+                   t.reserve_lamports, t.reserve_token,
                    t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature
             FROM trades t
             JOIN wallet_dict w ON w.id = t.wallet_id
@@ -460,8 +460,8 @@ impl TradeRepo {
         let rows = sqlx::query_as::<_, TradeDbRow>(
             r#"
             SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
-                   t.sol_amount, t.token_amount,
-                   t.reserve_sol, t.reserve_token,
+                   t.amount_lamports, t.token_amount,
+                   t.reserve_lamports, t.reserve_token,
                    t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature
             FROM trades t
             JOIN wallet_dict w ON w.id = t.wallet_id
@@ -477,7 +477,7 @@ impl TradeRepo {
             std::collections::HashMap::with_capacity(mints.len());
         for row in rows {
             let mut trade = Trade::try_from(row)?;
-            // BACKTEST-ONLY approximation of `real_sol_reserves`. The `trades` table
+            // BACKTEST-ONLY approximation of `real_reserve_sol`. The `trades` table
             // dropped the program-emitted real-reserve column, so `Trade::try_from`
             // leaves it `None`. This method feeds the offline backtest/sim ONLY (the
             // live/paper decision path uses `CachedTrade` from the decoder, which
@@ -486,7 +486,7 @@ impl TradeRepo {
             // sim's real-reserve gates (tpsl2 `min_liq_sol`/organic-liq, dead-token)
             // resolve instead of always seeing 0. Same formula as the lake corpus
             // (`approx_real_sol_reserves`); an approximation, not lamport-identical.
-            trade.real_sol_reserves = trade
+            trade.real_reserve_sol = trade
                 .reserve_sol
                 .map(|s| crate::config::constants::approx_real_sol_reserves(s, &trade.venue));
             grouped
@@ -509,8 +509,8 @@ impl TradeRepo {
         let rows = sqlx::query_as::<_, TradeDbRow>(
             r#"
             SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
-                   t.sol_amount, t.token_amount,
-                   t.reserve_sol, t.reserve_token,
+                   t.amount_lamports, t.token_amount,
+                   t.reserve_lamports, t.reserve_token,
                    t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature
             FROM trades t
             JOIN wallet_dict w ON w.id = t.wallet_id
@@ -578,7 +578,7 @@ impl TradeRepo {
             r#"
             SELECT COUNT(*)::bigint,
                    COALESCE(SUM(token_amount), 0)::bigint,
-                   COALESCE(SUM(sol_amount), 0)::bigint,
+                   COALESCE(SUM(amount_lamports), 0)::bigint,
                    MIN(block_time),
                    MAX(block_time)
             FROM trades
@@ -602,7 +602,7 @@ impl TradeRepo {
         Ok(Some(SigLegs {
             // token_amount stays an exact integer (raw units); SOL → human f64.
             token_amount: token_sum as u64,
-            sol_amount: lamports_to_sol(lamports_sum),
+            amount_sol: lamports_to_sol(lamports_sum),
             first_block_time: first.unwrap_or_else(Utc::now),
             last_block_time: last.unwrap_or_else(Utc::now),
         }))
@@ -686,14 +686,14 @@ impl TradeRepo {
                 r#"
                 WITH ranked AS (
                     SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
-                           t.sol_amount, t.token_amount,
-                           t.reserve_sol, t.reserve_token,
+                           t.amount_lamports, t.token_amount,
+                           t.reserve_lamports, t.reserve_token,
                            t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature,
                            ROW_NUMBER()                          OVER w  AS rn,
                            COUNT(*)                              OVER wp AS lifetime_count,
-                           COALESCE(SUM(t.sol_amount) OVER wp, 0)::bigint AS lifetime_volume,
+                           COALESCE(SUM(t.amount_lamports) OVER wp, 0)::bigint AS lifetime_volume,
                            FIRST_VALUE(t.block_time)             OVER w  AS newest_block_time,
-                           FIRST_VALUE(t.sol_amount::float8 / NULLIF(t.token_amount, 0)) OVER w AS newest_price,
+                           FIRST_VALUE(t.amount_lamports::float8 / NULLIF(t.token_amount, 0)) OVER w AS newest_price,
                            FIRST_VALUE(t.reserve_token::float8) OVER w AS newest_reserves
                     FROM trades t
                     JOIN wallet_dict w ON w.id = t.wallet_id
@@ -704,8 +704,8 @@ impl TradeRepo {
                         wp AS (PARTITION BY t.mint_address)
                 )
                 SELECT mint_address, wallet_address, trade_type, venue,
-                       sol_amount, token_amount,
-                       reserve_sol, reserve_token,
+                       amount_lamports, token_amount,
+                       reserve_lamports, reserve_token,
                        slot, tx_index, leg_index, block_time, tx_signature,
                        lifetime_count, lifetime_volume, newest_block_time, newest_price, newest_reserves
                 FROM ranked
@@ -754,7 +754,7 @@ impl TradeRepo {
 /// Returns `None` for time-driven exits where no real trade occurred.
 ///
 /// Price is derived now (the table has no `price_per_token` column), so the match
-/// converts the stored lamports to SOL (`sol_amount::float8 / 1e9`) before dividing
+/// converts the stored lamports to SOL (`amount_lamports::float8 / 1e9`) before dividing
 /// by `token_amount`, matching the `price_of()`/`lamports_to_sol()` convention every
 /// caller uses to compute the requested `price_per_token` (SOL, not lamports, per
 /// token). Best-effort lookup; the raw signature bytes are decoded back to base58.
@@ -767,7 +767,7 @@ pub async fn find_tx_by_fill(
     let bytes: Option<Vec<u8>> = sqlx::query_scalar(
         "SELECT tx_signature FROM trades \
          WHERE mint_address = $1 AND block_time = $2 \
-           AND (sol_amount::float8 / 1e9 / NULLIF(token_amount, 0)) = $3 \
+           AND (amount_lamports::float8 / 1e9 / NULLIF(token_amount, 0)) = $3 \
          LIMIT 1",
     )
     .bind(mint)
@@ -789,8 +789,8 @@ pub async fn find_tx_by_fill(
 pub struct SigLegs {
     /// Σ token_amount across the legs — exact raw integer units.
     pub token_amount: u64,
-    /// Σ sol_amount across the legs.
-    pub sol_amount: f64,
+    /// Σ amount_sol across the legs.
+    pub amount_sol: f64,
     /// Earliest leg's block time (the fill's entry time).
     pub first_block_time: DateTime<Utc>,
     /// Latest leg's block time (the fill's exit time).
@@ -801,7 +801,7 @@ impl SigLegs {
     /// Weighted-average execution price (Σsol / Σtokens), or 0 when no tokens.
     pub fn price_per_token(&self) -> f64 {
         if self.token_amount > 0 {
-            self.sol_amount / self.token_amount as f64
+            self.amount_sol / self.token_amount as f64
         } else {
             0.0
         }
@@ -824,7 +824,7 @@ pub struct SeedAgg {
 // Conversion helpers — the I/O boundary between the runtime `Trade` model and the
 // integer/BYTEA `trades` schema.
 //
-// SOL: the model carries `sol_amount` / `reserve_sol` as human SOL (f64),
+// SOL: the model carries `amount_sol` / `reserve_sol` as human SOL (f64),
 // so the SOL side round-trips through `sol_to_lamports`/`lamports_to_sol` (exact
 // lamport precision in the BIGINT column). Token amounts and token reserves are
 // now exact integers (`u64`) in the model too, so they bind/read as `i64` directly
@@ -886,7 +886,7 @@ mod tests {
     use sqlx::postgres::PgPoolOptions;
 
     /// `insert_many` binds 13 params/row (mint_address, wallet_id, trade_type,
-    /// venue, sol_amount, token_amount, reserve_sol, reserve_token,
+    /// venue, amount_lamports, token_amount, reserve_lamports, reserve_token,
     /// slot, tx_index, leg_index, block_time, tx_signature); one Postgres statement
     /// is capped at 65535 (sqlx 0.6 wraps `len() as i16` past it → a Postgres parse
     /// error). Pin the chunk so adding a bound column re-checks the ceiling here
@@ -900,7 +900,7 @@ mod tests {
         );
     }
 
-    /// `reserve_sol` is human SOL in the model but lamports in the BIGINT column —
+    /// `reserve_sol` is human SOL in the model but `reserve_lamports` in the BIGINT column —
     /// the SOL↔lamports round-trip must preserve fractional SOL (the old
     /// `f64_opt_to_raw` path rounded 30.5 SOL to the integer 31).
     #[test]
@@ -976,7 +976,7 @@ mod tests {
             .expect("query")
             .expect("the signature's legs are summed, not None");
         assert_eq!(legs.token_amount, 1000, "Σtokens across both legs");
-        assert!((legs.sol_amount - 1.0).abs() < 1e-6, "Σsol across both legs");
+        assert!((legs.amount_sol - 1.0).abs() < 1e-6, "Σsol across both legs");
         // Weighted-average price = Σsol / Σtokens, not a per-leg price.
         assert!((legs.price_per_token() - 0.001).abs() < 1e-9, "weighted-avg fill price");
 
@@ -1017,7 +1017,7 @@ mod tests {
             .expect("query")
             .expect("own sell legs summed");
         assert_eq!(legs.token_amount, 500, "only THIS position's sells summed");
-        assert!((legs.sol_amount - 0.5).abs() < 1e-6, "concurrent position's sell excluded");
+        assert!((legs.amount_sol - 0.5).abs() < 1e-6, "concurrent position's sell excluded");
 
         // Side filter holds: no Buy legs exist, so a Buy query over the sell sigs is None.
         assert!(

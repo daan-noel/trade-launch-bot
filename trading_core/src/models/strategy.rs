@@ -14,7 +14,7 @@ pub struct StrategyRule {
     /// Human-facing rule label.
     pub rule_name: String,
     /// Buy size in SOL per fired token.
-    pub buy_amount: f64,
+    pub buy_amount_sol: f64,
     /// Execution mode: `paper` or `real`.
     pub trade_mode: String,
     /// Whether the rule is eligible to fire.

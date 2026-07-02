@@ -282,22 +282,22 @@ impl StrategyService {
             // Inert target defaults (tpsl2 real overwrites with the trigger snapshot).
             position.set_target(0.0, 0, token.created_at, String::new());
 
-            let buy_amount = rule.buy_amount;
+            let buy_amount_sol = rule.buy_amount_sol;
             let position_id = position.id;
 
             // SOL balance-floor guard for real buys: checked BEFORE sync_position so
             // no runtime cleanup is needed when the guard fires.
             if is_real {
-                let buy_lamports = (buy_amount * LAMPORTS_PER_SOL as f64) as u64;
+                let buy_lamports = (buy_amount_sol * LAMPORTS_PER_SOL as f64) as u64;
                 if !self.trader.can_commit_buy(buy_lamports) {
-                    warn!("[REAL] SOL balance-floor guard blocked snipe of {buy_amount:.4} SOL \
+                    warn!("[REAL] SOL balance-floor guard blocked snipe of {buy_amount_sol:.4} SOL \
                            for {mint} rule {rule_id}");
                     continue;
                 }
                 if let Some(max_sol) = self.settings.borrow().max_committed_sol {
                     let max_lamports = (max_sol * LAMPORTS_PER_SOL as f64) as u64;
                     if self.trader.committed_lamports().saturating_add(buy_lamports) > max_lamports {
-                        warn!("[REAL] max_committed_sol guard blocked snipe of {buy_amount:.4} SOL \
+                        warn!("[REAL] max_committed_sol guard blocked snipe of {buy_amount_sol:.4} SOL \
                                for {mint} rule {rule_id}");
                         continue;
                     }
@@ -412,7 +412,7 @@ impl StrategyService {
                             mint.clone(),
                             creator,
                             token_program_id,
-                            buy_amount,
+                            buy_amount_sol,
                             position_id,
                             repo.clone(),
                             trade_repo.clone(),
@@ -1125,6 +1125,43 @@ impl StrategyService {
         }
 
         Ok((rule, count))
+    }
+
+    /// Pause every currently active rule for `strategy_id` in `trade_mode`. Each
+    /// rule runs through the exact single-rule `pause_rule` path (sequential, not
+    /// concurrent — this is an infrequent admin action, not a hot path), so a
+    /// per-rule failure doesn't block the rest of the batch. Returns one result
+    /// per targeted rule.
+    pub async fn pause_all_rules(
+        &self,
+        strategy_id: &str,
+        trade_mode: &str,
+    ) -> anyhow::Result<Vec<(Uuid, anyhow::Result<StrategyRule>)>> {
+        let rules = self.repo.find_rules_by_strategy(strategy_id).await?;
+        let mut out = Vec::new();
+        for r in rules.into_iter().filter(|r| r.trade_mode == trade_mode && r.is_active) {
+            out.push((r.id, self.pause_rule(r.id).await));
+        }
+        Ok(out)
+    }
+
+    /// Stop-and-close every rule for `strategy_id` in `trade_mode` that is either
+    /// active or still holding open positions (mirrors the per-row Stop button's
+    /// visibility: Active + Draining, not Idle/Finished). Sequential, same
+    /// rationale as [`pause_all_rules`].
+    pub async fn stop_all_rules(
+        &self,
+        strategy_id: &str,
+        trade_mode: &str,
+    ) -> anyhow::Result<Vec<(Uuid, anyhow::Result<(StrategyRule, usize)>)>> {
+        let rules = self.repo.find_rules_by_strategy(strategy_id).await?;
+        let mut out = Vec::new();
+        for r in rules.into_iter().filter(|r| {
+            r.trade_mode == trade_mode && (r.is_active || self.runtime.holding_count_by_rule(r.id) > 0)
+        }) {
+            out.push((r.id, self.stop_and_close_rule(r.id).await));
+        }
+        Ok(out)
     }
 
     // ── Rule CRUD (validate via the core `rules` domain, then append the live

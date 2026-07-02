@@ -12,12 +12,12 @@ const FIELDS: ParamField[] = [
   { column: 'tolerance_pct', group: 'fingerprint', section: 'fingerprint', kind: 'float', required: false, label: 'Tolerance %', helpKey: 'tolerance', unit: '%', step: '0.1', min: 0, max: 100, nullable: true },
   { column: 'p_token_cu_limit', group: 'fingerprint', section: 'fingerprint', kind: 'int', required: false, label: 'CU Limit', helpKey: 'cuLimit', nullable: true },
   { column: 'p_token_cu_price', group: 'fingerprint', section: 'fingerprint', kind: 'int', required: false, label: 'CU Price', helpKey: 'cuPrice', nullable: true },
-  { column: 'p_token_max_sol_cost', group: 'fingerprint', section: 'fingerprint', kind: 'float', required: false, label: 'Max SOL Cost', helpKey: 'maxSolCost', unit: '◎', step: '0.001', nullable: true },
-  { column: 'p_token_spendable_sol_in', group: 'fingerprint', section: 'fingerprint', kind: 'float', required: false, label: 'Spendable SOL In', helpKey: 'spendableSolIn', unit: '◎', step: '0.001', nullable: true },
+  { column: 'p_token_max_cost_lamports', group: 'fingerprint', section: 'fingerprint', kind: 'float', required: false, label: 'Max SOL Cost', helpKey: 'maxSolCost', unit: '◎', step: '0.001', nullable: true },
+  { column: 'p_token_spendable_lamports_in', group: 'fingerprint', section: 'fingerprint', kind: 'float', required: false, label: 'Spendable SOL In', helpKey: 'spendableSolIn', unit: '◎', step: '0.001', nullable: true },
   { column: 'p_token_ix_labels', group: 'fingerprint', section: 'fingerprint', kind: 'array', required: false, label: 'Instruction Labels', helpKey: 'ixLabels' },
 
   // ── Sizing & limits ──
-  { column: 'buy_amount', group: 'sizing', section: 'sizing', kind: 'float', required: true, label: 'Buy Amount (SOL)', helpKey: 'buyAmount', unit: '◎', step: '0.001' },
+  { column: 'buy_amount_sol', group: 'sizing', section: 'sizing', kind: 'float', required: true, label: 'Buy Amount (SOL)', helpKey: 'buyAmount', unit: '◎', step: '0.001' },
   { column: 'p_max_concurrent_tokens', group: 'sizing', section: 'sizing', kind: 'int', required: false, label: 'Max Concurrent Tokens', helpKey: 'maxConcurrentTokens' },
   { column: 'p_max_total_tokens', group: 'sizing', section: 'sizing', kind: 'int', required: false, label: 'Max Total Tokens', helpKey: 'maxTotalTokens' },
 

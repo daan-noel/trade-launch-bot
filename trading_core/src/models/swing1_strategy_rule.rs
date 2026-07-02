@@ -32,7 +32,7 @@ pub struct Swing1Rule {
     pub p_max_total_tokens: Option<u64>,
     pub p_token_ix_labels: Value,
     pub trade_mode: String,
-    pub buy_amount: f64,
+    pub buy_amount_sol: f64,
 
     // ── Exit ladder (reused semantics) ────────────────────────────────────────
     pub p_exit_take_profit: f64,
@@ -96,7 +96,7 @@ impl Swing1Rule {
         p_token_cu_price: Option<u64>,
         p_token_ix_labels: Value,
         trade_mode: String,
-        buy_amount: f64,
+        buy_amount_sol: f64,
         p_exit_take_profit: f64,
         p_exit_stop_loss: f64,
         p_token_max_sol_cost: Option<f64>,
@@ -118,7 +118,7 @@ impl Swing1Rule {
             p_token_cu_price,
             p_token_ix_labels,
             trade_mode,
-            buy_amount,
+            buy_amount_sol,
             p_exit_take_profit,
             p_exit_stop_loss,
             p_exit_trailing_stop_pct,

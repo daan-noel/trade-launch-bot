@@ -20,6 +20,7 @@ import {
 } from 'lib/params';
 import { ruleColumns, RuleRowProvider } from 'components/tpsl1/ruleColumns';
 import { SimSummaryCard } from 'components/tpsl1/SimSummaryCard';
+import { RunPositionsPanel } from 'components/strategy/RunPositionsPanel';
 import { PaperResultSection } from '@lab/components/strategies/PaperResultSection';
 import { TokenInspectModal, type InspectTarget } from 'components/tpsl1/TokenInspectModal';
 import {
@@ -518,19 +519,9 @@ export function Tpsl1Page() {
     usePolledRules(fetchTpsl1Rules, 'tpsl1');
 
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
-  // Positions for the selected rule: server-side page/sort/search/filter + whole-run
-  // summary, kept live via SSE / a settle-gated poll (mirrors the live page).
-  const [posQuery, setPosQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
-  const {
-    positions,
-    total: positionsTotal,
-    summary: positionsSummary,
-    loading: positionsLoading,
-    error: positionsError,
-  } = useRulePositions(
-    selectedRuleId, rules, fetchTpsl1RulePositions,
-    fetchTpsl1RulePositionsSummary, 'tpsl1', posQuery, POSITION_NUMERIC_COLS,
-  );
+  // Positions for the selected rule are split into Current run + Old runs by
+  // `RunPositionsPanel` (below); each section owns its own server-side table +
+  // summary. The paper-result view keeps its own `useRulePositions` instance.
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editRule, setEditRule] = useState<RuleRecord | null>(null);
@@ -792,10 +783,9 @@ export function Tpsl1Page() {
     const s = new Set<string>();
     matchedTokens.forEach((r) => s.add(r.mint));
     simTokens.forEach((r) => s.add(r.mint));
-    positions.forEach((r) => s.add(r.mint));
     paperPositions.forEach((r) => s.add(r.mint));
     return [...s].sort();
-  }, [matchedTokens, simTokens, positions, paperPositions]);
+  }, [matchedTokens, simTokens, paperPositions]);
 
   const { data: tokenBatch } = useGetTokensByMintsQuery(allMints, {
     skip: allMints.length === 0,
@@ -837,7 +827,7 @@ export function Tpsl1Page() {
       return;
     }
     for (const [label, col] of [
-      ['buy amount', 'buy_amount'],
+      ['buy amount', 'buy_amount_sol'],
       ['take profit', 'p_exit_take_profit'],
       ['stop loss', 'p_exit_stop_loss'],
     ] as const) {
@@ -1076,14 +1066,13 @@ export function Tpsl1Page() {
 
   // Stable row-select handlers so the result tables' memoized rows survive an
   // unrelated page render (these closures are passed straight to DataTable).
-  const onSelectPosition = useCallback(
-    (key: string | null) => {
-      const row = key ? positions.find((p) => p.id === key) ?? null : null;
+  const onInspectPosition = useCallback(
+    (row: RulePositionRecord | null) => {
       setInspect(
         row ? { table: 'positions', key: row.id, target: inspectFromPosition(row) } : null,
       );
     },
-    [positions],
+    [],
   );
 
   const onSelectSim = useCallback(
@@ -1129,73 +1118,25 @@ export function Tpsl1Page() {
     [sellToken],
   );
 
-  const positionRowActions = useCallback(
-    (row: RulePositionRecord) => {
-      if (row.status !== 'Holding') return null;
-      const isSelling = sellingPositionMint === row.mint;
-      return (
-        <div className="flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
-          <button
-            type="button"
-            disabled={isSelling}
-            onClick={() => { void handleSellPosition(row.mint); }}
-            className="rounded border border-red/50 bg-red/12 px-2 py-0.5 text-[11px] font-semibold text-red hover:bg-red/22 disabled:opacity-45"
-          >
-            {isSelling ? 'Selling…' : 'Sell ALL'}
-          </button>
-        </div>
-      );
-    },
-    [sellingPositionMint, handleSellPosition],
-  );
-
-  // Positions for the selected rule. Built once and rendered under whichever
-  // table owns the rule (real → below Real table, paper → below Paper table).
-  // Only one of isReal/isPaperRuleSelected is true at a time, so it renders once.
+  // Positions for the selected rule — split into Current run + Old runs. Rendered
+  // under whichever table owns the rule (real → below Real, paper → below Paper);
+  // only one of isReal/isPaperRuleSelected is true at a time, so it renders once.
   const positionsSection = (
-    <>
-      <SectionDivider />
-      <section>
-        <SectionHeading
-          title="Positions"
-          marker="bg-info"
-          badge="info"
-          count={positionsError ? undefined : positionsTotal}
-          subtitle={selectedRuleName ?? undefined}
-        />
-        {positionsError && <InlineAlert variant="error">{positionsError}</InlineAlert>}
-        {/* Summary is server-computed over the whole run (not the visible page). */}
-        {!positionsError && positionsSummary && positionsSummary.tokens > 0 && (
-          <SimSummaryCard
-            title="Positions Summary"
-            ruleName={selectedRuleName ?? ''}
-            summary={positionsSummary}
-            price={price}
-          />
-        )}
-        {!positionsError && (
-          <DataTable
-            columns={posCols}
-            rows={mergeTokenData(positions, tokenMap)}
-            rowKey={keyById}
-            selectedKey={inspect?.table === 'positions' ? inspect.key : null}
-            onSelect={onSelectPosition}
-            rowActions={isRealRuleSelected ? positionRowActions : undefined}
-            serverSide
-            serverTotal={positionsTotal}
-            onQueryChange={setPosQuery}
-            loading={positionsLoading}
-            resetKey={selectedRuleId ?? ''}
-            defaultPageSize={20}
-            pageSizeOptions={[20, 50, 100]}
-            colFilters
-            colToggle
-            tableId="tpsl1_positions"
-            emptyMessage="No positions for this rule."
-          />
-        )}
-      </section>
-    </>
+    <RunPositionsPanel
+      strategy="tpsl1"
+      selectedRuleId={selectedRuleId}
+      selectedRuleName={selectedRuleName}
+      rules={rules}
+      columns={posCols}
+      fetchPositions={fetchTpsl1RulePositions}
+      fetchSummary={fetchTpsl1RulePositionsSummary}
+      price={price}
+      selectedKey={inspect?.table === 'positions' ? inspect.key : null}
+      onInspect={onInspectPosition}
+      isReal={isRealRuleSelected}
+      sellingPositionMint={sellingPositionMint}
+      onSellPosition={handleSellPosition}
+    />
   );
 
   return (

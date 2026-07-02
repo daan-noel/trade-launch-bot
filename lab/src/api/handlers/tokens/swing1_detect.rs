@@ -81,7 +81,7 @@ impl Swing1DetectParams {
             None,
             serde_json::json!([]),
             "paper".into(),
-            1.0, // buy_amount — notional only; PnL% is notional-independent here
+            1.0, // buy_amount_sol — notional only; PnL% is notional-independent here
             self.take_profit.unwrap_or(100.0),
             self.stop_loss.unwrap_or(50.0),
             None,

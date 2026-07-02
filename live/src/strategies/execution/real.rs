@@ -303,7 +303,7 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
     mint: String,
     creator: String,
     token_program_id: String,
-    buy_amount: f64,
+    buy_amount_sol: f64,
     position_id: Uuid,
     repo: StrategyRepo,
     trade_repo: TradeRepo,
@@ -391,7 +391,7 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
         // the sole confirmation and the entry-price source. `reuse_account` (if set)
         // routes the buy straight into the existing account, skipping the template.
         let send_result = trader
-            .send_snipe_buy(&mint, &creator, &token_program_id, buy_amount, slippage_bps, reserves, on_signed, cashback_enabled, reuse_account.as_deref())
+            .send_snipe_buy(&mint, &creator, &token_program_id, buy_amount_sol, slippage_bps, reserves, on_signed, cashback_enabled, reuse_account.as_deref())
             .await;
 
         // The signature is known the instant the tx was signed (captured by the hook
@@ -553,7 +553,7 @@ pub(crate) async fn adopt_existing_fill_if_present(
                     sig,
                     fill.token_amount,
                     fill.price_per_token(),
-                    fill.sol_amount,
+                    fill.amount_sol,
                     fill.first_block_time,
                     token_account,
                 )
@@ -713,7 +713,7 @@ pub(crate) async fn sell_and_close_position(
         let prev = position.clone();
         position.close(
             legs.price_per_token(),
-            legs.sol_amount,
+            legs.amount_sol,
             legs.token_amount,
             sigs,
             legs.last_block_time,

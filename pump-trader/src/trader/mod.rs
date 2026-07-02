@@ -279,7 +279,7 @@ pub struct PumpFunTrader {
     // by a background task every ~30s — never queried inline on the hot buy path.
     // `None` until the first refresh completes; `can_commit_buy` fails open (allows)
     // when the cache is empty so a stale cache doesn't block all trades.
-    sol_balance_cache: Arc<std::sync::Mutex<Option<(u64, std::time::Instant)>>>,
+    balance_lamports_cache: Arc<std::sync::Mutex<Option<(u64, std::time::Instant)>>>,
 }
 
 impl PumpFunTrader {
@@ -372,7 +372,7 @@ impl PumpFunTrader {
             blockhash_cache: Arc::new(BlockhashCache::default()),
             committed_lamports: AtomicU64::new(0),
             position_commitments: Arc::new(DashMap::new()),
-            sol_balance_cache: Arc::new(std::sync::Mutex::new(None)),
+            balance_lamports_cache: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -446,7 +446,7 @@ impl PumpFunTrader {
     pub fn can_commit_buy(&self, buy_lamports: u64) -> bool {
         // 0.02 SOL reserve — enough for fees/tips/rent on the next sell.
         const RESERVE_FLOOR: u64 = 20_000_000;
-        let balance = match *self.sol_balance_cache.lock().unwrap_or_else(|p| p.into_inner()) {
+        let balance = match *self.balance_lamports_cache.lock().unwrap_or_else(|p| p.into_inner()) {
             Some((lamports, _)) => lamports,
             None => return true, // cache empty → fail open
         };
@@ -459,8 +459,8 @@ impl PumpFunTrader {
 
     /// Update the cached on-chain SOL balance. Called by the background refresh task
     /// every ~30 s — never on the hot buy path.
-    pub fn update_sol_balance_cache(&self, lamports: u64) {
-        *self.sol_balance_cache.lock().unwrap_or_else(|p| p.into_inner()) =
+    pub fn update_balance_lamports_cache(&self, lamports: u64) {
+        *self.balance_lamports_cache.lock().unwrap_or_else(|p| p.into_inner()) =
             Some((lamports, std::time::Instant::now()));
     }
 }

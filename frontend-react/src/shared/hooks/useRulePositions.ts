@@ -92,6 +92,10 @@ export function useRulePositions(
   /** Column keys that filter numerically (so `>5`/`1..10` become structured ops).
    *  Derive with `numericColKeys(columns)`; empty = every filter is substring. */
   numericCols?: ReadonlySet<string>,
+  /** When false, this is a *static* (immutable) view — the run-history ("old runs")
+   *  population never changes, so skip the SSE delta patching, the fallback poll, and
+   *  the settle reconcile. Only the fetch-on-select/query path runs. Default true. */
+  live: boolean = true,
 ): RulePositions {
   // Serialize the table view-state into the unified POST body. Numeric columns get
   // structured `{op,val}` filters; the server whitelist drops any unknown key.
@@ -196,7 +200,7 @@ export function useRulePositions(
   // (coalescing fill/exit bursts). Skipped once the rule is settled; the fallback
   // poll below reconciles dropped frames.
   useEffect(() => {
-    if (!selectedRuleId || settled) return;
+    if (!selectedRuleId || settled || !live) return;
     const pending: TpslPositionDelta[] = [];
     let timer: ReturnType<typeof setTimeout> | null = null;
     const flush = () => {
@@ -217,7 +221,7 @@ export function useRulePositions(
       if (timer) clearTimeout(timer);
       handle.close();
     };
-  }, [strategy, selectedRuleId, settled, loadSummary]);
+  }, [strategy, selectedRuleId, settled, live, loadSummary]);
 
   // Reconcile once when the rule transitions to settled: the terminal exit delta
   // can race the settle-driven unsubscribe above, so do one final silent page +
@@ -230,12 +234,12 @@ export function useRulePositions(
       wasSettled.current = settled;
       return;
     }
-    if (settled && !wasSettled.current && selectedRuleId) {
+    if (live && settled && !wasSettled.current && selectedRuleId) {
       void loadPage(selectedRuleId, true);
       void loadSummary(selectedRuleId);
     }
     wasSettled.current = settled;
-  }, [settled, selectedRuleId, loadPage, loadSummary]);
+  }, [settled, selectedRuleId, live, loadPage, loadSummary]);
 
   // Safety net: a slow visibility-gated poll catches dropped/lagged SSE frames.
   // No leading call (the effects above did the first fetch); off once settled.
@@ -247,7 +251,7 @@ export function useRulePositions(
       }
     },
     FALLBACK_POLL_INTERVAL_MS,
-    !!selectedRuleId && !settled,
+    !!selectedRuleId && !settled && live,
     false,
   );
 

@@ -28,7 +28,7 @@ use crate::models::trade::TradeRow;
 #[derive(Clone, Debug)]
 pub struct SweepTrade {
     pub block_time: DateTime<Utc>,
-    pub sol_amount: f64,
+    pub amount_sol: f64,
     pub token_amount: f64,
     pub price_per_token: f64,
     pub reserve_sol: Option<f64>,
@@ -37,7 +37,7 @@ pub struct SweepTrade {
     /// reserve_token`) as live + chart instead of silently falling back to execution
     /// price. Costs ~+8 B/row; accepted as the price of price parity (swing1 Step 0).
     pub reserve_token: Option<f64>,
-    pub real_sol_reserves: Option<f64>,
+    pub real_reserve_sol: Option<f64>,
     /// Real TOKEN reserves — feeds the pool-spot fallback of the shared
     /// [`chart_spot_price`](TradeRow::chart_spot_price). ~+8 B/row.
     pub real_token_reserves: Option<f64>,
@@ -54,8 +54,8 @@ impl TradeRow for SweepTrade {
     fn is_buy(&self) -> bool {
         self.is_buy
     }
-    fn sol_amount(&self) -> f64 {
-        self.sol_amount
+    fn amount_sol(&self) -> f64 {
+        self.amount_sol
     }
     fn token_amount(&self) -> f64 {
         self.token_amount
@@ -78,8 +78,8 @@ impl TradeRow for SweepTrade {
     fn reserve_token(&self) -> Option<f64> {
         self.reserve_token
     }
-    fn real_sol_reserves(&self) -> Option<f64> {
-        self.real_sol_reserves
+    fn real_reserve_sol(&self) -> Option<f64> {
+        self.real_reserve_sol
     }
     fn real_token_reserves(&self) -> Option<f64> {
         self.real_token_reserves
@@ -118,12 +118,12 @@ pub fn project_trades<T: TradeRow<Wallet = String>>(
         .iter()
         .map(|t| SweepTrade {
             block_time: t.block_time(),
-            sol_amount: t.sol_amount(),
+            amount_sol: t.amount_sol(),
             token_amount: t.token_amount(),
             price_per_token: t.price_per_token(),
             reserve_sol: t.reserve_sol(),
             reserve_token: t.reserve_token(),
-            real_sol_reserves: t.real_sol_reserves(),
+            real_reserve_sol: t.real_reserve_sol(),
             real_token_reserves: t.real_token_reserves(),
             slot: t.slot(),
             wallet: interner.intern(t.wallet()),

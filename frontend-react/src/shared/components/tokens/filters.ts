@@ -44,10 +44,10 @@ export interface TokenFilters {
   init_supply_max: string;
   token_amount_min: string;
   token_amount_max: string;
-  max_sol_cost_min: string;
-  max_sol_cost_max: string;
-  spendable_sol_in_min: string;
-  spendable_sol_in_max: string;
+  max_cost_lamports_min: string;
+  max_cost_lamports_max: string;
+  spendable_lamports_in_min: string;
+  spendable_lamports_in_max: string;
   min_tokens_out_min: string;
   min_tokens_out_max: string;
   // Technical
@@ -137,10 +137,10 @@ export const defaultFilters = (): TokenFilters => ({
   init_supply_max: '',
   token_amount_min: '',
   token_amount_max: '',
-  max_sol_cost_min: '',
-  max_sol_cost_max: '',
-  spendable_sol_in_min: '',
-  spendable_sol_in_max: '',
+  max_cost_lamports_min: '',
+  max_cost_lamports_max: '',
+  spendable_lamports_in_min: '',
+  spendable_lamports_in_max: '',
   min_tokens_out_min: '',
   min_tokens_out_max: '',
   cu_limit_min: '',
@@ -325,8 +325,8 @@ export function activeFilterCount(f: TokenFilters): number {
     f.init_buy_min || f.init_buy_max,
     f.init_supply_min || f.init_supply_max,
     f.token_amount_min || f.token_amount_max,
-    f.max_sol_cost_min || f.max_sol_cost_max,
-    f.spendable_sol_in_min || f.spendable_sol_in_max,
+    f.max_cost_lamports_min || f.max_cost_lamports_max,
+    f.spendable_lamports_in_min || f.spendable_lamports_in_max,
     f.min_tokens_out_min || f.min_tokens_out_max,
     f.cu_limit_min || f.cu_limit_max,
     f.cu_price_min || f.cu_price_max,
@@ -377,9 +377,9 @@ export function tokenPassesFilters(f: TokenFilters, t: TokenRecord): boolean {
   if (!optF64(t.initial_buy_sol, f.init_buy_min, f.init_buy_max)) return false;
   if (!optF64(t.initial_supply_token, f.init_supply_min, f.init_supply_max)) return false;
   if (!optF64(t.token_amount, f.token_amount_min, f.token_amount_max)) return false;
-  // max_sol_cost / spendable_sol_in are lamports; filter in SOL to match the table.
-  if (!optF64(t.max_sol_cost != null ? t.max_sol_cost / 1e9 : null, f.max_sol_cost_min, f.max_sol_cost_max)) return false;
-  if (!optF64(t.spendable_sol_in != null ? t.spendable_sol_in / 1e9 : null, f.spendable_sol_in_min, f.spendable_sol_in_max)) return false;
+  // max_cost_lamports / spendable_lamports_in are lamports; filter in SOL to match the table.
+  if (!optF64(t.max_cost_lamports != null ? t.max_cost_lamports / 1e9 : null, f.max_cost_lamports_min, f.max_cost_lamports_max)) return false;
+  if (!optF64(t.spendable_lamports_in != null ? t.spendable_lamports_in / 1e9 : null, f.spendable_lamports_in_min, f.spendable_lamports_in_max)) return false;
   if (!optF64(t.min_tokens_out, f.min_tokens_out_min, f.min_tokens_out_max)) return false;
 
   // Technical

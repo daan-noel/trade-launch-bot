@@ -51,8 +51,8 @@ const DEFAULT_GROUP_BY: GroupField[] = ['cu_limit', 'ix_labels'];
 const SCALAR_FILTER_FIELDS: GroupField[] = [
   'cu_limit',
   'cu_price',
-  'max_sol_cost',
-  'spendable_sol_in',
+  'max_cost_lamports',
+  'spendable_lamports_in',
   'initial_buy_sol',
 ];
 

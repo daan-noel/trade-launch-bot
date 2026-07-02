@@ -6,7 +6,7 @@ export interface ChartTrade {
   block_time: string;
   price_per_token: number;
   trade_type: 'buy' | 'sell';
-  sol_amount?: number;
+  amount_sol?: number;
   /** Raw token units swapped — used to reconstruct the pre-trade (genesis) open. */
   token_amount?: number;
   slot?: number;
@@ -172,9 +172,9 @@ export interface ChartRangeStats {
   uniqueWallets: number;
   uniqueBuyers: number;
   uniqueSellers: number;
-  /** Largest single buy `sol_amount` in the range (0 if none). */
+  /** Largest single buy `amount_sol` in the range (0 if none). */
   maxBuySol: number;
-  /** Largest single sell `sol_amount` in the range (0 if none). */
+  /** Largest single sell `amount_sol` in the range (0 if none). */
   maxSellSol: number;
   /** Wall-clock span from first to last trade in the range (ms). */
   durationMs: number;

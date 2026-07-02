@@ -57,6 +57,10 @@ pub struct PositionResponse {
     pub entry_time: Option<DateTime<Utc>>,
     pub exit_time: Option<DateTime<Utc>>,
     pub exit_reason: Option<String>,
+    /// Owning run's monotonic sequence (`strategy_runs.run_seq`). Populated only by
+    /// the run-history ("old runs") view — where it drives the run column + banding;
+    /// `None` on the current-run/live paths (single run) and SSE deltas.
+    pub run_seq: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     /// Swing1-only: legs harvested from the live exit memo at close (see
@@ -99,6 +103,9 @@ impl From<StrategyPosition> for PositionResponse {
             entry_time: p.entry_time,
             exit_time: p.exit_time,
             exit_reason: p.exit_reason,
+            // Stamped by the run-history handler from the run map; single-run views
+            // leave it None.
+            run_seq: None,
             created_at: p.created_at,
             updated_at: p.updated_at,
             swing_legs,
@@ -136,6 +143,24 @@ impl PositionListParams {
     }
 }
 
+/// Run-split selector for the by-rule positions + summary views.
+/// - `Current` — the rule's latest run only (the "Current run" section).
+/// - `History` — every prior run (all runs except the latest; the "Old runs" section).
+///
+/// Absent (`None`) preserves the legacy behavior (paper = latest run, real = all runs)
+/// for any caller that doesn't opt into the split.
+#[derive(serde::Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PositionScope {
+    Current,
+    History,
+}
+
+#[derive(serde::Deserialize)]
+pub struct ScopeParam {
+    pub scope: Option<PositionScope>,
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -162,8 +187,27 @@ fn json_positions(positions: Vec<StrategyPosition>) -> HttpResponse {
 /// `X-Total-Count` header so the client pager can size itself without the JSON
 /// body shape changing (the array-of-positions contract is preserved).
 fn json_positions_with_total(positions: Vec<StrategyPosition>, total: i64) -> HttpResponse {
-    let responses: Vec<PositionResponse> =
-        positions.into_iter().map(PositionResponse::from).collect();
+    json_positions_with_total_seq(positions, total, None)
+}
+
+/// Like [`json_positions_with_total`] but stamps each row's `run_seq` from a
+/// `run_id → run_seq` map — the run-history view uses it so the client can label +
+/// band positions by their originating run. A `None` map leaves `run_seq` unset.
+fn json_positions_with_total_seq(
+    positions: Vec<StrategyPosition>,
+    total: i64,
+    seq_map: Option<&std::collections::HashMap<Uuid, i64>>,
+) -> HttpResponse {
+    let responses: Vec<PositionResponse> = positions
+        .into_iter()
+        .map(|p| {
+            let mut r = PositionResponse::from(p);
+            if let Some(map) = seq_map {
+                r.run_seq = map.get(&r.run_id).copied();
+            }
+            r
+        })
+        .collect();
     HttpResponse::Ok()
         .insert_header(("X-Total-Count", total.to_string()))
         // Expose the count header to the browser fetch (needed when the SPA is
@@ -190,12 +234,14 @@ fn list_error(what: &str, e: anyhow::Error) -> HttpResponse {
 pub async fn get_positions_by_rule(
     app_state: web::Data<Arc<DeployState>>,
     path: web::Path<(String, Uuid)>,
+    scope: web::Query<ScopeParam>,
     body: web::Json<TableRequest>,
 ) -> impl Responder {
     let (strategy, rule_id) = path.into_inner();
     if let Err(resp) = strategy_id(&strategy) {
         return resp;
     }
+    let scope = scope.into_inner().scope;
     let req = body.into_inner();
     let (limit, offset) = req.pagination.bounds();
     let pq = PositionQuery::from(req);
@@ -207,27 +253,60 @@ pub async fn get_positions_by_rule(
         Err(e) => return list_error("load rule", e),
     };
 
-    // Page the rows and count the (filtered) population for the pager. Paper rules
-    // page their latest run (they retain only the current run's bag); real rules page
-    // their full lifetime history. Sort/search/filter apply to both list + count.
-    let (result, total) = if rule.trade_mode == "paper" {
-        match repo.latest_run(rule_id, "paper").await {
+    // Page the rows and count the (filtered) population for the pager. Sort/search/
+    // filter apply to both list + count. The scope selects which run(s):
+    //   `current` — the rule's latest run only (both modes);
+    //   `history` — every prior run, each row stamped with its `run_seq`;
+    //   absent    — legacy: paper = latest run, real = full lifetime history.
+    let (result, total, seq_map) = match scope {
+        Some(PositionScope::Current) => match repo.latest_run(rule_id, &rule.trade_mode).await {
             Ok(Some(run)) => (
                 repo.find_positions_by_run_paged(run.id, limit, offset, &pq).await,
                 repo.count_positions_by_run(run.id, &pq).await,
+                None,
             ),
-            Ok(None) => (Ok(Vec::new()), Ok(0)),
-            Err(e) => return list_error("load paper run", e),
+            Ok(None) => return json_positions_with_total(Vec::new(), 0),
+            Err(e) => return list_error("load current run", e),
+        },
+        Some(PositionScope::History) => {
+            let runs = match repo.run_seqs_for_rule(rule_id, &rule.trade_mode).await {
+                Ok(runs) => runs,
+                Err(e) => return list_error("load runs", e),
+            };
+            // Need a current run to exclude AND at least one prior run for there to
+            // be any history — otherwise the "old runs" section is empty.
+            let Some(&(latest_run_id, _)) = runs.first() else {
+                return json_positions_with_total(Vec::new(), 0);
+            };
+            if runs.len() <= 1 {
+                return json_positions_with_total(Vec::new(), 0);
+            }
+            let seq_map: std::collections::HashMap<Uuid, i64> = runs.into_iter().collect();
+            (
+                repo.find_positions_by_rule_excluding_run_paged(rule_id, latest_run_id, limit, offset, &pq)
+                    .await,
+                repo.count_positions_by_rule_excluding_run(rule_id, latest_run_id, &pq).await,
+                Some(seq_map),
+            )
         }
-    } else {
-        (
+        None if rule.trade_mode == "paper" => match repo.latest_run(rule_id, "paper").await {
+            Ok(Some(run)) => (
+                repo.find_positions_by_run_paged(run.id, limit, offset, &pq).await,
+                repo.count_positions_by_run(run.id, &pq).await,
+                None,
+            ),
+            Ok(None) => (Ok(Vec::new()), Ok(0), None),
+            Err(e) => return list_error("load paper run", e),
+        },
+        None => (
             repo.find_positions_by_rule_paged(rule_id, limit, offset, &pq).await,
             repo.count_positions_by_rule(rule_id, &pq).await,
-        )
+            None,
+        ),
     };
 
     match (result, total) {
-        (Ok(positions), Ok(total)) => json_positions_with_total(positions, total),
+        (Ok(positions), Ok(total)) => json_positions_with_total_seq(positions, total, seq_map.as_ref()),
         (Err(e), _) | (_, Err(e)) => list_error("load positions for rule", e),
     }
 }
@@ -242,11 +321,13 @@ pub async fn get_positions_by_rule(
 pub async fn get_positions_summary_by_rule(
     app_state: web::Data<Arc<DeployState>>,
     path: web::Path<(String, Uuid)>,
+    scope: web::Query<ScopeParam>,
 ) -> impl Responder {
     let (strategy, rule_id) = path.into_inner();
     if let Err(resp) = strategy_id(&strategy) {
         return resp;
     }
+    let scope = scope.into_inner().scope;
     let repo = repo(&app_state);
 
     let rule = match repo.find_rule(rule_id).await {
@@ -255,14 +336,26 @@ pub async fn get_positions_summary_by_rule(
         Err(e) => return list_error("load rule", e),
     };
 
-    let result = if rule.trade_mode == "paper" {
-        match repo.latest_run(rule_id, "paper").await {
+    // Mirror the scope semantics of `get_positions_by_rule` so the summary card
+    // aggregates exactly the population its table pages.
+    let result = match scope {
+        Some(PositionScope::Current) => match repo.latest_run(rule_id, &rule.trade_mode).await {
+            Ok(Some(run)) => repo.positions_summary_by_run(run.id).await,
+            Ok(None) => Ok(PositionsSummary::default()),
+            Err(e) => return list_error("load current run", e),
+        },
+        Some(PositionScope::History) => match repo.latest_run(rule_id, &rule.trade_mode).await {
+            // Exclude the current run; a lone run yields an empty (tokens=0) summary.
+            Ok(Some(run)) => repo.positions_summary_by_rule_excluding_run(rule_id, run.id).await,
+            Ok(None) => Ok(PositionsSummary::default()),
+            Err(e) => return list_error("load current run", e),
+        },
+        None if rule.trade_mode == "paper" => match repo.latest_run(rule_id, "paper").await {
             Ok(Some(run)) => repo.positions_summary_by_run(run.id).await,
             Ok(None) => Ok(PositionsSummary::default()),
             Err(e) => return list_error("load paper run", e),
-        }
-    } else {
-        repo.positions_summary_by_rule(rule_id).await
+        },
+        None => repo.positions_summary_by_rule(rule_id).await,
     };
 
     match result {

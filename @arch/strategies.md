@@ -26,7 +26,7 @@ migration is a later remake phase, so those core types survive until then.
 | `exit_state.rs` | `CachedExitStateImpl` enum-wrapped per-strategy exit memo + `clock_entry_time` — the incremental trade-gate + clock-sweep the cache drives |
 | `rules.rs` | `strategy_id`-dispatched rule-CRUD domain: `validate` (percent ranges + tpsl2 entry-window/scalp-gate), `build_rule(RuleDraft) -> StrategyRule`, `create`/`save` against `StrategyRepo`. Replaces the cloned `tpsl_rules_core` split. The calling **edge** (live `api/handlers/strategies/rules.rs`) appends cache `reload_rules` + `rules_changed` SSE via the service |
 
-Universal knobs (`buy_amount`, `trade_mode`, caps) are the typed columns on `StrategyRule`; only the
+Universal knobs (`buy_amount_sol`, `trade_mode`, caps) are the typed columns on `StrategyRule`; only the
 strategy-specific gates live in `params`. `StrategyPosition` gained PnL/status helpers
 (`is_win`/`realized_pnl_sol`/`pnl_pct`/`is_closed`/…) mirroring the `strategy_position_pnl` view.
 
@@ -56,6 +56,8 @@ exec + double-buy/sell invariants · paper mirror fill-poll · tpsl2 scalp-armin
 **Simulated table = in-memory server-side paging** (`lab/src/strategies/sim_query.rs`). The finished backtest's rows are already resident (lab is single-user, workstation RAM), so `POST …/rules/{id}/simulate/result` (unified `TableRequest`) pages/sorts/filters them in Rust — numeric operators compare numerically, matching the SQL path's semantics — with a whole-run `GET …/simulate/result/summary` aggregate. No `sim_result_tokens` table: an in-RAM query fits the data. The legacy whole-blob `GET /api/jobs/simulations/{rule_id}/result` still serves (re-serializes on take).
 
 **Matched table = materialize-then-page** (`lab/src/state/matched_cache.rs`). The match predicate is a Rust closure (not SQL), so `POST …/rules/{id}/matched` (unified `TableRequest`) runs `collect_matching_tokens` once per `(rule_id, from, to)` to get the matched **mint set**, caches it on `LocalState` (`MatchedCache`, TTL/GC like `sim_results`), and pages the DB restricted to `mint = ANY(set)` via `StrategyRepo::find_tokens_by_mints_paged` (token-scoped whitelist). Removes the old 5,000-row display cap. tpsl2/swing1 delegate the paging to `tpsl1::matched_page_response` (strategy-agnostic).
+
+**Positions table = Current run + Old runs** (`?scope=current|history` on `POST …/rules/{id}/positions` and its `/summary`). A rule's positions are split by run: `current` pages the rule's latest run (`StrategyRepo::latest_run` → `find_positions_by_run_paged` + `positions_summary_by_run`); `history` pages every prior run (`find_positions_by_rule_excluding_run_paged` + `positions_summary_by_rule_excluding_run`, excluding the latest run id), each row stamped with its `run_seq` from `run_seqs_for_rule` for a run column + per-run banding. Scope absent = legacy (paper = latest run, real = all runs). Both live (`live/src/api/handlers/strategies/positions.rs`) and lab (paper-only) handlers accept the param. Frontend: one shared `RunPositionsPanel` renders both sections — Current run keeps the live SSE/poll `useRulePositions` path; Old runs is a second `useRulePositions(…, live=false)` (fetch-only, immutable) and only shows when a prior run exists. Wired into all live + lab strategy pages.
 
 ## Per-strategy module map (`tpsl_sniper_1/`, mirrored in `tpsl_sniper_2/`)
 
@@ -89,8 +91,8 @@ exec + double-buy/sell invariants · paper mirror fill-poll · tpsl2 scalp-armin
 
 Checked sequentially for every real buy, inline before `sync_position`. If either fires: `continue` — no position is created, no runtime cleanup needed.
 
-1. **SOL balance-floor** (`can_commit_buy`) — `wallet_balance − 0.02 SOL − committed_lamports ≥ buy_amount`. Fails open when the balance cache is cold (startup) so a stale cache never blocks all buys.
-2. **`trade.max_committed_sol`** — if set, blocks buy when `committed + buy_amount > ceiling`. Optional (default: no ceiling). Configured live via the Settings API; no restart needed.
+1. **SOL balance-floor** (`can_commit_buy`) — `wallet_balance − 0.02 SOL − committed_lamports ≥ buy_amount_sol`. Fails open when the balance cache is cold (startup) so a stale cache never blocks all buys.
+2. **`trade.max_committed_sol`** — if set, blocks buy when `committed + buy_amount_sol > ceiling`. Optional (default: no ceiling). Configured live via the Settings API; no restart needed.
 
 `committed_lamports` is shared across both TPSL1 and TPSL2 — the ceiling and floor apply to the wallet's total open exposure regardless of which strategy opened the position.
 

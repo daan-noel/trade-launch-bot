@@ -62,13 +62,13 @@ pub fn token_matches_buy_rule(token: &Token, rule: &Swing1Rule) -> bool {
     // max_sol_cost / spendable_sol_in — read from the creation-instruction args,
     // tolerance band.
     if let Some(rule_val) = none_if_zero_f64(rule.p_token_max_sol_cost) {
-        match instruction_arg_as_sol(token, "max_sol_cost") {
+        match instruction_arg_as_sol(token, "max_cost_lamports") {
             Some(sol) if within_tolerance(sol, rule_val, rule.tolerance_pct, 1e-15) => {}
             _ => return false,
         }
     }
     if let Some(rule_val) = none_if_zero_f64(rule.p_token_spendable_sol_in) {
-        match instruction_arg_as_sol(token, "spendable_sol_in") {
+        match instruction_arg_as_sol(token, "spendable_lamports_in") {
             Some(sol) if within_tolerance(sol, rule_val, rule.tolerance_pct, 1e-15) => {}
             _ => return false,
         }
@@ -178,7 +178,7 @@ fn find_worst_case_spot_entry_at<T: TradeRow>(
     // First slot > trigger with a qualifying buy — only for the proximity check.
     let next_slot = post
         .iter()
-        .filter(|t| t.slot() > trigger_slot && t.is_buy() && spot(t).is_some() && !Trade::is_dust(t.sol_amount()))
+        .filter(|t| t.slot() > trigger_slot && t.is_buy() && spot(t).is_some() && !Trade::is_dust(t.amount_sol()))
         .map(|t| t.slot())
         .next();
 
@@ -189,7 +189,7 @@ fn find_worst_case_spot_entry_at<T: TradeRow>(
             let s = t.slot();
             let in_s = s == trigger_slot;
             let in_next = next_slot.is_some_and(|ns| s == ns && ns <= trigger_slot + MAX_FILL_WAIT_SLOTS);
-            (in_s || in_next) && t.is_buy() && spot(t).is_some() && !Trade::is_dust(t.sol_amount())
+            (in_s || in_next) && t.is_buy() && spot(t).is_some() && !Trade::is_dust(t.amount_sol())
         })
         .max_by(|a, b| spot(a).unwrap().total_cmp(&spot(b).unwrap()))?;
 

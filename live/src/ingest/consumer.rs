@@ -217,7 +217,7 @@ impl IngestConsumer {
         let is_amm = e.venue == Venue::Amm;
         let reserve_snapshot = e.reserves.virtual_token.zip(e.reserves.virtual_sol);
         let trade_type = trade_type(e.side);
-        let sol_amount = e.sol;
+        let amount_sol = e.sol;
         let token_amount = e.tokens;
         let price_per_token = e.price;
 
@@ -284,7 +284,7 @@ impl IngestConsumer {
             mint,
             wallet,
             trade_type,
-            sol_amount,
+            amount_sol,
             token_amount,
             price_per_token,
             tx_signature: e.signature,
@@ -322,7 +322,7 @@ impl IngestConsumer {
             SseEvent::LiquidityAdded {
                 mint: e.mint.clone(),
                 wallet: e.wallet,
-                sol_amount: e.sol_amount,
+                amount_sol: e.amount_sol,
                 token_amount: e.token_amount,
                 tx_signature: e.signature,
                 slot: e.slot,
@@ -332,7 +332,7 @@ impl IngestConsumer {
             SseEvent::LiquidityRemoved {
                 mint: e.mint.clone(),
                 wallet: e.wallet,
-                sol_amount: e.sol_amount,
+                amount_sol: e.amount_sol,
                 token_amount: e.token_amount,
                 tx_signature: e.signature,
                 slot: e.slot,
@@ -452,7 +452,7 @@ fn trade_from_event(e: &IlTrade) -> Trade {
         mint_address: e.mint.clone(),
         wallet_address: e.wallet.clone(),
         trade_type: trade_type(e.side),
-        sol_amount: e.sol,
+        amount_sol: e.sol,
         token_amount: e.tokens,
         price_per_token: e.price,
         tx_signature: e.signature.clone(),
@@ -463,7 +463,7 @@ fn trade_from_event(e: &IlTrade) -> Trade {
         received_at: e.received_at,
         reserve_sol: e.reserves.virtual_sol,
         reserve_token: e.reserves.virtual_token,
-        real_sol_reserves: e.reserves.real_sol,
+        real_reserve_sol: e.reserves.real_sol,
         real_token_reserves: e.reserves.real_token,
         instruction_type: e.instruction_type.clone(),
         instruction_labels: Value::Null,
@@ -494,26 +494,26 @@ fn buy_ix_to_json(args: &BuyInstructionArgs) -> Value {
         BuyInstructionArgs::Buy { token_amount, max_sol_cost } => json!({
             "type": "Buy",
             "token_amount": token_amount,
-            "max_sol_cost": max_sol_cost,
+            "max_cost_lamports": max_sol_cost,
         }),
         BuyInstructionArgs::BuyV2 { token_amount, max_sol_cost } => json!({
             "type": "BuyV2",
             "token_amount": token_amount,
-            "max_sol_cost": max_sol_cost,
+            "max_cost_lamports": max_sol_cost,
         }),
         BuyInstructionArgs::BuyExactSolIn { spendable_sol_in, min_tokens_out } => json!({
             "type": "BuyExactSolIn",
-            "spendable_sol_in": spendable_sol_in,
+            "spendable_lamports_in": spendable_sol_in,
             "min_tokens_out": min_tokens_out,
         }),
         BuyInstructionArgs::BuyExactQuoteIn { spendable_sol_in, min_tokens_out } => json!({
             "type": "BuyExactQuoteIn",
-            "spendable_sol_in": spendable_sol_in,
+            "spendable_lamports_in": spendable_sol_in,
             "min_tokens_out": min_tokens_out,
         }),
         BuyInstructionArgs::BuyExactQuoteInV2 { spendable_sol_in, min_tokens_out } => json!({
             "type": "BuyExactQuoteInV2",
-            "spendable_sol_in": spendable_sol_in,
+            "spendable_lamports_in": spendable_sol_in,
             "min_tokens_out": min_tokens_out,
         }),
     }

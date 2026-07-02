@@ -50,11 +50,11 @@ async fn setup_base_1m(pool: &PgPool) -> anyhow::Result<()> {
         SELECT
             mint_address,
             time_bucket(INTERVAL '1 minute', block_time) AS bucket,
-            first(sol_amount::double precision / NULLIF(token_amount, 0), slot) AS open_price,
-            max(sol_amount::double precision / NULLIF(token_amount, 0))         AS high_price,
-            min(sol_amount::double precision / NULLIF(token_amount, 0))         AS low_price,
-            last(sol_amount::double precision / NULLIF(token_amount, 0), slot)  AS close_price,
-            sum(sol_amount)                                                     AS volume_lamports,
+            first(amount_lamports::double precision / NULLIF(token_amount, 0), slot) AS open_price,
+            max(amount_lamports::double precision / NULLIF(token_amount, 0))         AS high_price,
+            min(amount_lamports::double precision / NULLIF(token_amount, 0))         AS low_price,
+            last(amount_lamports::double precision / NULLIF(token_amount, 0), slot)  AS close_price,
+            sum(amount_lamports)                                                     AS volume_lamports,
             count(*)                                                           AS trade_count
         FROM trades
         GROUP BY mint_address, time_bucket(INTERVAL '1 minute', block_time)

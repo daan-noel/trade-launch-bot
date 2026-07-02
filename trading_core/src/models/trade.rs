@@ -12,12 +12,12 @@ pub struct Trade {
     pub wallet_address: String,
     pub trade_type: TradeType,
     /// SOL amount (human-readable, already divided by lamports).
-    pub sol_amount: f64,
+    pub amount_sol: f64,
     /// Raw token units — an exact on-chain integer count (never fractional).
     /// Stored as `u64` so large legs (>2^53 raw units) keep every digit on the
     /// way to the `BIGINT` column; ratio consumers cast to `f64` at the divide.
     pub token_amount: u64,
-    /// Average execution price for this swap (`sol_amount / token_amount`).
+    /// Average execution price for this swap (`amount_sol / token_amount`).
     pub price_per_token: f64,
     pub tx_signature: String,
     /// Position of this trade's transaction within its block. Real on the live
@@ -48,7 +48,7 @@ pub struct Trade {
     /// from `reserve_sol`: on curve rows this is the *real* deposited SOL, not the
     /// virtual reserve the price derives from. Not persisted (DB keeps only the
     /// price pair); set by the live decoder.
-    pub real_sol_reserves: Option<f64>,
+    pub real_reserve_sol: Option<f64>,
     /// Real token reserves — raw on-chain integer units (`u64`). Not persisted.
     pub real_token_reserves: Option<u64>,
 
@@ -73,23 +73,23 @@ pub enum TradeType {
 }
 
 impl Trade {
-    /// True when `sol_amount` is below the ingest dust threshold (10k lamports).
-    pub fn is_dust(sol_amount: f64) -> bool {
-        sol_amount < MIN_TRADE_SOL
+    /// True when `amount_sol` is below the ingest dust threshold (10k lamports).
+    pub fn is_dust(amount_sol: f64) -> bool {
+        amount_sol < MIN_TRADE_SOL
     }
 
     pub fn new(
         mint_address: String,
         wallet_address: String,
         trade_type: TradeType,
-        sol_amount: f64,
+        amount_sol: f64,
         token_amount: u64,
         tx_signature: String,
         slot: u64,
         block_time: DateTime<Utc>,
     ) -> Self {
         let price_per_token = if token_amount > 0 {
-            sol_amount / token_amount as f64
+            amount_sol / token_amount as f64
         } else {
             0.0
         };
@@ -99,7 +99,7 @@ impl Trade {
             mint_address,
             wallet_address,
             trade_type,
-            sol_amount,
+            amount_sol,
             token_amount,
             price_per_token,
             tx_signature,
@@ -114,7 +114,7 @@ impl Trade {
             received_at: Utc::now(),
             reserve_sol: None,
             reserve_token: None,
-            real_sol_reserves: None,
+            real_reserve_sol: None,
             real_token_reserves: None,
             instruction_type: "Unknown".to_string(),
             instruction_labels: serde_json::Value::Array(vec![]),
@@ -140,7 +140,7 @@ pub trait TradeRow {
     type Wallet: Eq + std::hash::Hash + Clone;
 
     fn is_buy(&self) -> bool;
-    fn sol_amount(&self) -> f64;
+    fn amount_sol(&self) -> f64;
     fn token_amount(&self) -> f64;
     fn price_per_token(&self) -> f64;
     fn slot(&self) -> u64;
@@ -167,7 +167,7 @@ pub trait TradeRow {
         None
     }
     /// Real (non-virtual) SOL reserves (tpsl2's E4 + scalp liquidity gates read this).
-    fn real_sol_reserves(&self) -> Option<f64>;
+    fn real_reserve_sol(&self) -> Option<f64>;
     /// Real (non-virtual) TOKEN reserves — used for the PumpSwap pool spot fallback
     /// in [`chart_spot_price`](TradeRow::chart_spot_price). Only rows that carry the
     /// real-reserve pair price via the pool branch; the default is `None`.
@@ -180,12 +180,12 @@ pub trait TradeRow {
 
     // ── Shared GMGN price (single definition: chart == analyzer == live == sweep) ──
 
-    /// Average execution price (`sol_amount / token_amount`), `price_per_token` when
+    /// Average execution price (`amount_sol / token_amount`), `price_per_token` when
     /// `token_amount` is zero.
     fn execution_price(&self) -> f64 {
         let tok = self.token_amount();
         if tok > 0.0 {
-            self.sol_amount() / tok
+            self.amount_sol() / tok
         } else {
             self.price_per_token()
         }
@@ -203,7 +203,7 @@ pub trait TradeRow {
 
     /// PumpSwap pool spot from real reserves (`real_sol / real_token`).
     fn pool_spot_price(&self) -> Option<f64> {
-        match (self.real_sol_reserves(), self.real_token_reserves()) {
+        match (self.real_reserve_sol(), self.real_token_reserves()) {
             (Some(sol), Some(tok)) if tok > 0.0 => Some(sol / tok),
             _ => None,
         }
@@ -235,8 +235,8 @@ impl TradeRow for Trade {
     fn is_buy(&self) -> bool {
         matches!(self.trade_type, TradeType::Buy)
     }
-    fn sol_amount(&self) -> f64 {
-        self.sol_amount
+    fn amount_sol(&self) -> f64 {
+        self.amount_sol
     }
     fn token_amount(&self) -> f64 {
         self.token_amount as f64
@@ -262,8 +262,8 @@ impl TradeRow for Trade {
     fn reserve_token(&self) -> Option<f64> {
         self.reserve_token.map(|v| v as f64)
     }
-    fn real_sol_reserves(&self) -> Option<f64> {
-        self.real_sol_reserves
+    fn real_reserve_sol(&self) -> Option<f64> {
+        self.real_reserve_sol
     }
     fn real_token_reserves(&self) -> Option<f64> {
         self.real_token_reserves.map(|v| v as f64)
@@ -329,7 +329,7 @@ mod tests {
             Utc::now(),
         );
         amm.venue = "amm".into();
-        amm.real_sol_reserves = Some(25.0);
+        amm.real_reserve_sol = Some(25.0);
         amm.real_token_reserves = Some(250);
         assert!((amm.chart_spot_price().unwrap() - 0.1).abs() < 1e-12);
 

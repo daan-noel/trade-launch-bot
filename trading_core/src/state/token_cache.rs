@@ -53,7 +53,7 @@ pub struct CachedTrade {
     /// Token-local interned wallet id (index into `TokenState::interner`'s table).
     pub wallet: u32,
     pub is_buy: bool,
-    pub sol_amount: f64,
+    pub amount_sol: f64,
     pub token_amount: f64,
     pub price_per_token: f64,
     pub slot: u64,
@@ -61,7 +61,7 @@ pub struct CachedTrade {
     pub block_time: DateTime<Utc>,
     pub reserve_sol: Option<f64>,
     pub reserve_token: Option<f64>,
-    pub real_sol_reserves: Option<f64>,
+    pub real_reserve_sol: Option<f64>,
 }
 
 impl CachedTrade {
@@ -73,7 +73,7 @@ impl CachedTrade {
         Self {
             wallet,
             is_buy: matches!(t.trade_type, TradeType::Buy),
-            sol_amount: t.sol_amount,
+            amount_sol: t.amount_sol,
             // The cache row keeps token amounts/reserves as `f64` — it's the
             // short-lived hot-path projection feeding ratio math (spot price), not
             // storage. Exact integers live in the `Trade` model + DB; we cast at
@@ -85,7 +85,7 @@ impl CachedTrade {
             block_time: t.block_time,
             reserve_sol: t.reserve_sol,
             reserve_token: t.reserve_token.map(|v| v as f64),
-            real_sol_reserves: t.real_sol_reserves,
+            real_reserve_sol: t.real_reserve_sol,
         }
     }
 }
@@ -96,8 +96,8 @@ impl TradeRow for CachedTrade {
     fn is_buy(&self) -> bool {
         self.is_buy
     }
-    fn sol_amount(&self) -> f64 {
-        self.sol_amount
+    fn amount_sol(&self) -> f64 {
+        self.amount_sol
     }
     fn token_amount(&self) -> f64 {
         self.token_amount
@@ -120,8 +120,8 @@ impl TradeRow for CachedTrade {
     fn reserve_token(&self) -> Option<f64> {
         self.reserve_token
     }
-    fn real_sol_reserves(&self) -> Option<f64> {
-        self.real_sol_reserves
+    fn real_reserve_sol(&self) -> Option<f64> {
+        self.real_reserve_sol
     }
     fn wallet(&self) -> &u32 {
         &self.wallet
@@ -182,7 +182,7 @@ pub struct TokenState {
     pub first_slot_window_open: bool,
 
     pub last_trade_at: Option<DateTime<Utc>>,
-    /// Timestamp of the last trade with `sol_amount >= DEAD_MEANINGFUL_TRADE_SOL`.
+    /// Timestamp of the last trade with `amount_sol >= DEAD_MEANINGFUL_TRADE_SOL`.
     /// Dust/probe transactions (below the threshold) do not advance this field so
     /// they cannot keep a dead token alive. Falls back to `token.created_at` in the
     /// `is_dead` check when None (no meaningful trade has ever arrived).
@@ -343,7 +343,7 @@ impl TokenState {
     /// into the aggregate metrics: cumulative volume, count, ATH, and the
     /// newest-by-block_time snapshots (price, reserves, market cap).
     fn apply_aggregates<T: TradeRow>(&mut self, trade: &T) {
-        self.volume_sol_total += trade.sol_amount();
+        self.volume_sol_total += trade.amount_sol();
         self.trade_count += 1;
 
         // Same-slot (creation-slot) buy/sell SOL sums — a derived hot-metric,
@@ -355,9 +355,9 @@ impl TokenState {
             match self.token.creation_slot {
                 Some(creation_slot) if trade.slot() == creation_slot => {
                     if trade.is_buy() {
-                        self.first_slot_buy_sol += trade.sol_amount();
+                        self.first_slot_buy_sol += trade.amount_sol();
                     } else {
-                        self.first_slot_sell_sol += trade.sol_amount();
+                        self.first_slot_sell_sol += trade.amount_sol();
                     }
                 }
                 Some(creation_slot) if trade.slot() > creation_slot => {
@@ -386,7 +386,7 @@ impl TokenState {
             self.last_trade_at = Some(trade.block_time());
             // Only advance the meaningful-trade clock for non-dust trades so bot
             // probe transactions can't keep a dead token alive indefinitely.
-            if trade.sol_amount() >= DEAD_MEANINGFUL_TRADE_SOL {
+            if trade.amount_sol() >= DEAD_MEANINGFUL_TRADE_SOL {
                 self.last_meaningful_trade_at = Some(trade.block_time());
             }
             self.current_price = Some(price);
@@ -434,7 +434,7 @@ impl TokenState {
         // Newest known real SOL reserves for the dead-token liquidity signal. Only
         // overwrite when this trade carries a snapshot, so a reserve-less newest
         // trade doesn't shadow the last real reading.
-        if let Some(sol) = trade.real_sol_reserves() {
+        if let Some(sol) = trade.real_reserve_sol() {
             self.current_real_sol_reserves = Some(sol);
         }
     }
@@ -716,7 +716,7 @@ mod tests {
         )
     }
 
-    fn trade_at(at: DateTime<Utc>, sol: f64, tokens: f64, real_sol_reserves: f64) -> Trade {
+    fn trade_at(at: DateTime<Utc>, sol: f64, tokens: f64, real_reserve_sol: f64) -> Trade {
         let mut t = Trade::new(
             "MINT-dead".into(),
             "buyer".into(),
@@ -727,7 +727,7 @@ mod tests {
             1,
             at,
         );
-        t.real_sol_reserves = Some(real_sol_reserves);
+        t.real_reserve_sol = Some(real_reserve_sol);
         t
     }
 
@@ -938,7 +938,7 @@ mod tests {
         t.leg_index = 3;
         t.reserve_sol = Some(31.0);
         t.reserve_token = Some(900_000);
-        t.real_sol_reserves = Some(7.5);
+        t.real_reserve_sol = Some(7.5);
         t.venue = "amm".into();
 
         // Intern the wallet against a token-local interner (Phase B step 2), exactly
@@ -948,7 +948,7 @@ mod tests {
         let c = CachedTrade::from_trade(&t, wallet_id);
 
         assert_eq!(c.is_buy(), t.is_buy());
-        assert_eq!(c.sol_amount(), t.sol_amount());
+        assert_eq!(c.amount_sol(), t.amount_sol());
         assert_eq!(c.token_amount(), t.token_amount());
         assert_eq!(c.price_per_token(), t.price_per_token());
         assert_eq!(c.slot(), t.slot());
@@ -956,7 +956,7 @@ mod tests {
         assert_eq!(c.block_time(), t.block_time());
         assert_eq!(c.reserve_sol(), t.reserve_sol());
         assert_eq!(c.reserve_token(), t.reserve_token());
-        assert_eq!(c.real_sol_reserves(), t.real_sol_reserves());
+        assert_eq!(c.real_reserve_sol(), t.real_reserve_sol());
         // The cache wallet is an interned `u32`; the interner table maps it back to
         // the source `Trade`'s wallet address.
         assert_eq!(*c.wallet(), wallet_id);

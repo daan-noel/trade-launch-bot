@@ -172,7 +172,7 @@ fn check_max_sol_cost(token: &Token, rule: &Tpsl2Rule) -> CriterionOutcome {
     let Some(rule_val) = none_if_zero_f64(rule.p_token_max_sol_cost) else {
         return CriterionOutcome::NotConfigured;
     };
-    match instruction_arg_as_sol(token, "max_sol_cost") {
+    match instruction_arg_as_sol(token, "max_cost_lamports") {
         Some(sol) if within_tolerance(sol, rule_val, rule.tolerance_pct, 1e-15) => {
             CriterionOutcome::Satisfied
         }
@@ -184,7 +184,7 @@ fn check_spendable_sol_in(token: &Token, rule: &Tpsl2Rule) -> CriterionOutcome {
     let Some(rule_val) = none_if_zero_f64(rule.p_token_spendable_sol_in) else {
         return CriterionOutcome::NotConfigured;
     };
-    match instruction_arg_as_sol(token, "spendable_sol_in") {
+    match instruction_arg_as_sol(token, "spendable_lamports_in") {
         Some(sol) if within_tolerance(sol, rule_val, rule.tolerance_pct, 1e-15) => {
             CriterionOutcome::Satisfied
         }
@@ -356,7 +356,7 @@ mod tests {
     #[test]
     fn max_sol_cost_read_from_instruction_args() {
         let rule = rule_with_entry(None, None, None, json!([]), Some(1.0), None, 0.0);
-        let ix = json!({ "max_sol_cost": 1_000_000_000u64 }); // 1 SOL
+        let ix = json!({ "max_cost_lamports": 1_000_000_000u64 }); // 1 SOL
         let token = token_with(None, None, None, Some(ix), json!([]));
         assert!(token_matches_buy_rule(&token, &rule));
     }

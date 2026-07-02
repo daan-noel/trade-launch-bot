@@ -251,7 +251,7 @@ fn load_token_trades(
         let mint: String = row.get(0)?;
         let wallet: String = row.get(1)?;
         let is_buy: bool = row.get(2)?;
-        let sol_amount: f64 = row.get(3)?;
+        let amount_sol: f64 = row.get(3)?;
         let token_amount: f64 = row.get(4)?;
         let price: f64 = row.get(5)?;
         let slot: i64 = row.get(6)?;
@@ -269,7 +269,7 @@ fn load_token_trades(
         }
         cur_trades.push(SweepTrade {
             block_time: ts(block_time),
-            sol_amount,
+            amount_sol,
             token_amount,
             price_per_token: price,
             reserve_sol: vsol,
@@ -282,7 +282,7 @@ fn load_token_trades(
             // real-reserve gates (e.g. tpsl2 `min_liq_sol`) resolve. This is an
             // approximation of the live/paper value, not lamport-identical.
             // `real_token_reserves` stays None — no configured gate reads it.
-            real_sol_reserves: vsol.map(|s| approx_real_sol_reserves(s, &venue)),
+            real_reserve_sol: vsol.map(|s| approx_real_sol_reserves(s, &venue)),
             real_token_reserves: None,
             slot: slot as u64,
             wallet: interner.intern(&wallet),
@@ -338,8 +338,8 @@ fn attach_fingerprints(conn: &Connection, tokens_lit: &str, tokens: &mut [TokenT
                 cu_limit: row.get(3)?,
                 cu_price: row.get(4)?,
                 is_cashback_enabled: row.get::<_, Option<bool>>(5)?.unwrap_or(false),
-                max_sol_cost: row.get(6)?,
-                spendable_sol_in: row.get(7)?,
+                max_cost_lamports: row.get(6)?,
+                spendable_lamports_in: row.get(7)?,
                 ix_labels: ix_labels_json
                     .and_then(|s| serde_json::from_str(&s).ok())
                     .unwrap_or_default(),

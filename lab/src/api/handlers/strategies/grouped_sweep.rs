@@ -89,7 +89,7 @@ pub struct StartGroupedSweepBody {
     pub max_combos: Option<usize>,
     /// Notional (SOL) to price every simulated round-trip at. Affects the fixed
     /// per-leg cost (Jito tip + priority fee) as a fraction of the trade size —
-    /// set this to the live `buy_amount` so backtest PnL% matches live results.
+    /// set this to the live `buy_amount_sol` so backtest PnL% matches live results.
     /// Omitted ⇒ 1.0 SOL (the server default).
     #[serde(default = "default_buy_amount_sol")]
     pub buy_amount_sol: f64,
@@ -1384,7 +1384,7 @@ async fn fetch_token_meta(
             ti.ath_timestamp,
             ti.current_price,
             ti.market_cap,
-            ti.volume        AS volume_sol,
+            ti.volume_sol        AS volume_sol,
             ti.trade_count,
             COALESCE(ti.is_migrated, false) AS is_migrated,
             COALESCE(ti.is_dead,     false) AS is_dead
@@ -1427,12 +1427,12 @@ fn matches_field_filter(
             let v = fp.cu_price;
             allowed.iter().any(|a| a.as_i64().map(|x| Some(x) == v).unwrap_or(false))
         }
-        MaxSolCost => {
-            let v = fp.max_sol_cost;
+        MaxCostLamports => {
+            let v = fp.max_cost_lamports;
             allowed.iter().any(|a| a.as_i64().map(|x| Some(x) == v).unwrap_or(false))
         }
-        SpendableSolIn => {
-            let v = fp.spendable_sol_in;
+        SpendableLamportsIn => {
+            let v = fp.spendable_lamports_in;
             allowed.iter().any(|a| a.as_i64().map(|x| Some(x) == v).unwrap_or(false))
         }
         InitialBuySol => {

@@ -24,7 +24,7 @@ const RECONCILE_RETRY_SECS: u64 = 2;
 #[derive(Deserialize)]
 pub struct BuyRequest {
     pub mint: String,
-    pub sol_amount: f64,
+    pub amount_sol: f64,
     /// Optional: when omitted (manual buy by mint), the backend resolves it
     /// on-chain alongside the migration status.
     pub token_program_id: Option<String>,
@@ -102,15 +102,15 @@ pub async fn manual_buy(
     // lamports; <= 0 wastes the tip+fee on a 0-lamport buy) and cap at the
     // per-trade ceiling so a fat-finger or hostile request can't drain the
     // wallet. The pump-trader layer guards again as a backstop.
-    let sol_amount = body.sol_amount;
-    if !sol_amount.is_finite() || sol_amount <= 0.0 {
+    let amount_sol = body.amount_sol;
+    if !amount_sol.is_finite() || amount_sol <= 0.0 {
         return HttpResponse::BadRequest()
-            .json(serde_json::json!({ "error": "sol_amount must be a finite, positive number" }));
+            .json(serde_json::json!({ "error": "amount_sol must be a finite, positive number" }));
     }
-    if sol_amount > MAX_MANUAL_BUY_SOL {
+    if amount_sol > MAX_MANUAL_BUY_SOL {
         return HttpResponse::BadRequest().json(serde_json::json!({
             "error": format!(
-                "sol_amount {sol_amount} exceeds the per-trade limit of {MAX_MANUAL_BUY_SOL} SOL"
+                "amount_sol {amount_sol} exceeds the per-trade limit of {MAX_MANUAL_BUY_SOL} SOL"
             )
         }));
     }
@@ -188,13 +188,13 @@ pub async fn manual_buy(
             // Migrated → PumpSwap AMM (canonical pool derived).
             app_state
                 .trader
-                .amm_buy(&body.mint, &token_program_id, sol_amount, None, slippage, true)
+                .amm_buy(&body.mint, &token_program_id, amount_sol, None, slippage, true)
                 .await
         } else {
             // Still on the bonding curve.
             app_state
                 .trader
-                .buy_token(&routing.mint, &routing.creator_pubkey, token_program, sol_amount, slippage, routing.cashback_enabled)
+                .buy_token(&routing.mint, &routing.creator_pubkey, token_program, amount_sol, slippage, routing.cashback_enabled)
                 .await
         };
 

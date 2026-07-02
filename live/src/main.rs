@@ -595,7 +595,7 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(async move {
             loop {
                 match trader.get_sol_balance().await {
-                    Ok(lamports) => trader.update_sol_balance_cache(lamports),
+                    Ok(lamports) => trader.update_balance_lamports_cache(lamports),
                     Err(e) => warn!("SOL balance refresh failed (guard stays on last cached value): {e}"),
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;

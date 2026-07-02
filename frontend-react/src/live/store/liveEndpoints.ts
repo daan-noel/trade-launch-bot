@@ -8,7 +8,7 @@ import type {
 
 export interface BuyTokenArgs {
   mint: string;
-  sol_amount: number;
+  amount_sol: number;
   /// Omitted for manual buys — the backend resolves the token program on-chain.
   token_program_id?: string;
   /// Per-trade slippage in basis points; omit to use the global default.

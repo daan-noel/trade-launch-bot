@@ -73,16 +73,24 @@ async function postTablePage<R>(
   return { items, total: Number.isFinite(total) ? total : items.length };
 }
 
+/** Run-split scope for the by-rule positions/summary reads: `current` = the rule's
+ *  latest run; `history` = every prior run. Omit for the legacy (unsplit) view. */
+export type PositionScope = 'current' | 'history';
+
+const scopeQuery = (scope?: PositionScope) => (scope ? `?scope=${scope}` : '');
+
 /** POST one page of a rule's positions for `strategySeg` (`tpsl1`/`tpsl2`/`swing1`).
- *  Body is the unified `TableRequestBody`; response is a bare positions array. */
+ *  Body is the unified `TableRequestBody`; response is a bare positions array.
+ *  `scope` selects the current run vs. the run-history population. */
 function fetchRulePositionsPage(
   strategySeg: string,
   ruleId: string,
   body: TableRequestBody,
   signal?: AbortSignal,
+  scope?: PositionScope,
 ): Promise<import('types').RulePositionsPage> {
   return postTablePage(
-    `/api/strategies/${strategySeg}/rules/${ruleId}/positions`,
+    `/api/strategies/${strategySeg}/rules/${ruleId}/positions${scopeQuery(scope)}`,
     body,
     (json) => json as import('types').RulePositionRecord[],
     signal,
@@ -289,6 +297,16 @@ export async function stopTpsl1Rule(ruleId: string): Promise<import('types').Rul
   return request(`${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/stop`, { method: 'POST' });
 }
 
+/** Bulk `pause` — every currently active `mode` rule (Real or Paper section). */
+export async function pauseAllTpsl1Rules(mode: 'real' | 'paper'): Promise<import('types').BulkRuleResult> {
+  return request(`${API_BASE}/api/strategies/tpsl1/rules/pause-all?mode=${mode}`, { method: 'POST' });
+}
+
+/** Bulk `stop` — every active-or-draining `mode` rule (Real or Paper section). */
+export async function stopAllTpsl1Rules(mode: 'real' | 'paper'): Promise<import('types').BulkRuleResult> {
+  return request(`${API_BASE}/api/strategies/tpsl1/rules/stop-all?mode=${mode}`, { method: 'POST' });
+}
+
 export async function simulateTpsl1Rule(
   ruleId: string,
 ): Promise<import('types').SimulatedTokenResult[]> {
@@ -319,17 +337,19 @@ export function fetchTpsl1RulePositions(
   ruleId: string,
   body: TableRequestBody,
   signal?: AbortSignal,
+  scope?: PositionScope,
 ): Promise<import('types').RulePositionsPage> {
-  return fetchRulePositionsPage('tpsl1', ruleId, body, signal);
+  return fetchRulePositionsPage('tpsl1', ruleId, body, signal, scope);
 }
 
 /** Run/rule-wide position aggregates for the tpsl1 Positions Summary panel. */
 export async function fetchTpsl1RulePositionsSummary(
   ruleId: string,
   signal?: AbortSignal,
+  scope?: PositionScope,
 ): Promise<import('types').PositionsSummary> {
   return request(
-    `${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/positions/summary`,
+    `${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/positions/summary${scopeQuery(scope)}`,
     { signal },
   );
 }
@@ -428,6 +448,16 @@ export async function stopTpsl2Rule(ruleId: string): Promise<import('types').Rul
   return request(`${API_BASE}/api/strategies/tpsl2/rules/${ruleId}/stop`, { method: 'POST' });
 }
 
+/** Bulk `pause` — every currently active `mode` rule (Real or Paper section). */
+export async function pauseAllTpsl2Rules(mode: 'real' | 'paper'): Promise<import('types').BulkRuleResult> {
+  return request(`${API_BASE}/api/strategies/tpsl2/rules/pause-all?mode=${mode}`, { method: 'POST' });
+}
+
+/** Bulk `stop` — every active-or-draining `mode` rule (Real or Paper section). */
+export async function stopAllTpsl2Rules(mode: 'real' | 'paper'): Promise<import('types').BulkRuleResult> {
+  return request(`${API_BASE}/api/strategies/tpsl2/rules/stop-all?mode=${mode}`, { method: 'POST' });
+}
+
 export async function simulateTpsl2Rule(
   ruleId: string,
 ): Promise<import('types').SimulatedTokenResult[]> {
@@ -453,17 +483,19 @@ export function fetchTpsl2RulePositions(
   ruleId: string,
   body: TableRequestBody,
   signal?: AbortSignal,
+  scope?: PositionScope,
 ): Promise<import('types').RulePositionsPage> {
-  return fetchRulePositionsPage('tpsl2', ruleId, body, signal);
+  return fetchRulePositionsPage('tpsl2', ruleId, body, signal, scope);
 }
 
 /** Run/rule-wide position aggregates for the tpsl2 Positions Summary panel. */
 export async function fetchTpsl2RulePositionsSummary(
   ruleId: string,
   signal?: AbortSignal,
+  scope?: PositionScope,
 ): Promise<import('types').PositionsSummary> {
   return request(
-    `${API_BASE}/api/strategies/tpsl2/rules/${ruleId}/positions/summary`,
+    `${API_BASE}/api/strategies/tpsl2/rules/${ruleId}/positions/summary${scopeQuery(scope)}`,
     { signal },
   );
 }
@@ -557,21 +589,33 @@ export async function stopSwing1Rule(ruleId: string): Promise<import('types').Ru
   return request(`${API_BASE}/api/strategies/swing1/rules/${ruleId}/stop`, { method: 'POST' });
 }
 
+/** Bulk `pause` — every currently active `mode` rule (Real or Paper section). */
+export async function pauseAllSwing1Rules(mode: 'real' | 'paper'): Promise<import('types').BulkRuleResult> {
+  return request(`${API_BASE}/api/strategies/swing1/rules/pause-all?mode=${mode}`, { method: 'POST' });
+}
+
+/** Bulk `stop` — every active-or-draining `mode` rule (Real or Paper section). */
+export async function stopAllSwing1Rules(mode: 'real' | 'paper'): Promise<import('types').BulkRuleResult> {
+  return request(`${API_BASE}/api/strategies/swing1/rules/stop-all?mode=${mode}`, { method: 'POST' });
+}
+
 export function fetchSwing1RulePositions(
   ruleId: string,
   body: TableRequestBody,
   signal?: AbortSignal,
+  scope?: PositionScope,
 ): Promise<import('types').RulePositionsPage> {
-  return fetchRulePositionsPage('swing1', ruleId, body, signal);
+  return fetchRulePositionsPage('swing1', ruleId, body, signal, scope);
 }
 
 /** Run/rule-wide position aggregates for the swing1 Positions Summary panel. */
 export async function fetchSwing1RulePositionsSummary(
   ruleId: string,
   signal?: AbortSignal,
+  scope?: PositionScope,
 ): Promise<import('types').PositionsSummary> {
   return request(
-    `${API_BASE}/api/strategies/swing1/rules/${ruleId}/positions/summary`,
+    `${API_BASE}/api/strategies/swing1/rules/${ruleId}/positions/summary${scopeQuery(scope)}`,
     { signal },
   );
 }

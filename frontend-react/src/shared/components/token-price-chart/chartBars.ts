@@ -209,7 +209,7 @@ function seedOpenValue(
   toValue: (priceInSol: number) => number,
 ): number | null {
   for (const trade of sortedTrades) {
-    if (trade.sol_amount != null && trade.sol_amount < MIN_CHART_SOL) continue;
+    if (trade.amount_sol != null && trade.amount_sol < MIN_CHART_SOL) continue;
     if (chartValueForTrade(trade, metric) == null) continue;
     const pre = preTradeChartValue(trade, metric);
     return pre == null ? null : toValue(pre);
@@ -330,7 +330,7 @@ function collectTradeBuckets(
   const buckets = new Map<number, TradeBucket>();
 
   for (const trade of trades) {
-    if (trade.sol_amount != null && trade.sol_amount < MIN_CHART_SOL) continue;
+    if (trade.amount_sol != null && trade.amount_sol < MIN_CHART_SOL) continue;
 
     const key = bucketKey(trade);
     if (key == null) continue;
@@ -339,7 +339,7 @@ function collectTradeBuckets(
     if (value == null) continue;
 
     const price = toValue(value);
-    const vol = trade.sol_amount ?? 1;
+    const vol = trade.amount_sol ?? 1;
     const inflow = trade.trade_type === 'buy' ? vol : 0;
     const outflow = trade.trade_type === 'buy' ? 0 : vol;
     const liquiditySol = tradeLiquiditySol(trade);
@@ -494,7 +494,7 @@ export function computeRangeStats(
     const k = key as number;
     if (k < lo || k > hi) continue;
 
-    const sol = trade.sol_amount ?? 0;
+    const sol = trade.amount_sol ?? 0;
     if (trade.wallet_address) wallets.add(trade.wallet_address);
     if (trade.trade_type === 'buy') {
       inflow += sol;

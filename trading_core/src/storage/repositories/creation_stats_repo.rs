@@ -209,13 +209,13 @@ fn group_field_sql(f: GroupField) -> &'static str {
         GroupField::CuLimit => "COALESCE(t.cu_limit::text, '∅')",
         GroupField::CuPrice => "COALESCE(t.cu_price::text, '∅')",
         GroupField::IsCashbackEnabled => "t.is_cashback_enabled::text",
-        GroupField::MaxSolCost => "COALESCE(t.initial_buy_instruction->>'max_sol_cost', '∅')",
-        GroupField::SpendableSolIn => {
-            "COALESCE(t.initial_buy_instruction->>'spendable_sol_in', '∅')"
+        GroupField::MaxCostLamports => "COALESCE(t.initial_buy_instruction->>'max_cost_lamports', '∅')",
+        GroupField::SpendableLamportsIn => {
+            "COALESCE(t.initial_buy_instruction->>'spendable_lamports_in', '∅')"
         }
-        // initial_buy_sol is lamports (BIGINT); group on the human-SOL value so the
+        // initial_buy_lamports is lamports (BIGINT); group on the human-SOL value so the
         // displayed label matches the rest of the UI (÷1e9).
-        GroupField::InitialBuySol => "COALESCE((t.initial_buy_sol::float8 / 1e9)::text, '∅')",
+        GroupField::InitialBuySol => "COALESCE((t.initial_buy_lamports::float8 / 1e9)::text, '∅')",
         // Labels joined with " | " in on-chain order (NOT alphabetised) so the
         // displayed/copied set mirrors the real instruction sequence. Ordinality
         // preserves array position; duplicates are kept intentionally.

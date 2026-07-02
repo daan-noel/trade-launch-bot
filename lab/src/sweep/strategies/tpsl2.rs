@@ -26,7 +26,7 @@ use crate::strategies::tpsl_sniper_2::{entry, exit};
 /// The full TPSL2 rule param set, every knob swept. `take_profit`/`stop_loss` are
 /// always-on; every other knob is `Option` and a `None` (the default axis when
 /// the page leaves it blank, or an explicit `off`) means "unbounded" — the gate
-/// is disabled and the live pure fns ignore it (same as `0`). `buy_amount` and
+/// is disabled and the live pure fns ignore it (same as `0`). `buy_amount_sol` and
 /// the non-param rule fields stay inherited from the base rule template.
 #[derive(Clone, Copy, Debug)]
 pub struct Tpsl2Params {
@@ -600,7 +600,7 @@ impl Strategy for Tpsl2Strategy {
             return TokenOutcome::no_entry();
         };
         let rule = &params.rule;
-        let notional = rule.buy_amount;
+        let notional = rule.buy_amount_sol;
 
         // (3) Exit decision via the shared ladder.
         match exit::find_trade_driven_exit(trades, entry_time, entry_price, rule) {

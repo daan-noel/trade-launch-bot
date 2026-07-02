@@ -22,23 +22,23 @@ pub struct TokenInfoRepo {
 }
 
 /// New-schema metrics columns, in the order [`row_to_info`] consumes them.
-const INFO_COLS: &str = "mint_address, ath_price, ath_timestamp, volume, trade_count, \
+const INFO_COLS: &str = "mint_address, ath_price, ath_timestamp, volume_sol, trade_count, \
     last_trade_at, current_price, is_dead, is_migrated, lifetime_secs, \
-    first_slot_buy_sol, first_slot_sell_sol, updated_at";
+    first_slot_buy_lamports, first_slot_sell_lamports, updated_at";
 
 type InfoRow = (
     String,                  // mint_address
     Option<f64>,             // ath_price
     Option<DateTime<Utc>>,   // ath_timestamp
-    f64,                     // volume
+    f64,                     // volume_sol
     i64,                     // trade_count
     Option<DateTime<Utc>>,   // last_trade_at
     Option<f64>,             // current_price
     bool,                    // is_dead
     bool,                    // is_migrated
     Option<i64>,             // lifetime_secs (not on the TokenInfo model; read+dropped)
-    Option<i64>,             // first_slot_buy_sol  (lamports; → human SOL on read)
-    Option<i64>,             // first_slot_sell_sol (lamports; → human SOL on read)
+    Option<i64>,             // first_slot_buy_lamports  (lamports; → human SOL on read)
+    Option<i64>,             // first_slot_sell_lamports (lamports; → human SOL on read)
     DateTime<Utc>,           // updated_at
 );
 
@@ -50,15 +50,15 @@ fn row_to_info(r: InfoRow) -> TokenInfo {
         mint_address,
         ath_price,
         ath_timestamp,
-        volume,
+        volume_sol,
         trade_count,
         last_trade_at,
         current_price,
         is_dead,
         is_migrated,
         _lifetime_secs,
-        first_slot_buy_sol,
-        first_slot_sell_sol,
+        first_slot_buy_lamports,
+        first_slot_sell_lamports,
         updated_at,
     ) = r;
     TokenInfo {
@@ -67,7 +67,7 @@ fn row_to_info(r: InfoRow) -> TokenInfo {
         ath_price,
         ath_timestamp,
         age: None,
-        volume,
+        volume_sol,
         market_cap: None,
         trade_count,
         last_trade_at,
@@ -75,8 +75,8 @@ fn row_to_info(r: InfoRow) -> TokenInfo {
         is_dead,
         is_migrated,
         // Lamports (BIGINT) → human SOL f64 on read (mirrors `initial_buy_sol`).
-        first_slot_buy_sol: first_slot_buy_sol.map(lamports_to_sol),
-        first_slot_sell_sol: first_slot_sell_sol.map(lamports_to_sol),
+        first_slot_buy_sol: first_slot_buy_lamports.map(lamports_to_sol),
+        first_slot_sell_sol: first_slot_sell_lamports.map(lamports_to_sol),
         created_at: updated_at,
         updated_at,
         last_synced_at: None,
@@ -85,7 +85,7 @@ fn row_to_info(r: InfoRow) -> TokenInfo {
 
 /// Human SOL (f64) → lamports (i64). `first_slot_*_sol` are stored as exact
 /// lamports (BIGINT) but carried as human SOL on the metrics/model side, mirroring
-/// `tokens.initial_buy_sol` / `trades.sol_amount`.
+/// `tokens.initial_buy_sol` / `trades.amount_lamports`.
 fn sol_to_lamports(sol: f64) -> i64 {
     (sol * 1_000_000_000.0).round() as i64
 }
@@ -113,7 +113,7 @@ impl TokenInfoRepo {
         ath_price: Option<f64>,
         ath_timestamp: Option<DateTime<Utc>>,
         _age: Option<i64>,
-        volume: f64,
+        volume_sol: f64,
         _market_cap: Option<f64>,
         trade_count: i64,
         last_trade_at: Option<DateTime<Utc>>,
@@ -127,15 +127,15 @@ impl TokenInfoRepo {
         sqlx::query(
             r#"
             INSERT INTO tokens_info
-                (mint_address, ath_price, ath_timestamp, volume, trade_count,
+                (mint_address, ath_price, ath_timestamp, volume_sol, trade_count,
                  last_trade_at, current_price, is_dead, is_migrated, lifetime_secs,
-                 first_slot_buy_sol, first_slot_sell_sol, updated_at)
+                 first_slot_buy_lamports, first_slot_sell_lamports, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
             ON CONFLICT (mint_address) DO UPDATE
                 SET ath_price = COALESCE(EXCLUDED.ath_price, tokens_info.ath_price),
                     ath_timestamp = CASE WHEN EXCLUDED.ath_price IS NOT NULL
                                     THEN EXCLUDED.ath_timestamp ELSE tokens_info.ath_timestamp END,
-                    volume = EXCLUDED.volume,
+                    volume_sol = EXCLUDED.volume_sol,
                     trade_count = EXCLUDED.trade_count,
                     last_trade_at = CASE
                         WHEN EXCLUDED.last_trade_at IS NULL THEN tokens_info.last_trade_at
@@ -151,15 +151,15 @@ impl TokenInfoRepo {
                     -- grows monotonically within the open creation-slot window and
                     -- freezes once closed, so the latest in-memory value is always
                     -- authoritative.
-                    first_slot_buy_sol = EXCLUDED.first_slot_buy_sol,
-                    first_slot_sell_sol = EXCLUDED.first_slot_sell_sol,
+                    first_slot_buy_lamports = EXCLUDED.first_slot_buy_lamports,
+                    first_slot_sell_lamports = EXCLUDED.first_slot_sell_lamports,
                     updated_at = EXCLUDED.updated_at
             "#,
         )
         .bind(mint)
         .bind(ath_price)
         .bind(ath_timestamp)
-        .bind(volume)
+        .bind(volume_sol)
         .bind(trade_count)
         .bind(last_trade_at)
         .bind(current_price)

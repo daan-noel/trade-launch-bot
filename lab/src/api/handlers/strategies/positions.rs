@@ -48,24 +48,78 @@ async fn latest_paper_run(
     }
 }
 
-/// POST `.../rules/{rule_id}/positions` — one page of the latest paper run's bag,
-/// with the run-wide total on `X-Total-Count` (exposed to the browser fetch) so the
-/// client pager can size itself. Empty (200-total 0) when the rule has no paper run.
-/// The JSON body ([`TableRequest`]) carries paging + server-side sort/search/filter;
-/// `pagination` → `(limit, offset)`, the rest → [`PositionQuery`] via `From`.
+/// Run-split selector, mirroring the live `PositionScope`. Lab is paper-only, so
+/// `Current` = latest paper run, `History` = every prior paper run. Absent = legacy
+/// (latest paper run), so callers that don't opt into the split are unchanged.
+#[derive(serde::Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PositionScope {
+    Current,
+    History,
+}
+
+#[derive(serde::Deserialize)]
+pub struct ScopeParam {
+    pub scope: Option<PositionScope>,
+}
+
+/// POST `.../rules/{rule_id}/positions` — one page of positions, with the total on
+/// `X-Total-Count` (exposed to the browser fetch) so the client pager can size itself.
+/// `scope` selects the run(s): `current`/absent → latest paper run; `history` → every
+/// prior run, each row stamped with its `run_seq`. Empty (200-total 0) when there's no
+/// matching run. The JSON body ([`TableRequest`]) carries paging + sort/search/filter.
 pub async fn positions_by_rule_paged(
     repo: &StrategyRepo,
     rule_id: Uuid,
     strategy_id: &str,
+    scope: Option<PositionScope>,
     req: TableRequest,
 ) -> HttpResponse {
+    let (limit, offset) = req.pagination.bounds();
+    let pq = PositionQuery::from(req);
+
+    if matches!(scope, Some(PositionScope::History)) {
+        // "Old runs": all paper runs except the latest, rows stamped with run_seq.
+        let runs = match paper_runs_of(repo, rule_id, strategy_id).await {
+            Ok(runs) => runs,
+            Err(resp) => return resp,
+        };
+        let Some(&(latest_run_id, _)) = runs.first() else {
+            return positions_response(Vec::new(), 0);
+        };
+        if runs.len() <= 1 {
+            return positions_response(Vec::new(), 0);
+        }
+        let seq_map: std::collections::HashMap<Uuid, i64> = runs.into_iter().collect();
+        return match (
+            repo.find_positions_by_rule_excluding_run_paged(rule_id, latest_run_id, limit, offset, &pq)
+                .await,
+            repo.count_positions_by_rule_excluding_run(rule_id, latest_run_id, &pq).await,
+        ) {
+            (Ok(positions), Ok(total)) => {
+                let responses: Vec<PositionResponse> = positions
+                    .iter()
+                    .map(|p| {
+                        let mut r = PositionResponse::from(Position::from(p));
+                        r.run_seq = seq_map.get(&p.run_id).copied();
+                        r
+                    })
+                    .collect();
+                positions_response(responses, total)
+            }
+            (Err(e), _) | (_, Err(e)) => {
+                tracing::error!("Failed to load run-history positions for rule {rule_id}: {e}");
+                HttpResponse::InternalServerError().json(json!({"error": "Failed to load positions"}))
+            }
+        };
+    }
+
+    // `current` / absent: the latest paper run's bag.
     let run_id = match latest_paper_run(repo, rule_id, strategy_id).await {
         Ok(Some(id)) => id,
         Ok(None) => return positions_response(Vec::new(), 0),
         Err(resp) => return resp,
     };
-    let (limit, offset) = req.pagination.bounds();
-    let pq = PositionQuery::from(req);
     match (
         repo.find_positions_by_run_paged(run_id, limit, offset, &pq).await,
         repo.count_positions_by_run(run_id, &pq).await,
@@ -84,28 +138,64 @@ pub async fn positions_by_rule_paged(
     }
 }
 
-/// GET `.../rules/{rule_id}/positions/summary` — run-wide aggregates for the
-/// Positions Summary panel (latest paper run). Empty summary when no paper run.
+/// GET `.../rules/{rule_id}/positions/summary` — aggregates for the Positions Summary
+/// panel, over the same population its table pages: `current`/absent → latest paper
+/// run; `history` → every prior run. Empty summary when there's no matching run.
 pub async fn positions_summary_by_rule(
     repo: &StrategyRepo,
     rule_id: Uuid,
     strategy_id: &str,
+    scope: Option<PositionScope>,
 ) -> HttpResponse {
-    let run_id = match latest_paper_run(repo, rule_id, strategy_id).await {
-        Ok(Some(id)) => id,
-        Ok(None) => {
-            return HttpResponse::Ok()
-                .json(trading_core::models::PositionsSummary::default())
+    let empty = || HttpResponse::Ok().json(trading_core::models::PositionsSummary::default());
+
+    let result = if matches!(scope, Some(PositionScope::History)) {
+        // Exclude the latest run; a lone run yields an empty (tokens=0) summary.
+        match latest_paper_run(repo, rule_id, strategy_id).await {
+            Ok(Some(latest_run_id)) => {
+                repo.positions_summary_by_rule_excluding_run(rule_id, latest_run_id).await
+            }
+            Ok(None) => return empty(),
+            Err(resp) => return resp,
         }
-        Err(resp) => return resp,
+    } else {
+        match latest_paper_run(repo, rule_id, strategy_id).await {
+            Ok(Some(run_id)) => repo.positions_summary_by_run(run_id).await,
+            Ok(None) => return empty(),
+            Err(resp) => return resp,
+        }
     };
-    match repo.positions_summary_by_run(run_id).await {
+
+    match result {
         Ok(summary) => HttpResponse::Ok().json(summary),
         Err(e) => {
-            tracing::error!("Failed to load positions summary for run {run_id}: {e}");
+            tracing::error!("Failed to load positions summary for rule {rule_id}: {e}");
             HttpResponse::InternalServerError().json(json!({"error": "Failed to load positions summary"}))
         }
     }
+}
+
+/// `(run_id, run_seq)` for every paper run of a rule, newest first — but only after
+/// confirming the rule exists and belongs to `strategy_id` (so a mistyped strategy
+/// segment can't read another strategy's runs). Returns `Ok(vec![])` for an unknown /
+/// other-strategy rule (→ empty history).
+async fn paper_runs_of(
+    repo: &StrategyRepo,
+    rule_id: Uuid,
+    strategy_id: &str,
+) -> Result<Vec<(Uuid, i64)>, HttpResponse> {
+    match repo.find_rule(rule_id).await {
+        Ok(Some(r)) if r.strategy_id == strategy_id => {}
+        Ok(_) => return Ok(Vec::new()),
+        Err(e) => {
+            tracing::error!("Failed to get rule {rule_id}: {e}");
+            return Err(HttpResponse::InternalServerError().json(json!({"error": "Failed to get rule"})));
+        }
+    }
+    repo.run_seqs_for_rule(rule_id, "paper").await.map_err(|e| {
+        tracing::error!("Failed to load paper runs for {rule_id}: {e}");
+        HttpResponse::InternalServerError().json(json!({"error": "Failed to load paper runs"}))
+    })
 }
 
 fn positions_response(responses: Vec<PositionResponse>, total: i64) -> HttpResponse {

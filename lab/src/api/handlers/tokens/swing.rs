@@ -94,7 +94,7 @@ pub(crate) fn filter_trades_to_window<'a>(
     }
     let anchor = trades
         .iter()
-        .filter(|t| t.sol_amount > 0.0)
+        .filter(|t| t.amount_sol > 0.0)
         .map(|t| t.block_time.timestamp_millis())
         .min();
     let Some(anchor) = anchor else {

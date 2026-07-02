@@ -42,7 +42,7 @@ pub struct BacktestTokenResult {
     /// Seconds from entry to exit (None if still open).
     pub holding_secs: Option<i64>,
     pub pnl_percent: Option<f64>,
-    /// PnL in SOL based on the rule's buy_amount.
+    /// PnL in SOL based on the rule's buy_amount_sol.
     pub pnl_sol: Option<f64>,
     /// "LiquidityExit", "TakeProfit", "StopLoss", "TrailingStop", "Stall",
     /// "TimeStop", or "Open"
@@ -260,7 +260,7 @@ pub async fn run_backtest(
                         Some(fill) => {
                             let secs = (fill.block_time - entry_time).num_seconds();
                             let pct = ((fill.price - entry_price) / entry_price) * 100.0;
-                            let sol = rule.buy_amount * (pct / 100.0);
+                            let sol = rule.buy_amount_sol * (pct / 100.0);
                             (
                                 Some(fill.price),
                                 Some(fill.tx_signature),
@@ -279,7 +279,7 @@ pub async fn run_backtest(
                     symbol: token.symbol.clone(),
                     entry_price,
                     ath_price,
-                    entry_token_amount: rule.buy_amount,
+                    entry_token_amount: rule.buy_amount_sol,
                     entry_tx,
                     entry_time,
                     exit_price,

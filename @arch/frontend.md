@@ -83,7 +83,7 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
 
 All 3 strategies (tpsl1, tpsl2, swing_1) share ONE rule-form + copy/paste path. The
 canonical key everywhere — form state, clipboard blob, create/update payloads — is
-the backend **column** (`p_exit_take_profit`, `buy_amount`, `trade_mode`, …), so
+the backend **column** (`p_exit_take_profit`, `buy_amount_sol`, `trade_mode`, …), so
 there are no camelCase/axis/prefix translators.
 
 - `lib/params/types.ts` — `ParamField` (column · group · section · kind · required ·

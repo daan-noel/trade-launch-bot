@@ -113,6 +113,10 @@ Stay in the owning crate (`trading_core` / `pump-trader` / `ingest-laserstream` 
 Copy-Item .env .env.backup -Force   # always do this first
 ```
 
+## SOL vs lamports naming (locked, no exceptions)
+
+Every field/column/variable that denotes an amount of SOL names its unit. `_lamports` = exact integer (`BIGINT`/`i64`/`u64`); `_sol` = human `f64`. Same base concept keeps the same base name across layers, unit-only suffix differs — the DB stores `entry_lamports`, the model exposes `entry_sol` (converted at the repo boundary via `sol_to_lamports`/`lamports_to_sol`). If a name held lamports but read like SOL, drop the `sol` (`reserve_sol` → `reserve_lamports`, **not** `reserve_sol_lamports`). Ratio/rate fields are **not** amounts and keep `_price`/`_pct` (`entry_price`, `price_per_token`, `pnl_pct`, `cu_price`). JSONB keys follow the same rule (`initial_buy_instruction->>'max_cost_lamports'`/`'spendable_lamports_in'`). A new SOL column that skips the suffix is a bug (it caused the `find_tx_by_fill` lamports-vs-SOL mismatch). Codified in migration `0009_sol_lamports_naming.sql`; the `pump-trader` crate + the `lake/` Parquet schema keep their own decoupled vocab.
+
 ## Gotchas
 
 - **Sell-confirm timing:** the exit loop polls the **full** window before retrying — buffers the gRPC feed's index lag. Without it, duplicate sells fire. Preserve when editing `execution/real.rs` or the sell retry path.

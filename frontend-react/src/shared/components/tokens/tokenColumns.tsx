@@ -380,32 +380,32 @@ export function tokenColumns(): ColumnDef<TokenRecord>[] {
       filterNumber: (r) => r.token_amount,
     },
     {
-      key: 'max_sol_cost',
+      key: 'max_cost_lamports',
       label: 'Max SOL Cost',
       group: 'max_or_spendable',
       width: '100px',
       sortable: true,
       render: (r) =>
-        r.max_sol_cost != null ? formatDecimalTrim(r.max_sol_cost / 1e9, 3) : '-',
-      sortValue: (r) => r.max_sol_cost,
+        r.max_cost_lamports != null ? formatDecimalTrim(r.max_cost_lamports / 1e9, 3) : '-',
+      sortValue: (r) => r.max_cost_lamports,
       searchValue: () => '',
       filterValue: (r) =>
-        r.max_sol_cost != null ? formatDecimalTrim(r.max_sol_cost / 1e9, 3) : '',
-      filterNumber: (r) => (r.max_sol_cost != null ? r.max_sol_cost / 1e9 : null),
+        r.max_cost_lamports != null ? formatDecimalTrim(r.max_cost_lamports / 1e9, 3) : '',
+      filterNumber: (r) => (r.max_cost_lamports != null ? r.max_cost_lamports / 1e9 : null),
     },
     {
-      key: 'spendable_sol_in',
+      key: 'spendable_lamports_in',
       label: 'Spendable SOL In',
       group: 'max_or_spendable',
       width: '100px',
       sortable: true,
       render: (r) =>
-        r.spendable_sol_in != null ? formatDecimalTrim(r.spendable_sol_in / 1e9, 3) : '-',
-      sortValue: (r) => r.spendable_sol_in,
+        r.spendable_lamports_in != null ? formatDecimalTrim(r.spendable_lamports_in / 1e9, 3) : '-',
+      sortValue: (r) => r.spendable_lamports_in,
       searchValue: () => '',
       filterValue: (r) =>
-        r.spendable_sol_in != null ? formatDecimalTrim(r.spendable_sol_in / 1e9, 3) : '',
-      filterNumber: (r) => (r.spendable_sol_in != null ? r.spendable_sol_in / 1e9 : null),
+        r.spendable_lamports_in != null ? formatDecimalTrim(r.spendable_lamports_in / 1e9, 3) : '',
+      filterNumber: (r) => (r.spendable_lamports_in != null ? r.spendable_lamports_in / 1e9 : null),
     },
     {
       key: 'min_tokens_out',

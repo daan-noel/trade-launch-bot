@@ -171,9 +171,9 @@ struct LakeTradeRow {
     wallet: String,
     trade_type: String,
     venue: String,
-    sol_amount: i64,
+    amount_lamports: i64,
     token_amount: i64,
-    reserve_sol: Option<i64>,
+    reserve_lamports: Option<i64>,
     reserve_token: Option<i64>,
     slot: i64,
     tx_index: i32,
@@ -208,7 +208,7 @@ async fn export_day(pool: &PgPool, root: &Path, day: NaiveDate) -> Result<usize>
     let mut stream = sqlx::query_as::<_, LakeTradeRow>(
         r#"
         SELECT t.mint_address, w.address AS wallet, t.trade_type, t.venue,
-               t.sol_amount, t.token_amount, t.reserve_sol, t.reserve_token,
+               t.amount_lamports, t.token_amount, t.reserve_lamports, t.reserve_token,
                t.slot, t.tx_index, t.leg_index, t.block_time
         FROM trades t
         JOIN wallet_dict w ON w.id = t.wallet_id
@@ -260,7 +260,7 @@ struct TradeBuilders {
 
 impl TradeBuilders {
     fn push(&mut self, r: &LakeTradeRow) {
-        let sol = r.sol_amount as f64 / 1_000_000_000.0;
+        let sol = r.amount_lamports as f64 / 1_000_000_000.0;
         let token = r.token_amount as f64;
         let price = if token > 0.0 { sol / token } else { 0.0 };
         self.mint.append_value(&r.mint_address);
@@ -282,7 +282,7 @@ impl TradeBuilders {
         // like `sol_amount` above. Without this `vsol` was 1e9× too large, which
         // silently cancelled in the `vsol/vtok` price ratio but corrupted any
         // absolute-SOL use of the reserve (the real-liquidity reconstruction).
-        self.vsol.append_option(r.reserve_sol.map(|v| v as f64 / 1_000_000_000.0));
+        self.vsol.append_option(r.reserve_lamports.map(|v| v as f64 / 1_000_000_000.0));
         self.vtok.append_option(r.reserve_token.map(|v| v as f64));
         self.venue.append_value(&r.venue);
         self.tx_index.append_value(r.tx_index);
@@ -387,7 +387,7 @@ async fn export_tokens(pool: &PgPool, root: &Path) -> Result<usize> {
     let mut stream = sqlx::query_as::<_, LakeTokenRow>(
         r#"
         SELECT mint_address, symbol, token_program_id,
-               initial_buy_sol::float8 / 1e9 AS initial_buy_sol,
+               initial_buy_lamports::float8 / 1e9 AS initial_buy_sol,
                cu_limit, cu_price, is_cashback_enabled,
                is_mayhem_mode, created_at, initial_buy_instruction, ix_labels
         FROM tokens
@@ -409,9 +409,9 @@ async fn export_tokens(pool: &PgPool, root: &Path) -> Result<usize> {
         cu_limit.append_option(r.cu_limit);
         cu_price.append_option(r.cu_price);
         cashback.append_value(r.is_cashback_enabled);
-        max_sol_cost.append_option(extract_lamports(r.initial_buy_instruction.as_ref(), "max_sol_cost"));
+        max_sol_cost.append_option(extract_lamports(r.initial_buy_instruction.as_ref(), "max_cost_lamports"));
         spendable_sol_in
-            .append_option(extract_lamports(r.initial_buy_instruction.as_ref(), "spendable_sol_in"));
+            .append_option(extract_lamports(r.initial_buy_instruction.as_ref(), "spendable_lamports_in"));
         ix_labels.append_option(labels_json.as_deref());
         mayhem.append_value(r.is_mayhem_mode);
         // Microseconds, not seconds: PG `tokens.created_at` is timestamptz, and the
@@ -446,9 +446,9 @@ mod tests {
             wallet: wallet.into(),
             trade_type: if buy { "buy".into() } else { "sell".into() },
             venue: "curve".into(),
-            sol_amount: lamports,
+            amount_lamports: lamports,
             token_amount: raw_tok,
-            reserve_sol: Some(30_000_000_000), // 30 SOL in lamports
+            reserve_lamports: Some(30_000_000_000), // 30 SOL in lamports
             reserve_token: Some(84),
             slot: 7,
             tx_index: 0,

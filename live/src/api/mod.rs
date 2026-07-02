@@ -44,6 +44,17 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 "/strategies/{strategy}/rules/{rule_id}/stop",
                 web::post().to(handlers::strategies::rules::stop_rule),
             )
+            // Bulk lifecycle (Pause All / Stop All), scoped by `?mode=real|paper` —
+            // distinct literal path segments from `/rules/{rule_id}/...` above, so
+            // no route-matching conflict.
+            .route(
+                "/strategies/{strategy}/rules/pause-all",
+                web::post().to(handlers::strategies::rules::pause_all_rules),
+            )
+            .route(
+                "/strategies/{strategy}/rules/stop-all",
+                web::post().to(handlers::strategies::rules::stop_all_rules),
+            )
             .route(
                 "/strategies/{strategy}/rules/{rule_id}",
                 web::get().to(handlers::strategies::rules::get_rule),

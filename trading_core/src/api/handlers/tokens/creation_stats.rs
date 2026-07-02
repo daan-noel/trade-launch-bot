@@ -610,7 +610,7 @@ mod tests {
         // Strings, numbers, and bools all coerce to string; blanks/empty dropped;
         // ix_labels ignored (handled separately).
         let got = parse_field_filters(Some(
-            r#"{"cu_limit":["300000"," "],"cu_price":[1000],"is_cashback_enabled":[true],"max_sol_cost":[],"ix_labels":["A"]}"#,
+            r#"{"cu_limit":["300000"," "],"cu_price":[1000],"is_cashback_enabled":[true],"max_cost_lamports":[],"ix_labels":["A"]}"#,
         ))
         .unwrap();
         assert_eq!(

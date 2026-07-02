@@ -528,7 +528,7 @@ mod tests {
             "mint".into(),
             "wallet".into(),
             TradeType::Buy,
-            price, // sol_amount
+            price, // amount_sol
             1,   // token_amount → price_per_token = price
             format!("sig-{slot}-{secs}"),
             slot,
@@ -559,7 +559,7 @@ mod tests {
             None,
             serde_json::Value::Array(vec![]),
             "paper".into(),
-            1.0, // buy_amount
+            1.0, // buy_amount_sol
             take_profit,
             stop_loss,
             None,

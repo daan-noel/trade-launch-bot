@@ -49,7 +49,7 @@ pub enum SseEvent {
         mint: String,
         wallet: String,
         trade_type: TradeType,
-        sol_amount: f64,
+        amount_sol: f64,
         /// Raw token units — exact `u64` (serializes as a JSON number; the frontend
         /// scales to a display amount). No `f64` round-trip on the notify path.
         token_amount: u64,
@@ -61,7 +61,7 @@ pub enum SseEvent {
     LiquidityAdded {
         mint: String,
         wallet: String,
-        sol_amount: f64,
+        amount_sol: f64,
         token_amount: f64,
         tx_signature: String,
         slot: u64,
@@ -70,7 +70,7 @@ pub enum SseEvent {
     LiquidityRemoved {
         mint: String,
         wallet: String,
-        sol_amount: f64,
+        amount_sol: f64,
         token_amount: f64,
         tx_signature: String,
         slot: u64,

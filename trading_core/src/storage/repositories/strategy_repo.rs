@@ -10,7 +10,8 @@ use crate::models::strategy::{
 };
 
 // `entry_sol`/`exit_sol` are human SOL (f64) in the model but stored as exact
-// lamports (BIGINT) in the column, mirroring `trades.sol_amount`. Token amounts are
+// lamports (`entry_lamports`/`exit_lamports`, BIGINT) in the column, mirroring
+// `trades.amount_lamports`. Token amounts are
 // already exact integers (`u64`) and bind/read as `i64` directly.
 
 /// Human SOL (f64) → lamports (i64).
@@ -39,7 +40,7 @@ struct StrategyRuleDbRow {
     id: Uuid,
     strategy_id: String,
     rule_name: String,
-    buy_amount: f64,
+    buy_amount_sol: f64,
     trade_mode: String,
     is_active: bool,
     max_concurrent_tokens: Option<i64>,
@@ -55,7 +56,7 @@ impl From<StrategyRuleDbRow> for StrategyRule {
             id: r.id,
             strategy_id: r.strategy_id,
             rule_name: r.rule_name,
-            buy_amount: r.buy_amount,
+            buy_amount_sol: r.buy_amount_sol,
             trade_mode: r.trade_mode,
             is_active: r.is_active,
             max_concurrent_tokens: r.max_concurrent_tokens,
@@ -176,12 +177,12 @@ struct StrategyPositionDbRow {
     entry_price: Option<f64>,
     entry_token_amount: Option<i64>,
     // Lamports (BIGINT) → human SOL f64 in the model.
-    entry_sol: Option<i64>,
+    entry_lamports: Option<i64>,
     entry_time: Option<DateTime<Utc>>,
     entry_tx_signatures: Json<Value>,
     exit_price: Option<f64>,
     exit_token_amount: Option<i64>,
-    exit_sol: Option<i64>,
+    exit_lamports: Option<i64>,
     exit_time: Option<DateTime<Utc>>,
     exit_tx_signatures: Json<Value>,
     submitted_buy_signatures: Vec<String>,
@@ -210,12 +211,12 @@ impl From<StrategyPositionDbRow> for StrategyPosition {
             target_tx: r.target_tx,
             entry_price: r.entry_price,
             entry_token_amount: r.entry_token_amount.map(|v| v as u64),
-            entry_sol: r.entry_sol.map(lamports_to_sol),
+            entry_sol: r.entry_lamports.map(lamports_to_sol),
             entry_time: r.entry_time,
             entry_tx_signatures: r.entry_tx_signatures.0,
             exit_price: r.exit_price,
             exit_token_amount: r.exit_token_amount.map(|v| v as u64),
-            exit_sol: r.exit_sol.map(lamports_to_sol),
+            exit_sol: r.exit_lamports.map(lamports_to_sol),
             exit_time: r.exit_time,
             exit_tx_signatures: r.exit_tx_signatures.0,
             submitted_buy_signatures: r.submitted_buy_signatures,
@@ -288,7 +289,7 @@ struct PositionsSummaryRow {
 // column isn't pulled into every read and the wire contract stays decoupled.
 // ---------------------------------------------------------------------------
 
-const RULE_COLS: &str = "id, strategy_id, rule_name, buy_amount, trade_mode, is_active, \
+const RULE_COLS: &str = "id, strategy_id, rule_name, buy_amount_sol, trade_mode, is_active, \
     max_concurrent_tokens, max_total_tokens, params, created_at, updated_at";
 
 const RUN_COLS: &str = "id, strategy_id, rule_id, mode, run_seq, status, params_snapshot, \
@@ -302,16 +303,16 @@ const METRICS_COLS: &str = "run_id, rolled_up_at, n_fired, n_open, n_closed, win
 
 const POSITION_COLS: &str = "id, run_id, strategy_id, rule_id, mode, mint, wallet, \
     token_program_id, token_account, target_price, target_token_amount, target_time, target_tx, \
-    entry_price, entry_token_amount, entry_sol, entry_time, entry_tx_signatures, \
-    exit_price, exit_token_amount, exit_sol, exit_time, exit_tx_signatures, \
+    entry_price, entry_token_amount, entry_lamports, entry_time, entry_tx_signatures, \
+    exit_price, exit_token_amount, exit_lamports, exit_time, exit_tx_signatures, \
     submitted_buy_signatures, status, exit_reason, extra, created_at, updated_at";
 
 /// `POSITION_COLS` qualified with the `sp` alias — for the paged read that JOINs
 /// `tokens` (so the server can sort/filter by token-enrichment columns too).
 const POSITION_COLS_SP: &str = "sp.id, sp.run_id, sp.strategy_id, sp.rule_id, sp.mode, sp.mint, \
     sp.wallet, sp.token_program_id, sp.token_account, sp.target_price, sp.target_token_amount, \
-    sp.target_time, sp.target_tx, sp.entry_price, sp.entry_token_amount, sp.entry_sol, \
-    sp.entry_time, sp.entry_tx_signatures, sp.exit_price, sp.exit_token_amount, sp.exit_sol, \
+    sp.target_time, sp.target_tx, sp.entry_price, sp.entry_token_amount, sp.entry_lamports, \
+    sp.entry_time, sp.entry_tx_signatures, sp.exit_price, sp.exit_token_amount, sp.exit_lamports, \
     sp.exit_time, sp.exit_tx_signatures, sp.submitted_buy_signatures, sp.status, sp.exit_reason, \
     sp.extra, sp.created_at, sp.updated_at";
 
@@ -375,7 +376,7 @@ fn position_sort_sql(key: &str) -> Option<&'static str> {
         "name" => "t.name",
         "creator" => "t.creator_wallet",
         "created" => "t.created_at",
-        "initial_buy" => "t.initial_buy_sol",
+        "initial_buy" => "t.initial_buy_lamports",
         "init_supply" => "t.initial_supply_token",
         "cu_limit" => "t.cu_limit",
         "cu_price" => "t.cu_price",
@@ -386,17 +387,17 @@ fn position_sort_sql(key: &str) -> Option<&'static str> {
         "ath_price" => "i.ath_price",
         "ath_timestamp" => "i.ath_timestamp",
         "market_cap" => "(i.current_price * t.initial_supply_token)",
-        "volume" => "i.volume",
+        "volume" => "i.volume_sol",
         "trade_count" => "i.trade_count",
         "last_trade" => "i.last_trade_at",
         "migrated" => "i.is_migrated",
         "dead" => "i.is_dead",
-        "first_slot_buy" => "i.first_slot_buy_sol",
-        "first_slot_sell" => "i.first_slot_sell_sol",
+        "first_slot_buy" => "i.first_slot_buy_lamports",
+        "first_slot_sell" => "i.first_slot_sell_lamports",
         // initial_buy_instruction JSONB
         "token_amount" => "(t.initial_buy_instruction->>'token_amount')::numeric",
-        "max_sol_cost" => "(t.initial_buy_instruction->>'max_sol_cost')::numeric",
-        "spendable_sol_in" => "(t.initial_buy_instruction->>'spendable_sol_in')::numeric",
+        "max_cost_lamports" => "(t.initial_buy_instruction->>'max_cost_lamports')::numeric",
+        "spendable_lamports_in" => "(t.initial_buy_instruction->>'spendable_lamports_in')::numeric",
         "min_tokens_out" => "(t.initial_buy_instruction->>'min_tokens_out')::numeric",
         _ => return None,
     })
@@ -430,7 +431,7 @@ fn position_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
         "symbol" => ("t.symbol", Text),
         "name" => ("t.name", Text),
         "creator" => ("t.creator_wallet", Text),
-        "initial_buy" => ("t.initial_buy_sol", Numeric),
+        "initial_buy" => ("t.initial_buy_lamports", Numeric),
         "init_supply" => ("t.initial_supply_token", Numeric),
         "cu_limit" => ("t.cu_limit", Numeric),
         "cu_price" => ("t.cu_price", Numeric),
@@ -438,15 +439,15 @@ fn position_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
         "current_price" => ("i.current_price", Numeric),
         "ath_price" => ("i.ath_price", Numeric),
         "market_cap" => ("(i.current_price * t.initial_supply_token)", Numeric),
-        "volume" => ("i.volume", Numeric),
+        "volume" => ("i.volume_sol", Numeric),
         "trade_count" => ("i.trade_count", Numeric),
-        "first_slot_buy" => ("i.first_slot_buy_sol", Numeric),
-        "first_slot_sell" => ("i.first_slot_sell_sol", Numeric),
+        "first_slot_buy" => ("i.first_slot_buy_lamports", Numeric),
+        "first_slot_sell" => ("i.first_slot_sell_lamports", Numeric),
         // initial_buy_instruction JSONB — text in JSONB, cast to numeric so the
         // comparison ops work.
         "token_amount" => ("(t.initial_buy_instruction->>'token_amount')::numeric", Numeric),
-        "max_sol_cost" => ("(t.initial_buy_instruction->>'max_sol_cost')::numeric", Numeric),
-        "spendable_sol_in" => ("(t.initial_buy_instruction->>'spendable_sol_in')::numeric", Numeric),
+        "max_cost_lamports" => ("(t.initial_buy_instruction->>'max_cost_lamports')::numeric", Numeric),
+        "spendable_lamports_in" => ("(t.initial_buy_instruction->>'spendable_lamports_in')::numeric", Numeric),
         "min_tokens_out" => ("(t.initial_buy_instruction->>'min_tokens_out')::numeric", Numeric),
         _ => return None,
     })
@@ -609,20 +610,20 @@ fn token_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
         "symbol" => ("t.symbol", Text),
         "name" => ("t.name", Text),
         "creator" => ("t.creator_wallet", Text),
-        "initial_buy" | "init_buy" => ("t.initial_buy_sol", Numeric),
+        "initial_buy" | "init_buy" => ("t.initial_buy_lamports", Numeric),
         "init_supply" => ("t.initial_supply_token", Numeric),
         "cu_limit" => ("t.cu_limit", Numeric),
         "cu_price" => ("t.cu_price", Numeric),
         "current_price" => ("i.current_price", Numeric),
         "ath_price" => ("i.ath_price", Numeric),
         "market_cap" => ("(i.current_price * t.initial_supply_token)", Numeric),
-        "volume" => ("i.volume", Numeric),
+        "volume" => ("i.volume_sol", Numeric),
         "trade_count" => ("i.trade_count", Numeric),
-        "first_slot_buy" => ("i.first_slot_buy_sol", Numeric),
-        "first_slot_sell" => ("i.first_slot_sell_sol", Numeric),
+        "first_slot_buy" => ("i.first_slot_buy_lamports", Numeric),
+        "first_slot_sell" => ("i.first_slot_sell_lamports", Numeric),
         "token_amount" => ("(t.initial_buy_instruction->>'token_amount')::numeric", Numeric),
-        "max_sol_cost" => ("(t.initial_buy_instruction->>'max_sol_cost')::numeric", Numeric),
-        "spendable_sol_in" => ("(t.initial_buy_instruction->>'spendable_sol_in')::numeric", Numeric),
+        "max_cost_lamports" => ("(t.initial_buy_instruction->>'max_cost_lamports')::numeric", Numeric),
+        "spendable_lamports_in" => ("(t.initial_buy_instruction->>'spendable_lamports_in')::numeric", Numeric),
         "min_tokens_out" => ("(t.initial_buy_instruction->>'min_tokens_out')::numeric", Numeric),
         _ => return None,
     })
@@ -637,20 +638,20 @@ fn token_sort_sql(key: &str) -> Option<&'static str> {
         "name" => "t.name",
         "creator" => "t.creator_wallet",
         "created" | "created_at" => "t.created_at",
-        "initial_buy" | "init_buy" => "t.initial_buy_sol",
+        "initial_buy" | "init_buy" => "t.initial_buy_lamports",
         "init_supply" => "t.initial_supply_token",
         "cu_limit" => "t.cu_limit",
         "cu_price" => "t.cu_price",
         "current_price" => "i.current_price",
         "ath_price" => "i.ath_price",
         "market_cap" => "(i.current_price * t.initial_supply_token)",
-        "volume" => "i.volume",
+        "volume" => "i.volume_sol",
         "trade_count" => "i.trade_count",
-        "first_slot_buy" => "i.first_slot_buy_sol",
-        "first_slot_sell" => "i.first_slot_sell_sol",
+        "first_slot_buy" => "i.first_slot_buy_lamports",
+        "first_slot_sell" => "i.first_slot_sell_lamports",
         "token_amount" => "(t.initial_buy_instruction->>'token_amount')::numeric",
-        "max_sol_cost" => "(t.initial_buy_instruction->>'max_sol_cost')::numeric",
-        "spendable_sol_in" => "(t.initial_buy_instruction->>'spendable_sol_in')::numeric",
+        "max_cost_lamports" => "(t.initial_buy_instruction->>'max_cost_lamports')::numeric",
+        "spendable_lamports_in" => "(t.initial_buy_instruction->>'spendable_lamports_in')::numeric",
         "min_tokens_out" => "(t.initial_buy_instruction->>'min_tokens_out')::numeric",
         _ => return None,
     })
@@ -736,7 +737,7 @@ impl StrategyRepo {
         sqlx::query(
             r#"
             INSERT INTO strategy_rules
-                (id, strategy_id, rule_name, buy_amount, trade_mode, is_active,
+                (id, strategy_id, rule_name, buy_amount_sol, trade_mode, is_active,
                  max_concurrent_tokens, max_total_tokens, params, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             "#,
@@ -744,7 +745,7 @@ impl StrategyRepo {
         .bind(rule.id)
         .bind(&rule.strategy_id)
         .bind(&rule.rule_name)
-        .bind(rule.buy_amount)
+        .bind(rule.buy_amount_sol)
         .bind(&rule.trade_mode)
         .bind(rule.is_active)
         .bind(rule.max_concurrent_tokens)
@@ -762,7 +763,7 @@ impl StrategyRepo {
             r#"
             UPDATE strategy_rules SET
                 rule_name = $2,
-                buy_amount = $3,
+                buy_amount_sol = $3,
                 trade_mode = $4,
                 is_active = $5,
                 max_concurrent_tokens = $6,
@@ -774,7 +775,7 @@ impl StrategyRepo {
         )
         .bind(rule.id)
         .bind(&rule.rule_name)
-        .bind(rule.buy_amount)
+        .bind(rule.buy_amount_sol)
         .bind(&rule.trade_mode)
         .bind(rule.is_active)
         .bind(rule.max_concurrent_tokens)
@@ -887,6 +888,26 @@ impl StrategyRepo {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(StrategyRun::from))
+    }
+
+    /// `(run_id, run_seq)` for every run of a rule in a mode, newest first. Backs
+    /// the run-history positions view: the caller takes the first (latest) run as
+    /// the "current run" to exclude, and maps the rest onto each history position's
+    /// `run_seq` for the run column + banding.
+    pub async fn run_seqs_for_rule(
+        &self,
+        rule_id: Uuid,
+        mode: &str,
+    ) -> anyhow::Result<Vec<(Uuid, i64)>> {
+        let rows: Vec<(Uuid, i64)> = sqlx::query_as(
+            "SELECT id, run_seq FROM strategy_runs WHERE rule_id = $1 AND mode = $2 \
+             ORDER BY run_seq DESC",
+        )
+        .bind(rule_id)
+        .bind(mode)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
     }
 
     pub async fn set_run_status(
@@ -1014,8 +1035,8 @@ impl StrategyRepo {
             INSERT INTO strategy_positions
                 (id, run_id, strategy_id, rule_id, mode, mint, wallet, token_program_id,
                  target_price, target_token_amount, target_time, target_tx,
-                 entry_price, entry_token_amount, entry_sol, entry_time, entry_tx_signatures,
-                 exit_price, exit_token_amount, exit_sol, exit_time, exit_tx_signatures,
+                 entry_price, entry_token_amount, entry_lamports, entry_time, entry_tx_signatures,
+                 exit_price, exit_token_amount, exit_lamports, exit_time, exit_tx_signatures,
                  submitted_buy_signatures, status, exit_reason, extra, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
                     $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
@@ -1071,12 +1092,12 @@ impl StrategyRepo {
                 target_tx = $12,
                 entry_price = $13,
                 entry_token_amount = $14,
-                entry_sol = $15,
+                entry_lamports = $15,
                 entry_time = $16,
                 entry_tx_signatures = $17,
                 exit_price = $18,
                 exit_token_amount = $19,
-                exit_sol = $20,
+                exit_lamports = $20,
                 exit_time = $21,
                 exit_tx_signatures = $22,
                 submitted_buy_signatures = $23,
@@ -1172,7 +1193,7 @@ impl StrategyRepo {
         offset: i64,
         query: &PositionQuery,
     ) -> anyhow::Result<Vec<StrategyPosition>> {
-        self.find_positions_paged("sp.run_id", run_id, limit, offset, query).await
+        self.find_positions_paged("sp.run_id", run_id, None, limit, offset, query).await
     }
 
     /// Page-bounded positions for a rule across all its runs — the by-rule view
@@ -1184,18 +1205,36 @@ impl StrategyRepo {
         offset: i64,
         query: &PositionQuery,
     ) -> anyhow::Result<Vec<StrategyPosition>> {
-        self.find_positions_paged("sp.rule_id", rule_id, limit, offset, query).await
+        self.find_positions_paged("sp.rule_id", rule_id, None, limit, offset, query).await
     }
 
-    /// Shared page query behind the two paged views. LEFT-JOINs `tokens` so the
+    /// Page-bounded positions for a rule across **all runs except one** — the
+    /// "old runs" (run-history) view, which excludes the rule's current/latest run
+    /// so it complements [`find_positions_by_run_paged`] on the latest run.
+    pub async fn find_positions_by_rule_excluding_run_paged(
+        &self,
+        rule_id: Uuid,
+        exclude_run_id: Uuid,
+        limit: i64,
+        offset: i64,
+        query: &PositionQuery,
+    ) -> anyhow::Result<Vec<StrategyPosition>> {
+        self.find_positions_paged("sp.rule_id", rule_id, Some(exclude_run_id), limit, offset, query)
+            .await
+    }
+
+    /// Shared page query behind the paged views. LEFT-JOINs `tokens` so the
     /// [`PositionQuery`] can sort/filter/search by token-enrichment columns too.
     /// `scope_col` is a trusted literal (`"sp.run_id"` / `"sp.rule_id"`); the
     /// where/order fragments come only from the whitelist resolvers (no user text in
-    /// identifiers). Falls back to `sp.created_at DESC` when no sort resolves.
+    /// identifiers). `exclude_run` (when set) drops that run from the scope — the
+    /// run-history view uses it to omit the current run. Falls back to
+    /// `sp.created_at DESC` when no sort resolves.
     async fn find_positions_paged(
         &self,
         scope_col: &str,
         scope_id: Uuid,
+        exclude_run: Option<Uuid>,
         limit: i64,
         offset: i64,
         query: &PositionQuery,
@@ -1206,6 +1245,9 @@ impl StrategyRepo {
              LEFT JOIN tokens_info i ON i.mint_address = sp.mint WHERE "
         ));
         qb.push(scope_col).push(" = ").push_bind(scope_id);
+        if let Some(exclude) = exclude_run {
+            qb.push(" AND sp.run_id <> ").push_bind(exclude);
+        }
         push_position_where(&mut qb, query);
         push_position_order(&mut qb, query);
         qb.push(" LIMIT ").push_bind(limit).push(" OFFSET ").push_bind(offset);
@@ -1223,7 +1265,7 @@ impl StrategyRepo {
         run_id: Uuid,
         query: &PositionQuery,
     ) -> anyhow::Result<i64> {
-        self.count_positions("sp.run_id", run_id, query).await
+        self.count_positions("sp.run_id", run_id, None, query).await
     }
 
     /// Count of positions for a rule across all its runs (matching `query`).
@@ -1232,15 +1274,27 @@ impl StrategyRepo {
         rule_id: Uuid,
         query: &PositionQuery,
     ) -> anyhow::Result<i64> {
-        self.count_positions("sp.rule_id", rule_id, query).await
+        self.count_positions("sp.rule_id", rule_id, None, query).await
     }
 
-    /// Shared count behind the two count views — same JOIN + WHERE as
+    /// Count of a rule's positions across all runs except one (the run-history
+    /// view) — pairs with [`find_positions_by_rule_excluding_run_paged`].
+    pub async fn count_positions_by_rule_excluding_run(
+        &self,
+        rule_id: Uuid,
+        exclude_run_id: Uuid,
+        query: &PositionQuery,
+    ) -> anyhow::Result<i64> {
+        self.count_positions("sp.rule_id", rule_id, Some(exclude_run_id), query).await
+    }
+
+    /// Shared count behind the count views — same JOIN + WHERE as
     /// [`find_positions_paged`], so `total` matches the filtered page exactly.
     async fn count_positions(
         &self,
         scope_col: &str,
         scope_id: Uuid,
+        exclude_run: Option<Uuid>,
         query: &PositionQuery,
     ) -> anyhow::Result<i64> {
         let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
@@ -1249,6 +1303,9 @@ impl StrategyRepo {
              LEFT JOIN tokens_info i ON i.mint_address = sp.mint WHERE ",
         );
         qb.push(scope_col).push(" = ").push_bind(scope_id);
+        if let Some(exclude) = exclude_run {
+            qb.push(" AND sp.run_id <> ").push_bind(exclude);
+        }
         push_position_where(&mut qb, query);
         let (n,): (i64,) = qb.build_query_as().fetch_one(&self.pool).await?;
         Ok(n)
@@ -1271,7 +1328,7 @@ impl StrategyRepo {
     ) -> anyhow::Result<Vec<MatchedTokenRow>> {
         let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
             "SELECT t.mint_address AS mint, t.symbol, t.name, t.created_at, \
-                    t.initial_buy_sol::float8 / 1e9 AS initial_buy_sol, \
+                    t.initial_buy_lamports::float8 / 1e9 AS initial_buy_sol, \
                     t.cu_limit, t.cu_price \
              FROM tokens t \
              LEFT JOIN tokens_info i ON i.mint_address = t.mint_address \
@@ -1308,7 +1365,7 @@ impl StrategyRepo {
         &self,
         run_id: Uuid,
     ) -> anyhow::Result<PositionsSummary> {
-        self.positions_summary("run_id", run_id).await
+        self.positions_summary("run_id", run_id, None).await
     }
 
     /// Rule-wide position aggregates across all runs (real-rule lifetime history).
@@ -1316,42 +1373,54 @@ impl StrategyRepo {
         &self,
         rule_id: Uuid,
     ) -> anyhow::Result<PositionsSummary> {
-        self.positions_summary("rule_id", rule_id).await
+        self.positions_summary("rule_id", rule_id, None).await
     }
 
-    /// Shared aggregate query behind the two summary views. `filter_col` is a
+    /// Rule-wide aggregates across all runs except one (the run-history view) —
+    /// complements [`positions_summary_by_run`] on the latest run.
+    pub async fn positions_summary_by_rule_excluding_run(
+        &self,
+        rule_id: Uuid,
+        exclude_run_id: Uuid,
+    ) -> anyhow::Result<PositionsSummary> {
+        self.positions_summary("rule_id", rule_id, Some(exclude_run_id)).await
+    }
+
+    /// Shared aggregate query behind the summary views. `filter_col` is a
     /// trusted literal (`"run_id"` / `"rule_id"`), never user input — no injection
-    /// surface. All aggregation happens in Postgres (`COUNT/SUM FILTER`), so no rows
+    /// surface. `exclude_run` (when set) drops that run from the scope (run-history).
+    /// All aggregation happens in Postgres (`COUNT/SUM FILTER`), so no rows
     /// are shipped. The win rule mirrors [`StrategyPosition::is_win`]: a clean `End`
-    /// exit with positive realized SOL (`exit_sol > entry_sol`); every other closed
+    /// exit with positive realized SOL (`exit_lamports > entry_lamports`); every other closed
     /// position is a loss. SOL columns are lamports → divided to human SOL here.
     async fn positions_summary(
         &self,
         filter_col: &str,
         id: Uuid,
+        exclude_run: Option<Uuid>,
     ) -> anyhow::Result<PositionsSummary> {
         // Predicates (kept in one place so the two summary views can't drift):
         //   entered  := entry_price IS NOT NULL
         //   open     := status IN ('Holding','Arming','BuySubmitted')
         //   closed   := entry_price IS NOT NULL AND status IN ('End','ExitFailed')
-        //   win      := status = 'End' AND exit_sol > entry_sol   (SOL basis)
-        // Realized SOL PnL = exit_sol - entry_sol (lamports); % = (exit-entry)/entry.
+        //   win      := status = 'End' AND exit_lamports > entry_lamports   (SOL basis)
+        // Realized SOL PnL = exit_lamports - entry_lamports (lamports); % = (exit-entry)/entry.
         let sql = format!(
             "SELECT \
                COUNT(*) FILTER (WHERE entry_price IS NOT NULL) AS tokens, \
                COUNT(*) FILTER (WHERE status IN ('Holding','Arming','BuySubmitted')) AS open, \
-               COUNT(*) FILTER (WHERE status = 'End' AND exit_sol > entry_sol) AS win, \
+               COUNT(*) FILTER (WHERE status = 'End' AND exit_lamports > entry_lamports) AS win, \
                COUNT(*) FILTER (WHERE entry_price IS NOT NULL AND status IN ('End','ExitFailed') \
-                                  AND NOT (status = 'End' AND exit_sol > entry_sol)) AS loss, \
-               COALESCE(SUM(COALESCE(exit_sol,0) - entry_sol) \
+                                  AND NOT (status = 'End' AND exit_lamports > entry_lamports)) AS loss, \
+               COALESCE(SUM(COALESCE(exit_lamports,0) - entry_lamports) \
                         FILTER (WHERE entry_price IS NOT NULL AND status IN ('End','ExitFailed')), 0)::BIGINT AS total_pnl_lamports, \
-               COALESCE(SUM(entry_sol) FILTER (WHERE entry_price IS NOT NULL), 0)::BIGINT AS total_entry_lamports, \
-               COALESCE(SUM(entry_sol) FILTER (WHERE status IN ('Holding','Arming','BuySubmitted')), 0)::BIGINT AS total_holding_lamports, \
-               COALESCE(SUM(COALESCE(exit_sol,0) - entry_sol) \
-                        FILTER (WHERE status = 'End' AND exit_sol > entry_sol), 0)::BIGINT AS total_gains_lamports, \
-               COALESCE(SUM(entry_sol - COALESCE(exit_sol,0)) \
+               COALESCE(SUM(entry_lamports) FILTER (WHERE entry_price IS NOT NULL), 0)::BIGINT AS total_entry_lamports, \
+               COALESCE(SUM(entry_lamports) FILTER (WHERE status IN ('Holding','Arming','BuySubmitted')), 0)::BIGINT AS total_holding_lamports, \
+               COALESCE(SUM(COALESCE(exit_lamports,0) - entry_lamports) \
+                        FILTER (WHERE status = 'End' AND exit_lamports > entry_lamports), 0)::BIGINT AS total_gains_lamports, \
+               COALESCE(SUM(entry_lamports - COALESCE(exit_lamports,0)) \
                         FILTER (WHERE entry_price IS NOT NULL AND status IN ('End','ExitFailed') \
-                                  AND NOT (status = 'End' AND exit_sol > entry_sol)), 0)::BIGINT AS total_losses_lamports, \
+                                  AND NOT (status = 'End' AND exit_lamports > entry_lamports)), 0)::BIGINT AS total_losses_lamports, \
                COALESCE(SUM((exit_price - entry_price) / entry_price * 100.0) \
                         FILTER (WHERE entry_price IS NOT NULL AND entry_price > 0 \
                                   AND exit_price IS NOT NULL AND status IN ('End','ExitFailed')), 0)::DOUBLE PRECISION AS sum_pnl_pct, \
@@ -1364,12 +1433,14 @@ impl StrategyRepo {
                MIN((exit_price - entry_price) / entry_price * 100.0) \
                         FILTER (WHERE entry_price IS NOT NULL AND entry_price > 0 \
                                   AND exit_price IS NOT NULL AND status IN ('End','ExitFailed'))::DOUBLE PRECISION AS worst_pct \
-             FROM strategy_positions WHERE {filter_col} = $1"
+             FROM strategy_positions WHERE {filter_col} = $1{exclude_clause}",
+            exclude_clause = if exclude_run.is_some() { " AND run_id <> $2" } else { "" },
         );
-        let row = sqlx::query_as::<_, PositionsSummaryRow>(&sql)
-            .bind(id)
-            .fetch_one(&self.pool)
-            .await?;
+        let mut q = sqlx::query_as::<_, PositionsSummaryRow>(&sql).bind(id);
+        if let Some(exclude) = exclude_run {
+            q = q.bind(exclude);
+        }
+        let row = q.fetch_one(&self.pool).await?;
 
         let closed = row.win + row.loss;
         let win_rate = if closed > 0 { row.win as f64 / closed as f64 * 100.0 } else { 0.0 };
@@ -1421,10 +1492,10 @@ impl StrategyRepo {
               COUNT(p.*) FILTER (WHERE p.entry_price IS NOT NULL) AS total, \
               COUNT(p.*) FILTER (WHERE p.status IN ('Holding','Arming','BuySubmitted')) AS open, \
               COUNT(p.*) FILTER (WHERE p.status IN ('Arming','BuySubmitted')) AS pending, \
-              COUNT(p.*) FILTER (WHERE p.status = 'End' AND p.exit_sol > p.entry_sol) AS win, \
+              COUNT(p.*) FILTER (WHERE p.status = 'End' AND p.exit_lamports > p.entry_lamports) AS win, \
               COUNT(p.*) FILTER (WHERE p.entry_price IS NOT NULL AND p.status IN ('End','ExitFailed') \
-                                   AND NOT (p.status = 'End' AND p.exit_sol > p.entry_sol)) AS loss, \
-              COALESCE(SUM(COALESCE(p.exit_sol,0) - p.entry_sol) \
+                                   AND NOT (p.status = 'End' AND p.exit_lamports > p.entry_lamports)) AS loss, \
+              COALESCE(SUM(COALESCE(p.exit_lamports,0) - p.entry_lamports) \
                        FILTER (WHERE p.entry_price IS NOT NULL AND p.status IN ('End','ExitFailed')), 0)::BIGINT AS total_pnl_lamports, \
               COALESCE(SUM((p.exit_price - p.entry_price) / p.entry_price * 100.0) \
                        FILTER (WHERE p.entry_price IS NOT NULL AND p.entry_price > 0 \
@@ -1637,7 +1708,7 @@ impl StrategyRepo {
         let row = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
             "UPDATE strategy_positions \
              SET entry_tx_signatures = $2, entry_token_amount = $3, entry_price = $4, \
-                 entry_sol = $5, entry_time = $6, \
+                 entry_lamports = $5, entry_time = $6, \
                  token_account = COALESCE($7, token_account), \
                  status = 'Holding', updated_at = now() \
              WHERE id = $1 \
@@ -1841,7 +1912,7 @@ mod filter_sql_tests {
     #[test]
     fn gt_on_numeric_col_emits_numeric_predicate() {
         let sql = where_sql("volume", num(FilterOp::Gt, 100.0));
-        assert!(sql.contains("i.volume >"), "expected numeric compare, got: {sql}");
+        assert!(sql.contains("i.volume_sol >"), "expected numeric compare, got: {sql}");
         assert!(!sql.contains("::text"), "numeric op must not cast to text: {sql}");
         assert!(!sql.contains("ILIKE"), "numeric op must not ILIKE: {sql}");
     }

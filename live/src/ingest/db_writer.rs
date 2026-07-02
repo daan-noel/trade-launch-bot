@@ -205,7 +205,7 @@ impl DbWriter {
                         m.ath_price,
                         m.ath_timestamp,
                         m.age_seconds,
-                        m.volume,
+                        m.volume_sol,
                         m.market_cap,
                         m.trade_count,
                         m.last_trade_at,

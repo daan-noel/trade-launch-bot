@@ -63,7 +63,7 @@ struct TokenDbRow {
     bonding_curve_address: Option<String>,
     initial_supply_token: Option<i64>,
     /// Lamports (BIGINT); converted to human SOL on read.
-    initial_buy_sol: Option<i64>,
+    initial_buy_lamports: Option<i64>,
     initial_buy_instruction: Option<Json<Value>>,
     cu_limit: Option<i64>,
     cu_price: Option<i64>,
@@ -104,7 +104,7 @@ pub struct TokenListRow {
     // tokens_info (LEFT JOIN → all nullable)
     pub ath_price: Option<f64>,
     pub ath_timestamp: Option<DateTime<Utc>>,
-    pub volume: Option<f64>,
+    pub volume_sol: Option<f64>,
     pub market_cap: Option<f64>,
     pub trade_count: Option<i64>,
     pub last_trade_at: Option<DateTime<Utc>>,
@@ -135,7 +135,7 @@ impl From<TokenDbRow> for Token {
             bonding_curve_address: r.bonding_curve_address,
             initial_supply_token: r.initial_supply_token.map(|v| v as u64),
             // Lamports (BIGINT) → human SOL f64 on read.
-            initial_buy_sol: r.initial_buy_sol.map(lamports_to_sol),
+            initial_buy_sol: r.initial_buy_lamports.map(lamports_to_sol),
             initial_buy_instruction: r.initial_buy_instruction.map(|v| v.0),
             cu_limit: r.cu_limit.map(|v| v as u64),
             cu_price: r.cu_price.map(|v| v as u64),
@@ -151,7 +151,7 @@ impl From<TokenDbRow> for Token {
 
 // ---------------------------------------------------------------------------
 // SOL ↔ lamports — `initial_buy_sol` is human SOL (f64) in the model but stored
-// as exact lamports (BIGINT) in the column, mirroring `trades.sol_amount`.
+// as exact lamports (BIGINT) in the column, mirroring `trades.amount_lamports`.
 // ---------------------------------------------------------------------------
 
 /// Human SOL (f64) → lamports (i64).
@@ -172,7 +172,7 @@ fn lamports_to_sol(lamports: i64) -> f64 {
 /// so a future column added to `tokens` isn't pulled into every read, and the
 /// query's wire contract is decoupled from the physical table layout.
 const TOKEN_COLS: &str = "mint_address, creator_wallet, name, symbol, token_program_id, \
-    bonding_curve_address, initial_supply_token, initial_buy_sol, initial_buy_instruction, \
+    bonding_curve_address, initial_supply_token, initial_buy_lamports, initial_buy_instruction, \
     cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels, creation_tx_signature, \
     creation_slot, created_at";
 
@@ -192,7 +192,7 @@ impl TokenRepo {
         let mut qb = sqlx::QueryBuilder::new(
             "INSERT INTO tokens \
              (mint_address, creator_wallet, name, symbol, token_program_id, \
-              bonding_curve_address, initial_supply_token, initial_buy_sol, initial_buy_instruction, \
+              bonding_curve_address, initial_supply_token, initial_buy_lamports, initial_buy_instruction, \
               cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels, \
               creation_tx_signature, creation_slot, created_at) ",
         );
@@ -226,7 +226,7 @@ impl TokenRepo {
             r#"
             INSERT INTO tokens
                 (mint_address, creator_wallet, name, symbol, token_program_id,
-                    bonding_curve_address, initial_supply_token, initial_buy_sol, initial_buy_instruction, cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels,
+                    bonding_curve_address, initial_supply_token, initial_buy_lamports, initial_buy_instruction, cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels,
                     creation_tx_signature, creation_slot, created_at)
               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             ON CONFLICT (mint_address) DO NOTHING
@@ -261,7 +261,7 @@ impl TokenRepo {
             r#"
             INSERT INTO tokens
                 (mint_address, creator_wallet, name, symbol, token_program_id,
-                    bonding_curve_address, initial_supply_token, initial_buy_sol, initial_buy_instruction, cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels,
+                    bonding_curve_address, initial_supply_token, initial_buy_lamports, initial_buy_instruction, cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels,
                     creation_tx_signature, creation_slot, created_at)
               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             ON CONFLICT (mint_address) DO UPDATE SET
@@ -271,7 +271,7 @@ impl TokenRepo {
                 token_program_id = EXCLUDED.token_program_id,
                 bonding_curve_address = EXCLUDED.bonding_curve_address,
                 initial_supply_token = EXCLUDED.initial_supply_token,
-                initial_buy_sol = EXCLUDED.initial_buy_sol,
+                initial_buy_lamports = EXCLUDED.initial_buy_lamports,
                 initial_buy_instruction = EXCLUDED.initial_buy_instruction,
                 cu_limit = EXCLUDED.cu_limit,
                 cu_price = EXCLUDED.cu_price,
@@ -397,17 +397,17 @@ impl TokenRepo {
             SELECT t.mint_address, t.creator_wallet, t.name, t.symbol,
                    t.bonding_curve_address,
                    t.initial_supply_token,
-                   t.initial_buy_sol::float8 / 1e9 AS initial_buy_sol, t.initial_buy_instruction,
+                   t.initial_buy_lamports::float8 / 1e9 AS initial_buy_sol, t.initial_buy_instruction,
                    t.cu_limit, t.cu_price, t.is_mayhem_mode, t.is_cashback_enabled,
                    t.ix_labels, t.creation_tx_signature, t.created_at,
-                   i.ath_price, i.ath_timestamp, i.volume,
+                   i.ath_price, i.ath_timestamp, i.volume_sol,
                    (i.current_price * t.initial_supply_token) AS market_cap, i.trade_count,
                    i.last_trade_at, i.current_price, i.is_dead, i.is_migrated,
                    (SELECT MAX(s.last_synced_at) FROM token_sync_state s
                       WHERE s.mint_address = t.mint_address) AS last_synced_at,
                    i.lifetime_secs,
-                   i.first_slot_buy_sol::float8 / 1e9 AS first_slot_buy_sol,
-                   i.first_slot_sell_sol::float8 / 1e9 AS first_slot_sell_sol
+                   i.first_slot_buy_lamports::float8 / 1e9 AS first_slot_buy_sol,
+                   i.first_slot_sell_lamports::float8 / 1e9 AS first_slot_sell_sol
               FROM tokens t
               LEFT JOIN tokens_info i ON i.mint_address = t.mint_address
              WHERE t.created_at >= $1
@@ -454,15 +454,15 @@ impl TokenRepo {
         let sql = format!(
             "SELECT t.mint_address, t.creator_wallet, t.name, t.symbol, \
                     t.bonding_curve_address, t.initial_supply_token, \
-                    t.initial_buy_sol::float8 / 1e9 AS initial_buy_sol, t.initial_buy_instruction, \
+                    t.initial_buy_lamports::float8 / 1e9 AS initial_buy_sol, t.initial_buy_instruction, \
                     t.cu_limit, t.cu_price, t.is_mayhem_mode, t.is_cashback_enabled, \
                     t.ix_labels, t.creation_tx_signature, t.created_at, \
-                    i.ath_price, i.ath_timestamp, i.volume, \
+                    i.ath_price, i.ath_timestamp, i.volume_sol, \
                     (i.current_price * t.initial_supply_token) AS market_cap, i.trade_count, \
                     i.last_trade_at, i.current_price, i.is_dead, i.is_migrated, \
                     sync.last_synced_at, i.lifetime_secs, \
-                    i.first_slot_buy_sol::float8 / 1e9 AS first_slot_buy_sol, \
-                    i.first_slot_sell_sol::float8 / 1e9 AS first_slot_sell_sol \
+                    i.first_slot_buy_lamports::float8 / 1e9 AS first_slot_buy_sol, \
+                    i.first_slot_sell_lamports::float8 / 1e9 AS first_slot_sell_sol \
              {} WHERE {} ORDER BY {} LIMIT ${} OFFSET ${}",
             Self::LIST_FROM, where_sql, order_sql, limit_ph, offset_ph,
         );
@@ -518,17 +518,17 @@ impl TokenRepo {
             SELECT t.mint_address, t.creator_wallet, t.name, t.symbol,
                    t.bonding_curve_address,
                    t.initial_supply_token,
-                   t.initial_buy_sol::float8 / 1e9 AS initial_buy_sol, t.initial_buy_instruction,
+                   t.initial_buy_lamports::float8 / 1e9 AS initial_buy_sol, t.initial_buy_instruction,
                    t.cu_limit, t.cu_price, t.is_mayhem_mode, t.is_cashback_enabled,
                    t.ix_labels, t.creation_tx_signature, t.created_at,
-                   i.ath_price, i.ath_timestamp, i.volume,
+                   i.ath_price, i.ath_timestamp, i.volume_sol,
                    (i.current_price * t.initial_supply_token) AS market_cap, i.trade_count,
                    i.last_trade_at, i.current_price, i.is_dead, i.is_migrated,
                    (SELECT MAX(s.last_synced_at) FROM token_sync_state s
                       WHERE s.mint_address = t.mint_address) AS last_synced_at,
                    i.lifetime_secs,
-                   i.first_slot_buy_sol::float8 / 1e9 AS first_slot_buy_sol,
-                   i.first_slot_sell_sol::float8 / 1e9 AS first_slot_sell_sol
+                   i.first_slot_buy_lamports::float8 / 1e9 AS first_slot_buy_sol,
+                   i.first_slot_sell_lamports::float8 / 1e9 AS first_slot_sell_sol
               FROM tokens t
               LEFT JOIN tokens_info i ON i.mint_address = t.mint_address
              WHERE t.mint_address = ANY($1)
@@ -549,17 +549,17 @@ impl TokenRepo {
             SELECT t.mint_address, t.creator_wallet, t.name, t.symbol,
                    t.bonding_curve_address,
                    t.initial_supply_token,
-                   t.initial_buy_sol::float8 / 1e9 AS initial_buy_sol, t.initial_buy_instruction,
+                   t.initial_buy_lamports::float8 / 1e9 AS initial_buy_sol, t.initial_buy_instruction,
                    t.cu_limit, t.cu_price, t.is_mayhem_mode, t.is_cashback_enabled,
                    t.ix_labels, t.creation_tx_signature, t.created_at,
-                   i.ath_price, i.ath_timestamp, i.volume,
+                   i.ath_price, i.ath_timestamp, i.volume_sol,
                    (i.current_price * t.initial_supply_token) AS market_cap, i.trade_count,
                    i.last_trade_at, i.current_price, i.is_dead, i.is_migrated,
                    (SELECT MAX(s.last_synced_at) FROM token_sync_state s
                       WHERE s.mint_address = t.mint_address) AS last_synced_at,
                    i.lifetime_secs,
-                   i.first_slot_buy_sol::float8 / 1e9 AS first_slot_buy_sol,
-                   i.first_slot_sell_sol::float8 / 1e9 AS first_slot_sell_sol
+                   i.first_slot_buy_lamports::float8 / 1e9 AS first_slot_buy_sol,
+                   i.first_slot_sell_lamports::float8 / 1e9 AS first_slot_sell_sol
               FROM tokens t
               LEFT JOIN tokens_info i ON i.mint_address = t.mint_address
              WHERE t.mint_address = $1
@@ -639,7 +639,7 @@ mod parity_tests {
     ) {
         sqlx::query(
             "INSERT INTO tokens (mint_address, creator_wallet, name, symbol, \
-                initial_supply_token, initial_buy_sol, initial_buy_instruction, \
+                initial_supply_token, initial_buy_lamports, initial_buy_instruction, \
                 is_mayhem_mode, is_cashback_enabled, ix_labels, creation_tx_signature, created_at) \
              VALUES ($1,$2,$3,$4,$5,$6,$7,false,false,'[\"buy\"]'::jsonb,$8,$9) \
              ON CONFLICT (mint_address) DO NOTHING",
@@ -658,11 +658,11 @@ mod parity_tests {
         .expect("insert token");
 
         sqlx::query(
-            "INSERT INTO tokens_info (mint_address, current_price, ath_price, volume, \
+            "INSERT INTO tokens_info (mint_address, current_price, ath_price, volume_sol, \
                 trade_count, last_trade_at, is_dead, is_migrated) \
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8) \
              ON CONFLICT (mint_address) DO UPDATE SET \
-                current_price=$2, ath_price=$3, volume=$4, trade_count=$5, \
+                current_price=$2, ath_price=$3, volume_sol=$4, trade_count=$5, \
                 last_trade_at=$6, is_dead=$7, is_migrated=$8",
         )
         .bind(mint)
@@ -728,10 +728,10 @@ mod parity_tests {
         // Diverse fixture: prices, volumes, deadness, missing metrics (LEFT JOIN
         // nulls), buy-ix args, migrated flag.
         seed(&pool, "PARITYa", "AAA", base + chrono::Duration::minutes(10), 1_000_000_000, 1_000_000,
-            serde_json::json!({"token_amount": 500, "max_sol_cost": 2_000_000_000u64}),
+            serde_json::json!({"token_amount": 500, "max_cost_lamports": 2_000_000_000u64}),
             Some(0.002), Some(0.001), 12.5, 40, Some(now - chrono::Duration::hours(3)), false, false).await;
         seed(&pool, "PARITYb", "BBB", base + chrono::Duration::minutes(20), 2_000_000_000, 2_000_000,
-            serde_json::json!({"token_amount": 900, "max_sol_cost": 5_000_000_000u64}),
+            serde_json::json!({"token_amount": 900, "max_cost_lamports": 5_000_000_000u64}),
             Some(0.010), Some(0.008), 100.0, 5, Some(now - chrono::Duration::hours(3)), false, true).await;
         seed(&pool, "PARITYc", "CCC", base + chrono::Duration::minutes(30), 500_000_000, 1_000_000,
             serde_json::json!({}), None, None, 0.0, 0, None, true, false).await; // no metrics

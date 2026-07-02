@@ -36,8 +36,8 @@ const NUMERIC_FIELDS = GROUP_FIELDS.filter(
 const FIELD_UNIT_HINTS: Partial<Record<GroupField, string>> = {
   cu_limit: 'Raw integer (e.g. 200000). Match values shown in group keys.',
   cu_price: 'Raw integer (e.g. 1000). Match values shown in group keys.',
-  max_sol_cost: 'In lamports — 1 SOL = 1,000,000,000. Match values shown in group keys.',
-  spendable_sol_in: 'In lamports — 1 SOL = 1,000,000,000. Match values shown in group keys.',
+  max_cost_lamports: 'In lamports — 1 SOL = 1,000,000,000. Match values shown in group keys.',
+  spendable_lamports_in: 'In lamports — 1 SOL = 1,000,000,000. Match values shown in group keys.',
   initial_buy_sol: 'In SOL (e.g. 0.5, 1.0). Match values shown in group keys.',
 };
 

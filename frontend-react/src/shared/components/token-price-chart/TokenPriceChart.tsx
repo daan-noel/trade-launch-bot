@@ -386,10 +386,10 @@ function buildWalletBarActivityMap(
     }
     if (trade.trade_type === 'buy') {
       activity.buyCount += 1;
-      activity.buySol += trade.sol_amount ?? 0;
+      activity.buySol += trade.amount_sol ?? 0;
     } else {
       activity.sellCount += 1;
-      activity.sellSol += trade.sol_amount ?? 0;
+      activity.sellSol += trade.amount_sol ?? 0;
     }
   }
 

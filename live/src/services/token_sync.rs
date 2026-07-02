@@ -1391,7 +1391,7 @@ async fn write_metrics(
             m.ath_price,
             m.ath_timestamp,
             m.age_seconds,
-            m.volume,
+            m.volume_sol,
             m.market_cap,
             m.trade_count,
             m.last_trade_at,
@@ -1418,7 +1418,7 @@ fn trade_from_ingest_event(e: &ingest_laserstream::event::Trade) -> Trade {
             Side::Buy => TradeType::Buy,
             Side::Sell => TradeType::Sell,
         },
-        sol_amount: e.sol,
+        amount_sol: e.sol,
         token_amount: e.tokens,
         price_per_token: e.price,
         tx_signature: e.signature.clone(),
@@ -1429,7 +1429,7 @@ fn trade_from_ingest_event(e: &ingest_laserstream::event::Trade) -> Trade {
         received_at: e.received_at,
         reserve_sol: e.reserves.virtual_sol,
         reserve_token: e.reserves.virtual_token,
-        real_sol_reserves: e.reserves.real_sol,
+        real_reserve_sol: e.reserves.real_sol,
         real_token_reserves: e.reserves.real_token,
         instruction_type: e.instruction_type.clone(),
         instruction_labels: serde_json::json!(e.instruction_labels),
@@ -1673,11 +1673,11 @@ mod amm_verification {
             }
             let t = &trades[0];
             assert_eq!(t.venue, "amm");
-            assert!(t.sol_amount > 0.0 && t.token_amount > 0);
+            assert!(t.amount_sol > 0.0 && t.token_amount > 0);
             if verified < 3 {
                 println!(
                     "OK mint={base_mint}\n   derived_pool={derived}\n   {:?} sol={:.6} tokens_raw={} price={:.3e} wallet={}",
-                    t.trade_type, t.sol_amount, t.token_amount, t.price_per_token, t.wallet_address
+                    t.trade_type, t.amount_sol, t.token_amount, t.price_per_token, t.wallet_address
                 );
             }
             verified += 1;

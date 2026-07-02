@@ -27,7 +27,15 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
   legs — that was the bug this convention fixes.
 - **SOL** → lamports, `BIGINT` column. The model keeps SOL as human `f64`; conversion
   (`sol_to_lamports`/`lamports_to_sol`) happens at the repo boundary — exactness lives
-  in the column (`trades.sol_amount`, `tokens.initial_buy_sol`, `*.entry_sol/exit_sol`).
+  in the column (`trades.amount_lamports`, `tokens.initial_buy_lamports`,
+  `strategy_positions.entry_lamports/exit_lamports`).
+- **Unit-in-the-name rule (no exceptions):** every field/column/variable that denotes an
+  amount of SOL names its unit. `_lamports` = exact integer (`BIGINT`/`i64`/`u64`); `_sol`
+  = human `f64`. Same base concept, unit-only suffix differs by layer: the DB stores
+  `entry_lamports`, the model exposes `entry_sol`. If a name contained `sol` but held
+  lamports the word is dropped (`reserve_sol` → `reserve_lamports`, not `reserve_sol_lamports`).
+  Ratio/rate fields (`*_price`, `price_per_token`, `*_pct`, `cu_price`) are **not** amounts
+  and keep their `_price`/`_pct` names. See migration `0009_sol_lamports_naming.sql`.
 - **Prices/stats** → `f64` (genuine ratios: SOL per raw token unit; PnL %, win rate,
   volume). Any `price × tokens` casts the `u64` count `as f64` at the multiply.
 - **Views** divide lamports back to SOL (`strategy_position_pnl.realized_pnl_sol`,
@@ -38,17 +46,17 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
 
 ### Core trading
 
-- `tokens` — mint_address UNIQUE, creator_wallet, name/symbol, bonding_curve_address, initial_buy_sol(BIGINT lamports), cu_limit/price, is_mayhem_mode, ix_labels(JSONB), creation_slot(BIGINT), created_at
-- `trades` *(TimescaleDB hypertable on block_time, ~1mo retention)* — mint, wallet, trade_type, sol_amount(BIGINT lamports) / token_amount(BIGINT raw units), tx_signature(BYTEA), slot, block_time, virtual_*_reserves(BIGINT), venue(`curve`/`amm`); price derived in `trades_priced` view. PK `(block_time, tx_signature, leg_index)`. **This table = the LaserStream feed.**
+- `tokens` — mint_address UNIQUE, creator_wallet, name/symbol, bonding_curve_address, initial_buy_lamports(BIGINT), cu_limit/price, is_mayhem_mode, ix_labels(JSONB), initial_buy_instruction(JSONB; keys `max_cost_lamports`/`spendable_lamports_in`), creation_slot(BIGINT), created_at
+- `trades` *(TimescaleDB hypertable on block_time, ~1mo retention)* — mint, wallet, trade_type, amount_lamports(BIGINT) / token_amount(BIGINT raw units), reserve_lamports/reserve_token(BIGINT venue-neutral pair), tx_signature(BYTEA), slot, block_time, venue(`curve`/`amm`); price derived in `trades_priced` view (`price_per_token` = SOL/token). PK `(block_time, tx_signature, leg_index)`. **This table = the LaserStream feed.**
 - `raw_txs` *(TimescaleDB hypertable on block_time; compress 2d, retain 7d)* — tx_signature(BYTEA), slot, block_time, tx_index, payload(BYTEA = verbatim protobuf wire bytes, parse in Rust), source(SMALLINT: 0=live 1=sync). PK `(block_time, tx_signature)`. Source-of-truth feed; `trades` is a typed projection. Written by `RawTxRepo` from both the live ingest db_writer and the token_sync backfill.
 
 ### Token analysis
 
-- `tokens_info` — ATH, age, volume, market_cap, trade_count, is_dead, is_migrated, first_slot_buy_sol/first_slot_sell_sol(BIGINT lamports — same-creation-slot buy/sell totals, streamed in `TokenState`), sync watermarks
+- `tokens_info` — ATH, age, volume_sol(DOUBLE PRECISION), market_cap, trade_count, is_dead, is_migrated, first_slot_buy_lamports/first_slot_sell_lamports(BIGINT — same-creation-slot buy/sell totals, streamed in `TokenState`), sync watermarks
 
 ### Strategy (unified across all strategies — rows not tables per strategy)
 
-- `strategy_rules` — `strategy_id` discriminator, `buy_amount`, `trade_mode`, `is_active`, `max_concurrent_tokens`, `max_total_tokens`, `params`(JSONB with strategy-specific gates). See [strategy-storage.md](@plans/database/strategy-storage.md).
+- `strategy_rules` — `strategy_id` discriminator, `buy_amount_sol`, `trade_mode`, `is_active`, `max_concurrent_tokens`, `max_total_tokens`, `params`(JSONB with strategy-specific gates). See [strategy-storage.md](@plans/database/strategy-storage.md).
 - `strategy_runs` — one activation session; `run_seq` monotonic per `(rule, mode)`; `params_snapshot` frozen at activation
 - `strategy_run_metrics` — 1:1 finalize-time rollup (`win_rate`, `total_pnl_sol`, exit-reason mix, etc.)
 - `strategy_positions` — one bot-opened position; `status`(`Arming`/`BuySubmitted`/`Holding`/`ExitPending`/`End`/`ExitFailed`); amounts as BIGINT (lamports/raw units); `submitted_buy_signatures TEXT[]` for in-flight recovery; `token_account TEXT` (nullable, `0002_*.sql`) — the wallet's token account for the mint, persisted on the entry fill so a re-buy reuses one account and the sell reads it from the row (restart-safe, no in-memory-cache dependency)
@@ -70,7 +78,7 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
 | File | Table(s) | Notable fns |
 | --- | --- | --- |
 | `token_repo.rs` | tokens (+tokens_info) | `find_list_rows` (DB base for /api/tokens; `TokenListRow` carries the `tokens_info` metrics incl. `first_slot_buy_sol`/`first_slot_sell_sol`, divided to human SOL in the SELECT), `find_page_before` (keyset page for analysis scans), `find_by_mints` (chunked mint=ANY) |
-| `trade_repo.rs` | trades | `find_fill_by_signature`, `sum_legs_by_signatures` (per-sig attribution), `for_each_seed_mint` (cold-start seed), `find_by_mints_all` (batched per-mint grouped reads for backtests; **reconstructs** the dropped `real_sol_reserves` via `approx_real_sol_reserves(reserve_sol, venue)` — backtest-only, never the live path) |
+| `trade_repo.rs` | trades | `find_fill_by_signature`, `sum_legs_by_signatures` (per-sig attribution), `for_each_seed_mint` (cold-start seed), `find_by_mints_all` (batched per-mint grouped reads for backtests; **reconstructs** the dropped `real_reserve_sol` via `approx_real_sol_reserves(reserve_sol, venue)` — backtest-only, never the live path) |
 | `raw_tx_repo.rs` | raw_txs | `insert`, `insert_many` (ON CONFLICT DO NOTHING), `find_by_signature` (PK lookup) |
 | `token_info_repo.rs` | tokens_info | `upsert_metrics`, `get/update_sync_watermark` |
 | `creation_stats_repo.rs` | tokens (+tokens_info) | `heatmap`, `trend`, `grouped` — TZ-aware SQL, bucket granularities, per-field corpus filters |

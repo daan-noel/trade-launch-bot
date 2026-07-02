@@ -114,7 +114,7 @@ pub struct TokenMigrated {
 pub struct LiquidityEvent {
     pub mint: String,
     pub wallet: String,
-    pub sol_amount: f64,
+    pub amount_sol: f64,
     pub token_amount: f64,
     pub added: bool,
     pub signature: String,

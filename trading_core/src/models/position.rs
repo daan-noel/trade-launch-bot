@@ -377,6 +377,11 @@ pub struct PositionResponse {
     /// Why the position exited ("TakeProfit", "StopLoss", "TrailingStop",
     /// "Stall", "TimeStop", "LiquidityExit"); `None` while still open.
     pub exit_reason: Option<String>,
+    /// Owning run's monotonic sequence (`strategy_runs.run_seq`). Only populated
+    /// by the run-history ("old runs") positions view — where it drives the run
+    /// column + per-run banding; `None` on the current-run/live paths (single run,
+    /// no need to distinguish) and on SSE deltas.
+    pub run_seq: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -411,6 +416,9 @@ impl From<Position> for PositionResponse {
             strategy: p.strategy,
             rule_id: p.rule_id,
             exit_reason,
+            // `Position` (legacy shape) carries no run_seq; the run-history handler
+            // stamps it after construction from the run map.
+            run_seq: None,
             created_at: p.created_at,
             updated_at: p.updated_at,
         }

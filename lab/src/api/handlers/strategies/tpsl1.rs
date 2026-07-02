@@ -48,7 +48,7 @@ const STRATEGY: StrategyImpl = StrategyImpl::Tpsl1;
 // strategy-specific param. Mirror the deploy edge so the shared frontend body
 // shape is parsed identically.
 const RULE_NAME: &str = "rule_name";
-const BUY_AMOUNT: &str = "buy_amount";
+const BUY_AMOUNT: &str = "buy_amount_sol";
 const TRADE_MODE: &str = "trade_mode";
 const MAX_CONCURRENT: &str = "p_max_concurrent_tokens";
 const MAX_TOTAL: &str = "p_max_total_tokens";
@@ -89,7 +89,7 @@ fn rule_to_json(rule: &StrategyRule, paper_finished: bool, counters: &RuleCounte
     obj.insert("id".into(), json!(rule.id));
     obj.insert("strategy_id".into(), json!(rule.strategy_id));
     obj.insert(RULE_NAME.into(), json!(rule.rule_name));
-    obj.insert(BUY_AMOUNT.into(), json!(rule.buy_amount));
+    obj.insert(BUY_AMOUNT.into(), json!(rule.buy_amount_sol));
     obj.insert(TRADE_MODE.into(), json!(rule.trade_mode));
     obj.insert("is_active".into(), json!(rule.is_active));
     obj.insert(MAX_CONCURRENT.into(), json!(rule.max_concurrent_tokens));
@@ -207,7 +207,7 @@ fn draft_from_body(body: &Value) -> Result<RuleDraft, HttpResponse> {
     Ok(RuleDraft {
         strategy: STRATEGY,
         rule_name: body.get(RULE_NAME).and_then(Value::as_str).unwrap_or("").to_string(),
-        buy_amount: body.get(BUY_AMOUNT).and_then(Value::as_f64).unwrap_or(0.0),
+        buy_amount_sol: body.get(BUY_AMOUNT).and_then(Value::as_f64).unwrap_or(0.0),
         trade_mode: body.get(TRADE_MODE).and_then(Value::as_str).unwrap_or("paper").to_string(),
         max_concurrent_tokens: body.get(MAX_CONCURRENT).and_then(opt_i64),
         max_total_tokens: body.get(MAX_TOTAL).and_then(opt_i64),
@@ -279,7 +279,7 @@ pub async fn update_tpsl_rule(
             rule.rule_name = name.to_string();
         }
         if let Some(amount) = m.get(BUY_AMOUNT).and_then(Value::as_f64) {
-            rule.buy_amount = amount;
+            rule.buy_amount_sol = amount;
         }
         if let Some(mode) = m.get(TRADE_MODE).and_then(Value::as_str) {
             rule.trade_mode = mode.to_string();
@@ -617,19 +617,27 @@ pub async fn cancel_simulate_tpsl_rule(
 pub async fn get_positions_by_rule_tpsl1(
     app_state: web::Data<Arc<LocalState>>,
     rule_id: web::Path<Uuid>,
+    scope: web::Query<super::positions::ScopeParam>,
     body: web::Json<TableRequest>,
 ) -> impl Responder {
     let repo = app_state.strategy_repo();
-    super::positions::positions_by_rule_paged(&repo, rule_id.into_inner(), STRATEGY_ID, body.into_inner()).await
+    super::positions::positions_by_rule_paged(
+        &repo, rule_id.into_inner(), STRATEGY_ID, scope.into_inner().scope, body.into_inner(),
+    )
+    .await
 }
 
 /// GET /api/strategies/tpsl1/rules/{rule_id}/positions/summary — run-wide aggregates.
 pub async fn get_positions_summary_tpsl1(
     app_state: web::Data<Arc<LocalState>>,
     rule_id: web::Path<Uuid>,
+    scope: web::Query<super::positions::ScopeParam>,
 ) -> impl Responder {
     let repo = app_state.strategy_repo();
-    super::positions::positions_summary_by_rule(&repo, rule_id.into_inner(), STRATEGY_ID).await
+    super::positions::positions_summary_by_rule(
+        &repo, rule_id.into_inner(), STRATEGY_ID, scope.into_inner().scope,
+    )
+    .await
 }
 
 /// POST /api/strategies/tpsl1/rules/{rule_id}/simulate/result — one server-side

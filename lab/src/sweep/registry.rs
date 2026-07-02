@@ -336,7 +336,7 @@ async fn sweep_tpsl2(
     Ok(GroupedSweepOutput { combo_count, axes_json, groups })
 }
 
-/// Synthetic TPSL2 base rule the swept params overlay. Only `buy_amount` is
+/// Synthetic TPSL2 base rule the swept params overlay. Only `buy_amount_sol` is
 /// meaningful (see [`SWEEP_BASE_BUY_AMOUNT_SOL`]); every other field is either
 /// overwritten by the swept axes or unused in the grouped sweep, so we build it
 /// in-memory instead of requiring a DB template rule.
@@ -450,7 +450,7 @@ async fn sweep_swing1(
 }
 
 /// Synthetic swing1 base rule the swept params overlay. As with tpsl1/2, only
-/// `buy_amount` is meaningful — every other field is overwritten by the swept axes
+/// `buy_amount_sol` is meaningful — every other field is overwritten by the swept axes
 /// or unused in the grouped sweep. swing1 has no token-creation gate, so the
 /// token-filter fields stay inert.
 fn sweep_base_rule_swing1(buy_amount_sol: f64) -> Swing1Rule {
@@ -756,7 +756,7 @@ fn simulate_swing1_one_combo(
 }
 
 /// Synthetic TPSL1 base rule the swept params overlay. As with TPSL2, only
-/// `buy_amount` is meaningful (see [`SWEEP_BASE_BUY_AMOUNT_SOL`]) — every other
+/// `buy_amount_sol` is meaningful (see [`SWEEP_BASE_BUY_AMOUNT_SOL`]) — every other
 /// field is overwritten by the swept exit ladder or unused in the grouped sweep.
 fn sweep_base_rule_tpsl1(buy_amount_sol: f64) -> Tpsl1Rule {
     Tpsl1Rule::new(

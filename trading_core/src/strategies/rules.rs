@@ -34,7 +34,7 @@ pub enum RuleError {
 pub struct RuleDraft {
     pub strategy: StrategyImpl,
     pub rule_name: String,
-    pub buy_amount: f64,
+    pub buy_amount_sol: f64,
     pub trade_mode: String,
     pub max_concurrent_tokens: Option<i64>,
     pub max_total_tokens: Option<i64>,
@@ -207,7 +207,7 @@ pub fn build_rule(draft: &RuleDraft) -> Result<StrategyRule, String> {
         id: Uuid::new_v4(),
         strategy_id: draft.strategy.id().to_string(),
         rule_name: draft.rule_name.clone(),
-        buy_amount: draft.buy_amount,
+        buy_amount_sol: draft.buy_amount_sol,
         trade_mode: draft.trade_mode.clone(),
         is_active: false,
         max_concurrent_tokens: draft.max_concurrent_tokens,
@@ -268,7 +268,7 @@ mod tests {
         RuleDraft {
             strategy,
             rule_name: "r".into(),
-            buy_amount: 1.0,
+            buy_amount_sol: 1.0,
             trade_mode: "paper".into(),
             max_concurrent_tokens: Some(3),
             max_total_tokens: None,

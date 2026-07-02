@@ -111,7 +111,7 @@ impl ExitWalkState {
             self.peak_price = price;
             self.last_higher_high_time = trade.block_time();
         }
-        if let Some(reserves) = trade.real_sol_reserves() {
+        if let Some(reserves) = trade.real_reserve_sol() {
             if reserves > self.peak_reserves {
                 self.peak_reserves = reserves;
             }
@@ -323,7 +323,7 @@ fn ladder_reason<T: TradeRow>(
         .or_else(|| {
             // E4: reserves crash below the peak-since-entry. REAL reserves only.
             params.liquidity_drop_pct.and_then(|drop| {
-                t.real_sol_reserves().and_then(|reserves| {
+                t.real_reserve_sol().and_then(|reserves| {
                     (state.peak_reserves > 0.0
                         && reserves < state.peak_reserves * (1.0 - drop / 100.0))
                     .then_some(ExitReason::LiquidityExit)
@@ -596,7 +596,7 @@ mod tests {
             "mint".into(),
             "wallet".into(),
             TradeType::Buy,
-            price, // sol_amount
+            price, // amount_sol
             1,   // token_amount → price_per_token = price
             format!("sig-{slot}-{secs}"),
             slot,
@@ -608,7 +608,7 @@ mod tests {
     /// E4 reads real reserves now (never virtual — wash trading can fake virtual).
     fn buy_resv(price: f64, slot: u64, secs: i64, reserves: f64) -> Trade {
         let mut t = buy(price, slot, secs);
-        t.real_sol_reserves = Some(reserves);
+        t.real_reserve_sol = Some(reserves);
         t
     }
 
@@ -628,7 +628,7 @@ mod tests {
             None,
             serde_json::Value::Array(vec![]),
             "paper".into(),
-            1.0, // buy_amount
+            1.0, // buy_amount_sol
             take_profit,
             stop_loss,
             None,

@@ -280,7 +280,7 @@ export function MyWalletPage() {
     try {
       await buyToken({
         mint,
-        sol_amount: solAmount,
+        amount_sol: solAmount,
         // Omit for manual buys — the backend resolves the token program on-chain.
         ...(buyDialog.tokenProgramId
           ? { token_program_id: buyDialog.tokenProgramId }

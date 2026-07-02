@@ -18,7 +18,7 @@
 //!   • `p_entry_pullback_pct` (+ `p_entry_higher_low_secs`) — higher-low continuation shape.
 //!   • `p_entry_min_liquidity_sol` — real reserves ≥ N SOL.
 //!   • `p_entry_min_organic_liq`   — real reserves ≥ N SOL (a second, independently
-//!     tunable reserves floor; reads the same `real_sol_reserves` snapshot as
+//!     tunable reserves floor; reads the same `real_reserve_sol` snapshot as
 //!     `p_entry_min_liquidity_sol`).
 
 use chrono::{DateTime, Utc};
@@ -80,20 +80,20 @@ pub fn scalp_features(prefix: &[Trade]) -> Option<ScalpFeatures> {
     let alive_sol: f64 = prefix
         .iter()
         .filter(|t| t.block_time >= alive_cutoff)
-        .map(|t| t.sol_amount)
+        .map(|t| t.amount_sol)
         .sum();
 
     let organic_sol: f64 = prefix
         .iter()
-        .map(|t| if t.is_buy() { t.sol_amount } else { -t.sol_amount })
+        .map(|t| if t.is_buy() { t.amount_sol } else { -t.amount_sol })
         .sum();
 
     // Latest known real reserves: scan back for the most recent trade carrying a
-    // real_sol_reserves snapshot (the plan mandates REAL, never virtual).
+    // real_reserve_sol snapshot (the plan mandates REAL, never virtual).
     let real_liquidity_sol = prefix
         .iter()
         .rev()
-        .find_map(|t| t.real_sol_reserves)
+        .find_map(|t| t.real_reserve_sol)
         .unwrap_or(0.0);
 
     Some(ScalpFeatures { age_secs, alive_sol, organic_sol, real_liquidity_sol })
@@ -294,7 +294,7 @@ pub fn find_scalp_entry_indexed<T: TradeRow>(
 
     let first_time = trades[0].block_time();
     let mut organic_sol = 0.0f64; // running net SOL bought so far (any wallet)
-    let mut last_real_reserves = 0.0f64; // most recent real_sol_reserves snapshot
+    let mut last_real_reserves = 0.0f64; // most recent real_reserve_sol snapshot
     // Trailing alive-window: a running sum + a front cursor over `trades`.
     let mut alive_sol = 0.0f64;
     let mut alive_lo = 0usize;
@@ -302,22 +302,22 @@ pub fn find_scalp_entry_indexed<T: TradeRow>(
     for i in 0..trades.len() {
         let t = &trades[i];
         let block_time = t.block_time();
-        let sol_amount = t.sol_amount();
+        let amount_sol = t.amount_sol();
         // Fold this trade into the running accumulators FIRST so the features
         // below reflect the prefix `[0..=i]` (the candidate inclusive).
         if t.is_buy() {
-            organic_sol += sol_amount;
+            organic_sol += amount_sol;
         } else {
-            organic_sol -= sol_amount;
+            organic_sol -= amount_sol;
         }
-        if let Some(r) = t.real_sol_reserves() {
+        if let Some(r) = t.real_reserve_sol() {
             last_real_reserves = r;
         }
         // Slide the alive window to [cand.block_time - ALIVE_WINDOW_SECS, cand].
-        alive_sol += sol_amount;
+        alive_sol += amount_sol;
         let alive_cutoff = block_time - chrono::Duration::seconds(ALIVE_WINDOW_SECS);
         while alive_lo <= i && trades[alive_lo].block_time() < alive_cutoff {
-            alive_sol -= trades[alive_lo].sol_amount();
+            alive_sol -= trades[alive_lo].amount_sol();
             alive_lo += 1;
         }
 
@@ -413,7 +413,7 @@ pub fn find_worst_case_paper_entry_at<T: TradeRow>(trades: &[T], target_idx: usi
     // MAX_FILL_WAIT_SLOTS proximity check, not to restrict the window.
     let next_slot = post
         .iter()
-        .filter(|t| t.slot() > trigger_slot && t.is_buy() && t.price_per_token() > 0.0 && !Trade::is_dust(t.sol_amount()))
+        .filter(|t| t.slot() > trigger_slot && t.is_buy() && t.price_per_token() > 0.0 && !Trade::is_dust(t.amount_sol()))
         .map(|t| t.slot())
         .next();
 
@@ -424,7 +424,7 @@ pub fn find_worst_case_paper_entry_at<T: TradeRow>(trades: &[T], target_idx: usi
             let s = t.slot();
             let in_s = s == trigger_slot;
             let in_next = next_slot.is_some_and(|ns| s == ns && ns <= trigger_slot + MAX_FILL_WAIT_SLOTS);
-            (in_s || in_next) && t.is_buy() && t.price_per_token() > 0.0 && !Trade::is_dust(t.sol_amount())
+            (in_s || in_next) && t.is_buy() && t.price_per_token() > 0.0 && !Trade::is_dust(t.amount_sol())
         })
         .max_by(|a, b| a.price_per_token().total_cmp(&b.price_per_token()))?;
 
@@ -559,9 +559,9 @@ mod tests {
         let mut r = rule();
         r.p_entry_min_liquidity_sol = Some(10.0);
         let mut low = pbuy(1.0, 1, 0);
-        low.real_sol_reserves = Some(3.0);
+        low.real_reserve_sol = Some(3.0);
         let mut high = buy("out", 1.0, 1.0, 2, 2);
-        high.real_sol_reserves = Some(15.0);
+        high.real_reserve_sol = Some(15.0);
         // Only the second trade clears 10 SOL real reserves.
         let fill = find_scalp_entry(&vec![low, high], &r).expect("enters once liquid");
         assert_eq!(fill.block_time, base_time() + chrono::Duration::seconds(2));
@@ -617,21 +617,21 @@ mod tests {
         // A mixed series exercising every gate: buys/sells, reserve snapshots, and
         // a higher-low price shape.
         let mut low = buy("dev", 5.0, 100.0, 1, 0);
-        low.real_sol_reserves = Some(4.0);
+        low.real_reserve_sol = Some(4.0);
         let trades = vec![
             low,
             buy("dev2", 3.0, 60.0, 2, 1),
             t("dev", TradeType::Sell, 4.0, 90.0, 50, 3),
             {
                 let mut x = buy("out1", 2.0, 18.0, 500, 6);
-                x.real_sol_reserves = Some(12.0);
+                x.real_reserve_sol = Some(12.0);
                 x
             },
             t("out1", TradeType::Sell, 0.5, 4.0, 520, 8),
             {
                 let mut x = buy("out2", 1.5, 12.0, 540, 11);
                 x.price_per_token = 0.9; // higher-low after the early dip
-                x.real_sol_reserves = Some(13.0);
+                x.real_reserve_sol = Some(13.0);
                 x
             },
         ];
@@ -759,7 +759,7 @@ mod tests {
         let trigger = leg(1.0, 1.0, 100, 0, 0);
         let dust_sol = crate::config::constants::MIN_TRADE_SOL / 2.0;
         let mut dust = leg(dust_sol, 1.0, 101, 0, 1);
-        dust.sol_amount = dust_sol;
+        dust.amount_sol = dust_sol;
         let mut zero = leg(1.0, 0.0, 101, 1, 1); // price 0 → excluded
         zero.price_per_token = 0.0;
         let valid = leg(1.1, 1.0, 101, 2, 1);

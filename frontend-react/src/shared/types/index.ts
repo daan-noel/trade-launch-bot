@@ -25,8 +25,8 @@ export interface TokenRecord {
   initial_buy_sol: number | null;
   initial_supply_token: number | null;
   token_amount: number | null;
-  max_sol_cost: number | null;
-  spendable_sol_in: number | null;
+  max_cost_lamports: number | null;
+  spendable_lamports_in: number | null;
   min_tokens_out: number | null;
   cu_limit: number | null;
   cu_price: number | null;
@@ -60,13 +60,13 @@ export interface RuleRecord {
   p_token_initial_buy_sol: number | null;
   p_token_cu_limit: number | null;
   p_token_cu_price: number | null;
-  p_token_max_sol_cost: number | null;
-  p_token_spendable_sol_in: number | null;
+  p_token_max_cost_lamports: number | null;
+  p_token_spendable_lamports_in: number | null;
   p_max_concurrent_tokens: number | null;
   p_max_total_tokens: number | null;
   p_token_ix_labels: unknown;
   trade_mode: string;
-  buy_amount: number;
+  buy_amount_sol: number;
   p_exit_take_profit: number;
   p_exit_stop_loss: number;
   p_exit_trailing_stop_pct: number | null;
@@ -125,6 +125,14 @@ export interface RuleRecord {
   updated_at: string;
 }
 
+/** Response shape for the bulk lifecycle endpoints (`rules/pause-all`,
+ *  `rules/stop-all`): the rules that transitioned successfully, plus any that
+ *  failed (best-effort batch — one rule's failure doesn't block the rest). */
+export interface BulkRuleResult {
+  updated: RuleRecord[];
+  failed: { rule_id: string; error: string }[];
+}
+
 export interface RulePositionRecord {
   id: string;
   mint: string;
@@ -160,6 +168,10 @@ export interface RulePositionRecord {
   /** Why the position exited (TakeProfit/StopLoss/TrailingStop/Stall/TimeStop/
    * LiquidityExit); null while still open. */
   exit_reason: string | null;
+  /** Owning run's monotonic sequence — populated ONLY by the run-history ("old
+   * runs") view, where it drives the run column + per-run banding. null/absent on
+   * the current-run/live paths (single run). */
+  run_seq?: number | null;
   created_at: string;
   updated_at: string;
   // Token enrichment fields (populated by the batch endpoint; optional).
@@ -169,8 +181,8 @@ export interface RulePositionRecord {
   initial_buy_sol?: number | null;
   initial_supply_token?: number | null;
   token_amount?: number | null;
-  max_sol_cost?: number | null;
-  spendable_sol_in?: number | null;
+  max_cost_lamports?: number | null;
+  spendable_lamports_in?: number | null;
   min_tokens_out?: number | null;
   cu_limit?: number | null;
   cu_price?: number | null;
@@ -205,8 +217,8 @@ export interface RuleNotifSnapshot {
   tolerance_pct: number;
   p_token_cu_limit: number | null;
   p_token_cu_price: number | null;
-  p_token_max_sol_cost: number | null;
-  p_token_spendable_sol_in: number | null;
+  p_token_max_cost_lamports: number | null;
+  p_token_spendable_lamports_in: number | null;
   p_token_ix_labels: string[];
   p_exit_take_profit: number;
   p_exit_stop_loss: number;
@@ -269,8 +281,8 @@ export interface MatchedTokenRecord {
   creator_address?: string;
   initial_supply_token?: number | null;
   token_amount?: number | null;
-  max_sol_cost?: number | null;
-  spendable_sol_in?: number | null;
+  max_cost_lamports?: number | null;
+  spendable_lamports_in?: number | null;
   min_tokens_out?: number | null;
   is_mayhem_mode?: boolean;
   is_cashback_enabled?: boolean;
@@ -331,8 +343,8 @@ export interface SimulatedTokenResult {
   initial_buy_sol?: number | null;
   initial_supply_token?: number | null;
   token_amount?: number | null;
-  max_sol_cost?: number | null;
-  spendable_sol_in?: number | null;
+  max_cost_lamports?: number | null;
+  spendable_lamports_in?: number | null;
   min_tokens_out?: number | null;
   cu_limit?: number | null;
   cu_price?: number | null;
@@ -508,8 +520,8 @@ export interface TokenDetailRecord {
   initial_supply_token: number | null;
   initial_buy_sol: number | null;
   token_amount: number | null;
-  max_sol_cost: number | null;
-  spendable_sol_in: number | null;
+  max_cost_lamports: number | null;
+  spendable_lamports_in: number | null;
   min_tokens_out: number | null;
   cu_limit: number | null;
   cu_price: number | null;
@@ -548,7 +560,7 @@ export interface LiveTrade {
   mint: string;
   wallet: string;
   trade_type: string;
-  sol_amount: number;
+  amount_sol: number;
   token_amount: number;
   price_per_token: number;
   tx_signature: string;
@@ -585,7 +597,7 @@ export interface TradeRecord {
   mint_address: string;
   wallet_address: string;
   trade_type: 'buy' | 'sell';
-  sol_amount: number;
+  amount_sol: number;
   token_amount: number;
   price_per_token: number;
   tx_signature: string;
