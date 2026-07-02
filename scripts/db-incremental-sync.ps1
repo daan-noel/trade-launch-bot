@@ -33,6 +33,10 @@
     token_sync_state PK(mint_address, venue)                     -> DO UPDATE (newer last_synced_at wins)
     trades           PK(block_time, tx_signature, leg_index)     -> DO NOTHING (append-only)
     raw_txs          PK(block_time, tx_signature)                -> DO NOTHING (append-only; opt-in)
+    strategy_rules       PK(id)                                  -> DO UPDATE (server wins; full-table)
+    strategy_runs        PK(id)                                  -> DO UPDATE (server wins; full-table)
+    strategy_run_metrics PK(run_id)                              -> DO UPDATE (server wins; full-table)
+    strategy_positions   PK(id)                                  -> DO UPDATE (server wins; full-table)
 
   wallet_dict ids are GENERATED ALWAYS AS IDENTITY. The local DB is a read-mirror of
   the server's market data (lab has no ingest, so it never mints its own ids), so we
@@ -42,8 +46,13 @@
   sequence makes the next local intern() collide on wallet_dict_pkey. Order matters
   for the FKs: wallet_dict + tokens first, then tokens_info / token_sync_state / trades.
 
-  Strategy tables (strategy_rules/runs/run_metrics/positions) are NOT synced -- those
-  are per-box authoring/run state, not shared market data.
+  Strategy tables (strategy_rules/runs/run_metrics/positions) ARE synced (server wins)
+  so the LIVE box's real+paper positions are viewable on the lab. They are copied
+  FULL-TABLE each run (tiny vs trades; no watermark) and upserted with DO UPDATE so a
+  server-side status/exit-fill change refreshes the local row. FK-safe order:
+  strategy_rules -> strategy_runs -> strategy_run_metrics -> strategy_positions. NOTE:
+  server ids overwrite local rows on id-conflict, so a lab-authored rule/run sharing a
+  UUID with the server's would be clobbered (UUIDs collide with ~0 probability).
 
   Requires: ssh + psql on PATH; local Postgres >= 16 with postgres_fdw + TimescaleDB;
   connect as a SUPERUSER local role (CREATE EXTENSION / USER MAPPING). Stop any local
@@ -78,7 +87,13 @@ param(
   [switch]$IncludeToday,                                                  # also pull today's still-open chunk (partial day; default = sealed days only)
   [string]$LocalPgPassword = $env:PGPASSWORD
 )
-$ErrorActionPreference = 'Stop'
+# NOTE: 'Continue', not 'Stop'. Under 'Stop', a NATIVE exe (ssh/psql) writing ANY line
+# to stderr -- even a benign NOTICE or Windows-OpenSSH's "close - IO is still pending on
+# closed socket" teardown warning -- is wrapped as a terminating NativeCommandError in
+# Windows PowerShell 5.1, aborting before we can inspect $LASTEXITCODE. Every native call
+# below has an EXPLICIT exit-code check + throw, and cmdlet failures are guarded inline,
+# so 'Continue' loses no real safety while making the script robust to stderr noise.
+$ErrorActionPreference = 'Continue'
 if (-not $LocalPgPassword) { throw "Set the LOCAL DB password: `$env:PGPASSWORD='...'  (or -LocalPgPassword)" }
 
 # Force UTC so the sealed-day boundary (start-of-today) is computed in UTC
@@ -133,21 +148,46 @@ Initialize-SshPassphrase
 # Tables to mirror, in FK-safe order. raw_txs is appended only with -IncludeRawTxs.
 $syncTables = @('wallet_dict', 'tokens', 'tokens_info', 'token_sync_state', 'trades')
 if ($IncludeRawTxs) { $syncTables += 'raw_txs' }
+# Strategy tables (FK chain: rules -> runs -> run_metrics -> positions). Copied
+# full-table each run with DO UPDATE (server wins) so live's real+paper positions
+# show on the lab. Appended AFTER market data so the FDW import + parity guard cover
+# them; their inserts run in a dedicated FK-ordered block (see step 7b).
+$strategyTables = @('strategy_rules', 'strategy_runs', 'strategy_run_metrics', 'strategy_positions')
+$syncTables += $strategyTables
 $importList = ($syncTables -join ', ')
 
 $Utf8NoBom = New-Object System.Text.UTF8Encoding $false   # psql chokes on a UTF-8 BOM
 function Use-LocalPw { $env:PGPASSWORD = $LocalPgPassword }
 function Invoke-LocalSqlFile([string]$sql) {
   $f = [System.IO.Path]::GetTempFileName() -replace '\.tmp$', '.sql'
+  $errf = "$f.err"
   [System.IO.File]::WriteAllText($f, $sql, $Utf8NoBom)
-  try { & psql @localPg -f $f; if ($LASTEXITCODE -ne 0) { throw "psql failed (see above)" } }
-  finally { Remove-Item $f -ErrorAction SilentlyContinue }
+  # Redirect psql's stderr to a FILE (not 2>&1 into the pipeline): in Windows
+  # PowerShell 5.1 a native exe writing to stderr under $ErrorActionPreference='Stop'
+  # is wrapped as a terminating NativeCommandError -- even for a harmless NOTICE like
+  # "extension already exists". File redirection keeps stderr off the PS pipeline, so
+  # only a real non-zero exit code aborts. We surface stderr afterward for visibility.
+  try {
+    & psql @localPg -f $f 2>$errf
+    $code = $LASTEXITCODE
+    if (Test-Path $errf) { $err = (Get-Content $errf -Raw); if ($err -and $err.Trim()) { Write-Host $err.TrimEnd() } }
+    if ($code -ne 0) { throw "psql failed (exit $code; see above)" }
+  }
+  finally { Remove-Item $f, $errf -ErrorAction SilentlyContinue }
 }
 function Get-LocalScalar([string]$sql) {
   Use-LocalPw
-  $r = (& psql @localPg -tAc $sql).Trim()
-  if ($LASTEXITCODE -ne 0) { throw "psql query failed: $sql" }
-  return $r
+  $errf = [System.IO.Path]::GetTempFileName()
+  try {
+    $r = (& psql @localPg -tAc $sql 2>$errf)
+    $code = $LASTEXITCODE
+    if ($code -ne 0) {
+      $err = if (Test-Path $errf) { (Get-Content $errf -Raw) } else { '' }
+      throw "psql query failed: $sql`n$err"
+    }
+    return ("$r").Trim()
+  }
+  finally { Remove-Item $errf -ErrorAction SilentlyContinue }
 }
 # Fast, silent TCP probe (Test-NetConnection does a slow ICMP ping + progress UI).
 function Test-Port([int]$Port) {
@@ -170,8 +210,15 @@ if (Test-Path $SshKey) {
 
 # ---- 1. Read server DB creds from its .env ----------------------------------
 Write-Host "Reading server DB config from $SshTarget ..."
-$remoteEnv = (ssh @sshOpts $SshTarget "cd $RemoteDir 2>/dev/null && grep -E '^(POSTGRES_HOST_PORT|POSTGRES_PASSWORD|POSTGRES_USER|POSTGRES_DB)=' .env") -join "`n"
-if ($LASTEXITCODE -ne 0 -or -not $remoteEnv) { throw "Could not read $RemoteDir/.env on $SshTarget" }
+# Windows OpenSSH can emit a benign "close - IO is still pending on closed socket"
+# line to stderr; under $ErrorActionPreference='Stop' that would wrap as a terminating
+# NativeCommandError before we can check $LASTEXITCODE. Send ssh stderr to a file so
+# only a real non-zero exit aborts.
+$sshErr = [System.IO.Path]::GetTempFileName()
+$remoteEnv = (ssh @sshOpts $SshTarget "cd $RemoteDir 2>/dev/null && grep -E '^(POSTGRES_HOST_PORT|POSTGRES_PASSWORD|POSTGRES_USER|POSTGRES_DB)=' .env" 2>$sshErr) -join "`n"
+$sshCode = $LASTEXITCODE
+Remove-Item $sshErr -ErrorAction SilentlyContinue
+if ($sshCode -ne 0 -or -not $remoteEnv) { throw "Could not read $RemoteDir/.env on $SshTarget" }
 $renv = @{}
 foreach ($line in ($remoteEnv -split "`n")) {
   if ($line -match '^\s*([A-Z_]+)=(.*)$') { $renv[$Matches[1]] = $Matches[2].Trim().Trim('"').Trim("'") }
@@ -208,8 +255,11 @@ try {
   if (-not $ok) { throw "Tunnel port $TunnelLocalPort never opened" }
 
   $env:PGPASSWORD = $remotePw
-  & psql -h 127.0.0.1 -p $TunnelLocalPort -U $remoteUser -d $remoteDb -v ON_ERROR_STOP=1 -tAc 'SELECT 1' | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw "Could not reach server Postgres through the tunnel (creds/port?)" }
+  $verifyErr = [System.IO.Path]::GetTempFileName()
+  & psql -h 127.0.0.1 -p $TunnelLocalPort -U $remoteUser -d $remoteDb -v ON_ERROR_STOP=1 -tAc 'SELECT 1' 2>$verifyErr | Out-Null
+  $verifyCode = $LASTEXITCODE
+  Remove-Item $verifyErr -ErrorAction SilentlyContinue
+  if ($verifyCode -ne 0) { throw "Could not reach server Postgres through the tunnel (creds/port?)" }
   Use-LocalPw
   Write-Host "  tunnel up + server Postgres reachable."
 
@@ -352,16 +402,86 @@ ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING;
 $rawTxsSql
 "@
 
+  # ---- 7b. Strategy tables (view LIVE positions on the lab) ------------------
+  # Full-table copy each run, server wins. FK-safe order: rules -> runs ->
+  # run_metrics -> positions. These tables are tiny vs trades, so no watermark:
+  # we SELECT * the whole remote table and upsert. The DO UPDATE SET clause is
+  # BUILT AT RUNTIME from information_schema (all non-PK columns) so it stays
+  # correct after future migrations add columns (e.g. 0002's token_account) --
+  # no hand-maintained column list to rot. Both real + paper rows are pulled.
+  Write-Host "Mirroring strategy tables (rules/runs/run_metrics/positions; server wins, full-table) ..."
+  # Explicit, plain INSERT..SELECT..ON CONFLICT DO UPDATE per table, in FK-safe order
+  # (rules -> runs -> run_metrics -> positions). Server wins. DO UPDATE excludes the
+  # PK; EXCLUDED refreshes every other column so a server-side status/exit-fill change
+  # updates the local row. NOTE: strategy_runs ALSO has UNIQUE(rule_id,mode,run_seq) --
+  # ON CONFLICT (id) handles same-id updates; the lab's runs mirror the server 1:1 so
+  # that secondary key never collides across boxes in practice.
+  Invoke-LocalSqlFile @"
+\echo '-- strategy_rules'
+INSERT INTO strategy_rules SELECT * FROM ec2_sync_src.strategy_rules
+ON CONFLICT (id) DO UPDATE SET
+  strategy_id = EXCLUDED.strategy_id, rule_name = EXCLUDED.rule_name,
+  buy_amount = EXCLUDED.buy_amount, trade_mode = EXCLUDED.trade_mode,
+  is_active = EXCLUDED.is_active, max_concurrent_tokens = EXCLUDED.max_concurrent_tokens,
+  max_total_tokens = EXCLUDED.max_total_tokens, params = EXCLUDED.params,
+  created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at;
+
+\echo '-- strategy_runs'
+INSERT INTO strategy_runs SELECT * FROM ec2_sync_src.strategy_runs
+ON CONFLICT (id) DO UPDATE SET
+  strategy_id = EXCLUDED.strategy_id, rule_id = EXCLUDED.rule_id,
+  mode = EXCLUDED.mode, run_seq = EXCLUDED.run_seq, status = EXCLUDED.status,
+  params_snapshot = EXCLUDED.params_snapshot, max_total_tokens = EXCLUDED.max_total_tokens,
+  started_at = EXCLUDED.started_at, finished_at = EXCLUDED.finished_at;
+
+\echo '-- strategy_run_metrics'
+INSERT INTO strategy_run_metrics SELECT * FROM ec2_sync_src.strategy_run_metrics
+ON CONFLICT (run_id) DO UPDATE SET
+  rolled_up_at = EXCLUDED.rolled_up_at, n_fired = EXCLUDED.n_fired,
+  n_open = EXCLUDED.n_open, n_closed = EXCLUDED.n_closed, win_rate = EXCLUDED.win_rate,
+  total_pnl_sol = EXCLUDED.total_pnl_sol, expectancy_sol = EXCLUDED.expectancy_sol,
+  mean_pnl_pct = EXCLUDED.mean_pnl_pct, median_pnl_pct = EXCLUDED.median_pnl_pct,
+  p90_pnl_pct = EXCLUDED.p90_pnl_pct, best_pnl_pct = EXCLUDED.best_pnl_pct,
+  worst_pnl_pct = EXCLUDED.worst_pnl_pct, std_pnl_pct = EXCLUDED.std_pnl_pct,
+  profit_factor = EXCLUDED.profit_factor, avg_holding_secs = EXCLUDED.avg_holding_secs,
+  median_holding_secs = EXCLUDED.median_holding_secs,
+  n_exit_take_profit = EXCLUDED.n_exit_take_profit, n_exit_stop_loss = EXCLUDED.n_exit_stop_loss,
+  n_exit_trailing = EXCLUDED.n_exit_trailing, n_exit_stall = EXCLUDED.n_exit_stall,
+  n_exit_time = EXCLUDED.n_exit_time, n_exit_liquidity = EXCLUDED.n_exit_liquidity,
+  n_exit_cohort = EXCLUDED.n_exit_cohort, n_exit_open = EXCLUDED.n_exit_open;
+
+\echo '-- strategy_positions'
+INSERT INTO strategy_positions SELECT * FROM ec2_sync_src.strategy_positions
+ON CONFLICT (id) DO UPDATE SET
+  run_id = EXCLUDED.run_id, strategy_id = EXCLUDED.strategy_id, rule_id = EXCLUDED.rule_id,
+  mode = EXCLUDED.mode, mint = EXCLUDED.mint, wallet = EXCLUDED.wallet,
+  token_program_id = EXCLUDED.token_program_id, target_price = EXCLUDED.target_price,
+  target_token_amount = EXCLUDED.target_token_amount, target_time = EXCLUDED.target_time,
+  target_tx = EXCLUDED.target_tx, entry_price = EXCLUDED.entry_price,
+  entry_token_amount = EXCLUDED.entry_token_amount, entry_sol = EXCLUDED.entry_sol,
+  entry_time = EXCLUDED.entry_time, entry_tx_signatures = EXCLUDED.entry_tx_signatures,
+  exit_price = EXCLUDED.exit_price, exit_token_amount = EXCLUDED.exit_token_amount,
+  exit_sol = EXCLUDED.exit_sol, exit_time = EXCLUDED.exit_time,
+  exit_tx_signatures = EXCLUDED.exit_tx_signatures,
+  submitted_buy_signatures = EXCLUDED.submitted_buy_signatures, status = EXCLUDED.status,
+  exit_reason = EXCLUDED.exit_reason, extra = EXCLUDED.extra,
+  created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at,
+  token_account = EXCLUDED.token_account;
+"@
+
   # ---- 8. Sync _sqlx_migrations so local backend doesn't re-apply applied migrations ---
   # The server's checksum records are authoritative (same files, same binary).
   # Without this, _sqlx_migrations is empty locally and sqlx re-runs all migrations
   # on every startup, failing on non-idempotent steps.
   Write-Host "Syncing _sqlx_migrations from server ..."
   $env:PGPASSWORD = $remotePw
+  $migErr = [System.IO.Path]::GetTempFileName()
   $remoteMigrations = & psql -h 127.0.0.1 -p $TunnelLocalPort -U $remoteUser -d $remoteDb `
-    -tAF "`t" -c "SELECT version, description, installed_on, success, checksum, execution_time FROM _sqlx_migrations ORDER BY version"
+    -tAF "`t" -c "SELECT version, description, installed_on, success, checksum, execution_time FROM _sqlx_migrations ORDER BY version" 2>$migErr
+  $migCode = $LASTEXITCODE
+  Remove-Item $migErr -ErrorAction SilentlyContinue
   Use-LocalPw
-  if ($LASTEXITCODE -eq 0 -and $remoteMigrations) {
+  if ($migCode -eq 0 -and $remoteMigrations) {
     $upsertLines = foreach ($row in ($remoteMigrations -split "`n" | Where-Object { $_ -match '\S' })) {
       $cols = $row -split "`t"
       if ($cols.Count -lt 6) { continue }

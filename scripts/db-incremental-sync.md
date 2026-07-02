@@ -3,10 +3,16 @@
 Pull the EC2 server's **newer** data and append it into your local `meme_bot` DB —
 directly **DB → DB** over an SSH tunnel. No CSV files, no `scp`, no temp files.
 
-Safe to run repeatedly. **Non-destructive**: your local sweep results, positions,
-settings, `raw_txs`, and existing trades are never touched — only new
-rows are added (and a few metadata rows refreshed).
+Safe to run repeatedly. **Non-destructive**: your local sweep results, settings,
+`raw_txs`, and existing trades are never touched — only new rows are added (and a
+few metadata rows refreshed).
 
+> **Strategy tables are mirrored (server wins).** `strategy_rules`, `strategy_runs`,
+> `strategy_run_metrics`, and `strategy_positions` are copied **full-table each run**
+> and upserted (`DO UPDATE`) so the LIVE box's real **and** paper positions are
+> viewable on the lab. Because it's server-wins, a lab-authored rule/run sharing a
+> UUID with the server's would be overwritten (UUIDs collide with ≈0 probability).
+>
 > Run from the project root in PowerShell.
 
 ---
@@ -63,7 +69,8 @@ EC2 box (per the data-scale guardrails in `CLAUDE.md`).
 4. **Attaches the server** as a `postgres_fdw` foreign server (schema `ec2_sync_src`), rebuilt fresh each run.
 5. **Schema-parity guard** — compares local vs. server columns for every synced table and **aborts on drift** before moving any data.
 6. **Computes local watermarks** (`MAX(block_time)`, `MAX(created_at)`, …) and the sealed-day cutoff (midnight UTC today). TimescaleDB auto-creates destination chunks on insert — no partition-ensure step.
-7. **Upserts each table** with the watermark as a pushed-down literal (see table below); hypertables pull only sealed days `[watermark, cutoff)`.
+7. **Upserts each market-data table** with the watermark as a pushed-down literal (see table below); hypertables pull only sealed days `[watermark, cutoff)`.
+7b. **Mirrors the strategy tables** (`strategy_rules` → `strategy_runs` → `strategy_run_metrics` → `strategy_positions`, FK-safe order) **full-table, server wins** — no watermark (tiny vs. `trades`), `DO UPDATE` refreshes changed rows so status/exit-fill updates propagate.
 8. **Syncs `_sqlx_migrations`** from the server so the local backend doesn't re-apply migrations.
 9. **Detaches** — drops the foreign server (removing the server password from the local catalog) and kills the tunnel (in a `finally`, so it's cleaned up even on error).
 
@@ -77,6 +84,10 @@ EC2 box (per the data-scale guardrails in `CLAUDE.md`).
 | `token_sync_state` | `(mint_address, venue)` | DO UPDATE — newer `last_synced_at` wins |
 | `trades` | `(block_time, tx_signature, leg_index)` | DO NOTHING (append-only) |
 | `raw_txs` | `(block_time, tx_signature)` | DO NOTHING (opt-in via `-IncludeRawTxs`) |
+| `strategy_rules` | `id` | DO UPDATE — server wins (full-table) |
+| `strategy_runs` | `id` | DO UPDATE — server wins (full-table) |
+| `strategy_run_metrics` | `run_id` | DO UPDATE — server wins (full-table) |
+| `strategy_positions` | `id` | DO UPDATE — server wins (full-table; real + paper) |
 
 ---
 
