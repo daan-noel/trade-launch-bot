@@ -572,6 +572,7 @@ export function Swing1Page() {
             pageSizeOptions={[20, 50, 100]}
             colFilters
             colToggle
+            tableId={`${STRATEGY}_positions`}
             emptyMessage="No positions for this rule."
           />
         )}

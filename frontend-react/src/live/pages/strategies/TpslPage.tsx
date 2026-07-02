@@ -582,6 +582,7 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
             pageSizeOptions={[20, 50, 100]}
             colFilters
             colToggle
+            tableId={`${strategy}_positions`}
             emptyMessage="No positions for this rule."
           />
         )}

@@ -1200,6 +1200,7 @@ export function Tpsl2Page() {
             pageSizeOptions={[20, 50, 100]}
             colFilters
             colToggle
+            tableId="tpsl2_positions"
             emptyMessage="No positions for this rule."
           />
         )}
