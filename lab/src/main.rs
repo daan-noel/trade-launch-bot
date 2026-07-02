@@ -186,10 +186,14 @@ async fn main() -> anyhow::Result<()> {
     let local_state = Arc::new(state::local_state::LocalState::new(core_state.clone()));
 
     // Keep the token-list DB base fresh so `GET /api/tokens` reflects the whole
-    // seeded universe (tokens + persisted stats). Fire-and-forget.
+    // token universe held in RAM. Lab (workstation, big RAM) loads the FULL set —
+    // uncapped-but-bounded by `LAB_TOKEN_LIST_LIMIT` over a wide window — so its
+    // filter/sort/page runs in memory at analysis speed. Fire-and-forget.
     tokio::spawn(state::token_list_cache::run_token_list_db_refresh(
         core_state.token_repo(),
         core_state.token_list.clone(),
+        trading_core::config::constants::LAB_TOKEN_LIST_LIMIT,
+        trading_core::config::constants::LAB_TOKEN_LIST_WINDOW_DAYS,
     ));
 
     // SOL/USD price: prime the cache, then poll.

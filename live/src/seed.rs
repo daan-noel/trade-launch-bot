@@ -7,8 +7,8 @@ use tracing::info;
 
 use crate::state::token_cache::{TokenCache, TokenState};
 use trading_core::config::constants::{
-    total_supply_for, INITIAL_VIRTUAL_TOKEN_RESERVES, SEED_ACTIVITY_WINDOW_DAYS, SEED_TOKEN_LIMIT,
-    SEED_TRADES_PER_MINT,
+    total_supply_for, INITIAL_VIRTUAL_TOKEN_RESERVES, SEED_ACTIVITY_WINDOW_DAYS,
+    SEED_TRACKING_LIMIT, SEED_TRADES_PER_MINT,
 };
 use trading_core::models::{token::Token, token_info::TokenInfo, trade::Trade};
 use trading_core::storage::repositories::{
@@ -30,7 +30,7 @@ use trading_core::storage::repositories::{
 /// Strategy (scoped to a bounded seed set so cold start scales with *recent*
 /// activity, not total history):
 ///   1. Recent tokens — created within `SEED_ACTIVITY_WINDOW_DAYS`, capped at
-///      `SEED_TOKEN_LIMIT` — plus every mint with an unsettled position (always
+///      `SEED_TRACKING_LIMIT` — plus every mint with an unsettled position (always
 ///      tracked regardless of age, or its open exit would strand).
 ///   2. Those mints' persisted `tokens_info` metrics.
 ///   3. One windowed scan of `trades` (`for_each_seed_mint`): newest
@@ -44,7 +44,7 @@ pub async fn seed_token_cache(pool: &PgPool, token_cache: Arc<TokenCache>) -> an
     // 1a. Recent launches within the activity window (bounded on recency + count).
     let cutoff = chrono::Utc::now() - Duration::days(SEED_ACTIVITY_WINDOW_DAYS);
     let mut token_by_mint: HashMap<String, Token> = token_repo
-        .find_recent_active(SEED_TOKEN_LIMIT, cutoff)
+        .find_recent_active(SEED_TRACKING_LIMIT, cutoff)
         .await?
         .into_iter()
         .map(|t| (t.mint_address.clone(), t))
@@ -378,7 +378,7 @@ mod tests {
 
         let cutoff = now - chrono::Duration::days(SEED_ACTIVITY_WINDOW_DAYS);
         let mints: HashSet<String> = token_repo
-            .find_recent_active(SEED_TOKEN_LIMIT, cutoff)
+            .find_recent_active(SEED_TRACKING_LIMIT, cutoff)
             .await
             .expect("query")
             .into_iter()

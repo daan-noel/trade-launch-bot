@@ -677,6 +677,192 @@ pub fn is_swing_sort_col(col: &str) -> bool {
     SWING_SORT_COLS.contains(&col)
 }
 
+/// Whether a per-column filter key understands the numeric grammar (mirrors
+/// `NUMERIC_COLS`). Exposed for the SQL backend.
+pub fn is_numeric_col(key: &str) -> bool {
+    NUMERIC_COLS.contains(&key)
+}
+
+// ---------------------------------------------------------------------------
+// SQL column-expression maps (parity with the in-RAM `TokenSummary` accessors).
+//
+// These name the `tokens t LEFT JOIN tokens_info i` SQL expression for each
+// sortable / filterable column, so the SQL backend in `sql.rs` builds WHERE/ORDER
+// from the SAME column semantics the in-RAM engine uses. A change to how a column
+// is computed must land in BOTH the `TokenSummary` accessor and here.
+// ---------------------------------------------------------------------------
+
+/// FEP entry price = initial_buy_sol(SOL) / initial_supply_token. NULL when either
+/// input is missing or supply is 0. ath_fep = ath_price / entry (entry>0).
+pub fn ath_fep_sql_expr() -> &'static str {
+    "(CASE WHEN t.initial_buy_sol IS NOT NULL AND t.initial_supply_token > 0 \
+            AND (t.initial_buy_sol::float8/1e9 / t.initial_supply_token) > 0 \
+            AND i.ath_price IS NOT NULL \
+       THEN i.ath_price / (t.initial_buy_sol::float8/1e9 / t.initial_supply_token) END)"
+}
+
+/// current_fep = current_price / entry (entry>0).
+pub fn cur_fep_sql_expr() -> &'static str {
+    "(CASE WHEN t.initial_buy_sol IS NOT NULL AND t.initial_supply_token > 0 \
+            AND (t.initial_buy_sol::float8/1e9 / t.initial_supply_token) > 0 \
+            AND i.current_price IS NOT NULL \
+       THEN i.current_price / (t.initial_buy_sol::float8/1e9 / t.initial_supply_token) END)"
+}
+
+/// SQL numeric expression for a per-column numeric filter key (mirrors
+/// `col_filter_number`). `None` for unknown keys.
+pub fn col_filter_number_sql(key: &str) -> Option<String> {
+    Some(
+        match key {
+            "trade_count" => "COALESCE(i.trade_count, 0)".into(),
+            "ath_fep_ratio" => ath_fep_sql_expr().to_string(),
+            "current_fep_ratio" => cur_fep_sql_expr().to_string(),
+            "market_cap" => "(i.current_price * t.initial_supply_token)".into(),
+            "volume" => "COALESCE(i.volume, 0)".into(),
+            "first_slot_buy" => "i.first_slot_buy_sol::float8/1e9".into(),
+            "first_slot_sell" => "i.first_slot_sell_sol::float8/1e9".into(),
+            "initial_buy" => "t.initial_buy_sol::float8/1e9".into(),
+            "init_supply" => "t.initial_supply_token::float8".into(),
+            "token_amount" => buy_arg_sql("token_amount"),
+            "max_sol_cost" => format!("({}/1e9)", buy_arg_sql("max_sol_cost")),
+            "spendable_sol_in" => format!("({}/1e9)", buy_arg_sql("spendable_sol_in")),
+            "min_tokens_out" => buy_arg_sql("min_tokens_out"),
+            "cu_limit" => "t.cu_limit::float8".into(),
+            "cu_price" => "t.cu_price::float8".into(),
+            "ix_count" => ix_count_sql().into(),
+            _ => return None,
+        },
+    )
+}
+
+/// SQL text expression for a per-column substring filter key (mirrors
+/// `col_filter_text`). Rendered close to the Rust string form; numeric/date cols
+/// stringify to their raw value. `None` for unknown keys.
+pub fn col_filter_text_sql(key: &str) -> Option<String> {
+    Some(match key {
+        "symbol" => "(t.symbol || ' ' || t.name || ' ' || t.mint_address)".into(),
+        "name" => "t.name".into(),
+        "mint" => "t.mint_address".into(),
+        "creator" => "t.creator_wallet".into(),
+        "create_tx" => "t.creation_tx_signature".into(),
+        "token_age" => "EXTRACT(EPOCH FROM (now() - t.created_at))::bigint::text".into(),
+        "created" => rfc3339_sql("t.created_at"),
+        "last_trade" => rfc3339_sql("i.last_trade_at"),
+        "lifetime" => "COALESCE(i.lifetime_secs::text, '')".into(),
+        "last_synced" => rfc3339_sql("sync.last_synced_at"),
+        "trade_count" => "COALESCE(i.trade_count, 0)::text".into(),
+        "ath_price" => "COALESCE(i.ath_price::text, '')".into(),
+        "ath_timestamp" => rfc3339_sql("i.ath_timestamp"),
+        "ath_fep_ratio" => format!("COALESCE(({})::text, '')", ath_fep_sql_expr()),
+        "current_price" => "COALESCE(i.current_price::text, '')".into(),
+        "current_fep_ratio" => format!("COALESCE(({})::text, '')", cur_fep_sql_expr()),
+        "market_cap" => "COALESCE((i.current_price * t.initial_supply_token)::text, '')".into(),
+        "volume" => "COALESCE(i.volume, 0)::text".into(),
+        "first_slot_buy" => "COALESCE((i.first_slot_buy_sol::float8/1e9)::text, '')".into(),
+        "first_slot_sell" => "COALESCE((i.first_slot_sell_sol::float8/1e9)::text, '')".into(),
+        "initial_buy" => "COALESCE((t.initial_buy_sol::float8/1e9)::text, '')".into(),
+        "init_supply" => "COALESCE(t.initial_supply_token::text, '')".into(),
+        "token_amount" => format!("COALESCE(({})::text, '')", buy_arg_sql("token_amount")),
+        "max_sol_cost" => format!("COALESCE(({}/1e9)::text, '')", buy_arg_sql("max_sol_cost")),
+        "spendable_sol_in" => format!("COALESCE(({}/1e9)::text, '')", buy_arg_sql("spendable_sol_in")),
+        "min_tokens_out" => format!("COALESCE(({})::text, '')", buy_arg_sql("min_tokens_out")),
+        "cu_limit" => "COALESCE(t.cu_limit::text, '')".into(),
+        "cu_price" => "COALESCE(t.cu_price::text, '')".into(),
+        "ix_count" => format!("{}::text", ix_count_sql()),
+        "migrated" => "COALESCE(i.is_migrated, false)::text".into(),
+        "dead" => "COALESCE(i.is_dead, false)::text".into(),
+        "mayhem_mode" => "t.is_mayhem_mode::text".into(),
+        "cashback" => "t.is_cashback_enabled::text".into(),
+        _ => return None,
+    })
+}
+
+/// SQL sort expression for a sortable column, plus whether it's a text sort (so the
+/// caller applies a case-insensitive `LOWER`). Mirrors `sort_key` (which dir/null
+/// semantics are applied by the caller via `NULLS LAST`). `None` for unknown /
+/// swing-chain columns.
+pub fn sort_sql_expr(col: &str) -> Option<(&'static str, bool)> {
+    Some(match col {
+        "symbol" => ("t.symbol", true),
+        "name" => ("t.name", true),
+        "mint" => ("t.mint_address", true),
+        "creator" => ("t.creator_wallet", true),
+        // token_age sorts by age = now-created; monotonic with created_at DESC, so
+        // sort by created_at with reversed sense handled at caller: age ASC == created DESC.
+        // To keep it simple & correct we sort on the numeric age expression.
+        "token_age" => ("EXTRACT(EPOCH FROM (now() - t.created_at))", false),
+        // in-RAM sorts created/last_trade/ath_timestamp/last_synced as RFC3339
+        // STRINGS; lexical order of RFC3339 == chronological, so sort on the ts.
+        "created" => ("t.created_at", false),
+        "last_trade" => ("i.last_trade_at", false),
+        "lifetime" => ("i.lifetime_secs", false),
+        "last_synced" => ("sync.last_synced_at", false),
+        "trade_count" => ("COALESCE(i.trade_count, 0)", false),
+        "ath_price" => ("i.ath_price", false),
+        "ath_timestamp" => ("i.ath_timestamp", false),
+        "ath_fep_ratio" => (ATH_FEP_SORT, false),
+        "current_price" => ("i.current_price", false),
+        "current_fep_ratio" => (CUR_FEP_SORT, false),
+        "market_cap" => ("(i.current_price * t.initial_supply_token)", false),
+        "volume" => ("COALESCE(i.volume, 0)", false),
+        "first_slot_buy" => ("i.first_slot_buy_sol", false),
+        "first_slot_sell" => ("i.first_slot_sell_sol", false),
+        "initial_buy" => ("t.initial_buy_sol", false),
+        "init_supply" => ("t.initial_supply_token", false),
+        "token_amount" => (TOKEN_AMOUNT_SORT, false),
+        "max_sol_cost" => (MAX_SOL_COST_SORT, false),
+        "spendable_sol_in" => (SPENDABLE_SORT, false),
+        "min_tokens_out" => (MIN_TOKENS_OUT_SORT, false),
+        "cu_limit" => ("t.cu_limit", false),
+        "cu_price" => ("t.cu_price", false),
+        "ix_count" => (IX_COUNT_SORT, false),
+        "migrated" => ("(COALESCE(i.is_migrated, false))::int", false),
+        "dead" => ("(COALESCE(i.is_dead, false))::int", false),
+        "mayhem_mode" => ("t.is_mayhem_mode::int", false),
+        "cashback" => ("t.is_cashback_enabled::int", false),
+        _ => return None,
+    })
+}
+
+// Sort-expression constants that need a JSON/CASE body inline as a `&'static str`.
+const ATH_FEP_SORT: &str = "(CASE WHEN t.initial_buy_sol IS NOT NULL AND t.initial_supply_token > 0 AND (t.initial_buy_sol::float8/1e9 / t.initial_supply_token) > 0 AND i.ath_price IS NOT NULL THEN i.ath_price / (t.initial_buy_sol::float8/1e9 / t.initial_supply_token) END)";
+const CUR_FEP_SORT: &str = "(CASE WHEN t.initial_buy_sol IS NOT NULL AND t.initial_supply_token > 0 AND (t.initial_buy_sol::float8/1e9 / t.initial_supply_token) > 0 AND i.current_price IS NOT NULL THEN i.current_price / (t.initial_buy_sol::float8/1e9 / t.initial_supply_token) END)";
+const TOKEN_AMOUNT_SORT: &str = "(CASE WHEN COALESCE(t.initial_buy_instruction->>'token_amount', t.initial_buy_instruction->>'tokenAmount') ~ '^[0-9]+$' THEN COALESCE(t.initial_buy_instruction->>'token_amount', t.initial_buy_instruction->>'tokenAmount')::float8 END)";
+const MAX_SOL_COST_SORT: &str = "(CASE WHEN COALESCE(t.initial_buy_instruction->>'max_sol_cost', t.initial_buy_instruction->>'maxSolCost') ~ '^[0-9]+$' THEN COALESCE(t.initial_buy_instruction->>'max_sol_cost', t.initial_buy_instruction->>'maxSolCost')::float8 END)";
+const SPENDABLE_SORT: &str = "(CASE WHEN COALESCE(t.initial_buy_instruction->>'spendable_sol_in', t.initial_buy_instruction->>'spendableSolIn') ~ '^[0-9]+$' THEN COALESCE(t.initial_buy_instruction->>'spendable_sol_in', t.initial_buy_instruction->>'spendableSolIn')::float8 END)";
+const MIN_TOKENS_OUT_SORT: &str = "(CASE WHEN COALESCE(t.initial_buy_instruction->>'min_tokens_out', t.initial_buy_instruction->>'minTokensOut') ~ '^[0-9]+$' THEN COALESCE(t.initial_buy_instruction->>'min_tokens_out', t.initial_buy_instruction->>'minTokensOut')::float8 END)";
+const IX_COUNT_SORT: &str = "COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(t.ix_labels) = 'array' THEN t.ix_labels WHEN jsonb_typeof(t.ix_labels->'instructions') = 'array' THEN t.ix_labels->'instructions' ELSE '[]'::jsonb END), 0)";
+
+/// buy-ix JSON numeric reader for the col-filter map (snake/camel tolerant).
+fn buy_arg_sql(field: &str) -> String {
+    let camel = match field {
+        "max_sol_cost" => "maxSolCost",
+        "spendable_sol_in" => "spendableSolIn",
+        "token_amount" => "tokenAmount",
+        "min_tokens_out" => "minTokensOut",
+        _ => field,
+    };
+    format!(
+        "(CASE WHEN COALESCE(t.initial_buy_instruction->>'{field}', t.initial_buy_instruction->>'{camel}') ~ '^[0-9]+$' \
+          THEN COALESCE(t.initial_buy_instruction->>'{field}', t.initial_buy_instruction->>'{camel}')::float8 END)"
+    )
+}
+
+fn ix_count_sql() -> &'static str {
+    IX_COUNT_SORT
+}
+
+/// RFC3339 rendering of a nullable timestamptz as text (matches `to_rfc3339()`),
+/// empty string when NULL (matches `opt_num_str(...to_rfc3339())`).
+fn rfc3339_sql(col: &str) -> String {
+    format!("COALESCE(to_char({col} AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS+00:00'), '')")
+}
+
+/// Public wrapper around `parse_dt` for the SQL backend.
+pub fn parse_dt_public(v: &str) -> Option<DateTime<Utc>> {
+    parse_dt(v)
+}
+
 /// Parse the DataTable sort into validated `(column, descending)` levels, index
 /// 0 = primary. Prefers the multi-key `sort=col:dir,col:dir` param; falls back
 /// to the legacy single `sort_col`/`sort_dir` pair. Unknown columns are dropped
@@ -723,6 +909,7 @@ fn swing_sort_value(col: &str, s: &crate::analyzers::ChainStats) -> f64 {
 }
 
 /// Parsed query: global filters + search + per-column filters + sort.
+#[derive(Clone)]
 pub struct TokenQuery {
     search: String,
     /// Ordered sort levels `(column, descending)`; index 0 is the primary key.
@@ -767,6 +954,23 @@ impl TokenQuery {
     /// Chain-latency budget (ms) used to group those chain stats.
     pub fn swing_chain_latency_ms(&self) -> i64 {
         self.swing_chain_latency_ms
+    }
+
+    /// Global-filter value by `TokenFilters` field name, `None` when inactive.
+    /// Exposed for the SQL backend (`sql.rs`) to build WHERE clauses from the same
+    /// parsed map the in-RAM `matches` reads.
+    pub fn f_get(&self, key: &str) -> Option<&str> {
+        self.f.get(key).map(String::as_str)
+    }
+
+    /// The DataTable global-search string (empty ⇒ inactive).
+    pub fn search_str(&self) -> &str {
+        &self.search
+    }
+
+    /// Parsed per-column `(key, expr)` filters.
+    pub fn col_filters_slice(&self) -> &[(String, String)] {
+        &self.col_filters
     }
 
     pub fn from_params(q: &PaginationParams) -> Self {
@@ -834,6 +1038,26 @@ impl TokenQuery {
             swing_run_id: q.swing_run_id.clone().filter(|s| !s.is_empty()),
             swing_chain_latency_ms: q.swing_chain_latency_ms.unwrap_or(DEFAULT_CHAIN_LATENCY_MS),
         }
+    }
+
+    /// Public wrapper around `matches` for the live SQL handler, which computes the
+    /// `tracked` count in-RAM over the cache subset using the SAME predicate the SQL
+    /// WHERE reproduces for the full universe.
+    pub fn matches_public(&self, t: &TokenSummary, now: DateTime<Utc>) -> bool {
+        self.matches(t, now)
+    }
+
+    /// `TokenQuery` is `Clone`; this alias documents the intent at the call site
+    /// (moving a copy into the blocking `tracked`-count closure).
+    pub fn clone_for_tracked(&self) -> Self {
+        self.clone()
+    }
+
+    /// Public wrapper around `sort_refs` (no swing stats) for the SQL-vs-in-RAM
+    /// parity test, so a test can reproduce the in-RAM ordering to diff against the
+    /// SQL page.
+    pub fn sort_refs_public<'a>(&self, rows: &mut [&'a TokenSummary]) {
+        self.sort_refs(rows, None);
     }
 
     fn matches(&self, t: &TokenSummary, now: DateTime<Utc>) -> bool {
@@ -1361,6 +1585,49 @@ enum NumPred {
     Le(f64),
     Ne(f64),
     Eq(f64),
+}
+
+/// Public mirror of `NumPred` for the SQL backend (`sql.rs`), which needs to emit a
+/// comparison per variant. Kept as a distinct public type so the private `NumPred`
+/// stays an internal detail of the in-RAM evaluator.
+pub enum NumPredPublic {
+    Range(f64, f64),
+    Gt(f64),
+    Ge(f64),
+    Lt(f64),
+    Le(f64),
+    Ne(f64),
+    Eq(f64),
+}
+
+/// Parse a per-column numeric predicate (public wrapper — same grammar as the
+/// in-RAM path).
+pub fn parse_numeric_predicate_public(text: &str) -> Option<NumPredPublic> {
+    parse_numeric_predicate(text).map(|p| match p {
+        NumPred::Range(lo, hi) => NumPredPublic::Range(lo, hi),
+        NumPred::Gt(v) => NumPredPublic::Gt(v),
+        NumPred::Ge(v) => NumPredPublic::Ge(v),
+        NumPred::Lt(v) => NumPredPublic::Lt(v),
+        NumPred::Le(v) => NumPredPublic::Le(v),
+        NumPred::Ne(v) => NumPredPublic::Ne(v),
+        NumPred::Eq(v) => NumPredPublic::Eq(v),
+    })
+}
+
+/// Public mirror of `IxFilter` for the SQL backend.
+pub enum IxFilterPublic {
+    None,
+    Text(Vec<String>),
+    Json(Vec<String>),
+}
+
+/// Parse an ix-label filter (public wrapper — same grammar as the in-RAM path).
+pub fn parse_ix_label_filter_public(raw: &str) -> IxFilterPublic {
+    match parse_ix_label_filter(raw) {
+        IxFilter::None => IxFilterPublic::None,
+        IxFilter::Text(v) => IxFilterPublic::Text(v),
+        IxFilter::Json(v) => IxFilterPublic::Json(v),
+    }
 }
 
 fn parse_numeric_predicate(text: &str) -> Option<NumPred> {

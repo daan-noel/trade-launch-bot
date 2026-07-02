@@ -791,13 +791,12 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Keep the token-list DB base fresh so `GET /api/tokens` reflects the whole
-    // seeded universe (tokens + persisted stats), not just mints still resident in
-    // the live cache after idle eviction. Fire-and-forget like the eviction sweep.
-    tokio::spawn(state::token_list_cache::run_token_list_db_refresh(
-        core_state.token_repo(),
-        core_state.token_list.clone(),
-    ));
+    // NOTE: the live bin no longer runs the token-list DB-base refresher. On live the
+    // `GET /api/tokens` full list is paged directly from Postgres (see
+    // `api::handlers::tokens::list`), so the in-RAM `token_list` snapshot is kept
+    // tracking-only (its `db_base` stays empty) — the 4 GB EC2 box holds only the
+    // tracked subset, never the 100K+ universe. `lab` still runs the refresher to
+    // build a full in-RAM snapshot (it has the RAM and wants the speed).
 
     let strategy_runner = strategies::StrategyRunner::new(strategy_service, token_cache.clone());
     let strategy_task = tokio::spawn(strategy_runner.run(strategy_rx));

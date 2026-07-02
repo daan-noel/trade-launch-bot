@@ -83,6 +83,7 @@ Stay in the owning crate (`trading_core` / `pump-trader` / `ingest-laserstream` 
 
 - Bound every query — paginate/time-window/stream. Never `SELECT *` the full `trades`/`raw_txs`.
 - New high-volume tables are **TimescaleDB hypertables** with declarative `add_compression_policy` + `add_retention_policy` (defined in `0001_init.sql`); continuous aggregates are set up at boot by `trading_core::storage::timescale`. The old hand-rolled `maintenance.rs` partition loop is gone.
+- **Token-list backend differs by bin** (same `/api/tokens` wire contract). `live` pages the list **straight from Postgres** — filter/sort/search are compiled to SQL by `trading_core::api::handlers::tokens::sql` (`build_where_and_order` → `TokenRepo::find_list_page`/`count_list`), so the full token universe (100K+) is pageable with NO in-RAM cap; the live in-RAM `token_list` snapshot holds **only tracking tokens** (4 GB EC2 guardrail — live does NOT run `run_token_list_db_refresh`). `lab` runs the in-RAM `build_tokens_list` engine over a **full snapshot** (`LAB_TOKEN_LIST_LIMIT`/`LAB_TOKEN_LIST_WINDOW_DAYS`, workstation RAM, analysis speed). `SEED_TRACKING_LIMIT` (formerly `SEED_TOKEN_LIMIT`) is now the **live tracking-cache seed** cap only, never the list cap. The two engines are held at parity by `token_repo::parity_tests` (`--ignored`). See [tokens-db-pagination-plan.md](tokens-db-pagination-plan.md).
 
 ## Deployed server (EC2: 2vCPU / 4GB RAM — IO-bound, RAM-constrained)
 
@@ -92,7 +93,7 @@ Stay in the owning crate (`trading_core` / `pump-trader` / `ingest-laserstream` 
 - No new infra spend (box stays fixed)
 - Every new write path must justify IO cost; follow partition+retention pattern
 - Connection counts are load-bearing; new pools require shrinking something else
-- Don't raise `MAX_TRADES_RETAINED`, `SEED_TOKEN_LIMIT`, or cache TTLs on server
+- Don't raise `MAX_TRADES_RETAINED`, `SEED_TRACKING_LIMIT`, or cache TTLs on server
 
 ## Definition of done
 

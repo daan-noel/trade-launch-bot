@@ -6,9 +6,7 @@ use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use tracing::warn;
 
 use crate::api::handlers::tokens::TokenSummary;
-use crate::config::constants::{
-    SEED_ACTIVITY_WINDOW_DAYS, SEED_TOKEN_LIMIT, TOKEN_LIST_DB_REFRESH_SECS,
-};
+use crate::config::constants::TOKEN_LIST_DB_REFRESH_SECS;
 use crate::storage::repositories::token_repo::TokenRepo;
 
 use super::token_cache::TokenCache;
@@ -205,19 +203,30 @@ impl TokenListCache {
 }
 
 /// Periodically refresh the token-list DB base so `GET /api/tokens` reflects the
-/// whole seeded universe (`tokens LEFT JOIN tokens_info`, windowed by
-/// `SEED_ACTIVITY_WINDOW_DAYS` + capped at `SEED_TOKEN_LIMIT`) — including mints
-/// already evicted from the live cache — overlaid with live stats for tracked
-/// mints. One bounded, index-servable query per `TOKEN_LIST_DB_REFRESH_SECS`; the
-/// base matters only for idle/evicted mints (static stats), so a coarse cadence is
-/// plenty. The first tick fires immediately so the base is populated right after
-/// startup; until then the list serves the live cache alone (prior behaviour).
-pub async fn run_token_list_db_refresh(token_repo: TokenRepo, token_list: Arc<TokenListCache>) {
+/// whole in-RAM snapshot universe (`tokens LEFT JOIN tokens_info`, windowed by
+/// `window_days` + capped at `limit`) — including mints already evicted from the
+/// live cache — overlaid with live stats for tracked mints. One bounded,
+/// index-servable query per `TOKEN_LIST_DB_REFRESH_SECS`; the base matters only for
+/// idle/evicted mints (static stats), so a coarse cadence is plenty. The first tick
+/// fires immediately so the base is populated right after startup; until then the
+/// list serves the live cache alone.
+///
+/// **Lab-only in the split.** `lab` runs this with `LAB_TOKEN_LIST_LIMIT` /
+/// `LAB_TOKEN_LIST_WINDOW_DAYS` (workstation RAM, wants the whole universe resident
+/// for fast analysis). `live` no longer spawns it at all — the live box pages the
+/// full list straight from Postgres and keeps this snapshot tracking-only (the DB
+/// base stays empty), respecting the 4 GB EC2 guardrail.
+pub async fn run_token_list_db_refresh(
+    token_repo: TokenRepo,
+    token_list: Arc<TokenListCache>,
+    limit: i64,
+    window_days: i64,
+) {
     let mut tick = tokio::time::interval(Duration::from_secs(TOKEN_LIST_DB_REFRESH_SECS));
     loop {
         tick.tick().await;
-        let since = Utc::now() - ChronoDuration::days(SEED_ACTIVITY_WINDOW_DAYS);
-        match token_repo.find_list_rows(SEED_TOKEN_LIMIT, since).await {
+        let since = Utc::now() - ChronoDuration::days(window_days);
+        match token_repo.find_list_rows(limit, since).await {
             Ok(rows) => {
                 let summaries: Vec<TokenSummary> =
                     rows.into_iter().map(TokenSummary::from).collect();
@@ -242,6 +251,8 @@ mod tests {
             ath_price: None,
             ath_timestamp: None,
             volume_sol_total: 0.0,
+            first_slot_buy_sol: None,
+            first_slot_sell_sol: None,
             market_cap: None,
             initial_buy_sol: None,
             initial_supply_token: None,

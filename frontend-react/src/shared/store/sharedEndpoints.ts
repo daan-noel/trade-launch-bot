@@ -129,11 +129,13 @@ export const sharedApi = baseApi.injectEndpoints({
       transformResponse: withCreatedMs,
     }),
     // Server-side paginated/filtered/sorted token list. The backend applies the
-    // full TokenFilters set + search + per-column filters + sort over its
-    // in-memory cache, returning one page plus the filtered `total`. Distinct
-    // from `getTokens` (which Swing uses to pull everything) so the two no
-    // longer share a cache entry. A short retention keeps abandoned
-    // filter/sort/page permutations from accumulating.
+    // full TokenFilters set + search + per-column filters + sort, returning one
+    // page plus the filtered `total`. Backend execution differs by build (same wire
+    // contract): the LIVE bin pages this straight from Postgres over the whole token
+    // universe (no cap) — its in-RAM cache holds only tracking tokens; the LAB bin
+    // runs it over a full in-RAM snapshot. Distinct from `getTokens` (which Swing
+    // uses to pull everything) so the two no longer share a cache entry. A short
+    // retention keeps abandoned filter/sort/page permutations from accumulating.
     getTokensPage: builder.query<TokensResponse, TokensPageArgs>({
       query: (a) => {
         const p = new URLSearchParams();

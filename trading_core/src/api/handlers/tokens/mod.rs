@@ -4,8 +4,10 @@
 
 mod batch;
 mod creation_stats;
+mod sql;
 mod tokens;
 
 pub use batch::*;
 pub use creation_stats::*;
+pub use sql::*;
 pub use tokens::*;

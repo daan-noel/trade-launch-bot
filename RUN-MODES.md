@@ -113,7 +113,7 @@ postgres service, so you mainly need real secrets + config:
   injects it as the upstream `Authorization: Bearer` for proxied `/api`.
   Generate: `head -c 32 /dev/urandom | base64`
 
-Do **not** raise `MAX_TRADES_RETAINED`, `SEED_TOKEN_LIMIT`, pool sizes, or cache
+Do **not** raise `MAX_TRADES_RETAINED`, `SEED_TRACKING_LIMIT`, pool sizes, or cache
 TTLs on the box — connection counts and RAM are load-bearing (CLAUDE.md).
 
 ---

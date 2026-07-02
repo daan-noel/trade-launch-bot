@@ -110,12 +110,31 @@ pub const POOL_SUBSCRIBE_ACTIVITY_WINDOW_SECONDS: i64 = 3 * 3600; // 3 hours
 /// How often the pool-subscription refresh re-evaluates token liveness.
 pub const POOL_REFRESH_INTERVAL_SECONDS: u64 = 120; // 2 minutes
 
-/// Upper bound on how many tokens the startup cache seed pulls from the
-/// `tokens` table. Startup time + memory stay bounded as `tokens` grows.
-pub const SEED_TOKEN_LIMIT: i64 = 25_000;
+/// Upper bound on how many tokens the live startup cache seed pulls from the
+/// `tokens` table into the in-RAM strategy `TokenCache`. Startup time + resident
+/// memory stay bounded as `tokens` grows.
+///
+/// This is the LIVE (EC2) **tracking**-seed cap — it governs how many tokens the
+/// live box tracks in RAM for the strategy hot path, and must NOT be raised on the
+/// server (4 GB guardrail). It does NOT bound the `GET /api/tokens` list: `live`
+/// pages that list straight from Postgres (see `api::handlers::tokens::sql`), so the
+/// full token universe is visible regardless of this cap. Named `TRACKING` (not the
+/// old `TOKEN`) to make that separation explicit — it seeds the tracking cache, not
+/// the table.
+pub const SEED_TRACKING_LIMIT: i64 = 25_000;
+/// Lab's in-RAM token-list snapshot base cap. `lab` runs on the workstation (big
+/// RAM, speed-critical analysis) and wants the WHOLE token universe resident, so its
+/// snapshot loads up to this many rows — bounded-but-huge, well past the expected
+/// 100K+, rather than literally unbounded (a backstop if `tokens` ever grows to
+/// millions locally). Lab-only; never used by the live box.
+pub const LAB_TOKEN_LIST_LIMIT: i64 = 1_000_000;
 /// Only tokens created within this window are pulled into the startup cache seed.
 /// Tokens older than this aren't tracked live until they trade again.
 pub const SEED_ACTIVITY_WINDOW_DAYS: i64 = 7;
+/// Lab's token-list snapshot window: how far back the full in-RAM list base reaches.
+/// Wider than the live tracking seed window because lab analyzes historical tokens,
+/// not just the live-tracked recent set. Tune up for deeper local history.
+pub const LAB_TOKEN_LIST_WINDOW_DAYS: i64 = 90;
 /// Hard cap on retained in-memory trade history per token. The live token cache
 /// (`state::token_cache`, which re-exports this) keeps only the most recent
 /// `MAX_TRADES_RETAINED` trades; the oldest are trimmed from the front once the vec
