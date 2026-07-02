@@ -1399,6 +1399,8 @@ async fn write_metrics(
             m.is_dead,
             m.is_migrated,
             m.lifetime_secs,
+            m.first_slot_buy_sol,
+            m.first_slot_sell_sol,
         )
         .await
         .map_err(|e| SyncError::Internal(e.to_string()))
@@ -1454,6 +1456,7 @@ fn token_from_ingest_event(e: ingest_laserstream::event::TokenCreated) -> Token 
         is_cashback_enabled: e.is_cashback_enabled,
         instruction_labels: serde_json::json!(e.instruction_labels),
         creation_tx_signature: e.signature,
+        creation_slot: Some(e.slot),
         created_at: e.block_time,
     }
 }

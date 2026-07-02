@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS tokens (
 
     -- creation provenance (variable-shape → JSONB)
     creation_tx_signature   TEXT        NOT NULL,
+    creation_slot           BIGINT,                 -- Solana slot of the create tx
     ix_labels               JSONB       NOT NULL DEFAULT '[]',
     initial_buy_instruction JSONB,
 
@@ -89,6 +90,10 @@ Notes
 - `mint_address` is the PK — the old surrogate `id UUID` + separate `UNIQUE` are gone.
 - `name`/`symbol` treated as static (fixed at launch). If on-chain metadata renames
   become relevant, they move to `tokens_info` (dynamic) — see open questions.
+- `creation_slot` is a write-once creation fact (known at `TokenCreated`). It is the
+  slot key for the same-slot activity sums on `tokens_info` (`first_slot_*_sol`), so
+  it lives on `tokens` (creation fact), while the derived-from-trades sums live on
+  `tokens_info`.
 
 ---
 
@@ -105,6 +110,14 @@ CREATE TABLE IF NOT EXISTS tokens_info (
     volume         DOUBLE PRECISION NOT NULL DEFAULT 0.0,
     trade_count    BIGINT      NOT NULL DEFAULT 0,
     last_trade_at  TIMESTAMPTZ,
+
+    -- same-creation-slot activity (derived from trades, streamed in TokenState;
+    -- lamports, like initial_buy_sol — model keeps human f64, ÷1e9 on read).
+    -- Sums buy/sell SOL over trades whose slot == tokens.creation_slot. Grows
+    -- monotonically within the open window, then freezes → plain EXCLUDED overwrite
+    -- on upsert (unlike ath's COALESCE-preserve).
+    first_slot_buy_sol   BIGINT,                  -- lamports
+    first_slot_sell_sol  BIGINT,                  -- lamports
 
     -- lifecycle (orthogonal axes; a token can be both)
     is_dead        BOOLEAN     NOT NULL DEFAULT FALSE,

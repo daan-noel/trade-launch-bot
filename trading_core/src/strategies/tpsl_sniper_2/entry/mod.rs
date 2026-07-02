@@ -285,6 +285,7 @@ mod tests {
             false,
             instruction_labels,
             "create-sig".into(),
+            None,
             base_time(),
         )
     }

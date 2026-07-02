@@ -213,6 +213,8 @@ impl DbWriter {
                         m.is_dead,
                         m.is_migrated,
                         m.lifetime_secs,
+                        m.first_slot_buy_sol,
+                        m.first_slot_sell_sol,
                     )
                     .await
                 {

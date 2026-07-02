@@ -245,7 +245,7 @@ mod tests {
         Token::new(
             "mint".into(), "creator".into(), "name".into(), "SYM".into(),
             None, None, None, initial_buy_sol, None, cu_limit, cu_price,
-            false, false, instruction_labels, "create-sig".into(), Utc::now(),
+            false, false, instruction_labels, "create-sig".into(), None, Utc::now(),
         )
     }
 

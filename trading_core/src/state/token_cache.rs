@@ -167,6 +167,21 @@ pub struct TokenState {
     /// Total number of trades seen since tracking began.
     pub trade_count: u64,
 
+    /// Cumulative buy SOL across trades landing in the token's **creation slot**
+    /// (`token.creation_slot`). Human SOL in memory (same convention as
+    /// `volume_sol_total`); lamports conversion happens at the repo boundary.
+    /// Order-independent (a sum) — a same-slot trade delivered late still lands
+    /// correctly, as long as `first_slot_window_open` has not closed.
+    pub first_slot_buy_sol: f64,
+    /// Cumulative sell SOL across creation-slot trades. Same semantics as
+    /// `first_slot_buy_sol`.
+    pub first_slot_sell_sol: f64,
+    /// Latch: once a trade with `slot > creation_slot` is observed the window
+    /// closes and same-slot accumulation stops permanently. Not required for
+    /// correctness (summing same-slot trades is idempotent), only a cheap early
+    /// return so long-lived tokens stop re-checking the condition every trade.
+    pub first_slot_window_open: bool,
+
     pub last_trade_at: Option<DateTime<Utc>>,
     /// Timestamp of the last trade with `sol_amount >= DEAD_MEANINGFUL_TRADE_SOL`.
     /// Dust/probe transactions (below the threshold) do not advance this field so
@@ -237,6 +252,9 @@ impl TokenState {
             trades_base: 0,
             volume_sol_total: 0.0,
             trade_count: 0,
+            first_slot_buy_sol: 0.0,
+            first_slot_sell_sol: 0.0,
+            first_slot_window_open: true,
             last_trade_at: None,
             last_meaningful_trade_at: None,
             initial_virtual_token_reserves: None,
@@ -328,6 +346,27 @@ impl TokenState {
     fn apply_aggregates<T: TradeRow>(&mut self, trade: &T) {
         self.volume_sol_total += trade.sol_amount();
         self.trade_count += 1;
+
+        // Same-slot (creation-slot) buy/sell SOL sums — a derived hot-metric,
+        // order-independent by construction. The `first_slot_window_open` latch
+        // closes once a later-slot trade is seen so long-lived tokens stop
+        // re-checking. A same-slot trade arriving after the window closed
+        // under-counts (accepted; matches `ath`/`is_dead` gRPC-reorder tolerance).
+        if self.first_slot_window_open {
+            match self.token.creation_slot {
+                Some(creation_slot) if trade.slot() == creation_slot => {
+                    if trade.is_buy() {
+                        self.first_slot_buy_sol += trade.sol_amount();
+                    } else {
+                        self.first_slot_sell_sol += trade.sol_amount();
+                    }
+                }
+                Some(creation_slot) if trade.slot() > creation_slot => {
+                    self.first_slot_window_open = false;
+                }
+                _ => {}
+            }
+        }
 
         let price = trade.price_per_token();
 
@@ -533,6 +572,8 @@ where
                             true,
                             state.is_migrated,
                             lifetime,
+                            state.first_slot_buy_sol,
+                            state.first_slot_sell_sol,
                         )
                         .await
                     {
@@ -574,6 +615,7 @@ mod tests {
             false,
             serde_json::Value::Array(vec![]),
             "create-sig".into(),
+            None,
             created_at,
         )
     }
@@ -670,6 +712,7 @@ mod tests {
             false,
             serde_json::Value::Array(vec![]),
             "create-sig".into(),
+            None,
             created_at,
         )
     }
@@ -805,6 +848,75 @@ mod tests {
         ));
         // 60s < DEAD_QUIET_SECS → not dead.
         assert!(!state.is_dead(now));
+    }
+
+    // ── first-slot buy/sell SOL ───────────────────────────────────────────────
+
+    /// Token whose creation landed in a known slot.
+    fn token_at_slot(created_at: DateTime<Utc>, creation_slot: u64) -> Token {
+        Token::new(
+            "MINT-slot".into(),
+            "creator".into(),
+            "Slot Test".into(),
+            "SLOT".into(),
+            None, None, None, None, None, None, None,
+            false, false,
+            serde_json::Value::Array(vec![]),
+            "create-sig".into(),
+            Some(creation_slot),
+            created_at,
+        )
+    }
+
+    /// Trade with an explicit slot + direction (creation-slot activity is keyed on
+    /// `slot` and `is_buy`, not on price/reserves).
+    fn trade_slot(at: DateTime<Utc>, ty: TradeType, sol: f64, slot: u64) -> Trade {
+        Trade::new(
+            "MINT-slot".into(),
+            "buyer".into(),
+            ty,
+            sol,
+            1_000,
+            "sig".into(),
+            slot,
+            at,
+        )
+    }
+
+    #[test]
+    fn accumulates_first_slot_buy_and_sell_sol() {
+        let now = Utc::now();
+        let mut state = TokenState::new(token_at_slot(now, 100));
+
+        // Two buys + one sell in the creation slot (100).
+        state.add_trade(trade_slot(now, TradeType::Buy, 1.5, 100));
+        state.add_trade(trade_slot(now, TradeType::Buy, 0.5, 100));
+        state.add_trade(trade_slot(now, TradeType::Sell, 0.75, 100));
+
+        assert_eq!(state.first_slot_buy_sol, 2.0);
+        assert_eq!(state.first_slot_sell_sol, 0.75);
+        assert!(state.first_slot_window_open, "window still open (no later slot yet)");
+
+        // A later-slot trade closes the window and does NOT affect the sums.
+        state.add_trade(trade_slot(now, TradeType::Buy, 9.0, 101));
+        assert!(!state.first_slot_window_open, "later slot closes the window");
+        assert_eq!(state.first_slot_buy_sol, 2.0, "later-slot buy excluded");
+
+        // A same-slot trade arriving AFTER the window closed under-counts (accepted):
+        // it must NOT change the frozen sums.
+        state.add_trade(trade_slot(now, TradeType::Buy, 3.0, 100));
+        assert_eq!(state.first_slot_buy_sol, 2.0, "window closed → same-slot late trade ignored");
+    }
+
+    #[test]
+    fn first_slot_sums_zero_without_creation_slot() {
+        // A token with no known creation_slot never accumulates (None arm).
+        let now = Utc::now();
+        let mut state = TokenState::new(token_with_launch(now, 1.0, 1000));
+        assert!(state.token.creation_slot.is_none());
+        state.add_trade(trade_slot(now, TradeType::Buy, 1.0, 1));
+        assert_eq!(state.first_slot_buy_sol, 0.0);
+        assert_eq!(state.first_slot_sell_sol, 0.0);
     }
 
     #[test]

@@ -17,6 +17,10 @@ pub struct TokenInfo {
     pub current_price: Option<f64>,
     pub is_dead: bool,
     pub is_migrated: bool,
+    /// Total buy SOL across trades in the token's creation slot, if computed.
+    pub first_slot_buy_sol: Option<f64>,
+    /// Total sell SOL across trades in the token's creation slot, if computed.
+    pub first_slot_sell_sol: Option<f64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     /// Wall-clock time of the last successful manual sync, if any.
@@ -38,6 +42,8 @@ impl TokenInfo {
         current_price: Option<f64>,
         is_dead: bool,
         is_migrated: bool,
+        first_slot_buy_sol: Option<f64>,
+        first_slot_sell_sol: Option<f64>,
         created_at: DateTime<Utc>,
         updated_at: DateTime<Utc>,
         last_synced_at: Option<DateTime<Utc>>,
@@ -55,6 +61,8 @@ impl TokenInfo {
             current_price,
             is_dead,
             is_migrated,
+            first_slot_buy_sol,
+            first_slot_sell_sol,
             created_at,
             updated_at,
             last_synced_at,

@@ -38,13 +38,13 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
 
 ### Core trading
 
-- `tokens` — mint_address UNIQUE, creator_wallet, name/symbol, bonding_curve_address, initial_buy_sol(BIGINT lamports), cu_limit/price, is_mayhem_mode, ix_labels(JSONB), created_at
+- `tokens` — mint_address UNIQUE, creator_wallet, name/symbol, bonding_curve_address, initial_buy_sol(BIGINT lamports), cu_limit/price, is_mayhem_mode, ix_labels(JSONB), creation_slot(BIGINT), created_at
 - `trades` *(TimescaleDB hypertable on block_time, ~1mo retention)* — mint, wallet, trade_type, sol_amount(BIGINT lamports) / token_amount(BIGINT raw units), tx_signature(BYTEA), slot, block_time, virtual_*_reserves(BIGINT), venue(`curve`/`amm`); price derived in `trades_priced` view. PK `(block_time, tx_signature, leg_index)`. **This table = the LaserStream feed.**
 - `raw_txs` *(TimescaleDB hypertable on block_time; compress 2d, retain 7d)* — tx_signature(BYTEA), slot, block_time, tx_index, payload(BYTEA = verbatim protobuf wire bytes, parse in Rust), source(SMALLINT: 0=live 1=sync). PK `(block_time, tx_signature)`. Source-of-truth feed; `trades` is a typed projection. Written by `RawTxRepo` from both the live ingest db_writer and the token_sync backfill.
 
 ### Token analysis
 
-- `tokens_info` — ATH, age, volume, market_cap, trade_count, is_dead, is_migrated, sync watermarks
+- `tokens_info` — ATH, age, volume, market_cap, trade_count, is_dead, is_migrated, first_slot_buy_sol/first_slot_sell_sol(BIGINT lamports — same-creation-slot buy/sell totals, streamed in `TokenState`), sync watermarks
 - `tokens_analysis` — mint_address, analyzer_name, score, indicators(JSONB)
 - `creator_profiles` — wallet_address, tokens_created, suspiciousness_score, indicators(JSONB)
 

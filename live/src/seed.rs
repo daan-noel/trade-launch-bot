@@ -145,6 +145,17 @@ fn build_state(
         state.current_price = info.current_price;
         state.is_migrated = info.is_migrated;
         state.last_synced_at = info.last_synced_at;
+        // Seed the same-slot activity sums from the persisted metrics (like
+        // `volume`): the cold-start seed does NOT replay trades through
+        // `apply_aggregates` (it uses `push_trade_capped`), so without this a live
+        // restart would zero a token's frozen first-slot value. Close the window
+        // when a value is present — the creation slot is long past by seed time, so
+        // no new same-slot trade can legitimately arrive.
+        if let (Some(buy), Some(sell)) = (info.first_slot_buy_sol, info.first_slot_sell_sol) {
+            state.first_slot_buy_sol = buy;
+            state.first_slot_sell_sol = sell;
+            state.first_slot_window_open = false;
+        }
     }
 
     if let Some(agg) = agg {
@@ -220,6 +231,7 @@ mod tests {
             false,
             serde_json::Value::Array(vec![]),
             uniq("create-sig-"),
+            None,
             created_at,
         )
     }
@@ -242,6 +254,8 @@ mod tests {
             Some(3.0),       // current_price
             false,
             true, // is_migrated
+            None, // first_slot_buy_sol
+            None, // first_slot_sell_sol
             Utc::now(),
             Utc::now(),
             None,

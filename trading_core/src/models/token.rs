@@ -36,6 +36,10 @@ pub struct Token {
     pub instruction_labels: Value,
     /// Transaction signature of the creation instruction.
     pub creation_tx_signature: String,
+    /// Solana slot of the creation transaction. Creation fact captured at
+    /// `TokenCreated`; enables the same-slot buy/sell activity sums on
+    /// `tokens_info` (`first_slot_buy_sol`/`first_slot_sell_sol`).
+    pub creation_slot: Option<u64>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -56,6 +60,7 @@ impl Token {
         is_cashback_enabled: bool,
         instruction_labels: Value,
         creation_tx_signature: String,
+        creation_slot: Option<u64>,
         created_at: DateTime<Utc>,
     ) -> Self {
         Self {
@@ -75,6 +80,7 @@ impl Token {
             is_cashback_enabled,
             instruction_labels,
             creation_tx_signature,
+            creation_slot,
             created_at,
         }
     }

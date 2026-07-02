@@ -31,6 +31,7 @@ struct TokenDbRow {
     is_cashback_enabled: bool,
     ix_labels: Json<Value>,
     creation_tx_signature: String,
+    creation_slot: Option<i64>,
     created_at: DateTime<Utc>,
 }
 
@@ -98,6 +99,7 @@ impl From<TokenDbRow> for Token {
             is_cashback_enabled: r.is_cashback_enabled,
             instruction_labels: r.ix_labels.0,
             creation_tx_signature: r.creation_tx_signature,
+            creation_slot: r.creation_slot.map(|v| v as u64),
             created_at: r.created_at,
         }
     }
@@ -128,7 +130,7 @@ fn lamports_to_sol(lamports: i64) -> f64 {
 const TOKEN_COLS: &str = "mint_address, creator_wallet, name, symbol, token_program_id, \
     bonding_curve_address, initial_supply_token, initial_buy_sol, initial_buy_instruction, \
     cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels, creation_tx_signature, \
-    created_at";
+    creation_slot, created_at";
 
 impl TokenRepo {
     pub fn new(pool: PgPool) -> Self {
@@ -148,7 +150,7 @@ impl TokenRepo {
              (mint_address, creator_wallet, name, symbol, token_program_id, \
               bonding_curve_address, initial_supply_token, initial_buy_sol, initial_buy_instruction, \
               cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels, \
-              creation_tx_signature, created_at) ",
+              creation_tx_signature, creation_slot, created_at) ",
         );
         qb.push_values(tokens, |mut b, t| {
             b.push_bind(&t.mint_address)
@@ -166,6 +168,7 @@ impl TokenRepo {
                 .push_bind(t.is_cashback_enabled)
                 .push_bind(Json(&t.instruction_labels))
                 .push_bind(&t.creation_tx_signature)
+                .push_bind(t.creation_slot.map(|v| v as i64))
                 .push_bind(t.created_at);
         });
         qb.push(" ON CONFLICT (mint_address) DO NOTHING");
@@ -180,8 +183,8 @@ impl TokenRepo {
             INSERT INTO tokens
                 (mint_address, creator_wallet, name, symbol, token_program_id,
                     bonding_curve_address, initial_supply_token, initial_buy_sol, initial_buy_instruction, cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels,
-                    creation_tx_signature, created_at)
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                    creation_tx_signature, creation_slot, created_at)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             ON CONFLICT (mint_address) DO NOTHING
             "#,
         )
@@ -200,6 +203,7 @@ impl TokenRepo {
         .bind(token.is_cashback_enabled)
         .bind(Json(&token.instruction_labels))
         .bind(&token.creation_tx_signature)
+        .bind(token.creation_slot.map(|v| v as i64))
         .bind(token.created_at)
         .execute(&self.pool)
         .await?;
@@ -214,8 +218,8 @@ impl TokenRepo {
             INSERT INTO tokens
                 (mint_address, creator_wallet, name, symbol, token_program_id,
                     bonding_curve_address, initial_supply_token, initial_buy_sol, initial_buy_instruction, cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels,
-                    creation_tx_signature, created_at)
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                    creation_tx_signature, creation_slot, created_at)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             ON CONFLICT (mint_address) DO UPDATE SET
                 creator_wallet = EXCLUDED.creator_wallet,
                 name = EXCLUDED.name,
@@ -231,6 +235,7 @@ impl TokenRepo {
                 is_cashback_enabled = EXCLUDED.is_cashback_enabled,
                 ix_labels = EXCLUDED.ix_labels,
                 creation_tx_signature = EXCLUDED.creation_tx_signature,
+                creation_slot = COALESCE(EXCLUDED.creation_slot, tokens.creation_slot),
                 created_at = LEAST(tokens.created_at, EXCLUDED.created_at)
             "#,
         )
@@ -249,6 +254,7 @@ impl TokenRepo {
         .bind(token.is_cashback_enabled)
         .bind(Json(&token.instruction_labels))
         .bind(&token.creation_tx_signature)
+        .bind(token.creation_slot.map(|v| v as i64))
         .bind(token.created_at)
         .execute(&self.pool)
         .await?;

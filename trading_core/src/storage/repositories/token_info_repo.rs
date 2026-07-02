@@ -23,7 +23,8 @@ pub struct TokenInfoRepo {
 
 /// New-schema metrics columns, in the order [`row_to_info`] consumes them.
 const INFO_COLS: &str = "mint_address, ath_price, ath_timestamp, volume, trade_count, \
-    last_trade_at, current_price, is_dead, is_migrated, lifetime_secs, updated_at";
+    last_trade_at, current_price, is_dead, is_migrated, lifetime_secs, \
+    first_slot_buy_sol, first_slot_sell_sol, updated_at";
 
 type InfoRow = (
     String,                  // mint_address
@@ -36,6 +37,8 @@ type InfoRow = (
     bool,                    // is_dead
     bool,                    // is_migrated
     Option<i64>,             // lifetime_secs (not on the TokenInfo model; read+dropped)
+    Option<i64>,             // first_slot_buy_sol  (lamports; → human SOL on read)
+    Option<i64>,             // first_slot_sell_sol (lamports; → human SOL on read)
     DateTime<Utc>,           // updated_at
 );
 
@@ -54,6 +57,8 @@ fn row_to_info(r: InfoRow) -> TokenInfo {
         is_dead,
         is_migrated,
         _lifetime_secs,
+        first_slot_buy_sol,
+        first_slot_sell_sol,
         updated_at,
     ) = r;
     TokenInfo {
@@ -69,10 +74,25 @@ fn row_to_info(r: InfoRow) -> TokenInfo {
         current_price,
         is_dead,
         is_migrated,
+        // Lamports (BIGINT) → human SOL f64 on read (mirrors `initial_buy_sol`).
+        first_slot_buy_sol: first_slot_buy_sol.map(lamports_to_sol),
+        first_slot_sell_sol: first_slot_sell_sol.map(lamports_to_sol),
         created_at: updated_at,
         updated_at,
         last_synced_at: None,
     }
+}
+
+/// Human SOL (f64) → lamports (i64). `first_slot_*_sol` are stored as exact
+/// lamports (BIGINT) but carried as human SOL on the metrics/model side, mirroring
+/// `tokens.initial_buy_sol` / `trades.sol_amount`.
+fn sol_to_lamports(sol: f64) -> i64 {
+    (sol * 1_000_000_000.0).round() as i64
+}
+
+/// Lamports (i64) → human SOL (f64).
+fn lamports_to_sol(lamports: i64) -> f64 {
+    lamports as f64 / 1_000_000_000.0
 }
 
 impl TokenInfoRepo {
@@ -101,13 +121,16 @@ impl TokenInfoRepo {
         is_dead: bool,
         is_migrated: bool,
         lifetime_secs: Option<i64>,
+        first_slot_buy_sol: f64,
+        first_slot_sell_sol: f64,
     ) -> anyhow::Result<()> {
         sqlx::query(
             r#"
             INSERT INTO tokens_info
                 (mint_address, ath_price, ath_timestamp, volume, trade_count,
-                 last_trade_at, current_price, is_dead, is_migrated, lifetime_secs, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
+                 last_trade_at, current_price, is_dead, is_migrated, lifetime_secs,
+                 first_slot_buy_sol, first_slot_sell_sol, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
             ON CONFLICT (mint_address) DO UPDATE
                 SET ath_price = COALESCE(EXCLUDED.ath_price, tokens_info.ath_price),
                     ath_timestamp = CASE WHEN EXCLUDED.ath_price IS NOT NULL
@@ -124,6 +147,12 @@ impl TokenInfoRepo {
                     is_dead = EXCLUDED.is_dead,
                     is_migrated = tokens_info.is_migrated OR EXCLUDED.is_migrated,
                     lifetime_secs = COALESCE(EXCLUDED.lifetime_secs, tokens_info.lifetime_secs),
+                    -- Plain overwrite (not COALESCE-preserve like ath): the value
+                    -- grows monotonically within the open creation-slot window and
+                    -- freezes once closed, so the latest in-memory value is always
+                    -- authoritative.
+                    first_slot_buy_sol = EXCLUDED.first_slot_buy_sol,
+                    first_slot_sell_sol = EXCLUDED.first_slot_sell_sol,
                     updated_at = EXCLUDED.updated_at
             "#,
         )
@@ -137,6 +166,9 @@ impl TokenInfoRepo {
         .bind(is_dead)
         .bind(is_migrated)
         .bind(lifetime_secs)
+        // Human SOL → lamports (BIGINT) on write.
+        .bind(sol_to_lamports(first_slot_buy_sol))
+        .bind(sol_to_lamports(first_slot_sell_sol))
         .execute(&self.pool)
         .await?;
 

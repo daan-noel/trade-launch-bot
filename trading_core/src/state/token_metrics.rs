@@ -26,6 +26,11 @@ pub struct TokenMetricsWrite {
     /// DEAD_MEANINGFUL_TRADE_SOL`). `Some` only when `is_dead = true`; `None` while
     /// the token is still alive.
     pub lifetime_secs: Option<i64>,
+    /// Total buy SOL across trades in the token's creation slot (human SOL;
+    /// lamports-scaled at the repo boundary).
+    pub first_slot_buy_sol: f64,
+    /// Total sell SOL across trades in the token's creation slot.
+    pub first_slot_sell_sol: f64,
 }
 
 /// Replay all trades in chronological order and rebuild aggregate metrics.
@@ -70,5 +75,7 @@ pub fn metrics_from_state(mint: &str, state: &TokenState) -> TokenMetricsWrite {
         is_migrated: state.is_migrated,
         is_dead,
         lifetime_secs,
+        first_slot_buy_sol: state.first_slot_buy_sol,
+        first_slot_sell_sol: state.first_slot_sell_sol,
     }
 }

@@ -441,6 +441,7 @@ fn token_from_event(e: TokenCreated) -> Token {
         is_cashback_enabled: e.is_cashback_enabled,
         instruction_labels: labels_to_json(&e.instruction_labels),
         creation_tx_signature: e.signature,
+        creation_slot: Some(e.slot),
         created_at: e.block_time,
     }
 }
