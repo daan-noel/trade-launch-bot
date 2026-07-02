@@ -112,6 +112,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     render: (r: { trade_count?: number }) => r.trade_count ?? '—',
     sortValue: (r: { trade_count?: number }) => r.trade_count ?? null,
     searchValue: (r: { trade_count?: number }) => String(r.trade_count ?? ''),
+    filterNumber: (r: { trade_count?: number }) => r.trade_count ?? null,
   },
   {
     key: 'last_trade',
@@ -174,6 +175,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     render: (r: { market_cap?: number | null }) => <CompactCell sol={r.market_cap ?? null} digits={3} />,
     sortValue: (r: { market_cap?: number | null }) => r.market_cap ?? null,
     searchValue: (r: { market_cap?: number | null }) => String(r.market_cap ?? ''),
+    filterNumber: (r: { market_cap?: number | null }) => r.market_cap ?? null,
   },
   {
     key: 'volume',
@@ -184,6 +186,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     render: (r: { volume_sol_total?: number }) => <CompactCell sol={r.volume_sol_total ?? null} digits={4} />,
     sortValue: (r: { volume_sol_total?: number }) => r.volume_sol_total ?? null,
     searchValue: (r: { volume_sol_total?: number }) => String(r.volume_sol_total ?? ''),
+    filterNumber: (r: { volume_sol_total?: number }) => r.volume_sol_total ?? null,
   },
   {
     key: 'first_slot_buy',
@@ -194,6 +197,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     render: (r: { first_slot_buy_sol?: number | null }) => <AmountCell sol={r.first_slot_buy_sol ?? null} />,
     sortValue: (r: { first_slot_buy_sol?: number | null }) => r.first_slot_buy_sol ?? null,
     searchValue: (r: { first_slot_buy_sol?: number | null }) => String(r.first_slot_buy_sol ?? ''),
+    filterNumber: (r: { first_slot_buy_sol?: number | null }) => r.first_slot_buy_sol ?? null,
   },
   {
     key: 'first_slot_sell',
@@ -204,6 +208,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     render: (r: { first_slot_sell_sol?: number | null }) => <AmountCell sol={r.first_slot_sell_sol ?? null} />,
     sortValue: (r: { first_slot_sell_sol?: number | null }) => r.first_slot_sell_sol ?? null,
     searchValue: (r: { first_slot_sell_sol?: number | null }) => String(r.first_slot_sell_sol ?? ''),
+    filterNumber: (r: { first_slot_sell_sol?: number | null }) => r.first_slot_sell_sol ?? null,
   },
   // initial
   {
@@ -215,6 +220,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     render: (r: { initial_buy_sol?: number | null }) => <AmountCell sol={r.initial_buy_sol ?? null} />,
     sortValue: (r: { initial_buy_sol?: number | null }) => r.initial_buy_sol ?? null,
     searchValue: (r: { initial_buy_sol?: number | null }) => String(r.initial_buy_sol ?? ''),
+    filterNumber: (r: { initial_buy_sol?: number | null }) => r.initial_buy_sol ?? null,
   },
   {
     key: 'init_supply',
@@ -226,6 +232,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
       r.initial_supply_token != null ? formatCompact(r.initial_supply_token, 2) : '—',
     sortValue: (r: { initial_supply_token?: number | null }) => r.initial_supply_token ?? null,
     searchValue: (r: { initial_supply_token?: number | null }) => String(r.initial_supply_token ?? ''),
+    filterNumber: (r: { initial_supply_token?: number | null }) => r.initial_supply_token ?? null,
   },
   // max_or_spendable
   {
@@ -238,6 +245,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
       r.token_amount != null ? formatCompact(r.token_amount, 2) : '—',
     sortValue: (r: { token_amount?: number | null }) => r.token_amount ?? null,
     searchValue: (r: { token_amount?: number | null }) => String(r.token_amount ?? ''),
+    filterNumber: (r: { token_amount?: number | null }) => r.token_amount ?? null,
   },
   {
     key: 'max_sol_cost',
@@ -249,6 +257,9 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
       r.max_sol_cost != null ? formatDecimalTrim(r.max_sol_cost / 1e9, 3) : '—',
     sortValue: (r: { max_sol_cost?: number | null }) => r.max_sol_cost ?? null,
     searchValue: (r: { max_sol_cost?: number | null }) => String(r.max_sol_cost ?? ''),
+    // Numeric filter compares in the *displayed* unit (SOL), so divide lamports by 1e9.
+    filterNumber: (r: { max_sol_cost?: number | null }) =>
+      r.max_sol_cost != null ? r.max_sol_cost / 1e9 : null,
   },
   {
     key: 'spendable_sol_in',
@@ -260,6 +271,9 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
       r.spendable_sol_in != null ? formatDecimalTrim(r.spendable_sol_in / 1e9, 3) : '—',
     sortValue: (r: { spendable_sol_in?: number | null }) => r.spendable_sol_in ?? null,
     searchValue: (r: { spendable_sol_in?: number | null }) => String(r.spendable_sol_in ?? ''),
+    // Numeric filter compares in the *displayed* unit (SOL), so divide lamports by 1e9.
+    filterNumber: (r: { spendable_sol_in?: number | null }) =>
+      r.spendable_sol_in != null ? r.spendable_sol_in / 1e9 : null,
   },
   {
     key: 'min_tokens_out',
@@ -271,6 +285,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
       r.min_tokens_out != null ? formatCompact(r.min_tokens_out, 2) : '—',
     sortValue: (r: { min_tokens_out?: number | null }) => r.min_tokens_out ?? null,
     searchValue: (r: { min_tokens_out?: number | null }) => String(r.min_tokens_out ?? ''),
+    filterNumber: (r: { min_tokens_out?: number | null }) => r.min_tokens_out ?? null,
   },
   // compute
   {
@@ -282,6 +297,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     render: (r: { cu_limit?: number | null }) => (r.cu_limit != null ? r.cu_limit : '—'),
     sortValue: (r: { cu_limit?: number | null }) => r.cu_limit ?? null,
     searchValue: (r: { cu_limit?: number | null }) => String(r.cu_limit ?? ''),
+    filterNumber: (r: { cu_limit?: number | null }) => r.cu_limit ?? null,
   },
   {
     key: 'cu_price',
@@ -293,6 +309,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
       r.cu_price != null ? formatWithCommas(r.cu_price) : '—',
     sortValue: (r: { cu_price?: number | null }) => r.cu_price ?? null,
     searchValue: (r: { cu_price?: number | null }) => String(r.cu_price ?? ''),
+    filterNumber: (r: { cu_price?: number | null }) => r.cu_price ?? null,
   },
   // ix
   {
@@ -304,6 +321,7 @@ const ALL_TOKEN_COLS: ColumnDef<any>[] = [
     render: (r: { ix_labels_count?: number }) => r.ix_labels_count ?? '—',
     sortValue: (r: { ix_labels_count?: number }) => r.ix_labels_count ?? null,
     searchValue: (r: { ix_labels_count?: number }) => String(r.ix_labels_count ?? ''),
+    filterNumber: (r: { ix_labels_count?: number }) => r.ix_labels_count ?? null,
   },
   {
     key: 'ix_labels',

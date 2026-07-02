@@ -125,6 +125,19 @@ there are no camelCase/axis/prefix translators.
   (`/rules/{id}/positions/summary`) over the *whole* run — so the panel never depends on page size and
   uses the backend win rule (`End && exit_sol>entry_sol`), keeping it identical to the strategy-table
   row. All five strategy pages (live `TpslPage`/`Swing1Page` + the 3 lab pages) share this path.
+- **Paper-test result table = same server-side path.** The lab pages' Paper Test section
+  (`@lab/components/strategies/PaperResultSection`, shared across all 3) renders its token table as a
+  **second** `useRulePositions` instance scoped to the paper rule id (its own `paperPosQuery` +
+  `positionColumns`), so paper positions page/sort/search/filter in Postgres exactly like the
+  Positions section — no client-side 5,000-row array, no bespoke `applyPaperDeltas`. The section keeps
+  only the run-meta chrome (status / run# / Clear) from the `/paper-result` payload; its summary card
+  reads the same `/positions/summary` aggregate.
+- **Numeric column filters** (`>5`, `1..10`, `>=`, `!=`) on the shared token-enrichment columns:
+  `ALL_TOKEN_COLS` in `sharedTokenColumns.tsx` declares `filterNumber` on every numeric column
+  (mirrors the Tokens-page `tokenColumns.tsx`), so all strategy tables filter enrichment columns
+  numerically client-side (lamports→SOL normalized for `max_sol_cost`/`spendable_sol_in`). On the
+  server-side positions/paper tables, plain text still binds as an `ILIKE` substring backend-side —
+  numeric *operators* server-side are a future follow-up.
 - Memoized column defs/price formatters; cells read context directly. localStorage via `lib/storage`
   (`mt:` namespace); column visibility in one `mt:table.cols` map keyed by `tableId`.
 

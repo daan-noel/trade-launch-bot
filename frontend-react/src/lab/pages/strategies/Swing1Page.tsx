@@ -25,6 +25,7 @@ import {
 // `-`). This mirrors the live Swing1Page, which reuses the same columns.
 import { ruleColumns, RuleRowProvider } from 'components/tpsl1/ruleColumns';
 import { SimSummaryCard } from 'components/tpsl1/SimSummaryCard';
+import { PaperResultSection } from '@lab/components/strategies/PaperResultSection';
 import { TokenInspectModal, type InspectTarget } from 'components/tpsl2/TokenInspectModal';
 import type { ChartSwingLeg, ChartSwingOverlay } from 'components/token-price-chart';
 import { fetchSwing1Detect, type Swing1DetectParams } from '@lab/services/swing1Detect';
@@ -34,7 +35,7 @@ import {
   simColumns,
 } from 'components/tpsl1/tableColumns';
 import { useTimezone } from 'context/TimezoneContext';
-import { datetimeLocalToUtcWallClock, formatIso } from 'utils/date';
+import { datetimeLocalToUtcWallClock } from 'utils/date';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { usePolledRules } from 'hooks/usePolledRules';
 import { useRulePositions, DEFAULT_POSITIONS_QUERY } from 'hooks/useRulePositions';
@@ -53,7 +54,7 @@ import {
   stopSwing1Rule,
   updateSwing1Rule,
 } from 'services/api';
-import { connectPaperTestStream, connectTpslPositionsChanged } from 'services/sse';
+import { connectPaperTestStream } from 'services/sse';
 import { useBackgroundJobActions } from '@lab/context/BackgroundJobsContext';
 import { apiErrorMessage, useGetTokensByMintsQuery } from 'store/apiSlice';
 import { useSellTokenMutation } from '@live/store/liveEndpoints';
@@ -169,157 +170,6 @@ function RuleTableHeader({
   );
 }
 
-/** Renders the latest paper-test run for a rule: run-status header, the shared
- *  summary card, and the per-token table (reusing the simulation column set). */
-function PaperResultSection({
-  data,
-  price,
-  simCols,
-  selectedMint,
-  onSelectToken,
-  onClose,
-  onClear,
-  clearing,
-  canClear,
-}: {
-  data: PaperResultResponse;
-  price: ReturnType<typeof usePriceDisplay>;
-  simCols: typeof simColumns;
-  selectedMint: string | null;
-  onSelectToken: (row: SimulatedTokenResult | null) => void;
-  onClose: () => void;
-  onClear: () => void;
-  clearing: boolean;
-  canClear: boolean;
-}) {
-  const { timezone } = useTimezone();
-  const { run } = data;
-  // Inline confirm for the destructive Clear (mirrors the row-delete pattern).
-  const [confirmClear, setConfirmClear] = useState(false);
-
-  // Stable onSelect so the paper table's memoized rows survive an unrelated
-  // re-render (e.g. a price tick); resolves the clicked key back to its row.
-  const tokens = data.tokens;
-  const handleSelect = useCallback(
-    (key: string | null) => onSelectToken(key ? tokens.find((t) => t.mint === key) ?? null : null),
-    [tokens, onSelectToken],
-  );
-
-  if (!run) {
-    return (
-      <section>
-        <SectionHeading
-          title="Paper Test"
-          marker="bg-info"
-          badge="info"
-          subtitle={data.rule_name}
-          action={
-            <button
-              type="button"
-              onClick={onClose}
-              className="text-text-dim transition hover:text-text"
-            >
-              ✕
-            </button>
-          }
-        />
-        <p className="text-text-dim">
-          This rule hasn&apos;t been run in paper mode yet. Activate it to start a paper test.
-        </p>
-      </section>
-    );
-  }
-
-  const statusVariant: BadgeVariant =
-    run.status === 'Finished' ? 'primary' : run.status === 'Stopped' ? 'neutral' : 'info';
-
-  return (
-    <>
-      <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-text-dim">
-        <Badge variant={statusVariant} size="sm" pill className="uppercase">
-          {run.status === 'Running' ? '● Running' : run.status}
-        </Badge>
-        <span className="font-mono">Run #{run.run_seq}</span>
-        <span>
-          Cap:{' '}
-          <span className="font-mono text-text">
-            {run.max_total_tokens != null ? run.max_total_tokens : '∞'}
-          </span>
-        </span>
-        <span>
-          Started <span className="font-mono text-text">{formatIso(run.started_at, timezone)}</span>
-        </span>
-        {run.finished_at && (
-          <span>
-            Ended <span className="font-mono text-text">{formatIso(run.finished_at, timezone)}</span>
-          </span>
-        )}
-        <span className="flex-1" />
-        {confirmClear ? (
-          <span className="flex items-center gap-1">
-            <span className="font-semibold text-red">Clear results?</span>
-            <Button variant="danger" size="xs" disabled={clearing} onClick={onClear}>
-              {clearing ? 'Clearing…' : 'Yes'}
-            </Button>
-            <Button
-              variant="ghost"
-              size="xs"
-              disabled={clearing}
-              onClick={() => setConfirmClear(false)}
-            >
-              No
-            </Button>
-          </span>
-        ) : (
-          <Button
-            variant="ghost"
-            size="xs"
-            disabled={!canClear}
-            onClick={() => setConfirmClear(true)}
-            title={
-              canClear
-                ? 'Clear results — delete this rule’s paper run history'
-                : 'Stop the rule before clearing its results'
-            }
-            className="text-red"
-          >
-            🗑 Clear results
-          </Button>
-        )}
-      </div>
-
-      <SimSummaryCard
-        title="Paper Test Results"
-        ruleName={data.rule_name}
-        tokens={data.tokens}
-        price={price}
-        onClose={onClose}
-      />
-
-      <section>
-        <SectionHeading title="Paper Positions" count={data.tokens.length} subtitle={data.rule_name} />
-        {data.tokens.length === 0 ? (
-          <p className="text-text-dim">No positions recorded for this run yet.</p>
-        ) : (
-          <DataTable
-            columns={simCols}
-            rows={tokens}
-            rowKey={keyByMint}
-            selectedKey={selectedMint}
-            onSelect={handleSelect}
-            defaultPageSize={20}
-            pageSizeOptions={[20, 50, 100]}
-            searchable
-            colFilters
-            colToggle
-            tableId="swing1_paper"
-          />
-        )}
-      </section>
-    </>
-  );
-}
-
 /** A row selected for inspection, tagged with its source table so only that
  *  table highlights the selection (the three tables can share a mint/key). */
 type InspectState = {
@@ -427,65 +277,6 @@ function inspectFromPosition(r: RulePositionRecord): InspectTarget {
     exitTx: r.exit_tx,
     exitLabel: r.status && r.status !== 'Open' ? r.status : null,
   };
-}
-
-/** Map a live position row into the sim-shaped result the shared `SimSummaryCard`
- *  aggregates, so the Positions section shows the same KPI / TP-SL / PnL summary
- *  as the paper-test and simulation views. Mirrors the backend
- *  `paper_position_to_sim_result`: still-open rows read as `"Open"`; PnL in SOL is
- *  the entry-allocated SOL scaled by the realized PnL %. */
-function positionToSimResult(p: RulePositionRecord): SimulatedTokenResult {
-  const pnlPercent = p.pnl_percent;
-  // Armed-but-unfilled positions carry null entry_*; normalize to 0 so the
-  // sim-shaped result stays non-null. They contribute 0 to entry/PnL totals and
-  // simply read as an Open row in the summary.
-  const entryPrice = p.entry_price ?? 0;
-  const entryTokens = p.entry_token_amount ?? 0;
-  const pnlSol = pnlPercent != null ? entryPrice * entryTokens * (pnlPercent / 100) : null;
-  const holdingSecs =
-    p.entry_time && p.exit_time
-      ? Math.round((new Date(p.exit_time).getTime() - new Date(p.entry_time).getTime()) / 1000)
-      : null;
-  const athPrice =
-    p.exit_price != null ? Math.max(p.exit_price, entryPrice) : entryPrice;
-  return {
-    mint: p.mint,
-    symbol: p.symbol ?? '',
-    target_price: p.target_price,
-    target_token_amount: p.target_token_amount,
-    target_time: p.target_time,
-    target_tx: p.target_tx,
-    entry_price: entryPrice,
-    ath_price: athPrice,
-    entry_token_amount: entryTokens,
-    entry_tx: p.entry_tx,
-    entry_time: p.entry_time ?? p.created_at,
-    exit_price: p.exit_price,
-    exit_tx: p.exit_tx,
-    exit_time: p.exit_time,
-    holding_secs: holdingSecs,
-    pnl_percent: pnlPercent,
-    pnl_sol: pnlSol,
-    exit_reason: p.exit_reason ?? 'Open',
-    total_trades: 0,
-  };
-}
-
-/** Patch the open paper run's token rows from a coalesced batch of position
- *  deltas: upsert by mint (mapping the changed position through the same
- *  `positionToSimResult` the backend mirrors), drop removed ones. Lets the panel
- *  stay live off the SSE stream instead of refetching the whole run on each fill. */
-function applyPaperDeltas(
-  tokens: SimulatedTokenResult[],
-  batch: import('types').TpslPositionDelta[],
-): SimulatedTokenResult[] {
-  const byMint = new Map(tokens.map((t) => [t.mint, t]));
-  for (const d of batch) {
-    if (!d.position) continue;
-    if (d.removed) byMint.delete(d.position.mint);
-    else byMint.set(d.position.mint, positionToSimResult(d.position));
-  }
-  return Array.from(byMint.values());
 }
 
 /** Confirm dialog for Stop & close. Spells out how many positions will be
@@ -833,6 +624,22 @@ export function Swing1Page() {
     openPaperRuleId.current = paperResult?.ruleId ?? null;
   }, [paperResult]);
 
+  // Server-side positions for the OPEN paper-result view (its own page/sort/filter
+  // + whole-run summary, kept live via SSE). Scoped to the paper rule id; resolves
+  // to that rule's latest paper run — the same run `paper-result` reports. A second
+  // `useRulePositions` instance next to the selection-driven one above; the two
+  // never conflict (different rule ids) and each aborts its own stale fetches.
+  const [paperPosQuery, setPaperPosQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
+  const {
+    positions: paperPositions,
+    total: paperPositionsTotal,
+    summary: paperPositionsSummary,
+    loading: paperPositionsLoading,
+  } = useRulePositions(
+    paperResult?.ruleId ?? null, rules, fetchSwing1RulePositions,
+    fetchSwing1RulePositionsSummary, STRATEGY, paperPosQuery,
+  );
+
   // Live paper-test completion: when a run finishes (cap reached + all exited)
   // the backend auto-deactivates the rule and broadcasts `paper_test_finished`.
   // Show a banner, refresh the rule list (so it flips to Inactive), and refresh
@@ -852,36 +659,11 @@ export function Swing1Page() {
     return () => es.close();
   }, [loadRules, dispatch]);
 
-  // Keep the open paper-result view live while its run is in progress by patching
-  // its token rows from the position deltas (coalesced) instead of refetching the
-  // whole run on each fill. The one-time open fetch seeds the rows; run-meta
-  // (status → Finished) arrives via `paper_test_finished` above. Without this the
-  // summary froze at open-time. Notify over poll, zero refetch during the run.
-  useEffect(() => {
-    const pending: import('types').TpslPositionDelta[] = [];
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const flush = () => {
-      timer = null;
-      const id = openPaperRuleId.current;
-      const batch = pending.splice(0);
-      if (!id || !batch.length) return;
-      setPaperResult((prev) =>
-        prev && prev.ruleId === id
-          ? { ...prev, data: { ...prev.data, tokens: applyPaperDeltas(prev.data.tokens, batch) } }
-          : prev,
-      );
-    };
-    const handle = connectTpslPositionsChanged(STRATEGY, (delta) => {
-      if (delta.ruleId !== openPaperRuleId.current) return;
-      pending.push(delta);
-      if (!timer) timer = setTimeout(flush, 250);
-    });
-    return () => {
-      if (timer) clearTimeout(timer);
-      handle.close();
-    };
-  }, []);
-
+  // The open paper-result token table is now a server-side positions table
+  // (`useRulePositions` below, scoped to the paper rule) — it live-patches its
+  // visible rows + summary from the same `tpsl_positions_changed` stream itself,
+  // so no bespoke paper-delta patching is needed here. Run-meta (status →
+  // Finished) still arrives via `paper_test_finished` above.
   useEffect(() => {
     if (!paperNotice) return;
     const id = setTimeout(() => setPaperNotice(null), 9000);
@@ -984,9 +766,9 @@ export function Swing1Page() {
     matchedResult?.tokens.forEach((r) => s.add(r.mint));
     simResult?.tokens.forEach((r) => s.add(r.mint));
     positions.forEach((r) => s.add(r.mint));
-    paperResult?.data.tokens.forEach((r) => s.add(r.mint));
+    paperPositions.forEach((r) => s.add(r.mint));
     return [...s].sort();
-  }, [matchedResult, simResult, positions, paperResult]);
+  }, [matchedResult, simResult, positions, paperPositions]);
 
   const { data: tokenBatch } = useGetTokensByMintsQuery(allMints, {
     skip: allMints.length === 0,
@@ -1321,15 +1103,18 @@ export function Swing1Page() {
     [matchedResult],
   );
 
+  // The paper table is now a server-side positions table (id-keyed rows), so this
+  // resolves the clicked position by id — mirroring `onSelectPosition`.
   const onSelectPaperToken = useCallback(
-    (row: SimulatedTokenResult | null) => {
+    (key: string | null) => {
+      const row = key ? paperPositions.find((p) => p.id === key) ?? null : null;
       setInspect(
         row
-          ? { table: 'paper', key: row.mint, target: inspectFromSim(row), ruleId: paperResult?.ruleId ?? null }
+          ? { table: 'paper', key: row.id, target: inspectFromPosition(row), ruleId: paperResult?.ruleId ?? null }
           : null,
       );
     },
-    [paperResult],
+    [paperPositions, paperResult],
   );
 
   const handleSellPosition = useCallback(
@@ -1677,14 +1462,19 @@ export function Swing1Page() {
       {paperError && <InlineAlert variant="error">{paperError}</InlineAlert>}
       {paperResult && !paperLoading && (
         <PaperResultSection
-          data={{
-            ...paperResult.data,
-            tokens: mergeTokenData(paperResult.data.tokens, tokenMap),
-          }}
+          data={paperResult.data}
+          positionColumns={posCols}
+          positions={paperPositions}
+          positionsTotal={paperPositionsTotal}
+          positionsSummary={paperPositionsSummary}
+          positionsLoading={paperPositionsLoading}
+          tokenMap={tokenMap}
           price={price}
-          simCols={simCols}
-          selectedMint={inspect?.table === 'paper' ? inspect.key : null}
-          onSelectToken={onSelectPaperToken}
+          tableId="swing1_paper"
+          resetKey={paperResult.ruleId}
+          selectedKey={inspect?.table === 'paper' ? inspect.key : null}
+          onSelectPosition={onSelectPaperToken}
+          onQueryChange={setPaperPosQuery}
           onClose={() => {
             setPaperResult(null);
             setPaperError(null);
