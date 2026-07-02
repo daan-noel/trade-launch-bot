@@ -1,5 +1,5 @@
-// TPSL2 spec — TPSL1 plus the scalp-continuation entry gates (p_entry_*) and the
-// cohort-exit ratio. Standalone. Columns mirror `RuleRecord`; `comboKey`s mirror
+// TPSL2 spec — TPSL1 plus the scalp-continuation entry gates (p_entry_*).
+// Standalone. Columns mirror `RuleRecord`; `comboKey`s mirror
 // `lab/src/sweep/strategies/tpsl2.rs` `params_json`. Presentation copied from the
 // old `tpsl2/RuleFormModal`.
 
@@ -26,7 +26,6 @@ const FIELDS: ParamField[] = [
   { column: 'p_entry_min_alive_sol', group: 'entry', section: 'entry', kind: 'float', required: false, comboKey: 'entry_min_alive_sol', label: 'Min Alive SOL', helpKey: 'minAliveSol', unit: '◎', step: '0.01', nullable: true },
   { column: 'p_entry_min_organic_sol', group: 'entry', section: 'entry', kind: 'float', required: false, comboKey: 'entry_min_organic_sol', label: 'Min Organic SOL', helpKey: 'minOrganicSol', unit: '◎', step: '0.01', nullable: true },
   { column: 'p_entry_min_organic_liq', group: 'entry', section: 'entry', kind: 'float', required: false, comboKey: 'entry_min_organic_liq', label: 'Min Organic Liq', helpKey: 'minOrganicLiq', unit: '◎', step: '0.1', nullable: true },
-  { column: 'p_entry_max_cohort_held', group: 'entry', section: 'entry', kind: 'float', required: false, comboKey: 'entry_max_cohort_held', label: 'Max Cohort Held %', helpKey: 'maxCohortHeld', unit: '%', step: '1', min: 0, max: 100, nullable: true },
   { column: 'p_entry_min_liquidity_sol', group: 'entry', section: 'entry', kind: 'float', required: false, comboKey: 'entry_min_liquidity_sol', label: 'Min Liquidity SOL', helpKey: 'minLiquiditySol', unit: '◎', step: '0.1', nullable: true },
   { column: 'p_entry_pullback_pct', group: 'entry', section: 'entry', kind: 'float', required: false, comboKey: 'entry_pullback_pct', label: 'Pullback %', helpKey: 'pullbackPct', unit: '%', step: '1', min: 0, max: 100, nullable: true },
   { column: 'p_entry_higher_low_secs', group: 'entry', section: 'entry', kind: 'int', required: false, comboKey: 'entry_higher_low_secs', label: 'Higher-Low (s)', helpKey: 'higherLowSecs', step: '1', nullable: true },
@@ -38,13 +37,12 @@ const FIELDS: ParamField[] = [
   { column: 'p_exit_time_stop_secs', group: 'exit', section: 'exit', kind: 'int', required: false, comboKey: 'exit_time_stop_secs', label: 'Time Stop (s)', helpKey: 'timeStopSecs', step: '1', nullable: true, inputClass: 'focus:border-info' },
   { column: 'p_exit_stall_secs', group: 'exit', section: 'exit', kind: 'int', required: false, comboKey: 'exit_stall_secs', label: 'Stall (s)', helpKey: 'stallSecs', step: '1', nullable: true, inputClass: 'focus:border-accent' },
   { column: 'p_exit_liquidity_drop_pct', group: 'exit', section: 'exit', kind: 'float', required: false, comboKey: 'exit_liquidity_drop_pct', label: 'Liquidity Drop %', helpKey: 'liquidityDropPct', unit: '%', step: '1', min: 0, max: 100, nullable: true, inputClass: 'focus:border-primary' },
-  { column: 'p_exit_cohort_ratio', group: 'exit', section: 'exit', kind: 'float', required: false, comboKey: 'exit_cohort_ratio', label: 'Cohort Exit Ratio %', helpKey: 'cohortExitRatio', unit: '%', step: '1', min: 0, max: 100, nullable: true, inputClass: 'focus:border-red' },
 ];
 
 const SECTIONS: SpecSection[] = [
   { key: 'fingerprint', label: 'Token Fingerprint', hint: 'which token to match', accent: 'text-info', liveEditable: false, cols: 6 },
   { key: 'sizing', label: 'Sizing & Limits', hint: 'position size + concurrency · editable while live', accent: 'text-text-dim', liveEditable: true, cols: 3 },
-  { key: 'entry', label: 'Entry Gates · Scalp', hint: 'when to buy (trade-stream shape + cohort)', accent: 'text-accent', liveEditable: false, cols: 4 },
+  { key: 'entry', label: 'Entry Gates · Scalp', hint: 'when to buy (trade-stream shape)', accent: 'text-accent', liveEditable: false, cols: 4 },
   { key: 'exit', label: 'Exit Gates', hint: 'when to sell', accent: 'text-warning', liveEditable: false, cols: 4 },
 ];
 

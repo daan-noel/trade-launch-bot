@@ -123,20 +123,20 @@ impl Trade {
     }
 }
 
-/// The read-only fields the shared entry/exit/cohort fns consume, abstracted over
+/// The read-only fields the shared entry/exit fns consume, abstracted over
 /// the concrete row type so those fns can run against either the live `Trade`
 /// (decision parity with real trading) **or** the sweep's slim, wallet-interned
 /// [`SweepTrade`](crate::sweep::projection::SweepTrade) projection without
 /// duplicating any decision logic.
 ///
 /// `Trade` impls this trivially (below); the sweep impls it over a ~3× smaller
-/// row whose `Wallet` is an interned `u32` (so cohort-set hashing/membership in
-/// the hot loop is integer-keyed, not 44-char-base58-String-keyed). Because the
-/// fns monomorphize, the live path (`T = Trade`) compiles to byte-identical code
-/// — there is no runtime cost or behavior change for live trading.
+/// row whose `Wallet` is an interned `u32` (integer-keyed hashing/membership,
+/// not 44-char-base58-String-keyed). Because the fns monomorphize, the live path
+/// (`T = Trade`) compiles to byte-identical code — there is no runtime cost or
+/// behavior change for live trading.
 pub trait TradeRow {
-    /// Cheap, hashable wallet identity for cohort-set membership. `String` for the
-    /// live `Trade` (unchanged hashing); an interned `u32` for the sweep row.
+    /// Cheap, hashable wallet identity. `String` for the live `Trade` (unchanged
+    /// hashing); an interned `u32` for the sweep row.
     type Wallet: Eq + std::hash::Hash + Clone;
 
     fn is_buy(&self) -> bool;
@@ -174,7 +174,7 @@ pub trait TradeRow {
     fn real_token_reserves(&self) -> Option<f64> {
         None
     }
-    /// Borrowed wallet identity — borrowed so cohort membership never clones.
+    /// Borrowed wallet identity — borrowed so callers never clone unnecessarily.
     fn wallet(&self) -> &Self::Wallet;
     fn tx_signature(&self) -> &str;
 

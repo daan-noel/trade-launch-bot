@@ -5,10 +5,10 @@
 //! `round_trip` of the decision prices.
 //!
 //! swing1 has **no** token-creation gate (the dev-fingerprint filter is applied
-//! upstream), so unlike tpsl2 there is no per-token launch-cohort precompute — the
-//! swing scan is the only per-token work and it depends on the swing/kill/volume
-//! **entry** axes, so it runs once per distinct [`Swing1EntryKey`] in
-//! `resolve_entry` (cached across that key's exit sub-grid by the engine).
+//! upstream), and no per-token precompute — the swing scan is the only per-token
+//! work and it depends on the swing/kill/volume **entry** axes, so it runs once
+//! per distinct [`Swing1EntryKey`] in `resolve_entry` (cached across that key's
+//! exit sub-grid by the engine).
 //!
 //! Axis layout (mirrors the [`Swing1Rule`] fields):
 //!   • exit ladder (exit-only): take_profit, stop_loss, trailing, stall, time, liq
@@ -71,7 +71,6 @@ pub struct Swing1Params {
     pub entry_higher_low_secs: Option<u64>,
     pub entry_max_age_secs: Option<u64>,
     pub entry_min_liquidity_sol: Option<f64>,
-    pub entry_max_cohort_held: Option<f64>,
     // ── Symmetric next-kill exit (exit-only) ──────────────────────────────────
     pub exit_next_kill_depth_min_pct: Option<f64>,
     pub exit_next_kill_max_duration_ms: Option<i64>,
@@ -112,7 +111,6 @@ pub struct Swing1EntryKey {
     entry_higher_low_secs: Option<u64>,
     entry_max_age_secs: Option<u64>,
     entry_min_liquidity_sol: Option<f64>,
-    entry_max_cohort_held: Option<f64>,
 }
 
 /// The resolved entry for a token under one entry-param tuple: either no entry, or
@@ -160,7 +158,6 @@ pub struct Swing1Axes {
     pub entry_higher_low_secs: Vec<Option<u64>>,
     pub entry_max_age_secs: Vec<Option<u64>>,
     pub entry_min_liquidity_sol: Vec<Option<f64>>,
-    pub entry_max_cohort_held: Vec<Option<f64>>,
     pub exit_next_kill_depth_min_pct: Vec<Option<f64>>,
     pub exit_next_kill_max_duration_ms: Vec<Option<i64>>,
 }
@@ -203,7 +200,6 @@ impl Default for Swing1Axes {
             entry_higher_low_secs: vec![None],
             entry_max_age_secs: vec![None],
             entry_min_liquidity_sol: vec![None],
-            entry_max_cohort_held: vec![None],
             // Symmetric next-kill flee (separate thresholds from the entry kill_*).
             exit_next_kill_depth_min_pct: vec![None, Some(0.6)],
             exit_next_kill_max_duration_ms: vec![Some(8_000)],
@@ -264,8 +260,6 @@ pub struct AxesSpec {
     #[serde(default)]
     pub entry_min_liquidity_sol: Option<Vec<Option<f64>>>,
     #[serde(default)]
-    pub entry_max_cohort_held: Option<Vec<Option<f64>>>,
-    #[serde(default)]
     pub exit_next_kill_depth_min_pct: Option<Vec<Option<f64>>>,
     #[serde(default)]
     pub exit_next_kill_max_duration_ms: Option<Vec<Option<i64>>>,
@@ -324,7 +318,6 @@ impl Swing1Axes {
                 &spec.entry_min_liquidity_sol,
                 d.entry_min_liquidity_sol,
             ),
-            entry_max_cohort_held: axis(&spec.entry_max_cohort_held, d.entry_max_cohort_held),
             exit_next_kill_depth_min_pct: axis(
                 &spec.exit_next_kill_depth_min_pct,
                 d.exit_next_kill_depth_min_pct,
@@ -340,7 +333,7 @@ impl Swing1Axes {
     /// sampler decodes against (the mixed-radix `combo_at` order, the LHS plan
     /// column order, and the `refine`/`order_for_entry_cache` walks). Defined once
     /// so those stay in lockstep.
-    fn axis_lens(&self) -> [usize; 26] {
+    fn axis_lens(&self) -> [usize; 25] {
         [
             self.take_profit.len(),
             self.stop_loss.len(),
@@ -365,7 +358,6 @@ impl Swing1Axes {
             self.entry_higher_low_secs.len(),
             self.entry_max_age_secs.len(),
             self.entry_min_liquidity_sol.len(),
-            self.entry_max_cohort_held.len(),
             self.exit_next_kill_depth_min_pct.len(),
             self.exit_next_kill_max_duration_ms.len(),
         ]
@@ -443,7 +435,6 @@ impl Swing1Strategy {
             entry_higher_low_secs: take!(a.entry_higher_low_secs),
             entry_max_age_secs: take!(a.entry_max_age_secs),
             entry_min_liquidity_sol: take!(a.entry_min_liquidity_sol),
-            entry_max_cohort_held: take!(a.entry_max_cohort_held),
             exit_next_kill_depth_min_pct: take!(a.exit_next_kill_depth_min_pct),
             exit_next_kill_max_duration_ms: take!(a.exit_next_kill_max_duration_ms),
         })
@@ -476,7 +467,6 @@ impl Swing1Strategy {
         r.p_entry_higher_low_secs = p.entry_higher_low_secs;
         r.p_entry_max_age_secs = p.entry_max_age_secs;
         r.p_entry_min_liquidity_sol = p.entry_min_liquidity_sol;
-        r.p_entry_max_cohort_held = p.entry_max_cohort_held;
         r.p_exit_next_kill_depth_min_pct = p.exit_next_kill_depth_min_pct;
         r.p_exit_next_kill_max_duration_ms = p.exit_next_kill_max_duration_ms;
         r
@@ -529,7 +519,6 @@ impl Swing1Strategy {
             entry_higher_low_secs: opt_u(v, "entry_higher_low_secs"),
             entry_max_age_secs: opt_u(v, "entry_max_age_secs"),
             entry_min_liquidity_sol: opt_f(v, "entry_min_liquidity_sol"),
-            entry_max_cohort_held: opt_f(v, "entry_max_cohort_held"),
             exit_next_kill_depth_min_pct: opt_f(v, "exit_next_kill_depth_min_pct"),
             exit_next_kill_max_duration_ms: opt_i(v, "exit_next_kill_max_duration_ms"),
         };
@@ -613,7 +602,6 @@ impl ParamSpace for Swing1Strategy {
                             entry_higher_low_secs: take!(a.entry_higher_low_secs),
                             entry_max_age_secs: take!(a.entry_max_age_secs),
                             entry_min_liquidity_sol: take!(a.entry_min_liquidity_sol),
-                            entry_max_cohort_held: take!(a.entry_max_cohort_held),
                             exit_next_kill_depth_min_pct: take!(a.exit_next_kill_depth_min_pct),
                             exit_next_kill_max_duration_ms: take!(
                                 a.exit_next_kill_max_duration_ms
@@ -669,7 +657,6 @@ impl ParamSpace for Swing1Strategy {
             walk!(a.entry_higher_low_secs, entry_higher_low_secs);
             walk!(a.entry_max_age_secs, entry_max_age_secs);
             walk!(a.entry_min_liquidity_sol, entry_min_liquidity_sol);
-            walk!(a.entry_max_cohort_held, entry_max_cohort_held);
             walk!(a.exit_next_kill_depth_min_pct, exit_next_kill_depth_min_pct);
             walk!(a.exit_next_kill_max_duration_ms, exit_next_kill_max_duration_ms);
         }
@@ -691,7 +678,7 @@ impl ParamSpace for Swing1Strategy {
 /// only needs to be injective on the candidate values: `Option`s map a present
 /// value to its bit pattern and `None` to a reserved sentinel. The axes never
 /// carry `NaN`/`-0.0`, so equal bits ⟺ equal value ⟺ equal `entry_key`.
-fn entry_order_key(p: &Swing1Params) -> [u64; 18] {
+fn entry_order_key(p: &Swing1Params) -> [u64; 17] {
     // `+1` keeps `None` (0) distinct from `Some(0)`; real ms/secs never hit MAX.
     fn ou64(o: Option<u64>) -> u64 {
         o.map(|v| v.wrapping_add(1)).unwrap_or(0)
@@ -724,15 +711,14 @@ fn entry_order_key(p: &Swing1Params) -> [u64; 18] {
         ou64(p.entry_higher_low_secs),
         ou64(p.entry_max_age_secs),
         of64(p.entry_min_liquidity_sol),
-        of64(p.entry_max_cohort_held),
     ]
 }
 
 impl Strategy for Swing1Strategy {
     type Entry = Swing1Entry;
     type EntryKey = Swing1EntryKey;
-    /// swing1 has no param-independent per-token precompute (no launch-cohort gate);
-    /// the swing scan depends on the entry axes and runs in `resolve_entry`.
+    /// swing1 has no param-independent per-token precompute; the swing scan
+    /// depends on the entry axes and runs in `resolve_entry`.
     type TokenState = ();
 
     fn entry_key(&self, params: &Swing1Combo) -> Swing1EntryKey {
@@ -755,7 +741,6 @@ impl Strategy for Swing1Strategy {
             entry_higher_low_secs: p.entry_higher_low_secs,
             entry_max_age_secs: p.entry_max_age_secs,
             entry_min_liquidity_sol: p.entry_min_liquidity_sol,
-            entry_max_cohort_held: p.entry_max_cohort_held,
         }
     }
 
@@ -858,7 +843,6 @@ impl Strategy for Swing1Strategy {
             "entry_higher_low_secs": p.entry_higher_low_secs,
             "entry_max_age_secs": p.entry_max_age_secs,
             "entry_min_liquidity_sol": p.entry_min_liquidity_sol,
-            "entry_max_cohort_held": p.entry_max_cohort_held,
             "exit_next_kill_depth_min_pct": p.exit_next_kill_depth_min_pct,
             "exit_next_kill_max_duration_ms": p.exit_next_kill_max_duration_ms,
         })
@@ -929,8 +913,8 @@ mod tests {
         assert_eq!(before, after, "ordering must be a pure permutation of the combos");
 
         // Contiguity: each distinct entry key forms one unbroken run.
-        let mut seen: HashSet<[u64; 18]> = HashSet::new();
-        let mut prev: Option<[u64; 18]> = None;
+        let mut seen: HashSet<[u64; 17]> = HashSet::new();
+        let mut prev: Option<[u64; 17]> = None;
         for c in &combos {
             let k = entry_order_key(&c.raw);
             if Some(k) != prev {

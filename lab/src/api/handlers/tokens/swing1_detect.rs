@@ -34,7 +34,7 @@ use crate::{
 /// Same bounded DB read window the generic swing endpoint uses.
 const SWING_DB_TRADE_CAP: i64 = MAX_TRADES_RETAINED as i64;
 
-/// The page-editable swing1 params (the 25 swept knobs), all optional. A `None`
+/// The page-editable swing1 params (the 24 swept knobs), all optional. A `None`
 /// means "inert / no bound" — identical to a sweep axis left blank. `take_profit`/
 /// `stop_loss` default to sane non-zero values so the exit ladder always resolves
 /// a fill once an entry fires.
@@ -66,7 +66,6 @@ pub struct Swing1DetectParams {
     pub entry_higher_low_secs: Option<u64>,
     pub entry_max_age_secs: Option<u64>,
     pub entry_min_liquidity_sol: Option<f64>,
-    pub entry_max_cohort_held: Option<f64>,
     pub exit_next_kill_depth_min_pct: Option<f64>,
     pub exit_next_kill_max_duration_ms: Option<i64>,
 }
@@ -112,7 +111,6 @@ impl Swing1DetectParams {
         r.p_entry_higher_low_secs = self.entry_higher_low_secs;
         r.p_entry_max_age_secs = self.entry_max_age_secs;
         r.p_entry_min_liquidity_sol = self.entry_min_liquidity_sol;
-        r.p_entry_max_cohort_held = self.entry_max_cohort_held;
         r.p_exit_next_kill_depth_min_pct = self.exit_next_kill_depth_min_pct;
         r.p_exit_next_kill_max_duration_ms = self.exit_next_kill_max_duration_ms;
         r

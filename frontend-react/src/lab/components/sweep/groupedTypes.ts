@@ -55,20 +55,18 @@ export interface Tpsl2AxesSpec {
   time_stop_secs?: (number | null)[];
   stall_secs?: (number | null)[];
   liquidity_drop_pct?: (number | null)[];
-  cohort_ratio?: (number | null)[];
   entry_min_age_secs?: (number | null)[];
   entry_max_age_secs?: (number | null)[];
   entry_min_alive_sol?: (number | null)[];
   entry_min_organic_sol?: (number | null)[];
   entry_pullback_pct?: (number | null)[];
   entry_higher_low_secs?: (number | null)[];
-  entry_max_cohort_held?: (number | null)[];
   entry_min_liquidity_sol?: (number | null)[];
   entry_min_organic_liq?: (number | null)[];
 }
 
 /** The page-editable param grid for TPSL1 — the exit ladder only (no scalp
- *  entry gates, no cohort-dump exit). Mirrors the backend tpsl1 `AxesSpec`. */
+ *  entry gates). Mirrors the backend tpsl1 `AxesSpec`. */
 export interface Tpsl1AxesSpec {
   take_profit?: number[];
   stop_loss?: number[];
@@ -94,7 +92,6 @@ export const TPSL2_AXES: AxisDef[] = [
   { key: 'entry_min_alive_sol', label: 'Entry min alive (SOL)', group: 'entry', nullable: true, default: [null] },
   { key: 'entry_min_organic_sol', label: 'Entry min organic (SOL)', group: 'entry', nullable: true, default: [null] },
   { key: 'entry_min_organic_liq', label: 'Entry min organic liq (SOL)', group: 'entry', nullable: true, default: [null] },
-  { key: 'entry_max_cohort_held', label: 'Entry max cohort held %', group: 'entry', nullable: true, default: [null] },
   { key: 'entry_min_liquidity_sol', label: 'Entry min liq (SOL)', group: 'entry', nullable: true, default: [null, 5] },
   { key: 'entry_pullback_pct', label: 'Entry pullback %', group: 'entry', nullable: true, default: [null, 10] },
   { key: 'entry_higher_low_secs', label: 'Entry higher-low (s)', group: 'entry', nullable: true, default: [null] },
@@ -105,15 +102,14 @@ export const TPSL2_AXES: AxisDef[] = [
   { key: 'time_stop_secs', label: 'Time stop (s)', group: 'exit', nullable: true, default: [null, 120, 300] },
   { key: 'stall_secs', label: 'Stall (s)', group: 'exit', nullable: true, default: [null, 30, 60] },
   { key: 'liquidity_drop_pct', label: 'Liq-drop exit %', group: 'exit', nullable: true, default: [null] },
-  { key: 'cohort_ratio', label: 'Cohort-dump exit %', group: 'exit', nullable: true, default: [null] },
 ];
 
 // --- TPSL1 editable axes ----------------------------------------------------
 
 // TPSL1 is the token-creation-filter strategy: its only per-trade swept knobs
 // are the exit ladder (TP/SL lead, then the optional trailing/time/stall/liquidity
-// exits). It has NO scalp entry gates and NO cohort-dump exit, so this list is the
-// TPSL2 exit block minus cohort. Mirrors the backend `tpsl1::Tpsl1Axes::default`.
+// exits). It has NO scalp entry gates, so this list is the TPSL2 exit block.
+// Mirrors the backend `tpsl1::Tpsl1Axes::default`.
 export const TPSL1_AXES: AxisDef[] = [
   { key: 'take_profit', label: 'Take profit %', group: 'exit', nullable: false, default: [50, 100, 200] },
   { key: 'stop_loss', label: 'Stop loss %', group: 'exit', nullable: false, default: [30, 50] },
@@ -198,7 +194,7 @@ export interface ComboTokenResult {
   pnl_pct: number;
   holding_secs: number;
   /** `"TakeProfit"` | `"StopLoss"` | `"TrailingStop"` | `"Stall"` |
-   *  `"TimeStop"` | `"LiquidityExit"` | `"CohortExit"` | `"Open"` | `"NoEntry"` */
+   *  `"TimeStop"` | `"LiquidityExit"` | `"Open"` | `"NoEntry"` */
   exit: string;
   // Simulation fill details
   entry_time: string | null;

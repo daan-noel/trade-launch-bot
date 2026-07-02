@@ -76,8 +76,6 @@ pub struct Swing1Rule {
     pub p_entry_max_age_secs: Option<u64>,
     /// Optional entry guard: min real SOL liquidity at entry. `None`/`0` disables.
     pub p_entry_min_liquidity_sol: Option<f64>,
-    /// Optional entry guard: max launch-cohort held ratio (%). `None`/`0` disables.
-    pub p_entry_max_cohort_held: Option<f64>,
 
     // ── Symmetric next-kill exit (separate from entry kill_* thresholds) ──────
     pub p_exit_next_kill_depth_min_pct: Option<f64>,
@@ -145,7 +143,6 @@ impl Swing1Rule {
             p_entry_higher_low_secs: None,
             p_entry_max_age_secs: None,
             p_entry_min_liquidity_sol: None,
-            p_entry_max_cohort_held: None,
             p_exit_next_kill_depth_min_pct: None,
             p_exit_next_kill_max_duration_ms: None,
             p_token_max_sol_cost,

@@ -36,7 +36,6 @@ export interface SweepResultRecord {
   n_exit_stall: number;
   n_exit_time: number;
   n_exit_liquidity: number;
-  n_exit_cohort: number;
   /** swing1's symmetric next-kill flee count; 0 for tpsl1/tpsl2. */
   n_exit_next_kill: number;
   n_exit_open: number;

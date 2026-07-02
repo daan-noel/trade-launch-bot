@@ -2,15 +2,15 @@
 //!
 //! The hot loop walks one of these per trade instead of the full [`Trade`]
 //! (5 `String`s + `Uuid` + a JSON `Value` ≈ 250 B with heap indirection). It
-//! carries **only** the fields the shared entry/exit/cohort fns read — see
-//! [`TradeRow`] — and interns each token's wallets to a `u32` so cohort-set
+//! carries **only** the fields the shared entry/exit fns read — see
+//! [`TradeRow`] — and interns each token's wallets to a `u32` so wallet-set
 //! membership in the inner walk is integer-keyed (no base58-String hashing or
 //! clones). The projection is built **once per token** at corpus-load time and
 //! reused across every (combo) evaluation; `Trade` never enters the sweep loop.
 //!
-//! Wallet ids are token-local: cohort membership is always within a single
-//! token, so each token gets its own dense `u32` namespace plus a `wallets`
-//! table (`u32 → address`) kept only for the Parquet cache write.
+//! Wallet ids are token-local: each token gets its own dense `u32` namespace
+//! plus a `wallets` table (`u32 → address`) kept only for the Parquet cache
+//! write.
 
 use chrono::{DateTime, Utc};
 

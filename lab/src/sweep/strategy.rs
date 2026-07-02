@@ -266,10 +266,10 @@ pub trait Strategy: ParamSpace + Send + Sync {
 
     /// Param-independent, **per-token** state the engine computes once before a
     /// token's combo loop and threads into every [`Strategy::resolve_entry`] on
-    /// that token. Lets a strategy hoist work that depends only on the trade slice
-    /// (tpsl2's launch-cohort wallet `HashSet`) out of the per-entry-key resolve,
-    /// where it would otherwise rebuild once per distinct entry tuple. A strategy
-    /// with no such state sets this to `()`.
+    /// that token. Lets a strategy hoist work that depends only on the trade
+    /// slice out of the per-entry-key resolve, where it would otherwise rebuild
+    /// once per distinct entry tuple. A strategy with no such state sets this to
+    /// `()`.
     type TokenState;
 
     /// The entry-param signature of a combo. Combos sharing it share an entry.
@@ -295,9 +295,9 @@ pub trait Strategy: ParamSpace + Send + Sync {
     /// Resolve the exit + economics given a pre-resolved `entry`, under a combo's
     /// **exit** params. Called once per combo. Also receives the shared
     /// [`Strategy::TokenState`] so an exit feature can reuse param-independent
-    /// per-token precompute (tpsl2's E5 launch cohort) instead of rebuilding it per
-    /// combo. Returns a `Copy` [`TokenOutcome`]; PnL is priced through the core
-    /// [`CostModel`] (see [`round_trip_with_costs`]).
+    /// per-token precompute instead of rebuilding it per combo. Returns a `Copy`
+    /// [`TokenOutcome`]; PnL is priced through the core [`CostModel`] (see
+    /// [`round_trip_with_costs`]).
     fn resolve_exit(
         &self,
         trades: &[SweepTrade],

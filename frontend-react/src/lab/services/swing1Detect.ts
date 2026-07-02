@@ -34,7 +34,6 @@ export interface Swing1DetectParams {
   entry_higher_low_secs?: number | null;
   entry_max_age_secs?: number | null;
   entry_min_liquidity_sol?: number | null;
-  entry_max_cohort_held?: number | null;
   exit_next_kill_depth_min_pct?: number | null;
   exit_next_kill_max_duration_ms?: number | null;
 }

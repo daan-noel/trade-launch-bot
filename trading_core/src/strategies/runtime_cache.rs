@@ -431,13 +431,8 @@ impl StrategyRuntimeCache {
                 // First sight: an unfolded state at the window front, then fold +
                 // evaluate the whole retained window in one pass (reproducing a full
                 // re-walk on the position's first ping while memoizing for later).
-                let mut cached = CachedExitStateImpl::build_unfolded(
-                    trades_base,
-                    entry_price,
-                    entry_time,
-                    trades,
-                    &ladder,
-                );
+                let mut cached =
+                    CachedExitStateImpl::build_unfolded(trades_base, entry_price, entry_time, &ladder);
                 let reason = cached.advance_and_find_exit(trades, trades_base, &ladder);
                 v.insert(cached);
                 reason

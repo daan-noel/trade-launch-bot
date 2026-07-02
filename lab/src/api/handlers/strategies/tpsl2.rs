@@ -792,9 +792,9 @@ mod tests {
     #[test]
     fn uses_stored_exit_reason_not_pnl_sign() {
         let mut p = closed(1.0, 1.5);
-        p.exit_reason = Some("CohortDump".into());
+        p.exit_reason = Some("StopLoss".into());
         let r = paper_position_to_sim_result(p, &HashMap::new());
-        assert_eq!(r.exit_reason, "CohortDump");
+        assert_eq!(r.exit_reason, "StopLoss");
     }
 
     #[test]

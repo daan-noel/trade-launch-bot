@@ -50,7 +50,6 @@ const FIELDS: ParamField[] = [
   { column: 'p_entry_higher_low_secs', group: 'entry', section: 'confirm', kind: 'int', required: false, comboKey: 'entry_higher_low_secs', detectKey: 'entry_higher_low_secs', label: 'Entry higher-low (s)', nullable: true, help: 'require a higher-low to hold for this many seconds before entering' },
   { column: 'p_entry_max_age_secs', group: 'entry', section: 'confirm', kind: 'int', required: false, comboKey: 'entry_max_age_secs', detectKey: 'entry_max_age_secs', label: 'Entry max age (s)', nullable: true, help: 'skip the token if it is already older than this at entry (off = no age cap)' },
   { column: 'p_entry_min_liquidity_sol', group: 'entry', section: 'confirm', kind: 'float', required: false, comboKey: 'entry_min_liquidity_sol', detectKey: 'entry_min_liquidity_sol', label: 'Entry min liq (SOL)', nullable: true, help: 'only enter if pool liquidity is at least this many SOL (off = no minimum)' },
-  { column: 'p_entry_max_cohort_held', group: 'entry', section: 'confirm', kind: 'float', required: false, comboKey: 'entry_max_cohort_held', detectKey: 'entry_max_cohort_held', label: 'Entry max cohort held %', nullable: true, help: 'skip if the launch-cohort still holds more than this % of supply (off = ignore)' },
 
   // ── Exit · the reused ladder (TP/SL required) ──
   { column: 'p_exit_take_profit', group: 'exit', section: 'ladder', kind: 'float', required: true, comboKey: 'exit_take_profit', detectKey: 'take_profit', label: 'Take profit %', help: 'sell once unrealized gain reaches this %' },

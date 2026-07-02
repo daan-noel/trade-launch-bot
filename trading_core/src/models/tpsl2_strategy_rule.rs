@@ -5,10 +5,10 @@ use uuid::Uuid;
 
 /// Strategy rule for **tpsl_sniper_2** — the scalp-continuation strategy.
 /// Fully independent of tpsl1: it carries the common token-filter / exit-ladder
-/// fields **plus** the scalp-continuation entry gates and the E5 cohort-dump
-/// exit that only tpsl2 evaluates. Persisted in the tpsl2-only
-/// `tpsl2_strategy_rules` table via its own repo; `new()` leaves the scalp
-/// gates `None`, with the tpsl2 API setting them post-construction.
+/// fields **plus** the scalp-continuation entry gates that only tpsl2
+/// evaluates. Persisted in the tpsl2-only `tpsl2_strategy_rules` table via its
+/// own repo; `new()` leaves the scalp gates `None`, with the tpsl2 API setting
+/// them post-construction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tpsl2Rule {
     pub id: Uuid,
@@ -70,8 +70,8 @@ pub struct Tpsl2Rule {
     /// Liveness: total SOL traded (buys + sells, any wallet) in the trailing
     /// window ending at the candidate trade must be ≥ this. `None`/`0` disables.
     pub p_entry_min_alive_sol: Option<f64>,
-    /// Real demand: net SOL bought by *outside* (non-cohort) wallets so far must
-    /// be ≥ this. `None`/`0` disables.
+    /// Real demand: net SOL bought so far (buys − sells, any wallet) must be ≥
+    /// this. `None`/`0` disables.
     pub p_entry_min_organic_sol: Option<f64>,
     /// Higher-low shape gate — minimum dip off the local high (percent) for a dip
     /// to count. Paired with `p_entry_higher_low_secs`. `None`/`0` disables the gate.
@@ -79,22 +79,12 @@ pub struct Tpsl2Rule {
     /// Higher-low shape gate — minimum seconds the higher-low pattern must form
     /// over (filters sub-second fakes). Only active alongside `p_entry_pullback_pct`.
     pub p_entry_higher_low_secs: Option<u64>,
-    /// Overhang cap: the launch cohort's held ratio (net / bought, 0–1) must be ≤
-    /// this **percent** `0–100` (cohort already sold most of its bag). Compared as
-    /// `held_ratio > p / 100`. `None`/`0` disables.
-    pub p_entry_max_cohort_held: Option<f64>,
     /// Minimum **real** SOL reserves at entry. `None`/`0` disables.
     pub p_entry_min_liquidity_sol: Option<f64>,
-    /// Minimum real reserves attributable to outside buyers (real reserves minus
-    /// the cohort's net SOL deposit). `None`/`0` disables.
+    /// A second, independently tunable real-reserves floor — reads the same
+    /// `real_sol_reserves` snapshot as `p_entry_min_liquidity_sol`. `None`/`0`
+    /// disables.
     pub p_entry_min_organic_liq: Option<f64>,
-
-    // ── Scalp-continuation exit gate ──────────────────────────────────────────
-    /// E5 · Cohort-dump exit: exit once the launch cohort's net holdings collapse
-    /// to ≤ this **percent** `0–100` of everything it ever bought (the multi-wallet
-    /// rug signature). Compared as `net <= bought * p / 100`. Top ladder priority.
-    /// `None`/`0` disables.
-    pub p_exit_cohort_ratio: Option<f64>,
 
     /// Price tolerance percent when matching p_token_initial_buy_sol.
     pub tolerance_pct: f64,
@@ -150,10 +140,8 @@ impl Tpsl2Rule {
             p_entry_min_organic_sol: None,
             p_entry_pullback_pct: None,
             p_entry_higher_low_secs: None,
-            p_entry_max_cohort_held: None,
             p_entry_min_liquidity_sol: None,
             p_entry_min_organic_liq: None,
-            p_exit_cohort_ratio: None,
             p_token_max_sol_cost,
             p_token_spendable_sol_in,
             p_max_concurrent_tokens,

@@ -36,7 +36,6 @@ const SWING1_PARAM_KEYS = [
   'entry_higher_low_secs',
   'entry_max_age_secs',
   'entry_min_liquidity_sol',
-  'entry_max_cohort_held',
   // Symmetric next-kill exit
   'exit_next_kill_depth_min_pct',
   'exit_next_kill_max_duration_ms',

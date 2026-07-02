@@ -62,7 +62,6 @@ const DEFAULT_PARAMS: Swing1DetectParams = {
   entry_higher_low_secs: null,
   entry_max_age_secs: null,
   entry_min_liquidity_sol: null,
-  entry_max_cohort_held: null,
   exit_next_kill_depth_min_pct: null,
   exit_next_kill_max_duration_ms: 8000,
 };

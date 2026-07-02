@@ -45,11 +45,10 @@ pub enum ExitCode {
     Stall = 5,
     TimeStop = 6,
     LiquidityExit = 7,
-    CohortExit = 8,
     /// swing1's symmetric next-kill exit: a post-entry leg reverting to the kill
     /// profile (deep + short) — the dev starting another intentional kill/rug.
     /// Top-priority in the swing1 ladder.
-    NextKill = 9,
+    NextKill = 8,
 }
 
 impl ExitCode {
@@ -63,7 +62,6 @@ impl ExitCode {
             "Stall" => ExitCode::Stall,
             "TimeStop" => ExitCode::TimeStop,
             "LiquidityExit" => ExitCode::LiquidityExit,
-            "CohortExit" => ExitCode::CohortExit,
             "NextKill" => ExitCode::NextKill,
             "Open" => ExitCode::Open,
             _ => ExitCode::Open,
@@ -202,7 +200,6 @@ pub struct RunMetrics {
     pub n_exit_stall: u32,
     pub n_exit_time: u32,
     pub n_exit_liquidity: u32,
-    pub n_exit_cohort: u32,
     /// swing1 symmetric next-kill exits. Surfaced by the grouped sweep
     /// (`ComboMetrics`); the live `StrategyRunMetrics` rollup does NOT carry this
     /// column (NextKill only fires from swing1, which is backtest-only in Phase 1),
@@ -239,7 +236,6 @@ impl RunMetrics {
             n_exit_stall: self.n_exit_stall as i32,
             n_exit_time: self.n_exit_time as i32,
             n_exit_liquidity: self.n_exit_liquidity as i32,
-            n_exit_cohort: self.n_exit_cohort as i32,
             n_exit_open: self.n_exit_open as i32,
         }
     }
@@ -333,7 +329,7 @@ pub struct RunAgg {
     closed_pct_sum_sq: f64,
     holding_sum: i64,
     holding_sketch: QuantileSketch,
-    exit_counts: [u32; 9],
+    exit_counts: [u32; 8],
 }
 
 impl Default for RunAgg {
@@ -353,7 +349,7 @@ impl Default for RunAgg {
             closed_pct_sum_sq: 0.0,
             holding_sum: 0,
             holding_sketch: QuantileSketch::default(),
-            exit_counts: [0; 9],
+            exit_counts: [0; 8],
         }
     }
 }
@@ -438,9 +434,8 @@ impl RunAgg {
             n_exit_stall: self.exit_counts[3],
             n_exit_time: self.exit_counts[4],
             n_exit_liquidity: self.exit_counts[5],
-            n_exit_cohort: self.exit_counts[6],
-            n_exit_open: self.exit_counts[7],
-            n_exit_next_kill: self.exit_counts[8],
+            n_exit_open: self.exit_counts[6],
+            n_exit_next_kill: self.exit_counts[7],
         }
     }
 }
@@ -467,9 +462,8 @@ fn exit_index(e: ExitCode) -> usize {
         ExitCode::Stall => 3,
         ExitCode::TimeStop => 4,
         ExitCode::LiquidityExit => 5,
-        ExitCode::CohortExit => 6,
-        ExitCode::Open | ExitCode::NoEntry => 7,
-        ExitCode::NextKill => 8,
+        ExitCode::Open | ExitCode::NoEntry => 6,
+        ExitCode::NextKill => 7,
     }
 }
 

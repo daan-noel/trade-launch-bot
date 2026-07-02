@@ -3,13 +3,13 @@
 //! (later `lab`); only the live event/timer path lives here.
 //!
 //! The trading-free **decision** layer (`analysis`, and each strategy's
-//! `entry`/`exit`/`util`/`cohort`) moved to `trading_core::strategies` so the
+//! `entry`/`exit`/`util`) moved to `trading_core::strategies` so the
 //! local sweep/backtest path can reuse it without depending on this crate.
 //! Re-exported here so existing `crate::strategies::analysis::…` /
 //! `tpsl_sniper_N::{entry,exit,…}` paths keep resolving.
 
 //! The trading-free **decision** layer (`analysis`, and each strategy's
-//! `entry`/`exit`/`util`/`cohort`) lives in `trading_core::strategies`; the live
+//! `entry`/`exit`/`util`) lives in `trading_core::strategies`; the live
 //! crate now holds only the unified, registry-dispatched orchestration
 //! (`execution` / `service` / `runner`). The hand-cloned `tpsl_sniper_{1,2}` live
 //! modules were retired in Phase 3.

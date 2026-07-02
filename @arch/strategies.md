@@ -1,6 +1,6 @@
 # Strategies — TPSL snipers
 
-File-level map of `backend/src/strategies/`. Two **intentional clones**: `tpsl_sniper_1` (canonical/live) and `tpsl_sniper_2` (clone + cohort scalp gates). A fix in one usually belongs in both.
+File-level map of `backend/src/strategies/`. Two **intentional clones**: `tpsl_sniper_1` (canonical/live) and `tpsl_sniper_2` (clone + scalp-continuation entry gates). A fix in one usually belongs in both.
 Logic explainers: `@plans/tpsl-strategy/` (strategy-invariants.md, tpsl2-entry-exit-params.md, pumpfun-sniper-strategy-research.md).
 
 Backtesting is strategy-agnostic — the sweep engine only sees `Strategy`/`ParamSpace` returning `TokenOutcome`. TPSL2's impl (`sweep/strategies/tpsl2.rs`) reuses the same live entry/exit pure fns. A new strategy adds only its `Strategy`+`ParamSpace`+`AxesSpec` impl + a `registry.rs` arm + migration. See [@arch/sweep.md](@arch/sweep.md).
@@ -59,7 +59,7 @@ exec + double-buy/sell invariants · paper mirror fill-poll · tpsl2 scalp-armin
 
 ## Per-strategy module map (`tpsl_sniper_1/`, mirrored in `tpsl_sniper_2/`)
 
-> **Phase 3 note.** The **decision** modules (`entry/`, `exit/`, `cohort.rs`, `util.rs`) live in
+> **Phase 3 note.** The **decision** modules (`entry/`, `exit/`, `util.rs`) live in
 > `trading_core::strategies::tpsl_sniper_{1,2}` and are consumed by both the registry (live) and the
 > sweep/backtest (lab). The **orchestration** files below (`mod.rs` handler, `handler.rs`,
 > `execution/`, `service.rs`, `lifecycle.rs`, `runtime_cache.rs`, `paper_run.rs`, `backtest.rs`) were
@@ -83,7 +83,7 @@ exec + double-buy/sell invariants · paper mirror fill-poll · tpsl2 scalp-armin
 | `backtest.rs` | `run_backtest` — replay using same exit fns as live; cross-run `BacktestTradeCache`; detached + 202 |
 | `util.rs` | `none_if_zero_f64/u64` |
 
-`tpsl_sniper_2/` adds `cohort.rs` (launch-cohort primitive) and `entry/scalp.rs` (cohort-based scalp entry gates).
+`tpsl_sniper_2/` adds `entry/scalp.rs` (per-trade scalp-continuation entry gates — age/liveness/organic-flow/liquidity/pullback).
 
 ## Buy guards (service.rs)
 
@@ -107,7 +107,7 @@ Two background tasks fire once at boot then every 60 s:
 `LiquidityExit → StopLoss → TakeProfit → TrailingStop → Stall → TimeStop`
 
 - Trade-driven (`find_trade_driven_exit`, each new trade) and clock-driven (`find_clock_driven_exit`, 1s sweep, Stall/TimeStop only) share feature predicates.
-- Optional features (0/None = off): trailing stop (E1), time stop (E2), stall (E3), liquidity drop (E4), cohort ratio (E5, tpsl2 only). TakeProfit + StopLoss always on.
+- Optional features (0/None = off): trailing stop (E1), time stop (E2), stall (E3), liquidity drop (E4). TakeProfit + StopLoss always on.
 - All `p_*_pct` params stored whole-percent, divided by 100 at the comparison site.
 
 ## Real vs paper

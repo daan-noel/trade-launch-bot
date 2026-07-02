@@ -17,7 +17,7 @@
 - **Price basis = GMGN canonical curve-spot.** See "Step 0" — this is a project-wide reconciliation, done first.
 - **Kill→volume transition is count-free.** Detect the *shape change* (legs get longer + shallower). The floor `min_kills_before_volume` is a **swept** param (incl. 0), not a hardcoded count.
 - **Entry = first confirmed higher-low in the volume phase, minimal lag.** Reuse `higher_low_confirmed_index` (tpsl2).
-- **Exit watches:** next-kill-starting (same leg classifier, symmetric), liquidity/reserve crash (E4), stall/volume-death (E3). De-prioritize cohort-dump (E5) — real traders are present in the volume phase, so dev rug may not show as cohort net-sell.
+- **Exit watches:** next-kill-starting (same leg classifier, symmetric), liquidity/reserve crash (E4), stall/volume-death (E3).
 - **Classifier uses CAUSAL per-leg gates only** — drops the analyzer's non-causal high/low *pair-drop* quality filter, so the live-incremental machine and the backtest-batch run produce identical legs (pinned by a parity test).
 - **Sequencing = BACKTEST-FIRST.** Phase 1 builds the classifier + full sweep wiring and validates on the lake. Phase 2 adds the live incremental memo only if Phase 1 shows an edge.
 
@@ -64,7 +64,7 @@ Operate on the **raw alternating leg ledger** (`scan()` output), applying only p
 - Swing detection (N): `p_swing_high_to_low_sol`/`_pct`, `p_swing_low_to_high_sol`/`_pct`, `p_swing_min_leg_trades`.
 - Kill profile (N): `p_kill_depth_min_pct`, `p_kill_max_duration_ms`, `p_kill_min_net_flow_per_sec`.
 - Volume profile + transition (N): `p_vol_depth_max_pct`, `p_vol_min_duration_ms`, `p_vol_min_up_duration_ms`, `p_min_kills_before_volume`.
-- Entry confirmation (R, reuse `higher_low_confirmed_index`): `p_entry_pullback_pct`, `p_entry_higher_low_secs`, `p_entry_max_age_secs` (armer/window ceiling). Optional guards `p_entry_min_liquidity_sol`/`p_entry_max_cohort_held` (R).
+- Entry confirmation (R, reuse `higher_low_confirmed_index`): `p_entry_pullback_pct`, `p_entry_higher_low_secs`, `p_entry_max_age_secs` (armer/window ceiling). Optional guard `p_entry_min_liquidity_sol` (R).
 - Symmetric next-kill exit (N): `p_exit_next_kill_depth_min_pct`, `p_exit_next_kill_max_duration_ms` — separate from entry `kill_*` so the sweep tunes "flee" thresholds independently.
 
 ### 1d. Registry + module wiring (`trading_core`)

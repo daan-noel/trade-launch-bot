@@ -493,9 +493,9 @@ impl StrategyService {
                     continue;
                 };
                 // Incremental trade gate: fold the newly-printed trades into the
-                // position's memoized walk state (+ E5 cohort for tpsl2) AND evaluate
-                // the exit ladder against only those new trades in one pass — no
-                // per-ping full re-walk. Dispatched by the rule's stored ladder.
+                // position's memoized walk state AND evaluate the exit ladder against
+                // only those new trades in one pass — no per-ping full re-walk.
+                // Dispatched by the rule's stored ladder.
                 if let Some(exit_reason) = self.runtime.exit_state_advance_and_find_exit(
                     position.id,
                     rule_id,

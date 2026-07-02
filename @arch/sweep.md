@@ -30,7 +30,7 @@ Decision parity: a strategy's `simulate` calls the same pure fns the live path u
 | `grouping.rs` | `TokenFingerprint`, `GroupField`, `GroupKey`; `normalize_label_vec` (shared with corpus filter) |
 | `grouped_engine.rs` | `run_grouped_sweep`; two-phase driver (large groups serial, small groups parallel); `make_group_result`; coarse→refine (`run_grouped_with_refine`); partial persistence via `GroupSink` |
 | `registry.rs` | `tables_for(strategy_id)`, `strategy_ids()`, `run_grouped(...)`; `MAX_COMBOS`; `sweep_base_rule_tpsl{1,2}` |
-| `strategies/tpsl2.rs` | TPSL2 `Strategy`/`ParamSpace` — sweeps all 15 knobs; entry-cache by 8 scalp-gate knobs; `prepare_token` returns launch cohort once per token |
+| `strategies/tpsl2.rs` | TPSL2 `Strategy`/`ParamSpace` — sweeps all 14 knobs; entry-cache by 8 scalp-gate knobs; `prepare_token` is a no-op (`TokenState = ()`) |
 | `strategies/tpsl1.rs` | TPSL1 `Strategy`/`ParamSpace` — sweeps exit ladder only (6 knobs); param-free entry resolves once per token |
 
 ## Persistence + API

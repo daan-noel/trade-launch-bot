@@ -307,9 +307,9 @@ async fn sweep_tpsl2(
                 .num_threads(threads)
                 .thread_name(|i| format!("grouped-sweep-{i}"))
                 // Default Windows PE stack (1 MB) is too small for the hot loop:
-                // fill_outcomes → resolve_entry/exit → exit ladder + cohort fns
-                // stack up enough frames to overflow on large corpora. 8 MB matches
-                // the Linux thread default and gives comfortable headroom.
+                // fill_outcomes → resolve_entry/exit → exit ladder fns stack up
+                // enough frames to overflow on large corpora. 8 MB matches the
+                // Linux thread default and gives comfortable headroom.
                 .stack_size(8 * 1024 * 1024)
                 .build()
                 .map_err(|e| anyhow!("rayon pool build failed: {e}"))?;
@@ -601,7 +601,6 @@ fn exit_label(code: ExitCode) -> &'static str {
         ExitCode::Stall => "Stall",
         ExitCode::TimeStop => "TimeStop",
         ExitCode::LiquidityExit => "LiquidityExit",
-        ExitCode::CohortExit => "CohortExit",
         ExitCode::NextKill => "NextKill",
     }
 }
@@ -611,8 +610,7 @@ fn simulate_tpsl2_one_combo(
     params_json: &Value,
     buy_amount_sol: f64,
 ) -> Result<Vec<ComboTokenResult>> {
-    let has_cohort = params_json.get("exit_cohort_ratio").and_then(|v| v.as_f64()).is_some();
-    let strategy = Tpsl2Strategy::for_replay(sweep_base_rule_tpsl2(buy_amount_sol), has_cohort);
+    let strategy = Tpsl2Strategy::for_replay(sweep_base_rule_tpsl2(buy_amount_sol));
     let combo = strategy.combo_from_params_json(params_json)?;
     let params = std::slice::from_ref(&combo);
     let noop = Noop;

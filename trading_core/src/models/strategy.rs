@@ -78,7 +78,6 @@ pub struct StrategyRunMetrics {
     pub n_exit_stall: i32,
     pub n_exit_time: i32,
     pub n_exit_liquidity: i32,
-    pub n_exit_cohort: i32,
     pub n_exit_open: i32,
 }
 

@@ -201,7 +201,7 @@ impl Tpsl1Params {
 }
 
 /// tpsl2 strategy-specific gate params — the tpsl1 set plus the scalp-continuation
-/// entry gates and the E5 cohort-dump exit.
+/// entry gates.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Tpsl2Params {
     #[serde(default)]
@@ -242,14 +242,9 @@ pub struct Tpsl2Params {
     #[serde(default)]
     pub p_entry_higher_low_secs: Option<u64>,
     #[serde(default)]
-    pub p_entry_max_cohort_held: Option<f64>,
-    #[serde(default)]
     pub p_entry_min_liquidity_sol: Option<f64>,
     #[serde(default)]
     pub p_entry_min_organic_liq: Option<f64>,
-    // E5 cohort-dump exit.
-    #[serde(default)]
-    pub p_exit_cohort_ratio: Option<f64>,
 }
 
 impl Tpsl2Params {
@@ -275,10 +270,8 @@ impl Tpsl2Params {
             p_entry_min_organic_sol: r.p_entry_min_organic_sol,
             p_entry_pullback_pct: r.p_entry_pullback_pct,
             p_entry_higher_low_secs: r.p_entry_higher_low_secs,
-            p_entry_max_cohort_held: r.p_entry_max_cohort_held,
             p_entry_min_liquidity_sol: r.p_entry_min_liquidity_sol,
             p_entry_min_organic_liq: r.p_entry_min_organic_liq,
-            p_exit_cohort_ratio: r.p_exit_cohort_ratio,
         }
     }
 
@@ -311,10 +304,8 @@ impl Tpsl2Params {
         r.p_entry_min_organic_sol = self.p_entry_min_organic_sol;
         r.p_entry_pullback_pct = self.p_entry_pullback_pct;
         r.p_entry_higher_low_secs = self.p_entry_higher_low_secs;
-        r.p_entry_max_cohort_held = self.p_entry_max_cohort_held;
         r.p_entry_min_liquidity_sol = self.p_entry_min_liquidity_sol;
         r.p_entry_min_organic_liq = self.p_entry_min_organic_liq;
-        r.p_exit_cohort_ratio = self.p_exit_cohort_ratio;
         r.is_active = true;
         r
     }
@@ -386,8 +377,6 @@ pub struct Swing1Params {
     pub p_entry_max_age_secs: Option<u64>,
     #[serde(default)]
     pub p_entry_min_liquidity_sol: Option<f64>,
-    #[serde(default)]
-    pub p_entry_max_cohort_held: Option<f64>,
     // Symmetric next-kill exit.
     #[serde(default)]
     pub p_exit_next_kill_depth_min_pct: Option<f64>,
@@ -428,7 +417,6 @@ impl Swing1Params {
             p_entry_higher_low_secs: r.p_entry_higher_low_secs,
             p_entry_max_age_secs: r.p_entry_max_age_secs,
             p_entry_min_liquidity_sol: r.p_entry_min_liquidity_sol,
-            p_entry_max_cohort_held: r.p_entry_max_cohort_held,
             p_exit_next_kill_depth_min_pct: r.p_exit_next_kill_depth_min_pct,
             p_exit_next_kill_max_duration_ms: r.p_exit_next_kill_max_duration_ms,
         }
@@ -473,7 +461,6 @@ impl Swing1Params {
         r.p_entry_higher_low_secs = self.p_entry_higher_low_secs;
         r.p_entry_max_age_secs = self.p_entry_max_age_secs;
         r.p_entry_min_liquidity_sol = self.p_entry_min_liquidity_sol;
-        r.p_entry_max_cohort_held = self.p_entry_max_cohort_held;
         r.p_exit_next_kill_depth_min_pct = self.p_exit_next_kill_depth_min_pct;
         r.p_exit_next_kill_max_duration_ms = self.p_exit_next_kill_max_duration_ms;
         r.is_active = true;
@@ -559,9 +546,7 @@ impl StrategyImpl {
             }
             (Self::Tpsl2, StrategyParams::Tpsl2(p)) => {
                 let rule = p.to_rule();
-                let cohort = t2::entry::scalp_cohort(trades);
-                let (trigger_idx, _) =
-                    t2::entry::find_scalp_entry_with_cohort_indexed(trades, &rule, &cohort)?;
+                let (trigger_idx, _) = t2::entry::find_scalp_entry_indexed(trades, &rule)?;
                 let f = t2::entry::find_worst_case_paper_entry_at(trades, trigger_idx)?;
                 if f.price <= 0.0 {
                     return None;
@@ -585,8 +570,7 @@ impl StrategyImpl {
     }
 
     /// Walk the post-entry trades and resolve the exit fill (full re-walk, the
-    /// live trade-gate / sweep semantics). tpsl2 builds its launch cohort
-    /// internally for the E5 gate. A params/impl mismatch returns `None`.
+    /// live trade-gate / sweep semantics). A params/impl mismatch returns `None`.
     pub fn resolve_exit<T: TradeRow>(
         &self,
         trades: &[T],

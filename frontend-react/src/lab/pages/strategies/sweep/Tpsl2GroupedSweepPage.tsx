@@ -16,14 +16,12 @@ const TPSL2_PARAM_KEYS = [
   'entry_min_organic_sol',
   'entry_pullback_pct',
   'entry_higher_low_secs',
-  'entry_max_cohort_held',
   'entry_min_liquidity_sol',
   'entry_min_organic_liq',
   'exit_trailing_stop_pct',
   'exit_time_stop_secs',
   'exit_stall_secs',
   'exit_liquidity_drop_pct',
-  'exit_cohort_ratio',
 ];
 
 /** TPSL2 grouped sweep — the full entry-gate + exit-ladder param space. */

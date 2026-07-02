@@ -117,7 +117,7 @@ split across crates so the live and backtest paths can never drift:
 
 | Layer | Lives in | Holds |
 | --- | --- | --- |
-| **Domain** (decision logic, rule repo + validation + DTO) | `trading_core` | `strategies/` (`analysis`, per-strategy `entry`/`exit`/`util`/`cohort`) + `api/handlers/strategies/tpsl_rules_core.rs`. Written once; used by both edges. See [@arch/strategies.md](@arch/strategies.md) |
+| **Domain** (decision logic, rule repo + validation + DTO) | `trading_core` | `strategies/` (`analysis`, per-strategy `entry`/`exit`/`util`) + `api/handlers/strategies/tpsl_rules_core.rs`. Written once; used by both edges. See [@arch/strategies.md](@arch/strategies.md) |
 | **Runtime edge — deploy** | `live` | live runner + runtime cache (`cache.reload_rules`) + lifecycle + execution + position reads |
 | **Runtime edge — local** | `lab` | backtest harness + simulate/paper-result + sweep strategy adapters |
 

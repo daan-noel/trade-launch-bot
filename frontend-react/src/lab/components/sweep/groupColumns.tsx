@@ -72,7 +72,6 @@ const PARAM_ORDER = [
   'entry_min_organic_sol',
   'entry_pullback_pct',
   'entry_higher_low_secs',
-  'entry_max_cohort_held',
   'entry_min_liquidity_sol',
   'entry_min_organic_liq',
   'exit_take_profit',
@@ -81,7 +80,6 @@ const PARAM_ORDER = [
   'exit_time_stop_secs',
   'exit_stall_secs',
   'exit_liquidity_drop_pct',
-  'exit_cohort_ratio',
 ];
 
 /** High-leverage knobs shown by default; the rest hide behind the Columns toggle

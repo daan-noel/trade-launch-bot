@@ -13,23 +13,19 @@
 //!     ceiling lives here, the backtest, paper, and real paths all stop entering
 //!     past it by construction — the live deadline merely derives from it.
 //!   • `p_entry_min_alive_sol`     — still trading (total SOL in the trailing window).
-//!   • `p_entry_min_organic_sol`   — new people buying (net SOL by outside wallets).
+//!   • `p_entry_min_organic_sol`   — demand: net SOL bought so far (buys − sells,
+//!     any wallet).
 //!   • `p_entry_pullback_pct` (+ `p_entry_higher_low_secs`) — higher-low continuation shape.
-//!   • `p_entry_max_cohort_held`   — launch cohort already sold its bag.
 //!   • `p_entry_min_liquidity_sol` — real reserves ≥ N SOL.
-//!   • `p_entry_min_organic_liq`   — real reserves from buyers, not one dev deposit.
-//!
-//! Cohort / outside split reuses [`super::super::cohort`] so it matches rug
-//! detection and the E5 exit exactly.
-
-use std::collections::HashSet;
+//!   • `p_entry_min_organic_liq`   — real reserves ≥ N SOL (a second, independently
+//!     tunable reserves floor; reads the same `real_sol_reserves` snapshot as
+//!     `p_entry_min_liquidity_sol`).
 
 use chrono::{DateTime, Utc};
 
-use super::super::cohort::{cohort_flow, early_cohort_wallets, outside_net_sol};
 use super::super::util::{none_if_zero_f64, none_if_zero_u64};
 use super::EntryFill;
-use crate::config::constants::{EARLY_COHORT_SLOT_WINDOW, MAX_FILL_WAIT_SLOTS};
+use crate::config::constants::MAX_FILL_WAIT_SLOTS;
 use crate::models::trade::{Trade, TradeRow};
 use crate::models::Tpsl2Rule;
 
@@ -48,7 +44,6 @@ pub fn rule_configures_any_scalp_gate(rule: &Tpsl2Rule) -> bool {
         || none_if_zero_f64(rule.p_entry_min_alive_sol).is_some()
         || none_if_zero_f64(rule.p_entry_min_organic_sol).is_some()
         || none_if_zero_f64(rule.p_entry_pullback_pct).is_some()
-        || none_if_zero_f64(rule.p_entry_max_cohort_held).is_some()
         || none_if_zero_f64(rule.p_entry_min_liquidity_sol).is_some()
         || none_if_zero_f64(rule.p_entry_min_organic_liq).is_some()
 }
@@ -62,14 +57,10 @@ pub struct ScalpFeatures {
     pub age_secs: i64,
     /// Total SOL (buys + sells, any wallet) in the trailing `ALIVE_WINDOW_SECS`.
     pub alive_sol: f64,
-    /// Net SOL bought by outside (non-cohort) wallets so far.
+    /// Net SOL bought so far (buys − sells, any wallet).
     pub organic_sol: f64,
-    /// Launch cohort's held ratio (net / bought); `1` holding, `→0` sold out.
-    pub cohort_held_ratio: f64,
     /// Latest known real SOL reserves at the candidate.
     pub real_liquidity_sol: f64,
-    /// Real reserves attributable to outside buyers (`real − cohort net SOL`).
-    pub organic_liq_sol: f64,
 }
 
 /// Compute the trade-window features for a causal prefix. `prefix` must be
@@ -92,9 +83,10 @@ pub fn scalp_features(prefix: &[Trade]) -> Option<ScalpFeatures> {
         .map(|t| t.sol_amount)
         .sum();
 
-    let cohort = early_cohort_wallets(prefix, EARLY_COHORT_SLOT_WINDOW);
-    let flow = cohort_flow(prefix, &cohort);
-    let organic_sol = outside_net_sol(prefix, &cohort);
+    let organic_sol: f64 = prefix
+        .iter()
+        .map(|t| if t.is_buy() { t.sol_amount } else { -t.sol_amount })
+        .sum();
 
     // Latest known real reserves: scan back for the most recent trade carrying a
     // real_sol_reserves snapshot (the plan mandates REAL, never virtual).
@@ -104,17 +96,7 @@ pub fn scalp_features(prefix: &[Trade]) -> Option<ScalpFeatures> {
         .find_map(|t| t.real_sol_reserves)
         .unwrap_or(0.0);
 
-    // Of the real SOL in the pool, the part NOT contributed by the cohort/dev.
-    let organic_liq_sol = (real_liquidity_sol - flow.net_sol).max(0.0);
-
-    Some(ScalpFeatures {
-        age_secs,
-        alive_sol,
-        organic_sol,
-        cohort_held_ratio: flow.held_ratio(),
-        real_liquidity_sol,
-        organic_liq_sol,
-    })
+    Some(ScalpFeatures { age_secs, alive_sol, organic_sol, real_liquidity_sol })
 }
 
 /// Higher-low continuation gate. Walks the price series detecting **swing lows**
@@ -263,17 +245,6 @@ pub fn higher_low_confirmed_index<T: TradeRow>(
     None
 }
 
-/// The launch cohort for a token's trade slice — the wallet set every scalp gate
-/// splits cohort-vs-outside flow against. Depends **only** on the trades (the
-/// first trade's slot + `EARLY_COHORT_SLOT_WINDOW`), never on a rule's params, so
-/// the sweep computes it **once per token** (see `Strategy::prepare_token`) and
-/// reuses it across every entry-param tuple instead of rebuilding the `HashSet`
-/// per resolve. The live/backtest paths call [`find_scalp_entry`], which computes
-/// it inline — same definition, so decisions stay byte-identical.
-pub fn scalp_cohort<T: TradeRow>(trades: &[T]) -> HashSet<T::Wallet> {
-    early_cohort_wallets(trades, EARLY_COHORT_SLOT_WINDOW)
-}
-
 /// Walk a token's trades and return the entry fill at the **first trade where
 /// every configured scalp gate holds**, or `None` if none qualifies. The
 /// candidate must be a buy (we enter by buying, filling at its price). Trades are
@@ -283,41 +254,20 @@ pub fn scalp_cohort<T: TradeRow>(trades: &[T]) -> HashSet<T::Wallet> {
 /// [`rule_configures_any_scalp_gate`] (the backtest rejects such a rule up front),
 /// so this is never a silent buy-everything path.
 ///
-/// Computes the launch cohort inline ([`scalp_cohort`]); the sweep hot path calls
-/// [`find_scalp_entry_with_cohort`] with a per-token-cached cohort instead.
+/// Thin wrapper over [`find_scalp_entry_indexed`] dropping the trigger index —
+/// used by every caller that doesn't need it (live/backtest/registry).
 pub fn find_scalp_entry<T: TradeRow>(trades: &[T], rule: &Tpsl2Rule) -> Option<EntryFill> {
-    if !rule_configures_any_scalp_gate(rule) || trades.is_empty() {
-        return None;
-    }
-    let cohort = scalp_cohort(trades);
-    find_scalp_entry_with_cohort(trades, rule, &cohort)
+    find_scalp_entry_indexed(trades, rule).map(|(_, fill)| fill)
 }
 
-/// [`find_scalp_entry`] with the launch `cohort` supplied by the caller — the form
-/// the sweep uses so the cohort `HashSet` is built once per token, not once per
-/// entry-param tuple. `cohort` MUST equal [`scalp_cohort(trades)`](scalp_cohort)
-/// for the slice; passing a mismatched set changes the cohort/outside split and so
-/// the resolved entry. The live path goes through [`find_scalp_entry`], which
-/// computes it from the same definition, keeping decisions identical.
-pub fn find_scalp_entry_with_cohort<T: TradeRow>(
+/// [`find_scalp_entry`] that also returns the trigger trade's **index** in
+/// `trades`. The sweep uses this directly (its slim `SweepTrade` carries no
+/// `tx_signature`) to hand the index straight to [`find_worst_case_paper_entry_at`]
+/// (string-free); the live cache row (`CachedTrade`) is likewise signature-free, so
+/// the paper entry resolver uses this form too.
+pub fn find_scalp_entry_indexed<T: TradeRow>(
     trades: &[T],
     rule: &Tpsl2Rule,
-    cohort: &HashSet<T::Wallet>,
-) -> Option<EntryFill> {
-    find_scalp_entry_with_cohort_indexed(trades, rule, cohort).map(|(_, fill)| fill)
-}
-
-/// [`find_scalp_entry_with_cohort`] that also returns the trigger trade's **index**
-/// in `trades`. The sweep uses this so it can hand the index straight to
-/// [`find_worst_case_paper_entry_at`] (string-free), letting [`SweepTrade`] drop
-/// its `tx_signature` entirely (Phase 1.2). The string-returning wrapper above is
-/// what the live/backtest paths keep using, so their behavior is unchanged.
-///
-/// `SweepTrade` lives in the local-only sweep crate (`sweep::projection::SweepTrade`).
-pub fn find_scalp_entry_with_cohort_indexed<T: TradeRow>(
-    trades: &[T],
-    rule: &Tpsl2Rule,
-    cohort: &HashSet<T::Wallet>,
 ) -> Option<(usize, EntryFill)> {
     if !rule_configures_any_scalp_gate(rule) || trades.is_empty() {
         return None;
@@ -331,30 +281,19 @@ pub fn find_scalp_entry_with_cohort_indexed<T: TradeRow>(
     let min_organic = none_if_zero_f64(rule.p_entry_min_organic_sol);
     let pullback = none_if_zero_f64(rule.p_entry_pullback_pct);
     let higher_low_secs = none_if_zero_u64(rule.p_entry_higher_low_secs).map(|v| v as i64).unwrap_or(0);
-    let max_cohort_held = none_if_zero_f64(rule.p_entry_max_cohort_held);
     let min_liq = none_if_zero_f64(rule.p_entry_min_liquidity_sol);
     let min_organic_liq = none_if_zero_f64(rule.p_entry_min_organic_liq);
 
-    // O(n) preamble (M3): the launch cohort is fixed by the slice's first trade
-    // (cutoff = first.slot + EARLY_COHORT_SLOT_WINDOW), a superset of every prefix
-    // cohort — and identical to it for any real launch series, where a cohort
-    // wallet's first trade IS its in-window buy (a wallet can't sell before it has
-    // bought on the curve). Carrying the cohort/outside flows, the trailing
-    // alive-window sum, and the last-seen real reserves forward as the walk advances
-    // replaces the per-candidate prefix rescans (was O(n²)). The cohort itself is
-    // supplied by the caller (hoisted once per token in the sweep; computed inline
-    // by [`find_scalp_entry`] on the live path).
+    // O(n) single forward pass (M3): carrying the running net-SOL flow, the
+    // trailing alive-window sum, and the last-seen real reserves forward as the
+    // walk advances replaces per-candidate prefix rescans (was O(n²)).
 
     // First index (if any) at which the higher-low shape is confirmed; the
     // confirmation is monotonic in prefix length, so one forward pass suffices.
     let higher_low_idx = pullback.and_then(|pb| higher_low_confirmed_index(trades, pb, higher_low_secs));
 
     let first_time = trades[0].block_time();
-    // Running cohort/outside flow accumulators (mirror `cohort_flow` / `outside_net_sol`).
-    let mut cohort_bought = 0.0f64;
-    let mut cohort_net_tokens = 0.0f64;
-    let mut cohort_net_sol = 0.0f64;
-    let mut organic_sol = 0.0f64; // outside (non-cohort) net SOL
+    let mut organic_sol = 0.0f64; // running net SOL bought so far (any wallet)
     let mut last_real_reserves = 0.0f64; // most recent real_sol_reserves snapshot
     // Trailing alive-window: a running sum + a front cursor over `trades`.
     let mut alive_sol = 0.0f64;
@@ -364,20 +303,10 @@ pub fn find_scalp_entry_with_cohort_indexed<T: TradeRow>(
         let t = &trades[i];
         let block_time = t.block_time();
         let sol_amount = t.sol_amount();
-        // Fold this trade into the running flow/liquidity accumulators FIRST so the
-        // features below reflect the prefix `[0..=i]` (the candidate inclusive).
-        let in_cohort = cohort.contains(t.wallet());
+        // Fold this trade into the running accumulators FIRST so the features
+        // below reflect the prefix `[0..=i]` (the candidate inclusive).
         if t.is_buy() {
-            if in_cohort {
-                cohort_bought += t.token_amount();
-                cohort_net_tokens += t.token_amount();
-                cohort_net_sol += sol_amount;
-            } else {
-                organic_sol += sol_amount;
-            }
-        } else if in_cohort {
-            cohort_net_tokens -= t.token_amount();
-            cohort_net_sol -= sol_amount;
+            organic_sol += sol_amount;
         } else {
             organic_sol -= sol_amount;
         }
@@ -405,12 +334,6 @@ pub fn find_scalp_entry_with_cohort_indexed<T: TradeRow>(
                 break;
             }
         }
-        let cohort_held_ratio = if cohort_bought > 0.0 {
-            cohort_net_tokens.max(0.0) / cohort_bought
-        } else {
-            0.0
-        };
-        let organic_liq_sol = (last_real_reserves - cohort_net_sol).max(0.0);
 
         if let Some(min) = min_age {
             if age_secs < min {
@@ -427,20 +350,13 @@ pub fn find_scalp_entry_with_cohort_indexed<T: TradeRow>(
                 continue;
             }
         }
-        if let Some(max) = max_cohort_held {
-            // `max` is whole-percent (0–100); held_ratio is 0–1. Divide to compare,
-            // matching the E1/E4/E5 percent convention.
-            if cohort_held_ratio > max / 100.0 {
-                continue;
-            }
-        }
         if let Some(min) = min_liq {
             if last_real_reserves < min {
                 continue;
             }
         }
         if let Some(min) = min_organic_liq {
-            if organic_liq_sol < min {
+            if last_real_reserves < min {
                 continue;
             }
         }
@@ -477,7 +393,7 @@ pub fn find_worst_case_paper_entry<T: TradeRow>(trades: &[T], target_tx: &str) -
 
 /// [`find_worst_case_paper_entry`] keyed by the trigger trade's **index** rather
 /// than its `tx_signature`. The sweep resolves the trigger index from
-/// [`find_scalp_entry_with_cohort_indexed`] and calls this directly, so its
+/// [`find_scalp_entry_indexed`] and calls this directly, so its
 /// [`SweepTrade`] rows need carry no signature string at all (Phase 1.2).
 ///
 /// Fill model: window = trigger slot S (always) + the next observed slot after S
@@ -626,35 +542,16 @@ mod tests {
     }
 
     #[test]
-    fn organic_gate_ignores_cohort_buys() {
+    fn organic_gate_requires_net_demand() {
         let mut r = rule();
         r.p_entry_min_organic_sol = Some(1.0);
-        // Only cohort (early-slot) buys → organic stays 0 → never enters.
-        let cohort_only = vec![buy("dev", 5.0, 100.0, 1, 0), buy("dev2", 5.0, 100.0, 2, 1)];
-        assert!(find_scalp_entry(&cohort_only, &r).is_none());
-        // A later outside wallet buys 2 SOL → organic 2.0 >= 1.0.
-        let mut with_outside = cohort_only.clone();
-        with_outside.push(buy("outsider", 2.0, 20.0, 500, 5));
-        let fill = find_scalp_entry(&with_outside, &r).expect("outside demand qualifies");
-        assert_eq!(fill.tx_signature, "sig-outsider-500-5");
-    }
-
-    #[test]
-    fn cohort_held_gate_requires_cohort_sold_down() {
-        let mut r = rule();
-        r.p_entry_max_cohort_held = Some(30.0); // percent: ≤ 30% held
-        // Cohort holds its full bag (ratio 1.0) → blocked on the outside buy.
-        let holding = vec![buy("dev", 5.0, 100.0, 1, 0), buy("out", 1.0, 5.0, 500, 5)];
-        assert!(find_scalp_entry(&holding, &r).is_none());
-        // Cohort dumps 90% (ratio 0.1 ≤ 0.30), THEN an outside wallet buys — we
-        // enter on that later buy, where the overhang is already gone.
-        let dumped = vec![
-            buy("dev", 5.0, 100.0, 1, 0),
-            t("dev", TradeType::Sell, 4.0, 90.0, 600, 6),
-            buy("out", 1.0, 5.0, 700, 7),
-        ];
-        let fill = find_scalp_entry(&dumped, &r).expect("enters once cohort has sold down");
-        assert_eq!(fill.tx_signature, "sig-out-700-7");
+        // No buys at all yet → net SOL is 0 → never enters.
+        let none_yet = vec![t("dev", TradeType::Sell, 5.0, 100.0, 1, 0)];
+        assert!(find_scalp_entry(&none_yet, &r).is_none());
+        // A buy of 2 SOL clears the 1.0 SOL net-demand floor.
+        let with_buy = vec![buy("dev", 2.0, 20.0, 500, 5)];
+        let fill = find_scalp_entry(&with_buy, &r).expect("net demand clears the floor");
+        assert_eq!(fill.tx_signature, "sig-dev-500-5");
     }
 
     #[test]
@@ -685,7 +582,6 @@ mod tests {
         let min_organic = none_if_zero_f64(rule.p_entry_min_organic_sol);
         let pullback = none_if_zero_f64(rule.p_entry_pullback_pct);
         let hl_secs = none_if_zero_u64(rule.p_entry_higher_low_secs).map(|v| v as i64).unwrap_or(0);
-        let max_cohort_held = none_if_zero_f64(rule.p_entry_max_cohort_held);
         let min_liq = none_if_zero_f64(rule.p_entry_min_liquidity_sol);
         let min_organic_liq = none_if_zero_f64(rule.p_entry_min_organic_liq);
         for i in 0..trades.len() {
@@ -699,9 +595,8 @@ mod tests {
             if min_age.is_some_and(|m| f.age_secs < m) { continue; }
             if min_alive.is_some_and(|m| f.alive_sol < m) { continue; }
             if min_organic.is_some_and(|m| f.organic_sol < m) { continue; }
-            if max_cohort_held.is_some_and(|m| f.cohort_held_ratio > m / 100.0) { continue; }
             if min_liq.is_some_and(|m| f.real_liquidity_sol < m) { continue; }
-            if min_organic_liq.is_some_and(|m| f.organic_liq_sol < m) { continue; }
+            if min_organic_liq.is_some_and(|m| f.real_liquidity_sol < m) { continue; }
             if let Some(pb) = pullback {
                 if !higher_low_confirmed(prefix, pb, hl_secs) { continue; }
             }
@@ -719,8 +614,8 @@ mod tests {
 
     #[test]
     fn linearized_scalp_entry_matches_prefix_oracle() {
-        // A mixed series exercising every gate: cohort buys, a cohort dump, outside
-        // demand, reserve snapshots, and a higher-low price shape.
+        // A mixed series exercising every gate: buys/sells, reserve snapshots, and
+        // a higher-low price shape.
         let mut low = buy("dev", 5.0, 100.0, 1, 0);
         low.real_sol_reserves = Some(4.0);
         let trades = vec![
@@ -744,28 +639,26 @@ mod tests {
         // Sweep several gate combinations; each must agree with the oracle. The
         // trailing field is `max_age` (the entry-window ceiling) so the linearized
         // `break` is pinned against the oracle alongside every other gate.
-        type Combo = (Option<u64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<u64>);
+        type Combo = (Option<u64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<u64>);
         let combos: &[Combo] = &[
-            (Some(5), None, None, None, None, None, None),
-            (None, Some(2.0), None, None, None, None, None),
-            (None, None, Some(1.0), None, None, None, None),
-            (None, None, None, Some(30.0), None, None, None), // cohort-held %: ≤ 30%
-            (None, None, None, None, Some(10.0), None, None),
-            (None, None, None, None, None, Some(5.0), None),
-            (Some(5), Some(1.0), Some(1.0), Some(50.0), Some(5.0), Some(1.0), None),
+            (Some(5), None, None, None, None, None),
+            (None, Some(2.0), None, None, None, None),
+            (None, None, Some(1.0), None, None, None),
+            (None, None, None, Some(10.0), None, None),
+            (None, None, None, None, Some(5.0), None),
+            (Some(5), Some(1.0), Some(1.0), Some(5.0), Some(1.0), None),
             // max_age alone is inert (not a positive gate) → no entry.
-            (None, None, None, None, None, None, Some(5)),
+            (None, None, None, None, None, Some(5)),
             // min_age floor paired with a max_age ceiling = a real window.
-            (Some(1), None, None, None, None, None, Some(8)),
+            (Some(1), None, None, None, None, Some(8)),
             // A real gate under a tight ceiling that cuts the walk short.
-            (None, Some(1.0), None, None, None, None, Some(2)),
+            (None, Some(1.0), None, None, None, Some(2)),
         ];
-        for &(age, alive, organic, cohort_held, liq, organic_liq, max_age) in combos {
+        for &(age, alive, organic, liq, organic_liq, max_age) in combos {
             let mut r = rule();
             r.p_entry_min_age_secs = age;
             r.p_entry_min_alive_sol = alive;
             r.p_entry_min_organic_sol = organic;
-            r.p_entry_max_cohort_held = cohort_held;
             r.p_entry_min_liquidity_sol = liq;
             r.p_entry_min_organic_liq = organic_liq;
             r.p_entry_max_age_secs = max_age;
@@ -773,42 +666,7 @@ mod tests {
                 find_scalp_entry(&trades, &r),
                 scalp_entry_oracle(&trades, &r),
                 "linearized find_scalp_entry diverged from the per-prefix oracle for combo {:?}",
-                (age, alive, organic, cohort_held, liq, organic_liq, max_age)
-            );
-        }
-    }
-
-    #[test]
-    fn with_cohort_matches_inline_cohort() {
-        // The #7 cohort hoist: feeding `scalp_cohort(trades)` into
-        // `find_scalp_entry_with_cohort` must resolve byte-identical entries to the
-        // inline-cohort `find_scalp_entry` — that equality is what lets the sweep
-        // build the cohort once per token without changing any decision.
-        let trades = vec![
-            buy("dev", 5.0, 100.0, 1, 0),
-            buy("dev2", 3.0, 60.0, 2, 1),
-            t("dev", TradeType::Sell, 4.0, 90.0, 50, 3),
-            buy("out", 1.0, 5.0, 500, 5),
-            buy("out2", 1.5, 12.0, 540, 7),
-        ];
-        let cohort = scalp_cohort(&trades);
-        for &(age, organic, cohort_held, liq) in &[
-            (Some(5u64), None, None, None),
-            (None, Some(1.0f64), None, None),
-            (None, None, Some(50.0f64), None),
-            (None, None, None, Some(0.0f64)),
-            (Some(5), Some(1.0), Some(50.0), None),
-        ] {
-            let mut r = rule();
-            r.p_entry_min_age_secs = age;
-            r.p_entry_min_organic_sol = organic;
-            r.p_entry_max_cohort_held = cohort_held;
-            r.p_entry_min_liquidity_sol = liq;
-            assert_eq!(
-                find_scalp_entry(&trades, &r),
-                find_scalp_entry_with_cohort(&trades, &r, &cohort),
-                "hoisted-cohort entry diverged from inline-cohort for {:?}",
-                (age, organic, cohort_held, liq)
+                (age, alive, organic, liq, organic_liq, max_age)
             );
         }
     }

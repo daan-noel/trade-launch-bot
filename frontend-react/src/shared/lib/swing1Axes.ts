@@ -66,7 +66,6 @@ export interface Swing1AxesSpec {
   entry_higher_low_secs?: (number | null)[];
   entry_max_age_secs?: (number | null)[];
   entry_min_liquidity_sol?: (number | null)[];
-  entry_max_cohort_held?: (number | null)[];
   exit_next_kill_depth_min_pct?: (number | null)[];
   exit_next_kill_max_duration_ms?: (number | null)[];
 }
@@ -120,8 +119,6 @@ export const SWING1_AXES: AxisDef[] = [
     desc: 'skip the token if it is already older than this at entry (off = no age cap)' },
   { key: 'entry_min_liquidity_sol', label: 'Entry min liq (SOL)', group: 'entry', subgroup: 'confirm', nullable: true, default: [null],
     desc: 'only enter if pool liquidity is at least this many SOL (off = no minimum)' },
-  { key: 'entry_max_cohort_held', label: 'Entry max cohort held %', group: 'entry', subgroup: 'confirm', nullable: true, default: [null],
-    desc: 'skip if the launch-cohort still holds more than this % of supply — dump risk (off = ignore)' },
   // Exit — the reused ladder (TP/SL lead, then trailing/time/stall/liq).
   { key: 'take_profit', label: 'Take profit %', group: 'exit', subgroup: 'ladder', nullable: false, default: [50, 100, 200],
     desc: 'sell once unrealized gain reaches this %' },

@@ -158,9 +158,9 @@ live and backtest can't drift:
 
 > Reality check vs CLAUDE.md: CLAUDE.md calls them "intentional clones." In the code,
 > **tpsl1 (~1.4k LOC) and tpsl2 (~2.8k LOC) are NOT clones** — tpsl2 adds a **scalp-entry
-> gate** (arms and waits for a continuation signal before buying) and **cohort** feature
-> logic on top of tpsl1's immediate-buy + exit ladder. They share *structure* and the exit
-> ladder, so many fixes still apply to both — but tpsl2 is a superset, not a copy.
+> gate** (arms and waits for a continuation signal before buying) on top of tpsl1's
+> immediate-buy + exit ladder. They share *structure* and the exit ladder, so many fixes
+> still apply to both — but tpsl2 is a superset, not a copy.
 
 ---
 
@@ -213,6 +213,6 @@ npm run build                # production LIVE build → dist/
 4. **frontend** = one React repo, two build-time apps (`@live`/`@lab`) over `@shared`. ✅
 5. **Only unfinished piece:** `ingest-websocket` (🟥 scaffold, `unimplemented!()`) — a
    placeholder for a future alternate transport; nothing depends on it.
-6. **tpsl_sniper_2 is a superset of tpsl_sniper_1** (scalp-entry + cohort), not a clone.
+6. **tpsl_sniper_2 is a superset of tpsl_sniper_1** (scalp-entry gates), not a clone.
 7. Workflow: **LAB finds the best params → you create that rule in LIVE → LIVE trades it.**
 ```

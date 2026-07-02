@@ -73,7 +73,6 @@ fn probe_rule() -> Swing1Rule {
     r.p_entry_higher_low_secs = None;
     r.p_entry_max_age_secs = None;
     r.p_entry_min_liquidity_sol = None;
-    r.p_entry_max_cohort_held = None;
     // Exit next-kill.
     r.p_exit_next_kill_depth_min_pct = None;
     r.p_exit_next_kill_max_duration_ms = Some(8_000);

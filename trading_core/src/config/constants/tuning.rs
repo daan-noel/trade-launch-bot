@@ -67,12 +67,6 @@ pub const MAX_MANUAL_BUY_SOL: f64 = 5.0;
 // Strategy thresholds (hot path — read per-event; must stay as const)
 // ---------------------------------------------------------------------------
 
-/// Early-buyer cohort window. Wallets that bought within this many slots of a
-/// token's first trade are treated as the launch sniper / bundler cluster
-/// (Solana slots ≈ 400 ms, so ~150 ≈ the first minute). One window defines the
-/// cluster across the tpsl2 entry gates and the cohort-dump exit — see `cohort.rs`.
-pub const EARLY_COHORT_SLOT_WINDOW: i64 = 150;
-
 /// Worst-case paper/backtest fill window (entry and exit): the fill candidates are
 /// the trigger slot S plus the next observed slot after S, provided that slot is
 /// within this many slots of S. If the next slot is farther away only slot S is used.

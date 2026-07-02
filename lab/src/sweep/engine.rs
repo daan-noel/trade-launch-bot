@@ -24,9 +24,9 @@ const CANCEL_CHECK_STRIDE: usize = 256;
 /// sub-grid: on a grid the exit axes are the low-order digits, so a token's combos
 /// arrive as contiguous same-entry blocks and the entry recomputes E×/token, not
 /// E·X× (a scattered `random:N` order still resolves correctly — only the reuse
-/// rate falls). Param-independent per-token state ([`Strategy::prepare_token`],
-/// e.g. the launch cohort) is computed once up front and shared across every
-/// entry resolve. The cancel flag is polled every [`CANCEL_CHECK_STRIDE`] combos so
+/// rate falls). Param-independent per-token state ([`Strategy::prepare_token`])
+/// is computed once up front and shared across every entry resolve. The cancel
+/// flag is polled every [`CANCEL_CHECK_STRIDE`] combos so
 /// a large combo set bails mid-token; on a cancel `out` is left **partial** and
 /// `Err(())` is returned — the caller must discard it (never fold a short `out`,
 /// which is indexed by `combo_id`).
@@ -42,9 +42,9 @@ pub(crate) fn fill_outcomes<S: Strategy>(
 ) -> std::result::Result<(), ()> {
     out.clear();
     let mut entry_cache: Option<(S::EntryKey, S::Entry)> = None;
-    // Param-independent per-token state (e.g. tpsl2's launch cohort), computed once
-    // here and shared across every entry resolution on this token rather than
-    // rebuilt per distinct entry-param tuple.
+    // Param-independent per-token state, computed once here and shared across
+    // every entry resolution on this token rather than rebuilt per distinct
+    // entry-param tuple.
     let token_state = strategy.prepare_token(trades);
     for chunk in params.chunks(CANCEL_CHECK_STRIDE) {
         if observer.cancelled() {

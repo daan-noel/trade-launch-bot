@@ -21,7 +21,7 @@ use crate::sweep::strategy::{
 };
 use crate::sweep::projection::SweepTrade;
 use crate::models::Tpsl2Rule;
-use crate::strategies::tpsl_sniper_2::{cohort, entry, exit};
+use crate::strategies::tpsl_sniper_2::{entry, exit};
 
 /// The full TPSL2 rule param set, every knob swept. `take_profit`/`stop_loss` are
 /// always-on; every other knob is `Option` and a `None` (the default axis when
@@ -36,14 +36,12 @@ pub struct Tpsl2Params {
     pub time_stop_secs: Option<u64>,
     pub stall_secs: Option<u64>,
     pub liquidity_drop_pct: Option<f64>,
-    pub cohort_ratio: Option<f64>,
     pub entry_min_age_secs: Option<u64>,
     pub entry_max_age_secs: Option<u64>,
     pub entry_min_alive_sol: Option<f64>,
     pub entry_min_organic_sol: Option<f64>,
     pub entry_pullback_pct: Option<f64>,
     pub entry_higher_low_secs: Option<u64>,
-    pub entry_max_cohort_held: Option<f64>,
     pub entry_min_liquidity_sol: Option<f64>,
     pub entry_min_organic_liq: Option<f64>,
 }
@@ -62,7 +60,7 @@ pub struct Tpsl2Combo {
     pub rule: Tpsl2Rule,
 }
 
-/// The entry-param identity of a combo: the 9 scalp-gate knobs `find_scalp_entry`
+/// The entry-param identity of a combo: the scalp-gate knobs `find_scalp_entry`
 /// reads (and nothing else). Two combos with equal keys resolve the same entry on
 /// any token, so the engine resolves the entry once per distinct key (Rec 1). The
 /// exit knobs are deliberately absent — the entry never depends on them.
@@ -74,7 +72,6 @@ pub struct Tpsl2EntryKey {
     min_organic_sol: Option<f64>,
     pullback_pct: Option<f64>,
     higher_low_secs: Option<u64>,
-    max_cohort_held: Option<f64>,
     min_liquidity_sol: Option<f64>,
     min_organic_liq: Option<f64>,
 }
@@ -88,32 +85,12 @@ pub enum Tpsl2Entry {
     Entered { price: f64, time: DateTime<Utc>, slot: u64 },
 }
 
-/// Param-independent per-token state, computed once before a token's combo loop and
-/// shared across every entry **and** exit resolve. Holds the launch cohort (the
-/// scalp gates' cohort/outside split) plus the cohort's total bought bag — the E5
-/// exit denominator. Hoisting both out of the per-combo resolves removes the
-/// `HashSet` rebuild + `cohort_flow` pass that `find_trade_driven_exit` used to run
-/// on every `(combo × token)` when E5 was swept (the #1 cohort-exit hoist, mirroring
-/// the entry `#7` hoist).
-pub struct Tpsl2TokenState {
-    /// Launch cohort wallet ids — fed to both `find_scalp_entry_with_cohort` and the
-    /// E5 exit. Identical to `early_cohort_wallets(trades, EARLY_COHORT_SLOT_WINDOW)`.
-    cohort: std::collections::HashSet<u32>,
-    /// The cohort's total bought tokens (E5's dump-ratio denominator). Only computed
-    /// when `cohort_ratio` is on the swept axes — `0.0` otherwise (E5 ignores it).
-    cohort_bought: f64,
-}
-
 /// Declares the param axes and carries the base rule the swept params overlay.
 pub struct Tpsl2Strategy {
     base: Tpsl2Rule,
     axes: Tpsl2Axes,
     /// Execution costs applied to every simulated round-trip (Rec 1).
     costs: CostModel,
-    /// Whether any swept combo enables the E5 cohort-dump exit. When false, the
-    /// per-token `cohort_bought` pass is skipped (E5 never reads it), so a non-cohort
-    /// sweep pays nothing for the hoist.
-    sweeps_cohort_exit: bool,
 }
 
 /// Grid axes for the coarse pass. Each `Vec` is one knob's candidate values.
@@ -127,14 +104,12 @@ pub struct Tpsl2Axes {
     pub time_stop_secs: Vec<Option<u64>>,
     pub stall_secs: Vec<Option<u64>>,
     pub liquidity_drop_pct: Vec<Option<f64>>,
-    pub cohort_ratio: Vec<Option<f64>>,
     pub entry_min_age_secs: Vec<Option<u64>>,
     pub entry_max_age_secs: Vec<Option<u64>>,
     pub entry_min_alive_sol: Vec<Option<f64>>,
     pub entry_min_organic_sol: Vec<Option<f64>>,
     pub entry_pullback_pct: Vec<Option<f64>>,
     pub entry_higher_low_secs: Vec<Option<u64>>,
-    pub entry_max_cohort_held: Vec<Option<f64>>,
     pub entry_min_liquidity_sol: Vec<Option<f64>>,
     pub entry_min_organic_liq: Vec<Option<f64>>,
 }
@@ -151,14 +126,12 @@ impl Default for Tpsl2Axes {
             time_stop_secs: vec![None, Some(120), Some(300)],
             stall_secs: vec![None, Some(30), Some(60)],
             liquidity_drop_pct: vec![None],
-            cohort_ratio: vec![None],
             entry_min_age_secs: vec![Some(10), Some(30)],
             entry_max_age_secs: vec![None],
             entry_min_alive_sol: vec![None],
             entry_min_organic_sol: vec![None],
             entry_pullback_pct: vec![None, Some(10.0)],
             entry_higher_low_secs: vec![None],
-            entry_max_cohort_held: vec![None],
             entry_min_liquidity_sol: vec![None, Some(5.0)],
             entry_min_organic_liq: vec![None],
         }
@@ -184,8 +157,6 @@ pub struct AxesSpec {
     #[serde(default)]
     pub liquidity_drop_pct: Option<Vec<Option<f64>>>,
     #[serde(default)]
-    pub cohort_ratio: Option<Vec<Option<f64>>>,
-    #[serde(default)]
     pub entry_min_age_secs: Option<Vec<Option<u64>>>,
     #[serde(default)]
     pub entry_max_age_secs: Option<Vec<Option<u64>>>,
@@ -197,8 +168,6 @@ pub struct AxesSpec {
     pub entry_pullback_pct: Option<Vec<Option<f64>>>,
     #[serde(default)]
     pub entry_higher_low_secs: Option<Vec<Option<u64>>>,
-    #[serde(default)]
-    pub entry_max_cohort_held: Option<Vec<Option<f64>>>,
     #[serde(default)]
     pub entry_min_liquidity_sol: Option<Vec<Option<f64>>>,
     #[serde(default)]
@@ -232,14 +201,12 @@ impl Tpsl2Axes {
             time_stop_secs: axis(&spec.time_stop_secs, d.time_stop_secs),
             stall_secs: axis(&spec.stall_secs, d.stall_secs),
             liquidity_drop_pct: axis(&spec.liquidity_drop_pct, d.liquidity_drop_pct),
-            cohort_ratio: axis(&spec.cohort_ratio, d.cohort_ratio),
             entry_min_age_secs: axis(&spec.entry_min_age_secs, d.entry_min_age_secs),
             entry_max_age_secs: axis(&spec.entry_max_age_secs, d.entry_max_age_secs),
             entry_min_alive_sol: axis(&spec.entry_min_alive_sol, d.entry_min_alive_sol),
             entry_min_organic_sol: axis(&spec.entry_min_organic_sol, d.entry_min_organic_sol),
             entry_pullback_pct: axis(&spec.entry_pullback_pct, d.entry_pullback_pct),
             entry_higher_low_secs: axis(&spec.entry_higher_low_secs, d.entry_higher_low_secs),
-            entry_max_cohort_held: axis(&spec.entry_max_cohort_held, d.entry_max_cohort_held),
             entry_min_liquidity_sol: axis(&spec.entry_min_liquidity_sol, d.entry_min_liquidity_sol),
             entry_min_organic_liq: axis(&spec.entry_min_organic_liq, d.entry_min_organic_liq),
         }
@@ -254,14 +221,12 @@ impl Tpsl2Axes {
             * self.time_stop_secs.len()
             * self.stall_secs.len()
             * self.liquidity_drop_pct.len()
-            * self.cohort_ratio.len()
             * self.entry_min_age_secs.len()
             * self.entry_max_age_secs.len()
             * self.entry_min_alive_sol.len()
             * self.entry_min_organic_sol.len()
             * self.entry_pullback_pct.len()
             * self.entry_higher_low_secs.len()
-            * self.entry_max_cohort_held.len()
             * self.entry_min_liquidity_sol.len()
             * self.entry_min_organic_liq.len()
     }
@@ -277,14 +242,12 @@ impl Tpsl2Axes {
             self.time_stop_secs.len(),
             self.stall_secs.len(),
             self.liquidity_drop_pct.len(),
-            self.cohort_ratio.len(),
             self.entry_min_age_secs.len(),
             self.entry_max_age_secs.len(),
             self.entry_min_alive_sol.len(),
             self.entry_min_organic_sol.len(),
             self.entry_pullback_pct.len(),
             self.entry_higher_low_secs.len(),
-            self.entry_max_cohort_held.len(),
             self.entry_min_liquidity_sol.len(),
             self.entry_min_organic_liq.len(),
         ]
@@ -296,8 +259,7 @@ impl Tpsl2Axes {
 
 impl Tpsl2Strategy {
     pub fn new(base: Tpsl2Rule, axes: Tpsl2Axes) -> Self {
-        let sweeps_cohort_exit = axes.cohort_ratio.iter().any(Option::is_some);
-        Self { base, axes, costs: CostModel::pumpfun_default(), sweeps_cohort_exit }
+        Self { base, axes, costs: CostModel::pumpfun_default() }
     }
 
     /// Pair a scalar param set with its resolved `Tpsl2Rule` (built once here, not
@@ -332,14 +294,12 @@ impl Tpsl2Strategy {
             time_stop_secs: take!(a.time_stop_secs),
             stall_secs: take!(a.stall_secs),
             liquidity_drop_pct: take!(a.liquidity_drop_pct),
-            cohort_ratio: take!(a.cohort_ratio),
             entry_min_age_secs: take!(a.entry_min_age_secs),
             entry_max_age_secs: take!(a.entry_max_age_secs),
             entry_min_alive_sol: take!(a.entry_min_alive_sol),
             entry_min_organic_sol: take!(a.entry_min_organic_sol),
             entry_pullback_pct: take!(a.entry_pullback_pct),
             entry_higher_low_secs: take!(a.entry_higher_low_secs),
-            entry_max_cohort_held: take!(a.entry_max_cohort_held),
             entry_min_liquidity_sol: take!(a.entry_min_liquidity_sol),
             entry_min_organic_liq: take!(a.entry_min_organic_liq),
         })
@@ -355,29 +315,20 @@ impl Tpsl2Strategy {
         r.p_exit_time_stop_secs = p.time_stop_secs;
         r.p_exit_stall_secs = p.stall_secs;
         r.p_exit_liquidity_drop_pct = p.liquidity_drop_pct;
-        r.p_exit_cohort_ratio = p.cohort_ratio;
         r.p_entry_min_age_secs = p.entry_min_age_secs;
         r.p_entry_max_age_secs = p.entry_max_age_secs;
         r.p_entry_min_alive_sol = p.entry_min_alive_sol;
         r.p_entry_min_organic_sol = p.entry_min_organic_sol;
         r.p_entry_pullback_pct = p.entry_pullback_pct;
         r.p_entry_higher_low_secs = p.entry_higher_low_secs;
-        r.p_entry_max_cohort_held = p.entry_max_cohort_held;
         r.p_entry_min_liquidity_sol = p.entry_min_liquidity_sol;
         r.p_entry_min_organic_liq = p.entry_min_organic_liq;
         r
     }
 
-    /// Minimal strategy for re-simulating a single stored combo. `sweeps_cohort_exit`
-    /// must be `true` if the combo uses the cohort-dump exit (`exit_cohort_ratio != null`)
-    /// so that `prepare_token` computes the required `cohort_bought` bag.
-    pub fn for_replay(base: Tpsl2Rule, sweeps_cohort_exit: bool) -> Self {
-        Self {
-            base,
-            axes: Tpsl2Axes::default(),
-            costs: CostModel::pumpfun_default(),
-            sweeps_cohort_exit,
-        }
+    /// Minimal strategy for re-simulating a single stored combo.
+    pub fn for_replay(base: Tpsl2Rule) -> Self {
+        Self { base, axes: Tpsl2Axes::default(), costs: CostModel::pumpfun_default() }
     }
 
     /// Reconstruct a combo from the `params_json` stored in the results table.
@@ -404,14 +355,12 @@ impl Tpsl2Strategy {
             time_stop_secs: opt_u(v, "exit_time_stop_secs"),
             stall_secs: opt_u(v, "exit_stall_secs"),
             liquidity_drop_pct: opt_f(v, "exit_liquidity_drop_pct"),
-            cohort_ratio: opt_f(v, "exit_cohort_ratio"),
             entry_min_age_secs: opt_u(v, "entry_min_age_secs"),
             entry_max_age_secs: opt_u(v, "entry_max_age_secs"),
             entry_min_alive_sol: opt_f(v, "entry_min_alive_sol"),
             entry_min_organic_sol: opt_f(v, "entry_min_organic_sol"),
             entry_pullback_pct: opt_f(v, "entry_pullback_pct"),
             entry_higher_low_secs: opt_u(v, "entry_higher_low_secs"),
-            entry_max_cohort_held: opt_f(v, "entry_max_cohort_held"),
             entry_min_liquidity_sol: opt_f(v, "entry_min_liquidity_sol"),
             entry_min_organic_liq: opt_f(v, "entry_min_organic_liq"),
         };
@@ -474,14 +423,12 @@ impl ParamSpace for Tpsl2Strategy {
                     a.time_stop_secs.len(),
                     a.stall_secs.len(),
                     a.liquidity_drop_pct.len(),
-                    a.cohort_ratio.len(),
                     a.entry_min_age_secs.len(),
                     a.entry_max_age_secs.len(),
                     a.entry_min_alive_sol.len(),
                     a.entry_min_organic_sol.len(),
                     a.entry_pullback_pct.len(),
                     a.entry_higher_low_secs.len(),
-                    a.entry_max_cohort_held.len(),
                     a.entry_min_liquidity_sol.len(),
                     a.entry_min_organic_liq.len(),
                 ];
@@ -504,14 +451,12 @@ impl ParamSpace for Tpsl2Strategy {
                             time_stop_secs: take!(a.time_stop_secs),
                             stall_secs: take!(a.stall_secs),
                             liquidity_drop_pct: take!(a.liquidity_drop_pct),
-                            cohort_ratio: take!(a.cohort_ratio),
                             entry_min_age_secs: take!(a.entry_min_age_secs),
                             entry_max_age_secs: take!(a.entry_max_age_secs),
                             entry_min_alive_sol: take!(a.entry_min_alive_sol),
                             entry_min_organic_sol: take!(a.entry_min_organic_sol),
                             entry_pullback_pct: take!(a.entry_pullback_pct),
                             entry_higher_low_secs: take!(a.entry_higher_low_secs),
-                            entry_max_cohort_held: take!(a.entry_max_cohort_held),
                             entry_min_liquidity_sol: take!(a.entry_min_liquidity_sol),
                             entry_min_organic_liq: take!(a.entry_min_organic_liq),
                         })
@@ -550,14 +495,12 @@ impl ParamSpace for Tpsl2Strategy {
             walk!(a.time_stop_secs, time_stop_secs);
             walk!(a.stall_secs, stall_secs);
             walk!(a.liquidity_drop_pct, liquidity_drop_pct);
-            walk!(a.cohort_ratio, cohort_ratio);
             walk!(a.entry_min_age_secs, entry_min_age_secs);
             walk!(a.entry_max_age_secs, entry_max_age_secs);
             walk!(a.entry_min_alive_sol, entry_min_alive_sol);
             walk!(a.entry_min_organic_sol, entry_min_organic_sol);
             walk!(a.entry_pullback_pct, entry_pullback_pct);
             walk!(a.entry_higher_low_secs, entry_higher_low_secs);
-            walk!(a.entry_max_cohort_held, entry_max_cohort_held);
             walk!(a.entry_min_liquidity_sol, entry_min_liquidity_sol);
             walk!(a.entry_min_organic_liq, entry_min_organic_liq);
         }
@@ -576,12 +519,12 @@ impl ParamSpace for Tpsl2Strategy {
     }
 }
 
-/// A total-order key over a combo's 9 entry-gate knobs (the [`Tpsl2EntryKey`]
+/// A total-order key over a combo's entry-gate knobs (the [`Tpsl2EntryKey`]
 /// fields). Used only to group same-entry combos contiguously, so the encoding only
 /// needs to be injective on the candidate values: `Option`s map a present value to
 /// its bit pattern and `None` to a reserved sentinel. The axes never carry `NaN`/
 /// `-0.0`, so equal bits ⟺ equal value ⟺ equal `entry_key` (`PartialEq`).
-fn entry_order_key(p: &Tpsl2Params) -> [u64; 9] {
+fn entry_order_key(p: &Tpsl2Params) -> [u64; 8] {
     // `+1` keeps `None` (0) distinct from `Some(0)` (1); real age/secs never hit u64::MAX.
     fn ou64(o: Option<u64>) -> u64 {
         o.map(|v| v.wrapping_add(1)).unwrap_or(0)
@@ -596,7 +539,6 @@ fn entry_order_key(p: &Tpsl2Params) -> [u64; 9] {
         of64(p.entry_min_organic_sol),
         of64(p.entry_pullback_pct),
         ou64(p.entry_higher_low_secs),
-        of64(p.entry_max_cohort_held),
         of64(p.entry_min_liquidity_sol),
         of64(p.entry_min_organic_liq),
     ]
@@ -605,11 +547,7 @@ fn entry_order_key(p: &Tpsl2Params) -> [u64; 9] {
 impl Strategy for Tpsl2Strategy {
     type Entry = Tpsl2Entry;
     type EntryKey = Tpsl2EntryKey;
-    /// The token's launch cohort + bought bag (see [`Tpsl2TokenState`]) — built once
-    /// per token and reused across every entry **and** exit resolve, instead of
-    /// rebuilding the cohort `HashSet` inside each `find_scalp_entry` (#7) **and**
-    /// each `find_trade_driven_exit` E5 precompute (#1).
-    type TokenState = Tpsl2TokenState;
+    type TokenState = ();
 
     fn entry_key(&self, params: &Tpsl2Combo) -> Tpsl2EntryKey {
         let p = &params.raw;
@@ -620,41 +558,20 @@ impl Strategy for Tpsl2Strategy {
             min_organic_sol: p.entry_min_organic_sol,
             pullback_pct: p.entry_pullback_pct,
             higher_low_secs: p.entry_higher_low_secs,
-            max_cohort_held: p.entry_max_cohort_held,
             min_liquidity_sol: p.entry_min_liquidity_sol,
             min_organic_liq: p.entry_min_organic_liq,
         }
     }
 
-    fn prepare_token(&self, trades: &[SweepTrade]) -> Tpsl2TokenState {
-        // Cohort depends only on the trade slice (first slot + window), never on a
-        // rule's params — so hoist it out of the per-entry-key resolve (#7) and the
-        // per-combo E5 exit precompute (#1). The bag denominator is needed only when
-        // E5 is swept; skip its extra pass otherwise.
-        let cohort = entry::scalp_cohort(trades);
-        let cohort_bought = if self.sweeps_cohort_exit {
-            cohort::cohort_flow(trades, &cohort).bought_tokens
-        } else {
-            0.0
-        };
-        Tpsl2TokenState { cohort, cohort_bought }
-    }
+    fn prepare_token(&self, _trades: &[SweepTrade]) {}
 
-    fn resolve_entry(
-        &self,
-        trades: &[SweepTrade],
-        state: &Tpsl2TokenState,
-        params: &Tpsl2Combo,
-    ) -> Tpsl2Entry {
+    fn resolve_entry(&self, trades: &[SweepTrade], _state: &(), params: &Tpsl2Combo) -> Tpsl2Entry {
         let rule = &params.rule;
-        // (1) Decision: the scalp-entry trigger — the live gate logic, unchanged,
-        // but fed the per-token cohort so the `HashSet` isn't rebuilt per resolve.
+        // (1) Decision: the scalp-entry trigger — the live gate logic, unchanged.
         // The indexed variant hands back the trigger's position so the worst-case
         // fill is resolved by index, never by `tx_signature` — letting `SweepTrade`
         // carry no signature string at all (Phase 1.2).
-        let Some((trigger_idx, _)) =
-            entry::find_scalp_entry_with_cohort_indexed(trades, rule, &state.cohort)
-        else {
+        let Some((trigger_idx, _)) = entry::find_scalp_entry_indexed(trades, rule) else {
             return Tpsl2Entry::None;
         };
         // (2) Worst-case entry fill (first post-trigger buy slot within wait window).
@@ -674,7 +591,7 @@ impl Strategy for Tpsl2Strategy {
     fn resolve_exit(
         &self,
         trades: &[SweepTrade],
-        state: &Tpsl2TokenState,
+        _state: &(),
         entry: &Tpsl2Entry,
         params: &Tpsl2Combo,
     ) -> TokenOutcome {
@@ -685,16 +602,8 @@ impl Strategy for Tpsl2Strategy {
         let rule = &params.rule;
         let notional = rule.buy_amount;
 
-        // (3) Exit decision via the shared ladder, fed the per-token cohort so the
-        // E5 precompute (cohort `HashSet` + bag) isn't rebuilt per combo (#1).
-        match exit::find_trade_driven_exit_with_cohort(
-            trades,
-            entry_time,
-            entry_price,
-            rule,
-            &state.cohort,
-            state.cohort_bought,
-        ) {
+        // (3) Exit decision via the shared ladder.
+        match exit::find_trade_driven_exit(trades, entry_time, entry_price, rule) {
             Some(f) => {
                 let (pnl_sol, pnl_percent) =
                     round_trip_with_costs(entry_price, f.price, notional, &self.costs);
@@ -744,14 +653,12 @@ impl Strategy for Tpsl2Strategy {
             "exit_time_stop_secs": p.time_stop_secs,
             "exit_stall_secs": p.stall_secs,
             "exit_liquidity_drop_pct": p.liquidity_drop_pct,
-            "exit_cohort_ratio": p.cohort_ratio,
             "entry_min_age_secs": p.entry_min_age_secs,
             "entry_max_age_secs": p.entry_max_age_secs,
             "entry_min_alive_sol": p.entry_min_alive_sol,
             "entry_min_organic_sol": p.entry_min_organic_sol,
             "entry_pullback_pct": p.entry_pullback_pct,
             "entry_higher_low_secs": p.entry_higher_low_secs,
-            "entry_max_cohort_held": p.entry_max_cohort_held,
             "entry_min_liquidity_sol": p.entry_min_liquidity_sol,
             "entry_min_organic_liq": p.entry_min_organic_liq,
         })
@@ -802,14 +709,12 @@ mod tests {
             time_stop_secs: a.time_stop_secs[0],
             stall_secs: a.stall_secs[0],
             liquidity_drop_pct: a.liquidity_drop_pct[0],
-            cohort_ratio: a.cohort_ratio[0],
             entry_min_age_secs: a.entry_min_age_secs[0],
             entry_max_age_secs: a.entry_max_age_secs[0],
             entry_min_alive_sol: a.entry_min_alive_sol[0],
             entry_min_organic_sol: a.entry_min_organic_sol[0],
             entry_pullback_pct: a.entry_pullback_pct[0],
             entry_higher_low_secs: a.entry_higher_low_secs[0],
-            entry_max_cohort_held: a.entry_max_cohort_held[0],
             entry_min_liquidity_sol: a.entry_min_liquidity_sol[0],
             entry_min_organic_liq: a.entry_min_organic_liq[0],
         });
@@ -827,14 +732,12 @@ mod tests {
                 + (q.time_stop_secs != p.time_stop_secs) as u8
                 + (q.stall_secs != p.stall_secs) as u8
                 + (q.liquidity_drop_pct != p.liquidity_drop_pct) as u8
-                + (q.cohort_ratio != p.cohort_ratio) as u8
                 + (q.entry_min_age_secs != p.entry_min_age_secs) as u8
                 + (q.entry_max_age_secs != p.entry_max_age_secs) as u8
                 + (q.entry_min_alive_sol != p.entry_min_alive_sol) as u8
                 + (q.entry_min_organic_sol != p.entry_min_organic_sol) as u8
                 + (q.entry_pullback_pct != p.entry_pullback_pct) as u8
                 + (q.entry_higher_low_secs != p.entry_higher_low_secs) as u8
-                + (q.entry_max_cohort_held != p.entry_max_cohort_held) as u8
                 + (q.entry_min_liquidity_sol != p.entry_min_liquidity_sol) as u8
                 + (q.entry_min_organic_liq != p.entry_min_organic_liq) as u8;
             assert_eq!(diffs, 1, "a coordinate move changes exactly one axis");
@@ -888,8 +791,8 @@ mod tests {
 
         // Contiguity: walking the ordered combos, each distinct entry key forms one
         // unbroken run — a key that reappears after a different key fails the cache.
-        let mut seen: HashSet<[u64; 9]> = HashSet::new();
-        let mut prev: Option<[u64; 9]> = None;
+        let mut seen: HashSet<[u64; 8]> = HashSet::new();
+        let mut prev: Option<[u64; 8]> = None;
         for c in &combos {
             let k = entry_order_key(&c.raw);
             if Some(k) != prev {

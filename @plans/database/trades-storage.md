@@ -134,7 +134,7 @@ Notes
 - **No BRIN** — Timescale chunk exclusion does the time-range pruning the BRIN used to.
 - The mint index mainly serves **recent uncompressed chunks** (the live trading read
   path); historical chunks are served by compression's `segmentby`/`orderby` metadata.
-- No `wallet_address` index (cohort logic reads the in-memory runtime cache).
+- No `wallet_address` index (per-wallet flow logic reads the in-memory runtime cache).
 
 ---
 

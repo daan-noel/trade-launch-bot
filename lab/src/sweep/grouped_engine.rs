@@ -671,7 +671,6 @@ mod tests {
             n_exit_stall: 0,
             n_exit_time: 0,
             n_exit_liquidity: 0,
-            n_exit_cohort: 0,
             n_exit_next_kill: 0,
             n_exit_open: 0,
         }

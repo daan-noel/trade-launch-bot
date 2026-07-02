@@ -2,8 +2,8 @@
 import { STORAGE_KEYS } from 'lib/storage';
 import { GroupedSweepView } from './GroupedSweepView';
 
-/** TPSL1 swept knobs — the exit ladder only (no scalp entry gates, no cohort
- *  exit). This array IS the param column order in the combo table. Kept stable
+/** TPSL1 swept knobs — the exit ladder only (no scalp entry gates). This array
+ *  IS the param column order in the combo table. Kept stable
  *  (not data-derived) so the columns exist on first render (colToggle
  *  persistence). MUST match the backend tpsl1 `params_json` keys. */
 const TPSL1_PARAM_KEYS = [

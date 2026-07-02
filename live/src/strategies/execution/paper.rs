@@ -248,11 +248,10 @@ async fn resolve_paper_entry_tpsl2(
         if last_count != Some(trade_count) {
             last_count = Some(trade_count);
             // Resolve the trigger by index: the cache row carries no signature, so the
-            // worst-case entry keys off the trigger's position in `trades`. `scalp_cohort`
-            // + the indexed resolver give the same trigger the sig-keyed path did.
-            let cohort = t2_entry::scalp_cohort(&trades);
+            // worst-case entry keys off the trigger's position in `trades`. The indexed
+            // resolver gives the same trigger the sig-keyed path did.
             if let Some((trigger_idx, target_fill)) =
-                t2_entry::find_scalp_entry_with_cohort_indexed(&trades, &rule, &cohort)
+                t2_entry::find_scalp_entry_indexed(&trades, &rule)
             {
                 // No real buy in [trigger+1, trigger+MAX_FILL_WAIT_SLOTS] yet — keep
                 // polling until the fill window indexes or the deadline expires.

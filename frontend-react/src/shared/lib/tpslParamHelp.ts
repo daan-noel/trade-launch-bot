@@ -7,7 +7,7 @@
  *  Wording goal: explain what each value actually DOES in simple terms anyone
  *  can follow — the bodies mirror the backend behaviour (token-fingerprint
  *  matching, scalp entry gates, and the exit ladder). TPSL1 uses the subset
- *  without the entry gates / cohort exit; TPSL2 uses all of them. */
+ *  without the entry gates; TPSL2 uses all of them. */
 export interface ParamHelp {
   title: string;
   body: string;
@@ -87,7 +87,7 @@ export const TPSL_PARAM_HELP = {
   minOrganicSol: {
     title: 'Min Organic SOL',
     body:
-      "Require real outside demand. 'Organic SOL' is the net SOL bought by wallets that are NOT part of the launch group (the cohort — the wallets that bought in the token's first moments). A high value means genuine new buyers, not just insiders. Blank or 0 turns it off.",
+      "Require real demand. 'Organic SOL' is the net SOL bought so far (buys minus sells, from any wallet) — a high value means genuine buying pressure, not just the initial launch trade. Blank or 0 turns it off.",
   },
   pullbackPct: {
     title: 'Pullback %',
@@ -99,11 +99,6 @@ export const TPSL_PARAM_HELP = {
     body:
       "Second half of the 'higher-low' entry. After the first dip (see Pullback %), buy only once the price makes a second dip that bottoms HIGHER than the first — confirming buyers are stepping in. The two bottoms must be at least this many seconds apart, which filters out split-second fakes. Blank or 0 turns it off.",
   },
-  maxCohortHeld: {
-    title: 'Max Cohort Held %',
-    body:
-      "Only buy if the launch group still holds at or below this percent of all it ever bought (they've mostly dumped). Whole-percent, 0–100: 5 = enter only once insiders have sold down to 5% of their bag, lowering rug risk. Blank or 0 turns it off.",
-  },
   minLiquiditySol: {
     title: 'Min Liquidity SOL',
     body:
@@ -112,7 +107,7 @@ export const TPSL_PARAM_HELP = {
   minOrganicLiq: {
     title: 'Min Organic Liquidity SOL',
     body:
-      "Like Min Liquidity, but counts only the liquidity that came from outside buyers — real pool SOL minus what the launch group put in. Makes sure the liquidity isn't just the dev's own seed money. Blank or 0 turns it off.",
+      'A second, independently tunable real-liquidity floor — reads the same real pool SOL reserves as Min Liquidity SOL, so you can set both to different thresholds if needed. Blank or 0 turns it off.',
   },
 
   // ── Exit gates: when to sell ──
@@ -145,11 +140,6 @@ export const TPSL_PARAM_HELP = {
     title: 'Liquidity Drop %',
     body:
       "Sell if the pool's REAL SOL reserves crash this percent below their peak since entry. Catches liquidity being pulled (a rug) a price stop might miss. Whole-percent, 0–100: 50 sells when real liquidity halves from its peak. Blank or 0 turns it off.",
-  },
-  cohortExitRatio: {
-    title: 'Cohort Exit Ratio %',
-    body:
-      "Rug early-warning (TPSL2). Sell when the launch group's net holdings collapse to at or below this percent of all they ever bought. Whole-percent, 0–100: 5 sells once insiders have offloaded to 5% of their bag, front-running a coordinated dump. Blank or 0 turns it off.",
   },
 } satisfies Record<string, ParamHelp>;
 

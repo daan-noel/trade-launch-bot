@@ -166,7 +166,6 @@ struct ResultDbRow {
     n_exit_stall: i32,
     n_exit_time: i32,
     n_exit_liquidity: i32,
-    n_exit_cohort: i32,
     n_exit_next_kill: i32,
     n_exit_open: i32,
 }
@@ -198,7 +197,6 @@ impl From<ResultDbRow> for GroupedSweepResult {
             n_exit_stall: r.n_exit_stall,
             n_exit_time: r.n_exit_time,
             n_exit_liquidity: r.n_exit_liquidity,
-            n_exit_cohort: r.n_exit_cohort,
             n_exit_next_kill: r.n_exit_next_kill,
             n_exit_open: r.n_exit_open,
         }
@@ -253,7 +251,6 @@ impl RetentionRow {
             n_exit_stall: 0,
             n_exit_time: 0,
             n_exit_liquidity: 0,
-            n_exit_cohort: 0,
             n_exit_next_kill: 0,
             n_exit_open: 0,
         }
@@ -409,7 +406,7 @@ impl GroupedSweepRepo {
 
         // No `params` here (deduped into `_combos`, written once per run by
         // `insert_combos`); the narrowed columns are bound as i32/f32 to match the
-        // `0007` storage types. 27 binds/row → chunk well under the 65535 ceiling.
+        // `0007` storage types. 26 binds/row → chunk well under the 65535 ceiling.
         for chunk in g.results.chunks(2000) {
             let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(format!(
                 "INSERT INTO {} \
@@ -417,7 +414,7 @@ impl GroupedSweepRepo {
                   total_pnl_sol, mean_pnl_pct, median_pnl_pct, p90_pnl_pct, best_pnl_pct, \
                   worst_pnl_pct, std_pnl_pct, profit_factor, score, expectancy_sol, \
                   avg_holding_secs, median_holding_secs, n_exit_take_profit, n_exit_stop_loss, \
-                  n_exit_trailing, n_exit_stall, n_exit_time, n_exit_liquidity, n_exit_cohort, \
+                  n_exit_trailing, n_exit_stall, n_exit_time, n_exit_liquidity, \
                   n_exit_next_kill, n_exit_open) ",
                 t.results
             ));
@@ -447,7 +444,6 @@ impl GroupedSweepRepo {
                     .push_bind(r.n_exit_stall)
                     .push_bind(r.n_exit_time)
                     .push_bind(r.n_exit_liquidity)
-                    .push_bind(r.n_exit_cohort)
                     .push_bind(r.n_exit_next_kill)
                     .push_bind(r.n_exit_open);
             });
@@ -756,7 +752,7 @@ impl GroupedSweepRepo {
                     r.best_pnl_pct, r.worst_pnl_pct, r.std_pnl_pct, r.profit_factor, r.score, \
                     r.expectancy_sol, r.avg_holding_secs, r.median_holding_secs, \
                     r.n_exit_take_profit, r.n_exit_stop_loss, r.n_exit_trailing, r.n_exit_stall, \
-                    r.n_exit_time, r.n_exit_liquidity, r.n_exit_cohort, r.n_exit_next_kill, \
+                    r.n_exit_time, r.n_exit_liquidity, r.n_exit_next_kill, \
                     r.n_exit_open \
              FROM {} r JOIN {} c ON c.run_id = r.run_id AND c.combo_id = r.combo_id \
              WHERE r.run_id = $1 AND r.group_id = $2 \

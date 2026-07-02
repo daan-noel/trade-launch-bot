@@ -25,7 +25,7 @@ use crate::sweep::projection::{project_trades, SweepTrade};
 /// [`SweepTrade`] projection (wallet-interned, ~3× smaller than `Trade`), shared
 /// (`Arc`) so building a sub-corpus per group is a refcount clone, not a copy.
 /// `wallets` is the token-local `u32 → address` table the projection interns
-/// against; the hot loop never reads it (cohort membership is pure `u32`) — it
+/// against; the hot loop never reads it (wallet identity is pure `u32`) — it
 /// exists only to recover addresses for display.
 ///
 /// `fp` carries the token-creation fingerprint used only by the grouping layer

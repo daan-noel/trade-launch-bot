@@ -424,16 +424,6 @@ export const ruleColumns: ColumnDef<RuleRecord>[] = [
       searchValue: (r) => String(r.p_entry_higher_low_secs ?? ''),
     },
     {
-      key: 'max_cohort',
-      label: 'Max Cohort',
-      tooltip: paramTip('maxCohortHeld'),
-      group: 'entry',
-      sortable: true,
-      render: (r) => dashPercent(r.p_entry_max_cohort_held ?? 0),
-      sortValue: (r) => r.p_entry_max_cohort_held ?? 0,
-      searchValue: (r) => String(r.p_entry_max_cohort_held ?? ''),
-    },
-    {
       key: 'min_liq',
       label: 'Min Liq',
       tooltip: paramTip('minLiquiditySol'),
@@ -526,18 +516,6 @@ export const ruleColumns: ColumnDef<RuleRecord>[] = [
       ),
       sortValue: (r) => r.p_exit_liquidity_drop_pct ?? 0,
       searchValue: (r) => String(r.p_exit_liquidity_drop_pct ?? ''),
-    },
-    {
-      key: 'cohort_exit',
-      label: 'Cohort',
-      tooltip: paramTip('cohortExitRatio'),
-      group: 'exit',
-      sortable: true,
-      render: (r) => (
-        <span className="font-bold text-red">{dashPercent(r.p_exit_cohort_ratio ?? 0)}</span>
-      ),
-      sortValue: (r) => r.p_exit_cohort_ratio ?? 0,
-      searchValue: (r) => String(r.p_exit_cohort_ratio ?? ''),
     },
     {
       key: 'mode',

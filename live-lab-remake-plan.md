@@ -80,7 +80,7 @@ trading_core/src/strategies/
   kernel.rs          // simulate_rule(StrategyImpl, &StrategyParams, trades, cfg) -> RunMetrics + fills
                      // RunMetrics struct == strategy_run_metrics columns (live/paper/sweep comparable)
   tpsl_sniper_1/     // KEEP — entry/exit modules, called through the enum
-  tpsl_sniper_2/     // KEEP — entry/exit + scalp + cohort, called through the enum
+  tpsl_sniper_2/     // KEEP — entry/exit + scalp, called through the enum
 ```
 
 Key properties:

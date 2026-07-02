@@ -448,7 +448,7 @@ ON CONFLICT (run_id) DO UPDATE SET
   n_exit_take_profit = EXCLUDED.n_exit_take_profit, n_exit_stop_loss = EXCLUDED.n_exit_stop_loss,
   n_exit_trailing = EXCLUDED.n_exit_trailing, n_exit_stall = EXCLUDED.n_exit_stall,
   n_exit_time = EXCLUDED.n_exit_time, n_exit_liquidity = EXCLUDED.n_exit_liquidity,
-  n_exit_cohort = EXCLUDED.n_exit_cohort, n_exit_open = EXCLUDED.n_exit_open;
+  n_exit_open = EXCLUDED.n_exit_open;
 
 \echo '-- strategy_positions'
 INSERT INTO strategy_positions SELECT * FROM ec2_sync_src.strategy_positions

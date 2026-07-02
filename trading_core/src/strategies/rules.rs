@@ -74,8 +74,8 @@ fn validate_tpsl1(p: &Tpsl1Params) -> Result<(), String> {
     ])
 }
 
-/// tpsl1's percent rules plus the scalp-continuation gates: pullback / cohort
-/// percentages bounded, the entry window non-empty, and at least one scalp gate
+/// tpsl1's percent rules plus the scalp-continuation gates: pullback
+/// percentage bounded, the entry window non-empty, and at least one scalp gate
 /// configured (a tpsl2 rule's only entry path is the scalp trade-window gates).
 fn validate_tpsl2(p: &Tpsl2Params) -> Result<(), String> {
     if p.p_exit_take_profit <= 0.0 {
@@ -87,8 +87,6 @@ fn validate_tpsl2(p: &Tpsl2Params) -> Result<(), String> {
         ("Trailing Stop %", p.p_exit_trailing_stop_pct.unwrap_or(0.0)),
         ("Liquidity Drop %", p.p_exit_liquidity_drop_pct.unwrap_or(0.0)),
         ("Pullback %", p.p_entry_pullback_pct.unwrap_or(0.0)),
-        ("Cohort Exit Ratio %", p.p_exit_cohort_ratio.unwrap_or(0.0)),
-        ("Max Cohort Held %", p.p_entry_max_cohort_held.unwrap_or(0.0)),
     ])?;
 
     // Non-empty entry window: when both age bounds are set (nonzero), max > min.
@@ -120,7 +118,6 @@ fn validate_swing1(p: &Swing1Params) -> Result<(), String> {
         ("Trailing Stop %", p.p_exit_trailing_stop_pct.unwrap_or(0.0)),
         ("Liquidity Drop %", p.p_exit_liquidity_drop_pct.unwrap_or(0.0)),
         ("Pullback %", p.p_entry_pullback_pct.unwrap_or(0.0)),
-        ("Max Cohort Held %", p.p_entry_max_cohort_held.unwrap_or(0.0)),
     ])?;
     // Fractional depth params (0–1).
     for (name, v) in [

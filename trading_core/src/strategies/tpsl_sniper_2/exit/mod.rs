@@ -7,7 +7,7 @@
 //!     silent and no trade is arriving.
 //!
 //! Ladder priority (first match on a trade wins):
-//!   CohortExit → LiquidityExit → StopLoss → TakeProfit → TrailingStop → Stall → TimeStop.
+//!   LiquidityExit → StopLoss → TakeProfit → TrailingStop → Stall → TimeStop.
 //!
 //! Every feature is inert by default: with all `p_*` exit params unset/zero the
 //! trade walk reproduces the legacy fixed TP/SL behavior exactly.
@@ -19,11 +19,10 @@
 
 use chrono::{DateTime, Duration, Utc};
 
-use crate::config::constants::{EARLY_COHORT_SLOT_WINDOW, MAX_FILL_WAIT_SLOTS};
+use crate::config::constants::MAX_FILL_WAIT_SLOTS;
 use crate::models::trade::{Trade, TradeRow};
 use crate::models::{Position, PositionStatus, Tpsl2Rule};
 
-use super::cohort::{cohort_flow, early_cohort_wallets};
 use super::util::{none_if_zero_f64, none_if_zero_u64};
 
 /// The typed reason a position exited. Replaces the old stringly-typed reason
@@ -40,9 +39,6 @@ pub enum ExitReason {
     TimeStop,
     /// E4 · **real** SOL reserves crashed `p_exit_liquidity_drop_pct`% below their peak.
     LiquidityExit,
-    /// E5 · the launch cohort's net holdings collapsed to ≤ `p_exit_cohort_ratio`
-    /// of everything it bought (the multi-wallet rug dump). Top ladder priority.
-    CohortExit,
 }
 
 impl ExitReason {
@@ -56,7 +52,6 @@ impl ExitReason {
             Self::Stall => "Stall",
             Self::TimeStop => "TimeStop",
             Self::LiquidityExit => "LiquidityExit",
-            Self::CohortExit => "CohortExit",
         }
     }
 }
@@ -157,45 +152,23 @@ impl ExitWalkState {
 /// window end (a token evicted and re-tracked from empty, or — only under a
 /// pathological cap overrun — unfolded trades trimmed away) we rebuild from
 /// whatever the window holds rather than trust a stale cursor.
-/// Generic over the wallet identity `W` (the [`TradeRow::Wallet`] of whatever rows
-/// seed it). The live path always seeds it from the cache's [`CachedTrade`]
-/// (`W = u32`, the default), so `runtime_cache`'s `DashMap<Uuid, CachedExitState>`
-/// resolves to `CachedExitState<u32>`; the exit unit tests drive it from `Trade`
-/// (`W = String`). Only the E5 cohort memo is wallet-typed, so non-E5 use is `W`-inert.
+/// The live path always seeds it from the cache's [`CachedTrade`]; the exit unit
+/// tests drive it from `Trade`.
 ///
 /// [`CachedTrade`]: crate::state::token_cache::CachedTrade
 #[derive(Debug, Clone)]
-pub struct CachedExitState<W = u32> {
+pub struct CachedExitState {
     pub state: ExitWalkState,
     entry_time: DateTime<Utc>,
     entry_price: f64,
     consumed_abs: u64,
-    /// E5 launch-cohort memo (H4). `Some` once E5 is configured for the position;
-    /// the cohort set + bag (denominator) are fixed at seed time and only
-    /// `net` advances incrementally as cohort trades replay — replacing the
-    /// per-ping HashSet rebuild + three full passes.
-    cohort: Option<CohortMemo<W>>,
 }
 
-/// Memoized E5 launch cohort: the wallet set + everything it ever bought (the
-/// dump-ratio denominator), both fixed once the early-slot window has closed, plus
-/// the cohort's running net holdings advanced trade-by-trade. Computed once at the
-/// position's first sight (mirroring the peak memo); never rebuilt per ping.
-#[derive(Debug, Clone)]
-struct CohortMemo<W> {
-    wallets: std::collections::HashSet<W>,
-    bought: f64,
-    /// Net cohort holdings, current as of `consumed_abs`. Seeded to the net as of
-    /// `entry_time`, then evolved by each post-entry cohort trade.
-    net: f64,
-}
-
-impl<W: Eq + std::hash::Hash + Clone> CachedExitState<W> {
+impl CachedExitState {
     /// Seed from the retained post-entry history (one-time, at first sight of the
     /// position) and record the absolute fold cursor. `base` is the token's
-    /// `trades_base` (count already trimmed from the front). No cohort memo — used
-    /// by the clock sweep, which never needs E5.
-    pub fn build<T: TradeRow<Wallet = W>>(
+    /// `trades_base` (count already trimmed from the front).
+    pub fn build<T: TradeRow>(
         trades: &[T],
         base: u64,
         entry_price: f64,
@@ -206,68 +179,21 @@ impl<W: Eq + std::hash::Hash + Clone> CachedExitState<W> {
             entry_time,
             entry_price,
             consumed_abs: base + trades.len() as u64,
-            cohort: None,
         }
     }
 
     /// An empty (unfolded) state whose absolute cursor sits at the window front
     /// (`base`), so a following [`advance_and_find_exit`](Self::advance_and_find_exit)
-    /// folds the entire retained window. `params` decides whether the E5 cohort
-    /// memo is seeded (computed once here from the retained window). Used to seed
-    /// the trade gate so its first pass reproduces a full re-walk while memoizing
-    /// for subsequent incremental pings.
-    pub fn build_unfolded<T: TradeRow<Wallet = W>>(
-        trades: &[T],
-        base: u64,
-        entry_price: f64,
-        entry_time: DateTime<Utc>,
-        params: &LadderParams,
-    ) -> Self {
-        let cohort = params.cohort_exit_ratio.map(|_| {
-            // Fixed cohort + bag, computed once (H4). `net` seeds to the cohort's
-            // net holdings as of entry; the post-entry walk evolves it from there.
-            let wallets = early_cohort_wallets(trades, EARLY_COHORT_SLOT_WINDOW);
-            let bought = cohort_flow(trades, &wallets).bought_tokens;
-            let net: f64 = trades
-                .iter()
-                .filter(|t| t.block_time() <= entry_time && wallets.contains(t.wallet()))
-                .map(signed_tokens)
-                .sum();
-            CohortMemo { wallets, bought, net }
-        });
+    /// folds the entire retained window. Used to seed the trade gate so its first
+    /// pass reproduces a full re-walk while memoizing for subsequent incremental
+    /// pings.
+    pub fn build_unfolded(base: u64, entry_price: f64, entry_time: DateTime<Utc>) -> Self {
         Self {
             state: ExitWalkState::starting_at(entry_price, entry_time),
             entry_time,
             entry_price,
             consumed_abs: base,
-            cohort,
         }
-    }
-
-    /// Lazily attach the E5 cohort memo if E5 is configured but the state was
-    /// seeded without one (e.g. the clock sweep seeded it first via [`build`](Self::build)).
-    /// `net` is seeded to the cohort's net holdings as of the current fold cursor
-    /// (`consumed_abs`), so a following incremental advance continues correctly.
-    /// No-op once a cohort memo is present or when E5 is off.
-    pub fn ensure_cohort_seeded<T: TradeRow<Wallet = W>>(
-        &mut self,
-        trades: &[T],
-        base: u64,
-        params: &LadderParams,
-    ) {
-        if self.cohort.is_some() || params.cohort_exit_ratio.is_none() {
-            return;
-        }
-        // Window index of the fold cursor; clamp in case of an over-trim/reset.
-        let cursor = self.consumed_abs.saturating_sub(base).min(trades.len() as u64) as usize;
-        let wallets = early_cohort_wallets(trades, EARLY_COHORT_SLOT_WINDOW);
-        let bought = cohort_flow(trades, &wallets).bought_tokens;
-        let net: f64 = trades[..cursor]
-            .iter()
-            .filter(|t| wallets.contains(t.wallet()))
-            .map(signed_tokens)
-            .sum();
-        self.cohort = Some(CohortMemo { wallets, bought, net });
     }
 
     /// Fold any trades appended since the last advance into the running peaks.
@@ -281,7 +207,7 @@ impl<W: Eq + std::hash::Hash + Clone> CachedExitState<W> {
     /// tests pin [`advance_and_find_exit`]'s folding against it); the live trade
     /// gate folds + evaluates in one pass via [`advance_and_find_exit`].
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn advance<T: TradeRow<Wallet = W>>(&mut self, trades: &[T], base: u64) {
+    pub fn advance<T: TradeRow>(&mut self, trades: &[T], base: u64) {
         let start = self.consumed_abs.saturating_sub(base);
         if start > trades.len() as u64 {
             self.state =
@@ -298,18 +224,16 @@ impl<W: Eq + std::hash::Hash + Clone> CachedExitState<W> {
     }
 
     /// Incremental trade-gate: fold the genuinely-new trades into the running
-    /// peaks (and the E5 cohort net) **and**, in the same pass, evaluate the exit
-    /// ladder against each newly-folded post-entry trade, returning the first
-    /// [`ExitReason`] that fires.
+    /// peaks **and**, in the same pass, evaluate the exit ladder against each
+    /// newly-folded post-entry trade, returning the first [`ExitReason`] that
+    /// fires.
     ///
-    /// Decision-equivalent to a full [`find_trade_driven_exit`] re-walk: peaks and
-    /// the cohort net are accumulated by the identical fold, the ladder runs
-    /// against the state as of each trade via the shared [`ladder_reason`]
-    /// predicate, and only new trades can newly fire — an old trade that fired
-    /// would already have exited the position. The rebuild branch (history
-    /// reset/over-trimmed) re-walks the whole window from the seeded cohort net;
-    /// old trades there are idempotent, so the first firing trade is unchanged.
-    pub fn advance_and_find_exit<T: TradeRow<Wallet = W>>(
+    /// Decision-equivalent to a full [`find_trade_driven_exit`] re-walk: peaks are
+    /// accumulated by the identical fold, the ladder runs against the state as of
+    /// each trade via the shared [`ladder_reason`] predicate, and only new trades
+    /// can newly fire — an old trade that fired would already have exited the
+    /// position.
+    pub fn advance_and_find_exit<T: TradeRow>(
         &mut self,
         trades: &[T],
         base: u64,
@@ -324,23 +248,10 @@ impl<W: Eq + std::hash::Hash + Clone> CachedExitState<W> {
         if rebuild {
             // Lost the cursor: re-fold from the window start. Reset the peaks so
             // the walk below is a clean replay of whatever the window now holds.
-            // The cohort memo (set + bag + entry-net) is fixed, so the cohort net
-            // is re-derived by re-walking post-entry cohort trades from its seed.
             self.state = ExitWalkState::starting_at(self.entry_price, self.entry_time);
         }
         let from = if rebuild { 0 } else { start as usize };
         self.consumed_abs = base + trades.len() as u64;
-        // On a rebuild the running cohort net is reset to the entry-net seed so the
-        // re-walk re-derives it; re-seed it from the post-entry trades below.
-        if rebuild {
-            if let Some(c) = self.cohort.as_mut() {
-                c.net = trades
-                    .iter()
-                    .filter(|t| t.block_time() <= self.entry_time && c.wallets.contains(t.wallet()))
-                    .map(signed_tokens)
-                    .sum();
-            }
-        }
 
         let mut fired = None;
         for t in &trades[from..] {
@@ -348,35 +259,13 @@ impl<W: Eq + std::hash::Hash + Clone> CachedExitState<W> {
                 continue;
             }
             self.state.update_with_trade(t);
-            if let Some(c) = self.cohort.as_mut() {
-                if c.wallets.contains(t.wallet()) {
-                    c.net += signed_tokens(t);
-                }
-            }
             if fired.is_none() {
-                let cohort_net = self.cohort.as_ref().map(|c| (c.bought, c.net));
-                fired = ladder_reason(
-                    &self.state,
-                    t,
-                    self.entry_time,
-                    self.entry_price,
-                    params,
-                    cohort_net,
-                );
+                fired = ladder_reason(&self.state, t, self.entry_time, self.entry_price, params);
             }
-            // Keep folding the rest so the memoized peaks + cohort net stay current
-            // for the clock sweep even after the gate has already decided to exit.
+            // Keep folding the rest so the memoized peaks stay current for the
+            // clock sweep even after the gate has already decided to exit.
         }
         fired
-    }
-}
-
-/// Signed token flow for a trade: +tokens on a buy, −tokens on a sell.
-fn signed_tokens<T: TradeRow>(t: &T) -> f64 {
-    if t.is_buy() {
-        t.token_amount()
-    } else {
-        -t.token_amount()
     }
 }
 
@@ -392,7 +281,6 @@ pub struct LadderParams {
     time_stop_secs: Option<u64>,
     stall_secs: Option<u64>,
     liquidity_drop_pct: Option<f64>,
-    cohort_exit_ratio: Option<f64>,
 }
 
 impl LadderParams {
@@ -404,7 +292,6 @@ impl LadderParams {
             time_stop_secs: none_if_zero_u64(rule.p_exit_time_stop_secs),       // E2
             stall_secs: none_if_zero_u64(rule.p_exit_stall_secs),               // E3
             liquidity_drop_pct: none_if_zero_f64(rule.p_exit_liquidity_drop_pct), // E4
-            cohort_exit_ratio: none_if_zero_f64(rule.p_exit_cohort_ratio),       // E5
         }
     }
 
@@ -419,9 +306,8 @@ impl LadderParams {
     }
 }
 
-/// The exit ladder for a single trade `t`, given the running walk `state` (peaks as
-/// of `t`, inclusive) and, when E5 is configured, the cohort `(bought, net)` as of
-/// `t`. First feature that fires wins (ladder order). Shared by
+/// The exit ladder for a single trade `t`, given the running walk `state` (peaks
+/// as of `t`, inclusive). First feature that fires wins (ladder order). Shared by
 /// [`find_trade_driven_exit`] and [`CachedExitState::advance_and_find_exit`].
 fn ladder_reason<T: TradeRow>(
     state: &ExitWalkState,
@@ -429,23 +315,11 @@ fn ladder_reason<T: TradeRow>(
     entry_time: DateTime<Utc>,
     entry_price: f64,
     params: &LadderParams,
-    cohort: Option<(f64, f64)>,
 ) -> Option<ExitReason> {
     let price = t.price_per_token();
     let block_time = t.block_time();
     let pct = ((price - entry_price) / entry_price) * 100.0;
     None
-        .or_else(|| {
-            // E5: the cohort dumped — its net collapsed to ≤ ratio of its bag.
-            // Top priority: the insider cluster bailing is the biggest danger.
-            params.cohort_exit_ratio.and_then(|ratio| {
-                cohort.and_then(|(bought, net)| {
-                    // `ratio` is whole-percent (0–100); net/bought is 0–1.
-                    (bought > 0.0 && net <= bought * (ratio / 100.0))
-                        .then_some(ExitReason::CohortExit)
-                })
-            })
-        })
         .or_else(|| {
             // E4: reserves crash below the peak-since-entry. REAL reserves only.
             params.liquidity_drop_pct.and_then(|drop| {
@@ -497,10 +371,6 @@ fn time_stop_triggered(entry_time: DateTime<Utc>, at: DateTime<Utc>, time_stop_s
 /// Walk a position's post-entry trades chronologically and return the first exit
 /// the ladder fires, or `None` if the position is still open. Trades are assumed
 /// slot/time-sorted upstream.
-///
-/// Computes the E5 launch cohort inline when configured. The sweep hot path calls
-/// [`find_trade_driven_exit_with_cohort`] with the per-token-cached cohort instead,
-/// so the `HashSet` + bag aren't rebuilt per `(combo × token)`.
 pub fn find_trade_driven_exit<T: TradeRow>(
     trades: &[T],
     entry_time: DateTime<Utc>,
@@ -525,68 +395,16 @@ pub fn find_trade_driven_exit_with_slot<T: TradeRow>(
         return None;
     }
     let params = LadderParams::from_rule(rule);
-    // E5 precompute (cohort + bag denominator), computed inline here. Skipped when
-    // E5 is off so a non-cohort rule pays nothing.
-    match params.cohort_exit_ratio {
-        Some(_) => {
-            let cohort = early_cohort_wallets(trades, EARLY_COHORT_SLOT_WINDOW);
-            let bought = cohort_flow(trades, &cohort).bought_tokens;
-            run_exit_walk(trades, entry_time, entry_price, &params, Some((&cohort, bought)))
-        }
-        None => run_exit_walk(trades, entry_time, entry_price, &params, None),
-    }
+    run_exit_walk(trades, entry_time, entry_price, &params)
 }
 
-/// [`find_trade_driven_exit`] with the E5 launch `cohort` (and its `cohort_bought`
-/// bag denominator) supplied by the caller — the form the sweep uses so the cohort
-/// `HashSet` and the `cohort_flow` bag pass are built **once per token**
-/// (the local-only `sweep::strategy::Strategy::prepare_token`)
-/// rather than rebuilt inside every per-combo exit resolve. `cohort` MUST equal
-/// `early_cohort_wallets(trades, EARLY_COHORT_SLOT_WINDOW)` and `cohort_bought` its
-/// `cohort_flow(..).bought_tokens` for the slice — the live path computes both from
-/// that same definition via [`find_trade_driven_exit`], so decisions stay
-/// byte-identical. Both args are ignored when E5 (`p_exit_cohort_ratio`) is off,
-/// exactly as the inline path skips the cohort entirely.
-pub fn find_trade_driven_exit_with_cohort<T: TradeRow>(
-    trades: &[T],
-    entry_time: DateTime<Utc>,
-    entry_price: f64,
-    rule: &Tpsl2Rule,
-    cohort: &std::collections::HashSet<T::Wallet>,
-    cohort_bought: f64,
-) -> Option<ExitFill> {
-    if entry_price <= 0.0 {
-        return None;
-    }
-    let params = LadderParams::from_rule(rule);
-    let precomp = params.cohort_exit_ratio.map(|_| (cohort, cohort_bought));
-    run_exit_walk(trades, entry_time, entry_price, &params, precomp).map(|(fill, _)| fill)
-}
-
-/// The shared post-entry walk behind both [`find_trade_driven_exit`] and
-/// [`find_trade_driven_exit_with_cohort`]. `cohort_precomp` is `Some((set, bag))`
-/// only when E5 is configured; the net-at-entry seed is derived here (it depends on
-/// `entry_time`, which the per-token cohort cache can't fix) and then evolves
-/// causally as the walk replays each post-entry cohort trade.
+/// The shared post-entry walk behind [`find_trade_driven_exit`].
 fn run_exit_walk<T: TradeRow>(
     trades: &[T],
     entry_time: DateTime<Utc>,
     entry_price: f64,
     params: &LadderParams,
-    cohort_precomp: Option<(&std::collections::HashSet<T::Wallet>, f64)>,
 ) -> Option<(ExitFill, u64)> {
-    let (cohort, cohort_bought, mut cohort_net) = match cohort_precomp {
-        Some((cohort, bought)) => {
-            let net_at_entry: f64 = trades
-                .iter()
-                .filter(|t| t.block_time() <= entry_time && cohort.contains(t.wallet()))
-                .map(signed_tokens)
-                .sum();
-            (Some(cohort), bought, net_at_entry)
-        }
-        None => (None, 0.0, 0.0),
-    };
-
     let mut state = ExitWalkState::starting_at(entry_price, entry_time);
 
     // Single pass over the post-entry trades. The first trade where the ladder fires
@@ -660,17 +478,10 @@ fn run_exit_walk<T: TradeRow>(
         }
 
         state.update_with_trade(t);
-        // Evolve the cohort's net holdings as its trades replay (E5 only).
-        if let Some(cohort) = cohort.as_ref() {
-            if cohort.contains(t.wallet()) {
-                cohort_net += signed_tokens(t);
-            }
-        }
 
         // First feature that fires on this trade wins (ladder order). Shared with
         // the incremental gate via `ladder_reason` so they can never drift.
-        let cohort_arg = cohort.as_ref().map(|_| (cohort_bought, cohort_net));
-        if let Some(reason) = ladder_reason(&state, t, entry_time, entry_price, params, cohort_arg) {
+        if let Some(reason) = ladder_reason(&state, t, entry_time, entry_price, params) {
             pending = Some(reason);
             fire_slot = slot;
             fill_min = None; // reset; window starts fresh after firing tx
@@ -725,7 +536,7 @@ pub fn find_clock_driven_exit(
 ///
 /// Retained as a full-walk reference for the gate tests; the live trade gate now
 /// runs incrementally through `runtime_cache::exit_state_advance_and_find_exit`
-/// (decision-equivalent, no per-ping full re-walk or cohort rebuild).
+/// (decision-equivalent, no per-ping full re-walk).
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn should_position_exit_on_trade(
     position: &Position,
@@ -799,21 +610,6 @@ mod tests {
         let mut t = buy(price, slot, secs);
         t.real_sol_reserves = Some(reserves);
         t
-    }
-
-    /// A trade by a specific wallet, with explicit side/sol/tokens/slot — for the
-    /// cohort-dump (E5) tests where wallet identity and token flow matter.
-    fn trade_w(wallet: &str, side: TradeType, sol: f64, tokens: f64, slot: u64, secs: i64) -> Trade {
-        Trade::new(
-            "mint".into(),
-            wallet.into(),
-            side,
-            sol,
-            tokens as u64,
-            format!("sig-{wallet}-{slot}-{secs}"),
-            slot,
-            base_time() + Duration::seconds(secs),
-        )
     }
 
     /// Minimal rule with explicit TP/SL + optional E1/E2/E3/E4; else inert.
@@ -1023,88 +819,6 @@ mod tests {
         let rule = rule_with(1000.0, 90.0, None, None, None, Some(50.0));
         let exit = find_trade_driven_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
         assert_eq!(exit.reason, ExitReason::LiquidityExit);
-    }
-
-    // ── E5 cohort-dump (`p_exit_cohort_ratio`) ───────────────────────────────
-
-    /// rule_with + an explicit E5 cohort-exit ratio.
-    fn rule_cohort(cohort_exit_ratio: f64) -> Tpsl2Rule {
-        let mut r = rule_with(1000.0, 99.0, None, None, None, None);
-        r.p_exit_cohort_ratio = Some(cohort_exit_ratio);
-        r
-    }
-
-    #[test]
-    fn cohort_exit_fires_when_cohort_dumps() {
-        // "dev" buys 100 tokens at launch (slot 1, pre-entry). Entry at base_time,
-        // price 1.0. After entry an outside wallet trades (price ref), then "dev"
-        // dumps 96 → net 4 / 100 = 0.04 ≤ 0.05 (5%) → CohortExit at slot 501.
-        // Fill in slot 502 (F+1).
-        let trades = vec![
-            trade_w("dev", TradeType::Buy, 5.0, 100.0, 1, -2),
-            trade_w("out", TradeType::Buy, 1.0, 1.0, 500, 1),
-            trade_w("dev", TradeType::Sell, 4.5, 96.0, 501, 2),
-            trade_w("out", TradeType::Buy, 1.0, 1.0, 502, 3), // fill slot
-        ];
-        let rule = rule_cohort(5.0); // percent: exit at ≤ 5% held
-        let exit = find_trade_driven_exit(&trades, base_time(), 1.0, &rule).expect("should exit");
-        assert_eq!(exit.reason, ExitReason::CohortExit);
-        assert_eq!(exit.block_time, base_time() + Duration::seconds(3));
-    }
-
-    #[test]
-    fn cohort_exit_does_not_fire_while_cohort_holds() {
-        // "dev" keeps its bag (only a tiny trim) → net 95/100 = 0.95 > 0.05 (5%).
-        let trades = vec![
-            trade_w("dev", TradeType::Buy, 5.0, 100.0, 1, -2),
-            trade_w("out", TradeType::Buy, 1.0, 1.0, 500, 1),
-            trade_w("dev", TradeType::Sell, 0.2, 5.0, 501, 2),
-        ];
-        let rule = rule_cohort(5.0); // percent: exit at ≤ 5% held
-        assert!(find_trade_driven_exit(&trades, base_time(), 1.0, &rule).is_none());
-    }
-
-    #[test]
-    fn with_cohort_matches_inline_cohort_exit() {
-        // The #1 hoist: feeding the precomputed cohort + bag into
-        // `find_trade_driven_exit_with_cohort` must resolve byte-identical exits to
-        // the inline-cohort `find_trade_driven_exit` — the equality that lets the
-        // sweep build the cohort once per token without changing any decision.
-        let trades = vec![
-            trade_w("dev", TradeType::Buy, 5.0, 100.0, 1, -2),
-            trade_w("out", TradeType::Buy, 1.0, 1.0, 500, 1),
-            trade_w("dev", TradeType::Sell, 4.5, 96.0, 501, 2),
-            trade_w("out", TradeType::Buy, 1.0, 1.0, 502, 3), // fill slot
-        ];
-        let cohort = early_cohort_wallets(&trades, EARLY_COHORT_SLOT_WINDOW);
-        let bought = cohort_flow(&trades, &cohort).bought_tokens;
-
-        // E5 on: the hoisted-cohort path matches the inline path (a CohortExit here).
-        let rule_on = rule_cohort(5.0);
-        assert_eq!(
-            find_trade_driven_exit(&trades, base_time(), 1.0, &rule_on),
-            find_trade_driven_exit_with_cohort(&trades, base_time(), 1.0, &rule_on, &cohort, bought),
-        );
-
-        // E5 off: the cohort args are ignored, still identical to inline.
-        let rule_off = rule_with(1000.0, 99.0, None, None, None, None);
-        assert_eq!(
-            find_trade_driven_exit(&trades, base_time(), 1.0, &rule_off),
-            find_trade_driven_exit_with_cohort(&trades, base_time(), 1.0, &rule_off, &cohort, bought),
-        );
-    }
-
-    #[test]
-    fn cohort_exit_inert_when_unconfigured() {
-        // Same 96-token dump, but E5 off → no CohortExit. Sell priced near entry
-        // (≈0.94) so the high TP/SL don't fire either → position stays open.
-        let trades = vec![
-            trade_w("dev", TradeType::Buy, 5.0, 100.0, 1, -2),
-            trade_w("out", TradeType::Buy, 1.0, 1.0, 500, 1),
-            trade_w("dev", TradeType::Sell, 90.0, 96.0, 501, 2),
-        ];
-        let rule = rule_with(1000.0, 99.0, None, None, None, None);
-        assert!(find_trade_driven_exit(&trades, base_time(), 1.0, &rule).is_none());
     }
 
     // ── Live trade gate (`should_position_exit_on_trade`) ────────────────────

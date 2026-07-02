@@ -118,7 +118,6 @@ pub struct GroupedSweepResult {
     pub n_exit_stall: i32,
     pub n_exit_time: i32,
     pub n_exit_liquidity: i32,
-    pub n_exit_cohort: i32,
     /// swing1's symmetric next-kill flee count; 0 for tpsl1/tpsl2.
     pub n_exit_next_kill: i32,
     pub n_exit_open: i32,
@@ -135,7 +134,7 @@ pub struct ComboTokenResult {
     pub pnl_pct: f32,
     pub holding_secs: i64,
     /// Exit reason string: `"TakeProfit"`, `"StopLoss"`, `"TrailingStop"`,
-    /// `"Stall"`, `"TimeStop"`, `"LiquidityExit"`, `"CohortExit"`,
+    /// `"Stall"`, `"TimeStop"`, `"LiquidityExit"`,
     /// `"Open"` (still open at end of history), or `"NoEntry"`.
     pub exit: String,
     // --- Simulation fill details (populated by single-combo re-sim) ---

@@ -80,10 +80,8 @@ export interface RuleRecord {
   p_entry_min_organic_sol: number | null;
   p_entry_pullback_pct: number | null;
   p_entry_higher_low_secs: number | null;
-  p_entry_max_cohort_held: number | null;
   p_entry_min_liquidity_sol: number | null;
   p_entry_min_organic_liq: number | null;
-  p_exit_cohort_ratio: number | null;
   // ── swing1-only params (null on tpsl1/tpsl2). Merged flat into the rule JSON by
   //    the backend `rule_to_json`; 0/null = that knob is off. ──
   p_swing_high_to_low_sol?: number | null;
@@ -160,7 +158,7 @@ export interface RulePositionRecord {
   strategy: string;
   rule_id: string;
   /** Why the position exited (TakeProfit/StopLoss/TrailingStop/Stall/TimeStop/
-   * LiquidityExit/CohortExit); null while still open. */
+   * LiquidityExit); null while still open. */
   exit_reason: string | null;
   created_at: string;
   updated_at: string;

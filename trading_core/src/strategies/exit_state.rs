@@ -5,10 +5,9 @@
 //! **stateful** per-position memo so the per-second clock sweep and the per-trade
 //! gate never re-walk a token's retained history each tick. That memo
 //! ([`CachedExitState`](super::tpsl_sniper_1::exit::CachedExitState)) is a *distinct
-//! type per strategy* — tpsl1's is plain, tpsl2's is generic over the wallet type
-//! and carries an E5 launch-cohort memo — so this module enum-wraps both behind a
-//! single API the unified [`StrategyRuntimeCache`](super::runtime_cache) can store
-//! and dispatch by [`StrategyImpl`].
+//! type per strategy* — so this module enum-wraps all of them behind a single API
+//! the unified [`StrategyRuntimeCache`](super::runtime_cache) can store and
+//! dispatch by [`StrategyImpl`].
 //!
 //! Concrete to [`CachedTrade`] (the live token-cache feed is the only producer), so
 //! no extra generics leak into the cache. The dispatch returns the **`&'static str`**
@@ -24,9 +23,9 @@ use super::registry::{StrategyImpl, StrategyParams};
 use super::{swing_1 as sw, tpsl_sniper_1 as t1, tpsl_sniper_2 as t2};
 
 /// Strategy-dispatched exit-ladder params, resolved once per active rule at
-/// [`set_rules`](super::runtime_cache::StrategyRuntimeCache::set_rules) time. The two
-/// inner `LadderParams` are distinct types (tpsl2 adds the E5 cohort ratio), so this
-/// enum-wraps them. Cheap to clone (all scalar fields).
+/// [`set_rules`](super::runtime_cache::StrategyRuntimeCache::set_rules) time. The
+/// inner `LadderParams` are distinct types per strategy, so this enum-wraps them.
+/// Cheap to clone (all scalar fields).
 #[derive(Clone)]
 pub enum LadderParamsImpl {
     Tpsl1(t1::exit::LadderParams),
@@ -90,11 +89,11 @@ impl LadderParamsImpl {
     }
 }
 
-/// Strategy-dispatched per-position exit-walk memo (the running peaks + E5 cohort
-/// net, advanced as trades print). Stored in the runtime cache keyed by position id.
+/// Strategy-dispatched per-position exit-walk memo (the running peaks, advanced
+/// as trades print). Stored in the runtime cache keyed by position id.
 pub enum CachedExitStateImpl {
     Tpsl1(t1::exit::CachedExitState),
-    Tpsl2(t2::exit::CachedExitState<u32>),
+    Tpsl2(t2::exit::CachedExitState),
     /// Boxed: the swing memo carries the swing-scan machine (`SwingParams` + a `Vec`
     /// of finalized legs), far larger than the tpsl variants — boxing keeps every
     /// per-position slot small (the memo is stored, not passed on the hot path).
@@ -103,9 +102,7 @@ pub enum CachedExitStateImpl {
 
 impl CachedExitStateImpl {
     /// Seed a **fully-folded** memo from the retained post-entry history (the
-    /// clock-sweep's first-sight seed). tpsl2 seeds without the E5 cohort — the
-    /// clock path only checks TimeStop/Stall; the cohort is lazily attached if a
-    /// later trade ping needs E5 (see [`advance_and_find_exit`](Self::advance_and_find_exit)).
+    /// clock-sweep's first-sight seed).
     pub fn build(
         trades: &[CachedTrade],
         base: u64,
@@ -129,12 +126,10 @@ impl CachedExitStateImpl {
     /// Seed an **unfolded** memo whose cursor sits at the window front, so the first
     /// [`advance_and_find_exit`](Self::advance_and_find_exit) folds the entire
     /// retained window (reproducing a full re-walk on the position's first ping).
-    /// tpsl2 seeds its E5 cohort here from the retained window when E5 is configured.
     pub fn build_unfolded(
         base: u64,
         entry_price: f64,
         entry_time: DateTime<Utc>,
-        trades: &[CachedTrade],
         params: &LadderParamsImpl,
     ) -> Self {
         match params {
@@ -143,12 +138,10 @@ impl CachedExitStateImpl {
                 entry_price,
                 entry_time,
             )),
-            LadderParamsImpl::Tpsl2(p) => Self::Tpsl2(t2::exit::CachedExitState::build_unfolded(
-                trades,
+            LadderParamsImpl::Tpsl2(_) => Self::Tpsl2(t2::exit::CachedExitState::build_unfolded(
                 base,
                 entry_price,
                 entry_time,
-                p,
             )),
             LadderParamsImpl::Swing1(p) => Self::Swing1(Box::new(
                 sw::exit::CachedSwingExitState::build_unfolded(base, entry_price, entry_time, p),
@@ -159,9 +152,7 @@ impl CachedExitStateImpl {
     /// Fold the genuinely-new trades into the memo **and** evaluate the exit ladder
     /// against them in one pass, returning the first exit reason that fires.
     /// Decision-equivalent to a full re-walk (see the per-strategy `CachedExitState`
-    /// docs). For tpsl2 this lazily attaches the E5 cohort first (a clock-seeded memo
-    /// has none), exactly mirroring the legacy tpsl2 runtime cache. A params/memo
-    /// strategy mismatch is a no-op (`None`) — it never panics.
+    /// docs). A params/memo strategy mismatch is a no-op (`None`) — it never panics.
     pub fn advance_and_find_exit(
         &mut self,
         trades: &[CachedTrade],
@@ -173,7 +164,6 @@ impl CachedExitStateImpl {
                 c.advance_and_find_exit(trades, base, p).map(|r| r.as_str())
             }
             (Self::Tpsl2(c), LadderParamsImpl::Tpsl2(p)) => {
-                c.ensure_cohort_seeded(trades, base, p);
                 c.advance_and_find_exit(trades, base, p).map(|r| r.as_str())
             }
             (Self::Swing1(c), LadderParamsImpl::Swing1(p)) => {

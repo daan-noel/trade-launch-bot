@@ -38,8 +38,8 @@ pub const TRADES_TRIM_SLACK: usize = 1_000;
 /// decision-logic change. The full `Trade` is still what the DB and the
 /// `/api/tokens/:mint/trades` + swing endpoints serve (both read from Postgres).
 ///
-/// Implements [`TradeRow`] (`Wallet = u32`) so every shared entry/exit/cohort fn
-/// runs against it unchanged — exactly as the sweep's `SweepTrade` does. No
+/// Implements [`TradeRow`] (`Wallet = u32`) so every shared entry/exit fn runs
+/// against it unchanged — exactly as the sweep's `SweepTrade` does. No
 /// `tx_signature` is retained (Phase B step 1): the live paper fill resolvers work
 /// by **trade index**, not sig match, and `tx_signature()` returns `""` (same as
 /// `SweepTrade`) — the backtest still reads the real sig off the DB `Trade`, and
@@ -47,8 +47,7 @@ pub const TRADES_TRIM_SLACK: usize = 1_000;
 ///
 /// The wallet is stored as a token-local interned `u32` (Phase B step 2), not the
 /// 44-byte base58 String: `TokenState::interner` maps `u32 → address` and is the
-/// only resident copy of each distinct wallet string. Cohort-set membership in the
-/// entry/exit walks is therefore integer-keyed (a hot-path win too).
+/// only resident copy of each distinct wallet string.
 #[derive(Clone, Debug)]
 pub struct CachedTrade {
     /// Token-local interned wallet id (index into `TokenState::interner`'s table).
@@ -76,9 +75,9 @@ impl CachedTrade {
             is_buy: matches!(t.trade_type, TradeType::Buy),
             sol_amount: t.sol_amount,
             // The cache row keeps token amounts/reserves as `f64` — it's the
-            // short-lived hot-path projection feeding ratio math (cohort flow, spot
-            // price), not storage. Exact integers live in the `Trade` model + DB; we
-            // cast at this boundary.
+            // short-lived hot-path projection feeding ratio math (spot price), not
+            // storage. Exact integers live in the `Trade` model + DB; we cast at
+            // this boundary.
             token_amount: t.token_amount as f64,
             price_per_token: t.price_per_token,
             slot: t.slot,
@@ -922,8 +921,8 @@ mod tests {
     #[test]
     fn cached_trade_matches_trade_on_every_traderow_read() {
         // CachedTrade is a slim projection of Trade; its TradeRow reads (the only
-        // way the live entry/exit/cohort fns see a cache row) must be identical to
-        // the source Trade's, or decision parity silently breaks. Mirrors the sweep
+        // way the live entry/exit fns see a cache row) must be identical to the
+        // source Trade's, or decision parity silently breaks. Mirrors the sweep
         // projection's field-for-field guarantee.
         let now = Utc::now();
         let mut t = Trade::new(

@@ -75,7 +75,6 @@ Entry point: `run_grouped_with_refine(strategy, config, corpus, observer, sink)`
 ```rust
 pub struct TokenFingerprint {
     pub initial_buy_sol_bucket: Option<SolBucket>,  // <0.1, 0.1–0.5, 0.5–1, 1–5, >5
-    pub creator_wallet_cohort: Option<CreatorCohort>, // first_time, repeat, suspicious
     pub launch_hour_utc: Option<u8>,                // 0–23
     pub venue: Option<Venue>,                       // Curve, Amm
     // ... up to 8 fields
@@ -106,7 +105,7 @@ This means: the sweep continues computing while previous groups persist. DB writ
 
 1. **Corpus loaded once per run** — `DbSource::load()` pulls all tokens + their trade slices into `BacktestTradeCache` at the start. No DB queries during the simulate loop.
 
-2. **Entry cache reuse per token** — `Strategy::entry_key(params) -> EntryKey` maps params to a cache key. Tokens with the same entry params (e.g., same scalp gates) reuse the same entry result. For TPSL2: 15 params but entry varies on only 8 → 2^8 = 256 entry cache slots max per token, not 2^15.
+2. **Entry cache reuse per token** — `Strategy::entry_key(params) -> EntryKey` maps params to a cache key. Tokens with the same entry params (e.g., same scalp gates) reuse the same entry result. For TPSL2: 14 params but entry varies on only 8 → 2^8 = 256 entry cache slots max per token, not 2^14.
 
 3. **Buffer recycling in `engine.rs`** — `Vec<SweepTrade>` per-combo buffers are taken from a pool and returned after use. No allocation in the hot loop except for the `ComboAgg` accumulators (allocated once per combo at the start of each token's sweep).
 
@@ -128,6 +127,6 @@ Entry is param-free: `entry_key` always returns the same key → `prepare_token`
 
 ## TPSL2 `Strategy` Impl — `sweep/strategies/tpsl2.rs`
 
-Sweeps all 15 knobs (8 scalp entry + 7 exit ladder). Entry varies on 8 scalp-gate params → `entry_key` hashes those 8 params → `prepare_token` builds launch cohort and resolves entry for each unique `(token, entry_key)` combination.
+Sweeps all 14 knobs (8 scalp entry + 6 exit ladder). Entry varies on 8 scalp-gate params → `entry_key` hashes those 8 params → `prepare_token` is a no-op (`TokenState = ()`) and the entry resolves fresh for each unique `(token, entry_key)` combination.
 
-`prepare_token` is more expensive than TPSL1 (cohort computation requires sorting by `created_at`) but runs once per unique entry-key per token. The 8-param hash typically produces far fewer than 2^8 distinct values in practice (most params have 3–5 sweep values → ~3^5 = 243 distinct entries per token in a typical run).
+The 8-param hash typically produces far fewer than 2^8 distinct values in practice (most params have 3–5 sweep values → ~3^5 = 243 distinct entries per token in a typical run).

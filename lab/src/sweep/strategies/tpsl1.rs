@@ -6,8 +6,8 @@
 //! decision prices.
 //!
 //! TPSL1 differs from TPSL2 in its **param set**: it is the token-creation-filter
-//! strategy, so it has *no* per-trade scalp-continuation entry gates and *no*
-//! cohort-dump exit. The token-filter knobs (initial-buy/CU/max-sol-cost/…) are
+//! strategy, so it has *no* per-trade scalp-continuation entry gates. The
+//! token-filter knobs (initial-buy/CU/max-sol-cost/…) are
 //! entry *criteria* matched at token-creation against `Token` data, not per-trade
 //! params `simulate` can sweep — they're the grouping fingerprint instead. What
 //! remains sweepable is the exit ladder: TP/SL plus the four optional exits.
@@ -385,7 +385,7 @@ impl Strategy for Tpsl1Strategy {
     // Entry is param-free (no per-trade gate), so every combo shares one key and
     // the engine resolves the entry once per token.
     type EntryKey = ();
-    // No param-independent per-token state to hoist (TPSL1 has no cohort gate).
+    // No param-independent per-token state to hoist.
     type TokenState = ();
 
     fn entry_key(&self, _params: &Tpsl1Combo) {}

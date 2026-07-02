@@ -14,8 +14,6 @@ export function exitReasonBadge(reason: string | null | undefined) {
   switch (reason) {
     case 'LiquidityExit':
       return <span className="font-bold text-primary">LIQ</span>;
-    case 'CohortExit':
-      return <span className="font-bold text-red">COHORT</span>;
     case 'TakeProfit':
       return <span className="font-bold text-green">TP</span>;
     case 'StopLoss':

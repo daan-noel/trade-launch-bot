@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS strategy_rules (
     -- The strategy's "brain": token fingerprint + entry gates + exit gates +
     -- tolerance. Shape is per-strategy, validated in app, not by the DB.
     --   tpsl1 → {token:{…}, exit:{take_profit, stop_loss, trailing_stop_pct, …}}
-    --   tpsl2 → tpsl1 keys + {entry:{min_age_secs, pullback_pct, …}, exit:{cohort_ratio}}
+    --   tpsl2 → tpsl1 keys + {entry:{min_age_secs, pullback_pct, …}}
     params                  JSONB       NOT NULL DEFAULT '{}',
 
     created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -148,7 +148,6 @@ CREATE TABLE IF NOT EXISTS strategy_run_metrics (
     n_exit_stall        INTEGER     NOT NULL,
     n_exit_time         INTEGER     NOT NULL,
     n_exit_liquidity    INTEGER     NOT NULL,
-    n_exit_cohort       INTEGER     NOT NULL,              -- 0 for strategies w/o cohort exit
     n_exit_open         INTEGER     NOT NULL
 );
 
@@ -211,7 +210,7 @@ CREATE TABLE IF NOT EXISTS strategy_positions (
                                 CHECK (status IN ('Arming','BuySubmitted','Holding',
                                                   'ExitPending','End','ExitFailed')),
     exit_reason             TEXT,                           -- TakeProfit | StopLoss | TrailingStop |
-                                                            -- Stall | TimeStop | LiquidityExit | CohortExit
+                                                            -- Stall | TimeStop | LiquidityExit
     extra                   JSONB       NOT NULL DEFAULT '{}',  -- strategy-specific overflow beyond target_*
 
     created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),

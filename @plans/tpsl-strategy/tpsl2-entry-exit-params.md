@@ -59,15 +59,13 @@ Each new buy trade
     ↓ pass
 2. alive gate        — token still trading?
     ↓ pass
-3. organic gate      — new buyers showing up?
+3. organic gate      — real net buying pressure?
     ↓ pass
-4. cohort-held gate  — launch insiders already dumped?
+4. liquidity gate    — pool has enough real SOL?
     ↓ pass
-5. liquidity gate    — pool has enough real SOL?
+5. organic-liq gate  — second, independently tunable real-reserves floor?
     ↓ pass
-6. organic-liq gate  — pool depth not dev-deposited?
-    ↓ pass
-7. higher-low gate   — price chart shows continuation shape?
+6. higher-low gate   — price chart shows continuation shape?
     ↓ all pass
 →  ENTER at this trade's price
 ```
@@ -98,26 +96,13 @@ Total SOL traded (buys + sells, all wallets) in a trailing **10-second window** 
 
 **3. `p_entry_min_organic_sol` — Organic Demand**
 
-Net SOL flow from **outside** wallets (non-launch-cohort buyers) must be ≥ N.
-"Net" = total outside buys − total outside sells, cumulative since the token's first trade.
+Net SOL flow (buys − sells, any wallet) since the token's first trade must be ≥ N.
 
-> Example: `2.0` → at least 2 SOL net bought by real new wallets (not the deployer/early insiders).
-
-The "launch cohort" is the set of wallets that bought within `EARLY_COHORT_SLOT_WINDOW` slots of the first trade. Everything else is "outside."
+> Example: `2.0` → at least 2 SOL net bought so far — genuine buying pressure, not just the initial launch trade.
 
 ---
 
-**4. `p_entry_max_cohort_held` — Cohort Overhang (whole-percent)**
-
-The launch cohort's remaining bag, expressed as a fraction of what it ever bought, must be **≤ N%**.
-
-> Example: `30` → the insiders must have sold at least 70% of their tokens before entry is allowed. Prevents buying while the dev/early wallets are still holding a dump overhang.
-
-Formula: `cohort_net_tokens / cohort_bought_tokens ≤ p_entry_max_cohort_held / 100`
-
----
-
-**5. `p_entry_min_liquidity_sol` — Real Reserves Floor**
+**4. `p_entry_min_liquidity_sol` — Real Reserves Floor**
 
 The pool's **real** SOL reserves (from the on-chain `real_sol_reserves` field, NOT virtual) must be ≥ N at the candidate trade.
 
@@ -145,16 +130,15 @@ Uses the most recent trade in the prefix that carries a `real_sol_reserves` snap
 
 ---
 
-**6. `p_entry_min_organic_liq` — Organic Liquidity Floor**
+**5. `p_entry_min_organic_liq` — Organic Liquidity Floor**
 
-Real reserves attributable to **outside buyers** must be ≥ N. Calculated as:
-`real_sol_reserves − cohort_net_sol`
+A second, independently tunable real-reserves floor — reads the same `real_sol_reserves` snapshot as `p_entry_min_liquidity_sol`, so the two can be set to different thresholds.
 
-> Example: `3.0` → at least 3 SOL of pool depth came from real buyers, not just the deployer depositing. Filters single-wallet liquidity traps.
+> Example: `3.0` → at least 3 SOL of real pool depth, checked independently from `p_entry_min_liquidity_sol`.
 
 ---
 
-**7. `p_entry_pullback_pct` + `p_entry_higher_low_secs` — Higher-Low Shape**
+**6. `p_entry_pullback_pct` + `p_entry_higher_low_secs` — Higher-Low Shape**
 
 Waits for a specific price structure: the token must have formed a **higher low** — a swing bottom that is above the previous swing bottom — confirming a continuation pattern.
 
@@ -175,13 +159,12 @@ Once in a position, a **priority ladder** is evaluated on every new trade.
 ```
 Priority  Reason          Param                        Trigger condition
 ────────  ──────────────  ───────────────────────────  ────────────────────────────────────────────
-  1 (top) CohortExit      p_exit_cohort_ratio          cohort net tokens ≤ ratio% of what it bought
-  2       LiquidityExit   p_exit_liquidity_drop_pct    real reserves < peak_reserves × (1 − drop%)
-  3       StopLoss        p_exit_stop_loss             price ≤ entry × (1 − loss%)  [always on]
-  4       TakeProfit      p_exit_take_profit           price ≥ entry × (1 + profit%) [always on]
-  5       TrailingStop    p_exit_trailing_stop_pct     price ≤ peak_since_entry × (1 − trail%)
-  6       Stall           p_exit_stall_secs            no new higher-high for N seconds
-  7 (bot) TimeStop        p_exit_time_stop_secs        held for longer than N seconds total
+  1 (top) LiquidityExit   p_exit_liquidity_drop_pct    real reserves < peak_reserves × (1 − drop%)
+  2       StopLoss        p_exit_stop_loss             price ≤ entry × (1 − loss%)  [always on]
+  3       TakeProfit      p_exit_take_profit           price ≥ entry × (1 + profit%) [always on]
+  4       TrailingStop    p_exit_trailing_stop_pct     price ≤ peak_since_entry × (1 − trail%)
+  5       Stall           p_exit_stall_secs            no new higher-high for N seconds
+  6 (bot) TimeStop        p_exit_time_stop_secs        held for longer than N seconds total
 ```
 
 **Always on:** StopLoss and TakeProfit. All others are off when their param is `0` or `None`.
@@ -192,20 +175,7 @@ Priority  Reason          Param                        Trigger condition
 
 ### Exit Rule Details
 
-**E5 — `p_exit_cohort_ratio` — Cohort Dump (top priority)**
-
-The launch cohort's net holdings as a fraction of everything it ever bought falls to ≤ N%.
-This is the insider/rug-dump detector.
-
-> Example: `5` → exit the moment the cohort has sold down to ≤5% of their original bag.
-
-Formula: `cohort_net_tokens ≤ cohort_bought_tokens × (ratio / 100)`
-
-Why top priority: if the insiders are bailing, nothing else matters.
-
----
-
-**E4 — `p_exit_liquidity_drop_pct` — Liquidity Crash**
+**E4 — `p_exit_liquidity_drop_pct` — Liquidity Crash (top priority)**
 
 Real SOL reserves fall more than N% below their peak since entry.
 
@@ -265,10 +235,10 @@ Can also fire during silence via the clock sweep.
 
 | Trigger | What fires it | Which rules |
 | --- | --- | --- |
-| **Trade-driven** | new trade prints on the mint | ALL 7 rules |
+| **Trade-driven** | new trade prints on the mint | ALL 6 rules |
 | **Clock-driven (1s sweep)** | wall clock, even in silence | Stall (E3) + TimeStop (E2) only |
 
-Price-based rules (CohortExit, LiquidityExit, StopLoss, TakeProfit, TrailingStop) only make sense when a new price observation arrives, so they are trade-only. Time-based rules can fire while the token is dead-quiet.
+Price-based rules (LiquidityExit, StopLoss, TakeProfit, TrailingStop) only make sense when a new price observation arrives, so they are trade-only. Time-based rules can fire while the token is dead-quiet.
 
 ---
 
@@ -279,17 +249,5 @@ All `p_*_pct` and ratio params are stored as **whole percent** (0–100), not fr
 The comparison sites divide by 100 before comparing:
 
 - `p_exit_stop_loss = 20` means `−20%` → checked as `price ≤ entry_price * (1 − 20/100)`
-- `p_entry_max_cohort_held = 30` means `≤30%` held → checked as `ratio ≤ 30/100`
-- `p_exit_cohort_ratio = 5` means `≤5%` remaining → checked as `net ≤ bought * 5/100`
 
 The two exceptions that are always on and unclamped: `p_exit_take_profit` (unbounded above 0) and `p_exit_stop_loss`.
-
----
-
-## Cohort Definition (shared between entry and exit)
-
-The "launch cohort" is the same concept in both entry gates (E4/E5 entry, cohort-held) and exit (E5 CohortExit):
-
-> Any wallet that traded within `EARLY_COHORT_SLOT_WINDOW` slots of the token's very first trade.
-
-This set is fixed once computed — a wallet can't retroactively join the cohort. Computing it once per token and reusing it (rather than rebuilding per gate check) is a major performance optimization in both the live path and the param sweep.
