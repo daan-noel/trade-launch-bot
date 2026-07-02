@@ -13,27 +13,10 @@ use crate::{
     state::{core_state::CoreState, token_cache::TokenState},
 };
 
-/// Map a snake_case buy-arg key to the camelCase form actually persisted by the
-/// ingest writer (`buy_ix_to_json` in `live/src/ingest/consumer.rs`), e.g.
-/// `max_sol_cost` → `maxSolCost`. Historical `initial_buy_instruction` rows are
-/// all camelCase, so readers must accept both; new rows are written snake_case.
-fn buy_arg_camel(field: &str) -> Option<&'static str> {
-    Some(match field {
-        "max_sol_cost" => "maxSolCost",
-        "spendable_sol_in" => "spendableSolIn",
-        "token_amount" => "tokenAmount",
-        "min_tokens_out" => "minTokensOut",
-        _ => return None,
-    })
-}
-
-/// Read a `u64` buy-instruction arg by its snake_case name, tolerating the
-/// legacy camelCase key that older persisted rows carry (see [`buy_arg_camel`]).
+/// Read a `u64` buy-instruction arg by its snake_case name from
+/// `initial_buy_instruction`.
 fn extract_buy_arg_u64(value: &Option<Value>, field: &str) -> Option<u64> {
-    let obj = value.as_ref()?;
-    obj.get(field)
-        .or_else(|| buy_arg_camel(field).and_then(|camel| obj.get(camel)))
-        .and_then(|v| v.as_u64())
+    value.as_ref()?.get(field).and_then(|v| v.as_u64())
 }
 
 // ---------------------------------------------------------------------------
@@ -479,14 +462,8 @@ pub async fn get_token(state: web::Data<Arc<CoreState>>, path: web::Path<String>
     let repo = state.token_repo();
     match repo.find_list_row_by_mint(&mint).await {
         Ok(Some(token)) => {
-            // Read a buy-arg by snake_case name, falling back to the legacy
-            // camelCase key older rows carry (see `extract_buy_arg_u64`).
             let buy_arg = |field: &str| {
-                token.initial_buy_instruction.as_ref().and_then(|ix| {
-                    ix.get(field)
-                        .or_else(|| buy_arg_camel(field).and_then(|camel| ix.get(camel)))
-                        .and_then(|v| v.as_u64())
-                })
+                token.initial_buy_instruction.as_ref().and_then(|ix| ix.get(field).and_then(|v| v.as_u64()))
             };
             HttpResponse::Ok().json(serde_json::json!({
                 "mint_address": token.mint_address,
@@ -827,25 +804,15 @@ pub fn sort_sql_expr(col: &str) -> Option<(&'static str, bool)> {
 // Sort-expression constants that need a JSON/CASE body inline as a `&'static str`.
 const ATH_FEP_SORT: &str = "(CASE WHEN t.initial_buy_sol IS NOT NULL AND t.initial_supply_token > 0 AND (t.initial_buy_sol::float8/1e9 / t.initial_supply_token) > 0 AND i.ath_price IS NOT NULL THEN i.ath_price / (t.initial_buy_sol::float8/1e9 / t.initial_supply_token) END)";
 const CUR_FEP_SORT: &str = "(CASE WHEN t.initial_buy_sol IS NOT NULL AND t.initial_supply_token > 0 AND (t.initial_buy_sol::float8/1e9 / t.initial_supply_token) > 0 AND i.current_price IS NOT NULL THEN i.current_price / (t.initial_buy_sol::float8/1e9 / t.initial_supply_token) END)";
-const TOKEN_AMOUNT_SORT: &str = "(CASE WHEN COALESCE(t.initial_buy_instruction->>'token_amount', t.initial_buy_instruction->>'tokenAmount') ~ '^[0-9]+$' THEN COALESCE(t.initial_buy_instruction->>'token_amount', t.initial_buy_instruction->>'tokenAmount')::float8 END)";
-const MAX_SOL_COST_SORT: &str = "(CASE WHEN COALESCE(t.initial_buy_instruction->>'max_sol_cost', t.initial_buy_instruction->>'maxSolCost') ~ '^[0-9]+$' THEN COALESCE(t.initial_buy_instruction->>'max_sol_cost', t.initial_buy_instruction->>'maxSolCost')::float8 END)";
-const SPENDABLE_SORT: &str = "(CASE WHEN COALESCE(t.initial_buy_instruction->>'spendable_sol_in', t.initial_buy_instruction->>'spendableSolIn') ~ '^[0-9]+$' THEN COALESCE(t.initial_buy_instruction->>'spendable_sol_in', t.initial_buy_instruction->>'spendableSolIn')::float8 END)";
-const MIN_TOKENS_OUT_SORT: &str = "(CASE WHEN COALESCE(t.initial_buy_instruction->>'min_tokens_out', t.initial_buy_instruction->>'minTokensOut') ~ '^[0-9]+$' THEN COALESCE(t.initial_buy_instruction->>'min_tokens_out', t.initial_buy_instruction->>'minTokensOut')::float8 END)";
+const TOKEN_AMOUNT_SORT: &str = "(CASE WHEN t.initial_buy_instruction->>'token_amount' ~ '^[0-9]+$' THEN (t.initial_buy_instruction->>'token_amount')::float8 END)";
+const MAX_SOL_COST_SORT: &str = "(CASE WHEN t.initial_buy_instruction->>'max_sol_cost' ~ '^[0-9]+$' THEN (t.initial_buy_instruction->>'max_sol_cost')::float8 END)";
+const SPENDABLE_SORT: &str = "(CASE WHEN t.initial_buy_instruction->>'spendable_sol_in' ~ '^[0-9]+$' THEN (t.initial_buy_instruction->>'spendable_sol_in')::float8 END)";
+const MIN_TOKENS_OUT_SORT: &str = "(CASE WHEN t.initial_buy_instruction->>'min_tokens_out' ~ '^[0-9]+$' THEN (t.initial_buy_instruction->>'min_tokens_out')::float8 END)";
 const IX_COUNT_SORT: &str = "COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(t.ix_labels) = 'array' THEN t.ix_labels WHEN jsonb_typeof(t.ix_labels->'instructions') = 'array' THEN t.ix_labels->'instructions' ELSE '[]'::jsonb END), 0)";
 
-/// buy-ix JSON numeric reader for the col-filter map (snake/camel tolerant).
+/// buy-ix JSON numeric reader for the col-filter map.
 fn buy_arg_sql(field: &str) -> String {
-    let camel = match field {
-        "max_sol_cost" => "maxSolCost",
-        "spendable_sol_in" => "spendableSolIn",
-        "token_amount" => "tokenAmount",
-        "min_tokens_out" => "minTokensOut",
-        _ => field,
-    };
-    format!(
-        "(CASE WHEN COALESCE(t.initial_buy_instruction->>'{field}', t.initial_buy_instruction->>'{camel}') ~ '^[0-9]+$' \
-          THEN COALESCE(t.initial_buy_instruction->>'{field}', t.initial_buy_instruction->>'{camel}')::float8 END)"
-    )
+    format!("(CASE WHEN t.initial_buy_instruction->>'{field}' ~ '^[0-9]+$' THEN (t.initial_buy_instruction->>'{field}')::float8 END)")
 }
 
 fn ix_count_sql() -> &'static str {

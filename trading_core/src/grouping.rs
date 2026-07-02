@@ -46,33 +46,16 @@ pub struct TokenFingerprint {
     pub ix_labels: Vec<String>,
 }
 
-/// Map a snake_case buy-arg key to the camelCase form the ingest writer actually
-/// persists (`buy_ix_to_json` in `live/src/ingest/consumer.rs`), e.g.
-/// `max_sol_cost` → `maxSolCost`. Historical `initial_buy_instruction` rows are
-/// all camelCase, so every reader must accept both.
-pub fn buy_arg_camel(key: &str) -> Option<&'static str> {
-    Some(match key {
-        "max_sol_cost" => "maxSolCost",
-        "spendable_sol_in" => "spendableSolIn",
-        "token_amount" => "tokenAmount",
-        "min_tokens_out" => "minTokensOut",
-        _ => return None,
-    })
-}
-
 /// Read a lamports value (u64 number or numeric string) from a creation
 /// instruction-args object. Mirrors the live entry path's `instruction_arg_as_sol`
-/// reader (minus the SOL conversion — grouping keys on raw lamports). Tolerates the
-/// legacy camelCase key older persisted rows carry (see [`buy_arg_camel`]).
+/// reader (minus the SOL conversion — grouping keys on raw lamports).
 pub fn extract_lamports(instruction: Option<&Value>, key: &str) -> Option<i64> {
     let obj = instruction?;
-    obj.get(key)
-        .or_else(|| buy_arg_camel(key).and_then(|camel| obj.get(camel)))
-        .and_then(|v| {
-            v.as_i64()
-                .or_else(|| v.as_u64().map(|u| u as i64))
-                .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
-        })
+    obj.get(key).and_then(|v| {
+        v.as_i64()
+            .or_else(|| v.as_u64().map(|u| u as i64))
+            .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
+    })
 }
 
 /// Collect an instruction-labels JSON array into a `Vec<String>`, preserving
@@ -263,14 +246,4 @@ mod tests {
         assert_eq!(extract_lamports(None, "max_sol_cost"), None);
     }
 
-    #[test]
-    fn lamports_reads_persisted_camelcase_keys() {
-        // Ingest writes camelCase (`buy_ix_to_json`); readers query snake_case.
-        // Every persisted row is camelCase, so the fallback must resolve it.
-        let ix = json!({ "type": "BuyV2", "maxSolCost": 674_430_380u64, "tokenAmount": 23_303 });
-        assert_eq!(extract_lamports(Some(&ix), "max_sol_cost"), Some(674_430_380));
-        assert_eq!(extract_lamports(Some(&ix), "token_amount"), Some(23_303));
-        let exact = json!({ "type": "BuyExactSolIn", "spendableSolIn": 300_000_000u64 });
-        assert_eq!(extract_lamports(Some(&exact), "spendable_sol_in"), Some(300_000_000));
-    }
 }

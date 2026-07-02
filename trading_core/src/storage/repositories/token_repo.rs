@@ -726,12 +726,12 @@ mod parity_tests {
         let mints = ["PARITYa", "PARITYb", "PARITYc", "PARITYd", "PARITYe"];
 
         // Diverse fixture: prices, volumes, deadness, missing metrics (LEFT JOIN
-        // nulls), buy-ix args (snake + camel), migrated flag.
+        // nulls), buy-ix args, migrated flag.
         seed(&pool, "PARITYa", "AAA", base + chrono::Duration::minutes(10), 1_000_000_000, 1_000_000,
             serde_json::json!({"token_amount": 500, "max_sol_cost": 2_000_000_000u64}),
             Some(0.002), Some(0.001), 12.5, 40, Some(now - chrono::Duration::hours(3)), false, false).await;
         seed(&pool, "PARITYb", "BBB", base + chrono::Duration::minutes(20), 2_000_000_000, 2_000_000,
-            serde_json::json!({"tokenAmount": 900, "maxSolCost": 5_000_000_000u64}), // camelCase legacy
+            serde_json::json!({"token_amount": 900, "max_sol_cost": 5_000_000_000u64}),
             Some(0.010), Some(0.008), 100.0, 5, Some(now - chrono::Duration::hours(3)), false, true).await;
         seed(&pool, "PARITYc", "CCC", base + chrono::Duration::minutes(30), 500_000_000, 1_000_000,
             serde_json::json!({}), None, None, 0.0, 0, None, true, false).await; // no metrics

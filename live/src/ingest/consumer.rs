@@ -493,28 +493,28 @@ fn buy_ix_to_json(args: &BuyInstructionArgs) -> Value {
     match args {
         BuyInstructionArgs::Buy { token_amount, max_sol_cost } => json!({
             "type": "Buy",
-            "tokenAmount": token_amount,
-            "maxSolCost": max_sol_cost,
+            "token_amount": token_amount,
+            "max_sol_cost": max_sol_cost,
         }),
         BuyInstructionArgs::BuyV2 { token_amount, max_sol_cost } => json!({
             "type": "BuyV2",
-            "tokenAmount": token_amount,
-            "maxSolCost": max_sol_cost,
+            "token_amount": token_amount,
+            "max_sol_cost": max_sol_cost,
         }),
         BuyInstructionArgs::BuyExactSolIn { spendable_sol_in, min_tokens_out } => json!({
             "type": "BuyExactSolIn",
-            "spendableSolIn": spendable_sol_in,
-            "minTokensOut": min_tokens_out,
+            "spendable_sol_in": spendable_sol_in,
+            "min_tokens_out": min_tokens_out,
         }),
         BuyInstructionArgs::BuyExactQuoteIn { spendable_sol_in, min_tokens_out } => json!({
             "type": "BuyExactQuoteIn",
-            "spendableSolIn": spendable_sol_in,
-            "minTokensOut": min_tokens_out,
+            "spendable_sol_in": spendable_sol_in,
+            "min_tokens_out": min_tokens_out,
         }),
         BuyInstructionArgs::BuyExactQuoteInV2 { spendable_sol_in, min_tokens_out } => json!({
             "type": "BuyExactQuoteInV2",
-            "spendableSolIn": spendable_sol_in,
-            "minTokensOut": min_tokens_out,
+            "spendable_sol_in": spendable_sol_in,
+            "min_tokens_out": min_tokens_out,
         }),
     }
 }

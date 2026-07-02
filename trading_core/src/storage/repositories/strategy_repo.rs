@@ -123,7 +123,6 @@ struct StrategyRunMetricsDbRow {
     n_exit_stall: i32,
     n_exit_time: i32,
     n_exit_liquidity: i32,
-    n_exit_cohort: i32,
     n_exit_open: i32,
 }
 
@@ -153,7 +152,6 @@ impl From<StrategyRunMetricsDbRow> for StrategyRunMetrics {
             n_exit_stall: r.n_exit_stall,
             n_exit_time: r.n_exit_time,
             n_exit_liquidity: r.n_exit_liquidity,
-            n_exit_cohort: r.n_exit_cohort,
             n_exit_open: r.n_exit_open,
         }
     }
@@ -300,7 +298,7 @@ const METRICS_COLS: &str = "run_id, rolled_up_at, n_fired, n_open, n_closed, win
     total_pnl_sol, expectancy_sol, mean_pnl_pct, median_pnl_pct, p90_pnl_pct, best_pnl_pct, \
     worst_pnl_pct, std_pnl_pct, profit_factor, avg_holding_secs, median_holding_secs, \
     n_exit_take_profit, n_exit_stop_loss, n_exit_trailing, n_exit_stall, n_exit_time, \
-    n_exit_liquidity, n_exit_cohort, n_exit_open";
+    n_exit_liquidity, n_exit_open";
 
 const POSITION_COLS: &str = "id, run_id, strategy_id, rule_id, mode, mint, wallet, \
     token_program_id, token_account, target_price, target_token_amount, target_time, target_tx, \
@@ -360,7 +358,7 @@ impl From<TableRequest> for PositionQuery {
 /// The token-enrichment keys mirror the frontend `sharedTokenColumns` set 1:1 so
 /// every sortable column on the positions table sorts server-side. `pnl_pct` is
 /// computed from the fill prices; the four buy-arg fields are extracted from the
-/// `initial_buy_instruction` JSONB (camelCase keys — see the ingest writer).
+/// `initial_buy_instruction` JSONB.
 fn position_sort_sql(key: &str) -> Option<&'static str> {
     Some(match key {
         // strategy_positions
@@ -395,11 +393,11 @@ fn position_sort_sql(key: &str) -> Option<&'static str> {
         "dead" => "i.is_dead",
         "first_slot_buy" => "i.first_slot_buy_sol",
         "first_slot_sell" => "i.first_slot_sell_sol",
-        // initial_buy_instruction JSONB (camelCase keys)
-        "token_amount" => "(t.initial_buy_instruction->>'tokenAmount')::numeric",
-        "max_sol_cost" => "(t.initial_buy_instruction->>'maxSolCost')::numeric",
-        "spendable_sol_in" => "(t.initial_buy_instruction->>'spendableSolIn')::numeric",
-        "min_tokens_out" => "(t.initial_buy_instruction->>'minTokensOut')::numeric",
+        // initial_buy_instruction JSONB
+        "token_amount" => "(t.initial_buy_instruction->>'token_amount')::numeric",
+        "max_sol_cost" => "(t.initial_buy_instruction->>'max_sol_cost')::numeric",
+        "spendable_sol_in" => "(t.initial_buy_instruction->>'spendable_sol_in')::numeric",
+        "min_tokens_out" => "(t.initial_buy_instruction->>'min_tokens_out')::numeric",
         _ => return None,
     })
 }
@@ -444,12 +442,12 @@ fn position_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
         "trade_count" => ("i.trade_count", Numeric),
         "first_slot_buy" => ("i.first_slot_buy_sol", Numeric),
         "first_slot_sell" => ("i.first_slot_sell_sol", Numeric),
-        // initial_buy_instruction JSONB (camelCase keys) — text in JSONB, cast to
-        // numeric so the comparison ops work.
-        "token_amount" => ("(t.initial_buy_instruction->>'tokenAmount')::numeric", Numeric),
-        "max_sol_cost" => ("(t.initial_buy_instruction->>'maxSolCost')::numeric", Numeric),
-        "spendable_sol_in" => ("(t.initial_buy_instruction->>'spendableSolIn')::numeric", Numeric),
-        "min_tokens_out" => ("(t.initial_buy_instruction->>'minTokensOut')::numeric", Numeric),
+        // initial_buy_instruction JSONB — text in JSONB, cast to numeric so the
+        // comparison ops work.
+        "token_amount" => ("(t.initial_buy_instruction->>'token_amount')::numeric", Numeric),
+        "max_sol_cost" => ("(t.initial_buy_instruction->>'max_sol_cost')::numeric", Numeric),
+        "spendable_sol_in" => ("(t.initial_buy_instruction->>'spendable_sol_in')::numeric", Numeric),
+        "min_tokens_out" => ("(t.initial_buy_instruction->>'min_tokens_out')::numeric", Numeric),
         _ => return None,
     })
 }
@@ -622,10 +620,10 @@ fn token_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
         "trade_count" => ("i.trade_count", Numeric),
         "first_slot_buy" => ("i.first_slot_buy_sol", Numeric),
         "first_slot_sell" => ("i.first_slot_sell_sol", Numeric),
-        "token_amount" => ("(t.initial_buy_instruction->>'tokenAmount')::numeric", Numeric),
-        "max_sol_cost" => ("(t.initial_buy_instruction->>'maxSolCost')::numeric", Numeric),
-        "spendable_sol_in" => ("(t.initial_buy_instruction->>'spendableSolIn')::numeric", Numeric),
-        "min_tokens_out" => ("(t.initial_buy_instruction->>'minTokensOut')::numeric", Numeric),
+        "token_amount" => ("(t.initial_buy_instruction->>'token_amount')::numeric", Numeric),
+        "max_sol_cost" => ("(t.initial_buy_instruction->>'max_sol_cost')::numeric", Numeric),
+        "spendable_sol_in" => ("(t.initial_buy_instruction->>'spendable_sol_in')::numeric", Numeric),
+        "min_tokens_out" => ("(t.initial_buy_instruction->>'min_tokens_out')::numeric", Numeric),
         _ => return None,
     })
 }
@@ -650,10 +648,10 @@ fn token_sort_sql(key: &str) -> Option<&'static str> {
         "trade_count" => "i.trade_count",
         "first_slot_buy" => "i.first_slot_buy_sol",
         "first_slot_sell" => "i.first_slot_sell_sol",
-        "token_amount" => "(t.initial_buy_instruction->>'tokenAmount')::numeric",
-        "max_sol_cost" => "(t.initial_buy_instruction->>'maxSolCost')::numeric",
-        "spendable_sol_in" => "(t.initial_buy_instruction->>'spendableSolIn')::numeric",
-        "min_tokens_out" => "(t.initial_buy_instruction->>'minTokensOut')::numeric",
+        "token_amount" => "(t.initial_buy_instruction->>'token_amount')::numeric",
+        "max_sol_cost" => "(t.initial_buy_instruction->>'max_sol_cost')::numeric",
+        "spendable_sol_in" => "(t.initial_buy_instruction->>'spendable_sol_in')::numeric",
+        "min_tokens_out" => "(t.initial_buy_instruction->>'min_tokens_out')::numeric",
         _ => return None,
     })
 }
@@ -916,9 +914,9 @@ impl StrategyRepo {
                  expectancy_sol, mean_pnl_pct, median_pnl_pct, p90_pnl_pct, best_pnl_pct,
                  worst_pnl_pct, std_pnl_pct, profit_factor, avg_holding_secs, median_holding_secs,
                  n_exit_take_profit, n_exit_stop_loss, n_exit_trailing, n_exit_stall, n_exit_time,
-                 n_exit_liquidity, n_exit_cohort, n_exit_open)
+                 n_exit_liquidity, n_exit_open)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                    $18, $19, $20, $21, $22, $23, $24, $25)
+                    $18, $19, $20, $21, $22, $23, $24)
             ON CONFLICT (run_id) DO UPDATE SET
                 rolled_up_at = EXCLUDED.rolled_up_at,
                 n_fired = EXCLUDED.n_fired,
@@ -942,7 +940,6 @@ impl StrategyRepo {
                 n_exit_stall = EXCLUDED.n_exit_stall,
                 n_exit_time = EXCLUDED.n_exit_time,
                 n_exit_liquidity = EXCLUDED.n_exit_liquidity,
-                n_exit_cohort = EXCLUDED.n_exit_cohort,
                 n_exit_open = EXCLUDED.n_exit_open
             "#,
         )
@@ -969,7 +966,6 @@ impl StrategyRepo {
         .bind(m.n_exit_stall)
         .bind(m.n_exit_time)
         .bind(m.n_exit_liquidity)
-        .bind(m.n_exit_cohort)
         .bind(m.n_exit_open)
         .execute(&self.pool)
         .await?;

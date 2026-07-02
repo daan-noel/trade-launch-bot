@@ -205,22 +205,11 @@ pub fn build_where_and_order(q: &TokenQuery, now: DateTime<Utc>) -> BuiltQuery {
 // ---------------------------------------------------------------------------
 
 /// SQL numeric expression reading a buy-instruction arg from `initial_buy_instruction`
-/// JSONB, tolerating the legacy camelCase key older rows carry (mirrors
-/// `extract_buy_arg_u64` / `buy_arg_camel`). Non-numeric / absent ⇒ NULL.
+/// JSONB (mirrors `extract_buy_arg_u64`). Non-numeric / absent ⇒ NULL.
 fn buy_arg_expr(field: &str) -> String {
-    let camel = match field {
-        "max_sol_cost" => "maxSolCost",
-        "spendable_sol_in" => "spendableSolIn",
-        "token_amount" => "tokenAmount",
-        "min_tokens_out" => "minTokensOut",
-        _ => field,
-    };
     // `->>` yields text; cast to float8 only when it looks numeric so a stray
     // string doesn't error the whole query (mirrors `as_u64()` returning None).
-    format!(
-        "(CASE WHEN COALESCE(t.initial_buy_instruction->>'{field}', t.initial_buy_instruction->>'{camel}') ~ '^[0-9]+$' \
-          THEN COALESCE(t.initial_buy_instruction->>'{field}', t.initial_buy_instruction->>'{camel}')::float8 END)"
-    )
+    format!("(CASE WHEN t.initial_buy_instruction->>'{field}' ~ '^[0-9]+$' THEN (t.initial_buy_instruction->>'{field}')::float8 END)")
 }
 
 /// jsonb array length of the ix_labels, handling both the bare-array and the
@@ -633,6 +622,5 @@ mod tests {
         // buy-ix JSON arg, lamports → SOL via /1e9
         assert!(b.where_sql.contains("/1e9"));
         assert!(b.where_sql.contains("initial_buy_instruction->>'max_sol_cost'"));
-        assert!(b.where_sql.contains("'maxSolCost'"), "camelCase fallback present");
     }
 }
