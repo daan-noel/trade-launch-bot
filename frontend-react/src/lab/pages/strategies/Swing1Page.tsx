@@ -5,7 +5,7 @@ import { Badge, type BadgeVariant } from 'components/ui/Badge';
 import { SectionDivider } from 'components/ui/SectionDivider';
 import { Button } from 'components/ui/Button';
 import { Input } from 'components/ui/Input';
-import { InlineAlert, Modal } from 'components/ui/Modal';
+import { InlineAlert } from 'components/ui/Modal';
 import { SpecRuleForm } from 'components/strategy/SpecRuleForm';
 import {
   blobToDetectParams,
@@ -23,7 +23,7 @@ import {
 // swing1 rules carry the generic RuleRecord shape, so it reuses tpsl1's rule /
 // position / sim / matched column sets (the fingerprint-only columns just render
 // `-`). This mirrors the live Swing1Page, which reuses the same columns.
-import { ruleColumns, RuleRowProvider } from 'components/tpsl1/ruleColumns';
+import { ruleColumns as allRuleColumns, RuleRowProvider } from 'components/tpsl1/ruleColumns';
 import { SimSummaryCard } from 'components/tpsl1/SimSummaryCard';
 import { RunPositionsPanel } from 'components/strategy/RunPositionsPanel';
 import { PaperResultSection } from '@lab/components/strategies/PaperResultSection';
@@ -44,20 +44,16 @@ import { numericColKeys, toTableRequest, type TableRequestBody } from 'services/
 import type { TableQuery } from 'components/table/types';
 import { useDispatch } from 'react-redux';
 import {
-  activateSwing1Rule,
   clearSwing1PaperResult,
   createSwing1Rule,
   deleteSwing1Rule,
   fetchMatchedPage,
   fetchSimulatedPage,
   fetchSimulatedSummary,
-  fetchSwing1PaperResult,
   fetchSwing1RulePositions,
   fetchSwing1RulePositionsSummary,
   fetchSwing1Rules,
-  pauseSwing1Rule,
   startSimulation,
-  stopSwing1Rule,
   updateSwing1Rule,
 } from 'services/api';
 import { connectPaperTestStream, connectSimulationFinished } from 'services/sse';
@@ -75,7 +71,6 @@ import type { AppDispatch } from '@lab/store';
 import type {
   MatchedTokenRecord,
   PaperResultResponse,
-  PaperRunResponse,
   PaperTestFinishedEvent,
   PositionsSummary,
   RulePositionRecord,
@@ -317,164 +312,16 @@ function inspectFromPosition(r: RulePositionRecord): InspectTarget {
   };
 }
 
-/** Confirm dialog for Stop & close. Spells out how many positions will be
- *  force-exited and hard-warns when the rule trades real (on-chain sells). */
-function StopConfirmDialog({
-  rule,
-  busy,
-  onCancel,
-  onConfirm,
-}: {
-  rule: RuleRecord;
-  busy: boolean;
-  onCancel: () => void;
-  onConfirm: (rule: RuleRecord) => void;
-}) {
-  const open = rule.open_positions;
-  const real = rule.trade_mode === 'real';
-  return (
-    <Modal title={`Stop & close “${rule.rule_name}”?`} open onClose={onCancel}>
-      <div className="space-y-4 text-sm text-text">
-        {open > 0 ? (
-          <p>
-            <span className="font-mono font-bold">{open}</span> open position
-            {open === 1 ? '' : 's'} will be <span className="font-semibold">exited now</span> at the
-            current mark.
-          </p>
-        ) : (
-          <p className="text-text-dim">This rule has no open positions; it will just be deactivated.</p>
-        )}
-        {real && open > 0 && (
-          <InlineAlert variant="error">
-            ⚠ REAL mode — this sends live on-chain sell transactions.
-          </InlineAlert>
-        )}
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={onCancel} disabled={busy}>
-            Cancel
-          </Button>
-          <Button variant="danger" onClick={() => onConfirm(rule)} disabled={busy}>
-            {busy ? 'Stopping…' : 'Stop & close'}
-          </Button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-/** Re-activate prompt for a paper rule: loads the prior run so the user can
- *  choose a fresh run vs continuing it. Defaults to Continue for a resumable
- *  (non-finished) run, Fresh otherwise; warns that continuing a capped run takes
- *  no new entries. Real rules never reach this — they activate directly. */
-function ReactivateDialog({
-  rule,
-  busy,
-  onCancel,
-  onActivate,
-}: {
-  rule: RuleRecord;
-  busy: boolean;
-  onCancel: () => void;
-  onActivate: (rule: RuleRecord, paperRun: 'fresh' | 'continue') => void;
-}) {
-  const [loading, setLoading] = useState(true);
-  const [run, setRun] = useState<PaperRunResponse | null>(null);
-  const [tokenCount, setTokenCount] = useState(0);
-  const [mode, setMode] = useState<'fresh' | 'continue'>('fresh');
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    fetchSwing1PaperResult(rule.id)
-      .then((data) => {
-        if (cancelled) return;
-        setRun(data.run);
-        setTokenCount(data.tokens.length);
-        setMode(data.run && data.run.status !== 'Finished' ? 'continue' : 'fresh');
-      })
-      .catch(() => {
-        if (!cancelled) setRun(null);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [rule.id]);
-
-  const finished = run?.status === 'Finished';
-
-  return (
-    <Modal title={`Activate “${rule.rule_name}”`} open onClose={onCancel}>
-      {loading ? (
-        <p className="text-text-dim">Loading previous run…</p>
-      ) : !run ? (
-        <div className="space-y-4 text-sm text-text">
-          <p>No previous run — a fresh paper run will start.</p>
-          <div className="flex justify-end gap-2">
-            <Button variant="ghost" onClick={onCancel} disabled={busy}>
-              Cancel
-            </Button>
-            <Button variant="primary" onClick={() => onActivate(rule, 'fresh')} disabled={busy}>
-              {busy ? 'Activating…' : 'Activate'}
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <div className="space-y-4 text-sm text-text">
-          <p className="text-text-dim">
-            This rule has a previous run (
-            <span className="font-mono text-text">#{run.run_seq}</span>, {tokenCount} token
-            {tokenCount === 1 ? '' : 's'}). How do you want to start?
-          </p>
-          <div className="space-y-2">
-            <label className="flex cursor-pointer items-start gap-2">
-              <input
-                type="radio"
-                name="paperRun"
-                checked={mode === 'fresh'}
-                onChange={() => setMode('fresh')}
-                className="mt-1"
-              />
-              <span>
-                <span className="font-semibold">Fresh run</span>
-                <span className="text-text-dim"> — reset counters, clear run #{run.run_seq}’s positions.</span>
-              </span>
-            </label>
-            <label className="flex cursor-pointer items-start gap-2">
-              <input
-                type="radio"
-                name="paperRun"
-                checked={mode === 'continue'}
-                onChange={() => setMode('continue')}
-                className="mt-1"
-              />
-              <span>
-                <span className="font-semibold">Continue #{run.run_seq}</span>
-                <span className="text-text-dim"> — keep its tokens &amp; counters, resume taking entries.</span>
-              </span>
-            </label>
-          </div>
-          {finished && mode === 'continue' && (
-            <InlineAlert variant="error">
-              ⚠ Run #{run.run_seq} hit its token cap — continuing won’t take new entries until you
-              raise Max Total Tokens.
-            </InlineAlert>
-          )}
-          <div className="flex justify-end gap-2">
-            <Button variant="ghost" onClick={onCancel} disabled={busy}>
-              Cancel
-            </Button>
-            <Button variant="primary" onClick={() => onActivate(rule, mode)} disabled={busy}>
-              {busy ? 'Activating…' : 'Activate'}
-            </Button>
-          </div>
-        </div>
-      )}
-    </Modal>
-  );
-}
+/** No-op run-control bag — lab rules never execute a live run (no keys, no
+ *  gRPC), so the 'controls' column is filtered out of the rule table below and
+ *  this stands in only to satisfy `RuleRowContextValue`'s shape. */
+const NO_CONTROLS = {
+  busyId: null,
+  onPause: () => {},
+  onResume: () => {},
+  onStop: () => {},
+  onActivate: () => {},
+};
 
 /** The per-row action buttons, split out and memoized so a change to one row's
  *  state (or a global loading flag) only re-renders the rows whose buttons
@@ -697,91 +544,16 @@ export function Swing1Page() {
     return () => clearTimeout(id);
   }, [paperNotice]);
 
-  // Lifecycle controls (activate / pause / stop & close). `lifecycleBusyId`
-  // disables a row's buttons mid-transition; the two dialogs gate the re-activate
-  // (fresh/continue) and stop-and-close (force-exit) flows.
-  const [lifecycleBusyId, setLifecycleBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [stopConfirm, setStopConfirm] = useState<RuleRecord | null>(null);
-  const [reactivate, setReactivate] = useState<RuleRecord | null>(null);
 
   const [sellToken] = useSellTokenMutation();
   const [sellingPositionMint, setSellingPositionMint] = useState<string | null>(null);
 
-  const applyRuleUpdate = useCallback((updated: RuleRecord) => {
-    setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
-  }, []);
-
-  const handlePause = useCallback(
-    async (rule: RuleRecord) => {
-      setLifecycleBusyId(rule.id);
-      setActionError(null);
-      try {
-        applyRuleUpdate(await pauseSwing1Rule(rule.id));
-      } catch (e) {
-        setActionError(e instanceof Error ? e.message : 'Failed to pause rule');
-      } finally {
-        setLifecycleBusyId(null);
-      }
-    },
-    [applyRuleUpdate],
-  );
-
-  const handleActivate = useCallback(
-    async (rule: RuleRecord, paperRun: 'fresh' | 'continue' = 'fresh') => {
-      setLifecycleBusyId(rule.id);
-      setActionError(null);
-      try {
-        applyRuleUpdate(await activateSwing1Rule(rule.id, paperRun));
-        setReactivate(null);
-      } catch (e) {
-        setActionError(e instanceof Error ? e.message : 'Failed to activate rule');
-      } finally {
-        setLifecycleBusyId(null);
-      }
-    },
-    [applyRuleUpdate],
-  );
-
-  const handleActivateClick = useCallback(
-    (rule: RuleRecord) => {
-      // Only prompt fresh-vs-continue when there's an actual choice to make: a
-      // paper rule whose current/last run ever recorded a position. Otherwise
-      // (real rule, or a paper rule with nothing to continue) activate directly.
-      if (rule.trade_mode === 'paper' && rule.total_positions > 0) setReactivate(rule);
-      else handleActivate(rule, 'fresh');
-    },
-    [handleActivate],
-  );
-
-  const handleStopConfirm = useCallback(
-    async (rule: RuleRecord) => {
-      setLifecycleBusyId(rule.id);
-      setActionError(null);
-      try {
-        applyRuleUpdate(await stopSwing1Rule(rule.id));
-        setStopConfirm(null);
-      } catch (e) {
-        setActionError(e instanceof Error ? e.message : 'Failed to stop rule');
-      } finally {
-        setLifecycleBusyId(null);
-      }
-    },
-    [applyRuleUpdate],
-  );
-
-  // Run-control column lives in `ruleColumns`; the lifecycle handlers stay here
-  // and are threaded in. Rebuilt only when the busy row changes (handlers are
-  // stable useCallbacks).
-  const ruleControls = useMemo(
-    () => ({
-      busyId: lifecycleBusyId,
-      onPause: handlePause,
-      onResume: (r: RuleRecord) => handleActivate(r, 'continue'),
-      onStop: (r: RuleRecord) => (r.open_positions === 0 ? void handleStopConfirm(r) : setStopConfirm(r)),
-      onActivate: handleActivateClick,
-    }),
-    [lifecycleBusyId, handlePause, handleActivate, handleStopConfirm, handleActivateClick],
+  // Rule table: no Run-control column — lab never executes a live/paper run
+  // itself (no keys, no gRPC), that's deploy's job. Filtered once per mount.
+  const ruleColumns = useMemo(
+    () => allRuleColumns.filter((c) => c.key !== 'controls'),
+    [],
   );
   // positionColumns/simColumns are referentially-stable module constants — their
   // price cells read the unit/rate from context, so a USD-rate tick no longer
@@ -1084,8 +856,8 @@ export function Swing1Page() {
   // Single context value for the Run/Analyze cells — `ruleColumns` is now a
   // static array, so only the cells (not the column defs) re-read these.
   const rowContext = useMemo(
-    () => ({ controls: ruleControls, analysis: ruleAnalysis }),
-    [ruleControls, ruleAnalysis],
+    () => ({ controls: NO_CONTROLS, analysis: ruleAnalysis }),
+    [ruleAnalysis],
   );
 
   // Row-action cell renders the memoized <RuleActionsCell> (edit/delete only):
@@ -1516,24 +1288,6 @@ export function Swing1Page() {
           target={inspect.target}
           rule={inspect.ruleId ? rules.find((r) => r.id === inspect.ruleId) : undefined}
           onClose={() => setInspect(null)}
-        />
-      )}
-
-      {stopConfirm && (
-        <StopConfirmDialog
-          rule={stopConfirm}
-          busy={lifecycleBusyId === stopConfirm.id}
-          onCancel={() => setStopConfirm(null)}
-          onConfirm={handleStopConfirm}
-        />
-      )}
-
-      {reactivate && (
-        <ReactivateDialog
-          rule={reactivate}
-          busy={lifecycleBusyId === reactivate.id}
-          onCancel={() => setReactivate(null)}
-          onActivate={handleActivate}
         />
       )}
 
