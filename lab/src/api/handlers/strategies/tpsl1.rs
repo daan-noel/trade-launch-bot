@@ -814,7 +814,12 @@ pub(crate) fn paper_position_to_sim_result(
 ) -> BacktestTokenResult {
     let pnl_percent = p.pnl_pct();
     let exit_reason = exit_reason_or_derived(&p).unwrap_or_else(|| "Open".to_string());
-    let pnl_sol = pnl_percent.and_then(|pct| p.entry_token_amount.map(|a| a as f64 * (pct / 100.0)));
+    // entry_token_amount is the token count bought; SOL invested = entry_price ×
+    // tokens, so PnL in SOL = (entry_price × entry_token_amount) × pct/100.
+    let pnl_sol = pnl_percent.and_then(|pct| match (p.entry_price, p.entry_token_amount) {
+        (Some(price), Some(tokens)) => Some(price * tokens as f64 * (pct / 100.0)),
+        _ => None,
+    });
     let holding_secs = match (p.entry_time, p.exit_time) {
         (Some(e), Some(x)) => Some((x - e).num_seconds()),
         _ => None,

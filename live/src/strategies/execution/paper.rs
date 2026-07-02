@@ -157,7 +157,8 @@ pub(crate) fn spawn_entry_fill_poll(
 }
 
 /// tpsl1 paper entry: a fixed-count poll for the first indexed opening fill (cap 5),
-/// recording `buy_amount` as the entry token count. No target, no scalp window.
+/// recording the token count `buy_amount / entry_price` (SOL is display-derived,
+/// same convention as tpsl2/swing1). No target, no scalp window.
 async fn resolve_paper_entry_tpsl1(
     repo: &StrategyRepo,
     token_cache: &TokenCache,
@@ -181,10 +182,13 @@ async fn resolve_paper_entry_tpsl1(
                 .await
                 .unwrap_or_default()
                 .unwrap_or_default();
+            // Paper entry size is the token count `buy_amount / entry_price` (SOL is
+            // display-derived); guard a 0 price so we never divide by ~0.
+            let token_amount = if fill.price > 0.0 { buy_amount / fill.price } else { 0.0 };
             return Some(PaperEntry {
                 target: None,
                 price: fill.price,
-                token_amount: buy_amount,
+                token_amount,
                 tx: entry_tx,
                 time: fill.block_time,
             });

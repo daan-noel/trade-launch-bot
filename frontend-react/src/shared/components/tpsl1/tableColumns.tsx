@@ -131,12 +131,14 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
       label: 'PnL',
       group: 'pnl',
       render: (r) => {
-        if (r.exit_price == null) return <span className="text-text-dim">—</span>;
-        const amt = r.exit_token_amount ?? 0;
+        if (r.exit_price == null || r.pnl_sol == null)
+          return <span className="text-text-dim">—</span>;
+        // `pnl_sol` is the backend's realized SOL PnL — render it directly rather
+        // than the raw `exit_token_amount` token count (which is NOT SOL).
         const positive = (r.pnl_percent ?? 0) >= 0;
         return (
           <span className={cn('font-bold', positive ? 'text-green' : 'text-red')}>
-            <AmountCell sol={amt} />
+            <AmountCell sol={r.pnl_sol} />
           </span>
         );
       },

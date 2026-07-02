@@ -154,6 +154,8 @@ export interface RulePositionRecord {
   exit_time: string | null;
   exit_tx: string | null;
   pnl_percent: number | null;
+  /** Realized SOL PnL from the backend (null until the position closes). */
+  pnl_sol: number | null;
   status: string;
   strategy: string;
   rule_id: string;
