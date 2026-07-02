@@ -473,8 +473,14 @@ pub async fn simulate_swing1_rule(
         )
         .await
         {
-            Ok(summary) => match serde_json::to_string(&summary) {
-                Ok(json) => SimOutcome::Done(json),
+            Ok(summary) => match serde_json::to_value(&summary) {
+                Ok(serde_json::Value::Array(rows)) => {
+                    SimOutcome::Done(std::sync::Arc::new(rows))
+                }
+                Ok(_) => SimOutcome::Failed {
+                    status: 500,
+                    message: "unexpected sim result shape (not an array)".into(),
+                },
                 Err(e) => SimOutcome::Failed {
                     status: 500,
                     message: format!("result serialization failed: {e}"),
@@ -544,6 +550,25 @@ pub async fn get_positions_summary_swing1(
 ) -> impl Responder {
     let repo = app_state.strategy_repo();
     super::positions::positions_summary_by_rule(&repo, rule_id.into_inner(), STRATEGY_ID).await
+}
+
+/// POST /api/strategies/swing1/rules/{rule_id}/simulate/result — one server-side
+/// page of the finished backtest's per-token rows (in-memory, unified TableRequest).
+pub async fn get_simulate_result_swing1(
+    app_state: web::Data<Arc<LocalState>>,
+    rule_id: web::Path<Uuid>,
+    body: web::Json<TableRequest>,
+) -> impl Responder {
+    super::positions::sim_result_page(&app_state, rule_id.into_inner(), body.into_inner())
+}
+
+/// GET /api/strategies/swing1/rules/{rule_id}/simulate/result/summary — whole-run
+/// aggregate over the finished backtest's rows for the Simulated summary card.
+pub async fn get_simulate_result_summary_swing1(
+    app_state: web::Data<Arc<LocalState>>,
+    rule_id: web::Path<Uuid>,
+) -> impl Responder {
+    super::positions::sim_result_summary(&app_state, rule_id.into_inner())
 }
 
 // ---------------------------------------------------------------------------

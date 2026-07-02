@@ -128,11 +128,10 @@ pub async fn simulation_result(
 ) -> impl Responder {
     let rid = rule_id.into_inner();
     match state.sim_results.take(&rid) {
-        // Serialized once at completion — return the bytes verbatim (no re-encode
-        // of a potentially large, uncapped payload).
-        Some(SimOutcome::Done(json)) => HttpResponse::Ok()
-            .content_type("application/json")
-            .body(json),
+        // Legacy whole-blob collector — serialize the parsed rows back to a JSON
+        // array. (The Simulated table now prefers the paged POST endpoint; this
+        // stays for backward compatibility during the frontend transition.)
+        Some(SimOutcome::Done(rows)) => HttpResponse::Ok().json(&*rows),
         Some(SimOutcome::Cancelled) => {
             HttpResponse::Ok().json(serde_json::json!({ "cancelled": true }))
         }

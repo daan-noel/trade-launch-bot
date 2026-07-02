@@ -90,6 +90,14 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 "/strategies/tpsl1/rules/{rule_id}/positions",
                 web::post().to(handlers::strategies::tpsl1::get_positions_by_rule_tpsl1),
             )
+            .route(
+                "/strategies/tpsl1/rules/{rule_id}/simulate/result/summary",
+                web::get().to(handlers::strategies::tpsl1::get_simulate_result_summary_tpsl1),
+            )
+            .route(
+                "/strategies/tpsl1/rules/{rule_id}/simulate/result",
+                web::post().to(handlers::strategies::tpsl1::get_simulate_result_tpsl1),
+            )
             // ── Strategy rule authoring + backtest — tpsl_sniper_2 ──
             .route(
                 "/strategies/tpsl2/rules",
@@ -139,6 +147,14 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 "/strategies/tpsl2/rules/{rule_id}/positions",
                 web::post().to(handlers::strategies::tpsl2::get_positions_by_rule_tpsl2),
             )
+            .route(
+                "/strategies/tpsl2/rules/{rule_id}/simulate/result/summary",
+                web::get().to(handlers::strategies::tpsl2::get_simulate_result_summary_tpsl2),
+            )
+            .route(
+                "/strategies/tpsl2/rules/{rule_id}/simulate/result",
+                web::post().to(handlers::strategies::tpsl2::get_simulate_result_tpsl2),
+            )
             // ── Strategy rule authoring + backtest — swing_1 ──
             .route(
                 "/strategies/swing1/rules",
@@ -187,6 +203,14 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
             .route(
                 "/strategies/swing1/rules/{rule_id}/positions",
                 web::post().to(handlers::strategies::swing1::get_positions_by_rule_swing1),
+            )
+            .route(
+                "/strategies/swing1/rules/{rule_id}/simulate/result/summary",
+                web::get().to(handlers::strategies::swing1::get_simulate_result_summary_swing1),
+            )
+            .route(
+                "/strategies/swing1/rules/{rule_id}/simulate/result",
+                web::post().to(handlers::strategies::swing1::get_simulate_result_swing1),
             )
             // ── Grouped param-sweeps (generic across strategies) ──
             .route(
