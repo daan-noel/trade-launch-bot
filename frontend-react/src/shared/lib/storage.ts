@@ -29,7 +29,7 @@ export const STORAGE_KEYS = {
   sweepSel: `${PREFIX}sweep.sel`,
   /** Map of `{ [tableId]: visibleColumnKey[] }` — all DataTable column toggles. */
   tableCols: `${PREFIX}table.cols`,
-  /** Map of `{ [tableId]: { pageSize, sortCol, sortDir } }` — DataTable sort + page-size. */
+  /** Map of `{ [tableId]: { pageSize, sortKeys } }` — DataTable sort + page-size. */
   tablePrefs: `${PREFIX}table.prefs`,
   /** Notification preferences (real/paper toggles, status filter, fp-param display). */
   notificationPrefs: `${PREFIX}notifications`,
@@ -122,10 +122,6 @@ export interface TablePrefs {
   pageSize?: number;
   /** Multi-key sort; index 0 = primary. */
   sortKeys?: { col: string; dir: 'asc' | 'desc' }[];
-  /** @deprecated Legacy single-sort fields — read for backward compat only. */
-  sortCol?: string | null;
-  /** @deprecated Legacy single-sort fields — read for backward compat only. */
-  sortDir?: 'asc' | 'desc';
 }
 
 type TablePrefsMap = Record<string, TablePrefs>;

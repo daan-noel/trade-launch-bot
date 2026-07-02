@@ -166,10 +166,8 @@ export function DataTable<R>({
     if (tableId) {
       const prefs = getTablePrefs(tableId);
       if (prefs.sortKeys) return prefs.sortKeys;
-      // Backward compat: migrate old single-sort prefs written by a previous build.
-      if (prefs.sortCol) return [{ col: prefs.sortCol, dir: prefs.sortDir ?? 'asc' }];
     }
-    if (defaultSort?.col) return [{ col: defaultSort.col, dir: defaultSort.dir ?? 'asc' }];
+    if (defaultSort?.col) return [{ col: defaultSort.col, dir: defaultSort.dir ?? 'desc' }];
     return [];
   });
   const [search, setSearch] = useState('');
@@ -441,14 +439,14 @@ export function DataTable<R>({
     setSortKeys((prev) => {
       const idx = prev.findIndex((s) => s.col === key);
       if (idx === -1) {
-        // Not yet in sort list: append as lowest-priority at asc.
-        return [...prev, { col: key, dir: 'asc' }];
+        // Not yet in sort list: append as lowest-priority at desc.
+        return [...prev, { col: key, dir: 'desc' }];
       }
-      if (prev[idx].dir === 'asc') {
-        // asc → desc (in-place, same priority).
-        return prev.map((s, i) => (i === idx ? { ...s, dir: 'desc' as SortDir } : s));
+      if (prev[idx].dir === 'desc') {
+        // desc → asc (in-place, same priority).
+        return prev.map((s, i) => (i === idx ? { ...s, dir: 'asc' as SortDir } : s));
       }
-      // desc → none: remove from list.
+      // asc → none: remove from list.
       return prev.filter((_, i) => i !== idx);
     });
   };
