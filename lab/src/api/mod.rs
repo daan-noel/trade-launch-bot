@@ -83,6 +83,10 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 web::get().to(handlers::strategies::tpsl1::get_matched_tokens),
             )
             .route(
+                "/strategies/tpsl1/rules/{rule_id}/positions/summary",
+                web::get().to(handlers::strategies::tpsl1::get_positions_summary_tpsl1),
+            )
+            .route(
                 "/strategies/tpsl1/rules/{rule_id}/positions",
                 web::get().to(handlers::strategies::tpsl1::get_positions_by_rule_tpsl1),
             )
@@ -128,6 +132,10 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 web::get().to(handlers::strategies::tpsl2::get_matched_tokens),
             )
             .route(
+                "/strategies/tpsl2/rules/{rule_id}/positions/summary",
+                web::get().to(handlers::strategies::tpsl2::get_positions_summary_tpsl2),
+            )
+            .route(
                 "/strategies/tpsl2/rules/{rule_id}/positions",
                 web::get().to(handlers::strategies::tpsl2::get_positions_by_rule_tpsl2),
             )
@@ -171,6 +179,10 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
             .route(
                 "/strategies/swing1/rules/{rule_id}/matched",
                 web::get().to(handlers::strategies::swing1::get_matched_tokens),
+            )
+            .route(
+                "/strategies/swing1/rules/{rule_id}/positions/summary",
+                web::get().to(handlers::strategies::swing1::get_positions_summary_swing1),
             )
             .route(
                 "/strategies/swing1/rules/{rule_id}/positions",

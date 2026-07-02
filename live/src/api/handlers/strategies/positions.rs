@@ -13,7 +13,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::state::deploy_state::DeployState;
-use trading_core::models::StrategyPosition;
+use trading_core::models::{PositionsSummary, StrategyPosition};
 use trading_core::storage::repositories::strategy_repo::StrategyRepo;
 use trading_core::strategies::registry::StrategyImpl;
 use trading_core::strategies::swing_1::swing::SwingLeg;
@@ -143,6 +143,20 @@ fn json_positions(positions: Vec<StrategyPosition>) -> HttpResponse {
     HttpResponse::Ok().json(responses)
 }
 
+/// Like [`json_positions`] but also stamps the run/rule-wide total on an
+/// `X-Total-Count` header so the client pager can size itself without the JSON
+/// body shape changing (the array-of-positions contract is preserved).
+fn json_positions_with_total(positions: Vec<StrategyPosition>, total: i64) -> HttpResponse {
+    let responses: Vec<PositionResponse> =
+        positions.into_iter().map(PositionResponse::from).collect();
+    HttpResponse::Ok()
+        .insert_header(("X-Total-Count", total.to_string()))
+        // Expose the count header to the browser fetch (needed when the SPA is
+        // served through the dev proxy / a different origin).
+        .insert_header(("Access-Control-Expose-Headers", "X-Total-Count"))
+        .json(responses)
+}
+
 fn list_error(what: &str, e: anyhow::Error) -> HttpResponse {
     tracing::error!("Failed to {what}: {e}");
     HttpResponse::InternalServerError().json(serde_json::json!({"error": "Failed to load positions"}))
@@ -174,19 +188,67 @@ pub async fn get_positions_by_rule(
         Err(e) => return list_error("load rule", e),
     };
 
-    let result = if rule.trade_mode == "paper" {
+    // Page the rows and count the full population for the pager. Paper rules page
+    // their latest run (they retain only the current run's bag); real rules page
+    // their full lifetime history.
+    let (result, total) = if rule.trade_mode == "paper" {
         match repo.latest_run(rule_id, "paper").await {
-            Ok(Some(run)) => repo.find_positions_by_run_paged(run.id, limit, offset).await,
-            Ok(None) => Ok(Vec::new()),
+            Ok(Some(run)) => (
+                repo.find_positions_by_run_paged(run.id, limit, offset).await,
+                repo.count_positions_by_run(run.id).await,
+            ),
+            Ok(None) => (Ok(Vec::new()), Ok(0)),
             Err(e) => return list_error("load paper run", e),
         }
     } else {
-        repo.find_positions_by_rule_paged(rule_id, limit, offset).await
+        (
+            repo.find_positions_by_rule_paged(rule_id, limit, offset).await,
+            repo.count_positions_by_rule(rule_id).await,
+        )
+    };
+
+    match (result, total) {
+        (Ok(positions), Ok(total)) => json_positions_with_total(positions, total),
+        (Err(e), _) | (_, Err(e)) => list_error("load positions for rule", e),
+    }
+}
+
+/// GET /api/strategies/{strategy}/rules/{rule_id}/positions/summary
+///
+/// Run/rule-wide position aggregates for the page's **Positions Summary** panel,
+/// computed server-side in SQL over the *entire* population (never a page) with the
+/// same win/closed/open semantics as the per-rule runtime counters — so the summary
+/// panel and the strategy-table row always agree. Paper rules aggregate their latest
+/// run; real rules aggregate all their positions.
+pub async fn get_positions_summary_by_rule(
+    app_state: web::Data<Arc<DeployState>>,
+    path: web::Path<(String, Uuid)>,
+) -> impl Responder {
+    let (strategy, rule_id) = path.into_inner();
+    if let Err(resp) = strategy_id(&strategy) {
+        return resp;
+    }
+    let repo = repo(&app_state);
+
+    let rule = match repo.find_rule(rule_id).await {
+        Ok(Some(rule)) => rule,
+        Ok(None) => return HttpResponse::Ok().json(PositionsSummary::default()),
+        Err(e) => return list_error("load rule", e),
+    };
+
+    let result = if rule.trade_mode == "paper" {
+        match repo.latest_run(rule_id, "paper").await {
+            Ok(Some(run)) => repo.positions_summary_by_run(run.id).await,
+            Ok(None) => Ok(PositionsSummary::default()),
+            Err(e) => return list_error("load paper run", e),
+        }
+    } else {
+        repo.positions_summary_by_rule(rule_id).await
     };
 
     match result {
-        Ok(positions) => json_positions(positions),
-        Err(e) => list_error("load positions for rule", e),
+        Ok(summary) => HttpResponse::Ok().json(summary),
+        Err(e) => list_error("load positions summary", e),
     }
 }
 

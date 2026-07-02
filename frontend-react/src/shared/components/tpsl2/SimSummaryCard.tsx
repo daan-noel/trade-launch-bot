@@ -1,5 +1,5 @@
 import { useMemo, type ReactNode } from 'react';
-import type { SimulatedTokenResult } from 'types';
+import type { PositionsSummary, SimulatedTokenResult } from 'types';
 import { formatAge } from 'utils/format';
 import type { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { cn } from 'lib/cn';
@@ -24,6 +24,14 @@ interface SimSummaryCardProps {
   onClose?: () => void;
   /** Card heading; defaults to "Simulation Results". */
   title?: string;
+  /** Server-computed run/rule-wide aggregates. When provided, the headline +
+   *  detail stats render THESE (correct over the whole run, backend win rule)
+   *  instead of deriving from `tokens` — which, under server-side pagination, is
+   *  only the current page. The per-exit-reason strip stays token-derived (the
+   *  server summary doesn't carry exit-reason breakdowns), so it simply doesn't
+   *  render when the card is fed a `summary` with an empty `tokens` list. Sim/
+   *  backtest callers omit `summary` and keep the full client-side derivation. */
+  summary?: PositionsSummary | null;
 }
 
 export function SimSummaryCard({
@@ -32,10 +40,12 @@ export function SimSummaryCard({
   price,
   onClose,
   title = 'Simulation Results',
+  summary,
 }: SimSummaryCardProps) {
-  // All aggregates are pure functions of `tokens`, so derive them once and
-  // memoize: otherwise these ~10 filter/reduce passes re-run on every render
-  // (price-unit ticks, parent re-renders) for a list that hasn't changed.
+  // All aggregates are pure functions of the inputs, so derive them once and
+  // memoize. When the server `summary` is supplied it wins for the headline +
+  // detail stats — the client-side token derivation is only the current page under
+  // pagination. `exitCounts` stays token-derived (server carries no breakdown).
   const {
     tokensMatched,
     openCount,
@@ -54,6 +64,38 @@ export function SimSummaryCard({
     worst,
     exitCounts,
   } = useMemo(() => {
+    const exitCountsAgg = tokens.reduce<Record<string, { total: number; wins: number; losses: number }>>(
+      (acc, t) => {
+        if (!acc[t.exit_reason]) acc[t.exit_reason] = { total: 0, wins: 0, losses: 0 };
+        acc[t.exit_reason].total += 1;
+        if (t.exit_reason !== 'Open') {
+          if ((t.pnl_sol ?? 0) >= 0) acc[t.exit_reason].wins += 1;
+          else acc[t.exit_reason].losses += 1;
+        }
+        return acc;
+      },
+      {},
+    );
+    if (summary) {
+      return {
+        tokensMatched: summary.tokens,
+        openCount: summary.open,
+        winCount: summary.win,
+        lossCount: summary.loss,
+        winRate: summary.win_rate,
+        totalEntry: summary.total_entry_sol,
+        totalHolding: summary.total_holding_sol,
+        totalGains: summary.total_gains_sol,
+        totalLosses: summary.total_losses_sol,
+        totalPnl: summary.total_pnl_sol,
+        avgPnl: summary.closed > 0 ? summary.avg_pnl_pct : null,
+        avgEntry: summary.tokens > 0 ? summary.total_entry_sol / summary.tokens : null,
+        avgHold: summary.closed > 0 ? summary.avg_hold_secs : null,
+        best: summary.best_pct,
+        worst: summary.worst_pct,
+        exitCounts: exitCountsAgg,
+      };
+    }
     const tokensMatched = tokens.length;
     const openCount = tokens.filter((t) => t.exit_reason === 'Open').length;
     const closed = tokens.filter((t) => t.exit_reason !== 'Open');
@@ -95,23 +137,9 @@ export function SimSummaryCard({
       return m == null ? t.pnl_percent : Math.min(m, t.pnl_percent);
     }, null);
 
-    const exitCounts = tokens.reduce<Record<string, { total: number; wins: number; losses: number }>>(
-      (acc, t) => {
-        if (!acc[t.exit_reason]) acc[t.exit_reason] = { total: 0, wins: 0, losses: 0 };
-        acc[t.exit_reason].total += 1;
-        if (t.exit_reason !== 'Open') {
-          if ((t.pnl_sol ?? 0) >= 0) acc[t.exit_reason].wins += 1;
-          else acc[t.exit_reason].losses += 1;
-        }
-        return acc;
-      },
-      {},
-    );
-
     return {
       tokensMatched,
       openCount,
-      closedCount,
       winCount,
       lossCount,
       winRate,
@@ -125,9 +153,9 @@ export function SimSummaryCard({
       avgHold,
       best,
       worst,
-      exitCounts,
+      exitCounts: exitCountsAgg,
     };
-  }, [tokens]);
+  }, [tokens, summary]);
 
   // Headline KPIs, shown large; the rest read as a lighter secondary strip.
   const heroStats = [

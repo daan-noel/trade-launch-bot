@@ -82,6 +82,51 @@ pub struct StrategyRunMetrics {
     pub n_exit_open: i32,
 }
 
+/// Run-wide (or rule-wide) position aggregates for the strategy page's
+/// **Positions Summary** panel. Computed server-side in SQL over the *entire*
+/// population (never a page), using the same win/closed/open semantics as the
+/// per-rule runtime counters ([`StrategyPosition::is_win`] etc.) so the summary
+/// panel and the strategy-table row always agree.
+///
+/// SOL fields are human SOL (f64) — the SQL sums lamports and the repo divides.
+/// A "win" is a clean `End` exit with positive realized SOL; every other closed
+/// position (incl. `ExitFailed` and breakeven) is a loss. `tokens` counts entered
+/// positions (a real entry landed); `open` counts holding-index rows
+/// (`Holding`/`Arming`/`BuySubmitted`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PositionsSummary {
+    /// Entered positions (a real entry fill landed) — the summary's "Tokens".
+    pub tokens: i64,
+    /// Still in the holding index (`Holding`/`Arming`/`BuySubmitted`).
+    pub open: i64,
+    /// Clean `End` exits with positive realized SOL.
+    pub win: i64,
+    /// Every other closed position (loss/breakeven/`ExitFailed`).
+    pub loss: i64,
+    /// Closed positions = `win + loss` (the win-rate denominator).
+    pub closed: i64,
+    /// `win / closed * 100` (0 when nothing closed).
+    pub win_rate: f64,
+    /// Mean realized PnL % across closed positions (0 when nothing closed).
+    pub avg_pnl_pct: f64,
+    /// Sum of realized SOL PnL across closed positions (human SOL).
+    pub total_pnl_sol: f64,
+    /// Sum of entry cost across entered positions (human SOL).
+    pub total_entry_sol: f64,
+    /// Entry cost still deployed in open (holding) positions (human SOL).
+    pub total_holding_sol: f64,
+    /// Sum of positive realized PnL across winning closes (human SOL).
+    pub total_gains_sol: f64,
+    /// Sum of |realized PnL| across losing closes (human SOL, positive).
+    pub total_losses_sol: f64,
+    /// Mean hold time (seconds) across closed positions (0 when none).
+    pub avg_hold_secs: f64,
+    /// Best closed PnL % (`None` when nothing closed).
+    pub best_pct: Option<f64>,
+    /// Worst closed PnL % (`None` when nothing closed).
+    pub worst_pct: Option<f64>,
+}
+
 /// A single position lifecycle within a run. Backs the `strategy_positions`
 /// table. JSONB signature lists are `serde_json::Value`; the Postgres `TEXT[]`
 /// `submitted_buy_signatures` maps to `Vec<String>`.

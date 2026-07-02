@@ -61,6 +61,12 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
             // (`tpsl1`/`tpsl2` aliases or canonical ids). More-specific
             // `positions/mint|wallet/...` are registered before the catch-all
             // `positions/{position_id}` so they win the match.
+            // Run/rule-wide aggregates for the Positions Summary panel — registered
+            // before the paginated list route (distinct `/summary` suffix, no clash).
+            .route(
+                "/strategies/{strategy}/rules/{rule_id}/positions/summary",
+                web::get().to(handlers::strategies::positions::get_positions_summary_by_rule),
+            )
             .route(
                 "/strategies/{strategy}/rules/{rule_id}/positions",
                 web::get().to(handlers::strategies::positions::get_positions_by_rule),

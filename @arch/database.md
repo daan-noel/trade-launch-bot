@@ -81,7 +81,7 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
 | `grouped_sweep_repo.rs` | `<strategy>_grouped_sweep_*` | incremental writes: `insert_run`, `append_group`, `finalize_completed`, `mark_cancelled`; compaction: `fetch_combo_metrics_for_group`, `delete_combos_except`, `vacuum_full_results` |
 | `wallet_repo.rs` | wallets | `touch_last_seen_many` |
 | `wallet_profile_repo.rs` / `wallet_profile_tag_repo.rs` | wallet_profiles, tags | CRUD |
-| `strategy_repo.rs` | strategy_rules, strategy_runs, strategy_run_metrics, strategy_positions | `find_rule`, `insert_run`, `insert_position`, `update_position_status`, `mark_buy_submitted`, `find_all_holding`, `find_all_exit_pending`, `find_all_buy_submitted`, `find_reusable_token_account`, `fail_stale_exit_pending`, `finalize_run` |
+| `strategy_repo.rs` | strategy_rules, strategy_runs, strategy_run_metrics, strategy_positions | `find_rule`, `insert_run`, `insert_position`, `update_position_status`, `mark_buy_submitted`, `find_all_holding`, `find_all_exit_pending`, `find_all_buy_submitted`, `find_reusable_token_account`, `fail_stale_exit_pending`, `finalize_run`, `find_positions_by_{run,rule}_paged` + `count_positions_by_{run,rule}` (page + total for the positions table's `X-Total-Count`), `positions_summary_by_{run,rule}` (single `COUNT/SUM FILTER` aggregate for the Positions Summary panel — win = `status='End' AND exit_sol>entry_sol`, mirrors `StrategyPosition::is_win`; SOL sums cast BIGINT→human) |
 
 ## Rules
 

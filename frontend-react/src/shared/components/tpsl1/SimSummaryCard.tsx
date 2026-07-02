@@ -1,5 +1,5 @@
 import { useMemo, type ReactNode } from 'react';
-import type { SimulatedTokenResult } from 'types';
+import type { PositionsSummary, SimulatedTokenResult } from 'types';
 import { formatAge } from 'utils/format';
 import type { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { cn } from 'lib/cn';
@@ -13,6 +13,32 @@ interface SimSummaryCardProps {
   onClose?: () => void;
   /** Card heading; defaults to "Simulation Results". */
   title?: string;
+  /** Server-computed run/rule-wide aggregates. When provided, the card renders
+   *  THESE (correct over the whole run, and using the backend win rule) instead of
+   *  deriving from `tokens` — which, under server-side pagination, is only the
+   *  current page. Sim/backtest callers omit it and keep the client-side derivation
+   *  over the full in-memory token list. */
+  summary?: PositionsSummary | null;
+}
+
+/** Shape the card renders from — the same fields whether derived client-side (sim)
+ *  or supplied by the server (live positions). */
+interface CardAggregates {
+  tokensMatched: number;
+  openCount: number;
+  winCount: number;
+  lossCount: number;
+  winRate: number;
+  totalEntry: number;
+  totalHolding: number;
+  totalGains: number;
+  totalLosses: number;
+  totalPnl: number;
+  avgPnl: number | null;
+  avgEntry: number | null;
+  avgHold: number | null;
+  best: number | null;
+  worst: number | null;
 }
 
 export function SimSummaryCard({
@@ -21,10 +47,12 @@ export function SimSummaryCard({
   price,
   onClose,
   title = 'Simulation Results',
+  summary,
 }: SimSummaryCardProps) {
-  // All aggregates are pure functions of `tokens`, so derive them once and
-  // memoize: otherwise these ~10 filter/reduce passes re-run on every render
-  // (price-unit ticks, parent re-renders) for a list that hasn't changed.
+  // All aggregates are pure functions of the inputs, so derive them once and
+  // memoize: otherwise these passes re-run on every render (price-unit ticks,
+  // parent re-renders). When the server `summary` is supplied it wins — the
+  // client-side token derivation is only the current page under pagination.
   const {
     tokensMatched,
     openCount,
@@ -41,7 +69,26 @@ export function SimSummaryCard({
     avgHold,
     best,
     worst,
-  } = useMemo(() => {
+  } = useMemo<CardAggregates>(() => {
+    if (summary) {
+      return {
+        tokensMatched: summary.tokens,
+        openCount: summary.open,
+        winCount: summary.win,
+        lossCount: summary.loss,
+        winRate: summary.win_rate,
+        totalEntry: summary.total_entry_sol,
+        totalHolding: summary.total_holding_sol,
+        totalGains: summary.total_gains_sol,
+        totalLosses: summary.total_losses_sol,
+        totalPnl: summary.total_pnl_sol,
+        avgPnl: summary.closed > 0 ? summary.avg_pnl_pct : null,
+        avgEntry: summary.tokens > 0 ? summary.total_entry_sol / summary.tokens : null,
+        avgHold: summary.closed > 0 ? summary.avg_hold_secs : null,
+        best: summary.best_pct,
+        worst: summary.worst_pct,
+      };
+    }
     const tokensMatched = tokens.length;
     const openCount = tokens.filter((t) => t.exit_reason === 'Open').length;
     const closed = tokens.filter((t) => t.exit_reason !== 'Open');
@@ -98,7 +145,7 @@ export function SimSummaryCard({
       best,
       worst,
     };
-  }, [tokens]);
+  }, [tokens, summary]);
 
   // Headline KPIs, shown large; the rest read as a lighter secondary strip.
   const heroStats = [

@@ -226,6 +226,36 @@ export interface TpslPositionDelta {
   totalPositions: number;
 }
 
+/** One page of a rule's positions plus the run/rule-wide `total` (from the
+ *  `X-Total-Count` header) so the pager can size itself without fetching the
+ *  whole population. */
+export interface RulePositionsPage {
+  items: RulePositionRecord[];
+  total: number;
+}
+
+/** Run/rule-wide position aggregates for the Positions Summary panel — computed
+ *  server-side over the *entire* population (never a page), mirroring the backend
+ *  `PositionsSummary`. `tokens` = entered positions; `open` = holding-index rows;
+ *  a win is a clean `End` exit with positive realized SOL. SOL fields are human SOL. */
+export interface PositionsSummary {
+  tokens: number;
+  open: number;
+  win: number;
+  loss: number;
+  closed: number;
+  win_rate: number;
+  avg_pnl_pct: number;
+  total_pnl_sol: number;
+  total_entry_sol: number;
+  total_holding_sol: number;
+  total_gains_sol: number;
+  total_losses_sol: number;
+  avg_hold_secs: number;
+  best_pct: number | null;
+  worst_pct: number | null;
+}
+
 export interface MatchedTokenRecord {
   mint: string;
   symbol: string;

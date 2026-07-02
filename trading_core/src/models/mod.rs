@@ -19,7 +19,9 @@ pub mod wallet_profile_tag;
 pub use paper_run::{PaperRun, PaperRunStatus};
 pub use position::{Position, PositionResponse, PositionStatus};
 pub use raw_tx::RawTx;
-pub use strategy::{StrategyPosition, StrategyRule, StrategyRun, StrategyRunMetrics};
+pub use strategy::{
+    PositionsSummary, StrategyPosition, StrategyRule, StrategyRun, StrategyRunMetrics,
+};
 pub use token::Token;
 pub use token_sync_state::TokenSyncState;
 // Old per-strategy rule models — retained until Phase 2 (strategy registry unify)

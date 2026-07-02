@@ -31,7 +31,6 @@ import { datetimeLocalToUtcWallClock, formatIso } from 'utils/date';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { usePolledRules } from 'hooks/usePolledRules';
 import { useRulePositions } from 'hooks/useRulePositions';
-import { useLocalStorage } from 'hooks/useLocalStorage';
 import { useDispatch } from 'react-redux';
 import {
   activateTpsl1Rule,
@@ -40,6 +39,7 @@ import {
   deleteTpsl1Rule,
   fetchTpsl1PaperResult,
   fetchTpsl1RulePositions,
+  fetchTpsl1RulePositionsSummary,
   fetchTpsl1Rules,
   pauseTpsl1Rule,
   stopTpsl1Rule,
@@ -67,8 +67,6 @@ import type {
   SimulatedTokenResult,
 } from 'types';
 import { cn } from 'lib/cn';
-import { STORAGE_KEYS } from 'lib/storage';
-import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 
 const TPSL1_SPEC = getSpec('tpsl1');
 
@@ -687,13 +685,20 @@ export function Tpsl1Page() {
     usePolledRules(fetchTpsl1Rules, 'tpsl1');
 
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
-  // Positions for the selected rule: abortable fetch on select, then a silent
-  // poll that pauses when the tab is hidden and stops once the rule is settled.
+  // Positions for the selected rule: server-side paged page + run-wide summary,
+  // kept live via SSE / a settle-gated poll (mirrors the live page).
+  const [posPage, setPosPage] = useState(1);
+  const [posPageSize, setPosPageSize] = useState(20);
   const {
     positions,
+    total: positionsTotal,
+    summary: positionsSummary,
     loading: positionsLoading,
     error: positionsError,
-  } = useRulePositions(selectedRuleId, rules, fetchTpsl1RulePositions, 'tpsl1');
+  } = useRulePositions(
+    selectedRuleId, rules, fetchTpsl1RulePositions,
+    fetchTpsl1RulePositionsSummary, 'tpsl1', posPage, posPageSize,
+  );
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editRule, setEditRule] = useState<RuleRecord | null>(null);
@@ -1186,32 +1191,11 @@ export function Tpsl1Page() {
   const isRealRuleSelected = selectedRuleMode === 'real';
   const isPaperRuleSelected = selectedRuleId != null && selectedRuleMode != null && !isRealRuleSelected;
 
-  const [showPending, setShowPending] = useLocalStorage(`${STORAGE_KEYS.showPending}.tpsl1_lab`, false);
-
   // Split the single rule list into real vs paper so each renders in its own
   // table (real on top, flagged as live). Pure client-side partition of the
   // already-fetched rows — no extra fetch, same RuleRecord objects.
   const realRules = useMemo(() => rules.filter((r) => r.trade_mode === 'real'), [rules]);
   const paperRules = useMemo(() => rules.filter((r) => r.trade_mode !== 'real'), [rules]);
-
-  // Sim-shaped view of the live positions, feeding the Positions summary card.
-  // Exclude pre-fill rows (Arming = watching for the entry trigger; BuySubmitted =
-  // buy in flight) — they haven't filled yet and skew W/L/open tallies.
-  const isPreFill = (s: string) => s === 'Arming' || s === 'BuySubmitted';
-  const positionSummaryTokens = useMemo(
-    () => positions.filter((p) => !isPreFill(p.status)).map(positionToSimResult),
-    [positions],
-  );
-
-  const pendingCount = useMemo(
-    () => positions.filter((p) => isPreFill(p.status)).length,
-    [positions],
-  );
-
-  const visiblePositions = useMemo(
-    () => (showPending ? positions : positions.filter((p) => !isPreFill(p.status))),
-    [positions, showPending],
-  );
 
   // Stable row-select handlers so the result tables' memoized rows survive an
   // unrelated page render (these closures are passed straight to DataTable).
@@ -1293,38 +1277,33 @@ export function Tpsl1Page() {
           title="Positions"
           marker="bg-info"
           badge="info"
-          count={positionsLoading || positionsError ? undefined : visiblePositions.length}
+          count={positionsError ? undefined : positionsTotal}
           subtitle={selectedRuleName ?? undefined}
-          action={
-            pendingCount > 0 ? (
-              <VisibilityToggleButton
-                visible={showPending}
-                onToggle={() => setShowPending((v) => !v)}
-                label="pending entry"
-              >
-                {showPending ? `Hide pending (${pendingCount})` : `Show pending (${pendingCount})`}
-              </VisibilityToggleButton>
-            ) : undefined
-          }
         />
-        {positionsLoading && <p className="text-text-dim">Loading positions…</p>}
         {positionsError && <InlineAlert variant="error">{positionsError}</InlineAlert>}
-        {!positionsLoading && !positionsError && positionSummaryTokens.length > 0 && (
+        {/* Summary is server-computed over the whole run (not the visible page). */}
+        {!positionsError && positionsSummary && positionsSummary.tokens > 0 && (
           <SimSummaryCard
             title="Positions Summary"
             ruleName={selectedRuleName ?? ''}
-            tokens={positionSummaryTokens}
+            tokens={[]}
+            summary={positionsSummary}
             price={price}
           />
         )}
-        {!positionsLoading && !positionsError && (
+        {!positionsError && (
           <DataTable
             columns={posCols}
-            rows={mergeTokenData(visiblePositions, tokenMap)}
+            rows={mergeTokenData(positions, tokenMap)}
             rowKey={keyById}
             selectedKey={inspect?.table === 'positions' ? inspect.key : null}
             onSelect={onSelectPosition}
             rowActions={isRealRuleSelected ? positionRowActions : undefined}
+            serverSide
+            serverTotal={positionsTotal}
+            onQueryChange={(q) => { setPosPage(q.page); setPosPageSize(q.pageSize); }}
+            loading={positionsLoading}
+            resetKey={selectedRuleId ?? ''}
             defaultPageSize={20}
             pageSizeOptions={[20, 50, 100]}
             colFilters

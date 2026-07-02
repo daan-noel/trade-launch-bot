@@ -38,6 +38,42 @@ export interface AppSettings {
   gap_replay_max_window_secs: number;
 }
 
+/** Options for a paginated rule-positions fetch. */
+export interface PositionsPageOpts {
+  limit: number;
+  offset: number;
+  signal?: AbortSignal;
+}
+
+/**
+ * Fetch one page of a rule's positions for `strategySeg` (`tpsl1`/`tpsl2`/`swing1`),
+ * reading the run/rule-wide `total` off the `X-Total-Count` header so the pager can
+ * size itself without pulling the whole population. Kept as its own `fetch` (not the
+ * shared `request` wrapper) precisely because it needs the response header. Error +
+ * abort semantics mirror `request`.
+ */
+async function fetchRulePositionsPage(
+  strategySeg: string,
+  ruleId: string,
+  { limit, offset, signal }: PositionsPageOpts,
+): Promise<import('types').RulePositionsPage> {
+  const url =
+    `${API_BASE}/api/strategies/${strategySeg}/rules/${ruleId}/positions` +
+    `?limit=${limit}&offset=${offset}`;
+  const resp = await fetch(url, { signal });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => null);
+    const msg =
+      body && typeof body === 'object' && 'error' in body
+        ? String((body as { error: string }).error)
+        : `HTTP ${resp.status}`;
+    throw new Error(msg);
+  }
+  const items = (await resp.json()) as import('types').RulePositionRecord[];
+  const total = Number(resp.headers.get('X-Total-Count') ?? items.length);
+  return { items, total: Number.isFinite(total) ? total : items.length };
+}
+
 export async function fetchTokens(
   search: string,
   limit: number,
@@ -229,9 +265,20 @@ export async function clearTpsl1PaperResult(ruleId: string): Promise<void> {
 
 export async function fetchTpsl1RulePositions(
   ruleId: string,
+  opts: PositionsPageOpts,
+): Promise<import('types').RulePositionsPage> {
+  return fetchRulePositionsPage('tpsl1', ruleId, opts);
+}
+
+/** Run/rule-wide position aggregates for the tpsl1 Positions Summary panel. */
+export async function fetchTpsl1RulePositionsSummary(
+  ruleId: string,
   signal?: AbortSignal,
-): Promise<import('types').RulePositionRecord[]> {
-  return request(`${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/positions`, { signal });
+): Promise<import('types').PositionsSummary> {
+  return request(
+    `${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/positions/summary`,
+    { signal },
+  );
 }
 
 /**
@@ -356,9 +403,20 @@ export async function clearTpsl2PaperResult(ruleId: string): Promise<void> {
 
 export async function fetchTpsl2RulePositions(
   ruleId: string,
+  opts: PositionsPageOpts,
+): Promise<import('types').RulePositionsPage> {
+  return fetchRulePositionsPage('tpsl2', ruleId, opts);
+}
+
+/** Run/rule-wide position aggregates for the tpsl2 Positions Summary panel. */
+export async function fetchTpsl2RulePositionsSummary(
+  ruleId: string,
   signal?: AbortSignal,
-): Promise<import('types').RulePositionRecord[]> {
-  return request(`${API_BASE}/api/strategies/tpsl2/rules/${ruleId}/positions`, { signal });
+): Promise<import('types').PositionsSummary> {
+  return request(
+    `${API_BASE}/api/strategies/tpsl2/rules/${ruleId}/positions/summary`,
+    { signal },
+  );
 }
 
 /**
@@ -452,9 +510,20 @@ export async function stopSwing1Rule(ruleId: string): Promise<import('types').Ru
 
 export async function fetchSwing1RulePositions(
   ruleId: string,
+  opts: PositionsPageOpts,
+): Promise<import('types').RulePositionsPage> {
+  return fetchRulePositionsPage('swing1', ruleId, opts);
+}
+
+/** Run/rule-wide position aggregates for the swing1 Positions Summary panel. */
+export async function fetchSwing1RulePositionsSummary(
+  ruleId: string,
   signal?: AbortSignal,
-): Promise<import('types').RulePositionRecord[]> {
-  return request(`${API_BASE}/api/strategies/swing1/rules/${ruleId}/positions`, { signal });
+): Promise<import('types').PositionsSummary> {
+  return request(
+    `${API_BASE}/api/strategies/swing1/rules/${ruleId}/positions/summary`,
+    { signal },
+  );
 }
 
 export async function fetchSwing1PaperResult(

@@ -27,6 +27,7 @@ import {
   createSwing1Rule,
   deleteSwing1Rule,
   fetchSwing1RulePositions,
+  fetchSwing1RulePositionsSummary,
   fetchSwing1Rules,
   pauseSwing1Rule,
   stopSwing1Rule,
@@ -38,10 +39,7 @@ import { mergeTokenData } from 'components/tokens/sharedTokenColumns';
 import { usePolledRules } from 'hooks/usePolledRules';
 import { useRulePositions } from 'hooks/useRulePositions';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
-import { useLocalStorage } from 'hooks/useLocalStorage';
 import { cn } from 'lib/cn';
-import { STORAGE_KEYS } from 'lib/storage';
-import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 import type { RulePositionRecord, RuleRecord } from 'types';
 import type { ColumnDef } from 'components/table/types';
 
@@ -279,29 +277,6 @@ const RuleActionsCell = memo(function RuleActionsCell({
 });
 
 /** Positions section — rendered under the rule table that owns the selected rule. */
-function positionToSimResult(p: RulePositionRecord) {
-  const pnlPercent = p.pnl_percent;
-  const entryPrice = p.entry_price ?? 0;
-  const entryTokens = p.entry_token_amount ?? 0;
-  const pnlSol = pnlPercent != null ? entryPrice * entryTokens * (pnlPercent / 100) : null;
-  const holdingSecs =
-    p.entry_time && p.exit_time
-      ? Math.round((new Date(p.exit_time).getTime() - new Date(p.entry_time).getTime()) / 1000)
-      : null;
-  const athPrice = p.exit_price != null ? Math.max(p.exit_price, entryPrice) : entryPrice;
-  return {
-    mint: p.mint, symbol: p.symbol ?? '',
-    target_price: p.target_price, target_token_amount: p.target_token_amount,
-    target_time: p.target_time, target_tx: p.target_tx,
-    entry_price: entryPrice, ath_price: athPrice,
-    entry_token_amount: entryTokens, entry_tx: p.entry_tx,
-    entry_time: p.entry_time ?? p.created_at,
-    exit_price: p.exit_price, exit_tx: p.exit_tx, exit_time: p.exit_time,
-    holding_secs: holdingSecs, pnl_percent: pnlPercent, pnl_sol: pnlSol,
-    exit_reason: p.exit_reason ?? 'Open', total_trades: 0,
-  };
-}
-
 function inspectFromPosition(r: RulePositionRecord): InspectTarget {
   return {
     mint: r.mint,
@@ -331,8 +306,14 @@ export function Swing1Page() {
 
   const { rules, setRules, loading, error } = usePolledRules(fetchSwing1Rules, STRATEGY);
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
-  const { positions, loading: positionsLoading, error: positionsError } =
-    useRulePositions(selectedRuleId, rules, fetchSwing1RulePositions, STRATEGY);
+  // Server-side positions paging: the DataTable emits page/pageSize via
+  // `onQueryChange`, the hook fetches that page + the run-wide summary.
+  const [posPage, setPosPage] = useState(1);
+  const [posPageSize, setPosPageSize] = useState(20);
+  const { positions, total: positionsTotal, summary: positionsSummary,
+    loading: positionsLoading, error: positionsError } =
+    useRulePositions(selectedRuleId, rules, fetchSwing1RulePositions,
+      fetchSwing1RulePositionsSummary, STRATEGY, posPage, posPageSize);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editRule, setEditRule] = useState<RuleRecord | null>(null);
@@ -351,7 +332,6 @@ export function Swing1Page() {
   const [inspect, setInspect] = useState<
     { key: string; target: InspectTarget; swingOverlay: ChartSwingOverlay | null } | null
   >(null);
-  const [showPending, setShowPending] = useLocalStorage(`${STORAGE_KEYS.showPending}.${STRATEGY}`, false);
 
   const [sellToken] = useSellTokenMutation();
   const [sellingPositionMint, setSellingPositionMint] = useState<string | null>(null);
@@ -500,16 +480,6 @@ export function Swing1Page() {
     [selectedRuleId, rules],
   );
 
-  const isPreFill = (s: string) => s === 'Arming' || s === 'BuySubmitted';
-  const positionSummaryTokens = useMemo(
-    () => positions.filter((p) => !isPreFill(p.status)).map(positionToSimResult),
-    [positions],
-  );
-  const pendingCount = useMemo(() => positions.filter((p) => isPreFill(p.status)).length, [positions]);
-  const visiblePositions = useMemo(
-    () => showPending ? positions : positions.filter((p) => !isPreFill(p.status)),
-    [positions, showPending],
-  );
 
   const allMints = useMemo(() => {
     const s = new Set(positions.map((r) => r.mint));
@@ -567,38 +537,34 @@ export function Swing1Page() {
           title="Positions"
           marker="bg-info"
           badge="info"
-          count={positionsLoading || positionsError ? undefined : visiblePositions.length}
+          count={positionsError ? undefined : positionsTotal}
           subtitle={selectedRuleName ?? undefined}
-          action={
-            pendingCount > 0 ? (
-              <VisibilityToggleButton
-                visible={showPending}
-                onToggle={() => setShowPending((v) => !v)}
-                label="pending entry"
-              >
-                {showPending ? `Hide pending (${pendingCount})` : `Show pending (${pendingCount})`}
-              </VisibilityToggleButton>
-            ) : undefined
-          }
         />
-        {positionsLoading && <p className="text-text-dim">Loading positions…</p>}
         {positionsError && <InlineAlert variant="error">{positionsError}</InlineAlert>}
-        {!positionsLoading && !positionsError && positionSummaryTokens.length > 0 && (
+        {/* Summary is server-computed over the whole run (not the visible page), so
+            it renders as long as a rule is selected — independent of paging. */}
+        {!positionsError && positionsSummary && positionsSummary.tokens > 0 && (
           <SimSummaryCard
             title="Positions Summary"
             ruleName={selectedRuleName ?? ''}
-            tokens={positionSummaryTokens}
+            tokens={[]}
+            summary={positionsSummary}
             price={price}
           />
         )}
-        {!positionsLoading && !positionsError && (
+        {!positionsError && (
           <DataTable
             columns={positionColumns}
-            rows={mergeTokenData(visiblePositions, tokenMap)}
+            rows={mergeTokenData(positions, tokenMap)}
             rowKey={keyById}
             selectedKey={inspect?.key ?? null}
             onSelect={onSelectPosition}
             rowActions={isRealRuleSelected ? positionRowActions : undefined}
+            serverSide
+            serverTotal={positionsTotal}
+            onQueryChange={(q) => { setPosPage(q.page); setPosPageSize(q.pageSize); }}
+            loading={positionsLoading}
+            resetKey={selectedRuleId ?? ''}
             defaultPageSize={20}
             pageSizeOptions={[20, 50, 100]}
             colFilters

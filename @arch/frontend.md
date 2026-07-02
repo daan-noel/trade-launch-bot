@@ -117,6 +117,14 @@ there are no camelCase/axis/prefix translators.
 
 - Single SSE `EventSource` multiplexes all streams; positions/rules = delta patch + visibility-gated
   fallback poll. RTK Query structural sharing + 5min `keepUnusedDataFor` + `skipPollingIfUnfocused`.
+- **Positions = server-side paged, summary decoupled** (`useRulePositions`): the positions
+  `DataTable` runs in `serverSide` mode — the hook fetches one page (`limit`/`offset`) and reads the
+  run-wide total off the `X-Total-Count` header; live SSE deltas patch only rows *already on the page*
+  (a page not holding a delta's row picks it up on refetch/poll). The **Positions Summary** panel
+  (`SimSummaryCard`, optional `summary` prop) renders a **separate** server-computed aggregate
+  (`/rules/{id}/positions/summary`) over the *whole* run — so the panel never depends on page size and
+  uses the backend win rule (`End && exit_sol>entry_sol`), keeping it identical to the strategy-table
+  row. All five strategy pages (live `TpslPage`/`Swing1Page` + the 3 lab pages) share this path.
 - Memoized column defs/price formatters; cells read context directly. localStorage via `lib/storage`
   (`mt:` namespace); column visibility in one `mt:table.cols` map keyed by `tableId`.
 
