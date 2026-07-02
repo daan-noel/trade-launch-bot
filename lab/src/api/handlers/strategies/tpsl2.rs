@@ -29,6 +29,7 @@ use crate::{
     strategies::tpsl_sniper_2::backtest::BacktestTokenResult,
 };
 
+use trading_core::api::table_query::TableRequest;
 use trading_core::models::{StrategyPosition, StrategyRule};
 use trading_core::storage::repositories::strategy_repo::{PositionQuery, RuleCounters, StrategyRepo};
 use trading_core::strategies::registry::StrategyImpl;
@@ -553,17 +554,18 @@ pub async fn cancel_simulate_tpsl_rule(
 // Positions (lab view: latest paper run's bag)
 // ---------------------------------------------------------------------------
 
-/// GET /api/strategies/tpsl2/rules/{rule_id}/positions
+/// POST /api/strategies/tpsl2/rules/{rule_id}/positions
 ///
 /// Lab twin of the live `get_positions_by_rule`: one page of the latest paper run's
-/// bag (`X-Total-Count` header for the pager) via the shared `PositionResponse`.
+/// bag (`X-Total-Count` header for the pager) via the shared `PositionResponse`. The
+/// JSON body is the unified `TableRequest` (paging + server-side sort/search/filter).
 pub async fn get_positions_by_rule_tpsl2(
     app_state: web::Data<Arc<LocalState>>,
     rule_id: web::Path<Uuid>,
-    query: web::Query<super::positions::PositionListParams>,
+    body: web::Json<TableRequest>,
 ) -> impl Responder {
     let repo = app_state.strategy_repo();
-    super::positions::positions_by_rule_paged(&repo, rule_id.into_inner(), STRATEGY_ID, &query).await
+    super::positions::positions_by_rule_paged(&repo, rule_id.into_inner(), STRATEGY_ID, body.into_inner()).await
 }
 
 /// GET /api/strategies/tpsl2/rules/{rule_id}/positions/summary — run-wide aggregates.

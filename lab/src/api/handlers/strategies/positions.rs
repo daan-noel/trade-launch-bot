@@ -12,75 +12,9 @@ use actix_web::HttpResponse;
 use serde_json::json;
 use uuid::Uuid;
 
-use trading_core::api::table_query::{FilterOp, FilterSpec};
+use trading_core::api::table_query::TableRequest;
 use trading_core::models::{Position, PositionResponse};
 use trading_core::storage::repositories::strategy_repo::{PositionQuery, StrategyRepo};
-
-/// Query params for the paginated positions list — mirrors the live
-/// `PositionListParams` (bounded window + server-side sort/search/filter; see that
-/// struct's docs for the `sort`/`q`/`filter` wire format).
-#[derive(serde::Deserialize)]
-pub struct PositionListParams {
-    #[serde(default = "default_positions_limit")]
-    pub limit: i64,
-    #[serde(default)]
-    pub offset: i64,
-    #[serde(default)]
-    pub sort: String,
-    #[serde(default)]
-    pub q: String,
-    #[serde(default)]
-    pub filter: String,
-}
-
-fn default_positions_limit() -> i64 {
-    200
-}
-
-impl PositionListParams {
-    fn bounds(&self) -> (i64, i64) {
-        (self.limit.clamp(1, 1000), self.offset.max(0))
-    }
-
-    /// Parse the sort/search/filter fields into a repo [`PositionQuery`] (same
-    /// format as the live `PositionListParams::to_query`).
-    fn to_query(&self) -> PositionQuery {
-        let sort = self
-            .sort
-            .split(',')
-            .filter_map(|part| {
-                let (key, dir) = part.split_once(':')?;
-                let key = key.trim();
-                if key.is_empty() {
-                    return None;
-                }
-                Some((key.to_string(), dir.trim().eq_ignore_ascii_case("desc")))
-            })
-            .collect();
-        let filters = self
-            .filter
-            .split('|')
-            .filter_map(|part| {
-                let (key, val) = part.split_once(':')?;
-                let key = key.trim();
-                if key.is_empty() || val.trim().is_empty() {
-                    return None;
-                }
-                // Step 1 bridge: keep the flat GET contract working by lowering
-                // each filter string into a `Contains` `FilterSpec`. Step 3 flips
-                // this handler to POST + `web::Json<TableRequest>` and drops
-                // `to_query` entirely (the JSON body deserializes into the DTO).
-                let spec = FilterSpec {
-                    op: FilterOp::Contains,
-                    val: serde_json::Value::String(val.trim().to_string()),
-                    ..Default::default()
-                };
-                Some((key.to_string(), spec))
-            })
-            .collect();
-        PositionQuery { search: self.q.clone(), filters, sort }
-    }
-}
 
 /// Resolve the rule's latest paper run, scoped to `strategy_id`. Returns:
 ///   `Ok(Some(run_id))` — a paper run exists;
@@ -109,22 +43,24 @@ async fn latest_paper_run(
     }
 }
 
-/// GET `.../rules/{rule_id}/positions` — one page of the latest paper run's bag,
+/// POST `.../rules/{rule_id}/positions` — one page of the latest paper run's bag,
 /// with the run-wide total on `X-Total-Count` (exposed to the browser fetch) so the
 /// client pager can size itself. Empty (200-total 0) when the rule has no paper run.
+/// The JSON body ([`TableRequest`]) carries paging + server-side sort/search/filter;
+/// `pagination` → `(limit, offset)`, the rest → [`PositionQuery`] via `From`.
 pub async fn positions_by_rule_paged(
     repo: &StrategyRepo,
     rule_id: Uuid,
     strategy_id: &str,
-    query: &PositionListParams,
+    req: TableRequest,
 ) -> HttpResponse {
     let run_id = match latest_paper_run(repo, rule_id, strategy_id).await {
         Ok(Some(id)) => id,
         Ok(None) => return positions_response(Vec::new(), 0),
         Err(resp) => return resp,
     };
-    let (limit, offset) = query.bounds();
-    let pq = query.to_query();
+    let (limit, offset) = req.pagination.bounds();
+    let pq = PositionQuery::from(req);
     match (
         repo.find_positions_by_run_paged(run_id, limit, offset, &pq).await,
         repo.count_positions_by_run(run_id, &pq).await,

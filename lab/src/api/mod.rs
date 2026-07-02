@@ -88,7 +88,7 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
             )
             .route(
                 "/strategies/tpsl1/rules/{rule_id}/positions",
-                web::get().to(handlers::strategies::tpsl1::get_positions_by_rule_tpsl1),
+                web::post().to(handlers::strategies::tpsl1::get_positions_by_rule_tpsl1),
             )
             // ── Strategy rule authoring + backtest — tpsl_sniper_2 ──
             .route(
@@ -137,7 +137,7 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
             )
             .route(
                 "/strategies/tpsl2/rules/{rule_id}/positions",
-                web::get().to(handlers::strategies::tpsl2::get_positions_by_rule_tpsl2),
+                web::post().to(handlers::strategies::tpsl2::get_positions_by_rule_tpsl2),
             )
             // ── Strategy rule authoring + backtest — swing_1 ──
             .route(
@@ -186,7 +186,7 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
             )
             .route(
                 "/strategies/swing1/rules/{rule_id}/positions",
-                web::get().to(handlers::strategies::swing1::get_positions_by_rule_swing1),
+                web::post().to(handlers::strategies::swing1::get_positions_by_rule_swing1),
             )
             // ── Grouped param-sweeps (generic across strategies) ──
             .route(
