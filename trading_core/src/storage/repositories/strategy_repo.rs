@@ -597,6 +597,127 @@ fn push_position_order(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, query: &Posi
 }
 
 // ---------------------------------------------------------------------------
+// Matched-token list query: `tokens t LEFT JOIN tokens_info i` scoped to a
+// materialized mint set, sharing the structured filter machinery above.
+// ---------------------------------------------------------------------------
+
+/// Token-scoped filter whitelist: the `t.`/`i.` subset of [`position_filter_sql`]
+/// (no `sp.*` — there's no position join here) plus the matched table's frontend
+/// key aliases (`created`/`init_buy`). `None` = not filterable.
+fn token_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
+    use FilterKind::{Numeric, Text};
+    Some(match key {
+        "mint" => ("t.mint_address", Text),
+        "symbol" => ("t.symbol", Text),
+        "name" => ("t.name", Text),
+        "creator" => ("t.creator_wallet", Text),
+        "initial_buy" | "init_buy" => ("t.initial_buy_sol", Numeric),
+        "init_supply" => ("t.initial_supply_token", Numeric),
+        "cu_limit" => ("t.cu_limit", Numeric),
+        "cu_price" => ("t.cu_price", Numeric),
+        "current_price" => ("i.current_price", Numeric),
+        "ath_price" => ("i.ath_price", Numeric),
+        "market_cap" => ("(i.current_price * t.initial_supply_token)", Numeric),
+        "volume" => ("i.volume", Numeric),
+        "trade_count" => ("i.trade_count", Numeric),
+        "first_slot_buy" => ("i.first_slot_buy_sol", Numeric),
+        "first_slot_sell" => ("i.first_slot_sell_sol", Numeric),
+        "token_amount" => ("(t.initial_buy_instruction->>'tokenAmount')::numeric", Numeric),
+        "max_sol_cost" => ("(t.initial_buy_instruction->>'maxSolCost')::numeric", Numeric),
+        "spendable_sol_in" => ("(t.initial_buy_instruction->>'spendableSolIn')::numeric", Numeric),
+        "min_tokens_out" => ("(t.initial_buy_instruction->>'minTokensOut')::numeric", Numeric),
+        _ => return None,
+    })
+}
+
+/// Token-scoped sort whitelist — the `t.`/`i.` counterpart of
+/// [`position_sort_sql`], with the matched table's `created`/`init_buy` aliases.
+fn token_sort_sql(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "mint" => "t.mint_address",
+        "symbol" => "t.symbol",
+        "name" => "t.name",
+        "creator" => "t.creator_wallet",
+        "created" | "created_at" => "t.created_at",
+        "initial_buy" | "init_buy" => "t.initial_buy_sol",
+        "init_supply" => "t.initial_supply_token",
+        "cu_limit" => "t.cu_limit",
+        "cu_price" => "t.cu_price",
+        "current_price" => "i.current_price",
+        "ath_price" => "i.ath_price",
+        "market_cap" => "(i.current_price * t.initial_supply_token)",
+        "volume" => "i.volume",
+        "trade_count" => "i.trade_count",
+        "first_slot_buy" => "i.first_slot_buy_sol",
+        "first_slot_sell" => "i.first_slot_sell_sol",
+        "token_amount" => "(t.initial_buy_instruction->>'tokenAmount')::numeric",
+        "max_sol_cost" => "(t.initial_buy_instruction->>'maxSolCost')::numeric",
+        "spendable_sol_in" => "(t.initial_buy_instruction->>'spendableSolIn')::numeric",
+        "min_tokens_out" => "(t.initial_buy_instruction->>'minTokensOut')::numeric",
+        _ => return None,
+    })
+}
+
+/// Append the search + per-column filters for the token-scoped (matched) query.
+/// Search spans mint / symbol / name (ILIKE), mirroring the positions search.
+fn push_token_where(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, query: &PositionQuery) {
+    let search = query.search.trim();
+    if !search.is_empty() {
+        let needle = format!("%{}%", like_escape(search));
+        qb.push(" AND (t.mint_address ILIKE ")
+            .push_bind(needle.clone())
+            .push(" OR t.symbol ILIKE ")
+            .push_bind(needle.clone())
+            .push(" OR t.name ILIKE ")
+            .push_bind(needle)
+            .push(")");
+    }
+    for (key, spec) in &query.filters {
+        if let Some((col, kind)) = token_filter_sql(key) {
+            push_filter_predicate(qb, col, kind, spec);
+        }
+    }
+}
+
+/// `ORDER BY` for the token-scoped (matched) query — falls back to
+/// `t.created_at DESC` with a `t.mint_address` tiebreaker for stable paging.
+fn push_token_order(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, query: &PositionQuery) {
+    let resolved: Vec<(&'static str, bool)> = query
+        .sort
+        .iter()
+        .filter_map(|(key, desc)| token_sort_sql(key).map(|sql| (sql, *desc)))
+        .collect();
+    qb.push(" ORDER BY ");
+    if resolved.is_empty() {
+        qb.push("t.created_at DESC, t.mint_address DESC");
+        return;
+    }
+    let mut first = true;
+    for (sql, desc) in resolved {
+        if !first {
+            qb.push(", ");
+        }
+        first = false;
+        qb.push(sql).push(if desc { " DESC NULLS LAST" } else { " ASC NULLS LAST" });
+    }
+    qb.push(", t.mint_address DESC");
+}
+
+/// Sparse matched-token row: the projection the matched table renders (enrichment
+/// columns hydrate client-side via the batch endpoint). Field-for-field the lab
+/// handler's `MatchedTokenResult` / the frontend `MatchedTokenRecord`.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct MatchedTokenRow {
+    pub mint: String,
+    pub symbol: String,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    pub initial_buy_sol: Option<f64>,
+    pub cu_limit: Option<i64>,
+    pub cu_price: Option<i64>,
+}
+
+// ---------------------------------------------------------------------------
 // Repo
 // ---------------------------------------------------------------------------
 
@@ -1109,6 +1230,55 @@ impl StrategyRepo {
         );
         qb.push(scope_col).push(" = ").push_bind(scope_id);
         push_position_where(&mut qb, query);
+        let (n,): (i64,) = qb.build_query_as().fetch_one(&self.pool).await?;
+        Ok(n)
+    }
+
+    // -- Matched tokens (materialized mint set, DB-paged) ----------------------
+
+    /// One page of the matched-token table: `tokens t LEFT JOIN tokens_info i`
+    /// restricted to `t.mint_address = ANY($mints)` (the materialized match set),
+    /// then the same structured sort/filter/search machinery the positions table
+    /// uses — via the token-scoped whitelist. `query` carries only view-state
+    /// (paging is the caller's `limit`/`offset`). Removes the old 5,000-row display
+    /// cap: the full match set is pageable.
+    pub async fn find_tokens_by_mints_paged(
+        &self,
+        mints: &[String],
+        limit: i64,
+        offset: i64,
+        query: &PositionQuery,
+    ) -> anyhow::Result<Vec<MatchedTokenRow>> {
+        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+            "SELECT t.mint_address AS mint, t.symbol, t.name, t.created_at, \
+                    t.initial_buy_sol::float8 / 1e9 AS initial_buy_sol, \
+                    t.cu_limit, t.cu_price \
+             FROM tokens t \
+             LEFT JOIN tokens_info i ON i.mint_address = t.mint_address \
+             WHERE t.mint_address = ANY(",
+        );
+        qb.push_bind(mints).push(")");
+        push_token_where(&mut qb, query);
+        push_token_order(&mut qb, query);
+        qb.push(" LIMIT ").push_bind(limit).push(" OFFSET ").push_bind(offset);
+        let rows = qb.build_query_as::<MatchedTokenRow>().fetch_all(&self.pool).await?;
+        Ok(rows)
+    }
+
+    /// Filtered count of the matched set (same JOIN + WHERE as
+    /// [`find_tokens_by_mints_paged`]) so the pager's `total` matches the page.
+    pub async fn count_tokens_by_mints(
+        &self,
+        mints: &[String],
+        query: &PositionQuery,
+    ) -> anyhow::Result<i64> {
+        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+            "SELECT COUNT(*) FROM tokens t \
+             LEFT JOIN tokens_info i ON i.mint_address = t.mint_address \
+             WHERE t.mint_address = ANY(",
+        );
+        qb.push_bind(mints).push(")");
+        push_token_where(&mut qb, query);
         let (n,): (i64,) = qb.build_query_as().fetch_one(&self.pool).await?;
         Ok(n)
     }

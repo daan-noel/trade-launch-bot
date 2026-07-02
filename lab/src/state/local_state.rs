@@ -8,6 +8,7 @@ use tokio::sync::{RwLock, Semaphore};
 use super::backtest_trade_cache::BacktestTradeCache;
 use super::core_state::CoreState;
 use super::job_progress::ProgressCell;
+use super::matched_cache::MatchedCache;
 use super::sim_results::SimResults;
 use super::swing_results::SwingResults;
 use super::swing_run_cache::SwingRunCache;
@@ -99,6 +100,11 @@ pub struct LocalState {
     /// skip Parquet I/O and `attach_fingerprints` on the warm path. Single entry —
     /// a new sweep overwrites the previous.
     pub sweep_corpus_cache: Arc<RwLock<Option<SweepCorpusCache>>>,
+    /// Materialized matched-token **mint sets**, keyed by `(rule_id, from, to)`.
+    /// The first POST to a strategy's `/matched` runs the whole-table match scan
+    /// and caches the mint set here; later pages/sorts/filters re-query the DB
+    /// restricted to those mints (no re-scan). TTL/GC mirrors `sim_results`.
+    pub matched_cache: Arc<MatchedCache>,
 }
 
 impl LocalState {
@@ -119,6 +125,7 @@ impl LocalState {
             // Keep a few recent runs so re-runs / multiple tabs don't accumulate.
             swing_runs: Arc::new(SwingRunCache::new(3)),
             sweep_corpus_cache: Arc::new(RwLock::new(None)),
+            matched_cache: Arc::new(MatchedCache::new()),
         }
     }
 }

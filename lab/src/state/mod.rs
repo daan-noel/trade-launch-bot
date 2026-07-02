@@ -9,6 +9,7 @@ pub use trading_core::state::{core_state, token_cache, token_list_cache, token_m
 pub mod local_state;
 pub mod backtest_trade_cache;
 pub mod job_progress;
+pub mod matched_cache;
 pub mod sim_results;
 pub mod swing_results;
 pub mod swing_run_cache;

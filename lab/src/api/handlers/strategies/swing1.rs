@@ -349,112 +349,77 @@ where
 // Matched tokens (whole-table entry-criteria scan)
 // ---------------------------------------------------------------------------
 
-/// Upper bound on matched rows returned to the page.
-const MATCHED_RESULT_CAP: usize = 5_000;
-
-/// Sparse projection of a matched token sent to the page.
-#[derive(Serialize)]
-pub struct MatchedTokenResult {
-    pub mint: String,
-    pub symbol: String,
-    pub name: String,
-    pub created_at: DateTime<Utc>,
-    pub initial_buy_sol: Option<f64>,
-    pub cu_limit: Option<u64>,
-    pub cu_price: Option<u64>,
-}
-
-#[derive(Serialize)]
-pub struct MatchedTokensResponse {
-    pub tokens: Vec<MatchedTokenResult>,
-    pub total: usize,
-    pub capped: bool,
-}
-
-/// Return the tokens in the database that satisfy a rule's **entry** criteria.
+/// Return one server-side page of the tokens satisfying a swing1 rule's **entry**
+/// criteria. Same materialize-then-page design as the tpsl twins (see
+/// [`tpsl1::get_matched_tokens`](super::tpsl1::get_matched_tokens)): first POST
+/// scans the **whole** `tokens` table for the matched **mint set** and caches it on
+/// `LocalState`; later pages/sorts/filters re-query the DB restricted to that set.
 ///
 /// swing1's token-creation gate is the **optional** dev fingerprint
 /// (`token_matches_buy_rule`, vacuous-true when no fingerprint is set), so this
 /// returns every non-Mayhem token in the window that passes any configured
-/// fingerprint — the same candidate set the backtest resolves against (the latch
-/// then decides per token from the trade stream). Runs on the `batch_db` pool.
+/// fingerprint — the same candidate set the backtest resolves against. Runs on the
+/// `batch_db` pool.
 ///
-/// GET /api/strategies/swing1/rules/{rule_id}/matched
+/// POST /api/strategies/swing1/rules/{rule_id}/matched — body is the unified
+/// `TableRequest` (paging + sort/filter/search + the analysis `range`).
 pub async fn get_matched_tokens(
     app_state: web::Data<Arc<LocalState>>,
     rule_id: web::Path<Uuid>,
-    range: web::Query<AnalysisRange>,
+    body: web::Json<TableRequest>,
 ) -> impl Responder {
     let rule_id = rule_id.into_inner();
+    let req = body.into_inner();
+    let (from, to) = req.range.as_ref().map_or((None, None), |r| (r.from, r.to));
 
-    let strategy_rule = match app_state.strategy_repo().find_rule(rule_id).await {
-        Ok(Some(r)) if r.strategy_id == STRATEGY_ID => r,
-        Ok(_) => {
-            return HttpResponse::NotFound().json(json!({"error": "Rule not found"}));
-        }
-        Err(e) => {
-            tracing::error!("Failed to get rule {rule_id}: {e}");
-            return HttpResponse::InternalServerError().json(json!({"error": "Failed to get rule"}));
+    let mints = match app_state.matched_cache.get(rule_id, from, to) {
+        Some(cached) => cached,
+        None => {
+            let strategy_rule = match app_state.strategy_repo().find_rule(rule_id).await {
+                Ok(Some(r)) if r.strategy_id == STRATEGY_ID => r,
+                Ok(_) => return HttpResponse::NotFound().json(json!({"error": "Rule not found"})),
+                Err(e) => {
+                    tracing::error!("Failed to get rule {rule_id}: {e}");
+                    return HttpResponse::InternalServerError()
+                        .json(json!({"error": "Failed to get rule"}));
+                }
+            };
+            let rule = match trading_core::strategies::registry::swing1_decision_rule(&strategy_rule)
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!("invalid swing1 rule params for {rule_id}: {e}");
+                    return HttpResponse::InternalServerError()
+                        .json(json!({"error": "Invalid rule params"}));
+                }
+            };
+            let repo = trading_core::storage::repositories::token_repo::TokenRepo::new(
+                app_state.batch_db.clone(),
+            );
+            let matched = trading_core::strategies::analysis::collect_matching_tokens(
+                &repo,
+                from,
+                to,
+                |t| {
+                    !t.is_mayhem_mode
+                        && trading_core::strategies::swing_1::entry::token_matches_buy_rule(t, &rule)
+                },
+            )
+            .await;
+            let tokens = match matched {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::error!("matched-token scan failed: {e}");
+                    return HttpResponse::InternalServerError()
+                        .json(json!({"error": "Failed to build matched tokens"}));
+                }
+            };
+            let mint_set: Vec<String> = tokens.into_iter().map(|t| t.mint_address).collect();
+            app_state.matched_cache.insert(rule_id, from, to, mint_set)
         }
     };
-    let rule = match trading_core::strategies::registry::swing1_decision_rule(&strategy_rule) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!("invalid swing1 rule params for {rule_id}: {e}");
-            return HttpResponse::InternalServerError()
-                .json(json!({"error": "Invalid rule params"}));
-        }
-    };
 
-    let repo = trading_core::storage::repositories::token_repo::TokenRepo::new(
-        app_state.batch_db.clone(),
-    );
-    let matched = trading_core::strategies::analysis::collect_matching_tokens(
-        &repo,
-        range.from,
-        range.to,
-        |t| {
-            !t.is_mayhem_mode
-                && trading_core::strategies::swing_1::entry::token_matches_buy_rule(t, &rule)
-        },
-    )
-    .await;
-
-    let mut tokens = match matched {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::error!("matched-token scan failed: {e}");
-            return HttpResponse::InternalServerError()
-                .json(json!({"error": "Failed to build matched tokens"}));
-        }
-    };
-
-    let total = tokens.len();
-    let capped = total > MATCHED_RESULT_CAP;
-    if capped {
-        tracing::warn!(
-            rule_id = %rule_id,
-            matched = total,
-            cap = MATCHED_RESULT_CAP,
-            "matched-token result capped; narrow the from/to range to see the rest"
-        );
-        tokens.truncate(MATCHED_RESULT_CAP);
-    }
-
-    let results: Vec<MatchedTokenResult> = tokens
-        .into_iter()
-        .map(|t| MatchedTokenResult {
-            mint: t.mint_address,
-            symbol: t.symbol,
-            name: t.name,
-            created_at: t.created_at,
-            initial_buy_sol: t.initial_buy_sol,
-            cu_limit: t.cu_limit,
-            cu_price: t.cu_price,
-        })
-        .collect();
-
-    HttpResponse::Ok().json(MatchedTokensResponse { tokens: results, total, capped })
+    super::tpsl1::matched_page_response(app_state.strategy_repo(), &mints, req).await
 }
 
 /// Start a swing1 rule backtest as a detached background job and return at once.
