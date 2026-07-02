@@ -73,6 +73,10 @@ pub struct TokenListRow {
     pub is_migrated: Option<bool>,
     pub last_synced_at: Option<DateTime<Utc>>,
     pub lifetime_secs: Option<i64>,
+    // Same-creation-slot buy/sell SOL totals. Stored lamports (BIGINT); the SELECT
+    // divides by 1e9 so these arrive as human SOL f64, like `initial_buy_sol`.
+    pub first_slot_buy_sol: Option<f64>,
+    pub first_slot_sell_sol: Option<f64>,
 }
 
 impl From<TokenDbRow> for Token {
@@ -361,7 +365,9 @@ impl TokenRepo {
                    i.last_trade_at, i.current_price, i.is_dead, i.is_migrated,
                    (SELECT MAX(s.last_synced_at) FROM token_sync_state s
                       WHERE s.mint_address = t.mint_address) AS last_synced_at,
-                   i.lifetime_secs
+                   i.lifetime_secs,
+                   i.first_slot_buy_sol::float8 / 1e9 AS first_slot_buy_sol,
+                   i.first_slot_sell_sol::float8 / 1e9 AS first_slot_sell_sol
               FROM tokens t
               LEFT JOIN tokens_info i ON i.mint_address = t.mint_address
              WHERE t.created_at >= $1
@@ -421,7 +427,9 @@ impl TokenRepo {
                    i.last_trade_at, i.current_price, i.is_dead, i.is_migrated,
                    (SELECT MAX(s.last_synced_at) FROM token_sync_state s
                       WHERE s.mint_address = t.mint_address) AS last_synced_at,
-                   i.lifetime_secs
+                   i.lifetime_secs,
+                   i.first_slot_buy_sol::float8 / 1e9 AS first_slot_buy_sol,
+                   i.first_slot_sell_sol::float8 / 1e9 AS first_slot_sell_sol
               FROM tokens t
               LEFT JOIN tokens_info i ON i.mint_address = t.mint_address
              WHERE t.mint_address = ANY($1)
@@ -450,7 +458,9 @@ impl TokenRepo {
                    i.last_trade_at, i.current_price, i.is_dead, i.is_migrated,
                    (SELECT MAX(s.last_synced_at) FROM token_sync_state s
                       WHERE s.mint_address = t.mint_address) AS last_synced_at,
-                   i.lifetime_secs
+                   i.lifetime_secs,
+                   i.first_slot_buy_sol::float8 / 1e9 AS first_slot_buy_sol,
+                   i.first_slot_sell_sol::float8 / 1e9 AS first_slot_sell_sol
               FROM tokens t
               LEFT JOIN tokens_info i ON i.mint_address = t.mint_address
              WHERE t.mint_address = $1

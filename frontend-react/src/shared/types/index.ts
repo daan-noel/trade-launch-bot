@@ -15,6 +15,10 @@ export interface TokenRecord {
   trade_count: number;
   current_price: number | null;
   volume_sol_total: number;
+  /** Buy/sell SOL summed over trades in the token's creation slot (human SOL).
+   *  `null` for tokens predating the metric or with no creation-slot activity. */
+  first_slot_buy_sol: number | null;
+  first_slot_sell_sol: number | null;
   ath_price: number | null;
   ath_timestamp: string | null;
   market_cap: number | null;
@@ -178,6 +182,8 @@ export interface RulePositionRecord {
   trade_count?: number;
   current_price?: number | null;
   volume_sol_total?: number;
+  first_slot_buy_sol?: number | null;
+  first_slot_sell_sol?: number | null;
   market_cap?: number | null;
   ath_price?: number | null;
   ath_timestamp?: string | null;
@@ -244,6 +250,8 @@ export interface MatchedTokenRecord {
   trade_count?: number;
   current_price?: number | null;
   volume_sol_total?: number;
+  first_slot_buy_sol?: number | null;
+  first_slot_sell_sol?: number | null;
   market_cap?: number | null;
   ath_price?: number | null;
   ath_timestamp?: string | null;
@@ -306,6 +314,8 @@ export interface SimulatedTokenResult {
   trade_count?: number;
   current_price?: number | null;
   volume_sol_total?: number;
+  first_slot_buy_sol?: number | null;
+  first_slot_sell_sol?: number | null;
   market_cap?: number | null;
   is_migrated?: boolean;
   is_dead?: boolean;
@@ -469,6 +479,8 @@ export interface TokenDetailRecord {
   created_at: string;
   trade_count: number | null;
   volume_sol_total: number | null;
+  first_slot_buy_sol: number | null;
+  first_slot_sell_sol: number | null;
   market_cap: number | null;
   current_price: number | null;
   ath_price: number | null;

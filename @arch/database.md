@@ -71,7 +71,7 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
 
 | File | Table(s) | Notable fns |
 | --- | --- | --- |
-| `token_repo.rs` | tokens (+tokens_info) | `find_list_rows` (DB base for /api/tokens), `find_page_before` (keyset page for analysis scans), `find_by_mints` (chunked mint=ANY) |
+| `token_repo.rs` | tokens (+tokens_info) | `find_list_rows` (DB base for /api/tokens; `TokenListRow` carries the `tokens_info` metrics incl. `first_slot_buy_sol`/`first_slot_sell_sol`, divided to human SOL in the SELECT), `find_page_before` (keyset page for analysis scans), `find_by_mints` (chunked mint=ANY) |
 | `trade_repo.rs` | trades | `find_fill_by_signature`, `sum_legs_by_signatures` (per-sig attribution), `for_each_seed_mint` (cold-start seed), `find_by_mints_all` (batched per-mint grouped reads for backtests; **reconstructs** the dropped `real_sol_reserves` via `approx_real_sol_reserves(reserve_sol, venue)` — backtest-only, never the live path) |
 | `raw_tx_repo.rs` | raw_txs | `insert`, `insert_many` (ON CONFLICT DO NOTHING), `find_by_signature` (PK lookup) |
 | `token_info_repo.rs` | tokens_info | `upsert_metrics`, `get/update_sync_watermark` |

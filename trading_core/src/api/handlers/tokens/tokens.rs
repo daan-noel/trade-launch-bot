@@ -50,6 +50,11 @@ pub struct TokenSummary {
     pub ath_price: Option<f64>,
     pub ath_timestamp: Option<DateTime<Utc>>,
     pub volume_sol_total: f64,
+    /// Buy/sell SOL summed over trades landing in the token's creation slot
+    /// (human SOL; see `TokenState::first_slot_buy_sol`). `None` when the token
+    /// predates the metric or has no creation-slot activity recorded.
+    pub first_slot_buy_sol: Option<f64>,
+    pub first_slot_sell_sol: Option<f64>,
     pub market_cap: Option<f64>,
     pub initial_buy_sol: Option<f64>,
     pub initial_supply_token: Option<u64>,
@@ -106,6 +111,8 @@ impl From<&TokenState> for TokenSummary {
             ath_price: s.ath_price,
             ath_timestamp: s.ath_timestamp,
             volume_sol_total: s.volume_sol_total,
+            first_slot_buy_sol: Some(s.first_slot_buy_sol),
+            first_slot_sell_sol: Some(s.first_slot_sell_sol),
             market_cap: s.market_cap,
             initial_buy_sol: s.token.initial_buy_sol,
             initial_supply_token: s.token.initial_supply_token,
@@ -161,6 +168,8 @@ impl From<crate::storage::repositories::token_repo::TokenListRow> for TokenSumma
             ath_price: r.ath_price,
             ath_timestamp: r.ath_timestamp,
             volume_sol_total: r.volume.unwrap_or(0.0),
+            first_slot_buy_sol: r.first_slot_buy_sol,
+            first_slot_sell_sol: r.first_slot_sell_sol,
             market_cap: r.market_cap,
             initial_buy_sol: r.initial_buy_sol,
             initial_supply_token: r.initial_supply_token.map(|v| v as u64),
@@ -212,6 +221,8 @@ pub struct TokenDetail {
     pub created_at: DateTime<Utc>,
     pub trade_count: Option<u64>,
     pub volume_sol_total: Option<f64>,
+    pub first_slot_buy_sol: Option<f64>,
+    pub first_slot_sell_sol: Option<f64>,
     pub market_cap: Option<f64>,
     pub current_price: Option<f64>,
     pub ath_price: Option<f64>,
@@ -248,6 +259,8 @@ impl From<&TokenState> for TokenDetail {
             created_at: s.token.created_at,
             trade_count: Some(s.trade_count),
             volume_sol_total: Some(s.volume_sol_total),
+            first_slot_buy_sol: Some(s.first_slot_buy_sol),
+            first_slot_sell_sol: Some(s.first_slot_sell_sol),
             market_cap: s.market_cap,
             current_price: s.current_price,
             ath_price: s.ath_price,
@@ -333,6 +346,10 @@ pub struct PaginationParams {
     pub f_price_max: Option<String>,
     pub f_volume_min: Option<String>,
     pub f_volume_max: Option<String>,
+    pub f_first_slot_buy_min: Option<String>,
+    pub f_first_slot_buy_max: Option<String>,
+    pub f_first_slot_sell_min: Option<String>,
+    pub f_first_slot_sell_max: Option<String>,
     pub f_mcap_min: Option<String>,
     pub f_mcap_max: Option<String>,
     pub f_trades_min: Option<String>,
@@ -492,6 +509,8 @@ pub async fn get_token(state: web::Data<Arc<CoreState>>, path: web::Path<String>
                 "created_at": token.created_at,
                 "trade_count": token.trade_count,
                 "volume_sol_total": token.volume,
+                "first_slot_buy_sol": token.first_slot_buy_sol,
+                "first_slot_sell_sol": token.first_slot_sell_sol,
                 "market_cap": token.market_cap,
                 "current_price": token.current_price,
                 "ath_price": token.ath_price,
@@ -594,6 +613,8 @@ const NUMERIC_COLS: &[&str] = &[
     "current_fep_ratio",
     "market_cap",
     "volume",
+    "first_slot_buy",
+    "first_slot_sell",
     "initial_buy",
     "init_supply",
     "token_amount",
@@ -624,6 +645,8 @@ const SORTABLE_COLS: &[&str] = &[
     "current_fep_ratio",
     "market_cap",
     "volume",
+    "first_slot_buy",
+    "first_slot_sell",
     "initial_buy",
     "init_supply",
     "token_amount",
@@ -771,6 +794,10 @@ impl TokenQuery {
         put(&mut f, "price_max", &q.f_price_max);
         put(&mut f, "volume_min", &q.f_volume_min);
         put(&mut f, "volume_max", &q.f_volume_max);
+        put(&mut f, "first_slot_buy_min", &q.f_first_slot_buy_min);
+        put(&mut f, "first_slot_buy_max", &q.f_first_slot_buy_max);
+        put(&mut f, "first_slot_sell_min", &q.f_first_slot_sell_min);
+        put(&mut f, "first_slot_sell_max", &q.f_first_slot_sell_max);
         put(&mut f, "mcap_min", &q.f_mcap_min);
         put(&mut f, "mcap_max", &q.f_mcap_max);
         put(&mut f, "trades_min", &q.f_trades_min);
@@ -866,6 +893,20 @@ impl TokenQuery {
 
         // Market
         if !range_f64(t.volume_sol_total, g(f, "volume_min"), g(f, "volume_max")) {
+            return false;
+        }
+        if !opt_f64(
+            t.first_slot_buy_sol,
+            g(f, "first_slot_buy_min"),
+            g(f, "first_slot_buy_max"),
+        ) {
+            return false;
+        }
+        if !opt_f64(
+            t.first_slot_sell_sol,
+            g(f, "first_slot_sell_min"),
+            g(f, "first_slot_sell_max"),
+        ) {
             return false;
         }
         if !opt_f64(t.market_cap, g(f, "mcap_min"), g(f, "mcap_max")) {
@@ -1367,6 +1408,8 @@ fn col_filter_number(key: &str, t: &TokenSummary) -> Option<f64> {
         "current_fep_ratio" => cur_fep_of(t),
         "market_cap" => t.market_cap,
         "volume" => Some(t.volume_sol_total),
+        "first_slot_buy" => t.first_slot_buy_sol,
+        "first_slot_sell" => t.first_slot_sell_sol,
         "initial_buy" => t.initial_buy_sol,
         "init_supply" => t.initial_supply_token.map(|v| v as f64),
         "token_amount" => t.token_amount.map(|v| v as f64),
@@ -1402,6 +1445,8 @@ fn col_filter_text(key: &str, t: &TokenSummary) -> String {
         "current_fep_ratio" => opt_num_str(cur_fep_of(t)),
         "market_cap" => opt_num_str(t.market_cap),
         "volume" => t.volume_sol_total.to_string(),
+        "first_slot_buy" => opt_num_str(t.first_slot_buy_sol),
+        "first_slot_sell" => opt_num_str(t.first_slot_sell_sol),
         "initial_buy" => opt_num_str(t.initial_buy_sol),
         "init_supply" => opt_num_str(t.initial_supply_token),
         "token_amount" => opt_num_str(t.token_amount),
@@ -1464,6 +1509,8 @@ fn sort_key(col: &str, t: &TokenSummary) -> SortKey {
         "current_fep_ratio" => SortKey::Num(cur_fep_of(t)),
         "market_cap" => SortKey::Num(t.market_cap),
         "volume" => SortKey::Num(Some(t.volume_sol_total)),
+        "first_slot_buy" => SortKey::Num(t.first_slot_buy_sol),
+        "first_slot_sell" => SortKey::Num(t.first_slot_sell_sol),
         "initial_buy" => SortKey::Num(t.initial_buy_sol),
         "init_supply" => SortKey::Num(t.initial_supply_token.map(|v| v as f64)),
         "token_amount" => SortKey::Num(t.token_amount.map(|v| v as f64)),
