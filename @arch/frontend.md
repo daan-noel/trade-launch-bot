@@ -117,15 +117,24 @@ there are no camelCase/axis/prefix translators.
 
 - Single SSE `EventSource` multiplexes all streams; positions/rules = delta patch + visibility-gated
   fallback poll. RTK Query structural sharing + 5min `keepUnusedDataFor` + `skipPollingIfUnfocused`.
-- **Unified server-side table contract (POST + JSON).** Every strategy token table (Positions /
-  Paper / Matched / Simulated) pages/sorts/filters/searches over **one** request body — `TableRequest`
-  (`{ pagination, sorting, search, filters, range? }`), serialized by `services/tableRequest.ts`
-  (`toTableRequest(query, numericCols, {range?})`). Per-column filters are structured `{op, val}`
-  (`FilterOp` = contains/eq/gt/gte/lt/lte/between): for a **numeric** column, `parseFilterSpec` turns
-  `>5` / `1..10` into `{op:'gt',val:5}` / `{op:'between',…}`, so numeric operators compare
-  **numerically server-side**. `numericColKeys(columns)` derives the numeric-key set from a column
-  list. All four tables read the run-wide `total` off the `X-Total-Count` header. Positions is POST on
+- **Unified server-side table contract (POST + JSON).** Every server-side token table — the four
+  strategy tables (Positions / Paper / Matched / Simulated) **and the Tokens page** — pages/sorts/
+  filters/searches over **one** request body: `TableRequest`
+  (`{ pagination, sorting, search, filters, range?, trackedOnly?, swingRunId?, swingChainLatencyMs? }`),
+  serialized by `services/tableRequest.ts` (`toTableRequest(query, numericCols, {range?})`). Per-column
+  filters are structured `{op, val}` (`FilterOp` = contains/eq/gt/gte/lt/lte/between): for a **numeric**
+  column, `parseFilterSpec` turns `>5` / `1..10` into `{op:'gt',val:5}` / `{op:'between',…}`, so numeric
+  operators compare **numerically server-side**. `numericColKeys(columns)` derives the numeric-key set
+  from a column list. All tables read the run-wide `total` off the response. Positions is POST on
   **both** bins (live + lab) so the shared hook/fetchers are one code path.
+- **Tokens page = same contract (`POST /api/tokens`).** `getTokensPage` (`sharedEndpoints.ts`) folds the
+  DataTable view-state (`toTableRequest`) AND the global `TokenFilters` panel (`tokenFiltersToSpecs`,
+  `filters.ts`) into ONE `filters: {col → FilterSpec}` map keyed by backend column key (panel-wins on
+  collision), tz-normalizing the datetime pickers; the Tokens-only `trackedOnly`/`swingRunId`/
+  `swingChainLatencyMs` ride alongside. Backend lowers each `FilterSpec` back onto its internal panel/
+  per-column representation (`TokenQuery::from_table_request`), so the LIVE (Postgres) and LAB (in-RAM)
+  engines are unchanged and identical (DB parity test). The old bespoke `f_*`/`cf` `URLSearchParams`
+  builder and the dead simple `getTokens` GET endpoint were removed.
 - **Positions/Paper = server-side paged, summary decoupled** (`useRulePositions`): the positions
   `DataTable` runs in `serverSide` mode; the hook serializes its `TableQuery` (+ `numericCols`) into
   the POST body, fetches one page, and reads the total off `X-Total-Count`; live SSE deltas patch only

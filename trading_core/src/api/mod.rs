@@ -1,4 +1,5 @@
 pub mod handlers;
+pub mod table_eval;
 pub mod table_query;
 
 use actix_web::{error, web, HttpResponse};

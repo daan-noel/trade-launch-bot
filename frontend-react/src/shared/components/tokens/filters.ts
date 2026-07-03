@@ -1,4 +1,6 @@
 import type { TokenRecord } from 'types';
+import type { FilterSpec } from 'components/table/numericFilter';
+import { datetimeLocalToUtcWallClock } from 'utils/date';
 import { STORAGE_KEYS, getString, setString, remove } from 'lib/storage';
 
 export type TriState = '' | 'yes' | 'no';
@@ -338,6 +340,118 @@ export function activeFilterCount(f: TokenFilters): number {
     f.cashback,
   ];
   return groups.filter(Boolean).length;
+}
+
+// ---------------------------------------------------------------------------
+// TokenFilters panel → unified per-column `FilterSpec` map
+//
+// Folds the global filter panel into the SAME `filters: {col → FilterSpec}` map the
+// DataTable per-column filters use, keyed by backend **column** key. Range pairs
+// become `between` (or one-sided `gte`/`lte`); tri-state flags become `eq`
+// "yes"/"no"; datetime pickers are normalized from project-tz wall-clock to the UTC
+// instant the backend expects. The backend `lower_filter` is the exact inverse.
+// ---------------------------------------------------------------------------
+
+/** A numeric range pair → `between`/`gte`/`lte`, or `null` when both bounds blank. */
+function rangeSpec(min: string, max: string): FilterSpec | null {
+  const lo = min.trim();
+  const hi = max.trim();
+  if (lo && hi) return { op: 'between', min: Number(lo), max: Number(hi) };
+  if (lo) return { op: 'gte', val: Number(lo) };
+  if (hi) return { op: 'lte', val: Number(hi) };
+  return null;
+}
+
+/** A datetime range pair → `between`/`gte`/`lte` over tz-normalized UTC wall-clock
+ *  strings, or `null` when both bounds blank. */
+function dateRangeSpec(from: string, to: string, tz: string): FilterSpec | null {
+  const lo = from ? datetimeLocalToUtcWallClock(from, tz, 'lower') : '';
+  const hi = to ? datetimeLocalToUtcWallClock(to, tz, 'upper') : '';
+  if (lo && hi) return { op: 'between', min: lo, max: hi };
+  if (lo) return { op: 'gte', val: lo };
+  if (hi) return { op: 'lte', val: hi };
+  return null;
+}
+
+/** The panel's numeric range groups: `[colKey, minField, maxField]`. `colKey` is the
+ *  backend column key (NOT always the panel field prefix — e.g. `mcap`→`market_cap`). */
+const NUMERIC_RANGE_GROUPS: [string, keyof TokenFilters, keyof TokenFilters][] = [
+  ['ath_fep_ratio', 'ath_fep_min', 'ath_fep_max'],
+  ['current_fep_ratio', 'cur_fep_min', 'cur_fep_max'],
+  ['ath_price', 'ath_price_min', 'ath_price_max'],
+  ['current_price', 'price_min', 'price_max'],
+  ['volume', 'volume_min', 'volume_max'],
+  ['market_cap', 'mcap_min', 'mcap_max'],
+  ['trade_count', 'trades_min', 'trades_max'],
+  ['initial_buy', 'init_buy_min', 'init_buy_max'],
+  ['init_supply', 'init_supply_min', 'init_supply_max'],
+  ['token_amount', 'token_amount_min', 'token_amount_max'],
+  ['max_cost_lamports', 'max_cost_lamports_min', 'max_cost_lamports_max'],
+  ['spendable_lamports_in', 'spendable_lamports_in_min', 'spendable_lamports_in_max'],
+  ['min_tokens_out', 'min_tokens_out_min', 'min_tokens_out_max'],
+  ['cu_limit', 'cu_limit_min', 'cu_limit_max'],
+  ['cu_price', 'cu_price_min', 'cu_price_max'],
+  ['ix_count', 'ix_count_min', 'ix_count_max'],
+  // lifetime is minutes with a dead-only exemption — the backend `lifetime` column
+  // handles that; here it's just a numeric range like the rest.
+  ['lifetime', 'life_min', 'life_max'],
+];
+
+/** The panel's datetime range groups: `[colKey, fromField, toField]`. */
+const DATE_RANGE_GROUPS: [string, keyof TokenFilters, keyof TokenFilters][] = [
+  ['created', 'created_from', 'created_to'],
+  ['last_trade', 'last_trade_from', 'last_trade_to'],
+  ['ath_timestamp', 'ath_from', 'ath_to'],
+];
+
+/** The panel's tri-state flag groups: `[colKey, field]`. */
+const FLAG_GROUPS: [string, keyof TokenFilters][] = [
+  ['migrated', 'migrated'],
+  ['dead', 'dead'],
+  ['mayhem_mode', 'mayhem'],
+  ['cashback', 'cashback'],
+];
+
+/**
+ * Serialize the global `TokenFilters` panel into the unified per-column `FilterSpec`
+ * map (keyed by backend column key). `timezone` normalizes the datetime pickers to
+ * the UTC instant the backend expects. Blank groups are omitted.
+ */
+export function tokenFiltersToSpecs(f: TokenFilters, timezone: string): Record<string, FilterSpec> {
+  const out: Record<string, FilterSpec> = {};
+
+  // Identity: single-field case-insensitive substring.
+  for (const [col, field] of [
+    ['symbol', 'symbol'],
+    ['name', 'name'],
+    ['mint', 'mint'],
+    ['creator', 'creator'],
+    ['create_tx', 'create_tx'],
+  ] as [string, keyof TokenFilters][]) {
+    const v = f[field].trim();
+    if (v) out[col] = { op: 'contains', val: v };
+  }
+
+  for (const [col, minF, maxF] of NUMERIC_RANGE_GROUPS) {
+    const spec = rangeSpec(f[minF], f[maxF]);
+    if (spec) out[col] = spec;
+  }
+
+  for (const [col, fromF, toF] of DATE_RANGE_GROUPS) {
+    const spec = dateRangeSpec(f[fromF], f[toF], timezone);
+    if (spec) out[col] = spec;
+  }
+
+  // Instruction labels (JSON/text grammar handled server-side).
+  if (f.ix_label.trim()) out.ix_labels = { op: 'contains', val: f.ix_label.trim() };
+
+  // Flags: tri-state "yes"/"no" (blank = inactive).
+  for (const [col, field] of FLAG_GROUPS) {
+    const v = f[field];
+    if (v === 'yes' || v === 'no') out[col] = { op: 'eq', val: v };
+  }
+
+  return out;
 }
 
 export function tokenPassesFilters(f: TokenFilters, t: TokenRecord): boolean {

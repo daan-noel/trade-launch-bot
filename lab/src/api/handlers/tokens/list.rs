@@ -7,25 +7,31 @@ use std::sync::Arc;
 
 use actix_web::{http::header, web, HttpRequest, HttpResponse, Responder};
 
+use trading_core::api::table_query::TableRequest;
+
 use crate::analyzers::swing_analyzer::{compute_chain_stats, ChainStats};
 use crate::state::local_state::LocalState;
 
-use super::{build_tokens_list, is_swing_sort_col, PaginationParams, TokenQuery};
+use super::{build_tokens_list, is_swing_sort_col, TokenQuery};
 
-/// `GET /api/tokens` — list all currently tracked tokens sorted by trade count.
+/// `POST /api/tokens` — list tokens over the unified [`TableRequest`] body.
 pub async fn list_tokens(
     req: HttpRequest,
     state: web::Data<Arc<LocalState>>,
-    query: web::Query<PaginationParams>,
+    body: web::Json<TableRequest>,
 ) -> impl Responder {
     // Filtering + sorting the token set is CPU work that would otherwise block one
     // of the few (http_workers=2) async request threads. Run it on the blocking
     // pool so a large cache can't stall other requests.
     let state = state.get_ref().clone();
-    let q = TokenQuery::from_params(&query);
-    let limit_q = query.limit;
-    let offset_q = query.offset;
-    let tracked_only = query.tracked_only.unwrap_or(false);
+    let body = body.into_inner();
+    // Token list keeps its large envelope (pageSize up to 50k — Swing pulls the full
+    // filtered set), so we don't use `Page::bounds` (clamps to 1000).
+    let page = body.pagination.page.max(1);
+    let page_size = body.pagination.page_size.clamp(1, 50_000);
+    let (limit_q, offset_q) = (page_size, (page - 1) * page_size);
+    let tracked_only = body.tracked_only;
+    let q = TokenQuery::from_table_request(&body);
 
     let built = web::block(move || {
         // Swing-dependent branch — the only part of the list build that touches

@@ -4,7 +4,7 @@ Audit outcome for the 7 token-bearing tables (Tokens page · Positions · Paper 
 Matched · Simulated · Wallet Holdings). Goal: **one shared method** (contract + column grammar) for
 every token table, no by-meaning column duplication, and two live pagination bugs fixed.
 
-## Status — updated 2026-07-03 (Phases 1, 6, 2 landed this session)
+## Status — updated 2026-07-03 (Phases 1, 6, 2, 4 landed this session)
 
 Legend: `[x]` done · `[~]` partial · `[ ]` open.
 
@@ -27,10 +27,31 @@ Verification run: `cargo test -p trading_core` 241 pass; registry + `sql` + `sim
 DB value-parity matrix (`token_repo::parity_tests`) passes against local DB (port 5555, `DATABASE_URL`
 from `.env`); `cargo check -p live` + `-p lab` clean. No frontend code changed.
 
-### OPEN — resume here (recommended order: 4 → 7(items 1–2, dev servers up) → 3 → 5 → 8)
+### DONE & VERIFIED this session — Phase 4 (backend; non-breaking)
 
-- **Phase 4** (contained, non-breaking): extract reusable Rust `apply_table_request(rows, &TableRequest)`
-  from `sim_query.rs`; also the clean home for folding the sim whitelist into the shared grammar.
+- **Phase 4 — generalized in-memory evaluator.** Extracted `sim_query.rs`'s filter/sort/search/page
+  logic into a reusable, grammar-agnostic `trading_core::api::table_eval::apply_table_request(rows,
+  &TableRequest, resolve)` over `serde_json::Value` rows. `sim_query.rs` now owns only its `resolve`
+  whitelist (frontend key → JSON field + `ColKind`) and is a thin adapter. Same op semantics as the SQL
+  path (numeric-op-on-text drop, null-numeric exclude, contains-on-number → eq, mint/symbol search, raw
+  `mint` ASC tiebreak). Generalized the sort to apply **all** resolved sort keys in order + the mint
+  tail (was first-key-only — identical for today's single-key UI). Verified: `cargo test -p trading_core`
+  (5 new `table_eval` tests) + `cargo test -p lab` (9 `sim_query` tests, all unchanged/green);
+  `cargo check -p live` + `-p lab` + `-p trading_core` clean. The module is the shared home the Phase-8
+  Rust↔TS conformance test targets, and the reference for Phase 5's TS evaluator.
+
+### DONE & VERIFIED this session — Phase 3 (backend + frontend; BREAKING wire change)
+
+- **Phase 3 — `/api/tokens` folded onto the unified `POST TableRequest`.** Faithful full fold (user
+  choice): the global `TokenFilters` panel + DataTable per-column filters now share ONE `filters:
+  {col → FilterSpec}` map, keyed by backend column key. Backend keeps the two proven eval engines
+  untouched — `from_table_request` lowers each `FilterSpec` back onto the internal `f`/`col_filters`
+  representation (the inverse of the frontend serializer), so zero behavior loss (DB parity green).
+  Runtime-verified against the lab bin (every fold path). See Phase 3 section (all `[x]`) for the full
+  per-field mapping.
+
+### OPEN — resume here (recommended order: 7(items 1–2, dev servers up) → 5 → 8)
+
 - **Phase 7 items 1–2** (UI-affecting — run `npm run dev` and eyeball the Tokens page + strategy tables):
   collapse `tokenColumns.tsx` ↔ `sharedTokenColumns.tsx` `ALL_TOKEN_COLS` into one source; remove the
   `init_buy`/`initial_buy` + `cu_limit`/`cu_price` hand-column aliases; then reconcile tpsl1/tpsl2
@@ -95,34 +116,64 @@ from `.env`); `cargo check -p live` + `-p lab` clean. No frontend code changed.
       Verified: registry-invariant tests (both engines defined per capability; frozen numeric/sortable
       key sets) + the DB value-parity matrix (`token_repo::parity_tests`) all green; `sql.rs` header
       updated to describe the registry SSOT.
-- [ ] **Fold in `sim_query.rs::resolve`** — deferred to **Phase 4**. Simulated reads JSON backtest-result
+- [x] **Fold in `sim_query.rs::resolve`** — done in **Phase 4**. Simulated reads JSON backtest-result
       rows (different shape + key universe: `entry_price`/`pnl_pct`/`exit_reason` plus the enrichment
       subset), so it doesn't share the `TokenSummary`-typed registry directly; the clean unification is
-      the generalized Rust evaluator in Phase 4 (deferred by the current batch).
+      the generalized Rust evaluator (`table_eval::apply_table_request`) — Simulated keeps only its own
+      `resolve` grammar and delegates all evaluation to the shared, engine-agnostic machinery.
 - [x] **sortable/filterable encoded as flags (single source).** The registry structure IS the encoding:
       `sql_sort.is_some()` ⇒ sortable, `sql_num.is_some()` ⇒ numeric-grammar-filterable; every other
       column stays substring-filterable via `sql_text`. The sortable-but-not-numeric cols (`created`,
       `mayhem_mode`, `cashback`, `migrated`, `dead`, `ath_timestamp`, `last_trade`, `ath_price`,
       `current_price`, …) are now one explicit entry each — no divergent lists left to reconcile.
 
-## Phase 3 — One wire contract: migrate Tokens page onto `TableRequest`
+## Phase 3 — One wire contract: migrate Tokens page onto `TableRequest` — DONE (faithful full fold)
 
-- [ ] Backend: change the `/api/tokens` handlers (`live/src/api/handlers/tokens/list.rs`,
-      `lab/src/api/handlers/tokens/list.rs`) from `web::Query<PaginationParams>` (flat GET `f_*`/`cf`/
-      `sort`) to `web::Json<TableRequest>` (POST), mapping into the existing `TokenQuery` lowering.
-      Reuse `trading_core::api::table_query`.
-- [ ] Frontend: drive the Tokens page (`frontend-react/src/pages/tokens/TokensPage.tsx`) through the
-      shared `toTableRequest` serializer (`shared/services/tableRequest.ts`) like the other four tables;
-      drop the bespoke `f_*` query-param builder. Emit `X-Total-Count`-style total from the response.
-- [ ] Keep the SQL(live)/in-RAM(lab) split *behind* the contract, both fed by the Phase-2 registry.
+**Per-field lowering** (`TokenQuery::from_table_request`, the inverse of the frontend
+`tokenFiltersToSpecs` / `toTableRequest`): each wire `FilterSpec` (keyed by backend column key) routes to
+the internal rep the two proven engines already consume —
+- identity `symbol/name/mint/creator/create_tx` → `f[key]` single-field substring (contains).
+- dates `created/last_trade/ath_timestamp` → `f[{key}_from/_to]` (between→both, gte/gt→from, lte/lt→to);
+  a `contains` on a date col stays a per-column substring.
+- `lifetime` → `f[life_min/life_max]` (minutes; dead-only stale-guard preserved).
+- `ix_labels` → `f[ix_label]` (JSON ordered-exact vs text-substring grammar).
+- flags `migrated/dead/mayhem_mode/cashback` → `f[…]="yes"/"no"` on eq; a non-tri value stays substring.
+- every `is_numeric_col` key → `col_filters` raw predicate (between→`lo..hi`, gt→`>v`, …, contains→substring).
+- unknown keys dropped. The numeric `col_filters` path already reproduces the panel's `opt_f64`/`range_f64`
+  null-handling via the registry `sql_num`/`ram_num`, so no new eval code was needed.
 
-## Phase 4 — Generalized in-memory evaluator (Rust) for Simulated
+- [x] Backend: `/api/tokens` is now `POST web::Json<TableRequest>` on BOTH bins (`live`/`lab` `list.rs`;
+      routes flipped GET→POST in each `api/mod.rs`). `PaginationParams`/`from_params`/`parse_sort_levels`/
+      `parse_col_filters` deleted; new `TokenQuery::from_table_request` **lowers** each `FilterSpec` back
+      onto the internal `f` panel map / `col_filters` predicates the two proven eval engines (`matches`,
+      `sql.rs`) already consume — so evaluation code is untouched and faithful by construction. The
+      global `TokenFilters` panel folds into the same `filters: {col → FilterSpec}` map as the DataTable
+      per-column filters (identity/date/lifetime/ix-label/flag → panel map; numeric → per-column
+      predicate). Tokens-only `trackedOnly`/`swingRunId`/`swingChainLatencyMs` added to `TableRequest`;
+      pagination keeps the 50k envelope (NOT `Page::bounds`' 1000). `ath_price`/`current_price` made
+      numeric-filterable (frozen numeric-key test updated).
+- [x] Frontend: `getTokensPage` now POSTs the `TableRequest` body via `toTableRequest` (DataTable
+      view-state) merged with `tokenFiltersToSpecs` (the global panel → per-column `FilterSpec`, tz-
+      normalized dates, panel-wins on collision) + the Tokens-only extras. Bespoke `f_*`/`cf`
+      `URLSearchParams` builder deleted; dead `getTokens`/`useGetTokensQuery`/`TokensArgs` removed.
+      `TokensPage.tsx`/`SwingDetectionPage.tsx` unchanged (same hook args).
+- [x] SQL(live)/in-RAM(lab) split kept behind the contract, both fed by the Phase-2 registry. Verified:
+      `trading_core` tokens tests (39) + DB `token_repo::parity_tests` green (SQL≡in-RAM across the
+      filter/sort matrix); `cargo check -p live`/`-p lab` clean; `npm run build` clean.
 
-- [ ] Extract `sim_query.rs` filter/sort/search logic into a reusable
-      `apply_table_request(rows, &TableRequest)` that consumes the Phase-2 registry `kind`/op semantics
-      (Contains/Eq/Gt/Gte/Lt/Lte/Between; numeric-op-on-text → drop; Contains-on-number → eq;
-      null numeric → exclude). Simulated calls it. Behavior stays identical to the SQL path.
-- [ ] Fold the Phase-1 Simulated tiebreak into this evaluator (all resolved sort keys + `mint` tail).
+## Phase 4 — Generalized in-memory evaluator (Rust) for Simulated — DONE
+
+- [x] Extracted `sim_query.rs` filter/sort/search/page logic into a reusable
+      `trading_core::api::table_eval::apply_table_request(rows, &TableRequest, resolve)` that embodies the
+      registry `kind`/op semantics (Contains/Eq/Gt/Gte/Lt/Lte/Between; numeric-op-on-text → drop;
+      Contains-on-number → eq; null numeric → exclude; mint/symbol search). Generic over the column
+      grammar via a `ColResolver` (blanket-impl'd for `Fn(&str) -> Option<(&'static str, ColKind)>`), so
+      the whitelist stays next to each table's row shape. Simulated calls it (thin adapter keeping only
+      its `resolve`). Behavior identical to the SQL path — all 9 pre-existing `sim_query` tests pass
+      unchanged; 5 new `table_eval` tests cover the generic machinery.
+- [x] Folded the Phase-1 Simulated tiebreak into the evaluator, generalized to apply **all** resolved
+      sort keys in order then the raw `mint` ASC tail (was first-key-only; identical for today's
+      single-key UI, but the SSOT is now the general form the TS evaluator will mirror).
 
 ## Phase 5 — Wallet Holdings onto the shared method (client-executed TS evaluator)
 

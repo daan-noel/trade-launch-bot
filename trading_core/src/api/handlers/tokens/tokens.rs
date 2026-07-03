@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use crate::{
     analyzers::ChainStats,
+    api::table_query::{FilterOp, FilterSpec, TableRequest},
     state::{core_state::CoreState, token_cache::TokenState},
     storage::token_enrichment::MARKET_CAP_SQL,
 };
@@ -274,103 +275,14 @@ pub struct TokensListResponse {
     pub items: Vec<TokenSummary>,
 }
 
-/// Query params for `GET /api/tokens`. `limit`/`offset`/`search` keep their old
-/// meaning (the Swing page still calls `?limit=20000&offset=0`); everything else
-/// is optional and, when present, drives server-side filtering/sorting that
-/// mirrors the React table + global filter panel. Filter fields are a flat
-/// mirror of `TokenFilters` (filters.ts) prefixed `f_`, since serde_urlencoded
-/// cannot deserialize nested structs.
-#[derive(Deserialize)]
-pub struct PaginationParams {
-    #[serde(default = "default_limit")]
-    pub limit: i64,
-    #[serde(default)]
-    pub offset: i64,
-    /// DataTable global search box.
-    pub search: Option<String>,
-
-    // Multi-key column sort (DataTable header clicks). `sort` is the current
-    // wire format: an ordered, comma-joined `col:dir` list (index 0 = primary),
-    // e.g. `sort=trade_count:desc,symbol:asc`. `sort_col`/`sort_dir` are the
-    // legacy single-key params, still accepted as a 1-level fallback.
-    pub sort: Option<String>,
-    pub sort_col: Option<String>,
-    pub sort_dir: Option<String>,
-
-    /// Per-column filters, `;`-joined `colKey:rawExpr` entries.
-    pub cf: Option<String>,
-
-    // Swing chain sort: when any sort level is a chain column
-    // (`swing_pairs` / `max_seq_pairs` / `chain_count`), the order key is computed
-    // from the raw legs stashed under `swing_run_id` (the last "Swing Detection
-    // All" run), grouped at `swing_chain_latency_ms`. Absent ⇒ those columns sort
-    // every row last (no run to read), leaving the default order.
-    pub swing_run_id: Option<String>,
-    pub swing_chain_latency_ms: Option<i64>,
-
-    // --- Flat TokenFilters mirror (names == TS keys) ---
-    pub f_symbol: Option<String>,
-    pub f_name: Option<String>,
-    pub f_mint: Option<String>,
-    pub f_creator: Option<String>,
-    pub f_create_tx: Option<String>,
-    pub f_created_from: Option<String>,
-    pub f_created_to: Option<String>,
-    pub f_last_trade_from: Option<String>,
-    pub f_last_trade_to: Option<String>,
-    pub f_ath_from: Option<String>,
-    pub f_ath_to: Option<String>,
-    pub f_life_min: Option<String>,
-    pub f_life_max: Option<String>,
-    pub f_ath_fep_min: Option<String>,
-    pub f_ath_fep_max: Option<String>,
-    pub f_cur_fep_min: Option<String>,
-    pub f_cur_fep_max: Option<String>,
-    pub f_ath_price_min: Option<String>,
-    pub f_ath_price_max: Option<String>,
-    pub f_price_min: Option<String>,
-    pub f_price_max: Option<String>,
-    pub f_volume_min: Option<String>,
-    pub f_volume_max: Option<String>,
-    pub f_first_slot_buy_min: Option<String>,
-    pub f_first_slot_buy_max: Option<String>,
-    pub f_first_slot_sell_min: Option<String>,
-    pub f_first_slot_sell_max: Option<String>,
-    pub f_mcap_min: Option<String>,
-    pub f_mcap_max: Option<String>,
-    pub f_trades_min: Option<String>,
-    pub f_trades_max: Option<String>,
-    pub f_init_buy_min: Option<String>,
-    pub f_init_buy_max: Option<String>,
-    pub f_init_supply_min: Option<String>,
-    pub f_init_supply_max: Option<String>,
-    pub f_token_amount_min: Option<String>,
-    pub f_token_amount_max: Option<String>,
-    pub f_max_cost_lamports_min: Option<String>,
-    pub f_max_cost_lamports_max: Option<String>,
-    pub f_spendable_lamports_in_min: Option<String>,
-    pub f_spendable_lamports_in_max: Option<String>,
-    pub f_min_tokens_out_min: Option<String>,
-    pub f_min_tokens_out_max: Option<String>,
-    pub f_cu_limit_min: Option<String>,
-    pub f_cu_limit_max: Option<String>,
-    pub f_cu_price_min: Option<String>,
-    pub f_cu_price_max: Option<String>,
-    pub f_ix_count_min: Option<String>,
-    pub f_ix_count_max: Option<String>,
-    pub f_ix_label: Option<String>,
-    pub f_migrated: Option<String>,
-    pub f_dead: Option<String>,
-    pub f_mayhem: Option<String>,
-    pub f_cashback: Option<String>,
-    /// When `true`, restrict results to the live cache-tracked subset only
-    /// (mirrors the "tracked" badge click on the Tokens page).
-    pub tracked_only: Option<bool>,
-}
-
-fn default_limit() -> i64 {
-    50
-}
+// The token list is requested via the unified `POST /api/tokens` body
+// [`trading_core::api::table_query::TableRequest`] — the SAME contract the strategy
+// tables use. The global `TokenFilters` panel and the DataTable per-column filters
+// both arrive as entries in its `filters: {col → FilterSpec}` map; the Tokens-only
+// `tracked_only` / `swing_run_id` / `swing_chain_latency_ms` fields ride alongside.
+// [`TokenQuery::from_table_request`] lowers that body onto this module's internal
+// representation (`f` panel map + `col_filters`), which the two eval engines
+// (`matches` in-RAM, `sql.rs` SQL) already consume unchanged.
 
 // ---------------------------------------------------------------------------
 // Handlers
@@ -739,10 +651,14 @@ fn build_registry() -> Vec<ColumnSpec> {
         C::new("ix_count", Some(format!("{}::text", ix_count_sql())), |t| t.ix_labels_count.to_string())
             .numeric(ix_count_sql(), |t| Some(t.ix_labels_count as f64))
             .sortable(IX_COUNT_SORT, false, |t| SortKey::Num(Some(t.ix_labels_count as f64))),
-        // --- numeric-typed but substring-filtered (NOT in the numeric grammar) ---
+        // --- numeric (nullable): sortable + numeric-filterable. The panel filters
+        //     these as opt_f64 ranges; making them `is_numeric_col` lets the unified
+        //     per-column path handle both the panel range and a per-column predicate.
         C::new("ath_price", Some("COALESCE(i.ath_price::text, '')".into()), |t| opt_num_str(t.ath_price))
+            .numeric("i.ath_price", |t| t.ath_price)
             .sortable("i.ath_price", false, |t| SortKey::Num(t.ath_price)),
         C::new("current_price", Some("COALESCE(i.current_price::text, '')".into()), |t| opt_num_str(t.current_price))
+            .numeric("i.current_price", |t| t.current_price)
             .sortable("i.current_price", false, |t| SortKey::Num(t.current_price)),
         // --- flags (sortable as 0/1; substring text filter) ---
         C::new("migrated", Some("COALESCE(i.is_migrated, false)::text".into()), |t| t.is_migrated.to_string())
@@ -870,39 +786,14 @@ pub fn parse_dt_public(v: &str) -> Option<DateTime<Utc>> {
     parse_dt(v)
 }
 
-/// Parse the DataTable sort into validated `(column, descending)` levels, index
-/// 0 = primary. Prefers the multi-key `sort=col:dir,col:dir` param; falls back
-/// to the legacy single `sort_col`/`sort_dir` pair. Unknown columns are dropped
+/// Resolve the unified request's ordered sort specs into validated
+/// `(column, descending)` levels, index 0 = primary. Unknown columns are dropped
 /// (not fatal), so a stale client never breaks the listing.
-fn parse_sort_levels(q: &PaginationParams) -> Vec<(String, bool)> {
-    sort_levels_from(q.sort.as_deref(), q.sort_col.as_deref(), q.sort_dir.as_deref())
-}
-
-/// Core of [`parse_sort_levels`], split out so it's unit-testable without
-/// building the ~60-field `PaginationParams`.
-fn sort_levels_from(
-    sort: Option<&str>,
-    sort_col: Option<&str>,
-    sort_dir: Option<&str>,
-) -> Vec<(String, bool)> {
-    if let Some(spec) = sort.filter(|s| !s.is_empty()) {
-        return spec
-            .split(',')
-            .filter_map(|entry| {
-                let (col, dir) = entry.split_once(':').unwrap_or((entry, "asc"));
-                let col = col.trim();
-                if !is_sortable_key(col) {
-                    return None;
-                }
-                Some((col.to_string(), dir.trim().eq_ignore_ascii_case("desc")))
-            })
-            .collect();
-    }
-    // Legacy single-pair fallback.
-    match sort_col.filter(|s| is_sortable_key(s)) {
-        Some(col) => vec![(col.to_string(), sort_dir == Some("desc"))],
-        None => Vec::new(),
-    }
+fn sort_levels_from_specs(sorting: &[crate::api::table_query::SortSpec]) -> Vec<(String, bool)> {
+    sorting
+        .iter()
+        .filter_map(|s| is_sortable_key(&s.col).then(|| (s.col.clone(), s.dir.is_desc())))
+        .collect()
 }
 
 /// Pick a chain stat as the numeric sort key for a swing column.
@@ -932,17 +823,158 @@ pub struct TokenQuery {
     swing_chain_latency_ms: i64,
 }
 
-fn put(f: &mut HashMap<&'static str, String>, k: &'static str, v: &Option<String>) {
-    if let Some(s) = v {
-        if !s.is_empty() {
-            f.insert(k, s.clone());
-        }
+/// Insert a non-empty panel-filter value into the `f` map (empty ⇒ inactive, skip).
+fn put_str(f: &mut HashMap<&'static str, String>, k: &'static str, v: &str) {
+    if !v.is_empty() {
+        f.insert(k, v.to_string());
     }
 }
 
 /// Look up a global-filter value (defaults to "" — i.e. inactive).
 fn g<'a>(f: &'a HashMap<&'static str, String>, k: &str) -> &'a str {
     f.get(k).map(String::as_str).unwrap_or("")
+}
+
+// ---------------------------------------------------------------------------
+// FilterSpec → internal representation (the inverse of the frontend serializer)
+// ---------------------------------------------------------------------------
+
+/// Operand `Value` → trimmed string (numbers stringified, bools as `"true"`/`"false"`);
+/// empty for null/other. The frontend sends numeric operands as JSON numbers, and the
+/// date/text/flag operands as strings.
+fn operand_str(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.trim().to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// A numeric `FilterSpec` → the per-column raw predicate string the `col_filters`
+/// grammar (`numericFilter.ts` / `parse_numeric_predicate`) expects. `None` when the
+/// operand(s) are blank or the op isn't a numeric comparison (`contains` falls back to
+/// a substring filter at the call site).
+fn numeric_pred_expr(spec: &FilterSpec, val: &str, min: &str, max: &str) -> Option<String> {
+    Some(match spec.op {
+        FilterOp::Between if !min.is_empty() && !max.is_empty() => format!("{min}..{max}"),
+        FilterOp::Gt if !val.is_empty() => format!(">{val}"),
+        FilterOp::Gte if !val.is_empty() => format!(">={val}"),
+        FilterOp::Lt if !val.is_empty() => format!("<{val}"),
+        FilterOp::Lte if !val.is_empty() => format!("<={val}"),
+        FilterOp::Eq if !val.is_empty() => format!("={val}"),
+        _ => return None,
+    })
+}
+
+/// Lower a range-capable panel column (dates, lifetime): `between`/one-sided ops fill
+/// the inclusive `f[lo_key]`/`f[hi_key]` bounds the panel path evaluates; a `contains`
+/// (a DataTable per-column substring on the same column) instead lands as a raw
+/// substring `col_filters` entry so that behavior is preserved too.
+#[allow(clippy::too_many_arguments)]
+fn lower_range(
+    f: &mut HashMap<&'static str, String>,
+    col_filters: &mut Vec<(String, String)>,
+    col_key: &str,
+    lo_key: &'static str,
+    hi_key: &'static str,
+    spec: &FilterSpec,
+    val: &str,
+    min: &str,
+    max: &str,
+) {
+    match spec.op {
+        FilterOp::Between => {
+            put_str(f, lo_key, min);
+            put_str(f, hi_key, max);
+        }
+        FilterOp::Gt | FilterOp::Gte => put_str(f, lo_key, val),
+        FilterOp::Lt | FilterOp::Lte => put_str(f, hi_key, val),
+        // A substring/exact filter on a date/lifetime column → per-column text path.
+        FilterOp::Contains | FilterOp::Eq if !val.is_empty() => {
+            col_filters.push((col_key.to_string(), val.to_string()))
+        }
+        _ => {}
+    }
+}
+
+/// Lower a flag column: the panel's tri-state (`"yes"`/`"no"`) drives the `f` map;
+/// any other value (a DataTable substring like `"true"`/`"false"`) stays a per-column
+/// text filter.
+fn lower_flag(
+    f: &mut HashMap<&'static str, String>,
+    col_filters: &mut Vec<(String, String)>,
+    flag_key: &'static str,
+    col_key: &str,
+    val: &str,
+) {
+    match val {
+        "yes" | "no" => put_str(f, flag_key, val),
+        "" => {}
+        other => col_filters.push((col_key.to_string(), other.to_string())),
+    }
+}
+
+/// Fold one wire `FilterSpec` (keyed by frontend/registry column) onto the internal
+/// representation: the panel map `f` for identity/date/lifetime/ix-label/flag columns,
+/// or a raw `col_filters` predicate for numeric columns (unknown keys are dropped, so
+/// a stale client can't filter everything out). See [`TokenQuery::from_table_request`].
+fn lower_filter(
+    key: &str,
+    spec: &FilterSpec,
+    f: &mut HashMap<&'static str, String>,
+    col_filters: &mut Vec<(String, String)>,
+) {
+    let val = operand_str(&spec.val);
+    let min = operand_str(&spec.min);
+    let max = operand_str(&spec.max);
+
+    match key {
+        // Identity: single-field case-insensitive substring (panel semantics).
+        "symbol" => put_str(f, "symbol", &val),
+        "name" => put_str(f, "name", &val),
+        "mint" => put_str(f, "mint", &val),
+        "creator" => put_str(f, "creator", &val),
+        "create_tx" => put_str(f, "create_tx", &val),
+
+        // Dates: inclusive [from, to] over a timestamptz column.
+        "created" | "created_at" => {
+            lower_range(f, col_filters, "created", "created_from", "created_to", spec, &val, &min, &max)
+        }
+        "last_trade" | "last_trade_at" => {
+            lower_range(f, col_filters, "last_trade", "last_trade_from", "last_trade_to", spec, &val, &min, &max)
+        }
+        "ath_timestamp" => {
+            lower_range(f, col_filters, "ath_timestamp", "ath_from", "ath_to", spec, &val, &min, &max)
+        }
+
+        // Lifetime (minutes; dead-only stale guard preserved by the panel path).
+        "lifetime" => {
+            lower_range(f, col_filters, "lifetime", "life_min", "life_max", spec, &val, &min, &max)
+        }
+
+        // Instruction labels (JSON ordered-exact vs text-substring grammar).
+        "ix_labels" | "ix_label" => put_str(f, "ix_label", &val),
+
+        // Flags: panel tri-state → `f`; DataTable substring → per-column text.
+        "migrated" => lower_flag(f, col_filters, "migrated", "migrated", &val),
+        "dead" => lower_flag(f, col_filters, "dead", "dead", &val),
+        "mayhem_mode" | "mayhem" => lower_flag(f, col_filters, "mayhem", "mayhem_mode", &val),
+        "cashback" => lower_flag(f, col_filters, "cashback", "cashback", &val),
+
+        // Everything else: a known numeric column → per-column predicate, else
+        // substring; an unknown key is ignored.
+        _ => {
+            if column(key).is_none() {
+                return;
+            }
+            if let Some(expr) = numeric_pred_expr(spec, &val, &min, &max) {
+                col_filters.push((key.to_string(), expr));
+            } else if !val.is_empty() {
+                col_filters.push((key.to_string(), val));
+            }
+        }
+    }
 }
 
 impl TokenQuery {
@@ -980,70 +1012,28 @@ impl TokenQuery {
         &self.col_filters
     }
 
-    pub fn from_params(q: &PaginationParams) -> Self {
+    /// Lower the unified [`TableRequest`] body onto the internal query. Each
+    /// `FilterSpec` in `req.filters` (keyed by frontend/registry column) is folded via
+    /// [`lower_filter`] onto EITHER the global panel map `f` (identity / date /
+    /// lifetime / ix-label / flag columns, single-field or range semantics) OR a raw
+    /// per-column predicate in `col_filters` (numeric columns) — the exact
+    /// representation the two eval engines (`matches`, `sql.rs`) already consume. So
+    /// the wire is one unified FilterSpec map, evaluation is 100% the proven code.
+    /// This is the inverse of the frontend `tokenFiltersToSpecs` + `toTableRequest`.
+    pub fn from_table_request(req: &TableRequest) -> Self {
         let mut f: HashMap<&'static str, String> = HashMap::new();
-        put(&mut f, "symbol", &q.f_symbol);
-        put(&mut f, "name", &q.f_name);
-        put(&mut f, "mint", &q.f_mint);
-        put(&mut f, "creator", &q.f_creator);
-        put(&mut f, "create_tx", &q.f_create_tx);
-        put(&mut f, "created_from", &q.f_created_from);
-        put(&mut f, "created_to", &q.f_created_to);
-        put(&mut f, "last_trade_from", &q.f_last_trade_from);
-        put(&mut f, "last_trade_to", &q.f_last_trade_to);
-        put(&mut f, "ath_from", &q.f_ath_from);
-        put(&mut f, "ath_to", &q.f_ath_to);
-        put(&mut f, "life_min", &q.f_life_min);
-        put(&mut f, "life_max", &q.f_life_max);
-        put(&mut f, "ath_fep_min", &q.f_ath_fep_min);
-        put(&mut f, "ath_fep_max", &q.f_ath_fep_max);
-        put(&mut f, "cur_fep_min", &q.f_cur_fep_min);
-        put(&mut f, "cur_fep_max", &q.f_cur_fep_max);
-        put(&mut f, "ath_price_min", &q.f_ath_price_min);
-        put(&mut f, "ath_price_max", &q.f_ath_price_max);
-        put(&mut f, "price_min", &q.f_price_min);
-        put(&mut f, "price_max", &q.f_price_max);
-        put(&mut f, "volume_min", &q.f_volume_min);
-        put(&mut f, "volume_max", &q.f_volume_max);
-        put(&mut f, "first_slot_buy_min", &q.f_first_slot_buy_min);
-        put(&mut f, "first_slot_buy_max", &q.f_first_slot_buy_max);
-        put(&mut f, "first_slot_sell_min", &q.f_first_slot_sell_min);
-        put(&mut f, "first_slot_sell_max", &q.f_first_slot_sell_max);
-        put(&mut f, "mcap_min", &q.f_mcap_min);
-        put(&mut f, "mcap_max", &q.f_mcap_max);
-        put(&mut f, "trades_min", &q.f_trades_min);
-        put(&mut f, "trades_max", &q.f_trades_max);
-        put(&mut f, "init_buy_min", &q.f_init_buy_min);
-        put(&mut f, "init_buy_max", &q.f_init_buy_max);
-        put(&mut f, "init_supply_min", &q.f_init_supply_min);
-        put(&mut f, "init_supply_max", &q.f_init_supply_max);
-        put(&mut f, "token_amount_min", &q.f_token_amount_min);
-        put(&mut f, "token_amount_max", &q.f_token_amount_max);
-        put(&mut f, "max_cost_lamports_min", &q.f_max_cost_lamports_min);
-        put(&mut f, "max_cost_lamports_max", &q.f_max_cost_lamports_max);
-        put(&mut f, "spendable_lamports_in_min", &q.f_spendable_lamports_in_min);
-        put(&mut f, "spendable_lamports_in_max", &q.f_spendable_lamports_in_max);
-        put(&mut f, "min_tokens_out_min", &q.f_min_tokens_out_min);
-        put(&mut f, "min_tokens_out_max", &q.f_min_tokens_out_max);
-        put(&mut f, "cu_limit_min", &q.f_cu_limit_min);
-        put(&mut f, "cu_limit_max", &q.f_cu_limit_max);
-        put(&mut f, "cu_price_min", &q.f_cu_price_min);
-        put(&mut f, "cu_price_max", &q.f_cu_price_max);
-        put(&mut f, "ix_count_min", &q.f_ix_count_min);
-        put(&mut f, "ix_count_max", &q.f_ix_count_max);
-        put(&mut f, "ix_label", &q.f_ix_label);
-        put(&mut f, "migrated", &q.f_migrated);
-        put(&mut f, "dead", &q.f_dead);
-        put(&mut f, "mayhem", &q.f_mayhem);
-        put(&mut f, "cashback", &q.f_cashback);
+        let mut col_filters: Vec<(String, String)> = Vec::new();
+        for (key, spec) in &req.filters {
+            lower_filter(key, spec, &mut f, &mut col_filters);
+        }
 
         Self {
-            search: q.search.clone().unwrap_or_default(),
-            sort_levels: parse_sort_levels(q),
-            col_filters: q.cf.as_deref().map(parse_col_filters).unwrap_or_default(),
+            search: req.search.clone(),
+            sort_levels: sort_levels_from_specs(&req.sorting),
+            col_filters,
             f,
-            swing_run_id: q.swing_run_id.clone().filter(|s| !s.is_empty()),
-            swing_chain_latency_ms: q.swing_chain_latency_ms.unwrap_or(DEFAULT_CHAIN_LATENCY_MS),
+            swing_run_id: req.swing_run_id.clone().filter(|s| !s.is_empty()),
+            swing_chain_latency_ms: req.swing_chain_latency_ms.unwrap_or(DEFAULT_CHAIN_LATENCY_MS),
         }
     }
 
@@ -1535,23 +1525,6 @@ fn search_match(t: &TokenSummary, q_lower: &str) -> bool {
 
 // --- per-column filters (numericFilter.ts grammar) -------------------------
 
-fn parse_col_filters(s: &str) -> Vec<(String, String)> {
-    s.split(';')
-        .filter_map(|part| {
-            let part = part.trim();
-            if part.is_empty() {
-                return None;
-            }
-            let (k, v) = part.split_once(':')?;
-            let v = v.trim();
-            if v.is_empty() {
-                return None;
-            }
-            Some((k.trim().to_string(), v.to_string()))
-        })
-        .collect()
-}
-
 enum NumPred {
     Range(f64, f64),
     Gt(f64),
@@ -1759,7 +1732,7 @@ mod grammar_parity_tests {
             "trade_count", "ath_fep_ratio", "current_fep_ratio", "market_cap", "volume",
             "first_slot_buy", "first_slot_sell", "initial_buy", "init_supply", "token_amount",
             "max_cost_lamports", "spendable_lamports_in", "min_tokens_out", "cu_limit", "cu_price",
-            "ix_count",
+            "ix_count", "ath_price", "current_price",
         ]
         .into_iter()
         .collect();
@@ -1798,44 +1771,106 @@ mod grammar_parity_tests {
 }
 
 #[cfg(test)]
-mod sort_tests {
-    use super::sort_levels_from;
+mod lowering_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn req(json: serde_json::Value) -> TableRequest {
+        serde_json::from_value(json).expect("TableRequest")
+    }
 
     #[test]
-    fn multi_key_preserves_order_and_dir() {
-        // The reported bug: secondary key was dropped. Both levels must survive,
-        // in order, with per-level direction.
-        let levels = sort_levels_from(Some("trade_count:desc,symbol:asc"), None, None);
+    fn sorting_specs_resolve_and_drop_unknown() {
+        // Multi-key preserved in order + direction; unknown columns dropped.
+        let q = TokenQuery::from_table_request(&req(json!({
+            "sorting": [{"col":"trade_count","dir":"desc"}, {"col":"bogus","dir":"asc"}, {"col":"symbol","dir":"asc"}]
+        })));
         assert_eq!(
-            levels,
-            vec![("trade_count".to_string(), true), ("symbol".to_string(), false)]
+            q.sort_levels(),
+            &[("trade_count".to_string(), true), ("symbol".to_string(), false)]
         );
     }
 
     #[test]
-    fn unknown_columns_are_dropped_not_fatal() {
-        let levels = sort_levels_from(Some("bogus:desc,trade_count:asc"), None, None);
-        assert_eq!(levels, vec![("trade_count".to_string(), false)]);
+    fn numeric_filter_lowers_to_col_predicate() {
+        // A numeric column's FilterSpec becomes the raw `col_filters` predicate the
+        // registry numeric path consumes (same as the old `cf=trade_count:>=100`).
+        let q = TokenQuery::from_table_request(&req(json!({
+            "filters": {"trade_count": {"op":"gte","val":100}}
+        })));
+        assert_eq!(q.col_filters_slice(), &[("trade_count".to_string(), ">=100".to_string())]);
+        assert!(q.f_get("trades_min").is_none(), "numeric filters don't touch the panel map");
     }
 
     #[test]
-    fn missing_dir_defaults_to_asc() {
-        let levels = sort_levels_from(Some("symbol"), None, None);
-        assert_eq!(levels, vec![("symbol".to_string(), false)]);
+    fn between_lowers_to_range_expr() {
+        let q = TokenQuery::from_table_request(&req(json!({
+            "filters": {"market_cap": {"op":"between","min":5,"max":50}}
+        })));
+        assert_eq!(q.col_filters_slice(), &[("market_cap".to_string(), "5..50".to_string())]);
     }
 
     #[test]
-    fn legacy_single_pair_fallback() {
-        // Old clients / bookmarked URLs without the `sort=` param still work.
-        let levels = sort_levels_from(None, Some("market_cap"), Some("desc"));
-        assert_eq!(levels, vec![("market_cap".to_string(), true)]);
-        // Unknown legacy column → no sort.
-        assert!(sort_levels_from(None, Some("bogus"), Some("desc")).is_empty());
+    fn identity_and_flags_and_dates_lower_to_panel_map() {
+        let q = TokenQuery::from_table_request(&req(json!({
+            "filters": {
+                "symbol":        {"op":"contains","val":"BONK"},
+                "migrated":      {"op":"eq","val":"yes"},
+                "created":       {"op":"between","min":"2026-01-01T00:00:00","max":"2026-02-01T00:00:00"},
+                "lifetime":      {"op":"lte","val":"60"},
+                "ix_labels":     {"op":"contains","val":"buy"}
+            }
+        })));
+        assert_eq!(q.f_get("symbol"), Some("BONK"));
+        assert_eq!(q.f_get("migrated"), Some("yes"));
+        assert_eq!(q.f_get("created_from"), Some("2026-01-01T00:00:00"));
+        assert_eq!(q.f_get("created_to"), Some("2026-02-01T00:00:00"));
+        assert_eq!(q.f_get("life_max"), Some("60"));
+        assert_eq!(q.f_get("ix_label"), Some("buy"));
+        assert!(q.col_filters_slice().is_empty(), "panel-routed filters don't hit col_filters");
     }
 
     #[test]
-    fn empty_sort_is_no_op() {
-        assert!(sort_levels_from(Some(""), None, None).is_empty());
-        assert!(sort_levels_from(None, None, None).is_empty());
+    fn flag_substring_stays_a_col_filter() {
+        // A DataTable substring on a flag column ("true") is NOT the panel tri-state,
+        // so it stays a per-column text filter (unchanged behavior).
+        let q = TokenQuery::from_table_request(&req(json!({
+            "filters": {"migrated": {"op":"contains","val":"true"}}
+        })));
+        assert!(q.f_get("migrated").is_none());
+        assert_eq!(q.col_filters_slice(), &[("migrated".to_string(), "true".to_string())]);
+    }
+
+    #[test]
+    fn unknown_filter_key_is_dropped() {
+        let q = TokenQuery::from_table_request(&req(json!({
+            "filters": {"bogus_col": {"op":"gt","val":5}}
+        })));
+        assert!(q.col_filters_slice().is_empty());
+        assert!(q.f_get("bogus_col").is_none());
+    }
+
+    #[test]
+    fn tokens_only_fields_deserialize_camelcase() {
+        // Locks the exact camelCase wire shape the frontend POSTs (pagination.pageSize,
+        // trackedOnly, swingRunId, swingChainLatencyMs) against the `TableRequest`
+        // rename — a silent rename drift would break the live list at runtime.
+        let r = req(json!({
+            "pagination": {"page": 2, "pageSize": 50},
+            "sorting": [{"col":"market_cap","dir":"desc"}],
+            "search": "bonk",
+            "filters": {"volume": {"op":"between","min":5,"max":50}},
+            "trackedOnly": true,
+            "swingRunId": "run-123",
+            "swingChainLatencyMs": 90000
+        }));
+        assert_eq!(r.pagination.page, 2);
+        assert_eq!(r.pagination.page_size, 50);
+        assert!(r.tracked_only);
+        let q = TokenQuery::from_table_request(&r);
+        assert_eq!(q.swing_run_id(), Some("run-123"));
+        assert_eq!(q.swing_chain_latency_ms(), 90_000);
+        assert_eq!(q.search_str(), "bonk");
+        assert_eq!(q.col_filters_slice(), &[("volume".to_string(), "5..50".to_string())]);
     }
 }

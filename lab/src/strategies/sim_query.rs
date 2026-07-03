@@ -3,26 +3,21 @@
 //! The Simulated token table pages/sorts/filters/searches over the **unified**
 //! `TableRequest` contract — same shape as Positions/Matched — but its data source
 //! is the already-resident `Vec<Value>` in [`SimResults`](crate::state::sim_results)
-//! (lab is single-user, workstation RAM), so there's no DB to query: we apply the
-//! request in Rust. Numeric operators (`gt`, `between`, …) compare **numerically**,
-//! matching the SQL path's semantics (see `strategy_repo::push_filter_predicate`).
+//! (lab is single-user, workstation RAM), so there's no DB to query. This module owns
+//! only the **grammar** — which frontend column key maps to which JSON field + type
+//! ([`resolve`]) — and hands it to the shared, generic evaluator
+//! [`trading_core::api::table_eval::apply_table_request`], which applies the request
+//! (search → filters → sort → page) with the exact same op semantics as the SQL path
+//! (`strategy_repo::push_filter_predicate`). Numeric operators compare numerically; a
+//! numeric op on a text field is dropped just like the SQL whitelist drops it.
 //!
-//! Only whitelisted keys are honored (unknown → ignored), and each filter/sort key
-//! resolves to a JSON field + type, so a numeric op on a text field is dropped just
-//! like the SQL whitelist drops it.
+//! Only whitelisted keys are honored (unknown → ignored). Several columns use a
+//! friendlier display key than the underlying JSON field, so those are aliased here.
 
 use serde_json::Value;
 
-use trading_core::api::table_query::{FilterOp, FilterSpec, TableRequest};
-
-/// Column type for a sim result field — decides which ops are legal and how a
-/// value compares (string `contains`/`eq` vs numeric compare), mirroring the SQL
-/// `FilterKind`.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    Text,
-    Number,
-}
+use trading_core::api::table_eval::{apply_table_request, ColKind};
+use trading_core::api::table_query::TableRequest;
 
 /// Resolve a frontend column key to the JSON field it reads + its type. `None` =
 /// not filterable/sortable (dropped). Mirrors the frontend `simColumns` +
@@ -31,8 +26,8 @@ enum Kind {
 /// `appendedTokenColumns` set (`creator`, `trade_count`, `initial_buy`, `cu_limit`,
 /// `migrated`, ...) reads token metadata that `token_enrich::TokenEnrichment`
 /// flattens onto the row — see that module for where it's populated.
-fn resolve(key: &str) -> Option<(&'static str, Kind)> {
-    use Kind::{Number, Text};
+fn resolve(key: &str) -> Option<(&'static str, ColKind)> {
+    use ColKind::{Number, Text};
     Some(match key {
         "mint" => ("mint", Text),
         "symbol" => ("symbol", Text),
@@ -76,7 +71,7 @@ fn resolve(key: &str) -> Option<(&'static str, Kind)> {
         "cu_limit" => ("cu_limit", Number),
         "cu_price" => ("cu_price", Number),
         "ix_count" | "ix_labels_count" => ("ix_labels_count", Number),
-        // Booleans sort via `field_num`'s bool→0/1 coercion (no dedicated filter
+        // Booleans sort via the evaluator's bool→0/1 coercion (no dedicated filter
         // UI for these columns client-side, same as the SQL-backed tables).
         "migrated" | "is_migrated" => ("is_migrated", Number),
         "dead" | "is_dead" => ("is_dead", Number),
@@ -86,173 +81,12 @@ fn resolve(key: &str) -> Option<(&'static str, Kind)> {
     })
 }
 
-/// Read a JSON field as `f64` (number, numeric string, or bool as 0.0/1.0);
-/// `None` if absent/null.
-fn field_num(row: &Value, field: &str) -> Option<f64> {
-    match row.get(field) {
-        Some(Value::Number(n)) => n.as_f64(),
-        Some(Value::String(s)) => s.parse().ok(),
-        Some(Value::Bool(b)) => Some(if *b { 1.0 } else { 0.0 }),
-        _ => None,
-    }
-}
-
-/// Read a JSON field as a lowercased string (number stringified); `None` if
-/// absent/null.
-fn field_text(row: &Value, field: &str) -> Option<String> {
-    match row.get(field) {
-        Some(Value::String(s)) => Some(s.to_lowercase()),
-        Some(Value::Number(n)) => Some(n.to_string()),
-        _ => None,
-    }
-}
-
-/// Raw (case-sensitive) `mint` string for the stable sort tiebreak — mirrors the
-/// SQL `t.mint_address ASC` tail, which does NOT lowercase. `""` when absent.
-fn mint_raw(row: &Value) -> &str {
-    row.get("mint").and_then(Value::as_str).unwrap_or("")
-}
-
-/// Coerce a filter operand `Value` to `f64` (number or numeric string).
-fn operand_num(v: &Value) -> Option<f64> {
-    match v {
-        Value::Number(n) => n.as_f64(),
-        Value::String(s) => s.trim().parse().ok(),
-        _ => None,
-    }
-}
-
-/// Coerce a filter operand `Value` to a lowercased string.
-fn operand_text(v: &Value) -> Option<String> {
-    match v {
-        Value::String(s) => Some(s.trim().to_lowercase()),
-        Value::Number(n) => Some(n.to_string()),
-        _ => None,
-    }
-}
-
-/// Does `row` satisfy one structured filter? A shape/type mismatch (numeric op on
-/// a text field, non-numeric operand, missing bound) is treated as **not a
-/// constraint** → keeps the row, mirroring the SQL side dropping the predicate.
-fn row_matches(row: &Value, field: &str, kind: Kind, spec: &FilterSpec) -> bool {
-    match (kind, spec.op) {
-        (Kind::Text, FilterOp::Contains) => match operand_text(&spec.val) {
-            Some(needle) if !needle.is_empty() => {
-                field_text(row, field).is_some_and(|hay| hay.contains(&needle))
-            }
-            _ => true,
-        },
-        (Kind::Text, FilterOp::Eq) => match operand_text(&spec.val) {
-            Some(needle) if !needle.is_empty() => {
-                field_text(row, field).is_some_and(|hay| hay == needle)
-            }
-            _ => true,
-        },
-        // Numeric op on a text field → not a constraint.
-        (Kind::Text, _) => true,
-
-        (Kind::Number, FilterOp::Between) => {
-            match (operand_num(&spec.min), operand_num(&spec.max)) {
-                (Some(min), Some(max)) => {
-                    field_num(row, field).is_some_and(|v| v >= min && v <= max)
-                }
-                _ => true,
-            }
-        }
-        (Kind::Number, op) => match operand_num(&spec.val) {
-            Some(target) => match field_num(row, field) {
-                Some(v) => match op {
-                    FilterOp::Gt => v > target,
-                    FilterOp::Gte => v >= target,
-                    FilterOp::Lt => v < target,
-                    FilterOp::Lte => v <= target,
-                    // `eq`/`contains` on a numeric field → equality.
-                    _ => v == target,
-                },
-                // Field absent/null can't satisfy a numeric predicate.
-                None => false,
-            },
-            None => true,
-        },
-    }
-}
-
-/// Does `row` match the free-text search over mint / symbol? Blank search matches
-/// everything.
-fn matches_search(row: &Value, needle: &str) -> bool {
-    if needle.is_empty() {
-        return true;
-    }
-    ["mint", "symbol"]
-        .iter()
-        .filter_map(|f| field_text(row, f))
-        .any(|hay| hay.contains(needle))
-}
-
-/// One page of a finished sim's rows after applying the request's search +
-/// filters + sort, plus the total match count (before paging) for `X-Total-Count`.
-/// The returned rows are cloned refs into the shared `Arc` payload.
+/// One page of a finished sim's rows after applying the request's search + filters +
+/// sort, plus the total match count (before paging) for `X-Total-Count`. The returned
+/// rows are cloned refs into the shared `Arc` payload. Thin adapter over the shared
+/// [`apply_table_request`] evaluator with the sim's [`resolve`] grammar.
 pub fn query(rows: &[Value], req: &TableRequest) -> (Vec<Value>, usize) {
-    let needle = req.search.trim().to_lowercase();
-
-    // Resolve filters once (key → field/kind), dropping unknown keys.
-    let filters: Vec<(&'static str, Kind, &FilterSpec)> = req
-        .filters
-        .iter()
-        .filter_map(|(key, spec)| resolve(key).map(|(field, kind)| (field, kind, spec)))
-        .collect();
-
-    let mut matched: Vec<&Value> = rows
-        .iter()
-        .filter(|row| matches_search(row, &needle))
-        .filter(|row| filters.iter().all(|(field, kind, spec)| row_matches(row, field, *kind, spec)))
-        .collect();
-
-    let total = matched.len();
-
-    // Apply the first resolved sort key (the table sorts by one column at a time;
-    // extra keys, if ever sent, are ignored), then a deterministic `mint` ASC tail
-    // so ties don't shuffle across page seams — matching the SQL tables'
-    // `t.mint_address ASC` tiebreak (raw, case-sensitive base58). NULLS-last on the
-    // primary key regardless of direction. Runs even with no sort column so paging
-    // is stable in the default view too.
-    let primary = req
-        .sorting
-        .first()
-        .and_then(|s| resolve(&s.col).map(|(field, kind)| (field, kind, s.dir.is_desc())));
-    matched.sort_by(|a, b| {
-        let ord = match primary {
-            Some((field, Kind::Number, desc)) => cmp_opt(field_num(a, field), field_num(b, field), desc),
-            Some((field, Kind::Text, desc)) => cmp_opt(field_text(a, field), field_text(b, field), desc),
-            None => std::cmp::Ordering::Equal,
-        };
-        ord.then_with(|| mint_raw(a).cmp(mint_raw(b)))
-    });
-
-    // Page.
-    let (limit, offset) = req.pagination.bounds();
-    let page: Vec<Value> = matched
-        .into_iter()
-        .skip(offset as usize)
-        .take(limit as usize)
-        .cloned()
-        .collect();
-    (page, total)
-}
-
-/// Ordering for `Option<T>` values with NULLS-last semantics under both
-/// directions: a present value always sorts before an absent one.
-fn cmp_opt<T: PartialOrd>(a: Option<T>, b: Option<T>, desc: bool) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    match (a, b) {
-        (Some(a), Some(b)) => {
-            let ord = a.partial_cmp(&b).unwrap_or(Ordering::Equal);
-            if desc { ord.reverse() } else { ord }
-        }
-        (Some(_), None) => Ordering::Less,  // present before absent (NULLS last)
-        (None, Some(_)) => Ordering::Greater,
-        (None, None) => Ordering::Equal,
-    }
+    apply_table_request(rows, req, resolve)
 }
 
 #[cfg(test)]

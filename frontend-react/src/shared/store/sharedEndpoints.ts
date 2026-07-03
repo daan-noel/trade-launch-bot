@@ -1,8 +1,8 @@
 import { baseApi } from './baseApi';
 import type { AppSettings } from 'services/api';
-import type { TokenFilters } from 'components/tokens/filters';
+import { tokenFiltersToSpecs, type TokenFilters } from 'components/tokens/filters';
 import type { SortEntry } from 'components/table/types';
-import { datetimeLocalToUtcWallClock } from 'utils/date';
+import { toTableRequest } from 'services/tableRequest';
 import type {
   CreationStatsArgs,
   CreationStatsResponse,
@@ -14,32 +14,12 @@ import type {
   WalletProfile,
 } from 'types';
 
-export interface TokensArgs {
-  search: string;
-  limit: number;
-  offset: number;
-}
-
 /**
- * The datetime-range `TokenFilters` keys and which side of the range each is.
- * The bound only matters inside a DST transition, where it makes the wall-clock
- * → UTC tie-break inclusion-safe (see `datetimeLocalToUtcWallClock`). Any key not
- * listed here is passed to the backend verbatim.
- */
-const DATETIME_FILTER_BOUND = {
-  created_from: 'lower',
-  created_to: 'upper',
-  last_trade_from: 'lower',
-  last_trade_to: 'upper',
-  ath_from: 'lower',
-  ath_to: 'upper',
-} as const;
-
-/**
- * Args for the server-side paginated Tokens view. Unlike `TokensArgs` (which
- * pulls the whole list for client-side analysis on the Swing page), this asks
- * the backend to filter/sort/page so only one page crosses the wire. Mirrors
- * the DataTable view-state plus the global `TokenFilters` panel.
+ * Args for the server-side paginated Tokens view: the backend filters/sorts/pages so
+ * only one page crosses the wire. Mirrors the DataTable view-state plus the global
+ * `TokenFilters` panel; the endpoint serializes both into the unified `TableRequest`
+ * POST body (`toTableRequest` + `tokenFiltersToSpecs`). The Swing Detection page reuses
+ * it (with `swingRunId`), pulling the full filtered set via a large `pageSize`.
  */
 export interface TokensPageArgs {
   page: number; // 1-based
@@ -87,8 +67,7 @@ export const TOKEN_TRADES_LIMIT = 5_000;
 export interface TokensResponse {
   total: number;
   /** Filtered count restricted to the live, cache-tracked subset (≤ `total`).
-   *  Defaulted to `total` for the simple `getTokens` endpoint, which doesn't
-   *  emit it. */
+   *  Defensively defaulted to `total` if a response ever omits it. */
   tracked: number;
   items: TokenRecord[];
 }
@@ -117,62 +96,33 @@ function withCreatedMs(r: TokensResponse): TokensResponse {
  */
 export const sharedApi = baseApi.injectEndpoints({
   endpoints: (builder) => ({
-    getTokens: builder.query<TokensResponse, TokensArgs>({
-      query: ({ search, limit, offset }) => {
-        const params = new URLSearchParams({
-          limit: String(limit),
-          offset: String(offset),
-        });
-        if (search) params.set('search', search);
-        return `/api/tokens?${params.toString()}`;
-      },
-      transformResponse: withCreatedMs,
-    }),
-    // Server-side paginated/filtered/sorted token list. The backend applies the
-    // full TokenFilters set + search + per-column filters + sort, returning one
-    // page plus the filtered `total`. Backend execution differs by build (same wire
-    // contract): the LIVE bin pages this straight from Postgres over the whole token
-    // universe (no cap) — its in-RAM cache holds only tracking tokens; the LAB bin
-    // runs it over a full in-RAM snapshot. Distinct from `getTokens` (which Swing
-    // uses to pull everything) so the two no longer share a cache entry. A short
-    // retention keeps abandoned filter/sort/page permutations from accumulating.
+    // Server-side paginated/filtered/sorted token list over the **unified**
+    // `POST /api/tokens` [`TableRequest`] body — the SAME contract the strategy
+    // tables use. The DataTable view-state (`toTableRequest`) and the global
+    // `TokenFilters` panel (`tokenFiltersToSpecs`) fold into ONE `filters` map
+    // (panel-wins on any key collision); the Tokens-only `trackedOnly` /
+    // `swingRunId` / `swingChainLatencyMs` ride alongside. Backend execution differs
+    // by build (same wire contract): the LIVE bin pages this straight from Postgres
+    // over the whole token universe (no cap) — its in-RAM cache holds only tracking
+    // tokens; the LAB bin runs it over a full in-RAM snapshot. A short retention
+    // keeps abandoned filter/sort/page permutations from accumulating.
     getTokensPage: builder.query<TokensResponse, TokensPageArgs>({
       query: (a) => {
-        const p = new URLSearchParams();
-        p.set('limit', String(a.pageSize));
-        p.set('offset', String((a.page - 1) * a.pageSize));
-        if (a.search) p.set('search', a.search);
-        // Multi-key sort: ordered `col:dir,…` list (index 0 = primary). The
-        // backend applies every level in order with a stable tiebreak.
-        if (a.sortKeys.length > 0) {
-          p.set('sort', a.sortKeys.map((s) => `${s.col}:${s.dir}`).join(','));
-        }
-        const cf = Object.entries(a.colFilters)
-          .filter(([, v]) => v.trim())
-          .map(([k, v]) => `${k}:${v}`)
-          .join(';');
-        if (cf) p.set('cf', cf);
-        for (const [k, v] of Object.entries(a.filters)) {
-          if (!v) continue;
-          // Datetime-range filters carry picker wall-clock in the selected tz;
-          // normalize to the exact UTC instant the backend's `parse_dt` expects.
-          const bound = DATETIME_FILTER_BOUND[k as keyof typeof DATETIME_FILTER_BOUND];
-          const out = bound
-            ? datetimeLocalToUtcWallClock(String(v), a.timezone, bound)
-            : String(v);
-          if (out) p.set(`f_${k}`, out);
-        }
-        // Chain-column sort inputs (Swing Detection page). The backend only reads
-        // them when `sort_col` is a chain column, but sending them always keeps
-        // the cache key in sync with the active run + latency.
+        // Numeric columns needn't be enumerated: the backend re-parses each raw
+        // per-column predicate string, so an empty `numericCols` here yields the
+        // identical lowered filter (see `lower_filter`).
+        const body = toTableRequest(
+          { page: a.page, pageSize: a.pageSize, sortKeys: a.sortKeys, search: a.search, colFilters: a.colFilters },
+          new Set(),
+        );
+        // Fold the global panel into the same filters map (panel-wins on collision).
+        Object.assign(body.filters, tokenFiltersToSpecs(a.filters, a.timezone));
+        if (a.trackedOnly) body.trackedOnly = true;
         if (a.swingRunId) {
-          p.set('swing_run_id', a.swingRunId);
-          if (a.swingChainLatencyMs != null) {
-            p.set('swing_chain_latency_ms', String(a.swingChainLatencyMs));
-          }
+          body.swingRunId = a.swingRunId;
+          if (a.swingChainLatencyMs != null) body.swingChainLatencyMs = a.swingChainLatencyMs;
         }
-        if (a.trackedOnly) p.set('tracked_only', 'true');
-        return `/api/tokens?${p.toString()}`;
+        return { url: '/api/tokens', method: 'POST', body };
       },
       transformResponse: withCreatedMs,
       keepUnusedDataFor: 30,
@@ -270,7 +220,6 @@ export const sharedApi = baseApi.injectEndpoints({
 });
 
 export const {
-  useGetTokensQuery,
   useGetTokensByMintsQuery,
   useGetTokensPageQuery,
   useGetCreationStatsQuery,

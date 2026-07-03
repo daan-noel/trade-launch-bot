@@ -32,6 +32,18 @@ pub struct TableRequest {
     /// Matched / simulated only — the creation-time analysis window.
     #[serde(default)]
     pub range: Option<AnalysisRange>,
+    /// Tokens list only — restrict to the live cache-tracked subset (the "tracked"
+    /// badge). Ignored by the strategy tables.
+    #[serde(default)]
+    pub tracked_only: bool,
+    /// Tokens list only (Swing Detection page) — the last "Swing Detection All" run
+    /// id and its chain-latency budget, so the backend can sort the chain columns
+    /// (`swing_pairs`/`max_seq_pairs`/`chain_count`) from that run's raw legs. Omitted
+    /// elsewhere.
+    #[serde(default)]
+    pub swing_run_id: Option<String>,
+    #[serde(default)]
+    pub swing_chain_latency_ms: Option<i64>,
 }
 
 /// 1-based page + page size. [`Page::bounds`] clamps to the repo's historical

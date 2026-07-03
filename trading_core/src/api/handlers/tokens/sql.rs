@@ -466,14 +466,15 @@ fn build_order(q: &TokenQuery) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::handlers::tokens::{PaginationParams, TokenQuery};
+    use crate::api::handlers::tokens::TokenQuery;
+    use crate::api::table_query::TableRequest;
 
-    /// Build a `TokenQuery` from a JSON object of the (flat) `PaginationParams`
-    /// fields — every field is `Option<String>` / primitive, so JSON round-trips
-    /// cleanly and we avoid hand-constructing the ~60-field struct.
+    /// Build a `TokenQuery` from a JSON object of the unified [`TableRequest`] body
+    /// (`filters`/`sorting`/`search`/…), which `from_table_request` lowers onto the
+    /// internal representation the SQL builder reads.
     fn query(json: serde_json::Value) -> TokenQuery {
-        let params: PaginationParams = serde_json::from_value(json).expect("params");
-        TokenQuery::from_params(&params)
+        let req: TableRequest = serde_json::from_value(json).expect("TableRequest");
+        TokenQuery::from_table_request(&req)
     }
 
     fn now() -> DateTime<Utc> {
@@ -490,7 +491,10 @@ mod tests {
 
     #[test]
     fn text_filter_binds_lowercased_needle() {
-        let b = build_where_and_order(&query(serde_json::json!({"f_symbol": "BONK"})), now());
+        let b = build_where_and_order(
+            &query(serde_json::json!({"filters": {"symbol": {"op":"contains","val":"BONK"}}})),
+            now(),
+        );
         assert!(b.where_sql.contains("LOWER(t.symbol) LIKE '%' || $1 || '%'"));
         assert_eq!(b.args.len(), 1);
         match &b.args[0] {
@@ -501,8 +505,10 @@ mod tests {
 
     #[test]
     fn numeric_opt_range_requires_non_null() {
+        // ath_price is now a numeric column → the panel range lowers to the
+        // per-column predicate path, which requires non-null just like `opt_f64`.
         let b = build_where_and_order(
-            &query(serde_json::json!({"f_ath_price_min": "1.5", "f_ath_price_max": "9"})),
+            &query(serde_json::json!({"filters": {"ath_price": {"op":"between","min":1.5,"max":9}}})),
             now(),
         );
         assert!(b.where_sql.contains("i.ath_price IS NOT NULL"));
@@ -514,21 +520,27 @@ mod tests {
 
     #[test]
     fn tri_flag_emits_no_bind() {
-        let b = build_where_and_order(&query(serde_json::json!({"f_migrated": "yes"})), now());
+        let b = build_where_and_order(
+            &query(serde_json::json!({"filters": {"migrated": {"op":"eq","val":"yes"}}})),
+            now(),
+        );
         assert!(b.where_sql.contains("COALESCE(i.is_migrated, false) = true"));
         assert!(b.args.is_empty(), "tri-flags are constant, no bind");
     }
 
     #[test]
     fn tri_flag_no_means_false() {
-        let b = build_where_and_order(&query(serde_json::json!({"f_dead": "no"})), now());
+        let b = build_where_and_order(
+            &query(serde_json::json!({"filters": {"dead": {"op":"eq","val":"no"}}})),
+            now(),
+        );
         assert!(b.where_sql.contains("COALESCE(i.is_dead, false) = false"));
     }
 
     #[test]
     fn multi_key_sort_maps_columns_with_nulls_last_and_tiebreak() {
         let b = build_where_and_order(
-            &query(serde_json::json!({"sort": "trade_count:desc,symbol:asc"})),
+            &query(serde_json::json!({"sorting": [{"col":"trade_count","dir":"desc"},{"col":"symbol","dir":"asc"}]})),
             now(),
         );
         // trade_count numeric desc, symbol case-insensitive asc, then mint tiebreak.
@@ -540,14 +552,17 @@ mod tests {
     #[test]
     fn swing_sort_column_is_dropped_to_default_order() {
         // No DB source for chain columns on live → falls back to default order.
-        let b = build_where_and_order(&query(serde_json::json!({"sort": "swing_pairs:desc"})), now());
+        let b = build_where_and_order(
+            &query(serde_json::json!({"sorting": [{"col":"swing_pairs","dir":"desc"}]})),
+            now(),
+        );
         assert_eq!(b.order_sql, "t.created_at DESC, t.mint_address DESC");
     }
 
     #[test]
     fn date_range_parses_and_binds_timestamps() {
         let b = build_where_and_order(
-            &query(serde_json::json!({"f_created_from": "2026-01-01T00:00:00"})),
+            &query(serde_json::json!({"filters": {"created": {"op":"gte","val":"2026-01-01T00:00:00"}}})),
             now(),
         );
         assert!(b.where_sql.contains("t.created_at IS NOT NULL"));
@@ -557,7 +572,10 @@ mod tests {
 
     #[test]
     fn per_column_numeric_predicate_translates_operator() {
-        let b = build_where_and_order(&query(serde_json::json!({"cf": "trade_count:>=100"})), now());
+        let b = build_where_and_order(
+            &query(serde_json::json!({"filters": {"trade_count": {"op":"gte","val":100}}})),
+            now(),
+        );
         assert!(b.where_sql.contains("COALESCE(i.trade_count, 0) IS NOT NULL"));
         assert!(b.where_sql.contains(">= $1"));
         assert!(matches!(b.args[0], SqlArg::F64(v) if (v - 100.0).abs() < 1e-9));
@@ -565,7 +583,10 @@ mod tests {
 
     #[test]
     fn ix_label_text_mode_builds_exists() {
-        let b = build_where_and_order(&query(serde_json::json!({"f_ix_label": "buy"})), now());
+        let b = build_where_and_order(
+            &query(serde_json::json!({"filters": {"ix_labels": {"op":"contains","val":"buy"}}})),
+            now(),
+        );
         assert!(b.where_sql.contains("EXISTS (SELECT 1 FROM"));
         assert!(b.where_sql.contains("LOWER(e) LIKE"));
     }
@@ -573,7 +594,7 @@ mod tests {
     #[test]
     fn ix_label_json_mode_builds_set_equality() {
         let b = build_where_and_order(
-            &query(serde_json::json!({"f_ix_label": "[\"buy\",\"sell\"]"})),
+            &query(serde_json::json!({"filters": {"ix_labels": {"op":"contains","val":"[\"buy\",\"sell\"]"}}})),
             now(),
         );
         assert!(b.where_sql.contains("WITH ORDINALITY"));
@@ -599,7 +620,10 @@ mod tests {
 
     #[test]
     fn lamports_columns_filter_in_sol() {
-        let b = build_where_and_order(&query(serde_json::json!({"f_max_cost_lamports_min": "0.5"})), now());
+        let b = build_where_and_order(
+            &query(serde_json::json!({"filters": {"max_cost_lamports": {"op":"gte","val":0.5}}})),
+            now(),
+        );
         // buy-ix JSON arg, lamports → SOL via /1e9
         assert!(b.where_sql.contains("/1e9"));
         assert!(b.where_sql.contains("initial_buy_instruction->>'max_cost_lamports'"));

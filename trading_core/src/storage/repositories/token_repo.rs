@@ -570,9 +570,8 @@ impl TokenRepo {
 #[cfg(test)]
 mod parity_tests {
     use super::*;
-    use crate::api::handlers::tokens::{
-        build_where_and_order, PaginationParams, TokenQuery, TokenSummary,
-    };
+    use crate::api::handlers::tokens::{build_where_and_order, TokenQuery, TokenSummary};
+    use crate::api::table_query::TableRequest;
     use sqlx::postgres::PgPoolOptions;
 
     async fn test_pool() -> Option<PgPool> {
@@ -581,8 +580,8 @@ mod parity_tests {
     }
 
     fn q(json: serde_json::Value) -> TokenQuery {
-        let p: PaginationParams = serde_json::from_value(json).expect("params");
-        TokenQuery::from_params(&p)
+        let req: TableRequest = serde_json::from_value(json).expect("TableRequest");
+        TokenQuery::from_table_request(&req)
     }
 
     /// Insert one fixture token (+ tokens_info) with the fields the filters touch.
@@ -729,21 +728,24 @@ mod parity_tests {
             Some(now - chrono::Duration::hours(3)), false, false).await;
 
         // (label, query-json) matrix — each must agree between the two engines.
+        // Cases use the unified `TableRequest` body (`filters`/`sorting`/`search`),
+        // exercising every lowering path (identity/date/flag → panel map; numeric →
+        // per-column predicate).
         let cases: Vec<(&str, serde_json::Value)> = vec![
             ("no filter default order", serde_json::json!({})),
-            ("sort trade_count desc", serde_json::json!({"sort": "trade_count:desc"})),
-            ("sort volume asc", serde_json::json!({"sort": "volume:asc"})),
-            ("sort current_price desc (nulls last)", serde_json::json!({"sort": "current_price:desc"})),
-            ("multi-key mcap desc, symbol asc", serde_json::json!({"sort": "market_cap:desc,symbol:asc"})),
-            ("text symbol AA", serde_json::json!({"f_symbol": "AA"})),
-            ("dead only", serde_json::json!({"f_dead": "yes"})),
-            ("migrated only", serde_json::json!({"f_migrated": "yes"})),
-            ("volume range", serde_json::json!({"f_volume_min": "5", "f_volume_max": "50"})),
-            ("ath_price present min", serde_json::json!({"f_ath_price_min": "0.001"})),
-            ("trades >= 40", serde_json::json!({"cf": "trade_count:>=40"})),
+            ("sort trade_count desc", serde_json::json!({"sorting": [{"col":"trade_count","dir":"desc"}]})),
+            ("sort volume asc", serde_json::json!({"sorting": [{"col":"volume","dir":"asc"}]})),
+            ("sort current_price desc (nulls last)", serde_json::json!({"sorting": [{"col":"current_price","dir":"desc"}]})),
+            ("multi-key mcap desc, symbol asc", serde_json::json!({"sorting": [{"col":"market_cap","dir":"desc"},{"col":"symbol","dir":"asc"}]})),
+            ("text symbol AA", serde_json::json!({"filters": {"symbol": {"op":"contains","val":"AA"}}})),
+            ("dead only", serde_json::json!({"filters": {"dead": {"op":"eq","val":"yes"}}})),
+            ("migrated only", serde_json::json!({"filters": {"migrated": {"op":"eq","val":"yes"}}})),
+            ("volume range", serde_json::json!({"filters": {"volume": {"op":"between","min":5,"max":50}}})),
+            ("ath_price present min", serde_json::json!({"filters": {"ath_price": {"op":"gte","val":0.001}}})),
+            ("trades >= 40", serde_json::json!({"filters": {"trade_count": {"op":"gte","val":40}}})),
             ("global search AB", serde_json::json!({"search": "ab"})),
-            ("token_amount range (buy-ix)", serde_json::json!({"f_token_amount_min": "200", "f_token_amount_max": "800"})),
-            ("filter + sort combo", serde_json::json!({"f_ath_price_min": "0.001", "sort": "volume:desc"})),
+            ("token_amount range (buy-ix)", serde_json::json!({"filters": {"token_amount": {"op":"between","min":200,"max":800}}})),
+            ("filter + sort combo", serde_json::json!({"filters": {"ath_price": {"op":"gte","val":0.001}}, "sorting": [{"col":"volume","dir":"desc"}]})),
         ];
 
         for (label, json) in cases {

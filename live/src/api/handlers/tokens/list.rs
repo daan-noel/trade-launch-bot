@@ -19,26 +19,28 @@ use std::sync::Arc;
 use actix_web::{http::header, web, HttpRequest, HttpResponse, Responder};
 
 use trading_core::{
-    api::handlers::tokens::{
-        build_tokens_list, build_where_and_order, PaginationParams, TokenQuery, TokenSummary,
-        TokensListResponse,
+    api::{
+        handlers::tokens::{
+            build_tokens_list, build_where_and_order, TokenQuery, TokenSummary, TokensListResponse,
+        },
+        table_query::TableRequest,
     },
     state::core_state::CoreState,
 };
 
-/// `GET /api/tokens` — list tokens.
+/// `POST /api/tokens` — list tokens over the unified [`TableRequest`] body.
 /// Swing-chain sort columns are accepted but sort matching rows last on the live
 /// bin (no swing runs available), which is the correct no-data fallback.
 pub async fn list_tokens(
     req: HttpRequest,
     state: web::Data<Arc<CoreState>>,
-    query: web::Query<PaginationParams>,
+    body: web::Json<TableRequest>,
 ) -> impl Responder {
     let state = state.get_ref().clone();
-    let q = TokenQuery::from_params(&query);
-    let limit_q = query.limit;
-    let offset_q = query.offset;
-    let tracked_only = query.tracked_only.unwrap_or(false);
+    let body = body.into_inner();
+    let (limit_q, offset_q) = page_bounds(&body);
+    let tracked_only = body.tracked_only;
+    let q = TokenQuery::from_table_request(&body);
 
     // Tracked-only view: small resident set, served from the in-RAM cache exactly
     // as before (no SQL). Keeps the "tracked" badge click instant.
@@ -54,6 +56,15 @@ pub async fn list_tokens(
     // Full list: page the whole universe from Postgres.
     let built = build_full_list_sql(&state, &q, limit_q, offset_q).await;
     respond(req, built)
+}
+
+/// `(limit, offset)` from the request's 1-based page/pageSize. The token list keeps
+/// its historical large envelope (pageSize up to 50 000 — the Swing page pulls the
+/// full filtered set), so this does NOT use `Page::bounds` (which clamps to 1000).
+fn page_bounds(req: &TableRequest) -> (i64, i64) {
+    let page = req.pagination.page.max(1);
+    let page_size = req.pagination.page_size.clamp(1, 50_000);
+    (page_size, (page - 1) * page_size)
 }
 
 /// Build one page of the full token list from Postgres, plus the in-RAM `tracked`

@@ -14,8 +14,8 @@ use actix_web::web;
 pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/api")
-            // Token list (no swing-chain stats on the live bin)
-            .route("/tokens", web::get().to(handlers::tokens::list_tokens))
+            // Token list (unified TableRequest POST; no swing-chain stats on live)
+            .route("/tokens", web::post().to(handlers::tokens::list_tokens))
             // Token sync
             .route("/token/sync", web::post().to(handlers::tokens::sync_token))
             .route("/token/sync/preview", web::post().to(handlers::tokens::preview_sync))

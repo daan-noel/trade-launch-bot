@@ -13,10 +13,12 @@ const RANGE_RE = /^(-?\d+(?:\.\d+)?)\s*\.\.\s*(-?\d+(?:\.\d+)?)$/;
 export type FilterOp = 'contains' | 'eq' | 'gt' | 'gte' | 'lt' | 'lte' | 'between';
 
 /** A structured per-column filter — the parsed shape sent to the server. `between`
- *  carries `min`/`max`; every other op carries `val`. */
+ *  carries `min`/`max`; every other op carries `val`. Operands are `string | number`
+ *  so date-range filters (RFC3339 strings) share the same shape as numeric ones; the
+ *  backend reads each operand by the column's type. */
 export type FilterSpec =
   | { op: Exclude<FilterOp, 'between'>; val: string | number }
-  | { op: 'between'; min: number; max: number };
+  | { op: 'between'; min: string | number; max: string | number };
 
 /**
  * Parse a per-column numeric-filter string into a structured {@link FilterSpec}
@@ -70,7 +72,11 @@ export function parseNumericPredicate(text: string): ((n: number) => boolean) | 
   }
   const spec = parseFilterSpec(text);
   if (!spec) return null;
-  if (spec.op === 'between') return (n) => n >= spec.min && n <= spec.max;
+  if (spec.op === 'between') {
+    const lo = Number(spec.min);
+    const hi = Number(spec.max);
+    return (n) => n >= lo && n <= hi;
+  }
   const v = Number(spec.val);
   switch (spec.op) {
     case 'gt':

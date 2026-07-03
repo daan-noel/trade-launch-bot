@@ -14,8 +14,8 @@ use actix_web::web;
 pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/api")
-            // Token list (swing-aware)
-            .route("/tokens", web::get().to(handlers::tokens::list_tokens))
+            // Token list (unified TableRequest POST; swing-aware)
+            .route("/tokens", web::post().to(handlers::tokens::list_tokens))
             // Swing detection
             .route(
                 "/tokens/swings/batch",
