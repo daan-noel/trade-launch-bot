@@ -70,24 +70,48 @@ Entry point: `run_grouped_with_refine(strategy, config, corpus, observer, sink)`
 
 ## Grouping — `grouping.rs`
 
-`TokenFingerprint` is a struct of optional fields, each representing one dimension for grouping:
+`TokenFingerprint` is a struct of grouping dimensions. Nine are `tokens`-creation
+facts; `first_slot_{buy,sell}_sol` are trade-derived (from `tokens_info`). Creator
+wallet is **deliberately absent** — pump.fun creators rotate wallets, so it only ever
+yields singleton groups.
 
 ```rust
 pub struct TokenFingerprint {
-    pub initial_buy_sol_bucket: Option<SolBucket>,  // <0.1, 0.1–0.5, 0.5–1, 1–5, >5
-    pub launch_hour_utc: Option<u8>,                // 0–23
-    pub venue: Option<Venue>,                       // Curve, Amm
-    // ... up to 8 fields
+    pub token_program_id: Option<String>,
+    pub initial_buy_sol: Option<f64>,        // continuous SOL amount → binned
+    pub cu_limit: Option<i64>,               // discrete → exact
+    pub cu_price: Option<i64>,               // discrete → exact
+    pub is_cashback_enabled: bool,
+    pub max_cost_lamports: Option<i64>,      // continuous SOL amount → binned
+    pub spendable_lamports_in: Option<i64>,  // continuous SOL amount → binned
+    pub first_slot_buy_sol: Option<f64>,     // trade-derived (tokens_info) → binned
+    pub first_slot_sell_sol: Option<f64>,    // trade-derived (tokens_info) → binned
+    pub ix_labels: Vec<String>,
 }
 ```
 
-`GroupKey` is a sorted `Vec<(GroupField, GroupValue)>` — the selected subset of fingerprint fields for this sweep run. Two tokens with the same `GroupKey` are in the same group.
+`GroupKey` is a `Vec<(GroupField, String)>` in **selection order** (not sorted) — the
+chosen subset of fields, each rendered to its group-key string by `render_field`.
+Two tokens with the same `GroupKey` are in the same group.
 
-`attach_fingerprints(tokens, group_fields)` computes fingerprints for all corpus tokens in one pass:
+**Exact-value vs binned rendering (`render_field`).** Discrete fields (program id,
+CU limit/price, cashback, ix-labels) render their exact value. The continuous
+SOL-amount fields (`initial_buy_sol`, `max_cost_lamports`, `spendable_lamports_in`,
+`first_slot_{buy,sell}_sol`) are **binned** into fixed `SOL_BIN_WIDTH`-wide ranges via
+`bin_sol_label`, rendered `"lo–hi"` (e.g. `"1.0–1.1"`) — exact-value grouping there
+would make every token its own group. **Tuning constant:** `SOL_BIN_WIDTH = 0.1` SOL,
+`SOL_BIN_DECIMALS = 1`. Lamports-native fields (`max_cost`/`spendable`) are ÷1e9 to
+SOL first so the label reads in SOL. `0.1` is not f64-exact, so `bin_sol_label` adds a
+`+1e-9` epsilon on the ratio before `floor` — an on-edge value (e.g. `0.3`) lands in
+the upper bucket, and the nudge (0.1 lamport in ratio units) can never promote a
+genuinely sub-edge value. The dashboard mirror `creation_stats_repo::sol_bin_sql`
+applies the identical epsilon + 1-decimal `to_char` rounding so sweep and dashboard
+produce byte-identical labels. Making the width runtime-configurable is
+[dynamic-bucket-size-plan.md](../../dynamic-bucket-size-plan.md).
 
-1. Look up `initial_buy_sol`, `creator_wallet`, `created_at` from the projected corpus (already in memory)
-2. Bucket each field into its `GroupField` variant
-3. Build `GroupKey` by selecting only the `group_fields` subset
+Fingerprints are **embedded by the lake loader** (`LakeSource`/`duck.rs::load_fingerprints`
+reads the `fp_*` columns of the tokens dimension file), not a separate PG pass — the
+old `attach_fingerprints` PG pass was deleted at the lake cutover.
 
 Groups with fewer than `MIN_GROUP_SIZE` (default 30) tokens are merged into an `_other` bucket and swept separately.
 

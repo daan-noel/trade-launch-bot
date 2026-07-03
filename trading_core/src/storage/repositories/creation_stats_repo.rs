@@ -198,36 +198,54 @@ pub struct GroupedTrendPointRow {
     pub count: i64,
 }
 
+/// SQL bucket-label expression for a continuous SOL amount. Bins `sol_expr` (a
+/// float8 **SOL** expression, or NULL) into [`SOL_BIN_WIDTH`]-wide `"lo–hi"` ranges,
+/// `∅` when NULL. Kept byte-for-byte in lockstep with `grouping::bin_sol_label`:
+/// same `+ 1e-9` boundary epsilon (0.1 isn't f64-exact), same 1-decimal rounding
+/// (`to_char … '0.0'` ⇔ Rust `{:.1}`), same en-dash separator — so the dashboard and
+/// the sweep produce identical group keys. `sol_expr` is built from fixed field
+/// literals (never user text), so interpolation is injection-safe.
+fn sol_bin_sql(sol_expr: &str) -> String {
+    // width 0.1 / 1 decimal — mirror of `grouping::{SOL_BIN_WIDTH, SOL_BIN_DECIMALS}`.
+    let lo = format!("floor(({sol_expr}) / 0.1 + 1e-9) * 0.1");
+    format!(
+        "CASE WHEN ({sol_expr}) IS NULL THEN '∅' \
+         ELSE to_char({lo}, 'FM99999990.0') || '–' || to_char(({lo}) + 0.1, 'FM99999990.0') END"
+    )
+}
+
 /// The per-field SQL value expression used to build the group key. Renders a TEXT
 /// value so every field collapses to a hashable key, mirroring the sweep's
-/// `render_field`: `∅` sentinel for missing values, `" | "`-joined on-chain-order
-/// labels for `ix_labels`. Fields come from the fixed [`GroupField`] enum (never
-/// user free-text), so interpolating these literals is injection-safe.
-fn group_field_sql(f: GroupField) -> &'static str {
+/// `render_field`: discrete fields render their exact value (`∅` sentinel for
+/// missing, `" | "`-joined on-chain-order labels for `ix_labels`); the continuous
+/// SOL-amount fields are **binned** via [`sol_bin_sql`]. Fields come from the fixed
+/// [`GroupField`] enum (never user free-text), so interpolating these is injection-safe.
+fn group_field_sql(f: GroupField) -> String {
     match f {
-        GroupField::TokenProgramId => "COALESCE(t.token_program_id, '∅')",
-        GroupField::CuLimit => "COALESCE(t.cu_limit::text, '∅')",
-        GroupField::CuPrice => "COALESCE(t.cu_price::text, '∅')",
-        GroupField::IsCashbackEnabled => "t.is_cashback_enabled::text",
-        GroupField::MaxCostLamports => "COALESCE(t.initial_buy_instruction->>'max_cost_lamports', '∅')",
-        GroupField::SpendableLamportsIn => {
-            "COALESCE(t.initial_buy_instruction->>'spendable_lamports_in', '∅')"
+        GroupField::TokenProgramId => "COALESCE(t.token_program_id, '∅')".to_string(),
+        GroupField::CuLimit => "COALESCE(t.cu_limit::text, '∅')".to_string(),
+        GroupField::CuPrice => "COALESCE(t.cu_price::text, '∅')".to_string(),
+        GroupField::IsCashbackEnabled => "t.is_cashback_enabled::text".to_string(),
+        // Continuous SOL amounts → binned SOL ranges. Lamports sources are ÷1e9 to
+        // human SOL first so the label reads in SOL (matches the "SOL cost"/"SOL in"
+        // display name + the sweep's `bin_lamports_as_sol`).
+        GroupField::MaxCostLamports => {
+            sol_bin_sql("(t.initial_buy_instruction->>'max_cost_lamports')::float8 / 1e9")
         }
-        // initial_buy_lamports is lamports (BIGINT); group on the human-SOL value so the
-        // displayed label matches the rest of the UI (÷1e9).
-        GroupField::InitialBuySol => "COALESCE((t.initial_buy_lamports::float8 / 1e9)::text, '∅')",
+        GroupField::SpendableLamportsIn => {
+            sol_bin_sql("(t.initial_buy_instruction->>'spendable_lamports_in')::float8 / 1e9")
+        }
+        GroupField::InitialBuySol => sol_bin_sql("t.initial_buy_lamports::float8 / 1e9"),
         // First-slot buy/sell are trade-derived, sourced from `tokens_info` (the `ti`
         // alias the LEFT JOIN in `grouped()` adds) — the only non-`tokens` group fields.
-        // Lamports BIGINT → human SOL (÷1e9), matching the UI + `InitialBuySol` above.
-        GroupField::FirstSlotBuySol => "COALESCE((ti.first_slot_buy_lamports::float8 / 1e9)::text, '∅')",
-        GroupField::FirstSlotSellSol => "COALESCE((ti.first_slot_sell_lamports::float8 / 1e9)::text, '∅')",
+        GroupField::FirstSlotBuySol => sol_bin_sql("ti.first_slot_buy_lamports::float8 / 1e9"),
+        GroupField::FirstSlotSellSol => sol_bin_sql("ti.first_slot_sell_lamports::float8 / 1e9"),
         // Labels joined with " | " in on-chain order (NOT alphabetised) so the
         // displayed/copied set mirrors the real instruction sequence. Ordinality
         // preserves array position; duplicates are kept intentionally.
-        GroupField::IxLabels => {
-            "COALESCE((SELECT string_agg(e.val, ' | ' ORDER BY e.ord) \
+        GroupField::IxLabels => "COALESCE((SELECT string_agg(e.val, ' | ' ORDER BY e.ord) \
               FROM jsonb_array_elements_text(t.ix_labels) WITH ORDINALITY AS e(val, ord)), '∅')"
-        }
+            .to_string(),
     }
 }
 

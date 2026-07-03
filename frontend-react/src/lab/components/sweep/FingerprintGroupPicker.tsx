@@ -2,7 +2,13 @@ import { useEffect, useMemo, useRef } from 'react';
 import { Button } from 'components/ui/Button';
 import { Checkbox } from 'components/ui/Checkbox';
 import { cn } from 'lib/cn';
-import { GROUP_FIELDS, GROUP_FIELD_LABELS, type GroupField } from './groupedTypes';
+import {
+  GROUP_FIELDS,
+  GROUP_FIELD_LABELS,
+  BUCKETED_GROUP_FIELDS,
+  SOL_BUCKET_WIDTH,
+  type GroupField,
+} from './groupedTypes';
 
 /** Tri-state corpus filter on the `is_cashback_enabled` flag. */
 export type CashbackFilter = 'all' | 'true' | 'false';
@@ -33,14 +39,17 @@ const NUMERIC_FIELDS = GROUP_FIELDS.filter(
 );
 
 /** Units note shown at the bottom of each numeric field's filter tooltip. */
+// Discrete fields group on their exact value; the continuous SOL amounts are
+// grouped into fixed 0.1-SOL buckets (chips read as ranges like "1.0–1.1"), so the
+// value filter here is best used to pin a bucket rather than an exact amount.
 const FIELD_UNIT_HINTS: Partial<Record<GroupField, string>> = {
-  cu_limit: 'Raw integer (e.g. 200000). Match values shown in group keys.',
-  cu_price: 'Raw integer (e.g. 1000). Match values shown in group keys.',
-  max_cost_lamports: 'In lamports — 1 SOL = 1,000,000,000. Match values shown in group keys.',
-  spendable_lamports_in: 'In lamports — 1 SOL = 1,000,000,000. Match values shown in group keys.',
-  initial_buy_sol: 'In SOL (e.g. 0.5, 1.0). Match values shown in group keys.',
-  first_slot_buy_sol: 'In SOL — total buy volume in the creation slot. Match values shown in group keys.',
-  first_slot_sell_sol: 'In SOL — total sell volume in the creation slot. Match values shown in group keys.',
+  cu_limit: 'Raw integer (e.g. 200000), exact grouping. Match values shown in group keys.',
+  cu_price: 'Raw integer (e.g. 1000), exact grouping. Match values shown in group keys.',
+  max_cost_lamports: 'Grouped into 0.1-SOL buckets (chips read as ranges, e.g. 1.0–1.1).',
+  spendable_lamports_in: 'Grouped into 0.1-SOL buckets (chips read as ranges, e.g. 1.0–1.1).',
+  initial_buy_sol: 'Grouped into 0.1-SOL buckets (chips read as ranges, e.g. 1.0–1.1).',
+  first_slot_buy_sol: 'Creation-slot buy SOL, grouped into 0.1-SOL buckets (ranges, e.g. 1.0–1.1).',
+  first_slot_sell_sol: 'Creation-slot sell SOL, grouped into 0.1-SOL buckets (ranges, e.g. 1.0–1.1).',
 };
 
 /** Tooltip for a numeric field's filter input — explains the 3-state interaction
@@ -208,13 +217,22 @@ export function FingerprintGroupPicker({
                 title={fieldFilterTooltip(f, isGrouped)}
                 className="min-w-0 flex-1 rounded border border-white/10 bg-surface px-2 py-0.5 text-xs text-text-mid placeholder:text-text-dim/30 focus:border-white/25 focus:outline-none"
               />
-              {hasFilter && (
+              {hasFilter ? (
                 <span
                   className="shrink-0 text-[10px] text-text-dim/60"
                   title={isGrouped ? 'Groups restricted to these values' : 'Corpus pinned to these values'}
                 >
                   {isGrouped ? 'filtered' : 'pinned'}
                 </span>
+              ) : (
+                BUCKETED_GROUP_FIELDS.has(f) && (
+                  <span
+                    className="shrink-0 font-mono text-[10px] text-accent/70"
+                    title={`Continuous SOL amount — grouped into ${SOL_BUCKET_WIDTH}-SOL buckets. Group chips read as ranges (e.g. "1.0–1.1"), not exact values.`}
+                  >
+                    ◎{SOL_BUCKET_WIDTH} buckets
+                  </span>
+                )
               )}
             </div>
           );
@@ -305,6 +323,18 @@ export function FingerprintGroupPicker({
           );
         })()}
       </div>
+
+      {/* Legend — which fields bucket and how (so grouping behavior is self-explaining). */}
+      <p className="border-t border-white/5 pt-1.5 text-[11px] leading-snug text-text-dim/70">
+        <span className="font-mono text-accent/70">◎{SOL_BUCKET_WIDTH} buckets</span>{' '}
+        <span className="text-text-mid">
+          {[...BUCKETED_GROUP_FIELDS].map((f) => GROUP_FIELD_LABELS[f]).join(', ')}
+        </span>{' '}
+        are continuous SOL amounts, so they group by <b>{SOL_BUCKET_WIDTH}-SOL ranges</b> —
+        group chips read as{' '}
+        <span className="font-mono">1.0–1.1</span>, not exact values. Every other field
+        groups on its <b>exact</b> value.
+      </p>
 
       {groupBy.length === 0 && (
         <p className="text-xs text-text-dim/70">{emptyHint}</p>

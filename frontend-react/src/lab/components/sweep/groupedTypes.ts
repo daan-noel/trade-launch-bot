@@ -47,6 +47,25 @@ export const GROUP_FIELD_LABELS: Record<GroupField, string> = {
   is_cashback_enabled: 'Cashback on',
 };
 
+// --- bucketed (binned) fields ----------------------------------------------
+
+/** Bucket width (SOL) the backend groups the continuous SOL-amount fields by.
+ *  Mirrors `trading_core` `grouping::SOL_BIN_WIDTH` — keep the two in sync. */
+export const SOL_BUCKET_WIDTH = 0.1;
+
+/** Fields the backend groups into `SOL_BUCKET_WIDTH`-wide **ranges** (group chips
+ *  read as `"lo–hi"`, e.g. `"1.0–1.1"`) instead of exact values — they are continuous
+ *  SOL amounts, so exact grouping would make every token its own group. Every other
+ *  field groups on its exact value. Mirrors the binned arms of
+ *  `grouping::render_field` / `creation_stats_repo::group_field_sql`. */
+export const BUCKETED_GROUP_FIELDS: ReadonlySet<GroupField> = new Set<GroupField>([
+  'initial_buy_sol',
+  'max_cost_lamports',
+  'spendable_lamports_in',
+  'first_slot_buy_sol',
+  'first_slot_sell_sol',
+]);
+
 // --- TPSL2 editable axes ----------------------------------------------------
 
 /** The page-editable param grid for TPSL2 — one optional candidate list per
