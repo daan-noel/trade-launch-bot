@@ -30,38 +30,46 @@ use pump_trader::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRo
 /// Decision for a snipe buy that was sent but whose fill never appeared in the
 /// WS/DB feed within the poll window. Centralizing it keeps the **double-buy
 /// safety rule** — *re-send only on a confirmed on-chain revert* — in one place
-/// that is unit-tested without a live chain.
+/// that is unit-tested without a live chain. The revert sub-classification funnels
+/// through the SSOT `pump_trader::classify_swap_revert` (curve buy route — snipes
+/// are curve-only), so a futile revert gives up instead of re-paying fees.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SilentSendOutcome {
-    /// Tx reverted on-chain (no tokens bought) — safe to re-send.
+    /// Slippage-floor revert (no tokens bought) — safe to re-send, re-quoted with
+    /// fresh reserves.
     Resend,
+    /// Stale-creator `ConstraintSeeds` (2006) revert — refresh the creator and
+    /// re-send only if it actually changed; an unchanged creator (or a failed
+    /// refresh) is a guaranteed-futile resend, so the caller gives up.
+    RefreshCreatorThenResend,
     /// Tx landed but isn't indexed yet — wait for the row; never re-send (a
     /// second buy would double-fill).
     WaitThenSettle,
-    /// Pending/dropped, or the status check failed — ambiguous, so give up rather
-    /// than risk double-buying from a nonce tx that could still land.
+    /// Structural/unknown revert on the route the retry would reuse, pending/dropped,
+    /// or the status check failed — give up rather than re-pay fees on a futile
+    /// resend or risk double-buying from a nonce tx that could still land.
     GiveUp,
 }
 
 /// Map a one-shot `signature_state_detailed` result to the post-poll action. Pure;
-/// generic over the error type so tests need no `anyhow` value.
+/// generic over the error type so tests need no `anyhow` value. A confirmed revert
+/// is sub-classified by its on-chain error code through the shared SSOT decision
+/// (route=Curve, direction=Buy — snipes are curve-only): buy slippage → resend,
+/// stale-creator 2006 → refresh-then-resend, structural/unknown → give up.
 fn classify_silent_send<E>(status: &Result<SigStatus, E>) -> SilentSendOutcome {
     match status {
-        Ok(SigStatus::Reverted { .. }) => SilentSendOutcome::Resend,
+        Ok(SigStatus::Reverted { custom }) => {
+            match classify_swap_revert(*custom, SwapRoute::Curve, SwapDirection::Buy) {
+                SwapRetryDecision::Retry => SilentSendOutcome::Resend,
+                SwapRetryDecision::RefreshCreator => SilentSendOutcome::RefreshCreatorThenResend,
+                // StopFeeBurn (structural/unknown) or any decision not reachable on a
+                // curve buy → a resend would just revert again, so give up.
+                _ => SilentSendOutcome::GiveUp,
+            }
+        }
         Ok(SigStatus::Succeeded) => SilentSendOutcome::WaitThenSettle,
         Ok(SigStatus::Pending) | Err(_) => SilentSendOutcome::GiveUp,
     }
-}
-
-/// True when a confirmed-reverted snipe buy's custom error code is the
-/// stale-creator `ConstraintSeeds` (2006) — shares the SSOT decision with the
-/// sell path and pump-trader's own in-call heal (see `classify_sell_revert`).
-/// Curve buys are always route=Curve (snipes are curve-only).
-fn is_stale_creator_buy_revert<E>(status: &Result<SigStatus, E>) -> bool {
-    matches!(
-        status,
-        Ok(SigStatus::Reverted { custom }) if classify_swap_revert(*custom, SwapRoute::Curve, SwapDirection::Buy) == SwapRetryDecision::RefreshCreator
-    )
 }
 
 /// Recovery verdict for a `BuySubmitted` position whose submitted buy did **not**
@@ -322,9 +330,11 @@ impl BuyRetryCfg {
 
 /// Snipe-buy `mint` and record the entry fill on first sight in the WS feed,
 /// retrying per `cfg`. Honors the double-buy invariant: only a confirmed on-chain
-/// revert re-sends.
+/// revert re-sends. `reserves_fn` re-quotes the slippage `min_out` from the live
+/// token cache **per attempt** so a slippage-floor `Retry` resends with a fresh
+/// floor instead of the same stale one (which would just revert again).
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
+pub(crate) async fn buy_until_filled_or_give_up<E, F>(
     trader: Arc<E>,
     mint: String,
     mut creator: String,
@@ -337,9 +347,12 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
     trade_signals: Arc<TradeSignals>,
     cfg: BuyRetryCfg,
     slippage_bps: Option<u64>,
-    reserves: Option<(u128, u128)>,
+    reserves_fn: F,
     cashback_enabled: bool,
-) {
+) where
+    E: SnipeExecutor + 'static,
+    F: Fn() -> Option<(u128, u128)> + Send,
+{
     let wallet = trader.wallet();
     let max_attempts = cfg.max_attempts;
     let mut backoff_ms = cfg.backoff_ms;
@@ -413,6 +426,12 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
             })
         };
 
+        // Re-quote the slippage floor from the LIVE reserve cache each attempt: a
+        // slippage `Retry` that resent the SAME stale `min_out` would just revert
+        // again. `None` ⇒ min_out=1 (unprotected) rather than an inline reserve RPC
+        // (the latency budget forbids one here).
+        let reserves = reserves_fn();
+
         // Snipe send WITHOUT the blocking RPC confirm — the WS/DB trade feed below is
         // the sole confirmation and the entry-price source. `reuse_account` (if set)
         // routes the buy straight into the existing account, skipping the template.
@@ -465,32 +484,41 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
         let status = trader.check_signature(&signature).await;
         match classify_silent_send(&status) {
             SilentSendOutcome::Resend => {
+                // Buy slippage floor missed — resend; the per-attempt `reserves_fn`
+                // re-quotes `min_out` from the live cache above so the retry uses a
+                // fresh floor. Gated on a CONFIRMED revert, so this can't double-buy.
+                warn!(mint = %mint, attempt, sig = %signature,
+                    "buy reverted on a slippage floor; retrying with fresh reserves");
+            }
+            SilentSendOutcome::RefreshCreatorThenResend => {
                 // A stale `bonding_curve.creator` (pump `set_creator` between the
-                // triggering event and this buy) means every resend with the
-                // ORIGINAL `creator` would revert identically (2006) forever —
-                // refresh it once so the next attempt uses the current one.
-                // Gated on a CONFIRMED revert (already true for `Resend`), so
-                // this can't double-buy; shares the SSOT decision with the sell
-                // path (`classify_sell_revert`) and pump-trader's own in-call
-                // heal.
-                if is_stale_creator_buy_revert(&status) {
-                    match trader.refresh_creator(&mint).await {
-                        Ok(fresh) if fresh != creator => {
-                            warn!(mint = %mint, attempt, sig = %signature,
-                                old_creator = %creator, new_creator = %fresh,
-                                "buy reverted on a stale creator (pump set_creator); \
-                                 refreshed creator, retrying");
-                            creator = fresh;
-                        }
-                        Ok(_) => warn!(mint = %mint, attempt, sig = %signature,
-                            "buy reverted 2006 but the creator is unchanged on re-read; \
-                             retrying anyway (would only re-pay fees if truly stale)"),
-                        Err(err) => warn!(mint = %mint, attempt, sig = %signature,
-                            "creator refresh failed after a 2006 revert: {err}; \
-                             retrying with the original creator"),
+                // triggering event and this buy) means every resend with the ORIGINAL
+                // `creator` reverts identically (2006). Refresh once; resend only if it
+                // ACTUALLY changed — an unchanged creator (or a failed refresh) is a
+                // guaranteed-futile resend, so give up rather than re-pay fees. Gated on
+                // a CONFIRMED revert, so this can't double-buy; shares the SSOT decision
+                // with the sell path (`classify_sell_revert`) and pump-trader's own
+                // in-call heal.
+                match trader.refresh_creator(&mint).await {
+                    Ok(fresh) if fresh != creator => {
+                        warn!(mint = %mint, attempt, sig = %signature,
+                            old_creator = %creator, new_creator = %fresh,
+                            "buy reverted on a stale creator (pump set_creator); \
+                             refreshed creator, retrying");
+                        creator = fresh;
                     }
-                } else {
-                    warn!(mint = %mint, attempt, sig = %signature, "buy reverted on-chain; retrying");
+                    Ok(_) => {
+                        warn!(mint = %mint, attempt, sig = %signature,
+                            "buy reverted 2006 but the creator is unchanged on re-read; \
+                             giving up (a resend would only re-pay fees)");
+                        return;
+                    }
+                    Err(err) => {
+                        warn!(mint = %mint, attempt, sig = %signature,
+                            "creator refresh failed after a 2006 revert: {err}; giving up \
+                             (a resend with the original creator would revert identically)");
+                        return;
+                    }
                 }
             }
             SilentSendOutcome::WaitThenSettle => {
@@ -507,6 +535,11 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
             }
             SilentSendOutcome::GiveUp => {
                 match &status {
+                    Ok(SigStatus::Reverted { custom }) => warn!(mint = %mint, sig = %signature,
+                        raw_error_code = ?custom,
+                        "buy reverted on-chain (structural/unknown/unchanged-2006) on the \
+                         route the retry would reuse; giving up (a blind resend would only \
+                         re-pay fees)"),
                     Err(err) => warn!(mint = %mint, sig = %signature,
                         "buy status check failed: {err}; not re-sending (double-buy risk)"),
                     _ => warn!(mint = %mint, sig = %signature,
@@ -1170,11 +1203,15 @@ mod tests {
     }
 
     #[test]
-    fn confirmed_revert_is_the_only_resend() {
+    fn slippage_revert_resends_structural_gives_up() {
+        // A buy slippage floor → resend (re-quoted with fresh reserves).
         assert_eq!(
-            outcome(Ok(SigStatus::Reverted { custom: None })),
+            outcome(reverted(Some(pump_trader::CURVE_TOO_MUCH_SOL_REQUIRED))),
             SilentSendOutcome::Resend
         );
+        // A structural/unknown revert (or a missing code) → give up, not resend.
+        assert_eq!(outcome(reverted(Some(6022))), SilentSendOutcome::GiveUp);
+        assert_eq!(outcome(reverted(None)), SilentSendOutcome::GiveUp);
     }
 
     #[test]
@@ -1193,24 +1230,38 @@ mod tests {
     }
 
     #[test]
-    fn nothing_but_a_confirmed_revert_ever_resends() {
+    fn only_a_confirmed_revert_ever_resends() {
+        // The double-buy invariant: a non-revert status NEVER resends (neither the
+        // slippage resend nor the refresh-then-resend), so a nonce tx that could
+        // still land can't be double-bought.
         for status in [Ok(SigStatus::Succeeded), Ok(SigStatus::Pending), Err("x")] {
-            assert_ne!(outcome(status), SilentSendOutcome::Resend);
+            let o = outcome(status);
+            assert_ne!(o, SilentSendOutcome::Resend);
+            assert_ne!(o, SilentSendOutcome::RefreshCreatorThenResend);
         }
     }
 
     #[test]
-    fn stale_creator_buy_revert_is_detected_by_code() {
-        let stale: Result<SigStatus, &'static str> =
-            Ok(SigStatus::Reverted { custom: Some(pump_trader::ANCHOR_CONSTRAINT_SEEDS) });
-        assert!(is_stale_creator_buy_revert(&stale));
-
-        let other: Result<SigStatus, &'static str> =
-            Ok(SigStatus::Reverted { custom: Some(6022) });
-        assert!(!is_stale_creator_buy_revert(&other));
-
-        let succeeded: Result<SigStatus, &'static str> = Ok(SigStatus::Succeeded);
-        assert!(!is_stale_creator_buy_revert(&succeeded));
+    fn snipe_decision_covers_all_buy_codes() {
+        use pump_trader::{
+            AMM_BUY_SLIPPAGE_BELOW_MIN_BASE, ANCHOR_CONSTRAINT_SEEDS,
+            CURVE_BUY_SLIPPAGE_BELOW_MIN_TOKENS_OUT, CURVE_TOO_MUCH_SOL_REQUIRED,
+        };
+        // Curve buy slippage floors → resend (fresh reserves re-quoted per attempt).
+        for code in [CURVE_TOO_MUCH_SOL_REQUIRED, CURVE_BUY_SLIPPAGE_BELOW_MIN_TOKENS_OUT] {
+            assert_eq!(outcome(reverted(Some(code))), SilentSendOutcome::Resend);
+        }
+        // Stale-creator 2006 → refresh creator, resend only if it changed (the
+        // changed/unchanged decision itself lives at the call site).
+        assert_eq!(
+            outcome(reverted(Some(ANCHOR_CONSTRAINT_SEEDS))),
+            SilentSendOutcome::RefreshCreatorThenResend
+        );
+        // Structural (6022), an AMM-only slippage code on the curve route (6040), and
+        // a missing code are all futile on a curve snipe → give up.
+        for code in [Some(6022u32), Some(AMM_BUY_SLIPPAGE_BELOW_MIN_BASE), None] {
+            assert_eq!(outcome(reverted(code)), SilentSendOutcome::GiveUp);
+        }
     }
 
     fn recover(status: Result<Option<bool>, &'static str>) -> BuyRecoveryVerdict {

@@ -56,9 +56,10 @@ pub use buy::BuySignedHook;
 pub use nonce::NonceAuthCheck;
 pub use sim::{AccountDelta, SimOutcome};
 pub use swap_retry::{
-    classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute, AMM_EXCEEDED_SLIPPAGE,
-    ANCHOR_CONSTRAINT_SEEDS, BONDING_CURVE_COMPLETE, CURVE_MISSING_USER_VOLUME_ACCUMULATOR,
-    CURVE_TOO_LITTLE_SOL_RECEIVED,
+    classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute, AMM_BUY_SLIPPAGE_BELOW_MIN_BASE,
+    AMM_EXCEEDED_SLIPPAGE, ANCHOR_CONSTRAINT_SEEDS, BONDING_CURVE_COMPLETE,
+    CURVE_BUY_SLIPPAGE_BELOW_MIN_TOKENS_OUT, CURVE_MISSING_USER_VOLUME_ACCUMULATOR,
+    CURVE_TOO_LITTLE_SOL_RECEIVED, CURVE_TOO_MUCH_SOL_REQUIRED,
 };
 pub use tx::SigStatus;
 

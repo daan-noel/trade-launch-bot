@@ -398,15 +398,22 @@ impl StrategyService {
                     };
 
                     if proceed {
-                        // Derive the slippage min_out from the curve's in-memory
-                        // virtual reserves; `None` ⇒ min_out=1, never an inline RPC.
-                        let reserves = token_cache.get(&mint).and_then(|e| {
-                            let st = e.value();
-                            real::snipe_reserves_from_cache(
-                                st.current_reserve_token,
-                                st.current_reserve_sol,
-                            )
-                        });
+                        // Re-quote the slippage min_out from the curve's in-memory
+                        // virtual reserves on EVERY attempt (a resend with a stale
+                        // floor would just re-revert); `None` ⇒ min_out=1, never an
+                        // inline RPC. The closure captures a cache clone so the buy
+                        // loop can re-read fresh reserves per retry.
+                        let reserves_cache = token_cache.clone();
+                        let reserves_mint = mint.clone();
+                        let reserves_fn = move || {
+                            reserves_cache.get(&reserves_mint).and_then(|e| {
+                                let st = e.value();
+                                real::snipe_reserves_from_cache(
+                                    st.current_reserve_token,
+                                    st.current_reserve_sol,
+                                )
+                            })
+                        };
                         real::buy_until_filled_or_give_up(
                             trader.clone(),
                             mint.clone(),
@@ -420,7 +427,7 @@ impl StrategyService {
                             trade_signals,
                             real::BuyRetryCfg::production(),
                             slippage_bps,
-                            reserves,
+                            reserves_fn,
                             cashback_enabled,
                         )
                         .await;

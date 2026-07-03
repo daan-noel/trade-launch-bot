@@ -14,12 +14,16 @@
 //     send only learns the outcome from the LaserStream feed / a later
 //     `signature_state_detailed` poll.
 //
-// Two triggers, one shared decision. Scope is deliberately narrow: only the
-// codes already self-healed on the sell path (2006 stale-creator, 6003/6004
-// slippage, 6024 missing-UVA, 6005 already-migrated) are classified here, and
-// only 2006 is generalized to the buy direction — the other codes keep their
-// existing sell-only behavior (see CLAUDE.md SSOT rule; a wider buy-side
-// revert taxonomy is a separate change).
+// Two triggers, one shared decision. Codes classified here:
+//   - 2006 stale-creator (both directions, both routes);
+//   - the sell slippage floors (6003 curve, 6004 AMM), 6024 missing-UVA,
+//     6005 already-migrated (sell-only — these keep their curve/sell behavior);
+//   - the BUY slippage codes (curve 6002 `TooMuchSolRequired` / 6042
+//     `BuySlippageBelowMinTokensOut`; AMM 6004 `ExceededSlippage` shared with
+//     sell / 6040 `BuySlippageBelowMinBaseAmountOut`) → `Retry`, so a
+//     slippage-reverted entry re-quotes and resends instead of giving up.
+// Every other code falls through to `StopFeeBurn` (a blind resend would only
+// re-pay fees). See CLAUDE.md SSOT rule.
 // ============================================================
 
 /// The venue a swap executed against.
@@ -60,12 +64,19 @@ pub enum SwapRetryDecision {
     RerouteMigrated,
 }
 
-/// pump.fun bonding-curve `TooLittleSolReceived` — the curve SELL slippage
-/// floor (buy's own slippage error, `TooMuchSolRequired` = 6002, is a
-/// separate, not-yet-unified code — out of this change's scope).
+/// pump.fun bonding-curve `TooLittleSolReceived` — the curve SELL slippage floor.
 pub const CURVE_TOO_LITTLE_SOL_RECEIVED: u32 = 6003;
-/// PumpSwap AMM `ExceededSlippage` — the AMM-side slippage floor.
+/// pump.fun bonding-curve `TooMuchSolRequired` — the curve BUY slippage ceiling
+/// (the buyer's `max_sol_cost` was exceeded by the live price).
+pub const CURVE_TOO_MUCH_SOL_REQUIRED: u32 = 6002;
+/// pump.fun bonding-curve `BuySlippageBelowMinTokensOut` — the curve BUY
+/// min-tokens-out floor.
+pub const CURVE_BUY_SLIPPAGE_BELOW_MIN_TOKENS_OUT: u32 = 6042;
+/// PumpSwap AMM `ExceededSlippage` — the AMM-side slippage floor (shared by AMM
+/// buys and sells).
 pub const AMM_EXCEEDED_SLIPPAGE: u32 = 6004;
+/// PumpSwap AMM `BuySlippageBelowMinBaseAmountOut` — the AMM BUY min-base-out floor.
+pub const AMM_BUY_SLIPPAGE_BELOW_MIN_BASE: u32 = 6040;
 /// pump.fun `BondingCurveComplete`: token already migrated to the AMM but the
 /// caller's cache still had `is_migrated = false`.
 pub const BONDING_CURVE_COMPLETE: u32 = 6005;
@@ -85,12 +96,20 @@ pub fn classify_swap_revert(
     route: SwapRoute,
     direction: SwapDirection,
 ) -> SwapRetryDecision {
-    use SwapDirection::Sell;
+    use SwapDirection::{Buy, Sell};
     use SwapRoute::{Amm, Curve};
 
     match (custom, route, direction) {
         (Some(CURVE_TOO_LITTLE_SOL_RECEIVED), Curve, Sell) => SwapRetryDecision::Retry,
         (Some(AMM_EXCEEDED_SLIPPAGE), Amm, Sell) => SwapRetryDecision::Retry,
+        // Buy slippage floors — re-quote and resend (the entry-path analogue of
+        // the sell floors above). 6004 is shared buy+sell on the AMM route.
+        (Some(CURVE_TOO_MUCH_SOL_REQUIRED | CURVE_BUY_SLIPPAGE_BELOW_MIN_TOKENS_OUT), Curve, Buy) => {
+            SwapRetryDecision::Retry
+        }
+        (Some(AMM_EXCEEDED_SLIPPAGE | AMM_BUY_SLIPPAGE_BELOW_MIN_BASE), Amm, Buy) => {
+            SwapRetryDecision::Retry
+        }
         // 2006 is the only code generalized across both directions — the
         // stale-creator cache is equally wrong for a buy or a sell.
         (Some(ANCHOR_CONSTRAINT_SEEDS), Curve, _) => SwapRetryDecision::RefreshCreator,
@@ -167,6 +186,54 @@ mod tests {
                 SwapRoute::Amm,
                 SwapDirection::Sell
             ),
+            SwapRetryDecision::StopFeeBurn
+        );
+    }
+
+    #[test]
+    fn buy_slippage_codes_retry_on_their_own_route() {
+        // Curve buy floors.
+        for code in [CURVE_TOO_MUCH_SOL_REQUIRED, CURVE_BUY_SLIPPAGE_BELOW_MIN_TOKENS_OUT] {
+            assert_eq!(
+                classify_swap_revert(Some(code), SwapRoute::Curve, SwapDirection::Buy),
+                SwapRetryDecision::Retry
+            );
+        }
+        // AMM buy floors (6004 shared with sell, 6040 buy-only).
+        for code in [AMM_EXCEEDED_SLIPPAGE, AMM_BUY_SLIPPAGE_BELOW_MIN_BASE] {
+            assert_eq!(
+                classify_swap_revert(Some(code), SwapRoute::Amm, SwapDirection::Buy),
+                SwapRetryDecision::Retry
+            );
+        }
+        // A buy floor on the wrong route falls through to StopFeeBurn.
+        assert_eq!(
+            classify_swap_revert(
+                Some(CURVE_TOO_MUCH_SOL_REQUIRED),
+                SwapRoute::Amm,
+                SwapDirection::Buy
+            ),
+            SwapRetryDecision::StopFeeBurn
+        );
+        assert_eq!(
+            classify_swap_revert(
+                Some(AMM_BUY_SLIPPAGE_BELOW_MIN_BASE),
+                SwapRoute::Curve,
+                SwapDirection::Buy
+            ),
+            SwapRetryDecision::StopFeeBurn
+        );
+    }
+
+    #[test]
+    fn structural_buy_revert_stops_fee_burn() {
+        // An unknown/structural code on the buy path must give up, not resend.
+        assert_eq!(
+            classify_swap_revert(Some(6022), SwapRoute::Curve, SwapDirection::Buy),
+            SwapRetryDecision::StopFeeBurn
+        );
+        assert_eq!(
+            classify_swap_revert(None, SwapRoute::Curve, SwapDirection::Buy),
             SwapRetryDecision::StopFeeBurn
         );
     }

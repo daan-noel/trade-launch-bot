@@ -162,22 +162,29 @@ pub async fn manual_buy(
     // surfacing a 500. Curve buys use a durable nonce whose signature is fixed at
     // signing, so a `ConfirmTimeout` is similarly safe to surface as pending.
     //
-    // Only retry HERE on a proven on-chain revert (6003 curve / 6004 AMM) — mirrors
-    // `classify_silent_send`: `Reverted` → resend (no tokens bought, safe); any
-    // other error → stop (durable-nonce tx may have landed, re-sending risks a
-    // double-buy). The AMM path uses a recent-blockhash tx so a timeout truly is
-    // ambiguous; the curve path uses a durable nonce so the same caution applies.
+    // Only retry HERE on a proven **buy slippage** revert — the retry decision folds
+    // onto the SSOT `pump_trader::classify_swap_revert(custom, route, Buy)`, the same
+    // classifier the snipe/sell loops use, so the slippage-code list lives in exactly
+    // one place (curve 6002/6042, AMM 6004/6040). A `Retry` verdict means no tokens
+    // were bought, so resending is safe; any other error → stop (a durable-nonce tx
+    // may have landed, re-sending risks a double-buy). The AMM path uses a
+    // recent-blockhash tx so a timeout truly is ambiguous; the curve path uses a
+    // durable nonce so the same caution applies.
     //
     // A stale-creator revert (2006) never reaches this loop in practice: both
     // `buy_token` and `amm_buy` already self-heal it internally (refresh the
     // creator/coin_creator cache + resend once with `confirm=true`) before
     // returning — see `pump_trader`'s `buy.rs`/`amm.rs`. This loop is the
-    // caller-level backstop for the two codes that heal can't fix (a genuine
+    // caller-level backstop for the slippage codes that heal can't fix (a genuine
     // price move, not a stale cache).
     const BUY_MAX_ATTEMPTS: usize = 3;
-    // Pump.fun curve slippage-floor revert; PumpSwap AMM slippage revert.
-    const CURVE_SLIPPAGE_ERR: u32 = 6003;
-    const AMM_SLIPPAGE_ERR: u32 = 6004;
+    // The route this buy uses — selects which slippage codes `classify_swap_revert`
+    // treats as retryable (curve vs AMM).
+    let buy_route = if routing.is_migrated {
+        pump_trader::SwapRoute::Amm
+    } else {
+        pump_trader::SwapRoute::Curve
+    };
 
     let token_program = match &body.token_program_id {
         Some(id) => pump_trader::TokenProgram::from_id(id),
@@ -222,15 +229,19 @@ pub async fn manual_buy(
                 last_err = Some(pump_trader::TradeError::ConfirmTimeout);
                 break 'retry;
             }
-            Err(pump_trader::TradeError::Reverted { custom: Some(code) })
-                if code == CURVE_SLIPPAGE_ERR || code == AMM_SLIPPAGE_ERR =>
+            Err(pump_trader::TradeError::Reverted { custom })
+                if pump_trader::classify_swap_revert(
+                    custom,
+                    buy_route,
+                    pump_trader::SwapDirection::Buy,
+                ) == pump_trader::SwapRetryDecision::Retry =>
             {
-                // Proven on-chain revert with no tokens bought — safe to retry.
+                // Proven buy slippage revert with no tokens bought — safe to retry.
                 tracing::warn!(
-                    "manual_buy: slippage revert (error {code}) on attempt {attempt} for {}",
+                    "manual_buy: slippage revert (error {custom:?}) on attempt {attempt} for {}",
                     body.mint
                 );
-                last_err = Some(pump_trader::TradeError::Reverted { custom: Some(code) });
+                last_err = Some(pump_trader::TradeError::Reverted { custom });
                 // continue to next attempt
             }
             Err(e) => {

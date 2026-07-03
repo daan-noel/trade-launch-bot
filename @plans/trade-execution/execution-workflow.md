@@ -21,15 +21,19 @@ EntryGuard claimed                         ← recovery reaper skips guarded pos
 
 per-attempt loop (max 3):
   adopt_existing_fill_if_present()         ← check OUR sent sigs before sending again
+  reserves_fn() re-quotes min_out          ← fresh slippage floor from the live cache EACH attempt
   register on_signed write-ahead hook      ← closure persists sig to DB on sign
   send_snipe_buy() [confirm=false]         ← hook fires AFTER sign, BEFORE network submit
   poll_feed_until_entry_fill() 12 × 1 s   ← event-driven (TradeSignals.notify)
-  on timeout → classify_silent_send(sig):
-    Ok(Some(false)) proven revert  → retry (safe: tx is confirmed gone)
-      curve ConstraintSeeds 2006 → trader.refresh_creator(mint) first, then retry with
-      the fresh creator (2006 rationale below, under C); other proven reverts retry unchanged
-    Ok(Some(true))  landed+unindexed → wait extra poll window (re-send = double-buy)
-    Ok(None) / Err  pending/unknown → give up (never re-send; nonce tx may still land)
+  on timeout → classify_silent_send(sig) routes a Reverted status through the SSOT
+               classify_swap_revert(custom, SwapRoute::Curve, SwapDirection::Buy):
+    Reverted + buy slippage (6002/6042)  → resend (re-quoted min_out; no tokens bought)
+    Reverted + ConstraintSeeds 2006      → refresh_creator(mint); changed → resend with the
+                                           fresh creator, unchanged / refresh-fail → GIVE UP
+                                           (a resend would revert identically; rationale under C)
+    Reverted + structural/unknown        → give up (a blind resend only re-pays fees)
+    Succeeded (landed+unindexed)         → wait extra poll window (re-send = double-buy)
+    Pending / Err (status unknown)       → give up (never re-send; nonce tx may still land)
 
 on fill:   update_entry → sync runtime cache → EntryGuard drops
 on fail:   release_sol_for_position() + delete position + EntryGuard drops
